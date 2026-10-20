@@ -445,7 +445,7 @@ def _sent_since(graph, since: str, top: int = 50) -> list[dict]:
 
 def _inbox_conversation(graph, cid: str) -> list[dict]:
     data = graph.graph_get("/me/mailFolders/inbox/messages", {
-        "$filter": f"conversationId eq '{str(cid).replace("'", "''")}'",
+        "$filter": f"conversationId eq '{str(cid).replace(chr(39), chr(39) * 2)}'",
         "$select": "id,subject,categories,receivedDateTime", "$top": 50})
     return data.get("value", [])
 

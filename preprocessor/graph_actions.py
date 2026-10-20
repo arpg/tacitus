@@ -396,7 +396,8 @@ def _conversation_drafts(conversation_id: str) -> list:
     back to the plain query rather than degrading to "no drafts found".
     """
     # The query goes in params: graph_client refuses a path with a query in it.
-    base = {"$filter": f"conversationId eq '{str(conversation_id).replace("'", "''")}'",
+    quoted = str(conversation_id).replace("'", "''")
+    base = {"$filter": f"conversationId eq '{quoted}'",
             "$select": "id,subject,lastModifiedDateTime", "$top": 10}
     for params in ({**base, "$orderby": "lastModifiedDateTime desc"}, base):
         try:
@@ -499,7 +500,7 @@ def cmd_create_reply(args):
     if getattr(args, "to", None) and _conv_for_dedupe:
         try:
             latest = graph.graph_get("/me/messages", {
-                "$filter": f"conversationId eq '{str(_conv_for_dedupe).replace("'", "''")}'",
+                "$filter": f"conversationId eq '{str(_conv_for_dedupe).replace(chr(39), chr(39) * 2)}'",
                 "$orderby": "receivedDateTime desc", "$top": 1,
                 "$select": "id,receivedDateTime"}).get("value", [])
             if latest and latest[0]["id"] != args.message_id:
@@ -1341,7 +1342,7 @@ def cmd_archive_conversation(args):
     cid = args.conversation_id
     # $filter on conversationId to find inbox messages in this thread
     resp = graph.graph_get("/me/mailFolders/inbox/messages", {
-        "$filter": f"conversationId eq '{str(cid).replace("'", "''")}'",
+        "$filter": f"conversationId eq '{str(cid).replace(chr(39), chr(39) * 2)}'",
         "$select": "id,subject", "$top": 50})
     items = resp.get("value", [])
 

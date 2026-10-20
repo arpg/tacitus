@@ -223,7 +223,7 @@ def conversation(graph, conv_id: str) -> list[dict]:
     # The filter goes in params: graph_client refuses a path with a query.
     rows = graph.graph_get_all(
         "/me/messages",
-        {"$filter": f"conversationId eq '{str(conv_id).replace("'", "''")}'",
+        {"$filter": f"conversationId eq '{str(conv_id).replace(chr(39), chr(39) * 2)}'",
          "$select": graph.MAIL_FIELDS_FULL, "$top": 50})
     rows = [r for r in rows if not r.get("isDraft")]
     rows.sort(key=lambda r: r.get("receivedDateTime") or r.get("sentDateTime") or "")

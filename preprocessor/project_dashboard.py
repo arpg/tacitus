@@ -203,7 +203,7 @@ def resolve_email_weblink(ledger_id: str) -> tuple:
     if conv:
         try:
             hits = graph.graph_get("/me/messages", {
-                "$filter": f"conversationId eq '{str(conv).replace("'", "''")}'",
+                "$filter": f"conversationId eq '{str(conv).replace(chr(39), chr(39) * 2)}'",
                 "$select": "webLink,receivedDateTime",
                 "$orderby": "receivedDateTime desc", "$top": 1})
             vals = hits.get("value", [])
