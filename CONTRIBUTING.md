@@ -36,6 +36,8 @@ first; the operating file is read on every turn of every install.
 
 ## Before you start
 
+- The [code of conduct](CODE_OF_CONDUCT.md) (Contributor Covenant 2.1)
+  applies in issues, Discussions and pull requests.
 - Open an issue first for a change larger than a small fix.
 - Read `docs/SECURITY.md`. The approval gates (the Send and Create buttons),
   the mail mediator and the separate OS user are the core of the design. A
