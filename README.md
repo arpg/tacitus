@@ -13,11 +13,14 @@ ooooooooooooo       .o.         .oooooo.   ooooo ooooooooooooo oooooo     oooo  
 ```
 
 **Tacitus** is a self-hosted executive assistant for academics and
-professionals, built on [Claude Code](https://claude.ai/claude-code).
-Its assistant, the EA, reads your mail, drafts replies in your voice,
-tracks what you owe to whom, and finds meeting times across all your
+professionals, built on [Claude Code](https://claude.ai/claude-code)
+or [Codex](https://openai.com/codex/).
+Its assistant, the EA, reads your mail, drafts replies in your voice
+based on other information and your input, tracks what you owe to whom
+through a transparent ledger, and finds meeting times across all your
 calendars. The EA cannot send an email or place a meeting without your
-click.
+click. You are the executive, while Tacitcus serves quietly as an
+assistant.
 
 You talk to it the way you talk to a colleague: in a private chat on a
 server you run, from your desk or your phone. "Reply to Nico and say
@@ -59,26 +62,30 @@ done." "Open a channel for the field-trial proposal."
 
 ## Why you can trust it with your inbox
 
-An assistant that can act on your mail is useful only if you can bound
-what it does. These limits are enforced in code and by the operating
-system. They do not depend on the model following instructions.
+An assistant that can act on your mail is useful only if you can ensure it
+does not act as you. This limit is enforced in code and by the operating
+system. By design, we take the position that the model is not trustworthy.
+We must verify its outputs as we would that of a capable human EA.
 
-- **Nothing leaves without your click.** Sending mail, creating or moving
+- **Nothing leaves without your approval.** Sending mail, creating or moving
   an event, and deleting anything each need a one-time token. The chat
   bot mints that token only when you press the button on its card. The
   model holds no chat credential, so it cannot press the button.
-- **The model holds no keys.** Claude runs as a separate Unix user,
+- **The model holds no keys.** The model runs as a separate Unix user,
   `ea-bot`. Your Outlook and Google tokens belong to you and are
   unreadable to it. It reads mail and writes drafts through a mediator
-  that runs as you and refuses to send.
+  that runs as you and refuses to send without verifiable actions that only
+  you can take.
 - **The model cannot change its own rules.** The code it runs is
   read-only to it. Changes come from your checkout and nowhere else.
 - **Your mail can stay home.** An optional local model (any
   OpenAI-compatible endpoint, such as vLLM or Ollama) reads incoming mail
-  and writes the drafts. Claude then works from summaries.
+  and writes the drafts. The proprietary model then works from summaries,
+  as it would if you were to use a separate Chat window.
 - **Your conversations stay home.** The recommended chat platform is a
   Zulip server on your own machine, reached over your tailnet. Slack
-  also works if you accept that Slack stores the conversation.
+  also works if you accept that Slack stores the conversation and may
+  disseminate your data later.
 - **You can read all of it.** The gates are in this repository.
   [docs/SECURITY.md](docs/SECURITY.md) has the threat model and a list of
   what a prompt injection cannot do.
@@ -89,7 +96,7 @@ sequenceDiagram
     participant You
     participant Chat as Chat server
     participant Bot as Bot (runs as you)
-    participant LLM as Claude (ea-bot user)
+    participant LLM as Claude/Codex (ea-bot user)
     participant Mail as Mail mediator (runs as you)
     You->>Chat: "reply to Nico and say Tuesday works"
     Chat->>Bot: message event
@@ -134,8 +141,8 @@ flowchart TB
         dm["ea-dm<br/>every confirmation card"]
         sched["ea-scheduling<br/>one thread per request"]
     end
-    bot["chat bot (runs as you)<br/>routes each message to a Claude session,<br/>posts the cards, holds the chat credential"]
-    sessions["Claude sessions, run as the sandboxed ea-bot user"]
+    bot["chat bot (runs as you)<br/>routes each message to a Claude/Codex session,<br/>posts the cards, holds the chat credential"]
+    sessions["Claude/Codex sessions, run as the sandboxed ea-bot user"]
     cron["cron lanes<br/>briefings, audits, intake, plugins"]
     pre["preprocessor (Python, no model calls)<br/>ledger, project store, closure pipeline,<br/>scheduling solver, style profiles, preferences"]
     med["mail mediator (runs as you)<br/>holds the tokens, refuses to send"]
@@ -150,7 +157,7 @@ flowchart TB
 
 Most of the work is plain Python that spends no model tokens: reading
 the inbox, merging calendars, solving for meeting times, and closing
-ledger items from evidence. Claude does the judgment: the briefing, the
+ledger items from evidence. The model does the judgment: the briefing, the
 reply, the conversation. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 covers prompt construction, data flow and the approval gates.
 
@@ -159,7 +166,7 @@ covers prompt construction, data flow and the approval gates.
 You need:
 
 - an always-on Linux or macOS machine (WSL2 is untested);
-- a Claude Pro or Max subscription;
+- a Claude Pro or Max subscription, or a ChatGPT subscription that enables Codex;
 - a Microsoft 365 / Outlook account, and an app registration from your
   IT group (send them [docs/it-request.md](docs/it-request.md); this is
   usually the longest wait);
@@ -179,7 +186,7 @@ curl -fsSL https://raw.githubusercontent.com/arpg/tacitus/main/install.sh | bash
 
 `install.sh` checks the prerequisites and names the command for anything
 missing (`./install.sh --check` prints only that table). It installs
-Claude Code and the Python packages, then opens Claude Code on the
+Claude Code (suggested) and the Python packages, then opens Claude Code on the
 `/setup` skill. Setup asks one question at a time, runs every command
 for you, and ends when the health check passes.
 
@@ -222,9 +229,11 @@ asks, upgrades, and how to uninstall. To run in containers, read
 ## Status and support
 
 This is research software from a university robotics lab, with one
-maintainer, who has run it on their own mail every day since March 2026.
+maintainer, who built it in a moment of desperation in March 2026 and has
+improved and run it ever since.
 Outlook is required today; Gmail works as a second account. Linux is the
-primary platform and macOS is supported. Windows, a Gmail-only install
+primary platform and macOS is supported. Codex is generally supported
+but is not thoroughly tested. Windows, a Gmail-only install
 and a hosted service are out of scope until someone contributes them.
 Expect rough edges in the install.
 
