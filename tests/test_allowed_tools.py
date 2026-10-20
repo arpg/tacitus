@@ -94,6 +94,8 @@ REQUIRED_HELPERS = [
     "scheduling_engine.py",
     "fetch_url.py",
     "email_to_pdf.py",
+    # The only reader for a .docx: dontAsk lanes refuse unzip and python3 -c.
+    "doc_text.py",
     "poll_filler.py",
     "booking_link.py",
     "compile_letter.py",

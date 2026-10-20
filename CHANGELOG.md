@@ -6,6 +6,16 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The EA reads Word files again.** Since every headless lane runs with
+  `--permission-mode dontAsk`, the improvised `unzip -p` or `python3 -c`
+  that used to read a .docx is refused, and no granted tool read one.
+  `preprocessor/doc_text.py <path>` prints the text of a .docx (headings,
+  lists and tables in order; tracked changes accepted, or marked with
+  `--tracked`; reviewer comments anchored and listed with their
+  authors), a PDF or a text file. It reads only regular files that
+  resolve under `~/.ea/{state,docs,uploads,letters,research}`, with
+  size caps, and pages long text. The chat lanes and run-agent.sh grant
+  it; CLAUDE.md rule 5d names it.
 - **`/setup` goes on without an app registration.** With no registration
   the Outlook step used to stop the install until IT answered. It now
   also offers the owner plugin

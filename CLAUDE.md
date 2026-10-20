@@ -388,7 +388,7 @@ meeting confirmation is the body.
 5c. Archive (only when told): `graph_actions.py archive-message --message-id <id>`.
 5c-1. Check a draft's recipients with `preflight-check --message-id
    <draft-id>`, not `get-message`.
-5d. PDF attachments: `graph_actions.py scan-attachments --message-id <id>`.
+5d. A file's text (.docx, PDF, text): `doc_text.py <path>`; PDF hints: `scan-attachments`.
 5d-1. Files on a DRAFT are yours: `attach-file --message-id <draft-id>
    --file <path>`, `remove-attachment --message-id <draft-id> --name
    <file>`. Replace = remove, then attach. Never ask the user to swap a

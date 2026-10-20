@@ -2455,6 +2455,9 @@ _BASH_ONLY_TOOLS = (
     "Bash(python3 {script_dir}/preprocessor/scheduling_engine.py *),"
     "Bash(python3 {script_dir}/preprocessor/fetch_url.py *),"
     "Bash(python3 {script_dir}/preprocessor/email_to_pdf.py *),"
+    # Read-only text of a .docx, PDF or text file under ~/.ea's document
+    # folders: a dontAsk lane refuses unzip and `python3 -c`.
+    "Bash(python3 {script_dir}/preprocessor/doc_text.py *),"
     "Bash(python3 {script_dir}/preprocessor/poll_filler.py *),"
     "Bash(python3 {script_dir}/preprocessor/booking_link.py *),"
     "Bash(python3 {script_dir}/preprocessor/compile_letter.py *),"
@@ -2766,7 +2769,10 @@ def _tools_block(body_file: str, needed_modules: set[str] | None = None) -> str:
   Entries marked [auto] are reconciler-owned: a hand edit to the time
   is overwritten within 30 minutes, though an edited token WORD is
   preserved. Change the underlying meeting instead.{scheduling_tool_block}
-- Bash(python3 {sd}/preprocessor/fetch_url.py --url <url>) for reading web pages"""
+- Bash(python3 {sd}/preprocessor/fetch_url.py --url <url>) for reading web pages
+- Bash(python3 {sd}/preprocessor/doc_text.py <path>) for the text of a .docx,
+  PDF or text file under ~/.ea (state, docs, uploads, letters, research):
+  comments come at the end; --tracked marks tracked changes"""
 
 
 def resolve_bot_user_id():
@@ -11260,6 +11266,8 @@ File paths (read ONLY if this specific task requires them — avoid loading file
 
 When the user attaches files (receipts, images, PDFs):
 - Files are downloaded to {EA_DIR}/uploads/ with the local path in the message.
+- For a .docx or a PDF: read it with
+  python3 {EA_BOT_SCRIPT_DIR}/preprocessor/doc_text.py <local path>.
 - For receipts: copy to {EA_DIR}/receipts/<trip_name>/ and update the
   obligations ledger entry (via ledger.py update). Confirm what you saved
   and the current receipt tally for that trip.
