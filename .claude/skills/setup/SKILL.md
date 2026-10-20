@@ -200,11 +200,13 @@ create one themselves. Choose by the answer:
   `! python3 preprocessor/graph_client.py` for `device_code` (a link and
   a code for any browser). Both flows and the registration's values are
   SETUP.md "Microsoft Graph app registration".
-- No: fill in `docs/it-request.md` with them (the machine the EA runs
-  on, and which optional permissions they want) and have them send it to
-  their IT group. Stop the install here and tell them to re-run `/setup`
-  when IT answers; section 0 then finds the profile and identity written
-  and resumes here.
+- No: two paths (AskUserQuestion). **Ask IT**, the lasting one: fill in
+  `docs/it-request.md` with them, have them send it, stop and tell them to
+  re-run `/setup` when IT answers (section 0 resumes here). **IT will not
+  register one**: say what SETUP.md "Option C: no registration
+  (outlook-web-auth)" does, from its first paragraph, and ask whether
+  their organization allows it; unless it is a clear yes, ask IT. On a
+  yes, run its four steps; they type the install and `login` with `!`.
 
 Check before moving on:
 `python3 preprocessor/graph_actions.py calendar-view --days 1`.

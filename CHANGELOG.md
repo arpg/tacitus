@@ -6,6 +6,15 @@ repository that preceded it.
 
 ## Unreleased
 
+- **`/setup` goes on without an app registration.** With no registration
+  the Outlook step used to stop the install until IT answered. It now
+  also offers the owner plugin
+  [outlook-web-auth](https://github.com/arpg/tacitus-plugin-outlook-web-auth),
+  after saying what it does and asking whether the user's organization
+  allows it. The steps (Playwright, the install with consent, the first
+  sign-in and check, the harvest's crontab line) are SETUP.md "Option C:
+  no registration (outlook-web-auth)"; `user_init.py` names the plugin
+  where it said "an owner-side plugin".
 - **An upgrade path for the Outlook web token path** (#16). The owner
   plugin that v0.1.0 moved this path to is published:
   [outlook-web-auth](https://github.com/arpg/tacitus-plugin-outlook-web-auth). INSTALL.md ("Upgrade") and

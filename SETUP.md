@@ -111,7 +111,11 @@ id, a client secret, the delegated permissions the EA calls, admin
 consent, and says the EA works with public client flows off, as most
 university tenants set them. `docs/AUTHENTICATION.md` covers token
 lifetimes and failure modes. Without any registration, an owner-side
-plugin can supply tokens from another source (`docs/plugins.md`).
+plugin can supply tokens from another source (`docs/plugins.md`): the
+published one is
+[outlook-web-auth](https://github.com/arpg/tacitus-plugin-outlook-web-auth),
+which saves the token Outlook on the web holds for your own signed-in
+session (Option C below).
 
 ### Option A: confidential client
 
@@ -152,6 +156,38 @@ registration). `python3 user_init.py --phase auth` writes them and signs
 in; by hand, write the two lines and run
 `python3 preprocessor/graph_client.py`. A tenant that blocks third-party
 apps answers AADSTS1001010 or AADSTS65002; then Option A is the path.
+
+### Option C: no registration (outlook-web-auth)
+
+When IT will not register an app. The owner plugin
+[outlook-web-auth](https://github.com/arpg/tacitus-plugin-outlook-web-auth)
+opens Outlook on the web in a headless browser with your own signed-in
+session every 30 minutes and saves the token Outlook holds, so the EA
+reads your mail and calendar with no app registration. It does not get
+around sign-in or multi-factor authentication, but it gives the EA access
+your IT group did not register an app for: use it only where your
+organization's rules allow it, and keep the IT request open as the
+lasting path. As the owner, from the checkout:
+
+1. Playwright and Chromium in the Python that runs `ea-plugin.py`: when
+   `python3 -c "import playwright"` fails, step 3 of "Python packages in
+   three places" (your user site and `playwright install chromium`; on
+   Linux also the Chromium libraries under "Prerequisites").
+2. `python3 scripts/ea-plugin.py install git:https://github.com/arpg/tacitus-plugin-outlook-web-auth.git@v1.0.0`
+   prints the capabilities and stops, since an owner plugin always asks
+   for consent; read them, then run it again with `--accept-capabilities`.
+3. The first sign-in opens a visible browser on this machine:
+   `EA_CORE_DIR="$PWD" python3 ~/.ea-private/plugins/outlook-web-auth/outlook_web.py login`,
+   then `... outlook_web.py check` must report a token.
+4. The harvest goes in your crontab, beside the lines already there:
+   ```bash
+   crontab -l 2>/dev/null | grep -qF 'run-owner outlook-web-auth harvest' || \
+     { crontab -l 2>/dev/null; python3 scripts/ea-plugin.py cron-lines | grep -F 'run-owner outlook-web-auth harvest'; } | crontab -
+   ```
+
+The sign-in cookies last about 90 days; the harvest alerts in the EA
+channel a week before, and `outlook_web.py login` renews them. The
+plugin's README has the token lifetimes and the recovery steps.
 
 ### Test the Graph sign-in
 

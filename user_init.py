@@ -824,7 +824,8 @@ def phase_auth(chat: str = "slack"):
     print("                     (app registration; public-client redirect URI)")
     print("    4) skip          Set up later")
     print("  See docs/AUTHENTICATION.md for how to pick. With no app registration,")
-    print("  an owner-side plugin can add token sources; see docs/plugins.md.\n")
+    print("  the owner plugin outlook-web-auth can supply the token (skip here, then")
+    print("  see https://github.com/arpg/tacitus-plugin-outlook-web-auth).\n")
 
     choice = prompt("Graph auth method [1-4]", "1", key="graph-auth-method")
     method = {"1": "confidential", "2": "device_code", "3": "interactive",
