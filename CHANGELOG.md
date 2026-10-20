@@ -6,6 +6,14 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A thumbs up never means anything but the card's approval.** A card
+  that withholds its approval (a draft or an invite longer than one card
+  shows, an unstored event, a plugin card with a cut value) used to give
+  the thumbs up, the check and a bare code to the first action left:
+  Edit on a draft card, Cancel on an event card. Such a card now has no
+  default action (`ConfirmationCard.no_default`, kept on its registry
+  row): no thumbs-up chip, and a thumbs up or a bare code selects
+  nothing. Edit keeps its pencil chip.
 - **The EA can save an image from the web.** `fetch_url.py --url <u>
   --save-image <path>` fetches under the same address policy and log as
   a page read, keeps only a PNG, JPEG, GIF or WebP by its first bytes

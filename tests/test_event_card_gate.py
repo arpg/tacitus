@@ -119,9 +119,27 @@ def test_a_long_invite_text_gets_no_create_button():
         card = ns["_event_card"]("C", "T", "Planning", "s", "e", "a@example.edu", "", "",
                                  False, VALUE, body="Line of the agenda.\n" * 6000)
         assert action_ids(card) == ["cancel_event"], fits
+        assert card.no_default, "a thumbs up meant as Create must not pick Cancel"
         assert any("Not shown in full" in ln for ln in card.lines)
         # The short card itself fits, so it posts.
         assert _zulip_fits(card) and len(slack.render_card(card)[1]) <= 50
+
+
+def test_a_reply_with_a_long_quoted_thread_offers_no_thumbs_up():
+    """A short reply over a long quoted thread is more than one card shows,
+    so the card withholds Send. It once gave Edit the thumbs up, the chip
+    that means Send on every other draft card; it now has no default."""
+    ns = cards(_zulip_fits)
+    draft = {"to": "emma.lindgren41@example.edu", "subject": "RE: Seats", "conversation_id": "c1",
+             "body": "Hi Emma,\nWould that work on your end?\nKit",
+             "quoted": "> Earlier message in the thread.\n" * 600}
+    card = ns["_send_card"]("C", "T", "d1", draft)
+    assert "approve_send" not in action_ids(card) and card.no_default
+    assert chat.cards.action_reactions(card)[0] == ("pencil2", "edit_draft")
+    assert "+1" not in dict(chat.cards.action_reactions(card))
+    short = ns["_send_card"]("C", "T", "d1", dict(draft, quoted=""))
+    assert "approve_send" in action_ids(short) and not short.no_default
+    assert dict(chat.cards.action_reactions(short))["+1"] == "approve_send"
 
 
 def test_an_attendee_list_too_long_for_one_card_gets_no_create_button():

@@ -19,6 +19,7 @@ from chat.cards import (  # noqa: E402
     CardAction,
     CardRegistry,
     ConfirmationCard,
+    action_reactions,
     cancel_action,
     parse_code,
     primary_action,
@@ -62,6 +63,37 @@ def test_primary_and_cancel_action():
     assert cancel_action(plain).id == "b"
     assert cancel_action(ConfirmationCard("x", "t", actions=[CardAction("a", "A", "1")])) is None
     assert primary_action(ConfirmationCard("x", "t")) is None
+
+
+def _withheld_card():
+    """A draft card that withheld its Send: Edit comes first."""
+    return ConfirmationCard(kind="send", title="Send this draft?", no_default=True, actions=[
+        CardAction("edit_draft", ":pencil2: Edit", "d1", word="edit"),
+        CardAction("cancel_send", "Cancel", "d1", style="danger", word="cancel"),
+        CardAction("draft_handled", ":white_check_mark: Handled", "d1", word="handled"),
+    ])
+
+
+def test_a_card_with_no_default_gives_a_thumbs_up_to_nothing(tmp_path):
+    """A thumbs up means Send. On a card that withheld its Send it must not
+    pick the first action left (Edit): no chip, no reaction, no bare code."""
+    card = _withheld_card()
+    assert primary_action(card) is None and cancel_action(card).id == "cancel_send"
+    assert action_reactions(card) == [("pencil2", "edit_draft"), ("-1", "cancel_send"),
+                                      ("white_check_mark", "draft_handled")]
+    reg = _registry(tmp_path)
+    row = reg.add(_ref(), card, code="K7QX")
+    assert row["no_default"] is True
+    for name in ("+1", "thumbsup", "check"):
+        assert resolve_reaction(row, name, OWNER, OWNER) is None, name
+    assert resolve_reaction(row, "-1", OWNER, OWNER).action_id == "cancel_send"
+    thread = row["card_thread"]
+    assert resolve_code("K7QX", reg, OWNER, OWNER, thread_key=thread) is None
+    assert resolve_code("edit K7QX", reg, OWNER, OWNER, thread_key=thread).action_id == "edit_draft"
+    # without the flag the first action stays the default (a picker of rooms)
+    plain = reg.add(_ref("m2"), ConfirmationCard("room", "Pick", actions=[
+        CardAction("a", "A", "1"), CardAction("b", "B", "2", word="cancel")]), code="P2RT")
+    assert resolve_reaction(plain, "+1", OWNER, OWNER).action_id == "a"
 
 
 # registry

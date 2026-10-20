@@ -778,6 +778,24 @@ def test_a_tap_on_a_chip_picks_its_action(tmp_path):
     assert zf.reaction_action(ev, str(BOT), fe._card_row_for, "") is None
 
 
+def test_a_card_that_withheld_send_offers_no_thumbs_up(tmp_path):
+    """The Send card for a draft longer than a card shows has no Send and no
+    default: its legend offers no thumbs up, and a thumbs up picks nothing
+    (it once opened Edit, the first action left)."""
+    import dataclasses
+    fe, c = make(tmp_path)
+    card = _chip_card()
+    card = dataclasses.replace(card, actions=card.actions[2:3] + card.actions[1:2] + card.actions[3:],
+                               no_default=True)
+    ref = fe.post_card(f"stream:{DM}", card)
+    chips = [r["emoji_name"] for r in c.named("add_reaction") if r["message_id"] == int(ref.id)]
+    assert "+1" not in chips and chips[0] == "pencil2"
+    text = c.named("send_message")[-1]["content"]
+    assert ":+1:" not in text and ":pencil: Edit" in text
+    assert _tap(fe, ref, "+1", "1f44d") is None
+    assert _tap(fe, ref, "pencil", "270f").action_id == "edit_draft"
+
+
 def test_start_refuses_an_owner_id_equal_to_the_bots(tmp_path):
     from chat.base import ChatError
     fe, _ = make(tmp_path, start=False, owner_user_id=BOT)

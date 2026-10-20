@@ -81,6 +81,11 @@ class ConfirmationCard:
     thread_ts: str = ""
     ea_channel: str = ""
     content_fingerprint: str = ""
+    # No default action: a thumbs up, a check or a bare code selects only an
+    # action styled primary, never the first one. Set on a card that
+    # withheld its approval, so a thumbs up meant as Send does nothing
+    # instead of picking whatever action now comes first (Edit).
+    no_default: bool = False
 
 
 # Reactions the owner can put on a card, by the role of the action they pick.
@@ -101,12 +106,13 @@ def _norm_word(word: str) -> str:
     return " ".join(word.lower().split())
 
 
-def _pick_primary(items: list[tuple[str, str, str]]) -> str | None:
-    """The id of the first primary-styled item, else the first item."""
+def _pick_primary(items: list[tuple[str, str, str]], default: bool = True) -> str | None:
+    """The id of the first primary-styled item, else (with `default`) the
+    first item."""
     for aid, style, _word in items:
         if style == "primary":
             return aid
-    return items[0][0] if items else None
+    return items[0][0] if items and default else None
 
 
 # Words that name the action a cross reaction should pick. The style is
@@ -138,7 +144,7 @@ def _row_items(row: dict) -> list[tuple[str, str, str]]:
 
 def primary_action(card: ConfirmationCard) -> CardAction | None:
     """The action a bare code or a check reaction selects."""
-    aid = _pick_primary(_card_items(card))
+    aid = _pick_primary(_card_items(card), not card.no_default)
     return next((a for a in card.actions if a.id == aid), None)
 
 
@@ -255,6 +261,8 @@ class CardRegistry:
             row["reactions"] = dict(reactions)
         if chips:
             row["chips"] = list(chips)
+        if card.no_default:
+            row["no_default"] = True
         with self._lock:
             self._rows[_ref_key(ref.channel, ref.id)] = row
             self._save()
@@ -376,7 +384,7 @@ def resolve_reaction(row: dict | None, emoji_name: str, user_id: str,
         return _event_for(row, chip, user_id, "reaction")
     items = _row_items(row)
     if emoji_name in REACTION_ROLES["primary"]:
-        return _event_for(row, _pick_primary(items), user_id, "reaction")
+        return _event_for(row, _pick_primary(items, not row.get("no_default")), user_id, "reaction")
     if emoji_name in REACTION_ROLES["cancel"]:
         return _event_for(row, _pick_cancel(items), user_id, "reaction")
     return None
@@ -386,10 +394,11 @@ def resolve_code(text: str, registry: CardRegistry, user_id: str,
                  owner_id: str, *, thread_key: str | None) -> ActionEvent | None:
     """The action an owner's code reply selects, else None.
 
-    A bare code selects the primary action; a word before the code
-    selects the action with that word. An unknown word resolves to None;
-    the caller can tell that case apart with parse_code. The reply must be
-    in the thread the card was posted in (`thread_key`).
+    A bare code selects the primary action (none on a `no_default` card);
+    a word before the code selects the action with that word. An unknown
+    word resolves to None; the caller can tell that case apart with
+    parse_code. The reply must be in the thread the card was posted in
+    (`thread_key`).
     """
     if not owner_id or user_id != owner_id:
         return None
@@ -402,6 +411,6 @@ def resolve_code(text: str, registry: CardRegistry, user_id: str,
         return None
     items = _row_items(row)
     if word is None:
-        return _event_for(row, _pick_primary(items), user_id, "code")
+        return _event_for(row, _pick_primary(items, not row.get("no_default")), user_id, "code")
     aid = next((a for a, _s, w in items if w and _norm_word(w) == word), None)
     return _event_for(row, aid, user_id, "code")

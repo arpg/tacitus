@@ -906,6 +906,8 @@ def _withhold_approval(card: "_chat.ConfirmationCard", draft: dict, email_system
                        fallback_head: list) -> "_chat.ConfirmationCard":
     """`card` when it fits in one card and shows every field in full, else
     the same card with `actions` (no approval) and a line that says why.
+    That card has no default action (`no_default`): a thumbs up or a bare
+    code, meant as Send, selects nothing rather than the first action left.
     `fallback_head` goes before the lines in the notification text."""
     cut = _cut_fields(card)
     if cut:
@@ -913,13 +915,13 @@ def _withhold_approval(card: "_chat.ConfirmationCard", draft: dict, email_system
             f":no_entry: *Not shown in full:* the {', '.join(cut)} line is longer than "
             f"a card shows. This card has no {button} button. Open the draft in "
             f"{_mail_client_name(email_system)} to read all of it, and send it from there."]
-        return dataclasses.replace(card, lines=lines, actions=actions,
+        return dataclasses.replace(card, lines=lines, actions=actions, no_default=True,
                                    fallback_text=_draft_fallback(card.title,
                                                                  fallback_head + lines, draft))
     if _card_fits(card):
         return card
     lines = list(card.lines) + [_long_body_line(draft, email_system, button)]
-    return dataclasses.replace(card, lines=lines, actions=actions,
+    return dataclasses.replace(card, lines=lines, actions=actions, no_default=True,
                                fallback_text=_draft_fallback(card.title, fallback_head + lines,
                                                              draft))
 
@@ -945,8 +947,8 @@ def _send_card(channel: str, thread_ts: str, draft_id: str, draft: dict,
     which carries the original channel so results go back to the thread.
     The card carries the whole body: the authored part, then the quoted
     thread, which the frontend shows collapsed. A draft that does not fit
-    in one card gets no Send button: Edit comes first, so a thumbs-up or a
-    bare code on Zulip picks Edit."""
+    in one card gets no Send button and no default action: a thumbs up or a
+    bare code selects nothing, and Edit has its own pencil chip."""
     value = {"thread_ts": thread_ts, "draft_id": draft_id,
              "conversation_id": draft.get("conversation_id", ""),
              "ea_channel": channel, "email_system": email_system,
@@ -1207,7 +1209,7 @@ def _withhold_event_approval(card: "_chat.ConfirmationCard", short_fields: list,
         f":no_entry: *Not shown in full:* {why}, so this card has no {button} button. "
         f"{where}"]
     return dataclasses.replace(
-        card, fields=fields, lines=lines, actions=[cancel],
+        card, fields=fields, lines=lines, actions=[cancel], no_default=True,
         fallback_text="\n".join([card.title] + [f"*{f.label}:* {f.value}" for f in fields]
                                 + lines))
 
@@ -1275,6 +1277,7 @@ def _event_card(channel: str, thread_ts: str, subject: str, start: str, end: str
         kind="event", title=title, fields=fields,
         lines=lines,
         actions=[cancel_action] if unstored else [create, cancel_action],
+        no_default=unstored,
         block_id=f"confirm_event_{thread_ts}", fallback_text="\n".join(fallback),
         thread_ts=thread_ts, ea_channel=channel)
     where = ("Ask the EA to stage it again." if unstored else
@@ -6649,7 +6652,7 @@ def _post_plugin_card(channel: str, thread_ts: str | None, action_type: str, ite
                      f"so this card has no approve button.")
     card = _chat.ConfirmationCard(
         kind="plugin", title=r["title"], lines=lines,
-        actions=actions,
+        actions=actions, no_default=bool(r.get("cut")),
         block_id=f"confirm_plugin_{lp.name}_{spec['id']}_{thread_ts}_{r['key']}",
         fallback_text=r["fallback"], thread_ts=thread_ts, ea_channel=channel)
     _deliver_confirmation(channel, thread_ts, card, r["button_noun"], "plugin")
