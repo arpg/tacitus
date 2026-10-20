@@ -566,16 +566,33 @@ def run_job(job: dict, *, codex_run=None, scratch_runner=None, keep: bool = Fals
                       "tools": [str(t)[:300] for t in (job.get("claude") or {}).get("tools", [])][:40],
                       "elapsed_s": (job.get("claude") or {}).get("elapsed_s")},
            "codex": {}, "status": "error", "graded": False}
+    scratch = None
     try:
-        scratch = prepare_scratch(jid, runner=scratch_runner)
-        prompt = lane_prompt(job.get("prompt") or "", scratch) if kind == "briefing" else turn_prompt(job, scratch)
-        prefix = _bot_env({"EA_DIR": str(scratch), "EA_RUN_ID": rid, "EA_BOT_HOME": str(BOT_HOME)})
-        res = (codex_run or codex_cli.run)(
-            prompt, cwd=scratch, sandbox="workspace-write",
-            add_dirs=[BOT_HOME / ".ea" / "state" / "mail-queue"],
-            timeout=RUN_TIMEOUT_S.get(kind, 600), prefix=prefix, last_message_dir=scratch)
+        if kind == "chat" and job.get("prompt"):
+            # The production turn path with posting off (codex_turn): the
+            # prompt the bot gave Claude, on the chat thread's own ghost
+            # Codex thread and scratch EA_DIR, which persist across turns.
+            import codex_turn
+            tr = codex_turn.run_turn(job["prompt"], thread_key=str(job.get("thread_ts") or jid), run_id=rid,
+                                     live=False, fresh_prompt=job.get("fresh_prompt") or "",
+                                     lane=str(job.get("lane") or ""), codex_run=codex_run,
+                                     scratch_runner=scratch_runner)
+            res = {"output": tr["output"], "tool_calls": [{"input": c[4], "exit_code": None} for c in tr["tool_calls"]],
+                   "usage": tr["usage"], "duration_s": tr["duration_ms"] / 1000.0, "exit_code": tr["returncode"],
+                   "harness_error": tr["harness_error"], "files": tr.get("files") or []}
+            rec["thread_id"] = tr.get("thread_id")
+            rec["staged"] = tr.get("staged") or {}
+        else:
+            scratch = prepare_scratch(jid, runner=scratch_runner)
+            prompt = lane_prompt(job.get("prompt") or "", scratch) if kind == "briefing" else turn_prompt(job, scratch)
+            prefix = _bot_env({"EA_DIR": str(scratch), "EA_RUN_ID": rid, "EA_BOT_HOME": str(BOT_HOME)})
+            res = (codex_run or codex_cli.run)(
+                prompt, cwd=scratch, sandbox="workspace-write",
+                add_dirs=[BOT_HOME / ".ea" / "state" / "mail-queue"],
+                timeout=RUN_TIMEOUT_S.get(kind, 600), prefix=prefix, last_message_dir=scratch)
+            rec["staged"] = _staged_in(scratch)
         rec["codex"] = {"output": (res.get("output") or "")[:12000],
-                        "tool_calls": [{"command": (c.get("input") or {}).get("command", "")[:300],
+                        "tool_calls": [{"command": str((c.get("input") or {}).get("command", ""))[:300],
                                         "exit_code": c.get("exit_code")} for c in res.get("tool_calls") or []][:60],
                         "usage": res.get("usage") or {}, "duration_s": round(float(res.get("duration_s") or 0), 1),
                         "exit_code": res.get("exit_code"), "harness_error": res.get("harness_error") or "",
@@ -585,7 +602,7 @@ def run_job(job: dict, *, codex_run=None, scratch_runner=None, keep: bool = Fals
     except Exception as e:
         rec["codex"] = {"harness_error": f"ghost failed: {str(e)[:300]}"}
     finally:
-        if not keep:
+        if scratch is not None and not keep:
             remove_scratch(jid)
     _append(TURNS, rec)
     try:
@@ -593,6 +610,22 @@ def run_job(job: dict, *, codex_run=None, scratch_runner=None, keep: bool = Fals
     except OSError:
         pass
     return rec
+
+
+def _staged_in(root: Path) -> dict:
+    """The staged files a briefing ghost left in its scratch state."""
+    out = {}
+    for name in ("pending-event.json", "pending-event-update.json", "pending-event-delete.json",
+                 "pending-schedule-send.json"):
+        try:
+            text = (root / "state" / name).read_text()
+        except OSError:
+            continue
+        try:
+            out[name] = json.loads(text)
+        except ValueError:
+            out[name] = text[:4000]
+    return out
 
 
 def run_lane_live(prompt: str, *, agent: str, run_id: str, codex_run=None) -> dict:

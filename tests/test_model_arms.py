@@ -117,7 +117,7 @@ def test_turns_drafts_and_events_join_into_the_scorecard(store, monkeypatch):
     assert rem["latency_s"] == {"p50": 30.0, "p95": 30.0} and rem["cost_usd"] == 0.0 and rem["tools"] == 5
     assert cl["turns"] == 2 and cl["errors"] == 1 and cl["bounced"] == 1 and cl["sent_edited"] == 1
     assert cl["cost_usd"] == 0.5 and cl["sent_unchanged_share"] == 0.0
-    assert r["topics"] == {"claude": 1, "remote": 1, "pipeline": 0} and r["arms"]["remote"]["withheld"] == 1
+    assert r["topics"] == {"claude": 1, "remote": 1, "pipeline": 0, "codex": 0} and r["arms"]["remote"]["withheld"] == 1
     text = ma._report_text(r)
     assert "sched-channel/remote: turns 2" in text and "sched-channel/claude: turns 2" in text
     assert ma.summary_lines()[0].startswith("Model A/B (on; share 0.5")

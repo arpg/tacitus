@@ -9966,7 +9966,8 @@ def _handle_bot_command(channel: str, thread_ts: str, msg_ts: str,
             lane = _turn_lane(channel, "")
             if _cmd["cmd"] == "use":
                 tier = _cmd["tier"]
-                _arms.pin(channel, thread_ts, "remote" if tier == "local" else "claude",
+                _arms.pin(channel, thread_ts,
+                          "remote" if tier == "local" else "codex" if tier == "codex" else "claude",
                           lane=lane, reason="user")
                 sid, _resuming, _meta = _sess.lookup(thread_ts)
                 _sess.remember(thread_ts, tier=tier)
@@ -10455,12 +10456,35 @@ def _remote_llm_shadow_scheduling(*, run_id, channel, thread_ts, msg_ts, user_ms
                      daemon=True).start()
 
 
+def _codex_turn_live(*, prompt, fresh_prompt, run_id, thread_ts, lane) -> "tuple[ClaudeResult | None, dict]":
+    """The Codex arm's turn (codex_turn.run_turn, live): the prompt this
+    turn built, on Codex as the resident, on the chat thread's own Codex
+    thread. Returns (the result to post, the harness record), or (None,
+    record) when Claude should take the turn: a harness error or an
+    empty answer."""
+    try:
+        from preprocessor import codex_turn as _ct
+        rec = _ct.run_turn(prompt, thread_key=thread_ts, run_id=run_id, live=True,
+                           fresh_prompt=fresh_prompt, lane=lane)
+    except Exception as e:
+        log.warning(f"codex arm: raised, Claude takes the turn: {e}")
+        return None, {"harness_error": str(e)[:200]}
+    if rec.get("harness_error") or not str(rec.get("output") or "").strip():
+        return None, rec
+    log.info(f"codex arm: answered in {rec['duration_ms'] / 1000:.1f}s, {len(rec['tool_calls'])} commands, "
+             f"thread {str(rec.get('thread_id') or '')[:8]}")
+    return ClaudeResult(output=rec["output"], tool_calls=rec["tool_calls"], returncode=0,
+                        num_turns=rec["num_turns"], duration_ms=rec["duration_ms"]), rec
+
+
 def _codex_ghost_turn(*, run_id, channel, thread_ts, user_id, user_msg, task_block, cr,
-                      elapsed, response, model) -> None:
+                      elapsed, response, model, prompt="", fresh_prompt="") -> None:
     """Hand one finished Claude turn to the Codex ghost arm
-    (codex_ghost.enqueue), which replays it on Codex as ea-bot, records
-    what it would have answered and posts nothing. Returns at once; with
-    no window open the enqueue is a one-line skip. Never raises."""
+    (codex_ghost.enqueue): the same prompt runs on Codex as the resident
+    through the production turn path with posting off (codex_turn,
+    live=False), is recorded and judged against Claude's reply. Returns
+    at once; with no window open the enqueue is a one-line skip. Never
+    raises."""
     try:
         from preprocessor import codex_ghost as _cg
         if not _cg.active("chat"):
@@ -10473,7 +10497,7 @@ def _codex_ghost_turn(*, run_id, channel, thread_ts, user_id, user_msg, task_blo
             tools.append(f"{t[0]}: {str(summary)[:200]}")
         job = {"kind": "chat", "lane": _turn_lane(channel, user_id), "source_run_id": run_id,
                "channel": channel, "thread_ts": thread_ts, "user_msg": user_msg,
-               "task_block": task_block, "model": "",
+               "task_block": task_block, "model": "", "prompt": prompt, "fresh_prompt": fresh_prompt,
                "claude": {"output": response, "tools": tools, "elapsed_s": round(float(elapsed or 0), 1),
                           "model": model}}
         threading.Thread(target=_cg.enqueue, args=(job,), daemon=True).start()
@@ -11043,6 +11067,7 @@ actually want.
         remote_turn = None
         # The pipeline arm's record when it took (or tried) the turn.
         pipeline_turn, pipeline_model = None, ""
+        codex_turn_rec = None
         try:
             from preprocessor import model_arms as _arms
             arm = _arms.arm_for(channel, thread_ts, _turn_lane(channel, user_id))
@@ -11078,6 +11103,11 @@ actually want.
                 arm, arm_env = "claude", None
                 run_model, tier_effort = _tiers.model_for(tier_pick["tier"], default_model=MODEL)
                 run_effort = tier_effort or run_effort
+            elif tier_pick["explicit"] and tier_pick["tier"] == "codex":
+                # The Codex arm (codex_turn.py): the turn's own prompt on
+                # Codex as the resident; Claude takes the turn on a harness error.
+                arm, arm_env = "codex", None
+                run_model, run_effort = "codex", ""
             if tier_pick["explicit"]:
                 log.info(f"tier: {tier_pick['tier']} ({tier_pick['source']}"
                          f"{', ' + tier_pick['note'] if tier_pick['note'] else ''}) -> {run_model}")
@@ -11406,6 +11436,21 @@ Reminders:
             else:
                 log.info(f"model arm: pipeline drawn, not a scheduling ask; Claude takes the turn on {run_model}")
             arm, arm_env = "claude", None
+        # The Codex arm (model_arms arm "codex"; `use codex`, `@codex`): the
+        # prompt this turn built runs on Codex as the resident
+        # (codex_turn.run_turn, live), on a Codex thread kept per chat
+        # thread. Codex's answer takes the turn, and the drafts and staged
+        # events it made are surfaced by run id as after a Claude turn. A
+        # harness error or an empty answer hands the turn to Claude.
+        if live_cr is None and arm == "codex":
+            live_cr, codex_turn_rec = _codex_turn_live(
+                prompt=prompt, fresh_prompt=full_prompt, run_id=run_id, thread_ts=thread_ts,
+                lane=_turn_lane(channel, user_id))
+            if live_cr is None:
+                arm_fallback = ("codex:" + str((codex_turn_rec or {}).get("harness_error") or "no answer"))[:160]
+                log.warning(f"model arm: {arm_fallback}; Claude takes the turn on {MODEL}")
+                run_model, run_effort = MODEL, ""
+            arm, arm_env = "claude", None
         use_mcp = _needs_mcp(user_msg, needed_modules, is_thread_reply)
         if resuming and session_meta.get("use_mcp"):
             # A session that started with MCP tools keeps them: mid-
@@ -11703,6 +11748,8 @@ Reminders:
         # scheduling agent or the pipeline) is the local tier's, though
         # `arm` reads claude by then for the records.
         tier_name = "local" if live_cr is not None else _tiers.tier_of_model(run_model, arm)
+        if live_cr is not None and codex_turn_rec is not None:
+            tier_name = "codex"
         footer_backstop = (pipeline_turn or {}).get("backstop") if live_cr is not None else arm_backstop
         usage_footer = _record_invocation(
             run_model, elapsed, cr.stderr, cost_usd=cr.cost_usd, usage=cr.usage,
@@ -11934,7 +11981,7 @@ Reminders:
             _codex_ghost_turn(
                 run_id=run_id, channel=channel, thread_ts=thread_ts, user_id=user_id,
                 user_msg=user_msg, task_block=task_block, cr=cr, elapsed=elapsed,
-                response=response, model=run_model)
+                response=response, model=run_model, prompt=prompt, fresh_prompt=full_prompt)
 
     except subprocess.TimeoutExpired:
         log.error(f"Claude timed out after {run_timeout}s for message: {user_msg[:120]!r}")

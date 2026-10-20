@@ -40,12 +40,12 @@ ARMS_FILE = "ab-arms.json"
 TURNS = "ab-turns.jsonl"
 DRAFTS = "ab-drafts.jsonl"
 EVENTS = "ab-events.jsonl"
-ARMS = ("claude", "remote", "pipeline")
+ARMS = ("claude", "remote", "pipeline", "codex")
 LANES = ("main", "dm", "sched-channel", "room", "proactive")
 DEFAULT_DAYS = 14
 EDITED_AT = 0.15          # edit ratio at or above which a sent draft counts as edited
 _ALIASES = {"claude": "claude", "qwen": "remote", "remote": "remote", "on-prem": "remote",
-            "onprem": "remote", "local": "remote", "pipeline": "pipeline"}
+            "onprem": "remote", "local": "remote", "pipeline": "pipeline", "codex": "codex"}
 
 
 def _now() -> datetime:

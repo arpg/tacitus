@@ -1147,7 +1147,7 @@ def test_the_gateway_environment_rides_on_the_sudo_command():
 
 def test_the_arm_commands_and_outcome_hooks_are_wired():
     cmd = _fn_body("_handle_bot_command")
-    assert '_arms.pin(channel, thread_ts, "remote" if tier == "local" else "claude",' in cmd
+    assert '"remote" if tier == "local" else "codex" if tier == "codex" else "claude",' in cmd
     assert "_arms.arm_of(channel, thread_ts)" in cmd
     note = _fn_body("_remote_llm_note")
     assert "_arms.note_event_outcome(*args)" in note

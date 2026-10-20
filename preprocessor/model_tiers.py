@@ -46,13 +46,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ea_config as _ea_config  # noqa: E402
 import remote_llm as _rl  # noqa: E402
 
-TIERS = ("local", "opus", "fable")
+TIERS = ("local", "opus", "fable", "codex")
 TIER_TURNS = "tier-turns.jsonl"
 FABLE_MODEL = "claude-fable-5-1"
 
 ALIASES = {"fable": "fable", "opus": "opus", "claude": "opus",
-           "local": "local", "qwen": "local", "remote": "local", "on-prem": "local", "onprem": "local"}
-_ALIAS_RE = r"(fable|opus|claude|local|qwen|remote|on-?prem)"
+           "local": "local", "qwen": "local", "remote": "local", "on-prem": "local", "onprem": "local",
+           "codex": "codex"}
+_ALIAS_RE = r"(fable|opus|claude|local|qwen|remote|on-?prem|codex)"
 
 TAG_RE = re.compile(r"^\s*(?:@" + _ALIAS_RE + r"\b[:,]?|ask\s+" + _ALIAS_RE + r"\s*[:,])\s*", re.I)
 _USE_RE = re.compile(r"^\s*(?:use|switch\s+to)\s+" + _ALIAS_RE +
@@ -71,7 +72,7 @@ STAKES_RE = re.compile(
     r"\bpromotion\b|\bgrievance\b|\bpersonnel\b|\bHR\b|\bresign|\bcomplaint\b|\bnegotiat",
     re.I)
 
-NAMES = {"local": "the on-prem model", "opus": "Opus", "fable": "Fable"}
+NAMES = {"local": "the on-prem model", "opus": "Opus", "fable": "Fable", "codex": "Codex"}
 
 
 def tier_of(alias: str) -> str:
@@ -142,6 +143,8 @@ def tier_of_model(model: str, arm: str = "") -> str:
     """Which tier a run's model and arm amount to, for the footer."""
     if arm == "remote" or str(model or "").endswith("+slim"):
         return "local"
+    if arm == "codex" or str(model or "").startswith("codex"):
+        return "codex"
     return "fable" if "fable" in str(model or "").lower() else "opus"
 
 
@@ -162,6 +165,10 @@ def model_for(tier: str, *, default_model: str, cfg: dict | None = None) -> tupl
     s = settings(cfg)
     if tier == "fable":
         return s["models"].get("fable") or FABLE_MODEL, s["efforts"].get("fable") or ""
+    if tier == "codex":
+        # The Codex arm's model is the resident's config.toml; "codex" is
+        # the label the bot records and the footer names.
+        return "codex", ""
     return s["models"].get("opus") or default_model, s["efforts"].get("opus") or ""
 
 

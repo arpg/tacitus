@@ -257,7 +257,7 @@ def get_efforts(config_path: Path | None = None) -> dict:
     return cfg
 
 
-TIER_NAMES = ("local", "opus", "fable")
+TIER_NAMES = ("local", "opus", "fable", "codex")
 
 
 def tiers_from_block(val) -> dict:
