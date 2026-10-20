@@ -33,6 +33,40 @@ def test_route_follows_the_switches():
     assert r["drafting"]["owner"] == "claude" and r["scheduling"]["owner"] == "skip"
 
 
+def test_the_codex_harness_owns_briefing_and_drafting_unless_the_remote_writer_is_on():
+    r = rr.route({"drafting": "off"}, harness="codex")
+    assert r["briefing"]["owner"] == "codex" and r["drafting"]["owner"] == "codex"
+    assert "codex harness writes the body" in r["drafting"]["why"]
+    r = rr.route({"drafting": "remote"}, harness="codex")
+    assert r["drafting"]["owner"] == "remote" and r["briefing"]["owner"] == "codex"
+
+
+def test_draft_body_on_codex_uses_the_codex_writer_and_names_the_model(monkeypatch):
+    seen = {}
+
+    def fake_codex(prompt, model, timeout):
+        seen.update(prompt=prompt, model=model)
+        return {"text": "Dear Sol,\n\nTuesday works.\n\nBest,\nKit", "error": ""}
+    got = rr.draft_body(CASE, "codex", "", claude=fake_codex)
+    assert got["error"] == "" and "Tuesday works" in got["body"] and got["model"] == "codex"
+    assert "=== THE REQUEST ===" in seen["prompt"]
+    got = rr.draft_body(CASE, "codex", "", claude=lambda p, m, t: {"text": "", "error": "codex exit 1: x"})
+    assert got["error"].startswith("codex exit 1") and got["body"] == ""
+
+
+def test_codex_text_runs_as_the_resident_read_only(monkeypatch):
+    import codex_cli
+    seen = {}
+
+    def fake_run(prompt, **kw):
+        seen.update(kw)
+        return {"output": "body", "harness_error": ""}
+    monkeypatch.setattr(codex_cli, "run", fake_run)
+    out = rr.codex_text("P", "", 30)
+    assert out == {"text": "body", "error": "", "cost_usd": None}
+    assert seen["sandbox"] == "read-only" and seen["prefix"][2:4] == ["-u", "ea-bot"]
+
+
 def test_unchanged_compares_code_models_and_switches():
     now = {"commit": "abc", "claude_model": "m1", "remote_model": "q", "switches": {"mail": "enforce"}}
     assert rr.unchanged(now, dict(now))

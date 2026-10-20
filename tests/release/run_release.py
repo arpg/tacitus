@@ -157,7 +157,9 @@ def switches() -> dict:
 def route(sw: dict, harness: str = "claude") -> dict:
     """{lane: {"owner": claude|codex|remote|skip, "why": ...}} from the
     switches; the briefing lane's owner is the harness it runs on."""
-    drafting = "remote" if sw.get("drafting") == "remote" else "claude"
+    # The remote writer owns drafting when its switch is on; otherwise the
+    # harness under test writes the body (Claude, or Codex as the resident).
+    drafting = "remote" if sw.get("drafting") == "remote" else harness
     sched = sw.get("scheduling")
     return {
         "briefing": {"owner": harness,
@@ -165,7 +167,8 @@ def route(sw: dict, harness: str = "claude") -> dict:
                              if harness == "codex" else
                              "the eval fixtures exercise the Claude briefing skill")},
         "drafting": {"owner": drafting,
-                     "why": f"drafting switch is {sw.get('drafting') or 'off'}"},
+                     "why": (f"drafting switch is {sw.get('drafting') or 'off'}"
+                             + (f"; the {harness} harness writes the body" if drafting != "remote" else ""))},
         "scheduling": ({"owner": "remote", "why": f"scheduling switch is {sched}"}
                        if sched in ("shadow", "enforce") else
                        {"owner": "skip",
@@ -226,6 +229,21 @@ def calendar_mode(flag: str | None, live: bool, tokens: list[str]) -> dict:
 
 
 # ── model calls ────────────────────────────────────────────────────────
+
+def codex_text(prompt: str, model: str = "", timeout: float = JUDGE_TIMEOUT_S) -> dict:
+    """One `codex exec` turn as the resident, read-only, in the resident's
+    home: the drafting case on the Codex harness. The same shape as
+    claude_text. Codex runs as the resident because its sandbox confines
+    writes, not reads (preprocessor/codex_ghost.py)."""
+    import codex_cli
+    import codex_ghost
+    res = codex_cli.run(prompt, cwd=codex_ghost.BOT_HOME, model=model, sandbox="read-only",
+                        timeout=int(timeout), prefix=codex_ghost._bot_env(),
+                        last_message_dir=codex_ghost.BOT_HOME / ".local" / "state" / "ea-lanes")
+    if res.get("harness_error"):
+        return {"text": "", "error": res["harness_error"], "cost_usd": None}
+    return {"text": res.get("output") or "", "error": "", "cost_usd": None}
+
 
 def claude_text(prompt: str, model: str, timeout: float = JUDGE_TIMEOUT_S) -> dict:
     """One tool-less `claude -p` turn as this user. {"text", "error",
@@ -424,7 +442,11 @@ def draft_body(case: dict, owner: str, model: str, *, writer=None, claude=None) 
     import draft_ab
     msgs = draft_ab.remote_messages(case["brief"], case["to"])
     prompt = msgs[0]["content"] + "\n\n=== THE REQUEST ===\n" + msgs[1]["content"]
-    r = (claude or claude_text)(prompt, model, JUDGE_TIMEOUT_S)
+    if owner == "codex":
+        r = (claude or codex_text)(prompt, model, JUDGE_TIMEOUT_S)
+        model = model or "codex"
+    else:
+        r = (claude or claude_text)(prompt, model, JUDGE_TIMEOUT_S)
     if r.get("error"):
         return {"body": "", "error": r["error"], "model": model}
     body, _meta = draft_ab.finish_body(r["text"])
