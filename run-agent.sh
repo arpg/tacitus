@@ -1067,6 +1067,15 @@ if [[ -n "$CLAUDE_OUTPUT" ]]; then
     "$SCRIPT_DIR/scripts/owner-io.sh" mkdir "$REPORT_DIR" 2>/dev/null || true
     printf '%s\n' "$CLAUDE_OUTPUT" | "$SCRIPT_DIR/scripts/owner-io.sh" write "$REPORT_DIR/${AGENT}-latest.md" 2>/dev/null \
         && log "Report written to $REPORT_DIR/${AGENT}-latest.md" || true
+    # The Codex ghost arm (docs/codex-harness.md, "The ghost arm"): with a
+    # window open, the same prompt is replayed on Codex off to the side and
+    # judged against this report. The enqueue returns at once; a closed
+    # window is a one-line skip. Never for a run Codex itself produced.
+    if [[ "${CODEX_LANE:-0}" == 0 ]]; then
+        GHOST_NOTE=$(printf '%s' "$PROMPT" | EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/codex_ghost.py" enqueue-lane \
+            --agent "$AGENT" --run-id "cron-${AGENT}-${TIMESTAMP}" --report "$REPORT_DIR/${AGENT}-latest.md" 2>>"$LOG_FILE" || true)
+        [[ -n "$GHOST_NOTE" ]] && log "Codex ghost: $GHOST_NOTE"
+    fi
     if [[ "$HAS_SLACK" == 1 ]]; then
         # `set +e`: without it, errexit + pipefail kill the script the moment
         # the post fails, so POST_RC could only ever be 0 by the time it is

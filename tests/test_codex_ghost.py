@@ -296,6 +296,10 @@ def test_the_bot_and_the_lane_runner_hand_turns_to_the_ghost():
     lane = (REPO / "run-agent.sh").read_text()
     assert 'codex_ghost.py" gate briefing' in lane and "run-lane" in lane and "EA_HARNESS:-claude" in lane
     assert lane.index("CODEX_LANE=1") < lane.index('if [[ "$REMOTE_BRIEFING" == 0 ]]; then\nset +e')
+    # the ghost enqueue follows the report file, never a run Codex produced
+    assert 'codex_ghost.py" enqueue-lane' in lane
+    assert lane.index('log "Report written to') < lane.index('enqueue-lane') < lane.index('if [[ "$HAS_SLACK" == 1 ]]; then')
+    assert 'if [[ "${CODEX_LANE:-0}" == 0 ]]; then' in lane
     doc = (REPO / "docs" / "codex-harness.md").read_text()
     assert "## The ghost arm" in doc and "## Production" in doc
     assert (REPO / "deploy" / "enable-codex-ghost.sh").exists()
