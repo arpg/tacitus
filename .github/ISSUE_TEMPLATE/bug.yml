@@ -14,7 +14,7 @@ body:
     attributes:
       label: Version
       description: "`git -C <your checkout> describe --tags --always`"
-      placeholder: v1.3.0 or a commit id
+      placeholder: v0.1.0 or a commit id
     validations:
       required: true
   - type: dropdown
