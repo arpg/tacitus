@@ -419,7 +419,8 @@ stores `source_message_id`.
 
 ## Moving a core feature into a plugin
 
-1. Create the plugin repo (`ea-plugin-template` is the skeleton) and write
+1. Create the plugin repo ([arpg/tacitus-plugin-template](https://github.com/arpg/tacitus-plugin-template)
+   is the skeleton, MIT) and write
    a v2 manifest that declares what the feature does.
 2. Move the code: the preprocessor part to `collect.py`, the skill to the
    plugin, the keywords to `chat`, a hard-coded card to `cards`, sender
