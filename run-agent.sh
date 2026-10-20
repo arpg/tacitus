@@ -706,7 +706,16 @@ if [[ "$REMOTE_BRIEFING" == 0 && "${EA_HARNESS:-claude}" == "codex" ]]; then
                 log "Harness: claude; the codex gate said: ${GATE_WHY}"
             fi
             ;;
-        *) log "Harness: claude; EA_HARNESS=codex covers the briefing lanes only" ;;
+        *)
+            # No ghost verdict exists for the other lanes yet, so they run
+            # on Codex only when forced; the same runner serves them.
+            if [[ "${EA_HARNESS_FORCE:-0}" == 1 ]]; then
+                CODEX_LANE=1
+                log "Harness: codex (forced; no ghost verdict exists for $AGENT)"
+            else
+                log "Harness: claude; a lane other than the briefings runs on codex only with EA_HARNESS_FORCE=1"
+            fi
+            ;;
     esac
 fi
 if [[ "$CODEX_LANE" == 1 ]]; then
