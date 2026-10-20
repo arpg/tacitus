@@ -133,6 +133,40 @@ def test_probe_wants_the_word_ok(tmp_path, monkeypatch):
     assert not ok and "could not start" in detail
 
 
+def test_a_thread_is_started_persistent_and_resumed_with_its_sandbox_restated(tmp_path):
+    first = X.build(cwd=tmp_path, sandbox="workspace-write", add_dirs=[tmp_path / "q"], ephemeral=False)
+    assert "--ephemeral" not in first and first[1] == "exec" and "resume" not in first
+    again = X.build(cwd=tmp_path, sandbox="workspace-write", add_dirs=[tmp_path / "q"], ephemeral=False,
+                    resume="01a1-thread", model="m")
+    assert again[1:4] == ["exec", "resume", "01a1-thread"] and "--json" in again
+    assert "-C" not in again and "--add-dir" not in again and "--sandbox" not in again, "resume takes none of these"
+    assert 'sandbox_mode="workspace-write"' in again
+    roots = again[again.index('sandbox_mode="workspace-write"') + 2]
+    assert roots.startswith("sandbox_workspace_write.writable_roots=[") and str(tmp_path / "q") in roots
+    assert again[-1] == "-" and again[again.index("-m") + 1] == "m"
+    assert X.parse_events(EVENTS)["thread_id"] == "t1"
+
+
+def test_run_hands_back_the_thread_id_and_passes_resume_through(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        seen["cwd"] = kw.get("cwd")
+        Path(cmd[cmd.index("-o") + 1]).write_text("ok")
+
+        class R:
+            returncode = 0
+            stdout = EVENTS
+            stderr = ""
+        return R()
+    monkeypatch.setattr(X.subprocess, "run", fake_run)
+    monkeypatch.setattr(X, "binary", lambda: "/usr/bin/codex")
+    res = X.run("hi", cwd=tmp_path, ephemeral=False, resume="t1")
+    assert res["thread_id"] == "t1" and seen["cmd"][1:4] == ["exec", "resume", "t1"]
+    assert seen["cwd"] == str(tmp_path), "the resumed thread's root is the process cwd"
+
+
 def test_the_provider_switches_harness_and_refuses_an_unknown_one(tmp_path, monkeypatch):
     import provider
     monkeypatch.setenv("EA_EVAL_SCRATCH", str(tmp_path / "scratch"))

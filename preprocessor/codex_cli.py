@@ -50,19 +50,33 @@ def version() -> str:
 
 
 def build(*, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
-          last_message_file=None, ephemeral: bool = True) -> list[str]:
+          last_message_file=None, ephemeral: bool = True, resume: str = "") -> list[str]:
     """The command line for one run. The prompt goes on stdin (`-`), so
-    no instruction text ever sits in a process listing."""
+    no instruction text ever sits in a process listing.
+
+    `resume` names a thread from an earlier run (its `thread_id`): the
+    command is then `codex exec resume <id>`, which keeps that thread's
+    working root and sandbox (resume takes no --sandbox, -C or --add-dir),
+    so the process cwd is the thread's root and the sandbox is restated
+    as config overrides. A thread meant to be resumed is started with
+    ephemeral=False."""
     if sandbox not in SANDBOXES:
         raise ValueError(f"sandbox must be one of {SANDBOXES}")
-    cmd = [binary() or CODEX_BIN, "exec", "--skip-git-repo-check", "--color", "never",
-           "--json", "--sandbox", sandbox, "-C", str(cwd)]
+    if resume:
+        cmd = [binary() or CODEX_BIN, "exec", "resume", str(resume), "--skip-git-repo-check", "--json",
+               "-c", f'sandbox_mode="{sandbox}"']
+        if add_dirs:
+            roots = ", ".join(json.dumps(str(d)) for d in add_dirs)
+            cmd += ["-c", f"sandbox_workspace_write.writable_roots=[{roots}]"]
+    else:
+        cmd = [binary() or CODEX_BIN, "exec", "--skip-git-repo-check", "--color", "never",
+               "--json", "--sandbox", sandbox, "-C", str(cwd)]
+        for d in add_dirs:
+            cmd += ["--add-dir", str(d)]
     if ephemeral:
         cmd.append("--ephemeral")
     if model:
         cmd += ["-m", model]
-    for d in add_dirs:
-        cmd += ["--add-dir", str(d)]
     if last_message_file:
         cmd += ["-o", str(last_message_file)]
     cmd.append("-")
@@ -77,6 +91,7 @@ def parse_events(stdout: str) -> dict:
     messages, tool_calls, files, errors = [], [], [], []
     usage: dict = {}
     turns = 0
+    thread_id = ""
     for line in (stdout or "").splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -86,6 +101,9 @@ def parse_events(stdout: str) -> dict:
         except ValueError:
             continue
         t = ev.get("type")
+        if t == "thread.started":
+            thread_id = str(ev.get("thread_id") or "")
+            continue
         if t == "turn.completed":
             turns += 1
             usage = ev.get("usage") or usage
@@ -107,17 +125,20 @@ def parse_events(stdout: str) -> dict:
             if "requirements layers" not in msg:
                 errors.append(msg)
     return {"messages": messages, "tool_calls": tool_calls, "files": files,
-            "usage": usage, "turns": turns, "errors": errors}
+            "usage": usage, "turns": turns, "errors": errors, "thread_id": thread_id}
 
 
 def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
-        timeout: int = 600, env: dict | None = None, prefix=(), last_message_dir=None) -> dict:
+        timeout: int = 600, env: dict | None = None, prefix=(), last_message_dir=None,
+        ephemeral: bool = True, resume: str = "") -> dict:
     """One non-interactive run. Returns {"output", "tool_calls",
     "exit_code", "duration_s", "harness_error", "num_turns", "usage",
-    "files", "stderr"}: `output` is the agent's final message (the `-o`
-    file, else the last agent_message event); `harness_error` names why
-    the run was not measured (no binary, a non-zero exit with no message,
-    a timeout, an error item).
+    "files", "stderr", "thread_id"}: `output` is the agent's final message
+    (the `-o` file, else the last agent_message event); `harness_error`
+    names why the run was not measured (no binary, a non-zero exit with no
+    message, a timeout, an error item); `thread_id` is the Codex thread,
+    which a later run continues with `resume=` (started with
+    ephemeral=False, or Codex keeps nothing).
 
     `prefix` goes before the command (`sudo -u ea-bot env ...` runs codex
     as the resident; the binary is then the resident's, found on the PATH
@@ -140,13 +161,15 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
         else:
             last = Path(td_ctx.name) / "last-message.txt"
         cmd = build(cwd=cwd, model=model, sandbox=sandbox, add_dirs=add_dirs,
-                    last_message_file=last)
+                    last_message_file=last, ephemeral=ephemeral, resume=resume)
         if prefix:
             cmd = prefix + [CODEX_BIN] + cmd[1:]
         start = time.time()
         try:
+            # cwd is the thread's root: a resumed thread takes it from the
+            # process (resume has no -C), and sudo keeps it for the child.
             r = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
-                               timeout=timeout, cwd=str(cwd) if not prefix else None, env=env)
+                               timeout=timeout, cwd=str(cwd), env=env)
         except subprocess.TimeoutExpired:
             return {"output": "", "tool_calls": [], "exit_code": -1, "duration_s": float(timeout),
                     "harness_error": f"codex timed out after {timeout}s", "num_turns": 0,
@@ -182,7 +205,7 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
             "exit_code": r.returncode, "duration_s": duration, "harness_error": harness_error,
             "warnings": parsed["errors"] if output else [],
             "num_turns": parsed["turns"], "usage": parsed["usage"], "files": parsed["files"],
-            "stderr": (r.stderr or "")[-500:]}
+            "stderr": (r.stderr or "")[-500:], "thread_id": parsed["thread_id"]}
 
 
 def probe(timeout: int = PROBE_TIMEOUT_S) -> tuple[bool, str]:

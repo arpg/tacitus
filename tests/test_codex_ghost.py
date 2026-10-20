@@ -231,7 +231,7 @@ def test_codex_cli_runs_the_residents_codex_behind_the_prefix(tmp_path, monkeypa
     res = codex_cli.run("hi", cwd=tmp_path, sandbox="workspace-write", add_dirs=[tmp_path / "q"],
                         prefix=prefix, last_message_dir=tmp_path)
     assert seen["cmd"][:2] == prefix and seen["cmd"][2] == codex_cli.CODEX_BIN
-    assert "--add-dir" in seen["cmd"] and seen["cwd"] is None and seen["input"] == "hi"
+    assert "--add-dir" in seen["cmd"] and seen["cwd"] == str(tmp_path) and seen["input"] == "hi"
     assert res["output"] == "final answer" and res["usage"] == {"input_tokens": 3} and not res["harness_error"]
     assert Path(seen["cmd"][seen["cmd"].index("-o") + 1]).parent == tmp_path
 
