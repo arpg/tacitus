@@ -272,9 +272,10 @@ print(sum(1 for v in d.values() if v.get('lane') not in ('resident', 'deferred')
     # so kill it and let systemd respawn with the new code — no sudo needed.
     # Only when those files changed, to avoid a needless mail blip per deploy.
     # (2026-07-17: the Branch-B auto-hold was refused because the mediator held
-    # pre-change is_allowed() until manually restarted.)
+    # pre-change is_allowed() until manually restarted.) codex_ghost is the
+    # ghost rule the mediator imports on first use, so it is in the list too.
     if deploy_git diff --name-only 'HEAD@{1}' HEAD 2>/dev/null \
-         | grep -qE "preprocessor/(mail_mediat(ion|or)|mail_privacy|remote_llm)\.py"; then
+         | grep -qE "preprocessor/(mail_mediat(ion|or)|mail_privacy|remote_llm|codex_ghost)\.py"; then
         echo "[deploy] mediation code changed — restarting ea-mail-mediator"
         # Anchored at the interpreter, so it matches the mediator and never
         # a shell whose command line merely names the file (a `git add` of it).
