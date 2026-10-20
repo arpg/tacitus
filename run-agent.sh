@@ -687,6 +687,39 @@ ALLOWED_TOOLS+=",Bash(cat *),Bash(ls *),Read,Agent"
 # here: no retry, no validation, no Slack post, no failure line in the log,
 # and the run log just stops after "Invoking Claude Code with skill: …".
 # Capture the status instead and let the validate/retry ladder below run.
+# The lane on Codex (docs/codex-harness.md, "Production"): EA_HARNESS=codex
+# runs a briefing lane through codex_ghost.py run-lane --live as ea-bot,
+# the same prompt, writes confined to the EA state. It runs only when the
+# ghost arm's final verdict for briefings is GO (codex_ghost.py gate), or
+# with EA_HARNESS_FORCE=1; otherwise the Claude run below goes ahead and
+# the log says why.
+CODEX_LANE=0
+if [[ "$REMOTE_BRIEFING" == 0 && "${EA_HARNESS:-claude}" == "codex" ]]; then
+    case "$AGENT" in
+        morning-briefing|afternoon-catchup)
+            GATE_WHY=$(EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/codex_ghost.py" gate briefing 2>>"$LOG_FILE")
+            GATE_RC=$?
+            if [[ "$GATE_RC" == 0 || "${EA_HARNESS_FORCE:-0}" == 1 ]]; then
+                CODEX_LANE=1
+                log "Harness: codex (${GATE_WHY:-forced})"
+            else
+                log "Harness: claude; the codex gate said: ${GATE_WHY}"
+            fi
+            ;;
+        *) log "Harness: claude; EA_HARNESS=codex covers the briefing lanes only" ;;
+    esac
+fi
+if [[ "$CODEX_LANE" == 1 ]]; then
+    set +e
+    CLAUDE_OUTPUT=$(printf '%s' "$PROMPT" | EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/codex_ghost.py" run-lane \
+        --agent "$AGENT" --run-id "cron-${AGENT}-${TIMESTAMP}" --live 2>>"$LOG_FILE")
+    CLAUDE_RC=$?
+    set -e
+    # The Claude block below is skipped; the output handling further down is shared.
+    REMOTE_BRIEFING=1
+    [[ "$CLAUDE_RC" == 0 ]] || CLAUDE_OUTPUT=":warning: ${AGENT}: the Codex lane failed (rc=${CLAUDE_RC}). The run log has the error. No Claude run was made; the next scheduled run tries again."
+fi
+
 if [[ "$REMOTE_BRIEFING" == 0 ]]; then
 set +e
 # EA_RUN_ID labels every draft this run creates, so the bot can give

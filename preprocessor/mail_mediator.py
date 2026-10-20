@@ -538,6 +538,14 @@ def handle(req_path: str):
         return
 
     run_id = str(req.get("run_id") or "")[:64]
+    # A Codex ghost run (codex_ghost.py) may read; every other verb is
+    # recorded for the judge and answered as done, never executed.
+    recorded = _ghost_recorded(tool, verb, argv, run_id)
+    if recorded:
+        _respond(rid, json.dumps({"status": "recorded", "ghost": True, "message": recorded}), "", 0)
+        _audit(tool, verb, "GHOST-RECORDED")
+        _cleanup(req_path)
+        return
     refusal = _gate_precheck(tool, verb, argv, run_id)
     if refusal:
         _respond(rid, "", json.dumps({"status": "error", "message": refusal}), 2)
@@ -671,6 +679,23 @@ def _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir, deliveries, r
         _cleanup(req_path)
         if stage_dir is not None:
             shutil.rmtree(stage_dir, ignore_errors=True)
+
+
+def _ghost_recorded(tool, verb, argv, run_id) -> str:
+    """'' unless the run id is a Codex ghost's and the verb is not a read:
+    then the message answered in place of the call, with the call
+    recorded in the ghost store. A failure to record still refuses the
+    write: a ghost never executes one."""
+    try:
+        import codex_ghost
+        msg = codex_ghost.ghost_refusal(tool, verb, run_id)
+        if msg:
+            codex_ghost.record_write(run_id, tool, verb, list(argv))
+        return msg
+    except Exception as e:
+        if str(run_id or "").startswith("cron-ghost-codex-"):
+            return f"ghost run: '{tool} {verb}' not executed ({str(e)[:80]})"
+        return ""
 
 
 def _gate_precheck(tool, verb, argv, run_id) -> str:

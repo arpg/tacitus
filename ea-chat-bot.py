@@ -10455,6 +10455,32 @@ def _remote_llm_shadow_scheduling(*, run_id, channel, thread_ts, msg_ts, user_ms
                      daemon=True).start()
 
 
+def _codex_ghost_turn(*, run_id, channel, thread_ts, user_id, user_msg, task_block, cr,
+                      elapsed, response, model) -> None:
+    """Hand one finished Claude turn to the Codex ghost arm
+    (codex_ghost.enqueue), which replays it on Codex as ea-bot, records
+    what it would have answered and posts nothing. Returns at once; with
+    no window open the enqueue is a one-line skip. Never raises."""
+    try:
+        from preprocessor import codex_ghost as _cg
+        if not _cg.active("chat"):
+            return
+        tools = []
+        for t in cr.tool_calls:
+            summary = t[2] if len(t) > 2 else ""
+            if len(t) > 4 and isinstance(t[4], dict) and t[4].get("command"):
+                summary = t[4]["command"]
+            tools.append(f"{t[0]}: {str(summary)[:200]}")
+        job = {"kind": "chat", "lane": _turn_lane(channel, user_id), "source_run_id": run_id,
+               "channel": channel, "thread_ts": thread_ts, "user_msg": user_msg,
+               "task_block": task_block, "model": "",
+               "claude": {"output": response, "tools": tools, "elapsed_s": round(float(elapsed or 0), 1),
+                          "model": model}}
+        threading.Thread(target=_cg.enqueue, args=(job,), daemon=True).start()
+    except Exception as e:
+        log.debug(f"codex ghost enqueue skipped: {e}")
+
+
 def _turn_lane(channel: str, user_id: str) -> str:
     if user_id == "proactive-scheduler":
         return "proactive"
@@ -11902,6 +11928,13 @@ Reminders:
                 user_msg=user_msg, user_id=user_id, task_block=task_block,
                 mixed=bool(needed_modules - {"scheduling", "drafting", "gmail"}),
                 cr=cr, elapsed=elapsed, response=response)
+        # The Codex ghost arm (docs/codex-harness.md): a turn Claude answered
+        # is replayed on Codex off to the side while a window is open.
+        if live_cr is None and arm == "claude" and remote_turn is None:
+            _codex_ghost_turn(
+                run_id=run_id, channel=channel, thread_ts=thread_ts, user_id=user_id,
+                user_msg=user_msg, task_block=task_block, cr=cr, elapsed=elapsed,
+                response=response, model=run_model)
 
     except subprocess.TimeoutExpired:
         log.error(f"Claude timed out after {run_timeout}s for message: {user_msg[:120]!r}")

@@ -111,26 +111,42 @@ def parse_events(stdout: str) -> dict:
 
 
 def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
-        timeout: int = 600, env: dict | None = None) -> dict:
+        timeout: int = 600, env: dict | None = None, prefix=(), last_message_dir=None) -> dict:
     """One non-interactive run. Returns {"output", "tool_calls",
     "exit_code", "duration_s", "harness_error", "num_turns", "usage",
     "files", "stderr"}: `output` is the agent's final message (the `-o`
     file, else the last agent_message event); `harness_error` names why
     the run was not measured (no binary, a non-zero exit with no message,
-    a timeout, an error item)."""
+    a timeout, an error item).
+
+    `prefix` goes before the command (`sudo -u ea-bot env ...` runs codex
+    as the resident; the binary is then the resident's, found on the PATH
+    the prefix sets, so the owner's `binary()` check is skipped);
+    `last_message_dir` is where the `-o` file goes, a directory that user
+    can write (the owner's temp dir is not)."""
+    prefix = list(prefix or ())
     b = binary()
-    if not b:
+    if not b and not prefix:
         return {"output": "", "tool_calls": [], "exit_code": 127, "duration_s": 0.0,
                 "harness_error": f"codex not found ({CODEX_BIN})", "num_turns": 0,
                 "usage": {}, "files": [], "stderr": ""}
-    with tempfile.TemporaryDirectory(prefix="ea-codex-") as td:
-        last = Path(td) / "last-message.txt"
+    # The -o file: the owner's temp dir when codex runs as the owner; a file
+    # under `last_message_dir` (which the run's user can write and this
+    # process can read) when a prefix runs it as another user.
+    td_ctx = None if last_message_dir else tempfile.TemporaryDirectory(prefix="ea-codex-")
+    try:
+        if last_message_dir:
+            last = Path(last_message_dir) / f"last-message-{os.getpid()}-{int(time.time())}.txt"
+        else:
+            last = Path(td_ctx.name) / "last-message.txt"
         cmd = build(cwd=cwd, model=model, sandbox=sandbox, add_dirs=add_dirs,
                     last_message_file=last)
+        if prefix:
+            cmd = prefix + [CODEX_BIN] + cmd[1:]
         start = time.time()
         try:
             r = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
-                               timeout=timeout, cwd=str(cwd), env=env)
+                               timeout=timeout, cwd=str(cwd) if not prefix else None, env=env)
         except subprocess.TimeoutExpired:
             return {"output": "", "tool_calls": [], "exit_code": -1, "duration_s": float(timeout),
                     "harness_error": f"codex timed out after {timeout}s", "num_turns": 0,
@@ -148,6 +164,9 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
             pass
         if not output and parsed["messages"]:
             output = parsed["messages"][-1].strip()
+    finally:
+        if td_ctx is not None:
+            td_ctx.cleanup()
     # An error item ends the run only when no final message came out of
     # it: codex also reports advisories as error items (unknown model
     # metadata, a fallback), and a run that still answered was measured.
