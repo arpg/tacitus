@@ -109,5 +109,9 @@ else
 fi
 
 echo "[codex] 4/4 probe"
-as_bot python3 "$SCRIPT_DIR/preprocessor/codex_cli.py" probe
+# From the resident's own copy of the code: ea-bot cannot read the
+# owner's checkout, and the lanes run from its copy anyway.
+BOT_TREE="$EA_BOT_HOME/ea-system"
+[ -r "$BOT_TREE/preprocessor/codex_cli.py" ] || BOT_TREE="/opt/ea-system"
+as_bot sh -c "cd '$EA_BOT_HOME' && python3 '$BOT_TREE/preprocessor/codex_cli.py' probe"
 echo "[codex] done. The ghost arm: python3 preprocessor/codex_ghost.py status"
