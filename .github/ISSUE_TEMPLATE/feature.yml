@@ -1,0 +1,54 @@
+name: Feature request (after a Discussion)
+description: A feature that was discussed in Ideas and has a design. New ideas start in Discussions.
+title: "[feature] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start in [Discussions > Ideas](https://github.com/arpg/tacitus/discussions/categories/ideas).
+        Open an issue when the idea has a design, and say whether you will build it.
+        A capability for one person, one institution or one service belongs in a plugin
+        (`docs/plugins.md`), which needs no change to the core and no review from the maintainer.
+        Do not paste real names, email addresses or mail text; use made-up values in examples.
+  - type: input
+    id: discussion
+    attributes:
+      label: Discussion
+      description: The link to the Ideas thread.
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you cannot do today, and how often it comes up.
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: The design
+      description: What changes, in which module, and what the EA says or does differently. Name the gate it goes through if it acts on mail or a calendar.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where it belongs
+      options:
+        - Core (every install needs it)
+        - A plugin (one person, institution or service)
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: who
+    attributes:
+      label: Who builds it
+      options:
+        - I will open a pull request
+        - I can test a pull request
+        - Someone else would have to build it
+    validations:
+      required: true

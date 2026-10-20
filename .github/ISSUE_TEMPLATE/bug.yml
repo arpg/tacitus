@@ -1,0 +1,86 @@
+name: Bug report
+description: Something that worked stopped working, or behaves differently from what the docs say.
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For an install that never got going, use **Install or first-week feedback** instead.
+        Do not paste real names, email addresses, mail text or tokens: `--share` on the doctor
+        masks them, and in everything else replace them with made-up values.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`git -C <your checkout> describe --tags --always`"
+      placeholder: v1.3.0 or a commit id
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux host install
+        - macOS host install
+        - Docker
+    validations:
+      required: true
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Install profile
+      options:
+        - email
+        - review-only
+        - assistant
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Briefings and the ledger
+        - Drafts and the review card
+        - Scheduling (solver, invites, reschedules, polls)
+        - Chat (Zulip or Slack, rooms, buttons)
+        - Mail access (Outlook, Gmail, the mediator)
+        - Calendar access (Outlook, Google)
+        - Remote model (mail gate, writer, digests)
+        - Plugins
+        - Install, upgrade, services, cron
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened. Paste the exact error text, with identities replaced.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: "`python3 scripts/ea-doctor.py --share` (masks addresses, account names, hosts and ids). Paste it whole."
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log lines
+      description: "The lines around the failure: `journalctl -u ea-chat-bot --since '1 hour ago'` on Linux, `~/.ea/logs/` for the cron lanes. Replace identities."
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send
+      options:
+        - label: I searched the open issues and Discussions for this problem.
+          required: true
+        - label: No real name, address, mail text or token is in this report.
+          required: true
