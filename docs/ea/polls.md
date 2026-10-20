@@ -1,4 +1,4 @@
-### Scheduling poll filling (When2Meet, WhenIsGood, Doodle, Timeful)
+### Scheduling poll filling (When2Meet, WhenIsGood, Doodle, Timeful, Calendly polls)
 
 When the user asks you to fill a scheduling poll:
 1. Find the poll URL from the referenced email
@@ -15,5 +15,12 @@ When the user asks you to fill a scheduling poll:
 
 Read `skills/fill-poll.md` for the full workflow. The poll filler enforces
 a hardcoded URL allowlist (when2meet.com, whenisgood.net, doodle.com,
-timeful.app only).
+timeful.app, framadate.org and calendly.com only).
 This is ask-first tier: always show the conflict summary before filling.
+
+A Calendly *meeting poll* (`calendly.com/d/<code>/...`) is a vote and is
+filled like the others; a Calendly booking page is read-only
+(`booking_link.py`), never booked. The read needs no browser. The fill
+stops before the submit and leaves a screenshot unless `--go` is given:
+run it without `--go` first, show the user the screenshot path, and run
+it again with `--go` when they say so.

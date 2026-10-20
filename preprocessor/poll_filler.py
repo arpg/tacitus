@@ -52,6 +52,8 @@ ALLOWED_URL_PATTERNS = [
     re.compile(r"^https://(www\.)?doodle\.com/(meeting/participate/id|poll|group-poll/participate)/[\w\-]+$"),
     re.compile(r"^https://(www\.)?(timeful\.app|betterwhen2meet\.com)/e/[\w\-]+$"),
     re.compile(r"^https://(www\.)?(beta\.)?framadate\.org/polls/[\w\-]+$"),
+    # A Calendly meeting poll's share link; a booking page is booking_link.py's.
+    re.compile(r"^https://(www\.)?calendly\.com/d/[\w\-]+(/[\w\-]+)?/?$"),
 ]
 
 EA_DIR = os.environ.get("EA_DIR", os.path.expanduser("~/.ea"))
@@ -141,7 +143,8 @@ def _validate_url(url: str) -> str:
         _fail(f"Only HTTPS URLs allowed, got {parsed.scheme}://")
     if not any(p.match(url) for p in ALLOWED_URL_PATTERNS):
         _fail(f"URL not on allowlist: {parsed.netloc}. "
-              f"Allowed: when2meet.com, whenisgood.net, doodle.com, timeful.app, framadate.org")
+              f"Allowed: when2meet.com, whenisgood.net, doodle.com, timeful.app, framadate.org, "
+              f"calendly.com/d/<code> (a meeting poll)")
     return url
 
 
@@ -162,6 +165,8 @@ def _detect_platform(url: str) -> str:
         return "timeful"
     if "framadate.org" in host:
         return "framadate"
+    if "calendly.com" in host:
+        return "calendly"
     _fail(f"Unsupported platform: {host}")
 
 
@@ -1212,9 +1217,31 @@ PLATFORM_FILLERS = {
     "framadate": _framadate_fill,
 }
 
+# Calendly meeting polls (poll_calendly.py): the read is two public GETs,
+# the fill is a browser that stops before the vote unless --go is given.
+import poll_calendly  # noqa: E402
+
+FILL_DRY_RUN = True   # cmd_fill_poll sets it from --go
+
+
+def _calendly_read(url: str) -> dict:
+    try:
+        return poll_calendly.read(url, user_tz=_get_user_timezone())
+    except poll_calendly.CalendlyError as e:
+        _fail(str(e))
+
+
+def _calendly_fill(page, url: str, name: str, available_ids: list[str]) -> dict:
+    return poll_calendly.fill(page, url, name, available_ids, email=_get_user_email(),
+                              dry_run=FILL_DRY_RUN, screenshot=lambda label: _screenshot(page, label))
+
+
+PLATFORM_FILLERS["calendly"] = _calendly_fill
+
 # API-based platforms (no browser needed, different function signatures)
 API_READERS = {
     "timeful": _timeful_read,
+    "calendly": _calendly_read,
 }
 
 API_FILLERS = {
@@ -1270,6 +1297,8 @@ def cmd_fill_poll(args):
 
     sent = {"name": name, "available": available}
     outcome = "error"
+    global FILL_DRY_RUN
+    FILL_DRY_RUN = not getattr(args, "go", False)
     try:
         if platform in API_FILLERS:
             result = API_FILLERS[platform](url, name, available)
@@ -1324,6 +1353,9 @@ def main():
                                   "scheduling_engine or another tool.")
     fp.add_argument("--visible", action="store_true",
                     help="Show browser window (for debugging)")
+    fp.add_argument("--go", action="store_true",
+                    help="Calendly: submit the vote. Without it the fill selects the slots, "
+                         "fills the form, takes a screenshot and stops before the submit.")
     fp.set_defaults(func=cmd_fill_poll)
 
     args = parser.parse_args()
