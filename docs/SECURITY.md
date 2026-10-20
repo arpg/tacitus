@@ -506,6 +506,13 @@ out of untrusted email, so it enforces an SSRF policy in code (B8-01):
   re-validates every sub-request the page makes and aborts the ones that
   fail;
 - raw HTML is capped at 2 MB;
+- `--save-image` is the one mode that writes: the same policy and log,
+  then only a PNG, JPEG, GIF or WebP by its first bytes (never SVG, which
+  can carry script; never a page or an archive), at most 15 MB, into a
+  NEW file (`O_EXCL | O_NOFOLLOW`, mode 0644, a plain file name) in a
+  folder that resolves under the decks' workspace or `~/.ea/state`. A
+  GET with a URL was already possible, so saving the body opens no new
+  way out; the log records its size, type, SHA-256 and destination;
 - every fetch, block and error is appended as one JSONL record (URL,
   resolved IP, method, outcome) to `~/.ea/logs/fetch-url.log`.
 

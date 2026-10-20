@@ -134,6 +134,12 @@ Own plots go in `figures-src/make_<name>.py` (matplotlib, values from a
 results JSON) and are regenerated with `build --figures`. Never redraw a
 published figure; never invent a data point.
 
+A photo or logo from the web: read its page with `fetch_url.py --url`,
+take the image URL from `images`, then
+`fetch_url.py --url <image URL> --save-image /home/ea-bot/presentations/decks/<slug>/public/img/<name>.jpg`
+(docs/ea/web-reading.md). Put its credit line on the slide and its source
+URL and license in SOURCE.md.
+
 ## Rails
 
 - Tailnet only. The URL is reachable from the user's tailscale devices

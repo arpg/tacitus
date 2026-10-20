@@ -6,6 +6,16 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The EA can save an image from the web.** `fetch_url.py --url <u>
+  --save-image <path>` fetches under the same address policy and log as
+  a page read, keeps only a PNG, JPEG, GIF or WebP by its first bytes
+  (never SVG), at most 15 MB, and writes a new file (never over one,
+  never through a symlink) in a deck's folder or `~/.ea/state`, with the
+  suffix of its real type. A page read now also lists the page's images
+  (`og:image` first) so the image URL can be found from the page that
+  shows it. `fetch_url.py` was already granted in every lane, so no
+  grant changes. docs/ea/web-reading.md, the deck skill and
+  docs/SECURITY.md describe it.
 - **The EA reads Word files again.** Since every headless lane runs with
   `--permission-mode dontAsk`, the improvised `unzip -p` or `python3 -c`
   that used to read a .docx is refused, and no granted tool read one.

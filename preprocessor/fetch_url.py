@@ -4,6 +4,15 @@ Claude calls this via shell to read URLs found in emails.
 
 Usage:
   python fetch_url.py --url "https://example.com/program" [--max-chars 4000] [--js]
+  python fetch_url.py --url "https://example.com/photo.jpg" --save-image <path>
+
+A page read returns the text, the action links and the page's images
+(og:image, then <img> sources with their alt text), so an image's own URL
+can be found from the page that shows it. --save-image saves one image:
+the same address policy and log as a page read, then only a PNG, JPEG,
+GIF or WebP by its first bytes (never SVG, which can carry script), at
+most MAX_IMAGE_BYTES, written to a new file (never over one, never
+through a symlink, mode 0644) in a deck's folder or ~/.ea/state.
 
 Safety: this is the EA's only general-purpose outbound-network primitive
 and the URLs it receives come from untrusted email, so it enforces its
@@ -23,6 +32,7 @@ own address policy:
 
 import argparse
 import contextlib
+import hashlib
 import ipaddress
 import json
 import os
@@ -42,6 +52,11 @@ USER_AGENT = (
     "Chrome/125.0.0.0 Safari/537.36"
 )
 MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024  # 2 MB cap on raw HTML
+MAX_IMAGE_BYTES = 15 * 1024 * 1024    # cap on one saved image
+MAX_PAGE_IMAGES = 15
+# Where --save-image may write: the decks' folders and the EA's state.
+DECKS_ROOT = Path(os.environ.get("EA_DECKS_ROOT", str(Path.home() / "presentations"))) / "decks"
+SAVE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
 ACTION_LINK_KEYWORDS = re.compile(
     r"apply|submit|register|sign.?up|enroll|deadline|application|nomination|rsvp",
     re.IGNORECASE,
@@ -199,7 +214,8 @@ def pinned_dns(host: str, addrinfo: list):
 # ── Fetchers ────────────────────────────────────────────────────────────
 
 def fetch_with_requests(url: str, timeout: int = 15,
-                        max_redirects: int = MAX_REDIRECTS) -> requests.Response:
+                        max_redirects: int = MAX_REDIRECTS,
+                        max_bytes: int = MAX_DOWNLOAD_BYTES) -> requests.Response:
     """GET `url`, validating every redirect hop. Redirects are walked by
     hand (allow_redirects=False) so a public URL cannot bounce us into an
     internal service."""
@@ -226,12 +242,12 @@ def fetch_with_requests(url: str, timeout: int = 15,
             current = urljoin(current, location)
             continue
         resp.raise_for_status()
-        chunks = []  # capped at MAX_DOWNLOAD_BYTES
+        chunks = []  # capped at max_bytes
         total = 0
         for chunk in resp.iter_content(chunk_size=65536):
             chunks.append(chunk)
             total += len(chunk)
-            if total >= MAX_DOWNLOAD_BYTES:
+            if total >= max_bytes:
                 break
         resp._content = b"".join(chunks)
         return resp
@@ -353,6 +369,116 @@ def extract(html: str, max_chars: int):
     return title, meta_desc, text, links, full_length, truncated
 
 
+def page_images(html: str, base: str) -> list[dict]:
+    """The page's images, the share image first: [{src, alt}], absolute
+    http(s) URLs only, at most MAX_PAGE_IMAGES."""
+    soup = BeautifulSoup(html, "html.parser")
+    out, seen = [], set()
+
+    def add(src, alt=""):
+        src = urljoin(base, (src or "").strip())
+        if urlsplit(src).scheme not in ALLOWED_SCHEMES or src in seen:
+            return
+        seen.add(src)
+        out.append({"src": src, "alt": " ".join(str(alt or "").split())[:120]})
+
+    for prop in ("og:image", "og:image:url", "twitter:image"):
+        m = soup.find("meta", attrs={"property": prop}) or soup.find("meta", attrs={"name": prop})
+        if m and m.get("content"):
+            add(m["content"], "share image")
+    for img in soup.find_all("img"):
+        add(img.get("src") or img.get("data-src"), img.get("alt"))
+        if len(out) >= MAX_PAGE_IMAGES:
+            break
+    return out[:MAX_PAGE_IMAGES]
+
+
+def image_kind(data: bytes) -> str:
+    """The file suffix for a PNG, JPEG, GIF or WebP by its first bytes;
+    '' for anything else."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return ".gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return ""
+
+
+def _save_roots() -> list[Path]:
+    roots = []
+    for r in (DECKS_ROOT, EA_DIR / "state"):
+        try:
+            roots.append(r.resolve(strict=True))
+        except (OSError, RuntimeError):
+            continue
+    return roots
+
+
+def save_image(url: str, dest: str) -> dict:
+    """Fetch one image under the address policy and write it to a new
+    file at `dest` (the suffix follows the image's real type)."""
+    result = {"url": url, "saved": None, "error": None}
+    target = Path(dest).expanduser()
+    if not SAVE_NAME_RE.match(target.name):
+        result["error"] = "the file name may use letters, digits, '.', '_' and '-' only"
+        return result
+    try:
+        folder = target.parent.resolve(strict=True)
+    except (OSError, RuntimeError):
+        result["error"] = f"no such folder: {target.parent}"
+        return result
+    if not any(folder.is_relative_to(r) for r in _save_roots()):
+        result["error"] = (f"{target.parent} is outside the folders an image may be saved in "
+                           f"({DECKS_ROOT}, {EA_DIR / 'state'})")
+        return result
+    try:
+        info = validate_url(url)
+        resp = fetch_with_requests(url, max_bytes=MAX_IMAGE_BYTES + 1)
+    except BlockedURL as e:
+        _log_event("blocked", url=url, reason=str(e), method="save-image")
+        result["error"] = f"Blocked: {e}"
+        return result
+    except requests.HTTPError as e:
+        result["error"] = f"HTTP {e.response.status_code}"
+        _log_event("error", url=url, method="save-image", reason=result["error"])
+        return result
+    except (requests.RequestException, OSError) as e:
+        result["error"] = f"Fetch failed: {e}"
+        _log_event("error", url=url, method="save-image", reason=str(e))
+        return result
+    data = resp.content or b""
+    ctype = resp.headers.get("content-type", "")
+    if len(data) > MAX_IMAGE_BYTES:
+        result["error"] = f"over {MAX_IMAGE_BYTES // (1024 * 1024)} MB"
+        _log_event("refused", url=url, method="save-image", reason=result["error"])
+        return result
+    kind = image_kind(data)
+    if not kind:
+        result["error"] = (f"not a PNG, JPEG, GIF or WebP image (content-type {ctype or 'none'}); "
+                           "for a page, read it and take an image URL from `images`")
+        _log_event("refused", url=url, method="save-image", reason="not an image", ctype=ctype)
+        return result
+    final = folder / (target.stem + kind)
+    try:
+        fd = os.open(final, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    except FileExistsError:
+        result["error"] = f"{final} exists; pick another name"
+        return result
+    except OSError as e:
+        result["error"] = f"cannot write {final}: {e}"
+        return result
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    digest = hashlib.sha256(data).hexdigest()
+    _log_event("saved", url=url, ip=info["ips"][0], method="save-image", bytes=len(data),
+               type=kind[1:], sha256=digest, dest=str(final))
+    result.update(saved=str(final), bytes=len(data), type=kind[1:], sha256=digest)
+    return result
+
+
 def run(url: str, max_chars: int, force_js: bool):
     result = {
         "url": url,
@@ -362,6 +488,7 @@ def run(url: str, max_chars: int, force_js: bool):
         "content_length": 0,
         "truncated": False,
         "links": [],
+        "images": [],
         "method": None,
         "error": None,
     }
@@ -461,6 +588,10 @@ def run(url: str, max_chars: int, force_js: bool):
     result["content_length"] = full_length
     result["truncated"] = truncated
     result["links"] = links
+    try:
+        result["images"] = page_images(html, url)
+    except Exception:
+        result["images"] = []
     result["method"] = method
 
     if len(text) < 50:
@@ -478,10 +609,13 @@ if __name__ == "__main__":
                         help="Max characters of extracted text (default 4000)")
     parser.add_argument("--js", action="store_true",
                         help="Force Playwright rendering for JS-heavy pages")
+    parser.add_argument("--save-image", metavar="PATH",
+                        help="save the image at --url to a new file (a deck's folder or ~/.ea/state)")
     args = parser.parse_args()
 
     try:
-        output = run(args.url, args.max_chars, args.js)
+        output = (save_image(args.url, args.save_image) if args.save_image
+                  else run(args.url, args.max_chars, args.js))
     except Exception as e:
         output = {"url": args.url, "error": f"Unexpected error: {e}"}
 

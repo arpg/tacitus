@@ -413,6 +413,132 @@ def test_log_path_is_never_production(d):
     assert str(fu.EA_DIR) == _TMP_EA
 
 
+# ── images ──────────────────────────────────────────────────────────
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+SVG = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+
+
+def test_page_images_lists_the_share_image_first(d):
+    html = ("<html><head><meta property='og:image' content='/share.jpg'></head><body>"
+            "<img src='photos/a.jpg' alt=' The  dome '><img src='data:image/png;base64,AAAA'>"
+            "<img data-src='https://cdn.example/b.webp'><img src='/share.jpg'></body></html>")
+    imgs = fu.page_images(html, "https://site.example/story/")
+    assert imgs == [{"src": "https://site.example/share.jpg", "alt": "share image"},
+                    {"src": "https://site.example/story/photos/a.jpg", "alt": "The dome"},
+                    {"src": "https://cdn.example/b.webp", "alt": ""}], imgs
+
+
+def _serve_bytes(body, ctype="image/png"):
+    class Resp:
+        status_code = 200
+        headers = {"content-type": ctype}
+        _content = b""
+
+        @property
+        def content(self):   # requests builds it from _content, which the fetch sets
+            return self._content
+
+        def iter_content(self, chunk_size=0):
+            for i in range(0, len(body), 65536):
+                yield body[i:i + 65536]
+
+        def raise_for_status(self):
+            pass
+
+        def close(self):
+            pass
+    return Resp()
+
+
+def _with_image(d, body, ctype="image/png"):
+    """Point the module at scratch folders and a canned response."""
+    fu.LOG_PATH = d / "logs" / "fetch-url.log"
+    fu.EA_DIR = d / "ea"
+    fu.DECKS_ROOT = d / "presentations" / "decks"
+    (fu.EA_DIR / "state").mkdir(parents=True, exist_ok=True)
+    (fu.DECKS_ROOT / "talk" / "public" / "img").mkdir(parents=True, exist_ok=True)
+    real_get, real_dns = fu.requests.get, _fake_dns({"img.example": ["93.184.216.34"]})
+    fu.requests.get = lambda url, **kw: _serve_bytes(body, ctype)
+    return real_get, real_dns
+
+
+def _restore(real_get, real_dns):
+    fu.requests.get = real_get
+    socket.getaddrinfo = real_dns
+    fu.EA_DIR = Path(_TMP_EA)
+
+
+def test_save_image_writes_a_real_image_to_a_new_file(d):
+    real = _with_image(d, PNG)
+    try:
+        dest = fu.DECKS_ROOT / "talk" / "public" / "img" / "dome.jpg"
+        out = fu.save_image("https://img.example/dome", str(dest))
+        assert out["error"] is None, out
+        saved = Path(out["saved"])
+        assert saved.name == "dome.png", saved          # the suffix follows the bytes
+        assert saved.read_bytes() == PNG and out["type"] == "png"
+        assert (saved.stat().st_mode & 0o777) == 0o644
+        again = fu.save_image("https://img.example/dome", str(dest))
+        assert "exists" in again["error"] and saved.read_bytes() == PNG
+        rows = [json.loads(x) for x in fu.LOG_PATH.read_text().splitlines() if x.strip()]
+        assert any(r["event"] == "saved" and r["dest"] == str(saved) and r["sha256"] == out["sha256"]
+                   and r["ip"] == "93.184.216.34" for r in rows), rows
+    finally:
+        _restore(*real)
+
+
+def test_save_image_refuses_what_is_not_a_raster_image(d):
+    for body, ctype in ((b"<html><body>photo page</body></html>", "text/html"), (SVG, "image/svg+xml")):
+        real = _with_image(d, body, ctype)
+        try:
+            out = fu.save_image("https://img.example/x", str(fu.EA_DIR / "state" / "x.png"))
+            assert "not a PNG, JPEG, GIF or WebP" in out["error"], out
+            assert not list((fu.EA_DIR / "state").iterdir())
+        finally:
+            _restore(*real)
+
+
+def test_save_image_writes_only_in_its_folders_and_under_its_cap(d):
+    real = _with_image(d, PNG)
+    try:
+        outside = d / "elsewhere"
+        outside.mkdir()
+        assert "outside the folders" in fu.save_image("https://img.example/x", str(outside / "x.png"))["error"]
+        escape = fu.EA_DIR / "state" / "out"
+        escape.symlink_to(outside)
+        assert "outside the folders" in fu.save_image("https://img.example/x", str(escape / "x.png"))["error"]
+        assert "file name" in fu.save_image("https://img.example/x", str(fu.EA_DIR / "state" / ".hidden"))["error"]
+        assert "file name" in fu.save_image("https://img.example/x", str(fu.EA_DIR / "state" / "a b.png"))["error"]
+        link = fu.EA_DIR / "state" / "linked.png"
+        link.symlink_to(outside / "target.png")
+        assert "exists" in fu.save_image("https://img.example/x", str(link))["error"]
+        assert not (outside / "target.png").exists() and list(outside.iterdir()) == []
+        cap = fu.MAX_IMAGE_BYTES
+        fu.MAX_IMAGE_BYTES = 10
+        try:
+            assert "over" in fu.save_image("https://img.example/x", str(fu.EA_DIR / "state" / "big.png"))["error"]
+        finally:
+            fu.MAX_IMAGE_BYTES = cap
+    finally:
+        _restore(*real)
+
+
+def test_save_image_keeps_the_address_policy(d):
+    fu.LOG_PATH = d / "logs" / "fetch-url.log"
+    fu.EA_DIR = d / "ea"
+    (fu.EA_DIR / "state").mkdir(parents=True)
+    real_get = fu.requests.get
+    fu.requests.get = lambda *a, **k: (_ for _ in ()).throw(AssertionError("contacted"))
+    try:
+        out = fu.save_image("http://127.0.0.1/x.png", str(fu.EA_DIR / "state" / "x.png"))
+        assert out["error"].startswith("Blocked"), out
+        assert not list((fu.EA_DIR / "state").iterdir())
+    finally:
+        fu.requests.get = real_get
+        fu.EA_DIR = Path(_TMP_EA)
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0
