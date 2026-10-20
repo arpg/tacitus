@@ -3185,11 +3185,12 @@ _LEDGER_OPEN_STATUSES = ("open", "follow_up", "snoozed")
 
 def _close_ledger_row(channel: str, thread_ts: str, entry: dict, note: str,
                       *, skip_archive: bool, signal: str = "",
-                      sweep: bool = True) -> None:
+                      sweep: bool = True, announced: list | None = None) -> None:
     """Close one row on `signal` (closure.py) and announce it in the thread
     (do-and-tell, like every other ledger closure the bot performs).
     `sweep` False closes the row alone, not the detector rows of its
-    thread."""
+    thread. With `announced`, the row's description is appended there for
+    the caller's one status line instead of a post of its own."""
     import subprocess as sp
     cmd = ["python3", str(SCRIPT_DIR / "preprocessor" / "ledger.py"), "close",
            "--id", entry["id"], "--note", note]
@@ -3209,11 +3210,21 @@ def _close_ledger_row(channel: str, thread_ts: str, entry: dict, note: str,
         log.info(f"Ledger item {entry['id']} not closed on {signal or 'send'}: {action or out[:120]}")
         return
     log.info(f"Closed ledger item {entry['id']} ({note})")
+    if announced is not None:
+        announced.append(entry.get("description") or entry["id"])
+        return
     FRONTEND.post(
         channel=channel, thread_ts=thread_ts,
         text=f":white_check_mark: Closed obligation: "
              f"{entry.get('description', entry['id'])}",
     )
+
+
+def _with_closed(status: str, announced: list) -> str:
+    """A card's status line with the rows its outcome closed: one message
+    for the outcome, not one more per row in the thread."""
+    return status + "".join(f"\n:white_check_mark: Closed: {_card_short('Closed', d)}"
+                            for d in announced)
 
 
 def _propose_ledger_row(entry: dict, why: str, signal: str, evidence_ts: str = "") -> None:
@@ -3239,7 +3250,8 @@ def _close_ledger_for_conversation(channel: str, thread_ts: str,
                                    conversation_id: str, note: str,
                                    *, skip_archive: bool,
                                    skip_ids: tuple = (), signal: str = "send_reply_row",
-                                   left_out: list | None = None) -> bool:
+                                   left_out: list | None = None,
+                                   announced: list | None = None) -> bool:
     """Close the reply row for a conversation. True if one closed. The
     open rows it leaves on the thread go to `left_out`.
 
@@ -3282,6 +3294,7 @@ def _close_ledger_for_conversation(channel: str, thread_ts: str,
     if reply is None:
         return False
     _close_ledger_row(channel, thread_ts, reply, note, skip_archive=skip_archive,
+                      announced=announced,
                       signal=signal)
     return True
 
@@ -3375,7 +3388,8 @@ _LEFT_OPEN_WHY = {
 
 def _close_ledger_for_draft(channel: str, thread_ts: str,
                             conversation_id: str, draft_id: str, *,
-                            how: str = "send", sent_at: str = "") -> None:
+                            how: str = "send", sent_at: str = "",
+                            announced: list | None = None) -> None:
     """Settle the ledger rows a draft finishes, once it is sent (the Send
     button, "Sent myself", a send found in Outlook) or marked handled.
 
@@ -3385,7 +3399,9 @@ def _close_ledger_for_draft(channel: str, thread_ts: str,
     row on its conversation, if there is one (_close_ledger_for_conversation).
     Every other open row on the thread gets a proposal: the send may have
     finished it, and the user confirms on the card. `sent_at` is the send's
-    UTC time (default now), the proposal's evidence clock.
+    UTC time (default now), the proposal's evidence clock. With
+    `announced`, the closed rows are listed there for the outcome's status
+    line (_with_closed) instead of each posting in the thread.
     """
     from preprocessor.ledger import is_waiting
     note, skip_archive, named_sig, reply_sig, left_sig = _DRAFT_OUTCOMES[how]
@@ -3399,13 +3415,13 @@ def _close_ledger_for_draft(channel: str, thread_ts: str,
                 continue
             same_thread = bool(conversation_id) and entry.get("conversation_id") == conversation_id
             _close_ledger_row(channel, thread_ts, entry, note, skip_archive=skip_archive,
-                              signal=named_sig, sweep=same_thread)
+                              signal=named_sig, sweep=same_thread, announced=announced)
             closed.append(entry["id"])
         left: list[dict] = []
         if _close_ledger_for_conversation(channel, thread_ts, conversation_id, note,
                                           skip_archive=skip_archive,
                                           skip_ids=tuple(closed), signal=reply_sig,
-                                          left_out=left):
+                                          left_out=left, announced=announced):
             closed.append(conversation_id)
         for entry in left:
             if not is_waiting(entry):
@@ -3603,6 +3619,12 @@ def _execute_send(channel: str, thread_ts: str, confirm_msg_ts: str | None,
             if warnings:
                 msg += "\n" + "\n".join(f":warning: {w}" for w in warnings)
             log.info(f"Email sent successfully for thread {thread_ts}")
+            # Close the rows the send finishes first, so the card and the
+            # thread each carry one line that names them.
+            closed: list = []
+            _close_ledger_for_draft(channel, thread_ts, conversation_id,
+                                    draft_id, announced=closed)
+            msg = _with_closed(msg, closed)
             if confirm_msg_ts:
                 _replace_buttons_with_status(confirm_channel, confirm_msg_ts, msg)
             # Also confirm in the conversation the draft came from. A draft
@@ -3612,10 +3634,6 @@ def _execute_send(channel: str, thread_ts: str, confirm_msg_ts: str | None,
             if thread_ts or not confirm_msg_ts:
                 FRONTEND.post(channel=channel, thread_ts=thread_ts,
                               text=msg)
-
-            # Close matching ledger entry after successful send
-            _close_ledger_for_draft(channel, thread_ts, conversation_id,
-                                    draft_id)
             if email_system != "gmail":
                 _file_admissions_after_send(conversation_id)
             return True
@@ -4221,14 +4239,15 @@ def handle_sent_myself(ev: "_chat.ActionEvent"):
     # Terminal: the user says the mail went out by hand, so a later
     # `updated` record must not repost a Send button.
     _mark_draft_confirmation(draft_id, "consumed")
+    # Close the rows the draft finishes, exactly as the Send button does;
+    # the card names them, so nothing more lands in the thread.
+    closed: list = []
+    _close_ledger_for_draft(channel, thread_ts, conversation_id, draft_id,
+                            how="sent_myself", announced=closed)
     _replace_buttons_with_status(
         dm_channel, message_ts,
-        ":incoming_envelope: Marked as sent by user.",
+        _with_closed(":incoming_envelope: Marked as sent by user.", closed),
     )
-
-    # Close the rows the draft finishes, exactly as the Send button does.
-    _close_ledger_for_draft(channel, thread_ts, conversation_id, draft_id,
-                            how="sent_myself")
     if conversation_id:
         import subprocess as sp
         # Archive the inbox-side of this conversation. "Sent myself" = the
@@ -4803,11 +4822,12 @@ def handle_draft_handled(ev: "_chat.ActionEvent"):
                 f"or closed. Delete it in Outlook, or ask me again in a minute.")
             return
         _mark_draft_confirmation(draft_id, "retired")
+        closed: list = []
+        _close_ledger_for_draft(channel, thread_ts, conversation_id, draft_id,
+                                how="handled", announced=closed)
         _replace_buttons_with_status(
             dm_channel, message_ts,
-            ":white_check_mark: Handled. Draft deleted, thread archived, item closed.")
-        _close_ledger_for_draft(channel, thread_ts, conversation_id, draft_id,
-                                how="handled")
+            _with_closed(":white_check_mark: Handled. Draft deleted, thread archived.", closed))
         if not conversation_id:
             return
         try:
@@ -9154,18 +9174,28 @@ def _reconcile_vanished_drafts(force: bool = False) -> int:
         log.info(f"Draft ...{draft_id[-12:]} left Drafts outside its block ({outcome}); "
                  f"retiring the block")
         _mark_draft_confirmation(draft_id, "consumed")
-        try:
-            _replace_buttons_with_status(entry.get("channel") or "", entry["message_ts"], text)
-        except Exception as e:
-            log.warning(f"retiring block for ...{draft_id[-12:]} failed: {e}")
+        closed: list = []
         if outcome == "sent":
             try:
                 _close_ledger_for_draft(entry.get("ea_channel") or CHANNEL_ID,
                                         entry.get("thread_ts") or "", conv, draft_id,
-                                        how="outlook_send", sent_at=sent_at)
+                                        how="outlook_send", sent_at=sent_at,
+                                        announced=closed)
             except Exception as e:
                 log.warning(f"ledger close after an Outlook send failed: {e}")
             _file_admissions_after_send(conv)
+        card_channel = entry.get("channel") or ""
+        try:
+            _replace_buttons_with_status(card_channel, entry["message_ts"],
+                                         _with_closed(text, closed))
+        except Exception as e:
+            log.warning(f"retiring block for ...{draft_id[-12:]} failed: {e}")
+        # Settled outside the card: the owner may never have opened it, and
+        # an edit leaves it unread. File it where it is out of the Inbox.
+        try:
+            FRONTEND.file_card(_card_ref(card_channel, entry["message_ts"]))
+        except Exception as e:
+            log.warning(f"filing the settled card ...{draft_id[-12:]} failed: {e}")
         retired += 1
     if retired:
         try:

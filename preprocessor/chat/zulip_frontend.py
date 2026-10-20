@@ -624,6 +624,9 @@ class ZulipFrontend(ChatFrontend):
         self.stream_name = str(self.cfg.get("stream") or "ea")
         self.sched_stream_name = str(self.cfg.get("sched_stream") or "")
         self.dm_stream_name = str(self.cfg.get("dm_stream") or "ea-dm")
+        # Where a card settled outside chat goes (file_card): private, the
+        # bot its only required subscriber.
+        self.done_stream_name = str(self.cfg.get("dm_done_stream") or f"{self.dm_stream_name}-done")
         self.main_channel_name = self.stream_name
         self.private_dir = Path(private_dir)
         self.queue_path = self.private_dir / QUEUE_FILE
@@ -1460,6 +1463,63 @@ class ZulipFrontend(ChatFrontend):
             except Exception:
                 log.warning("zulip: could not take chip %s off card %s", name, ref.id)
         return edited
+
+    def file_card(self, ref: MessageRef) -> bool:
+        """Move a card settled outside chat, with its topic, to the done
+        stream. An edit leaves a card the owner never opened unread in the
+        Inbox; a moved one leaves it, since the owner is not subscribed
+        there (a subscriber who mutes the stream keeps it out too). False,
+        and the card stays, when the stream cannot be made or vetted or the
+        server refuses the move (past its move limit)."""
+        if not ref.channel.startswith("stream:"):
+            return False
+        sid = self._done_stream_id()
+        if sid is None or stream_id_of(ref.channel) == sid:
+            return False
+        try:
+            res = self.client.update_message({
+                "message_id": int(ref.id), "stream_id": sid, "propagate_mode": "change_all",
+                "send_notification_to_old_thread": False,
+                "send_notification_to_new_thread": False})
+        except Exception as e:
+            log.warning("zulip: could not file card %s: %s", ref.id, e)
+            return False
+        if not _ok(res):
+            log.warning("zulip: could not file card %s: %s", ref.id, _err(res))
+            return False
+        return True
+
+    def _done_stream_id(self) -> int | None:
+        """The done stream's id, made on first use as a private stream with
+        the bot as its subscriber. None when it cannot be made, is not
+        private, or has a subscriber besides the bot and the owner: it
+        holds whole cards, so it gets the EA streams' own rule."""
+        name = self.done_stream_name
+        sid = self._lookup_stream_id(name)
+        if sid is None:
+            res = self.client.add_subscriptions(
+                [{"name": name, "description": "Confirmation cards settled outside chat "
+                                               "(sent or deleted in the mail client)."}],
+                invite_only=True, history_public_to_subscribers=True,
+                principals=[self.bot_email])
+            if not _ok(res):
+                log.warning("zulip: could not make stream %s: %s", name, _err(res))
+                return None
+            sid = self._lookup_stream_id(name)
+            if sid is None:
+                return None
+        info = self._get_stream(sid)
+        if info is None or not info.get("invite_only"):
+            log.warning("zulip: stream %s is not private; no card is filed there", name)
+            return None
+        members = self.channel_members(f"stream:{sid}")
+        if members is None or str(self.self_id) not in members \
+                or not members <= {str(self.self_id), str(self.owner_id)}:
+            log.warning("zulip: stream %s has subscribers besides the owner and the bot, or "
+                        "none the bot can read; no card is filed there", name)
+            return None
+        self._stream_names[sid] = name
+        return sid
 
     def message_posted_at(self, ref: MessageRef) -> float | None:
         try:

@@ -184,7 +184,7 @@ def test_handled_closes_and_archives_only_after_the_delete():
     i_ret = body.index("return", i_fail)
     i_close = body.index("_close_ledger_for_draft(")
     i_arch = body.index("archive-conversation")
-    i_done = body.index("Draft deleted, thread archived, item closed")
+    i_done = body.index("Draft deleted, thread archived.")
     i_retired = body.index('_mark_draft_confirmation(draft_id, "retired")')
     assert i_del < i_fail < i_ret < min(i_close, i_arch, i_done, i_retired)
     assert "@app.action(\"draft_handled\")\ndef handle_draft_handled(" in BOT_SRC

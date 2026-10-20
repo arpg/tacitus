@@ -361,7 +361,12 @@ flowchart LR
    ```
    `owner_user_id` is the only user whose reactions and codes confirm a
    card; the bot refuses to start without it. Leave `sched_stream` empty
-   to run without a scheduling stream.
+   to run without a scheduling stream. A card settled outside chat (a
+   draft sent or deleted in Outlook) moves, with its topic, to a private
+   stream the bot makes on first use, `<dm_stream>-done` (`dm_done_stream`
+   names another), so a card you never opened leaves your Inbox. To read
+   those cards, subscribe to that stream and mute it: a subscriber who
+   does not mute it gets the unread ones back.
 4. **Secret.** Add the `ZULIP_API_KEY=` line to `~/.ea-private/secrets.env`
    (owner, mode 600, in a 0700 `~/.ea-private`; never `~/.ea/.env`). It is
    the only new secret; nothing goes in `~/.ea/.env` for Zulip.

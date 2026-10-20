@@ -365,16 +365,19 @@ def test_a_threadless_send_reports_on_its_card_alone():
     """A briefing card's draft has no thread. Its Sent line goes on the
     card; a second top-level post would open a "Sent." topic on Zulip."""
     ex = _fn_src("_execute_send")
-    ok = ex[ex.index('if send_data.get("status") == "sent":'):ex.index("_close_ledger_for_draft(")]
+    start = ex.index('if send_data.get("status") == "sent":')
+    ok = ex[start:ex.index("return True", start)]
     assert "if thread_ts or not confirm_msg_ts:" in ok
     guard = ok.index("if thread_ts or not confirm_msg_ts:")
     assert ok.index("FRONTEND.post(channel=channel, thread_ts=thread_ts", guard) > guard
 
 
 def test_a_draft_that_leaves_drafts_outside_its_card_is_retired_with_the_right_line():
-    """Sent from Outlook: 'Sent from Outlook.', ledger closed, admissions
-    filing run. Deleted there: 'Deleted in Outlook'. Still a draft, or
-    Graph down: untouched. Throttled unless forced."""
+    """Sent from Outlook: 'Sent from Outlook.' with the rows it closed on
+    the same line (no post in the thread), admissions filing run, and the
+    card filed out of the Inbox. Deleted there: 'Deleted in Outlook', also
+    filed. Still a draft, or Graph down: untouched. Throttled unless
+    forced."""
     import types
     from datetime import datetime, timezone
     ns = {"json": json, "time": __import__("time"), "datetime": datetime,
@@ -408,23 +411,52 @@ def test_a_draft_that_leaves_drafts_outside_its_card_is_retired_with_the_right_l
     class Cards:
         def by_ref(self, channel, ts):
             return {"actions": {"approve_send": {"value": {"conversation_id": convs.get(ts, "")}}}}
-    lines, marks, closed, filed = [], [], [], []
+    lines, marks, closed, filed, moved = [], [], [], [], []
+
+    def close(ch, th, conv, d, **kw):
+        closed.append(conv)
+        kw["announced"].append("Reply to Nico about the review")
+
     ns.update({
         "_graph_json": graph_json, "_CARDS": Cards(), "_load_draft_confirms": lambda: confirms,
         "_mark_draft_confirmation": lambda d, st: marks.append((d, st)),
         "_replace_buttons_with_status": lambda ch, ts, text: lines.append((ts, text)),
-        "_close_ledger_for_draft": lambda ch, th, conv, d, **kw: closed.append(conv),
+        "_close_ledger_for_draft": close,
         "_file_admissions_after_send": lambda conv: filed.append(conv),
         "_retire_empty_bulk_cards": lambda: None,
+        "_with_closed": lambda s, a: s + "".join(f"\n:white_check_mark: Closed: {d}" for d in a),
+        "_card_ref": lambda ch, ts: (ch, ts),
+        "FRONTEND": types.SimpleNamespace(file_card=lambda ref: moved.append(ref) or True),
     })
     assert ns["_reconcile_vanished_drafts"](force=True) == 2
-    assert dict(lines) == {"1": ":incoming_envelope: Sent from Outlook.",
+    assert dict(lines) == {"1": ":incoming_envelope: Sent from Outlook.\n"
+                                ":white_check_mark: Closed: Reply to Nico about the review",
                            "2": ":wastebasket: Deleted in Outlook; not sent."}
     assert sorted(marks) == [("dGone", "consumed"), ("dSent", "consumed")]
     assert closed == ["cSent"] and filed == ["cSent"]
+    assert sorted(moved) == [("DM", "1"), ("DM", "2")]
     # throttled: an unforced second call inside the window does nothing
     lines.clear()
     assert ns["_reconcile_vanished_drafts"]() == 0 and lines == []
+
+
+def test_a_draft_outcome_names_its_closed_rows_once():
+    """Each draft outcome closes its rows first and names them on its one
+    status line; none posts a 'Closed obligation' per row in the thread."""
+    for fn in ("_execute_send", "handle_sent_myself", "handle_draft_handled",
+               "_reconcile_vanished_drafts"):
+        body = _fn_src(fn)
+        i_close = body.index("_close_ledger_for_draft(")
+        assert "announced=closed" in body[i_close:i_close + 300], fn
+        assert "_with_closed(" in body[i_close:], fn
+    row = _fn_src("_close_ledger_row")
+    i = row.index("if announced is not None:")
+    assert row.index("return", i) < row.index("Closed obligation"), "a collected row posts nothing"
+    ns = {"_card_short": lambda label, v: str(v)}
+    exec(_fn_src("_with_closed"), ns)
+    assert ns["_with_closed"]("Sent.", []) == "Sent."
+    assert ns["_with_closed"]("Sent.", ["A", "B"]) == ("Sent.\n:white_check_mark: Closed: A"
+                                                        "\n:white_check_mark: Closed: B")
 
 
 def test_a_send_files_an_applicant_conversation():

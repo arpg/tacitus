@@ -289,6 +289,12 @@ class ChatFrontend(ABC):
     def message_posted_at(self, ref: MessageRef) -> float | None:
         """Epoch seconds when the message was posted, None when unknown."""
 
+    def file_card(self, ref: MessageRef) -> bool:
+        """Take a card settled outside chat (a send from the mail client)
+        out of the owner's unread view, keeping it readable. False when the
+        platform has no such place or the move fails; the card stays."""
+        return False
+
     # conversations and rooms
 
     @abstractmethod

@@ -6,6 +6,15 @@ repository that preceded it.
 
 ## Unreleased
 
+- **Sends stop filling the Zulip Inbox.** A draft outcome (Send, Sent
+  myself, Handled, a send or a delete found in Outlook) names the ledger
+  rows it closed on its one status line, instead of one "Closed
+  obligation" post per row in the thread. A card settled outside chat (a
+  draft sent or deleted in Outlook) is filed with `ChatFrontend.file_card`:
+  on Zulip it moves, with its topic and without a notice, to a private
+  stream the bot makes on first use (`<dm_stream>-done`, or
+  `dm_done_stream`), only while that stream's subscribers are the bot and
+  the owner. An edit had left a card the owner never opened unread.
 - **A thumbs up never means anything but the card's approval.** A card
   that withholds its approval (a draft or an invite longer than one card
   shows, an unstored event, a plugin card with a cut value) used to give

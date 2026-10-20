@@ -138,8 +138,13 @@ code: the owner reacts with a check (or a cross to cancel) or replies
 with the code, led by the action's word for anything but the primary
 action (`handled <code>`, `cancel <code>`). A card that withholds its
 approval (more than one card shows) has no primary: a thumbs up or a
-bare code there selects nothing (`ConfirmationCard.no_default`). See the
-Chat front-end layer section.
+bare code there selects nothing (`ConfirmationCard.no_default`). A draft
+outcome (Send, Sent myself, Handled, a send or delete found in Outlook)
+names the ledger rows it closed on its one status line, never in a post
+per row; a card settled outside chat is filed (`ChatFrontend.file_card`):
+on Zulip it moves to the private `ea-dm-done` stream, where the owner is
+not subscribed, so an edit no longer leaves it unread in the Inbox. See
+the Chat front-end layer section.
 
 ## Reschedule requests: detected in minutes, answered by the solver
 

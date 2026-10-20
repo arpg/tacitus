@@ -583,6 +583,7 @@ def _click_ns(current_fp: str, send_status: str = "sent", body: str = "b"):
         "_post_send_confirmation": lambda *a, **k: rec.cards.append(("send", a, k)),
         "_post_schedule_send_confirmation": lambda *a, **k: rec.cards.append(("schedule", a)),
         "_close_ledger_for_draft": lambda *a, **k: None,
+        "_with_closed": lambda status, closed: status,
         "_file_admissions_after_send": lambda *a, **k: None,
         "_send_error_is_missing": lambda e: False,
     }

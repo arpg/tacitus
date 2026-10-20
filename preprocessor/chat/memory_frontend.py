@@ -69,6 +69,7 @@ class MemoryFrontend(ChatFrontend):
         self.home_views: list[dict] = []
         self.modals: list[dict] = []
         self.created_rooms: list[RoomRef] = []
+        self.filed_cards: list[MessageRef] = []
         self.history: list[InboundMessage] = []
         self.rooms: dict[str, ChannelInfo] = {
             "C_MAIN": ChannelInfo("C_MAIN", "ea", is_private=True, is_member=True),
@@ -155,6 +156,10 @@ class MemoryFrontend(ChatFrontend):
 
     def replace_card_with_status(self, ref: MessageRef, text: str) -> bool:
         self.updates.append({"ref": ref, "status": text})
+        return True
+
+    def file_card(self, ref: MessageRef) -> bool:
+        self.filed_cards.append(ref)
         return True
 
     def message_posted_at(self, ref: MessageRef) -> float | None:

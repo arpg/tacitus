@@ -1254,6 +1254,42 @@ def test_create_private_room(tmp_path):
         fe.create_private_room("ea")
 
 
+def test_a_settled_card_is_filed_out_of_the_inbox(tmp_path):
+    """A card settled outside chat moves, with its topic and without a
+    notice, to a private done stream the bot makes on first use."""
+    fe, c = make(tmp_path)
+    ref = fe.post_card(f"stream:{DM}", _card())
+    assert fe.file_card(ref) is True
+    sub = c.named("add_subscriptions")[-1]
+    assert sub == {"streams": [{"name": "ea-dm-done", "description": "Confirmation cards "
+                                "settled outside chat (sent or deleted in the mail client)."}],
+                   "invite_only": True, "history_public_to_subscribers": True,
+                   "principals": ["ea-bot@example.org"]}
+    done = c.stream_ids["ea-dm-done"]
+    moves = [u for u in c.named("update_message") if "stream_id" in u]
+    assert moves == [{"message_id": int(ref.id), "stream_id": done, "propagate_mode": "change_all",
+                      "send_notification_to_old_thread": False,
+                      "send_notification_to_new_thread": False}]
+    ref2 = fe.post_card(f"stream:{DM}", _card())
+    assert fe.file_card(ref2) is True
+    assert len(c.named("add_subscriptions")) == 1, "the stream is made once"
+
+
+def test_a_card_is_not_filed_where_a_third_person_reads(tmp_path):
+    fe, c = make(tmp_path)
+    ref = fe.post_card(f"stream:{DM}", _card())
+    fe.file_card(ref)                                  # makes the stream
+    done = c.stream_ids["ea-dm-done"]
+    c.members[done] = [BOT, OWNER, 77]
+    before = len(c.named("update_message"))
+    assert fe.file_card(fe.post_card(f"stream:{DM}", _card())) is False
+    assert not [u for u in c.named("update_message")[before:] if "stream_id" in u]
+    c.members[done] = [BOT, OWNER]
+    c.update_results = [{"result": "error", "msg": "The time limit for editing this message has past"}]
+    assert fe.file_card(fe.post_card(f"stream:{DM}", _card())) is False
+    assert fe.file_card(MessageRef(f"dm:{OWNER}", "5", f"dm:{OWNER}")) is False
+
+
 def test_create_room_not_permitted(tmp_path):
     fe, c = make(tmp_path)
     c.add_subs_result = {"result": "error", "code": "BAD_REQUEST",
