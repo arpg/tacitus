@@ -80,11 +80,14 @@ class _Loc:
 
 
 class _Page:
-    """A fake Playwright page: the selectors present, what gets clicked
-    and filled, and the body text after a submit."""
+    """A fake Playwright page: the selectors present, which slots have a
+    button on the page (`clicked` = the slot ids whose button exists), the
+    page's own tally of selected times, and the body text after a submit."""
     def __init__(self, present, clicked, after="Thank you, your response was submitted"):
         self.present, self.clicked, self.after = set(present), clicked, after
         self.clicks, self.filled, self.gotos, self.submitted = [], {}, [], False
+        self.buttons = {(t["day"], t["time"]) for t in pc.targets(clicked)}
+        self.selected = 0
 
     def goto(self, url, **kw):
         self.gotos.append(url)
@@ -93,19 +96,24 @@ class _Page:
         pass
 
     def locator(self, sel):
+        if sel.startswith("xpath="):
+            m = __import__("re").search(r"text\(\)\)='([^']+)'\]/following::button\[normalize-space\(\)='([^']+)'\]", sel)
+            key = (m.group(1), m.group(2)) if m else None
+            loc = _Loc(1 if key in self.buttons else 0, self, sel)
+
+            def click(timeout=None, _k=key):
+                self.clicks.append(_k)
+                self.selected += 1
+            loc.click = click  # type: ignore[method-assign]
+            return loc
         if sel == "button[type='submit']" and sel in self.present:
             loc = _Loc(1, self, sel)
             loc.click = lambda timeout=None: setattr(self, "submitted", True)  # type: ignore[method-assign]
             return loc
         return _Loc(1 if sel in self.present else 0, self, sel)
 
-    def evaluate(self, js, wanted):
-        assert "clicked" in js
-        return {"clicked": [w["slot_id"] for w in wanted if w["slot_id"] in self.clicked],
-                "missing": [w["slot_id"] for w in wanted if w["slot_id"] not in self.clicked]}
-
     def inner_text(self, sel):
-        return self.after if self.submitted else "0 times selected"
+        return self.after if self.submitted else f"{self.selected} times selected"
 
 
 FORM = {"button:has-text('Next')", "#full_name", "#email", "button[type='submit']"}
@@ -119,6 +127,10 @@ def test_the_fill_stops_before_the_submit_unless_told_to_go():
                   screenshot=lambda label: shots.append(label) or f"/x/{label}.png", wait_ms=0)
     assert res["ok"] and res["dry_run"] and not res["submitted"] and not page.submitted
     assert res["clicked"] == ids[:1] and res["missing"] == ids[1:]
+    assert page.clicks[0] == ("Monday, December 7", "3:00 pm"), "a real pointer click on the day's button"
+    assert pc.button_xpath("Monday, December 7", "3:00 pm").startswith("xpath=//*[normalize-space(text())='Monday, December 7']")
+    assert pc.selected_count("12 times selected Next") == 12 and pc.selected_count("1 time selected") == 1
+    assert pc.selected_count("nothing") == 0
     assert page.filled == {"#full_name": "Kit Calloway", "#email": "kit@example.edu"}
     assert res["screenshot"] == "/x/calendly-pre-submit.png" and shots == ["calendly-pre-submit"]
     page = _Page(FORM, clicked=ids)

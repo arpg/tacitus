@@ -127,27 +127,21 @@ def targets(slot_ids: list[str]) -> list[dict]:
     return out
 
 
+def button_xpath(day: str, time_text: str) -> str:
+    """The Playwright selector for a time button: the first button with
+    that text after the element whose text is the day heading."""
+    return (f"xpath=//*[normalize-space(text())='{day}']/following::button"
+            f"[normalize-space()='{time_text}'][1]")
+
+
+def selected_count(body_text: str) -> int:
+    """The page's own tally, "N times selected" (or "1 time selected")."""
+    m = re.search(r"(\d+)\s+times?\s+selected", body_text or "", re.I)
+    return int(m.group(1)) if m else 0
+
+
 # The browser side. `page` is a Playwright page; everything the page does
 # is behind this one function so the tests can run it against a fake.
-_CLICK_JS = """(wanted) => {
-  const norm = s => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-  const clicked = [], missing = [];
-  const all = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,p,span,div,button'));
-  for (const w of wanted) {
-    let dayIdx = all.findIndex(e => e.children.length === 0 && norm(e.textContent) === norm(w.day));
-    if (dayIdx < 0) { missing.push(w.slot_id); continue; }
-    let found = null;
-    for (let i = dayIdx + 1; i < all.length; i++) {
-      const e = all[i];
-      if (e.children.length === 0 && /^[a-z]+day, [a-z]+ \\d{1,2}$/.test(norm(e.textContent))) break;
-      if (e.tagName === 'BUTTON' && norm(e.textContent) === norm(w.time)) { found = e; break; }
-    }
-    if (!found) { missing.push(w.slot_id); continue; }
-    if (found.getAttribute('aria-pressed') !== 'true' && found.getAttribute('aria-checked') !== 'true') found.click();
-    clicked.push(w.slot_id);
-  }
-  return {clicked, missing};
-}"""
 
 
 def fill(page, url: str, name: str, slot_ids: list[str], *, email: str, dry_run: bool = True,
@@ -165,12 +159,31 @@ def fill(page, url: str, name: str, slot_ids: list[str], *, email: str, dry_run:
                 loc.first.click(timeout=2000)
         except Exception:
             pass
-    res = page.evaluate(_CLICK_JS, targets(slot_ids))
-    clicked, missing = list(res.get("clicked") or []), list(res.get("missing") or [])
-    if not clicked:
-        return {"ok": False, "clicked": [], "missing": missing, "submitted": False, "dry_run": dry_run,
-                "screenshot": shot("calendly-no-slots"), "error": "no slot button matched; nothing selected"}
+    # Real pointer clicks: the page's buttons are React controls, and a
+    # script-driven click() leaves the selection empty. Each target is the
+    # first time button after its day heading.
+    clicked, missing = [], []
+    for t in targets(slot_ids):
+        loc = page.locator(button_xpath(t["day"], t["time"]))
+        if not loc.count():
+            missing.append(t["slot_id"])
+            continue
+        try:
+            loc.first.click(timeout=5000)
+            clicked.append(t["slot_id"])
+        except Exception:
+            missing.append(t["slot_id"])
     page.wait_for_timeout(500)
+    counted = selected_count(page.inner_text("body"))
+    if not clicked or counted == 0:
+        return {"ok": False, "clicked": clicked, "missing": missing, "submitted": False, "dry_run": dry_run,
+                "screenshot": shot("calendly-no-slots"),
+                "error": ("no slot button matched; nothing selected" if not clicked
+                          else f"clicked {len(clicked)} but the page counts {counted} selected")}
+    if counted != len(clicked):
+        return {"ok": False, "clicked": clicked, "missing": missing, "submitted": False, "dry_run": dry_run,
+                "screenshot": shot("calendly-count"),
+                "error": f"clicked {len(clicked)} but the page counts {counted} selected"}
     nxt = page.locator("button:has-text('Next')")
     if not nxt.count():
         return {"ok": False, "clicked": clicked, "missing": missing, "submitted": False, "dry_run": dry_run,
