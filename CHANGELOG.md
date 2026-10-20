@@ -1,10 +1,11 @@
 # Changelog
 
-## v1.3.0 (2026-10-20)
+Versions restart at the public release: `v0.1.0` is the first public
+commit. The sections from `v1.2.0` down are the history of the private
+repository that preceded it.
 
-- **Public release as Tacitus**, under AGPL-3.0-only: the README as a
-  front page, INSTALL.md, the developer guide in `.claude/CLAUDE.md`
-  (kept out of the EA's tree), the EA's portrait on Zulip and Slack.
+## Unreleased
+
 - **Intake for a public repository.** Issue forms that require the
   version, platform, profile and the doctor's output; `ea-doctor.py
   --share` masks addresses, account names, hosts and ids for pasting;
@@ -17,6 +18,14 @@
 - **Scheduling.** The pipeline's invite path says when the meeting is
   already on the calendar and stages nothing; a reply the on-prem model
   wrote names the local tier in its footer.
+- **Python 3.10 floor.** Five f-strings no longer nest their own quote
+  type; a wall test compiles every file with python3.10 when present.
+
+## v0.1.0 (2026-10-20)
+
+- **Public release as Tacitus**, under AGPL-3.0-only: the README as a
+  front page, INSTALL.md, the developer guide in `.claude/CLAUDE.md`
+  (kept out of the EA's tree), the EA's portrait on Zulip and Slack.
 
 - **The briefing checks that what it raises is still open.** The remote
   briefing's pre-send audit now asks about every ledger row the post

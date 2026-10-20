@@ -13,7 +13,7 @@ body:
     attributes:
       label: Version
       description: "Run `git -C <your checkout> describe --tags --always` and paste the result."
-      placeholder: v0.0.1
+      placeholder: v0.1.0
     validations:
       required: true
   - type: dropdown
