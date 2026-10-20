@@ -453,8 +453,10 @@ no mail or calendar token, no remote model, no resident user.
   gets, so a drafting case is measured either way. The briefing lane is
   Claude's in every configuration.
 
-**On GitHub.** `.github/workflows/release-suite.yml` runs on every `v*`
-tag and on `workflow_dispatch` (inputs: one `lane`, the `harness`). It
+**On GitHub.** `.github/workflows/release-suite.yml` runs by hand only,
+with Actions > Release suite > Run workflow (inputs: one `lane`, the
+`harness`); a tag does not start it, since a run spends the login's
+model quota for about an hour. It
 builds the Docker image, prepares the volumes (`docker compose up init`),
 writes a scratch configuration into ea-bot's config volume (the install
 tests' `tests/install/answers-email.json` when present, else the

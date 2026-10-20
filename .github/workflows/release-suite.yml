@@ -3,11 +3,14 @@
 # repository secret, no mail or calendar token and no remote model. The
 # scheduling lane reads the canned calendar; drafting runs on Claude.
 # docs/EVAL.md, "On a fresh machine", says how to mint the token.
+#
+# By hand only. The suite spends the login's model quota for about an
+# hour, so a tag does not start it; cut-tag.sh runs it on the owner's
+# machine before a tag, and Actions > Release suite > Run workflow runs
+# it here when the secret is set.
 name: Release suite
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       lane:
