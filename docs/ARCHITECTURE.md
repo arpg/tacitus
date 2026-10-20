@@ -136,8 +136,10 @@ Slack signature and checks the clicker against `EA_SLACK_OWNER_ID`. On
 Zulip the same card is a message in the `ea-dm` stream with a one-time
 code: the owner reacts with a check (or a cross to cancel) or replies
 with the code, led by the action's word for anything but the primary
-action (`handled <code>`, `cancel <code>`). See the Chat front-end layer
-section.
+action (`handled <code>`, `cancel <code>`). A card that withholds its
+approval (more than one card shows) has no primary: a thumbs up or a
+bare code there selects nothing (`ConfirmationCard.no_default`). See the
+Chat front-end layer section.
 
 ## Reschedule requests: detected in minutes, answered by the solver
 
