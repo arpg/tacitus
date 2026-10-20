@@ -93,7 +93,23 @@ against the real EA_DIR, writes confined to its state and docs, the same
 prompt and the same output handling. It runs only when `codex_ghost.py
 gate briefing` finds a GO no older than 14 days (`EA_HARNESS_FORCE=1`
 overrides); otherwise the Claude run goes ahead and the log says why.
-The chat lanes have no production path on Codex yet (next section).
+
+**Chat turns** (`preprocessor/codex_turn.py`): the arm `codex` runs a
+chat turn on Codex as the resident. The bot builds the turn's prompt as
+it does for Claude (the fresh prompt with the operating instructions, or
+the slim continuation) and `run_turn` sends it to a Codex thread kept
+per chat thread (`codex exec` once, `codex exec resume` after), with
+writes confined to the EA state, docs and research directories and the
+run id the bot minted, so drafts and staged events surface as after a
+Claude turn. A topic gets the arm with `use codex`, one message with
+`@codex`, a lane with `tiers.lanes` in ea-config.json; the footer says
+"EA · Codex". A harness error or an empty answer hands the turn to
+Claude. The same function with `live=False` is the ghost's chat path:
+the production path with posting off (a scratch EA_DIR per thread, the
+real path replaced in the prompt, the mediator recording every write,
+the staged files read back for the judge). The email-author subagent
+has no Codex twin yet: a turn that needs it uses `email_writer.py`
+(the remote writer) or writes the body itself.
 
 ## Not covered
 
