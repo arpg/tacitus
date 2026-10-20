@@ -530,6 +530,13 @@ def build_today_top(needs_resp: list, dropped: list, deadlines: list,
                 5, [f"your own ask{when}; answers owed to you"],
                 it.get("from_name") or it.get("from", ""))
             continue
+        if it.get("answered_at"):
+            # The user wrote in this thread after the reminder: its date
+            # is history, and a row that carries the thread has its own.
+            add("deadline", it.get("subject", ""), it.get("message_id", ""),
+                5, [f"you replied {str(it['answered_at'])[:10]}"],
+                it.get("from_name") or it.get("from", ""))
+            continue
         if due:
             days_left = (due - now).days
             if days_left < 0:
@@ -784,6 +791,17 @@ def _user_started_threads(sent: list) -> tuple[dict, dict]:
         if key and (key not in by_subject or ts < by_subject[key]):
             by_subject[key] = ts
     return by_conv, by_subject
+
+
+def _user_last_sent_by_conv(sent: list) -> dict[str, str]:
+    """conversation id -> the latest time the user sent in that thread."""
+    out: dict[str, str] = {}
+    for s in sent or []:
+        cid = s.get("conversationId") or ""
+        ts = s.get("sentDateTime") or s.get("receivedDateTime") or ""
+        if cid and ts and ts > out.get(cid, ""):
+            out[cid] = ts
+    return out
 
 
 def detect_dropped_threads(
@@ -1559,8 +1577,12 @@ def detect_deadlines(inbox: list, sent: list | None = None) -> list:
     One item per conversation (its newest message), and a date the user
     set for OTHER people is marked `owed_to_user`. Otherwise a charge the
     user wrote himself mints one OVERDUE item per reply. `sent` is what
-    says who opened the thread; without it nothing is owed_to_user."""
+    says who opened the thread; without it nothing is owed_to_user. An
+    item the user has answered in its own thread since it arrived carries
+    `answered_at`: the charge was met or taken up, so it is not overdue
+    work (build_today_top)."""
     root_by_conv, root_by_subject = _user_started_threads(sent or [])
+    last_sent = _user_last_sent_by_conv(sent or [])
     best: dict[str, dict] = {}
     order: list[str] = []
     for m in inbox:
@@ -1614,6 +1636,11 @@ def detect_deadlines(inbox: list, sent: list | None = None) -> list:
         elif received > (prev.get("received") or ""):
             best[conv] = item
 
+    for conv in order:
+        item = best[conv]
+        answered = last_sent.get(item["conversation_id"]) if item["conversation_id"] else ""
+        if answered and answered > (item.get("received") or ""):
+            item["answered_at"] = answered
     return [best[c] for c in order]
 
 

@@ -243,6 +243,28 @@ def test_the_thread_root_is_found_by_subject_when_the_conversation_id_differs():
     assert pp.detect_deadlines(inbox, sent)[0]["owed_to_user"] is False
 
 
+def test_a_reminder_the_user_answered_in_its_thread_is_not_overdue_work():
+    """A department reminder with a passed date: the user answered in its
+    thread after it arrived, so the date is history. Before the answer it
+    is still the user's overdue work."""
+    remind = _msg("rem1", "Final reminder: spring appointment requests due Oct 18",
+                  conv="conv-appts", received=NOW - timedelta(days=4),
+                  preview="Spring appointment requests are due by Oct 18.")
+    answer = _sent("RE: Final reminder: spring appointment requests due Oct 18",
+                   conv="conv-appts", at=NOW - timedelta(days=1))
+    earlier = _sent("RE: spring appointments", conv="conv-appts", at=NOW - timedelta(days=6))
+    [item] = pp.detect_deadlines([remind], [answer])
+    assert item["answered_at"] and item["owed_to_user"] is False
+    item["extracted_date"] = (NOW - timedelta(days=2)).strftime("%B %-d")
+    top, rest = pp.build_today_top([], [], [item], [], [], [], cap=5, floor=30)
+    assert top == [] and rest[0]["score"] == 5, (top, rest)
+    [item] = pp.detect_deadlines([remind], [earlier])
+    assert "answered_at" not in item
+    item["extracted_date"] = (NOW - timedelta(days=2)).strftime("%B %-d")
+    top, _ = pp.build_today_top([], [], [item], [], [], [], cap=5, floor=30)
+    assert top and "OVERDUE" in top[0]["reason"]
+
+
 def test_norm_subject_strips_every_reply_prefix():
     assert pp._norm_subject("Re: RE: Fwd:  Curriculum  group") == "curriculum group"
     assert pp._norm_subject("AW: Sv: hello") == "hello"

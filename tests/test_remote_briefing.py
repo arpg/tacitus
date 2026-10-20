@@ -190,7 +190,7 @@ def test_a_morning_run(priv):
         {"ok": True, "draft_id": "draft-1"}
     queue = lambda items, agent, now: queued.extend(items) or len(items)
     nsf = "row-nsf"
-    audit = lambda agent, text, b, dry_run, chat: {
+    audit = lambda agent, text, b, dry_run, chat, rendered: {
         "closed": [nsf], "closed_rows": [{"id": nsf, "why": "submitted Friday"}],
         "parked": [], "unsure_rows": [], "asked": 1}
     text, rec = rb.run("morning-briefing", _briefing(), run_id="cron-morning-briefing-1", now=NOW,
@@ -590,3 +590,45 @@ def test_the_live_scheduling_branch_runs_before_claude_and_falls_back():
             sys.modules["preprocessor"] = saved
         else:
             sys.modules.pop("preprocessor", None)
+
+
+def test_an_item_is_named_once_in_the_post():
+    """A row on the do-list is not repeated in the date banner, the
+    decisions or the hand-offs. A due row no other section shows keeps its
+    banner line."""
+    b = _briefing()
+    b["open_obligations"].append({"id": "row-late", "description": "Grant report", "type": "task",
+                                  "deadline": "2026-10-09"})
+    c = rb.candidates(b, today=NOW.date())
+    nsf = next(r for r in c if c[r].get("ledger_id") == "row-nsf")
+    plan = {"get_done_today": [{"ref": nsf, "when": "first thing", "why": "due Wednesday"}],
+            "flexes": [{"ref": nsf, "line": "again"}],
+            "needs_you": [{"ref": nsf, "decision": "decide the report"}]}
+    post = rb.render_morning(b, c, plan, now=NOW, drafts=[],
+                             escalated=[{"ref": nsf, "why": "write it"}])
+    assert post.count("NSF annual report") == 1, post
+    assert "OVERDUE: *Grant report*" in post
+    shown = rb.shown_refs(c, plan, [], [], now=NOW, morning=True)
+    rows = rb.shown_rows(c, shown)
+    assert rows[0] == "row-nsf" and "row-late" in rows and "row-old" not in rows
+
+
+def test_the_audit_verdict_runs_on_claude_and_falls_back_to_the_remote_model(priv, monkeypatch):
+    import open_claims_audit as oca
+    rec = {"asked": 1, "parked": [], "prompt": "P", "claims": [{"id": "row-nsf", "description": "NSF"}]}
+    seen = {}
+    monkeypatch.setattr(oca, "prepare", lambda **kw: seen.update(kw) or rec)
+    monkeypatch.setattr(oca, "apply", lambda audit, verdicts: {
+        "closed": [v["id"] for v in verdicts if v["verdict"] == "done"], "unsure": []})
+    done = '{"verdicts": [{"id": "row-nsf", "verdict": "done", "why": "submitted"}]}'
+    out = rb.audit_post("morning-briefing", "post", {}, dry_run=False, rendered=["row-nsf"],
+                        judge=lambda prompt: done,
+                        chat=lambda *a, **k: pytest.fail("the remote model was asked"))
+    assert out["closed"] == ["row-nsf"] and out["judge"] == "claude"
+    assert seen["rendered"] == ["row-nsf"] and seen["claude_safe"] is True
+
+    def down(prompt):
+        raise RuntimeError("no login")
+    out = rb.audit_post("morning-briefing", "post", {}, dry_run=False, judge=down,
+                        chat=lambda *a, **k: {"content": done})
+    assert out["closed"] == ["row-nsf"] and out["judge"] == "remote (Claude failed)"

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **The briefing checks that what it raises is still open.** The remote
+  briefing's pre-send audit now asks about every ledger row the post
+  shows, by id, not only rows whose words matched and had evidence. The
+  evidence adds mail in the row's own thread, archived mail from the
+  person a waiting row waits on, and rows closed since with the same
+  thread or correspondent, with their notes. Kept mail is removed, and a
+  tool-less Claude call gives the verdicts (`briefing_audit` in
+  remote-llm.json; the remote model answers when Claude fails). A
+  deadline email the user has answered in its own thread is no longer
+  overdue work in `today_top`. A do-list item is named once: not again in
+  the date banner, "Needs you" or "Sent to Claude".
 - **Rooms are the bot's own.** The bot serves, posts in, reopens and
   archives a registered room only when the owner-private
   `~/.ea-private/owner-rooms.json` names it as a room the bot created for

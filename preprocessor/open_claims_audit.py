@@ -70,7 +70,8 @@ AUDIT_LOG = EA_DIR / "logs" / "open-claims-audit.jsonl"
 AUDIT_AGENTS = ("morning-briefing", "afternoon-catchup", "weekly-audit")
 CONFIRMED_OPEN_DAYS = 7
 MAX_CLAIMS = 12          # the prompt stays short; the queue is five items
-MAX_EVIDENCE = 6         # lines per item
+MAX_RENDERED = 20        # rows the post itself shows: every one is asked
+MAX_EVIDENCE = 8         # lines per item
 RARE_DF = 2              # a word at most this many open rows share is distinctive
 VERDICTS = ("open", "done", "unsure")
 
@@ -255,18 +256,32 @@ def _people_on(msg: dict) -> tuple[set[str], set[str]]:
 def evidence_for(entry: dict, *, inbox: list, sent: list, events: list,
                  closed_index: dict[str, list] | None = None,
                  closed_rows: list[dict] | None = None,
-                 df: dict[str, int] | None = None) -> list[str]:
+                 df: dict[str, int] | None = None,
+                 archive: list | None = None) -> list[str]:
     """Contrary evidence for one row, at the scrubber's own standard: two
     distinctive words of the row in a subject, or one word when the mail
     is with the row's own correspondent (by address, or by a name the
     row spells out); a meeting response only when the row is RSVP-shaped
     and quotes the invite; closed rows that carry the same manuscript or
     proposal id. Every line names its date, so the model can see whether
-    it postdates the row."""
+    it postdates the row.
+
+    Mail in the row's own thread after the row, the user's or anyone's,
+    is evidence whatever its words, and so is mail from the person a
+    waiting row waits on: their answer is how that row ends. Archived
+    mail counts as inbound, since the user often archives the answer the
+    row waited for. A row closed since this one was made, in the same
+    thread or with the same correspondent, comes with its notes: that is
+    where the answer's facts were written down."""
     lines: list[str] = []
+    # (rank, line): a closed row's notes, then the row's own thread, then
+    # the waited-on person's mail on the topic, then the rest of theirs
+    strong: list[tuple[int, str]] = []
     distinct = _distinctive(entry, df or {})
     entry_date = cs._entry_iso(entry)
     own_addr = (entry.get("from_email") or "").strip().lower()
+    conv = entry.get("conversation_id") or ""
+    waiting = ledger_mod.is_waiting(entry)
     named = _named_people_of(entry)
     text = f"{entry.get('description') or ''} {(entry.get('notes') or '')[:400]}"
     rsvp_shaped = bool(cs._RSVP_SHAPE_RE.search(text))
@@ -292,25 +307,53 @@ def evidence_for(entry: dict, *, inbox: list, sent: list, events: list,
             if rsvp_shaped and len(title) >= 8 and f" {title} " in f" {text_loose} ":
                 lines.append(f"sent {ts}: subject={subject[:80]!r} (the invite this row names)")
             continue
+        to = ", ".join(sorted(a for a in addrs if a != _addr(m.get("from") or {})))[:90]
+        if conv and m.get("conversationId") == conv:
+            strong.append((1, f"sent {ts}: in this row's thread, subject={subject[:80]!r} to={to}"))
+            continue
         if cs._is_auto_generated_subject(subject):
             continue
         hits = overlap_ok(subject, addrs, names)
         if hits:
-            to = ", ".join(sorted(a for a in addrs if a != _addr(m.get("from") or {})))[:90]
             lines.append(f"sent {ts}: subject={subject[:80]!r} to={to} overlap={sorted(hits)[:4]}")
 
-    for m in (inbox or [])[:300]:
+    mail = [("inbox", m) for m in (inbox or [])[:300]] + \
+           [("archived", m) for m in (archive or [])[:300]]
+    for where, m in mail:
         ts = m.get("receivedDateTime") or ""
         if entry_date and ts and ts < entry_date:
             continue
         subject = (m.get("subject") or "").strip()
+        frm = _addr(m.get("from") or {})
+        if conv and m.get("conversationId") == conv:
+            strong.append((1, f"{where} {ts}: in this row's thread, subject={subject[:80]!r} from={frm}"))
+            continue
+        if waiting and own_addr and frm == own_addr:
+            on_topic = bool(distinct & cs._extract_content_tokens(subject))
+            strong.append((2 if on_topic else 3, f"{where} {ts}: from the person this row "
+                                                 f"waits on, subject={subject[:80]!r}"))
+            continue
         if cs._is_auto_generated_subject(subject):
             continue
         addrs, names = _people_on(m)
         hits = overlap_ok(subject, addrs, names)
         if hits:
-            frm = _addr(m.get("from") or {})
-            lines.append(f"inbox {ts}: subject={subject[:80]!r} from={frm} overlap={sorted(hits)[:4]}")
+            lines.append(f"{where} {ts}: subject={subject[:80]!r} from={frm} overlap={sorted(hits)[:4]}")
+
+    eid = entry.get("id") or ""
+    for r in closed_rows or []:
+        closed_at = r.get("closed_at") or ""
+        if r.get("id") == eid or not closed_at or (entry_date and closed_at < entry_date):
+            continue
+        same_thread = bool(conv) and r.get("conversation_id") == conv
+        same_person = bool(own_addr) and (r.get("from_email") or "").lower() == own_addr
+        if not (same_thread or same_person):
+            continue
+        notes = " ".join((r.get("notes") or "").split())[:240]
+        strong.append((0, f"closed row {closed_at[:16]}: {r.get('id')} "
+                          f"{(r.get('description') or '')[:80]!r}"
+                          + (" (same thread)" if same_thread else " (same correspondent)")
+                          + (f" notes={notes!r}" if notes else "")))
 
     for ev in (events or [])[:200]:
         subject = ev.get("subject") or ""
@@ -331,10 +374,10 @@ def evidence_for(entry: dict, *, inbox: list, sent: list, events: list,
                 row = by_id.get(sid) or {}
                 lines.append(f"closed row {ts}: {sid} "
                              f"{(row.get('description') or '')[:70]!r} (same id {k})")
-    # dedupe, keep order, cap
+    # dedupe, keep order (the row's own thread and person first), cap
     seen: set[str] = set()
     out: list[str] = []
-    for ln in lines:
+    for ln in [ln for _rank, ln in sorted(strong, key=lambda x: x[0])] + lines:
         if ln in seen:
             continue
         seen.add(ln)
@@ -347,7 +390,8 @@ def evidence_for(entry: dict, *, inbox: list, sent: list, events: list,
 # ── the question ──────────────────────────────────────────────────────
 
 def build_prompt(agent: str, claims: list[dict]) -> str:
-    """One short prompt. Only rows with evidence are listed."""
+    """One short prompt: the rows the post shows, and the other rows it
+    names that have evidence."""
     lines = [
         f"You are the pre-send check for the EA's {agent}. A draft message is "
         "about to be posted. It presents the ledger items below as OPEN. "
@@ -358,6 +402,11 @@ def build_prompt(agent: str, claims: list[dict]) -> str:
         "discharged: the user replied to that person about that topic, accepted "
         "or declined that invite, sent that deliverable, or every reminder about "
         "it was closed.",
+        "- A 'waiting' row waits on someone else. It is done when that person "
+        "answered with what the row waits for: their mail after the row, or a "
+        "closed row whose notes record their answer.",
+        "- The row's own last action and notes are evidence too: they can say the "
+        "deliverable went out.",
         "- A related thread, a meeting about the topic, or a matching name is NOT "
         "completion. When the evidence is ambiguous, answer 'unsure'.",
         "- Use only the evidence listed. Do not invent evidence. You have no tools.",
@@ -370,12 +419,19 @@ def build_prompt(agent: str, claims: list[dict]) -> str:
                      f"created: {(e.get('date_identified') or '')[:10]} | "
                      f"deadline: {e.get('deadline') or '-'}")
         lines.append(f"    claim: {(e.get('description') or '')[:300]}")
+        if e.get("from_email"):
+            lines.append(f"    correspondent: {e['from_email']}")
         la = " ".join((e.get("last_action") or "").split())
         if la:
             lines.append(f"    last action: {la[:220]}")
+        notes = " ".join((e.get("notes") or "").split())
+        if notes:
+            lines.append(f"    notes: {notes[:300]}")
         lines.append("    evidence:")
         for ev in c.get("evidence") or []:
             lines.append(f"      - {ev}")
+        if not c.get("evidence"):
+            lines.append("      - (no mail, calendar or closed-row evidence)")
     lines += [
         "",
         "Answer with ONE JSON object and nothing else:",
@@ -424,17 +480,79 @@ def parse_verdicts(text: str) -> list[dict]:
 
 # ── prepare ───────────────────────────────────────────────────────────
 
+def _rendered_claims(rendered: list[str], open_entries: list[dict], found: list[dict],
+                     now: datetime | None) -> list[dict]:
+    """Claims for the rows a renderer says its post shows, by id. A row
+    the text guess already found keeps its entry; a parked row stays with
+    the parked claims; a row the user confirmed open this week is not
+    asked again."""
+    now = now or datetime.now(timezone.utc)
+    by_id = {e.get("id"): e for e in open_entries if e.get("id")}
+    parked = {c["id"] for c in found if c.get("parked_until")}
+    out: list[dict] = []
+    for rid in dict.fromkeys(r for r in rendered if r):
+        e = by_id.get(rid)
+        if e is None or rid in parked or _recently_confirmed_open(e, now):
+            continue
+        out.append({"id": rid, "why_mentioned": "rendered", "entry": e})
+    return out[:MAX_RENDERED]
+
+
+def _fetch_archive(days: int = 14) -> tuple[list, str]:
+    """The Archive folder's recent mail: the user archives the answer a
+    row waited for, so the inbox alone hides it."""
+    try:
+        import graph_client as graph
+        return graph.get_messages("archive", days_back=days), "graph_client"
+    except Exception as e:
+        direct = f"{type(e).__name__}"
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    payload, err = lmc._graph_cli_json("list-mail", "--folder", "archive",
+                                       "--top", "200", "--since", since)
+    if err:
+        return [], f"unavailable ({direct}; {err})"
+    return lmc._normalize_cli_messages(payload), "CLI"
+
+
+def without_kept(msgs: list) -> list:
+    """`msgs` less the mail kept from Anthropic (mail_privacy's keep
+    list): the verdict may run on Claude. Fails closed: when the gate
+    cannot say, no mail goes."""
+    if not msgs:
+        return []
+    try:
+        import mail_privacy
+        import remote_llm
+        rows, _refusal = mail_privacy._prune_kept(list(msgs), mail_privacy.load_index(),
+                                                  remote_llm.config())
+        return [m for m in rows if isinstance(m, dict) and not m.get("_note")]
+    except Exception as e:
+        print(f"open_claims_audit: kept-mail filter failed, no mail evidence: {str(e)[:120]}",
+              file=sys.stderr)
+        return []
+
+
 def prepare(*, agent: str, post: str, briefing: dict | None,
             open_entries: list[dict] | None = None,
             inbox: list | None = None, sent: list | None = None,
             events: list | None = None, closed_rows: list[dict] | None = None,
-            no_fetch: bool = False, now: datetime | None = None) -> dict:
+            no_fetch: bool = False, now: datetime | None = None,
+            rendered: list[str] | None = None, archive: list | None = None,
+            claude_safe: bool = False) -> dict:
     """The audit record before the question is asked. Injectable inputs
-    keep the tests off Graph; the CLI fetches what is not given."""
+    keep the tests off Graph; the CLI fetches what is not given.
+
+    `rendered` is the ledger ids a renderer knows its post shows (the
+    remote briefing renders from refs, so it does not have to guess from
+    words). Each is asked whether or not mail evidence turned up: its own
+    notes and last action can say it is done. `claude_safe` drops kept
+    mail from the evidence before the prompt is written."""
     open_entries = open_entries if open_entries is not None else ledger_mod.get_open_entries()
     today_top = (briefing or {}).get("today_top") or []
     found = extract_claims(post, open_entries, today_top, now=now)
-    claims = [c for c in found if not c.get("parked_until")]
+    shown = _rendered_claims(rendered or [], open_entries, found, now)
+    shown_ids = {c["id"] for c in shown}
+    claims = shown + [c for c in found if not c.get("parked_until") and c["id"] not in shown_ids]
     record = {
         "ts": _now_iso(), "agent": agent, "post_chars": len(post or ""),
         "open_rows": len(open_entries), "claims": [], "asked": 0,
@@ -453,6 +571,14 @@ def prepare(*, agent: str, post: str, briefing: dict | None,
         else:
             inbox, sent, events, status = lmc._fetch_evidence()
             record["fetch"] = status.get("route", "")
+    if archive is None:
+        if no_fetch:
+            archive = []
+        else:
+            archive, route = _fetch_archive()
+            record["fetch_archive"] = route
+    if claude_safe:
+        inbox, sent, archive = without_kept(inbox), without_kept(sent), without_kept(archive)
     if closed_rows is None:
         try:
             closed_rows = ledger_mod.get_closed_entries_brief()
@@ -464,12 +590,12 @@ def prepare(*, agent: str, post: str, briefing: dict | None,
     for c in claims:
         ev = evidence_for(c["entry"], inbox=inbox or [], sent=sent or [],
                           events=events or [], closed_index=closed_index,
-                          closed_rows=closed_rows, df=df)
+                          closed_rows=closed_rows, df=df, archive=archive or [])
         c["evidence"] = ev
         record["claims"].append({"id": c["id"], "why_mentioned": c["why_mentioned"],
                                  "evidence": ev,
                                  "description": (c["entry"].get("description") or "")[:160]})
-        if ev:
+        if ev or c["why_mentioned"] == "rendered":
             asked.append(c)
     record["asked"] = len(asked)
     if asked:

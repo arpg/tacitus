@@ -31,8 +31,11 @@ a morning queue whose top three items were already done):
    finds every open ledger row the draft presents as open and gathers
    contrary evidence (the user's sent mail with that person on that
    topic, a decline of that invite, closed rows carrying the same
-   manuscript or proposal id). Only rows WITH evidence go to a short,
-   tool-less second Claude call: open, done or unsure, per item. Rows
+   manuscript or proposal id; mail in the row's own thread; archived
+   mail from the person a waiting row waits on; rows closed since with
+   the same thread or correspondent, with their notes). Rows WITH
+   evidence, and in the remote briefing every row the post shows, go to
+   a short, tool-less second Claude call: open, done or unsure, per item. Rows
    judged done get a close proposal (they stay open until the user
    confirms on the card), are logged to the missed-closure backlog with
    source `pre-send-audit`, and the agent rewrites its draft once with a

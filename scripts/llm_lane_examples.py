@@ -439,7 +439,7 @@ def _briefings() -> tuple[str, str]:
                         now=when, chat=model(morning_plan),
                         drafter=lambda c, says, run_id: {"ok": True, "draft_id": "draft-1"},
                         queue=lambda items, agent, now: len(items),
-                        audit=lambda agent, text, b, dry_run, chat: {
+                        audit=lambda agent, text, b, dry_run, chat, rendered=None: {
                             "closed": ["row-nsf"], "parked": [], "unsure_rows": [],
                             "closed_rows": [{"id": "row-nsf", "why": "submitted Friday in Research.gov",
                                              "description": "NSF annual report"}]})

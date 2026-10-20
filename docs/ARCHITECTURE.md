@@ -375,7 +375,8 @@ the afternoon update: code numbers the candidates, one remote call picks
 them by ref, code applies the rails (an afternoon pick the sent folder or
 the EA channel already shows the user on leaves "since this morning" for
 an "Already in motion" line), drafts through the writer and renders
-the post, and the open-claims audit runs with remote verdicts. Items the
+the post, and the open-claims audit asks Claude about every row the post
+shows (remote verdicts when Claude fails). Items the
 remote model cannot handle go to a queue the bot drains each tick
 (`_remote_escalation_tick`): the pending hand-offs (up to two, the rest
 next tick) share one EA topic and one Claude session, which reads each
@@ -2374,7 +2375,12 @@ the scrubber's own standard (two row words in a subject, or one when the
 mail is with the row's correspondent by address or spelled-out name; a
 meeting response only when an RSVP-shaped row quotes the invite; closed
 rows sharing a manuscript/proposal id), and asks a tool-less sonnet call
-for a verdict on the rows that have evidence. `done` rows get a close
+for a verdict on the rows that have evidence. The remote briefing passes
+the rows it renders by id: each is asked with or without mail evidence,
+and its evidence adds mail in the row's own thread, archived mail from
+the person a waiting row waits on, and rows closed since with the same
+thread or correspondent, notes included. Kept mail is removed before a
+Claude verdict. `done` rows get a close
 proposal (`ledger.py propose`; they stay open for the user's confirm) and
 are logged to the missed-closure backlog (source `pre-send-audit`); the
 agent then rewrites its draft once with a `PRE-SEND AUDIT RESULT` note. Open is not the whole test: a row the draft

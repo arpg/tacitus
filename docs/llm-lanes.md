@@ -73,6 +73,7 @@ switched.
 | `drafting` | `off` `ab` `remote` | `remote` | `email_writer.py` writes every email body. The `email-author` subagent writes only on a fallback and for letters. Edits at Send are recorded. |
 | `digests` | `off` `remote` | `remote` | The list digest and the admissions digest are judged by the remote model and post to `mail-digest`. |
 | `briefings` | `off` `remote` | `remote` | The morning briefing (04:00) and the afternoon update (15:00) are written by the remote model, with drafts and hand-offs to Claude. |
+| `briefing_audit` | `claude` `remote` | `claude` | The briefings' pre-send check: Claude decides whether each item the post shows is still open, from evidence with kept mail removed. The remote model answers when the Claude run fails. `remote` puts the verdict back on the remote model. |
 | `audits` | `off` `remote` | `off` | `remote`: the Sunday audit is written by the remote model (remote_audit.py), with flagged items handed to one Claude session. `off`: the Claude lane on skills/weekly-audit.md. |
 | `scheduling` | `off` `shadow` `enforce` | `shadow` | The remote scheduling agent runs beside Claude and only records. It stops after `shadow_until` (2026-11-02). `enforce` makes it answer the scheduling channel and the proactive scheduler itself, with Claude as the fallback (section 2.11). |
 | `keep_from_anthropic` | domains, addresses, `admissions` | `mil` and the domains the owner lists, plus the domains enabled plugins add; admissions on | Mail that never reaches Claude in bulk. It never limits the remote model. |
@@ -571,9 +572,17 @@ line; it never falls back to a Claude run.
   numbered, under a limit of 600 s per item up to 1200 s; that session
   reads each item's thread and reports one line per item. A single hand-off gets the
   prompt below. An item with no thread becomes a decision instead.
-- **The pre-send audit** runs as before, with the remote model giving the
-  verdicts: rows it closes or parks leave the post, and code renders the
-  post again.
+- **The pre-send audit** asks about every ledger row the post shows, by
+  ref, plus rows its words name that have evidence. The evidence covers
+  the row's own thread, archived mail from the person a waiting row waits
+  on, and rows closed since with the same thread or correspondent, with
+  their notes. Kept mail is removed first, and one tool-less Claude call
+  gives the verdicts (`briefing_audit`); the remote model answers when
+  Claude fails. Rows it closes or parks leave the post, and code renders
+  the post again.
+- **One mention per item.** A do-list item does not repeat in the date
+  banner, "Needs you" or "Sent to Claude"; the banner names only due
+  items no other section shows.
 - **The afternoon update** picks what is new since the morning and what is
   still pending. It drafts and hands off nothing. Code checks the picks
   against the sent folder and the channel before they post: an item whose
@@ -593,7 +602,6 @@ one-click confirm (closure.py):
 <!-- example: briefing-morning -->
 ```text
 :sunny: *Morning Briefing, Mon Oct 12*
-:alarm_clock: DUE SOON: *Slides for Thursday's review* (Pat Rivera), Wed Oct 14
 
 :dart: *Get done today* (in this order, fitted to your gaps)
 1. *Slides for Thursday's review* (Pat Rivera): in the 1-2:30 gap. Pat merges the deck Wednesday
@@ -1656,7 +1664,7 @@ Each row is independent. Turning back needs no code change and no restart.
 | `preprocessor/draft_ab.py` | The drafting modes, the writer match and the send measure |
 | `preprocessor/remote_digests.py` | The list and admissions digests |
 | `preprocessor/mail_tagger.py` | `ask_remote` in enforce |
-| `preprocessor/remote_briefing.py` | The briefings: candidates, the plan check, the rails, drafts, hand-offs, the render, the audit with remote verdicts |
+| `preprocessor/remote_briefing.py` | The briefings: candidates, the plan check, the rails, drafts, hand-offs, the render, the audit with Claude verdicts |
 | `run-agent.sh` | The branch to `remote_briefing.py` for the two briefings; the Claude call, its retry and the Sonnet audit run only when it exits 3 |
 | `ea-chat-bot.py` | `_remote_escalation_tick` (one topic per briefing's hand-offs, the brief in its prompt), `_used_scheduling_tools` (the shadow's trigger), `_remote_scheduling_live` (the live branch in `handle_message_async`) |
 | `CLAUDE.md`, `CLAUDE-scheduling.md`, `skills/morning-briefing.md`, `docs/ea/drafting-voice.md`, `docs/ea/briefing-data.md` | The lane instructions: the writer first, the subagent on a fallback; no email text in the JSON |

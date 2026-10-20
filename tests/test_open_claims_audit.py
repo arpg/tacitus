@@ -640,6 +640,81 @@ invoke_claude() {
     assert _status(db, "show-tickets-nov4")[0] == "open"
 
 
+
+# ── rows the post shows, and the answer a waiting row waits for ───────
+
+WAIT = _entry("waiting-rook-funding", "waiting",
+              "Waiting on Rook Palmer: likelihood the mooring funding comes through",
+              "2026-09-01T16:39:00Z", from_email="rook.palmer17@example.edu",
+              deadline="2026-09-03")
+
+
+def _inbound(subject, frm, ts, conv=""):
+    return {"id": f"in-{ts}", "subject": subject, "receivedDateTime": ts,
+            "conversationId": conv,
+            "from": {"emailAddress": {"name": "", "address": frm}},
+            "toRecipients": [{"emailAddress": {"address": "wren.fairbanks84@example.edu"}}]}
+
+
+def test_a_waiting_row_sees_the_archived_answer_and_the_closed_row_that_recorded_it():
+    """The answer a waiting row waits on arrives, the user reads it and
+    archives it, and its reply row closes on the archive. Neither the
+    inbox nor the row's words show that; the archive and the closed
+    row's notes do."""
+    archived = [_inbound("Re: Spring student for the mooring", "rook.palmer17@example.edu",
+                         "2026-09-01T17:46:00Z", conv="conv-mooring")]
+    closed = [{"id": "response-mooring", "type": "response_needed",
+               "description": "Needs response: Re: Spring student for the mooring",
+               "notes": "Rook rated the funding better than 90% and agreed with the plan.",
+               "last_action": "Auto-closed: email archived from inbox by user.",
+               "conversation_id": "conv-mooring", "created_at": "2026-09-01T17:50:00Z",
+               "closed_at": "2026-09-01T18:00:00Z", "from_email": "rook.palmer17@example.edu"}]
+    ev = oca.evidence_for(WAIT, inbox=[], sent=[], events=[], archive=archived,
+                          closed_rows=closed, df={})
+    assert any(e.startswith("archived 2026-09-01T17:46:00Z: from the person this row waits on")
+               for e in ev), ev
+    assert any("closed row" in e and "same correspondent" in e and "better than 90%" in e
+               for e in ev), ev
+    # another person's mail is not the answer
+    other = [_inbound("Re: Spring student", "sky.ito@example.edu", "2026-09-01T17:46:00Z")]
+    assert oca.evidence_for(WAIT, inbox=other, sent=[], events=[], df={}) == []
+
+
+def test_mail_in_the_rows_own_thread_is_evidence_whatever_its_words():
+    row = dict(DOE, date_identified="2026-08-20T16:30:02Z")
+    sent = [dict(_sent("RE: Final reminder", ["office@example.edu"], "2026-08-21T10:00:00Z"),
+                 conversationId="conv-doe")]
+    ev = oca.evidence_for(row, inbox=[], sent=sent, events=[], df={})
+    assert ev and ev[0].startswith("sent 2026-08-21T10:00:00Z: in this row's thread"), ev
+
+
+def test_every_row_the_post_shows_is_asked_even_without_evidence():
+    """The renderer names its rows; words are not guessed for them, the
+    cap for guessed rows does not cut them, and a row with no mail
+    evidence is still asked: its own notes can say it is done."""
+    rec = oca.prepare(agent="morning-briefing", post="nothing that names a row",
+                      briefing={"today_top": []}, open_entries=OPEN + [WAIT],
+                      inbox=[], sent=[], events=[], archive=[], closed_rows=[],
+                      rendered=["waiting-rook-funding", "no-such-row", "spring-sym-20-participants"],
+                      now=NOW)
+    assert [c["id"] for c in rec["claims"]] == ["waiting-rook-funding"]   # confirmed-open skipped
+    assert rec["claims"][0]["why_mentioned"] == "rendered"
+    assert rec["asked"] == 1
+    assert "(no mail, calendar or closed-row evidence)" in rec["prompt"]
+    assert "A 'waiting' row waits on someone else" in rec["prompt"]
+    assert "correspondent: rook.palmer17@example.edu" in rec["prompt"]
+
+
+def test_kept_mail_filter_fails_closed():
+    import mail_privacy
+    saved = mail_privacy.load_index
+    mail_privacy.load_index = lambda: (_ for _ in ()).throw(OSError("no index"))
+    try:
+        assert oca.without_kept([_inbound("x", "a@example.edu", "2026-09-01T00:00:00Z")]) == []
+    finally:
+        mail_privacy.load_index = saved
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0

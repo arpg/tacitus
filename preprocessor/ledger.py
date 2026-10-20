@@ -1682,7 +1682,7 @@ def get_closed_entries_brief(db_path: Path | None = None,
                              since: str | None = None) -> list[dict]:
     """Completed/closed rows with the fields a closure signal needs to
     judge them: id, type, description, notes (first 400 chars),
-    last_action, conversation_id, created_at, closed_at.
+    last_action, conversation_id, created_at, closed_at, from_email.
 
     closure_scrubber's identifier-sibling signal reads these: a hand-made
     row that names manuscript or proposal ids closes once every row that
@@ -1700,7 +1700,8 @@ def get_closed_entries_brief(db_path: Path | None = None,
     rows = conn.execute(f"""
         SELECT id, type, description, substr(COALESCE(notes, ''), 1, 400),
                COALESCE(last_action, ''), COALESCE(conversation_id, ''),
-               COALESCE(created_at, ''), COALESCE(closed_at, updated_at, '')
+               COALESCE(created_at, ''), COALESCE(closed_at, updated_at, ''),
+               lower(COALESCE(from_email, ''))
         FROM ledger
         WHERE status IN ('completed', 'closed'){src_sql}{since_sql}
     """, params).fetchall()
@@ -1708,7 +1709,7 @@ def get_closed_entries_brief(db_path: Path | None = None,
     return [{
         "id": r[0], "type": r[1] or "", "description": r[2] or "",
         "notes": r[3] or "", "last_action": r[4], "conversation_id": r[5],
-        "created_at": r[6], "closed_at": r[7],
+        "created_at": r[6], "closed_at": r[7], "from_email": r[8],
     } for r in rows]
 
 

@@ -33,9 +33,10 @@ The morning run:
      records the draft for the send measure.
   5. Escalations go to the bot's queue (ESCALATIONS). The bot opens one EA
      topic for a briefing's items, and one Claude session reads their threads.
-  6. Code renders the post in the skill's shape. The open-claims audit
-     runs with the remote model's verdicts; rows it closes or parks leave
-     the post, and the post is rendered again.
+  6. Code renders the post in the skill's shape, naming each item once.
+     The open-claims audit asks about every ledger row the post shows,
+     with Claude's verdicts (the remote model's when Claude fails); rows
+     it closes or parks leave the post, and the post is rendered again.
 The afternoon run picks what is new since the morning and what is still
 pending; it drafts and escalates nothing. When the remote model cannot
 answer, code renders the ranked queue alone and the post says so.
@@ -583,17 +584,42 @@ def _line_of(c: dict) -> str:
     return f"*{_clean(c.get('title'), 120)}*{who}"
 
 
-def _soon(cands: dict[str, dict], today: date, skip: set[str]) -> list[str]:
+def _soon_refs(cands: dict[str, dict], today: date, skip: set[str]) -> list[str]:
     out = []
     for r, c in cands.items():
         d = _date(c.get("due"))
-        if not d or r in skip:
-            continue
+        if d and r not in skip and (d < today or (d - today).days <= SOON_DAYS):
+            out.append(r)
+    return out[:6]
+
+
+def _soon(cands: dict[str, dict], today: date, skip: set[str]) -> list[str]:
+    out = []
+    for r in _soon_refs(cands, today, skip):
+        c = cands[r]
+        d = _date(c.get("due"))
         if d < today:
             out.append(f":red_circle: OVERDUE: {_line_of(c)}, was due {d:%a %b} {d.day}")
-        elif (d - today).days <= SOON_DAYS:
+        else:
             out.append(f":alarm_clock: DUE SOON: {_line_of(c)}, {d:%a %b} {d.day}")
-    return out[:6]
+    return out
+
+
+def shown_refs(cands: dict[str, dict], plan: dict, drafts: list[dict], escalated: list[dict],
+               *, now: datetime, morning: bool) -> list[str]:
+    """Every ref the post shows: the pre-send audit asks about each."""
+    today = now.astimezone().date()
+    if morning:
+        listed = [p["ref"] for k in ("get_done_today", "flexes", "needs_you")
+                  for p in plan.get(k) or []]
+        listed += [d["ref"] for d in drafts] + [e["ref"] for e in escalated]
+        listed += _soon_refs(cands, today, set(listed))
+    else:
+        listed = [p["ref"] for k in ("since_morning", "in_motion", "pending")
+                  for p in plan.get(k) or []]
+        tomorrow = today + timedelta(days=1)
+        listed += [r for r, c in cands.items() if _date(c.get("due")) == tomorrow]
+    return [r for r in dict.fromkeys(listed) if r in cands]
 
 
 def _looks_done(b: dict, audit: dict) -> list[str]:
@@ -666,10 +692,20 @@ def render_morning(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime
         out.append(f":warning: Calendar source {_clean(acct, 60)} failed to load; free time below may be wrong.")
     if fallback:
         out.append(f":warning: {fallback}")
-    out += _soon(cands, today, skip)
+    # One mention per item: the do-list wins, and the date banner names
+    # only what no other section shows.
+    top = [p for p in plan.get("get_done_today") or [] if p["ref"] not in skip]
+    on_list = {p["ref"] for p in top}
+    flex = [p for p in plan.get("flexes") or [] if p["ref"] not in skip | on_list]
+    needs = [p for p in plan.get("needs_you") or [] if p["ref"] not in skip]
+    needs += [{"ref": d["ref"], "decision": d["decision"]} for d in drafts if not d.get("ok")]
+    needs = [p for p in needs if p["ref"] not in on_list]
+    escalated = [e for e in escalated if e["ref"] not in on_list]
+    elsewhere = on_list | {p["ref"] for p in flex} | {p["ref"] for p in needs} \
+        | {e["ref"] for e in escalated}
+    out += _soon(cands, today, skip | elsewhere)
     out.append("")
     out.append(":dart: *Get done today* (in this order, fitted to your gaps)")
-    top = [p for p in plan.get("get_done_today") or [] if p["ref"] not in skip]
     if top:
         for i, p in enumerate(top, 1):
             when = f": {_clean(p.get('when'), 60)}" if p.get("when") else ""
@@ -677,7 +713,6 @@ def render_morning(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime
             out.append(f"{i}. {_line_of(cands[p['ref']])}{when}{why}{mark(p['ref'])}")
     else:
         out.append("Nothing is pressing today.")
-    flex = [p for p in plan.get("flexes") or [] if p["ref"] not in skip]
     if flex:
         out += ["", ":leaves: *Flexes* (fine today, fine tomorrow)"]
         out += [f"- {_line_of(cands[p['ref']])}: {_clean(p.get('line'), 140)}{mark(p['ref'])}"
@@ -705,8 +740,6 @@ def render_morning(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime
         out += [f"- {_line_of(cands[d['ref']])}: "
                 + (f"thanks only; they ask: {_clean(cands[d['ref']].get('ask'), 140)}" if d.get("ack")
                    else _clean(d.get('says'), 140)) for d in ok]
-    needs = [p for p in plan.get("needs_you") or [] if p["ref"] not in skip]
-    needs += [{"ref": d["ref"], "decision": d["decision"]} for d in drafts if not d.get("ok")]
     if needs:
         out += ["", f":question: *Needs you* ({len(needs)})"]
         out += [f"- {_line_of(cands[p['ref']])}: {_clean(p.get('decision'), 160)}" for p in needs]
@@ -790,23 +823,70 @@ def fallback_plan(b: dict, cands: dict[str, dict], *, morning: bool) -> dict:
 
 AUDIT_SYSTEM = ("You check a professor's assistant's briefing. For each item, decide from the "
                 "evidence whether it is still open. Answer exactly in the format the request asks.")
+AUDIT_MODEL = "opus"
 
 
-def audit_post(agent: str, text: str, b: dict, *, dry_run: bool, chat=None) -> dict:
-    """open_claims_audit with the remote model's verdicts. Returns
-    {closed, closed_rows, unsure_rows, parked, asked}; {} on any failure,
-    which leaves the post as it is."""
+def audit_judge(cfg: dict | None = None) -> str:
+    """Who gives the verdicts: "claude" unless remote-llm.json says
+    `"briefing_audit": "remote"`. Whether an item is still open is a
+    judgment, so it stays with Claude; kept mail never reaches the prompt
+    (open_claims_audit.without_kept)."""
+    cfg = cfg if cfg is not None else remote_llm.config()
+    return "remote" if cfg.get("briefing_audit") == "remote" else "claude"
+
+
+def _claude_verdicts(prompt: str) -> str:
+    """One tool-less Claude run as the resident; its answer text."""
+    import ea_config
+    import mail_privacy
+    model = ea_config.get_models().get("briefing_audit") or AUDIT_MODEL
+    r = mail_privacy._run_claude(f"{AUDIT_SYSTEM}\n\n{prompt}", model, "")
+    if r.get("rc") or not r.get("text"):
+        raise RuntimeError(f"claude rc={r.get('rc')}: {(r.get('stderr') or '')[-160:]}")
+    return str(r["text"])
+
+
+def _remote_verdicts(prompt: str, chat=None) -> str:
+    r = (chat or remote_llm.chat)([{"role": "system", "content": AUDIT_SYSTEM},
+                                   {"role": "user", "content": prompt}],
+                                  purpose="briefing-audit", max_tokens=2000)
+    return r.get("content") or ""
+
+
+def shown_rows(cands: dict[str, dict], refs) -> list[str]:
+    """The ledger ids behind the refs a post shows, in order."""
+    return list(dict.fromkeys(cands[r]["ledger_id"] for r in refs
+                              if r in cands and cands[r].get("ledger_id")))
+
+
+def audit_post(agent: str, text: str, b: dict, *, dry_run: bool, chat=None,
+               rendered: list[str] | None = None, judge=None) -> dict:
+    """open_claims_audit on the post: every row in `rendered` (the rows
+    the post shows) and every other row its words name with evidence.
+    Claude gives the verdicts (audit_judge); the remote model answers
+    when Claude cannot. Returns {closed, closed_rows, unsure_rows,
+    parked, asked, judge}; {} on any failure, which leaves the post as
+    it is."""
     try:
         import open_claims_audit as oca
-        rec = oca.prepare(agent=agent, post=text, briefing=b)
+        who = audit_judge()
+        rec = oca.prepare(agent=agent, post=text, briefing=b, rendered=rendered,
+                          claude_safe=(who == "claude"))
         out = {"asked": rec.get("asked", 0), "parked": [p["id"] for p in rec.get("parked") or []],
-               "closed": [], "closed_rows": [], "unsure_rows": []}
+               "closed": [], "closed_rows": [], "unsure_rows": [], "judge": who}
         if not rec.get("asked") or dry_run:
             return out
-        r = (chat or remote_llm.chat)([{"role": "system", "content": AUDIT_SYSTEM},
-                                       {"role": "user", "content": rec["prompt"]}],
-                                      purpose="briefing-audit", max_tokens=2000)
-        verdicts = oca.parse_verdicts(r.get("content") or "")
+        answer = ""
+        if who == "claude":
+            try:
+                answer = (judge or _claude_verdicts)(rec["prompt"])
+            except Exception as e:
+                print(f"remote_briefing: Claude audit failed, the remote model answers: "
+                      f"{str(e)[:160]}", file=sys.stderr)
+                out["judge"] = "remote (Claude failed)"
+        if not answer:
+            answer = _remote_verdicts(rec["prompt"], chat)
+        verdicts = oca.parse_verdicts(answer)
         summary = oca.apply(audit=rec, verdicts=verdicts)
         why = {v["id"]: v.get("why", "") for v in verdicts}
         out["closed"] = summary.get("closed") or []
@@ -904,7 +984,9 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
              (lambda a: render_afternoon(briefing, cands, plan, now=now, audit=a, stale=stale,
                                          fallback=fallback))
     text = render(None)
-    checked = (audit or audit_post)(agent, text, briefing, dry_run=dry_run, chat=None)
+    shown = shown_refs(cands, plan, drafts, escalated, now=now, morning=morning)
+    checked = (audit or audit_post)(agent, text, briefing, dry_run=dry_run, chat=None,
+                                    rendered=shown_rows(cands, shown))
     if checked and (checked.get("closed") or checked.get("parked") or checked.get("unsure_rows")):
         text = render(checked)
     rec.update(plan={k: len(v) for k, v in plan.items()},
