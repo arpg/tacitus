@@ -838,6 +838,53 @@ def check_auth(ea_dir: Path):
                                    "SETUP.md 'The deferred-send signing key'")
 
 
+GRAPH_AUTH_METHODS = ("", "confidential", "device_code", "interactive")
+OUTLOOK_WEB_PLUGIN = "https://github.com/arpg/tacitus-plugin-outlook-web-auth"
+OUTLOOK_WEB_FIX = (f"install the owner plugin outlook-web-auth ({OUTLOOK_WEB_PLUGIN}, README "
+                   "'Moving from the core's copy'), or move to an app registration "
+                   "(docs/AUTHENTICATION.md, Option A or B)")
+
+
+def _owner_crontab() -> str:
+    try:
+        r = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=20)
+    except Exception:
+        return ""
+    return r.stdout if r.returncode == 0 else ""
+
+
+def check_outlook_web_path(env: dict, *, cron_text: str | None = None,
+                           sources: list[str] | None = None):
+    """An install set up for the Outlook web token path the core carried
+    before v0.1.0: GRAPH_AUTH_METHOD=playwright, or a crontab line that
+    runs the removed token_refresh.py. Without an owner plugin that
+    supplies a Graph token, Outlook access stops when the last harvested
+    token expires. Silent on an install with neither sign."""
+    method = (env.get("GRAPH_AUTH_METHOD") or "").strip().lower()
+    cron_text = _owner_crontab() if cron_text is None else cron_text
+    old_cron = any("token_refresh.py" in ln and not ln.lstrip().startswith("#")
+                   for ln in cron_text.splitlines())
+    if method not in GRAPH_AUTH_METHODS and method != "playwright":
+        warn("auth: GRAPH_AUTH_METHOD", f"{method!r} is not read",
+             "use confidential, device_code or interactive, or remove it (docs/AUTHENTICATION.md)")
+    if method != "playwright" and not old_cron:
+        return
+    sources = _graph_auth_sources() if sources is None else sources
+    if not sources:
+        signs = (["GRAPH_AUTH_METHOD=playwright"] if method == "playwright" else []) + \
+                (["a crontab line runs token_refresh.py"] if old_cron else [])
+        fail("auth: outlook web token path",
+             "; ".join(signs) + ": v0.1.0 moved this path to an owner plugin, and none supplies a Graph token",
+             OUTLOOK_WEB_FIX)
+    elif old_cron:
+        fail("auth: outlook web token path",
+             f"{', '.join(sources)} supplies the token, but a crontab line still runs the removed token_refresh.py",
+             "replace that line with the one `ea-plugin.py cron-lines` prints")
+    else:
+        ok("auth: outlook web token path",
+           f"{', '.join(sources)} supplies the token; GRAPH_AUTH_METHOD=playwright is no longer read")
+
+
 def check_slack(env: dict):
     tok = env.get("SLACK_BOT_TOKEN", "")
     if not tok:
@@ -1417,6 +1464,7 @@ def main() -> int:
             check_private(ea_dir)
         env = check_env(ea_dir)
         check_auth(ea_dir)
+        check_outlook_web_path(env)
         check_owner_trust(ea_dir)
         check_resident_trust(ea_dir)
         check_chat(env)

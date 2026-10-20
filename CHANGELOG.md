@@ -6,6 +6,15 @@ repository that preceded it.
 
 ## Unreleased
 
+- **An upgrade path for the Outlook web token path** (#16). The owner
+  plugin that v0.1.0 moved this path to is published:
+  [outlook-web-auth](https://github.com/arpg/tacitus-plugin-outlook-web-auth). INSTALL.md ("Upgrade") and
+  docs/AUTHENTICATION.md say how an install on `GRAPH_AUTH_METHOD=playwright`,
+  a pasted token or a `token_refresh.py` cron line moves to it. The
+  doctor fails `auth: outlook web token path` while such an install has
+  no owner plugin supplying a Graph token, or still runs the removed
+  `token_refresh.py` from cron, and warns on a `GRAPH_AUTH_METHOD` value
+  the core does not read.
 - **Briefings also post to project rooms.** After the open-claims audit,
   each item in the morning briefing or the afternoon update that belongs
   to a project with a room is posted in that room too, one message per

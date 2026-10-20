@@ -207,6 +207,14 @@ running code changed, and runs the tests and the prompt evals
 owner-private `~/.ea-private/evals.json`, skips them). The
 doctor then checks the result.
 
+**From the pre-release line (v1.2.0 and earlier) on the Outlook web
+token path** (`GRAPH_AUTH_METHOD=playwright`, a pasted token, or a cron
+line that runs `token_refresh.py`): v0.1.0 moved that path to the owner
+plugin [outlook-web-auth](https://github.com/arpg/tacitus-plugin-outlook-web-auth).
+Install it and replace the old cron line as its README says ("Moving from
+the core's copy"), or Outlook access stops when the current token
+expires. The doctor fails `auth: outlook web token path` until then.
+
 After a change to the config templates or the scheduled jobs, also run
 `./setup.sh --profile <name> --install-cron`. It adds new templates and
 keeps the files you have. In Docker: `git pull`, `docker compose build`,

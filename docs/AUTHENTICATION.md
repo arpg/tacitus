@@ -191,7 +191,7 @@ only without public client flows. The symptoms are the same everywhere:
 |---|---|
 | IT-provisioned app with a secret, public client flows off | **Option A** (confidential), no cron |
 | Tenant that allows a public-client app registration | **Option B** (MSAL interactive or device code), simpler |
-| Tenant that blocks app registrations entirely | An owner plugin's token source ([plugins.md](plugins.md)) |
+| Tenant that blocks app registrations entirely | An owner plugin's token source, such as [outlook-web-auth](https://github.com/arpg/tacitus-plugin-outlook-web-auth) |
 | Headless server with no display (not even xvfb) | Option A or B with one sign-in from a desktop, or an owner plugin's token source |
 
 The auth method is selected via `GRAPH_AUTH_METHOD` in `~/.ea/.env`
@@ -210,6 +210,22 @@ manifest order, after the MSAL cache and before any interactive sign-in.
 Only an owner process loads them, from the owner-private plugin
 directory, after the owner and integrity checks. A token with an `exp`
 claim is kept in the process until a minute before it expires.
+
+The published one is [outlook-web-auth](https://github.com/arpg/tacitus-plugin-outlook-web-auth): a pasted token, or a
+headless browser harvest every 30 minutes that reads the token Outlook on
+the web holds for your own session. Use it only where your organization's
+rules allow it. Its README has the install steps. To write your own,
+start from [tacitus-plugin-template](https://github.com/arpg/tacitus-plugin-template).
+
+**Upgrading from the pre-release line.** Before v0.1.0 the core carried
+this path itself (`GRAPH_AUTH_METHOD=playwright`, a pasted
+`manual_token.txt`, and an owner cron line running
+`preprocessor/token_refresh.py`). v0.1.0 removed it, so such an install
+loses Outlook access when its last token expires unless it installs
+outlook-web-auth (or moves to Option A or B) when it upgrades. The
+plugin's README, "Moving from the core's copy", lists the steps;
+`scripts/ea-doctor.py` fails `auth: outlook web token path` until they
+are done.
 
 ### REST API vs Graph API Compatibility
 
@@ -361,7 +377,7 @@ tenant, and tenants differ in what they allow. Three outcomes cover them:
 |---|---|
 | Registers a confidential client (secret, public client flows off) | Option A |
 | Registers a public client (public client flows on) | Option B |
-| Registers nothing for third parties | An owner plugin's token source ([plugins.md](plugins.md)) |
+| Registers nothing for third parties | An owner plugin's token source, such as [outlook-web-auth](https://github.com/arpg/tacitus-plugin-outlook-web-auth) |
 
 Every well-known Microsoft client ID fails in a tenant that has not
 consented to it, so none of them is a way around a registration:
