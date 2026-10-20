@@ -5,9 +5,34 @@ maintained on a best-effort basis.
 
 ## Reporting a problem
 
-Open an issue with the **Install or first-week feedback** form. It asks
-for the version, the OS, the profile, the step and the doctor's output.
-Replace real names, addresses and mail text with made-up values.
+- An install that never got going: the **Install or first-week
+  feedback** issue form.
+- Something that stopped working: the **Bug report** form, with the
+  output of `python3 scripts/ea-doctor.py --share`, which masks your
+  addresses, account names, hosts and ids.
+- A question: [Discussions > Q&A](https://github.com/arpg/tacitus/discussions/categories/q-a).
+- An idea: [Discussions > Ideas](https://github.com/arpg/tacitus/discussions/categories/ideas);
+  it becomes an issue when it has a design and someone to build it.
+- A vulnerability: a private security advisory ([SECURITY.md](SECURITY.md)).
+
+In every report, replace real names, addresses and mail text with
+made-up values. An issue labelled `needs-info` closes after three weeks
+without an answer; reopen it when you have the details.
+
+## What gets merged
+
+The maintainer's time goes, in this order, to the approval gates, the
+mediator and anything that moves data off the machine; to install
+failures on Linux and macOS; then to the rest. A pull request with
+tests, a clear mechanism and no new dependency is the fastest route for
+anything else.
+
+A capability for one person, one institution or one service (a form to
+file, a portal to read, a list to digest, an institution's letterhead)
+is a plugin, not a core change: [docs/plugins.md](docs/plugins.md). A
+core change that adds a dependency, a new lane that spends model tokens,
+or a change to the operating file `CLAUDE.md` needs an Ideas discussion
+first; the operating file is read on every turn of every install.
 
 ## Before you start
 

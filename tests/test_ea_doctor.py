@@ -284,6 +284,30 @@ def test_the_dashboard_loopback_fallback_is_a_warning():
     assert "EA_DASH_TOKEN" in got["fix"] and "set-secret.sh" in got["fix"]
 
 
+def test_share_masks_identities_and_keeps_the_report_shape():
+    """--share is what a user pastes into a public issue: addresses, the
+    account in a home path, URLs, hosts and long ids become placeholders;
+    check names, statuses and ea-bot's own paths stay."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ea_doctor", DOCTOR)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    text = ("[  ok  ] zulip: get_profile  (bot ea-bot@zulip.example id 9)\n"
+            "[ FAIL ] profile: name and email  (pat.lee@example.edu)\n"
+            "           fix: edit /home/patlee/.ea/config/user-profile.json\n"
+            "[  ok  ] deploy tree  (/home/ea-bot/ea-system at 903f647)\n"
+            "[ warn ] chat site  (https://eps.tail1234.ts.net:8443, host eps.tail1234.ts.net)\n"
+            "[  ok  ] calendar  (id 0123456789abcdef0123456789abcdef)\n")
+    masked = mod.share_mask(text)
+    for gone in ("pat.lee@example.edu", "ea-bot@zulip.example", "/home/patlee", "eps.tail1234",
+                 "0123456789abcdef0123456789abcdef", "https://"):
+        assert gone not in masked, gone
+    for kept in ("[ FAIL ] profile: name and email", "/home/ea-bot/ea-system", "903f647",
+                 "/home/<user>/.ea/config/user-profile.json", "<email>", "<host>", "<id>", "<url>"):
+        assert kept in masked, kept
+    r = subprocess.run([sys.executable, str(DOCTOR), "--ci", "--share"], capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.rstrip().endswith("(--share: addresses, account names, hosts and ids masked)")
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0

@@ -88,6 +88,27 @@ def fail(name, detail="", fix=""):
     rec("FAIL", name, detail, fix)
 
 
+# --share: the output a user pastes into a public issue. Addresses, the
+# account names in home paths, host names and long ids become fixed
+# placeholders, so the shape of the report survives and the identities do
+# not. The masking runs on the rendered text, never on the checks.
+_SHARE_RULES = [
+    (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "<email>"),
+    (re.compile(r"(/(?:home|Users)/)(?!ea-bot/)[^/\s'\"]+"), r"\1<user>"),
+    (re.compile(r"https?://[^\s'\"]+"), "<url>"),
+    (re.compile(r"\b[a-z0-9-]+\.(?:ts\.net|local|lan|edu|com|org|net)\b"), "<host>"),
+    (re.compile(r"\b[0-9a-f]{24,}\b"), "<id>"),
+]
+
+
+def share_mask(text: str) -> str:
+    """The text with addresses, home-path user names, URLs, host names and
+    long hexadecimal ids replaced by placeholders."""
+    for rx, rep in _SHARE_RULES:
+        text = rx.sub(rep, text)
+    return text
+
+
 def _read_env(path: Path) -> dict:
     out: dict = {}
     try:
@@ -1364,6 +1385,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="EA install checklist (read-only)")
     ap.add_argument("--ci", action="store_true", help="templates only; no system or network checks")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--share", action="store_true",
+                    help="mask addresses, account names, hosts and ids in the output, for "
+                         "pasting into a public issue")
     ap.add_argument("--ea-dir", default=os.environ.get("EA_DIR", str(Path.home() / ".ea")))
     ap.add_argument("--profile", default=None, choices=("email", "review-only", "assistant"),
                     help="install profile to check against (default: ea-config.json, else assistant)")
@@ -1418,6 +1442,7 @@ def main() -> int:
     expected = [n.strip() for n in a.expect_missing.split(",") if n.strip()]
     unexpected = [r for r in fails if not any(r["name"].startswith(n) for n in expected)]
     unmatched = [n for n in expected if not any(r["name"].startswith(n) for r in fails)]
+    out: list[str] = []
     if a.json:
         doc = {"results": RESULTS, "fail": len(fails), "warn": len(warns),
                "pass": len(RESULTS) - len(fails) - len(warns)}
@@ -1425,25 +1450,27 @@ def main() -> int:
             doc["expected_missing"] = expected
             doc["unexpected_fail"] = [r["name"] for r in unexpected]
             doc["expected_missing_unmatched"] = unmatched
-        print(json.dumps(doc, indent=1))
+        out.append(json.dumps(doc, indent=1))
     else:
         mark = {"PASS": "  ok  ", "WARN": " warn ", "FAIL": " FAIL "}
         for r in RESULTS:
             line = f"[{mark[r['status']]}] {r['name']}"
             if r["detail"]:
                 line += f"  ({r['detail']})"
-            print(line)
+            out.append(line)
             if r["status"] != "PASS" and r["fix"]:
-                print(f"           fix: {r['fix']}")
-        print(f"\n{len(RESULTS) - len(fails) - len(warns)} ok, {len(warns)} warn, {len(fails)} FAIL"
-              + ("" if a.ci else f"  ({ea_dir})"))
+                out.append(f"           fix: {r['fix']}")
+        out.append(f"\n{len(RESULTS) - len(fails) - len(warns)} ok, {len(warns)} warn, {len(fails)} FAIL"
+                   + ("" if a.ci else f"  ({ea_dir})"))
         if expected:
-            print(f"expected missing: {', '.join(expected)}"
-                  + (f"; did not fail: {', '.join(unmatched)}" if unmatched else ""))
-            if unexpected:
-                print("unexpected FAIL: " + ", ".join(r["name"] for r in unexpected))
-            else:
-                print("no unexpected FAIL")
+            out.append(f"expected missing: {', '.join(expected)}"
+                       + (f"; did not fail: {', '.join(unmatched)}" if unmatched else ""))
+            out.append("unexpected FAIL: " + ", ".join(r["name"] for r in unexpected)
+                       if unexpected else "no unexpected FAIL")
+        if a.share:
+            out.append("(--share: addresses, account names, hosts and ids masked)")
+    text = "\n".join(out)
+    print(share_mask(text) if a.share else text)
     return 1 if unexpected else 0
 
 

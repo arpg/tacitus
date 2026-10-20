@@ -1,6 +1,22 @@
 # Changelog
 
-## Unreleased
+## v1.3.0 (2026-10-20)
+
+- **Public release as Tacitus**, under AGPL-3.0-only: the README as a
+  front page, INSTALL.md, the developer guide in `.claude/CLAUDE.md`
+  (kept out of the EA's tree), the EA's portrait on Zulip and Slack.
+- **Intake for a public repository.** Issue forms that require the
+  version, platform, profile and the doctor's output; `ea-doctor.py
+  --share` masks addresses, account names, hosts and ids for pasting;
+  Discussions for questions and ideas; SECURITY.md with private
+  reporting; SUPPORT.md; Dependabot monthly; a stale rule for
+  `needs-info` only.
+- **CI.** Pull requests run the lint; the full tiers run on pushes to
+  `main`, with the `full-ci` label or by hand. The release suite runs by
+  hand only.
+- **Scheduling.** The pipeline's invite path says when the meeting is
+  already on the calendar and stages nothing; a reply the on-prem model
+  wrote names the local tier in its footer.
 
 - **The briefing checks that what it raises is still open.** The remote
   briefing's pre-send audit now asks about every ledger row the post

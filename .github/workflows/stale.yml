@@ -1,0 +1,35 @@
+# Issues that wait on their reporter close themselves: an issue labelled
+# needs-info with no activity for 14 days gets a notice, and closes 7 days
+# later unless someone answers. Nothing else is touched: a triaged bug
+# waits for the maintainer as long as it takes. Weekly, so it costs one
+# short run.
+name: stale needs-info
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v11.0.0
+        with:
+          only-labels: needs-info
+          days-before-stale: 14
+          days-before-close: 7
+          days-before-pr-stale: -1
+          days-before-pr-close: -1
+          stale-issue-label: stale
+          stale-issue-message: >-
+            This issue waits on information from its reporter and has had no
+            activity for two weeks. It closes in a week unless someone answers;
+            a closed issue can be reopened.
+          close-issue-message: >-
+            Closed for want of information. Reopen it, or open a new issue,
+            when you have the details.
+          exempt-issue-labels: triage,security

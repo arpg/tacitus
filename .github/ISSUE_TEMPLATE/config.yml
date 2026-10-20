@@ -1,1 +1,11 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
+contact_links:
+  - name: Question or help with your install
+    url: https://github.com/arpg/tacitus/discussions/categories/q-a
+    about: Ask in Discussions. Other users answer there too, and answered questions stay findable.
+  - name: Idea or feature request
+    url: https://github.com/arpg/tacitus/discussions/categories/ideas
+    about: Propose it in Discussions. Ideas with interest and a design become issues; many fit a plugin (docs/plugins.md).
+  - name: Security vulnerability
+    url: https://github.com/arpg/tacitus/security/advisories/new
+    about: Report privately through a security advisory, never in a public issue (SECURITY.md).

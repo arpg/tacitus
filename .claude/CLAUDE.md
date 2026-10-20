@@ -13,12 +13,18 @@ never reads it.
   deploying checkout deploys at once (the post-commit hook), so work on a
   branch or in a worktree. Only the owner merges. Other sessions may
   share the checkout: stage files by name.
-- **CI is opt-in; Actions minutes are limited.** Without the `full-ci`
-  label a pull request runs only the lint. Add `full-ci` only for a
-  change to `install.sh`, setup, the CI workflows, Docker or macOS
-  paths. For any other change, run `python3 tests/run_wall.py` locally
-  and say in the pull request that it passed. Batch commits before a
-  push: each push to a pull request starts a run.
+- **CI on a pull request is the lint only.** Pushes to `main` run the
+  full tiers. Add the `full-ci` label to a pull request only for a change
+  to `install.sh`, setup, the CI workflows, Docker or macOS paths. For
+  any other change, run `python3 tests/run_wall.py` locally and say in
+  the pull request that it passed.
+- **Inbound issues and ideas.** Questions and ideas go to Discussions;
+  bugs come through the issue forms with `ea-doctor.py --share` output.
+  Triage by hand costs the maintainer's time and the EA's quota, so
+  answer with a link to the doc or the form that applies, label
+  `needs-info` when a report lacks its version or doctor output (the
+  stale workflow closes it after three quiet weeks), and point a
+  one-institution or one-service request to a plugin.
 - **No real names or mail content in public text.** Commit messages,
   pull request titles and descriptions, issues and test fixtures become
   public with the repository. Keep the evidence traceable without the

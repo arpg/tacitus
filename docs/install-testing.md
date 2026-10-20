@@ -22,15 +22,15 @@ before the wall runs, so a test that reads a real install fails here
 rather than passing on the owner's machine. The wall needs `pytest` and
 `PyYAML` beyond `requirements.txt`; the job installs both.
 
-A full run is opt-in: a pull request with the `full-ci` label (adding
-the label starts the run), Actions > CI > Run workflow on a branch, or a
-tag. Every other pull request and push to `main` runs only the lint; the
+Every push to `main` and every tag runs the full tiers, macOS included
+(standard runners are free on a public repository). A pull request runs
+only the lint unless it carries the `full-ci` label (adding the label
+starts the run) or is run by hand with Actions > CI > Run workflow; the
 wall legs start, skip their steps and report, so the checks branch
-protection requires still arrive, and the other jobs report skipped. The
-local post-commit hook runs the wall on every commit to `main` in the
-deploying checkout. A draft runs nothing, and a new push cancels the pull
-request's run in progress. The macOS leg joins the matrix on pull
-requests, tags and runs by hand.
+protection requires still arrive, and the other jobs report skipped. A
+draft runs nothing, and a new push cancels the pull request's run in
+progress. A first pull request from a fork waits for a maintainer to
+approve its workflow run.
 
 The front door, `install.sh`, is in the wall too (`tests/test_install_sh.py`):
 `bash -n`, `--check` on the host and on a bare PATH (git and python3
@@ -187,11 +187,10 @@ exit codes.
 
 ## Cost notes
 
-- A macOS minute costs ten Linux minutes on a private repository. The
-  tiers run only on a full run: the `full-ci` label, Run workflow, or a
-  tag; the macOS smoke on tags and Run workflow only. Everything else
-  runs the lint, about two minutes, plus a minute for each wall leg to
-  report.
+- Standard runners are free on a public repository, so pushes to `main`
+  and tags run everything. Pull requests still run only the lint unless
+  labelled `full-ci`, to keep the queue short and the wall a local habit;
+  the macOS smoke runs on tags and Run workflow only.
 - The Linux smoke downloads Claude Code for ea-bot and the Python
   packages on every run (a few minutes). It starts no service that
   outlives the job; the mediator unit the installer starts dies with the

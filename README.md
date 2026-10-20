@@ -219,13 +219,26 @@ asks, upgrades, and how to uninstall. To run in containers, read
 - [CONTRIBUTING.md](CONTRIBUTING.md): the code layout, the tests, and how to make a change
 - [CHANGELOG.md](CHANGELOG.md): what each release contains
 
-## Status
+## Status and support
 
-This is research software from a university robotics lab. Its first
-user has run it on their own mail every day since March 2026. Outlook is
-required today; Gmail works as a second account. Linux is the primary
-platform and macOS is supported. Expect rough edges in the install, and
-please open an issue when you find one.
+This is research software from a university robotics lab, with one
+maintainer, who has run it on their own mail every day since March 2026.
+Outlook is required today; Gmail works as a second account. Linux is the
+primary platform and macOS is supported. Windows, a Gmail-only install
+and a hosted service are out of scope until someone contributes them.
+Expect rough edges in the install.
+
+- A question or help with an install: [Discussions](https://github.com/arpg/tacitus/discussions).
+- A bug: [an issue](https://github.com/arpg/tacitus/issues/new/choose),
+  with the output of `python3 scripts/ea-doctor.py --share` (it masks
+  your addresses and account names).
+- A feature: an Ideas discussion first. A capability for one person,
+  one institution or one service is a [plugin](docs/plugins.md), which
+  needs no change to the core.
+- A vulnerability: a [private advisory](SECURITY.md), never a public issue.
+
+Replies come within about a week ([SUPPORT.md](SUPPORT.md) has the
+order of priority). Pull requests with tests move faster than issues.
 
 The assistant inside Tacitus is the EA, and its name runs through the
 system: the `ea-bot` user, the `~/.ea` directory and the `ea` chat
