@@ -241,8 +241,15 @@ def _raw_config() -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+# Chat turns the ghost does not replay: a deck build runs node and a
+# headless browser, which the sandbox has no network or display for, and
+# one such replay cost millions of input tokens for nothing. The window
+# may name its own list (`start --skip`).
+DEFAULT_SKIP = [r"\bdecks?\b", r"\bslides?\b", r"\bslidev\b", r"\bpresentation\b"]
+
+
 def window(raw: dict | None = None) -> dict:
-    """{"from", "until", "kinds", "share"} or {} when no window is set."""
+    """{"from", "until", "kinds", "share", "skip"} or {} when no window is set."""
     raw = _raw_config() if raw is None else raw
     w = (raw.get("ghost") or {}).get("codex") if isinstance(raw.get("ghost"), dict) else None
     if not isinstance(w, dict) or not w.get("from") or not w.get("until"):
@@ -252,7 +259,24 @@ def window(raw: dict | None = None) -> dict:
         share = min(1.0, max(0.0, float(w.get("share", DEFAULT_SHARE))))
     except (TypeError, ValueError):
         share = DEFAULT_SHARE
-    return {"from": str(w["from"]), "until": str(w["until"]), "kinds": kinds, "share": share}
+    skip = w.get("skip") if isinstance(w.get("skip"), list) else list(DEFAULT_SKIP)
+    return {"from": str(w["from"]), "until": str(w["until"]), "kinds": kinds, "share": share,
+            "skip": [str(s) for s in skip if str(s).strip()]}
+
+
+def skip_reason(job: dict, w: dict | None = None) -> str:
+    """'' or the pattern that keeps this chat turn out of the ghost."""
+    if job.get("kind") != "chat":
+        return ""
+    text = str(job.get("user_msg") or "")
+    import re
+    for pat in (w or window()).get("skip") or []:
+        try:
+            if re.search(pat, text, re.I):
+                return pat
+        except re.error:
+            continue
+    return ""
 
 
 def active(kind: str | None = None, today: date | None = None, raw: dict | None = None) -> bool:
@@ -266,14 +290,15 @@ def active(kind: str | None = None, today: date | None = None, raw: dict | None 
     return kind is None or kind in w["kinds"]
 
 
-def start(days: int = DEFAULT_DAYS, kinds=KINDS, share: float = DEFAULT_SHARE) -> dict:
+def start(days: int = DEFAULT_DAYS, kinds=KINDS, share: float = DEFAULT_SHARE, skip=None) -> dict:
     raw = _raw_config()
     if not raw:
         raise SystemExit(f"{owner_trust.private_dir() / remote_llm.CONFIG_FILE} is missing or unreadable")
     today = date.today()
     w = {"from": today.isoformat(), "until": (today + timedelta(days=max(1, days) - 1)).isoformat(),
          "kinds": [k for k in kinds if k in KINDS] or list(KINDS),
-         "share": min(1.0, max(0.0, float(share)))}
+         "share": min(1.0, max(0.0, float(share))),
+         "skip": list(DEFAULT_SKIP) if skip is None else [s for s in skip if str(s).strip()]}
     raw.setdefault("ghost", {})
     if not isinstance(raw["ghost"], dict):
         raw["ghost"] = {}
@@ -539,6 +564,12 @@ def enqueue(job: dict, *, today: date | None = None, spawn=None, lim: dict | Non
         w = window()
         if kind == "chat" and not _share_pick(job.get("source_run_id", ""), w.get("share", DEFAULT_SHARE)):
             return {"skipped": "not in the share"}
+        pat = skip_reason(job, w)
+        if pat:
+            _append(TURNS, {"id": job_id(kind, job.get("source_run_id", "")), "ts": _iso(_now()),
+                            "kind": kind, "lane": job.get("lane"), "source_run_id": job.get("source_run_id"),
+                            "status": "skipped", "skip_reason": f"pattern: {pat}"})
+            return {"skipped": f"pattern: {pat}"}
         block = quota_block(lim if lim is not None else limits())
         if block:
             _append(TURNS, {"id": job_id(kind, job.get("source_run_id", "")), "ts": _iso(_now()),
@@ -905,6 +936,9 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("start"); s.add_argument("--days", type=int, default=DEFAULT_DAYS)
     s.add_argument("--kinds", default=",".join(KINDS)); s.add_argument("--share", type=float, default=DEFAULT_SHARE)
+    s.add_argument("--skip", default=None,
+                   help="comma-separated regexes; a chat turn whose message matches one is not replayed "
+                        "(default: deck and slide builds)")
     sub.add_parser("stop"); sub.add_parser("status")
     s = sub.add_parser("limits"); s.add_argument("--fresh", action="store_true")
     s = sub.add_parser("grade"); s.add_argument("--judge", default="claude", choices=("claude", "remote"))
@@ -927,7 +961,8 @@ def main(argv=None) -> int:
         print("codex_ghost: owner only (the store is owner-private)", file=sys.stderr)
         return 2
     if a.cmd == "start":
-        w = start(a.days, [k.strip() for k in a.kinds.split(",") if k.strip()], a.share)
+        skip = None if a.skip is None else [p.strip() for p in a.skip.split(",") if p.strip()]
+        w = start(a.days, [k.strip() for k in a.kinds.split(",") if k.strip()], a.share, skip=skip)
         print(json.dumps(w)); return 0
     if a.cmd == "stop":
         stop(); print("codex ghost window removed"); return 0

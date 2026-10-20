@@ -102,6 +102,22 @@ def test_enqueue_skips_without_a_window_and_queues_with_one(private):
     assert cg.enqueue({"kind": "other", "source_run_id": "x"}, spawn=spawned.append, lim={})["skipped"].startswith("unknown kind")
 
 
+def test_deck_builds_are_not_replayed_and_the_skip_is_recorded(private):
+    cg.start(7, ["chat"], 1.0)
+    assert cg.window()["skip"] == cg.DEFAULT_SKIP
+    res = cg.enqueue({"kind": "chat", "source_run_id": "d1", "user_msg": "rebuild the deck with the new photos"},
+                     spawn=lambda p: pytest.fail("a deck turn must not run"), lim={})
+    assert res["skipped"].startswith("pattern:")
+    assert _rows(cg.TURNS)[-1]["skip_reason"].startswith("pattern:")
+    assert "queued" in cg.enqueue({"kind": "chat", "source_run_id": "d2", "user_msg": "snooze the vendor thread"},
+                                  spawn=lambda p: None, lim={})
+    assert cg.skip_reason({"kind": "briefing", "user_msg": "deck"}) == ""
+    cg.start(7, ["chat"], 1.0, skip=[r"\bpoll\b"])
+    assert cg.window()["skip"] == [r"\bpoll\b"]
+    assert cg.skip_reason({"kind": "chat", "user_msg": "rebuild the deck"}) == ""
+    assert cg.skip_reason({"kind": "chat", "user_msg": "fill the poll"}) == r"\bpoll\b"
+
+
 def test_the_chat_share_is_a_stable_draw_per_turn(private):
     cg.start(7, ["chat"], 0.0)
     assert cg.enqueue({"kind": "chat", "source_run_id": "r1"}, spawn=lambda p: None, lim={}) == {"skipped": "not in the share"}
