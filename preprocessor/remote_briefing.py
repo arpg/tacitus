@@ -964,11 +964,9 @@ def room_slices(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dic
                 matcher=None) -> list[dict]:
     """Post each project room its slice of this post (briefing_rooms);
     returns the posts, each with `ok` once sent. A dry run plans them and
-    sends nothing. Off on a frontend other than Zulip, and with
-    `"briefing_rooms": false` in remote-llm.json."""
+    sends nothing. Off with `"briefing_rooms": false` in remote-llm.json."""
     import briefing_rooms
-    import chat_notify
-    if not briefing_rooms.enabled() or chat_notify.frontend_name() != "zulip":
+    if not briefing_rooms.enabled():
         return []
     morning = agent == "morning-briefing"
     local = now.astimezone()
@@ -1076,8 +1074,11 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
     if posts:
         import briefing_rooms
         sent = [p for p in posts if p.get("ok", dry_run)]
-        text = "\n".join([text] + briefing_rooms.pointer_line(sent))
-        rec["rooms"] = [{"stream": p["stream"], "items": len(p["refs"]), "ok": p.get("ok")}
+        try:
+            text = "\n".join([text] + briefing_rooms.pointer_line(sent))
+        except Exception as e:
+            print(f"remote_briefing: room pointer line skipped: {str(e)[:160]}", file=sys.stderr)
+        rec["rooms"] = [{"room": p["room"], "items": len(p["refs"]), "ok": p.get("ok")}
                         for p in posts]
     rec.update(plan={k: len(v) for k, v in plan.items()},
                drafts=sum(1 for d in drafts if d.get("ok")),

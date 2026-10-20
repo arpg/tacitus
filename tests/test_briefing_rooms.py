@@ -39,8 +39,8 @@ def _matcher(scores):
         or []
 
 
-TARGETS = {"kestrel": {"channel": "stream:7", "stream": "ea-kestrel"},
-           "lumen": {"channel": "stream:8", "stream": "ea-lumen"}}
+TARGETS = {"kestrel": {"channel": "stream:7", "room": "ea-kestrel"},
+           "lumen": {"channel": "stream:8", "room": "ea-lumen"}}
 
 
 def test_a_link_beats_a_filed_thread_beats_the_matcher(conn):
@@ -69,21 +69,49 @@ def test_only_rooms_the_owner_record_names_get_a_post():
     owner = {"stream:7": {"name": "ea-kestrel"}, "stream:9": {"name": "ea-arch"},
              "stream:10": {"name": "tmp-1"}, "stream:11": {"name": "ea-other"}}
     assert br.rooms(registry=registry, owner=owner) == {
-        "kestrel": {"channel": "stream:7", "stream": "ea-kestrel"}}
+        "kestrel": {"channel": "stream:7", "room": "ea-kestrel"}}
     owner["stream:7"]["archived_by_bot"] = True
     assert br.rooms(registry=registry, owner=owner) == {}
 
 
-def test_a_room_key_posts_only_to_a_room_in_the_owner_record(monkeypatch):
+class _FE:
+    """A stand-in frontend: records posts, links rooms Slack style."""
+    def __init__(self):
+        self.posts = []
+
+    def post(self, channel, text, thread_ts=None):
+        self.posts.append((channel, text, thread_ts))
+        return type("Ref", (), {"thread_key": f"{channel}:t1"})()
+
+    def mention(self, channel):
+        return f"<#{channel}>"
+
+
+@pytest.mark.parametrize("frontend", ["slack", "zulip"])
+def test_a_room_key_posts_through_the_frontend_to_owner_rooms_only(monkeypatch, frontend):
     import owner_rooms
-    monkeypatch.setattr(owner_rooms, "get", lambda cid: {"name": "ea-kestrel"} if cid == "stream:7" else None)
-    posted = []
-    monkeypatch.setattr(chat_notify, "_zulip_post_parts", lambda zcfg, target, parts: posted.append(target) or True)
-    monkeypatch.setattr(chat_notify, "_chat_cfg", lambda: {"zulip": {}})
-    assert chat_notify._send_zulip(chat_notify.room_key("stream:7"), ["hi"], None)
-    assert posted == [{"stream": "ea-kestrel"}]
-    assert not chat_notify._send_zulip(chat_notify.room_key("stream:99"), ["hi"], None)
-    assert len(posted) == 1
+    monkeypatch.setattr(owner_rooms, "get", lambda cid: {"name": "ea-kestrel"} if cid == "C7" else None)
+    fe = _FE()
+    monkeypatch.setattr(chat_notify, "_ROOM_FE", [fe])
+    monkeypatch.setattr(chat_notify, "frontend_name", lambda: frontend)
+    monkeypatch.setattr(chat_notify, "_send_slack", lambda *a: pytest.fail("webhook path"))
+    monkeypatch.setattr(chat_notify, "_send_zulip", lambda *a: pytest.fail("notify path"))
+    text = f"part one{chat_notify.SPLIT_MARKER}part two"
+    assert chat_notify.post(chat_notify.room_key("C7"), text, _bypass_quiet=True)
+    assert fe.posts == [("C7", "part one", None), ("C7", "part two", "C7:t1")]
+    assert not chat_notify.post(chat_notify.room_key("C99"), "x", _bypass_quiet=True)
+    assert len(fe.posts) == 2
+    assert chat_notify.room_mention("C7") == "<#C7>"
+
+
+def test_quiet_hours_hold_a_room_post(monkeypatch):
+    import quiet_hours
+    held = []
+    monkeypatch.setattr(quiet_hours, "should_defer", lambda priority: True)
+    monkeypatch.setattr(quiet_hours, "defer", lambda key, text, priority: held.append(key))
+    monkeypatch.setattr(chat_notify, "_send_room", lambda *a: pytest.fail("posted in quiet hours"))
+    assert chat_notify.post(chat_notify.room_key("C7"), "x")
+    assert held == ["room:C7"]
 
 
 def test_each_room_gets_one_post_with_its_items_and_its_other_open_rows(conn):
@@ -99,21 +127,21 @@ def test_each_room_gets_one_post_with_its_items_and_its_other_open_rows(conn):
                  {"id": "row-k2", "description": "Kestrel field test plan", "notes": ""}]
     posts = br.plan_posts(entries, heading="Morning briefing, Mon Oct 12", open_rows=open_rows,
                           conn=conn, targets=TARGETS, clean=rb._clean, matcher=_matcher({"kestrel": 3}))
-    assert [(p["stream"], p["refs"]) for p in posts] == [("ea-kestrel", ["L1"]), ("ea-lumen", ["R1"])]
+    assert [(p["room"], p["refs"]) for p in posts] == [("ea-kestrel", ["L1"]), ("ea-lumen", ["R1"])]
     k = posts[0]["text"]
     assert k.startswith("*Morning briefing, Mon Oct 12: Kestrel radar*")
     assert ":dart: Do today: *Radar order* (Pat): first thing" in k
     assert "Also open here (1): Kestrel field test plan" in k and "Lunch" not in k
     assert "—" not in k
-    assert br.pointer_line(posts) == ["", ":house: Also in project rooms: #**ea-kestrel** (1), #**ea-lumen** (1)"]
+    assert br.pointer_line(posts, mention=lambda cid: f"<#{cid}>") == [
+        "", ":house: Also in project rooms: <#stream:7> (1), <#stream:8> (1)"]
     sent = br.send(posts, poster=lambda key, text: key == "room:stream:7")
-    assert sent == [{"stream": "ea-kestrel", "ok": True}, {"stream": "ea-lumen", "ok": False}]
+    assert sent == [{"room": "ea-kestrel", "ok": True}, {"room": "ea-lumen", "ok": False}]
 
 
 def test_the_morning_run_posts_slices_and_names_the_rooms(monkeypatch, conn, tmp_path):
     monkeypatch.setenv("EA_DIR", str(tmp_path))
     monkeypatch.setattr(br, "enabled", lambda cfg=None: True)
-    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "zulip")
     b = {"open_obligations": [{"id": "row-k", "description": "Radar order", "type": "task",
                                "from_email": "pat@example.edu"}],
          "today_top": [], "delta_summary": {}}

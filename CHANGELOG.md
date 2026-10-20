@@ -14,8 +14,9 @@ repository that preceded it.
   the strict project matcher. The full post still goes to the EA stream
   and ends with the rooms that got a slice. A room post goes only to a
   room the owner's record names (`room:<channel id>` keys in
-  `chat_notify.post`), and quiet hours hold it. `"briefing_rooms":
-  false` in remote-llm.json turns it off.
+  `chat_notify.post`, posted through the configured chat frontend), and
+  quiet hours hold it. `"briefing_rooms": false` in remote-llm.json
+  turns it off.
 - **Intake for a public repository.** Issue forms that require the
   version, platform, profile and the doctor's output; `ea-doctor.py
   --share` masks addresses, account names, hosts and ids for pasting;

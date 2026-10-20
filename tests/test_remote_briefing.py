@@ -634,15 +634,17 @@ def test_the_audit_verdict_runs_on_claude_and_falls_back_to_the_remote_model(pri
     assert out["closed"] == ["row-nsf"] and out["judge"] == "remote (Claude failed)"
 
 
-def test_the_ea_post_names_the_rooms_that_got_a_slice(priv):
-    rooms = lambda *a, **k: [{"stream": "ea-kestrel", "refs": ["R1", "L1"], "ok": True},
-                             {"stream": "ea-lumen", "refs": ["R2"], "ok": False}]
+def test_the_ea_post_names_the_rooms_that_got_a_slice(priv, monkeypatch):
+    import chat_notify
+    monkeypatch.setattr(chat_notify, "room_mention", lambda cid: f"#**{cid}**")
+    rooms = lambda *a, **k: [{"room": "ea-kestrel", "channel": "stream:7", "refs": ["R1", "L1"], "ok": True},
+                             {"room": "ea-lumen", "channel": "stream:8", "refs": ["R2"], "ok": False}]
     text, rec = rb.run("morning-briefing", _briefing(), run_id="r", now=NOW, chat=_model(PLAN),
                        drafter=lambda *a, **k: {"ok": True, "draft_id": "d"},
                        queue=lambda *a, **k: 0, audit=lambda *a, **k: {}, rooms=rooms)
-    assert text.endswith(":house: Also in project rooms: #**ea-kestrel** (2)")
-    assert rec["rooms"] == [{"stream": "ea-kestrel", "items": 2, "ok": True},
-                            {"stream": "ea-lumen", "items": 1, "ok": False}]
+    assert text.endswith(":house: Also in project rooms: #**stream:7** (2)")
+    assert rec["rooms"] == [{"room": "ea-kestrel", "items": 2, "ok": True},
+                            {"room": "ea-lumen", "items": 1, "ok": False}]
     boom = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("store locked"))
     text, rec = rb.run("morning-briefing", _briefing(), run_id="r", now=NOW, chat=_model(PLAN),
                        drafter=lambda *a, **k: {"ok": True, "draft_id": "d"},

@@ -229,40 +229,8 @@ def _zulip_post_parts(zcfg: dict, target: dict, parts: list[str]) -> bool:
     return all_ok
 
 
-ROOM_KEY_PREFIX = "room:"
-
-
-def room_key(channel_id: str) -> str:
-    """The channel key that posts to one project room (a new topic)."""
-    return ROOM_KEY_PREFIX + str(channel_id)
-
-
-def _room_stream(channel_key: str) -> str:
-    """The stream of the room a `room:` key names, or "" when the owner's
-    own record (owner_rooms) does not name it or the bot archived it. The
-    registry in ea-bot space is never the authority: a process that cannot
-    read the owner record posts nowhere."""
-    try:
-        try:
-            import owner_rooms
-        except ImportError:
-            from preprocessor import owner_rooms
-        row = owner_rooms.get(channel_key[len(ROOM_KEY_PREFIX):])
-    except Exception:
-        return ""
-    if not row or row.get("archived_by_bot"):
-        return ""
-    return str(row.get("name") or "")
-
-
 def _send_zulip(channel_key: str, parts: list[str], blocks: Optional[list]) -> bool:
     zcfg = _chat_cfg()["zulip"]
-    if channel_key.startswith(ROOM_KEY_PREFIX):
-        stream = _room_stream(channel_key)
-        if not stream:
-            print(f"WARNING: '{channel_key}' is not a room in the owner's record; nothing posted")
-            return False
-        return _zulip_post_parts(zcfg, {"stream": stream}, parts)
     target = (zcfg.get("notify") or {}).get(channel_key)
     if not isinstance(target, dict) or not target.get("stream"):
         print(f"WARNING: No Zulip notify target configured for '{channel_key}'")
@@ -270,6 +238,71 @@ def _send_zulip(channel_key: str, parts: list[str], blocks: Optional[list]) -> b
         print(f"  Message was: {(parts[0] if parts else '')[:100]}...")
         return False
     return _zulip_post_parts(zcfg, target, parts)
+
+
+# ── Project rooms ─────────────────────────────────────────────────────
+# A room is addressed by its channel id, on every frontend, through the
+# chat abstraction (chat.load_frontend): `post(channel, text)` with no
+# thread opens a new top-level post (a new topic on Zulip). The owner's own
+# record (owner_rooms) is the authority on which rooms exist; the registry
+# in ea-bot space is never consulted here, and a process that cannot read
+# the owner record posts nowhere.
+
+ROOM_KEY_PREFIX = "room:"
+_ROOM_FE: list = []
+
+
+def room_key(channel_id: str) -> str:
+    """The channel key that posts to one project room (a new thread)."""
+    return ROOM_KEY_PREFIX + str(channel_id)
+
+
+def _owner_room(channel_id: str) -> dict | None:
+    """The owner record's row for a room the bot may post in, or None."""
+    try:
+        try:
+            import owner_rooms
+        except ImportError:
+            from preprocessor import owner_rooms
+        row = owner_rooms.get(channel_id)
+    except Exception:
+        return None
+    if not row or row.get("archived_by_bot"):
+        return None
+    return row
+
+
+def _room_frontend():
+    """One sender-only frontend per process, for the room posts."""
+    if not _ROOM_FE:
+        _ROOM_FE.append(_chat_pkg().load_frontend(for_cli=True))
+    return _ROOM_FE[0]
+
+
+def room_mention(channel_id: str) -> str:
+    """The room as a link in the frontend's own syntax; `#<name>` from
+    the owner record when the frontend cannot say."""
+    row = _owner_room(channel_id) or {}
+    try:
+        return _room_frontend().mention(channel_id)
+    except Exception:
+        return f"#{row.get('name') or channel_id}"
+
+
+def _send_room(channel_key: str, parts: list[str]) -> bool:
+    cid = channel_key[len(ROOM_KEY_PREFIX):]
+    if _owner_room(cid) is None:
+        print(f"WARNING: '{channel_key}' is not a room in the owner's record; nothing posted")
+        return False
+    try:
+        fe = _room_frontend()
+        first = fe.post(cid, parts[0])
+        for part in parts[1:]:
+            fe.post(cid, part, thread_ts=first.thread_key)
+        return True
+    except Exception as e:
+        print(f"Room post to {cid} failed: {e}")
+        return False
 
 
 # ── Public API ────────────────────────────────────────────────────────
@@ -311,6 +344,8 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
         parts = [text]
 
     name = frontend_name()
+    if channel_key.startswith(ROOM_KEY_PREFIX) and name != "memory":
+        return _send_room(channel_key, parts)
     if name == "slack":
         return _send_slack(channel_key, parts, blocks)
     if name == "zulip":

@@ -74,7 +74,7 @@ switched.
 | `digests` | `off` `remote` | `remote` | The list digest and the admissions digest are judged by the remote model and post to `mail-digest`. |
 | `briefings` | `off` `remote` | `remote` | The morning briefing (04:00) and the afternoon update (15:00) are written by the remote model, with drafts and hand-offs to Claude. |
 | `briefing_audit` | `claude` `remote` | `claude` | The briefings' pre-send check: Claude decides whether each item the post shows is still open, from evidence with kept mail removed. The remote model answers when the Claude run fails. `remote` puts the verdict back on the remote model. |
-| `briefing_rooms` | `true` `false` | `true` | Each briefing item that belongs to a project with a room (`#ea-<project>`) is also posted there, one message per room in a new topic, with the project's other open rows; the EA post names those rooms in one line. Zulip only. |
+| `briefing_rooms` | `true` `false` | `true` | Each briefing item that belongs to a project with a room (`#ea-<project>`) is also posted there, one message per room in a new topic, with the project's other open rows; the EA post names those rooms in one line. Any chat frontend: rooms are posted through the frontend abstraction. |
 | `audits` | `off` `remote` | `off` | `remote`: the Sunday audit is written by the remote model (remote_audit.py), with flagged items handed to one Claude session. `off`: the Claude lane on skills/weekly-audit.md. |
 | `scheduling` | `off` `shadow` `enforce` | `shadow` | The remote scheduling agent runs beside Claude and only records. It stops after `shadow_until` (2026-11-02). `enforce` makes it answer the scheduling channel and the proactive scheduler itself, with Claude as the fallback (section 2.11). |
 | `keep_from_anthropic` | domains, addresses, `admissions` | `mil` and the domains the owner lists, plus the domains enabled plugins add; admissions on | Mail that never reaches Claude in bulk. It never limits the remote model. |
@@ -588,12 +588,15 @@ line; it never falls back to a Claude run.
   An item belongs to a project by its ledger link, then by its filed
   thread, then by the strict project matcher (score 3 or more; a tie
   goes to both projects, at most two). Each room with items gets one
-  post in a new topic: the items under their section, then up to five
-  other open rows of the project. A reply in that topic is a room turn
-  with the post as thread history. A post goes only to a room the
-  owner's record (`owner_rooms`) names, through `chat_notify.post` with
-  the key `room:<channel id>`, so quiet hours hold it like the EA post.
-  The EA post ends with "Also in project rooms" and the room names.
+  post as a new thread (a new topic on Zulip): the items under their
+  section, then up to five other open rows of the project. A reply in
+  that thread is a room turn with the post as thread history. A post
+  goes only to a room the owner's record (`owner_rooms`) names, through
+  `chat_notify.post` with the key `room:<channel id>`: quiet hours hold
+  it like the EA post, and the configured frontend
+  (`chat.load_frontend`) posts it by channel id. The EA post ends with
+  "Also in project rooms" and each room as a link in the frontend's
+  own syntax (`mention`).
 - **The afternoon update** picks what is new since the morning and what is
   still pending. It drafts and hands off nothing. Code checks the picks
   against the sent folder and the channel before they post: an item whose

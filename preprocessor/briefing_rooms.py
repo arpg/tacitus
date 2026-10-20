@@ -2,9 +2,9 @@
 """Project-room slices of a briefing.
 
 The morning briefing and the afternoon update post whole to the EA
-stream. An item that belongs to a project with a room (#ea-<project>) is
-also posted in that room: one message per room per run, in a new topic,
-so the user can act on it there with the room's specialist and the
+channel. An item that belongs to a project with a room (#ea-<project>) is
+also posted in that room: one message per room per run, as a new thread
+(a new topic on Zulip), so the user can act on it there with the room's specialist and the
 project pack. A room with no item gets no post.
 
 Which project an item belongs to, strongest first:
@@ -16,10 +16,11 @@ Which project an item belongs to, strongest first:
 An item with no project stays in the EA post only.
 
 A room gets a post only when the registry binds it to the project, it is
-not archived, and the owner's own record (owner_rooms) names it: the
-post goes through chat_notify.post with the key `room:<channel id>`,
-which resolves the stream from that record and nothing else. Quiet hours
-hold a room post like the EA post.
+not archived, and the owner's own record (owner_rooms) names it. The
+post goes through chat_notify.post with the key `room:<channel id>`:
+quiet hours hold it like the EA post, the owner record is checked again,
+and the configured chat frontend posts it (a new topic on Zulip, a new
+message on Slack).
 
 Switch: `"briefing_rooms": false` in remote-llm.json turns the slices off.
 """
@@ -95,7 +96,7 @@ def projects_for(item: dict, idx: dict, conn, *, matcher=None) -> list[str]:
 # ── which rooms ───────────────────────────────────────────────────────
 
 def rooms(*, registry: dict | None = None, owner: dict | None = None) -> dict[str, dict]:
-    """{project: {"channel", "stream"}} for the rooms a post may go to:
+    """{project: {"channel", "room"}} for the rooms a post may go to:
     bound to the project in the registry, not archived, and named in the
     owner's record under the same name."""
     import ea_channels
@@ -116,7 +117,7 @@ def rooms(*, registry: dict | None = None, owner: dict | None = None) -> dict[st
         row = owner.get(cid)
         if not row or row.get("archived_by_bot") or row.get("name") != e.get("name"):
             continue
-        out[pid] = {"channel": cid, "stream": row["name"]}
+        out[pid] = {"channel": cid, "room": row["name"]}
     return out
 
 
@@ -178,7 +179,7 @@ def render(heading: str, project_name: str, entries: list[dict], others: list[st
 
 def plan_posts(entries: list[dict], *, heading: str, open_rows: list[dict], conn,
                targets: dict[str, dict], clean, matcher=None) -> list[dict]:
-    """[{project, channel, stream, text, refs}], one per room with items."""
+    """[{project, channel, room, text, refs}], one per room with items."""
     idx = index(conn)
     names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM projects")}
     posts = []
@@ -186,23 +187,27 @@ def plan_posts(entries: list[dict], *, heading: str, open_rows: list[dict], conn
         shown = {e["ledger_id"] for e in items if e.get("ledger_id")}
         others = also_open(pid, open_rows, shown, conn, matcher=matcher, idx=idx)
         posts.append({"project": pid, "channel": targets[pid]["channel"],
-                      "stream": targets[pid]["stream"],
+                      "room": targets[pid]["room"],
                       "text": render(heading, names.get(pid) or pid, items, others, clean),
                       "refs": [e["ref"] for e in items]})
-    posts.sort(key=lambda p: p["stream"])
+    posts.sort(key=lambda p: p["room"])
     return posts
 
 
-def pointer_line(posts: list[dict]) -> list[str]:
-    """The EA post's line that names the rooms that got a slice."""
+def pointer_line(posts: list[dict], *, mention=None) -> list[str]:
+    """The EA post's line that names the rooms that got a slice, each as a
+    link in the frontend's own syntax (chat_notify.room_mention)."""
     if not posts:
         return []
+    if mention is None:
+        import chat_notify
+        mention = chat_notify.room_mention
     return ["", ":house: Also in project rooms: " + ", ".join(
-        f"#**{p['stream']}** ({len(p['refs'])})" for p in posts)]
+        f"{mention(p['channel'])} ({len(p['refs'])})" for p in posts)]
 
 
 def send(posts: list[dict], *, poster=None) -> list[dict]:
-    """Post each slice; returns [{stream, ok}]."""
+    """Post each slice; returns [{room, ok}]."""
     import chat_notify
     poster = poster or chat_notify.post
     out = []
@@ -210,7 +215,7 @@ def send(posts: list[dict], *, poster=None) -> list[dict]:
         try:
             ok = bool(poster(chat_notify.room_key(p["channel"]), p["text"]))
         except Exception as e:
-            print(f"briefing_rooms: post to {p['stream']} failed: {str(e)[:160]}", file=sys.stderr)
+            print(f"briefing_rooms: post to {p['room']} failed: {str(e)[:160]}", file=sys.stderr)
             ok = False
-        out.append({"stream": p["stream"], "ok": ok})
+        out.append({"room": p["room"], "ok": ok})
     return out
