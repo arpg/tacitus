@@ -149,7 +149,7 @@ class _Run:
 def _fake_scratch(cmd, inp):
     spec = json.loads(inp)
     assert cmd[2:4] == ["-u", cg.RESIDENT] and "python3" in cmd, "made as the resident"
-    assert spec["root"].startswith(str(cg.BOT_HOME / ".local" / "state" / "ea-lanes" / "codex-ghost"))
+    assert spec["root"].startswith(str(cg.BOT_HOME / ".ea" / "state" / "codex-ghost")), "under an allowed mediator root"
     assert "state/obligations-ledger.db" in spec["copies"] and "state/briefing-latest.json" in spec["copies"]
     return _Run()
 

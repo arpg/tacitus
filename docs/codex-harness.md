@@ -63,9 +63,13 @@ grades it against Claude. Claude stays the workhorse throughout.
 - **How a replay runs.** As the resident, never as the owner: Codex's
   sandbox confines writes, not reads, and a model shell started as the
   owner could read the owner's secrets. The working root is a scratch
-  EA_DIR under `~ea-bot/.local/state/ea-lanes/codex-ghost/` holding
-  copies of the ledger, the project store and the briefing, and links to
-  the config, the docs and the mediator's queue. The run id starts with
+  EA_DIR under `~ea-bot/.ea/state/codex-ghost/` (inside a root the
+  mediator already reads inputs from and delivers outputs to, so a body
+  file or a downloaded attachment under it passes the same checks a
+  production turn's does) holding copies of the ledger, the project
+  store and the briefing, and links to the config, the docs and the
+  mediator's queue. The remote writer and the style store answer a ghost
+  as they do a production turn; every other mediated write is recorded. The run id starts with
   `cron-ghost-codex-`, so the mail gate treats it as a cron lane, and the
   mediator answers every verb that is not a read with `{"status":
   "recorded"}`: a draft, an archive or a snooze is written to

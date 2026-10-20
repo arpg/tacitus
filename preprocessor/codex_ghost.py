@@ -96,9 +96,12 @@ PASS = {
              "error_share_max": 0.10},
 }
 
-# What a ghost may ask the mediator for: reads. Everything else is recorded.
+# What a ghost may ask the mediator for: reads, and the tools that only
+# produce text (the remote writer, the style store). Everything else is
+# recorded.
 READ_PREFIXES = ("get-", "list-", "search", "calendar-view", "resolve-", "scan-", "download-",
                  "preflight-", "read-", "check-")
+GHOST_TEXT_TOOLS = ("email_writer", "style_profiles")
 
 PROBLEM_KINDS = ("wrong-fact", "missed-item", "invented-item", "rule-break", "wrong-write",
                  "missing-write", "wording", "tool-misuse", "other")
@@ -387,6 +390,10 @@ def ghost_refusal(tool: str, verb: str, run_id: str) -> str:
     v = str(verb or "")
     if any(v.startswith(p) for p in READ_PREFIXES):
         return ""
+    if tool in GHOST_TEXT_TOOLS:
+        # The remote writer and the style store produce text and touch no
+        # mailbox: a ghost needs them to draft as the production turn does.
+        return ""
     return f"ghost run: '{tool} {verb}' recorded, not executed"
 
 
@@ -429,7 +436,12 @@ print(str(root))
 
 
 def scratch_root(jid: str) -> Path:
-    return BOT_HOME / ".local" / "state" / "ea-lanes" / "codex-ghost" / jid / "ea"
+    """A ghost's EA_DIR, under the resident's real state directory: that
+    directory is already a root the mediator may read inputs from and
+    deliver outputs to (mail_mediation._allowed_roots), so a body file or
+    a downloaded attachment under the scratch passes the same checks a
+    production turn's does, and nothing is widened for it."""
+    return BOT_HOME / ".ea" / "state" / "codex-ghost" / jid / "ea"
 
 
 def prepare_scratch(jid: str, *, copies=("state/obligations-ledger.db", "state/briefing-latest.json",
@@ -577,7 +589,8 @@ def run_job(job: dict, *, codex_run=None, scratch_runner=None, keep: bool = Fals
                                      live=False, fresh_prompt=job.get("fresh_prompt") or "",
                                      lane=str(job.get("lane") or ""), codex_run=codex_run,
                                      scratch_runner=scratch_runner)
-            res = {"output": tr["output"], "tool_calls": [{"input": c[4], "exit_code": None} for c in tr["tool_calls"]],
+            res = {"output": tr["output"],
+                   "tool_calls": [{"input": c[4], "exit_code": None, "output": c[3]} for c in tr["tool_calls"]],
                    "usage": tr["usage"], "duration_s": tr["duration_ms"] / 1000.0, "exit_code": tr["returncode"],
                    "harness_error": tr["harness_error"], "files": tr.get("files") or []}
             rec["thread_id"] = tr.get("thread_id")
@@ -593,7 +606,8 @@ def run_job(job: dict, *, codex_run=None, scratch_runner=None, keep: bool = Fals
             rec["staged"] = _staged_in(scratch)
         rec["codex"] = {"output": (res.get("output") or "")[:12000],
                         "tool_calls": [{"command": str((c.get("input") or {}).get("command", ""))[:300],
-                                        "exit_code": c.get("exit_code")} for c in res.get("tool_calls") or []][:60],
+                                        "exit_code": c.get("exit_code"),
+                                        "output": str(c.get("output") or "")[-400:]} for c in res.get("tool_calls") or []][:60],
                         "usage": res.get("usage") or {}, "duration_s": round(float(res.get("duration_s") or 0), 1),
                         "exit_code": res.get("exit_code"), "harness_error": res.get("harness_error") or "",
                         "files": (res.get("files") or [])[:40], "model": job.get("model") or ""}
