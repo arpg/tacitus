@@ -26,8 +26,10 @@ Every push to `main` and every tag runs the full tiers, macOS included
 (standard runners are free on a public repository). A pull request runs
 only the lint unless it carries the `full-ci` label (adding the label
 starts the run) or is run by hand with Actions > CI > Run workflow; the
-wall legs start, skip their steps and report, so the checks branch
-protection requires still arrive, and the other jobs report skipped. A
+wall legs start, skip their steps and report, and the `ci` job at the
+end passes when every job passed or was skipped; branch protection
+requires that one check, and a pull request need not be current with
+`main` to merge, since every push to `main` runs the full tiers. A
 draft runs nothing, and a new push cancels the pull request's run in
 progress. A first pull request from a fork waits for a maintainer to
 approve its workflow run.

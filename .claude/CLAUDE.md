@@ -14,7 +14,8 @@ never reads it.
   branch or in a worktree. Only the owner merges. Other sessions may
   share the checkout: stage files by name.
 - **CI on a pull request is the lint only.** Pushes to `main` run the
-  full tiers. Add the `full-ci` label to a pull request only for a change
+  full tiers. Branch protection requires the one `ci` check; a pull
+  request need not be current with `main`, and auto-merge works. Add the `full-ci` label to a pull request only for a change
   to `install.sh`, setup, the CI workflows, Docker or macOS paths. For
   any other change, run `python3 tests/run_wall.py` locally and say in
   the pull request that it passed.

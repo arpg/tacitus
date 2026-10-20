@@ -25,6 +25,11 @@
 # push cancels the pull request's run in progress. A first pull request
 # from a fork waits for a maintainer to approve its workflow run.
 #
+# The `ci` job at the end sums the others up: it fails when any of them
+# failed or was cancelled and passes when they passed or were skipped, so
+# branch protection requires that one check and the list of job names can
+# change without a settings change.
+#
 # Tier 3, the release suite, needs a login and runs on the owner's machine
 # (docs/EVAL.md, "Release tests"). Every action is pinned to a version.
 name: CI
@@ -215,3 +220,18 @@ jobs:
           # the smoke puts first on PATH answers 3.12 to setup.sh's `python3`.
           EA_SMOKE_PYTHON: /opt/homebrew/opt/python@3.12/libexec/bin/python3
         run: bash tests/install/smoke.sh
+
+  ci:
+    # The one check branch protection requires. always() keeps it running
+    # when a job it needs was skipped; the step reads each result.
+    if: always()
+    needs: [lint-and-validate, wall, wall-docker, bootstrap-linux, bootstrap-macos, install-smoke-linux, install-smoke-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed or was skipped
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          bad=$(echo "$RESULTS" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(" ".join(k for k,v in d.items() if v["result"] not in ("success","skipped")))')
+          if [ -n "$bad" ]; then echo "::error::failed or cancelled: $bad"; exit 1; fi
