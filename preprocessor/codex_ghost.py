@@ -48,6 +48,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import select
 import shlex
 import subprocess
@@ -522,7 +523,44 @@ def codex_suffix(scratch: Path, kind: str) -> str:
 
 # You are Codex, not Claude
 
-The rules above about Claude Code tools (Read, Bash allow lists, MCP, subagents) mean the same for your shell. The code is at {BOT_TREE} (read-only): run its scripts as `python3 {BOT_TREE}/preprocessor/<script>.py ...`, never a `~` path. EA_DIR is {scratch}: the ledger and the briefing there are yours to read and update. Mail and calendar reads go through the mediator as usual; a mail write (a draft, an archive, a snooze) is recorded by the mediator and not executed, which is expected: make the call you would make and say what you did. There is no Agent tool and no email-author subagent here: an email body comes from `email_writer.py write` first, and when it exits 3 or 4 you write the body yourself by the guide at {BOT_TREE}/.claude/agents/email-author.md and docs/ea/drafting-voice.md, after `style_profiles.py get --contact <addr>`. Never write a file outside EA_DIR. Do not ask the user anything; this run is unattended. Your final message is {final}."""
+The rules above about Claude Code tools (Read, Bash allow lists, MCP, subagents) mean the same for your shell. The code is at {BOT_TREE} (read-only): run its scripts as `python3 {BOT_TREE}/preprocessor/<script>.py ...`, never a `~` path. EA_DIR is {scratch}: the ledger and the briefing there are yours to read and update. Mail and calendar reads go through the mediator as usual; a mail write (a draft, an archive, a snooze) is recorded by the mediator and not executed, which is expected: make the call you would make and say what you did. There is no Agent tool and no email-author subagent here: an email body comes from `email_writer.py write` first, and when it exits 3 or 4 you write the body yourself by the guide at {BOT_TREE}/.claude/agents/email-author.md and docs/ea/drafting-voice.md, after `style_profiles.py get --contact <addr>`. Never write a file outside EA_DIR. Do not ask the user anything; this run is unattended. Your final message is {final}.
+
+Claims in your final message must match your command log. Say a draft, a reply or a Send card exists only after a `create-reply`, `create-draft` or `update-draft` call in this run returned an id, and name that id; otherwise say that nothing was staged and what blocked it. You never send, archive or close mail: a send waits for the user's button, an archive for the user's word, so never report either as done. Times for a meeting come from `scheduling_engine.py propose-meeting` run on the real request (`--help` is not a run); print every time in the user's time zone. A blocked turn ends with the exact items you need from the user. When a real photo or file cannot be fetched, say so and stop; never put a generated image or an invented fact in its place."""
+
+
+# Patterns in a Codex reply that claim a draft or a send, and the write
+# verbs that back a draft claim. A reply that claims more than the
+# command log shows is the ghost's commonest fault; the judge sees it and
+# the report counts it.
+_CLAIM_DRAFT = re.compile(r"\b(drafts? (is|are|was|were|created|ready|updated)|created (a|the|an|two|both) drafts?|"
+                          r"send (card|button)|repl(y|ies) (is|are) ready|staged (a|the|an|two|both) (draft|reply|note|event))", re.I)
+_CLAIM_SENT = re.compile(r"\b(sent|archived|submitted)\b", re.I)
+_DRAFT_VERBS = {"create-reply", "create-draft", "update-draft"}
+
+
+def claim_check(output: str, writes: list[dict]) -> dict:
+    """Does the reply claim a draft or a send that no recorded write
+    backs? {"draft_claimed", "draft_written", "sent_claimed", "mismatch"}."""
+    text = output or ""
+    real = [w for w in writes if "--help" not in (w.get("argv") or [])]
+    written = any(w.get("verb") in _DRAFT_VERBS for w in real)
+    draft_claimed = bool(_CLAIM_DRAFT.search(text))
+    sent_claimed = bool(_CLAIM_SENT.search(text))
+    return {"draft_claimed": draft_claimed, "draft_written": written, "sent_claimed": sent_claimed,
+            "mismatch": (draft_claimed and not written) or sent_claimed}
+
+
+def _harness_note(rec: dict, codex: dict) -> str:
+    notes = []
+    if codex.get("harness_error"):
+        notes.append(f"Codex harness note: {codex['harness_error']}")
+    c = rec.get("claims") or {}
+    if c.get("draft_claimed") and not c.get("draft_written"):
+        notes.append("harness check: the reply speaks of a draft or a Send card, but no create-reply, create-draft "
+                     "or update-draft was called in this run")
+    if c.get("sent_claimed"):
+        notes.append("harness check: the reply says something was sent, archived or submitted; the assistant can do none of these")
+    return f"({'; '.join(notes)})" if notes else ""
 
 
 def lane_prompt(prompt: str, scratch: Path) -> str:
@@ -681,6 +719,7 @@ def run_job(job: dict, *, codex_run=None, scratch_runner=None, keep: bool = Fals
                         "exit_code": res.get("exit_code"), "harness_error": res.get("harness_error") or "",
                         "files": (res.get("files") or [])[:40], "model": job.get("model") or ""}
         rec["writes"] = _writes_for(rid)
+        rec["claims"] = claim_check(res.get("output") or "", rec["writes"])
         rec["status"] = "ok" if not res.get("harness_error") else "error"
     except Exception as e:
         rec["codex"] = {"harness_error": f"ghost failed: {str(e)[:300]}"}
@@ -768,7 +807,7 @@ def grade(*, judge: str = "claude", max_turns: int = 50, runner=None) -> dict:
                     claude_reply=rec["claude"].get("output") or "(empty)",
                     codex_tools="; ".join(c.get("command", "") for c in codex.get("tool_calls") or [])[:800] or "none",
                     writes=_writes_text(rec.get("writes") or []), codex_reply=codex.get("output") or "(empty)",
-                    harness_note=f"(Codex harness note: {codex['harness_error']})" if codex.get("harness_error") else "",
+                    harness_note=_harness_note(rec, codex),
                     kinds=", ".join(PROBLEM_KINDS))
                 ans, meta = _judge(prompt, CHAT_JUDGE_SCHEMA, judge=judge, runner=runner)
                 row = {"id": rec["id"], "kind": "chat", "lane": rec.get("lane"), "ts": _iso(_now()),
@@ -826,6 +865,7 @@ def measure(kind: str, since: date | None = None) -> dict:
         m["better_codex"] = sum(1 for g in judged if g.get("better") == "codex")
         m["wrong_list"] = [{"id": g["id"], "lane": g.get("lane"), "problems": g.get("problems")}
                            for g in judged if g.get("codex_grade") == "wrong"][-10:]
+        m["claim_mismatches"] = sum(1 for t in ok if (t.get("claims") or {}).get("mismatch"))
         kinds = {}
         for g in judged:
             for p in g.get("problems") or []:
@@ -882,7 +922,8 @@ def report(as_json: bool = False) -> str:
         if kind == "briefing":
             head += f"; same {m.get('same', 0)} minor {m.get('minor', 0)} major {m.get('major', 0)}; codex better {m.get('better_codex', 0)}"
         else:
-            head += f"; send {m.get('send', 0)} edit {m.get('edit', 0)} wrong {m.get('wrong', 0)}; codex better {m.get('better_codex', 0)}"
+            head += (f"; send {m.get('send', 0)} edit {m.get('edit', 0)} wrong {m.get('wrong', 0)}; "
+                     f"codex better {m.get('better_codex', 0)}; claim mismatches {m.get('claim_mismatches', 0)}")
         head += f"; tokens in {m['input_tokens']:,} out {m['output_tokens']:,}; p50 {m['duration_p50_s']:.0f}s"
         lines.append(head)
         for r in k["reasons"]:

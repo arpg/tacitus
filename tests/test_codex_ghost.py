@@ -329,6 +329,23 @@ def test_a_wrong_chat_turn_lands_in_the_wrong_list(private):
     assert m["problem_kinds"] == [("wrong-fact", 2)]
 
 
+def test_a_reply_that_claims_a_draft_without_a_write_is_a_mismatch_the_judge_sees():
+    none = cg.claim_check("Both notes are ready; the Send cards are in your DM.", [])
+    assert none["draft_claimed"] and not none["draft_written"] and none["mismatch"]
+    help_only = cg.claim_check("Draft created.", [{"verb": "create-reply", "argv": ["create-reply", "--help"]}])
+    assert help_only["mismatch"], "a --help call backs nothing"
+    backed = cg.claim_check("Draft created, id AAMk1.", [{"verb": "create-reply", "argv": ["create-reply", "--message-id", "x"]}])
+    assert backed["draft_written"] and not backed["mismatch"]
+    sent = cg.claim_check("Reply sent and the thread archived.", [{"verb": "create-reply", "argv": ["create-reply"]}])
+    assert sent["sent_claimed"] and sent["mismatch"]
+    assert cg.claim_check("Nothing was staged; I need the amount.", [])["mismatch"] is False
+    note = cg._harness_note({"claims": none}, {})
+    assert "no create-reply" in note and note.startswith("(")
+    assert cg._harness_note({"claims": backed}, {}) == ""
+    text = cg.codex_suffix(Path("/x"), "chat")
+    assert "returned an id" in text and "never report either as done" in text and "--help` is not a run" in text
+
+
 # ── the wiring ───────────────────────────────────────────────────────
 
 def test_the_bot_and_the_lane_runner_hand_turns_to_the_ghost():

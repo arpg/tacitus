@@ -2548,7 +2548,7 @@
       ],
       "assertions": {
         "must_contain": [
-          "### Scheduling poll filling (When2Meet, WhenIsGood, Doodle, Timeful)",
+          "### Scheduling poll filling (When2Meet, WhenIsGood, Doodle, Timeful, Calendly polls)",
           "## Your role"
         ],
         "must_not_contain": [
