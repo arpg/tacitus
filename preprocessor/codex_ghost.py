@@ -567,6 +567,44 @@ def _spawn(path: Path) -> None:
                          start_new_session=True, cwd=str(SCRIPT_DIR), env=dict(os.environ, EA_DIR=str(EA_DIR)))
 
 
+STALE_JOB_S = 180
+
+
+def run_queued(*, older_than_s: int = STALE_JOB_S, now: float | None = None, runner=None) -> dict:
+    """Run the job files a worker left behind: a worker is a detached
+    child of the bot, so a bot restart (a deploy) takes it with it and
+    the job file stays. Any job older than `older_than_s` with no worker
+    alive for it runs here, in this process, one after another."""
+    jobs_dir = _store() / JOBS
+    now = time.time() if now is None else now
+    ran, skipped = [], []
+    for path in sorted(jobs_dir.glob("*.json")) if jobs_dir.exists() else []:
+        try:
+            age = now - path.stat().st_mtime
+        except OSError:
+            continue
+        if age < older_than_s or _worker_alive(path):
+            skipped.append(path.name)
+            continue
+        try:
+            job = json.loads(path.read_text())
+        except (OSError, ValueError):
+            path.unlink(missing_ok=True)
+            continue
+        rec = (runner or run_job)(job)
+        ran.append({"id": job.get("id"), "status": rec.get("status")})
+    return {"ran": ran, "skipped": skipped}
+
+
+def _worker_alive(path: Path) -> bool:
+    """True when a `run-job <path>` process exists for this job file."""
+    try:
+        out = subprocess.run(["pgrep", "-f", f"run-job {path}"], capture_output=True, text=True, timeout=10)
+        return out.returncode == 0 and out.stdout.strip() != ""
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def run_job(job: dict, *, codex_run=None, scratch_runner=None, keep: bool = False) -> dict:
     """Execute one queued replay as the resident and record it."""
     kind, jid, rid = job["kind"], job["id"], job["run_id"]
@@ -871,6 +909,7 @@ def main(argv=None) -> int:
     s = sub.add_parser("limits"); s.add_argument("--fresh", action="store_true")
     s = sub.add_parser("grade"); s.add_argument("--judge", default="claude", choices=("claude", "remote"))
     s.add_argument("--max", type=int, default=50)
+    sub.add_parser("run-queued", help="run the job files a worker left behind (a bot restart kills workers)")
     s = sub.add_parser("report"); s.add_argument("--json", action="store_true")
     sub.add_parser("final")
     s = sub.add_parser("gate"); s.add_argument("kind", choices=KINDS)
@@ -897,7 +936,12 @@ def main(argv=None) -> int:
     if a.cmd == "limits":
         print(json.dumps(limits(fresh=a.fresh), indent=1)); return 0
     if a.cmd == "grade":
-        print(json.dumps(grade(judge=a.judge, max_turns=a.max))); return 0
+        left = run_queued()
+        out = grade(judge=a.judge, max_turns=a.max)
+        out["requeued"] = left["ran"]
+        print(json.dumps(out)); return 0
+    if a.cmd == "run-queued":
+        print(json.dumps(run_queued())); return 0
     if a.cmd == "report":
         print(report(as_json=a.json)); return 0
     if a.cmd == "final":

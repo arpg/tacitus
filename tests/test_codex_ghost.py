@@ -125,6 +125,33 @@ def test_quota_stops_the_ghost_and_records_the_skip(private):
     assert rows[-1]["status"] == "skipped" and rows[-1]["skip_reason"].startswith("quota:")
 
 
+def test_a_job_a_dead_worker_left_behind_runs_from_the_sweep(private, monkeypatch):
+    """A worker is a detached child of the bot, so a bot restart kills it
+    and the job file stays; the sweep runs a job older than the stale
+    age with no worker alive, and leaves a fresh one to its worker."""
+    import time as _t
+    cg.start(7, ["chat"], 1.0)
+    spawned = []
+    cg.enqueue({"kind": "chat", "source_run_id": "old", "prompt": "P"}, spawn=spawned.append, lim={})
+    cg.enqueue({"kind": "chat", "source_run_id": "new", "prompt": "P"}, spawn=spawned.append, lim={})
+    old, new = spawned
+    os.utime(old, (_t.time() - 600, _t.time() - 600))
+    monkeypatch.setattr(cg, "_worker_alive", lambda path: False)
+    ran = []
+
+    def runner(job):
+        ran.append(job["id"])
+        (cg._store() / cg.JOBS / f"{job['id']}.json").unlink()
+        return {"status": "ok"}
+    out = cg.run_queued(runner=runner)
+    assert ran == [json.loads(old.read_text())["id"]] if old.exists() else len(ran) == 1
+    assert out["ran"][0]["status"] == "ok" and new.name in out["skipped"]
+    # a worker still alive keeps its job
+    os.utime(new, (_t.time() - 600, _t.time() - 600))
+    monkeypatch.setattr(cg, "_worker_alive", lambda path: True)
+    assert cg.run_queued(runner=lambda job: pytest.fail("a live worker's job must not run twice"))["ran"] == []
+
+
 def test_limits_come_from_the_app_server_answer_and_are_cached(private):
     calls = []
 
