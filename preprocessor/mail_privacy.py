@@ -2148,6 +2148,14 @@ def report(post: bool = False) -> dict:
     except Exception as e:
         text += f"\nModel A/B: report failed ({str(e)[:120]})."
     try:
+        # The Codex ghost arm (codex_ghost.py): its lines while a window is
+        # set, so the day's verdict per kind reaches the same report.
+        import codex_ghost
+        if codex_ghost.window():
+            text += "\n" + codex_ghost.report()
+    except Exception as e:
+        text += f"\nCodex ghost: report failed ({str(e)[:120]})."
+    try:
         import model_tiers
         tier_lines = model_tiers.summary_lines()
         if tier_lines:

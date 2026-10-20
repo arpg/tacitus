@@ -158,6 +158,24 @@ def test_the_ghost_runner_takes_the_production_path_for_a_chat_job_with_a_prompt
     assert rec["codex"]["tool_calls"][0]["command"] == "cmd"
 
 
+def test_a_codex_run_meets_the_same_gates_as_a_claude_run():
+    """Tool parity: the token gate and the mediator refuse the gated verbs
+    for any resident run, whatever the harness, and a Codex prompt names
+    the rules a Claude run gets from its deny list and its subagent."""
+    import mail_mediation as mm
+    for verb in ("send-draft", "send-gmail-draft", "create-event", "update-event", "delete-event", "schedule-send"):
+        assert verb in mm.GATED["graph_actions"], verb
+        assert verb not in mm.SAFE["graph_actions"], verb
+    assert "create-event" in mm.GATED.get("google_calendar_client", set())
+    text = cg.codex_suffix(ct.REAL_EA_DIR, "chat")
+    assert "no Agent tool and no email-author subagent" in text and "email_writer.py write" in text
+    assert "Never write a file outside EA_DIR" in text and "never a `~` path" in text
+    live = ct.live_prompt("P")
+    assert "waits for the user's button" in live and "recorded by the mediator" not in live
+    ghost = ct.ghost_prompt(f"see {ct.REAL_EA_DIR}/state", Path("/scratch/ea"))
+    assert "recorded by the mediator" in ghost and str(ct.REAL_EA_DIR) + "/state" not in ghost
+
+
 def test_the_bot_wires_the_codex_arm_and_the_tier():
     bot = (REPO / "ea-chat-bot.py").read_text()
     assert "def _codex_turn_live(" in bot
