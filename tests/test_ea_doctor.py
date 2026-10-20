@@ -284,22 +284,6 @@ def test_the_dashboard_loopback_fallback_is_a_warning():
     assert "EA_DASH_TOKEN" in got["fix"] and "set-secret.sh" in got["fix"]
 
 
-if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    passed = failed = 0
-    for t in tests:
-        try:
-            t()
-            print(f"  ✅ {t.__name__}")
-            passed += 1
-        except Exception as e:
-            print(f"  ❌ {t.__name__}: {e}")
-            traceback.print_exc()
-            failed += 1
-    print(f"\n  {passed} passed, {failed} failed")
-    sys.exit(1 if failed else 0)
-
-
 def test_share_masks_identities_and_keeps_the_report_shape():
     """--share is what a user pastes into a public issue: addresses, the
     account in a home path, URLs, hosts and long ids become placeholders;
@@ -324,3 +308,17 @@ def test_share_masks_identities_and_keeps_the_report_shape():
     r = subprocess.run([sys.executable, str(DOCTOR), "--ci", "--share"], capture_output=True, text=True)
     assert r.returncode == 0 and r.stdout.rstrip().endswith("(--share: addresses, account names, hosts and ids masked)")
 
+if __name__ == "__main__":
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    passed = failed = 0
+    for t in tests:
+        try:
+            t()
+            print(f"  ✅ {t.__name__}")
+            passed += 1
+        except Exception as e:
+            print(f"  ❌ {t.__name__}: {e}")
+            traceback.print_exc()
+            failed += 1
+    print(f"\n  {passed} passed, {failed} failed")
+    sys.exit(1 if failed else 0)
