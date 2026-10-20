@@ -866,6 +866,8 @@ def main(argv=None) -> int:
     s = sub.add_parser("run-job"); s.add_argument("path"); s.add_argument("--keep", action="store_true")
     s = sub.add_parser("run-lane"); s.add_argument("--agent", required=True); s.add_argument("--run-id", required=True)
     s.add_argument("--live", action="store_true")
+    s = sub.add_parser("smoke", help="one tiny ghost chat turn end to end as the resident; prints the record")
+    s.add_argument("--keep", action="store_true", help="keep the smoke thread's scratch root")
     a = ap.parse_args(argv)
 
     if not owner_trust.is_owner_process():
@@ -912,6 +914,21 @@ def main(argv=None) -> int:
         if res.get("harness_error"):
             print(res["harness_error"], file=sys.stderr); return 1
         sys.stdout.write(res.get("output") or ""); return 0
+    if a.cmd == "smoke":
+        # First contact: the whole ghost path on one harmless turn (the
+        # scratch EA_DIR made as the resident, the sandbox, the queue link,
+        # the -o file read back, the thread kept), with no mail involved.
+        import codex_turn
+        jid = job_id("chat", "smoke")
+        prompt = ("Run `python3 " + str(BOT_TREE) + "/preprocessor/ledger.py list --status open --limit 1` and then "
+                  "reply with one line: the word ok, the number of rows it printed, and nothing else.")
+        rec = codex_turn.run_turn(prompt, thread_key="codex-ghost-smoke", run_id=run_id_for(jid), live=False,
+                                  fresh_prompt=prompt, lane="dm")
+        print(json.dumps({k: rec.get(k) for k in ("output", "harness_error", "thread_id", "duration_ms", "num_turns",
+                                                    "usage", "staged")}, indent=1, default=str))
+        if not a.keep:
+            codex_turn.forget_thread("codex-ghost-smoke", "ghost")
+        return 0 if not rec.get("harness_error") else 1
     return 2
 
 
