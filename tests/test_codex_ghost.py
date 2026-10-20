@@ -304,3 +304,39 @@ def test_the_bot_and_the_lane_runner_hand_turns_to_the_ghost():
     doc = (REPO / "docs" / "codex-harness.md").read_text()
     assert "## The ghost arm" in doc and "## Production" in doc
     assert (REPO / "deploy" / "enable-codex-ghost.sh").exists()
+
+
+def test_the_enable_script_finds_the_binary_behind_npms_launcher(tmp_path):
+    """npm puts a JavaScript launcher on PATH and the static binary in the
+    platform package beside it; the script copies the binary, never the
+    launcher (the resident has no node)."""
+    import subprocess
+    pkg = tmp_path / "lib" / "node_modules" / "@openai" / "codex"
+    vendor = pkg / "node_modules" / "@openai" / "codex-linux-x64" / "vendor" / "x86_64-unknown-linux-musl"
+    (vendor / "bin").mkdir(parents=True)
+    (vendor / "codex-resources").mkdir()
+    (vendor / "bin" / "codex").write_text("#!/bin/sh\necho binary\n")
+    os.chmod(vendor / "bin" / "codex", 0o755)
+    (pkg / "bin").mkdir()
+    (pkg / "bin" / "codex.js").write_text("// launcher\n")
+    binp = tmp_path / "bin"
+    binp.mkdir()
+    (binp / "codex").symlink_to(pkg / "bin" / "codex.js")
+    script = ["/bin/bash", str(REPO / "deploy" / "enable-codex-ghost.sh"), "--print-source"]
+    env = dict(os.environ, PATH=f"{binp}:/usr/bin:/bin")
+    r = subprocess.run(script, capture_output=True, text=True, env=env, timeout=30)
+    assert r.returncode == 0, r.stderr
+    assert Path(r.stdout.strip()) == vendor
+    # a direct binary install: its own directory
+    direct = tmp_path / "direct"
+    direct.mkdir()
+    (direct / "codex").write_text("#!/bin/sh\n")
+    os.chmod(direct / "codex", 0o755)
+    r = subprocess.run(script, capture_output=True, text=True,
+                       env=dict(os.environ, PATH=f"{direct}:/usr/bin:/bin"), timeout=30)
+    assert r.returncode == 0 and Path(r.stdout.strip()) == direct
+    # no codex on PATH: a clear line and exit 1, before any sudo
+    (tmp_path / "empty").mkdir()
+    r = subprocess.run(script, capture_output=True, text=True,
+                       env=dict(os.environ, PATH=f"{tmp_path / 'empty'}:/usr/bin:/bin"), timeout=30)
+    assert r.returncode == 1 and "no codex binary" in r.stderr

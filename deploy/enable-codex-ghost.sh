@@ -27,22 +27,46 @@
 #   EA_CODEX_MODEL the model to write into ea-bot's config (default: the
 #                  owner's config.toml model, else gpt-5.6-sol)
 set -euo pipefail
-EA_BOT_HOME="$(getent passwd ea-bot | cut -d: -f6)"
-[ -n "$EA_BOT_HOME" ] || { echo "no ea-bot user; run setup-ea-user.sh first" >&2; exit 1; }
+EA_BOT_HOME="$(getent passwd ea-bot 2>/dev/null | cut -d: -f6 || true)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Where the real binary is. `codex` on the owner's PATH is usually npm's
+# JavaScript launcher (bin/codex.js in the @openai/codex package); the
+# static binary and its resources sit in the platform package beside it,
+# node_modules/@openai/codex-<platform>/vendor/<triple>/. A Homebrew or
+# a direct install puts the binary itself on PATH.
+codex_source_dir() {
+    local owner real pkg vendor
+    owner="$(command -v codex || true)"
+    [ -n "$owner" ] || return 1
+    real="$(readlink -f "$owner")"
+    case "$real" in
+        *.js)
+            pkg="$(dirname "$(dirname "$real")")"
+            for vendor in "$pkg"/node_modules/@openai/codex-*/vendor/*/ "$pkg"/../codex-*/vendor/*/; do
+                if [ -x "$vendor/bin/codex" ]; then printf '%s\n' "${vendor%/}"; return 0; fi
+            done
+            return 1 ;;
+        *)
+            # A real binary: its directory, with resources beside it when present.
+            if [ -d "$(dirname "$real")/codex-resources" ]; then printf '%s\n' "$(dirname "$real")"; return 0; fi
+            if [ -d "$(dirname "$(dirname "$real")")/codex-resources" ]; then printf '%s\n' "$(dirname "$(dirname "$real")")"; return 0; fi
+            printf '%s\n' "$(dirname "$real")"; return 0 ;;
+    esac
+}
+if [ "${1:-}" = "--print-source" ]; then
+    # For a check or a test: the directory the copy would come from, no sudo.
+    codex_source_dir || { echo "no codex binary found behind $(command -v codex || echo 'nothing on PATH')" >&2; exit 1; }
+    exit 0
+fi
+[ -n "$EA_BOT_HOME" ] || { echo "no ea-bot user; run setup-ea-user.sh first" >&2; exit 1; }
 if [ -z "${EA_CODEX_SRC:-}" ]; then
-    OWNER_CODEX="$(command -v codex || true)"
-    [ -n "$OWNER_CODEX" ] || { echo "codex is not on the owner's PATH; install it or set EA_CODEX_SRC" >&2; exit 1; }
-    # The npm package's vendor directory: bin/codex beside codex-resources.
-    REAL="$(readlink -f "$OWNER_CODEX")"
-    EA_CODEX_SRC="$(dirname "$(dirname "$REAL")")"
-    if [ ! -x "$EA_CODEX_SRC/bin/codex" ]; then
-        EA_CODEX_SRC="$(dirname "$REAL")"
-    fi
+    EA_CODEX_SRC="$(codex_source_dir || true)"
+    [ -n "$EA_CODEX_SRC" ] || { echo "no codex binary found behind the owner's \`codex\` (npm's launcher with no platform package?); set EA_CODEX_SRC to the directory holding bin/codex" >&2; exit 1; }
 fi
 [ -x "$EA_CODEX_SRC/bin/codex" ] || [ -x "$EA_CODEX_SRC/codex" ] || { echo "no codex binary under $EA_CODEX_SRC" >&2; exit 1; }
 BIN_DIR="$EA_CODEX_SRC/bin"; [ -d "$BIN_DIR" ] || BIN_DIR="$EA_CODEX_SRC"
+echo "[codex] source: $EA_CODEX_SRC"
 
 as_bot() { sudo -u ea-bot env HOME="$EA_BOT_HOME" PATH="$EA_BOT_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" "$@"; }
 
