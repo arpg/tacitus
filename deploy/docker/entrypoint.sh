@@ -49,7 +49,7 @@ DEPLOY_DIR="$EA_BOT_HOME/ea-system"
 log() { printf '[entrypoint] %s\n' "$*" >&2; }
 
 # The image gives every new volume its directories, owners and modes, the
-# ones setup-ea-user.sh sets on a host. A volume without them was made some
+# ones scripts/install/setup-ea-user.sh sets on a host. A volume without them was made some
 # other way (a bind mount, say); init stops there rather than chown a tree
 # another user can change.
 check_volume() {
@@ -139,7 +139,7 @@ run_as_owner_with_env() {
 }
 
 # A command as ea-bot in its deployed tree, as the agent role runs one, with
-# umask 027: a config file user_init.py writes lands at 0640, readable by
+# umask 027: a config file scripts/install/user_init.py writes lands at 0640, readable by
 # the owner through group ea and by no one else.
 run_as_ea_bot() {
     setpriv --reuid=ea-bot --regid=ea --init-groups \
@@ -153,7 +153,7 @@ run_as_ea_bot() {
 # First run). Who writes what follows the host split: ea-bot writes its
 # config and ~/.ea/.env, the owner writes the secrets, the push settings
 # and the tokens. Every question goes through ask(), which with --answers
-# reads the file by key (the keys of user_init.py --answers, listed in
+# reads the file by key (the keys of scripts/install/user_init.py --answers, listed in
 # docs/install-testing.md, plus the ones named below) and never the
 # terminal; the logins need a terminal and are skipped with --answers.
 # ---------------------------------------------------------------------
@@ -273,19 +273,19 @@ setup_answers_copy() {
 
 setup_config_phases() {
     local phase
-    say "The configuration questions (user_init.py, as ea-bot)"
+    say "The configuration questions (scripts/install/user_init.py, as ea-bot)"
     echo "  Each phase writes one file under ~/.ea/config. Enter takes the default."
     echo "  Not asked here: tone (it reads your sent mail after the mail sign-in) and"
     echo "  auth (the next step)."
     for phase in $SETUP_PHASES; do
-        say "user_init.py --phase $phase"
-        run_as_ea_bot python3 "$DEPLOY_DIR/user_init.py" "${SETUP_PHASE_ARGS[@]}" --phase "$phase"
+        say "scripts/install/user_init.py --phase $phase"
+        run_as_ea_bot python3 "$DEPLOY_DIR/scripts/install/user_init.py" "${SETUP_PHASE_ARGS[@]}" --phase "$phase"
     done
 }
 
 setup_graph_env() {
     local method pairs
-    say "Outlook: the Microsoft Graph app registration (SETUP.md, Microsoft Graph app registration)"
+    say "Outlook: the Microsoft Graph app registration (docs/SETUP.md, Microsoft Graph app registration)"
     echo "  The non-secret settings go in ~/.ea/.env (ea-bot's, mode 0640); a client"
     echo "  secret goes in the owner-private secrets.env (mode 0600)."
     echo "    1) confidential  auth-code flow + client secret (public client flows off)"
@@ -302,7 +302,7 @@ setup_graph_env() {
         *) log "Graph auth method '$REPLY' is not one of 1, 2, 4"; exit 2 ;;
     esac
     if [ "$method" = skip ]; then
-        echo "  Skipped. SETUP.md, Microsoft Graph app registration says what to put in ~/.ea/.env later."
+        echo "  Skipped. docs/SETUP.md, Microsoft Graph app registration says what to put in ~/.ea/.env later."
         return 0
     fi
     ask graph-client-id "Application (client) ID"
@@ -335,7 +335,7 @@ setup_graph_env() {
 setup_chat_env() {
     local site bot_email owner_id pairs
     [ "$SETUP_PROFILE" = assistant ] || return 0
-    say "Chat platform (assistant profile; SETUP.md, Zulip server)"
+    say "Chat platform (assistant profile; docs/SETUP.md, Zulip server)"
     echo "  Zulip is recommended: a server on this machine, where every message stays."
     ask chat-frontend "Chat platform: zulip or slack" zulip
     case "${REPLY,,}" in
@@ -365,7 +365,7 @@ setup_chat_env() {
             fi
             ;;
         slack)
-            echo "  SETUP.md, Slack: the app, its tokens, the private channel and your member id."
+            echo "  docs/SETUP.md, Slack: the app, its tokens, the private channel and your member id."
             ask slack-channel-id "EA Slack channel ID (C...)" ""
             pairs="$(jq -n --arg v "$REPLY" 'if $v == "" then {} else {EA_SLACK_CHANNEL_ID: $v} end')"
             ask slack-channel-name-env "EA Slack channel name" "ea-assistant"
@@ -385,15 +385,15 @@ setup_chat_env() {
 }
 
 setup_state_phase() {
-    say "user_init.py --phase state"
-    run_as_ea_bot python3 "$DEPLOY_DIR/user_init.py" "${SETUP_PHASE_ARGS[@]}" \
+    say "scripts/install/user_init.py --phase state"
+    run_as_ea_bot python3 "$DEPLOY_DIR/scripts/install/user_init.py" "${SETUP_PHASE_ARGS[@]}" \
         "${SETUP_CHAT_ARGS[@]}" --phase state
 }
 
 setup_push_phase() {
     [ "$SETUP_PROFILE" != assistant ] || return 0
-    say "user_init.py --phase push (as the owner: push.json is owner-private)"
-    run_as_owner python3 "$CODE_DIR/user_init.py" "${SETUP_PHASE_ARGS[@]}" --phase push
+    say "scripts/install/user_init.py --phase push (as the owner: push.json is owner-private)"
+    run_as_owner python3 "$CODE_DIR/scripts/install/user_init.py" "${SETUP_PHASE_ARGS[@]}" --phase push
 }
 
 claude_logged_in() {
@@ -487,7 +487,7 @@ setup_graph_signin() {
     if run_as_owner_with_env python3 "$CODE_DIR/preprocessor/graph_client.py"; then
         SETUP_GRAPH_SIGNED_IN=1
         if [ "$SETUP_GRAPH_METHOD" = confidential ]; then
-            # The requested scopes follow what the app grants (SETUP.md, Microsoft Graph app registration).
+            # The requested scopes follow what the app grants (docs/SETUP.md, Microsoft Graph app registration).
             run_as_owner_with_env python3 "$CODE_DIR/preprocessor/graph_client.py" --align --write \
                 || log "scope alignment failed; later: graph_client.py --align --write as the owner"
         fi
@@ -501,11 +501,11 @@ setup_graph_signin() {
 # can enter; ea-bot writes it into its config at umask 027.
 setup_tone_phase() {
     [ "$SETUP_GRAPH_SIGNED_IN" = 1 ] || return 0
-    say "user_init.py --phase tone (read as the owner, written as ea-bot)"
+    say "scripts/install/user_init.py --phase tone (read as the owner, written as ea-bot)"
     local dir
     dir="$(mktemp -d /run/ea-setup-tone.XXXXXX)" || { log "tone: no temp dir"; return 0; }
     chown "$OWNER_USER" "$dir"
-    if run_as_owner_with_env python3 "$CODE_DIR/user_init.py" "${SETUP_PHASE_ARGS[@]}" \
+    if run_as_owner_with_env python3 "$CODE_DIR/scripts/install/user_init.py" "${SETUP_PHASE_ARGS[@]}" \
             --phase tone --out "$dir/baseline.json" && [ -s "$dir/baseline.json" ]; then
         run_as_ea_bot sh -c 'cat > "$1.new" && mv "$1.new" "$1"' _ \
             "$EA_DIR/config/writing-style-baseline.json" < "$dir/baseline.json" \
@@ -516,7 +516,7 @@ setup_tone_phase() {
 
 setup_google_signin() {
     [ -z "$SETUP_ANSWERS" ] || return 0
-    say "Google Calendar (optional; SETUP.md, Google OAuth app)"
+    say "Google Calendar (optional; docs/SETUP.md, Google OAuth app)"
     if ! run_as_owner test -e "$EA_DIR/auth/google_client_secret.json"; then
         echo "  No ~/.ea/auth/google_client_secret.json yet. Put it there as the owner, then:"
         echo "    docker compose run --rm owner python3 /opt/ea-system/preprocessor/google_calendar_client.py --setup"
@@ -530,7 +530,7 @@ setup_google_signin() {
 
 setup_doctor() {
     # The misses a container has at this point: the EA-Managed calendar
-    # (SETUP.md, Google OAuth app, in Google Calendar) and whichever login was skipped.
+    # (docs/SETUP.md, Google OAuth app, in Google Calendar) and whichever login was skipped.
     local expect="EA-Managed calendar" rc=0
     [ "$SETUP_CLAUDE_LOGIN" = 1 ] || expect="$expect,ea-bot: Claude login"
     [ "$SETUP_GRAPH_SIGNED_IN" = 1 ] || expect="$expect,auth: msal_token_cache.json"

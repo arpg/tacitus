@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# setup-ea-user-macos.sh — Provision ea-bot workspace on macOS
+# scripts/install/setup-ea-user-macos.sh — Provision ea-bot workspace on macOS
 #
-# macOS equivalent of setup-ea-user.sh. Isolation is MANDATORY (Layer 1
+# macOS equivalent of scripts/install/setup-ea-user.sh. Isolation is MANDATORY (Layer 1
 # of the security model — see docs/SECURITY.md). There is no opt-out.
 #
 # Creates:
@@ -17,7 +17,7 @@
 # test against. Read each step before running, and ask Claude Code if
 # any command fails. Corrections welcome via PR.
 #
-# Run once during initial setup: sudo bash setup-ea-user-macos.sh
+# Run once during initial setup: sudo bash scripts/install/setup-ea-user-macos.sh
 # Re-run safely (idempotent).
 #
 # --- Notice to Claude Code agents running this script --------------
@@ -33,7 +33,7 @@
 set -euo pipefail
 
 if [ "$(uname -s)" != "Darwin" ]; then
-    echo "ERROR: This script is macOS-only. Use setup-ea-user.sh on Linux." >&2
+    echo "ERROR: This script is macOS-only. Use scripts/install/setup-ea-user.sh on Linux." >&2
     exit 1
 fi
 
@@ -42,7 +42,7 @@ REAL_USER="${SUDO_USER:-$(whoami)}"
 REAL_HOME="$(eval echo ~"$REAL_USER")"
 
 if [ "$REAL_USER" = "root" ]; then
-    echo "ERROR: Run as 'sudo bash setup-ea-user-macos.sh', not as root directly."
+    echo "ERROR: Run as 'sudo bash scripts/install/setup-ea-user-macos.sh', not as root directly."
     echo "The script needs to know your real username via SUDO_USER."
     exit 1
 fi
@@ -51,7 +51,7 @@ REAL_UID="$(id -u "$REAL_USER")"
 # usually staff), so "$REAL_USER:$REAL_USER" is an illegal owner here.
 REAL_GROUP="$(id -gn "$REAL_USER")"
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"   # the checkout root; this script lives in scripts/install/
 CLAUDE_BIN="$(which claude 2>/dev/null || echo /usr/local/bin/claude)"
 EA_BOT_HOME="/Users/ea-bot"
 EA_BOT_EA_DIR="$EA_BOT_HOME/.ea"
@@ -206,7 +206,7 @@ elif [ -L "$OLD_EA_DIR" ]; then
     echo "Symlink already exists at $OLD_EA_DIR → $(readlink "$OLD_EA_DIR")"
 else
     echo "WARNING: No .ea directory found at $OLD_EA_DIR or $EA_BOT_EA_DIR."
-    echo "  Run './setup.sh --profile <name>' first (SETUP.md 'The service account')."
+    echo "  Run './scripts/install/setup.sh --profile <name>' first (docs/SETUP.md 'The service account')."
     exit 1
 fi
 
@@ -358,7 +358,7 @@ echo ""
 echo "=== Next Steps ==="
 echo "1. Re-login to pick up 'ea' group membership"
 echo "2. Log ea-bot's Claude Code in (/login, then Ctrl+C); the claude.ai Gmail and"
-echo "   Calendar connectors come with that account (SETUP.md 'Claude Code connectors'):"
+echo "   Calendar connectors come with that account (docs/SETUP.md 'Claude Code connectors'):"
 echo "   sudo -u ea-bot env HOME=$EA_BOT_HOME claude"
 echo "   (enable the connectors in claude.ai Settings > Connectors for that account)"
 echo "3. Every profile (after the chat platform on assistant): the services, then mail mediation:"

@@ -10,7 +10,7 @@ from the question, the answer as the quote, source `onboarding`). The
 morning briefing on a chat profile ends with the question of the day
 (the preprocessor puts it in the briefing JSON as `onboarding_question`);
 the email profile answers the bank in one sitting (`ask --count N`,
-`user_init.py --phase preferences`).
+`scripts/install/user_init.py --phase preferences`).
 
 State is `~/.ea/state/onboarding.json`, written through resident_io like
 the other state files:

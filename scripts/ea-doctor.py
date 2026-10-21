@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ea-doctor: is this install complete? Read-only. Never changes anything.
 
-The pieces a working install needs are spread across SETUP.md's
+The pieces a working install needs are spread across docs/SETUP.md's
 appendices, two setup scripts and a crontab file. This script is the
 checklist as code: every prerequisite the running system depends on,
 checked the way the system checks it, with the fix printed next to each
@@ -42,7 +42,7 @@ RESULTS: list[dict] = []
 NEEDS_SLACK = True
 # The EA-Managed calendar is required when the profile can create real
 # calendar events (the Create button); on the email and review-only
-# profiles Google Calendar is optional (SETUP.md "Google OAuth app"), so its checks WARN.
+# profiles Google Calendar is optional (docs/SETUP.md "Google OAuth app"), so its checks WARN.
 NEEDS_CALENDAR = True
 SLACK_CONFIG = ("slack_webhooks.json", "ea-channels.json")
 
@@ -148,7 +148,7 @@ def check_repo():
     if v >= (3, 10):
         ok("python", f"{v.major}.{v.minor}")
     else:
-        fail("python", f"{v.major}.{v.minor}", "Python 3.10+ is required (3.12+ on Ubuntu 24.04, see SETUP.md 'Python packages in three places')")
+        fail("python", f"{v.major}.{v.minor}", "Python 3.10+ is required (3.12+ on Ubuntu 24.04, see docs/SETUP.md 'Python packages in three places')")
 
 
 def check_templates():
@@ -156,7 +156,7 @@ def check_templates():
     for name in REQUIRED_CONFIG:
         p = cfg / name
         if not p.exists():
-            fail(f"template: config/{name}", "missing from the repo", "restore it; setup.sh copies the templates from here (SETUP.md 'Config files')")
+            fail(f"template: config/{name}", "missing from the repo", "restore it; scripts/install/setup.sh copies the templates from here (docs/SETUP.md 'Config files')")
             continue
         if name.endswith(".json"):
             good, why = _json_ok(p)
@@ -180,7 +180,7 @@ def _as_ea_bot(*cmd: str) -> subprocess.CompletedProcess | None:
 
 
 def check_ea_bot_claude(home: Path):
-    """ea-bot's own Claude Code (~/.local/bin/claude, SETUP.md 'The service account'), tested as
+    """ea-bot's own Claude Code (~/.local/bin/claude, docs/SETUP.md 'The service account'), tested as
     ea-bot because the owner cannot always see into ea-bot's home, and
     ea-bot's login: ~/.claude/.credentials.json, or on macOS, where ea-bot
     has no keychain, a CLAUDE_CODE_OAUTH_TOKEN in ~/.claude/settings.json
@@ -194,7 +194,7 @@ def check_ea_bot_claude(home: Path):
     else:
         fail("ea-bot: .local/bin/claude", "missing (the Claude CLI for the ea-bot user)",
              f"sudo -u ea-bot env HOME={home} bash -c 'curl -fsSL https://claude.ai/install.sh | bash' "
-             "(ea-bot's own install; SETUP.md 'The service account')")
+             "(ea-bot's own install; docs/SETUP.md 'The service account')")
     r = _as_ea_bot("test", "-e", str(home / ".claude/.credentials.json"))
     if r is not None and r.returncode == 0:
         ok("ea-bot: Claude login", ".claude/.credentials.json")
@@ -227,7 +227,7 @@ def check_claude_probe():
     try:
         home = Path(pwd.getpwnam("ea-bot").pw_dir)
     except KeyError:
-        fail(name, "no ea-bot user", "sudo bash setup-ea-user.sh")
+        fail(name, "no ea-bot user", "sudo bash scripts/install/setup-ea-user.sh")
         return
     own = home / ".local/bin/claude"
     r = _as_ea_bot("test", "-x", str(own))
@@ -304,11 +304,11 @@ def check_users_and_dirs(ea_dir: Path):
             ok("ea-bot: ea-system")
         else:
             fail("ea-bot: ea-system", "missing (the deployed copy every lane runs)",
-                 "run setup-ea-user.sh, then scripts/deploy.sh (or commit once: the post-commit hook deploys)")
+                 "run scripts/install/setup-ea-user.sh, then scripts/deploy.sh (or commit once: the post-commit hook deploys)")
         check_ea_bot_claude(home)
     except KeyError:
         fail("ea-bot user", "no such user",
-             "sudo bash setup-ea-user.sh (creates the user, group ea, sudoers, dirs)")
+             "sudo bash scripts/install/setup-ea-user.sh (creates the user, group ea, sudoers, dirs)")
         return
     me = pwd.getpwuid(os.getuid()).pw_name
     groups = subprocess.run(["id", "-nG", me], capture_output=True, text=True).stdout.split()
@@ -399,7 +399,7 @@ def check_config(ea_dir: Path):
     for name in REQUIRED_CONFIG:
         p = _config_file(cfg, name)
         if not p.exists():
-            fail(f"config: {name}", "missing", f"cp {REPO}/config/{name} {p}; then edit (SETUP.md 'Config files')")
+            fail(f"config: {name}", "missing", f"cp {REPO}/config/{name} {p}; then edit (docs/SETUP.md 'Config files')")
             continue
         if name.endswith(".json"):
             good, why = _json_ok(p)
@@ -430,7 +430,7 @@ def check_config(ea_dir: Path):
             (ok if cal else miss)("EA-Managed calendar",
                                   "configured" if cal else "no calendar_id"
                                   + ("" if NEEDS_CALENDAR else "; optional on this profile"),
-                                  "SETUP.md 'The EA-Managed calendar': create it and record its id")
+                                  "docs/SETUP.md 'The EA-Managed calendar': create it and record its id")
             # The mediator trusts only the owner-private copy of that id;
             # without it every hold and the reconciler's writes are refused.
             if cal:
@@ -483,7 +483,7 @@ def check_install_overlay(ea_dir: Path):
     if home is None:
         render = f"python3 {REPO}/preprocessor/install_overlay.py render (as yourself; the ea-bot user does not exist yet)"
     else:
-        # The command the setup docs give (SETUP.md 'The install overlay'); the render
+        # The command the setup docs give (docs/SETUP.md 'The install overlay'); the render
         # finds ea-bot's tree from its passwd home.
         render = f"sudo -u ea-bot /usr/bin/python3 {code}/preprocessor/install_overlay.py render"
     if not rendered.exists():
@@ -511,12 +511,12 @@ SECRETS_NAME = "~/.ea-private/secrets.env"
 
 def _env_fix() -> str:
     """Where ~/.ea/.env comes from on this profile and frontend."""
-    graph = ("python3 user_init.py --phase auth (an answers file in the setup skill) writes "
-             "the GRAPH_* keys (SETUP.md 'Microsoft Graph app registration')")
+    graph = ("python3 scripts/install/user_init.py --phase auth (an answers file in the setup skill) writes "
+             "the GRAPH_* keys (docs/SETUP.md 'Microsoft Graph app registration')")
     if not NEEDS_SLACK:
         return graph
     if CHAT_FRONTEND == "slack":
-        return f"{graph}; the Slack ids go there too (SETUP.md 'The Slack environment files')"
+        return f"{graph}; the Slack ids go there too (docs/SETUP.md 'The Slack environment files')"
     return f"{graph}; {CHAT_FRONTEND} needs no key there (its settings are the chat block)"
 
 
@@ -526,7 +526,7 @@ def check_env(ea_dir: Path) -> dict:
         (fail if NEEDS_SLACK else warn)("~/.ea/.env", "missing", _env_fix())
     for k in REQUIRED_ENV:
         (ok if env.get(k) else fail)(f"env: {k}", "" if env.get(k) else "unset",
-                                     "add it to ~/.ea/.env (SETUP.md 'The Slack environment files'); EA_SLACK_OWNER_ID is your Slack member id")
+                                     "add it to ~/.ea/.env (docs/SETUP.md 'The Slack environment files'); EA_SLACK_OWNER_ID is your Slack member id")
     for k in OPTIONAL_ENV:
         (ok if env.get(k) else warn)(f"env (optional): {k}", "" if env.get(k) else "unset; default applies")
     secrets, source = _owner_secrets(ea_dir)
@@ -534,16 +534,16 @@ def check_env(ea_dir: Path) -> dict:
         (fail if REQUIRED_SECRETS else warn)(
             SECRETS_NAME, "missing",
             f"put the secrets in {SECRETS_NAME}, mode 600, in a 0700 ~/.ea-private owned by you "
-            "(SETUP.md 'Secrets'); ea-bot must not be able to read it")
+            "(docs/SETUP.md 'Secrets'); ea-bot must not be able to read it")
     elif source != _private_dir() / _owner_trust().SECRETS_FILE:
         warn(SECRETS_NAME, f"only the legacy {source} (in ea-bot's tree)",
              f"move its lines to {SECRETS_NAME} (mode 600); sudo bash deploy/harden-permissions.sh "
-             "copies them when that file is missing (SETUP.md 'Secrets')")
+             "copies them when that file is missing (docs/SETUP.md 'Secrets')")
     else:
         ok(SECRETS_NAME, str(source))
     for k in REQUIRED_SECRETS:
         (ok if secrets.get(k) else fail)(f"secret: {k}", "" if secrets.get(k) else "unset",
-                                         f"SETUP.md 'The Slack app' and 'The app-level token'; put the token in "
+                                         f"docs/SETUP.md 'The Slack app' and 'The app-level token'; put the token in "
                                          f"{SECRETS_NAME} (mode 600)"
                                          if k.startswith("SLACK_") else
                                          f"put {k}=... in {SECRETS_NAME} (mode 600; "
@@ -704,7 +704,7 @@ def check_owner_trust(ea_dir: Path):
         fail("owner trust: auth dir", str(e)[:200],
              f"a mode only: chmod 750 {auth}. Another user's: never chown it; move it aside, "
              f"make a new one as the owner, sign in again and make a new scheduled-send key "
-             f"(SETUP.md 'The deferred-send signing key')")
+             f"(docs/SETUP.md 'The deferred-send signing key')")
         return
     key = auth / "scheduled-send-hmac.key"
     if key.exists():
@@ -715,7 +715,7 @@ def check_owner_trust(ea_dir: Path):
         except (OSError, ot.OwnerTrustError) as e:
             fail("owner trust: scheduled-send key", f"{str(e)[:200]} (scheduled sends are held)",
                  f"chmod 600 {key} as the owner; a key another user owns: delete it and make a new one "
-                 f"(SETUP.md 'The deferred-send signing key'), never chown it")
+                 f"(docs/SETUP.md 'The deferred-send signing key'), never chown it")
     tokens = [auth / n for n in ("msal_token_cache.json", "msal_tokens.json")]
     tokens += sorted(auth.glob("google_token_*.json"))
     # Plain-text tokens an owner plugin's harvest writes (owner_trust.HARVESTED_TOKEN_GLOB).
@@ -827,15 +827,15 @@ def check_auth(ea_dir: Path):
     elif p.exists():
         good, why = _json_ok(p)
         (ok if good else fail)("auth: msal_token_cache.json", why or "parses",
-                               "SETUP.md 'Microsoft Graph app registration'; a torn file: keep its first JSON object (graph_client does this on load)")
+                               "docs/SETUP.md 'Microsoft Graph app registration'; a torn file: keep its first JSON object (graph_client does this on load)")
     else:
-        fail("auth: msal_token_cache.json", "missing", "SETUP.md 'Microsoft Graph app registration', then python3 preprocessor/graph_actions.py list-mail --folder inbox --top 1")
+        fail("auth: msal_token_cache.json", "missing", "docs/SETUP.md 'Microsoft Graph app registration', then python3 preprocessor/graph_actions.py list-mail --folder inbox --top 1")
     toks = sorted(auth.glob("google_token_*.json")) if auth.exists() else []
     (ok if toks else warn)("auth: google tokens", f"{len(toks)} account file(s)",
-                           "SETUP.md 'Google OAuth app': google_calendar_client.py --setup for each Google account in scheduling-preferences.json")
+                           "docs/SETUP.md 'Google OAuth app': google_calendar_client.py --setup for each Google account in scheduling-preferences.json")
     key = auth / "scheduled-send-hmac.key"
     (ok if key.exists() else warn)("auth: scheduled-send-hmac.key", "" if key.exists() else "missing",
-                                   "SETUP.md 'The deferred-send signing key'")
+                                   "docs/SETUP.md 'The deferred-send signing key'")
 
 
 GRAPH_AUTH_METHODS = ("", "confidential", "device_code", "interactive")
@@ -901,12 +901,12 @@ def check_slack(env: dict):
         fail("slack: auth.test", str(e)[:120], "check the network and SLACK_BOT_TOKEN")
         return
     if not body.get("ok"):
-        fail("slack: auth.test", body.get("error", "?"), "regenerate the bot token (SETUP.md 'The Slack app')")
+        fail("slack: auth.test", body.get("error", "?"), "regenerate the bot token (docs/SETUP.md 'The Slack app')")
         return
     ok("slack: auth.test", f"team {body.get('team_id')} bot {body.get('user_id')}")
     missing = [s for s in REQUIRED_SLACK_SCOPES if s not in scopes]
     (ok if not missing else fail)("slack: bot scopes", "all present" if not missing else "missing " + ", ".join(missing),
-                                  "api.slack.com/apps > OAuth & Permissions > Bot Token Scopes; then reinstall (SETUP.md 'The Slack app')")
+                                  "api.slack.com/apps > OAuth & Permissions > Bot Token Scopes; then reinstall (docs/SETUP.md 'The Slack app')")
     cid = env.get("EA_SLACK_CHANNEL_ID", "")
     if cid:
         try:
@@ -919,7 +919,7 @@ def check_slack(env: dict):
             if not info.get("ok"):
                 fail("slack: EA channel", info.get("error", "?"), "invite the bot to the channel; check EA_SLACK_CHANNEL_ID")
             elif not ch.get("is_private"):
-                fail("slack: EA channel", f"#{ch.get('name')} is PUBLIC", "the EA channel must be private (SETUP.md 'The private channel')")
+                fail("slack: EA channel", f"#{ch.get('name')} is PUBLIC", "the EA channel must be private (docs/SETUP.md 'The private channel')")
             elif not ch.get("is_member"):
                 fail("slack: EA channel", f"bot is not a member of #{ch.get('name')}", "/invite @EA in the channel")
             else:
@@ -1076,13 +1076,13 @@ def check_services():
         check_launchd_services()
         return
     if not shutil.which("systemctl"):
-        warn("systemd", "not available", "SETUP.md 'Services'")
+        warn("systemd", "not available", "docs/SETUP.md 'Services'")
         return
     user_unit = Path.home() / ".config/systemd/user/ea-chat-bot.service"
     if user_unit.exists():
         warn("service: ea-chat-bot user unit", f"{user_unit} exists; the bot is the system unit",
              "systemctl --user disable --now ea-chat-bot, remove the file, systemctl --user "
-             "daemon-reload, then sudo bash deploy/harden-permissions.sh (SETUP.md 'Services')")
+             "daemon-reload, then sudo bash deploy/harden-permissions.sh (docs/SETUP.md 'Services')")
     for unit, required in SERVICES:
         r = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True)
         state = r.stdout.strip()
@@ -1091,7 +1091,7 @@ def check_services():
         elif required and NEEDS_SLACK:
             fail(f"service: {unit}", state or "unknown",
                  "sudo bash deploy/harden-permissions.sh writes and starts the system unit "
-                 "(SETUP.md 'Services')")
+                 "(docs/SETUP.md 'Services')")
         elif required:
             warn(f"service: {unit}", state or "not installed", "the Slack bot; not used by this profile")
         else:
@@ -1294,7 +1294,7 @@ def check_persistence_digest(now: float | None = None):
     ot = _owner_trust()
     path = _private_dir() / persistence_digest.SNAPSHOT_FILE
     name = "persistence digest"
-    fix = (f"the cron line is in SETUP.md 'Cron schedule'; python3 {DIGEST_SCRIPT} runs it "
+    fix = (f"the cron line is in docs/SETUP.md 'Cron schedule'; python3 {DIGEST_SCRIPT} runs it "
            "now, and ~/.ea-private/logs/persistence-digest.log says why a run failed")
     try:
         doc = json.loads(ot.read_owner_file(path))
@@ -1342,7 +1342,7 @@ def check_dashboard_bind():
          + (f" since {doc['since']}" if doc.get("since") else ""),
          "scripts/set-secret.sh EA_DASH_TOKEN (a long random value), then "
          "restart the ea-dashboard service; or EA_DASH_BIND=127.0.0.1 to mean loopback "
-         "(SETUP.md 'Project dashboard')")
+         "(docs/SETUP.md 'Project dashboard')")
 
 
 def check_cron():

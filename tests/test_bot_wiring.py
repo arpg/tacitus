@@ -488,7 +488,7 @@ def test_a_new_message_opens_its_thread_under_the_key_it_already_has():
 def test_scheduling_lane_is_one_session_per_thread():
     """The scheduling channel never uses the resident, a room binding or
     the conversation index: each thread is its own session on
-    CLAUDE-scheduling.md, and a new thread starts from nothing."""
+    prompts/CLAUDE-scheduling.md, and a new thread starts from nothing."""
     hm = _fn_body("handle_message_async")
     assert "sched_lane = bool(SCHED_CHANNEL_ID) and channel == SCHED_CHANNEL_ID" in hm
     assert "if _resident_cfg.enabled() and not sched_lane and not per_topic:" in hm
@@ -497,13 +497,13 @@ def test_scheduling_lane_is_one_session_per_thread():
                  "                    _maybe_rotate_room_session(channel, thread_ts, is_thread_reply)")
     assert "\n                _bind_room_session(channel, thread_ts)" in hm[i:i + 500]
     assert "session_id, resuming, session_meta = _sessions.lookup(thread_ts)" in hm
-    assert 'SCRIPT_DIR / "CLAUDE-scheduling.md"' in hm and "{task_block}" in hm
+    assert 'SCRIPT_DIR / "prompts/CLAUDE-scheduling.md"' in hm and "{task_block}" in hm
     assert "scheduling_only = sched_lane or" in hm
     assert 'conv_block = "" if sched_lane else' in hm
     assert 'run_model = _ea_config.get_models().get("scheduler") or MODEL' in hm
     assert "_record_invocation(\n            run_model, elapsed" in hm, "the footer names the model that ran"
-    assert "act as Kit's" not in hm, "the channel prefix moved into CLAUDE-scheduling.md"
-    ops = (ROOT / "CLAUDE-scheduling.md").read_text()
+    assert "act as Kit's" not in hm, "the channel prefix moved into prompts/CLAUDE-scheduling.md"
+    ops = (ROOT / "prompts/CLAUDE-scheduling.md").read_text()
     for must in ("no memory", "propose-meeting", "validate-draft", "pending-event.json",
                  "email-author", "Never call", "EA-Managed"):
         assert must in ops, must
@@ -1067,7 +1067,7 @@ def test_the_remote_arm_runs_the_same_harness_through_the_gateway():
     assert 'run_model, run_effort = _arms.remote_model() + "+slim", ""' in body
     assert "if arm == \"remote\":\n            use_mcp = False" in body
     assert "prompt = _rsp.compose(user_profile, user_rules, task_block," in body
-    assert (ROOT / "CLAUDE-scheduling-remote.md").exists()
+    assert (ROOT / "prompts/CLAUDE-scheduling-remote.md").exists()
     # Every Claude run of the turn carries the arm's environment.
     runs = re.findall(r"_run_claude_streaming\(\n\s+_claude_args_for\([^\n]*\n\s+timeout=[^\n]*", body)
     assert len(runs) >= 4

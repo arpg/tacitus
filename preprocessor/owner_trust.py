@@ -800,7 +800,7 @@ def _seed_calendar(priv: Path, tree: Path, *, required: bool = True,
                 return 1 if required else 0
         if not cal and flag_id is None:
             print(f"  calendar: no ea_managed_calendar.calendar_id in {conf}; "
-                  f"SETUP.md 'The EA-Managed calendar', then `owner_trust.py seed --calendar`",
+                  f"docs/SETUP.md 'The EA-Managed calendar', then `owner_trust.py seed --calendar`",
                   file=sys.stderr if required else sys.stdout)
             return 1 if required else 0
         acct = str((ea or {}).get("email") or "").strip() if isinstance(ea, dict) else ""

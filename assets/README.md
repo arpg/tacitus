@@ -6,7 +6,7 @@ Slack accepts.
 
 `scripts/zulip_bootstrap.py` uploads it to the bot it creates, and to an
 existing bot with `--avatar`. On Slack, upload it by hand under **Basic
-Information > Display Information > App icon** (SETUP.md "The Slack
+Information > Display Information > App icon** (docs/SETUP.md "The Slack
 app").
 
 The picture is a square crop of

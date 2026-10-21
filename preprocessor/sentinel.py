@@ -87,7 +87,7 @@ LEDGER_SYNC_LOG = owner_log("ledger-sync.log")
 LOG_DIR = owner_log_dir()
 SENTINEL_LOG = owner_log("sentinel.log")
 # The owner keeps the cron schedule as a file in the home directory
-# (SETUP.md "Cron schedule"); the sentinel runs as the owner.
+# (docs/SETUP.md "Cron schedule"); the sentinel runs as the owner.
 CRONTAB_MASTER = Path(os.environ.get("EA_CRONTAB_MASTER") or str(Path.home() / "crontab.master"))
 
 def _bot_unit() -> str:

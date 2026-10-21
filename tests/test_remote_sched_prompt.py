@@ -25,7 +25,7 @@ def test_compose_is_compact_and_carries_the_parts():
     assert "update-draft --message-id <m-ref of the draft>" in p and '"own": true' in p and '"is_draft": true' in p
     assert '"timezone":"Europe/London"' in p and "Never create-reply beside a draft the user wrote." in p
     assert len(p) < 12000
-    lane = (ROOT / "CLAUDE-scheduling.md").read_text() + (ROOT / "skills" / "scheduling-rules.md").read_text()
+    lane = (ROOT / "prompts/CLAUDE-scheduling.md").read_text() + (ROOT / "skills" / "scheduling-rules.md").read_text()
     assert len(p) < len(lane) / 3
 
 

@@ -104,7 +104,7 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         if: env.LEG_TESTS == 'true'
         with:
-          # 3.10 is the floor SETUP.md states; the other legs take a current release.
+          # 3.10 is the floor docs/SETUP.md states; the other legs take a current release.
           python-version: ${{ matrix.os == 'ubuntu-22.04' && '3.10' || '3.12' }}
 
       - name: Install dependencies
@@ -217,7 +217,7 @@ jobs:
       - name: Install smoke (email profile, no accounts)
         env:
           # libexec/bin holds an unversioned python3, so the directory
-          # the smoke puts first on PATH answers 3.12 to setup.sh's `python3`.
+          # the smoke puts first on PATH answers 3.12 to scripts/install/setup.sh's `python3`.
           EA_SMOKE_PYTHON: /opt/homebrew/opt/python@3.12/libexec/bin/python3
         run: bash tests/install/smoke.sh
 

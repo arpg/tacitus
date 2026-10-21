@@ -134,7 +134,7 @@ RESIDENT_MODULES = frozenset({
 # for what is never safe as the owner: running an env file as code, and git
 # in the lanes' tree.
 TERMINAL_TOOLS = frozenset({
-    "setup.sh", "setup-ea-user.sh", "setup-ea-user-macos.sh", "user_init.py",
+    "scripts/install/setup.sh", "scripts/install/setup-ea-user.sh", "scripts/install/setup-ea-user-macos.sh", "scripts/install/user_init.py",
     "deploy/enable-mail-mediation.sh", "deploy/enable-deck-builder.sh",
     "deploy/harden-permissions.sh", "deploy/stage-proc-hidepid.sh",
     "scripts/zulip_switch.sh", "scripts/ea-doctor.py", "scripts/build_closure_corpus.py",

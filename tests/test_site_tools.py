@@ -353,20 +353,20 @@ def test_the_sites_and_the_bot_account_come_from_github_json(tmp_path, monkeypat
 def test_an_unconfigured_token_dir_is_refused_in_one_line(monkeypatch):
     monkeypatch.setattr(st, "SITES", {SLUG: {"title": "T", "repo": "o/t", "url": "https://t/"}})
     monkeypatch.setattr(st, "BOT_TOKEN_DIR", "")
-    with pytest.raises(st.SiteError, match="github.json names no bot_token_dir; see SETUP.md"):
+    with pytest.raises(st.SiteError, match="github.json names no bot_token_dir; see docs/SETUP.md"):
         st.token_file(SLUG)
 
 
 def test_an_unconfigured_install_is_refused_in_one_line(env, monkeypatch):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(st, "SITES", {})
-        with pytest.raises(st.SiteError, match="github.json names no sites; see SETUP.md"):
+        with pytest.raises(st.SiteError, match="github.json names no sites; see docs/SETUP.md"):
             st.cmd_status(SLUG)
         assert st.cmd_list()["sites"] == []
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(st, "BOT_NAME", "")
         (env["clone"] / "index.html").write_text("<p>v2</p>\n")
-        with pytest.raises(st.SiteError, match="github.json names no bot_login or bot_email; see SETUP.md"):
+        with pytest.raises(st.SiteError, match="github.json names no bot_login or bot_email; see docs/SETUP.md"):
             st.cmd_commit(SLUG, "v2")
 
 

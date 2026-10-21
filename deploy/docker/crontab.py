@@ -2,7 +2,7 @@
 """Write the container's crontab for supercronic.
 
 The scheduler service runs this at start, as the owner, and hands the
-output to supercronic. It holds the same jobs setup.sh and SETUP.md "Cron schedule"
+output to supercronic. It holds the same jobs scripts/install/setup.sh and docs/SETUP.md "Cron schedule"
 install on a host, for the install profile in ea-config.json:
 
   - every profile: the briefings, the weekly audit, intake, ledger sync,
@@ -14,7 +14,7 @@ install on a host, for the install profile in ea-config.json:
   - one line per schedule of each plugin in ~/.ea/plugins: a v1 plugin
     from its own plugin.json when that says enabled; a v2 plugin from the
     owner's lock (plugins.lock.json in the private directory), the way
-    setup.sh and plugin_registry.get_plugin read it, so a v2 manifest
+    scripts/install/setup.sh and plugin_registry.get_plugin read it, so a v2 manifest
     without an accepted, enabled lock entry schedules nothing;
   - the owner plugins' cron jobs, the lines `ea-plugin.py cron-lines`
     prints;
@@ -75,7 +75,7 @@ ADMISSIONS = (
 
 # Plugin manifests are ea-bot space and their fields become cron lines that
 # run as the owner, so a field is used only when it has its shape. These are
-# the checks setup.sh applies to the same manifests.
+# the checks scripts/install/setup.sh applies to the same manifests.
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 SCHEDULE = re.compile(r"@(?:reboot|yearly|annually|monthly|weekly|daily|hourly)"
                       r"|[0-9A-Za-z*/,-]+(?:[ \t]+[0-9A-Za-z*/,-]+){4}")

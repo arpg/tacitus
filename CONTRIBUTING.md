@@ -50,7 +50,7 @@ first; the operating file is read on every turn of every install.
 1. Fork the repository (or clone it, if you have write access), make a
    branch, and open a pull request from it.
 2. Turn the hooks on in your clone: `git config core.hooksPath .githooks`
-   (`setup.sh` does it on an install). The pre-commit hook runs a secrets
+   (`scripts/install/setup.sh` does it on an install). The pre-commit hook runs a secrets
    lint and a boundary lint; fix what they report and do not bypass
    them. The post-commit hook deploys only from the main checkout on
    `main`, and runs the test wall there.
@@ -78,7 +78,7 @@ ea-system/                     # this repository
 ├── run-agent.sh               # scheduled agents: briefings, audits, intake, list digests
 ├── run-plugin.sh              # scheduled plugins, run as ea-bot
 ├── CLAUDE.md                  # the operating core every lane reads; topic guides in docs/ea/
-├── CLAUDE-scheduling.md       # the scheduling channel's operating file
+├── prompts/                   # the scheduling channel's operating files
 ├── preprocessor/              # Python that spends no model tokens
 │   ├── chat/                  # chat front end: the interface, the Slack and Zulip adapters, cards
 │   ├── preprocess.py          # mail and calendar delta engine, request detection
@@ -98,12 +98,14 @@ ea-system/                     # this repository
 │   └── ...
 ├── ea_plugins/                # helpers a plugin imports: scoped ledger, mediated mail
 ├── skills/                    # instruction sets for the scheduled agents
+├── docs/                      # INSTALL.md, SETUP.md, ARCHITECTURE.md, SECURITY.md, the runbook
 ├── docs/ea/                   # topic guides appended to CLAUDE.md when a message needs them
 ├── .claude/agents/            # the email-author subagent
 ├── .claude/skills/setup/      # the /setup install skill
 ├── config/                    # templates, copied to ~/.ea/config/ at install
 ├── deploy/                    # root steps: mail mediation, hardening, deck builder; zulip/ runs the chat server
 ├── scripts/                   # ea-bot shell, doctor, deny lists, Zulip bootstrap and switch
+│   └── install/               # setup.sh, the service-account installers, user_init.py
 └── tests/                     # the test wall, prompt evals, smoke test, lints
 
 ~/.ea/                         # per-user state, shared with ea-bot (not in the repository)

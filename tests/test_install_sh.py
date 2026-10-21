@@ -63,12 +63,13 @@ def _stub(dir_: Path, name: str, body: str) -> None:
 
 @pytest.fixture
 def copy_with_stubs(tmp_path):
-    """A temporary copy of the checkout's shape (install.sh, setup.sh,
+    """A temporary copy of the checkout's shape (install.sh, scripts/install/setup.sh,
     preprocessor/, requirements.txt), a stub claude that logs every call,
     a stub python3 that is new enough and already has every package."""
     copy = tmp_path / "ea-system"
     (copy / "preprocessor").mkdir(parents=True)
-    for name in ("install.sh", "setup.sh", "requirements.txt"):
+    (copy / "scripts" / "install").mkdir(parents=True)
+    for name in ("install.sh", "scripts/install/setup.sh", "requirements.txt"):
         (copy / name).write_bytes((REPO / name).read_bytes())
     (copy / "install.sh").chmod(0o755)
     stubs = tmp_path / "stubs"

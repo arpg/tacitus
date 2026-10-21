@@ -6,7 +6,7 @@ For the security threat model, autonomy tiers, and "what prompt
 injection cannot do", see [SECURITY.md](SECURITY.md). For auth
 pathways and token lifetimes, see [AUTHENTICATION.md](AUTHENTICATION.md).
 For the resident-session lifecycle and per-dispatch context selection,
-see [../LLM_HARNESS_as_EA.md](../LLM_HARNESS_as_EA.md).
+see [llm-harness.md](llm-harness.md).
 
 **Keeping this document current**: A pre-commit hook warns when files
 depicted here change without an update to this document. See
@@ -274,7 +274,7 @@ drafting, reports in `~/.ea/state/reports/`, no chat platform; with
 nothing to read `pending-event.json`, proposed holds and events stay
 text in the report), `review-only` (`email` minus drafting, enforced by
 `scripts/disallowed-tools.review-only.txt` in every launcher) and
-`assistant` (the full system). `setup.sh --profile` installs the cron
+`assistant` (the full system). `scripts/install/setup.sh --profile` installs the cron
 lines for it (the bot's system unit comes from
 `deploy/harden-permissions.sh`), `run-agent.sh` writes every report to
 `~/.ea/state/reports/<agent>-latest.md` and posts to Slack only when the
@@ -293,7 +293,7 @@ manifest (its `context` grants included) and the capability digest the
 owner accepted. Owner processes act on the locked manifest copy, never
 on the live file, and a directory whose name is in the lock is never read
 as a v1 plugin, whatever its live `plugin.json` says
-(`plugin_registry.locked_names`; `run-plugin.sh` and `setup.sh` follow
+(`plugin_registry.locked_names`; `run-plugin.sh` and `scripts/install/setup.sh` follow
 the same rule). The install policy comes only from the owner-private
 `plugins-policy.json`.
 
@@ -456,7 +456,7 @@ bodies come from the `email-author` subagent in `.claude/agents/`, which
 carries its own model.
 
 Two prompts carry all their instructions: the scheduling prompt
-(`CLAUDE-scheduling.md`, and its compact form for the remote arm) and
+(`prompts/CLAUDE-scheduling.md`, and its compact form for the remote arm) and
 the slim reply prompt. They run outside the tree, each in its own
 directory under the resident's `~/.local/state/ea-lanes/`
 (`slack_sessions.LANES`, `prepare_lane_dir`), so Claude Code adds no
@@ -505,7 +505,7 @@ the chat-replies step, and write the report for
 rules (`preferences.py render --skill`) come after both blocks.
 
 The scheduling channel is the lane with the shortest memory: each
-thread is one `claude -p` session on `CLAUDE-scheduling.md` (the
+thread is one `claude -p` session on `prompts/CLAUDE-scheduling.md` (the
 scheduler's own operating file), started with the scheduling rules, the
 staged-event guide and the scheduling-scoped user rules in the prompt.
 A new thread starts from nothing and runs on `models.scheduler` from
@@ -1043,7 +1043,7 @@ rules are gated per (session, thread). A session-keyed tracker
 (`~/.ea/state/resident-context.json`) records what each thread has already
 been sent this session; rotation changes the `session_id`, which
 auto-resets the tracker. `build_dispatch()` is pure and unit-tested. Full
-detail: [../LLM_HARNESS_as_EA.md](../LLM_HARNESS_as_EA.md) §4.
+detail: [llm-harness.md](llm-harness.md) §4.
 
 Long tasks: the orchestrator launches BACKGROUND subagents (Agent
 tool), replies immediately, and stays responsive. Completion reports
@@ -2186,7 +2186,7 @@ the user's answer runs `onboarding.py answer`, which adds a rule through
 `preferences.py` (kind and scope from the question, the answer as the
 quote, source `onboarding`, id `onboarding-<question id>`). State is
 `~/.ea/state/onboarding.json`. The email profile answers the bank in one
-sitting (`onboarding.py ask --count N`, `user_init.py --phase
+sitting (`onboarding.py ask --count N`, `scripts/install/user_init.py --phase
 preferences`). The chat bot's and `run-agent.sh`'s tool lists allow
 `onboarding.py`.
 
@@ -2249,7 +2249,7 @@ Files that participate in prompt construction and action execution:
 | `preprocessor/codex_ghost.py` | The Codex ghost arm: a window (`ghost.codex` in the owner-private config), one replay per finished Claude turn (a briefing lane's exact prompt from run-agent.sh; a chat turn's exact prompt from the bot) run detached as the resident; the mediator records every write on a `cron-ghost-codex-` run id and executes none; `grade` with the ghost week's judge against Claude's output; `report`, `final`, `gate` (GO, NO-GO, NOT ENOUGH DATA per kind against `PASS`); `limits` from `codex app-server`; the production switch `EA_HARNESS=codex` in run-agent.sh asks `gate` |
 | `ea-chat-bot.py` (Codex arm) | `_codex_turn_live` runs a turn drawn or pinned to the `codex` arm through `codex_turn.run_turn`; Claude takes the turn on a harness error or an empty answer; the footer says Codex; `_codex_ghost_turn` hands a turn Claude answered, with the prompt it got, to the ghost |
 | `preprocessor/id_handles.py` | Short handles (`m3`, `c2`, `e4`) for the 150-character Outlook ids within one run: added beside every id a mediated read prints, resolved back in the next call's argv by the ea-bot shims of graph_actions, scheduling_engine and google_calendar_client, only in a process whose effective user is the resident (an owner process resolves nothing); a model never retypes a long id |
-| `preprocessor/remote_sched_prompt.py` | The scheduling lane's compact prompt for the on-prem arm (`CLAUDE-scheduling-remote.md` + profile identity + scheduling rules + request, a fifth of the lane prompt), and its rebuild from a recorded lane prompt for the replay |
+| `preprocessor/remote_sched_prompt.py` | The scheduling lane's compact prompt for the on-prem arm (`prompts/CLAUDE-scheduling-remote.md` + profile identity + scheduling rules + request, a fifth of the lane prompt), and its rebuild from a recorded lane prompt for the replay |
 | `preprocessor/tool_gateway.py` | owner user service on loopback: tool calling for the on-prem model (the endpoint serves it with native tool calling off); renders a harness's tool list into the model's own tool prompt and parses the `<tool_call>` blocks back, under the Anthropic Messages API (Claude Code through `ANTHROPIC_BASE_URL`) or the OpenAI chat API (opencode); bearer token, the endpoint key never leaves the owner; the resident reaches it through the `gateway` entry of the network policy |
 | `preprocessor/deck_tools.py` | ea-bot deck workspace CLI: scaffold, lint, build (the owner's `build-deck.sh` under a `tailscale` shim), render, list, figures, off; the Slidev theme is `deck.theme` in ea-config.json, default the built-in theme |
 | `preprocessor/deck_serve.py` | Mediated tailnet route for a deck: `serve`/`off`/`status`, validated owner-side (slug, EA port range, ea-bot-owned listener, no takeover, no Funnel) |

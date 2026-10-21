@@ -1,7 +1,7 @@
 """The fresh-install path for a user who follows the README quick start
 with the email profile: no chat server, no remote model.
 
-Each test runs the real shell out of setup.sh or run-agent.sh in a scratch
+Each test runs the real shell out of scripts/install/setup.sh or run-agent.sh in a scratch
 directory with stubs on PATH, or reads the scripts and docs the install
 skill points at. Nothing here touches ~/.ea, sudo or a service.
 """
@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-SETUP = (REPO / "setup.sh").read_text()
+SETUP = (REPO / "scripts/install/setup.sh").read_text()
 RUN_AGENT = (REPO / "run-agent.sh").read_text()
 
 
@@ -27,7 +27,7 @@ def _segment(text: str, start: str, end: str) -> str:
     return text[i:text.index(end, i)]
 
 
-# ── setup.sh: the config copy and the profile record ─────────────────
+# ── scripts/install/setup.sh: the config copy and the profile record ─────────────────
 
 def _run_config_block(ea_dir: Path, profile: str) -> subprocess.CompletedProcess:
     block = _segment(SETUP, 'OWNER_IO="$SCRIPT_DIR/scripts/owner-io.sh"', "# Make scripts executable")
@@ -81,14 +81,14 @@ def test_setup_names_the_fix_when_the_config_dir_is_not_writable(tmp_path):
         os.chmod(ea_dir / "config", 0o700)
     assert r.returncode != 0
     assert "Traceback" not in r.stderr
-    assert "setup.sh: cannot write" in r.stderr and "setup-ea-user.sh" in r.stderr
-    assert "./setup.sh --profile email" in r.stderr
+    assert "scripts/install/setup.sh: cannot write" in r.stderr and "scripts/install/setup-ea-user.sh" in r.stderr
+    assert "./scripts/install/setup.sh --profile email" in r.stderr
 
 
 def test_setup_no_longer_links_the_code_into_ea_dir():
     for stale in ('"$EA_DIR/preprocessor"', '"$EA_DIR/skills"', '"$EA_DIR/CLAUDE.md"'):
         assert stale not in SETUP, stale
-    assert 'for link in "$EA_BOT_EA_DIR/preprocessor"' not in (REPO / "setup-ea-user.sh").read_text()
+    assert 'for link in "$EA_BOT_EA_DIR/preprocessor"' not in (REPO / "scripts/install/setup-ea-user.sh").read_text()
 
 
 # ── run-agent.sh: the install overlay and the no-chat block ──────────
@@ -163,7 +163,7 @@ def test_now_flag_skips_the_morning_gate_and_the_nothing_new_skip():
     assert 'if [[ "$AGENT" == "morning-briefing" && "$NOW" != true ]]; then' in gate
     assert "Mountain" not in RUN_AGENT, "the comment names no author's timezone"
     assert '"$DELTA_SIZE" -eq 0 && "$NOW" != true' in RUN_AGENT
-    for doc in (".claude/skills/setup/SKILL.md", "SETUP.md", "setup.sh"):
+    for doc in (".claude/skills/setup/SKILL.md", "docs/SETUP.md", "scripts/install/setup.sh"):
         assert "run-agent.sh morning-briefing --now" in (REPO / doc).read_text(), doc
 
 
@@ -193,8 +193,8 @@ def test_doctor_warns_not_fails_on_the_calendar_when_the_profile_has_no_buttons(
 
 def test_doctor_fix_texts_name_sections_that_exist():
     doctor = (REPO / "scripts" / "ea-doctor.py").read_text()
-    setup_md = (REPO / "SETUP.md").read_text()
-    for stale in ("3c/3d", "3a/3b", "step 3d", "SETUP.md 3a)", "SETUP.md 3c)", "project dashboard"):
+    setup_md = (REPO / "docs/SETUP.md").read_text()
+    for stale in ("3c/3d", "3a/3b", "step 3d", "docs/SETUP.md 3a)", "docs/SETUP.md 3c)", "project dashboard"):
         assert stale not in doctor, stale
     headings = {ln.lstrip("#").strip() for ln in setup_md.splitlines() if ln.startswith("#")}
     for heading in ("The Slack app", "The app-level token", "The private channel",
@@ -219,7 +219,7 @@ def test_harden_skips_the_bot_unit_steps_when_there_is_no_unit():
 
 
 def test_macos_runs_the_services_and_mediation_on_every_profile():
-    """macOS has no harden-permissions.sh and setup-ea-user-macos.sh leaves
+    """macOS has no harden-permissions.sh and scripts/install/setup-ea-user-macos.sh leaves
     mediation alone, so the skill runs install-services.sh (the mediator
     always, the bot only with chat) and enable-mail-mediation.sh on every
     profile, in section 8, not in the assistant-only section 6."""
@@ -232,7 +232,7 @@ def test_macos_runs_the_services_and_mediation_on_every_profile():
     services = (REPO / "deploy" / "macos" / "install-services.sh").read_text()
     assert 'ea_config.py" feature chat' in services and 'JOBS="$MED $BOT"' in services
     assert 'for j in $JOBS; do' in services and '"$EA_TREE/.env" \\' not in services
-    assert "enable-mail-mediation.sh" in (REPO / "setup-ea-user-macos.sh").read_text()
+    assert "enable-mail-mediation.sh" in (REPO / "scripts/install/setup-ea-user-macos.sh").read_text()
 
 
 def test_the_email_profile_promises_no_holds():
@@ -240,7 +240,7 @@ def test_the_email_profile_promises_no_holds():
     block in run-agent.sh forbids staging it), so no doc says the email
     profile holds time on a calendar."""
     assert "Do not write pending-event.json" in RUN_AGENT
-    for doc in ("README.md", "SETUP.md"):
+    for doc in ("README.md", "docs/SETUP.md"):
         text = (REPO / doc).read_text()
         row = next(ln for ln in text.splitlines() if ln.startswith("| `email`"))
         assert "no holds" in row and "EA holds on your Outlook calendar" not in row, doc
@@ -249,7 +249,7 @@ def test_the_email_profile_promises_no_holds():
 
 
 def test_one_bot_unit_path_the_system_unit_harden_writes():
-    """setup.sh writes no unit; harden-permissions.sh says which unit it
+    """scripts/install/setup.sh writes no unit; harden-permissions.sh says which unit it
     found, writes the system unit on a chat profile with none, reports a
     user unit with the step that retires it (never a second bot beside it),
     and the docs describe that one path."""
@@ -265,7 +265,7 @@ def test_one_bot_unit_path_the_system_unit_harden_writes():
     assert "cat > /etc/systemd/system/ea-chat-bot.service <<EOF" in harden
     assert "SupplementaryGroups=ea" in harden and "systemctl enable ea-chat-bot.service" in harden
     assert "/etc/sudoers.d/ea-chat-bot" in harden
-    setup_md = (REPO / "SETUP.md").read_text()
+    setup_md = (REPO / "docs/SETUP.md").read_text()
     services = _segment(setup_md, "## Services", "## Cron schedule")
     assert "Prefer a **system** unit" not in services and ".venv/bin/python3" not in services
     assert "harden-permissions.sh` writes it" in services
@@ -277,18 +277,18 @@ def test_one_bot_unit_path_the_system_unit_harden_writes():
 
 def test_docs_put_setup_sh_before_the_service_account_and_name_the_report_file():
     skill = (REPO / ".claude" / "skills" / "setup" / "SKILL.md").read_text()
-    setup_md = (REPO / "SETUP.md").read_text()
+    setup_md = (REPO / "docs/SETUP.md").read_text()
     readme = (REPO / "README.md").read_text()
     sec5 = _segment(skill, "## 5. Service account", "## 6. Chat platform")
-    assert sec5.index("./setup.sh --profile <name>") < sec5.index("sudo ./setup-ea-user.sh")
+    assert sec5.index("./scripts/install/setup.sh --profile <name>") < sec5.index("sudo ./scripts/install/setup-ea-user.sh")
     assert "## 0. Resume" in skill and "picks up at this section" not in skill
-    for text, name in ((skill, "SKILL.md"), (setup_md, "SETUP.md"), (readme, "README.md")):
+    for text, name in ((skill, "SKILL.md"), (setup_md, "docs/SETUP.md"), (readme, "README.md")):
         assert "web board" not in text, name
         assert "reports/<agent>-latest.md" in text, name
     assert "holds on the EA-Managed calendar" not in setup_md
     assert "opik/docker-compose.yml" not in setup_md
-    assert "GRAPH_AUTH_METHOD=device_code" in setup_md and "user_init.py --phase auth" in setup_md
-    assert "`setup.sh` writes these entries for you" not in setup_md
+    assert "GRAPH_AUTH_METHOD=device_code" in setup_md and "scripts/install/user_init.py --phase auth" in setup_md
+    assert "`scripts/install/setup.sh` writes these entries for you" not in setup_md
     assert "ALL=(ea-bot) NOPASSWD: ALL" in setup_md
     assert "assistant` profile it also checks new mail every 10 minutes" in readme
     # the text this change added carries no em-dash

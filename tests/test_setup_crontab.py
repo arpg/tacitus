@@ -1,13 +1,13 @@
-"""setup.sh installs a crontab that keeps the owner's jobs off ea-bot space.
+"""scripts/install/setup.sh installs a crontab that keeps the owner's jobs off ea-bot space.
 
 The cron jobs are owner processes (docs/SECURITY.md, "Owner trust rules").
-The crontab setup.sh writes sends their output to the owner-private log
+The crontab scripts/install/setup.sh writes sends their output to the owner-private log
 directory (~/.ea-private/logs, mode 700), runs them from the deployed tree
 (/opt/ea-system, EA_LIVE_DIR here) when it holds the job scripts and from
 the checkout otherwise, and takes a plugin manifest's fields (ea-bot space)
 into a cron line only when each has its plain shape.
 
-Each test runs the real setup.sh from a scratch copy of the checkout with
+Each test runs the real scripts/install/setup.sh from a scratch copy of the checkout with
 stub pip, crontab and systemctl on PATH and a scratch HOME, so no host
 state is read or written. The installed crontab is judged by the daily
 audit's own cron parser (scripts/boundary-audit.py) and by boundary_lint.
@@ -52,13 +52,13 @@ EARLIER = ("0 1 * * * /usr/bin/true  # the owner's own job\n"
 
 
 def _checkout(base: Path) -> Path:
-    """A scratch checkout: the real setup.sh beside stand-ins for what it
+    """A scratch checkout: the real scripts/install/setup.sh beside stand-ins for what it
     runs, plus the real owner-io.sh and ea_config.py it writes config and
     reads the profile's features through."""
     repo = base / "repo"
-    for sub in ("config", "preprocessor", "skills", "scripts"):
+    for sub in ("config", "preprocessor", "skills", "scripts", "scripts/install"):
         (repo / sub).mkdir(parents=True)
-    shutil.copy2(ROOT / "setup.sh", repo / "setup.sh")
+    shutil.copy2(ROOT / "scripts/install/setup.sh", repo / "scripts/install/setup.sh")
     shutil.copy2(ROOT / "scripts" / "owner-io.sh", repo / "scripts" / "owner-io.sh")
     shutil.copy2(ROOT / "preprocessor" / "ea_config.py", repo / "preprocessor" / "ea_config.py")
     (repo / "requirements.txt").write_text("")
@@ -88,7 +88,7 @@ def _plugin(ea_dir: Path, folder: str, manifest) -> None:
 
 def _run_setup(base: Path, live: Path, answer: str = "y", profile: str = "assistant",
                extra_env: dict | None = None):
-    """setup.sh with stdin from a pipe, so non-interactive by itself: a
+    """scripts/install/setup.sh with stdin from a pipe, so non-interactive by itself: a
     "y" answer is --install-cron, as the setup skill runs it."""
     repo = base / "repo" if (base / "repo").exists() else _checkout(base)
     home = base / "home"
@@ -107,7 +107,7 @@ def _run_setup(base: Path, live: Path, answer: str = "y", profile: str = "assist
         "LANG": "C.UTF-8",
         **(extra_env or {}),
     }
-    args = ["bash", str(repo / "setup.sh"), "--profile", profile]
+    args = ["bash", str(repo / "scripts/install/setup.sh"), "--profile", profile]
     if answer == "y":
         args.append("--install-cron")
     r = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True,
@@ -132,7 +132,7 @@ def _mode(p: Path) -> int:
 
 
 def test_the_template_names_no_resident_log_sink():
-    hits = [h for h in bl.lint_shell("setup.sh", (ROOT / "setup.sh").read_text())
+    hits = [h for h in bl.lint_shell("scripts/install/setup.sh", (ROOT / "scripts/install/setup.sh").read_text())
             if h.rule == "cron-log"]
     assert not hits, "\n".join(h.render() for h in hits)
 
@@ -240,7 +240,7 @@ def test_a_manifest_field_that_is_not_plain_never_becomes_a_cron_line(tmp_path):
 
 
 def test_a_rerun_replaces_the_maintenance_lines_instead_of_doubling_them(tmp_path):
-    """The kept-entries filter strips every line setup.sh emits, the
+    """The kept-entries filter strips every line scripts/install/setup.sh emits, the
     python3 maintenance lines included, so a second run (a profile change,
     or pointing the jobs at the deployed tree) leaves one copy of each."""
     live = _live_tree(tmp_path)
@@ -268,7 +268,7 @@ def test_skipped_entries_are_saved_where_only_the_owner_can_change_them(tmp_path
 
 
 def test_no_terminal_and_no_token_exits_0_after_printing_the_sign_in_command(tmp_path):
-    """Claude Code's Bash tool gives setup.sh no terminal. With no Graph
+    """Claude Code's Bash tool gives scripts/install/setup.sh no terminal. With no Graph
     token the run must not try the sign-in (it would stop at a prompt
     nobody answers): it prints the one command the user runs and goes on."""
     live = _live_tree(tmp_path)
@@ -290,7 +290,7 @@ def test_no_terminal_and_no_token_exits_0_after_printing_the_sign_in_command(tmp
 
 
 def test_a_git_checkout_gets_the_deploy_hooks(tmp_path):
-    """git pull deploys only through the post-merge hook, so setup.sh points
+    """git pull deploys only through the post-merge hook, so scripts/install/setup.sh points
     core.hooksPath at .githooks when the checkout names no hooks directory,
     says so, and leaves a value that is already set alone."""
     live = _live_tree(tmp_path)
@@ -306,7 +306,7 @@ def test_a_git_checkout_gets_the_deploy_hooks(tmp_path):
     _, _, r = _run_setup(tmp_path, live, answer="n", profile="email")
     got = subprocess.run(git + ["config", "--get", "core.hooksPath"], capture_output=True, text=True)
     assert got.stdout.strip() == "/elsewhere" and "already /elsewhere" in r.stdout
-    guide = (ROOT / "INSTALL.md").read_text()
+    guide = (ROOT / "docs/INSTALL.md").read_text()
     upgrade = guide[guide.index("## Upgrade"):guide.index("## Uninstall")]
     assert "git pull" in upgrade and "post-merge" in upgrade and "ea-doctor.py" in upgrade
     uninstall = guide[guide.index("## Uninstall"):guide.index("## If something fails")]

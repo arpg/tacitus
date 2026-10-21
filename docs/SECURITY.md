@@ -320,10 +320,10 @@ that is *not* `isolation: ENFORCED ...`, the bot is not actually
 running and needs the ea-bot user created.
 
 Setup:
-- Linux: `sudo bash setup-ea-user.sh`
-- macOS: `sudo bash setup-ea-user-macos.sh`
+- Linux: `sudo bash scripts/install/setup-ea-user.sh`
+- macOS: `sudo bash scripts/install/setup-ea-user-macos.sh`
 
-See [SETUP.md](../SETUP.md#the-service-account). macOS user management uses
+See [SETUP.md](SETUP.md#the-service-account). macOS user management uses
 `dscl` instead of `useradd`, but the resulting permission model is
 identical — isolation works the same way on both platforms.
 
@@ -612,7 +612,7 @@ consumed, so an operational fault never burns an approval.
 
 > **Known open item, found 2026-08-22 while reconciling these docs.** The
 > HMAC guarantee assumes `ea-bot` cannot substitute the key. On the
-> current install it can. `setup-ea-user.sh` leaves `~/.ea/auth` as
+> current install it can. `scripts/install/setup-ea-user.sh` leaves `~/.ea/auth` as
 > `ea-bot:ea 750`, and Unix write permission lives on the DIRECTORY, not
 > the file. So `ea-bot` cannot *read* an owner-only `0600` key sitting there,
 > but it can unlink that key and create its own — and then mint
@@ -620,7 +620,7 @@ consumed, so an operational fault never burns an approval.
 > fails closed and the send is held); replacing it defeats the control.
 > The same reasoning applies to every other owner-owned file in that
 > directory. Closing this means making the auth directory
-> non-`ea-bot`-writable, which is a change to `setup-ea-user.sh`.
+> non-`ea-bot`-writable, which is a change to `scripts/install/setup-ea-user.sh`.
 
 **Public publishing.** `site_tools.py publish` (a GitHub Pages site, or a
 private status site that partners read) and `overleaf_tools.py push` put
@@ -793,7 +793,7 @@ size checks made on the descriptor it reads, and with no owner fallback.
 A reply can bring the owner only a file ea-bot could post itself with
 `chat_upload.py`.
 
-Mail mediation is installed by the mandatory hardening (`setup-ea-user.sh`
+Mail mediation is installed by the mandatory hardening (`scripts/install/setup-ea-user.sh`
 runs `deploy/enable-mail-mediation.sh`); that same enabler is the ops tool
 (`--status`, `--rollback`). The enabler locks the tokens first and no
 failure, check or rollback gives one back to ea-bot: a broken forward path
@@ -1352,7 +1352,7 @@ The buttons the bot does post fall into two groups:
 Each user creates their own free Slack workspace and runs their own EA
 instance on their own machine. This provides complete isolation at the
 OAuth layer with zero risk of cross-user data leakage. See
-[SETUP.md](../SETUP.md#slack) for workspace setup.
+[SETUP.md](SETUP.md#slack) for workspace setup.
 
 ### Code-Level Hardening (applies to all deployments)
 
@@ -1420,7 +1420,7 @@ to start without it.
 
 | File | Security role |
 |------|-------------|
-| `setup-ea-user.sh` | Creates `ea-bot` user, `ea` group, file permissions |
+| `scripts/install/setup-ea-user.sh` | Creates `ea-bot` user, `ea` group, file permissions |
 | `ea-chat-bot.py` | Button handlers, token issuance, user verification |
 | `preprocessor/chat/` | Chat frontends; owner check and code/reaction capture on Zulip; the card registry |
 | `/home/<you>/.ea-private/` | owner-only `0700`: card registry, Zulip queue position, button stores, Slack webhook file |

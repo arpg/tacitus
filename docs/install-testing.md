@@ -7,7 +7,7 @@ third needs a Claude login and runs on the owner's machine.
 | Tier | What it proves | Where | Needs |
 |---|---|---|---|
 | 1, the unit wall | every `tests/test_*.py` passes on a clean machine with no install to read | the `wall` job: ubuntu-22.04 (Python 3.10, the floor), ubuntu-latest, macos-latest | Python, `requirements.txt`, pytest, PyYAML |
-| 2, the install smoke | `user_init.py`, `setup.sh`, the service-account installer, the overlay and the doctor run end to end on a fresh machine and leave only the misses no account can fill | `install-smoke-linux` (ubuntu-latest), `install-smoke-macos` (macos-latest); `tests/install/docker-smoke.sh` locally | passwordless sudo, the network, no `~/.ea` |
+| 2, the install smoke | `scripts/install/user_init.py`, `scripts/install/setup.sh`, the service-account installer, the overlay and the doctor run end to end on a fresh machine and leave only the misses no account can fill | `install-smoke-linux` (ubuntu-latest), `install-smoke-macos` (macos-latest); `tests/install/docker-smoke.sh` locally | passwordless sudo, the network, no `~/.ea` |
 | 3, the release suite | the models the lanes run on today answer as well as last time | the owner's machine, Saturday night and when a tag is cut | a Claude login, the remote-LLM switches |
 
 The `lint-and-validate` job (the secrets lint, the config templates, the
@@ -49,20 +49,20 @@ since macOS ships bash 3.2.
 with nothing read from the terminal:
 
 1. The config, from `tests/install/answers-email.json`:
-   `python3 user_init.py --answers <file> --phase <phase>` for each
+   `python3 scripts/install/user_init.py --answers <file> --phase <phase>` for each
    config phase (`identity`, `scheduling`, `inbox`, `autonomy`, `groups`,
    `deadlines`, `style`, `auth`, `reimbursement`, `vip`, `push`,
    `state`). `tone` reads sent mail and `summary` only prints, so neither
    runs. `auth` writes the Graph keys for the device-code flow and skips
    the sign-in.
-2. `EA_NONINTERACTIVE=1 ./setup.sh --profile email`: the templates, the
+2. `EA_NONINTERACTIVE=1 ./scripts/install/setup.sh --profile email`: the templates, the
    profile, the cron template. The flag (or `--non-interactive`, or a
    standard input that is not a terminal) skips the Graph and Google
    sign-ins, printing the command for each, and saves the cron entries to
    `~/.ea-private/crontab-template.txt` instead of installing them
    (`--install-cron` installs them).
-3. `sudo bash setup-ea-user.sh` (Linux) or `sudo bash
-   setup-ea-user-macos.sh` (macOS): the `ea-bot` user, group `ea`, the
+3. `sudo bash scripts/install/setup-ea-user.sh` (Linux) or `sudo bash
+   scripts/install/setup-ea-user-macos.sh` (macOS): the `ea-bot` user, group `ea`, the
    deployed tree, `~/.ea` moved into ea-bot's home, the sudoers rule,
    Claude Code for ea-bot (downloaded on a runner; already in the Docker
    image).
@@ -120,7 +120,7 @@ other exit, or no script). It never adds a FAIL: codex is optional.
 
 ### The answers file
 
-`user_init.py --answers FILE` takes every answer from a JSON object
+`scripts/install/user_init.py --answers FILE` takes every answer from a JSON object
 keyed by prompt and never calls `input()`. A key left out takes the
 prompt's default (what Enter gives), an empty value the same, and a
 required prompt with no default and no key stops the run and names the
@@ -165,7 +165,7 @@ prepared `/home/ea-bot/.ea` and `/home/ea-bot/ea-system` (a host has
 neither before the installers run), adds a fresh owner user with
 passwordless sudo, copies this tree in as a git repository in that
 user's home, and runs `smoke.sh` as that user. The image already holds
-Claude Code for ea-bot, so that download does not happen; `setup.sh`
+Claude Code for ea-bot, so that download does not happen; `scripts/install/setup.sh`
 still reaches the package index. Without systemd the doctor warns on
 `systemd` and the mail-mediation step of the installer reports a
 warning; neither is a FAIL (docs/docker.md says the same of the

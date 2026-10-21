@@ -59,7 +59,7 @@ if [ "${1:-}" = "--print-source" ]; then
     codex_source_dir || { echo "no codex binary found behind $(command -v codex || echo 'nothing on PATH')" >&2; exit 1; }
     exit 0
 fi
-[ -n "$EA_BOT_HOME" ] || { echo "no ea-bot user; run setup-ea-user.sh first" >&2; exit 1; }
+[ -n "$EA_BOT_HOME" ] || { echo "no ea-bot user; run scripts/install/setup-ea-user.sh first" >&2; exit 1; }
 if [ -z "${EA_CODEX_SRC:-}" ]; then
     EA_CODEX_SRC="$(codex_source_dir || true)"
     [ -n "$EA_CODEX_SRC" ] || { echo "no codex binary found behind the owner's \`codex\` (npm's launcher with no platform package?); set EA_CODEX_SRC to the directory holding bin/codex" >&2; exit 1; }

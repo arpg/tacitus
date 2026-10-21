@@ -174,7 +174,7 @@ else
     skip "ea-chat-bot not installed"
 fi
 if systemctl --user cat ea-chat-bot >/dev/null 2>&1; then
-    red "a user unit ea-chat-bot exists beside the system one: retire it (SETUP.md 'Services')"
+    red "a user unit ea-chat-bot exists beside the system one: retire it (docs/SETUP.md 'Services')"
 fi
 
 # ---- Cron ----

@@ -1,6 +1,6 @@
 {
   "profile": "assistant",
-  "profile_note": "email | review-only | assistant. email: no Slack, the EA drafts and holds and never sends, briefings go to the board and ~/.ea/state/reports/. review-only: email without drafting. assistant: Slack, channels, buttons, the resident and plugins. Set by /setup; read by setup.sh, run-agent.sh, the shells and ea-doctor.",
+  "profile_note": "email | review-only | assistant. email: no Slack, the EA drafts and holds and never sends, briefings go to the board and ~/.ea/state/reports/. review-only: email without drafting. assistant: Slack, channels, buttons, the resident and plugins. Set by /setup; read by scripts/install/setup.sh, run-agent.sh, the shells and ea-doctor.",
   "_doc": "Operational configuration for the EA system. Controls master pause, eval toggles, log level, quiet hours and travel mode. Missing file = every key below at its default. Keys starting with '_' are stripped by preprocessor/ea_config.py load(); the *_note keys are ignored by the reader and kept as inline documentation.",
   "ea_enabled": true,
   "ea_enabled_note": "Master switch. When false, all cron agents (morning-briefing, afternoon-catchup, weekly-audit, scheduling-check, priority-check) exit immediately. The Slack bot stays running but responds with a paused status instead of invoking Claude. Background maintenance (token refresh, ledger sync, scheduled sends) continues regardless.",

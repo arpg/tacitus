@@ -1246,7 +1246,7 @@ context trimming). What remained was comprehension of a 50 to 60k
 character lane prompt and copying errors in 150-character ids. Two
 changes answer those:
 
-- *The compact prompt* (`CLAUDE-scheduling-remote.md`,
+- *The compact prompt* (`prompts/CLAUDE-scheduling-remote.md`,
   `preprocessor/remote_sched_prompt.py`). The remote arm's scheduling
   turn gets the exact commands, the rules that decide a turn, the
   staged-event shape and the id handles, the profile's identity keys,
@@ -1666,7 +1666,7 @@ Each row is independent. Turning back needs no code change and no restart.
 | `preprocessor/sched_pipeline.py` | The pipeline: `locate_thread`, `extract_intent`, `solver_args`, `pick_options`, `check_pick`, `render_reply`, `run`, the shadow beside Claude's turn (`shadow`, `load_variants`), `report` |
 | `preprocessor/sched_evolve.py` | Offline prompt evolution on the endpoint: `build_corpus`, `build_labels`, `evaluate`, `evolve` |
 | `preprocessor/arm_backtest.py` | The replay of past scheduling turns on the on-prem arm, judged against Claude's recorded turns (`collect`, `run_arm`, `judge_exchange`, `run`, the `SMOKE` set, `compare`) |
-| `preprocessor/remote_sched_prompt.py`, `CLAUDE-scheduling-remote.md` | The compact scheduling prompt for the on-prem arm (`compose`, `from_lane_prompt`) |
+| `preprocessor/remote_sched_prompt.py`, `prompts/CLAUDE-scheduling-remote.md` | The compact scheduling prompt for the on-prem arm (`compose`, `from_lane_prompt`) |
 | `preprocessor/id_handles.py` | Short handles for Outlook ids within a run, resolved and added in the three mediated tools' shims |
 | `ea-chat-bot.py` | The arm's run (`arm_env`, `run_kw`, `_rerun_on_claude`), the backstop on a remote scheduling turn (`_backstop_remote_turn`, `_withdraw_remote_turn`), `which model` / `use claude` in `_handle_bot_command` |
 | `preprocessor/ghost_week.py` | The ghost week: the read records (`record_read`, `ghost_read_async`), the turn notes (`note_turn`), the judges (`grade_mail`, `grade_sched`), the measures, the pass levels and verdicts, `final`, the `gate` the switch reads, the tripwire |
@@ -1681,7 +1681,7 @@ Each row is independent. Turning back needs no code change and no restart.
 | `preprocessor/remote_briefing.py` | The briefings: candidates, the plan check, the rails, drafts, hand-offs, the render, the audit with Claude verdicts |
 | `run-agent.sh` | The branch to `remote_briefing.py` for the two briefings; the Claude call, its retry and the Sonnet audit run only when it exits 3 |
 | `ea-chat-bot.py` | `_remote_escalation_tick` (one topic per briefing's hand-offs, the brief in its prompt), `_used_scheduling_tools` (the shadow's trigger), `_remote_scheduling_live` (the live branch in `handle_message_async`) |
-| `CLAUDE.md`, `CLAUDE-scheduling.md`, `skills/morning-briefing.md`, `docs/ea/drafting-voice.md`, `docs/ea/briefing-data.md` | The lane instructions: the writer first, the subagent on a fallback; no email text in the JSON |
+| `CLAUDE.md`, `prompts/CLAUDE-scheduling.md`, `skills/morning-briefing.md`, `docs/ea/drafting-voice.md`, `docs/ea/briefing-data.md` | The lane instructions: the writer first, the subagent on a fallback; no email text in the JSON |
 
 ## 9. Review checklist
 

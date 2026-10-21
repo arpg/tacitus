@@ -68,7 +68,7 @@ GRAPH_CLIENT_SECRET=<client-secret-value>
 # Sign in once (opens a browser, catches the redirect locally):
 python3 preprocessor/graph_client.py
 ```
-`python3 user_init.py --phase auth` walks through all of this and writes the
+`python3 scripts/install/user_init.py --phase auth` walks through all of this and writes the
 files for you; choose method **confidential**.
 
 **Ongoing operation:**

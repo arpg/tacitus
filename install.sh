@@ -7,7 +7,7 @@
 #
 # Checks the prerequisites, installs Claude Code for the invoking user,
 # clones the repository when it is not already here, installs the Python
-# packages the way setup.sh does, and starts Claude Code in the checkout
+# packages the way scripts/install/setup.sh does, and starts Claude Code in the checkout
 # with the setup skill (.claude/skills/setup/SKILL.md) as the first
 # message. The skill asks the setup questions one at a time and ends with
 # scripts/ea-doctor.py green.
@@ -119,7 +119,7 @@ py_version_ok() {
 }
 
 # The first python3 that is new enough: EA_PYTHON, then the python3 on
-# PATH (what setup.sh and run-agent.sh call), then versioned names and
+# PATH (what scripts/install/setup.sh and run-agent.sh call), then versioned names and
 # Homebrew's paths. On macOS Apple's /usr/bin/python3 is 3.9, so the
 # Homebrew one is usually the answer.
 find_python() {
@@ -263,7 +263,7 @@ install_claude() {
     say "Claude Code: installed ($(command -v claude)). If a new shell cannot find it, add \$HOME/.local/bin to PATH."
 }
 
-is_checkout() { [ -f "$1/setup.sh" ] && [ -d "$1/preprocessor" ]; }
+is_checkout() { [ -f "$1/scripts/install/setup.sh" ] && [ -d "$1/preprocessor" ]; }
 
 # SRC: the checkout this script is in, the checkout the user is standing
 # in, or a fresh clone at EA_SRC.
@@ -301,7 +301,7 @@ find_or_clone_src() {
     fi
 }
 
-# The same step as setup.sh: the packages go into the python3 the scripts
+# The same step as scripts/install/setup.sh: the packages go into the python3 the scripts
 # call. The import probe names the load-bearing packages, so a second
 # run skips pip.
 install_python_packages() {

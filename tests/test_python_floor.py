@@ -1,4 +1,4 @@
-"""Every Python file parses on the floor SETUP.md states, Python 3.10.
+"""Every Python file parses on the floor docs/SETUP.md states, Python 3.10.
 
 The wall usually runs on a newer interpreter, which accepts syntax the
 floor rejects (an f-string that nests its own quote type, for one), so a

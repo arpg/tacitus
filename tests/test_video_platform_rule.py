@@ -39,7 +39,7 @@ def test_remote_scheduling_prompt_names_the_configured_platform(tmp_path, monkey
     assert "never\n   Teams" not in text and "Do not create Teams meetings" not in text
 
 
-@pytest.mark.parametrize("name", ["CLAUDE.md", "CLAUDE-scheduling.md", "CLAUDE-scheduling-remote.md"])
+@pytest.mark.parametrize("name", ["CLAUDE.md", "prompts/CLAUDE-scheduling.md", "prompts/CLAUDE-scheduling-remote.md"])
 def test_core_prompts_do_not_forbid_a_named_platform(name):
     text = (REPO / name).read_text()
     assert "Teams meeting" not in text

@@ -1,4 +1,4 @@
-"""user_init.py --chat: the Slack path writes no ea-config.json, the Zulip
+"""scripts/install/user_init.py --chat: the Slack path writes no ea-config.json, the Zulip
 path writes a chat block that ea_config.get_chat reads back."""
 import builtins
 import json
@@ -9,6 +9,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts" / "install"))
 sys.path.insert(0, str(ROOT / "preprocessor"))
 
 import ea_config  # noqa: E402
@@ -33,7 +34,7 @@ def _run(monkeypatch, ea_dir, *extra):
     monkeypatch.setattr(user_init, "detect_system_timezone",
                         lambda: "America/Denver")
     monkeypatch.setattr(sys, "argv",
-                        ["user_init.py", "--ea-dir", str(ea_dir), *extra])
+                        ["scripts/install/user_init.py", "--ea-dir", str(ea_dir), *extra])
     user_init.main()
 
 
@@ -96,7 +97,7 @@ def test_preferences_phase_records_each_answer_as_a_rule(monkeypatch, tmp_path, 
     # outside EA_DIR as the owner's and hands the write to the resident.
     monkeypatch.setenv("EA_DIR", str(tmp_path))
     monkeypatch.setattr(sys, "argv",
-                        ["user_init.py", "--ea-dir", str(tmp_path), "--phase", "preferences"])
+                        ["scripts/install/user_init.py", "--ea-dir", str(tmp_path), "--phase", "preferences"])
     user_init.main()
 
     store = prefs.load(tmp_path / "config" / "preferences.json")
@@ -114,7 +115,7 @@ def test_preferences_phase_records_each_answer_as_a_rule(monkeypatch, tmp_path, 
 def test_full_setup_offers_the_preferences_phase_and_skips_it_by_default(monkeypatch, tmp_path, capsys):
     _run(monkeypatch, tmp_path)
     out = capsys.readouterr().out
-    assert "Later: python3 user_init.py --phase preferences" in out
+    assert "Later: python3 scripts/install/user_init.py --phase preferences" in out
     assert not (tmp_path / "state" / "onboarding.json").exists()
     assert not (tmp_path / "config" / "preferences.json").exists()
 
@@ -136,7 +137,7 @@ def _run_answers(monkeypatch, ea_dir, answers_file=ANSWERS_FILE, *extra):
         raise AssertionError(f"input() was called with --answers: {p!r}")
     monkeypatch.setattr(builtins, "input", no_input)
     monkeypatch.setenv("EA_PRIVATE_DIR", str(ea_dir / "private"))
-    monkeypatch.setattr(sys, "argv", ["user_init.py", "--ea-dir", str(ea_dir),
+    monkeypatch.setattr(sys, "argv", ["scripts/install/user_init.py", "--ea-dir", str(ea_dir),
                                       "--answers", str(answers_file), *extra])
     user_init.main()
 
@@ -233,7 +234,7 @@ def test_tone_out_writes_the_baseline_to_the_file_not_the_config_dir(monkeypatch
 
 
 def test_out_goes_only_with_the_tone_phase(monkeypatch, tmp_path):
-    monkeypatch.setattr(sys, "argv", ["user_init.py", "--ea-dir", str(tmp_path),
+    monkeypatch.setattr(sys, "argv", ["scripts/install/user_init.py", "--ea-dir", str(tmp_path),
                                       "--phase", "vip", "--out", str(tmp_path / "x.json")])
     with pytest.raises(SystemExit):
         user_init.main()
@@ -293,7 +294,7 @@ def test_no_terminal_and_no_answers_stops_with_the_way_out(monkeypatch, tmp_path
     def eof(p=""):
         raise EOFError
     monkeypatch.setattr(builtins, "input", eof)
-    monkeypatch.setattr(sys, "argv", ["user_init.py", "--ea-dir", str(tmp_path),
+    monkeypatch.setattr(sys, "argv", ["scripts/install/user_init.py", "--ea-dir", str(tmp_path),
                                       "--phase", "identity"])
     with pytest.raises(SystemExit) as e:
         user_init.main()
@@ -301,7 +302,7 @@ def test_no_terminal_and_no_answers_stops_with_the_way_out(monkeypatch, tmp_path
 
 
 def test_template_placeholders_are_never_offered_as_defaults(monkeypatch, tmp_path):
-    """setup.sh copies the templates before the identity phase runs (on the
+    """scripts/install/setup.sh copies the templates before the identity phase runs (on the
     host and in the container), so the template's placeholders are in the
     file; the prompts offer none of them, and the template keys the phase
     does not ask about survive."""
@@ -316,7 +317,7 @@ def test_template_placeholders_are_never_offered_as_defaults(monkeypatch, tmp_pa
         return {"Full name": "Pat Example", "Primary work email": "pat@uni.example"}.get(
             p.split(" [")[0].rstrip(": "), "")
     monkeypatch.setattr(builtins, "input", fake_input)
-    monkeypatch.setattr(sys, "argv", ["user_init.py", "--ea-dir", str(tmp_path), "--phase", "identity"])
+    monkeypatch.setattr(sys, "argv", ["scripts/install/user_init.py", "--ea-dir", str(tmp_path), "--phase", "identity"])
     user_init.main()
     text = "\n".join(shown)
     for placeholder in ("Your Name", "you@example.edu", "DARPA", "Example University",
@@ -326,7 +327,7 @@ def test_template_placeholders_are_never_offered_as_defaults(monkeypatch, tmp_pa
     assert saved["name"] == "Pat Example" and saved["institution"]["domains"] == ["uni.example"]
     assert "gmail_accounts_note" in saved and "family_note" in saved
     sched = json.loads((cfg / "scheduling-preferences.json").read_text())
-    monkeypatch.setattr(sys, "argv", ["user_init.py", "--ea-dir", str(tmp_path), "--phase", "scheduling"])
+    monkeypatch.setattr(sys, "argv", ["scripts/install/user_init.py", "--ea-dir", str(tmp_path), "--phase", "scheduling"])
     monkeypatch.setattr(user_init, "detect_system_timezone", lambda: "America/Denver")
     user_init.main()
     after = json.loads((cfg / "scheduling-preferences.json").read_text())

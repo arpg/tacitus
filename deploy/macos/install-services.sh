@@ -2,7 +2,7 @@
 # install-services.sh: the owner-side services on macOS, hardened from the start.
 #
 # The macOS counterpart of the systemd units plus deploy/harden-permissions.sh
-# (SETUP.md "Services" and "Hardening"). Installs two root LaunchDaemons that run as the
+# (docs/SETUP.md "Services" and "Hardening"). Installs two root LaunchDaemons that run as the
 # owner, never as ea-bot:
 #
 #   <prefix>.ea-chat-bot        /opt/ea-system/ea-chat-bot.py
@@ -18,7 +18,7 @@
 # root-owned launcher /usr/local/libexec/ea-service-run.sh. Every file here is
 # root- or owner-owned; ea-bot can rewrite none of it.
 #
-# Run AFTER the chat platform is configured (SETUP.md "Zulip server" or "Slack"): step 3 below
+# Run AFTER the chat platform is configured (docs/SETUP.md "Zulip server" or "Slack"): step 3 below
 # seeds ~/.ea-private/chat.json from ea-config.json's chat block only when the
 # file is missing, so running earlier would freeze the template values.
 # On a profile with no chat platform (email, review-only) it installs the
@@ -40,7 +40,7 @@ OWNER_UID="$(id -u "$OWNER")"
 OWNER_GROUP="$(id -gn "$OWNER")"
 OWNER_HOME="$(dscl . -read "/Users/$OWNER" NFSHomeDirectory | awk '{print $2}')"
 EABOT_HOME="$(dscl . -read /Users/ea-bot NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
-[ -n "$EABOT_HOME" ] || { echo "ERROR: no ea-bot user; run setup-ea-user-macos.sh first." >&2; exit 1; }
+[ -n "$EABOT_HOME" ] || { echo "ERROR: no ea-bot user; run scripts/install/setup-ea-user-macos.sh first." >&2; exit 1; }
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 EA_TREE="$EABOT_HOME/.ea"
 LIVE=/opt/ea-system

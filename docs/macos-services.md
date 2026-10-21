@@ -53,7 +53,7 @@ evaluates them as shell.
 
 ## Order
 
-1. `sudo bash setup-ea-user-macos.sh` (the service account and its own
+1. `sudo bash scripts/install/setup-ea-user-macos.sh` (the service account and its own
    Claude Code).
 2. On `assistant`, the chat platform (SETUP.md "Zulip server", or "Slack")
    and its secret in `~/.ea-private/secrets.env`. On `email` and
@@ -94,7 +94,7 @@ Three interpreters are in play, and each must have `requirements.txt`:
 |---|---|---|
 | the services (owner) | `~/ea-system/.venv` (Python 3.14; `ortools` has no 3.15 wheel yet) | `python3.14 -m venv .venv` in the repo |
 | ea-bot's Claude and its tool calls | `/Users/ea-bot/ea-system/.venv` (the bot puts it first on PATH, `ea-chat-bot.py:524`) | the owner, in the deployed clone, which the owner owns |
-| cron (`/opt/ea-system/run-agent.sh` and bare `python3` lines) | the owner's venv, through a `PATH=` line at the top of the crontab | `setup.sh` / SETUP.md "The venv on the cron PATH" |
+| cron (`/opt/ea-system/run-agent.sh` and bare `python3` lines) | the owner's venv, through a `PATH=` line at the top of the crontab | `scripts/install/setup.sh` / SETUP.md "The venv on the cron PATH" |
 
 `/opt/ea-system/.venv` never exists: every deploy mirrors git, and the venv is
 not in git.
@@ -131,7 +131,7 @@ missing or names other labels. Re-run `install-services.sh`. Check with
 **The deploy says UNSAFE DEPLOY TREE.** `/Users/ea-bot/ea-system` or its
 `.git` is not owned by you, or is group- or world-writable, or is a symlink.
 That is the check working: something changed the tree. Look before fixing;
-`sudo bash setup-ea-user-macos.sh` re-creates a safe copy if you move the bad
+`sudo bash scripts/install/setup-ea-user-macos.sh` re-creates a safe copy if you move the bad
 one aside.
 
 **ea-bot's tool calls fail with `ModuleNotFoundError`.** ea-bot's venv is

@@ -250,7 +250,7 @@ next_boot(){  # $1 = gid
 stage(){
   need_root
   resolve_owner
-  getent passwd "$RESIDENT" >/dev/null || fail "the $RESIDENT user does not exist (run setup-ea-user.sh first)"
+  getent passwd "$RESIDENT" >/dev/null || fail "the $RESIDENT user does not exist (run scripts/install/setup-ea-user.sh first)"
   [ -f "$FSTAB" ] && [ ! -L "$FSTAB" ] || fail "$FSTAB is not a regular file"
 
   ylw "[1/4] exemption group $GROUP"

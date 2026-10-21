@@ -8,7 +8,7 @@ the v1.2.0 upgrade: ea-bot now has its own Claude Code.*
 ea-bot runs **its own native install** of Claude Code at
 `/Users/ea-bot/.local/bin/claude` (a symlink into
 `/Users/ea-bot/.local/share/claude/versions/`). It updates itself. Nothing is
-copied from the owner's install. `setup-ea-user-macos.sh` step 6b installs it,
+copied from the owner's install. `scripts/install/setup-ea-user-macos.sh` step 6b installs it,
 and `scripts/ea-doctor.py` checks it. This is upstream's design (CHANGELOG
 v1.2.0, SETUP.md "The service account").
 

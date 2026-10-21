@@ -6,9 +6,9 @@ description: Guided install of the EA system, the front door for a new user. Ask
 You are installing the EA system for the person in front of you. Work
 from this repository as the invoking user; never as `ea-bot`. This skill
 is the whole install: every question and every command is here.
-`SETUP.md` is the reference; when a step needs background (a portal's
+`docs/SETUP.md` is the reference; when a step needs background (a portal's
 screens, a file's keys, why a rule is shaped as it is) this skill names
-the SETUP.md appendix to read, by heading. Ask one question at a time
+the docs/SETUP.md appendix to read, by heading. Ask one question at a time
 with the AskUserQuestion tool. Write each answer down before the next
 question. Never guess a value the user has not given you.
 
@@ -52,14 +52,14 @@ keyboard fails there (Python's `input()` ends in EOFError). So:
   address, an id or a link, offer the likely values you know (the domain
   of the work email, the detected timezone) and tell the user to pick
   "Other" and type the value.
-- **Answers files.** `user_init.py` never asks you anything: write the
+- **Answers files.** `scripts/install/user_init.py` never asks you anything: write the
   answers to `~/.ea-private/answers-<phase>.json` (mode 600;
   `mkdir -m 700 -p ~/.ea-private` first), then run
-  `python3 user_init.py --answers ~/.ea-private/answers-<phase>.json --phase <phase>`.
+  `python3 scripts/install/user_init.py --answers ~/.ea-private/answers-<phase>.json --phase <phase>`.
   The keys are in docs/install-testing.md; `tests/install/answers-email.json`
   is a complete example. Delete a file that holds a secret once its phase
   has run.
-- **`setup.sh`** sees no terminal and runs non-interactive by itself: it
+- **`scripts/install/setup.sh`** sees no terminal and runs non-interactive by itself: it
   never signs in and never asks. It prints the sign-in command for the
   user instead, and installs the cron lines only with `--install-cron`.
 - **Steps the user types.** Some steps need the user's own password,
@@ -122,16 +122,16 @@ it for the chat server. Explain the three in one line each:
   session rooms, the Send and Create buttons, the resident session and
   plugins.
 
-Then run `./setup.sh --profile <name>`. It installs the Python packages,
+Then run `./scripts/install/setup.sh --profile <name>`. It installs the Python packages,
 copies every config template into `~/.ea/config/` (a file already there
 is kept), records the profile in `ea-config.json`, and saves the cron
 lines without installing them. Run it now, while `~/.ea` is still the
 user's own directory, and never write `ea-config.json` by hand before
 it: the template would be skipped. To move from `email` to `assistant`
-later, run `./setup.sh --profile assistant` and do section 6.
+later, run `./scripts/install/setup.sh --profile assistant` and do section 6.
 `python3 preprocessor/ea_config.py features --profile <name>` prints
 what the profile turns on; use it to decide which sections below apply.
-The table of profiles is SETUP.md "Choose a profile".
+The table of profiles is docs/SETUP.md "Choose a profile".
 
 ## 2. Identity (all profiles)
 
@@ -141,7 +141,7 @@ answer. Then the home timezone: offer the machine's zone (`timedatectl
 show -p Timezone --value`, or `readlink /etc/localtime` on macOS) and
 "Other". Working hours are asked once, in section 4, where they are
 used. One `identity` phase writes sections 2 and 2b together, after 2b.
-The keys of every config file are in SETUP.md "Config files".
+The keys of every config file are in docs/SETUP.md "Config files".
 
 ## 2b. Institution (all profiles)
 
@@ -199,11 +199,11 @@ create one themselves. Choose by the answer:
   `localhost:8400` and aligns the scopes to what the app grants), or
   `! python3 preprocessor/graph_client.py` for `device_code` (a link and
   a code for any browser). Both flows and the registration's values are
-  SETUP.md "Microsoft Graph app registration".
+  docs/SETUP.md "Microsoft Graph app registration".
 - No: two paths (AskUserQuestion). **Ask IT**, the lasting one: fill in
   `docs/it-request.md` with them, have them send it, stop and tell them to
   re-run `/setup` when IT answers (section 0 resumes here). **IT will not
-  register one**: say what SETUP.md "Option C: no registration
+  register one**: say what docs/SETUP.md "Option C: no registration
   (outlook-web-auth)" does, from its first paragraph, and ask whether
   their organization allows it; unless it is a clear yes, ask IT. On a
   yes, run its four steps; they type the install and `login` with `!`.
@@ -214,7 +214,7 @@ Check before moving on:
 ## 4. Google Calendar (all profiles, recommended)
 
 Ask whether they use Google Calendar or Gmail. Skip this section only if
-they say they never use Google. Otherwise walk them through SETUP.md
+they say they never use Google. Otherwise walk them through docs/SETUP.md
 "Google OAuth app": a Google Cloud project, the Calendar API (and Gmail
 API when the EA drafts there), the consent screen **published** ("In
 production": in "Testing" status Google ends the refresh tokens after 7
@@ -227,7 +227,7 @@ the second terminal (it asks them to paste the address the browser lands
 on): `python3 preprocessor/google_calendar_client.py --setup`.
 Check: `python3 preprocessor/google_calendar_client.py --test`.
 
-Then the EA-Managed calendar (SETUP.md "The EA-Managed calendar"): ask
+Then the EA-Managed calendar (docs/SETUP.md "The EA-Managed calendar"): ask
 them to create a secondary Google calendar named `EA-Managed`, paste its
 id into `ea_managed_calendar` of `scheduling-preferences.json`, and run
 `python3 preprocessor/owner_trust.py seed --calendar` as the user: the
@@ -240,16 +240,16 @@ solver has no rule store and no place to hold time. It is required on
 
 ## 5. Service account and permissions (all profiles)
 
-`./setup.sh --profile <name>` ran in section 1; run it again only if the
+`./scripts/install/setup.sh --profile <name>` ran in section 1; run it again only if the
 profile changed. Then the service account, a step the user types in the
-second terminal: `sudo ./setup-ea-user.sh` (Linux) or
-`sudo ./setup-ea-user-macos.sh`.
+second terminal: `sudo ./scripts/install/setup-ea-user.sh` (Linux) or
+`sudo ./scripts/install/setup-ea-user-macos.sh`.
 It creates `ea-bot`, moves `~/.ea` into ea-bot's home, installs ea-bot's
 own Claude Code and the sudoers rule, and on Linux turns mail mediation
 on. Check: `id ea-bot && test -L ~/.ea && sudo -n -u ea-bot true`.
 After this script `~/.ea/config` belongs to `ea-bot`, and a later
-`./setup.sh` run writes it as `ea-bot` through that sudoers rule. What
-each script does, and the sudoers rule, are SETUP.md "The service
+`./scripts/install/setup.sh` run writes it as `ea-bot` through that sudoers rule. What
+each script does, and the sudoers rule, are docs/SETUP.md "The service
 account". Do not weaken a permission to get past an error.
 
 Then ea-bot's Claude login, a step the user types in the second
@@ -264,7 +264,7 @@ the doctor's `ea-bot: Claude login` line is the check.
 On a Linux desktop session, `newgrp ea` (or a new login) gives their
 shell the `ea` group.
 
-Then the install overlay (SETUP.md "The install overlay"): `render`, as
+Then the install overlay (docs/SETUP.md "The install overlay"): `render`, as
 `ea-bot`, turns the config into `~/.ea/config/CLAUDE.install.md`;
 `install`, as the invoking user who owns the deployed tree, copies it
 there as `CLAUDE.local.md`, which every Claude session loads. On Linux:
@@ -277,7 +277,7 @@ python3 preprocessor/install_overlay.py install --tree /home/ea-bot/ea-system
 You run both: the sudoers rule lets the invoking user run any command
 as `ea-bot` without a password. On macOS, use `/Users/ea-bot` and the
 Homebrew Python (`/opt/homebrew/bin/python3`; Apple's is 3.9); the other
-differences are SETUP.md "macOS notes". The doctor's two `install
+differences are docs/SETUP.md "macOS notes". The doctor's two `install
 overlay` lines confirm both steps. Run both again after any later change
 to `user-profile.json`.
 
@@ -289,9 +289,9 @@ where every message, file and confirmation card stays on that machine.
 Slack is acceptable when they would rather not run a chat server and
 accept that everything the EA shows them, drafts and quoted mail
 included, is stored by Slack. The comparison is the "Choosing a chat
-platform" table in INSTALL.md.
+platform" table in docs/INSTALL.md.
 
-For Zulip, SETUP.md "Zulip server": the docker-zulip stack in
+For Zulip, docs/SETUP.md "Zulip server": the docker-zulip stack in
 `deploy/zulip/README.md`; then
 `python3 scripts/zulip_bootstrap.py --site <site> --owner-email <you> --owner-key <key>`,
 which prints the `chat` block (with `"frontend": "zulip"`) to paste into
@@ -301,7 +301,7 @@ the owner's Zulip user id if the printed block lacks it. The bot starts
 in section 8; confirm its startup line
 `frontend=zulip stream=ea (private, subscribed) owner=<id>` there.
 
-For Slack, SETUP.md "Slack" end to end: the app and its scopes, its
+For Slack, docs/SETUP.md "Slack" end to end: the app and its scopes, its
 icon (`assets/tacitus-avatar.png`, uploaded by hand), Socket Mode, the
 event subscriptions, the app-level token, the private channel.
 Ask for the bot token, the app token, the channel id, the channel name
@@ -314,7 +314,7 @@ and `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` to `~/.ea-private/secrets.env`
 The scopes the doctor checks are the ones the bot calls.
 
 The bot service comes in section 8, from the same root step that
-hardens the install (SETUP.md "Services"); `setup.sh` writes no unit.
+hardens the install (docs/SETUP.md "Services"); `scripts/install/setup.sh` writes no unit.
 
 ## 7. Claude Code connectors
 
@@ -327,7 +327,7 @@ up. Ask the user to enable them in claude.ai Settings > Connectors
 section 5, and to finish each one's sign-in there. Check, as ea-bot:
 `sudo -n -u ea-bot env HOME=/home/ea-bot /home/ea-bot/.local/bin/claude mcp list`
 lists `claude.ai Gmail` and `claude.ai Google Calendar` as connected
-(SETUP.md "Claude Code connectors").
+(docs/SETUP.md "Claude Code connectors").
 
 ## 7b. Remote writer (optional, any profile that drafts)
 
@@ -339,42 +339,42 @@ the `REMOTE_LLM_API_KEY=` line into `~/.ea-private/secrets.env`,
 `python3 preprocessor/remote_llm.py init --endpoint <https URL> --model <name> --drafting remote`,
 then `python3 preprocessor/remote_llm.py ping`. The endpoint must be
 https. Do not offer the mail, digest, briefing or scheduling switches in
-the same file; they are an owner's later decision (SETUP.md "Remote
+the same file; they are an owner's later decision (docs/SETUP.md "Remote
 writer", `docs/llm-lanes.md`).
 
 ## 8. Acceptance
 
 On Linux the hardening step, a `sudo` step the user types in the second
-terminal: `sudo bash deploy/harden-permissions.sh` (SETUP.md "Hardening"). It
+terminal: `sudo bash deploy/harden-permissions.sh` (docs/SETUP.md "Hardening"). It
 seeds the owner-owned code tree at `/opt/ea-system` and the owner-private
 files, and moves the services off the ea-bot tree so a prompt-injected
 EA cannot reach the owner account. It says which bot unit it found: on
-`assistant` it writes and starts the bot's system unit (SETUP.md
+`assistant` it writes and starts the bot's system unit (docs/SETUP.md
 "Services"); on a profile with no chat platform it says the bot-unit
 steps are skipped, which is expected. When a service does not stay up,
 it ends with a WARNING and that service's last log lines; a bot line
 `the chat setting <NAME> is not set` sends you back to section 6. Check:
 `test -f /opt/ea-system/.deployed-commit`, and on `assistant`
 `systemctl is-active ea-chat-bot`. Mail mediation is already on:
-`setup-ea-user.sh` ran `deploy/enable-mail-mediation.sh`.
+`scripts/install/setup-ea-user.sh` ran `deploy/enable-mail-mediation.sh`.
 
 On macOS, on every profile, two `sudo` steps the user types in the
 second terminal instead: `sudo bash deploy/macos/install-services.sh` (the owner-owned
 `/opt/ea-system`, the owner-private files and the LaunchDaemons: the
 mediator always, the bot only with a chat platform), then
 `sudo bash deploy/enable-mail-mediation.sh`, which turns mediation on
-(SETUP.md "launchd"). Check: the doctor's `service:` line for the
+(docs/SETUP.md "launchd"). Check: the doctor's `service:` line for the
 mediator passes, and
 `sudo -n -u ea-bot test -r /Users/ea-bot/.ea/auth/msal_token_cache.json`
 fails (ea-bot can no longer read the Outlook token).
 
 Then install the cron lines, pointed at `/opt/ea-system`:
-`./setup.sh --profile <name> --install-cron`. Check: `crontab -l`
+`./scripts/install/setup.sh --profile <name> --install-cron`. Check: `crontab -l`
 shows the `run-agent.sh morning-briefing` line under `/opt/ea-system`.
 
 Then run `python3 scripts/ea-doctor.py --profile <name>` and fix every
 FAIL it prints, using the fix text next to each; each fix names the
-SETUP.md appendix for its check, and SETUP.md "Troubleshooting and the
+docs/SETUP.md appendix for its check, and docs/SETUP.md "Troubleshooting and the
 doctor's checks" maps every check name to one. Warnings about features
 the profile does not use are expected.
 
@@ -384,7 +384,7 @@ and showing the user where the report landed: the EA channel for
 `assistant`, otherwise `~/.ea/state/reports/morning-briefing-latest.md`
 and the phone push when one is configured.
 
-For `email` and `review-only`, offer the phone push once (SETUP.md
+For `email` and `review-only`, offer the phone push once (docs/SETUP.md
 "Phone push"): they install the ntfy app and pick a long random topic;
 `answers-push.json` (`"push-configure": true`, `push-topic`) and the
 `push` phase write `~/.ea-private/push.json`;

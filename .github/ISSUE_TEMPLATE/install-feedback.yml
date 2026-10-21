@@ -65,7 +65,7 @@ body:
         - /setup 2. Identity or 2b. Institution
         - /setup 3. Outlook (app registration or sign-in)
         - /setup 4. Google Calendar
-        - /setup 5. Service account (setup-ea-user.sh, ea-bot login)
+        - /setup 5. Service account (scripts/install/setup-ea-user.sh, ea-bot login)
         - /setup 6. Chat platform
         - /setup 7. Claude Code connectors or 7b. Remote writer
         - /setup 8. Acceptance (hardening, doctor)

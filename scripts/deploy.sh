@@ -1,7 +1,7 @@
 #!/bin/bash
 # Deploy the current HEAD of the owner's source checkout to /home/ea-bot/ea-system.
 #
-# This is the standalone version of Step 3 of setup-ea-user.sh, suitable to
+# This is the standalone version of Step 3 of scripts/install/setup-ea-user.sh, suitable to
 # run after every commit (or any time the deployed copy needs to be refreshed).
 # It runs as the source-tree owner, with no sudo.
 #
@@ -14,7 +14,7 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DST=/home/ea-bot/ea-system
 
 if [ ! -d "$DST/.git" ]; then
-    echo "ERROR: $DST is not a git repo. Run setup-ea-user.sh first to bootstrap." >&2
+    echo "ERROR: $DST is not a git repo. Run scripts/install/setup-ea-user.sh first to bootstrap." >&2
     exit 1
 fi
 

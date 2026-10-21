@@ -199,15 +199,15 @@ the chat rooms and buttons.
 | `review-only` | `email` without drafting: the EA reads, tracks and briefs, and writes nothing to the mailbox. | About an hour |
 | `assistant` | Everything: chat rooms on Zulip or Slack, the Send and Create cards, the scheduling channel, plugins. | About half a day, most of it for the chat server |
 
-[INSTALL.md](INSTALL.md) is the full guide: what to prepare, what setup
+[docs/INSTALL.md](docs/INSTALL.md) is the full guide: what to prepare, what setup
 asks, upgrades, and how to uninstall. To run in containers, read
 [docs/docker.md](docs/docker.md).
 
 ## Documentation
 
 **Using it**
-- [INSTALL.md](INSTALL.md): prepare, install, upgrade, uninstall
-- [SETUP.md](SETUP.md): the reference behind every setup step and health check
+- [docs/INSTALL.md](docs/INSTALL.md): prepare, install, upgrade, uninstall
+- [docs/SETUP.md](docs/SETUP.md): the reference behind every setup step and health check
 - [docs/SCHEDULING.md](docs/SCHEDULING.md): the solver and your scheduling rules
 - [docs/zulip-switch.md](docs/zulip-switch.md): Zulip or Slack, and moving between them
 - [docs/remote-llm.md](docs/remote-llm.md): running mail through a model you host
@@ -220,7 +220,7 @@ asks, upgrades, and how to uninstall. To run in containers, read
 
 **Building on it**
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): rooms, prompts, data flow, approval gates
-- [LLM_HARNESS_as_EA.md](LLM_HARNESS_as_EA.md): the resident session and how context is chosen
+- [docs/llm-harness.md](docs/llm-harness.md): the resident session and how context is chosen
 - [docs/plugins.md](docs/plugins.md): writing a plugin
 - [docs/EVAL.md](docs/EVAL.md): evaluation and quality tracking
 - [CONTRIBUTING.md](CONTRIBUTING.md): the code layout, the tests, and how to make a change

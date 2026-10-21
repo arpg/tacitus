@@ -1,6 +1,6 @@
 """The ea-bot setup scripts run git in the lanes' copy only after the check.
 
-setup-ea-user.sh and setup-ea-user-macos.sh run as root and deploy the
+scripts/install/setup-ea-user.sh and scripts/install/setup-ea-user-macos.sh run as root and deploy the
 source into ea-bot's home, where ea-bot can put its own tree or a symlink
 at the copy's name. Step 3 of each script enters the copy and checks the
 directory it is in before any git command or chown there (the deploy hook's
@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-SCRIPTS = ["setup-ea-user.sh", "setup-ea-user-macos.sh"]
+SCRIPTS = ["scripts/install/setup-ea-user.sh", "scripts/install/setup-ea-user-macos.sh"]
 sys.path.insert(0, str(REPO / "scripts"))
 
 import boundary_lint as bl  # noqa: E402

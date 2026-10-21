@@ -7,18 +7,18 @@ with email/calendar services, and optionally analyzes writing style
 from sent mail to build per-contact communication profiles.
 
 Usage:
-    python3 user_init.py                     # Full interactive setup
-    python3 user_init.py --update            # Re-run on existing config
-    python3 user_init.py --style-only        # Re-run writing style detection
-    python3 user_init.py --phase tone --out FILE
+    python3 scripts/install/user_init.py                     # Full interactive setup
+    python3 scripts/install/user_init.py --update            # Re-run on existing config
+    python3 scripts/install/user_init.py --style-only        # Re-run writing style detection
+    python3 scripts/install/user_init.py --phase tone --out FILE
                                              # The style baseline to FILE, not the
                                              # config dir (the container's owner side)
-    python3 user_init.py --phase scheduling  # Run a single phase
-    python3 user_init.py --ea-dir /tmp/test  # Override EA directory
-    python3 user_init.py --chat zulip --zulip-site https://chat.example.edu \
+    python3 scripts/install/user_init.py --phase scheduling  # Run a single phase
+    python3 scripts/install/user_init.py --ea-dir /tmp/test  # Override EA directory
+    python3 scripts/install/user_init.py --chat zulip --zulip-site https://chat.example.edu \
         --zulip-bot-email ea-bot@chat.example.edu --zulip-owner-id 8
                                              # Talk to the EA over Zulip
-    python3 user_init.py --answers tests/install/answers-email.json
+    python3 scripts/install/user_init.py --answers tests/install/answers-email.json
                                              # Every answer from a file; no prompt
                                              # reads the terminal (install tests)
 
@@ -204,14 +204,14 @@ def template_values(filename: str) -> dict:
     """The shipped template of a config file (config/<filename> in this
     checkout), or {} when there is none."""
     try:
-        data = json.loads((Path(__file__).resolve().parent / "config" / filename).read_text())
+        data = json.loads((Path(__file__).resolve().parents[2] / "config" / filename).read_text())
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
 def without_template(existing: dict, template: dict) -> dict:
-    """`existing` less every value still equal to the template's: setup.sh
+    """`existing` less every value still equal to the template's: scripts/install/setup.sh
     copies the templates first, and a placeholder ("Your Name", the
     example role) must never be offered as an answer's default."""
     out = {}
@@ -262,7 +262,7 @@ def chat_block(frontend: str, site: str = "", bot_email: str = "",
     block in ea_config already means Slack, so nothing is written)."""
     if frontend != "zulip":
         return None
-    sys.path.insert(0, str(Path(__file__).parent / "preprocessor"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
     import ea_config
     notify = ea_config.DEFAULTS["chat"]["zulip"]["notify"]
     return {
@@ -863,7 +863,7 @@ def phase_auth(chat: str = "slack"):
             print("  This will open a browser window for Microsoft login.\n")
             try:
                 import importlib
-                sys.path.insert(0, str(Path(__file__).parent / "preprocessor"))
+                sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
                 import graph_client as graph
                 importlib.reload(graph)  # re-read the env vars set above
                 if method == "confidential":
@@ -898,11 +898,11 @@ def phase_auth(chat: str = "slack"):
         if not secret_file.exists():
             print(f"\n  Place your Google OAuth2 client secret at:")
             print(f"    {secret_file}")
-            print("  Then re-run: python3 user_init.py --phase auth")
-            print("  See SETUP.md 'Google OAuth app' for how to create the secret.")
+            print("  Then re-run: python3 scripts/install/user_init.py --phase auth")
+            print("  See docs/SETUP.md 'Google OAuth app' for how to create the secret.")
         else:
             try:
-                sys.path.insert(0, str(Path(__file__).parent / "preprocessor"))
+                sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
                 import google_calendar_client as gcal
                 gcal.authenticate_all()
                 print("  Google Calendar authentication successful!")
@@ -929,7 +929,7 @@ def phase_auth(chat: str = "slack"):
     print("  You need a Bot Token (xoxb-...) and App Token (xapp-...).\n")
 
     # The tokens go in the owner-private secrets.env; the ids in ~/.ea/.env
-    # (mode 640, non-secret), as SETUP.md 'The Slack environment files' says.
+    # (mode 640, non-secret), as docs/SETUP.md 'The Slack environment files' says.
     secrets = {}
     bot_token = prompt("Slack Bot Token (xoxb-..., or 'skip')", "skip", key="slack-bot-token")
     if bot_token != "skip":
@@ -1134,12 +1134,12 @@ def phase_tone(out: Path | None = None):
 
     if not prompt_yn("Run writing style analysis now?", default=True, key="style-analysis-now"):
         print("  Skipped. You can run this later:")
-        print("    python3 user_init.py --style-only")
+        print("    python3 scripts/install/user_init.py --style-only")
         return
 
     print("\n  Fetching sent mail (last 90 days)...")
     try:
-        sys.path.insert(0, str(Path(__file__).parent / "preprocessor"))
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
         import graph_client as graph
         sent = graph.get_sent(days_back=90)
         # Cap at 500 messages
@@ -1168,7 +1168,7 @@ def phase_tone(out: Path | None = None):
     except Exception as e:
         print(f"  Failed to analyze writing style: {e}")
         print("  Make sure Graph API is authenticated first (Phase 8).")
-        print("  You can re-run: python3 user_init.py --style-only")
+        print("  You can re-run: python3 scripts/install/user_init.py --style-only")
 
 
 # ---------------------------------------------------------------------------
@@ -1262,7 +1262,7 @@ def phase_push():
 
     if not prompt_yn("Send each report to your phone through ntfy?", default=False,
                      key="push-configure"):
-        print("  Skipped. SETUP.md 'Phone push' says how to add it later.")
+        print("  Skipped. docs/SETUP.md 'Phone push' says how to add it later.")
         return
 
     settings = {
@@ -1276,14 +1276,14 @@ def phase_push():
     if click:
         settings["click"] = click
 
-    sys.path.insert(0, str(Path(__file__).parent / "preprocessor"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
     import push_notify
     bad = push_notify.problems(settings)
     if bad:
         for line in bad:
             print(f"  {line}")
         raise SystemExit("  push.json not written: fix the values above and run "
-                         "python3 user_init.py --phase push again")
+                         "python3 scripts/install/user_init.py --phase push again")
     for line in push_notify.warnings(settings):
         print(f"  note: {line}")
 
@@ -1310,7 +1310,7 @@ def phase_preferences():
     a later `onboarding.py ask` or the morning briefing."""
     section_header("Phase 11a: First-Week Preferences")
 
-    sys.path.insert(0, str(Path(__file__).parent / "preprocessor"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
     import onboarding
 
     questions = onboarding.remaining_questions(ea_dir=EA_DIR)
@@ -1386,7 +1386,7 @@ def phase_summary():
     print()
     print("  Next steps:")
     print("  1. Review your config files and adjust as needed")
-    print("  2. Set up cron jobs (see setup.sh for examples):")
+    print("  2. Set up cron jobs (see scripts/install/setup.sh for examples):")
     print("       - Morning briefing:  7 AM weekdays")
     print("       - Scheduling check:  every 30 min during business hours")
     print("       - Priority check:    every 15 min during business hours")
@@ -1480,10 +1480,10 @@ def main():
     if profile_path.exists() and not args.update and not args.force and not args.style_only and not args.phase:
         print(f"ERROR: An EA system is already configured at {EA_DIR}/")
         print()
-        print("  To update the existing configuration:  python3 user_init.py --update")
-        print("  To overwrite without prompting:        python3 user_init.py --force")
+        print("  To update the existing configuration:  python3 scripts/install/user_init.py --update")
+        print("  To overwrite without prompting:        python3 scripts/install/user_init.py --force")
         print("  To set up a new EA for a different user:")
-        print(f"    EA_DIR=/path/to/new/.ea python3 user_init.py")
+        print(f"    EA_DIR=/path/to/new/.ea python3 scripts/install/user_init.py")
         sys.exit(1)
 
     block = chat_block(args.chat, args.zulip_site, args.zulip_bot_email,
@@ -1562,7 +1562,7 @@ def main():
     if prompt_yn("Answer the first-week preference questions now?", default=False):
         phase_preferences()
     else:
-        print("  Later: python3 user_init.py --phase preferences, or one a day in chat.")
+        print("  Later: python3 scripts/install/user_init.py --phase preferences, or one a day in chat.")
     phase_state()
     phase_summary()
     if ANSWERS is not None:

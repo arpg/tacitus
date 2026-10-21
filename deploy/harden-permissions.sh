@@ -48,7 +48,7 @@
 #     profile with a chat platform and no unit yet, this script writes it
 #     (the drop-in below gives it its ExecStart) and the restart grant the
 #     deploy hook uses. An existing system unit is kept as it is. A user
-#     unit left by an older setup.sh is reported with the step that retires
+#     unit left by an older scripts/install/setup.sh is reported with the step that retires
 #     it, and no system unit is written beside it, since two bots would
 #     both consume the chat events.
 #
@@ -80,7 +80,7 @@ fi
 OWNER_HOME="$(getent passwd "$OWNER" | cut -d: -f6)"
 EABOT_HOME="$(getent passwd ea-bot | cut -d: -f6)"
 [ -n "$OWNER_HOME" ] || { echo "no home for owner '$OWNER'" >&2; exit 1; }
-[ -n "$EABOT_HOME" ] || { echo "the ea-bot user does not exist (run setup-ea-user.sh first)" >&2; exit 1; }
+[ -n "$EABOT_HOME" ] || { echo "the ea-bot user does not exist (run scripts/install/setup-ea-user.sh first)" >&2; exit 1; }
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EABOT_TREE="$EABOT_HOME/ea-system"
@@ -375,6 +375,6 @@ if [ "$ok" = 1 ]; then
     echo "[harden] revert: rm the two .d/harden.conf files, systemctl daemon-reload, restart."
     [ "$BOT_RETIRE" = 0 ] || echo "[harden] the bot is not hardened yet: retire its user unit (above) and run this script again."
 else
-    echo "[harden] WARNING: a service is not active on the new path (its log lines are above). The bot needs its chat settings: SETUP.md \"Zulip server\" or \"Slack\"." >&2
+    echo "[harden] WARNING: a service is not active on the new path (its log lines are above). The bot needs its chat settings: docs/SETUP.md \"Zulip server\" or \"Slack\"." >&2
     exit 1
 fi

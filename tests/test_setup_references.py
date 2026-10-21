@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Every pointer into SETUP.md names an appendix that exists.
+"""Every pointer into docs/SETUP.md names an appendix that exists.
 
-SETUP.md is reference material with named appendices, and the skill, the
+docs/SETUP.md is reference material with named appendices, and the skill, the
 doctor's fix texts, the docs and the code point into it by heading:
-`SETUP.md "Heading"`, `SETUP.md 'Heading'` (inside a Python string) or
-`SETUP.md#slug`. A heading renamed without its pointers leaves a reader
+`docs/SETUP.md "Heading"`, `docs/SETUP.md 'Heading'` (inside a Python string) or
+`docs/SETUP.md#slug`. A heading renamed without its pointers leaves a reader
 with nothing to open, so this test slugs the headings the way GitHub does
 and checks every pointer in the tree against them. Step numbers were the
-old scheme; none may remain where this tree points into SETUP.md.
+old scheme; none may remain where this tree points into docs/SETUP.md.
 """
 import os
 import re
@@ -15,11 +15,11 @@ import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-SETUP = REPO / "SETUP.md"
+SETUP = REPO / "docs/SETUP.md"
 SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", "worktrees"}
 TEXT_SUFFIXES = {".md", ".py", ".sh", ".txt", ".json", ".yml", ".yaml", ".example", ".toml", ".cfg", ""}
 
-# A pointer is SETUP.md, a separator, then the quoted name; a quote with
+# A pointer is docs/SETUP.md, a separator, then the quoted name; a quote with
 # no separator closes a string literal around the file name. A pointer
 # may wrap onto the next line of a paragraph or a comment, and a
 # double-quoted name may hold an apostrophe, so the text is joined on
@@ -30,12 +30,12 @@ ANCHOR = re.compile(r"SETUP\.md#([A-Za-z0-9_-]+)")
 INTERNAL_ANCHOR = re.compile(r"\]\(#([A-Za-z0-9_-]+)\)")
 STEP_NUMBER = re.compile(r"SETUP\.md\)?,?\s+(?:[Ss]teps?\s*\d|\d[A-Za-z]?(?:\.\d)?\b)")
 # Where the old step numbers lived, and the top-level files that point
-# into SETUP.md. setup.sh is held by its own work and is not listed. The
+# into docs/SETUP.md. scripts/install/setup.sh is held by its own work and is not listed. The
 # fresh-install test keeps old step strings as the list of what the
 # doctor must no longer say.
-OWNED = ("SETUP.md", ".claude", "scripts", "docs", "preprocessor", "deploy", "skills", "tests",
-         "README.md", ".env.example", "user_init.py", "setup-ea-user-macos.sh",
-         "setup-ea-user.sh")
+OWNED = ("docs/SETUP.md", ".claude", "scripts", "docs", "preprocessor", "deploy", "skills", "tests",
+         "README.md", ".env.example", "scripts/install/user_init.py", "scripts/install/setup-ea-user-macos.sh",
+         "scripts/install/setup-ea-user.sh")
 STEP_EXEMPT = {"tests/test_fresh_install_path.py"}
 
 
@@ -95,7 +95,7 @@ def test_setup_md_has_the_named_appendices():
                  "The install overlay", "The deferred-send signing key", "Phone push"):
         assert must in names, must
     text = SETUP.read_text()
-    assert "## Step " not in text and "### Step " not in text, "SETUP.md is reference, not steps"
+    assert "## Step " not in text and "### Step " not in text, "docs/SETUP.md is reference, not steps"
     assert "READ FIRST" not in text, "the agent invariants live in the setup skill"
     assert "./install.sh" in text.split("\n## ", 1)[0], "the opening names the installer"
 
@@ -105,15 +105,15 @@ def test_every_pointer_into_setup_md_names_a_heading():
     missing = []
     for p in tree_files():
         text = _text(p)
-        if not text or "SETUP.md" not in text:
+        if not text or "docs/SETUP.md" not in text:
             continue
         rel = p.relative_to(REPO)
         for name in quoted_pointers(text):
             if name not in names:
-                missing.append(f"{rel}: SETUP.md \"{name}\"")
+                missing.append(f"{rel}: docs/SETUP.md \"{name}\"")
         for slug in ANCHOR.findall(text):
             if slug not in slugs:
-                missing.append(f"{rel}: SETUP.md#{slug}")
+                missing.append(f"{rel}: docs/SETUP.md#{slug}")
     assert not missing, "\n".join(missing)
 
 
@@ -147,7 +147,7 @@ def test_the_skill_points_into_setup_md_by_heading_only():
                  "AskUserQuestion", "one more question each day for a week"):
         assert must in skill, must
     assert len(skill.splitlines()) <= 420, "the skill stays about 400 lines"
-    for text, name in ((skill, "SKILL.md"), (SETUP.read_text(), "SETUP.md")):
+    for text, name in ((skill, "SKILL.md"), (SETUP.read_text(), "docs/SETUP.md")):
         assert chr(0x2014) not in text, f"em-dash in {name}"
 
 
@@ -160,7 +160,7 @@ def test_the_front_docs_agree_with_the_code():
     assert "an absent `chat` block means Slack" in setup and "means `assistant`" in setup
     changelog = (REPO / "CHANGELOG.md").read_text()
     assert "allows exactly" not in changelog and "NOPASSWD: ALL" in changelog
-    assert "ALL=(ea-bot) NOPASSWD: ALL" in (REPO / "setup-ea-user.sh").read_text().replace("$REAL_USER ", "")
+    assert "ALL=(ea-bot) NOPASSWD: ALL" in (REPO / "scripts/install/setup-ea-user.sh").read_text().replace("$REAL_USER ", "")
     contributing = (REPO / "CONTRIBUTING.md").read_text()
     assert "Fork the repository" in contributing and "pytest -q tests`" not in contributing
     assert "tests/run_wall.py" in contributing and "core.hooksPath .githooks" in contributing
@@ -173,7 +173,7 @@ def test_common_failures_cover_the_first_install_snags():
                  "docs/it-request.md", "externally-managed-environment", "newer than 3.14",
                  "No sudo rights", "No Graph sign-in yet. Sign in yourself"):
         assert must in failures, must
-    assert "No Graph sign-in yet. Sign in yourself" in (REPO / "setup.sh").read_text()
+    assert "No Graph sign-in yet. Sign in yourself" in (REPO / "scripts/install/setup.sh").read_text()
 
 
 def test_connectors_are_the_claude_ai_account_ones_the_allowlists_grant():
@@ -195,8 +195,8 @@ def test_connectors_are_the_claude_ai_account_ones_the_allowlists_grant():
 
 
 def test_the_skill_runs_nothing_that_reads_the_terminal():
-    """Claude Code's Bash tool has no terminal. The skill gives user_init.py
-    its answers in a file, lets setup.sh run non-interactive, and hands the
+    """Claude Code's Bash tool has no terminal. The skill gives scripts/install/user_init.py
+    its answers in a file, lets scripts/install/setup.sh run non-interactive, and hands the
     steps that need a password, a browser or a login to the user with the
     `!` prefix, each followed by a read-only check."""
     skill = (REPO / ".claude" / "skills" / "setup" / "SKILL.md").read_text()
@@ -211,7 +211,7 @@ def test_the_skill_runs_nothing_that_reads_the_terminal():
     assert "! python3 preprocessor/graph_client.py" in skill
     assert "sudo: A terminal is required to authenticate" in skill
     assert "! sudo" not in skill and "! cd /" not in skill
-    for typed in ("`sudo ./setup-ea-user.sh`", "`sudo ./setup-ea-user-macos.sh`",
+    for typed in ("`sudo ./scripts/install/setup-ea-user.sh`", "`sudo ./scripts/install/setup-ea-user-macos.sh`",
                   "`python3 preprocessor/google_calendar_client.py --setup`",
                   "`sudo -u ea-bot env HOME=/home/ea-bot claude`",
                   "`sudo bash deploy/harden-permissions.sh`"):
@@ -222,9 +222,9 @@ def test_the_skill_runs_nothing_that_reads_the_terminal():
     for check in ("calendar-view --days 1", "google_calendar_client.py --test",
                   "id ea-bot && test -L ~/.ea", ".claude/.credentials.json"):
         assert check in skill, check
-    # the skill lets setup.sh copy the templates before anything writes config
+    # the skill lets scripts/install/setup.sh copy the templates before anything writes config
     sec1 = skill[skill.index("## 1. Profile"):skill.index("## 2. Identity")]
-    assert "./setup.sh --profile <name>" in sec1
+    assert "./scripts/install/setup.sh --profile <name>" in sec1
     assert "mkdir -p ~/.ea" not in skill
 
 

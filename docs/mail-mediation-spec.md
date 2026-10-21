@@ -236,7 +236,7 @@ Rollback at any step: `chmod g+r` the tokens → direct path restored.
 - **Not a phase anymore (install integration):** the "phases" above were the one-time *migration* of an
   already-running deployment (verify the forward path while the token is still readable, then cut it,
   with auto-rollback). On a fresh install there is nothing to migrate, so mediation is now part of the
-  mandatory two-user hardening: `setup-ea-user.sh` calls `deploy/enable-mail-mediation.sh`, which is a
+  mandatory two-user hardening: `scripts/install/setup-ea-user.sh` calls `deploy/enable-mail-mediation.sh`, which is a
   portable, idempotent enabler (installs the mediator unit for the invoking user, sets the flag, moves
   the tokens) that doubles as the standalone migrator/ops tool (`--status`, `--rollback`).
   The tokens are locked before any other step, and neither a failed check nor `--rollback`

@@ -442,7 +442,7 @@ def check_tokens(ctx: Ctx) -> list[dict]:
 AUTH_RECOVERY = ("as root: mv {auth} {auth}.untrusted-<date> and install -d -o <owner> -g ea "
                  "-m 0750 {auth}; then as the owner put token files back only from your own "
                  "backup or sign in again (graph_client.py; google_calendar_client.py --setup), "
-                 "and make a new scheduled-send key (SETUP.md 'The deferred-send signing key'); "
+                 "and make a new scheduled-send key (docs/SETUP.md 'The deferred-send signing key'); "
                  "never chown the old files to the owner")
 # What deploy/tree-custody.sh moves out of auth/ (an entry the owner did not
 # own, a file with other names) goes to an owner-only directory by this name.

@@ -5,7 +5,7 @@ The lane prompt Claude gets is 50 to 60k characters: the operating
 instructions, the profile, the whole scheduling-rules skill, the
 staged-events guide, the user's rules and the request. A 27B model
 loses the request in it. The on-prem arm gets `compose()`: the compact
-instructions in CLAUDE-scheduling-remote.md (the exact commands, the
+instructions in prompts/CLAUDE-scheduling-remote.md (the exact commands, the
 rules that decide a turn, the staged-event shape, the id handles),
 the profile, the user's scheduling rules, and the request. About a
 fifth of the length.
@@ -20,7 +20,7 @@ import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-REMOTE_FILE = REPO / "CLAUDE-scheduling-remote.md"
+REMOTE_FILE = REPO / "prompts/CLAUDE-scheduling-remote.md"
 PROFILE_START, PROFILE_END = "=== USER PROFILE ===", "=== END USER PROFILE ==="
 RULES_HEAD = "## User rules"
 REQUEST_MARK = "The user posted"

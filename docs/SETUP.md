@@ -50,7 +50,7 @@ name.
 ## Choose a profile
 
 Three install profiles, set as `"profile"` in `~/.ea/config/ea-config.json`
-and asked first by `/setup`. Every lane reads it: `setup.sh` installs the
+and asked first by `/setup`. Every lane reads it: `scripts/install/setup.sh` installs the
 cron lines and services for it, `run-agent.sh` delivers reports where it
 says, the launchers add its deny list, and `ea-doctor.py` checks only
 what it needs. `python3 preprocessor/ea_config.py features --profile
@@ -59,7 +59,7 @@ what it needs. `python3 preprocessor/ea_config.py features --profile
 **Start with `email`.** It needs no chat server and no buttons, and a
 first install takes about an hour once IT has given you the Outlook app.
 Move to `assistant` later: change `"profile"`, run
-`./setup.sh --profile assistant`, then do the chat platform and the
+`./scripts/install/setup.sh --profile assistant`, then do the chat platform and the
 services. Plan half a day for `assistant` from the start, most of it for
 the chat server.
 
@@ -74,9 +74,9 @@ verbs need a card's token, so an `email` or `review-only` install cannot
 send mail or create a real calendar event by construction.
 
 The defaults in the code are the full system's, not the recommended
-start: an `ea-config.json` with no `"profile"` (and `setup.sh` with no
+start: an `ea-config.json` with no `"profile"` (and `scripts/install/setup.sh` with no
 `--profile`) means `assistant`, an absent `chat` block means Slack, and
-`user_init.py --chat` defaults to `slack`. The `/setup` skill always
+`scripts/install/user_init.py --chat` defaults to `slack`. The `/setup` skill always
 records the profile you choose, and `scripts/zulip_bootstrap.py` prints a
 `chat` block with `"frontend": "zulip"`, so neither default applies to an
 install it makes.
@@ -86,7 +86,7 @@ install it makes.
 Optional, for `email` and `review-only`. With no chat channel, a report
 is a file in `~/.ea/state/reports/`. To see it on your phone, install the
 ntfy app, choose a long random topic name, and write the owner-private
-`~/.ea-private/push.json` (mode 600; `user_init.py --phase push` writes
+`~/.ea-private/push.json` (mode 600; `scripts/install/user_init.py --phase push` writes
 it too):
 
 ```json
@@ -136,7 +136,7 @@ GRAPH_REDIRECT_URI=http://localhost:8400/callback
 GRAPH_CLIENT_SECRET=<client-secret-value>
 ```
 
-`python3 user_init.py --phase auth` asks for these values, writes both
+`python3 scripts/install/user_init.py --phase auth` asks for these values, writes both
 files and runs the sign-in. By hand: `python3 preprocessor/graph_client.py`
 opens a browser and catches the redirect locally. Then align the
 requested scopes to what the app grants:
@@ -152,7 +152,7 @@ The cached refresh token renews silently; no cron and no manual refresh.
 When the tenant allows public client flows. Two keys in `~/.ea/.env`:
 `GRAPH_CLIENT_ID` and `GRAPH_AUTH_METHOD=device_code` (or `interactive`
 for a browser sign-in, which needs a public-client redirect URI on the
-registration). `python3 user_init.py --phase auth` writes them and signs
+registration). `python3 scripts/install/user_init.py --phase auth` writes them and signs
 in; by hand, write the two lines and run
 `python3 preprocessor/graph_client.py`. A tenant that blocks third-party
 apps answers AADSTS1001010 or AADSTS65002; then Option A is the path.
@@ -297,7 +297,7 @@ recommendation: it runs on the EA's machine in Docker and is reached over
 your tailnet, so every message, file and confirmation card stays on that
 machine. The comparison with Slack is the "Choosing a chat platform"
 table in [INSTALL.md](INSTALL.md#choosing-a-chat-platform); the switch in either direction is one
-config key and a restart ([docs/zulip-switch.md](docs/zulip-switch.md),
+config key and a restart ([docs/zulip-switch.md](zulip-switch.md),
 `scripts/zulip_switch.sh`).
 
 Three private streams stand in for the Slack channel, the DM and the
@@ -321,7 +321,7 @@ flowchart LR
     bot["EA bot<br/>its own event queue, its own API key"] <--> realm
 ```
 
-1. **Run the server.** [deploy/zulip/README.md](deploy/zulip/README.md):
+1. **Run the server.** [deploy/zulip/README.md](../deploy/zulip/README.md):
    secrets in `~/.ea-private/zulip.env` (mode 600, outside the checkout),
    `deploy/zulip/compose.sh up -d`, two-factor sign-in on, the realm and owner created headless with
    `manage.py create_realm`, and your owner API key. The stack listens on
@@ -401,7 +401,7 @@ and one bot app are all it needs, and your EA conversations, mail data
 and approval buttons stay inside it. A shared lab workspace works too
 (private channels are invisible to admins who are not members), with the
 risk that another member installs an app with scopes that read private
-channels. `python3 user_init.py --phase auth` collects the tokens and
+channels. `python3 scripts/install/user_init.py --phase auth` collects the tokens and
 channel id once the app exists.
 
 ### The Slack app
@@ -477,7 +477,7 @@ keeps a prompt-injected EA from tampering with the bot, and it is
 mandatory on every host: the bot and `run-agent.sh` refuse to start
 without the user, and there is no opt-out variable.
 
-Run `./setup.sh --profile <name>` first, while `~/.ea` is still yours:
+Run `./scripts/install/setup.sh --profile <name>` first, while `~/.ea` is still yours:
 it copies the config templates and records the profile. In a terminal it
 also runs the Graph and Google sign-ins when their files are there and
 asks whether to install the cron lines. With no terminal on its standard
@@ -486,8 +486,8 @@ it signs in nowhere, prints the sign-in command to run by hand, and
 saves the cron lines unless `--install-cron` is given. Then, once:
 
 ```bash
-sudo bash setup-ea-user.sh          # Linux
-sudo bash setup-ea-user-macos.sh    # macOS (dscl instead of useradd; /Users/ea-bot)
+sudo bash scripts/install/setup-ea-user.sh          # Linux
+sudo bash scripts/install/setup-ea-user-macos.sh    # macOS (dscl instead of useradd; /Users/ea-bot)
 ```
 
 ### What the installer does
@@ -505,8 +505,8 @@ Both scripts are idempotent and do the same things, in this order:
    it is handed to you before any other step and never to ea-bot. Mode
    fixes in ea-bot's trees run as ea-bot, and a re-run hands ea-bot no
    file it does not already own.
-   From then on `setup.sh` writes config as ea-bot through the sudoers
-   rule, so a later `./setup.sh` run (a profile change, or re-pointing
+   From then on `scripts/install/setup.sh` writes config as ea-bot through the sudoers
+   rule, so a later `./scripts/install/setup.sh` run (a profile change, or re-pointing
    the cron lines after hardening) needs nothing else.
 4. Close your home to other users (no `o+x`): ea-bot never enters it.
 5. Write ea-bot's Claude Code settings and install ea-bot's **own**
@@ -568,10 +568,10 @@ the less-privileged user. The Docker image writes the same rule.
 Two long-lived services run **as you**, never as ea-bot: the mail
 mediator (`preprocessor/mail_mediator.py`) on every profile, and the
 chat bot (`ea-chat-bot.py`) on `assistant`. On Linux each is a system
-unit: `deploy/enable-mail-mediation.sh` (which `setup-ea-user.sh` runs)
+unit: `deploy/enable-mail-mediation.sh` (which `scripts/install/setup-ea-user.sh` runs)
 writes the mediator's, and [Hardening](#hardening)
 (`deploy/harden-permissions.sh`) writes the bot's once the chat platform
-is configured. `setup.sh` runs as you and writes no unit. On macOS
+is configured. `scripts/install/setup.sh` runs as you and writes no unit. On macOS
 both are LaunchDaemons ([launchd](#launchd)).
 
 ### systemd
@@ -611,7 +611,7 @@ the owner-private environment files. It enables and starts the unit, and
 writes `/etc/sudoers.d/ea-chat-bot` (`systemctl restart
 ea-chat-bot.service` only) so the deploy hook can restart the bot. An
 existing system unit is kept and gets the drop-in. A user unit
-(`~/.config/systemd/user/ea-chat-bot.service`, from an older `setup.sh`)
+(`~/.config/systemd/user/ea-chat-bot.service`, from an older `scripts/install/setup.sh`)
 is reported with the step that retires it, and the script writes no
 system unit beside it, since two bots would both take the chat events:
 `systemctl --user disable --now ea-chat-bot`, remove the file,
@@ -635,17 +635,17 @@ loaded by a root-owned launcher from `~/.ea-private/bot.env` and
 `secrets.env`: the mail mediator always, and the chat bot only when the
 profile has a chat platform. `--status` reports and `--remove` undoes.
 Then `sudo bash deploy/enable-mail-mediation.sh` turns mediation on (on
-Linux `setup-ea-user.sh` runs it). On `assistant`, run the services
+Linux `scripts/install/setup-ea-user.sh` runs it). On `assistant`, run the services
 script after the chat platform is configured: its third step seeds
 `~/.ea-private/chat.json` from the `chat` block only when that file is
 missing. The design, the
 deploy hook and the troubleshooting are in
-[docs/macos-services.md](docs/macos-services.md).
+[docs/macos-services.md](macos-services.md).
 
 ## Cron schedule
 
 The cron jobs are owner processes (`docs/SECURITY.md`, "Owner trust
-rules"). `setup.sh` prints the entries for the profile and installs them
+rules"). `scripts/install/setup.sh` prints the entries for the profile and installs them
 when you confirm, or with `--install-cron`; a non-interactive run
 (`EA_NONINTERACTIVE=1`, `--non-interactive`, or no terminal on standard
 input) without that flag saves them to
@@ -655,7 +655,7 @@ deploy hook keeps in step), never the checkout. Output goes to the
 owner-private `~/.ea-private/logs` (mode 700). Times are the machine's
 local timezone.
 
-What `setup.sh` writes, by profile (`preprocessor/ea_config.py` features):
+What `scripts/install/setup.sh` writes, by profile (`preprocessor/ea_config.py` features):
 
 ```
 # ---- every profile ----
@@ -693,7 +693,7 @@ What `setup.sh` writes, by profile (`preprocessor/ea_config.py` features):
 ```
 
 `./run-agent.sh morning-briefing --now` runs the briefing by hand at any
-hour (`--now` skips the 4 AM gate). Lines `setup.sh` does not write; add
+hour (`--now` skips the 4 AM gate). Lines `scripts/install/setup.sh` does not write; add
 the ones you want with `crontab -e`:
 
 ```
@@ -826,7 +826,7 @@ to the owner-private `chat.json` the bot trusts, and copies a legacy
 `.env.secrets` to `~/.ea-private/secrets.env` when that file is missing.
 It first says which bot unit it found. On a profile with a chat
 platform and no unit it writes the bot's system unit
-([systemd](#systemd)); a user unit left by an older `setup.sh` is
+([systemd](#systemd)); a user unit left by an older `scripts/install/setup.sh` is
 reported with the step that retires it. It adds systemd drop-ins and
 verifies the services came back on the new path. On a profile with no
 chat platform there is no bot unit: the script says so, skips that
@@ -834,7 +834,7 @@ unit's drop-in and restart, and still seeds `/opt/ea-system`, the
 owner-private files and the mediator's drop-in when that unit exists.
 Revert by removing
 `/etc/systemd/system/*.service.d/harden.conf` and reloading. Afterwards
-run `./setup.sh --profile <name> --install-cron` once more so the cron
+run `./scripts/install/setup.sh --profile <name> --install-cron` once more so the cron
 lines run `/opt/ea-system`. The doctor's `hardening:` checks warn until the script
 has run. The full model is `docs/SECURITY.md`.
 
@@ -846,8 +846,8 @@ install.
 
 ## Config files
 
-`setup.sh` copies every template in `config/` to `~/.ea/config/`,
-skipping files that exist. `python3 user_init.py` fills the same files
+`scripts/install/setup.sh` copies every template in `config/` to `~/.ea/config/`,
+skipping files that exist. `python3 scripts/install/user_init.py` fills the same files
 from a terminal form (phases: `identity`, `scheduling`, `inbox`,
 `autonomy`, `groups`, `deadlines`, `style`, `auth`, `tone`,
 `reimbursement`, `vip`, `push`, `state`; `--phase <name>` reruns one,
@@ -921,7 +921,7 @@ only; hardening moves the live copy to `~/.ea-private/`).
 
 State files (`~/.ea/state/obligations-ledger.json` as `[]`,
 `seen-messages.json` and `seen-conversations.json` as `{}`) are created
-by `user_init.py --phase state` or by hand before the first run.
+by `scripts/install/user_init.py --phase state` or by hand before the first run.
 
 ### Secrets
 
@@ -1077,7 +1077,7 @@ core: **scheduled** (cron through `run-plugin.sh`, sandboxed as ea-bot)
 or **interactive** (a chat block in `plugin.json` that the live bot loads
 on a matching message), or both. Install one with
 `gh repo clone <owner>/ea-plugin-<name> ~/.ea/plugins/<name>`, fill in
-its `.env.secrets` if it needs any, and run `bash setup.sh` (it wires the
+its `.env.secrets` if it needs any, and run `bash scripts/install/setup.sh` (it wires the
 cron lines; an interactive plugin works after a bot restart). The design,
 the `plugin.json` schema and the trust model are in
 `docs/plugin-architecture.md`.
@@ -1121,7 +1121,7 @@ no token and no warning.
 
 The EA also runs as a small set of containers from one image, keeping
 the two-user split inside the image: no `ea-bot` account, systemd unit
-or crontab on the host. [docs/docker.md](docs/docker.md) is the whole
+or crontab on the host. [docs/docker.md](docker.md) is the whole
 procedure (the settings file, the volumes, the sign-ins through the
 `owner` and `signin` services, the overlay, what the doctor shows along
 the way). `tests/install/docker-smoke.sh` runs the fresh-install path in
@@ -1131,7 +1131,7 @@ a container.
 
 The install is the same on a Mac; these are the differences.
 
-- **The service account**: `sudo bash setup-ea-user-macos.sh` uses
+- **The service account**: `sudo bash scripts/install/setup-ea-user-macos.sh` uses
   `dscl` and `sysadminctl` instead of `useradd`; ea-bot is a hidden
   account (UID 499) with its home at `/Users/ea-bot`. The code looks the
   home up with `pwd.getpwnam`, so nothing is hardcoded; read `/Users/ea-bot`
@@ -1210,7 +1210,7 @@ tokens, the deck builder) is the normal state of a new install.
   owner id, an expired token, a stream the bot is not subscribed to.
 - **Graph errors**: the token may be expired; sign in again
   (`python3 preprocessor/graph_client.py`), or re-run
-  `python3 user_init.py --phase auth`.
+  `python3 scripts/install/user_init.py --phase auth`.
 - **Google "No credentials"**: `python3 preprocessor/google_calendar_client.py --setup`
   for the account named.
 - **A connector fails**: `claude mcp list` as ea-bot names it; enable
@@ -1240,7 +1240,7 @@ tokens, the deck builder) is the normal state of a new install.
   app, the permissions and the consent they grant. Sign in again when
   they answer ([Microsoft Graph app registration](#microsoft-graph-app-registration)).
 - **pip refuses to install** with "externally-managed-environment" (PEP
-  668: Debian, Ubuntu, Homebrew): `install.sh` and `setup.sh` pass
+  668: Debian, Ubuntu, Homebrew): `install.sh` and `scripts/install/setup.sh` pass
   `--break-system-packages` only to an interpreter marked that way, so
   this means pip ran from another `python3`; run `./install.sh` again, or
   name the interpreter with `EA_PYTHON=/path/to/python3 ./install.sh`.
@@ -1250,20 +1250,20 @@ tokens, the deck builder) is the normal state of a new install.
   names one that is too new; install Python 3.12 (or 3.13) and run it
   again, or point `EA_PYTHON` at it.
 - **No sudo rights**: the service account, hardening and mediation steps
-  run as root (`setup-ea-user.sh`, `deploy/harden-permissions.sh`,
+  run as root (`scripts/install/setup-ea-user.sh`, `deploy/harden-permissions.sh`,
   `deploy/enable-mail-mediation.sh`), and `install.sh --check` reports
   whether you can. An account that cannot `sudo` cannot install the EA on
   that machine: ask its administrator to run those steps, or to add you
   to the `sudo` group (`wheel` on some distributions, `admin` on macOS).
   There is no install without the ea-bot user.
-- **`setup.sh` printed "No Graph sign-in yet. Sign in yourself"**: it ran
+- **`scripts/install/setup.sh` printed "No Graph sign-in yet. Sign in yourself"**: it ran
   with no terminal (Claude Code, a pipe), so it did not try the sign-in.
   Run the command it printed yourself, in Claude Code with a `!` in front
   or in a terminal: `python3 preprocessor/graph_client.py` (with
   `--align --write` for the confidential client). "no GRAPH_CLIENT_ID"
   means the app registration is not in `~/.ea/.env` yet: run the `auth`
-  phase of `user_init.py` first. "Graph token expired and no refresh
-  token available" from an older `setup.sh` is the same thing: no
+  phase of `scripts/install/user_init.py` first. "Graph token expired and no refresh
+  token available" from an older `scripts/install/setup.sh` is the same thing: no
   sign-in yet.
 
 ### Python packages in three places

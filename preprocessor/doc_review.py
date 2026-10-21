@@ -12,7 +12,7 @@ It runs as ea-bot, in ea-bot's own clone of the repo (~/doc-review), with
 the bot account's fine-grained token (~/.config/doc-review/token): one
 repository, contents and pull requests only. The repository and the owner's
 login come from ~/.ea/config/github.json (`doc_review.repo`,
-`doc_review.owner_login`; see SETUP.md). That token cannot create or delete a
+`doc_review.owner_login`; see docs/SETUP.md). That token cannot create or delete a
 repository, change a setting, add a collaborator or reach any other
 repository, and that is the security boundary. This tool is a convenience
 over git and the GitHub API, not a gate. git runs through safe_git.py, so
@@ -101,7 +101,7 @@ REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$")
 
 def _repo() -> str:
     if not REPO or "/" not in REPO:
-        raise ReviewError("github.json names no doc_review.repo; see SETUP.md")
+        raise ReviewError("github.json names no doc_review.repo; see docs/SETUP.md")
     if not REPO_RE.match(REPO) or ".." in REPO:
         raise ReviewError(f"github.json doc_review.repo must be owner/name, not {REPO!r}")
     return REPO
@@ -114,7 +114,7 @@ def remote_url() -> str:
 
 def _owner_login() -> str:
     if not OWNER_LOGIN:
-        raise ReviewError("github.json names no doc_review.owner_login; see SETUP.md")
+        raise ReviewError("github.json names no doc_review.owner_login; see docs/SETUP.md")
     return OWNER_LOGIN
 
 

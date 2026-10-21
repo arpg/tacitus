@@ -5,7 +5,7 @@ The entrypoint's init role runs this through `runuser -u ea-bot` on every
 start. Everything here is ea-bot space, so it runs as ea-bot: a symlink
 planted in that space then reaches only what ea-bot can reach already.
 
-  - the directories setup-ea-user.sh makes, where an older volume lacks
+  - the directories scripts/install/setup-ea-user.sh makes, where an older volume lacks
     them (the image puts them in every new volume);
   - the config templates a new volume does not have yet;
   - config files another user put there (a `docker compose cp` lands as

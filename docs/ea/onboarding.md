@@ -26,7 +26,7 @@ or personal names; the user supplies those.
   records an answer. One question a day: `next` returns nothing while
   the question asked today is still open (`--force` overrides).
 - Email profile: the whole bank in one sitting, either
-  `python3 user_init.py --phase preferences` (interactive) or
+  `python3 scripts/install/user_init.py --phase preferences` (interactive) or
   `python3 preprocessor/onboarding.py ask --count 3`, which prints the
   questions with the exact `answer` and `skip` commands. The setup
   skill and the doctor point at `ask`.

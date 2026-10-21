@@ -13,10 +13,10 @@ This document covers two things the rest of the docs only sketch:
    turn actually needs, instead of re-sending the whole operating manual
    every message.
 
-For the security threat model see [docs/SECURITY.md](docs/SECURITY.md); for
+For the security threat model see [docs/SECURITY.md](SECURITY.md); for
 the end-to-end message flow and prompt construction see
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); for the token-custody design
-see [docs/mail-mediation-spec.md](docs/mail-mediation-spec.md).
+[docs/ARCHITECTURE.md](ARCHITECTURE.md); for the token-custody design
+see [docs/mail-mediation-spec.md](mail-mediation-spec.md).
 
 ---
 
@@ -72,12 +72,12 @@ always been. A confirmation is a card the frontend renders: Slack
 buttons, or on Zulip a message with one reaction chip per action and a
 one-time code, which the owner confirms with one tap or by replying
 with the code. See
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) ("Chat front-end layer").
+[docs/ARCHITECTURE.md](ARCHITECTURE.md) ("Chat front-end layer").
 
 A third, unrelated lane exists for **scheduled agents** (morning briefing,
 afternoon catch-up, weekly audit) via `run-agent.sh` on cron. Those are
 one-shot, full-context invocations, not part of the conversational harness;
-see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §2.
+see [docs/ARCHITECTURE.md](ARCHITECTURE.md) §2.
 
 The rest of this document is about the resident pane, because that is where
 almost every interactive message lands.
@@ -121,7 +121,7 @@ Key properties:
 - **User: `ea-bot`.** The interactive session is NOT you (the owner account). It is the
   unprivileged service account whose home is `/home/ea-bot` and whose only
   writable state is the shared `~/.ea`. This is the sandbox boundary; see
-  §6 and [docs/SECURITY.md](docs/SECURITY.md) Layer 1.
+  §6 and [docs/SECURITY.md](SECURITY.md) Layer 1.
 - **Model: `claude-opus-5-5[1m]`** by default (override with
   `EA_RESIDENT_MODEL`). Interactive conversations run on Opus. The
   scheduled agents pick their own default in `run-agent.sh` — Opus 5.5,
@@ -332,8 +332,8 @@ around:
    them; GATED verbs are refused there too. So a prompt-injected resident
    cannot send mail because it physically **cannot obtain a send-capable
    credential**, not merely because it is told not to. See
-   [docs/SECURITY.md](docs/SECURITY.md) and
-   [docs/mail-mediation-spec.md](docs/mail-mediation-spec.md).
+   [docs/SECURITY.md](SECURITY.md) and
+   [docs/mail-mediation-spec.md](mail-mediation-spec.md).
 
 The relationship between the harness and mediation is worth stating plainly:
 **the `ea-bot` user that the resident runs as is exactly the user that
@@ -363,11 +363,11 @@ into an unapproved send.
 
 ## 8. Related documents
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) -- full message flow, prompt
+- [docs/ARCHITECTURE.md](ARCHITECTURE.md) -- full message flow, prompt
   construction, approval-gate lifecycle, preprocessing pipeline.
-- [docs/SECURITY.md](docs/SECURITY.md) -- threat model, autonomy tiers, the
+- [docs/SECURITY.md](SECURITY.md) -- threat model, autonomy tiers, the
   four defense layers, and what prompt injection cannot do.
-- [docs/mail-mediation-spec.md](docs/mail-mediation-spec.md) -- the
+- [docs/mail-mediation-spec.md](mail-mediation-spec.md) -- the
   token-custody design and its rollout.
-- [CLAUDE.md](CLAUDE.md) -- the operating instructions the resident follows
+- [CLAUDE.md](../CLAUDE.md) -- the operating instructions the resident follows
   (the primer is a distilled, session-scoped subset).

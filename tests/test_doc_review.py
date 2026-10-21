@@ -337,13 +337,13 @@ def test_an_unconfigured_repo_or_owner_is_refused_in_one_line(env):
     gh.graph[1] = _pull()
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(dr, "OWNER_LOGIN", "")
-        with pytest.raises(dr.ReviewError, match="github.json names no doc_review.owner_login; see SETUP.md"):
+        with pytest.raises(dr.ReviewError, match="github.json names no doc_review.owner_login; see docs/SETUP.md"):
             dr.cmd_review(gh, 1)
         with pytest.raises(dr.ReviewError, match="owner_login"):
             dr.poll_reviews(gh)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(dr, "REPO", "")
-        with pytest.raises(dr.ReviewError, match="github.json names no doc_review.repo; see SETUP.md"):
+        with pytest.raises(dr.ReviewError, match="github.json names no doc_review.repo; see docs/SETUP.md"):
             dr.cmd_status(gh, 1)
         with pytest.raises(dr.ReviewError, match="doc_review.repo"):
             dr.cmd_open(gh, str(_draft(env, "C.\n", name="two.md")), "Two")

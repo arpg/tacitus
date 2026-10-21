@@ -2,7 +2,7 @@
 """The install profile (email | review-only | assistant) is one setting that
 every lane reads: the config module defines it, the launchers add the
 review-only deny list, the cron lane writes reports to files and posts to
-Slack only when the profile has it, setup.sh and the doctor take it as a
+Slack only when the profile has it, scripts/install/setup.sh and the doctor take it as a
 flag, and the /setup skill asks for it first."""
 
 import json
@@ -79,12 +79,12 @@ def test_cron_lane_writes_the_report_and_posts_only_with_slack():
 
 
 def test_setup_and_doctor_take_the_profile():
-    setup = (ROOT / "setup.sh").read_text()
+    setup = (ROOT / "scripts/install/setup.sh").read_text()
     assert "--profile)" in setup and 'HAS_SLACK=1' in setup
-    assert 'd["profile"] = profile' in setup, "setup.sh records the profile in ea-config.json"
+    assert 'd["profile"] = profile' in setup, "scripts/install/setup.sh records the profile in ea-config.json"
     assert 'for path in "$SCRIPT_DIR"/config/*' in setup, "every template is copied"
     assert "active-projects.md with your grants" not in setup
-    r = subprocess.run(["bash", str(ROOT / "setup.sh"), "--profile", "gmail-first"],
+    r = subprocess.run(["bash", str(ROOT / "scripts/install/setup.sh"), "--profile", "gmail-first"],
                        capture_output=True, text=True)
     assert r.returncode == 2 and "unknown profile" in r.stderr
     doctor = [sys.executable, str(ROOT / "scripts" / "ea-doctor.py")]
@@ -109,11 +109,11 @@ def test_setup_skill_exists_and_the_core_points_at_it():
     text = skill.read_text()
     assert text.startswith("---\nname: setup\n")
     for must in ("email", "review-only", "assistant", "AskUserQuestion",
-                 "ea-doctor.py --profile", "setup.sh --profile", "docs/it-request.md"):
+                 "ea-doctor.py --profile", "scripts/install/setup.sh --profile", "docs/it-request.md"):
         assert must in text, must
     core = (ROOT / "CLAUDE.md").read_text()
     assert "/setup" in core and ".claude/skills/setup/SKILL.md" in core
-    assert "## Choose a profile" in (ROOT / "SETUP.md").read_text()
+    assert "## Choose a profile" in (ROOT / "docs/SETUP.md").read_text()
     in_repo = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-inside-work-tree"],
                              capture_output=True).returncode == 0
     if in_repo:  # the Docker image carries the tree without its .git
@@ -122,12 +122,12 @@ def test_setup_skill_exists_and_the_core_points_at_it():
 
 
 def test_setup_asks_for_the_institution_and_installs_the_overlay():
-    """The skill and SETUP.md both write the institution block, then render
+    """The skill and docs/SETUP.md both write the institution block, then render
     the overlay as ea-bot and install it in the deployed tree. Neither
     names one institution except as the pointer to the worked example."""
     skill = (ROOT / ".claude" / "skills" / "setup" / "SKILL.md").read_text()
-    setup = (ROOT / "SETUP.md").read_text()
-    for name, text in (("SKILL.md", skill), ("SETUP.md", setup)):
+    setup = (ROOT / "docs/SETUP.md").read_text()
+    for name, text in (("SKILL.md", skill), ("docs/SETUP.md", setup)):
         for must in ("`institution` block", "safety_rail_domain", "video.platform", "video.link",
                      "zoom_link", "sudo -u ea-bot /usr/bin/python3 "
                      "/home/ea-bot/ea-system/preprocessor/install_overlay.py render",

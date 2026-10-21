@@ -6,6 +6,15 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A smaller root directory.** `SETUP.md`, `INSTALL.md` and the
+  LLM-harness essay (now `llm-harness.md`) live in `docs/`; the
+  scheduling channel's operating files live in `prompts/`; `setup.sh`,
+  the two service-account installers and `user_init.py` live in
+  `scripts/install/` (`install.sh` stays at the root and calls them).
+  The `ea-slack-bot.py` shim is gone: a unit whose ExecStart still
+  names it needs `deploy/rename-chat-bot.sh` first. `run-agent.sh`,
+  `run-plugin.sh` and `ea-chat-bot.py` stay at the root, so no crontab
+  or unit changes.
 - **Sends stop filling the Zulip Inbox.** A draft outcome (Send, Sent
   myself, Handled, a send or a delete found in Outlook) names the ledger
   rows it closed on its one status line, instead of one "Closed

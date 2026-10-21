@@ -5,7 +5,7 @@ Where it comes from, first answer wins:
   1. `timezone` in ~/.ea/config/user-profile.json (the identity answers
      setup writes);
   2. `timezone` in ~/.ea/config/scheduling-preferences.json (where
-     user_init.py writes it);
+     scripts/install/user_init.py writes it);
   3. the system's zone: $TZ, then the /etc/localtime link, then
      /etc/timezone;
   4. UTC.

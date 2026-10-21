@@ -8,7 +8,7 @@
 # calendar mutate) are refused. See docs/SECURITY.md and docs/mail-mediation-spec.md.
 #
 # This is NOT a "phase" you bolt on afterward. It is the mediation install step:
-#   * setup-ea-user.sh calls it during a fresh hardened install, and
+#   * scripts/install/setup-ea-user.sh calls it during a fresh hardened install, and
 #   * you can run it standalone to migrate a pre-mediation install, or for ops.
 # Idempotent and reversible.
 #
@@ -234,7 +234,7 @@ rollback(){
 
 enable(){
   need_root
-  [ -f "$MEDIATOR_PY" ] || fail "deployed mail_mediator.py missing at $MEDIATOR_PY -- deploy the source first (setup-ea-user.sh Step 3)"
+  [ -f "$MEDIATOR_PY" ] || fail "deployed mail_mediator.py missing at $MEDIATOR_PY -- deploy the source first (scripts/install/setup-ea-user.sh Step 3)"
 
   ylw "[0/3] the auth directory and every token in it to ${REAL_USER} (the old modes recorded once)"
   lock_tokens || fail "the tokens could not be locked; nothing else changed"

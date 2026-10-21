@@ -77,7 +77,7 @@ trusted_repo(){
     [ -n "$PY" ] && [ -x "$PY" ] || die "python3 is required"
     [ -f "$POLICY_PY" ] || die "missing $POLICY_PY"
     home="$(getent passwd "$RESIDENT" | cut -d: -f6 || true)"
-    [ -n "$home" ] || die "the $RESIDENT user does not exist (run setup-ea-user.sh first)"
+    [ -n "$home" ] || die "the $RESIDENT user does not exist (run scripts/install/setup-ea-user.sh first)"
     case "$(readlink -f "$REPO_DIR")/" in
         "$(readlink -f "$home")"/*)
             die "refusing to run code from $REPO_DIR, which is in the resident's home;" \

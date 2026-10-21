@@ -4,12 +4,12 @@
 #
 # The install starts with ./install.sh, which opens Claude Code on the
 # setup skill (.claude/skills/setup/SKILL.md); the skill runs this script.
-# SETUP.md is the reference for each step.
+# docs/SETUP.md is the reference for each step.
 # Run once on your always-on machine.
 #
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"   # the checkout root; this script lives in scripts/install/
 EA_DIR="${EA_DIR:-$HOME/.ea}"
 
 # --profile email|review-only|assistant. Default: what ea-config.json says,
@@ -35,7 +35,7 @@ while [[ $# -gt 0 ]]; do
         --profile=*) PROFILE="${1#--profile=}"; shift ;;
         --non-interactive) NONINTERACTIVE=1; shift ;;
         --install-cron) INSTALL_CRON=1; shift ;;
-        -h|--help) echo "usage: setup.sh [--profile email|review-only|assistant] [--non-interactive] [--install-cron]"; exit 0 ;;
+        -h|--help) echo "usage: scripts/install/setup.sh [--profile email|review-only|assistant] [--non-interactive] [--install-cron]"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -70,7 +70,7 @@ echo "=== EA System Setup ==="
 echo "Install location: $EA_DIR"
 echo "Profile: $PROFILE"
 [[ "$NONINTERACTIVE" == 1 ]] && echo "Non-interactive run ($NONINTERACTIVE_WHY): nothing here reads the terminal."
-echo "For detailed instructions, see SETUP.md"
+echo "For detailed instructions, see docs/SETUP.md"
 echo ""
 
 # 1. Python deps
@@ -110,7 +110,7 @@ echo "Setting up directory structure..."
 mkdir -p "$EA_DIR"/{auth,state,logs,config,receipts,letters,templates}
 
 # Writes into ~/.ea/config go through scripts/owner-io.sh: before
-# setup-ea-user.sh the directory is the owner's and the write is a plain
+# scripts/install/setup-ea-user.sh the directory is the owner's and the write is a plain
 # one; after it the directory belongs to ea-bot and the write runs as
 # ea-bot through the sudoers rule that script installs. So this script
 # runs the same way on a fresh install and on a re-run (a profile change,
@@ -120,7 +120,7 @@ config_write() {
     # stdin becomes $EA_DIR/config/$1. One line names the fix when the
     # write is refused, in place of the traceback a bare cp would give.
     if ! "$OWNER_IO" write "$EA_DIR/config/$1" 2>/dev/null; then
-        echo "setup.sh: cannot write $EA_DIR/config/$1 as $(id -un): the config directory belongs to ea-bot and sudo refused to write it as ea-bot. Fix: sudo bash $SCRIPT_DIR/setup-ea-user.sh (it installs the sudoers rule), then run ./setup.sh --profile $PROFILE again." >&2
+        echo "scripts/install/setup.sh: cannot write $EA_DIR/config/$1 as $(id -un): the config directory belongs to ea-bot and sudo refused to write it as ea-bot. Fix: sudo bash $SCRIPT_DIR/scripts/install/setup-ea-user.sh (it installs the sudoers rule), then run ./scripts/install/setup.sh --profile $PROFILE again." >&2
         exit 1
     fi
 }
@@ -164,7 +164,7 @@ if [[ "$PROFILE_RC" == 0 ]]; then
 elif [[ "$PROFILE_RC" == 3 ]]; then
     echo "  Profile already recorded: $PROFILE"
 else
-    echo "setup.sh: could not read $EA_DIR/config/ea-config.json to record the profile" >&2
+    echo "scripts/install/setup.sh: could not read $EA_DIR/config/ea-config.json to record the profile" >&2
     exit 1
 fi
 
@@ -177,10 +177,10 @@ if [[ ! -f "$EA_DIR/.env" ]]; then
     echo "=== Environment file ==="
     if [[ "$HAS_SLACK" == 1 ]]; then
         echo "You need to create $EA_DIR/.env with your Slack channel ids."
-        echo "See .env.example in this repo and SETUP.md, 'Zulip server' or 'Slack', for details."
+        echo "See .env.example in this repo and docs/SETUP.md, 'Zulip server' or 'Slack', for details."
     else
         echo "No $EA_DIR/.env yet. Graph device-code sign-in needs GRAPH_CLIENT_ID and"
-        echo "GRAPH_AUTH_METHOD=device_code there; python3 user_init.py --phase auth writes them."
+        echo "GRAPH_AUTH_METHOD=device_code there; python3 scripts/install/user_init.py --phase auth writes them."
     fi
     echo ""
 else
@@ -192,7 +192,7 @@ fi
 echo ""
 echo "=== Microsoft Graph API Authentication ==="
 # The sign-in command: the confidential client aligns its scopes as it
-# signs in (SETUP.md 'Microsoft Graph app registration').
+# signs in (docs/SETUP.md 'Microsoft Graph app registration').
 GRAPH_SIGNIN="python3 $SCRIPT_DIR/preprocessor/graph_client.py"
 [[ "${GRAPH_AUTH_METHOD:-}" == confidential ]] && GRAPH_SIGNIN="$GRAPH_SIGNIN --align --write"
 if [[ "$NONINTERACTIVE" == 1 ]]; then
@@ -203,7 +203,7 @@ if [[ "$NONINTERACTIVE" == 1 ]]; then
         echo "  Check it with: python3 $SCRIPT_DIR/preprocessor/graph_actions.py calendar-view --days 1"
     elif [[ -z "${GRAPH_CLIENT_ID:-}" ]]; then
         echo "No Graph sign-in yet, and no GRAPH_CLIENT_ID in $EA_DIR/.env: write the app"
-        echo "registration first (python3 $SCRIPT_DIR/user_init.py --phase auth), then sign in with:"
+        echo "registration first (python3 $SCRIPT_DIR/scripts/install/user_init.py --phase auth), then sign in with:"
         echo "  $GRAPH_SIGNIN"
     else
         echo "No Graph sign-in yet. Sign in yourself with this one command"
@@ -223,11 +223,11 @@ echo "This authenticates your personal Google Calendar accounts."
 echo ""
 if [[ "$NONINTERACTIVE" == 1 ]]; then
     echo "Non-interactive run: the Google sign-in is skipped. It asks you to paste the"
-    echo "address your browser lands on, so run it yourself in a terminal (SETUP.md 'Google OAuth app'):"
+    echo "address your browser lands on, so run it yourself in a terminal (docs/SETUP.md 'Google OAuth app'):"
     echo "  python3 $SCRIPT_DIR/preprocessor/google_calendar_client.py --setup"
 elif [[ ! -f "$EA_DIR/auth/google_client_secret.json" ]]; then
     echo "Google client secret not found."
-    echo "See SETUP.md, 'Google OAuth app', for creating Google OAuth credentials."
+    echo "See docs/SETUP.md, 'Google OAuth app', for creating Google OAuth credentials."
     echo ""
     echo "Skipping Google Calendar auth for now. You can set it up later."
 else
@@ -261,7 +261,7 @@ if [[ -x "$LIVE_DIR/run-agent.sh" && -x "$LIVE_DIR/run-plugin.sh" ]]; then
 else
     CODE_DIR="$SCRIPT_DIR"
     echo "No deployed tree at $LIVE_DIR: the jobs run from this checkout."
-    echo "Run setup.sh again after deploy/harden-permissions.sh to point them at $LIVE_DIR."
+    echo "Run scripts/install/setup.sh again after deploy/harden-permissions.sh to point them at $LIVE_DIR."
     echo ""
 fi
 OWNER_PRIVATE_DIR="$HOME/.ea-private"
@@ -293,12 +293,12 @@ SLACK_CHECK_ENTRIES="# Scheduling check: hourly during business hours (posts to 
 # surface on the desk and in the rooms, not as posts)
 */10 7-19 * * 1-5  $CODE_DIR/run-agent.sh intake-check >> $OWNER_LOG_DIR/intake-check.log 2>&1
 "
-SLACK_MAINTENANCE_ENTRIES="# Deferred sends (the Schedule button). Needs the signing key from SETUP.md
+SLACK_MAINTENANCE_ENTRIES="# Deferred sends (the Schedule button). Needs the signing key from docs/SETUP.md
 # 'Cron schedule'; without it the pass refuses and sends nothing.
 */5 * * * *        python3 $CODE_DIR/preprocessor/scheduled_sends.py check >> $OWNER_LOG_DIR/scheduled-sends.log 2>&1
 
 # Calendar protection reconciler: standing attendee-less commitments become
-# p0 [auto] holds on the EA-Managed calendar (SETUP.md, 'The EA-Managed calendar')
+# p0 [auto] holds on the EA-Managed calendar (docs/SETUP.md, 'The EA-Managed calendar')
 7,37 * * * *       python3 $CODE_DIR/preprocessor/calendar_reconciler.py --apply >> $OWNER_LOG_DIR/calendar-reconciler.log 2>&1
 "
 fi
@@ -547,7 +547,7 @@ fi
 # 8. The chat bot service (assistant profile)
 # The bot runs as a system unit (Linux) or a LaunchDaemon (macOS), both
 # written by a root step once the chat platform is configured; this script
-# runs as the owner and writes neither. SETUP.md 'Services'.
+# runs as the owner and writes neither. docs/SETUP.md 'Services'.
 if [[ "$HAS_SLACK" == 1 ]]; then
 echo ""
 echo "=== Chat bot service ==="
@@ -575,9 +575,9 @@ echo "  3. Edit $EA_DIR/config/vip_senders.txt with your VIP contacts"
 echo "  4. Add your projects: python3 $SCRIPT_DIR/preprocessor/project_store.py add --help"
 echo "  5. Enable the Gmail and Google Calendar connectors (and Slack on a Slack install) in"
 echo "     claude.ai Settings > Connectors for the account ea-bot logs in with; check with"
-echo "     claude mcp list as ea-bot (SETUP.md 'Claude Code connectors')"
+echo "     claude mcp list as ea-bot (docs/SETUP.md 'Claude Code connectors')"
 echo "  6. Check: python3 $SCRIPT_DIR/scripts/ea-doctor.py --profile $PROFILE"
 echo "  7. Test with: ./run-agent.sh morning-briefing --now   (--now skips the 4 AM gate)"
 echo ""
 echo "All times are in your machine's local timezone ($(date +%Z))."
-echo "For detailed setup instructions, see SETUP.md"
+echo "For detailed setup instructions, see docs/SETUP.md"

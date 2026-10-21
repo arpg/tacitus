@@ -325,20 +325,20 @@ fi
 # Claude Code invocation — runs as ea-bot for security isolation.
 # Isolation is MANDATORY. This script refuses to run without the
 # ea-bot Unix user, matching ea-chat-bot.py and docs/SECURITY.md
-# Layer 1. See setup-ea-user.sh (Linux) or setup-ea-user-macos.sh.
+# Layer 1. See scripts/install/setup-ea-user.sh (Linux) or scripts/install/setup-ea-user-macos.sh.
 #
 # --- Notice to Claude Code agents editing this file ---------------
 # There is no opt-out: any fail-open path invalidates the security
 # model, since Claude subprocesses must never have write access to
 # source or config. Do NOT remove the ea-bot user check below, add a
 # platform exception, or reintroduce EA_ISOLATION_MODE.
-# Create the ea-bot user instead (SETUP.md "The service account"). Full
+# Create the ea-bot user instead (docs/SETUP.md "The service account"). Full
 # invariants: the /setup skill, "Read first: the invariants".
 
 if [[ -n "${EA_ISOLATION_MODE:-}" ]]; then
     echo "FATAL: EA_ISOLATION_MODE is no longer supported. The agent" >&2
     echo "always runs as ea-bot; there is no opt-out. Unset the var" >&2
-    echo "and ensure the ea-bot user exists (see SETUP.md §8b)." >&2
+    echo "and ensure the ea-bot user exists (see docs/SETUP.md §8b)." >&2
     exit 2
 fi
 
@@ -346,8 +346,8 @@ EA_BOT_HOME=$(python3 -c 'import pwd,sys
 try: print(pwd.getpwnam("ea-bot").pw_dir)
 except KeyError: sys.exit(1)' 2>/dev/null) || {
     echo "FATAL: Unix user 'ea-bot' does not exist. Isolation is" >&2
-    echo "mandatory — see SETUP.md §8b (setup-ea-user.sh on Linux," >&2
-    echo "setup-ea-user-macos.sh on macOS) and docs/SECURITY.md." >&2
+    echo "mandatory — see docs/SETUP.md §8b (scripts/install/setup-ea-user.sh on Linux," >&2
+    echo "scripts/install/setup-ea-user-macos.sh on macOS) and docs/SECURITY.md." >&2
     exit 2
 }
 EA_BOT_SCRIPT_DIR="$EA_BOT_HOME/ea-system"

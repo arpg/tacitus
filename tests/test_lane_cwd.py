@@ -51,7 +51,7 @@ class _DirectIO:
 def home(tmp_path, monkeypatch):
     """An ea-bot home laid out as setup leaves it: the deployed tree with
     the core, the overlay and the project subagents, and the EA tree with
-    the copy of CLAUDE.md setup.sh puts there."""
+    the copy of CLAUDE.md scripts/install/setup.sh puts there."""
     home = tmp_path / "ea-bot"
     tree = home / "ea-system"
     (tree / ".claude" / "agents").mkdir(parents=True)
@@ -152,7 +152,7 @@ def test_the_bot_runs_the_lanes_in_their_directory():
     assert src.count('["--session-id", session_id]') == src.count("cwd=prompt_cwd")
 
 
-LANE_PROMPTS = ("CLAUDE-scheduling.md", "CLAUDE-scheduling-remote.md", "docs/ea/scheduling.md",
+LANE_PROMPTS = ("prompts/CLAUDE-scheduling.md", "prompts/CLAUDE-scheduling-remote.md", "docs/ea/scheduling.md",
                 "skills/scheduling-rules.md", "skills/reply.md", "skills/fill-poll.md")
 RELATIVE = re.compile(r"(?<![/\w.~{}-])(?:preprocessor|skills|docs|scripts|config)/[\w./-]+")
 

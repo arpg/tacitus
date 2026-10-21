@@ -45,7 +45,7 @@ differences are:
 
 **Setup:** run the macOS-specific provisioning script once:
 ```bash
-sudo bash setup-ea-user-macos.sh
+sudo bash scripts/install/setup-ea-user-macos.sh
 ```
 
 It creates a hidden `ea-bot` service account (UID 499, not on the
@@ -94,7 +94,7 @@ If `.venv/bin/python3` exists in the script directory, that bin directory is
 prepended to PATH and all `python3` invocations use `$PYTHON3` (the venv
 binary). No manual venv activation needed before running the script.
 
-### 6. Timezone detection (`user_init.py`)
+### 6. Timezone detection (`scripts/install/user_init.py`)
 
 `detect_system_timezone()` now tries `systemsetup -gettimezone` on Darwin
 before falling back to `timedatectl` and `/etc/timezone`.
@@ -114,7 +114,7 @@ pip install playwright && playwright install chromium
 
 ### B. Order: config templates before Google auth
 
-Copy the config templates (`setup.sh`) BEFORE running Google Calendar auth
+Copy the config templates (`scripts/install/setup.sh`) BEFORE running Google Calendar auth
 (SETUP.md "Google OAuth app").
 `google_calendar_client.py --setup` reads `~/.ea/config/scheduling-preferences.json`
 and fails if it doesn't exist. Populate the `calendars` section with the user's
@@ -126,9 +126,9 @@ Google Cloud projects in "Testing" mode require each Google account to be added
 as a test user before it can complete the OAuth flow:
 APIs & Services → OAuth consent screen → Test users → Add users
 
-### D. Skip `setup-ea-user.sh` (Linux-only)
+### D. Skip `scripts/install/setup-ea-user.sh` (Linux-only)
 
-`setup-ea-user.sh` uses `useradd`/`groupadd`/`usermod` — none of which exist on
+`scripts/install/setup-ea-user.sh` uses `useradd`/`groupadd`/`usermod` — none of which exist on
 macOS. Skip the Linux script. If you want isolation on macOS (recommended for any
 shared/production host), create the ea-bot user manually via `dscl` as
 shown in section 2 above. For single-user dev installs the `auto` default
@@ -173,7 +173,7 @@ show "Bolt app is running" but no "RAW message event" lines appear.
 [ ] Graph API auth working (graph_client.py sign-in, SETUP.md "Microsoft Graph app registration",
     or an owner plugin's token source: docs/plugins.md)
 [ ] Slack app has Event Subscriptions enabled (message.channels, message.groups)
-[ ] ea-bot user created via `sudo bash setup-ea-user-macos.sh`
+[ ] ea-bot user created via `sudo bash scripts/install/setup-ea-user-macos.sh`
     (MANDATORY — bot refuses to start without it; see §2)
 [ ] Startup log shows `isolation: ENFORCED user=ea-bot home=/Users/ea-bot`
 [ ] launchd plist created with all env vars and venv PATH

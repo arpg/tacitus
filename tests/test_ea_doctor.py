@@ -51,14 +51,14 @@ def test_every_required_template_is_in_the_repo_and_documented():
     spec = importlib.util.spec_from_file_location("ea_doctor", DOCTOR)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    setup = (REPO / "SETUP.md").read_text()
+    setup = (REPO / "docs/SETUP.md").read_text()
     for name in mod.REQUIRED_CONFIG:
         assert (REPO / "config" / name).exists(), name
-        assert name in setup, f"SETUP.md never mentions {name}"
+        assert name in setup, f"docs/SETUP.md never mentions {name}"
     for scope in mod.REQUIRED_SLACK_SCOPES:
-        assert f"`{scope}`" in setup, f"SETUP.md does not list the Slack scope {scope}"
+        assert f"`{scope}`" in setup, f"docs/SETUP.md does not list the Slack scope {scope}"
     for key in mod.REQUIRED_ENV + mod.REQUIRED_SECRETS:
-        assert key in setup, f"SETUP.md does not mention {key}"
+        assert key in setup, f"docs/SETUP.md does not mention {key}"
 
 
 def test_a_bare_ea_dir_reports_misses_with_fixes_and_writes_nothing():

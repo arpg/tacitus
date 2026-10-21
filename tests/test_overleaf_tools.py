@@ -129,7 +129,7 @@ def test_push_commits_as_the_bot_account_and_status_counts(env):
 def test_an_unconfigured_bot_account_is_refused_in_one_line(env, monkeypatch):
     monkeypatch.setattr(ot, "BOT_EMAIL", "")
     (env["clone"] / "main.tex").write_text("changed\n")
-    with pytest.raises(ot.OverleafError, match="github.json names no bot_login or bot_email; see SETUP.md"):
+    with pytest.raises(ot.OverleafError, match="github.json names no bot_login or bot_email; see docs/SETUP.md"):
         ot.cmd_commit(str(env["clone"]), "Retitle")
 
 

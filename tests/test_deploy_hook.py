@@ -28,7 +28,7 @@ def _restarts(files: list[str]) -> bool:
 def test_docs_skills_and_config_do_not_restart():
     assert not _restarts(["docs/ARCHITECTURE.md", "CLAUDE.md", "skills/morning-briefing.md",
                           "config/ea-config.json", ".claude/agents/email-author.md",
-                          "tests/test_bot_wiring.py", "SETUP.md"])
+                          "tests/test_bot_wiring.py", "docs/SETUP.md"])
 
 
 def test_runtime_code_restarts():

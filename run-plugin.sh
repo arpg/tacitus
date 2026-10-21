@@ -44,7 +44,7 @@ PYTHON3="$(command -v python3)"
 # -------------------------------------------------------------------
 # Schedule reconciliation:  run-plugin.sh --check-schedules
 # -------------------------------------------------------------------
-# setup.sh emits cron lines only when an operator re-runs it by hand, so
+# scripts/install/setup.sh emits cron lines only when an operator re-runs it by hand, so
 # flipping `enabled` or editing `schedule` in a manifest changes nothing
 # on its own. This mode detects the resulting drift in both directions:
 # an enabled plugin with no cron line, and a disabled plugin still fired
@@ -144,7 +144,7 @@ if problems:
     print(f"\n  {len(problems)} schedule drift(s):")
     for p in problems:
         print(f"    - {p}")
-    print("\n  Re-run setup.sh to regenerate the plugin cron block, or fix "
+    print("\n  Re-run scripts/install/setup.sh to regenerate the plugin cron block, or fix "
           "the offending lines with `crontab -e`.")
     sys.exit(1)
 print("\n  OK: every manifest agrees with the crontab")

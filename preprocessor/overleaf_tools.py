@@ -212,7 +212,7 @@ def _credential_helper() -> str:
 
 def _bot_identity() -> tuple[str, str]:
     if not BOT_NAME or not BOT_EMAIL:
-        raise OverleafError("github.json names no bot_login or bot_email; see SETUP.md")
+        raise OverleafError("github.json names no bot_login or bot_email; see docs/SETUP.md")
     return BOT_NAME, BOT_EMAIL
 
 

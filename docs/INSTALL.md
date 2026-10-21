@@ -18,11 +18,11 @@ Start the IT request first. Everything else fits in one sitting.
 |---|---|---|---|
 | An always-on machine with `sudo` | every profile | none | Linux (a server, a NUC) or macOS. WSL2 is untested. |
 | Claude Pro or Max | every profile | minutes | The EA's service account signs in with its own copy and uses your quota. |
-| An Outlook app registration | every profile | days, sometimes weeks | Send [docs/it-request.md](docs/it-request.md) to your IT group. It lists the permissions, the data flow and the security model. If you can register apps yourself, see SETUP.md "Microsoft Graph app registration". |
+| An Outlook app registration | every profile | days, sometimes weeks | Send [docs/it-request.md](it-request.md) to your IT group. It lists the permissions, the data flow and the security model. If you can register apps yourself, see SETUP.md "Microsoft Graph app registration". |
 | A Google Cloud OAuth app | Google Calendar or Gmail | 15 minutes | SETUP.md "Google OAuth app". Google shows an "unverified app" screen at sign-in; continue through "Advanced". You are the only user. Publish the app, or Google ends the sign-in every 7 days. |
 | An `EA-Managed` Google calendar | `assistant` (optional elsewhere) | 2 minutes | A secondary calendar where your scheduling rules live as recurring events. Setup tells you when to create it. |
 | Docker, or a Slack workspace | `assistant` | minutes | Docker runs the Zulip chat server (recommended). See [Choosing a chat platform](#choosing-a-chat-platform). |
-| A model you host | optional | varies | Any OpenAI-compatible endpoint (vLLM, Ollama). It reads mail and writes drafts in place of Claude. See [docs/remote-llm.md](docs/remote-llm.md). |
+| A model you host | optional | varies | Any OpenAI-compatible endpoint (vLLM, Ollama). It reads mail and writes drafts in place of Claude. See [docs/remote-llm.md](remote-llm.md). |
 
 Python 3.10 to 3.14 must be on the machine. On macOS use Homebrew's
 Python; Apple's `/usr/bin/python3` is 3.9. `install.sh` checks this and
@@ -38,7 +38,7 @@ names the command that installs what is missing.
 
 Without a chat platform there are no cards, and sending needs a card's
 token. So an `email` or `review-only` install cannot send mail or create
-an event at all. To move up later, run `./setup.sh --profile assistant`,
+an event at all. To move up later, run `./scripts/install/setup.sh --profile assistant`,
 then `claude "/setup"` in the checkout. Setup skips what is already
 done.
 
@@ -116,7 +116,7 @@ The platform decides who holds that text.
 | Setup | SETUP.md "Zulip server" | SETUP.md "Slack" |
 
 The EA behaves the same on both. Switching is one config key and a
-restart ([docs/zulip-switch.md](docs/zulip-switch.md)).
+restart ([docs/zulip-switch.md](zulip-switch.md)).
 
 ## 4. Check the install
 
@@ -168,19 +168,19 @@ What you can change later, by asking the EA or by editing the file:
 ## Other ways to install
 
 **Docker.** The EA and the Zulip server run as containers on one host.
-[docs/docker.md](docs/docker.md) covers the first run, the volumes and
+[docs/docker.md](docker.md) covers the first run, the volumes and
 the differences from a host install.
 
-**Without Claude Code.** The `user_init.py` wizard writes your
+**Without Claude Code.** The `scripts/install/user_init.py` wizard writes your
 preferences and config files interactively. It does not create the
 service account, the services or the scheduled jobs; finish those with
 SETUP.md.
 
 ```bash
-python3 user_init.py                       # every phase
-python3 user_init.py --phase scheduling    # one phase again
-python3 user_init.py --style-only          # measure your writing style again
-python3 user_init.py --update              # every phase, showing current values
+python3 scripts/install/user_init.py                       # every phase
+python3 scripts/install/user_init.py --phase scheduling    # one phase again
+python3 scripts/install/user_init.py --style-only          # measure your writing style again
+python3 scripts/install/user_init.py --update              # every phase, showing current values
 ```
 
 ## Upgrade
@@ -216,7 +216,7 @@ the core's copy"), or Outlook access stops when the current token
 expires. The doctor fails `auth: outlook web token path` until then.
 
 After a change to the config templates or the scheduled jobs, also run
-`./setup.sh --profile <name> --install-cron`. It adds new templates and
+`./scripts/install/setup.sh --profile <name> --install-cron`. It adds new templates and
 keeps the files you have. In Docker: `git pull`, `docker compose build`,
 then `docker compose up -d`.
 
@@ -269,7 +269,7 @@ in them).
 2. Look the check up in SETUP.md "Troubleshooting and the doctor's
    checks", which also lists the warnings a new install expects.
 3. For a running install that stopped working, see
-   [docs/RUNBOOK.md](docs/RUNBOOK.md).
+   [docs/RUNBOOK.md](RUNBOOK.md).
 4. Still stuck: open an issue with the **Install or first-week
    feedback** form. It asks for the version, the OS, the profile, the
    step and the doctor's output. Replace real names, addresses and mail

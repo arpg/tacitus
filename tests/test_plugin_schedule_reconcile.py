@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for `run-plugin.sh --check-schedules`.
 
-`setup.sh` emits plugin cron lines only when an operator re-runs it by
+`scripts/install/setup.sh` emits plugin cron lines only when an operator re-runs it by
 hand, so `plugin.json` and the crontab drift in both directions: an
 enabled plugin with no cron line never runs, and a disabled plugin with a
 cron line keeps firing. `--check-schedules` is the detector. These tests drive the real shell

@@ -1,5 +1,5 @@
 {
-  "_doc": "Answers for user_init.py --answers: a complete email-profile install with no chat platform, no remote model, Outlook by device code and a phone push. Every value is made up. docs/install-testing.md lists the keys; a key left out takes the prompt's default.",
+  "_doc": "Answers for scripts/install/user_init.py --answers: a complete email-profile install with no chat platform, no remote model, Outlook by device code and a phone push. Every value is made up. docs/install-testing.md lists the keys; a key left out takes the prompt's default.",
 
   "full-name": "Pat Example",
   "work-email": "pat.example@example.edu",

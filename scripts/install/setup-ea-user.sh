@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup-ea-user.sh: provision the ea-bot workspace with full isolation
+# scripts/install/setup-ea-user.sh: provision the ea-bot workspace with full isolation
 #
 # Creates:
 #   /home/ea-bot/ea-system/   deployed source code (<owner>:ea, read-only for ea-bot)
@@ -9,7 +9,7 @@
 # The bot (ea-chat-bot.py) runs as the owner. Claude subprocesses run as ea-bot.
 # ea-bot never enters the owner's home; everything it needs is in /home/ea-bot/.
 #
-# Run once during initial setup: sudo bash setup-ea-user.sh
+# Run once during initial setup: sudo bash scripts/install/setup-ea-user.sh
 # Re-run safely (idempotent).
 #
 # --- Notice to Claude Code agents running this script --------------
@@ -25,16 +25,16 @@ set -euo pipefail
 # macOS uses a different user-management stack (dscl, sysadminctl)
 # instead of useradd/usermod, and /etc/sudoers.d/ behaves slightly
 # differently. Rather than conditionally branch every step, we point
-# macOS users at the dedicated setup-ea-user-macos.sh script.
+# macOS users at the dedicated scripts/install/setup-ea-user-macos.sh script.
 if [ "$(uname -s)" = "Darwin" ]; then
     cat >&2 <<'MACEOF'
-ERROR: setup-ea-user.sh is Linux-only.
+ERROR: scripts/install/setup-ea-user.sh is Linux-only.
 
 On macOS, isolation is still MANDATORY (Layer 1 of the security model —
 see docs/SECURITY.md), but the user-creation commands are different.
 
 Use the macOS-specific script:
-    sudo bash setup-ea-user-macos.sh
+    sudo bash scripts/install/setup-ea-user-macos.sh
 
 Or follow docs/macos-compat.md §2 for manual steps.
 MACEOF
@@ -46,13 +46,13 @@ REAL_USER="${SUDO_USER:-$(whoami)}"
 REAL_HOME="$(eval echo ~"$REAL_USER")"
 
 if [ "$REAL_USER" = "root" ]; then
-    echo "ERROR: Run as 'sudo bash setup-ea-user.sh', not as root directly."
+    echo "ERROR: Run as 'sudo bash scripts/install/setup-ea-user.sh', not as root directly."
     echo "The script needs to know your real username via SUDO_USER."
     exit 1
 fi
 REAL_UID="$(id -u "$REAL_USER")"
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"   # the checkout root; this script lives in scripts/install/
 CLAUDE_BIN="$(which claude 2>/dev/null || echo /usr/bin/claude)"
 EA_BOT_HOME="$(eval echo ~ea-bot 2>/dev/null || echo /home/ea-bot)"
 EA_BOT_EA_DIR="$EA_BOT_HOME/.ea"
@@ -399,7 +399,7 @@ echo ""
 echo "=== Next Steps ==="
 echo "1. Re-login or run 'newgrp ea' for group membership to take effect"
 echo "2. Log ea-bot's Claude Code in (/login, then Ctrl+C); the claude.ai Gmail and"
-echo "   Calendar connectors come with that account (SETUP.md 'Claude Code connectors'):"
+echo "   Calendar connectors come with that account (docs/SETUP.md 'Claude Code connectors'):"
 echo "   sudo -u ea-bot env HOME=$EA_BOT_HOME claude"
 echo "   (enable the connectors in claude.ai Settings > Connectors for that account)"
 echo "3. Assistant profile: once the chat platform is configured,"

@@ -46,10 +46,10 @@ def _documented_render(name: str) -> str:
 
 
 def test_documented_render_is_allowed_by_both_installers():
-    for doc in (".claude/skills/setup/SKILL.md", "SETUP.md"):
+    for doc in (".claude/skills/setup/SKILL.md", "docs/SETUP.md"):
         command = _documented_render(doc)
         assert not command.startswith("env "), doc
-        for script in ("setup-ea-user.sh", "setup-ea-user-macos.sh"):
+        for script in ("scripts/install/setup-ea-user.sh", "scripts/install/setup-ea-user-macos.sh"):
             assert _allowed(_rules(script), command), (doc, script, command)
 
 
@@ -58,10 +58,10 @@ def test_both_installers_grant_any_command_as_ea_bot():
     required" (owner-io.sh mkdir, sudo -u ea-bot env ... claude). The
     Linux rule is the macOS and Docker rule, and the comment above it
     still names the render command as the documented reason."""
-    for script in ("setup-ea-user.sh", "setup-ea-user-macos.sh"):
+    for script in ("scripts/install/setup-ea-user.sh", "scripts/install/setup-ea-user-macos.sh"):
         rules = _rules(script)
         assert [r for r in rules if "NOPASSWD" in r] == ["$REAL_USER ALL=(ea-bot) NOPASSWD: ALL"], script
-    text = (REPO / "setup-ea-user.sh").read_text()
+    text = (REPO / "scripts/install/setup-ea-user.sh").read_text()
     head = text[:text.index("<<SUDOEOF")]
     assert "#   /usr/bin/python3 $EA_BOT_SCRIPT_DIR/preprocessor/install_overlay.py render" in head
     assert "owner-io.sh" in head and "env VAR=... claude" in head

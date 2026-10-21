@@ -1,6 +1,6 @@
 # The EA in one image, for compose.yaml (see docs/docker.md).
 #
-# Two users, as on a host install (setup-ea-user.sh):
+# Two users, as on a host install (scripts/install/setup-ea-user.sh):
 #   owner   runs the chat bot, the mail mediator and the cron jobs; holds the
 #           tokens and the secrets.
 #   ea-bot  runs Claude Code and the agent tools; the owner reaches it only
@@ -89,7 +89,7 @@ RUN set -eu; \
 
 # The directories each named volume starts with. Docker copies them, with
 # their owners and modes, into a new volume, so no step has to chown a tree
-# ea-bot can change. The modes are the ones setup-ea-user.sh sets on a host.
+# ea-bot can change. The modes are the ones scripts/install/setup-ea-user.sh sets on a host.
 RUN set -eu; \
     ea=/home/ea-bot/.ea; \
     install -d -o ea-bot -g ea -m 0750 "$ea" "$ea/config"; \

@@ -180,8 +180,8 @@ enable(){
   [ -f "$DECK_SERVE" ] || fail "deployed deck_serve.py missing at $DECK_SERVE; deploy first (scripts/deploy.sh)"
   [ -d "$PRES_SRC/playbooks" ] || fail "no presentations workspace at $PRES_SRC (set EA_PRESENTATIONS_SRC)"
   [ -f "$PRES_SRC/shared/scripts/build-deck.sh" ] || fail "$PRES_SRC/shared/scripts/build-deck.sh missing"
-  id "$EA_BOT_USER" >/dev/null 2>&1 || fail "no $EA_BOT_USER user; run setup-ea-user.sh first"
-  getent group ea >/dev/null || fail "no ea group; run setup-ea-user.sh first"
+  id "$EA_BOT_USER" >/dev/null 2>&1 || fail "no $EA_BOT_USER user; run scripts/install/setup-ea-user.sh first"
+  getent group ea >/dev/null || fail "no ea group; run scripts/install/setup-ea-user.sh first"
 
   ylw "[1/5] read-only mounts under $MOUNT_ROOT"
   mkdir -p "$MOUNT_ROOT"; chown root:ea "$MOUNT_ROOT"; chmod 0750 "$MOUNT_ROOT"

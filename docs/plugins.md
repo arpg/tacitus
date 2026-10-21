@@ -82,7 +82,7 @@ the mediator, the crons, `run-plugin.sh`) act on it.
 
 A directory whose name is in the lock is read only through the lock,
 whatever its live `plugin.json` says: the registry, `run-plugin.sh` and
-`setup.sh` treat a locked name as locked even when the live file now
+`scripts/install/setup.sh` treat a locked name as locked even when the live file now
 claims to be a v1 manifest, so a resident that rewrites a disabled
 plugin's manifest gets no skill, tool grant or cron line back. The lock
 entry's `manifest` also carries the `context` grants a scheduled run may
@@ -145,7 +145,7 @@ After an install or an update, restart the chat bot and the mail mediator
 to load cards, chat triggers, verbs and tool denials; re-render the
 resident's network policy when the plugin declares a local endpoint; add
 the cron lines `run-plugin.sh --check-schedules` and `ea-plugin.py
-cron-lines` name. `setup.sh` writes one `run-plugin.sh` line per schedule
+cron-lines` name. `scripts/install/setup.sh` writes one `run-plugin.sh` line per schedule
 of each plugin the lock enables, as it does for a v1 plugin's `schedule`
 and `extra_schedules`.
 

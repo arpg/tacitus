@@ -98,7 +98,7 @@ the volumes hold the config templates.
 
 In order:
 
-1. **The configuration questions**, as `ea-bot`: `user_init.py --phase
+1. **The configuration questions**, as `ea-bot`: `scripts/install/user_init.py --phase
    <phase>` for `identity` (your name, email, role and the institution
    block: domains, the safety-rail domain, the video platform and your
    meeting link), `scheduling`, `inbox`, `autonomy`, `groups`,
@@ -127,7 +127,7 @@ In order:
    tokens into `secrets.env`; SETUP.md, Slack).
 
 4. **The phone push**, on `email` and `review-only`, as the owner:
-   `user_init.py --phase push` writes the owner-private `push.json`.
+   `scripts/install/user_init.py --phase push` writes the owner-private `push.json`.
 
 5. **The Claude login for `ea-bot`**, interactive: `claude auth login`
    (open the link it prints, sign in with the subscription the EA runs
@@ -146,7 +146,7 @@ In order:
    token lands in `~/.ea/auth` as the owner's file.
 
 6b. **The tone phase**, right after a successful Microsoft sign-in:
-   `user_init.py --phase tone` runs as the owner, who holds the mail
+   `scripts/install/user_init.py --phase tone` runs as the owner, who holds the mail
    token, and writes the style baseline from your sent mail to a
    directory only the owner can enter; `ea-bot` then writes it into its
    config as `writing-style-baseline.json`. With no sign-in the step is
@@ -175,7 +175,7 @@ value as its default and rewrites its file, and a login that exists is
 kept. Finish with `docker compose up -d`.
 
 **Without prompts.** `--answers FILE` takes every answer from a JSON
-file by key (`user_init.py --answers`; `docs/install-testing.md` lists
+file by key (`scripts/install/user_init.py --answers`; `docs/install-testing.md` lists
 the keys, and the role adds `chat-frontend`, `zulip-site`,
 `zulip-bot-email`, `zulip-owner-id`, `zulip-api-key`, `slack-owner-id`
 and `claude-login`), asks nothing and skips the two logins, which need a
@@ -207,7 +207,7 @@ The volumes outlive the containers. `docker compose down` keeps them;
 ledger and the Claude login.
 
 Use these named volumes, not bind mounts. The image holds each volume's
-directories with their owners and modes (the ones `setup-ea-user.sh` sets
+directories with their owners and modes (the ones `scripts/install/setup-ea-user.sh` sets
 on a host), and Docker copies them into a new named volume. `init` stops
 with a message when a volume belongs to the wrong user, rather than chown
 a tree that `ea-bot` can change.
@@ -285,13 +285,13 @@ each runs as is the one who owns the file, the split
 - **A config phase**, as `ea-bot` through the `agent` service:
 
   ```bash
-  docker compose run --rm agent python3 /home/ea-bot/ea-system/user_init.py --phase scheduling
+  docker compose run --rm agent python3 /home/ea-bot/ea-system/scripts/install/user_init.py --phase scheduling
   ```
 
   The phases are `identity`, `scheduling`, `inbox`, `autonomy`,
   `groups`, `deadlines`, `style`, `reimbursement`, `vip`, `state` and
   `summary`; `push` runs as the owner (`owner` in place of `agent`,
-  `/opt/ea-system/user_init.py`). `auth` stays out of the container: it
+  `/opt/ea-system/scripts/install/user_init.py`). `auth` stays out of the container: it
   signs in as the user that runs it, and run as ea-bot it would put the
   client secret in ea-bot's own private directory; the `setup` role's own
   `.env` step and the owner's sign-in replace it. A finished

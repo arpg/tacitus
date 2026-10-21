@@ -7,10 +7,10 @@ The install's own facts (names, rooms, sites, lists) are in
 `CLAUDE.local.md` beside this file, rendered from config by
 `preprocessor/install_overlay.py`.
 
-If `~/.ea/config/user-profile.json` does not exist, this is a fresh install.
+No `~/.ea/config/user-profile.json` means a fresh install.
 Run the `/setup` skill (`.claude/skills/setup/SKILL.md`): it asks the
 profile and account questions one at a time, writes the config, and ends
-with `scripts/ea-doctor.py --profile <name>` green. `SETUP.md` is the
+with `scripts/ea-doctor.py --profile <name>` green. `docs/SETUP.md` is the
 reference. The install profile (`email`, `review-only` or `assistant`) is
 `profile` in `~/.ea/config/ea-config.json`.
 
@@ -253,7 +253,7 @@ directory; registries say which (`preprocessor/slack_sessions.py`,
 - **One topic, one session** (`chat_sessions`, default `per-topic`).
   Another topic's work is in another session: find it with
   `session_index.py` before you say it does not exist. The scheduling
-  channel runs one session per thread on `CLAUDE-scheduling.md`.
+  channel runs one session per thread on `prompts/CLAUDE-scheduling.md`.
 - **Tiers**: `local` (on-prem), `opus` (default), `fable`. The user
   picks (`@fable`, `use local`, a `[fable]` topic); high-stakes messages
   never run on `local`. The bot chooses the model, never you.

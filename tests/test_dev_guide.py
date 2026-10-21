@@ -10,7 +10,7 @@ REPO = Path(__file__).resolve().parent.parent
 GUIDE = REPO / ".claude" / "CLAUDE.md"
 SPARSE = "sparse-checkout set --no-cone '/*' '!/.claude/CLAUDE.md'"
 DEPLOYS = (".githooks/post-commit", "scripts/deploy.sh", "deploy/macos/deploy.sh",
-           "setup-ea-user.sh", "setup-ea-user-macos.sh")
+           "scripts/install/setup-ea-user.sh", "scripts/install/setup-ea-user-macos.sh")
 
 
 def _in_image() -> bool:

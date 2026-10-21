@@ -99,5 +99,5 @@ and works with a public client where policy allows one.
 ## After IT answers
 
 Put the IDs in `~/.ea/.env` and the secret in `~/.ea-private/secrets.env`,
-then run `python3 user_init.py --phase auth`. SETUP.md "Microsoft Graph app registration"
+then run `python3 scripts/install/user_init.py --phase auth`. SETUP.md "Microsoft Graph app registration"
 has the details.

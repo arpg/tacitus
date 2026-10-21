@@ -1,6 +1,6 @@
 """Root's steps on ea-bot's trees and on the owner's auth directory.
 
-setup-ea-user.sh, setup-ea-user-macos.sh and deploy/enable-mail-mediation.sh
+scripts/install/setup-ea-user.sh, scripts/install/setup-ea-user-macos.sh and deploy/enable-mail-mediation.sh
 run as root over ea-bot space, where ea-bot can rename or replace any entry
 (docs/SECURITY.md "Owner trust rules"). deploy/tree-custody.sh holds the
 rules they share:
@@ -39,7 +39,7 @@ import pytest
 pytestmark = pytest.mark.skipif(sys.platform == "darwin", reason="the stubs use GNU find")
 
 REPO = Path(__file__).resolve().parent.parent
-SCRIPTS = ["setup-ea-user.sh", "setup-ea-user-macos.sh"]
+SCRIPTS = ["scripts/install/setup-ea-user.sh", "scripts/install/setup-ea-user-macos.sh"]
 REAL_CHMOD = shutil.which("chmod") or "/bin/chmod"
 RESIDENT_UID = 2 ** 31 - 7          # a stand-in ea-bot that is not this user
 RESIDENT_GID = 2 ** 31 - 9
@@ -97,7 +97,7 @@ class World:
         self.path = f"{stubs}:/usr/bin:/bin"
 
     def tree(self, at: Path) -> Path:
-        """A state tree as setup.sh leaves it, with the owner's tokens."""
+        """A state tree as scripts/install/setup.sh leaves it, with the owner's tokens."""
         for d in ("auth", "state/sub", "config", "logs", "exports"):
             (at / d).mkdir(parents=True)
         files = {"auth/msal_token_cache.json": 0o640, "auth/google_token_a_at_b_c.json": 0o660,

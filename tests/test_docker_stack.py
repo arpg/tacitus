@@ -559,12 +559,12 @@ def test_compose_setup_service_runs_the_role_once_with_a_terminal():
 
 def test_entrypoint_setup_role_runs_the_phases_as_ea_bot_in_order():
     """The config phases run as ea-bot in its deployed tree, in the order a
-    full user_init.py run asks them; auth, tone, push and summary are not
+    full scripts/install/user_init.py run asks them; auth, tone, push and summary are not
     among them (the role's own steps, the owner's push, nothing). The
     owner's push phase names no ea-bot step."""
     text = (DOCKER / "entrypoint.sh").read_text()
     assert 'setup_role "$@"' in _role(text, "setup")
-    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / "scripts" / "install"))
     import user_init
     m = re.search(r'^SETUP_PHASES="([^"]+)"$', text, re.M)
     assert m, "the entrypoint lists the phases in SETUP_PHASES"
@@ -580,14 +580,14 @@ def test_entrypoint_setup_role_runs_the_phases_as_ea_bot_in_order():
     assert "setpriv --reuid=ea-bot --regid=ea --init-groups" in ea_bot
     assert "umask 027" in ea_bot and 'cd "$1"' in ea_bot and '"$DEPLOY_DIR"' in ea_bot
     phases = _shell_fn(text, "setup_config_phases")
-    assert ('run_as_ea_bot python3 "$DEPLOY_DIR/user_init.py" "${SETUP_PHASE_ARGS[@]}" '
+    assert ('run_as_ea_bot python3 "$DEPLOY_DIR/scripts/install/user_init.py" "${SETUP_PHASE_ARGS[@]}" '
             '--phase "$phase"') in phases
     assert "for phase in $SETUP_PHASES; do" in phases
     state = _shell_fn(text, "setup_state_phase")
-    assert 'run_as_ea_bot python3 "$DEPLOY_DIR/user_init.py"' in state and "--phase state" in state
+    assert 'run_as_ea_bot python3 "$DEPLOY_DIR/scripts/install/user_init.py"' in state and "--phase state" in state
     assert '"${SETUP_CHAT_ARGS[@]}"' in state, "the Zulip chat block rides on the state phase"
     push = _shell_fn(text, "setup_push_phase")
-    assert 'run_as_owner python3 "$CODE_DIR/user_init.py"' in push and "--phase push" in push
+    assert 'run_as_owner python3 "$CODE_DIR/scripts/install/user_init.py"' in push and "--phase push" in push
     assert "ea_bot" not in push and "ea-bot" not in push
 
 
@@ -654,7 +654,7 @@ def test_entrypoint_setup_role_reads_tone_as_the_owner_and_writes_it_as_ea_bot()
     text = (DOCKER / "entrypoint.sh").read_text()
     tone = _shell_fn(text, "setup_tone_phase")
     assert '[ "$SETUP_GRAPH_SIGNED_IN" = 1 ] || return 0' in tone, "no token, no tone"
-    assert ('run_as_owner_with_env python3 "$CODE_DIR/user_init.py" "${SETUP_PHASE_ARGS[@]}"'
+    assert ('run_as_owner_with_env python3 "$CODE_DIR/scripts/install/user_init.py" "${SETUP_PHASE_ARGS[@]}"'
             in tone)
     assert '--phase tone --out "$dir/baseline.json"' in tone
     assert 'chown "$OWNER_USER" "$dir"' in tone and 'rm -rf "$dir"' in tone

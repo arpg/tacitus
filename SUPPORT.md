@@ -6,8 +6,8 @@ users, then from the maintainer.
 
 | You want | Go to |
 |---|---|
-| To install, upgrade or uninstall | [INSTALL.md](INSTALL.md), then [SETUP.md](SETUP.md) for the step that failed |
-| The health check | `python3 scripts/ea-doctor.py`; each FAIL names its fix and its SETUP.md section |
+| To install, upgrade or uninstall | [docs/INSTALL.md](docs/INSTALL.md), then [docs/SETUP.md](docs/SETUP.md) for the step that failed |
+| The health check | `python3 scripts/ea-doctor.py`; each FAIL names its fix and its docs/SETUP.md section |
 | A question, or help with your install | [Discussions > Q&A](https://github.com/arpg/tacitus/discussions/categories/q-a) |
 | To propose a feature | [Discussions > Ideas](https://github.com/arpg/tacitus/discussions/categories/ideas); a design becomes an issue |
 | To report a bug | [New issue > Bug report](https://github.com/arpg/tacitus/issues/new/choose), with `ea-doctor.py --share` output |

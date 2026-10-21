@@ -5,7 +5,7 @@ The model A/B (model_arms.py) runs a topic's turns on the on-prem model
 in the Claude Code harness through the tool gateway. Before live topics
 draw that arm, this replays the scheduling turns Claude already took:
 each fresh scheduling-channel session's first prompt (the whole lane
-prompt, CLAUDE-scheduling.md with the profile, the guides and the task
+prompt, prompts/CLAUDE-scheduling.md with the profile, the guides and the task
 block, as the bot built it that day) is run again as ea-bot on the
 on-prem arm, with the read tools and the solver, and no write: the
 draft and staging tools are withheld and the arm is told to end its

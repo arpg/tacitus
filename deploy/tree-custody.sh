@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # tree-custody.sh: what the root installers do to the resident's trees and
-# to the owner's auth directory. Sourced by setup-ea-user.sh,
-# setup-ea-user-macos.sh and deploy/enable-mail-mediation.sh; it defines
+# to the owner's auth directory. Sourced by scripts/install/setup-ea-user.sh,
+# scripts/install/setup-ea-user-macos.sh and deploy/enable-mail-mediation.sh; it defines
 # functions only and changes nothing when sourced.
 #
 # Everything under the resident's home is ea-bot space (docs/SECURITY.md
@@ -92,7 +92,7 @@ none of them and changed nothing in it. To recover:
   3. As $3, put token files back only from your own backup, or sign in
      again: python3 preprocessor/graph_client.py, and
      python3 preprocessor/google_calendar_client.py --setup per account.
-  4. As $3, make a new scheduled-send key (SETUP.md "The deferred-send
+  4. As $3, make a new scheduled-send key (docs/SETUP.md "The deferred-send
      signing key"). A deferred send signed with the old key is held and
      needs a new card.
   5. Run this script again.
@@ -125,7 +125,7 @@ tc_quarantine_close() {
         "These entries were in auth/ but were not the owner's own files, or had" \
         "other names elsewhere. Their contents are not trusted: never move one" \
         "back or chown it. Put a token back only from your own backup, or sign" \
-        "in again; make a new scheduled-send key (SETUP.md \"The deferred-send" \
+        "in again; make a new scheduled-send key (docs/SETUP.md \"The deferred-send" \
         "signing key\"). Then delete this directory." >> "$qdir/NOTE.txt" ) || return 1
     echo "WARNING: auth/$qdir holds what was not the owner's; make a new scheduled-send key and sign in again for any token among it" >&2
 }

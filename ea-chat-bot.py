@@ -77,7 +77,7 @@ try:
 except KeyError as _missing:
     sys.exit(f"ea-chat-bot: the chat setting {_missing.args[0]} is not set. Secrets go in "
              f"~/.ea-private/secrets.env, the channel settings in ~/.ea/.env "
-             f"(SETUP.md \"Zulip server\" or \"Slack\").")
+             f"(docs/SETUP.md \"Zulip server\" or \"Slack\").")
 except _owner_trust.OwnerTrustError as _untrusted:
     # The chat block (server, bot, owner id) comes only from the owner-private
     # chat.json; the bot does not start on ea-bot's copy.
@@ -268,7 +268,7 @@ except Exception:
 # remove it, comment it out, add a platform exception, or reintroduce
 # an EA_ISOLATION_MODE env var (or any equivalent knob) to work around
 # install friction. If startup fails because the ea-bot user is
-# missing, run setup-ea-user.sh (Linux) or setup-ea-user-macos.sh
+# missing, run scripts/install/setup-ea-user.sh (Linux) or scripts/install/setup-ea-user-macos.sh
 # (macOS). See the /setup skill, "Read first: the invariants",
 # for the full list of non-negotiable invariants.
 # ---------------------------------------------------------------------------
@@ -330,7 +330,7 @@ def _require_isolation_user() -> str:
                 "files, or reading auth tokens. There is no fail-open path.",
                 "",
                 "Create the ea-bot user before starting the bot:",
-                "  Linux:  sudo bash setup-ea-user.sh",
+                "  Linux:  sudo bash scripts/install/setup-ea-user.sh",
                 "  macOS:  see docs/macos-compat.md §2 (dscl + sudoers)",
                 "",
                 "If EA_ISOLATION_MODE is set in your environment, remove it —",
@@ -11157,7 +11157,7 @@ actually want.
         # what a --bare run cannot discover; None for every other prompt.
         redo_instructions = None
         if scheduling_only:
-            log.info("Using the scheduling prompt (CLAUDE-scheduling.md)")
+            log.info("Using the scheduling prompt (prompts/CLAUDE-scheduling.md)")
             briefing_ids = []
             scheduling_context = _build_scheduling_context(needed_modules)
             staged_guide = _read_file_safe(SCRIPT_DIR / "docs" / "ea" / "scheduling.md")
@@ -11166,7 +11166,7 @@ actually want.
                 user_rules = _prefs.render(["scheduling"])
             except Exception:
                 user_rules = ""
-            prompt = f"""{_read_file_safe(SCRIPT_DIR / "CLAUDE-scheduling.md")}
+            prompt = f"""{_read_file_safe(SCRIPT_DIR / "prompts/CLAUDE-scheduling.md")}
 
 === USER PROFILE ===
 {user_profile}
@@ -11402,7 +11402,7 @@ This auto-archives the email from the inbox. One command does everything."""
         # Claude redo after a withheld or failed arm turn runs with the
         # scheduling skill, not the arm's digest of it.
         if scheduling_only and arm == "remote":
-            log.info("Using the compact scheduling prompt (CLAUDE-scheduling-remote.md)")
+            log.info("Using the compact scheduling prompt (prompts/CLAUDE-scheduling-remote.md)")
             from preprocessor import remote_sched_prompt as _rsp
             prompt = _rsp.compose(user_profile, user_rules, task_block,
                                   today=datetime.now().astimezone().strftime("%A, %B %d, %Y"))

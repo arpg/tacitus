@@ -808,7 +808,7 @@ def _require_ea_managed(calendar_id: str) -> Optional[dict]:
     ea = _ea_managed_calendar_id()
     if not ea:
         return {"error": "EA-Managed calendar is not configured: the owner-private "
-                         "calendars.json is missing (SETUP.md 'The EA-Managed calendar'; "
+                         "calendars.json is missing (docs/SETUP.md 'The EA-Managed calendar'; "
                          "python3 preprocessor/owner_trust.py seed --calendar)"}
     if (calendar_id or "").strip().lower() != ea.strip().lower():
         return {

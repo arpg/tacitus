@@ -208,13 +208,14 @@ def test_units_and_crontab_lines_are_checked_wherever_they_are_written():
 
 
 def test_terminal_tools_are_checked_only_for_what_they_hand_on(tmp_path):
-    (tmp_path / "setup.sh").write_text(
+    (tmp_path / "scripts" / "install").mkdir(parents=True)
+    (tmp_path / "scripts/install/setup.sh").write_text(
         '#!/usr/bin/env bash\nmkdir -p "$EA_DIR/state"\n'
         'E="\n0 * * * * run.sh >> $EA_DIR/logs/x.log 2>&1\n"\n')
     (tmp_path / "run-agent.sh").write_text('#!/usr/bin/env bash\nmkdir -p "$EA_DIR/state"\n')
     hits, _ = bl.lint(tmp_path)
     assert sorted((h.file, h.rule) for h in hits) == [("run-agent.sh", "sh-io"),
-                                                      ("setup.sh", "cron-log")], hits
+                                                      ("scripts/install/setup.sh", "cron-log")], hits
 
 
 # ── the CLI and the hook ────────────────────────────────────────────────

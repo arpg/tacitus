@@ -72,8 +72,8 @@ before the chat front end became Zulip or Slack). On a host whose unit
 still carries the old name, `sudo bash deploy/rename-chat-bot.sh` moves
 the unit, its drop-in and the sudoers grant over in one restart; until
 then the deploy hook, the sentinel and `zulip_switch.sh` fall back to
-the old unit, and `ea-slack-bot.py` in the tree replaces itself with
-`ea-chat-bot.py` so the old unit's ExecStart keeps working.
+the old unit. The tree no longer carries an `ea-slack-bot.py` shim: a
+unit whose ExecStart still names it needs the rename first.
 
 ---
 

@@ -5,7 +5,7 @@ A site is a repository served from the root of main: by GitHub Pages
 (public), or by a server that pulls main on a timer (private, behind
 sign-in; `private: true` on the site). The sites and the bot account come
 from ~/.ea/config/github.json (`sites`, `bot_login`, `bot_email`,
-`bot_token_dir`; see SETUP.md). ea-bot holds one clone per site at
+`bot_token_dir`; see docs/SETUP.md). ea-bot holds one clone per site at
 ~/presentations/sites/<slug> and pushes as the bot account with that
 account's one GitHub token (~/.config/<bot_token_dir>/token, classic, repo
 scope), the same for every site. The token can do what the bot account can
@@ -143,7 +143,7 @@ def token_file(slug: str) -> Path:
     """The bot account's one token, the same for every site."""
     _site(slug)
     if not BOT_TOKEN_DIR or "/" in BOT_TOKEN_DIR or BOT_TOKEN_DIR in (".", ".."):
-        raise SiteError("github.json names no bot_token_dir; see SETUP.md")
+        raise SiteError("github.json names no bot_token_dir; see docs/SETUP.md")
     return _home() / ".config" / BOT_TOKEN_DIR / "token"
 
 
@@ -155,7 +155,7 @@ def file_roots() -> tuple[Path, ...]:
 
 def _site(slug: str) -> dict:
     if not SITES:
-        raise SiteError("github.json names no sites; see SETUP.md")
+        raise SiteError("github.json names no sites; see docs/SETUP.md")
     try:
         return SITES[slug]
     except KeyError:
@@ -164,7 +164,7 @@ def _site(slug: str) -> dict:
 
 def _bot_identity() -> tuple[str, str]:
     if not BOT_NAME or not BOT_EMAIL:
-        raise SiteError("github.json names no bot_login or bot_email; see SETUP.md")
+        raise SiteError("github.json names no bot_login or bot_email; see docs/SETUP.md")
     return BOT_NAME, BOT_EMAIL
 
 

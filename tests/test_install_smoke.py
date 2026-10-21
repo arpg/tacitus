@@ -61,6 +61,7 @@ def test_expected_misses_are_doctor_check_names_and_are_documented():
 
 def test_answers_file_covers_every_phase_the_smoke_runs():
     sys.path.insert(0, str(REPO))
+    sys.path.insert(0, str(REPO / "scripts" / "install"))
     import user_init
     phases = re.search(r"^for phase in (.+?); do", SMOKE.read_text(), re.M)
     assert phases, "smoke.sh loops over the config phases"
@@ -102,9 +103,9 @@ def test_workflow_has_the_tiers_on_pinned_actions():
 
 
 def test_setup_sh_has_the_non_interactive_switch():
-    setup = (REPO / "setup.sh").read_text()
+    setup = (REPO / "scripts/install/setup.sh").read_text()
     assert "--non-interactive" in setup and "EA_NONINTERACTIVE" in setup
-    r = subprocess.run(["bash", "-n", str(REPO / "setup.sh")], capture_output=True, text=True)
+    r = subprocess.run(["bash", "-n", str(REPO / "scripts/install/setup.sh")], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     # the sign-ins and the cron question are the three places it reads the
     # terminal; a run with no terminal on stdin is non-interactive by itself
