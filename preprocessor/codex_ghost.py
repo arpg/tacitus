@@ -394,6 +394,33 @@ def limits(fresh: bool = False, runner=None) -> dict:
     return cached or lim
 
 
+def quota_after(lim: dict) -> dict:
+    """The windows' used percent right after a turn, kept on the turn
+    record so the report can show the day's peak, not only the latest
+    reading: {"primary": 4, "secondary": 19, "read_at": ...}."""
+    out = {}
+    for key in ("primary", "secondary"):
+        used = (lim.get(key) or {}).get("used_percent") if lim else None
+        if isinstance(used, (int, float)):
+            out[key] = used
+    if out:
+        out["read_at"] = (lim or {}).get("read_at") or _iso(_now())
+    return out
+
+
+def quota_peak(turns: list[dict]) -> dict:
+    """The highest reading per window over these turns, with the turn that
+    carried it: {"primary": {"used_percent", "id"}, "secondary": {...}}."""
+    peak: dict = {}
+    for t in turns:
+        q = t.get("quota") or {}
+        for key in ("primary", "secondary"):
+            used = q.get(key)
+            if isinstance(used, (int, float)) and used >= (peak.get(key) or {}).get("used_percent", -1):
+                peak[key] = {"used_percent": used, "id": t.get("id")}
+    return peak
+
+
 def quota_block(lim: dict) -> str:
     """'' when the ghost may run, else why not."""
     if not lim or "error" in lim and not lim.get("primary"):
@@ -720,6 +747,7 @@ def run_job(job: dict, *, codex_run=None, scratch_runner=None, keep: bool = Fals
                         "files": (res.get("files") or [])[:40], "model": job.get("model") or ""}
         rec["writes"] = _writes_for(rid)
         rec["claims"] = claim_check(res.get("output") or "", rec["writes"])
+        rec["quota"] = quota_after(limits(fresh=True))
         rec["status"] = "ok" if not res.get("harness_error") else "error"
     except Exception as e:
         rec["codex"] = {"harness_error": f"ghost failed: {str(e)[:300]}"}
@@ -847,7 +875,8 @@ def measure(kind: str, since: date | None = None) -> dict:
          "input_tokens": usage_in, "output_tokens": usage_out,
          "duration_p50_s": durs[len(durs) // 2] if durs else 0.0,
          "duration_max_s": durs[-1] if durs else 0.0,
-         "enhancements": [g.get("enhancement") for g in judged if g.get("enhancement")][-8:]}
+         "enhancements": [g.get("enhancement") for g in judged if g.get("enhancement")][-8:],
+         "quota_peak": quota_peak(turns)}
     if kind == "briefing":
         m["same"] = sum(1 for g in judged if g.get("verdict") == "same")
         m["minor"] = sum(1 for g in judged if g.get("verdict") == "minor")
@@ -925,6 +954,11 @@ def report(as_json: bool = False) -> str:
             head += (f"; send {m.get('send', 0)} edit {m.get('edit', 0)} wrong {m.get('wrong', 0)}; "
                      f"codex better {m.get('better_codex', 0)}; claim mismatches {m.get('claim_mismatches', 0)}")
         head += f"; tokens in {m['input_tokens']:,} out {m['output_tokens']:,}; p50 {m['duration_p50_s']:.0f}s"
+        pk = m.get("quota_peak") or {}
+        if pk:
+            head += "; quota peak " + ", ".join(
+                f"{'5-hour' if key == 'primary' else 'weekly'} {pk[key]['used_percent']:.0f}%"
+                for key in ("primary", "secondary") if key in pk)
         lines.append(head)
         for r in k["reasons"]:
             lines.append(f"    {r}")

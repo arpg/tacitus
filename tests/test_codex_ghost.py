@@ -290,6 +290,28 @@ def _seed(kind, n, answer):
     cg.grade(judge="claude", runner=lambda prompt, schema, judge: (answer, {"cost_usd": 0.01}))
 
 
+def test_each_turn_keeps_the_quota_reading_and_the_report_shows_the_peak(private, monkeypatch):
+    monkeypatch.setattr(cg, "remove_scratch", lambda jid, runner=None: None)
+    readings = iter([{"primary": {"used_percent": 3}, "secondary": {"used_percent": 18}, "read_at": "2026-01-01T00:00:00+00:00"},
+                     {"primary": {"used_percent": 9}, "secondary": {"used_percent": 19}, "read_at": "2026-01-01T00:10:00+00:00"},
+                     {"primary": {"used_percent": 5}, "secondary": {"used_percent": 19}, "read_at": "2026-01-01T00:20:00+00:00"}])
+    monkeypatch.setattr(cg, "limits", lambda fresh=False, runner=None: next(readings))
+
+    def codex_run(prompt, **kw):
+        return {"output": "Nothing was staged.", "tool_calls": [], "usage": {"input_tokens": 10, "output_tokens": 1},
+                "duration_s": 1, "exit_code": 0, "harness_error": "", "files": []}
+    for i in range(3):
+        job = {"kind": "chat", "id": f"chat-q{i}", "run_id": cg.run_id_for(f"chat-q{i}"), "lane": "dm", "channel": "dm:1",
+               "thread_ts": f"t{i}", "source_run_id": f"s{i}", "user_msg": "hi", "task_block": "",
+               "claude": {"output": "Hi.", "tools": [], "elapsed_s": 1}}
+        rec = cg.run_job(job, codex_run=codex_run, scratch_runner=_fake_scratch)
+    assert rec["quota"] == {"primary": 5, "secondary": 19, "read_at": "2026-01-01T00:20:00+00:00"}
+    peak = cg.quota_peak(_rows(cg.TURNS))
+    assert peak["primary"] == {"used_percent": 9, "id": "chat-q1"} and peak["secondary"]["used_percent"] == 19
+    assert cg.quota_after({}) == {} and cg.quota_after({"error": "x"}) == {}
+    assert "quota peak 5-hour 9%, weekly 19%" in cg.report()
+
+
 def test_briefings_are_graded_against_claude_and_the_verdict_follows_pass(private):
     _seed("briefing", 5, {"missing_in_codex": ["the dean's deadline"], "extra_in_codex": [], "wrong_in_codex": [],
                           "verdict": "minor", "better": "claude", "enhancement": "read the ledger deadlines"})
