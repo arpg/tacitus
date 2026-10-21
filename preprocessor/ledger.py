@@ -675,6 +675,10 @@ def cmd_add(args) -> int:
     from_email = args.from_email or core_extra.get("from_email", "")
     from_name = args.from_name or core_extra.get("from_name", "")
 
+    if len(args.description or "") > TITLE_CHARS:
+        print(f"NOTE: ledger row {args.id!r} has a {len(args.description)}-character description. "
+              f"A description is a title (under {TITLE_CHARS} characters): briefings show it cut. "
+              f"Put the detail in --notes.", file=sys.stderr)
     db.execute("""
         INSERT INTO ledger (id, type, status, description, from_email, from_name,
                            source_message_id, conversation_id, gmail_thread_id,
@@ -1305,7 +1309,7 @@ def cmd_stats(args) -> int:
         "open_by_type": {r[0]: r[1] for r in by_type},
         "stale_7_days": stale_7,
         "upcoming_deadlines": [
-            {"id": r[0], "description": r[1][:60], "deadline": r[2]}
+            {"id": r[0], "description": brief_title(r[1], 60), "deadline": r[2]}
             for r in upcoming_deadlines
         ],
     })
@@ -1733,10 +1737,28 @@ def get_recently_closed(days: int = 7,
         ORDER BY closed_at DESC
     """, (cutoff,)).fetchall()
     conn.close()
-    return [{"id": r["id"], "description": (r["description"] or "")[:120],
-             "closed_at": r["closed_at"], "note": (r["last_action"] or "")[:120],
+    return [{"id": r["id"], "description": brief_title(r["description"], 120),
+             "closed_at": r["closed_at"], "note": brief_title(r["last_action"], 120),
              "conversation_id": r["conversation_id"] or ""}
             for r in rows]
+
+
+# A description is a title. Where a brief shows one in a fixed width,
+# the cut lands on a word and says it is a cut, so a reader never sees
+# "send the CSCI 5848 recomme".
+TITLE_CHARS = 140
+
+
+def brief_title(text: str, limit: int = 120) -> str:
+    """`text` whole when it fits, else its longest word-boundary prefix
+    under `limit` with an ellipsis."""
+    t = " ".join((text or "").split())
+    if len(t) <= limit:
+        return t
+    cut = t[:limit - 1]
+    if " " in cut:
+        cut = cut[:cut.rfind(" ")]
+    return cut.rstrip(" ,;:-") + "…"
 
 
 def _derive_conversation_id(source_message_id: str) -> str:
@@ -1793,6 +1815,10 @@ def add_entry(entry_id: str, entry_type: str, description: str,
               f"ever auto-close it; it will stay open until closed by hand. "
               f"If this came from an email, pass --source-message-id.",
               file=sys.stderr)
+    if len(description or "") > TITLE_CHARS:
+        print(f"NOTE: ledger row {entry_id!r} has a {len(description)}-character description. "
+              f"A description is a title (under {TITLE_CHARS} characters): briefings show it cut. "
+              f"Put the detail in --notes.", file=sys.stderr)
     now = _now()
     conn.execute("""
         INSERT INTO ledger (id, type, status, description, from_email, from_name,

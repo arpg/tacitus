@@ -408,13 +408,21 @@ def _parse_ledger_deadline(value) -> "datetime | None":
     return _parse_deadline_date(t)
 
 
+def _title(text, limit: int) -> str:
+    """A ledger description in a fixed width: ledger.brief_title (a
+    word-boundary cut with an ellipsis), imported here to keep the
+    module's import order."""
+    import ledger
+    return ledger.brief_title(text or "", limit)
+
+
 def _close_proposals(obligations: list) -> list[dict]:
     """The open rows that carry a close proposal, for the briefing."""
     out = []
     for ob in obligations or []:
         prop = ob.get("close_proposal")
         if isinstance(prop, dict):
-            out.append({"id": ob.get("id"), "description": (ob.get("description") or "")[:160],
+            out.append({"id": ob.get("id"), "description": _title(ob.get("description"), 160),
                         "why": (prop.get("why") or "")[:200], "since": prop.get("first_at") or ""})
     return out[:20]
 
@@ -633,7 +641,7 @@ def build_today_top(needs_resp: list, dropped: list, deadlines: list,
             reasons.append(f"open {stale}d without action")
         if not reasons:
             reasons.append("open obligation")
-        add("obligation", ob.get("description", "")[:100], ob.get("id", ""),
+        add("obligation", _title(ob.get("description"), 100), ob.get("id", ""),
             score, reasons)
 
     scored.sort(key=lambda x: x["score"], reverse=True)
