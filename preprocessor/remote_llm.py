@@ -617,13 +617,13 @@ SWITCHES = {"mail": ("off", "shadow", "enforce", "ghost", "sealed"),
             "briefings": ("off", "remote"), "audits": ("off", "remote")}
 
 
-def switches(cfg: dict | None = None) -> dict:
+def switches(cfg: dict | None = None, today: date | None = None) -> dict:
     """{switch: {"set": value in the file, "effective": value in force}}.
     They differ when a shadow switch is past `shadow_until`."""
     cfg = cfg if cfg is not None else config()
     out = {}
     for key in SWITCHES:
-        eff = mode(key, cfg) if key in PARTS else cfg.get(key, "off")
+        eff = mode(key, cfg, today) if key in PARTS else cfg.get(key, "off")
         out[key] = {"set": cfg.get(key, "off"), "effective": eff}
     return out
 
@@ -680,7 +680,7 @@ def set_switch(key: str, value: str, *, days: int | None = None, force: bool = F
             raw["shadow_until"] = window["until"]
         out["window"] = window
     _owner_trust.write_owner_file(path, (json.dumps(raw, indent=2) + "\n").encode(), mode=0o600)
-    out["effective"] = switches()[key]["effective"]
+    out["effective"] = switches(today=today)[key]["effective"]
     return out
 
 
