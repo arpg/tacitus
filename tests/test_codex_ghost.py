@@ -344,6 +344,7 @@ def test_a_reply_that_claims_a_draft_without_a_write_is_a_mismatch_the_judge_see
     assert cg._harness_note({"claims": backed}, {}) == ""
     text = cg.codex_suffix(Path("/x"), "chat")
     assert "returned an id" in text and "never report either as done" in text and "--help` is not a run" in text
+    assert "never list or read `state/mail-queue`" in text
 
 
 # ── the wiring ───────────────────────────────────────────────────────
