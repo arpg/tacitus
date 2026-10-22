@@ -6,6 +6,10 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The Send-all card is filed with its drafts.** A "N drafts are
+  ready" card whose drafts were all sent, cancelled or deleted on their
+  own cards or in Outlook got a status edit and stayed unread in the
+  Zulip Inbox; it now moves to the done stream like the draft cards.
 - **Stop a running turn.** `stop` or `cancel` (also `never mind`, `wrong
   channel`) in a thread whose turn is still running ends that turn's
   Claude process instead of queueing behind it. The stopped turn posts

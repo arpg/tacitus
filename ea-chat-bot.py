@@ -4420,6 +4420,12 @@ def _retire_empty_bulk_cards() -> int:
                     dm, card_ts, ":wastebasket: Every draft on this card was already handled.")
             except Exception as e:
                 log.debug(f"bulk card {batch_id} update failed: {e}")
+            # Its drafts were settled on their own cards or in Outlook, so
+            # this card was never used: file it with them, out of the Inbox.
+            try:
+                FRONTEND.file_card(_card_ref(dm, card_ts))
+            except Exception as e:
+                log.warning(f"filing the Send-all card {batch_id} failed: {e}")
         batches.pop(batch_id, None)
         done += 1
     if done:

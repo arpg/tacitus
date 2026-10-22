@@ -556,3 +556,26 @@ if __name__ == "__main__":
                 print(f"FAIL  {name}: {e!r}")
     print(f"{'OVERALL: [FAIL]' if failed else 'OVERALL: [PASS]'} ({failed} failed)")
     sys.exit(1 if failed else 0)
+
+
+def test_a_send_all_card_whose_drafts_were_handled_elsewhere_is_filed():
+    """Every draft on the batch settled on its own card or in Outlook: the
+    card gets its status line and is filed to the done stream, like the
+    draft cards, instead of staying unread in the Inbox."""
+    import types
+    lines, moved, saved = [], [], []
+    ns = {"log": types.SimpleNamespace(info=lambda *a, **k: None, debug=lambda *a, **k: None,
+                                       warning=lambda *a, **k: None),
+          "_load_draft_confirms": lambda: {"d1": {"status": "consumed"}, "d2": {"status": "consumed"},
+                                           "d3": {"status": "live"}},
+          "_load_bulk_batches": lambda: {"b-done": {"ids": ["d1", "d2"], "card_ts": "77", "dm_channel": "stream:6"},
+                                         "b-live": {"ids": ["d3"], "card_ts": "78", "dm_channel": "stream:6"}},
+          "_save_bulk_batches": lambda b: saved.append(dict(b)),
+          "_replace_buttons_with_status": lambda ch, ts, text: lines.append((ch, ts, text)),
+          "_card_ref": lambda ch, ts: (ch, ts),
+          "FRONTEND": types.SimpleNamespace(file_card=lambda ref: moved.append(ref) or True)}
+    exec(compile(_fn_src("_retire_empty_bulk_cards"), "bot[bulk]", "exec"), ns)
+    assert ns["_retire_empty_bulk_cards"]() == 1
+    assert lines == [("stream:6", "77", ":wastebasket: Every draft on this card was already handled.")]
+    assert moved == [("stream:6", "77")], "the settled card is filed; the live one stays"
+    assert saved and list(saved[-1]) == ["b-live"]
