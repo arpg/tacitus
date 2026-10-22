@@ -568,8 +568,6 @@ _CLAIM_SENT = re.compile(
     r"(\bI(?:'ve| have)?(?: just| now| also)? (?:sent|archived|submitted)\b"
     r"|\b(?:repl(?:y|ies)|e-?mails?|messages?|drafts?|notes?|threads?) (?:was|were|has been|have been|is|are|got)"
     r"(?: now| already| just)? (?:sent|archived|submitted)\b"
-    r"|\b(?:sent|archived|submitted) (?:the|that|this|your|both|all|each|every) "
-    r"(?:repl(?:y|ies)|e-?mails?|messages?|drafts?|notes?|threads?)\b"
     r"|^\W*(?:reply|email|draft|message) (?:sent|archived)\b)", re.I | re.M)
 _DRAFT_VERBS = {"create-reply", "create-draft", "update-draft"}
 
