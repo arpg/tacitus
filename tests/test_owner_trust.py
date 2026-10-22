@@ -318,6 +318,45 @@ def test_owner_takes_the_chat_block_from_the_private_copy(owner, monkeypatch, ca
         "https://attacker.example"
 
 
+def test_the_bot_takes_the_slack_owner_id_only_from_the_private_copy(owner, monkeypatch):
+    """~/.ea/.env is ea-bot's to rewrite, so the owner id that decides whose
+    click approves a card comes from chat.json."""
+    _shared_chat(owner, monkeypatch, {"frontend": "slack"})
+    made = {}
+
+    class FakeSlack:
+        @classmethod
+        def from_env(cls, env, *, for_cli=False):
+            made.update(owner=env.get("EA_SLACK_OWNER_ID"), for_cli=for_cli)
+
+    monkeypatch.setattr(chat, "_platform_module", lambda name: types.SimpleNamespace(SlackFrontend=FakeSlack))
+    env = {"SLACK_BOT_TOKEN": "x", "SLACK_APP_TOKEN": "y", "EA_SLACK_OWNER_ID": "U_FROM_DOTENV"}
+    _write(owner.priv / "chat.json", json.dumps({"frontend": "slack"}))
+    with pytest.raises(ot.OwnerTrustError, match="slack.owner_user_id"):
+        chat.load_frontend(env=env)
+    chat.load_frontend(env=env, for_cli=True)            # a sender approves nothing
+    assert made == {"owner": "", "for_cli": True}
+    _write(owner.priv / "chat.json", json.dumps({"frontend": "slack", "slack": {"owner_user_id": "U_MINE"}}))
+    chat.load_frontend(env=env)
+    assert made == {"owner": "U_MINE", "for_cli": False}
+
+
+def test_the_chat_seed_confirms_the_slack_owner_id(owner, monkeypatch):
+    _write(owner.tree / "config" / "ea-config.json", json.dumps({"chat": {"frontend": "slack"}}), 0o644)
+    _write(owner.tree / ".env", "EA_SLACK_OWNER_ID=U_MINE\n", 0o640)
+    monkeypatch.setattr(ot, "_interactive", lambda: False)
+    assert _seed(owner, "--chat", "--chat-frontend", "slack") == 1      # owner id unconfirmed
+    assert not (owner.priv / "chat.json").exists()
+    assert _seed(owner, "--chat", "--chat-frontend", "slack", "--chat-owner-id", "U_MINE") == 0
+    block = json.loads((owner.priv / "chat.json").read_text())
+    assert block["slack"] == {"owner_user_id": "U_MINE"} and "zulip" not in block
+    # a chat.json written before the owner id moved here gets it added
+    _write(owner.priv / "chat.json", json.dumps({"frontend": "slack"}))
+    assert _seed(owner, "--chat") == 1
+    assert _seed(owner, "--chat", "--chat-owner-id", "U_MINE") == 0
+    assert json.loads((owner.priv / "chat.json").read_text())["slack"]["owner_user_id"] == "U_MINE"
+
+
 def test_an_untrusted_private_chat_file_fails_closed(owner, monkeypatch):
     _shared_chat(owner, monkeypatch, {"frontend": "slack"})
     _write(owner.priv / "chat.json", json.dumps({"frontend": "zulip"}), 0o620)

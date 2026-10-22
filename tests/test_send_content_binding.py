@@ -714,7 +714,7 @@ def test_a_click_refused_for_no_owner_id_is_visible_where_the_card_is():
     assert len(rec.posts) == 1, rec.posts
     post = rec.posts[0]
     assert post["channel"] == "D_CARD"
-    assert "refused" in post["text"] and "EA_SLACK_OWNER_ID" in post["text"]
+    assert "refused" in post["text"] and "slack.owner_user_id" in post["text"]
     # a burst of clicks gets one notice per conversation, not one per click
     ns["_verify_button_user"](_click_ev("U_FIRST", "D_CARD"))
     assert len(rec.posts) == 1

@@ -876,9 +876,21 @@ def _routing_must(z: dict, given: dict) -> list[tuple[str, str, str]]:
 
 def _seed_chat(priv: Path, tree: Path, given: dict | None = None) -> int:
     target = priv / CHAT_FILE
+    slack_owner = read_env_values(tree / ".env", ("EA_SLACK_OWNER_ID",)).get(
+        "EA_SLACK_OWNER_ID", "")
     if target.exists():
         block = json.loads(read_owner_file(target))
         print(f"  chat: {target} exists, kept")
+        s = block.get("slack") if isinstance(block.get("slack"), dict) else {}
+        if block.get("frontend", "slack") == "slack" and not s.get("owner_user_id"):
+            # A chat.json from before the Slack owner id moved here.
+            ok = _confirm("chat", [("EA_SLACK_OWNER_ID", slack_owner)],
+                          [("owner_user_id", slack_owner, "--chat-owner-id")], given or {})
+            if ok is None:
+                return 1
+            block["slack"] = {**s, "owner_user_id": ok["owner_user_id"]}
+            write_owner_file(target, json.dumps(block, indent=2) + "\n", mode=0o600)
+            print(f"  chat: slack.owner_user_id added to {target}")
     else:
         given = dict(given or {})
         conf = tree / "config" / "ea-config.json"
@@ -898,6 +910,8 @@ def _seed_chat(priv: Path, tree: Path, given: dict | None = None) -> int:
                 continue
             src = block if len(path) == 1 else z
             must.append((key, str(src.get(path[-1], "slack" if key == "frontend" else "")), flag))
+        if frontend == "slack":
+            must.append(("owner_user_id", slack_owner, "--chat-owner-id"))
         if frontend == "zulip":
             must += _routing_must(z, given)
         ok = _confirm("chat", _flat(block) or [("frontend", "slack")], must, given)
@@ -910,9 +924,10 @@ def _seed_chat(priv: Path, tree: Path, given: dict | None = None) -> int:
             if len(path) == 1:
                 block[path[0]] = ok[key]
             else:
-                if not isinstance(block.get("zulip"), dict):
-                    block["zulip"] = {}
-                block["zulip"][path[1]] = ok[key]
+                section = "slack" if frontend == "slack" else path[0]
+                if not isinstance(block.get(section), dict):
+                    block[section] = {}
+                block[section][path[1]] = ok[key]
         for key, val in ok.items():
             if key in dict(CHAT_ROUTING):
                 block.setdefault("zulip", {})[key] = val
@@ -930,6 +945,8 @@ def _seed_chat(priv: Path, tree: Path, given: dict | None = None) -> int:
     print(f"    site          = {z.get('site', '')}")
     print(f"    bot_email     = {z.get('bot_email', '')}")
     print(f"    owner_user_id = {z.get('owner_user_id', '')}")
+    s = block.get("slack") if isinstance(block.get("slack"), dict) else {}
+    print(f"    slack.owner_user_id = {s.get('owner_user_id', '')}")
     for key, _ in CHAT_ROUTING:
         print(f"    {key:<13} = {z.get(key, '')}")
     notify = z.get("notify") if isinstance(z.get("notify"), dict) else {}

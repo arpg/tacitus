@@ -1139,7 +1139,9 @@ rules, and where each is enforced:
   environment says.
 - **Chat settings come from the owner.** Owner processes read the chat
   block from `~/.ea-private/chat.json`; ea-config.json keeps a copy for
-  the lanes' wording. Without chat.json an owner process refuses to run a
+  the lanes' wording. On Slack the owner id is `slack.owner_user_id` there:
+  the bot never takes EA_SLACK_OWNER_ID from `~/.ea/.env`, which ea-bot
+  can rewrite, and refuses to start without it. Without chat.json an owner process refuses to run a
   chat frontend, with an error naming the seed step, and `ea-doctor`
   reports it. The seed (`owner_trust.py seed`) copies chat.json and
   calendars.json from ea-bot's files once: it shows every value and writes

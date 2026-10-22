@@ -117,9 +117,10 @@ def load_frontend(*, for_cli: bool = False, ea_dir: str | Path | None = None,
     name = cfg.get("frontend")
     if name == "slack":
         mod = _platform_module("slack")
-        return mod.SlackFrontend.from_env(
-            _with_secrets(env, ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"), legacy),
-            for_cli=for_cli)
+        env = _with_secrets(env, ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"), legacy)
+        if ea_dir is None and owner_trust.is_owner_process():
+            env = _trusted_slack_owner(env, cfg, for_cli)
+        return mod.SlackFrontend.from_env(env, for_cli=for_cli)
     if name == "zulip":
         mod = _platform_module("zulip")
         api_key = owner_trust.owner_secret("ZULIP_API_KEY", env=env, legacy=legacy)
@@ -131,6 +132,23 @@ def load_frontend(*, for_cli: bool = False, ea_dir: str | Path | None = None,
         from .memory_frontend import MemoryFrontend
         return MemoryFrontend.from_config(cfg.get("memory", {}))
     raise ChatError(f"unknown chat frontend {name!r}; expected one of {', '.join(FRONTENDS)}")
+
+
+def _trusted_slack_owner(env: Mapping[str, str], cfg: dict, for_cli: bool) -> Mapping[str, str]:
+    """`env` with EA_SLACK_OWNER_ID taken from the owner's chat.json
+    (`slack.owner_user_id`), never from ~/.ea/.env, which ea-bot can
+    rewrite: the owner id decides whose click approves a card. The bot
+    refuses to start without it; a CLI sender, which approves nothing, only
+    drops the untrusted copy."""
+    slack = cfg.get("slack") if isinstance(cfg.get("slack"), dict) else {}
+    owner = str(slack.get("owner_user_id") or "").strip()
+    if not owner and not for_cli:
+        raise owner_trust.OwnerTrustError(
+            f"{private_dir() / owner_trust.CHAT_FILE} has no slack.owner_user_id. The bot "
+            f"takes the Slack owner id only from it, never from ~/.ea/.env in ea-bot "
+            f"space. Add it as the owner: python3 preprocessor/owner_trust.py seed --chat "
+            f"--chat-owner-id <your Slack member id>")
+    return {**env, "EA_SLACK_OWNER_ID": owner}
 
 
 def _with_secrets(env: Mapping[str, str], names, legacy) -> Mapping[str, str]:

@@ -4002,7 +4002,7 @@ def _verify_button_user(ev: "_chat.ActionEvent") -> bool:
     user_id = ev.user_id
     if not OWNER_SLACK_USER_ID:
         log.error(f"Refused a button click by {user_id}: no owner id is set. Set "
-                  f"EA_SLACK_OWNER_ID (Slack) or chat.zulip.owner_user_id (Zulip).")
+                  f"slack.owner_user_id (Slack) or zulip.owner_user_id (Zulip) in ~/.ea-private/chat.json.")
         _post_ownerless_refusal(ev)
         return False
     if user_id and user_id == str(getattr(FRONTEND, "bot_user_id", "") or ""):
@@ -4018,8 +4018,8 @@ _OWNERLESS_NOTICE_S = 60.0
 _ownerless_notice_at: dict = {}
 _OWNERLESS_NOTICE = (":no_entry: That click was refused, and nothing was done. No owner "
                      "id is set, so the bot cannot tell that the click is yours. Set "
-                     "EA_SLACK_OWNER_ID (Slack) or chat.zulip.owner_user_id (Zulip), "
-                     "then restart the bot.")
+                     "slack.owner_user_id (Slack) or zulip.owner_user_id (Zulip) in "
+                     "~/.ea-private/chat.json, then restart the bot.")
 
 
 def _post_ownerless_refusal(ev: "_chat.ActionEvent") -> None:
@@ -13401,8 +13401,8 @@ if __name__ == "__main__":
     _adopt_registered_rooms()
 
     if not OWNER_SLACK_USER_ID:
-        log.error("EA_SLACK_OWNER_ID is not set: every button click is refused until "
-                  "it is. Set EA_SLACK_OWNER_ID in ~/.ea/.env and restart the bot.")
+        log.error("No owner id is set: every button click is refused until it is. Set "
+                  "slack.owner_user_id in ~/.ea-private/chat.json and restart the bot.")
 
     # Start watchdog in background
     wd = threading.Thread(target=watchdog_loop, daemon=True)
