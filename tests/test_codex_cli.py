@@ -221,3 +221,20 @@ def test_the_codex_prompt_carries_the_core_and_the_shared_framing(tmp_path, monk
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_run_streams_each_event_when_asked_and_reads_the_same_result(tmp_path, monkeypatch):
+    """With on_event the run is read line by line, every JSONL event handed
+    over as it arrives, and the result is what the whole-read run gives."""
+    script = ('for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done\n'
+              'cat > /dev/null\n'
+              f"printf '%s' '{EVENTS.replace(chr(39), chr(39)+chr(34)+chr(39)+chr(34)+chr(39))}'\n"
+              'printf ":sunny: *Morning Briefing*" > "$out"\n')
+    fake = _fake_codex(tmp_path, script)
+    monkeypatch.setattr(X, "CODEX_BIN", str(fake))
+    seen = []
+    res = X.run("hello", cwd=tmp_path, sandbox="read-only", timeout=30, on_event=seen.append)
+    assert res["harness_error"] == "", res
+    assert res["output"] == ":sunny: *Morning Briefing*" and res["tool_calls"] and res["exit_code"] == 0
+    assert any(e.get("type") == "item.completed" for e in seen), "the events arrived as they were printed"
+    assert [e.get("type") for e in seen] == [json.loads(l)["type"] for l in EVENTS.splitlines() if l.strip()]

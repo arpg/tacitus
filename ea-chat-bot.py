@@ -499,6 +499,7 @@ def _feed_stdin(proc: subprocess.Popen, text: str) -> None:
 
 
 from preprocessor import turn_cancel as _turn_cancel
+from preprocessor import turn_progress as _turn_progress
 
 # The Claude processes running now, by run id, so a `stop` in a thread
 # can end that thread's turn (_cancel_thread_runs).
@@ -549,8 +550,10 @@ def _run_claude_streaming(
     extra_env: dict | None = None,
     result_chars: int = 300,
     cwd: "Path | None" = None,
+    progress: "_turn_progress.Progress | None" = None,
 ) -> ClaudeResult:
     """Run Claude subprocess with stream-json, logging tool calls in real-time.
+    `progress` gets each tool call as it starts and ends, for the heartbeat.
 
     `cwd` is the run's working directory: the deployed tree by default,
     where Claude Code loads CLAUDE.md and CLAUDE.local.md; a lane directory
@@ -660,6 +663,8 @@ def _run_claude_streaming(
                                 from preprocessor import web_tool_log as _web_tool_log
                                 _web_tool_log.note(tool_name, inp_full, lane=label,
                                                    run_id=run_id)
+                            if progress is not None:
+                                progress.begin(tool_name, inp if isinstance(inp, dict) else {})
                             pending_tools[tool_id] = (
                                 tool_name, time.monotonic(), inp_summary, inp_full,
                             )
@@ -697,6 +702,8 @@ def _run_claude_streaming(
                                 tool_calls.append(
                                     (tname, telapsed, targs, result_snippet, tfull)
                                 )
+                                if progress is not None:
+                                    progress.end(tname, tfull if isinstance(tfull, dict) else {}, telapsed)
                                 snippet = result_snippet[:120].replace("\n", " ")
                                 log.info(f"  [{label}] tool_result: {tname} {status} "
                                          f"({telapsed:.1f}s) {snippet}")
@@ -10554,7 +10561,8 @@ def _remote_llm_shadow_scheduling(*, run_id, channel, thread_ts, msg_ts, user_ms
                      daemon=True).start()
 
 
-def _codex_turn_live(*, prompt, fresh_prompt, run_id, thread_ts, lane) -> "tuple[ClaudeResult | None, dict]":
+def _codex_turn_live(*, prompt, fresh_prompt, run_id, thread_ts, lane,
+                     progress=None) -> "tuple[ClaudeResult | None, dict]":
     """The Codex arm's turn (codex_turn.run_turn, live): the prompt this
     turn built, on Codex as the resident, on the chat thread's own Codex
     thread. Returns (the result to post, the harness record), or (None,
@@ -10563,7 +10571,8 @@ def _codex_turn_live(*, prompt, fresh_prompt, run_id, thread_ts, lane) -> "tuple
     try:
         from preprocessor import codex_turn as _ct
         rec = _ct.run_turn(prompt, thread_key=thread_ts, run_id=run_id, live=True,
-                           fresh_prompt=fresh_prompt, lane=lane)
+                           fresh_prompt=fresh_prompt, lane=lane,
+                           on_event=progress.codex_event if progress is not None else None)
     except Exception as e:
         log.warning(f"codex arm: raised, Claude takes the turn: {e}")
         return None, {"harness_error": str(e)[:200]}
@@ -11554,6 +11563,26 @@ Reminders:
             else:
                 log.info(f"model arm: pipeline drawn, not a scheduling ask; Claude takes the turn on {run_model}")
             arm, arm_env = "claude", None
+        # Heartbeat: every 3 minutes, what the turn is doing so far (the
+        # tool calls as phrases), in one message edited in place; "Still
+        # working" only before the first tool call. It covers the Codex
+        # arm below and the Claude run.
+        progress = _turn_progress.Progress()
+        heartbeat_stop = threading.Event()
+        def _heartbeat():
+            ref = None
+            while not heartbeat_stop.wait(180):
+                text = progress.summary() or (
+                    f":hourglass_flowing_sand: Still working... ({progress.minutes()}m)")
+                try:
+                    if ref is not None and FRONTEND.update(ref, text):
+                        continue
+                    ref = FRONTEND.post(channel=channel, thread_ts=thread_ts, text=text)
+                except Exception:
+                    ref = None
+        hb_thread = threading.Thread(target=_heartbeat, daemon=True)
+        hb_thread.start()
+
         # The Codex arm (model_arms arm "codex"; `use codex`, `@codex`): the
         # prompt this turn built runs on Codex as the resident
         # (codex_turn.run_turn, live), on a Codex thread kept per chat
@@ -11563,7 +11592,7 @@ Reminders:
         if live_cr is None and arm == "codex":
             live_cr, codex_turn_rec = _codex_turn_live(
                 prompt=prompt, fresh_prompt=full_prompt, run_id=run_id, thread_ts=thread_ts,
-                lane=_turn_lane(channel, user_id))
+                lane=_turn_lane(channel, user_id), progress=progress)
             if live_cr is None:
                 arm_fallback = ("codex:" + str((codex_turn_rec or {}).get("harness_error") or "no answer"))[:160]
                 log.warning(f"model arm: {arm_fallback}; Claude takes the turn on {MODEL}")
@@ -11582,22 +11611,6 @@ Reminders:
             use_mcp = False
         allowed_tools = _build_allowed_tools(use_mcp)
         log.info(f"MCP servers: {'enabled' if use_mcp else 'SKIPPED'}")
-
-        # Heartbeat: post status update every 3 min so user knows we're working
-        heartbeat_stop = threading.Event()
-        def _heartbeat():
-            elapsed_min = 0
-            while not heartbeat_stop.wait(180):
-                elapsed_min += 3
-                try:
-                    FRONTEND.post(
-                        channel=channel, thread_ts=thread_ts,
-                        text=f":hourglass_flowing_sand: Still working... ({elapsed_min}m)",
-                    )
-                except Exception:
-                    pass
-        hb_thread = threading.Thread(target=_heartbeat, daemon=True)
-        hb_thread.start()
 
         def _claude_args_for(p: str, session_flags: list[str]) -> list[str]:
             # An adopted session may carry the model and effort it was
@@ -11643,7 +11656,7 @@ Reminders:
             cr = _run_claude_streaming(
                 _claude_args_for(prompt, ["--resume", session_id]),
                 timeout=run_timeout, label="mono", run_id=run_id, **run_kw,
-                cwd=_sessions.session_cwd(session_id))
+                cwd=_sessions.session_cwd(session_id), progress=progress)
             # A timeout (rc -1) is not a failed resume: the session holds the
             # turn so far, and the thread's next message resumes it there.
             if cr.returncode != -1 and (cr.returncode != 0 or not cr.output):
@@ -11662,12 +11675,12 @@ Reminders:
                 cr = _run_claude_streaming(
                     _claude_args_for(prompt, ["--session-id", session_id]),
                     timeout=run_timeout, label="mono", run_id=run_id, **run_kw,
-                    cwd=prompt_cwd)
+                    cwd=prompt_cwd, progress=progress)
         else:
             cr = _run_claude_streaming(
                 _claude_args_for(prompt, ["--session-id", session_id]),
                 timeout=run_timeout, label="mono", run_id=run_id, **run_kw,
-                cwd=prompt_cwd)
+                cwd=prompt_cwd, progress=progress)
         heartbeat_stop.set()
         elapsed = time.monotonic() - t0
 
@@ -11694,7 +11707,7 @@ Reminders:
             session_id, resuming, session_meta = _sessions.lookup(thread_ts)
             r = _run_claude_streaming(
                 _claude_args_for(claude_prompt, ["--session-id", session_id]),
-                timeout=run_timeout, label="mono", run_id=run_id, cwd=prompt_cwd)
+                timeout=run_timeout, label="mono", run_id=run_id, cwd=prompt_cwd, progress=progress)
             elapsed = time.monotonic() - t0
             return r
 

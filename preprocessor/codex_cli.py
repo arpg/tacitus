@@ -128,9 +128,67 @@ def parse_events(stdout: str) -> dict:
             "usage": usage, "turns": turns, "errors": errors, "thread_id": thread_id}
 
 
+class _Done:
+    def __init__(self, stdout: str, stderr: str, returncode: int):
+        self.stdout, self.stderr, self.returncode = stdout, stderr, returncode
+
+
+def _run_streaming(cmd, prompt: str, *, timeout: int, cwd: str, env, on_event) -> "_Done":
+    """The same run, read line by line: each JSONL event goes to on_event
+    as it arrives. A run past its timeout is ended and reported as
+    subprocess.run would (TimeoutExpired)."""
+    import threading
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         text=True, cwd=cwd, env=env)
+
+    def feed():
+        try:
+            p.stdin.write(prompt)
+            p.stdin.close()
+        except (OSError, ValueError):
+            pass
+    threading.Thread(target=feed, daemon=True).start()
+    expired = threading.Event()
+
+    def stop():
+        expired.set()
+        try:
+            p.terminate()
+            p.wait(timeout=10)
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+    timer = threading.Timer(timeout, stop)
+    timer.daemon = True
+    timer.start()
+    lines = []
+    try:
+        for line in p.stdout:
+            lines.append(line)
+            s = line.strip()
+            if s.startswith("{"):
+                try:
+                    on_event(json.loads(s))
+                except Exception:
+                    pass
+        p.wait()
+    finally:
+        timer.cancel()
+    if expired.is_set():
+        raise subprocess.TimeoutExpired(cmd, timeout)
+    err = ""
+    try:
+        err = p.stderr.read() if p.stderr else ""
+    except (OSError, ValueError):
+        pass
+    return _Done("".join(lines), err, p.returncode)
+
+
 def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
         timeout: int = 600, env: dict | None = None, prefix=(), last_message_dir=None,
-        ephemeral: bool = True, resume: str = "") -> dict:
+        ephemeral: bool = True, resume: str = "", on_event=None) -> dict:
     """One non-interactive run. Returns {"output", "tool_calls",
     "exit_code", "duration_s", "harness_error", "num_turns", "usage",
     "files", "stderr", "thread_id"}: `output` is the agent's final message
@@ -144,7 +202,9 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
     as the resident; the binary is then the resident's, found on the PATH
     the prefix sets, so the owner's `binary()` check is skipped);
     `last_message_dir` is where the `-o` file goes, a directory that user
-    can write (the owner's temp dir is not)."""
+    can write (the owner's temp dir is not). `on_event`, when given, gets
+    each JSONL event as it arrives (the turn's progress line reads the
+    command items); without it the run is read whole at the end."""
     prefix = list(prefix or ())
     b = binary()
     if not b and not prefix:
@@ -168,8 +228,11 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
         try:
             # cwd is the thread's root: a resumed thread takes it from the
             # process (resume has no -C), and sudo keeps it for the child.
-            r = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
-                               timeout=timeout, cwd=str(cwd), env=env)
+            if on_event is None:
+                r = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
+                                   timeout=timeout, cwd=str(cwd), env=env)
+            else:
+                r = _run_streaming(cmd, prompt, timeout=timeout, cwd=str(cwd), env=env, on_event=on_event)
         except subprocess.TimeoutExpired:
             return {"output": "", "tool_calls": [], "exit_code": -1, "duration_s": float(timeout),
                     "harness_error": f"codex timed out after {timeout}s", "num_turns": 0,

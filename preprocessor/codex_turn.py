@@ -158,7 +158,7 @@ def _shape(res: dict, thread_id: str, mode: str, staged: dict | None = None) -> 
 
 def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_prompt: str = "",
              lane: str = "", model: str = "", timeout: int | None = None, codex_run=None,
-             scratch_runner=None, clear_runner=None) -> dict:
+             scratch_runner=None, clear_runner=None, on_event=None) -> dict:
     """One turn. `prompt` is what the bot would send Claude this turn
     (fresh or continuation); `fresh_prompt` is the fresh prompt, used when
     this thread has no Codex thread yet or its resume fails. Returns the
@@ -185,9 +185,10 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
     last_dir = root if not live else BOT_HOME / ".local" / "state" / "ea-lanes"
 
     def go(text: str, resume: str) -> dict:
+        extra = {"on_event": on_event} if on_event is not None else {}
         return runner(wrap(text), cwd=root, sandbox="workspace-write", add_dirs=add_dirs, model=model,
                       timeout=timeout, prefix=prefix, last_message_dir=last_dir, ephemeral=False,
-                      resume=resume)
+                      resume=resume, **extra)
 
     resumed = bool(row.get("thread_id"))
     res = go(prompt if resumed else (fresh_prompt or prompt), row.get("thread_id") or "")
