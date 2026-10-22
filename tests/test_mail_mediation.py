@@ -283,7 +283,10 @@ def test_docs_is_an_allowed_root_and_its_siblings_are_not():
         names = {r.name for r in M._allowed_roots()}
         assert "docs" in names
         assert "research" in names  # the owner/EA shared research folder
+        assert "exports" in names and "presentations" in names, "the EA's exports and the decks it builds"
         assert not ({"auth", "config"} & names)
+        roots = M._allowed_roots()
+        assert any(r == M.EA_DIR.parent / "presentations" for r in roots), "the deck workspace beside ~/.ea"
         for bad in ("/home/ea-bot/.ea/auth/graph-token.json",
                     "/home/ea-bot/.ea/config/ea-config.json"):
             assert M.sanitize("graph_actions", "download-attachment",

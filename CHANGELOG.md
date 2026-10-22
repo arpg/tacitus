@@ -6,6 +6,11 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A built deck or poster attaches from where it was built.** The mail
+  mediator's attach and download roots gain the deck workspace
+  (`EA_DECKS_ROOT`, else the resident's `presentations/`) and
+  `~/.ea/exports`; a poster PDF no longer needs a copy the lane cannot
+  make.
 - **The Send-all card is filed with its drafts.** A "N drafts are
   ready" card whose drafts were all sent, cancelled or deleted on their
   own cards or in Outlook got a status edit and stayed unread in the
