@@ -19,7 +19,7 @@ Its assistant, the EA, reads your mail, drafts replies in your voice
 based on other information and your input, tracks what you owe to whom
 through a transparent ledger, and finds meeting times across all your
 calendars. The EA cannot send an email or place a meeting without your
-click. You are the executive, while Tacitcus serves quietly as an
+click. You are the executive, while Tacitus serves quietly as an
 assistant.
 
 You talk to it the way you talk to a colleague: in a private chat on a
