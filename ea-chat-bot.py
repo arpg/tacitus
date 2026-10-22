@@ -2461,6 +2461,8 @@ _BASH_ONLY_TOOLS = (
     # Read-only text of a .docx, PDF or text file under ~/.ea's document
     # folders: a dontAsk lane refuses unzip and `python3 -c`.
     "Bash(python3 {script_dir}/preprocessor/doc_text.py *),"
+    # A .docx from markdown, written under ~/.ea's document folders.
+    "Bash(python3 {script_dir}/preprocessor/doc_write.py *),"
     "Bash(python3 {script_dir}/preprocessor/poll_filler.py *),"
     "Bash(python3 {script_dir}/preprocessor/booking_link.py *),"
     "Bash(python3 {script_dir}/preprocessor/compile_letter.py *),"
@@ -2775,7 +2777,12 @@ def _tools_block(body_file: str, needed_modules: set[str] | None = None) -> str:
 - Bash(python3 {sd}/preprocessor/fetch_url.py --url <url>) for reading web pages
 - Bash(python3 {sd}/preprocessor/doc_text.py <path>) for the text of a .docx,
   PDF or text file under ~/.ea (state, docs, uploads, letters, research):
-  comments come at the end; --tracked marks tracked changes"""
+  comments come at the end; --tracked marks tracked changes
+- Bash(python3 {sd}/preprocessor/doc_write.py docx --in <file.md> --out <path>.docx)
+  for a Word file: write the content as markdown first (headings, lists,
+  tables, **bold**), the output goes under ~/.ea/docs, letters, state or
+  research; --template <docx> keeps a letterhead's styles and headers.
+  Never hand-write RTF or XML for a document someone will open in Word."""
 
 
 def resolve_bot_user_id():

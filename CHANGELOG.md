@@ -6,6 +6,12 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A Word file from markdown.** `preprocessor/doc_write.py docx --in
+  <file.md> --out <path>.docx` writes a .docx (headings, lists, tables,
+  bold and italic, page breaks) under `~/.ea/docs`, `letters`, `state` or
+  `research`; `--template` keeps a letterhead's styles, headers and
+  footers. The chat and cron lanes allow it, so the EA no longer falls
+  back to hand-written RTF when a document is wanted in Word.
 - **A smaller root directory.** `SETUP.md`, `INSTALL.md` and the
   LLM-harness essay (now `llm-harness.md`) live in `docs/`; the
   scheduling channel's operating files live in `prompts/`; `setup.sh`,

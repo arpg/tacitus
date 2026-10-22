@@ -9,8 +9,8 @@ The install's own facts (names, rooms, sites, lists) are in
 
 No `~/.ea/config/user-profile.json` means a fresh install.
 Run the `/setup` skill (`.claude/skills/setup/SKILL.md`): it asks the
-profile and account questions one at a time, writes the config, and ends
-with `scripts/ea-doctor.py --profile <name>` green. `docs/SETUP.md` is the
+questions one at a time, writes the config, and ends with the doctor
+green. `docs/SETUP.md` is the
 reference. The install profile (`email`, `review-only` or `assistant`) is
 `profile` in `~/.ea/config/ea-config.json`.
 
@@ -388,7 +388,8 @@ meeting confirmation is the body.
 5c. Archive (only when told): `graph_actions.py archive-message --message-id <id>`.
 5c-1. Check a draft's recipients with `preflight-check --message-id
    <draft-id>`, not `get-message`.
-5d. A file's text (.docx, PDF, text): `doc_text.py <path>`; PDF hints: `scan-attachments`.
+5d. A file's text: `doc_text.py <path>`; markdown to .docx: `doc_write.py
+   docx --in <md> --out <path>`; PDF hints: `scan-attachments`.
 5d-1. Files on a DRAFT are yours: `attach-file --message-id <draft-id>
    --file <path>`, `remove-attachment --message-id <draft-id> --name
    <file>`. Replace = remove, then attach. Never ask the user to swap a
