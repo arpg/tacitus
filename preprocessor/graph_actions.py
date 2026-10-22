@@ -1299,11 +1299,22 @@ def cmd_scan_attachments(args):
 
 
 def cmd_archive_message(args):
-    """Move a message to the Archive folder."""
-    result = graph.graph_post(
-        f"/me/messages/{args.message_id}/move",
-        {"destinationId": "archive"},
-    )
+    """Move a message to the Archive folder. A message id is stale once the
+    message has moved (Graph gives a message a new id per folder), so a 404
+    is answered as {"archived": false, "gone": true}: the message is not in
+    the inbox under that id, and the caller archives by conversation."""
+    try:
+        result = graph.graph_post(
+            f"/me/messages/{args.message_id}/move",
+            {"destinationId": "archive"},
+        )
+    except Exception as e:
+        if "404" in str(e):
+            print(json.dumps({"archived": False, "gone": True,
+                              "message": "no message with this id: it moved or was deleted; "
+                                         "archive-conversation covers what is still in the inbox"}))
+            return
+        raise
     print(json.dumps({"archived": True, "id": result.get("id", args.message_id)}))
 
 

@@ -610,6 +610,8 @@ def _archive_email(message_id: str) -> dict:
     r = _graph_cli("archive-message", "--message-id", message_id)
     if r.get("error"):
         return {"archived": False, "error": r["error"]}
+    if r.get("gone"):
+        return {"archived": False, "gone": True, "note": r.get("message", "the message id is stale")}
     return {"archived": True, "new_id": r.get("new_id", r.get("message_id",
                                                               message_id))}
 
@@ -969,7 +971,15 @@ def _archive_after_close(db, row, closed_ids: list[str], skip: bool) -> dict:
         "SELECT id FROM ledger WHERE conversation_id = ? AND status IN "
         "('open', 'snoozed', 'follow_up') AND source IS NULL", (conv_id,)).fetchall()
     if not still_open:
-        out["conversation_archive"] = _archive_conversation(conv_id)
+        conv = _archive_conversation(conv_id)
+        out["conversation_archive"] = conv
+        # The message id was stale and the thread has nothing left in the
+        # inbox: the mail is already where a close puts it.
+        if msg_id and (out.get("email_archive") or {}).get("gone") and conv.get("archived") \
+                and not conv.get("errors"):
+            out["email_archive"] = {"archived": True, "by": "conversation",
+                                    "note": "the message had already left the inbox; its id was stale"}
+            db.execute("UPDATE ledger SET email_archived = 1 WHERE id = ?", (row["id"],))
         return out
     out["conversation_kept"] = [r[0] for r in still_open][:10]
     for cid in closed_ids[1:]:
