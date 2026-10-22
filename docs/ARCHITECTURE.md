@@ -2299,6 +2299,10 @@ resident's, a shell's) go to the late-draft sweep. The bot answers four commands
 and before the EA switch (`_handle_bot_command`): `adopt session <uuid>
 [as <model>]`, `conversations`, `name this conversation <t>`, `open a
 channel for <project> | for session <uuid> | for this conversation`.
+A `stop` or `cancel` in a thread whose turn is running ends that
+turn's Claude process (`preprocessor/turn_cancel.py`, `_cancel_thread_runs`):
+no reply is posted, and the drafts the run made before the stop keep
+their cards.
 Channel creation needs the Slack scope `groups:write`; the bot creates the
 private channel, invites the owner, sets the topic, registers it, posts
 the project's opening context (with a link to the board's

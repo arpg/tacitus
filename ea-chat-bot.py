@@ -466,6 +466,8 @@ class ClaudeResult:
     # True only when the run hit its time limit; a run that failed to start
     # also has returncode -1.
     timed_out: bool = False
+    # True when the user stopped the run (a `stop` in its thread).
+    cancelled: bool = False
 
 
 def _stop_claude(proc: subprocess.Popen, grace_s: float = 10.0) -> None:
@@ -494,6 +496,17 @@ def _feed_stdin(proc: subprocess.Popen, text: str) -> None:
         proc.stdin.close()
     except (OSError, ValueError):
         pass
+
+
+from preprocessor import turn_cancel as _turn_cancel
+
+# The Claude processes running now, by run id, so a `stop` in a thread
+# can end that thread's turn (_cancel_thread_runs).
+_LIVE_RUNS = _turn_cancel.LiveRuns()
+
+
+class _TurnCancelled(Exception):
+    """The user stopped this turn while it ran; no reply is posted."""
 
 
 _GMAIL_DRAFT_TOOLS = ("mcp__claude_ai_Gmail__create_draft",
@@ -597,6 +610,7 @@ def _run_claude_streaming(
             if prompt_text is not None:
                 threading.Thread(target=_feed_stdin, args=(proc, prompt_text),
                                  daemon=True).start()
+            _LIVE_RUNS.register(run_id, proc)
             # The deadline holds while claude prints nothing (a long tool
             # call): the watchdog stops the run, and the read loop ends.
             expired = threading.Event()
@@ -695,6 +709,12 @@ def _run_claude_streaming(
                 _stop_claude(proc)
                 raise subprocess.TimeoutExpired(cmd, timeout)
             proc.wait(timeout=10)
+            _LIVE_RUNS.unregister(run_id)
+            if _LIVE_RUNS.cancelled(run_id):
+                log.info(f"[{label}] stopped by the user after {time.monotonic() - t0:.1f}s "
+                         f"(tool_calls: {[t[0] for t in tool_calls]})")
+                return ClaudeResult(output="", tool_calls=tool_calls, returncode=-3, stderr="",
+                                    gmail_draft_ids=gmail_draft_ids, cancelled=True)
             stderr_text = proc.stderr.read() if proc.stderr else ""
             stderr_lines = stderr_text.strip().splitlines()
 
@@ -703,6 +723,10 @@ def _run_claude_streaming(
                 watchdog.cancel()
             if proc is not None:
                 _stop_claude(proc)
+            _LIVE_RUNS.unregister(run_id)
+            if _LIVE_RUNS.cancelled(run_id):
+                return ClaudeResult(output="", tool_calls=tool_calls, returncode=-3, stderr="",
+                                    gmail_draft_ids=gmail_draft_ids, cancelled=True)
             elapsed = time.monotonic() - t0
             log.error(f"[{label}] timed out after {elapsed:.1f}s "
                       f"(tool_calls: {[t[0] for t in tool_calls]})")
@@ -718,6 +742,10 @@ def _run_claude_streaming(
                 watchdog.cancel()
             if proc is not None:
                 _stop_claude(proc)
+            _LIVE_RUNS.unregister(run_id)
+            if _LIVE_RUNS.cancelled(run_id):
+                return ClaudeResult(output="", tool_calls=tool_calls, returncode=-3, stderr="",
+                                    gmail_draft_ids=gmail_draft_ids, cancelled=True)
             elapsed = time.monotonic() - t0
             log.error(f"[{label}] error after {elapsed:.1f}s: {e}")
             return ClaudeResult(output=f"Error: {e}", returncode=-1, stderr="")
@@ -1865,6 +1893,24 @@ def _session_lock(session_id: str) -> threading.Lock:
         if lock is None:
             lock = _SESSION_LOCKS[session_id] = threading.Lock()
         return lock
+
+
+def _cancel_thread_runs(channel: str, thread_ts: str) -> list[str]:
+    """Stop every per-thread run live in this thread. Returns the first
+    words of each stopped message. A resident or deferred dispatch has no
+    process here and is left alone."""
+    with _dispatch_lock:
+        _prune_dispatches_locked()
+        mine = [(rid, d) for rid, d in _active_dispatches.items()
+                if d.get("channel") == channel and d.get("thread_ts") == thread_ts
+                and d.get("lane") not in ("resident", "deferred")]
+    stopped = []
+    for rid, d in mine:
+        if _LIVE_RUNS.stop(rid, _stop_claude):
+            words = " ".join(str(d.get("user_msg") or "").split())
+            stopped.append(words[:60] + ("…" if len(words) > 60 else ""))
+            log.info(f"turn {rid} stopped by the user in thread {thread_ts}")
+    return stopped
 
 
 def _thread_busy(channel: str, thread_ts: str) -> bool:
@@ -10867,6 +10913,24 @@ def handle_message_async(
     if not FRONTEND.react(channel, msg_ts, ack):
         log.warning(f"Failed to add reaction: {ack}")
 
+    # A `stop` or `cancel` while this thread's turn runs ends that turn
+    # instead of queueing behind it. With nothing running the message is
+    # an ordinary one and Claude reads it.
+    if _turn_cancel.is_cancel(user_msg):
+        stopped = _cancel_thread_runs(channel, thread_ts)
+        if stopped:
+            names = "; ".join(f"\"{m}\"" for m in stopped)
+            try:
+                FRONTEND.post(channel=channel, thread_ts=thread_ts,
+                              text=f":octagonal_sign: Stopped: {names}. A draft it made before the stop "
+                                   "keeps its card; cancel it there.")
+                _swap_reaction(channel, msg_ts, ack, "white_check_mark")
+            except Exception as e:
+                log.warning(f"cancel post failed: {e}")
+            with _active_lock:
+                _active_threads.discard(msg_ts)
+            return
+
     # Handle "usage" / "quota" command without invoking Claude
     if user_msg.strip().lower() in ("usage", "quota", "limits"):
         try:
@@ -11628,6 +11692,8 @@ Reminders:
             elapsed = time.monotonic() - t0
             return r
 
+        if cr.cancelled:
+            raise _TurnCancelled()
         if live_cr is None and arm == "remote" and (
                 cr.timed_out or cr.returncode != 0 or not (cr.output or "").strip()
                 or _raw_tool_markup(cr.output)):
@@ -12031,6 +12097,22 @@ Reminders:
                 user_msg=user_msg, task_block=task_block, cr=cr, elapsed=elapsed,
                 response=response, model=run_model, prompt=prompt, fresh_prompt=full_prompt)
 
+    except _TurnCancelled:
+        # The user stopped this turn: no reply. What it staged before the
+        # stop gets its cards, so the user can cancel those too.
+        _swap_reaction(channel, msg_ts, "eyes", "x")
+        _LIVE_RUNS.forget(run_id)
+        if run_id and journal_offset is not None:
+            try:
+                _surface_run_drafts(channel, thread_ts, journal_offset, run_id, "mono-stopped")
+            except Exception as e:
+                log.warning(f"Draft detection after a stop failed: {e}")
+            try:
+                _post_claimed_actions(channel, thread_ts,
+                                      _claim_event_actions(newer_than=run_started),
+                                      "mono-stopped")
+            except Exception as e:
+                log.warning(f"Event action detection after a stop failed: {e}")
     except subprocess.TimeoutExpired:
         log.error(f"Claude timed out after {run_timeout}s for message: {user_msg[:120]!r}")
         _swap_reaction(channel, msg_ts, "eyes", "x")

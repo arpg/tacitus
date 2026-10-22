@@ -6,6 +6,13 @@ repository that preceded it.
 
 ## Unreleased
 
+- **Stop a running turn.** `stop` or `cancel` (also `never mind`, `wrong
+  channel`) in a thread whose turn is still running ends that turn's
+  Claude process instead of queueing behind it. The stopped turn posts
+  no reply; a draft it made before the stop keeps its Send card, so it
+  can be cancelled there. With nothing running, the word is an ordinary
+  message. The resident pane and a parked (deferred) message are not
+  affected.
 - **A Word file from markdown.** `preprocessor/doc_write.py docx --in
   <file.md> --out <path>.docx` writes a .docx (headings, lists, tables,
   bold and italic, page breaks) under `~/.ea/docs`, `letters`, `state` or
