@@ -246,7 +246,8 @@ def _raw_config() -> dict:
 # headless browser, which the sandbox has no network or display for, and
 # one such replay cost millions of input tokens for nothing. The window
 # may name its own list (`start --skip`).
-DEFAULT_SKIP = [r"\bdecks?\b", r"\bslides?\b", r"\bslidev\b", r"\bpresentation\b"]
+DEFAULT_SKIP = [r"\bdecks?\b", r"\bslides?\b", r"\bslidev\b", r"\bpresentation\b", r"\bposters?\b",
+                r"\binfographics?\b"]
 
 
 def window(raw: dict | None = None) -> dict:
@@ -552,7 +553,7 @@ def codex_suffix(scratch: Path, kind: str) -> str:
 
 The rules above about Claude Code tools (Read, Bash allow lists, MCP, subagents) mean the same for your shell. The code is at {BOT_TREE} (read-only): run its scripts as `python3 {BOT_TREE}/preprocessor/<script>.py ...`, never a `~` path. EA_DIR is {scratch}: the ledger and the briefing there are yours to read and update. Mail and calendar reads go through the mediator as usual; a mail write (a draft, an archive, a snooze) is recorded by the mediator and not executed, which is expected: make the call you would make and say what you did. There is no Agent tool and no email-author subagent here: an email body comes from `email_writer.py write` first, and when it exits 3 or 4 you write the body yourself by the guide at {BOT_TREE}/.claude/agents/email-author.md and docs/ea/drafting-voice.md, after `style_profiles.py get --contact <addr>`. Never write a file outside EA_DIR. Do not ask the user anything; this run is unattended. Your final message is {final}.
 
-Claims in your final message must match your command log. Say a draft, a reply or a Send card exists only after a `create-reply`, `create-draft` or `update-draft` call in this run returned an id, and name that id; otherwise say that nothing was staged and what blocked it. You never send, archive or close mail: a send waits for the user's button, an archive for the user's word, so never report either as done. Times for a meeting come from `scheduling_engine.py propose-meeting` run on the real request (`--help` is not a run); print every time in the user's time zone. A blocked turn ends with the exact items you need from the user. When a real photo or file cannot be fetched, say so and stop; never put a generated image or an invented fact in its place. A mail verb's own exit status and JSON are the only signal of its outcome: never list or read `state/mail-queue`, and never infer an outage from a file there; call the verb."""
+Claims in your final message must match your command log. Say a draft, a reply or a Send card exists only after a `create-reply`, `create-draft` or `update-draft` call in this run returned an id, and name that id; otherwise say that nothing was staged and what blocked it. You never send, archive or close mail: a send waits for the user's button, an archive for the user's word, so never report either as done. Times for a meeting come from `scheduling_engine.py propose-meeting` run on the real request (`--help` is not a run); print every time in the user's time zone. A blocked turn ends with the exact items you need from the user. When a real photo or file cannot be fetched, say so and stop; never put a generated image or an invented fact in its place. A mail verb's own exit status and JSON are the only signal of its outcome: never list or read `state/mail-queue`, and never infer an outage from a file there; call the verb. Never write an em-dash. A briefing names every open ledger row that is due, overdue or waiting on the user, and prints every time as the user's local clock with am or pm, never UTC."""
 
 
 # Patterns in a Codex reply that claim a draft or a send, and the write
@@ -561,7 +562,15 @@ Claims in your final message must match your command log. Say a draft, a reply o
 # the report counts it.
 _CLAIM_DRAFT = re.compile(r"\b(drafts? (is|are|was|were|created|ready|updated)|created (a|the|an|two|both) drafts?|"
                           r"send (card|button)|repl(y|ies) (is|are) ready|staged (a|the|an|two|both) (draft|reply|note|event))", re.I)
-_CLAIM_SENT = re.compile(r"\b(sent|archived|submitted)\b", re.I)
+# A send or an archive the assistant reports as its own doing. A third
+# party's ("Chris sent the wrap", "she submitted the form") is a fact.
+_CLAIM_SENT = re.compile(
+    r"(\bI(?:'ve| have)?(?: just| now| also)? (?:sent|archived|submitted)\b"
+    r"|\b(?:repl(?:y|ies)|e-?mails?|messages?|drafts?|notes?|threads?) (?:was|were|has been|have been|is|are|got)"
+    r"(?: now| already| just)? (?:sent|archived|submitted)\b"
+    r"|\b(?:sent|archived|submitted) (?:the|that|this|your|both|all|each|every) "
+    r"(?:repl(?:y|ies)|e-?mails?|messages?|drafts?|notes?|threads?)\b"
+    r"|^\W*(?:reply|email|draft|message) (?:sent|archived)\b)", re.I | re.M)
 _DRAFT_VERBS = {"create-reply", "create-draft", "update-draft"}
 
 
@@ -746,7 +755,8 @@ def run_job(job: dict, *, codex_run=None, scratch_runner=None, keep: bool = Fals
                         "exit_code": res.get("exit_code"), "harness_error": res.get("harness_error") or "",
                         "files": (res.get("files") or [])[:40], "model": job.get("model") or ""}
         rec["writes"] = _writes_for(rid)
-        rec["claims"] = claim_check(res.get("output") or "", rec["writes"])
+        # A briefing speaks of drafts and sends as facts; the check reads chat.
+        rec["claims"] = claim_check(res.get("output") or "", rec["writes"]) if kind == "chat" else {}
         rec["quota"] = quota_after(limits(fresh=True))
         rec["status"] = "ok" if not res.get("harness_error") else "error"
     except Exception as e:

@@ -360,11 +360,19 @@ def test_a_reply_that_claims_a_draft_without_a_write_is_a_mismatch_the_judge_see
     assert backed["draft_written"] and not backed["mismatch"]
     sent = cg.claim_check("Reply sent and the thread archived.", [{"verb": "create-reply", "argv": ["create-reply"]}])
     assert sent["sent_claimed"] and sent["mismatch"]
+    assert cg.claim_check("I sent the reply and archived the thread.", [])["sent_claimed"]
+    assert cg.claim_check("The reply was sent; both emails are archived.", [])["sent_claimed"]
+    for fact in ("Chris sent the committee wrap yesterday.", "She submitted the form on Monday.",
+                 "Kirsten's mail was archived by the filter.", "You archived that thread on Oct 20."):
+        assert not cg.claim_check(fact, [])["sent_claimed"], fact
+    import re as _re
+    assert any(_re.search(pat, "fix the poster logos", _re.I) for pat in cg.DEFAULT_SKIP), "poster turns are skipped"
     assert cg.claim_check("Nothing was staged; I need the amount.", [])["mismatch"] is False
     note = cg._harness_note({"claims": none}, {})
     assert "no create-reply" in note and note.startswith("(")
     assert cg._harness_note({"claims": backed}, {}) == ""
     text = cg.codex_suffix(Path("/x"), "chat")
+    assert "Never write an em-dash" in text and "never UTC" in text
     assert "returned an id" in text and "never report either as done" in text and "--help` is not a run" in text
     assert "never list or read `state/mail-queue`" in text
 
