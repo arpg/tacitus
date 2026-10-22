@@ -542,22 +542,6 @@ def test_dm_pointer_never_unfurls_the_block_it_points_at():
     assert "_CARDS.posted_at(card)" in guard and "FRONTEND.message_posted_at(card)" in guard
 
 
-if __name__ == "__main__":
-    failed = 0
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            try:
-                fn()
-                print(f"  ok  {name}")
-            except Exception as e:  # noqa: BLE001
-                failed += 1
-                import traceback
-                traceback.print_exc()
-                print(f"FAIL  {name}: {e!r}")
-    print(f"{'OVERALL: [FAIL]' if failed else 'OVERALL: [PASS]'} ({failed} failed)")
-    sys.exit(1 if failed else 0)
-
-
 def test_a_send_all_card_whose_drafts_were_handled_elsewhere_is_filed():
     """Every draft on the batch settled on its own card or in Outlook: the
     card gets its status line and is filed to the done stream, like the
@@ -579,3 +563,18 @@ def test_a_send_all_card_whose_drafts_were_handled_elsewhere_is_filed():
     assert lines == [("stream:6", "77", ":wastebasket: Every draft on this card was already handled.")]
     assert moved == [("stream:6", "77")], "the settled card is filed; the live one stays"
     assert saved and list(saved[-1]) == ["b-live"]
+
+if __name__ == "__main__":
+    failed = 0
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            try:
+                fn()
+                print(f"  ok  {name}")
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                import traceback
+                traceback.print_exc()
+                print(f"FAIL  {name}: {e!r}")
+    print(f"{'OVERALL: [FAIL]' if failed else 'OVERALL: [PASS]'} ({failed} failed)")
+    sys.exit(1 if failed else 0)

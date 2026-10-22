@@ -219,10 +219,6 @@ def test_the_codex_prompt_carries_the_core_and_the_shared_framing(tmp_path, monk
     assert captured["kw"]["env"]["EA_DIR"] == str(tmp_path)
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-q"]))
-
-
 def test_run_streams_each_event_when_asked_and_reads_the_same_result(tmp_path, monkeypatch):
     """With on_event the run is read line by line, every JSONL event handed
     over as it arrives, and the result is what the whole-read run gives."""
@@ -238,3 +234,6 @@ def test_run_streams_each_event_when_asked_and_reads_the_same_result(tmp_path, m
     assert res["output"] == ":sunny: *Morning Briefing*" and res["tool_calls"] and res["exit_code"] == 0
     assert any(e.get("type") == "item.completed" for e in seen), "the events arrived as they were printed"
     assert [e.get("type") for e in seen] == [json.loads(l)["type"] for l in EVENTS.splitlines() if l.strip()]
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))
