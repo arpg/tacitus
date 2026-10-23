@@ -208,6 +208,20 @@ class Gate:
         people.append(frm if isinstance(frm, str) else mail_privacy._addr(frm))
         return any(remote_llm.keep_reason(a, self.cfg) for a in people if a)
 
+    def record_fields(self, item: dict) -> dict | None:
+        """The remote record's fields (state, scheduling, offered_times, ask,
+        ...) for one message, or None when the gate is off, the message is
+        the user's own, or no good record exists yet."""
+        if not self.on:
+            return None
+        msg = self.msgs.get(item.get("message_id") or item.get("id") or "")
+        if msg is not None and self._own(msg):
+            return None
+        rec = self._record(item)
+        if not rec or rec.get("status") != "ok":
+            return None
+        return _record_fields(rec)
+
     def classify(self, item: dict) -> tuple[str, dict | None]:
         """(class, record): action | fyi | kept | own | pending | unread."""
         mid = item.get("message_id") or item.get("id") or ""

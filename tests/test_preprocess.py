@@ -467,5 +467,87 @@ def test_mail_row_kind_types_the_row_by_the_remote_record():
     assert set(MAIL_ROW_PREFIXES) == {"response-", "task-", "deadline-"}
 
 
+def test_a_record_that_accepts_an_offered_time_is_a_scheduling_request_even_after_the_user_wrote():
+    """The keyword pass skips a thread the user has written to, so an
+    acceptance of a time the user offered never surfaced. With the mail
+    gate on, the remote record's scheduling kind makes it a request: kind
+    "confirmation" with the accepted time; a message the user answered
+    afterwards is not one; a record of kind "none" adds nothing."""
+    from preprocessor.preprocess import _sched_description
+    inbox = [{
+        "id": "msg-accept-1", "conversationId": "conv-intro-1",
+        "subject": "Re: Intro", "receivedDateTime": "2026-10-22T22:53:00Z",
+        "bodyPreview": "Wed Nov 4, 2:45-3:15 PM MT is best; I probably just need 15 min.",
+        "from": {"emailAddress": {"address": "morgan.vasquez41@example.edu", "name": "Morgan"}},
+    }, {
+        "id": "msg-answered-1", "conversationId": "conv-old-1",
+        "subject": "Re: Coffee", "receivedDateTime": "2026-10-20T10:00:00Z",
+        "bodyPreview": "Tuesday at 2 works.",
+        "from": {"emailAddress": {"address": "flo.thornbury67@example.org", "name": "Flo"}},
+    }, {
+        "id": "msg-fyi-1", "conversationId": "conv-fyi-1",
+        "subject": "Notes", "receivedDateTime": "2026-10-22T12:00:00Z", "bodyPreview": "Here are the notes.",
+        "from": {"emailAddress": {"address": "sam.okafor12@example.org", "name": "Sam"}},
+    }]
+    sent = [{"conversationId": "conv-intro-1", "sentDateTime": "2026-10-21T22:32:00Z"},
+            {"conversationId": "conv-old-1", "sentDateTime": "2026-10-20T11:00:00Z"}]
+    records = {"msg-accept-1": {"state": "scheduling", "scheduling": "confirmation",
+                                "offered_times": ["2026-11-04T14:45:00-07:00"],
+                                "ask": "Confirm the Wed Nov 4 call and share the phone number."},
+               "msg-answered-1": {"state": "scheduling", "scheduling": "confirmation", "offered_times": ["2026-10-21T14:00:00-06:00"]},
+               "msg-fyi-1": {"state": "fyi", "scheduling": "none"}}
+
+    class Gate:
+        on = True
+        def record_fields(self, item):
+            return records.get(item.get("message_id"))
+    assert detect_scheduling_requests(inbox, sent) == [], "the keyword pass sees nothing here"
+    found = detect_scheduling_requests(inbox, sent, gate=Gate())
+    assert [r["message_id"] for r in found] == ["msg-accept-1"]
+    r = found[0]
+    assert r["kind"] == "confirmation" and r["offered_times"] == ["2026-11-04T14:45:00-07:00"]
+    assert r["from_record"] and "phone number" in r["ask"]
+    assert _sched_description("confirmation", "Re: Intro") == "Time accepted: Re: Intro"
+    assert _sched_description("proposes-times", "Re: Intro") == "Times proposed: Re: Intro"
+    assert _sched_description("new", "Coffee") == "Scheduling request: Coffee"
+
+    class Off:
+        on = False
+    assert detect_scheduling_requests(inbox, sent, gate=Off()) == []
+
+
+def test_a_closed_threads_row_reopens_on_a_newer_message():
+    """A needs-response row is keyed by the conversation; a second ask in a
+    thread whose row was closed found the id taken and was dropped. Now a
+    message newer than the close reopens the row on the new message, with
+    closure's reopen record; an older one leaves it closed."""
+    import sqlite3
+    from preprocessor import ledger as L
+    from preprocessor.preprocess import update_ledger_from_analysis
+    db = L._get_db()
+    db.execute("DELETE FROM ledger WHERE id = 'response-convreopen12'")
+    db.execute("""INSERT INTO ledger (id, type, status, description, from_email, source_message_id,
+                  conversation_id, date_identified, last_action, notes, metadata, created_at, updated_at, closed_at)
+                  VALUES ('response-convreopen12', 'response_needed', 'completed', 'Needs response: Re: Intro',
+                  'morgan.vasquez41@example.edu', 'msg-old', 'abcdconvreopen12', '2026-10-20T21:10:16Z',
+                  'Sent from Outlook', 'old ask', '{}', '2026-10-20T21:10:16Z', '2026-10-21T22:33:32Z', '2026-10-21T22:33:32Z')""")
+    db.commit(); db.close()
+    item = {"message_id": "msg-newer", "conversation_id": "abcdconvreopen12", "subject": "Re: Intro",
+            "from": "morgan.vasquez41@example.edu", "received": "2026-10-22T22:53:00Z",
+            "body_preview": "Wed Nov 4 is best."}
+    update_ledger_from_analysis([], [], [], needs_response=[item], scheduling_requests=None)
+    row = L.get_entry("response-convreopen12")
+    assert row["status"] == "open" and row["source_message_id"] == "msg-newer" and not row.get("closed_at")
+    assert "reopened" in (row["last_action"] or "")
+    meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else json.loads(row.get("metadata") or "{}")
+    assert row.get("reopened_at") or meta.get("reopened_at"), "closure's reopen record is on the row"
+    # an older message than the close changes nothing
+    db = L._get_db()
+    db.execute("UPDATE ledger SET status = 'completed', closed_at = '2026-10-23T00:00:00Z', source_message_id = 'msg-newer' WHERE id = 'response-convreopen12'")
+    db.commit(); db.close()
+    update_ledger_from_analysis([], [], [], needs_response=[dict(item, message_id="msg-stale", received="2026-10-22T23:00:00Z")])
+    assert L.get_entry("response-convreopen12")["status"] == "completed"
+
+
 if __name__ == "__main__":
     main()

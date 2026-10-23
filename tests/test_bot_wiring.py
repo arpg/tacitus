@@ -684,7 +684,7 @@ def test_proactive_scheduling_runs_the_reschedule_brief():
     queue is fed by the ten-minute intake as well as the hourly check."""
     tick = BOT_SRC[BOT_SRC.index("def _scheduling_proactive_tick("):BOT_SRC.index("def scheduling_proactive_loop(")]
     assert 'kind = req.get("kind") or "new"' in tick
-    assert "_proactive_scheduling_prompt(kind, name, subject, cid, mid)" in tick
+    assert "_proactive_scheduling_prompt(kind, name, subject, cid, mid," in tick
     prompt = BOT_SRC[BOT_SRC.index("def _proactive_scheduling_prompt("):BOT_SRC.index("def _scheduling_proactive_tick(")]
     assert "reschedule-brief --conversation-id" in prompt
     assert "pending-event-update.json" in prompt and "stage_reschedule" in prompt and "offer_options" in prompt
@@ -1188,6 +1188,20 @@ def test_raw_tool_markup_in_a_remote_turn_sends_it_back_to_claude():
     raw = ns["_raw_tool_markup"]
     assert raw('<tool_call>\n{"name": "Bash",\narguments": {"command": "ls"}}\n</tool_call>')
     assert raw("<function=Bash>") and not raw("Here is the owner portal address.") and not raw(None)
+
+
+def test_an_accepted_time_opens_a_scheduling_thread_that_stages_the_invite():
+    """A queued request of kind "confirmation" (the remote record: the other
+    side accepted a time the user offered) gets its own seed line and a
+    prompt that stages pending-event.json and the confirming reply."""
+    assert 'if kind == "confirmation":' in BOT_SRC
+    i = BOT_SRC.index('if kind == "confirmation":')
+    block = BOT_SRC[i:i + 2600]
+    for needle in ("accepted a time", "pending-event.json", "create-reply", "validate-draft",
+                   "Create and Send buttons", "stage nothing"):
+        assert needle in block, needle
+    assert "*Time accepted* by" in BOT_SRC, "the seed line names the acceptance"
+    assert 'offered_times=req.get("offered_times")' in BOT_SRC, "the tick hands the accepted time to the prompt"
 
 
 if __name__ == "__main__":

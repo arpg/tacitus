@@ -11,6 +11,7 @@ Usage:
 
 import argparse
 import json
+import sqlite3
 import os
 import re
 try:
@@ -1042,8 +1043,29 @@ def analyze_writing_style(sent: list) -> dict:
     }
 
 
-def detect_scheduling_requests(inbox: list, sent: list) -> list:
-    """Find emails that contain scheduling requests we haven't responded to."""
+# The remote record's scheduling kinds that make a request of the lane.
+# "confirmation" is the other side accepting a time the user offered: the
+# keyword pass never sees it (the user has written to that thread), and it
+# is the moment an invite and a confirming reply are due.
+RECORD_SCHED_KINDS = ("request", "proposes-times", "reschedule", "confirmation")
+
+
+def _sched_description(kind: str, subject: str) -> str:
+    lead = {"reschedule": "Reschedule request: ", "confirmation": "Time accepted: ",
+            "proposes-times": "Times proposed: "}.get(kind or "", "Scheduling request: ")
+    return lead + (subject or "")[:80]
+
+
+def detect_scheduling_requests(inbox: list, sent: list, gate=None) -> list:
+    """Find emails that contain scheduling requests we haven't responded to.
+
+    Two passes: the keyword list over the preview (a thread the user has
+    already written to is skipped there), then, with a mail gate, the
+    remote records: a message whose record says it is scheduling (an
+    acceptance of a time the user offered, times proposed back, a request
+    the list misses) is a request too, also in a thread the user has
+    written to, as long as it arrived after the user's last message there.
+    A record item carries the record's `offered_times` and `ask`."""
     sent_convs = {m.get("conversationId") for m in sent if m.get("conversationId")}
     requests_found = []
 
@@ -1072,6 +1094,42 @@ def detect_scheduling_requests(inbox: list, sent: list) -> list:
             "kind": classify_scheduling_kind(preview),
         })
 
+    if gate is not None and getattr(gate, "on", False):
+        sent_times: dict = {}
+        for m in sent:
+            cid = m.get("conversationId")
+            ts = m.get("sentDateTime") or m.get("receivedDateTime", "")
+            if cid and ts > sent_times.get(cid, ""):
+                sent_times[cid] = ts
+        have = {r["message_id"] for r in requests_found}
+        for m in inbox:
+            mid = m.get("id", "")
+            if not mid or mid in have:
+                continue
+            rec = gate.record_fields({"message_id": mid, "conversation_id": m.get("conversationId", "")})
+            if not rec or rec.get("scheduling") not in RECORD_SCHED_KINDS:
+                continue
+            conv = m.get("conversationId", "")
+            if conv and (m.get("receivedDateTime", "") or "") <= sent_times.get(conv, ""):
+                continue  # the user wrote after it: answered
+            from_addr = m.get("from", {}).get("emailAddress", {}).get("address", "")
+            if any(skip in from_addr.lower() for skip in ["noreply", "no-reply", "notifications"]):
+                continue
+            kind = rec.get("scheduling")
+            requests_found.append({
+                "message_id": mid,
+                "conversation_id": conv,
+                "subject": m.get("subject", ""),
+                "from": from_addr,
+                "from_name": m.get("from", {}).get("emailAddress", {}).get("name", ""),
+                "received": m.get("receivedDateTime", ""),
+                "body_preview": m.get("bodyPreview", "")[:500],
+                "kind": kind if kind in ("reschedule", "confirmation", "proposes-times") else "new",
+                "offered_times": [str(t) for t in (rec.get("offered_times") or [])],
+                "ask": str(rec.get("ask") or "")[:300],
+                "from_record": True,
+            })
+
     return requests_found
 
 
@@ -1087,15 +1145,17 @@ def register_new_scheduling_requests(scheduling: list) -> list:
     known_ids = _ledger_mod.get_all_source_message_ids()
     new = [s for s in scheduling if s["message_id"] not in known_ids]
     for s in new:
+        notes = s.get("body_preview", "")[:300]
+        if s.get("offered_times"):
+            notes = f"Times named: {', '.join(s['offered_times'][:6])}. " + (s.get("ask") or notes)
         _ledger_mod.add_entry(
             entry_id=f"sched-{s['message_id'][-12:]}",
             entry_type="scheduling",
-            description=(("Reschedule request: " if s.get("kind") == "reschedule"
-                          else "Scheduling request: ") + s["subject"][:80]),
+            description=_sched_description(s.get("kind"), s["subject"]),
             from_email=s.get("from", ""),
             from_name=s.get("from_name", ""),
             source_message_id=s["message_id"],
-            notes=s.get("body_preview", "")[:300],
+            notes=notes[:500],
         )
     return new
 
@@ -1813,6 +1873,44 @@ def mail_row_kind(item: dict) -> dict:
     return out
 
 
+def _reopen_mail_row_if_newer(entry_id: str, item: dict, kind: dict) -> bool:
+    """A thread's row is keyed by the conversation, so a second ask in a
+    thread whose row was closed found the id taken and was dropped. When
+    the new message arrived after the close, the row opens again on it:
+    the new source id, the new ask, and closure's reopen record (the
+    evidence that closed it does not close it again)."""
+    row = _ledger_mod.get_entry(entry_id)
+    if not row or row.get("status") not in ("completed", "closed"):
+        return False
+    closed_at = row.get("closed_at") or row.get("updated_at") or ""
+    received = item.get("received", "") or ""
+    if not received or received <= closed_at:
+        return False
+    try:
+        import closure
+        db = _ledger_mod._get_db()
+        db.row_factory = sqlite3.Row
+        sql_row = db.execute("SELECT * FROM ledger WHERE id = ?", (entry_id,)).fetchone()
+        try:
+            prior = json.loads(sql_row["metadata"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            prior = {}
+        meta = closure.note_reopen(db, sql_row, actor="intake", meta=prior)
+        now = _ledger_mod._now()
+        db.execute("""UPDATE ledger SET status = 'open', source_message_id = ?, description = ?,
+                      notes = ?, last_action = ?, metadata = ?, closed_at = NULL, email_archived = 0,
+                      updated_at = ? WHERE id = ?""",
+                   (item.get("message_id", ""), kind["description"], kind["notes"][:500],
+                    f"{now[:10]}: reopened, a new message after the close", json.dumps(meta), now, entry_id))
+        db.commit()
+        db.close()
+        print(f"  reopened {entry_id}: a new message arrived after its close", file=sys.stderr)
+        return True
+    except Exception as e:
+        print(f"  reopen of {entry_id} failed: {e}", file=sys.stderr)
+        return False
+
+
 def update_ledger_from_analysis(
     ledger: list,
     dropped_threads: list,
@@ -1839,6 +1937,7 @@ def update_ledger_from_analysis(
         kind = mail_row_kind(item)
         entry_id = f"{kind['prefix']}{key[-12:]}"
         if _ledger_mod.entry_exists(entry_id):
+            _reopen_mail_row_if_newer(entry_id, item, kind)
             continue
         # Skip if another mail row, a thread- or a sched- entry already
         # covers this conversation
@@ -2173,7 +2272,7 @@ def run_full_daily(force_full: bool = False) -> dict:
         "dropped_threads"))
     all_needs_resp = gate.items(suppress_closed_conversations(
         detect_needs_response(inbox, sent), "needs_response"))
-    all_scheduling = gate.items(detect_scheduling_requests(inbox, sent))
+    all_scheduling = gate.items(detect_scheduling_requests(inbox, sent, gate=gate))
     travel = detect_unreimbursed_travel(inbox, sent, calendar)
 
     # Filter to delta: only surface items never shown to the user before.
@@ -2555,7 +2654,7 @@ def run_scheduling_check() -> dict:
     working_hours = graph.get_working_hours()
 
     gate = _mail_gate(inbox, "scheduling-check")
-    scheduling = gate.items(detect_scheduling_requests(inbox, sent))
+    scheduling = gate.items(detect_scheduling_requests(inbox, sent, gate=gate))
     new_scheduling = register_new_scheduling_requests(scheduling)
     write_proactive_queue(new_scheduling)
 
@@ -2614,7 +2713,7 @@ def run_intake_check() -> dict:
     # the scheduling channel within minutes instead of at the next hourly
     # check. Same detector, same ledger dedupe, same queue merge.
     new_scheduling = register_new_scheduling_requests(
-        gate.items(detect_scheduling_requests(inbox, sent)))
+        gate.items(detect_scheduling_requests(inbox, sent, gate=gate)))
     queued = write_proactive_queue(new_scheduling)
     if new_scheduling:
         print(f"  Intake: {len(new_scheduling)} scheduling request(s) queued "
@@ -2753,7 +2852,7 @@ def run_full_weekly() -> dict:
             stale_days=PREPROCESSOR_CONFIG.get(
                 "stale_thread_days_weekly_audit", 2)),
         "dropped_threads"))
-    scheduling = gate.items(detect_scheduling_requests(inbox, sent))
+    scheduling = gate.items(detect_scheduling_requests(inbox, sent, gate=gate))
     needs_resp = gate.items(suppress_closed_conversations(
         detect_needs_response(inbox, sent), "needs_response"))
     travel = detect_unreimbursed_travel(inbox, sent, past_calendar)

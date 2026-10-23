@@ -6,6 +6,17 @@ repository that preceded it.
 
 ## Unreleased
 
+- **An accepted time becomes a scheduling turn.** The remote record's
+  scheduling kind now feeds the scheduling detector beside the keyword
+  list, also in a thread the user has written to: when the other side
+  accepts a time the user offered (kind `confirmation`), the proactive
+  queue opens a scheduling thread that checks the calendar, stages the
+  Create card and drafts the confirming reply. Times proposed back and
+  requests the keyword list misses come the same way.
+- **A closed thread's row reopens on a newer ask.** A needs-response row
+  is keyed by its conversation; a second ask in a thread whose row was
+  closed used to be dropped as a duplicate. A message newer than the
+  close reopens the row on it, with closure's reopen record.
 - **A built deck or poster attaches from where it was built.** The mail
   mediator's attach and download roots gain the deck workspace
   (`EA_DECKS_ROOT`, else the resident's `presentations/`) and
