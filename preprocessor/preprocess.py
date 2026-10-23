@@ -1101,11 +1101,14 @@ def detect_scheduling_requests(inbox: list, sent: list, gate=None) -> list:
             ts = m.get("sentDateTime") or m.get("receivedDateTime", "")
             if cid and ts > sent_times.get(cid, ""):
                 sent_times[cid] = ts
+        import mail_privacy as _mp
         have = {r["message_id"] for r in requests_found}
         for m in inbox:
             mid = m.get("id", "")
             if not mid or mid in have:
                 continue
+            if _mp.CALENDAR_RESPONSE_SUBJECT.match(m.get("subject") or ""):
+                continue  # Outlook's own meeting response, not an ask
             rec = gate.record_fields({"message_id": mid, "conversation_id": m.get("conversationId", "")})
             if not rec or rec.get("scheduling") not in RECORD_SCHED_KINDS:
                 continue

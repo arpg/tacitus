@@ -99,6 +99,10 @@ SENSITIVE_KINDS = ("none", "student-record", "personnel", "health", "letter",
                    "manuscript-review", "legal-financial", "admissions", "other")
 SCHED_KINDS = ("none", "request", "proposes-times", "reschedule", "booking-link",
                "poll", "confirmation", "cancellation")
+# Outlook's own meeting responses ("Accepted: <subject>"): the model reads
+# them as confirmations or requests, and they ask nothing of the user.
+CALENDAR_RESPONSE_SUBJECT = re.compile(
+    r"^\s*(?:accepted|tentative|tentatively accepted|declined|canceled|cancelled|new time proposed)\s*:", re.I)
 TONES = ("distress", "escalation", "withdrawal", "urgent", "complaint")
 STATES = ("needs-reply", "todo", "decide", "scheduling", "awaiting-reply", "fyi")
 DOMAINS = ("research", "service", "teaching", "professional", "personal")

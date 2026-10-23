@@ -488,6 +488,10 @@ def test_a_record_that_accepts_an_offered_time_is_a_scheduling_request_even_afte
         "id": "msg-fyi-1", "conversationId": "conv-fyi-1",
         "subject": "Notes", "receivedDateTime": "2026-10-22T12:00:00Z", "bodyPreview": "Here are the notes.",
         "from": {"emailAddress": {"address": "sam.okafor12@example.org", "name": "Sam"}},
+    }, {
+        "id": "msg-cal-1", "conversationId": "conv-cal-1",
+        "subject": "Accepted: Lab meeting", "receivedDateTime": "2026-10-22T12:30:00Z", "bodyPreview": "",
+        "from": {"emailAddress": {"address": "sam.okafor12@example.org", "name": "Sam"}},
     }]
     sent = [{"conversationId": "conv-intro-1", "sentDateTime": "2026-10-21T22:32:00Z"},
             {"conversationId": "conv-old-1", "sentDateTime": "2026-10-20T11:00:00Z"}]
@@ -495,7 +499,8 @@ def test_a_record_that_accepts_an_offered_time_is_a_scheduling_request_even_afte
                                 "offered_times": ["2026-11-04T14:45:00-07:00"],
                                 "ask": "Confirm the Wed Nov 4 call and share the phone number."},
                "msg-answered-1": {"state": "scheduling", "scheduling": "confirmation", "offered_times": ["2026-10-21T14:00:00-06:00"]},
-               "msg-fyi-1": {"state": "fyi", "scheduling": "none"}}
+               "msg-fyi-1": {"state": "fyi", "scheduling": "none"},
+               "msg-cal-1": {"state": "scheduling", "scheduling": "confirmation", "offered_times": ["2026-10-23T10:00:00-06:00"]}}
 
     class Gate:
         on = True
@@ -503,7 +508,7 @@ def test_a_record_that_accepts_an_offered_time_is_a_scheduling_request_even_afte
             return records.get(item.get("message_id"))
     assert detect_scheduling_requests(inbox, sent) == [], "the keyword pass sees nothing here"
     found = detect_scheduling_requests(inbox, sent, gate=Gate())
-    assert [r["message_id"] for r in found] == ["msg-accept-1"]
+    assert [r["message_id"] for r in found] == ["msg-accept-1"], "Outlook's Accepted: reply is not a request"
     r = found[0]
     assert r["kind"] == "confirmation" and r["offered_times"] == ["2026-11-04T14:45:00-07:00"]
     assert r["from_record"] and "phone number" in r["ask"]

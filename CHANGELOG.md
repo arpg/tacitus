@@ -6,6 +6,13 @@ repository that preceded it.
 
 ## Unreleased
 
+- **`sched_backtest.py`**: for the scheduling mail of the last N days
+  (the remote records' request, proposes-times, reschedule and
+  confirmation kinds), what reached the lane: a ledger row, a scheduling
+  thread, a card, and whether the user answered by hand. Owner-side; the
+  first run is the baseline for the scheduling work. The scheduling
+  detector's record pass skips Outlook's own "Accepted:" and "Tentative:"
+  replies, which the model labels as confirmations.
 - **An accepted time becomes a scheduling turn.** The remote record's
   scheduling kind now feeds the scheduling detector beside the keyword
   list, also in a thread the user has written to: when the other side
