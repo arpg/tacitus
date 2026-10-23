@@ -6,6 +6,11 @@ repository that preceded it.
 
 ## Unreleased
 
+- **`invite_eval.py`**: nightly, every invite the scheduling pipeline
+  staged is scored against the thread (the accepted time, phone or
+  video), the intent (duration, the sender on the event), the user's zone
+  and the calendar (created, and at the staged time). One line to the
+  health channel, the scores in the owner's store.
 - **The thread's own times decide an acceptance.** `sched_thread_state.py`
   reads the clock times in a thread with no model: the user's last message
   naming times is the offer, and the next inbound that names one of them
