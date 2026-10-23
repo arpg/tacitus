@@ -541,6 +541,11 @@ def _called_gmail_draft_tool(tool_calls) -> bool:
     return any((tc[0] if tc else "") in _GMAIL_DRAFT_TOOLS for tc in (tool_calls or []))
 
 
+# The email-author subagent's result is the body it wrote. The tool log
+# keeps it whole: draft_ab pairs a new draft with the call that wrote it
+# by that text, and a cut snippet would pair nothing.
+AUTHOR_RESULT_CHARS = 4000
+
 def _run_claude_streaming(
     claude_args: list[str],
     timeout: int = 600,
@@ -696,7 +701,11 @@ def _run_claude_streaming(
                                             gmail_draft_ids.append(gid)
                                 # A turn the backstop will review keeps
                                 # more of each result (result_chars).
-                                result_snippet = str(content)[:result_chars]
+                                keep = result_chars
+                                if tname in ("Agent", "Task") and isinstance(tfull, dict) \
+                                        and tfull.get("subagent_type") == "email-author":
+                                    keep = max(keep, AUTHOR_RESULT_CHARS)
+                                result_snippet = str(content)[:keep]
                                 # (name, elapsed, args_summary,
                                 # result_snippet, args_full_dict)
                                 tool_calls.append(

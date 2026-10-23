@@ -1142,7 +1142,9 @@ def test_the_gateway_environment_rides_on_the_sudo_command():
     assert 'for k, v in (extra_env or {}).items():\n        env_vars.append(f"{k}={v}")' in body
     runner = _fn_body("_run_claude_streaming")
     assert "cmd = _sudo_claude_cmd(args, run_id=run_id, extra_env=extra_env)" in runner
-    assert "result_snippet = str(content)[:result_chars]" in runner
+    assert "result_snippet = str(content)[:keep]" in runner
+    # the email-author result is kept whole: draft_ab pairs drafts by it
+    assert "keep = max(keep, AUTHOR_RESULT_CHARS)" in runner
 
 
 def test_the_arm_commands_and_outcome_hooks_are_wired():

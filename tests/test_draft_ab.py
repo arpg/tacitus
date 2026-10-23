@@ -56,9 +56,13 @@ class Rng:
         return self.v
 
 
-def _calls(prompt=PROMPT):
+HANDBACK = ("[Subagent hand-back] The text below is the final report of a subagent this "
+            "session spawned.\n\nHi Pat,\nYes, I will send the slides tonight.\nKit")
+
+
+def _calls(prompt=PROMPT, result=HANDBACK):
     return [("Bash", 1.0, "", "", {"command": "ls"}),
-            ("Agent", 30.0, "", "Hi Pat...", {"subagent_type": "email-author", "prompt": prompt})]
+            ("Agent", 30.0, "", result, {"subagent_type": "email-author", "prompt": prompt})]
 
 
 def _chat(text):
@@ -69,8 +73,45 @@ def _chat(text):
 
 
 def test_only_email_author_calls_take_part():
-    assert ab.author_calls(_calls()) == [{"prompt": PROMPT}]
+    assert ab.author_calls(_calls()) == [{"prompt": PROMPT, "result": HANDBACK}]
     assert ab.author_calls([("Agent", 1.0, "", "", {"subagent_type": "general-purpose", "prompt": "x"})]) == []
+
+
+def test_author_match_pairs_a_draft_with_the_text_it_holds():
+    body = "Hi Pat,\nYes, I will send the slides tonight.\nKit"
+    assert ab.author_match(HANDBACK, body) == 1.0                    # preamble, then the body
+    cut = ab.author_match("[Subagent hand-back] ...\n\nHi Pat,\nYes, I will send the", body)
+    assert ab.AUTHOR_MATCH <= cut < 1.0                               # cut short, still its text
+    other = ("Dear Dr. Lee,\nI heard your talk at the PI meeting last month. I advise a startup "
+             "building robots and would like to know when it would suit you for me to introduce "
+             "the team.\nBest,\nKit")
+    assert ab.author_match(other, body) < ab.AUTHOR_MATCH             # another email's text
+    assert ab.author_match("", body) == 0.0 and ab.author_match(HANDBACK, "") == 0.0
+
+
+def test_a_call_for_another_email_does_not_claim_the_writers_draft(store, monkeypatch):
+    """One run: the writer made the draft, and the subagent wrote a
+    different email (its contact has no address yet). The draft keeps its
+    body in both modes; the remote mode records it as the writer's."""
+    import email_writer
+    other_call = ("Agent", 30.0, "",
+                  "Dear Dr. Lee,\nI heard your talk at the PI meeting last month. I advise a "
+                  "startup building robots and would like to introduce the team.\nBest,\nKit",
+                  {"subagent_type": "email-author",
+                   "prompt": "Write a first email to Dr. Lee; the address is not known yet."})
+    monkeypatch.setattr(email_writer, "recent_bodies", lambda since: [
+        {"run_id": "run-9", "body": "Hi Pat,\nYes, I will send the slides tonight.\nKit",
+         "recipient_domain": "example.edu"}])
+    g = Graph()
+    chat = _chat("Dear Dr. Lee,\n\nI enjoyed your talk.\n\nBest,\nKit")
+    assert ab.assign("m1", [other_call], run_id="run-9", graph=g, chat=chat, rng=Rng(0.1),
+                     background=False) == {}
+    assert g.updates == [] and ab.assignment("m1") is None
+    owner_trust.write_owner_file(store / rl.CONFIG_FILE, json.dumps(
+        {"endpoint": "https://llm.example.edu/v1", "model": "m-1", "drafting": "remote"}).encode(),
+        mode=0o600)
+    rec = ab.assign("m2", [other_call], run_id="run-9", graph=g, chat=chat, background=False)
+    assert rec["mode"] == "writer" and rec["qwen_body"].startswith("Hi Pat") and g.updates == []
 
 
 def test_own_text_cuts_the_quoted_thread():

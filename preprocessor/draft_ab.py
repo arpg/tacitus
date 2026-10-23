@@ -4,8 +4,11 @@ email body, chosen at random and blind, and the user's edits before
 sending are the score (docs/remote-llm.md, "Drafting A/B").
 
 Only drafts whose body came from the `email-author` subagent in a bot
-run take part: that call's prompt is the context both writers get. For a
-draft drawn to the remote arm, the remote model receives what the
+run take part: that call's prompt is the context both writers get. A
+draft is paired with the call whose returned text it holds
+(`author_match`); a draft the writer (`email_writer.py`) made in a run
+that also called the subagent for another email is the writer's draft
+and keeps its body. For a draft drawn to the remote arm, the remote model receives what the
 subagent receives: its instructions (.claude/agents/email-author.md),
 the recipient's style profile and the voice guide it would have read
 with its tools, the caller's prompt, and the text of any file that
@@ -35,6 +38,7 @@ import json
 import os
 import random
 import re
+import string
 import sys
 import threading
 import time
@@ -111,6 +115,13 @@ def _words(text: str) -> list[str]:
     return re.findall(r"\S+", text or "")
 
 
+_PUNCT = string.punctuation + "\u201c\u201d\u2018\u2019\u2026"
+
+
+def _norm_words(text: str) -> list[str]:
+    return [w for w in (x.strip(_PUNCT).lower() for x in _words(text)) if w]
+
+
 def edit_ratio(shown: str, sent: str) -> float:
     """1 minus the word-level similarity of the two texts: 0 is untouched,
     1 is rewritten."""
@@ -120,10 +131,26 @@ def edit_ratio(shown: str, sent: str) -> float:
     return round(1 - difflib.SequenceMatcher(None, a, b, autojunk=False).ratio(), 4)
 
 
+AUTHOR_MATCH = 0.6
+
+
+def author_match(result: str, body: str) -> float:
+    """The share of a draft's own words that the subagent's returned text
+    holds in order: 1 when that text is the body, near 0 when it is
+    another email's. The result may carry a hand-back preamble or be cut
+    short; the matched words count, the rest of the result does not."""
+    rw, bw = _norm_words(result), _norm_words(body)
+    if not rw or not bw:
+        return 0.0
+    sm = difflib.SequenceMatcher(None, bw, rw, autojunk=False)
+    return round(sum(b.size for b in sm.get_matching_blocks()) / len(bw), 4)
+
+
 # ── the context the email-author subagent gets ────────────────────────
 
 def author_calls(tool_calls) -> list[dict]:
-    """The email-author calls of one run: [{prompt}], in order."""
+    """The email-author calls of one run: [{prompt, result}], in order.
+    `result` is the text the subagent returned, the body it wrote."""
     out = []
     for t in tool_calls or []:
         name = t[0] if t else ""
@@ -131,7 +158,7 @@ def author_calls(tool_calls) -> list[dict]:
         if name in ("Agent", "Task") and args.get("subagent_type") == "email-author":
             prompt = str(args.get("prompt") or "")
             if prompt.strip():
-                out.append({"prompt": prompt})
+                out.append({"prompt": prompt, "result": str(t[3] or "") if len(t) > 3 else ""})
     return out
 
 
@@ -285,14 +312,15 @@ def remote_body(prompt: str, recipient: str, *, chat=None, messages: list[dict] 
 # ── assignment, at draft time ─────────────────────────────────────────
 
 def _pick_call(calls: list[dict], claude_text: str) -> dict | None:
-    if not calls:
+    """The email-author call that wrote this draft: the one whose returned
+    text the body holds (author_match at or above AUTHOR_MATCH). None when
+    no call did: the body came from the writer, or Claude wrote it itself,
+    and a call for another email in the same run must not claim it."""
+    scored = [(author_match(c.get("result", ""), claude_text), c) for c in calls]
+    if not scored:
         return None
-    if len(calls) == 1:
-        return calls[0]
-    # Several drafts in one run: the call whose prompt shares the most
-    # words with the body Claude wrote from it.
-    words = set(_words(claude_text.lower()))
-    return max(calls, key=lambda c: len(words & set(_words(c["prompt"].lower()))))
+    score, call = max(scored, key=lambda s: s[0])
+    return call if score >= AUTHOR_MATCH else None
 
 
 def prompt_recipient(prompt: str) -> str:
@@ -344,21 +372,25 @@ def assign(draft_id: str, tool_calls, *, run_id: str = "", thread_ts: str = "",
     """Give one new Outlook draft its writer and, for the remote one, put
     the remote body in it: drawn in the `ab` mode, always the remote model
     in the `remote` mode. Returns the assignment record (also stored).
-    Never raises; with the switch off or no email-author call in the run,
-    returns {} and touches nothing."""
+    Never raises; with the switch off, or no email-author call whose text
+    this draft holds, returns {} and touches nothing (the remote mode
+    records the writer's own draft, see note_writer_draft)."""
     try:
         cfg = remote_llm.config()
         m = mode(cfg)
         if m == "off":
             return {}
         calls = author_calls(tool_calls)
-        if not calls:
-            return note_writer_draft(draft_id, run_id, thread_ts, graph=graph) if m == "remote" else {}
+        if not calls and m != "remote":
+            return {}
         if graph is None:
             import graph_client as graph
         msg = graph.get_message_full(draft_id)
         claude_text = own_text(msg)
         call = _pick_call(calls, claude_text)
+        if call is None:
+            return (note_writer_draft(draft_id, run_id, thread_ts, graph=graph, msg=msg)
+                    if m == "remote" else {})
         recipient = _recipient(msg, call["prompt"])
         arm = "qwen" if m == "remote" or (rng or random).random() < _share(cfg) else "claude"
         rec = {"ts": _now_iso(), "draft_id": draft_id, "run_id": run_id, "thread_ts": thread_ts,
@@ -398,7 +430,8 @@ def assign(draft_id: str, tool_calls, *, run_id: str = "", thread_ts: str = "",
 WRITER_MATCH = 0.6
 
 
-def note_writer_draft(draft_id: str, run_id: str, thread_ts: str = "", *, graph=None) -> dict:
+def note_writer_draft(draft_id: str, run_id: str, thread_ts: str = "", *, graph=None,
+                      msg: dict | None = None) -> dict:
     """A draft whose body came from the remote writer (email_writer.py):
     recorded as mode `writer` so the send measure covers it. It is matched
     to the writer's record of this run by text. Never raises."""
@@ -409,9 +442,10 @@ def note_writer_draft(draft_id: str, run_id: str, thread_ts: str = "", *, graph=
                   if not run_id or b.get("run_id") == run_id]
         if not bodies:
             return {}
-        if graph is None:
-            import graph_client as graph
-        msg = graph.get_message_full(draft_id)
+        if msg is None:
+            if graph is None:
+                import graph_client as graph
+            msg = graph.get_message_full(draft_id)
         text = own_text(msg)
         best = min(bodies, key=lambda b: edit_ratio(b["body"], text))
         if 1 - edit_ratio(best["body"], text) < WRITER_MATCH:

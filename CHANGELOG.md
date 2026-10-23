@@ -6,6 +6,13 @@ repository that preceded it.
 
 ## Unreleased
 
+- **Drafting A/B pairs a draft with the call that wrote it.**
+  `draft_ab.assign` took any `email-author` call in the run as the writer
+  of every new Outlook draft: a draft the remote writer made, in a run
+  that also called the subagent for a different email, had that other
+  email's body put in it before the Send card. The pairing now requires
+  the subagent's returned text in the draft (`author_match`), and the
+  bot keeps that text whole in the tool log.
 - **`invite_eval.py`**: nightly, every invite the scheduling pipeline
   staged is scored against the thread (the accepted time, phone or
   video), the intent (duration, the sender on the event), the user's zone
