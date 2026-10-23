@@ -2759,11 +2759,6 @@ def _tools_block(body_file: str, needed_modules: set[str] | None = None) -> str:
   multi-step workflow is gone — `propose-meeting` does it all in one
   call.
 
-  ABSOLUTE PATHS ONLY: always
-  `python3 /home/ea-bot/ea-system/preprocessor/scheduling_engine.py …`.
-  Never relative — the allowlist rejects relative paths and you'll
-  burn a turn for nothing.
-
   DATE HYGIENE: if the user names a weekday + day-of-month (e.g.
   "Tue May 27"), VERIFY before acting:
   `date -d "2026-05-27"` → if it prints "Wed", that combination is
@@ -2781,6 +2776,18 @@ def _tools_block(body_file: str, needed_modules: set[str] | None = None) -> str:
   pending-event-update.json or pending-event-delete.json.
 """ if _USER_GOOGLE_CALENDARS else "")
     return f"""Tools available:
+- COMMAND SHAPE (every lane): the Bash allowlist matches the literal
+  command line. One script per Bash call, always as
+  `python3 {sd}/preprocessor/<script>.py ...`. A `cd`, a `;`, a `&&`, a
+  relative path, a `~`, a bare `python`, a shell variable, a loop or a
+  `$(...)` matches nothing and is refused. Read a script's JSON with jq
+  in its own call.
+  A refusal reads "Permission to use Bash has been denied because Claude
+  Code is running in don't ask mode". That is a command-shape error on
+  the one call, never a lane outage: rewrite the command in the shape
+  above and run it again. Do not report to the user that shell access is
+  gone, do not spawn an agent to audit permissions, and do not touch
+  ~/.claude/settings.json; those are dead ends in this subprocess.
 - Read/Write/Edit files
 - Bash(python3 {sd}/preprocessor/graph_actions.py <cmd>) for Outlook:
   create-draft, create-reply, update-draft, delete-draft, preflight-check,
@@ -11323,15 +11330,20 @@ SAFETY:
 {_STYLE_RULES}
 
 PATHS:
-All ea-system scripts live at /home/ea-bot/ea-system/preprocessor/ —
-always use absolute paths, NEVER ~/.ea/preprocessor/... (which does not
-exist and is not in the tool allowlist).
+All ea-system scripts live at /home/ea-bot/ea-system/preprocessor/. Every
+Bash call is one script on its absolute path, never ~/.ea/preprocessor/...
+(which does not exist), never `cd` plus a relative name, never two
+commands joined with `;` or `&&`.
 
-If a Bash command is blocked with "requires approval":
-- Retry with the absolute /home/ea-bot/ea-system/preprocessor/ path.
-- Do NOT invoke permission-diagnosis skills, spawn sub-Agents to audit
-  permissions, or try to edit ~/.claude/settings.json. Those paths are
-  dead ends in this subprocess and waste the turn budget.
+If a Bash call comes back "Permission to use Bash has been denied because
+Claude Code is running in don't ask mode":
+- The shape of that one command was wrong. Rewrite it as
+  `python3 /home/ea-bot/ea-system/preprocessor/<script>.py ...` and run
+  it again. The lane's shell is not gone; the other scripts still run.
+- Do NOT tell the user that shell access was denied, invoke
+  permission-diagnosis skills, spawn sub-Agents to audit permissions, or
+  try to edit ~/.claude/settings.json. Those paths are dead ends in this
+  subprocess and waste the turn budget.
 
 EFFICIENCY RULE — TURN BUDGET:
 You have a STRICT budget of 8 tool-call turns.
