@@ -30,10 +30,10 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-DEFAULT_TZ = "America/Denver"
-
-
 def _tz(name: str | None = None) -> ZoneInfo:
+    """The user's zone: the name given, else the scheduling agent's
+    default, which comes from the install's config."""
+    from sched_agent import DEFAULT_TZ
     try:
         return ZoneInfo(name or os.environ.get("EA_TZ") or DEFAULT_TZ)
     except Exception:
