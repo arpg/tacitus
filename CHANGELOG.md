@@ -6,6 +6,13 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The thread's own times decide an acceptance.** `sched_thread_state.py`
+  reads the clock times in a thread with no model: the user's last message
+  naming times is the offer, and the next inbound that names one of them
+  is an acceptance, other times a counter. The scheduling detector runs
+  it as a third pass over the Sent mail (bodies) and the inbox, so an
+  accepted offer reaches the lane even when the remote record is missing
+  or wrong, and the record pass's time is checked against the offer.
 - **`sched_backtest.py`**: for the scheduling mail of the last N days
   (the remote records' request, proposes-times, reschedule and
   confirmation kinds), what reached the lane: a ledger row, a scheduling

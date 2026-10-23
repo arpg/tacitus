@@ -1056,7 +1056,18 @@ def _sched_description(kind: str, subject: str) -> str:
     return lead + (subject or "")[:80]
 
 
-def detect_scheduling_requests(inbox: list, sent: list, gate=None) -> list:
+def _sent_with_bodies(days: int = 14) -> list:
+    """The user's Sent mail with bodies, for the thread-state pass: an
+    offer of times is longer than a preview. Empty when Graph is not
+    reachable; the pass then finds nothing and the record pass stands."""
+    try:
+        return graph.get_sent(days_back=days, full_body=True)
+    except Exception as e:
+        print(f"  sent bodies not read ({e}); the thread-state pass is skipped", file=sys.stderr)
+        return []
+
+
+def detect_scheduling_requests(inbox: list, sent: list, gate=None, sent_full: list | None = None) -> list:
     """Find emails that contain scheduling requests we haven't responded to.
 
     Two passes: the keyword list over the preview (a thread the user has
@@ -1065,9 +1076,17 @@ def detect_scheduling_requests(inbox: list, sent: list, gate=None) -> list:
     acceptance of a time the user offered, times proposed back, a request
     the list misses) is a request too, also in a thread the user has
     written to, as long as it arrived after the user's last message there.
-    A record item carries the record's `offered_times` and `ask`."""
+    A record item carries the record's `offered_times` and `ask`.
+
+    A third pass needs no model: where the user's own last message in a
+    thread names clock times (sched_thread_state), an inbound after it
+    that names one of them is an acceptance (kind "confirmation", the one
+    time) and one that names other times is a counter ("proposes-times").
+    `sent_full` is the Sent mail with bodies; with a gate and none given
+    it is fetched once."""
     sent_convs = {m.get("conversationId") for m in sent if m.get("conversationId")}
     requests_found = []
+    import mail_privacy as _mp
 
     for m in inbox:
         preview = (m.get("bodyPreview", "") + " " + m.get("subject", "")).lower()
@@ -1101,7 +1120,6 @@ def detect_scheduling_requests(inbox: list, sent: list, gate=None) -> list:
             ts = m.get("sentDateTime") or m.get("receivedDateTime", "")
             if cid and ts > sent_times.get(cid, ""):
                 sent_times[cid] = ts
-        import mail_privacy as _mp
         have = {r["message_id"] for r in requests_found}
         for m in inbox:
             mid = m.get("id", "")
@@ -1131,6 +1149,45 @@ def detect_scheduling_requests(inbox: list, sent: list, gate=None) -> list:
                 "offered_times": [str(t) for t in (rec.get("offered_times") or [])],
                 "ask": str(rec.get("ask") or "")[:300],
                 "from_record": True,
+            })
+
+    if gate is not None and sent_full is None:
+        sent_full = _sent_with_bodies()
+    if sent_full:
+        import sched_thread_state as _sts
+        offers = _sts.offers_from_sent(sent_full)
+        have = {r["message_id"]: r for r in requests_found}
+        for m in inbox:
+            mid, conv = m.get("id", ""), m.get("conversationId", "")
+            offer = offers.get(conv)
+            if not mid or not offer or (m.get("receivedDateTime", "") or "") <= offer["at"]:
+                continue
+            if _mp.CALENDAR_RESPONSE_SUBJECT.match(m.get("subject") or ""):
+                continue
+            from_addr = m.get("from", {}).get("emailAddress", {}).get("address", "")
+            if any(skip in from_addr.lower() for skip in ["noreply", "no-reply", "notifications"]):
+                continue
+            state, picks, others = _sts.classify_reply(m.get("bodyPreview", "") or "", offer["times"])
+            if state == "accepted":
+                kind, times, note = "confirmation", [picks[0]["start"]], f"Accepted {picks[0]['start']}, one of the times the user offered."
+            elif state in ("counter", "several"):
+                kind, times, note = "proposes-times", [t["start"] for t in (picks + others)], "Named other times than the user offered."
+            else:
+                continue
+            prior = have.get(mid)
+            if prior is not None:
+                # The record pass found it too: the thread's own times win,
+                # and the two agree or the item says they do not.
+                prior["offered_times"] = times
+                prior["kind"] = kind
+                prior["offered_match"] = (state == "accepted")
+                continue
+            requests_found.append({
+                "message_id": mid, "conversation_id": conv, "subject": m.get("subject", ""),
+                "from": from_addr, "from_name": m.get("from", {}).get("emailAddress", {}).get("name", ""),
+                "received": m.get("receivedDateTime", ""), "body_preview": m.get("bodyPreview", "")[:500],
+                "kind": kind, "offered_times": times, "ask": note, "from_state": True,
+                "offered_match": state == "accepted",
             })
 
     return requests_found

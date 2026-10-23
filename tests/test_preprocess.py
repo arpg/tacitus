@@ -518,7 +518,50 @@ def test_a_record_that_accepts_an_offered_time_is_a_scheduling_request_even_afte
 
     class Off:
         on = False
-    assert detect_scheduling_requests(inbox, sent, gate=Off()) == []
+    assert detect_scheduling_requests(inbox, sent, gate=Off(), sent_full=[]) == []
+
+
+def test_the_threads_own_times_make_an_acceptance_a_request_without_a_record():
+    """No model: the user's Sent message names three times, the inbound
+    preview names one of them, so it is a confirmation with that time; a
+    reply naming other times is a counter; the record pass's item for the
+    same message takes the thread's times."""
+    offer = ("Hi Morgan, The week of Nov 2 works. Here are three 30-minute slots: - Mon Nov 2, 2:30-3:00 PM MT "
+             "- Tue Nov 3, 10:45-11:15 AM MT - Wed Nov 4, 2:45-3:15 PM MT By phone or Zoom. Kit")
+    sent_full = [{"conversationId": "conv-intro-1", "sentDateTime": "2026-10-21T22:32:00Z",
+                  "from": {"emailAddress": {"address": "kit.calloway@example.edu"}}, "body": {"content": offer}}]
+    inbox = [{
+        "id": "msg-accept-2", "conversationId": "conv-intro-1",
+        "subject": "Re: Intro", "receivedDateTime": "2026-10-22T22:53:00Z",
+        "bodyPreview": "Wed Nov 4, 2:45-3:15 PM MT is best; I probably just need 15 min.",
+        "from": {"emailAddress": {"address": "morgan.vasquez41@example.edu", "name": "Morgan"}},
+    }, {
+        "id": "msg-counter-2", "conversationId": "conv-intro-1",
+        "subject": "Re: Intro", "receivedDateTime": "2026-10-22T23:10:00Z",
+        "bodyPreview": "Actually, could we do Thu Nov 5 at 9:00 AM MT instead?",
+        "from": {"emailAddress": {"address": "morgan.vasquez41@example.edu", "name": "Morgan"}},
+    }, {
+        "id": "msg-before-2", "conversationId": "conv-intro-1",
+        "subject": "Re: Intro", "receivedDateTime": "2026-10-20T21:05:00Z",
+        "bodyPreview": "Is next week doable? Mon Nov 2 2:30 PM MT maybe",
+        "from": {"emailAddress": {"address": "morgan.vasquez41@example.edu", "name": "Morgan"}},
+    }]
+    found = {r["message_id"]: r for r in detect_scheduling_requests(inbox, [], gate=None, sent_full=sent_full)}
+    assert set(found) == {"msg-accept-2", "msg-counter-2"}, "the message before the offer is not a reply to it"
+    a = found["msg-accept-2"]
+    assert a["kind"] == "confirmation" and a["offered_times"] == ["2026-11-04T14:45:00-07:00"]
+    assert a["from_state"] and a["offered_match"] and "one of the times the user offered" in a["ask"]
+    c = found["msg-counter-2"]
+    assert c["kind"] == "proposes-times" and c["offered_times"] == ["2026-11-05T09:00:00-07:00"] and not c["offered_match"]
+
+    class Gate:
+        on = True
+        def record_fields(self, item):
+            return {"state": "scheduling", "scheduling": "confirmation",
+                    "offered_times": ["2026-11-04T14:00:00-07:00"]} if item["message_id"] == "msg-accept-2" else None
+    both = {r["message_id"]: r for r in detect_scheduling_requests(inbox, [], gate=Gate(), sent_full=sent_full)}
+    assert both["msg-accept-2"]["from_record"] and both["msg-accept-2"]["offered_times"] == ["2026-11-04T14:45:00-07:00"]
+    assert both["msg-accept-2"]["offered_match"] is True, "the thread's own time corrects the record's"
 
 
 def test_a_closed_threads_row_reopens_on_a_newer_message():
