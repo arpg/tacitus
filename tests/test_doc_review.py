@@ -225,6 +225,31 @@ def test_fetch_update_and_purge_follow_the_pr(env, tmp_path):
         dr.cmd_update(gh, 1, str(out), "late")
 
 
+def test_fetch_reads_a_merged_pr_at_its_merge_commit(env, tmp_path):
+    """GitHub deletes the review branch on merge; fetch and purge then read
+    the file at the merge commit, which stays on main."""
+    gh = FakeGitHub()
+    draft = _draft(env, "One. Two!")
+    dr.cmd_open(gh, str(draft), "Notes", slug="notes")
+    _run("git", "fetch", "-q", "origin", cwd=env["seed"])
+    _run("git", "checkout", "-q", "main", cwd=env["seed"])
+    _run("git", "merge", "-q", "--no-ff", "-m", "Merge notes", "origin/review/notes",
+         cwd=env["seed"])
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=env["seed"], capture_output=True,
+                         text=True, check=True).stdout.strip()
+    _run("git", "push", "-q", "origin", "main", cwd=env["seed"])
+    _run("git", "push", "-q", "origin", "--delete", "review/notes", cwd=env["seed"])
+    gh.pulls[1].update({"merged": True, "state": "closed", "merge_commit_sha": sha})
+    out = tmp_path / "merged.md"
+    res = dr.cmd_fetch(gh, 1, str(out))
+    assert res["state"] == "merged" and out.read_text() == "One.\nTwo!\n"
+    assert dr.cmd_purge(gh, 1, str(draft))["status"] == "purged" and not draft.exists()
+    # an open row whose branch is gone still fails, in one line
+    gh.pulls[1].update({"merged": False, "state": "open", "merge_commit_sha": None})
+    with pytest.raises(dr.ReviewError, match="git fetch"):
+        dr.cmd_fetch(gh, 1, str(out))
+
+
 def test_update_never_forces_over_a_newer_push(env, tmp_path, monkeypatch):
     gh = FakeGitHub()
     dr.cmd_open(gh, str(_draft(env, "One.\n")), "Race")

@@ -275,6 +275,22 @@ def _remote_text(branch: str, path: str) -> str:
     return _git("cat-file", "blob", f"origin/{branch}:{path}")
 
 
+def _merged_text(merge_commit: str, path: str) -> str:
+    """The file as the merge commit holds it. GitHub deletes a review
+    branch on merge, so a merged pull request is read at its merge commit,
+    which stays on main."""
+    _git("fetch", "-q", remote_url(), merge_commit)
+    return _git("cat-file", "blob", f"{merge_commit}:{path}")
+
+
+def _row_text(row: dict) -> str:
+    """The pull request's current text: its branch while open, its merge
+    commit once merged."""
+    if row.get("state") == "merged" and row.get("merge_commit"):
+        return _merged_text(row["merge_commit"], row["path"])
+    return _remote_text(row["branch"], row["path"])
+
+
 def _commit_and_push(branch: str, start: str, path: str, text: str, message: str) -> str:
     """Write the file on `branch` (created from `start`, the branch as GitHub
     has it), commit and push. A push that GitHub refuses, because the branch
@@ -437,6 +453,7 @@ def _entry(gh: GitHub, pr: int) -> dict:
     row["url"] = info.get("html_url") or row.get("url", "")
     row["title"] = info.get("title") or row.get("title", "")
     row["state"] = "merged" if info.get("merged") else str(info.get("state") or "")
+    row["merge_commit"] = str(info.get("merge_commit_sha") or row.get("merge_commit") or "")
     if not row.get("path"):
         files = gh.rest("GET", _repo_path(f"/pulls/{int(pr)}/files"))
         mds = [f.get("filename") for f in files if str(f.get("filename", "")).endswith(".md")]
@@ -515,7 +532,7 @@ def cmd_open(gh: GitHub, file: str, title: str, slug: str = "", thread: str = ""
 
 def cmd_fetch(gh: GitHub, pr: int, out: str) -> dict:
     row = _entry(gh, pr)
-    text = _remote_text(row["branch"], row["path"])
+    text = _row_text(row)
     Path(out).write_text(text)
     return {"status": "fetched", "pr": pr, "path": row["path"],
             "bytes": len(text.encode("utf-8")), "out": out, "state": row["state"]}
@@ -538,7 +555,7 @@ def cmd_purge(gh: GitHub, pr: int, file: str) -> dict:
     """Delete the EA's local draft once the PR holds the same text."""
     draft = _draft_path(file)
     row = _entry(gh, pr)
-    if _remote_text(row["branch"], row["path"]) != _prepared(str(draft)):
+    if _row_text(row) != _prepared(str(draft)):
         raise ReviewError(f"PR #{pr} does not hold this file's text; nothing deleted")
     draft.unlink()
     return {"status": "purged", "pr": pr, "file": str(draft)}

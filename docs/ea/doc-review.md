@@ -66,8 +66,9 @@ review.
   the thread when the user merges.
 - Your replies on GitHub are in the assistant voice (Simplified Technical
   English). The document itself is in the user's voice.
-- One pull request per document. To review a merged document again, open a new
-  review with another `--slug`.
+- One pull request per document. `fetch --pr <n>` reads a merged document
+  too, at its merge commit; the branch is gone after the merge. To review a
+  merged document again, open a new review with another `--slug`.
 - `status` lists the open reviews, with the threads left and the last review.
 - "github.json names no doc_review.repo" (or no `doc_review.owner_login`):
   the config is incomplete. Tell the user; SETUP.md has the keys.
