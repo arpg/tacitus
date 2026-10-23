@@ -1599,11 +1599,12 @@ prevent. The judge needs no fallback: it only ever sees records.
 The health line each morning:
 
 ```text
-:broom: Reconcile: 196 rows in 28 groups; 3 look done (on the morning card); 11 notes; 4 rows given their thread; 43 rows placed in projects; $2.80.
+:broom: Reconcile: 113 rows in 28 groups; 3 look done (on the morning card); 27 notes; 5 rows given their thread; 43 rows placed in projects; $2.24.
 ```
 
-The first night's dry run on the live ledger: 28 groups, about nine
-seconds and eleven cents per group. The run record
+That is the first real pass on the live ledger (2026-10-23): 218
+seconds, one row skipped by the user's veto, no group failed. Plugin
+rows are not read; a plugin's rows are its own. The run record
 (`<private>/remote-llm/reconcile.jsonl`) holds counts and the touched
 row ids, never text. `run --dry-run` judges and writes nothing;
 `run --project <id>` does one project.

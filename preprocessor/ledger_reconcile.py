@@ -413,7 +413,7 @@ You get one group of open ledger rows ({group}) and, for each, what the mail sho
 For every row, by its ref, answer:
 - verdict: "done" when the thread shows the row's work happened (he replied to the person who asked, the thing was sent, the meeting was placed, the question was answered); "duplicate" when another row in this group (give `of`) carries the same work; else "open". Never say done because time passed, and never because the row's note sounds finished: the thread must show it.
 - thread: for a row with candidate threads, the T ref that is the row's own thread, or "" when none is. A thread that merely mentions the topic is not the row's thread.
-- note: one sentence, at most {note_chars} characters, on what the mail shows that the row's last_action does not: a reply arrived, the date moved, the thing was sent, who now owns it. Empty when nothing new happened or the last_action already says it; never write "nothing new". Plain words, no em-dash, no advice.
+- note: one sentence, at most {note_chars} characters, on what the mail shows that the row's last_action does not: a reply arrived, the date moved, the thing was sent, who now owns it. Empty when nothing new happened, when the last_action already says it, or when the thread is kept (counts only); never write "nothing new" or that content is not visible. Plain words, no em-dash, no advice.
 - why: one short sentence for a done or duplicate verdict, naming the message (date and who) that shows it.
 
 Answer with a JSON array of objects {{"ref", "verdict", "of", "thread", "note", "why"}}, one per row, no other text.
