@@ -56,3 +56,25 @@ a morning queue whose top three items were already done):
    /home/ea-bot/ea-system/preprocessor/item_feedback.py --id <id> --kind
    done|not_mine|snooze|still_open [--note "..."] [--until YYYY-MM-DD]
    --source chat`.
+
+## The nightly reconcile
+
+`preprocessor/ledger_reconcile.py` runs at 01:30 as the owner. It
+judges every open row against the remote model's thread records, one
+Claude call per project, and never sees message text. What it writes:
+
+- A close proposal (`close_proposal`, signals `llm:reconcile` and
+  `llm:reconcile-duplicate`): the row looks done, or repeats another
+  row. It stays open until the user clicks the card. Treat it as any
+  proposal: never report it as closed.
+- A dated line on `last_action` ending in `(reconcile)`: what the mail
+  shows since the previous action.
+- `conversation_id` on a row that had none, when its own reply cannot
+  close it; on a reply row the thread is in the row's `reconcile`
+  metadata (`thread`). Read it before you search for the thread.
+- A project link and a filed thread, when the row's words name one
+  project clearly.
+
+If a reconcile note or link is wrong, say so in chat: the row's
+`reconcile` metadata names the group and the night.
+
