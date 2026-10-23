@@ -76,6 +76,7 @@ switched.
 | `briefing_audit` | `claude` `remote` | `claude` | The briefings' pre-send check: Claude decides whether each item the post shows is still open, from evidence with kept mail removed. The remote model answers when the Claude run fails. `remote` puts the verdict back on the remote model. |
 | `briefing_rooms` | `true` `false` | `true` | Each briefing item that belongs to a project with a room (`#ea-<project>`) is also posted there, one message per room in a new topic, with the project's other open rows; the EA post names those rooms in one line. Any chat frontend: rooms are posted through the frontend abstraction. |
 | `audits` | `off` `remote` | `off` | `remote`: the Sunday audit is written by the remote model (remote_audit.py), with flagged items handed to one Claude session. `off`: the Claude lane on skills/weekly-audit.md. |
+| `reconcile` | `off` `nightly` | `nightly` | `nightly`: every open ledger row is judged against the remote model's thread records once a night, one tool-less Claude call per project (ledger_reconcile.py, section 2.19). It proposes closes, appends notes, gives id-less rows their thread and places rows in projects; it never closes a row. Needs `mail` at enforce. |
 | `scheduling` | `off` `shadow` `enforce` | `shadow` | The remote scheduling agent runs beside Claude and only records. It stops after `shadow_until` (2026-11-02). `enforce` makes it answer the scheduling channel and the proactive scheduler itself, with Claude as the fallback (section 2.11). |
 | `keep_from_anthropic` | domains, addresses, `admissions` | `mil` and the domains the owner lists, plus the domains enabled plugins add; admissions on | Mail that never reaches Claude in bulk. It never limits the remote model. |
 
@@ -1544,6 +1545,69 @@ enabled for (`model_arms.py enable --arm pipeline --lanes
 sched-channel,room`), not only the scheduling channel. The release suite
 (`docs/EVAL.md`) carries one case per shape with a canned thread.
 
+### 2.19 The nightly reconcile (`reconcile = nightly`)
+
+A room session that holds a whole project's rows and threads at once
+does the ledger good: it reads the threads, cross-links the rows,
+rewrites their notes and says which look done. The crons judge one
+row at a time by signal and never touch a note. `ledger_reconcile.py`
+does the room's work every night, under the gate's rule: the remote
+model reads the mail, code composes each thread into a brief, and
+Claude judges the briefs. No message text leaves the machine.
+
+The pass, at 01:30 (owner cron):
+
+1. **Code refreshes the briefs.** `mail_privacy.sync_briefs` writes the
+   thread brief onto every open row with a conversation id, and the
+   remote model reads any message in those threads that has no record
+   yet (up to 120 threads a night). A row with no conversation id gets
+   up to three candidate threads from the record index, matched on the
+   row's own distinctive words plus its correspondent as a sender. The
+   index is a local file; nothing searches the mailbox.
+2. **Code groups the rows by project.** A row in no project is placed
+   in the one active project its words name clearly
+   (`project_store.match`, a score of 3 with the runner-up 2 behind) and
+   linked there. The rest form a loose bucket in chunks of 14.
+3. **One tool-less Claude call per group** (the `reconcile` model in
+   `ea-config.json`, default Opus) sees each row's title, type, dates,
+   last action and notes, and its thread as a list of dated gists and
+   asks, or its candidate threads by ref. A kept thread shows counts and
+   dates only. It answers per row: `open`, `done` or `duplicate` (with
+   the other row), the candidate that is the row's thread, and one line
+   on what the mail shows that the last action does not. A ref it
+   invents, a duplicate of itself, a thread not among the row's own
+   candidates, a done without a why: dropped.
+4. **Code writes what the policy allows.** `done` and `duplicate` are
+   close PROPOSALS (`closure.propose`, signals `llm:reconcile` and
+   `llm:reconcile-duplicate`): the row stays open, the morning
+   briefing's "Looks done?" line and the DM card carry it, one click
+   closes; a row the user kept open is skipped (closure's veto). A note
+   is appended to `last_action` with the date and `(reconcile)`. A
+   thread goes onto the row's `conversation_id` when the row's own reply
+   cannot close it (`ledger.closes_on_reply` false), so the signals can
+   propose on it; on a reply row it stays in the row's `reconcile`
+   metadata, where the next night reads it, and a wrong link can close
+   nothing. A thread placed in a project is filed there. Every write
+   is one line in the owner-private `logs/ledger-reconcile.log`.
+
+**When the remote model is down the night is skipped**, and the health
+line says so. Nothing in the pass is urgent, the briefing's own
+pre-send audit still checks what the post shows, and a hosted reader
+would move the night's mail to Anthropic, which the gate exists to
+prevent. The judge needs no fallback: it only ever sees records.
+
+The health line each morning:
+
+```text
+:broom: Reconcile: 196 rows in 28 groups; 3 look done (on the morning card); 11 notes; 4 rows given their thread; 43 rows placed in projects; $2.80.
+```
+
+The first night's dry run on the live ledger: 28 groups, about nine
+seconds and eleven cents per group. The run record
+(`<private>/remote-llm/reconcile.jsonl`) holds counts and the touched
+row ids, never text. `run --dry-run` judges and writes nothing;
+`run --project <id>` does one project.
+
 ## 3. What Claude sees now
 
 | Path | Before 2026-10-09 | Now |
@@ -1596,6 +1660,8 @@ python3 /opt/ea-system/preprocessor/mail_privacy.py report     # the daily numbe
 python3 /opt/ea-system/preprocessor/mail_privacy.py sync-briefs  # thread briefs onto the ledger rows
 python3 /opt/ea-system/preprocessor/mail_privacy.py brief --conversation-id <id>
 python3 /opt/ea-system/preprocessor/sched_agent.py report        # shadow and live scheduling turns
+python3 /opt/ea-system/preprocessor/ledger_reconcile.py run --dry-run [--project <id>]   # the nightly reconcile, judged only
+python3 /opt/ea-system/preprocessor/ledger_reconcile.py status
 python3 /opt/ea-system/preprocessor/remote_llm.py set mail ghost --days 7        # open the ghost week
 python3 /opt/ea-system/preprocessor/remote_llm.py set scheduling shadow --days 7
 python3 /opt/ea-system/preprocessor/ghost_week.py status          # windows, counts, the gate
@@ -1617,6 +1683,7 @@ repo's virtualenv Python, which the crontab's `PATH` puts first.
 | `remote_digests.py admissions-digest` | Monday 08:00 |
 | `ghost_week.py grade` (the judge on the day's reads and turns) | 16:45 |
 | `mail_privacy.py report --post` | 17:30 |
+| `ledger_reconcile.py run --post` (every open row against the thread records) | 01:30 |
 
 Logs are in `<owner home>/.ea-private/logs/` (`mail-privacy.log`,
 `mail-tagger.log`, `list-digest.log`, `admissions-digest.log`). The store is
@@ -1679,6 +1746,7 @@ Each row is independent. Turning back needs no code change and no restart.
 | `preprocessor/remote_digests.py` | The list and admissions digests |
 | `preprocessor/mail_tagger.py` | `ask_remote` in enforce |
 | `preprocessor/remote_briefing.py` | The briefings: candidates, the plan check, the rails, drafts, hand-offs, the render, the audit with Claude verdicts |
+| `preprocessor/ledger_reconcile.py` | The nightly reconcile: `groups`, `candidate_threads`, `items_for`, `parse_verdicts`, `apply`, `run` |
 | `run-agent.sh` | The branch to `remote_briefing.py` for the two briefings; the Claude call, its retry and the Sonnet audit run only when it exits 3 |
 | `ea-chat-bot.py` | `_remote_escalation_tick` (one topic per briefing's hand-offs, the brief in its prompt), `_used_scheduling_tools` (the shadow's trigger), `_remote_scheduling_live` (the live branch in `handle_message_async`) |
 | `CLAUDE.md`, `prompts/CLAUDE-scheduling.md`, `skills/morning-briefing.md`, `docs/ea/drafting-voice.md`, `docs/ea/briefing-data.md` | The lane instructions: the writer first, the subagent on a fallback; no email text in the JSON |

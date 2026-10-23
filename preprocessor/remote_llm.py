@@ -28,6 +28,9 @@ Six switches (SWITCHES), each in the private config:
                   update on the remote model (remote_briefing.py)
   * `audits`      off | remote: the weekly audit on the remote model
                   (remote_audit.py), with flagged items handed to Claude
+  * `reconcile`   off | nightly: every open ledger row judged against the
+                  remote model's thread records, one Claude call per
+                  project, proposals and notes only (ledger_reconcile.py)
 
 `shadow` runs beside the live lanes and records what the remote model
 would have done; it changes nothing the Claude lanes see or do. A shadow
@@ -143,7 +146,7 @@ class NoSlotError(RemoteLLMError):
 def _off() -> dict:
     return {"endpoint": "", "model": "", "shadow_until": "", "ghost": {},
             "mail": "off", "scheduling": "off", "drafting": "off", "digests": "off",
-            "briefings": "off", "audits": "off",
+            "briefings": "off", "audits": "off", "reconcile": "off",
             "qwen_share": 0.5,
             "ab": {"share": 0.0, "lanes": [], "from": "", "until": "", "arm": "remote"},
             "sched_backstop": True,
@@ -195,6 +198,9 @@ def config() -> dict:
     # The weekly audit (remote_audit.py): `remote` writes it on the remote
     # model and hands the flagged items to Claude.
     cfg["audits"] = "remote" if raw.get("audits") == "remote" else "off"
+    # The nightly reconcile (ledger_reconcile.py): `nightly` judges every
+    # open row against the thread records, by project.
+    cfg["reconcile"] = "nightly" if raw.get("reconcile") == "nightly" else "off"
     # The Claude backstop on the scheduling agent's live writes
     # (sched_agent.backstop_review) is on unless the file says false.
     cfg["sched_backstop"] = raw.get("sched_backstop") is not False
@@ -614,7 +620,8 @@ def chat_json(messages: list[dict], *, purpose: str, schema: dict, **kw) -> tupl
 SWITCHES = {"mail": ("off", "shadow", "enforce", "ghost", "sealed"),
             "scheduling": ("off", "shadow", "enforce"),
             "drafting": ("off", "ab", "remote"), "digests": ("off", "remote"),
-            "briefings": ("off", "remote"), "audits": ("off", "remote")}
+            "briefings": ("off", "remote"), "audits": ("off", "remote"),
+            "reconcile": ("off", "nightly")}
 
 
 def switches(cfg: dict | None = None, today: date | None = None) -> dict:
@@ -733,7 +740,7 @@ def _status() -> dict:
         "shadow_until": cfg["shadow_until"], "ghost": cfg.get("ghost"),
         "mail": mode("mail", cfg), "scheduling": mode("scheduling", cfg),
         "drafting": cfg["drafting"], "digests": cfg["digests"], "briefings": cfg["briefings"],
-        "audits": cfg["audits"],
+        "audits": cfg["audits"], "reconcile": cfg["reconcile"],
         "keep_from_anthropic": cfg["keep_from_anthropic"],
         "key_present": bool(_owner() and api_key()),
         "store": files,
