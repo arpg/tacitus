@@ -331,6 +331,13 @@ came from the `email-author` subagent in a bot run, a blind coin flip
   Claude's body in the draft, quoted thread kept, before the Send card is
   posted. A remote body that is empty, asks for more (`NEED:`) or takes
   over 60 seconds is dropped and Claude's body stays (a fallback).
+- **Paired by text.** A draft takes part only when the subagent's
+  returned text is its body (`author_match`: 0.6 or more of the body's
+  words, in order). A run can make a draft with `email_writer.py` and
+  also call the subagent for another email, one whose contact has no
+  address yet; that draft is the writer's and keeps its body (recorded as
+  mode `writer` in the remote mode). The bot keeps the subagent's result
+  whole in the run's tool log for this pairing.
 - **Blind.** The card does not say who wrote the body; the assignment is
   in the private store.
 - **The score is the user's edits.** The Send button reads the body
