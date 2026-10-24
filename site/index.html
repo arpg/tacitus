@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tacitus</title>
+<meta name="description" content="Tacitus is a self-hosted executive assistant. Real chat exchanges, names changed.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..600&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: a night-shift ledger. Sticky section rail on the left, a column of chat
+   threads on the right that rise into view as you scroll. Dark first: the EA
+   works at 4 AM. Bronze accent after the Roman historian on the avatar. */
+:root {
+  --bg: #0d1016;
+  --bg-2: #141922;
+  --bg-3: #1b212c;
+  --fg: #e9e5db;
+  --fg-2: #b9b5aa;
+  --muted: #7f7d76;
+  --line: #262d39;
+  --accent: #d4a24f;
+  --accent-soft: #3a2d15;
+  --accent-ink: #1a1206;
+  --user: #2d2a22;
+  --user-fg: #f1ead9;
+  --ea: #161c26;
+  --ok: #7fbf8a;
+  --warn: #e0b35a;
+  --bad: #e07a6c;
+  --display: "Fraunces", "Iowan Old Style", Georgia, serif;
+  --body: "Source Sans 3", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f3f2ee; --bg-2: #ffffff; --bg-3: #e9e7e0; --fg: #171a1f; --fg-2: #3f444c;
+    --muted: #6f737a; --line: #d9d6cd; --accent: #8f6616; --accent-soft: #f0e3c4;
+    --accent-ink: #ffffff; --user: #f3e6c8; --user-fg: #241c0a; --ea: #ffffff;
+    --ok: #2f7d45; --warn: #9a6d10; --bad: #b4473a; color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f3f2ee; --bg-2: #ffffff; --bg-3: #e9e7e0; --fg: #171a1f; --fg-2: #3f444c;
+  --muted: #6f737a; --line: #d9d6cd; --accent: #8f6616; --accent-soft: #f0e3c4;
+  --accent-ink: #ffffff; --user: #f3e6c8; --user-fg: #241c0a; --ea: #ffffff;
+  --ok: #2f7d45; --warn: #9a6d10; --bad: #b4473a; color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font-family: var(--body); font-size: 17px; line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+a:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wrap { max-width: 1180px; margin: 0 auto; padding-inline: 20px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 400; letter-spacing: -0.01em; text-wrap: balance; margin: 0; }
+p { margin: 0; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); }
+.mono { font-family: var(--mono); }
+
+/* top bar */
+.top {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 10;
+  background: color-mix(in oklab, var(--bg) 88%, transparent); backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.top .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 54px; }
+.brand { font-family: var(--mono); font-weight: 600; letter-spacing: 0.22em; font-size: 14px; color: var(--fg); text-decoration: none; }
+.top nav { display: flex; gap: 18px; overflow-x: auto; scrollbar-width: none; }
+.top nav::-webkit-scrollbar { display: none; }
+.top nav a { color: var(--fg-2); text-decoration: none; font-size: 14px; white-space: nowrap; }
+.top nav a:hover { color: var(--fg); }
+
+/* hero */
+.hero { padding-block: 72px 48px; border-bottom: 1px solid var(--line); }
+.hero .wrap { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 48px; align-items: start; }
+.hero h1 { font-size: clamp(38px, 5.4vw, 66px); line-height: 1.02; font-variation-settings: "opsz" 144; }
+.hero h1 em { font-style: italic; color: var(--accent); }
+.hero .lede { margin-top: 22px; font-size: 20px; color: var(--fg-2); max-width: 34em; }
+.hero .principle { margin-top: 18px; font-family: var(--display); font-style: italic; font-size: 20px; line-height: 1.35; color: var(--fg); max-width: 30em; border-left: 2px solid var(--accent); padding-left: 16px; }
+.hero .cta { margin-top: 28px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.cta a.primary { background: var(--accent); color: var(--accent-ink); text-decoration: none; padding: 11px 18px; border-radius: 6px; font-weight: 600; }
+.cta a.ghost { color: var(--fg); text-decoration: none; padding: 11px 6px; }
+.hero .fact { margin-top: 36px; font-family: var(--mono); font-size: 13px; color: var(--muted); line-height: 1.7; }
+
+/* day strip */
+.day { border-bottom: 1px solid var(--line); background: var(--bg-2); }
+.day .wrap { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; }
+.day .slot { padding: 26px 20px 28px 0; border-right: 1px solid var(--line); }
+.day .slot:last-child { border-right: 0; }
+.day .slot + .slot { padding-left: 20px; }
+.day .t { font-family: var(--mono); font-size: 13px; color: var(--accent); }
+.day h3 { font-size: 22px; margin-top: 6px; }
+.day p { margin-top: 8px; color: var(--fg-2); font-size: 15.5px; }
+
+/* sections */
+section.feature { padding-block: 72px; border-bottom: 1px solid var(--line); }
+section.feature .wrap { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 56px; align-items: start; }
+.rail { position: sticky; top: calc(54px + env(safe-area-inset-top, 0px) + 28px); }
+.rail h2 { font-size: clamp(30px, 3.6vw, 44px); line-height: 1.08; margin-top: 10px; }
+.rail .thesis { margin-top: 18px; color: var(--fg-2); font-size: 17px; max-width: 30em; }
+.rail ul { margin: 22px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.rail li { padding-left: 18px; position: relative; color: var(--fg-2); font-size: 15.5px; }
+.rail li::before { content: ""; position: absolute; left: 0; top: 0.62em; width: 8px; height: 1px; background: var(--accent); }
+.threads { display: grid; gap: 34px; min-width: 0; }
+
+/* chat thread */
+.chat { background: var(--bg-2); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; min-width: 0; }
+.chat .head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; padding: 12px 16px; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+.chat .head b { color: var(--fg-2); font-weight: 600; }
+.chat .head .room { color: var(--accent); }
+.chat .body { padding: 18px 16px 20px; display: grid; gap: 14px; }
+.msg { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; align-items: end; max-width: 92%; }
+.msg.user { grid-template-columns: minmax(0, 1fr); justify-self: end; }
+.avatar { width: 34px; height: 34px; border-radius: 50%; background: var(--bg-3) url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAAAAADH8yjkAAAbN0lEQVR42gXBR8+m13kY4Puc+9Snvf2r0xvJYRFFUrQkW4psB5aAOG2VLLIwssgvyTY/IJs4iIEEiY1kEUAybCu2FBUypE1K7BzOcGa+3t7y9OfUXBf50S1Rx6xNae6cqq6010xVfGX2Iieha+3uAXDLRXeadNerCUDtJ/hcMeeJwMd8qs/KvLl5KsaN7Xeu1lOjTrQblw3vk9EZVcsE3yJIrKK9rIw4tNeGIfWhmYFF12xXva4EbHiW+LXe3fWC1DJLurjR0+VKhasFq9psFHhay9JPrCEtBpzGJPee7kmzHmck4h/U7dXomE2aEe+EBGJI1l3aVPe+WIUsTm0HutFVPy+5Cwwm7XIn5qdQjgeRy2RI0ovJ8mxmB9bT6aUgyWa8Cv2QY9BNopYW8Hc0tumwRebrAOOSqiSELqEMoyozEmuemK1eb6KSHlhI4YKFxhnSqJHQ8vRqdGJbMy98KzPvok297lxNrXZZWc9da7jGexBnZuK6TsSkWo3dqYwKBsMm2cZAh4MpCFXumuWJU/YqikYVa2cE8HjlSWqRFo4PkbmiX+F0FZiXThUlnqiZ3bjIDP5htNW1s3wWiG7ilsk1Ku+mXMNqoOssQdqf5nQ5n11uUhG5sJBq2QnBKAipBNABIsTgoKKRcmgdNOVWCpxsDHpawBrfNDSRO/QUmiTkirZqEOprmQixVMCwxsJlLkyatYqKNmlYU28sl11HMVsm6572W1lILccKtGNtvt3LCdTouBiGkWlYit8x+6Nj7a0Eh6GHRib+JC96CynJsmaPJgPPO7/JZVFnlnapJO6C5WqDEZLUQGdrh7gVrJdZstamNdK1QAwsBhJYMjL4bU51ZuuszHlSkbEkm1xPImkp46wvypTwc86XShXR0mhkkreivm+7kfXCkcFNGa+Z2qyEsWGtKs+7oHxs+fSYhHSVtWt8c2tYcmKVHfYBeBLL1OmSWiAugVmZ8AbE+Fzc6lgYxQJ2Zg+2+aJej5t0+2mSOE4lGesNYKJ97LzIeyd9XrOkaQnl0UDE7505zS3rVTSMEd9TkpxA4uemx9zxKWs2bIPZ9Xu7GkSR3HiYze++MJc2aS6nSKBWA3ZL1EmXtjmss8sxCuOyzsatQdRStQO+wIi3UYc6dSnt2kSWUBSS1Hs9ZuHy8pO/uTpbuia5trU3XUM3ai+Ikfv3b6wPioLxeJ0v51zTsk5N4XTo0LtMhzph0vA2kDBu8fVMF1Jwos/loAlXHRdsRc5op68+eP/9zXqaLPd4el2OmdjZvXb6oVcF62m6qPz2/NaO6mglp0PB2omL9jbDXAxDTOESvGKBIGvIv064TKLnPIbeMyoaNjFpfZE1H12uFrOX7s9MV21u3Yw40a1JXbMqitiZuN2vU5Pnsf/k06aN5tLfOa23YQX5JtTlpKvyjNR1opoe7xeUOOVIJy2iT60UTaqP9PFPf8Pm7Xq2N93Zm2XzSU5iSCVIFYeQ240C/9ycrpoet28/2NXHUlcU0uDaE9VbbIt5FYy0RScK/D4kpoicarTDhJGwV3ejqvziK/Hw/vVX9qCvg7mRHpYip8yzCIxNczKa2ZCNx1kRojMq23tpcsX7rnWqDLwoXZ4UZk07J65ca/BHzTj36HAYjcI6uRLDePr+rz4/TUcPr1/f+dYL9+O6PdjZ6a5YNtCBfnZG3zmfgnz6rpyLo/b+sN7RxPtd9WhA4Ed+pD2UcpkxhiNfb1MCuL2zdTVSTuRGiHOtaLL+2/dX3TgUz/06nsn8zmWtnl3D6bKQtG7LR0UKSrO0ZwmqjzcvaAgSadwqnx9eTyWLdZWM+mQAFUuUqwQovqZllZB1bPPSkt6Kwz//yvF03eYPJzfGXlC3d3JjfSExdxl1R2Oh9h6wwMQtPYjinlcpxTgEgvEZoXkKhzvpAfDtbqDTZRvCWFX4I54kzRASborLhSXmx4HXRR1uF/NvPdj9xt0RT5M2E7fsAEy68UpPtKfSkVYIF/ksQqBI+si6o77koU7iZVqkkTTzEokZBeJpue4CnKUDJWE39vDLDevpst8+fIT2q9PVmZvKfYjwzlTVpVMDzwVQGsGHAQpfexqHxjEOUWYyDmj9eopl57nortYxG1za43cqp2A8JbFdrZrk88ezIxcgtPymto8/oTuqM8nweO+jvZ0VaDas2JhQESgIQig6To8/TZyAkFx83HXV5SxuWy16PpQ8dVEKcHv4xmR1dgdPFqxIKFv9IkzBTrMXcwYv3n3hlU17W7pBBLfcmp8FFeSeNxl4ZCRQRgiPvBJ5lIx3PzEwTlBtpBk69BlUMgUGgUj8A+f14Sx7luVHm/LduqhhpIvte80h9YsbD0ahl3LzaBL4/vlas0ucDD0JgrqB206Bo8kwdkmMn79bckHqfdnQbIVVx6O8RJMK0+KbZRnEsFfTC7v6+2KrP7HoZrX4w3tSskZcb8AGu5sYtt0fFshZPRtaVNZYdtSPiWduhE7GYCveY+M0O94OnMlwVQAsWqy9xJeE3DXnKaHQ/epSe8l8GZbFvv6nGi/wcVEMWbPmuTXz1XGS8/O0nj/px3HFzJPRuO/xwHuOlEAvqovG055cpsbm5djRydCTdifiN8uUuevGmfD0Ed04n6bETc1VGh7S6mnz6QuSHh0S4g53PzhjeO+di7m29Y5cpVW1nz9LNIpMAgNyckalhVDm3PXNjBqePFsF7+IaX29i3vDg/JB8FdS5DOIBJz9cn9A7t/Mvys+nr6x+PbyefXF2493Hu784/Cd/l412lSAuXV2fPV5ei7kigMHH9XFSWC6g92tE42vZYswYMxmVO/cvw2jcVs1Xtlyll5T6xf0nb0/6X15e33kUD73qhkt4rMe7+cdbj45+79cEZiIS2CfPlncYiSHGAEB2Cal1VIusW/OU9GA89C2YrMA3ha3m7WYy+E875YPqmUDND29dHXz5evNjsn03efHsspTxzuRH7RevLF87Kyahj8uN/2/Jy5pjgBhidIQ8OqNVp6/GdhGzI52uFICUg+rxDe+2+/Wi8asve7EoJTvHbz9bnFDFnmyP3l2z/LNbsxP9EsueLR58fbW+8crVDBpnUd/f1ZQQCBAj8cFcnPQkWdKWDhX3nI0MJYanRU13yYUtbtgTUXXSD7OB52XLzt9uo1L/efTi2dVvPnu2F2qemFeXo7ef08fZyMcv1/MZH6fMDRYIJcGC13ON641Ik6nd9VtixYHEmZpVDm9Baqywjh6P+Xm/H8u8WlQfbOvn9Y3N6ZuPrp68+t3Jh83sA9yVgT6b+lvA2eUMvSMuUqRAIyGUUHZS0zbkVsWNaiNZqvTMDat6DTSBaOLGJgeyBO7qKTHdGtqfnrwyOYWTR7ddzS2fHHvxuEvjZHsuQMh4LVTOAfEACIFAJJRhtnSCnS7LZdGozkzgXE81awXBh3NdkVlVj96/HBEfMtHAa19W8eCMPjm6OHnWv/S2vvnxJ6+Nv7oxNnqo5H4/PjoLAWKHGCinhIYQEMlocyLQsIaYmEG8SoKPkyAdYUsyvdYvCco+r1jk+cVcPDtH50+/TrayM733oPIxmM0bdU08LE7P1/GDg1HIggsMePCMBhoIBEhvH/qlikDLcejp7lNRXB1fMxAZFBWNTs2/yHxH08UK41HUhMj6lfboX3083jdHu13wqpiSwVOCe/Gnj95sRwF6BQg+egJAnA+U5r5uMTagoG/I+OZamEUtvKWFjvShd0Mb+sxttx056CD93uzGzp+8TFfNQZ+1m6uXV8dOMoJ0eTJ55y+mRNenBx0desYgBgCCEazfv12ysmBsIIPwg3WNJCYUkoFn7Axb0imyEat2ABpw90Fz6isy35wX6/ri+POH23qwAsC2BYRv62fJDgzacQwJCeBc1bZJRvksb3eKYd13reat46c3lnmyAmZ8vOic95ez4SJdDjo6ur2/9eoj/XROP97g41e6o/1Xf++qz1nAk4+XYRuvLDV1cd7eC3VZntQlid3pC3fy7XjtHJcn20U11SeTZX2rzFnX52zri12NpVeLc8L9/nPh9482sf/Br4/e/b6t81I9hi+qnW9+3tlxh7/679+89mSuxnazBatTS2Pvj4fNRUVobugbcumbZlJumcOkKVT0HcurosG7sa/dFiRnB/O6Gjk95Fm3L18+/mjZNwO9un83fF6cvp52X46Tz/60+0dDzQP0sjuPutsttm5fW3305dLeFja7v35kK6IK68ygZVki025tAV8taGb7blH1u8su8Hrc3lvSarL1t9Cpln7vd373X3ZfTT65tvmrW7Nfb96Sh5SxNIoe8lvbsxztVfOqqPfnN1979dpnz92kb7Nm7ZJoINKsGpYFwVeJWfJONS5sbbrc95m79cojcfW6fWpL89Ybf/ar6//8/5z4R+Zimp7vTW1dSBGFktNdn836qrj5sH6O/+Ktu9d28PTU50N/7pLxsSQu8djoZGlwZwptz40P5xRPtQtI24cTU25++NEK5n/yaPb0t2+/9RfV5eG4u/O8qRuU05yBLVWi/NlPbr3Q/8//2v/jH2wpFPzwy41MumVSXBZ0FYrKDIEpizuthpip1LiTcWNuiYtt3T88f2zr/c+GvW9lfzz6G/r9x+/pjvSje5ddgahHW7tJ7cTxz9/77t2rcuett34vi1QCPTpwlogIhNk8GSxlok9ahq9PNoMivR9G6zbv7aLP7qzk9snVhTnv9n53Ot2e/zhX73D5jQP6Vr/OKVXJfLy3P/3yt9Prq+WdvULc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) center/cover no-repeat; border: 1px solid var(--line); flex: none; }
+.bubble { border-radius: 16px; padding: 11px 14px; font-size: 15.5px; line-height: 1.45; min-width: 0; overflow-wrap: anywhere; }
+.msg.user .bubble { background: var(--user); color: var(--user-fg); border-bottom-right-radius: 5px; }
+.msg.ea .bubble { background: var(--ea); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+.bubble p + p { margin-top: 9px; }
+.bubble ul { margin: 8px 0 0; padding-left: 18px; }
+.bubble li + li { margin-top: 3px; }
+.bubble .who { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin-bottom: 6px; letter-spacing: 0.04em; }
+.bubble b { font-weight: 600; }
+.bubble .path { font-family: var(--mono); font-size: 13px; color: var(--fg-2); }
+.bubble code { font-family: var(--mono); font-size: 13.5px; background: var(--bg-3); padding: 1px 5px; border-radius: 4px; }
+.bubble .ok { color: var(--ok); } .bubble .warn { color: var(--warn); } .bubble .bad { color: var(--bad); }
+.bubble .lead { font-weight: 600; }
+.msg .stamp { grid-column: 1 / -1; font-family: var(--mono); font-size: 11px; color: var(--muted); padding-inline: 4px; }
+.msg.user .stamp { text-align: right; }
+.note { font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: center; padding-block: 2px; }
+
+/* the lock card */
+.card { margin-top: 10px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 10px; background: var(--bg); padding: 12px 14px; font-size: 14px; }
+.card .ttl { font-family: var(--mono); font-size: 12px; color: var(--accent); letter-spacing: 0.06em; display: flex; gap: 8px; align-items: center; }
+.card dl { margin: 8px 0 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; }
+.card dt { color: var(--muted); font-family: var(--mono); font-size: 12px; padding-top: 2px; }
+.card dd { margin: 0; color: var(--fg-2); min-width: 0; }
+.card .btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.btn { font-family: var(--mono); font-size: 12px; padding: 5px 10px; border-radius: 5px; border: 1px solid var(--line); color: var(--fg-2); background: var(--bg-2); }
+.btn.go { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+
+/* reveal */
+@media (prefers-reduced-motion: no-preference) {
+  .msg.in { animation: rise 0.55s cubic-bezier(.2,.7,.2,1) both; animation-delay: calc(var(--i, 0) * 90ms); }
+  @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+}
+
+/* trust */
+.trust { padding-block: 80px; border-bottom: 1px solid var(--line); }
+.trust .wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 56px; align-items: start; }
+.trust h2 { font-size: clamp(32px, 4.2vw, 52px); line-height: 1.05; }
+.trust h2 em { font-style: italic; color: var(--accent); }
+.trust .lede { margin-top: 20px; color: var(--fg-2); font-size: 18px; max-width: 32em; }
+.stack { display: grid; gap: 14px; }
+.tier { border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; background: var(--bg-2); }
+.tier .eyebrow { color: var(--muted); }
+.tier h3 { font-size: 24px; margin-top: 6px; }
+.tier p { margin-top: 8px; color: var(--fg-2); font-size: 15.5px; }
+.tier.hot { border-color: color-mix(in oklab, var(--accent) 60%, var(--line)); }
+.gates { margin-top: 30px; display: grid; gap: 10px; }
+.gate { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 12px; align-items: start; color: var(--fg-2); font-size: 15.5px; }
+.gate .ic { font-family: var(--mono); color: var(--accent); }
+
+/* install + footer */
+.install { padding-block: 72px; }
+.install .wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 48px; align-items: center; }
+.install h2 { font-size: clamp(30px, 3.6vw, 44px); }
+.install p { margin-top: 16px; color: var(--fg-2); }
+pre.sh { margin: 0; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; font-family: var(--mono); font-size: 13.5px; line-height: 1.6; overflow-x: auto; color: var(--fg); }
+pre.sh .c { color: var(--muted); }
+.req { margin-top: 18px; display: grid; gap: 6px; font-size: 15px; color: var(--fg-2); }
+footer { border-top: 1px solid var(--line); padding-block: 28px 40px; color: var(--muted); font-size: 14px; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 28px; justify-content: space-between; }
+
+/* responsive */
+@media (max-width: 960px) {
+  .hero .wrap, section.feature .wrap, .trust .wrap, .install .wrap { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+  .rail { position: static; }
+  .day .wrap { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .day .slot { border-right: 0; border-bottom: 1px solid var(--line); padding-left: 0 !important; }
+  .numbers .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  body { font-size: 16px; }
+  .hero { padding-block: 44px 36px; }
+  .day .wrap { grid-template-columns: minmax(0, 1fr); }
+  .msg { max-width: 100%; }
+  .chat .head { flex-direction: column; gap: 2px; }
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top">TACITUS</a>
+    <nav aria-label="Sections">
+      <a href="#scheduling">Scheduling</a>
+      <a href="#inbox">Inbox</a>
+      <a href="#documents">Documents</a>
+      <a href="#review">Review</a>
+      <a href="#projects">Projects</a>
+      <a href="#rules">Rules</a>
+      <a href="#trust">Trust</a>
+      <a href="#install">Install</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+<section class="hero">
+  <div class="wrap">
+    <div>
+      <p class="eyebrow">Self-hosted executive assistant</p>
+      <h1>The assistant you would hire, <em>if you could afford one.</em></h1>
+      <p class="lede">Tacitus takes the friction out of the places a human executive assistant would be great: the inbox, the calendar, the forms, the follow-ups, the files. It reads your mail and calendars, drafts in your voice, finds meeting times on your real calendars, and tracks what you owe to whom. You talk to it in a private chat.</p>
+      <p class="principle">A human EA cannot make decisions on behalf of the executive. Neither can Tacitus. That is the design principle: nothing is sent, booked or deleted until you press the button.</p>
+      <div class="cta">
+        <a class="primary" href="https://github.com/arpg/tacitus">Read the code on GitHub</a>
+        <a class="ghost" href="#scheduling">See it work &darr;</a>
+      </div>
+      <p class="fact">Every exchange on this page is from one professor's live install, March to October 2026.<br>Names and places are changed. The words are not.</p>
+    </div>
+
+    <div class="chat" aria-label="Example exchange: filling a Doodle poll">
+      <div class="head"><span><span class="room">#ea</span> &rsaquo; <b>Fill out the doodle for Max</b></span><span>Oct 20</span></div>
+      <div class="body">
+        <div class="msg user"><div class="bubble">Fill out the doodle for Max</div></div>
+        <div class="msg ea"><div class="avatar"></div><div class="bubble">
+          <p><b>Doodle: Innovation &amp; AI use-case focus group.</b> Max at the consulting firm sent it. Each session is 90 minutes, and responses are due Fri Oct 23. Of the 10 slots, only 1 is clear on your calendar.</p>
+          <p><span class="ok">&#10003;</span> <b>1 slot free, I will mark it available:</b></p>
+          <ul><li>Wed Nov 4, 11:00 AM to 12:30 PM. It overlaps the NLP Seminar, but that is a note on your calendar and does not block you.</li></ul>
+          <p><span class="warn">&#9651;</span> <b>3 slots are possible but need your decision:</b></p>
+          <ul>
+            <li>Fri Oct 30, 9:30 to 11:00 AM: you would have to move two 1:1s.</li>
+            <li>Wed Nov 4, 8:30 to 10:00 AM: it starts before your 9:00 working hours.</li>
+            <li>Fri Nov 6, 12:00 to 1:30 PM: it is after your Friday working hours, which end at 11:45.</li>
+          </ul>
+          <p><span class="bad">&#10007;</span> <b>6 hard conflicts, I will mark them unavailable:</b> all three Oct 28 slots (you are out of state), Nov 4 at 8:00 (childcare dropoff), Nov 5 at 2:00 and 2:30 (your lecture).</p>
+          <p>Which of the 3 possible slots do you want me to add? You can also say "overbook all" or "keep all."</p>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="day" aria-label="What a day looks like">
+  <div class="wrap">
+    <div class="slot"><div class="t">04:00</div><h3>It reads the night's mail.</h3><p>Plain Python merges the inbox, the calendars and the ledger. The model only judges what is left.</p></div>
+    <div class="slot"><div class="t">07:00</div><h3>A briefing is waiting.</h3><p>What needs you today, which replies are already drafted, which threads have waited too long.</p></div>
+    <div class="slot"><div class="t">Any time</div><h3>You talk to it like a colleague.</h3><p>One chat thread per request. One private room per project, with a specialist that already knows the file.</p></div>
+    <div class="slot"><div class="t">Your tap</div><h3>Send, Create, Reschedule.</h3><p>Each is a button in your DM with a one-time token. The model has no way to press it.</p></div>
+  </div>
+</section>
+
+<!-- ================= SCHEDULING ================= -->
+<section class="feature" id="scheduling">
+  <div class="wrap">
+    <aside class="rail">
+      <p class="eyebrow">Scheduling</p>
+      <h2>Scheduling is a sentence.</h2>
+      <p class="thesis">A constraint solver reads Outlook and every Google calendar you name, applies your rules, and proposes times. The same solver fills When2Meet, Doodle and Calendly polls. The invite waits behind a Create button.</p>
+      <ul>
+        <li>Your rules are recurring events on a calendar you edit in your own calendar app: working hours, lunch, no-meeting Fridays, who gets priority.</li>
+        <li>Reschedule requests are detected in mail within minutes and staged as a button.</li>
+        <li>Attendee free/busy comes from their calendars, not from the model's memory.</li>
+      </ul>
+    </aside>
+
+    <div class="threads">
+
+      <div class="chat">
+        <div class="head"><span><span class="room">#ea</span> &rsaquo; <b>Reschedule Noah</b></span><span>Oct 5</span></div>
+        <div class="body">
+          <div class="msg user"><div class="bubble">reschedule the meeting with Noah tomorrow as per his request - some time next week</div></div>
+          <div class="msg ea"><div class="avatar"></div><div class="bubble">
+            <p>I staged a move of tomorrow's <b>Noah / Chris</b> 1:1 (Tue Oct 6, 12:00 MT) to <b>Wed Oct 14, 1:00 to 1:30 PM MT</b>. That is 3:00 PM ET for Noah. The meeting does not move until you click the Reschedule button.</p>
+            <p><b>Why Wednesday:</b></p>
+            <ul>
+              <li>Noah wrote that Monday Oct 12 is a holiday, and his university runs its Monday schedule on Tuesday. I kept the meeting off both days.</li>
+              <li>I looked for times inside his 9 to 5 Eastern hours next week. Wednesday was the only day with free time.</li>
+            </ul>
+            <p>The move changes this one meeting only. The Nov 3 meeting in the series stays as it is. When you click Reschedule, Outlook sends Noah an updated invite.</p>
+            <div class="card"><div class="ttl">&#128274; RESCHEDULE</div>
+              <dl><dt>event</dt><dd>Noah / Chris 1:1</dd><dt>from</dt><dd>Tue Oct 6, 12:00 MT</dd><dt>to</dt><dd>Wed Oct 14, 1:00 to 1:30 PM MT</dd></dl>
+              <div class="btns"><span class="btn go">Reschedule</span><span class="btn">Cancel</span></div>
+            </div>
+          </div></div>
+          <div class="msg user"><div class="bubble">I'll approve this reschedule but could you also send a note with potential good times on that Weds.? Also suggest Tues times that would work in case those are any good for him.</div></div>
+          <div class="msg ea"><div class="avatar"></div><div class="bubble">
+            <p>&#9993; I created a reply draft to Noah in the "Tomorrow" thread. The confirmation card with the Send step is in your ea-dm stream.</p>
+            <p>The note offers Wed Oct 14, 3:00 to 5:00 PM ET, and Tue Oct 13, 2:00 to 3:30 PM ET.</p>
+            <p><span class="warn">&#9651;</span> All of the Tuesday times overlap your "p1 lecture prep" block. Your lecture starts at 1:30 MT. If you want to keep that prep time, tell me and I will remove Tuesday from the note before you send it.</p>
+            <p>The note says the invite already moved. Approve the Reschedule before you send the note.</p>
+          </div></div>
+        </div>
+      </div>
+
+
+
+
+    </div>
+  </div>
+</section>
+
+<!-- ================= INBOX ================= -->
+<section class="feature" id="inbox">
+  <div class="wrap">
+    <aside class="rail">
+      <p class="eyebrow">Inbox</p>
+      <h2>One message. Ten drafts. Zero tabs.</h2>
+      <p class="thesis">Dictate your verdicts on the day's mail in one breath. Each reply is drafted in the voice you use with that person, with proposed times where a meeting was asked for, and a Send card lands in your DM. Sending closes the ledger item and archives the thread.</p>
+      <ul>
+        <li>Style profiles are learned from 90 days of your sent mail: greeting, closing, length, formality, per contact.</li>
+        <li>A yes to a meeting always carries two or three solver times.</li>
+        <li>Every draft names the ledger row it closes.</li>
+      </ul>
+    </aside>
+
+    <div class="threads">
+
+      <div class="chat">
+        <div class="head"><span><span class="room">#ea</span> &rsaquo; <b>Afternoon sweep</b></span><span>Oct 20</span></div>
+        <div class="body">
+          <div class="msg user"><div class="bubble">Sam - we have a meeting on Thursday - it sounds like the lab but follow up to confirm the place if we have access. Yue - I looked at the calendar and unfortunately Thursday's fully booked for this, so apologize. Mel - ignore, we can't bite here, maybe just archive. Rob - say would be happy to take a chat, but this week and early next are packed with travel, Friday is a possibility though. Albert - say thank you again for the call and would love to have him, will follow up in Nov, and add a ledger item for it dependent on forming the team. Paul - this is done. Sam D - I don't think I need to do anything, archive. Deven, wish I could, is it OK if I pass along to a grad student? Ali - I think ignore, seems unsolicited inbound. Nikhil - Sorry not taking HS students at the moment, already have one I'm working with, could circulate with the lab if he's interested in working with a phd student. Emily - maybe this can simply be done for supporting more seats on the coding tool? problem is it's $100/month. Mara - meet next week? Greg - great, what times is he available? Kevin - maybe he can meet with Cole separately and I meet later when I'm back, first week of Nov? Mari - double check this hasn't been done - but yes absolutely. Spurgeon - I think I pinged Kara already? ---- note to archive after I send on these so they go away from inbox.</div></div>
+          <div class="msg ea"><div class="avatar"></div><div class="bubble">
+            <p>&#9993; <b>I made 10 reply drafts.</b> The Send cards are in your ea-dm stream:</p>
+            <ul>
+              <li><b>Sam and Avi:</b> we meet at the lab Thursday at 10:00. The draft asks Sam to confirm access and gives your full name for the guard station.</li>
+              <li><b>Yue:</b> apologizes, because Thursday is fully booked.</li>
+              <li><b>Rob and Eric:</b> happy to chat. The draft offers <b>Fri Oct 30</b>, 10:30 or 11:00. This Friday has no open time.</li>
+              <li><b>Albert:</b> thanks him for the call and says you will follow up in November.</li>
+              <li><b>Deven:</b> asks if it is OK to pass his note to a grad student.</li>
+              <li><b>Nikhil:</b> no high school students now, but you could circulate his note to PhD students in the lab.</li>
+              <li><b>Mara:</b> you travel early next week, so the draft offers Thu Oct 29 at 9:00, 9:30 or 11:00.</li>
+              <li><b>Greg:</b> thanks him and asks what times he is free on Nov 16 and 17.</li>
+              <li><b>Kevin:</b> he meets Cole first. The draft offers you on Mon Nov 2 at 2:15 or 2:45, or Tue Nov 3 at 10:45.</li>
+              <li><b>Mari:</b> yes. I found no reply from you on this, so it was not done before.</li>
+            </ul>
+            <p>Each draft has a ledger row. When you click Send, the row closes and the thread is archived, as you asked.</p>
+            <p><span class="ok">&#10003;</span> <b>Done now:</b> Paul and Sam D: rows closed and threads archived. Mel: archived. Ali: no action, his email was already out of your inbox. Albert: a follow-up row due Nov 2, dependent on the team forming, and the decision is in the project journal.</p>
+          </div></div>
+          <div class="msg user"><div class="bubble">Scan what I sent and close appropriate items. As for Kara, do she and I have a meeting on the books? If not we should make a 15 minute one for when she's available on Outlook to round it out.</div></div>
+          <div class="msg ea"><div class="avatar"></div><div class="bubble">
+            <p><span class="ok">&#10003;</span> <b>What you sent.</b> You sent all 10 replies. The send closed each row and archived its thread. Your edits are in what went out: Albert's note copies Toby and says mid-November, Kevin's note copies Cole and Kira, Mara got only 11:00. Albert already wrote back that he accepts. I moved his follow-up row to Nov 16 to match your note.</p>
+            <p>&#128197; <b>Kara.</b> There is no Kara meeting on your calendar for the next month. I checked her Outlook free/busy from Oct 21 to Nov 6. The first time you are both free is <b>Mon Nov 2, 2:15 to 2:30 PM</b>, on Zoom. This week is full, and you are out of state Oct 25 to 28. The Create card is in your ea-dm stream.</p>
+          </div></div>
+        </div>
+      </div>
+
+
+
+    </div>
+  </div>
+</section>
+
+<!-- ================= DOCUMENTS ================= -->
+<section class="feature" id="documents">
+  <div class="wrap">
+    <aside class="rail">
+      <p class="eyebrow">Letters, forms, spreadsheets</p>
+      <h2>Dictate it. Get a PDF on letterhead.</h2>
+      <p class="thesis">Recommendation letters from a voice memo, sponsor forms from a web link, health forms from a photo of the blank. It compiles on your letterhead with your signature, checks every page, and tells you exactly what it left blank.</p>
+      <ul>
+        <li>Letters are LaTeX on your template, kept with their source, revised in place.</li>
+        <li>It reads what the form actually asks for before it fills it.</li>
+        <li>Your CV lives in Overleaf. It pulls, edits and pushes it.</li>
+      </ul>
+    </aside>
+
+    <div class="threads">
+
+      <div class="chat">
+        <div class="head"><span><span class="room">#ea</span> &rsaquo; <b>Leo's fellowship letter</b></span><span>Oct 15</span></div>
+        <div class="body">
+          <div class="msg user"><div class="bubble">I need to draft a LoR for Leo for the NSF fellowship. Use the standard letter I have. The flow should be consistent with the attached which is another grad recommendation. However in this case this is for the fellowship so we need to make it very clear why this is a strong student. Letter should be no more than two pages, but just about there.<p>Here's my dictation.</p><p><i>I've only known Leo for a little bit. He joined the robot program this year But in the past two and a half months, he and I have worked together on this belief consistency problem I was pretty unfamiliar with his background And so when he said he was interested in working with me, we just sat down for a half hour meeting I went over this work and he was already familiar with it He had already read the paper&hellip;</i></p><p class="note" style="text-align:left">[1,100 more words of dictation]</p></div></div>
+          <div class="msg ea"><div class="avatar"></div><div class="bubble">
+            <p>The letter compiled to 3 pages. I am cutting it to fit two.</p>
+            <p>&#128221; <b>Leo's letter is ready.</b> It is on your standard letterhead and fills exactly two pages, with your signature and the bio block at the foot of page 2.</p>
+            <p class="path">~/.ea/letters/leo-rec-nsf-grfp-2026.pdf</p>
+            <p><b>How it flows.</b> It follows the order of the earlier letter. The main change is more evidence, because this is for the fellowship: the first meeting, a plain description of the problem and the skills it requires, his open-vocabulary question, his work since then, the broader impacts from his materials, and your own fellowship as the close.</p>
+          </div></div>
+          <div class="msg user"><div class="bubble">Feedback on letter:<p>"He had already read the paper and came with several intelligent questions" - no paper noted. Mention this is the ISRR paper from my CV, give the citation. Also "Faculty members receive many notes of interest" is obvious to a panel of faculty. Be more careful in your next version. We should say things like "While I receive many inquiries of inbound interest, ..." and elaborate carefully.</p><p>Don't use the term "real dialogue." Use "genuine" rather than real.</p><p>Add to the footnote that I am now Faculty Director of AI in the CS department.</p></div></div>
+          <div class="msg ea"><div class="avatar"></div><div class="bubble">
+            <p>The letter ran a few lines past two pages. I am cutting lines elsewhere to bring it back to two pages.</p>
+            <p>&#128221; <b>Version 2 is ready and still fits on two pages.</b></p>
+            <ul>
+              <li><b>The paper.</b> It is now named, with the citation from your CV.</li>
+              <li><b>Inbound interest.</b> The sentence now speaks from your own experience: "While I receive many inquiries of inbound interest in my group's work, a growing share of them now arrive with a polished question that a language model produced from the paper's abstract, and the interest rarely holds up once we talk. Leo's did."</li>
+              <li><b>The bio footnote.</b> It now opens with "Associate Professor and Faculty Director of AI in the Computer Science department."</li>
+            </ul>
+            <p>The word "real" no longer appears anywhere in the letter.</p>
+          </div></div>
+                  </div>
+      </div>
+
+
+
+
+    </div>
+  </div>
+</section>
+
+<!-- ================= REVIEW ================= -->
+<section class="feature" id="review">
+  <div class="wrap">
+    <aside class="rail">
+      <p class="eyebrow">Working documents</p>
+      <h2>Review it like code. Comment on any line.</h2>
+      <p class="thesis">Outlines, briefs, memos and proposal sections open as pull requests in a private GitHub repository, one sentence per line. You leave inline comments and suggested wording on your phone. The assistant applies the whole review in one commit, replies on each thread, and resolves it. You merge.</p>
+      <ul>
+        <li>The merged file is the finished document.</li>
+        <li>Confidential material never goes there: letters, reviews, personnel files stay local.</li>
+        <li>A comment it cannot resolve stays open with its question.</li>
+      </ul>
+    </aside>
+
+    <div class="threads">
+
+      <div class="chat">
+        <div class="head"><span><span class="room">#ea-bs-ai</span> &rsaquo; <b>Faculty brief for the vote, PR #15</b></span><span>Oct 22</span></div>
+        <div class="body">
+          <div class="msg user"><div class="bubble"><span class="who">Inline comments, 20:52 to 21:11</span>"Delete this line." &middot; "~carries~ new verb please" &middot; "the vote is on the structure and to indicate department temperature for this degree. While the AI faculty in our department are generally excited to offer this degree, we acknowledge this is a significant undertaking both conceptually and pragmatically. (or something to this effect?)" &middot; "This is for builders." &middot; "We are a public university and it's actually part of our responsibility."</div></div>
+          <div class="msg ea"><div class="avatar"></div><div class="bubble">
+            <p><span class="who">21:16</span></p>
+            <p><span class="ok">&#10003;</span> I made every change your review asked for in PR #15, in one commit. All 32 threads have a reply and are resolved. No thread is left open, and the PR is not merged.</p>
+            <ul>
+              <li><b>Byline:</b> it now names you and the six members of the ad hoc committee. I took the names from the recipients of your Oct 21 agenda email.</li>
+              <li><b>Abstract:</b> two lines are gone. It now says staffing is not committed. The vote is on the structure and the department's temperature, with your sentence that this is a significant undertaking.</li>
+              <li><b>Introduction:</b> it names the job titles; a new line names the courses we cut to make room; "Employers told us" is now one paragraph of department history.</li>
+              <li>A sweep of the whole document for "carries" and similar wording, per the review note.</li>
+            </ul>
+          </div></div>
+        </div>
+      </div>
+
+
+    </div>
+  </div>
+</section>
+
+<!-- ================= PROJECTS ================= -->
+<section class="feature" id="projects">
+  <div class="wrap">
+    <aside class="rail">
+      <p class="eyebrow">Projects and rooms</p>
+      <h2>"Get me up to speed here."</h2>
+      <p class="thesis">Each project gets a private room and a specialist that already knows its people, its mail and its decisions. Ask where things stand and it reads the ledger, the threads and the calendar this turn, then tells you what is yours and what is someone else's.</p>
+      <ul>
+        <li>A project store holds people, filed mail and a decision journal. The ledger holds what you owe.</li>
+        <li>Drop in a call transcript and the outline updates.</li>
+        <li>It pushes to Overleaf and publishes status sites, and pulls before every edit.</li>
+      </ul>
+    </aside>
+
+    <div class="threads">
+
+      <div class="chat">
+        <div class="head"><span><span class="room">#ea-workshop</span> &rsaquo; <b>What is actually needed from me?</b></span><span>Oct 23</span></div>
+        <div class="body">
+          <div class="msg user"><div class="bubble">Get me up to speed here. What is actually needed from me? Do a deep dive on existing emails here to update the ledger. I think Kara is handling the invite list, and check in on our last email chain to confirm if needed, and mine if we should have another meeting. We also need to circulate pre-read, deadline for that is likely week before Thanksgiving? Unless she thinks it's needed earlier too.</div></div>
+          <div class="msg ea"><div class="avatar"></div><div class="bubble">
+            <p>I read the four workshop threads and the ledger chain. One email is due from you today. The rest is with Kara or with the host lab.</p>
+            <p><b>What you need to do</b></p>
+            <ul>
+              <li>&#128308; <b>Reply to Kara today.</b> She wants to answer the host this week, and she waits on you. She asks four things: sign off on her core list of seven; yes or no on two more names; a choice between two candidates, where one choice means the host does not have to clear a foreign national; and three optional adds. Tell me your picks and I will draft the reply.</li>
+              <li><b>Pre-read.</b> This is new, so I added a row due Fri Nov 20. Thanksgiving week takes away one of the 2.5 weeks before Dec 8. If the pre-read asks people to fill anything in, it should go out around Nov 13. Nobody owns writing it yet, because you dropped the gap map on Oct 1.</li>
+            </ul>
+            <p><b>Handled by others</b></p>
+            <ul><li><b>Attendee list:</b> Kara owns it. You told the host so on Oct 19. He asked again last night, so the list now waits only on the sign-offs. You do not need to reply to him. If Kara has not written by Oct 28, I will raise it.</li><li><b>Date:</b> Dec 8, 1 to 5 PM. That is the one open window for the senior attendee.</li></ul>
+          </div></div>
+        </div>
+      </div>
+
+
+
+
+
+
+    </div>
+  </div>
+</section>
+
+<!-- ================= RULES ================= -->
+<section class="feature" id="rules">
+  <div class="wrap">
+    <aside class="rail">
+      <p class="eyebrow">Rules and closure</p>
+      <h2>Say it once. In your own words.</h2>
+      <p class="thesis">A preference you state in chat is recorded verbatim, scoped, and applied in every later briefing and draft. Obligations close themselves from evidence: your reply, your archive, a matching calendar event, a send. If you ever have to say "that's done", it logs its own miss as a defect to fix.</p>
+      <ul>
+        <li>Standing rules outrank the built-in skills.</li>
+        <li>Thin evidence becomes a one-tap "Looks done?" card instead of a silent close.</li>
+        <li>List mail and cold applicant mail are digested in code, never surfaced one by one.</li>
+      </ul>
+    </aside>
+
+    <div class="threads">
+
+      <div class="chat">
+        <div class="head"><span><span class="room">#ea</span> &rsaquo; <b>Standing rules, as spoken</b></span><span>Jun to Oct</span></div>
+        <div class="body">
+          <div class="msg user"><div class="bubble">Not doing the DOE portal. Not doing the safety-training vendor until they scream at me. Quarantine is never an action item.</div></div>
+          <div class="msg ea"><div class="avatar"></div><div class="bubble"><p>Recorded three rules: DOE portal notices are dropped from briefings; safety-training mail is suppressed unless the subject carries FINAL, OVERDUE or non-compliance; quarantine digests are never an action item. Related ledger rows auto-close.</p></div></div>
+          <div class="msg user"><div class="bubble">The agency-wide BAA is like most other BAAs, totally garbage - not actually an opportunity.</div></div>
+          <div class="msg ea"><div class="avatar"></div><div class="bubble"><p>Recorded: office-wide and rolling BAAs are not opportunities. Scope: funding, newsletters. The funding digest had ranked it second of 44; the calibration log has that too.</p></div></div>
+          <div class="msg user"><div class="bubble">Standing rule is no interns unless they're working with someone I know.</div></div>
+          <div class="msg ea"><div class="avatar"></div><div class="bubble"><p>Recorded, and the open intern request is closed under that rule.</p></div></div>
+          <div class="msg user"><div class="bubble">If I deleted, assume I handled it.</div></div>
+          <div class="msg ea"><div class="avatar"></div><div class="bubble"><p>Recorded. A row whose mail you archived or deleted closes without a card.</p></div></div>
+        </div>
+      </div>
+
+
+
+    </div>
+  </div>
+</section>
+
+<!-- ================= TRUST ================= -->
+<section class="trust" id="trust">
+  <div class="wrap">
+    <div>
+      <p class="eyebrow">Models</p>
+      <h2>Frontier intelligence. <em>Your mail stays home.</em></h2>
+      <p class="lede">Claude Code or Codex does the judgment: the conversation, the hard reply, the plan. If you have a GPU, an open-weight model you host reads every message first, writes the digests, the tags, the briefings and the first drafts. The frontier model sees summaries of what needs you, and reads one thread's text only when a request calls for it. Nothing is read in bulk.</p>
+      <div class="gates">
+        <div class="gate"><span class="ic">&#128274;</span><span><b>One-time tokens.</b> Sending mail, creating or moving an event, a deferred send, a delete, a publish, a reviewer invite: each needs a token the bot mints only when you press the card's button. The model holds no chat credential, so it cannot press it.</span></div>
+        <div class="gate"><span class="ic">&#128100;</span><span><b>A separate user.</b> The model runs as its own Unix account. Your mail and calendar tokens belong to you and are unreadable to it. Reads and drafts go through a mediator that runs as you and refuses to send.</span></div>
+        <div class="gate"><span class="ic">&#128213;</span><span><b>Read-only code.</b> The rules it runs under cannot be edited by the model. Changes come from your checkout and nowhere else.</span></div>
+        <div class="gate"><span class="ic">&#127968;</span><span><b>Your chat on your server.</b> Zulip on your own machine over your tailnet is the recommended front end. Slack works if you accept that Slack stores the conversation.</span></div>
+      </div>
+    </div>
+    <div class="stack">
+      <div class="tier hot">
+        <p class="eyebrow">Judgment</p>
+        <h3>Claude Code, or Codex</h3>
+        <p>Runs every conversation, every project room, the audits and the scheduling channel. Claude Code is the workhorse in production today; Codex runs under evaluation on the same lanes with every write recorded.</p>
+      </div>
+      <div class="tier">
+        <p class="eyebrow">Mail front desk, optional</p>
+        <h3>A model you host</h3>
+        <p>Any OpenAI-compatible endpoint over https: vLLM, Ollama, or a server your group runs. The reference install uses a 27B open-weight model on a colleague's machine at the same university. It reads the inbox, classifies, summarizes, tags, drafts and briefs. Money, contracts, deans, declines and personnel never run here.</p>
+      </div>
+      <div class="tier">
+        <p class="eyebrow">No model at all</p>
+        <h3>Plain Python</h3>
+        <p>Reading the inbox, merging calendars, solving for meeting times, closing ledger items from evidence, learning your style from sent mail. Most of the work, and it spends no tokens.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= INSTALL ================= -->
+<section class="install" id="install">
+  <div class="wrap">
+    <div>
+      <p class="eyebrow">Install</p>
+      <h2>An always-on Linux or macOS box, and about an hour.</h2>
+      <p>Start with the <b>email</b> profile: triage, the ledger, drafts in your voice, meeting times in the morning report. Move to <b>assistant</b> when you want the chat rooms and the buttons.</p>
+      <div class="req">
+        <span>&middot; A Claude Pro or Max subscription, or a ChatGPT subscription that enables Codex</span>
+        <span>&middot; A Microsoft 365 account and an app registration from your IT group (the longest wait)</span>
+        <span>&middot; Optionally, Google accounts for calendars and Gmail drafts</span>
+        <span>&middot; Optionally, a GPU and an open model for the mail</span>
+      </div>
+    </div>
+    <div>
+<pre class="sh"><span class="c"># on the machine that will run it</span>
+git clone https://github.com/arpg/tacitus.git ea-system
+cd ea-system &amp;&amp; ./install.sh
+<span class="c"># checks prerequisites, installs Claude Code,
+# then opens /setup: one question at a time,
+# until the health check passes.</span></pre>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Tacitus is free software under AGPL-3.0-only. Research software from a university robotics lab, one maintainer, built in a moment of desperation in March 2026.</span>
+    <span><a href="https://github.com/arpg/tacitus">Code</a> &middot; <a href="https://github.com/arpg/tacitus/discussions">Discussions</a> &middot; <a href="https://github.com/arpg/tacitus/blob/main/docs/SECURITY.md">Threat model</a></span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var msgs = document.querySelectorAll('.msg, .note');
+  if (!('IntersectionObserver' in window)) return;
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduce) return;
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        e.target.classList.add('in');
+        io.unobserve(e.target);
+      }
+    });
+  }, { rootMargin: '0px 0px -8% 0px', threshold: 0.05 });
+  var vh = window.innerHeight || 800;
+  msgs.forEach(function (m) {
+    var r = m.getBoundingClientRect();
+    if (r.top > vh) {
+      var siblings = m.parentElement ? Array.prototype.indexOf.call(m.parentElement.children, m) : 0;
+      m.style.setProperty('--i', Math.min(siblings, 6));
+      io.observe(m);
+    }
+  });
+})();
+</script>
+
+</body>
+</html>
