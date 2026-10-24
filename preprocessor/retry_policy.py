@@ -64,7 +64,7 @@ class CircuitOpen(RuntimeError):
     """Raised by raise_if_open() when the service breaker is open."""
 
 
-_NUMBER_FIELDS = ("failures", "last_failure_ts", "opened_at")
+_NUMBER_FIELDS = ("failures", "last_failure_ts", "opened_at", "cooldown", "opens", "threshold")
 
 
 def _valid_entry(entry: dict) -> dict:
@@ -151,16 +151,27 @@ class CircuitBreaker:
     def record_failure(self, error: str = "") -> None:
         e = self._entry(fresh=True)
         failures = (e.get("failures") or 0) + 1
+        now = time.time()
+        prev_opened = e.get("opened_at") or 0
         entry = {
             "failures": failures,
-            "last_failure_ts": time.time(),
+            "last_failure_ts": now,
             "last_error": str(error)[:300],
-            "opened_at": e.get("opened_at") or 0,
+            "opened_at": prev_opened,
+            # The breaker's own cooldown and the number of times it has
+            # opened: open_breakers() reads both, so a breaker with a long
+            # cooldown is not read as recovered between its probes, and
+            # one that keeps reopening is read as a sustained outage.
+            "cooldown": self.cooldown,
+            "threshold": self.threshold,
+            "opens": e.get("opens") or 0,
         }
         if failures >= self.threshold:
             # Stamp opened_at on the crossing failure and on any failure
             # during half-open probing.
-            entry["opened_at"] = time.time()
+            entry["opened_at"] = now
+            if not prev_opened or (now - prev_opened) >= self.cooldown:
+                entry["opens"] += 1
         self._write(entry)
 
     def record_success(self) -> None:
@@ -169,17 +180,28 @@ class CircuitBreaker:
             self._write(None)
 
 
+SUSTAINED_OPENS = 3     # a breaker that reopened this often stays listed until a success clears it
+
+
 def open_breakers() -> list[dict]:
-    """All currently-open breakers (for sentinel / status surfaces)."""
+    """All currently-open breakers (for sentinel / status surfaces).
+
+    A breaker is open from ITS OWN threshold, and one past its cooldown
+    is half-open: it stays listed while it keeps failing within two of
+    its own cooldowns (the entry records both; the module defaults are
+    the fallback for an older entry). One that has
+    opened SUSTAINED_OPENS times is a sustained outage and stays listed
+    until a success clears the entry, however long the next probe takes:
+    a service that answered nobody is not recovered."""
     out = []
     now = time.time()
     for service, e in _load_all().items():
-        if (e.get("failures") or 0) < FAILURE_THRESHOLD:
+        if (e.get("failures") or 0) < (e.get("threshold") or FAILURE_THRESHOLD):
             continue
-        if (now - (e.get("opened_at") or 0)) >= COOLDOWN_SECONDS:
-            # Past cooldown means half-open; surface it only while it
-            # keeps reopening.
-            if (now - (e.get("last_failure_ts") or 0)) > COOLDOWN_SECONDS * 2:
+        cooldown = float(e.get("cooldown") or COOLDOWN_SECONDS)
+        sustained = (e.get("opens") or 0) >= SUSTAINED_OPENS
+        if (now - (e.get("opened_at") or 0)) >= cooldown and not sustained:
+            if (now - (e.get("last_failure_ts") or 0)) > cooldown * 2:
                 continue
         out.append({"service": service, **e})
     return out
