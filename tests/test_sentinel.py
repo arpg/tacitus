@@ -846,6 +846,28 @@ def test_deploy_integrity_tolerates_a_docs_only_gap_but_not_a_runtime_one():
         finally:
             (sentinel.REPO_DIR, sentinel.DEPLOY_DIR, sentinel.BOT_INSTANCE_FILE) = orig
 
+
+def test_breaker_detail_names_the_service_and_error_kind_only():
+    """The detail is fingerprinted: a failure count or the full error text
+    would re-alert on every probe of a dead service."""
+    import retry_policy
+    orig = retry_policy.open_breakers
+    retry_policy.open_breakers = lambda: [
+        {"service": "remote-llm", "failures": 15, "opens": 4,
+         "last_error": "HTTP 502: <html><title>502 Proxy Error</title>..."},
+        {"service": "remote-llm-tune", "failures": 3, "last_error": "timed out after 330s"}]
+    try:
+        ok, detail = sentinel.check_circuit_breakers()
+        assert not ok
+        assert detail.startswith("circuit breaker OPEN: remote-llm (HTTP 502), "
+                                 "remote-llm-tune (timed out after 330s) ")
+        assert "15" not in detail and "<html>" not in detail
+        retry_policy.open_breakers = lambda: []
+        assert sentinel.check_circuit_breakers() == (True, "no open circuit breakers")
+    finally:
+        retry_policy.open_breakers = orig
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0

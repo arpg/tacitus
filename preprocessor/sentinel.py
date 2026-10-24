@@ -659,11 +659,20 @@ def check_circuit_breakers() -> tuple[bool, str]:
         return (True, f"breaker check skipped ({e})")
     if not open_now:
         return (True, "no open circuit breakers")
+    # The detail is fingerprinted, so it names the services and the kind
+    # of error only. A failure count or a full error text would change
+    # with every probe and re-alert on each one.
     names = ", ".join(
-        f"{b['service']} ({b.get('failures')}x, last: "
-        f"{(b.get('last_error') or '?')[:60]})" for b in open_now)
+        f"{b['service']} ({_error_kind(b.get('last_error'))})" for b in open_now)
     return (False, f"circuit breaker OPEN: {names} — external service "
                    f"down; calls are failing fast")
+
+
+def _error_kind(error) -> str:
+    """'HTTP 502' from 'HTTP 502: <html>...'; the first words otherwise."""
+    text = re.sub(r"\s+", " ", str(error or "?")).strip()
+    head = text.split(":", 1)[0].strip()
+    return (head or text)[:40] or "?"
 
 
 def check_resident_pane() -> tuple[bool, str]:
