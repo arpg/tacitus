@@ -115,7 +115,9 @@ jobs:
 
       - name: poppler (pdftotext) on Linux
         if: env.LEG_TESTS == 'true' && runner.os == 'Linux'
-        run: sudo apt-get -qq install -y poppler-utils
+        # The runner image's package index goes stale between image builds,
+        # and a stale index 404s on the current poppler build.
+        run: sudo apt-get -qq update && sudo apt-get -qq install -y poppler-utils
 
       - name: Point HOME and EA_DIR at empty directories
         if: env.LEG_TESTS == 'true'
