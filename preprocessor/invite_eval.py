@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -39,8 +40,11 @@ PHONE_WORDS = ("phone", "call me", "call you", "dial")
 
 
 def _dt(s: str) -> datetime | None:
+    # Graph writes seven fractional digits; fromisoformat before Python 3.11
+    # accepts at most six.
+    text = re.sub(r"(\.\d{6})\d+", r"\1", str(s)).replace("Z", "+00:00")
     try:
-        d = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        d = datetime.fromisoformat(text)
     except (TypeError, ValueError):
         return None
     return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
