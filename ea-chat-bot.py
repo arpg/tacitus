@@ -355,18 +355,24 @@ EA_BOT_HOME = _require_isolation_user()
 EA_BOT_SCRIPT_DIR = Path(EA_BOT_HOME) / "ea-system"
 CLAUDE_BIN = _detect_claude_bin()
 # A headless run with no login is not an error to the CLI: it answers the
-# prompt with this line and exit 0, in no turn.
+# prompt with this line and exit 0, in no turn. A stored token the server
+# refuses (CLAUDE_CODE_OAUTH_TOKEN in ea-bot's settings) is answered with
+# the 401 line instead, is_error true, one turn.
 _NOT_LOGGED_IN = "Not logged in"
+_LOGIN_LOST_MARKERS = (_NOT_LOGGED_IN, "Failed to authenticate",
+                       "OAuth access token is invalid", "API Error: 401")
 
 
 def _login_lost_message() -> str:
     """What a turn posts in place of the CLI's 'Not logged in' line: the
     one command that restores ea-bot's login (docs/SETUP.md 'Common
     failures')."""
-    return ("The EA is offline: ea-bot's Claude login has lapsed, so no turn can run. "
-            f"Restore it in a terminal on the host: `cd / && sudo -u {EA_BOT_USER} env "
-            f"HOME={EA_BOT_HOME} {CLAUDE_BIN}`, then `/login`, then Ctrl+C. "
-            "The sentinel reports the same on the health channel until it is fixed.")
+    return ("The EA is offline: ea-bot's Claude login has lapsed or its stored token is "
+            "refused, so no turn can run. Restore the login in a terminal on the host: "
+            f"`cd / && sudo -u {EA_BOT_USER} env HOME={EA_BOT_HOME} {CLAUDE_BIN}`, then "
+            "`/login`, then Ctrl+C. A token kept by scripts/install/ea-bot-token.sh is "
+            "renewed by running that script again. The sentinel reports the same on the "
+            "health channel until it is fixed.")
 
 # Startup audit line — stderr so it lands in systemd/launchd journal
 # immediately, regardless of the Python logging config applied later.
@@ -797,9 +803,11 @@ def _run_claude_streaming(
 
         # The lane would post the CLI's 'Not logged in' line as the reply;
         # the user reads the fix instead, and the log says what happened.
-        if _NOT_LOGGED_IN in output_text or any(_NOT_LOGGED_IN in s for s in stderr_lines):
+        _hit = next((m for m in _LOGIN_LOST_MARKERS
+                     if m in output_text or any(m in s for s in stderr_lines)), None)
+        if _hit:
             log.error(f"[{label}] ea-bot's Claude login is gone: the CLI answered "
-                      f"'{_NOT_LOGGED_IN}' (sentinel check ea_bot_login)")
+                      f"'{_hit}' (sentinel check ea_bot_login)")
             output_text = _login_lost_message()
 
         # Summary log

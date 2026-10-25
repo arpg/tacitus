@@ -1241,8 +1241,11 @@ tokens, the deck builder) is the normal state of a new install.
   claude`, then `/login`, then Ctrl+C, in a terminal (it is a full-screen
   program). A long-lived `claude setup-token` login (the macOS way, and
   the Docker image's) lasts a year and needs no renewal in between:
-  `bash scripts/install/ea-bot-token.sh` makes it and stores it as
-  ea-bot; run it again before the year ends (`docs/macos-claude-binary.md`). Your own Claude Code's
+  `bash scripts/install/ea-bot-token.sh` makes it, stores it as ea-bot
+  and proves it with one short call; run it again before the year ends
+  (`docs/macos-claude-binary.md`). A stored token the server refuses
+  reads as logged in to `claude auth status` and fails every turn with a
+  401: the bot's reply and the sentinel name it from the first such turn. Your own Claude Code's
   login is separate: `claude`, then `/login`.
 - **Microsoft says "Need admin approval"** (`AADSTS65001`: no consent
   for the app; `AADSTS90094`: the permissions need an administrator):

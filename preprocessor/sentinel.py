@@ -119,6 +119,11 @@ EA_BOT_HOME = "/home/ea-bot"
 # "Common failures").
 LOGIN_FIX = (f"cd / && sudo -u ea-bot env HOME={EA_BOT_HOME} "
              f"{EA_BOT_HOME}/.local/bin/claude, then /login, then Ctrl+C")
+# The bot's runner logs this phrase when a turn met a lost login or a
+# refused stored token (ea-chat-bot.py, _LOGIN_LOST_MARKERS).
+BOT_LOG = "slack-bot.log"
+LOGIN_LOST_MARKER = "Claude login is gone"
+LOGIN_LOST_WINDOW_MIN = 60
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +300,32 @@ def _ea_bot_logged_in() -> bool | None:
         return None
     state = data.get("loggedIn") if isinstance(data, dict) else None
     return state if isinstance(state, bool) else None
+
+
+def _login_lost_in_bot_log(window_min: int = LOGIN_LOST_WINDOW_MIN) -> bool:
+    """Whether a chat turn met a lost login within the window, by the
+    bot's own log line. `claude auth status` reports a stored token as a
+    login whatever the server says of it, so a refused token is seen
+    here, on the first turn that hits it, and nowhere else."""
+    path = LOG_DIR / BOT_LOG
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 400_000))
+            tail = f.read().decode("utf-8", "replace")
+    except OSError:
+        return False
+    cutoff = time.time() - window_min * 60
+    for line in tail.splitlines():
+        if LOGIN_LOST_MARKER not in line:
+            continue
+        try:
+            ts = time.mktime(time.strptime(line[:19], "%Y-%m-%d %H:%M:%S"))
+        except ValueError:
+            continue
+        if ts >= cutoff:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -739,6 +770,13 @@ def check_ea_bot_login() -> tuple[bool, str]:
     0, so the lanes keep going and post that line. The sentinel asks the
     CLI itself; when that probe cannot run it reads the credentials file,
     where a missing refresh token is the same unrecoverable state."""
+    if _login_lost_in_bot_log():
+        return (False, "a chat turn met a lost ea-bot Claude login within the last "
+                       f"{LOGIN_LOST_WINDOW_MIN} min (the bot log) — a stored token the "
+                       "server refuses still reads as logged in to `claude auth status`; "
+                       "fix: renew it with scripts/install/ea-bot-token.sh, or remove "
+                       "env.CLAUDE_CODE_OAUTH_TOKEN from ea-bot's .claude/settings.json "
+                       "and use the browser login: " + LOGIN_FIX)
     logged_in = _ea_bot_logged_in()
     if logged_in is True:
         return (True, "ea-bot Claude login present (claude auth status)")

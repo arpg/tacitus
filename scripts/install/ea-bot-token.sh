@@ -59,8 +59,15 @@ printf '2/2  Paste the token (not echoed), then Enter: '
 read -rs TOKEN
 echo ""
 TOKEN="${TOKEN//[[:space:]]/}"
+# A setup-token begins with sk-ant- and is long; a terminal paste can
+# arrive short or empty, and a stored fragment is worse than no token:
+# the CLI prefers it to the browser login and every turn fails with 401.
 if [[ -z "$TOKEN" ]]; then
     echo "ea-bot-token: no token pasted; nothing was stored" >&2
+    exit 1
+fi
+if [[ "$TOKEN" != sk-ant-* || ${#TOKEN} -lt 40 ]]; then
+    echo "ea-bot-token: the paste gave ${#TOKEN} characters; a token begins with sk-ant- and is longer than 40. Nothing was stored. Copy the whole token and run this again." >&2
     exit 1
 fi
 
@@ -87,7 +94,40 @@ print("stored: env.CLAUDE_CODE_OAUTH_TOKEN in " + path + " (mode 600)")
 ' "$SETTINGS")
 unset TOKEN
 
+# `claude auth status` reports a stored token as a login whatever the
+# server says of it, so the proof is one real turn on it. A refused token
+# is removed again, and the browser login, when there is one, stays in use.
 echo ""
-echo "Claude Code reads the token at every start. The login as the CLI sees it now:"
+echo "Verifying with one short call as $EA_BOT_USER..."
+VERDICT="$(cd / && sudo -u "$EA_BOT_USER" env HOME="$EA_BOT_HOME" "$CLAUDE" -p "Reply with the word OK" --model haiku --output-format json 2>/dev/null < /dev/null \
+    | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    print("no answer"); sys.exit(0)
+print("ok" if not d.get("is_error") else "error: " + str(d.get("result", ""))[:160])
+')"
+if [[ "$VERDICT" != ok ]]; then
+    (cd / && sudo -u "$EA_BOT_USER" env HOME="$EA_BOT_HOME" python3 -c '
+import json, os, sys
+path = sys.argv[1]
+d = json.load(open(path))
+env = d.get("env") or {}
+env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+if env:
+    d["env"] = env
+else:
+    d.pop("env", None)
+fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+with os.fdopen(fd, "w") as f:
+    f.write(json.dumps(d, indent=2) + "\n")
+os.replace(path + ".tmp", path)
+os.chmod(path, 0o600)
+' "$SETTINGS")
+    echo "ea-bot-token: the token did not work ($VERDICT); removed again, the browser login stays in use. Make a new one and run this again." >&2
+    exit 1
+fi
+echo "ok: one turn ran on the stored token."
 (cd / && sudo -u "$EA_BOT_USER" env HOME="$EA_BOT_HOME" "$CLAUDE" auth status 2>/dev/null) | grep -E '"(loggedIn|authMethod)"' || true
-echo "Renew in about a year: run this script again. The doctor (scripts/ea-doctor.py) reports the login."
+echo "Claude Code reads it at every start. Renew in about a year: run this script again. The doctor (scripts/ea-doctor.py) reports the login."

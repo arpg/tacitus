@@ -509,16 +509,20 @@ def test_crontab_match_ok():
 # Resident auth check: ea-bot OAuth token lapse
 # ---------------------------------------------------------------------------
 
-def _login_probe(logged_in, refresh):
-    """Fake both probes: the CLI's answer and the credentials file."""
-    orig = (sentinel._ea_bot_logged_in, sentinel._ea_bot_refresh_token_present)
+def _login_probe(logged_in, refresh, lost_in_log=False):
+    """Fake the three probes: the CLI's answer, the credentials file and
+    the bot log."""
+    orig = (sentinel._ea_bot_logged_in, sentinel._ea_bot_refresh_token_present,
+            sentinel._login_lost_in_bot_log)
     sentinel._ea_bot_logged_in = lambda: logged_in
     sentinel._ea_bot_refresh_token_present = lambda: refresh
+    sentinel._login_lost_in_bot_log = lambda: lost_in_log
     return orig
 
 
 def _restore(orig):
-    sentinel._ea_bot_logged_in, sentinel._ea_bot_refresh_token_present = orig
+    (sentinel._ea_bot_logged_in, sentinel._ea_bot_refresh_token_present,
+     sentinel._login_lost_in_bot_log) = orig
 
 
 def test_ea_bot_login_gone_fails_with_the_fix():
@@ -569,6 +573,40 @@ def test_ea_bot_login_nothing_readable_skips():
         assert "skipped" in detail
     finally:
         _restore(orig)
+
+
+def test_a_turn_that_met_a_refused_token_alerts_though_the_cli_says_logged_in():
+    """`claude auth status` reports a stored token as a login whatever the
+    server says of it (2026-10-25: a three-character paste, every turn a
+    401). The bot's log line is the signal, within the window."""
+    orig = _login_probe(True, True, lost_in_log=True)
+    try:
+        ok, detail = sentinel.check_ea_bot_login()
+        assert not ok
+        assert "ea-bot-token.sh" in detail and "/login" in detail
+    finally:
+        _restore(orig)
+
+
+def test_the_bot_log_signal_has_a_window():
+    import tempfile
+    import time as _time
+    orig_dir = sentinel.LOG_DIR
+    with tempfile.TemporaryDirectory() as td:
+        sentinel.LOG_DIR = Path(td)
+        try:
+            log = Path(td) / sentinel.BOT_LOG
+            assert sentinel._login_lost_in_bot_log() is False          # no log
+            old = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(_time.time() - 3 * 3600))
+            now = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime())
+            log.write_text(f"{old},000 ERROR [mono] ea-bot's Claude login is gone: the CLI answered 'Not logged in'\n"
+                           f"{now},000 INFO [mono] done in 3.0s\n")
+            assert sentinel._login_lost_in_bot_log() is False          # too old
+            log.write_text(log.read_text()
+                           + f"{now},000 ERROR [mono] ea-bot's Claude login is gone: the CLI answered 'API Error: 401'\n")
+            assert sentinel._login_lost_in_bot_log() is True
+        finally:
+            sentinel.LOG_DIR = orig_dir
 
 
 def test_ea_bot_login_is_checked_on_every_install():

@@ -1211,12 +1211,19 @@ def test_a_lapsed_login_posts_the_fix_not_the_cli_line():
     /login' and exit 0; the lane must post the restoring command, not
     that line."""
     body = _fn_body("_run_claude_streaming")
-    assert "_NOT_LOGGED_IN in output_text" in body
+    assert "for m in _LOGIN_LOST_MARKERS" in body
     assert "output_text = _login_lost_message()" in body
-    assert 'log.error(' in body[body.index("_NOT_LOGGED_IN in output_text"):
+    assert 'log.error(' in body[body.index("for m in _LOGIN_LOST_MARKERS"):
                                 body.index("output_text = _login_lost_message()")]
+    assert "Claude login is gone" in body   # the sentinel reads this phrase
+    # a stored token the server refuses answers with the 401 line, is_error
+    markers = BOT_SRC[BOT_SRC.index("_LOGIN_LOST_MARKERS = ("):BOT_SRC.index(")", BOT_SRC.index("_LOGIN_LOST_MARKERS = ("))]
+    assert '_NOT_LOGGED_IN = "Not logged in"' in BOT_SRC
+    for m in ("_NOT_LOGGED_IN", "Failed to authenticate", "OAuth access token is invalid", "API Error: 401"):
+        assert m in markers, m
     msg = _fn_body("_login_lost_message")
     assert "/login" in msg and "sudo -u" in msg and "Ctrl+C" in msg
+    assert "ea-bot-token.sh" in msg
 
 
 if __name__ == "__main__":

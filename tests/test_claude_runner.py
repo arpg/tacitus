@@ -58,7 +58,8 @@ def runner(tmp_path, monkeypatch):
           "log": logging.getLogger("test-claude-runner"),
           "EA_BOT_SCRIPT_DIR": tmp_path, "_draft_events": _Journal,
           "_is_gmail_draft_tool": lambda *a: False,
-          "_NOT_LOGGED_IN": "Not logged in", "_login_lost_message": lambda: "login lost",
+          "_NOT_LOGGED_IN": "Not logged in", "_LOGIN_LOST_MARKERS": ("Not logged in",),
+          "_login_lost_message": lambda: "login lost",
           "_sudo_claude_cmd": lambda args, run_id="", extra_env=None: [sys.executable, str(fake), *args]}
     code = (_src("@dataclass\nclass ClaudeResult", "\n\n\n_GMAIL_DRAFT_TOOLS")
             + "\n\n" + _src("def _run_claude_streaming(", "\n# ----"))
