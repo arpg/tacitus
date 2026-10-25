@@ -1240,8 +1240,9 @@ tokens, the deck builder) is the normal state of a new install.
   ea-bot logs in with its own copy of Claude Code. On Linux, `sudo -u ea-bot env HOME=/home/ea-bot
   claude`, then `/login`, then Ctrl+C, in a terminal (it is a full-screen
   program). A long-lived `claude setup-token` login (the macOS way, and
-  the Docker image's) lasts a year: run `setup-token` as ea-bot again
-  before it ends (`docs/macos-claude-binary.md`). Your own Claude Code's
+  the Docker image's) lasts a year and needs no renewal in between:
+  `bash scripts/install/ea-bot-token.sh` makes it and stores it as
+  ea-bot; run it again before the year ends (`docs/macos-claude-binary.md`). Your own Claude Code's
   login is separate: `claude`, then `/login`.
 - **Microsoft says "Need admin approval"** (`AADSTS65001`: no consent
   for the app; `AADSTS90094`: the permissions need an administrator):
