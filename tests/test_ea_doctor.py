@@ -308,6 +308,24 @@ def test_share_masks_identities_and_keeps_the_report_shape():
     r = subprocess.run([sys.executable, str(DOCTOR), "--ci", "--share"], capture_output=True, text=True)
     assert r.returncode == 0 and r.stdout.rstrip().endswith("(--share: addresses, account names, hosts and ids masked)")
 
+
+def test_the_responsibility_notice_warns_until_acknowledged():
+    with tempfile.TemporaryDirectory(prefix="ea-doctor-") as td:
+        d = Path(td)
+        (d / "config").mkdir()
+        cfg = d / "config" / "ea-config.json"
+        cfg.write_text("{}")
+        doc = json.loads(_run("--json", ea_dir=d).stdout)
+        res = {x["name"]: x for x in doc["results"]}
+        assert res["responsibility notice"]["status"] == "WARN"
+        assert "--acknowledged" in res["responsibility notice"]["fix"]
+        cfg.write_text(json.dumps({"acknowledged": {"responsibility": "2026-10-25"}}))
+        doc = json.loads(_run("--json", ea_dir=d).stdout)
+        res = {x["name"]: x for x in doc["results"]}
+        assert res["responsibility notice"]["status"] == "PASS"
+        assert "2026-10-25" in res["responsibility notice"]["detail"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0

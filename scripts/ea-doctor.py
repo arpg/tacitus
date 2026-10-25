@@ -412,6 +412,18 @@ def check_config(ea_dir: Path):
         (ok if p.exists() else warn)(f"config (optional): {name}",
                                      "" if p.exists() else "absent; defaults apply",
                                      f"cp {REPO}/config/{name} {p} to customise")
+    eac = cfg / "ea-config.json"
+    if eac.exists():
+        try:
+            d = json.loads(eac.read_text())
+            ack = d.get("acknowledged") if isinstance(d.get("acknowledged"), dict) else {}
+            when = str(ack.get("responsibility") or "")
+            (ok if when else warn)("responsibility notice",
+                                   f"acknowledged {when}" if when else "not acknowledged",
+                                   "read 'Your responsibility' in README.md, then run "
+                                   "./scripts/install/setup.sh --profile <name> --acknowledged")
+        except Exception:
+            pass
     prof = cfg / "user-profile.json"
     if prof.exists():
         try:

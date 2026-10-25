@@ -73,6 +73,14 @@ Without a chat platform there are no confirmation cards, and the send
 verbs need a card's token, so an `email` or `review-only` install cannot
 send mail or create a real calendar event by construction.
 
+**The notice.** Before the installer runs, `/setup` shows the "Your
+responsibility" paragraph of the README and asks whether you accept it.
+On a yes it runs `scripts/install/setup.sh` with `--acknowledged`, which
+records the date as `"acknowledged": {"responsibility": "YYYY-MM-DD"}`
+in `ea-config.json`, once. `ea-doctor.py` warns while that value is
+missing. An install made by hand records it the same way:
+`./scripts/install/setup.sh --profile <name> --acknowledged`.
+
 The defaults in the code are the full system's, not the recommended
 start: an `ea-config.json` with no `"profile"` (and `scripts/install/setup.sh` with no
 `--profile`) means `assistant`, an absent `chat` block means Slack, and

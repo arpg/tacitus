@@ -253,6 +253,23 @@ The assistant inside Tacitus is the EA, and its name runs through the
 system: the `ea-bot` user, the `~/.ea` directory and the `ea` chat
 channels.
 
+## Your responsibility
+
+Tacitus is not an ordinary program. Running it, you give an assistant
+read access to your mailbox and calendars and let it draft mail in
+your voice, stage calendar events, fill polls, upload letters and
+publish sites as you. Every send and every event still waits for your
+click, and the EA cannot sign anything or move money, but it decides
+what to draft, what to file and what to leave alone, and language
+models make mistakes. What goes out under your name is yours: read
+what you approve, keep your own eyes on the ledger, and do not run it
+on an account whose mail you are not entitled to let a third party
+read (a hosted model sees what the gate lets through; see
+`docs/llm-lanes.md`). The authors do not review any install and have no
+view into yours. The software comes with no warranty of any kind, as
+the license below says in full; `/setup` shows this paragraph once and
+records that you read it.
+
 ## License
 
 Copyright (C) 2026 the authors listed in [AUTHORS](AUTHORS).

@@ -29,13 +29,15 @@ EA_DIR="${EA_DIR:-$HOME/.ea}"
 PROFILE=""
 NONINTERACTIVE="${EA_NONINTERACTIVE:-0}"
 INSTALL_CRON=0
+ACKNOWLEDGED=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --profile) PROFILE="$2"; shift 2 ;;
         --profile=*) PROFILE="${1#--profile=}"; shift ;;
+        --acknowledged) ACKNOWLEDGED=1; shift ;;
         --non-interactive) NONINTERACTIVE=1; shift ;;
         --install-cron) INSTALL_CRON=1; shift ;;
-        -h|--help) echo "usage: scripts/install/setup.sh [--profile email|review-only|assistant] [--non-interactive] [--install-cron]"; exit 0 ;;
+        -h|--help) echo "usage: scripts/install/setup.sh [--profile email|review-only|assistant] [--acknowledged] [--non-interactive] [--install-cron]"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -139,28 +141,36 @@ for path in "$SCRIPT_DIR"/config/*; do
 done
 
 # The profile lives in ea-config.json; every lane reads it from there.
-# The Python prints the updated file, or exits 3 when the file already
-# records this profile, so an unchanged config is never rewritten.
+# --acknowledged records, once, the date the user read the "Your
+# responsibility" paragraph of the README (the setup skill shows it and
+# passes the flag on a yes). The Python prints the updated file, or
+# exits 3 when the file already records both, so an unchanged config is
+# never rewritten.
 set +e
 PROFILE_JSON=$("$OWNER_IO" read "$EA_DIR/config/ea-config.json" 2>/dev/null | python3 -c '
-import json, sys
-profile = sys.argv[1]
+import datetime, json, sys
+profile, acknowledged = sys.argv[1], sys.argv[2] == "1"
 try:
     d = json.loads(sys.stdin.read() or "{}")
     if not isinstance(d, dict):
         d = {}
 except Exception:
     d = {}
-if d.get("profile") == profile:
+ack = d.get("acknowledged") if isinstance(d.get("acknowledged"), dict) else {}
+want_ack = acknowledged and not ack.get("responsibility")
+if d.get("profile") == profile and not want_ack:
     sys.exit(3)
 d["profile"] = profile
+if want_ack:
+    ack["responsibility"] = datetime.date.today().isoformat()
+    d["acknowledged"] = ack
 print(json.dumps(d, indent=2, ensure_ascii=False))
-' "$PROFILE")
+' "$PROFILE" "${ACKNOWLEDGED:-0}")
 PROFILE_RC=$?
 set -e
 if [[ "$PROFILE_RC" == 0 ]]; then
     printf '%s\n' "$PROFILE_JSON" | config_write ea-config.json
-    echo "  Profile recorded: $PROFILE"
+    echo "  Profile recorded: $PROFILE${ACKNOWLEDGED:+ (responsibility notice acknowledged)}"
 elif [[ "$PROFILE_RC" == 3 ]]; then
     echo "  Profile already recorded: $PROFILE"
 else

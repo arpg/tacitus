@@ -77,10 +77,10 @@ keyboard fails there (Python's `input()` ends in EOFError). So:
 ## 0. Resume
 
 Before the first question, read what an earlier run left behind and
-skip every question it already answered. Each section writes a file or
-a value that this list checks:
+skip every question it answered. Each section writes a value this list checks:
 
-- `~/.ea/config/ea-config.json` has `"profile"`: section 1 is done.
+- `~/.ea/config/ea-config.json` has `"profile"` and `"acknowledged"`:
+  section 1 is done; with the second missing, its notice is still owed.
 - `~/.ea/config/user-profile.json` has a real `name` and `email` (no
   placeholder): section 2 is done; its `institution` block has
   `domains` and `video.platform`: 2b is done.
@@ -103,29 +103,29 @@ the first one that is not.
 ## 1. Profile
 
 This is the first question, before any other. Ask which profile they
-want, and recommend `email` for a first install: it needs no chat
-server, and it takes about an hour once IT has given them the Outlook
-app. `assistant` is the upgrade path; it takes about half a day, most of
-it for the chat server. Explain the three in one line each:
+want, and recommend `email` for a first install: no chat server, about
+an hour once IT has given them the Outlook app. `assistant` is the
+upgrade path, about half a day, most of it the chat server. The three:
 
 - `email` (recommended first): the EA reads Outlook, keeps the ledger,
   drafts replies in the user's voice and proposes meeting times in its
-  report; it places no holds or events. No chat platform. The user
-  works with it in the Claude Code shell and sends every draft from
-  Outlook themselves. Briefings land in
-  `~/.ea/state/reports/<agent>-latest.md` and go out by phone push when
-  one is configured.
-- `review-only`: `email` without drafting. The EA triages, tracks and
-  briefs; it writes nothing to the mailbox.
-- `assistant`: everything, plus the chat platform (Zulip or Slack) with
-  the EA channel, the scheduling channel, the direct message, project and
-  session rooms, the Send and Create buttons, the resident session and
-  plugins.
+  report; no holds, no events, no chat platform. The user works with it
+  in the Claude Code shell and sends every draft from Outlook. Briefings
+  land in `~/.ea/state/reports/<agent>-latest.md`, by phone push when set up.
+- `review-only`: `email` without drafting; nothing is written to the mailbox.
+- `assistant`: everything, plus the chat platform (Zulip or Slack): the
+  EA channel, the scheduling channel, the direct message, project and
+  session rooms, the Send and Create buttons, the resident session, plugins.
 
-Then run `./scripts/install/setup.sh --profile <name>`. It installs the Python packages,
+Then show the notice: print the "Your responsibility" paragraph of
+`README.md` word for word and ask whether they have read it and accept
+that what the EA sends and files under their name is theirs. On
+anything but a yes, stop; `/setup` resumes when they are ready. Never
+shorten the paragraph or answer for them. On a yes, run
+`./scripts/install/setup.sh --profile <name> --acknowledged`. It installs the Python packages,
 copies every config template into `~/.ea/config/` (a file already there
-is kept), records the profile in `ea-config.json`, and saves the cron
-lines without installing them. Run it now, while `~/.ea` is still the
+is kept), records the profile and the acknowledgment date in
+`ea-config.json`, and saves the cron lines without installing them. Run it now, while `~/.ea` is still the
 user's own directory, and never write `ea-config.json` by hand before
 it: the template would be skipped. To move from `email` to `assistant`
 later, run `./scripts/install/setup.sh --profile assistant` and do section 6.

@@ -87,7 +87,7 @@ def _plugin(ea_dir: Path, folder: str, manifest) -> None:
 
 
 def _run_setup(base: Path, live: Path, answer: str = "y", profile: str = "assistant",
-               extra_env: dict | None = None):
+               extra_env: dict | None = None, extra_args: list[str] | None = None):
     """scripts/install/setup.sh with stdin from a pipe, so non-interactive by itself: a
     "y" answer is --install-cron, as the setup skill runs it."""
     repo = base / "repo" if (base / "repo").exists() else _checkout(base)
@@ -107,7 +107,7 @@ def _run_setup(base: Path, live: Path, answer: str = "y", profile: str = "assist
         "LANG": "C.UTF-8",
         **(extra_env or {}),
     }
-    args = ["bash", str(repo / "scripts/install/setup.sh"), "--profile", profile]
+    args = ["bash", str(repo / "scripts/install/setup.sh"), "--profile", profile, *(extra_args or [])]
     if answer == "y":
         args.append("--install-cron")
     r = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True,
@@ -351,3 +351,27 @@ def test_a_v2_plugin_takes_its_cron_lines_from_the_owners_lock(tmp_path):
     assert "# EA Plugin: v2demo (weekly)" in crontab
     jobs = "\n".join(_jobs(crontab))
     assert "owned" not in jobs and "v2off" not in jobs
+
+
+def test_acknowledged_records_the_notice_date_once(tmp_path):
+    """--acknowledged writes the date the user read the responsibility
+    notice beside the profile; a later run without the flag keeps it,
+    and a later run with it does not move the date."""
+    live = _live_tree(tmp_path)
+    repo, home, r = _run_setup(tmp_path, live, answer="n")
+    cfg = home / ".ea" / "config" / "ea-config.json"
+    assert "acknowledged" not in json.loads(cfg.read_text())
+    _, _, r = _run_setup(tmp_path, live, answer="n", extra_args=["--acknowledged"])
+    assert "responsibility notice acknowledged" in r.stdout
+    doc = json.loads(cfg.read_text())
+    when = doc["acknowledged"]["responsibility"]
+    assert doc["profile"] == "assistant" and len(when) == 10 and when[4] == "-"
+    doc["acknowledged"]["responsibility"] = "2026-01-02"
+    cfg.write_text(json.dumps(doc))
+    _, _, r = _run_setup(tmp_path, live, answer="n", profile="email", extra_args=["--acknowledged"])
+    doc = json.loads(cfg.read_text())
+    assert doc["profile"] == "email" and doc["acknowledged"]["responsibility"] == "2026-01-02"
+    _, _, r = _run_setup(tmp_path, live, answer="n", profile="email")
+    assert "Profile already recorded" in r.stdout
+    assert json.loads(cfg.read_text())["acknowledged"]["responsibility"] == "2026-01-02"
+
