@@ -179,6 +179,17 @@ def _as_ea_bot(*cmd: str) -> subprocess.CompletedProcess | None:
     return r
 
 
+def _login_state(stdout: str) -> bool | None:
+    """`claude auth status` output: logged in or not, by the CLI's own
+    word; None when the text is not its JSON with a boolean loggedIn."""
+    try:
+        d = json.loads(stdout.strip() or "{}")
+    except ValueError:
+        return None
+    v = d.get("loggedIn") if isinstance(d, dict) else None
+    return v if isinstance(v, bool) else None
+
+
 def check_ea_bot_claude(home: Path):
     """ea-bot's own Claude Code (~/.local/bin/claude, docs/SETUP.md 'The service account'), tested as
     ea-bot because the owner cannot always see into ea-bot's home, and
@@ -195,12 +206,31 @@ def check_ea_bot_claude(home: Path):
         fail("ea-bot: .local/bin/claude", "missing (the Claude CLI for the ea-bot user)",
              f"sudo -u ea-bot env HOME={home} bash -c 'curl -fsSL https://claude.ai/install.sh | bash' "
              "(ea-bot's own install; docs/SETUP.md 'The service account')")
+    probe = ("import json,sys; d=json.load(open(sys.argv[1])); "
+             "print('yes' if (d.get('env') or {}).get('CLAUDE_CODE_OAUTH_TOKEN') else 'no')")
+    login_fix = (f"cd / && sudo -u ea-bot env HOME={home} {own}, then /login, then Ctrl+C "
+                 "(docs/SETUP.md 'Common failures')")
+    # The CLI's own answer first: a credentials file can exist with its
+    # tokens wiped, which the file test below would still pass.
+    if r is not None and r.returncode == 0:
+        s = _as_ea_bot("env", f"HOME={home}", str(own), "auth", "status")
+        state = _login_state(s.stdout) if s is not None else None
+        if state is True:
+            ok("ea-bot: Claude login", "claude auth status: logged in")
+            return
+        if state is False:
+            t = _as_ea_bot("/usr/bin/python3", "-c", probe, str(home / ".claude/settings.json"))
+            if t is not None and t.stdout.strip() == "yes":
+                ok("ea-bot: Claude login", "CLAUDE_CODE_OAUTH_TOKEN in .claude/settings.json (renew yearly)")
+            else:
+                fail("ea-bot: Claude login",
+                     "claude auth status: not logged in (every lane answers 'Not logged in')",
+                     login_fix)
+            return
     r = _as_ea_bot("test", "-e", str(home / ".claude/.credentials.json"))
     if r is not None and r.returncode == 0:
         ok("ea-bot: Claude login", ".claude/.credentials.json")
         return
-    probe = ("import json,sys; d=json.load(open(sys.argv[1])); "
-             "print('yes' if (d.get('env') or {}).get('CLAUDE_CODE_OAUTH_TOKEN') else 'no')")
     t = _as_ea_bot("/usr/bin/python3", "-c", probe, str(home / ".claude/settings.json"))
     if t is not None and t.stdout.strip() == "yes":
         ok("ea-bot: Claude login", "CLAUDE_CODE_OAUTH_TOKEN in .claude/settings.json (renew yearly)")

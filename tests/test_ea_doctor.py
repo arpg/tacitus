@@ -326,6 +326,20 @@ def test_the_responsibility_notice_warns_until_acknowledged():
         assert "2026-10-25" in res["responsibility notice"]["detail"]
 
 
+def test_the_login_check_reads_the_cli_s_own_answer():
+    """A credentials file can exist with its tokens wiped; the doctor asks
+    `claude auth status` and parses only a boolean loggedIn."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ea_doctor_under_test", DOCTOR)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod._login_state('{"loggedIn": true, "authMethod": "claude.ai"}') is True
+    assert mod._login_state('{\n  "loggedIn": false,\n  "authMethod": "none"\n}') is False
+    assert mod._login_state("Not logged in · Please run /login") is None
+    assert mod._login_state("") is None
+    assert mod._login_state('{"loggedIn": "yes"}') is None
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0

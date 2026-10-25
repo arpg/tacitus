@@ -1204,6 +1204,19 @@ def test_an_accepted_time_opens_a_scheduling_thread_that_stages_the_invite():
     assert 'offered_times=req.get("offered_times")' in BOT_SRC, "the tick hands the accepted time to the prompt"
 
 
+def test_a_lapsed_login_posts_the_fix_not_the_cli_line():
+    """The CLI answers a login-less run with 'Not logged in · Please run
+    /login' and exit 0; the lane must post the restoring command, not
+    that line."""
+    body = _fn_body("_run_claude_streaming")
+    assert "_NOT_LOGGED_IN in output_text" in body
+    assert "output_text = _login_lost_message()" in body
+    assert 'log.error(' in body[body.index("_NOT_LOGGED_IN in output_text"):
+                                body.index("output_text = _login_lost_message()")]
+    msg = _fn_body("_login_lost_message")
+    assert "/login" in msg and "sudo -u" in msg and "Ctrl+C" in msg
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0

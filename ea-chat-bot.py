@@ -354,6 +354,19 @@ EA_BOT_USER = _ISOLATION_USER
 EA_BOT_HOME = _require_isolation_user()
 EA_BOT_SCRIPT_DIR = Path(EA_BOT_HOME) / "ea-system"
 CLAUDE_BIN = _detect_claude_bin()
+# A headless run with no login is not an error to the CLI: it answers the
+# prompt with this line and exit 0, in no turn.
+_NOT_LOGGED_IN = "Not logged in"
+
+
+def _login_lost_message() -> str:
+    """What a turn posts in place of the CLI's 'Not logged in' line: the
+    one command that restores ea-bot's login (docs/SETUP.md 'Common
+    failures')."""
+    return ("The EA is offline: ea-bot's Claude login has lapsed, so no turn can run. "
+            f"Restore it in a terminal on the host: `cd / && sudo -u {EA_BOT_USER} env "
+            f"HOME={EA_BOT_HOME} {CLAUDE_BIN}`, then `/login`, then Ctrl+C. "
+            "The sentinel reports the same on the health channel until it is fixed.")
 
 # Startup audit line — stderr so it lands in systemd/launchd journal
 # immediately, regardless of the Python logging config applied later.
@@ -772,6 +785,13 @@ def _run_claude_streaming(
             usage = {}
             n_turns = 0
             duration_ms = 0
+
+        # The lane would post the CLI's 'Not logged in' line as the reply;
+        # the user reads the fix instead, and the log says what happened.
+        if _NOT_LOGGED_IN in output_text or any(_NOT_LOGGED_IN in s for s in stderr_lines):
+            log.error(f"[{label}] ea-bot's Claude login is gone: the CLI answered "
+                      f"'{_NOT_LOGGED_IN}' (sentinel check ea_bot_login)")
+            output_text = _login_lost_message()
 
         # Summary log
         inp_tok = usage.get("input_tokens", 0)

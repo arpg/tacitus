@@ -509,77 +509,74 @@ def test_crontab_match_ok():
 # Resident auth check: ea-bot OAuth token lapse
 # ---------------------------------------------------------------------------
 
-import types  # noqa: E402
+def _login_probe(logged_in, refresh):
+    """Fake both probes: the CLI's answer and the credentials file."""
+    orig = (sentinel._ea_bot_logged_in, sentinel._ea_bot_refresh_token_present)
+    sentinel._ea_bot_logged_in = lambda: logged_in
+    sentinel._ea_bot_refresh_token_present = lambda: refresh
+    return orig
 
 
-def _resident_enabled(enabled=True):
-    """Inject a fake resident_bridge so check_resident_auth runs."""
-    fake = types.SimpleNamespace(enabled=lambda: enabled)
-    sentinel.sys.modules["resident_bridge"] = fake
+def _restore(orig):
+    sentinel._ea_bot_logged_in, sentinel._ea_bot_refresh_token_present = orig
 
 
-def _clear_resident():
-    sentinel.sys.modules.pop("resident_bridge", None)
-
-
-def test_resident_auth_no_refresh_token_fails():
-    """The one real unrecoverable state: no refresh token means the
-    resident can never re-authenticate. An access-token expiry check
-    would instead false-alarm on every idle period."""
-    _resident_enabled()
-    orig = sentinel._ea_bot_refresh_token_present
-    sentinel._ea_bot_refresh_token_present = lambda: False
+def test_ea_bot_login_gone_fails_with_the_fix():
+    """The CLI's own word wins over the file: a credentials file can exist
+    with its tokens wiped. The detail carries the one restoring command."""
+    orig = _login_probe(False, True)
     try:
-        ok, detail = sentinel.check_resident_auth()
+        ok, detail = sentinel.check_ea_bot_login()
         assert not ok
-        assert "refresh token" in detail.lower()
-        assert "tmux attach -t ea-resident" in detail  # actionable
+        assert "not logged in" in detail.lower()
+        assert "sudo -u ea-bot" in detail and "/login" in detail
     finally:
-        sentinel._ea_bot_refresh_token_present = orig
-        _clear_resident()
+        _restore(orig)
 
 
-def test_resident_auth_present_ok():
-    """A present refresh token = healthy, even if the access token is
-    expired/near expiry (it auto-refreshes). No more idle false alarms."""
-    _resident_enabled()
-    orig = sentinel._ea_bot_refresh_token_present
-    sentinel._ea_bot_refresh_token_present = lambda: True
+def test_ea_bot_login_present_ok():
+    orig = _login_probe(True, None)
     try:
-        ok, detail = sentinel.check_resident_auth()
+        ok, detail = sentinel.check_ea_bot_login()
         assert ok, detail
-        assert "refresh token" in detail.lower()
+        assert "login present" in detail
     finally:
-        sentinel._ea_bot_refresh_token_present = orig
-        _clear_resident()
+        _restore(orig)
 
 
-def test_resident_auth_unreadable_skips():
-    """Fail-open: a sudo/read hiccup must never page or crash."""
-    _resident_enabled()
-    orig = sentinel._ea_bot_refresh_token_present
-    sentinel._ea_bot_refresh_token_present = lambda: None
+def test_ea_bot_login_probe_unavailable_falls_back_to_the_refresh_token():
+    """No sudo grant or no binary: the credentials file decides. A missing
+    refresh token is the same unrecoverable state; a present one is fine
+    even with the access token expired (it renews on demand)."""
+    orig = _login_probe(None, False)
     try:
-        ok, detail = sentinel.check_resident_auth()
+        ok, detail = sentinel.check_ea_bot_login()
+        assert not ok
+        assert "refresh token" in detail.lower() and "/login" in detail
+        sentinel._ea_bot_refresh_token_present = lambda: True
+        ok, detail = sentinel.check_ea_bot_login()
+        assert ok, detail
+    finally:
+        _restore(orig)
+
+
+def test_ea_bot_login_nothing_readable_skips():
+    """Fail-open: a sudo/read hiccup must never page or crash."""
+    orig = _login_probe(None, None)
+    try:
+        ok, detail = sentinel.check_ea_bot_login()
         assert ok
         assert "skipped" in detail
     finally:
-        sentinel._ea_bot_refresh_token_present = orig
-        _clear_resident()
+        _restore(orig)
 
 
-def test_resident_auth_disabled_skips():
-    """No resident mode -> nothing to check, regardless of creds state."""
-    _resident_enabled(enabled=False)
-    orig = sentinel._ea_bot_refresh_token_present
-    sentinel._ea_bot_refresh_token_present = lambda: False
-    try:
-        ok, detail = sentinel.check_resident_auth()
-        assert ok
-        assert "disabled" in detail
-    finally:
-        sentinel._ea_bot_refresh_token_present = orig
-        _clear_resident()
+def test_ea_bot_login_is_checked_on_every_install():
+    """The old check ran only in resident mode, which is off, so a lost
+    login went unreported for hours. The new one has no such gate."""
+    names = [n for n, _ in sentinel.CHECKS]
+    assert "ea_bot_login" in names
+    assert "resident_auth" not in names
 
 
 # ---------------------------------------------------------------------------

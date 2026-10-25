@@ -1234,8 +1234,10 @@ tokens, the deck builder) is the normal state of a new install.
 - **A `-p` lane exits silently with no output**: see
   [Trust state in .claude.json](#trust-state-in-claudejson).
 - **The Claude login fails or has expired** (the doctor's `ea-bot: Claude
-  login`, or a lane log that says to log in): ea-bot logs in with its own
-  copy of Claude Code. On Linux, `sudo -u ea-bot env HOME=/home/ea-bot
+  login`, the sentinel's `ea_bot_login` alert on the health channel, or
+  a chat reply that starts "The EA is offline"; the CLI answers a run
+  with no login with "Not logged in" and exit 0, so nothing else fails):
+  ea-bot logs in with its own copy of Claude Code. On Linux, `sudo -u ea-bot env HOME=/home/ea-bot
   claude`, then `/login`, then Ctrl+C, in a terminal (it is a full-screen
   program). A long-lived `claude setup-token` login (the macOS way, and
   the Docker image's) lasts a year: run `setup-token` as ea-bot again

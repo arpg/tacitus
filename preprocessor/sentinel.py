@@ -114,6 +114,11 @@ WEEKLY_MAX_AGE_DAYS = 8
 FAILURE_PATTERNS = ("FATAL", "RETRY ALSO FAILED", "OUTPUT VALIDATION FAILED")
 MONITORED_AGENTS = ("morning-briefing", "afternoon-catchup", "weekly-audit")
 EA_BOT_CREDENTIALS = "/home/ea-bot/.claude/.credentials.json"
+EA_BOT_HOME = "/home/ea-bot"
+# The one command that restores ea-bot's Claude login (docs/SETUP.md,
+# "Common failures").
+LOGIN_FIX = (f"cd / && sudo -u ea-bot env HOME={EA_BOT_HOME} "
+             f"{EA_BOT_HOME}/.local/bin/claude, then /login, then Ctrl+C")
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +261,40 @@ def _ea_bot_refresh_token_present() -> bool | None:
         return raw == "1"
     except Exception:
         return None
+
+
+def _ea_bot_claude() -> str | None:
+    """The Claude binary ea-bot runs, in the bot's order: its own install,
+    then the system-wide ones. Tested as ea-bot, since the owner cannot
+    always look into ea-bot's home."""
+    for c in (EA_BOT_HOME + "/.local/bin/claude", "/usr/local/bin/claude", "/usr/bin/claude"):
+        try:
+            r = subprocess.run(["sudo", "-n", "-u", "ea-bot", "test", "-x", c],
+                               capture_output=True, timeout=10, cwd="/")
+        except Exception:
+            return None
+        if r.returncode == 0:
+            return c
+    return None
+
+
+def _ea_bot_logged_in() -> bool | None:
+    """Whether ea-bot's Claude Code has a login, by the CLI's own word
+    (`claude auth status`, run as ea-bot). None when the probe cannot run:
+    no sudo grant, no binary, or output that is not the CLI's JSON. The
+    token itself is never read."""
+    claude = _ea_bot_claude()
+    if claude is None:
+        return None
+    try:
+        out = subprocess.run(
+            ["sudo", "-n", "-u", "ea-bot", "env", f"HOME={EA_BOT_HOME}", claude, "auth", "status"],
+            capture_output=True, text=True, timeout=30, cwd="/")
+        data = json.loads(out.stdout.strip() or "{}")
+    except Exception:
+        return None
+    state = data.get("loggedIn") if isinstance(data, dict) else None
+    return state if isinstance(state, bool) else None
 
 
 # ---------------------------------------------------------------------------
@@ -693,25 +732,26 @@ def check_resident_pane() -> tuple[bool, str]:
         return (True, f"resident check skipped ({e})")
 
 
-def check_resident_auth() -> tuple[bool, str]:
-    """ea-bot Claude credentials sanity: the resident runs as ea-bot with
-    its own OAuth creds. Flags only the one locally-detectable
-    unrecoverable state, a MISSING refresh token, which means the resident
-    can never re-authenticate. Re-auth: `tmux attach -t ea-resident`, then
-    `/login`."""
-    try:
-        import resident_bridge
-        if not resident_bridge.enabled():
-            return (True, "resident mode disabled")
-    except Exception as e:
-        return (True, f"resident auth check skipped ({e})")
+def check_ea_bot_login() -> tuple[bool, str]:
+    """ea-bot's Claude login, the one every chat turn and cron lane runs
+    on. A headless run with no login is not an error to the CLI: it
+    answers the prompt with "Not logged in · Please run /login" and exit
+    0, so the lanes keep going and post that line. The sentinel asks the
+    CLI itself; when that probe cannot run it reads the credentials file,
+    where a missing refresh token is the same unrecoverable state."""
+    logged_in = _ea_bot_logged_in()
+    if logged_in is True:
+        return (True, "ea-bot Claude login present (claude auth status)")
+    if logged_in is False:
+        return (False, "ea-bot's Claude login is GONE (claude auth status: not "
+                       "logged in) — every chat turn and cron lane answers "
+                       "'Not logged in'; fix: " + LOGIN_FIX)
     present = _ea_bot_refresh_token_present()
     if present is None:
-        return (True, "resident auth check skipped (creds unreadable)")
+        return (True, "ea-bot login check skipped (probe and creds unreadable)")
     if not present:
-        return (False, "ea-bot has NO refresh token — resident cannot "
-                       "re-authenticate; tmux attach -t ea-resident, then "
-                       "/login")
+        return (False, "ea-bot has NO refresh token — its Claude login cannot "
+                       "renew; fix: " + LOGIN_FIX)
     return (True, "ea-bot creds have a refresh token (auth self-heals)")
 
 
@@ -729,7 +769,7 @@ CHECKS = [
     ("deploy_integrity", check_deploy_integrity),
     ("circuit_breakers", check_circuit_breakers),
     ("resident_pane", check_resident_pane),
-    ("resident_auth", check_resident_auth),
+    ("ea_bot_login", check_ea_bot_login),
 ]
 
 
