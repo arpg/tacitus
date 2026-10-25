@@ -58,12 +58,19 @@ deploy_git() (
     exec git --git-dir=.git --work-tree=. "$@"
 )
 
+# The commit the deployed copy ran before this deploy. The restart and the
+# eval decisions below diff from it to HEAD: a pull fast-forwards several
+# commits and fires post-merge once, so HEAD~1 alone sees the last commit
+# and misses runtime code in the ones before it. Empty (no deployed copy
+# yet) falls back to HEAD~1.
+OLD_HEAD=""
 if [ -d "$DEPLOY_DIR/.git" ]; then
     echo "[deploy] Pulling to $DEPLOY_DIR..."
     if ! ( cd -P -- "$DEPLOY_DIR" 2>/dev/null && deploy_tree_ok ); then
         echo -e "\033[31m[deploy] ✗ UNSAFE DEPLOY TREE: $DEPLOY_DIR and its .git must be real directories (not symlinks), owned by $(id -un) and writable by no one else. NOT deploying, NOT restarting.\033[0m"
         exit 1
     fi
+    OLD_HEAD="$(deploy_git rev-parse HEAD 2>/dev/null)"
     # Fetch from the working tree (works even before push to remote).
     # Exit codes CHECKED (2026-07-24 permafix): a silently-failed fetch
     # used to reset to a stale FETCH_HEAD and restart old code, no alarm.
@@ -125,7 +132,7 @@ if [ -d "$DEPLOY_DIR/.git" ]; then
     # are read per dispatch from the deployed tree, so they are live the
     # moment the copy lands. A restart kills every per-thread run in
     # flight, so it is not free.
-    RUNTIME_CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null \
+    RUNTIME_CHANGED=$(git diff --name-only "${OLD_HEAD:-HEAD~1}" HEAD 2>/dev/null \
         | grep -E '^(ea-chat-bot\.py|preprocessor/.*\.py|scripts/disallowed-tools[^/]*\.txt|requirements\.txt)$' || true)
     if [ -z "$RUNTIME_CHANGED" ]; then
         echo "[deploy] No runtime code changed; the bot keeps running (skills, docs and config are read per dispatch)."
@@ -359,7 +366,7 @@ fi
 if [ "$POSTCOMMIT_ENABLED" = "False" ]; then
     echo "[tests] Post-commit tests disabled (EA_POSTCOMMIT_TESTS or eval_postcommit_enabled in the owner's evals.json). Skipping."
 elif [ -f "$EVAL_RUNNER" ]; then
-    CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null)
+    CHANGED=$(git diff --name-only "${OLD_HEAD:-HEAD~1}" HEAD 2>/dev/null)
     PROMPT_FILES="skills/ CLAUDE.md preprocessor/ ea-chat-bot.py run-agent.sh"
     RUN_EVALS=false
 

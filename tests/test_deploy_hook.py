@@ -39,6 +39,17 @@ def test_runtime_code_restarts():
     assert _restarts(["requirements.txt"])
 
 
+def test_hook_diffs_from_the_commit_the_copy_ran_not_the_last_commit_only():
+    # A pull fast-forwards several commits and fires post-merge once; the
+    # restart decision must see every commit since the deployed copy's
+    # previous head, else runtime code in all but the last is missed.
+    hook = HOOK.read_text()
+    assert "HEAD~1 HEAD" not in hook
+    assert hook.count('"${OLD_HEAD:-HEAD~1}" HEAD') == 2
+    assert hook.index('OLD_HEAD="$(deploy_git rev-parse HEAD') < hook.index('deploy_git fetch "$REPO_ROOT" HEAD')
+    assert hook.index('deploy_git fetch "$REPO_ROOT" HEAD') < hook.index("RUNTIME_CHANGED=")
+
+
 def test_hook_waits_for_an_idle_bot_before_restarting():
     hook = HOOK.read_text()
     i = hook.index("RUNTIME_CHANGED=")
