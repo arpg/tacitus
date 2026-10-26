@@ -133,7 +133,7 @@ if [ -d "$DEPLOY_DIR/.git" ]; then
     # moment the copy lands. A restart kills every per-thread run in
     # flight, so it is not free.
     RUNTIME_CHANGED=$(git diff --name-only "${OLD_HEAD:-HEAD~1}" HEAD 2>/dev/null \
-        | grep -E '^(ea-chat-bot\.py|preprocessor/.*\.py|scripts/disallowed-tools[^/]*\.txt|requirements\.txt)$' || true)
+        | grep -E '^(ea-chat-bot\.py|preprocessor/.*\.py|botcore/botcore/.*\.py|scripts/disallowed-tools[^/]*\.txt|requirements\.txt)$' || true)
     if [ -z "$RUNTIME_CHANGED" ]; then
         echo "[deploy] No runtime code changed; the bot keeps running (skills, docs and config are read per dispatch)."
     else

@@ -97,7 +97,7 @@ restart() {   # $1 label
 
 # The bot: only when code it holds in memory changed, and only once no
 # per-thread run is in flight (same rule and 1200 s limit as the Linux hook).
-if grep -qE '^(ea-chat-bot\.py|preprocessor/.*\.py|scripts/disallowed-tools[^/]*\.txt|requirements\.txt)$' <<<"$CHANGED"; then
+if grep -qE '^(ea-chat-bot\.py|preprocessor/.*\.py|botcore/botcore/.*\.py|scripts/disallowed-tools[^/]*\.txt|requirements\.txt)$' <<<"$CHANGED"; then
     INFLIGHT="$PRIV/bot-inflight.json"
     for i in $(seq 1 300); do
         BUSY=$(python3 -c "

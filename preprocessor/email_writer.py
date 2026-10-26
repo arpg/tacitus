@@ -22,7 +22,10 @@ copy and --out an output it delivers back into ea-bot's allowed roots;
 both are read and written here only as files this user owns.
 
 Switch: `"drafting": "remote"` in remote-llm.json. Any other value turns
-the writer off.
+the writer off, and so does a process that is not the owner's (remote_llm
+reads its config only there): the resident on an install without mail
+mediation runs this CLI itself and always gets the writer-off fallback,
+before the brief is read.
 
 stdout is one JSON object:
     {"status": "ok", "writer": "remote", "out": <path>, "words": n,
@@ -252,12 +255,19 @@ def _compose_and_write(brief: str, to: str, conversation_id: str, draft_id: str,
                                 timeout=max(5, min(REMOTE_TIMEOUT_S, left)))
 
 
+WRITER_OFF = {"status": "fallback", "reason": "writer off"}
+
+
+def writer_on() -> bool:
+    return remote_llm.config().get("drafting") == "remote"
+
+
 def write(to: str, brief: str, out: str, *, conversation_id: str = "", draft_id: str = "",
           graph=None, chat=None, budget: float = BUDGET_S) -> tuple[dict, int]:
     """(the JSON answer, exit code). Writes the body to `out` and records
     the call; never raises past the writer's own failures."""
-    if remote_llm.config().get("drafting") != "remote":
-        return {"status": "fallback", "reason": "writer off"}, EXIT_FALLBACK
+    if not writer_on():
+        return dict(WRITER_OFF), EXIT_FALLBACK
     t0 = time.monotonic()
     rec = {"ts": _now_iso(), "run_id": os.environ.get("EA_RUN_ID", "")[:64],
            "recipient_domain": to.rsplit("@", 1)[-1],
@@ -351,6 +361,15 @@ def main(argv: list[str] | None = None) -> int:
     _mm_child.check_child_parse(ap, a)  # the verb the mediator checked
     try:
         to = recipient(a.to)
+    except ArgError as e:
+        return _error(str(e))
+    if not writer_on():
+        # The caller falls back to the email-author subagent. The brief is
+        # not read: a resident run checks it against the owner's rules, which
+        # the resident's own state directory (group-writable) never passes.
+        print(json.dumps(WRITER_OFF))
+        return EXIT_FALLBACK
+    try:
         brief = read_brief(a.brief_file)
     except ArgError as e:
         return _error(str(e))

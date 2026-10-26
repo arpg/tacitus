@@ -664,7 +664,7 @@ def check_deploy_integrity() -> tuple[bool, str]:
 # hook (.githooks/post-commit) decides a restart with the same pattern;
 # it is read from there so the two cannot drift, with this copy as the
 # fallback when the hook is unreadable.
-_RUNTIME_PATTERN_FALLBACK = (r"^(ea-chat-bot\.py|preprocessor/.*\.py|"
+_RUNTIME_PATTERN_FALLBACK = (r"^(ea-chat-bot\.py|preprocessor/.*\.py|botcore/botcore/.*\.py|"
                              r"scripts/disallowed-tools[^/]*\.txt|requirements\.txt)$")
 
 

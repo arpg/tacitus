@@ -257,6 +257,25 @@ def test_bad_arguments_are_refused(store, work, tmp_path, capsys, monkeypatch):
     assert not out.exists() and not hasattr(chat, "messages") and rl.read(ew.STORE) == []
 
 
+def test_a_resident_run_falls_back_before_it_reads_the_brief(store, tmp_path, capsys, monkeypatch):
+    # An install without mail mediation: ea-bot runs the CLI itself and
+    # writes its brief in its own state directory, which is group-writable.
+    chat = _chat("Hi Pat,\n\nYes.\n\nKit", monkeypatch)
+    state = tmp_path / "state"
+    state.mkdir()
+    os.chmod(state, 0o2775)
+    brief = state / "pat-brief.txt"
+    brief.write_text(BRIEF)
+    out = state / "reply-body.txt"
+    monkeypatch.setattr(ew, "read_brief", lambda path: pytest.fail("brief read"))
+    monkeypatch.setattr(rl, "_owner", lambda: False)
+    code, ans, _ = _run(capsys, "--to", "pat@example.edu", "--brief-file", brief, "--out", out)
+    assert code == 4 and ans == {"status": "fallback", "reason": "writer off"}
+    assert not out.exists() and not hasattr(chat, "messages")
+    code, _, err = _run(capsys, "--to", "not-an-address", "--brief-file", brief, "--out", out)
+    assert code == 2 and json.loads(err)["status"] == "error"
+
+
 def test_finish_body_kinds():
     assert ab.finish_body("NEED: the date")[1]["kind"] == "need"
     assert ab.finish_body("  ")[1]["kind"] == "empty"

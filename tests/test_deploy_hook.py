@@ -37,6 +37,18 @@ def test_runtime_code_restarts():
     assert _restarts(["scripts/disallowed-tools.txt"])
     assert _restarts(["scripts/disallowed-tools.review-only.txt"])
     assert _restarts(["requirements.txt"])
+    # The chat layer the bot holds in memory lives in the botcore package.
+    assert _restarts(["botcore/botcore/chat/zulip_frontend.py"])
+    assert not _restarts(["botcore/README.md", "botcore/tests/test_standalone.py"])
+
+
+def test_the_macos_deploy_and_the_sentinel_restart_on_the_same_files():
+    pat = _pattern()
+    mac = (ROOT / "deploy" / "macos" / "deploy.sh").read_text()
+    assert f"grep -qE '{pat}'" in mac
+    sys.path.insert(0, str(ROOT / "preprocessor"))
+    import sentinel
+    assert sentinel._RUNTIME_PATTERN_FALLBACK == pat
 
 
 def test_hook_diffs_from_the_commit_the_copy_ran_not_the_last_commit_only():
