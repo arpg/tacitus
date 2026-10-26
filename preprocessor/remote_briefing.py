@@ -64,12 +64,14 @@ import tempfile
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import institution as _institution  # noqa: E402
 import ledger as _ledger  # noqa: E402
 import remote_llm  # noqa: E402
+import sched_render  # noqa: E402
 
 EA_DIR = Path(os.environ.get("EA_DIR", str(Path.home() / ".ea")))
 ESCALATIONS = EA_DIR / "state" / "remote-escalations.json"
@@ -276,24 +278,61 @@ Write short plain sentences. Never write an em-dash. Use only the items given, a
 {rules}"""
 
 
+_TIME = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$")
+
+
+def _at(value, zone: str = "") -> datetime | None:
+    """A calendar time on the user's clock (the local zone, as
+    `now.astimezone()` reads it). Graph's calendar view prints UTC
+    wall-clock with no offset and timeZone "UTC"; a free slot carries its
+    offset. A time with neither is UTC."""
+    m = _TIME.match(str(value or "").strip())
+    if not m:
+        return None
+    try:
+        if m.group(2):
+            dt = datetime.fromisoformat(m.group(1) + ("+00:00" if m.group(2) == "Z" else m.group(2)))
+        else:
+            try:
+                src = ZoneInfo(zone) if zone and zone.upper() != "UTC" else timezone.utc
+            except Exception:
+                src = timezone.utc
+            dt = datetime.fromisoformat(m.group(1)).replace(tzinfo=src)
+    except ValueError:
+        return None
+    return dt.astimezone()
+
+
+def _event_times(e: dict) -> tuple[datetime | None, datetime | None]:
+    st, en = e.get("start") or {}, e.get("end") or {}
+    return _at(st.get("dateTime"), st.get("timeZone") or ""), _at(en.get("dateTime"), en.get("timeZone") or "")
+
+
+def _span(start: datetime | None, end: datetime | None) -> str:
+    """'9:30-10:30 AM' on the user's clock."""
+    if start and end:
+        return sched_render.clock_range(start, end)
+    return sched_render.clock(start) if start else ""
+
+
 def _calendar(b: dict, today: date) -> list[str]:
     out = []
     for e in b.get("todays_events") or []:
-        st = ((e.get("start") or {}).get("dateTime") or "")
         if e.get("isAllDay"):
             out.append(f"all day: {_clean(e.get('subject'), 80)}")
-        elif st:
-            en = ((e.get("end") or {}).get("dateTime") or "")
-            out.append(f"{st[11:16]}-{en[11:16]} {_clean(e.get('subject'), 80)}")
+            continue
+        start, end = _event_times(e)
+        if start:
+            out.append(f"{_span(start, end)} {_clean(e.get('subject'), 80)}")
     return out[:14]
 
 
 def _free(b: dict, today: date) -> list[str]:
     out = []
     for s in b.get("availability_merged") or []:
-        st, en = str(s.get("start") or ""), str(s.get("end") or "")
-        if st[:10] == today.isoformat():
-            out.append(f"{st[11:16]}-{en[11:16]}")
+        start, end = _at(s.get("start")), _at(s.get("end"))
+        if start and start.date() == today:
+            out.append(_span(start, end))
     return out[:10]
 
 
@@ -822,15 +861,16 @@ def render_afternoon(b: dict, cands: dict[str, dict], plan: dict, *, now: dateti
         out += [f"- {_line_of(cands[p['ref']])}: {in_motion(cands[p['ref']])}" for p in motion]
     rest = []
     for e in b.get("todays_events") or []:
-        st = ((e.get("start") or {}).get("dateTime") or "")
-        if st and not e.get("isAllDay") and st[11:16] >= f"{local:%H:%M}":
-            rest.append(f"- {st[11:16]} {_clean(e.get('subject'), 80)}")
+        start, _end = _event_times(e)
+        if start and not e.get("isAllDay") and start >= now:
+            rest.append(f"- {sched_render.clock(start)} {_clean(e.get('subject'), 80)}")
     if rest:
         out += ["", "*Remaining today:*"] + rest[:8]
     tom = []
     for e in b.get("tomorrows_events") or []:
-        st = ((e.get("start") or {}).get("dateTime") or "")
-        tom.append(f"- {'all day' if e.get('isAllDay') else st[11:16]} {_clean(e.get('subject'), 80)}")
+        start, _end = _event_times(e)
+        when = "all day" if e.get("isAllDay") else (sched_render.clock(start) if start else "")
+        tom.append(f"- {when} {_clean(e.get('subject'), 80)}")
     tomorrow = local.date() + timedelta(days=1)
     tom += [f"- Due tomorrow: {_line_of(c)}" for r, c in cands.items()
             if _date(c.get("due")) == tomorrow and r not in skip]

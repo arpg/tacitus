@@ -624,7 +624,7 @@ one-click confirm (closure.py):
 :leaves: *Flexes* (fine today, fine tomorrow)
 - *Travel form for the Portland trip*: file it this week
 
-:clipboard: 09:30-10:30 Lab meeting · 15:00-16:00 Thesis committee
+:clipboard: 9:30-10:30 AM Lab meeting · 3:00-4:00 PM Thesis committee
 
 :white_check_mark: *Quietly handled*: 2 answered by your replies; 1 draft(s) staged.
 
@@ -654,10 +654,10 @@ The afternoon update for the same day:
 - *Co-authoring the survey* (Lee Wong): Lee is waiting on the section
 
 *Remaining today:*
-- 15:00 Thesis committee
+- 3:00 PM Thesis committee
 
 *Tomorrow preview:*
-- 08:00 Program review
+- 8:00 AM Program review
 
 *Pending your response:*
 - *Travel form for the Portland trip*: still not filed

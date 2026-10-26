@@ -52,14 +52,21 @@ grades it against Claude. Claude stays the workhorse throughout.
 - **Open a window:** `python3 preprocessor/codex_ghost.py start --days 7
   [--kinds briefing,chat] [--share 0.5]`. It writes `ghost.codex` in the
   owner-private remote-llm.json. `stop` removes it; `status` and `report`
-  read it.
+  read it. `restart` (same options) first moves the last window's turns,
+  grades, recorded writes, verdicts and queued jobs to
+  `codex-ghost/archive/<from>_<until>/` and forgets the ghost Codex
+  threads, so the new window is measured from zero.
 - **What is replayed.** `briefing`: after the morning briefing or the
   afternoon update, run-agent.sh hands the exact prompt it gave Claude to
   `enqueue-lane`, with Claude's report as the reference. `chat`: after a
   turn Claude answered in the EA channel, the DM or a room, the bot hands
   the context block and the user's message to `enqueue` (a share of the
   turns, `--share`). Each job runs detached; the production turn never
-  waits for it.
+  waits for it. A chat turn whose message names a deck, a link, a Google
+  document, GitHub, Overleaf or a logo is not replayed (`DEFAULT_SKIP`,
+  read against the user's words, not a room's preamble): the sandbox has
+  no network. A replay whose commands still hit the missing network is
+  recorded as skipped.
 - **How a replay runs.** As the resident, never as the owner: Codex's
   sandbox confines writes, not reads, and a model shell started as the
   owner could read the owner's secrets. The working root is a scratch
@@ -68,20 +75,34 @@ grades it against Claude. Claude stays the workhorse throughout.
   file or a downloaded attachment under it passes the same checks a
   production turn's does) holding copies of the ledger, the project
   store and the briefing, and links to the config, the docs and the
-  mediator's queue. The remote writer and the style store answer a ghost
-  as they do a production turn; every other mediated write is recorded. The run id starts with
+  mediator's queue. The remote writer, the style store and the solver's
+  reads (`propose-meeting`, `validate-draft`, `check-attendees`,
+  `reschedule-brief`) answer a ghost as they do a production turn, and a
+  `--help` runs as the verb's usage alone. The run id starts with
   `cron-ghost-codex-`, so the mail gate treats it as a cron lane, and the
-  mediator answers every verb that is not a read with `{"status":
-  "recorded"}`: a draft, an archive or a snooze is written to
-  `recorded-writes.jsonl` and never executed. Network is off.
+  mediator answers every other verb in place of running it
+  (`ghost_answer`): a draft verb in the real verb's JSON with a synthetic
+  draft id (`ghostdraft-...`), so the turn goes on as in production, and
+  an archive or a snooze with `{"status": "recorded"}`. Each call, with a
+  draft's body, is written to `recorded-writes.jsonl` and never executed.
+  A read of a ghost draft id answers from that record. Network is off.
+- **One thread per replay.** A chat replay runs the fresh prompt the bot
+  built for the turn (it carries the thread's history) on a new Codex
+  thread and a new scratch, both gone after the turn. A resumed ghost
+  thread carried earlier turns' stub answers into later turns.
 - **Records and grades.** `turns.jsonl` holds Claude's output, Codex's
   output, its commands, usage and timing. `grade` runs the ghost week's
   judge (Sonnet as ea-bot, or `--judge remote`): a briefing is `same`,
   `minor` or `major` with the items missing, extra or wrong; a chat turn
-  is `send`, `edit`, `wrong` or `none` with problem kinds. `report` gives
-  the verdict per kind against `PASS` (GO, NO-GO, NOT ENOUGH DATA), the
-  wrong and major lists and the judge's enhancement lines. `final` writes
-  the verdict files that `gate` reads.
+  is `send`, `edit`, `wrong` or `none` with problem kinds, and Claude's
+  reply gets the same grade. The chat judge counts a recorded draft call
+  with a body as the draft; the briefing judge gets the user's zone and
+  reads a UTC time and its local twin as one fact. `report` gives the
+  verdict per kind against `PASS` (GO, NO-GO, NOT ENOUGH DATA), the wrong
+  and major lists and the judge's enhancement lines. Chat is measured
+  against Claude on the same turns: Codex's send share may trail
+  Claude's, and its wrong share exceed Claude's, by at most 10 points.
+  `final` writes the verdict files that `gate` reads.
 - **Quota.** `limits` reads the account's 5-hour and weekly windows
   through `codex app-server`; `enqueue` skips, and records the skip, once
   a window passes `QUOTA_STOP`.

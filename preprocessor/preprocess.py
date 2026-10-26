@@ -417,6 +417,32 @@ def _title(text, limit: int) -> str:
     return ledger.brief_title(text or "", limit)
 
 
+def _event_local_day(e: dict) -> str:
+    """The event's start date on the local clock, 'YYYY-MM-DD'. Graph's
+    calendar view prints UTC wall-clock with no offset (timeZone "UTC");
+    an all-day event's date is its own date."""
+    st = e.get("start") or {}
+    raw = str(st.get("dateTime") or "")
+    if e.get("isAllDay") or len(raw) < 19:
+        return raw[:10]
+    try:
+        from zoneinfo import ZoneInfo
+        zone = str(st.get("timeZone") or "UTC")
+        src = timezone.utc if zone.upper() == "UTC" else ZoneInfo(zone)
+    except Exception:
+        src = timezone.utc
+    m = re.match(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$", raw)
+    try:
+        if m and m.group(2):
+            off = "+00:00" if m.group(2) == "Z" else m.group(2)
+            dt = datetime.fromisoformat(m.group(1) + off)
+        else:
+            dt = datetime.fromisoformat(raw[:19]).replace(tzinfo=src)
+        return dt.astimezone().strftime("%Y-%m-%d")
+    except ValueError:
+        return raw[:10]
+
+
 def _close_proposals(obligations: list) -> list[dict]:
     """The open rows that carry a close proposal, for the briefing."""
     out = []
@@ -2665,14 +2691,15 @@ def run_full_daily(force_full: bool = False) -> dict:
         # ends with it; the afternoon catchup ignores it.
         "onboarding_question": _onboarding_question(),
         "working_hours": working_hours,
-        # Today's schedule is always included (small, essential)
+        # Today's schedule is always included (small, essential). The day
+        # is the user's: an evening event is UTC's next day.
         "todays_events": [
             e for e in calendar
-            if e["start"]["dateTime"][:10] == datetime.now().strftime("%Y-%m-%d")
+            if _event_local_day(e) == datetime.now().strftime("%Y-%m-%d")
         ],
         "tomorrows_events": [
             e for e in calendar
-            if e["start"]["dateTime"][:10] == (
+            if _event_local_day(e) == (
                 datetime.now() + timedelta(days=1)
             ).strftime("%Y-%m-%d")
         ],

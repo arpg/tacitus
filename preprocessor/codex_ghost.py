@@ -20,7 +20,11 @@ under ea-bot's lane state that holds a copy of the ledger and the briefing
 and links to the config, the docs and the mediator's queue, so a ledger
 write lands in the copy, a mail read goes through the mediator under a
 ghost run id, and a mail write (a draft, an archive, a snooze) is recorded
-by the mediator and never executed (`ghost_refusal`). Network is off.
+by the mediator and never executed (`ghost_answer`): the mediator answers
+it as the real verb would, with a synthetic draft id for a draft, so the
+turn goes on as a production turn does. Network is off. Each chat turn
+starts its own Codex thread on its own scratch (the fresh prompt carries
+the thread's history), and a turn that needs the network is skipped.
 
 Each replay is recorded (`turns.jsonl`: Claude's output and Codex's,
 usage, timing) and graded by the ghost week's judge against Claude's
@@ -35,6 +39,7 @@ QUOTA_STOP, so a ghost never starves the owner's own Codex use.
 
 CLI (owner only):
   codex_ghost.py start [--days 7] [--kinds briefing,chat] [--share 0.5]
+  codex_ghost.py restart [same options]     (archive the last window's records, then start)
   codex_ghost.py stop | status | limits
   codex_ghost.py grade [--judge claude|remote] [--max N]
   codex_ghost.py report [--json] | final | gate <kind>
@@ -89,20 +94,35 @@ GATE_MAX_AGE_DAYS = 14
 JUDGE_MODEL = "sonnet"
 
 # Pass levels per kind. GO only when every check holds; NOT ENOUGH DATA
-# under judged_min.
+# under judged_min. Chat is measured against Claude on the same judged
+# turns: the judge is strict with both sides, so a fixed send floor fails
+# a Codex that matches Claude. Codex's send share may trail Claude's by
+# send_gap_max, and its wrong share may exceed Claude's by wrong_gap_max.
 PASS = {
     "briefing": {"judged_min": 5, "major_share_max": 0.10, "minor_share_max": 0.50,
                  "error_share_max": 0.10},
-    "chat": {"judged_min": 15, "wrong_share_max": 0.10, "send_share_min": 0.50,
+    "chat": {"judged_min": 15, "wrong_gap_max": 0.10, "send_gap_max": 0.10,
              "error_share_max": 0.10},
 }
 
-# What a ghost may ask the mediator for: reads, and the tools that only
-# produce text (the remote writer, the style store). Everything else is
-# recorded.
+# What a ghost may ask the mediator for: reads, the solver's verbs that
+# only read calendars, and the tools that only produce text (the remote
+# writer, the style store). Everything else is recorded.
 READ_PREFIXES = ("get-", "list-", "search", "calendar-view", "resolve-", "scan-", "download-",
                  "preflight-", "read-", "check-")
+GHOST_READ_VERBS = {
+    # scheduling_engine.py: these read the calendars and print options or
+    # issues; only log-decision writes (the decisions file).
+    "scheduling_engine": {"propose-meeting", "validate-draft", "check-attendees", "reschedule-brief",
+                          "review-patterns"},
+    "deck_serve": {"status"},
+}
 GHOST_TEXT_TOOLS = ("email_writer", "style_profiles")
+HELP_FLAGS = ("--help", "-h")
+# A recorded draft's id. It passes the mediator's id check, so a later
+# update-draft or attach-file on it is recorded like the create.
+GHOST_ID_PREFIX = "ghostdraft-"
+BODY_CAP = 6000
 
 PROBLEM_KINDS = ("wrong-fact", "missed-item", "invented-item", "rule-break", "wrong-write",
                  "missing-write", "wording", "tool-misuse", "other")
@@ -124,6 +144,7 @@ BRIEFING_JUDGE_SCHEMA = {
 BRIEFING_JUDGE_PROMPT = """Two {agent} reports were written from the same day's data for a professor's assistant. CLAUDE's was posted; CODEX's was recorded and never posted. Compare them. Claude's report is the reference, not the truth: an item Codex adds that the data supports is "extra", not wrong. Answer with JSON only:
 {{"missing_in_codex": [items Claude surfaces that Codex leaves out], "extra_in_codex": [items Codex surfaces that Claude does not], "wrong_in_codex": [facts Codex states differently from Claude, or rules it breaks: a send without a button, an em-dash, a name invented], "verdict": "same" | "minor" | "major", "better": "codex" | "claude" | "same", "enhancement": one line naming what would close Codex's largest gap, or ""}}
 Each item is one short line. "major" means a decision the user would get wrong from Codex's report; "minor" means wording or an omission the user would notice but survive.
+Times: {zone}. Either report may print a time on the 24-hour UTC clock. A time that names the same moment in the user's zone is the same fact, not a wrong one, and the user's local clock is the right way to print it.
 
 === CLAUDE ===
 {claude}
@@ -152,6 +173,8 @@ CHAT_JUDGE_PROMPT = """You grade one chat turn of a professor's executive assist
 {{"codex_grade": "send", "claude_grade": "edit", "better": "same", "problems": [{{"kind": "wording", "note": "..."}}], "enhancement": "..."}}
 
 The rules that matter: the assistant never sends mail or creates an event itself (a draft or a staged event waits for the user's click); it never invents a fact, a name or a time; it writes short sentences, no em-dash; it names what it did and what it could not do; it does not answer a question only the user can answer.
+
+Codex's mail writes were recorded, not executed: that is the replay, not a fault. A recorded create-reply, create-draft or update-draft that carries a body is the draft: in production it exists and the user gets its Send card. Its body is shown with the call; grade it as the draft.
 
 The lane: {lane}
 The user's message: {user_msg}
@@ -244,10 +267,23 @@ def _raw_config() -> dict:
 
 # Chat turns the ghost does not replay: a deck build runs node and a
 # headless browser, which the sandbox has no network or display for, and
-# one such replay cost millions of input tokens for nothing. The window
-# may name its own list (`start --skip`).
+# one such replay cost millions of input tokens for nothing. A turn that
+# names a link, a Google document, GitHub, Overleaf or a logo to fetch
+# needs the network too. The window may name its own list
+# (`start --skip`). The patterns read the user's words, not the room's
+# preamble.
 DEFAULT_SKIP = [r"\bdecks?\b", r"\bslides?\b", r"\bslidev\b", r"\bpresentation\b", r"\bposters?\b",
-                r"\binfographics?\b"]
+                r"\binfographics?\b",
+                r"https?://", r"\bdocs\.google\b", r"\bgoogle (docs?|drive|sheets?|slides?)\b", r"\bgdocs?\b",
+                r"\bgithub\b", r"\bpull requests?\b", r"\bdoc[- ]review\b", r"\boverleaf\b", r"\blogos?\b"]
+
+# A command output that shows the sandbox's missing network. A turn whose
+# commands hit it is recorded as skipped: the replay measured the sandbox,
+# not Codex.
+NETWORK_FAIL = re.compile(r"could not resolve host|temporary failure in name resolution|name or service not known|"
+                          r"getaddrinfo|nodename nor servname|failed to resolve|nameresolutionerror|"
+                          r"network is unreachable", re.I)
+_ROOM_PREAMBLE = re.compile(r"\A\s*\[From the private [^\]]*\]\s*")
 
 
 def window(raw: dict | None = None) -> dict:
@@ -270,8 +306,7 @@ def skip_reason(job: dict, w: dict | None = None) -> str:
     """'' or the pattern that keeps this chat turn out of the ghost."""
     if job.get("kind") != "chat":
         return ""
-    text = str(job.get("user_msg") or "")
-    import re
+    text = _ROOM_PREAMBLE.sub("", str(job.get("user_msg") or ""), count=1)
     for pat in (w or window()).get("skip") or []:
         try:
             if re.search(pat, text, re.I):
@@ -308,6 +343,47 @@ def start(days: int = DEFAULT_DAYS, kinds=KINDS, share: float = DEFAULT_SHARE, s
     owner_trust.write_owner_file(owner_trust.private_dir() / remote_llm.CONFIG_FILE,
                                  (json.dumps(raw, indent=2) + "\n").encode(), mode=0o600)
     return w
+
+
+def archive_window(runner=None) -> dict:
+    """Move the last window's records (turns, grades, recorded writes,
+    final verdicts, queued jobs) to codex-ghost/archive/<from>_<until>/
+    and forget the ghost Codex threads with their scratch roots, so a new
+    window is measured from zero. Production rows in the thread registry
+    stay. Returns {"archive": dir, "moved": [...], "threads": n}."""
+    w = window()
+    label = f"{w['from']}_{w['until']}" if w else f"to-{date.today().isoformat()}"
+    base = _store() / STORE / "archive"
+    dest = base / label
+    n = 1
+    while dest.exists():
+        n += 1
+        dest = base / f"{label}-{n}"
+    dest.mkdir(mode=0o700, parents=True)
+    moved = []
+    for name in [TURNS, GRADES, WRITES] + [FINAL.format(kind=k) for k in KINDS]:
+        src = _store() / name
+        if src.exists():
+            os.replace(src, dest / src.name)
+            moved.append(src.name)
+    jobs = _store() / JOBS
+    if jobs.exists() and any(jobs.iterdir()):
+        os.replace(jobs, dest / "jobs")
+        moved.append("jobs")
+    threads = 0
+    import codex_turn
+    reg = codex_turn._registry()
+    scratch_base = BOT_HOME / ".ea" / "state" / "codex-ghost"
+    for key in list(reg):
+        row = (reg.get(key) or {}).get("ghost")
+        if not row:
+            continue
+        root = Path(str(row.get("root") or ""))
+        if root.name == "ea" and root.parent.parent == scratch_base:
+            remove_scratch(root.parent.name, runner=runner)
+        codex_turn.forget_thread(key, "ghost")
+        threads += 1
+    return {"archive": str(dest), "moved": moved, "threads": threads}
 
 
 def stop() -> None:
@@ -436,25 +512,108 @@ def quota_block(lim: dict) -> str:
 
 # ── the mediator's rule for a ghost ───────────────────────────────────
 
-def ghost_refusal(tool: str, verb: str, run_id: str) -> str:
-    """'' when the mediator may run this call for a ghost run id, else the
-    message it answers with. Reads run; every other verb is recorded."""
-    if not is_ghost_run(run_id):
-        return ""
+def is_ghost_read(tool: str, verb: str) -> bool:
     v = str(verb or "")
     if any(v.startswith(p) for p in READ_PREFIXES):
-        return ""
-    if tool in GHOST_TEXT_TOOLS:
-        # The remote writer and the style store produce text and touch no
-        # mailbox: a ghost needs them to draft as the production turn does.
-        return ""
-    return f"ghost run: '{tool} {verb}' recorded, not executed"
+        return True
+    if v in GHOST_READ_VERBS.get(tool, ()):
+        return True
+    # The remote writer and the style store produce text and touch no
+    # mailbox: a ghost needs them to draft as the production turn does.
+    return tool in GHOST_TEXT_TOOLS
 
 
-def record_write(run_id: str, tool: str, verb: str, argv: list) -> None:
+def wants_help(argv) -> bool:
+    """True when the call asks for its verb's usage. The mediator then
+    runs `<verb> --help` alone, which prints and exits before any verb
+    runs, and records nothing."""
+    return any(str(a) in HELP_FLAGS for a in list(argv or [])[1:])
+
+
+def _opt(argv, flag: str) -> str:
+    argv = [str(a) for a in argv or []]
+    for i, a in enumerate(argv):
+        if a == flag and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith(flag + "="):
+            return a[len(flag) + 1:]
+    return ""
+
+
+def _ghost_ids(argv) -> list[str]:
+    return [str(a) for a in argv or [] if str(a).startswith(GHOST_ID_PREFIX)]
+
+
+def _new_ghost_id(run_id: str, argv) -> str:
+    h = hashlib.sha256(f"{run_id}:{json.dumps(list(argv or []), default=str)}:{time.time()}".encode())
+    return GHOST_ID_PREFIX + h.hexdigest()[:16]
+
+
+def _draft_answer(tool: str, verb: str, argv, gid: str) -> dict | None:
+    """The JSON the real draft verb prints (graph_actions, gmail_client),
+    with the synthetic id in place of the server's."""
+    if tool == "graph_actions":
+        if verb == "create-reply":
+            return {"status": "reply_draft_created", "id": gid}
+        if verb == "create-draft":
+            return {"status": "draft_created", "id": gid}
+        if verb == "update-draft":
+            return {"status": "updated", "message_id": _opt(argv, "--message-id")}
+        if verb == "delete-draft":
+            return {"status": "deleted", "message_id": _opt(argv, "--message-id")}
+    if tool == "gmail_client":
+        if verb == "create-draft":
+            return {"draft_id": gid, "message_id": gid, "thread_id": _opt(argv, "--thread-id"),
+                    "in_reply_to": _opt(argv, "--reply-to-message-id"), "quoted": False}
+        if verb == "update-draft":
+            did = _opt(argv, "--draft-id")
+            return {"draft_id": did, "message_id": did, "thread_id": _opt(argv, "--thread-id"),
+                    "in_reply_to": "", "quoted": False, "attachments_kept": 0}
+    return None
+
+
+def ghost_answer(tool: str, verb: str, argv, run_id: str, *, body: str = "") -> dict | None:
+    """None when the mediator runs this call (the run is not a ghost's,
+    the verb only reads, or the call asks for --help); else the JSON the
+    mediator answers with in place of the call, after recording it.
+
+    A draft verb answers in the real verb's shape with a synthetic draft
+    id, so the turn goes on as in production (the user would get the
+    draft's Send card). A read that names a recorded draft answers with
+    the recorded call. Every other write answers "recorded"."""
+    if not is_ghost_run(run_id):
+        return None
+    v = str(verb or "")
+    if wants_help(argv):
+        return None
+    gids = _ghost_ids(argv)
+    if is_ghost_read(tool, v):
+        if not gids:
+            return None
+        made = next((w for w in reversed(_writes_for(run_id)) if w.get("answer_id") in gids), {})
+        margv = made.get("argv") or []
+        return {"status": "ok", "ghost": True, "id": gids[0], "is_draft": True,
+                "to": _opt(margv, "--to"), "cc": _opt(margv, "--cc"), "subject": _opt(margv, "--subject"),
+                "body": (made.get("body") or "")[:BODY_CAP],
+                "message": "a draft this run made; the mediator recorded it, so this is the recorded call"}
+    gid = _new_ghost_id(run_id, argv) if v in ("create-reply", "create-draft") else ""
+    answer = _draft_answer(tool, v, argv, gid)
+    if answer is None:
+        answer = {"status": "recorded", "message": f"ghost run: '{tool} {verb}' recorded, not executed"}
+    answer["ghost"] = True
+    record_write(run_id, tool, v, list(argv or []), body=body, answer_id=gid)
+    return answer
+
+
+def record_write(run_id: str, tool: str, verb: str, argv: list, *, body: str = "", answer_id: str = "") -> None:
     try:
-        _append(WRITES, {"ts": _iso(_now()), "run_id": str(run_id)[:64], "tool": tool, "verb": verb,
-                         "argv": [str(a)[:300] for a in list(argv)[:40]]})
+        rec = {"ts": _iso(_now()), "run_id": str(run_id)[:64], "tool": tool, "verb": verb,
+               "argv": [str(a)[:300] for a in list(argv)[:40]]}
+        if body:
+            rec["body"] = str(body)[:BODY_CAP]
+        if answer_id:
+            rec["answer_id"] = answer_id
+        _append(WRITES, rec)
     except Exception as e:
         print(f"codex_ghost.record_write: {str(e)[:120]}", file=sys.stderr)
 
@@ -545,15 +704,28 @@ def _overlay() -> str:
     return ""
 
 
-def codex_suffix(scratch: Path, kind: str) -> str:
+GHOST_WRITES = ("Mail and calendar reads go through the mediator as usual. A mail write (a draft, an archive, a "
+                "snooze) is recorded by the mediator and not executed, which is expected: the mediator answers as "
+                "the real verb does, with a draft id for a draft, and in production the user would get that "
+                "draft's Send card. Make the call you would make and report it as you would in production.")
+LIVE_WRITES = ("Mail and calendar reads and writes go through the mediator as they do for Claude, and a send or a "
+               "calendar change waits for the user's button as the rules above say.")
+
+
+def codex_suffix(scratch: Path, kind: str, *, live: bool = False) -> str:
     final = "the briefing, as you would post it" if kind == "briefing" else "the reply you would post"
+    writes = LIVE_WRITES if live else GHOST_WRITES
+    archive = ("You archive, snooze or close mail only when the user's message in this thread says to, never as a "
+               "side effect of a reply, and never report an archive the user did not ask for." if kind == "chat" else
+               "You archive, snooze or close mail only as rule 8 above allows, and never report an archive this run "
+               "did not make.")
     return f"""
 
 # You are Codex, not Claude
 
-The rules above about Claude Code tools (Read, Bash allow lists, MCP, subagents) mean the same for your shell. The code is at {BOT_TREE} (read-only): run its scripts as `python3 {BOT_TREE}/preprocessor/<script>.py ...`, never a `~` path. EA_DIR is {scratch}: the ledger and the briefing there are yours to read and update. Mail and calendar reads go through the mediator as usual; a mail write (a draft, an archive, a snooze) is recorded by the mediator and not executed, which is expected: make the call you would make and say what you did. There is no Agent tool and no email-author subagent here: an email body comes from `email_writer.py write` first, and when it exits 3 or 4 you write the body yourself by the guide at {BOT_TREE}/.claude/agents/email-author.md and docs/ea/drafting-voice.md, after `style_profiles.py get --contact <addr>`. Never write a file outside EA_DIR. Do not ask the user anything; this run is unattended. Your final message is {final}.
+The rules above about Claude Code tools (Read, Bash allow lists, MCP, subagents) mean the same for your shell. The code is at {BOT_TREE} (read-only): run its scripts as `python3 {BOT_TREE}/preprocessor/<script>.py ...`, never a `~` path. EA_DIR is {scratch}: the ledger and the briefing there are yours to read and update. {writes} There is no Agent tool and no email-author subagent here: an email body comes from `email_writer.py write` first, and when it exits 3 or 4 you write the body yourself by the guide at {BOT_TREE}/.claude/agents/email-author.md and docs/ea/drafting-voice.md, after `style_profiles.py get --contact <addr>`. Never write a file outside EA_DIR. Do not ask the user anything; this run is unattended. Your final message is {final}.
 
-Claims in your final message must match your command log. Say a draft, a reply or a Send card exists only after a `create-reply`, `create-draft` or `update-draft` call in this run returned an id, and name that id; otherwise say that nothing was staged and what blocked it. You never send, archive or close mail: a send waits for the user's button, an archive for the user's word, so never report either as done. Times for a meeting come from `scheduling_engine.py propose-meeting` run on the real request (`--help` is not a run); print every time in the user's time zone. A blocked turn ends with the exact items you need from the user. When a real photo or file cannot be fetched, say so and stop; never put a generated image or an invented fact in its place. A mail verb's own exit status and JSON are the only signal of its outcome: never list or read `state/mail-queue`, and never infer an outage from a file there; call the verb. Never write an em-dash. A briefing names every open ledger row that is due, overdue or waiting on the user, and prints every time as the user's local clock with am or pm, never UTC."""
+Claims in your final message must match your command log. Every "done" names the command in this run that did it. Say a draft, a reply or a Send card exists only after a `create-reply`, `create-draft` or `update-draft` call in this run returned an id, and name that id. Say a document, a slide, a file or a ledger change is done only after the command that wrote it exited 0 in this run. Anything else is not done: say so, and say what blocked it. You have no browser, no Google Drive and no connector of any kind: never say you opened, connected or asked to connect one. You never send mail: a send waits for the user's button, so never report one as done. {archive} Times for a meeting come from `scheduling_engine.py propose-meeting` run on the real request (`--help` is not a run); print every time in the user's time zone. A blocked turn ends with the exact items you need from the user. When a real photo or file cannot be fetched, say so and stop; never put a generated image or an invented fact in its place. A mail verb's own exit status and JSON are the only signal of its outcome: never list or read `state/mail-queue`, and never infer an outage from a file there; call the verb. Never write an em-dash, in a title or header line too: write a colon or a comma. A briefing names every open ledger row that is due, overdue or waiting on the user, and prints every time as the user's local clock with am or pm, never UTC."""
 
 
 # Patterns in a Codex reply that claim a draft or a send, and the write
@@ -723,13 +895,15 @@ def run_job(job: dict, *, codex_run=None, scratch_runner=None, keep: bool = Fals
     try:
         if kind == "chat" and job.get("prompt"):
             # The production turn path with posting off (codex_turn): the
-            # prompt the bot gave Claude, on the chat thread's own ghost
-            # Codex thread and scratch EA_DIR, which persist across turns.
+            # fresh prompt the bot built for this turn (it carries the
+            # thread's history), on a new Codex thread and a new scratch
+            # EA_DIR, both gone after the turn. A resumed ghost thread
+            # carried the stub answers of earlier turns into later ones.
             import codex_turn
-            tr = codex_turn.run_turn(job["prompt"], thread_key=str(job.get("thread_ts") or jid), run_id=rid,
-                                     live=False, fresh_prompt=job.get("fresh_prompt") or "",
+            fresh = job.get("fresh_prompt") or job["prompt"]
+            tr = codex_turn.run_turn(fresh, thread_key=jid, run_id=rid, live=False, fresh_prompt=fresh,
                                      lane=str(job.get("lane") or ""), codex_run=codex_run,
-                                     scratch_runner=scratch_runner)
+                                     scratch_runner=scratch_runner, persist=False, keep_scratch=keep)
             res = {"output": tr["output"],
                    "tool_calls": [{"input": c[4], "exit_code": None, "output": c[3]} for c in tr["tool_calls"]],
                    "usage": tr["usage"], "duration_s": tr["duration_ms"] / 1000.0, "exit_code": tr["returncode"],
@@ -757,6 +931,9 @@ def run_job(job: dict, *, codex_run=None, scratch_runner=None, keep: bool = Fals
         rec["claims"] = claim_check(res.get("output") or "", rec["writes"]) if kind == "chat" else {}
         rec["quota"] = quota_after(limits(fresh=True))
         rec["status"] = "ok" if not res.get("harness_error") else "error"
+        blocked = network_blocked(res.get("tool_calls") or [])
+        if blocked and kind == "chat":
+            rec["status"], rec["skip_reason"] = "skipped", f"network: {blocked}"
     except Exception as e:
         rec["codex"] = {"harness_error": f"ghost failed: {str(e)[:300]}"}
     finally:
@@ -768,6 +945,16 @@ def run_job(job: dict, *, codex_run=None, scratch_runner=None, keep: bool = Fals
     except OSError:
         pass
     return rec
+
+
+def network_blocked(calls: list[dict]) -> str:
+    """The first command whose output shows the sandbox's missing
+    network, or ''."""
+    for c in calls or []:
+        if NETWORK_FAIL.search(str(c.get("output") or "")):
+            cmd = c.get("command") or (c.get("input") or {}).get("command") or "a command"
+            return str(cmd)[:120]
+    return ""
 
 
 def _staged_in(root: Path) -> dict:
@@ -792,8 +979,7 @@ def run_lane_live(prompt: str, *, agent: str, run_id: str, codex_run=None) -> di
     (run-agent.sh) asks `gate briefing` first."""
     real = BOT_HOME / ".ea"
     full = "# Operating instructions (CLAUDE.md)\n\n" + _core() + "\n\n# This run\n\n" + prompt.strip() \
-        + codex_suffix(real, "briefing").replace("is recorded by the mediator and not executed, which is expected: make the call you would make and say what you did",
-                                                 "goes through the mediator as it does for Claude")
+        + codex_suffix(real, "briefing", live=True)
     prefix = _bot_env({"EA_DIR": str(real), "EA_RUN_ID": run_id, "EA_BOT_HOME": str(BOT_HOME)})
     return (codex_run or codex_cli.run)(
         full, cwd=BOT_HOME, sandbox="workspace-write",
@@ -811,7 +997,29 @@ def _judge(prompt: str, schema: dict, *, judge: str, runner=None):
 def _writes_text(writes: list[dict]) -> str:
     if not writes:
         return "(none)"
-    return "\n".join(f"- {w.get('tool')} {w.get('verb')} {' '.join(w.get('argv') or [])[:160]}" for w in writes[:12])
+    lines = []
+    for w in writes[:12]:
+        lines.append(f"- {w.get('tool')} {w.get('verb')} {' '.join(w.get('argv') or [])[:160]}")
+        if w.get("body"):
+            lines.append("  body: " + str(w["body"])[:1500].replace("\n", "\n  "))
+    return "\n".join(lines)
+
+
+def _zone_note(ts: str) -> str:
+    """'Europe/Lisbon, UTC+1 on 2026-07-21': the user's zone on the
+    day of a replay, for the briefing judge."""
+    try:
+        import user_tz
+        tz = user_tz.zone(EA_DIR)
+        day = _day(ts) or date.today()
+        noon = datetime(day.year, day.month, day.day, 12, tzinfo=timezone.utc).astimezone(tz)
+        off = noon.utcoffset() or timedelta(0)
+        hours = off.total_seconds() / 3600
+        sign = "+" if hours >= 0 else "-"
+        num = f"{abs(hours):g}"
+        return f"the user's zone is {getattr(tz, 'key', str(tz))}, UTC{sign}{num} on {day.isoformat()}"
+    except Exception:
+        return "the user's zone is not known here"
 
 
 def grade(*, judge: str = "claude", max_turns: int = 50, runner=None) -> dict:
@@ -826,7 +1034,8 @@ def grade(*, judge: str = "claude", max_turns: int = 50, runner=None) -> dict:
             if rec["kind"] == "briefing":
                 prompt = BRIEFING_JUDGE_PROMPT.format(
                     agent=rec.get("agent") or "briefing", claude=rec["claude"].get("output") or "(empty)",
-                    codex=rec["codex"].get("output") or "(empty)", writes=_writes_text(rec.get("writes") or []))
+                    codex=rec["codex"].get("output") or "(empty)", writes=_writes_text(rec.get("writes") or []),
+                    zone=_zone_note(rec.get("ts") or ""))
                 ans, meta = _judge(prompt, BRIEFING_JUDGE_SCHEMA, judge=judge, runner=runner)
                 row = {"id": rec["id"], "kind": "briefing", "agent": rec.get("agent"), "ts": _iso(_now()),
                        "verdict": ans.get("verdict"), "better": ans.get("better"),
@@ -897,8 +1106,11 @@ def measure(kind: str, since: date | None = None) -> dict:
     else:
         for grade_name in ("send", "edit", "wrong", "none"):
             m[grade_name] = sum(1 for g in judged if g.get("codex_grade") == grade_name)
+            m[f"claude_{grade_name}"] = sum(1 for g in judged if g.get("claude_grade") == grade_name)
         m["wrong_share"] = _share(m["wrong"], len(judged))
         m["send_share"] = _share(m["send"], len(judged))
+        m["claude_wrong_share"] = _share(m["claude_wrong"], len(judged))
+        m["claude_send_share"] = _share(m["claude_send"], len(judged))
         m["better_codex"] = sum(1 for g in judged if g.get("better") == "codex")
         m["wrong_list"] = [{"id": g["id"], "lane": g.get("lane"), "problems": g.get("problems")}
                            for g in judged if g.get("codex_grade") == "wrong"][-10:]
@@ -925,10 +1137,14 @@ def verdict(kind: str, m: dict | None = None) -> tuple[str, list[str]]:
         if m["minor_share"] > p["minor_share_max"]:
             reasons.append(f"minor or worse {m['minor_share']:.0%} > {p['minor_share_max']:.0%}")
     else:
-        if m["wrong_share"] > p["wrong_share_max"]:
-            reasons.append(f"wrong {m['wrong_share']:.0%} > {p['wrong_share_max']:.0%}")
-        if m["send_share"] < p["send_share_min"]:
-            reasons.append(f"send {m['send_share']:.0%} < {p['send_share_min']:.0%}")
+        wrong_cap = m.get("claude_wrong_share", 0.0) + p["wrong_gap_max"]
+        if m["wrong_share"] > wrong_cap + 1e-9:
+            reasons.append(f"wrong {m['wrong_share']:.0%} > Claude's {m.get('claude_wrong_share', 0.0):.0%} "
+                           f"+ {p['wrong_gap_max']:.0%}")
+        send_floor = m.get("claude_send_share", 0.0) - p["send_gap_max"]
+        if m["send_share"] < send_floor - 1e-9:
+            reasons.append(f"send {m['send_share']:.0%} < Claude's {m.get('claude_send_share', 0.0):.0%} "
+                           f"- {p['send_gap_max']:.0%}")
     return ("GO" if not reasons else "NO-GO"), reasons
 
 
@@ -959,7 +1175,8 @@ def report(as_json: bool = False) -> str:
         if kind == "briefing":
             head += f"; same {m.get('same', 0)} minor {m.get('minor', 0)} major {m.get('major', 0)}; codex better {m.get('better_codex', 0)}"
         else:
-            head += (f"; send {m.get('send', 0)} edit {m.get('edit', 0)} wrong {m.get('wrong', 0)}; "
+            head += (f"; send {m.get('send', 0)} edit {m.get('edit', 0)} wrong {m.get('wrong', 0)} "
+                     f"(Claude send {m.get('claude_send', 0)} wrong {m.get('claude_wrong', 0)}); "
                      f"codex better {m.get('better_codex', 0)}; claim mismatches {m.get('claim_mismatches', 0)}")
         head += f"; tokens in {m['input_tokens']:,} out {m['output_tokens']:,}; p50 {m['duration_p50_s']:.0f}s"
         pk = m.get("quota_peak") or {}
@@ -1022,6 +1239,10 @@ def main(argv=None) -> int:
     s.add_argument("--skip", default=None,
                    help="comma-separated regexes; a chat turn whose message matches one is not replayed "
                         "(default: deck and slide builds)")
+    s = sub.add_parser("restart", help="archive the last window's records and threads, then start a new window")
+    s.add_argument("--days", type=int, default=DEFAULT_DAYS)
+    s.add_argument("--kinds", default=",".join(KINDS)); s.add_argument("--share", type=float, default=DEFAULT_SHARE)
+    s.add_argument("--skip", default=None, help="as for start")
     sub.add_parser("stop"); sub.add_parser("status")
     s = sub.add_parser("limits"); s.add_argument("--fresh", action="store_true")
     s = sub.add_parser("grade"); s.add_argument("--judge", default="claude", choices=("claude", "remote"))
@@ -1043,10 +1264,13 @@ def main(argv=None) -> int:
     if not owner_trust.is_owner_process():
         print("codex_ghost: owner only (the store is owner-private)", file=sys.stderr)
         return 2
-    if a.cmd == "start":
+    if a.cmd in ("start", "restart"):
         skip = None if a.skip is None else [p.strip() for p in a.skip.split(",") if p.strip()]
+        out = {}
+        if a.cmd == "restart":
+            out["archived"] = archive_window()
         w = start(a.days, [k.strip() for k in a.kinds.split(",") if k.strip()], a.share, skip=skip)
-        print(json.dumps(w)); return 0
+        print(json.dumps(dict(out, window=w) if out else w)); return 0
     if a.cmd == "stop":
         stop(); print("codex ghost window removed"); return 0
     if a.cmd == "status":

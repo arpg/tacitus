@@ -26,7 +26,9 @@ Codex threads: the first turn in a chat thread starts a Codex thread
 (`codex exec`, not ephemeral) and its id is kept in the owner-private
 registry, one per chat thread and mode; later turns resume it
 (`codex exec resume <id>`). A resume that fails starts a new thread with
-the fresh prompt the caller passes as `fresh_prompt`.
+the fresh prompt the caller passes as `fresh_prompt`. The ghost arm
+passes `persist=False`: each replay is a new thread on a new scratch,
+kept nowhere, and the scratch is removed after the turn.
 
 A ghost's thread id and a production thread id are never the same
 registry row: the ghost's scratch root is that thread's root.
@@ -103,10 +105,7 @@ def ghost_prompt(prompt: str, scratch: Path) -> str:
 
 
 def live_prompt(prompt: str) -> str:
-    suffix = codex_ghost.codex_suffix(REAL_EA_DIR, "chat").replace(
-        "a mail write (a draft, an archive, a snooze) is recorded by the mediator and not executed, which is expected: make the call you would make and say what you did",
-        "a mail write goes through the mediator as it does for Claude, and a send or a calendar change waits for the user's button as the rules above say")
-    return prompt + suffix
+    return prompt + codex_ghost.codex_suffix(REAL_EA_DIR, "chat", live=True)
 
 
 # ── staged files in a ghost's scratch ─────────────────────────────────
@@ -158,22 +157,24 @@ def _shape(res: dict, thread_id: str, mode: str, staged: dict | None = None) -> 
 
 def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_prompt: str = "",
              lane: str = "", model: str = "", timeout: int | None = None, codex_run=None,
-             scratch_runner=None, clear_runner=None, on_event=None) -> dict:
+             scratch_runner=None, clear_runner=None, on_event=None, persist: bool = True,
+             keep_scratch: bool = False) -> dict:
     """One turn. `prompt` is what the bot would send Claude this turn
     (fresh or continuation); `fresh_prompt` is the fresh prompt, used when
     this thread has no Codex thread yet or its resume fails. Returns the
     bot's result shape (`_shape`); `harness_error` set means Codex did
     not answer and the caller lets Claude take the turn."""
     mode = "live" if live else "ghost"
+    persist = persist or live
     timeout = timeout or (ROOM_TIMEOUT_S if lane == "room" else TURN_TIMEOUT_S)
-    row = thread_row(thread_key, mode)
+    row = thread_row(thread_key, mode) if persist else {}
     if live:
         root = BOT_HOME
         add_dirs = [REAL_EA_DIR / d for d in LIVE_WRITABLE]
         ea_dir = REAL_EA_DIR
         wrap = live_prompt
     else:
-        jid = "chat-" + codex_ghost.hashlib.sha256(thread_key.encode()).hexdigest()[:12]
+        jid = ghost_scratch_id(thread_key)
         root = Path(row["root"]) if row.get("root") else codex_ghost.scratch_root(jid)
         if not row.get("root"):
             root = codex_ghost.prepare_scratch(jid, runner=scratch_runner)
@@ -197,11 +198,20 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
         forget_thread(thread_key, mode)
         res = go(fresh_prompt or prompt, "")
     tid = res.get("thread_id") or row.get("thread_id") or ""
-    if tid and not res.get("harness_error"):
+    if tid and persist and not res.get("harness_error"):
         remember_thread(thread_key, mode, tid, root)
     staged = None
     if not live:
         staged = read_staged(root)
-        if staged:
+        if not persist:
+            if not keep_scratch:
+                codex_ghost.remove_scratch(jid, runner=clear_runner)
+        elif staged:
             clear_staged(root, runner=clear_runner)
     return _shape(res, tid, mode, staged)
+
+
+def ghost_scratch_id(thread_key: str) -> str:
+    """The scratch job id for a ghost thread key (its root is
+    codex_ghost.scratch_root of this id)."""
+    return "chat-" + codex_ghost.hashlib.sha256(thread_key.encode()).hexdigest()[:12]

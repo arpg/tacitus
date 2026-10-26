@@ -128,6 +128,32 @@ def test_a_ghost_turn_runs_in_a_scratch_root_with_the_prompt_paths_rewritten(pri
     assert run2.calls[0]["resume"] == "gh-1" and run2.calls[0]["cwd"] == root
 
 
+def test_a_ghost_turn_without_persist_is_a_new_thread_on_a_scratch_removed_after(private, tmp_path, monkeypatch):
+    """A resumed ghost thread carried the stub answers of earlier turns
+    into later ones (it learned an outage that never happened): the ghost
+    arm runs each replay on a new thread and a new scratch."""
+    removed = []
+    monkeypatch.setattr(cg, "remove_scratch", lambda jid, runner=None: removed.append(jid))
+
+    def fake_prepare(jid, runner=None, **kw):
+        root = tmp_path / "scratch" / jid / "ea"
+        (root / "state").mkdir(parents=True)
+        (root / "state" / "pending-event.json").write_text(json.dumps({"subject": "Sync"}))
+        return root
+    monkeypatch.setattr(cg, "prepare_scratch", fake_prepare)
+    ct.remember_thread("chat-j1", "ghost", "old-thread", Path("/old"))
+    run = _codex([{"output": "Done.", "thread_id": "gh-new"}])
+    rec = ct.run_turn("FRESH", thread_key="chat-j1", run_id=cg.run_id_for("chat-j1"), live=False,
+                      fresh_prompt="FRESH", codex_run=run, scratch_runner=_scratch, persist=False)
+    assert run.calls[0]["resume"] == "" and str(run.calls[0]["cwd"]).endswith(ct.ghost_scratch_id("chat-j1") + "/ea")
+    assert rec["staged"] == {"pending-event.json": {"subject": "Sync"}}, "staged files are read before the scratch goes"
+    assert removed == [ct.ghost_scratch_id("chat-j1")]
+    assert ct.thread_row("chat-j1", "ghost")["thread_id"] == "old-thread", "the registry is neither read nor written"
+    run2 = _codex([{"output": "Live.", "thread_id": "L1"}])
+    ct.run_turn("P", thread_key="t-live", run_id="r", live=True, codex_run=run2, persist=False)
+    assert ct.thread_row("t-live", "live")["thread_id"] == "L1", "production threads always persist"
+
+
 def test_live_and_ghost_threads_never_share_a_row(private):
     ct.remember_thread("t5", "live", "L", ct.BOT_HOME)
     ct.remember_thread("t5", "ghost", "G", Path("/x"))
@@ -151,8 +177,10 @@ def test_the_ghost_runner_takes_the_production_path_for_a_chat_job_with_a_prompt
            "prompt": "THE PROMPT", "fresh_prompt": "THE FRESH PROMPT",
            "claude": {"output": "claude reply", "tools": [], "elapsed_s": 3}}
     rec = cg.run_job(job, codex_run=lambda *a, **k: pytest.fail("codex_cli.run must not be called directly"))
-    assert seen["thread_key"] == "stream:5:topic:x" and seen["live"] is False and seen["fresh_prompt"] == "THE FRESH PROMPT"
-    assert seen["prompt"] == "THE PROMPT" and seen["run_id"] == job["run_id"]
+    # each replay is its own thread: the fresh prompt (it carries the
+    # thread's history), keyed by the job, kept nowhere
+    assert seen["thread_key"] == "chat-9" and seen["live"] is False and seen["fresh_prompt"] == "THE FRESH PROMPT"
+    assert seen["prompt"] == "THE FRESH PROMPT" and seen["run_id"] == job["run_id"] and seen["persist"] is False
     assert rec["status"] == "ok" and rec["codex"]["output"] == "ghost reply" and rec["thread_id"] == "gh-9"
     assert rec["staged"] == {"pending-event.json": {"subject": "S"}}
     assert rec["codex"]["tool_calls"][0]["command"] == "cmd"

@@ -4,8 +4,10 @@ audit's closures), the code-only fallback, the afternoon update, the
 escalation queue and the switch. All mail here is made up; nothing
 reaches the network, Graph, the ledger or the real private dir."""
 import json
+import os
 import sys
-from datetime import datetime, timedelta, timezone
+import time
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,16 @@ import remote_llm as rl  # noqa: E402
 import remote_briefing as rb  # noqa: E402
 
 NOW = datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc)   # Mon 04:00 MT
+
+
+@pytest.fixture
+def mountain(monkeypatch):
+    """The local clock on Mountain time, as the install's is."""
+    monkeypatch.setenv("TZ", "America/Denver")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
 
 
 @pytest.fixture
@@ -66,9 +78,11 @@ def _briefing():
              "source_message_id": "m-slides", "conversation_id": "c-slides", "type": "response_needed"},
             {"id": "row-old", "description": "Old travel form", "type": "task"},
         ],
-        "todays_events": [{"subject": "Lab meeting", "start": {"dateTime": "2026-10-12T09:30:00"},
-                           "end": {"dateTime": "2026-10-12T10:30:00"}}],
-        "availability_merged": [{"start": "2026-10-12T13:00:00", "end": "2026-10-12T14:30:00"}],
+        # Graph's calendar view: UTC wall-clock, timeZone "UTC".
+        "todays_events": [{"subject": "Lab meeting",
+                           "start": {"dateTime": "2026-10-12T15:30:00.0000000", "timeZone": "UTC"},
+                           "end": {"dateTime": "2026-10-12T16:30:00.0000000", "timeZone": "UTC"}}],
+        "availability_merged": [{"start": "2026-10-12T19:00:00+00:00", "end": "2026-10-12T20:30:00+00:00"}],
         "handled_by_reply": [{"subject": "x"}],
         "delta_summary": {"open_obligations": 3, "total_inbox": 40},
         "recently_closed": [],
@@ -184,7 +198,7 @@ def _model(plan):
     return chat
 
 
-def test_a_morning_run(priv):
+def test_a_morning_run(mountain, priv):
     made, queued = [], []
     drafter = lambda c, says, run_id: made.append((c["message_id"], says, run_id)) or \
         {"ok": True, "draft_id": "draft-1"}
@@ -202,7 +216,7 @@ def test_a_morning_run(priv):
     assert "*Sent to Claude* (1)" in text and queued[0]["conversation_id"] == "c-paper"
     assert "NSF annual report" not in text.split("*Looks done?*")[0]     # proposed by the audit
     assert "*Looks done?* (1)" in text and "(submitted Friday)" in text
-    assert "09:30-10:30 Lab meeting" in text and "_written by the remote model_" in text
+    assert "9:30-10:30 AM Lab meeting" in text and "_written by the remote model_" in text
     assert "—" not in text
     assert rec["drafts"] == 1 and rec["decisions_from_rails"] == 1 and rec["escalated"] == 1
 
@@ -224,14 +238,16 @@ def test_the_code_only_fallback(priv):
     assert "1. *Slides for the review*" in text and rec["fallback"]
 
 
-def test_the_afternoon_update(priv):
+def test_the_afternoon_update(mountain, priv):
     plan = {"since_morning": [{"ref": "R3", "line": "Lee wants a section"}],
             "pending": [{"ref": "L1", "line": "the report is still open"}]}
-    b = dict(_briefing(), tomorrows_events=[{"subject": "Review", "start": {"dateTime": "2026-10-13T08:00:00"}}])
+    b = dict(_briefing(), tomorrows_events=[{"subject": "Review", "start": {"dateTime": "2026-10-13T14:00:00.0000000",
+                                                                             "timeZone": "UTC"}}])
     text, _ = rb.run("afternoon-catchup", b, run_id="r", now=NOW, chat=_model(plan),
                      audit=lambda *a, **k: {})
     assert text.startswith(":coffee: *Afternoon Update, ")
-    assert "Lee wants a section" in text and "*Tomorrow preview:*" in text and "08:00 Review" in text
+    assert "Lee wants a section" in text and "*Tomorrow preview:*" in text and "- 8:00 AM Review" in text
+    assert "*Remaining today:*\n- 9:30 AM Lab meeting" in text
     assert "Pending your response" in text
 
 
@@ -650,3 +666,28 @@ def test_the_ea_post_names_the_rooms_that_got_a_slice(priv, monkeypatch):
                        drafter=lambda *a, **k: {"ok": True, "draft_id": "d"},
                        queue=lambda *a, **k: 0, audit=lambda *a, **k: {}, rooms=boom)
     assert "project rooms" not in text and "rooms" not in rec
+
+
+def test_calendar_times_print_on_the_users_clock_never_utc(mountain):
+    """The posted briefing printed Graph's UTC wall-clock: a 9:00 AM
+    meeting showed as 15:00. Times print on the local clock, and an
+    evening meeting (UTC's next day) is today's."""
+    b = {"todays_events": [
+            {"subject": "Committee", "start": {"dateTime": "2026-10-21T15:00:00.0000000", "timeZone": "UTC"},
+             "end": {"dateTime": "2026-10-21T16:00:00.0000000", "timeZone": "UTC"}},
+            {"subject": "Dinner", "start": {"dateTime": "2026-10-22T00:30:00.0000000", "timeZone": "UTC"},
+             "end": {"dateTime": "2026-10-22T02:00:00.0000000", "timeZone": "UTC"}},
+            {"subject": "Retreat", "isAllDay": True, "start": {"dateTime": "2026-10-21T00:00:00.0000000",
+                                                              "timeZone": "UTC"}}],
+         "availability_merged": [{"start": "2026-10-21T17:00:00+00:00", "end": "2026-10-21T17:30:00+00:00"},
+                                 {"start": "2026-10-22T03:00:00+00:00", "end": "2026-10-22T03:30:00+00:00"}]}
+    cal = rb._calendar(b, date(2026, 10, 21))
+    assert cal == ["9:00-10:00 AM Committee", "6:30-8:00 PM Dinner", "all day: Retreat"]
+    assert rb._free(b, date(2026, 10, 21)) == ["11:00-11:30 AM", "9:00-9:30 PM"]
+    assert not any("15:00" in line for line in cal)
+    import preprocess
+    assert preprocess._event_local_day(b["todays_events"][1]) == "2026-10-21"
+    assert preprocess._event_local_day(b["todays_events"][2]) == "2026-10-21"
+    assert preprocess._event_local_day({"start": {"dateTime": "2026-10-21T20:00:00-06:00"}}) == "2026-10-21"
+    pre = (Path(__file__).resolve().parents[1] / "preprocessor" / "preprocess.py").read_text()
+    assert 'if _event_local_day(e) == datetime.now().strftime("%Y-%m-%d")' in pre

@@ -63,26 +63,81 @@ def test_a_ghost_run_may_read_and_every_write_is_recorded(private):
     rid = cg.run_id_for("briefing-x")
     assert rid.startswith("cron-ghost-codex-") and cg.is_ghost_run(rid)
     for verb in ("get-conversation", "search-mail", "list-mail", "calendar-view", "get-event", "preflight-check"):
-        assert cg.ghost_refusal("graph_actions", verb, rid) == "", verb
+        assert cg.ghost_answer("graph_actions", verb, [verb], rid) is None, verb
     for verb in ("create-reply", "create-draft", "archive-message", "snooze-message", "update-draft", "set-categories"):
-        assert "recorded, not executed" in cg.ghost_refusal("graph_actions", verb, rid), verb
-    assert cg.ghost_refusal("graph_actions", "create-draft", "cron-morning-briefing-1") == ""
-    assert cg.ghost_refusal("graph_actions", "create-draft", "") == ""
-    cg.record_write(rid, "graph_actions", "create-reply", ["--message-id", "m1", "--body", "x"])
-    assert _rows(cg.WRITES)[0]["verb"] == "create-reply" and cg._writes_for(rid)[0]["run_id"] == rid
+        assert cg.ghost_answer("graph_actions", verb, [verb], rid)["ghost"] is True, verb
+    assert cg.ghost_answer("graph_actions", "create-draft", ["create-draft"], "cron-morning-briefing-1") is None
+    assert cg.ghost_answer("graph_actions", "create-draft", ["create-draft"], "") is None
+    assert [w["verb"] for w in _rows(cg.WRITES)] == ["create-reply", "create-draft", "archive-message",
+                                                    "snooze-message", "update-draft", "set-categories"]
+    assert cg._writes_for(rid)[0]["run_id"] == rid
 
 
 def test_the_mediator_answers_recorded_for_a_ghost_write(private, monkeypatch):
     import mail_mediator as mm
     seen = []
-    monkeypatch.setattr(cg, "record_write", lambda *a: seen.append(a))
-    assert mm._ghost_recorded("graph_actions", "get-message", [], cg.run_id_for("chat-1")) == ""
-    msg = mm._ghost_recorded("graph_actions", "archive-message", ["--message-id", "m"], cg.run_id_for("chat-1"))
-    assert "recorded" in msg and seen and seen[0][2] == "archive-message"
-    assert mm._ghost_recorded("graph_actions", "archive-message", [], "cron-x") == ""
+    monkeypatch.setattr(cg, "record_write", lambda *a, **k: seen.append((a, k)))
+    assert mm._ghost_recorded("graph_actions", "get-message", [], cg.run_id_for("chat-1")) is None
+    ans = mm._ghost_recorded("graph_actions", "archive-message", ["archive-message", "--message-id", "m"],
+                             cg.run_id_for("chat-1"))
+    assert ans["status"] == "recorded" and ans["ghost"] and seen and seen[0][0][2] == "archive-message"
+    assert mm._ghost_recorded("graph_actions", "archive-message", [], "cron-x") is None
     text = (REPO / "preprocessor" / "mail_mediator.py").read_text()
     assert text.index("_ghost_recorded(tool, verb, argv, run_id)") < text.index("refusal = _gate_precheck(tool, verb, argv, run_id)")
+    assert text.index("if _ghost_help(argv, run_id):") < text.index("_stage_paths(rid, argv)")
     assert '"status": "recorded", "ghost": True' in text
+
+
+def test_a_recorded_draft_answers_like_the_real_verb_with_an_id(private):
+    """The stub that carried no id made every ghost draft read as a
+    failure: Codex said nothing was staged. A draft verb now answers in
+    the real verb's shape with a synthetic id, the call (with its body) is
+    recorded, and a later read of that id answers from the record."""
+    rid = cg.run_id_for("chat-2")
+    argv = ["create-reply", "--message-id", "AAMk1", "--body", "x", "--body-file", "/s/reply-body.txt"]
+    ans = cg.ghost_answer("graph_actions", "create-reply", argv, rid, body="Thanks, Tuesday works.")
+    assert ans["status"] == "reply_draft_created" and ans["id"].startswith(cg.GHOST_ID_PREFIX) and ans["ghost"]
+    [w] = cg._writes_for(rid)
+    assert w["verb"] == "create-reply" and w["body"] == "Thanks, Tuesday works." and w["answer_id"] == ans["id"]
+    new = cg.ghost_answer("graph_actions", "create-draft", ["create-draft", "--to", "a@example.edu",
+                                                            "--subject", "Visit"], rid)
+    assert new["status"] == "draft_created" and new["id"] != ans["id"]
+    upd = cg.ghost_answer("graph_actions", "update-draft", ["update-draft", "--message-id", ans["id"]], rid)
+    assert upd == {"status": "updated", "message_id": ans["id"], "ghost": True}
+    gm = cg.ghost_answer("gmail_client", "create-draft", ["create-draft", "--thread-id", "t1"], rid)
+    assert gm["draft_id"].startswith(cg.GHOST_ID_PREFIX) and gm["thread_id"] == "t1"
+    seen = cg.ghost_answer("graph_actions", "preflight-check", ["preflight-check", "--message-id", new["id"]], rid)
+    assert seen["is_draft"] and seen["to"] == "a@example.edu" and seen["subject"] == "Visit"
+    assert cg.ghost_answer("graph_actions", "get-message", ["get-message", "--message-id", "AAMk1"], rid) is None
+    assert cg.ghost_answer("graph_actions", "create-reply", argv, "cron-morning-briefing-1") is None
+    other = cg.ghost_answer("graph_actions", "snooze-message", ["snooze-message", "--message-id", "m"], rid)
+    assert other["status"] == "recorded" and "recorded, not executed" in other["message"]
+
+
+def test_a_ghost_runs_the_solver_reads_and_help_and_records_neither(private):
+    rid = cg.run_id_for("chat-3")
+    for verb in ("propose-meeting", "validate-draft", "check-attendees", "reschedule-brief"):
+        assert cg.ghost_answer("scheduling_engine", verb, [verb, "--duration", "30"], rid) is None, verb
+    assert cg.ghost_answer("scheduling_engine", "log-decision", ["log-decision"], rid)["status"] == "recorded"
+    assert cg.wants_help(["create-reply", "--help"]) and cg.wants_help(["create-draft", "-h"])
+    assert not cg.wants_help(["--help"]) and not cg.wants_help(["create-reply", "--body", "x"])
+    assert cg.ghost_answer("graph_actions", "create-reply", ["create-reply", "--help"], rid) is None
+    assert [w["verb"] for w in cg._writes_for(rid)] == ["log-decision"]
+    import mail_mediator as mm
+    assert mm._ghost_help(["create-reply", "--help"], rid) and not mm._ghost_help(["create-reply", "--help"], "cron-x")
+
+
+def test_the_mediator_reads_a_ghost_drafts_body_with_the_residents_access(private, monkeypatch):
+    import mail_mediator as mm
+    read = []
+    monkeypatch.setattr(mm.resident_io, "read_text", lambda p: read.append(p) or "Body text.")
+    assert mm._ghost_body(["create-reply", "--body", "x", "--body-file", "/s/b.txt"]) == "Body text."
+    assert read == ["/s/b.txt"]
+    monkeypatch.setattr(mm.resident_io, "read_text", lambda p: None)
+    assert mm._ghost_body(["create-draft", "--body", "Inline body."]) == "Inline body."
+    assert mm._ghost_body(["create-draft", "--body", "x"]) == ""
+    ans = mm._ghost_recorded("graph_actions", "get-conversation", ["get-conversation"], cg.run_id_for("c"))
+    assert ans is None
 
 
 # ── enqueue ──────────────────────────────────────────────────────────
@@ -116,6 +171,56 @@ def test_deck_builds_are_not_replayed_and_the_skip_is_recorded(private):
     assert cg.window()["skip"] == [r"\bpoll\b"]
     assert cg.skip_reason({"kind": "chat", "user_msg": "rebuild the deck"}) == ""
     assert cg.skip_reason({"kind": "chat", "user_msg": "fill the poll"}) == r"\bpoll\b"
+
+
+def test_turns_that_need_the_network_are_skipped_before_and_after_the_run(private, monkeypatch):
+    cg.start(7, ["chat"], 1.0)
+    room = "[From the private #ea-x channel, scoped to project 'x'. Reply in this thread.]\n\n"
+    for msg in ("draft the intro from https://docs.google.com/presentation/d/abc", "update the Google Doc",
+                "open a pull request on the doc-review repo", "add both logos", "push it to Overleaf"):
+        assert cg.skip_reason({"kind": "chat", "user_msg": room + msg}), msg
+    assert cg.skip_reason({"kind": "chat", "user_msg": room + "snooze the vendor thread"}) == ""
+    assert cg.skip_reason({"kind": "chat", "user_msg": "[From the private #ea-decks channel.]\n\nsnooze it"}) == "", \
+        "the room's preamble is not the user's words"
+    monkeypatch.setattr(cg, "remove_scratch", lambda jid, runner=None: None)
+    monkeypatch.setattr(cg, "limits", lambda fresh=False, runner=None: {})
+
+    def codex_run(prompt, **kw):
+        return {"output": "I could not reach the document.", "usage": {}, "duration_s": 1, "exit_code": 0,
+                "harness_error": "", "files": [],
+                "tool_calls": [{"input": {"command": "python3 fetch_url.py --url u"}, "exit_code": 1,
+                                "output": "curl: (6) Could not resolve host: example.org"}]}
+    job = {"kind": "chat", "id": "chat-n", "run_id": cg.run_id_for("chat-n"), "lane": "dm", "source_run_id": "n",
+           "user_msg": "read the page", "claude": {"output": "Read it.", "tools": []}}
+    rec = cg.run_job(job, codex_run=codex_run, scratch_runner=_fake_scratch)
+    assert rec["status"] == "skipped" and rec["skip_reason"].startswith("network: python3 fetch_url.py")
+    assert cg.measure("chat")["skipped"] == 1 and cg.measure("chat")["errors"] == 0
+    assert cg.network_blocked([{"command": "ls", "output": "ok"}]) == ""
+
+
+def test_restart_archives_the_last_window_and_forgets_the_ghost_threads(private, monkeypatch):
+    import codex_turn as ct
+    removed = []
+    monkeypatch.setattr(cg, "remove_scratch", lambda jid, runner=None: removed.append(jid))
+    cg.start(7)
+    _seed("chat", 2, {"codex_grade": "wrong", "claude_grade": "send", "better": "claude", "problems": [],
+                      "enhancement": ""})
+    cg.record_write(cg.run_id_for("chat-0"), "graph_actions", "create-reply", [])
+    cg.final()
+    root = cg.BOT_HOME / ".ea" / "state" / "codex-ghost" / "chat-abc" / "ea"
+    ct.remember_thread("stream:1:topic:a", "ghost", "G", root)
+    ct.remember_thread("stream:1:topic:a", "live", "L", cg.BOT_HOME)
+    (cg._store() / cg.JOBS).mkdir(parents=True, exist_ok=True)
+    (cg._store() / cg.JOBS / "chat-old.json").write_text("{}")
+    out = cg.archive_window()
+    arch = Path(out["archive"])
+    assert {"turns.jsonl", "grades.jsonl", "recorded-writes.jsonl", "final-chat.json", "jobs"} <= set(out["moved"])
+    assert (arch / "turns.jsonl").exists() and (arch / "jobs" / "chat-old.json").exists()
+    assert _rows(cg.TURNS) == [] and _rows(cg.GRADES) == [] and cg.measure("chat")["judged"] == 0
+    assert removed == ["chat-abc"] and out["threads"] == 1
+    assert ct.thread_row("stream:1:topic:a", "ghost") == {} and ct.thread_row("stream:1:topic:a", "live")["thread_id"] == "L"
+    assert not cg.gate("chat")[0]
+    assert Path(cg.archive_window()["archive"]) != arch, "a second archive of the same window does not overwrite"
 
 
 def test_the_chat_share_is_a_stable_draw_per_turn(private):
@@ -342,6 +447,45 @@ def test_chat_turns_go_and_the_gate_opens_on_a_fresh_final(private):
     assert rep["kinds"]["chat"]["verdict"] == "GO" and rep["kinds"]["chat"]["measure"]["send"] == 15
 
 
+def test_the_chat_verdict_compares_codex_with_claude_on_the_same_turns(private):
+    """Claude's own send share under this judge was 26%: a fixed 50% floor
+    fails a Codex that matches Claude. Codex may trail Claude's send share
+    and exceed its wrong share by the gaps in PASS, no more."""
+    _seed("chat", 20, {"codex_grade": "edit", "claude_grade": "edit", "better": "same", "problems": [],
+                       "enhancement": ""})
+    m = cg.measure("chat")
+    assert m["send_share"] == 0 and m["claude_send_share"] == 0
+    assert cg.verdict("chat", m) == ("GO", [])
+    m.update(claude_send_share=0.25, send_share=0.10)
+    v, reasons = cg.verdict("chat", m)
+    assert v == "NO-GO" and reasons == ["send 10% < Claude's 25% - 10%"]
+    m.update(send_share=0.20, wrong_share=0.15, claude_wrong_share=0.0)
+    assert cg.verdict("chat", m)[1] == ["wrong 15% > Claude's 0% + 10%"]
+    m.update(wrong_share=0.10)
+    assert cg.verdict("chat", m)[0] == "GO"
+    assert "(Claude send 0 wrong 0)" in cg.report()
+
+
+def test_the_judges_see_draft_bodies_and_the_users_zone(private, monkeypatch):
+    text = cg._writes_text([{"tool": "graph_actions", "verb": "create-reply", "argv": ["create-reply"],
+                             "body": "Thanks.\nTuesday works."}])
+    assert "body: Thanks.\n  Tuesday works." in text
+    (Path(os.environ["EA_DIR"]) / "config").mkdir()
+    (Path(os.environ["EA_DIR"]) / "config" / "user-profile.json").write_text(json.dumps({"timezone": "America/Denver"}))
+    monkeypatch.setattr(cg, "EA_DIR", Path(os.environ["EA_DIR"]))
+    assert cg._zone_note("2026-10-21T15:00:00+00:00") == "the user's zone is America/Denver, UTC-6 on 2026-10-21"
+    assert cg._zone_note("2026-11-03T15:00:00+00:00").endswith("UTC-7 on 2026-11-03")
+    seen = []
+    cg._append(cg.TURNS, {"id": "briefing-z", "ts": "2026-10-21T15:00:00+00:00", "kind": "briefing", "status": "ok",
+                          "agent": "morning-briefing", "claude": {"output": "15:00 AI Committee"},
+                          "codex": {"output": "9:00 AM AI Committee"}})
+    cg.grade(judge="claude", runner=lambda prompt, schema, judge: (seen.append(prompt), (
+        {"missing_in_codex": [], "extra_in_codex": [], "wrong_in_codex": [], "verdict": "same", "better": "same",
+         "enhancement": ""}, {}))[1])
+    assert "UTC-6 on 2026-10-21" in seen[0] and "24-hour UTC clock" in seen[0]
+    assert "is the draft: in production it exists" in cg.CHAT_JUDGE_PROMPT
+
+
 def test_a_wrong_chat_turn_lands_in_the_wrong_list(private):
     _seed("chat", 2, {"codex_grade": "wrong", "claude_grade": "send", "better": "claude",
                       "problems": [{"kind": "wrong-fact", "note": "named a time the data lacks"}],
@@ -372,9 +516,16 @@ def test_a_reply_that_claims_a_draft_without_a_write_is_a_mismatch_the_judge_see
     assert "no create-reply" in note and note.startswith("(")
     assert cg._harness_note({"claims": backed}, {}) == ""
     text = cg.codex_suffix(Path("/x"), "chat")
-    assert "Never write an em-dash" in text and "never UTC" in text
-    assert "returned an id" in text and "never report either as done" in text and "--help` is not a run" in text
+    assert "Never write an em-dash, in a title or header line too" in text and "never UTC" in text
+    assert "returned an id" in text and "never report one as done" in text and "--help` is not a run" in text
     assert "never list or read `state/mail-queue`" in text
+    assert "Every \"done\" names the command in this run that did it" in text
+    assert "no Google Drive and no connector" in text and "never as a side effect of a reply" in text
+    assert "with a draft id for a draft" in text and "Send card" in text
+    brief = cg.codex_suffix(Path("/x"), "briefing")
+    assert "only as rule 8 above allows" in brief and "never as a side effect of a reply" not in brief
+    live = cg.codex_suffix(Path("/x"), "briefing", live=True)
+    assert "recorded by the mediator" not in live and "waits for the user's button" in live
 
 
 # ── the wiring ───────────────────────────────────────────────────────

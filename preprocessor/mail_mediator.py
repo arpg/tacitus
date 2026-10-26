@@ -539,13 +539,18 @@ def handle(req_path: str):
 
     run_id = str(req.get("run_id") or "")[:64]
     # A Codex ghost run (codex_ghost.py) may read; every other verb is
-    # recorded for the judge and answered as done, never executed.
+    # recorded for the judge and answered as the real verb answers (a
+    # synthetic draft id for a draft), never executed.
     recorded = _ghost_recorded(tool, verb, argv, run_id)
-    if recorded:
-        _respond(rid, json.dumps({"status": "recorded", "ghost": True, "message": recorded}), "", 0)
+    if recorded is not None:
+        _respond(rid, json.dumps(recorded), "", 0)
         _audit(tool, verb, "GHOST-RECORDED")
         _cleanup(req_path)
         return
+    if _ghost_help(argv, run_id):
+        # A ghost's `<verb> --help` runs as the verb's usage alone: the
+        # parser prints it and exits before any verb runs.
+        argv = [verb, "--help"]
     refusal = _gate_precheck(tool, verb, argv, run_id)
     if refusal:
         _respond(rid, "", json.dumps({"status": "error", "message": refusal}), 2)
@@ -681,21 +686,51 @@ def _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir, deliveries, r
             shutil.rmtree(stage_dir, ignore_errors=True)
 
 
-def _ghost_recorded(tool, verb, argv, run_id) -> str:
-    """'' unless the run id is a Codex ghost's and the verb is not a read:
-    then the message answered in place of the call, with the call
-    recorded in the ghost store. A failure to record still refuses the
+_GHOST_PREFIX = "cron-ghost-codex-"
+
+
+def _ghost_recorded(tool, verb, argv, run_id) -> dict | None:
+    """None unless the run id is a Codex ghost's and the call is a write
+    (or a read of a draft the ghost made): then the JSON answered in place
+    of the call, with the call recorded in the ghost store
+    (codex_ghost.ghost_answer). A failure to record still refuses the
     write: a ghost never executes one."""
+    if not str(run_id or "").startswith(_GHOST_PREFIX):
+        return None
     try:
         import codex_ghost
-        msg = codex_ghost.ghost_refusal(tool, verb, run_id)
-        if msg:
-            codex_ghost.record_write(run_id, tool, verb, list(argv))
-        return msg
+        reads = codex_ghost.is_ghost_read(tool, verb) or codex_ghost.wants_help(argv)
+        return codex_ghost.ghost_answer(tool, verb, list(argv), run_id, body="" if reads else _ghost_body(argv))
     except Exception as e:
-        if str(run_id or "").startswith("cron-ghost-codex-"):
-            return f"ghost run: '{tool} {verb}' not executed ({str(e)[:80]})"
-        return ""
+        return {"status": "recorded", "ghost": True,
+                "message": f"ghost run: '{tool} {verb}' not executed ({str(e)[:80]})"}
+
+
+def _ghost_help(argv, run_id) -> bool:
+    if not str(run_id or "").startswith(_GHOST_PREFIX):
+        return False
+    try:
+        import codex_ghost
+        return codex_ghost.wants_help(argv)
+    except Exception:
+        return False
+
+
+def _ghost_body(argv) -> str:
+    """The body a ghost's draft call carries, for the judge: the
+    --body-file's text, read with the resident's access (the path passed
+    the root checks already), else a --body that is not the placeholder."""
+    argv = [str(a) for a in argv or []]
+    for flag in ("--body-file",):
+        if flag in argv and argv.index(flag) + 1 < len(argv):
+            text = resident_io.read_text(argv[argv.index(flag) + 1])
+            if text:
+                return text[:6000]
+    if "--body" in argv and argv.index("--body") + 1 < len(argv):
+        body = argv[argv.index("--body") + 1]
+        if body.strip() and body.strip() != "x":
+            return body[:6000]
+    return ""
 
 
 def _gate_precheck(tool, verb, argv, run_id) -> str:
