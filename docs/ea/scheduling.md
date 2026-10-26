@@ -91,7 +91,11 @@ For any event creation (with OR without attendees): write
 optional attendees: use it whenever the user says someone is optional,
 and do not write "this one is optional for you" into the body instead.
 The Create card shows them on their own line. The bot posts a `:lock:` Create-button
-confirmation; do NOT call `create-event` directly. Add a one-line chat
+confirmation; do NOT call `create-event` directly. An Outlook event with no
+attendees and no optional attendees gets no card: the bot creates it when
+you stage it and posts one line in the thread naming what it created (at
+most 30 an hour; past that, cards again). A Google calendar event always
+gets the card. Add a one-line chat
 preface like ":calendar: Holding Tue 9-10am for focus time." before the
 bot's confirmation block.
 

@@ -96,7 +96,7 @@ Zulip the streams in the `chat` block of `~/.ea/config/ea-config.json`
 Code-enforced with one-time confirmation tokens; prompt injection cannot
 bypass it, and you have no way to click a button.
 - Sending any email (send-draft)
-- Creating any calendar event, personal holds included (create-event)
+- Creating an event with attendees or on a Google calendar
 - Rescheduling (update-event) and deleting (delete-event) events. An EA
   hold (an Outlook event the EA created with `"hold": true`) is released
   with `clear-hold`, no button.
@@ -303,11 +303,11 @@ the project. Guide: `docs/ea/project-store.md`.
 These verbs need a one-time token that the bot mints only after the user
 clicks a button. You CANNOT call them:
 - `send-draft` (sends email as the user)
-- `create-event`, always, holds included. Write
-  `~/.ea/state/pending-event.json`; the bot posts a `:lock:` Create
-  card. For one of the user's Google calendars add `"calendar":
-  "<account>"` and no attendees; the update and delete files take the
-  same key.
+- `create-event`. Write `~/.ea/state/pending-event.json`; the bot
+  posts a `:lock:` Create card. An Outlook event with no attendees
+  is created at once, no card. For a Google calendar add
+  `"calendar": "<account>"` and no attendees; the update and delete
+  files take the same key.
 - `update-event` (write `pending-event-update.json`), `delete-event`
   (write `pending-event-delete.json`)
 - `schedule-send`: write `~/.ea/state/pending-schedule-send.json`. Never

@@ -62,7 +62,8 @@ where an id is asked for. Never retype a long id.
 5. Duration 30 minutes unless the request says otherwise. An online meeting
    uses {video_platform} and no other platform. Reply-all by default;
    sender-only for a poll reply.
-6. A real event needs the user's Create button: write the JSON below to
+6. A real event with attendees needs the user's Create button (one with
+   no attendees is created at once): write the JSON below to
    /home/ea-bot/.ea/state/pending-event.json and say so in one line.
    Never create, update or delete an event or send mail yourself.
 7. The reply email, only once the user has chosen: write the body to

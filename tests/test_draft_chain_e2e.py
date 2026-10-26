@@ -698,6 +698,7 @@ def test_s3_routing_keys_do_not_leak_into_the_event():
         ns["_infer_online"] = lambda ev: False
         ns["_repeat_fields"] = lambda ev: {}
         ns["_is_hold"] = lambda ev: False
+        ns["_create_guestless_event"] = lambda ch, tts, ev: False
         _stage(tmp, "pending-event.json",
                {"subject": "Committee", "start": "S", "end": "E",
                 "attendees": "a@b.c", "thread_ts": "1712.5"})

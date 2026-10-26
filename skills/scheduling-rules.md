@@ -105,8 +105,8 @@ Both verbs default to the EA-Managed calendar and refuse every other one, so
 they are safe to reach for, with or without `--calendar-id`.
 
 A hold that has to be visible to colleagues goes on Outlook instead: stage
-`pending-event.json` with `"hold": true` and no attendees (the Create button
-makes it tentative and tags it "EA Hold"), and release it later with
+`pending-event.json` with `"hold": true` and no attendees (the bot creates it
+at once, with no button, tentative and tagged "EA Hold"), and release it later with
 `python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py clear-hold --event-id <id>`,
 no button. Outlook event ids come from `graph_actions.py calendar-view`. A real meeting still goes through
 `pending-event-update.json` / `pending-event-delete.json` and its button,

@@ -67,12 +67,13 @@ question) gets one line pointing the user to the EA channel.
    that calendar notifies anyone. Offer to hold the top option while
    the other side decides. A hold colleagues must see goes on Outlook:
    stage `pending-event.json` with `"hold": true` and no attendees (the
-   Create button makes it tentative, tagged "EA Hold"), and release it
+   bot creates it at once, tentative, tagged "EA Hold"), and release it
    yourself later with `graph_actions.py clear-hold --event-id <id>`,
    no button. Clear every hold you placed once the meeting lands or the
    option is dropped.
-6. A real event (Outlook, or a personal Google calendar, with or
-   without attendees) needs the button: write
+6. A real event with attendees, or on a personal Google calendar,
+   needs the button (an Outlook event with no attendees is created
+   when staged): write
    `~/.ea/state/pending-event.json` (update: `pending-event-update.json`,
    delete: `pending-event-delete.json`) with `"thread_ts"` set to this
    thread, and the bot posts the :lock: Create button. Never call

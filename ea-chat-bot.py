@@ -3943,8 +3943,11 @@ def _csv(value) -> str:
 
 
 def _execute_event_create(channel: str, thread_ts: str, confirm_msg_ts: str | None,
-                          event_data: dict, *, dm_channel: str | None = None):
-    """Execute token -> create-event pipeline. Called by button action handler."""
+                          event_data: dict, *, dm_channel: str | None = None,
+                          announce: bool = True):
+    """Execute token -> create-event pipeline. Called by button action
+    handler, and for a guestless event by _create_guestless_event, which
+    passes announce=False and posts one line for the batch itself."""
     import subprocess as sp
     confirm_channel = dm_channel or channel
     try:
@@ -4012,7 +4015,8 @@ def _execute_event_create(channel: str, thread_ts: str, confirm_msg_ts: str | No
             msg = f":white_check_mark: Calendar event created{where}: {subject}"
             if confirm_msg_ts:
                 _replace_buttons_with_status(confirm_channel, confirm_msg_ts, msg)
-            FRONTEND.post(channel=channel, thread_ts=thread_ts, text=msg)
+            if announce:
+                FRONTEND.post(channel=channel, thread_ts=thread_ts, text=msg)
             # NO staging-file cleanup here. The file that fed THIS button
             # was claimed and removed when the button was posted; anything
             # at that path now is a DIFFERENT, unconsumed staging write.
@@ -7555,6 +7559,102 @@ _BUTTON_PAYLOAD_RETENTION_S = 7 * 24 * 3600
 _SLACK_BUTTON_VALUE_MAX = 2000
 
 
+# An Outlook event with no attendees mails no one, so it is created when the
+# EA stages it, with no Create card, and the thread gets one line naming what
+# was created. A Google calendar event still takes the card (a family
+# calendar shows it to others), and so does one past the hourly cap, which
+# bounds what a run that went wrong can put on the calendar. The same
+# subject and times staged again within a week are not created twice.
+_GUESTLESS_PER_HOUR = 30
+_GUESTLESS_KEEP_S = 7 * 24 * 3600
+_guestless_lock = threading.Lock()
+_guestless_created: dict = {}   # thread -> events created since the last announce
+
+
+def _is_guestless(ev: dict) -> bool:
+    def text(v):
+        return ",".join(str(x) for x in v) if isinstance(v, (list, tuple)) else str(v or "")
+    return not (ev.get("calendar") or text(ev.get("attendees")).strip()
+                or text(ev.get("optional_attendees")).strip())
+
+
+def _guestless_claim(key: str) -> str:
+    """'new' when the event may be created now (and records it), 'dup' when
+    the same event was created this week, 'cap' past the hourly cap."""
+    path = _private_state("guestless-events.json")
+    now = time.time()
+    with _guestless_lock:
+        try:
+            seen = json.loads(path.read_text())
+            seen = seen if isinstance(seen, dict) else {}
+        except Exception:
+            seen = {}
+        seen = {k: float(t) for k, t in seen.items()
+                if isinstance(t, (int, float)) and now - t < _GUESTLESS_KEEP_S}
+        if key in seen:
+            return "dup"
+        if sum(1 for t in seen.values() if now - t < 3600) >= _GUESTLESS_PER_HOUR:
+            return "cap"
+        seen[key] = now
+        _atomic.write_json(path, seen, mode=0o600)
+        return "new"
+
+
+def _guestless_release(key: str) -> None:
+    """Forget a claim whose create failed, so a restage can try again."""
+    path = _private_state("guestless-events.json")
+    with _guestless_lock:
+        try:
+            seen = json.loads(path.read_text())
+            if isinstance(seen, dict) and seen.pop(key, None) is not None:
+                _atomic.write_json(path, seen, mode=0o600)
+        except Exception:
+            pass
+
+
+def _create_guestless_event(channel: str, thread_ts: str | None, ev: dict) -> bool:
+    """Create a staged guestless Outlook event at once. False sends it to a
+    Create card: it has guests, is on a Google calendar, is past the cap, or
+    the create failed."""
+    if not _is_guestless(ev):
+        return False
+    start, end = _event_time_local(ev.get("start", "")), _event_time_local(ev.get("end", ""))
+    subject = str(ev.get("subject", ""))
+    key = f"{subject}|{start}|{end}"
+    state = _guestless_claim(key)
+    if state == "dup":
+        log.info(f"guestless event already created this week, skipped: {subject}")
+        return True
+    if state == "cap":
+        log.warning(f"guestless cap ({_GUESTLESS_PER_HOUR}/h) reached; '{subject}' gets a card")
+        return False
+    online = _infer_online(ev)
+    event_data = {"subject": subject, "start": start, "end": end, "attendees": "",
+                  "location": _resolve_online_location(ev.get("location", ""), online),
+                  "body": ev.get("body", ""), "online": online, "hold": _is_hold(ev),
+                  **_repeat_fields(ev)}
+    if _execute_event_create(channel, thread_ts, None, event_data, announce=False):
+        with _guestless_lock:
+            _guestless_created.setdefault(str(thread_ts or channel), []).append(
+                (subject, _event_time_text(start)))
+        return True
+    _guestless_release(key)
+    return False
+
+
+def _announce_guestless(channel: str, thread_ts: str | None) -> None:
+    """One post in the thread for the guestless events just created."""
+    with _guestless_lock:
+        made = _guestless_created.pop(str(thread_ts or channel), [])
+    if not made:
+        return
+    lines = "\n".join(f"- {when}: {subject}" for subject, when in made)
+    noun = "1 event" if len(made) == 1 else f"{len(made)} events"
+    FRONTEND.post(channel=channel, thread_ts=thread_ts,
+                  text=f":white_check_mark: Added to your calendar with no button, "
+                       f"since no one is invited ({noun}):\n{lines}")
+
+
 def _load_button_payloads() -> dict:
     try:
         data = json.loads(_BUTTON_PAYLOADS.read_text())
@@ -8479,6 +8579,13 @@ def _post_staged_action(channel: str, thread_ts: str | None,
         act.pop(key, None)
     if kind.startswith("event_"):
         _remote_llm_note("note_claude_staged", channel, thread_ts, {"action": kind, **act})
+    if kind in ("event_create_multi", "event_create"):
+        events = act.get("events", []) if kind == "event_create_multi" else [act]
+        carded = [ev for ev in events if not _create_guestless_event(channel, thread_ts, ev)]
+        if len(carded) < len(events):
+            _announce_guestless(channel, thread_ts)
+        kind = "event_create_multi" if carded else ""
+        act = {"events": carded}
     if kind == "event_create_multi":
         for ev in act.get("events", []):
             _post_event_confirmation(
