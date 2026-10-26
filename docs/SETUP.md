@@ -1064,21 +1064,19 @@ stops with one line naming it):
   (`docs/ea/doc-review.md`).
 - `sites`: the Pages sites by slug (`docs/ea/sites.md`).
 
-### Deck builder
+### Deck hosting
 
-`assistant` only. Lets the EA build slide decks the way you build your
-own: Slidev, your theme and playbooks, staged on the tailnet with a PDF.
-Needs your presentations workspace (`~/presentations` with `playbooks/`,
-the theme under `shared/` at the name `preprocessor/deck_tools.py`
-expects, and `shared/scripts/build-deck.sh`) and Tailscale with you as
-operator. `sudo bash deploy/enable-deck-builder.sh` (`--status`,
-`--rollback`) bind-mounts the workspace read-only under `/srv/ea/`
-(`root:ea 0750`), copies your node for ea-bot to `~ea-bot/.local/node`,
-enables linger for ea-bot so a deck's static server outlives a bot
-restart, and restarts the mediator so it executes `deck_serve`. The
-tailnet route is the only step across the user boundary; Funnel is never
-available to the EA. Verify with
-`sudo -u ea-bot python3 ~ea-bot/ea-system/preprocessor/deck_tools.py doctor`.
+`assistant` only, and optional. The core carries only the hosting
+boundary for a deck plugin: `sudo bash deploy/enable-deck-builder.sh`
+(`--status`, `--rollback`) bind-mounts your presentations workspace
+read-only under `/srv/ea/` (`root:ea 0750`), copies your node for ea-bot
+to `~ea-bot/.local/node`, enables linger for ea-bot so a deck's static
+server outlives a bot restart, and restarts the mediator so it executes
+`deck_serve`, the one step across the user boundary. Funnel is never
+available to the EA. The deck tool itself (scaffold, lint, build, render,
+PDF) is a plugin, since every owner builds slides their own way; install
+one with `ea-plugin.py` and run its own init. Without a plugin the
+enable script changes nothing the EA uses.
 
 ### Personal plugins
 

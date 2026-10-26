@@ -47,7 +47,6 @@ SCRIPTS: dict[str, dict[str, str]] = {
     "gmail_client": {"_": "drafting in Gmail", "search": "reading Gmail", "get-message": "reading Gmail",
                      "get-thread": "reading Gmail", "list-drafts": "reading Gmail"},
     "google_calendar_client": {"_": "reading Google Calendar"},
-    "deck_tools": {"_": "building the deck"},
     "overleaf_tools": {"_": "working in Overleaf"},
     "site_tools": {"_": "working on the site"},
     "doc_review": {"_": "opening the review"},

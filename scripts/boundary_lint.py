@@ -119,7 +119,6 @@ HELPER_FUNCTIONS = frozenset({("preprocessor/ledger.py", "guarded_connect")})
 # access is not reported; py-resident-module reports owner code that
 # imports one, or runs one without switching to the resident.
 RESIDENT_MODULES = frozenset({
-    "preprocessor/deck_tools.py",
     "preprocessor/doc_review.py",
     "preprocessor/poll_filler.py",
     "preprocessor/booking_link.py",

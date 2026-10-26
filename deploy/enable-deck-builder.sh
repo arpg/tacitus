@@ -14,8 +14,12 @@
 #   3. linger for ea-bot, so a deck's static server runs in ea-bot's own
 #      systemd slice and survives a bot restart;
 #   4. a restart of ea-mail-mediator, so it executes the deck_serve tool (the
-#      tailnet route: the one step only the Tailscale operator may take);
-#   5. the EA workspace and its toolchain template (npm ci, network).
+#      tailnet route: the one step only the Tailscale operator may take).
+#
+# The deck tool itself (scaffold, lint, build, render) is a plugin, since
+# every owner builds slides their own way; after this script, install one
+# with ea-plugin.py and run its own init as ea-bot for the workspace and
+# the toolchain template.
 #
 # Funnel is not granted anywhere: the mediator has no funnel verb, tailscaled
 # takes writes only from root or the operator, and the deny list refuses the
@@ -42,7 +46,6 @@ PRES_DST="$MOUNT_ROOT/presentations"
 LIB_DST="$MOUNT_ROOT/presentation-library"
 NODE_DST="$EA_BOT_HOME/.local/node"
 FSTAB_TAG="# ea-deck-builder"
-DECK_TOOLS="$DEPLOY/preprocessor/deck_tools.py"
 DECK_SERVE="$DEPLOY/preprocessor/deck_serve.py"
 SHIM="$DEPLOY/scripts/deck-bin/tailscale"
 
@@ -66,7 +69,7 @@ ea_run(){ sudo -u "$EA_BOT_USER" env HOME="$EA_BOT_HOME" EA_DIR="$EA_DIR" \
 # The Slidev theme new decks use: `deck.theme` in ea-config.json. "default"
 # is Slidev's built-in theme and needs no package in the mounted tree; any
 # other name is the local package shared/theme-<name>, which ea-bot must be
-# able to read. The same rule deck_tools.py applies.
+# able to read. The deck plugin's tool applies the same rule.
 deck_theme(){
   python3 - "$EA_DIR/config/ea-config.json" <<'PY'
 import json, re, sys
@@ -160,8 +163,15 @@ status(){
   echo "== linger =="; echo "  $(loginctl show-user "$EA_BOT_USER" -p Linger 2>/dev/null || echo 'Linger=no (user not lingering)')"
   echo "== node =="; [ -x "$NODE_DST/bin/node" ] && echo "  $("$NODE_DST/bin/node" --version) at $NODE_DST" || echo "  missing"
   echo "== mediator =="; echo "  $(systemctl is-active ea-mail-mediator 2>/dev/null || echo 'not installed')"
-  echo "== deck lane (as ea-bot) =="
-  ea_run "python3 $DECK_TOOLS doctor" 2>&1 | sed 's/^/  /' || true
+  echo "== deck plugin (as ea-bot) =="
+  local found=0 tool
+  for tool in "$EA_DIR"/plugins/*/deck_tools.py; do
+    [ -f "$tool" ] || continue
+    found=1
+    echo "  $tool"
+    ea_run "python3 $tool doctor" 2>&1 | sed 's/^/  /' || true
+  done
+  [ "$found" = 1 ] || echo "  no deck plugin installed (ea-plugin.py install git:<url>)"
 }
 
 rollback(){
@@ -183,7 +193,7 @@ enable(){
   id "$EA_BOT_USER" >/dev/null 2>&1 || fail "no $EA_BOT_USER user; run scripts/install/setup-ea-user.sh first"
   getent group ea >/dev/null || fail "no ea group; run scripts/install/setup-ea-user.sh first"
 
-  ylw "[1/5] read-only mounts under $MOUNT_ROOT"
+  ylw "[1/4] read-only mounts under $MOUNT_ROOT"
   mkdir -p "$MOUNT_ROOT"; chown root:ea "$MOUNT_ROOT"; chmod 0750 "$MOUNT_ROOT"
   bind_ro "$PRES_SRC" "$PRES_DST" || fail "could not bind-mount $PRES_SRC read-only at $PRES_DST"
   grn "  $PRES_DST -> $PRES_SRC (ro)"
@@ -198,15 +208,15 @@ enable(){
   if sudo -u "$EA_BOT_USER" touch "$PRES_DST/.ea-write-probe" 2>/dev/null; then rm -f "$PRES_DST/.ea-write-probe"; fail "ea-bot can WRITE through $PRES_DST; the mount is not read-only"; fi
   grn "  ea-bot reads the tree and cannot write it"
 
-  ylw "[2/5] node for $EA_BOT_USER"
+  ylw "[2/4] node for $EA_BOT_USER"
   install_node
 
-  ylw "[3/5] linger for $EA_BOT_USER (deck servers outlive a bot restart)"
+  ylw "[3/4] linger for $EA_BOT_USER (deck servers outlive a bot restart)"
   loginctl enable-linger "$EA_BOT_USER" || ylw "  enable-linger failed; builds will run unscoped"
   for _i in 1 2 3 4 5; do [ -S "/run/user/$(id -u "$EA_BOT_USER")/bus" ] && break; sleep 1; done
   if [ -S "/run/user/$(id -u "$EA_BOT_USER")/bus" ]; then grn "  user manager up"; else ylw "  user manager not up yet; builds run unscoped until it is"; fi
 
-  ylw "[4/5] restart the mediator so it executes deck_serve"
+  ylw "[4/4] restart the mediator so it executes deck_serve"
   if systemctl is-enabled ea-mail-mediator >/dev/null 2>&1; then
     systemctl restart ea-mail-mediator; sleep 2
     systemctl is-active --quiet ea-mail-mediator || { journalctl -u ea-mail-mediator -n 20 --no-pager; fail "mediator did not come back"; }
@@ -214,10 +224,6 @@ enable(){
   else
     ylw "  ea-mail-mediator not installed (deploy/enable-mail-mediation.sh); the route verb has no executor yet"
   fi
-
-  ylw "[5/5] workspace + toolchain template (npm ci as $EA_BOT_USER; network)"
-  ea_run "python3 $DECK_TOOLS init --template" || fail "workspace init failed (see above)"
-  grn "  $EA_BOT_HOME/presentations ready"
 
   echo; ylw "self-tests"
   out="$(ea_run "timeout 60 python3 $DECK_SERVE status" 2>&1)"
@@ -231,7 +237,9 @@ enable(){
   out="$(ea_run "PATH=$DEPLOY/scripts/deck-bin:\$PATH tailscale serve status" 2>&1)"
   [ $? -eq 0 ] && grn "  shim passes serve status through" || fail "shim passthrough failed: $out"
 
-  echo; grn "DECK BUILDER ENABLED: the EA builds decks in $EA_BOT_HOME/presentations and stages them tailnet-only."
+  echo; grn "DECK HOSTING ENABLED: the mounts, node, linger and the route verb are in place."
+  echo "  next: install a deck plugin (ea-plugin.py install git:<url>), then run its init"
+  echo "        as $EA_BOT_USER for the workspace and the toolchain template"
   echo "  rollback: sudo bash $0 --rollback"; echo
   status
 }

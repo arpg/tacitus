@@ -6,6 +6,15 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The deck tool is a plugin.** `preprocessor/deck_tools.py`, the
+  deck-builder skill, its chat trigger and its allowlist line leave the
+  core; every owner builds slides their own way, so a Slidev workflow is
+  one owner's plugin (`ea-plugin-slidev-decks`), not a capability every
+  install carries. The core keeps the hosting boundary: the mediated
+  `deck_serve.py` route verb, the `scripts/deck-bin` shims, the resident
+  deck ports, and `deploy/enable-deck-builder.sh` for the mounts, node,
+  linger and the mediator restart. `deck.theme` leaves the config
+  template. A plugin's tool reaches the core through `EA_CORE_DIR`.
 - **`email_to_pdf.py --gmail <account>`** prints a Gmail message to PDF,
   as it does an Outlook message: the HTML part from the mediated
   `gmail_client.py get-message`, rendered offline with every request

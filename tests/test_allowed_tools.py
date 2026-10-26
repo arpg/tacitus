@@ -115,8 +115,6 @@ REQUIRED_HELPERS = [
     # to record user corrections with `preferences.py add`.
     "preferences.py",
     "onboarding.py",
-    # skills/deck-builder.md runs every deck step through this one CLI.
-    "deck_tools.py",
     # docs/ea/overleaf.md runs every Overleaf git step through this one CLI.
     "overleaf_tools.py",
 ]

@@ -33,10 +33,6 @@
     "scheduler": ""
   },
   "efforts_note": "Per-lane effort levels (low, medium, high, xhigh, max) read by ea_config.get_efforts() and passed as --effort beside the lane's model, so a model change never changes effort silently (the CLI's default effort differs by model). room_specialist is the default a new room's session is minted with; a room pins its own effort with `python3 preprocessor/ea_channels.py set-effort --channel <id|name> --effort <level>` (for example xhigh for a room that needs it). Empty means the CLI default for that model.",
-  "deck": {
-    "theme": "default"
-  },
-  "deck_note": "The Slidev theme preprocessor/deck_tools.py wires into every new deck (skills/deck-builder.md). default: Slidev's built-in theme, bundled with the CLI, no local package. Any other lowercase name: the package shared/theme-<name> in the owner's presentations tree, which deploy/enable-deck-builder.sh checks ea-bot can read. Missing block = default.",
   "rooms": {
     "rotate_bytes": 1000000
   },

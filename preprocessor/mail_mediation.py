@@ -591,7 +591,7 @@ def _allowed_roots() -> list[Path]:
     # research/ is the folder the owner and the EA both write (the owner's
     # research tree symlinks into it), so a letter or figure kept there can
     # go on a draft without a copy. exports/ holds the EA's own screenshots
-    # and exports, and the deck workspace (deck_tools: EA_DECKS_ROOT, else
+    # and exports, and the deck workspace (the deck plugin: EA_DECKS_ROOT, else
     # <resident home>/presentations) holds the PDFs it builds: a poster or
     # a deck goes on a draft from where it was built, since the lane has no
     # copy command.

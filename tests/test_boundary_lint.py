@@ -157,14 +157,14 @@ def test_constants_follow_imports_across_modules():
 
 
 def test_a_resident_only_module_stays_out_of_owner_code():
-    tool = HEAD + "def build():\n    (EA_DIR / 'decks').mkdir()\n"
-    owner = "import deck_tools\n"
+    tool = HEAD + "def open_pr():\n    (EA_DIR / 'review').mkdir()\n"
+    owner = "import doc_review\n"
     runner = "import subprocess\ndef run():\n" \
-             "    subprocess.run(['python3', '/x/preprocessor/deck_tools.py', 'list'])\n" \
+             "    subprocess.run(['python3', '/x/preprocessor/doc_review.py', 'list'])\n" \
              "def run_as_resident():\n" \
              "    subprocess.run(['sudo', '-n', '-u', 'ea-bot', 'python3', " \
-             "'/x/preprocessor/deck_tools.py'])\n"
-    hits = _py({"preprocessor/deck_tools.py": tool, "preprocessor/owner.py": owner,
+             "'/x/preprocessor/doc_review.py'])\n"
+    hits = _py({"preprocessor/doc_review.py": tool, "preprocessor/owner.py": owner,
                 "preprocessor/runner.py": runner})
     assert [h[:2] for h in hits] == [("preprocessor/owner.py", "py-resident-module"),
                                      ("preprocessor/runner.py", "py-resident-module")], hits

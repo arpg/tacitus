@@ -1233,7 +1233,7 @@ def check_hardening():
 
 
 def check_decks(ea_dir: Path):
-    """The optional deck lane (skills/deck-builder.md). WARN when it is not
+    """The optional deck lane (the owner's slidev-decks plugin). WARN when it is not
     installed; FAIL only on a half install, which is what would surface to
     the user as a build that dies mid-way."""
     ref = Path("/srv/ea/presentations")

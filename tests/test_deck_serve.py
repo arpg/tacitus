@@ -27,7 +27,6 @@ sys.path.insert(0, str(REPO / "preprocessor"))
 os.environ.setdefault("EA_DIR", tempfile.mkdtemp(prefix="ea-test-deck-"))
 
 import deck_serve as D  # noqa: E402
-import deck_tools as T  # noqa: E402
 
 RESIDENT = 997
 OTHER = 1000
@@ -206,10 +205,12 @@ def test_curl_shim_leaves_every_other_call_to_the_real_curl():
         assert C.plan(one, status) == one, status
 
 
-def test_curl_shim_is_first_on_the_build_path():
-    assert os.access(REPO / "scripts" / "deck-bin" / "curl", os.X_OK)
-    assert T._env()["PATH"].split(os.pathsep)[0] == str(T.SHIM_DIR)
-    assert (T.SHIM_DIR / "curl").exists()
+def test_both_shims_are_executable():
+    """A deck plugin puts scripts/deck-bin first on the build PATH; both
+    shims must be there and runnable (the plugin's own tests check the
+    PATH order)."""
+    for name in ("tailscale", "curl"):
+        assert os.access(REPO / "scripts" / "deck-bin" / name, os.X_OK), name
 
 
 def test_deck_serve_cli_refuses_before_touching_tailscale(monkeypatch=None):
@@ -237,117 +238,15 @@ def test_mediation_tables_carry_deck_serve():
     assert MM.TOOLS["deck_serve"].name == "deck_serve.py"
 
 
-def test_count_slides():
-    text = "---\ntheme: x\nlayout: cover\n---\n\n# A\n\n---\n\n# B\n\n---\nlayout: two-col\n---\n\n# C\n\n---\nhide: true\n---\n\n# hidden\n\n---\n\n# D\n"
-    assert T.count_slides(text) == 4
-
-
-def test_deck_tools_workspace_scaffold_without_toolchain():
-    """`init` builds the workspace layout (symlinks, dirs) with nothing
-    mounted; `new` refuses when the theme is not there instead of leaving
-    a half deck behind; slugs are checked."""
-    with tempfile.TemporaryDirectory() as td:
-        env = dict(os.environ, EA_DECKS_ROOT=f"{td}/ws", EA_DIR=f"{td}/ea",
-                   EA_PRESENTATIONS_REF=f"{td}/ref", EA_PRESENTATION_LIBRARY_REF=f"{td}/lib",
-                   EA_NODE_BIN=f"{td}/nonode")
-        Path(td, "ea", "config").mkdir(parents=True)
-        cli = [sys.executable, str(REPO / "preprocessor" / "deck_tools.py")]
-        r = subprocess.run(cli + ["init"], capture_output=True, text=True, env=env)
-        assert r.returncode == 0, r.stderr
-        rep = json.loads(r.stdout)
-        assert rep["ref_mounted"] is False and rep["node"] is False
-        assert Path(td, "ws", "shared").is_symlink()
-        assert Path(td, "ws", "decks").is_dir()
-        r = subprocess.run(cli + ["new", "--slug", "x-2026-09", "--title", "X"],
-                           capture_output=True, text=True, env=env)
-        assert r.returncode == 2 and "not mounted" in r.stderr
-        assert not Path(td, "ws", "decks", "x-2026-09").exists()
-        r = subprocess.run(cli + ["new", "--slug", "Bad_Slug", "--title", "X"],
-                           capture_output=True, text=True, env=env)
-        assert r.returncode == 2 and "kebab-case" in r.stderr
-        r = subprocess.run(cli + ["list"], capture_output=True, text=True, env=env)
-        assert r.returncode == 0 and json.loads(r.stdout)["decks"] == []
-
-
-def _theme_env(td: str) -> dict:
-    """A workspace, an EA dir and a mounted presentations tree with the
-    build script; an empty toolchain template stands in for node_modules
-    so `new` copies it instead of running npm."""
-    env = dict(os.environ, EA_DECKS_ROOT=f"{td}/ws", EA_DIR=f"{td}/ea",
-               EA_PRESENTATIONS_REF=f"{td}/ref", EA_PRESENTATION_LIBRARY_REF=f"{td}/lib",
-               EA_NODE_BIN=f"{td}/nonode")
-    Path(td, "ea", "config").mkdir(parents=True)
-    Path(td, "ref", "shared", "scripts").mkdir(parents=True)
-    Path(td, "ref", "shared", "scripts", "build-deck.sh").write_text("#!/bin/sh\n")
-    Path(td, "ws", "decks", "_template", "node_modules").mkdir(parents=True)
-    return env
-
-
-def _new(env: dict, slug: str) -> subprocess.CompletedProcess:
-    cli = [sys.executable, str(REPO / "preprocessor" / "deck_tools.py")]
-    return subprocess.run(cli + ["new", "--slug", slug, "--title", "X"],
-                          capture_output=True, text=True, env=env)
-
-
-def test_deck_tools_new_with_the_default_theme_needs_no_local_package():
-    """With deck.theme unset, or "default", a new deck runs on Slidev's
-    built-in theme: package.json names no slidev-theme-* dependency and
-    the front matter says `theme: default`; no theme package in the
-    mounted tree is needed."""
-    with tempfile.TemporaryDirectory() as td:
-        env = _theme_env(td)
-        r = _new(env, "plain-2026-10")
-        assert r.returncode == 0, r.stderr
-        assert json.loads(r.stdout)["theme"] == "default"
-        deck = Path(td, "ws", "decks", "plain-2026-10")
-        pkg = json.loads((deck / "package.json").read_text())
-        assert not [d for d in pkg["dependencies"] if d.startswith("slidev-theme-")], pkg
-        assert "theme-" not in json.dumps(pkg)
-        assert (deck / "slides.md").read_text().startswith("---\ntheme: default\n")
-        Path(td, "ea", "config", "ea-config.json").write_text(json.dumps({"deck": {"theme": "default"}}))
-        r = _new(env, "plain-two-2026-10")
-        assert r.returncode == 0, r.stderr
-
-
-def test_deck_tools_new_with_a_named_theme_uses_the_local_package():
-    with tempfile.TemporaryDirectory() as td:
-        env = _theme_env(td)
-        Path(td, "ea", "config", "ea-config.json").write_text(json.dumps({"deck": {"theme": "acme"}}))
-        r = _new(env, "acme-2026-10")
-        assert r.returncode == 2 and "theme 'acme'" in r.stderr, r.stderr
-        assert not Path(td, "ws", "decks", "acme-2026-10").exists()
-        Path(td, "ref", "shared", "theme-acme").mkdir()
-        Path(td, "ref", "shared", "theme-acme", "package.json").write_text("{}")
-        r = _new(env, "acme-2026-10")
-        assert r.returncode == 0, r.stderr
-        deck = Path(td, "ws", "decks", "acme-2026-10")
-        pkg = json.loads((deck / "package.json").read_text())
-        assert pkg["dependencies"]["slidev-theme-acme"] == "file:../../shared/theme-acme"
-        assert (deck / "slides.md").read_text().startswith("---\ntheme: acme\n")
-        Path(td, "ea", "config", "ea-config.json").write_text(json.dumps({"deck": {"theme": "Bad Name"}}))
-        r = _new(env, "bad-2026-10")
-        assert r.returncode == 2 and "deck.theme" in r.stderr
-
-
 def test_deck_code_names_no_institution_theme():
-    """The theme is config; neither the tool nor the enable script hard
-    codes one institution's theme."""
-    for rel in ("preprocessor/deck_tools.py", "deploy/enable-deck-builder.sh",
-                "skills/deck-builder.md"):
+    """The theme is config; the enable script hard codes no institution's
+    theme (the deck tool itself lives in the slidev-decks plugin)."""
+    for rel in ("deploy/enable-deck-builder.sh",):
         assert "cu-boulder" not in (REPO / rel).read_text(), rel
     script = REPO / "deploy" / "enable-deck-builder.sh"
     assert "deck_theme()" in script.read_text()
     r = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-
-
-def test_deck_tools_guard_for_other_users():
-    if os.geteuid() == 997:
-        return
-    env = {k: v for k, v in os.environ.items() if k != "EA_DECKS_ROOT"}
-    r = subprocess.run([sys.executable, str(REPO / "preprocessor" / "deck_tools.py"), "list"],
-                       capture_output=True, text=True, env=env)
-    assert r.returncode == 2 and "EA_DECKS_ROOT" in r.stderr
 
 
 if __name__ == "__main__":

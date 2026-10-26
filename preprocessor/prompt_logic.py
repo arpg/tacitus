@@ -714,18 +714,6 @@ SKILL_SIGNALS: list[tuple[str, tuple[str, ...]]] = [
         "fill it out", "fill that out", "availability poll",
         "fill out the", "fill in the",
     )),
-    # Slidev decks built in the EA's own workspace and staged on the
-    # tailnet (skills/deck-builder.md). "deck" alone is not a trigger:
-    # it appears in ordinary mail talk ("I don't have a deck").
-    ("deck-builder", (
-        "slide deck", "slides", "update deck", "briefing deck",
-        "quick deck", "a deck for", "the deck", "deck for", "deck on",
-        "make a deck", "build a deck", "draft a deck", "new deck",
-        "rebuild the deck", "stage the deck", "take down the deck",
-        "tear down the deck", "presentation for", "a presentation on",
-        "make a presentation", "build a presentation", "draft a presentation",
-        "make me a presentation", "put together a presentation",
-    )),
 ]
 
 

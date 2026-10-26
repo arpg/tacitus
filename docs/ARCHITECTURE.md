@@ -2023,26 +2023,20 @@ EA-Managed calendar (a personal block that emails no one). See
 [SECURITY.md](SECURITY.md) Layer 5 and
 [mail-mediation-spec.md](mail-mediation-spec.md).
 
-The same boundary carries deck hosting (`skills/deck-builder.md`). ea-bot
-authors a Slidev deck in `/home/ea-bot/presentations/decks/<slug>/`
-against the owner's theme and playbooks, read through a read-only bind
-mount at `/srv/ea/presentations`, and runs the owner's `build-deck.sh`
-from the deck via `preprocessor/deck_tools.py`. The build, the loopback
-static server and the PDF are ea-bot's; the `tailscale serve` route is a
-mediated verb (`preprocessor/deck_serve.py`, re-validated owner-side: EA
-port range, ea-bot-owned listener, no takeover, no Funnel) reached through
-the PATH shim `scripts/deck-bin/tailscale`. The result is a tailnet-only
-URL; there is no funnel verb anywhere in the EA.
-
-A new deck's theme is `deck.theme` in ea-config.json
-(`deck_tools.deck_theme`). `default`, the value when the key is absent,
-is Slidev's built-in theme, bundled with the CLI. Any other name must be
-a lowercase word and a local package at `shared/theme-<name>` in the
-owner's presentations tree; `deck_tools.py new` refuses to write
-anything until that package is there, then adds
-`slidev-theme-<name>` to the deck's `package.json` and names the theme
-in its front matter. `deploy/enable-deck-builder.sh` reports the
-configured theme and whether ea-bot can read its package.
+The same boundary carries deck hosting. The deck tool itself (scaffold,
+lint, build, render, PDF) is a plugin, not core: every owner builds
+slides their own way, so the core keeps only what crosses the user
+boundary. ea-bot builds in its own workspace against the owner's tree,
+read through a read-only bind mount at `/srv/ea/presentations`; the
+build, the loopback static server and the PDF are ea-bot's; the
+`tailscale serve` route is a mediated verb (`preprocessor/deck_serve.py`,
+re-validated owner-side: EA port range, ea-bot-owned listener, no
+takeover, no Funnel) reached through the PATH shim
+`scripts/deck-bin/tailscale`. The result is a tailnet-only URL; there is
+no funnel verb anywhere in the EA. `deploy/enable-deck-builder.sh`
+installs the mounts, node for ea-bot, linger and the mediator restart,
+and reports whether ea-bot can read the theme a plugin's `deck.theme`
+names.
 
 ---
 
@@ -2267,7 +2261,6 @@ Files that participate in prompt construction and action execution:
 | `preprocessor/id_handles.py` | Short handles (`m3`, `c2`, `e4`) for the 150-character Outlook ids within one run: added beside every id a mediated read prints, resolved back in the next call's argv by the ea-bot shims of graph_actions, scheduling_engine and google_calendar_client, only in a process whose effective user is the resident (an owner process resolves nothing); a model never retypes a long id |
 | `preprocessor/remote_sched_prompt.py` | The scheduling lane's compact prompt for the on-prem arm (`prompts/CLAUDE-scheduling-remote.md` + profile identity + scheduling rules + request, a fifth of the lane prompt), and its rebuild from a recorded lane prompt for the replay |
 | `preprocessor/tool_gateway.py` | owner user service on loopback: tool calling for the on-prem model (the endpoint serves it with native tool calling off); renders a harness's tool list into the model's own tool prompt and parses the `<tool_call>` blocks back, under the Anthropic Messages API (Claude Code through `ANTHROPIC_BASE_URL`) or the OpenAI chat API (opencode); bearer token, the endpoint key never leaves the owner; the resident reaches it through the `gateway` entry of the network policy |
-| `preprocessor/deck_tools.py` | ea-bot deck workspace CLI: scaffold, lint, build (the owner's `build-deck.sh` under a `tailscale` shim), render, list, figures, off; the Slidev theme is `deck.theme` in ea-config.json, default the built-in theme |
 | `preprocessor/deck_serve.py` | Mediated tailnet route for a deck: `serve`/`off`/`status`, validated owner-side (slug, EA port range, ea-bot-owned listener, no takeover, no Funnel) |
 | `preprocessor/doc_review.py` | Working documents as pull requests in the private review repo `<your-org>/doc-review`: runs as ea-bot in its clone `~/doc-review` with the fine-grained token of the EA's own GitHub account (`~/.config/doc-review/token`), registry in `~/.ea/state/doc-reviews.json`; the bot's `doc_review_loop` runs `poll` as ea-bot, hands a submitted review to the EA in the document's thread and posts merges |
 | `preprocessor/site_tools.py` | The EA's sites (`sites` in `~/.ea/config/github.json`): public GitHub Pages sites, and private ones (`private: true`, served by another host from a periodic pull of `main` behind sign-in, where `publish` returns `live: null`); runs as ea-bot in one clone per site under `~/presentations/sites/<slug>`, pushing to `main` as the EA's own GitHub account (`<bot>`) with that account's one classic token (`~/.config/<bot>/token`, repo scope; the account has write, not admin, on each site repository); `commit` commits locally, and `publish` runs only from the bot after the owner clicks the card (publish_gate.py, a one-time token bound to the commit and the GitHub head the card showed), pushes exactly that commit, never forces, refuses an added line with an em-dash or a commit that is not a fast-forward of GitHub, and waits until the live site serves the pushed files; a Jekyll site built by GitHub Actions (`build`) first waits for that workflow's run on the pushed commit (public API, no token), then compares only the files Jekyll copies unchanged, and a failed build returns `live: false` with `build_url`; `add-file` copies a PDF or an image from a deck folder (`/srv/ea/presentations/decks`, `~/presentations/decks`) into the clone, since the lane has no cp; git runs with hooks off and the credential helper on the command line |

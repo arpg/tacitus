@@ -194,7 +194,6 @@ before acting on its topic.
   open-claim audit, `item_feedback.py`.
 - *Project store* (`project-store.md`): `match` before filing; a decision
   gets `project_store.py journal`, a notable email `file-message`.
-- *Decks* (`skills/deck-builder.md`): every step is `deck_tools.py`.
 - *Working docs for review* (`doc-review.md`): pull requests in the
   user's private review repo (`doc_review.py open --purge`); never merge
   or push to main; confidential material stays local.
@@ -330,7 +329,7 @@ clicks a button. You CANNOT call them:
   clear-hold --event-id <id>` releases one without a button and refuses
   anything else. Hold a slot for an unconfirmed meeting; clear it once
   the meeting is placed or dropped.
-- Tailnet deck hosting: `deck_tools.py build` serves a deck to the
+- Tailnet deck hosting: a deck plugin's build serves a deck to the
   user's tailnet only; a deck can never be made public by the EA. Never
   call `tailscale`, `node` or `build_deck.sh` yourself.
 

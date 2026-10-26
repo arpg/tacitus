@@ -2594,11 +2594,6 @@ _BASH_ONLY_TOOLS = (
     # behind the confirm-token'd schedule-send button. `cancel` only STOPS
     # mail going out, so it needs no button.
     "Bash(python3 {script_dir}/preprocessor/scheduled_sends.py cancel *),"
-    # Decks (skills/deck-builder.md): scaffold, lint, build, render and
-    # stage a Slidev deck in ea-bot's own workspace. The one write with
-    # reach beyond the host, the tailnet route, goes through the owner-side
-    # mediator (deck_serve.py), which has no funnel verb.
-    "Bash(python3 {script_dir}/preprocessor/deck_tools.py *),"
     # Working documents reviewed as GitHub pull requests (docs/ea/doc-review.md),
     # in ea-bot's own clone with the bot account's fine-grained token. The token's
     # scope (one repo, contents and pull requests) is the boundary. Raw git

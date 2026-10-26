@@ -31,7 +31,7 @@ The allowlist, worked out from the code, skills and plugins:
          systemd-resolved stub, 127.0.0.53, on a stock Ubuntu host): every
          lane resolves names through it.
   decks  tcp 127.0.0.1:<deck_serve.PORT_RANGE>: the EA's own deck servers.
-         export-pdf.sh (the PDF) and `deck_tools.py render` drive Chromium
+         The deck plugin's PDF export and slide previews drive Chromium
          against them, and they bind 127.0.0.1 only.
   gateway tcp 127.0.0.1:<tool_gateway.PORT>: the owner's tool gateway, the
          on-prem model with tool calling, for a harness (Claude Code through
@@ -120,8 +120,8 @@ SIX_TO_FOUR = ipaddress.IPv6Network("2002::/16")   # RFC 3056
 
 REASONS = {
     "dns": "name resolution through a nameserver in /etc/resolv.conf",
-    "decks": "the EA's own deck servers (deck_serve.PORT_RANGE), which export-pdf.sh "
-             "and deck_tools.py render drive Chromium against",
+    "decks": "the EA's own deck servers (deck_serve.PORT_RANGE), which the deck "
+             "plugin's PDF export and previews drive Chromium against",
     "gateway": "the owner's tool gateway (tool_gateway.py), the on-prem model with tool "
                "calling for a harness the resident runs",
 }

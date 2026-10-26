@@ -827,9 +827,9 @@ renames as ea-bot, and the daily audit warns when either mount is missing
 no-mail residual. Design and rollout:
 [mail-mediation-spec.md](mail-mediation-spec.md).
 
-**Deck hosting rides the same boundary.** The EA builds slide decks in its
-own workspace (`/home/ea-bot/presentations/`, `skills/deck-builder.md`)
-and serves them on the owner's tailnet. The owner's presentations tree is
+**Deck hosting rides the same boundary.** A deck plugin builds slide
+decks in the EA's own workspace (`/home/ea-bot/presentations/`) and the
+core serves them on the owner's tailnet. The owner's presentations tree is
 a read-only bind mount at `/srv/ea/presentations` (under a `root:ea 0750`
 directory, so only the `ea` group can traverse it); `/home/<you>` itself
 stays closed. The static file server runs as ea-bot on a loopback port in

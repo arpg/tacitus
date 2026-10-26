@@ -1203,7 +1203,7 @@ LINGER_DIR = Path("/var/lib/systemd/linger")
 CGROUP_USER_SLICE = Path("/sys/fs/cgroup/user.slice")
 DECK_BUILDER_TAG = "# ea-deck-builder"
 # Units a desktop distribution starts in every user manager, and the EA's own
-# transient deck scopes (deck_tools.py). Anything else is reported by name.
+# transient deck scopes (the deck plugin's builds). Anything else is reported by name.
 USER_UNIT_BASELINE = (
     "init.scope", "dbus.service", "dbus.socket", "dbus-broker.service",
     "pipewire*.service", "pipewire*.socket", "wireplumber.service", "filter-chain.service",
