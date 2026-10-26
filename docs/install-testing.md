@@ -32,7 +32,11 @@ requires that one check, and a pull request need not be current with
 `main` to merge, since every push to `main` runs the full tiers. A
 draft runs nothing, and a new push cancels the pull request's run in
 progress. A first pull request from a fork waits for a maintainer to
-approve its workflow run.
+approve its workflow run. The label cannot start a run for a fork's
+branch, which is not in this repository: with the label on, the full
+tiers run on the fork's next push or when it is marked ready, or by hand
+from a copy of its head commit on a branch here
+(`.github/workflows/full-ci-label.yml` has the steps).
 
 The front door, `install.sh`, is in the wall too (`tests/test_install_sh.py`):
 `bash -n`, `--check` on the host and on a bare PATH (git and python3

@@ -3,8 +3,11 @@
 # label event cannot start ci.yml itself without also starting a run for
 # every other label, whose skipped checks would stand in for real ones.
 # The check runs land on the branch's head commit, which is the pull
-# request's. A pull request from a fork has a read-only token here; run
-# CI on its branch by hand instead.
+# request's. A pull request from a fork has a read-only token here and a
+# branch this repository does not have, so the job skips it: with the
+# label on, ci.yml runs the full tiers on the fork's next push or when it
+# is marked ready; to run them now, push its head commit to a branch here
+# (ci/pr-<number>), Run workflow on that branch, then delete the branch.
 name: full-ci label
 
 on:
@@ -17,7 +20,7 @@ permissions:
 
 jobs:
   start-full-ci:
-    if: github.event.label.name == 'full-ci'
+    if: github.event.label.name == 'full-ci' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Run CI on the branch
