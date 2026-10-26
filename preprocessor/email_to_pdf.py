@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-email_to_pdf.py — Convert an Outlook email body to PDF for receipt submission.
+email_to_pdf.py — Convert an Outlook or Gmail email body to PDF for receipt submission.
 
 Uses chromium headless (via playwright) to "print" the HTML email body to PDF,
 matching what you'd get from File > Print > Save as PDF in a browser. The
@@ -10,14 +10,18 @@ count of refused requests goes on the reviewed outbound log.
 
 Usage:
     python3 email_to_pdf.py --message-id <id> --output <path.pdf>
+    python3 email_to_pdf.py --gmail <account> --message-id <id> --output <path.pdf>
 
 Or as a library:
     from email_to_pdf import message_to_pdf
     path = message_to_pdf(message_id, output_path)
+    path = message_to_pdf(message_id, output_path, gmail="you@gmail.com")
 """
 
 import argparse
+import html as _html
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -55,16 +59,44 @@ def _fetch_message(message_id: str, graph_module=None) -> dict:
             "body_type": msg.get("body", {}).get("contentType", "text").lower(),
         }
 
+    msg = _run_get_message("graph_actions.py",
+                           ["get-message", "--message-id", message_id, "--raw-html"])
+    return {
+        "subject": msg.get("subject") or "Email",
+        "sender": (msg.get("from") or {}).get("address", ""),
+        "date": msg.get("received", ""),
+        "body": msg.get("body", ""),
+        "body_type": (msg.get("body_type") or "text").lower(),
+    }
+
+
+def _fetch_gmail_message(account: str, message_id: str) -> dict:
+    """The same fields for a message in a Gmail account, through the
+    mediated `gmail_client.py get-message` (a SAFE verb). Its `html` is the
+    raw text/html part; a message with none prints its plain text."""
+    msg = _run_get_message("gmail_client.py",
+                           ["get-message", "--email", account, "--message-id", message_id])
+    rich = msg.get("html") or ""
+    return {
+        "subject": msg.get("subject") or "Email",
+        "sender": msg.get("from", ""),
+        "date": msg.get("date", ""),
+        "body": rich or msg.get("body", ""),
+        "body_type": "html" if rich else "text",
+    }
+
+
+def _run_get_message(script: str, argv: list) -> dict:
+    """Run a mail client's get-message and return its JSON object."""
     proc = subprocess.run(
-        [sys.executable, str(Path(__file__).resolve().parent / "graph_actions.py"),
-         "get-message", "--message-id", message_id, "--raw-html"],
+        [sys.executable, str(Path(__file__).resolve().parent / script), *argv],
         capture_output=True, text=True,
     )
     out = proc.stdout.strip()
     if proc.returncode != 0 or not out:
         raise RuntimeError(
-            f"graph_actions get-message failed (rc={proc.returncode}): "
-            f"{(proc.stderr or '').strip()[:400]}")
+            f"{Path(script).stem} get-message failed (rc={proc.returncode}): "
+            f"{(proc.stderr or out or '').strip()[:400]}")
     try:
         msg = json.loads(out)
     except json.JSONDecodeError:
@@ -75,19 +107,14 @@ def _fetch_message(message_id: str, graph_module=None) -> dict:
         msg = json.loads(out[brace:])
     if msg.get("error"):
         raise RuntimeError(msg["error"])
-
-    return {
-        "subject": msg.get("subject") or "Email",
-        "sender": (msg.get("from") or {}).get("address", ""),
-        "date": msg.get("received", ""),
-        "body": msg.get("body", ""),
-        "body_type": (msg.get("body_type") or "text").lower(),
-    }
+    return msg
 
 
-def message_to_pdf(message_id: str, output_path: str, graph_module=None) -> str:
+def message_to_pdf(message_id: str, output_path: str, graph_module=None,
+                   gmail: str = "") -> str:
     """
-    Fetch an Outlook message and save its body as a PDF.
+    Fetch an Outlook message, or with `gmail` a message in that Gmail
+    account, and save its body as a PDF.
 
     Returns the output path on success, raises on failure.
     """
@@ -96,30 +123,11 @@ def message_to_pdf(message_id: str, output_path: str, graph_module=None) -> str:
     except ImportError:
         raise RuntimeError("playwright not installed — run: pip install playwright && playwright install chromium")
 
-    msg = _fetch_message(message_id, graph_module)
-    body_content = msg["body"]
-    body_type = msg["body_type"]
-    subject = msg["subject"]
-    sender = msg["sender"]
-    date = msg["date"]
-
-    if body_type == "text":
-        body_content = f"<pre>{body_content}</pre>"
-        body_type = "html"
-
-    # The PDF is a receipt record, so it carries its own From/Subject/Date.
-    header_html = f"""
-    <div style="font-family: Arial, sans-serif; border-bottom: 1px solid #ccc; padding-bottom: 8px; margin-bottom: 16px;">
-      <strong>From:</strong> {sender}<br>
-      <strong>Subject:</strong> {subject}<br>
-      <strong>Date:</strong> {date}
-    </div>
-    """
-    if "<body" in body_content.lower():
-        html = body_content.replace("<body", f"<body><div id='ea-header'>{header_html}</div><div id='ea-body'", 1)
-        html += "</div>"
+    if gmail:
+        msg = _fetch_gmail_message(gmail, message_id)
     else:
-        html = f"<html><body>{header_html}{body_content}</body></html>"
+        msg = _fetch_message(message_id, graph_module)
+    html = _page_html(msg)
 
     output_path = str(output_path)
     refused = Refused()
@@ -141,6 +149,32 @@ def message_to_pdf(message_id: str, output_path: str, graph_module=None) -> str:
     refused.log()
 
     return output_path
+
+
+def _page_html(msg: dict) -> str:
+    """The page that is printed: the message's From, Subject and Date
+    above its body, since the PDF is a receipt record."""
+    body_content = msg["body"]
+    # A Gmail From header is "Name <address>": escaped, or the address
+    # parses as a tag and drops out of the header.
+    subject = _html.escape(msg["subject"])
+    sender = _html.escape(msg["sender"])
+    date = _html.escape(msg["date"])
+
+    if msg["body_type"] == "text":
+        body_content = f"<pre style='white-space: pre-wrap'>{_html.escape(body_content)}</pre>"
+
+    header_html = f"""
+    <div style="font-family: Arial, sans-serif; border-bottom: 1px solid #ccc; padding-bottom: 8px; margin-bottom: 16px;">
+      <strong>From:</strong> {sender}<br>
+      <strong>Subject:</strong> {subject}<br>
+      <strong>Date:</strong> {date}
+    </div>
+    """
+    if re.search(r"<body", body_content, re.IGNORECASE):
+        return re.sub(r"<body", lambda _m: f"<body><div id='ea-header'>{header_html}</div><div id='ea-body'",
+                      body_content, count=1, flags=re.IGNORECASE) + "</div>"
+    return f"<html><body>{header_html}{body_content}</body></html>"
 
 
 class Refused:
@@ -176,13 +210,18 @@ class Refused:
 # CLI
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Convert Outlook email to PDF", allow_abbrev=False)
-    parser.add_argument("--message-id", required=True, help="Outlook message ID")
+    parser = argparse.ArgumentParser(description="Convert an Outlook or Gmail email to PDF",
+                                     allow_abbrev=False)
+    parser.add_argument("--message-id", required=True,
+                        help="Outlook message ID, or with --gmail a Gmail message ID")
+    parser.add_argument("--gmail", default="",
+                        help="Gmail account the message is in (gmail_client.py --email); "
+                             "without it the message is Outlook mail")
     parser.add_argument("--output", required=True, help="Output PDF path")
     args = parser.parse_args()
 
     try:
-        path = message_to_pdf(args.message_id, args.output)
+        path = message_to_pdf(args.message_id, args.output, gmail=args.gmail)
         print(f"Saved: {path}")
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)

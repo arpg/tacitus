@@ -108,3 +108,9 @@ already read tells you what is downloadable. Select with `--attachment-id`
 (exact) or `--name-pattern` (case-insensitive substring); zero or several
 matches is an error, not a guess. Under mail mediation `--output` must sit
 inside `~/.ea/uploads`, `receipts`, `docs`, `state`, or `/tmp`.
+
+**A Gmail message as a PDF** (a receipt with no attached PDF):
+```bash
+python3 /home/ea-bot/ea-system/preprocessor/email_to_pdf.py \
+  --gmail <acct> --message-id <id> --output ~/.ea/receipts/<trip>/<name>.pdf
+```

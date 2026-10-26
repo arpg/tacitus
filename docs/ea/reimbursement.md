@@ -12,7 +12,10 @@ item is flagged as pending in the ledger.
    - Outlook: `python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py search-mail --query "subject:hotel confirmation" --folder inbox`
    - Gmail MCP: `subject:(Trip.com OR hotel OR confirmation) after:YYYY-MM-DD`
 3. For email-format receipts (HTML body, no PDF attachment): convert to PDF with
-   `python3 /home/ea-bot/ea-system/preprocessor/email_to_pdf.py --message-id <id> --output ~/.ea/receipts/<trip>/<name>.pdf`
+   `python3 /home/ea-bot/ea-system/preprocessor/email_to_pdf.py --message-id <id> --output ~/.ea/receipts/<trip>/<name>.pdf`.
+   A receipt in a Gmail account adds `--gmail <account>` and takes the Gmail
+   message id (`gmail_client.py search`). The PDF is the original email;
+   never retype a receipt, and never ask the user to forward it.
 4. Save all receipt files under `~/.ea/receipts/<trip_name>/`
 
 #### Step 2 — Confirm with user via chat (ask-first)

@@ -6,6 +6,14 @@ repository that preceded it.
 
 ## Unreleased
 
+- **`email_to_pdf.py --gmail <account>`** prints a Gmail message to PDF,
+  as it does an Outlook message: the HTML part from the mediated
+  `gmail_client.py get-message`, rendered offline with every request
+  refused. A receipt that came only to a Gmail account had no PDF path,
+  and the EA asked the user to forward it to Outlook. The page header now
+  escapes its From, Subject and Date (a Gmail `Name <address>` sender
+  lost its address), a plain-text body is escaped, and the header goes
+  inside an upper-case `<BODY>` tag.
 - **Plugins can ask for mail as it arrives.** A v2 manifest's
   `capabilities.mail_triggers` names the mail a plugin wants: a sender or
   domain, the tagger's topic tag, a subject substring, bulk mail only. The
