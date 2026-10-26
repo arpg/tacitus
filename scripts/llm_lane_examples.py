@@ -120,6 +120,9 @@ def _setup(tmp: Path):
     import mail_privacy
     import mail_gate
     import draft_ab
+    import user_tz
+    # The user's zone is pinned too: it reads the runner's config first.
+    user_tz.name = lambda ea_dir=None: os.environ["TZ"]
     remote_llm._owner = lambda: True
     remote_llm._breaker = lambda *a: None
     mail_privacy._user_addresses = lambda: {USER}

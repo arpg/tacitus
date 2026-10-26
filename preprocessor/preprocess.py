@@ -417,8 +417,24 @@ def _title(text, limit: int) -> str:
     return ledger.brief_title(text or "", limit)
 
 
+def _user_zone():
+    """The user's zone (user_tz.py: the profile, the scheduling
+    preferences, then the system's zone). The briefing's day is the
+    user's, never the machine's."""
+    try:
+        import user_tz
+        return user_tz.zone()
+    except Exception:
+        return None   # astimezone(None): the system's zone
+
+
+def _user_today(days: int = 0) -> str:
+    """The user's date, `days` from now, 'YYYY-MM-DD'."""
+    return (datetime.now(_user_zone()) + timedelta(days=days)).strftime("%Y-%m-%d")
+
+
 def _event_local_day(e: dict) -> str:
-    """The event's start date on the local clock, 'YYYY-MM-DD'. Graph's
+    """The event's start date on the user's clock, 'YYYY-MM-DD'. Graph's
     calendar view prints UTC wall-clock with no offset (timeZone "UTC");
     an all-day event's date is its own date."""
     st = e.get("start") or {}
@@ -438,7 +454,7 @@ def _event_local_day(e: dict) -> str:
             dt = datetime.fromisoformat(m.group(1) + off)
         else:
             dt = datetime.fromisoformat(raw[:19]).replace(tzinfo=src)
-        return dt.astimezone().strftime("%Y-%m-%d")
+        return dt.astimezone(_user_zone()).strftime("%Y-%m-%d")
     except ValueError:
         return raw[:10]
 
@@ -595,7 +611,7 @@ def build_today_top(needs_resp: list, dropped: list, deadlines: list,
     # credit mirrors the email deadline path above, so the two paths rank
     # a given due date the same way.
     today = now.date()
-    local_today = now.astimezone().date()
+    local_today = now.astimezone(_user_zone()).date()
     for ob in obligations or []:
         if ob.get("status") in ("snoozed", "follow_up", "completed"):
             continue
@@ -2695,13 +2711,11 @@ def run_full_daily(force_full: bool = False) -> dict:
         # is the user's: an evening event is UTC's next day.
         "todays_events": [
             e for e in calendar
-            if _event_local_day(e) == datetime.now().strftime("%Y-%m-%d")
+            if _event_local_day(e) == _user_today()
         ],
         "tomorrows_events": [
             e for e in calendar
-            if _event_local_day(e) == (
-                datetime.now() + timedelta(days=1)
-            ).strftime("%Y-%m-%d")
+            if _event_local_day(e) == _user_today(1)
         ],
         # --- New skill data (zero extra API calls) ---
         "noisy_group_threads": group_threads[:10],

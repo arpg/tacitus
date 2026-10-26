@@ -9,6 +9,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -26,6 +27,17 @@ def mountain(monkeypatch):
     monkeypatch.setenv("TZ", "America/Denver")
     time.tzset()
     yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+@pytest.fixture
+def machine_tz(monkeypatch):
+    """Sets the machine's clock: the user's zone comes from config."""
+    def set_tz(name):
+        monkeypatch.setenv("TZ", name)
+        time.tzset()
+    yield set_tz
     monkeypatch.undo()
     time.tzset()
 
@@ -690,4 +702,35 @@ def test_calendar_times_print_on_the_users_clock_never_utc(mountain):
     assert preprocess._event_local_day(b["todays_events"][2]) == "2026-10-21"
     assert preprocess._event_local_day({"start": {"dateTime": "2026-10-21T20:00:00-06:00"}}) == "2026-10-21"
     pre = (Path(__file__).resolve().parents[1] / "preprocessor" / "preprocess.py").read_text()
-    assert 'if _event_local_day(e) == datetime.now().strftime("%Y-%m-%d")' in pre
+    assert "if _event_local_day(e) == _user_today()" in pre
+
+
+@pytest.mark.parametrize("machine, zone, committee, dinner, free, dinner_day", [
+    ("UTC", "America/Denver", "9:00-10:00 AM Committee", "6:30-8:00 PM Dinner", "11:00-11:30 AM",
+     "2026-10-21"),
+    ("America/Denver", "Europe/Zurich", "5:00-6:00 PM Committee", "2:30-4:00 AM Dinner", "7:00-7:30 PM",
+     "2026-10-22"),
+])
+def test_times_follow_the_users_configured_zone_not_the_machines(tmp_path, monkeypatch, machine_tz, machine,
+                                                                 zone, committee, dinner, free, dinner_day):
+    """The user's zone is the one in config (user_tz.py), not the
+    machine's: a server on UTC, or a user away from the server's zone,
+    still reads the times on the user's own clock."""
+    ea = tmp_path / "ea"
+    (ea / "config").mkdir(parents=True)
+    (ea / "config" / "user-profile.json").write_text(json.dumps({"timezone": zone}))
+    monkeypatch.setenv("EA_DIR", str(ea))
+    machine_tz(machine)
+    committee_ev = {"subject": "Committee",
+                    "start": {"dateTime": "2026-10-21T15:00:00.0000000", "timeZone": "UTC"},
+                    "end": {"dateTime": "2026-10-21T16:00:00.0000000", "timeZone": "UTC"}}
+    dinner_ev = {"subject": "Dinner",
+                 "start": {"dateTime": "2026-10-22T00:30:00.0000000", "timeZone": "UTC"},
+                 "end": {"dateTime": "2026-10-22T02:00:00.0000000", "timeZone": "UTC"}}
+    b = {"todays_events": [committee_ev, dinner_ev],
+         "availability_merged": [{"start": "2026-10-21T17:00:00+00:00", "end": "2026-10-21T17:30:00+00:00"}]}
+    assert rb._calendar(b, date(2026, 10, 21)) == [committee, dinner]
+    assert rb._free(b, date(2026, 10, 21)) == [free]
+    import preprocess
+    assert preprocess._event_local_day(dinner_ev) == dinner_day
+    assert preprocess._user_today() == datetime.now(ZoneInfo(zone)).strftime("%Y-%m-%d")
