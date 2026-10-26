@@ -165,6 +165,37 @@ def test_search_drops_note_rows():
         mail._run_cli = orig
 
 
+def test_include_deleted_adds_deleted_items_once():
+    deleted = [
+        {"id": "m9", "subject": "Editor Assignment - JRNL-2026-0002", "from": SENDER,
+         "received": "2026-09-21T08:00:00Z", "conversation_id": "c9", "to": [], "cc": []},
+        {"id": "m1", "subject": "dup of a search hit", "from": SENDER,
+         "received": "2026-09-20T08:00:00Z", "conversation_id": "c1", "to": [], "cc": []},
+        {"id": "m8", "subject": "someone else", "from": "other@example.com",
+         "received": "2026-09-21T09:00:00Z", "conversation_id": "c8", "to": [], "cc": []},
+    ]
+    fake = FakeCli()
+    calls = []
+
+    def cli(argv):
+        calls.append(list(argv))
+        if argv[0] == "list-mail":
+            return json.dumps(deleted)
+        return fake(argv)
+
+    orig = mail._run_cli
+    mail._run_cli = cli
+    try:
+        plain = mail.messages_from(SENDER, DAYS, full_body=False)
+        both = mail.messages_from(SENDER, DAYS, full_body=False, include_deleted=True)
+    finally:
+        mail._run_cli = orig
+    assert [m["id"] for m in plain] == ["m1", "m2"]
+    assert [m["id"] for m in both] == ["m9", "m1", "m2"]
+    listing = [c for c in calls if c[0] == "list-mail"]
+    assert len(listing) == 1 and listing[0][1:3] == ["--folder", "deleteditems"]
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

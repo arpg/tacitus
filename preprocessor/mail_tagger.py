@@ -13,13 +13,16 @@ Division of labour:
     the categories with a PATCH per message. Then it lists Sent Items
     since the last tick and flips `needs-reply` to `awaiting-reply` on
     every inbox message of a conversation the user has written in. A
-    tick with nothing new costs two Graph GETs and no model call.
+    tick with nothing new costs two Graph GETs and no model call. Last,
+    it hands the tick's tagged mail to plugin_mail.route(), which copies
+    each message a plugin's mail trigger matches to that plugin.
   * `backfill --days N`: the same pass over older inbox mail that still
     has no `auto-tagged` category.
   * `status`: the state file in one screen.
 
 The feature is per install: off unless ea-config.json sets
-`mail_tagger.enabled` to true. Off, `tick` exits at once.
+`mail_tagger.enabled` to true. Off, `tick` runs only the plugin mail
+triggers, when a plugin declares one, and those see no topic tags.
 
 State (owner-private, 0600): STATE_FILE holds the last tick time, the
 ids tagged recently (so a message whose PATCH failed is retried, and one
@@ -548,10 +551,19 @@ def flip_answered(sent: list[dict], *, graph, user: set[str] | None = None,
     return {"flipped": flipped, "conversations": len(latest), "details": details}
 
 
+def _route(inbox: list[dict], *, graph, now: datetime, cats_by_id: dict,
+           tagged_only: bool, dry_run: bool) -> dict:
+    import plugin_mail
+    return plugin_mail.route(inbox, graph=graph, now=now, cats_by_id=cats_by_id,
+                             tagged_only=tagged_only, dry_run=dry_run)
+
+
 def tick(*, dry_run: bool = False, graph=None, now: datetime | None = None,
          state_path: Path | None = None, log_path: Path | None = None,
          inbox: list | None = None, sent: list | None = None, asker=None,
-         vocab: list[dict] | None = None) -> dict:
+         vocab: list[dict] | None = None, tag: bool = True, router=None) -> dict:
+    """One pass. With tag False (the tagger is off) only the plugin mail
+    triggers run."""
     now = now or _now()
     graph = graph or _default_graph()
     state = load_state(state_path)
@@ -561,12 +573,22 @@ def tick(*, dry_run: bool = False, graph=None, now: datetime | None = None,
     if inbox is None:
         inbox = _inbox_since(graph, since)
     if sent is None:
-        sent = _sent_since(graph, since)
+        sent = _sent_since(graph, since) if tag else []
     summary = {"since": since, "inbox_rows": len(inbox), "sent_rows": len(sent)}
-    summary["tag"] = tag_messages(inbox, graph=graph, state=state, dry_run=dry_run,
-                                  now=now, vocab=vocab, asker=asker, log_path=log_path)
-    summary["flip"] = flip_answered(sent, graph=graph, dry_run=dry_run, now=now,
-                                    log_path=log_path)
+    if tag:
+        summary["tag"] = tag_messages(inbox, graph=graph, state=state, dry_run=dry_run,
+                                      now=now, vocab=vocab, asker=asker, log_path=log_path)
+        summary["flip"] = flip_answered(sent, graph=graph, dry_run=dry_run, now=now,
+                                        log_path=log_path)
+    cats_by_id = {mid: r.get("cats") for mid, r in state["recent"].items()
+                  if isinstance(r, dict) and r.get("cats")}
+    try:
+        summary["route"] = (router or _route)(inbox, graph=graph, now=now,
+                                              cats_by_id=cats_by_id, tagged_only=tag,
+                                              dry_run=dry_run)
+    except Exception as e:  # a plugin hand-off never stops the tagger
+        print(f"mail_tagger: plugin mail routing failed: {e}", file=sys.stderr)
+        summary["route"] = {"error": str(e)[:200]}
     if not dry_run:
         cutoff = _iso(now - RECENT_TTL)
         state["recent"] = {k: v for k, v in state["recent"].items()
@@ -592,6 +614,14 @@ def backfill(*, days: int = 30, dry_run: bool = False, graph=None,
     if not dry_run:
         save_state(state, state_path)
     return summary
+
+
+def _plugin_triggers() -> bool:
+    try:
+        import plugin_registry
+        return bool(plugin_registry.mail_triggers())
+    except Exception:
+        return False
 
 
 def _print(obj) -> None:
@@ -630,6 +660,12 @@ def main(argv=None) -> int:
                 "state_file": str(STATE_FILE)})
         return 0
     if not enabled():
+        if args.cmd == "tick" and _plugin_triggers():
+            s = tick(dry_run=args.dry_run, tag=False)
+            r = s.get("route") or {}
+            print(f"{_iso(_now())} mail_tagger: disabled; plugin mail "
+                  f"delivered={r.get('delivered', 0)} kept={r.get('kept', 0)}")
+            return 0
         print(f"{_iso(_now())} mail_tagger: disabled (ea-config.json mail_tagger.enabled)")
         return 0
     if args.cmd == "tick":
@@ -638,8 +674,13 @@ def main(argv=None) -> int:
         s = backfill(days=args.days, dry_run=args.dry_run)
     t = s.get("tag", s)
     f = s.get("flip", {})
+    r = s.get("route") or {}
     line = (f"{_iso(_now())} tagged={t.get('tagged', 0)} failed={t.get('failed', 0)} "
             f"skipped={t.get('skipped', 0)} flipped={f.get('flipped', 0)}")
+    if r.get("matched") or r.get("kept") or r.get("error"):
+        line += (f" plugin_mail={r.get('delivered', 0)}"
+                 + (f" kept={r['kept']}" if r.get("kept") else "")
+                 + (f" error={r['error'][:80]!r}" if r.get("error") else ""))
     if args.dry_run:
         _print(s)
     else:

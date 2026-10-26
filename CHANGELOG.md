@@ -6,6 +6,15 @@ repository that preceded it.
 
 ## Unreleased
 
+- **Plugins can ask for mail as it arrives.** A v2 manifest's
+  `capabilities.mail_triggers` names the mail a plugin wants: a sender or
+  domain, the tagger's topic tag, a subject substring, bulk mail only. The
+  mail tagger's tick copies each match, with its body, to the plugin
+  (`plugin_mail.py`), and `ea_plugins.mail.delivered()` reads the copies.
+  A plugin that searched for its mail at its own hour missed mail deleted
+  in between, since a move changes the Graph id and a mailbox search
+  skips Deleted Items. A topic trigger must be bulk-only; kept mail never
+  reaches an agent-zone plugin; sealed mail arrives without its body.
 - **Drafting A/B pairs a draft with the call that wrote it.**
   `draft_ab.assign` took any `email-author` call in the run as the writer
   of every new Outlook draft: a draft the remote writer made, in a run

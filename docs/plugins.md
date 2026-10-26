@@ -168,6 +168,7 @@ and `extra_schedules`.
     "cards": [],
     "mail_rules": {"closure_confirm_senders": [], "closure_exclude_senders": [],
                    "keep_from_anthropic_domains": []},
+    "mail_triggers": [{"id": "alerts", "from": ["alerts@notes.example.org"]}],
     "network": {"domains": ["api.example.org"], "local": []},
     "secrets": ["EXAMPLE_TOKEN"],
     "owner_hooks": {"verbs": [], "auth_sources": [], "cron": []},
@@ -291,6 +292,43 @@ core substring matches; `keep_from_anthropic_domains` join the remote
 model's keep list (`remote_llm.py`). A substring shorter than six
 characters, or with no `@` or `.`, is refused as too broad.
 
+**mail_triggers.** New mail handed to the plugin as it arrives. The
+mail tagger's tick (owner cron, every two minutes) checks each new inbox
+message against the triggers of every enabled plugin whose files match
+the lock, and copies a match to the plugin: ids, sender, subject, time,
+the trigger id and the body (`preprocessor/plugin_mail.py`). A trigger
+matches when every key it names matches:
+
+| Key | Matches |
+|---|---|
+| `id` | the trigger's name, a slug, unique in the plugin |
+| `from` | the sender, a full address or an `@domain` |
+| `topics` | the tagger's topic tag: `lor`, `recruiting`, `hiring`, `purchasing`, `funding`, `manuscripts` |
+| `subject` | any one of the substrings is in the subject (four characters or more) |
+| `bulk` | `true`: the message carries `List-Unsubscribe`, `List-Id` or a `Precedence` of bulk or list |
+| `exclude_from` | the sender is none of these |
+
+A trigger needs `from` or `topics`, and one with no `from` must set
+`"bulk": true`, so a topic alone never hands a colleague's mail to a
+plugin. At most ten triggers. A plugin reads its copies with
+`mail.delivered()` (below). The copy is taken on arrival, so mail
+deleted or moved before the plugin's run is still there: a move changes
+a message's Graph id, and a mailbox search does not cover Deleted Items.
+
+- An agent-zone plugin's copies are in
+  `<EA_DIR>/state/plugin-mail/<name>.json`, rewritten from the owner's
+  queue on each delivery. An owner-zone plugin reads the owner's queue.
+- Mail with an address on the `keep_from_anthropic` list never goes to an
+  agent-zone plugin.
+- With the mail switch `sealed`, an agent-zone plugin's copy has no body;
+  `delivered()` reads it through `get-message`, which is sealed like any
+  lane's read.
+- With the tagger off (`mail_tagger.enabled` false), the tick runs the
+  triggers alone, and a `topics` trigger matches nothing.
+- Copies are kept 45 days, at most 200 per plugin, each body cut at
+  200,000 characters.
+  `python3 preprocessor/plugin_mail.py status` counts them per trigger.
+
 **network.** `domains` are the internet hosts the plugin reaches, listed
 for consent (the resident's internet access stays open). `local` entries
 (`daddr`, `proto`, `ports`, `reason`) join the resident's network
@@ -374,7 +412,8 @@ declares the alias.
   write. `graph_actions` lists the subcommands the run may call; each
   becomes one allowlist entry. A plugin never imports `graph_client`: under
   mail mediation the resident has no token. `from ea_plugins import mail`
-  gives mediated reads.
+  gives mediated reads (`messages_from`, `search`, `get_message`), and
+  `mail.delivered()` the copies a v2 plugin's `mail_triggers` were handed.
 - `output.channel_key`: the chat route (on Zulip, `chat.zulip.notify` in
   `ea-config.json` maps it to a stream and topic).
   `output.format_anchors`: the shortcodes a post may open with.

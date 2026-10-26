@@ -49,6 +49,7 @@ import sys
 import tempfile
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -176,6 +177,9 @@ WRITERS = [
     W("slack_sessions", lambda m, p: m.adopt(ONE_TS, ONE_SESSION, require_file=False), attr="REGISTRY"),
     # plugins (docs/plugins.md): the click token, the verb alias hint, an
     # agent-zone release written into the resident's plugins dir
+    W("plugin_mail", lambda m, p: m.deliver("x", "agent", [{"id": "m1", "received": "",
+      "delivered_at": "2026-10-18T00:00:00Z"}], datetime(2026, 10, 18, tzinfo=timezone.utc),
+      ea_dir=p.parents[2]), name="state/plugin-mail/x.json"),
     W("plugin_cards", lambda m, p: m.mint_token("p", "c", {"x": 1}, path=p),
       name="state/plugin-card-tokens.json"),
     W("plugin_install", lambda m, p: _plugin_ctx(m, p.parent.parent / "plugins")._write_alias_hint(

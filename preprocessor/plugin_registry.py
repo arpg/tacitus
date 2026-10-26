@@ -886,6 +886,19 @@ def mail_rules(lock=None) -> dict:
     return {k: sorted(v) for k, v in out.items()}
 
 
+def mail_triggers(lock=None) -> list[tuple]:
+    """[(LockedPlugin, trigger)] for the mail triggers of the enabled
+    plugins whose files match the lock: mail goes only to a plugin the
+    owner accepted, as it was accepted."""
+    out = []
+    for lp in managed_plugins(lock=lock):
+        triggers = lp.manifest["capabilities"].get("mail_triggers") or []
+        # Only a plugin that asks for mail pays for the file hashes.
+        if triggers and not verify(lp):
+            out += [(lp, t) for t in triggers]
+    return out
+
+
 def netpolicy_allows(lock=None) -> list[dict]:
     """Allowlist entries for resident_netpolicy, one per local endpoint an
     enabled plugin declares, named after the plugin."""

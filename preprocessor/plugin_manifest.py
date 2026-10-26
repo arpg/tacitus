@@ -51,6 +51,10 @@ AUTH_KINDS = ("graph",)
 # command; the item reaches a card executor as JSON on stdin.
 COMMAND_FIELDS = {"plugin_dir", "python", "token"}
 DEFAULT_STATE_DIRS = ("state",)
+# The topic tags mail_tagger gives (mail_tagger.TOPICS); a mail trigger
+# may name them.
+MAIL_TOPICS = ("lor", "recruiting", "hiring", "purchasing", "funding", "manuscripts")
+MAIL_TRIGGER_CAP = 10
 
 
 class ManifestError(ValueError):
@@ -177,7 +181,7 @@ def _empty_capabilities() -> dict:
                                         "keep_from_anthropic_domains": []},
             "network": {"domains": [], "local": []}, "secrets": [],
             "owner_hooks": {"verbs": [], "auth_sources": [], "cron": []},
-            "claude_plugin": ""}
+            "claude_plugin": "", "mail_triggers": []}
 
 
 def _norm_chat(chat: dict, errors: list, strict: bool) -> dict | None:
@@ -306,6 +310,53 @@ def _norm_mail_rules(m, errors: list) -> dict:
         if not HOST_RE.match(d):
             errors.append(f"capabilities.mail_rules.keep_from_anthropic_domains: bad domain {d!r}")
     out["keep_from_anthropic_domains"] = doms
+    return out
+
+
+def _norm_mail_triggers(items, errors: list) -> list[dict]:
+    """Incoming mail the owner's tagger tick hands to the plugin as it
+    arrives (plugin_mail.py). A trigger matches on the sender, the
+    tagger's topic tag, the subject and whether the mail is bulk mail;
+    the keys it names must all match. A trigger with no `from` must set
+    `bulk`, so a topic alone never routes a colleague's mail."""
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        errors.append("capabilities.mail_triggers must be a list")
+        return []
+    if len(items) > MAIL_TRIGGER_CAP:
+        errors.append(f"capabilities.mail_triggers: at most {MAIL_TRIGGER_CAP} triggers")
+    out, ids = [], set()
+    for i, t in enumerate(items[:MAIL_TRIGGER_CAP]):
+        where = f"capabilities.mail_triggers[{i}]"
+        if not isinstance(t, dict):
+            errors.append(f"{where} must be an object")
+            continue
+        tid = str(t.get("id") or "")
+        if not NAME_RE.match(tid) or tid in ids:
+            errors.append(f"{where}.id {tid!r} must be a unique slug")
+        ids.add(tid)
+        senders = [v.strip().lower() for v in _strs(t.get("from")) if v.strip()]
+        for v in senders:
+            dom = v[1:] if v.startswith("@") else v.rpartition("@")[2]
+            if not ("@" in v and HOST_RE.match(dom) and "." in dom):
+                errors.append(f"{where}.from: {v!r} must be an address or an @domain")
+        topics = [v.strip().lower() for v in _strs(t.get("topics")) if v.strip()]
+        for v in topics:
+            if v not in MAIL_TOPICS:
+                errors.append(f"{where}.topics: {v!r} is not one of {MAIL_TOPICS}")
+        subject = [v.strip().lower() for v in _strs(t.get("subject")) if v.strip()]
+        for v in subject:
+            if len(v) < 4:
+                errors.append(f"{where}.subject: {v!r} is too broad")
+        exclude = [v.strip().lower() for v in _strs(t.get("exclude_from")) if v.strip()]
+        bulk = bool(t.get("bulk"))
+        if not senders and not topics:
+            errors.append(f"{where}: needs `from` or `topics`")
+        if not senders and not bulk:
+            errors.append(f"{where}: a trigger with no `from` must set \"bulk\": true")
+        out.append({"id": tid, "from": senders, "topics": topics, "subject": subject,
+                    "exclude_from": exclude, "bulk": bulk})
     return out
 
 
@@ -440,6 +491,7 @@ def _normalize_v2(raw: dict, dir_name: str, errors: list) -> dict:
         cards.append(card)
     caps["cards"] = cards
     caps["mail_rules"] = _norm_mail_rules(caps_raw.get("mail_rules"), errors)
+    caps["mail_triggers"] = _norm_mail_triggers(caps_raw.get("mail_triggers"), errors)
     caps["network"] = _norm_network(caps_raw.get("network"), errors)
     secrets = _strs(caps_raw.get("secrets"))
     for s in secrets:
@@ -554,6 +606,10 @@ def capability_summary(norm: dict) -> dict:
                "claude_plugin": caps["claude_plugin"]}
     if norm.get("context"):
         summary["context"] = norm["context"]
+    # Only when declared, so a lock entry from before mail triggers keeps
+    # the digest the owner accepted.
+    if caps.get("mail_triggers"):
+        summary["mail_triggers"] = caps["mail_triggers"]
     return summary
 
 
@@ -607,6 +663,20 @@ def describe(summary: dict) -> list[str]:
         lines.append(f"mail rule: mail from *{s}* never closes a ledger row")
     for d in mr["keep_from_anthropic_domains"]:
         lines.append(f"mail rule: mail from {d} stays with the remote model")
+    for t in summary.get("mail_triggers") or []:
+        what = []
+        if t["from"]:
+            what.append("from " + ", ".join(t["from"]))
+        if t["topics"]:
+            what.append("tagged " + ", ".join(t["topics"]))
+        if t["subject"]:
+            what.append("subject has " + " or ".join(repr(x) for x in t["subject"]))
+        if t["bulk"]:
+            what.append("bulk mail only")
+        if t["exclude_from"]:
+            what.append("not from " + ", ".join(t["exclude_from"]))
+        lines.append(f"mail trigger {t['id']}: new mail {'; '.join(what)} is copied, "
+                     "with its text, to the plugin as it arrives")
     for d in summary["network"]["domains"]:
         lines.append(f"network: reaches {d}")
     for e in summary["network"]["local"]:

@@ -14,11 +14,19 @@ parser written against graph_client.get_messages keeps working.
     for m in msgs:
         html = m["body"]["content"]
 
+A plugin whose manifest declares `mail_triggers` also gets its matching
+mail copied to it as the mail arrives (preprocessor/plugin_mail.py);
+`delivered()` reads those copies, in the same shape:
+
+    for m in mail.delivered(lookback_days=30):
+        ...
+
 Reads only. Nothing here drafts, sends, moves or deletes.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -143,17 +151,37 @@ def _graph_shape(row: dict, full: Optional[dict] = None) -> dict:
     return msg
 
 
+def deleted_rows(since: str, *, top: int = SEARCH_CAP) -> list[dict]:
+    """Deleted Items received on or after `since` (YYYY-MM-DD), newest
+    first, as `graph_actions.py list-mail` prints them. A mailbox $search
+    does not cover that folder."""
+    argv = ["list-mail", "--folder", "deleteditems", "--since", since, "--top", str(int(top))]
+    data = _extract_json(_run_cli(argv)) or []
+    if isinstance(data, dict):
+        if data.get("error"):
+            raise MailError(str(data["error"]))
+        data = data.get("messages") or []
+    rows = [r for r in data if isinstance(r, dict) and r.get("id")]
+    if len(rows) >= top:
+        print(f"[ea_plugins.mail] Deleted Items listing cap {top} reached since {since}; "
+              "older deleted mail in the window may be missing", file=sys.stderr)
+    return rows
+
+
 def messages_from(sender: str, lookback_days: int, *,
                   full_body: bool = True,
                   prefilter: Optional[Callable[[dict], bool]] = None,
-                  top: int = SEARCH_CAP) -> list[dict]:
+                  top: int = SEARCH_CAP, include_deleted: bool = False) -> list[dict]:
     """Every message from `sender` received in the last `lookback_days`,
     newest first, in Graph's message shape.
 
     One mailbox-wide search (inbox and archive folders alike), then, with
     full_body, one get-message per row that passes `prefilter`, a callable
     on the search row (subject, preview, received, ...). A prefilter keeps
-    the body fetches to the mail the caller's parser can use.
+    the body fetches to the mail the caller's parser can use. The search
+    does not reach Deleted Items; include_deleted adds that folder's
+    newest `top` messages from the sender. Mail the user deletes before
+    the plugin runs is better caught with a mail trigger (delivered()).
     """
     sender = (sender or "").strip()
     if not _ADDRESS_RE.match(sender):
@@ -164,6 +192,9 @@ def messages_from(sender: str, lookback_days: int, *,
         print(f"[ea_plugins.mail] search cap {top} reached for {sender} "
               f"since {since}; older mail in the window may be missing",
               file=sys.stderr)
+    if include_deleted:
+        have = {r["id"] for r in rows}
+        rows += [r for r in deleted_rows(since, top=top) if r["id"] not in have]
     sender_lc = sender.lower()
     out: list[dict] = []
     for r in rows:
@@ -175,5 +206,74 @@ def messages_from(sender: str, lookback_days: int, *,
             continue
         full = get_message(r["id"], raw_html=True) if full_body else None
         out.append(_graph_shape(r, full))
+    out.sort(key=lambda m: m.get("receivedDateTime") or "", reverse=True)
+    return out
+
+
+def _inbox_file(plugin: str) -> Path:
+    ea_dir = Path(os.environ.get("EA_DIR") or (Path.home() / ".ea"))
+    return ea_dir / "state" / "plugin-mail" / f"{plugin}.json"
+
+
+def _read_delivered(plugin: str) -> list:
+    """The copies on disk: the resident's inbox file, or for an owner-zone
+    plugin running as the owner, the owner's queue."""
+    path = _inbox_file(plugin)
+    try:
+        return json.loads(path.read_text())
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as e:
+        raise MailError(f"{path}: unreadable: {e}") from e
+    try:
+        sys.path.insert(0, str(_SCRIPT_DIR / "preprocessor"))
+        import owner_trust
+        import plugin_mail
+        if owner_trust.is_owner_process():
+            return plugin_mail._read_owner_json(plugin_mail.queue_path(plugin), [])
+    except Exception:
+        pass
+    return []
+
+
+def delivered(lookback_days: Optional[int] = None, *, plugin: Optional[str] = None,
+              trigger: Optional[str] = None, fetch_sealed: bool = True) -> list[dict]:
+    """The mail the owner's mail triggers copied to this plugin, newest
+    first, in Graph's message shape plus `trigger` (the trigger id). The
+    copy holds the body as it was on arrival, so mail deleted or moved
+    since is still here. A copy marked sealed carries no body; with
+    fetch_sealed, the body is read through get-message, which gives the
+    remote model's record in the sealed mode. `plugin` defaults to
+    EA_PLUGIN_NAME."""
+    plugin = plugin or os.environ.get("EA_PLUGIN_NAME") or ""
+    if not plugin:
+        raise ValueError("delivered() needs a plugin name (EA_PLUGIN_NAME is not set)")
+    since = kql_since(lookback_days) if lookback_days is not None else ""
+    out = []
+    for rec in _read_delivered(plugin):
+        if not isinstance(rec, dict) or not rec.get("id"):
+            continue
+        if trigger and rec.get("trigger") != trigger:
+            continue
+        if since and (rec.get("received") or "")[:10] < since:
+            continue
+        row = {"id": rec["id"], "subject": rec.get("subject") or "",
+               "from": rec.get("from") or "", "received": rec.get("received") or "",
+               "conversation_id": rec.get("conversation_id") or "",
+               "to": rec.get("to") or []}
+        full = None
+        if "body" in rec:
+            full = {"from": {"address": rec.get("from") or "",
+                             "name": rec.get("from_name") or ""},
+                    "body_type": rec.get("body_type") or "html", "body": rec["body"]}
+        elif fetch_sealed:
+            try:
+                full = get_message(rec["id"], raw_html=True)
+            except MailError as e:
+                print(f"[ea_plugins.mail] {rec['id'][-12:]}: {e}", file=sys.stderr)
+        msg = _graph_shape(row, full)
+        msg["trigger"] = rec.get("trigger") or ""
+        msg["internetMessageId"] = rec.get("internet_message_id") or ""
+        out.append(msg)
     out.sort(key=lambda m: m.get("receivedDateTime") or "", reverse=True)
     return out
