@@ -270,11 +270,12 @@ To adopt a deck into the owner's tree: `cp -r decks/<slug>
 
 RENDER_JS = r"""
 const { chromium } = require("playwright-chromium");
-const [port, slug, outDir, clicks, list] = process.argv.slice(1);
+const [port, slug, outDir, clicks, list, vw, vh] = process.argv.slice(1);
 (async () => {
   const b = await chromium.launch();
   for (const s of list.split(",")) {
-    const p = await b.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
+    const p = await b.newPage({ viewport: { width: Number(vw), height: Number(vh) },
+                                deviceScaleFactor: 1 });
     await p.goto(`http://127.0.0.1:${port}/${slug}/${s}?clicks=${clicks}`,
                  { waitUntil: "networkidle", timeout: 60000 });
     await p.waitForTimeout(1200);
@@ -520,6 +521,32 @@ def count_slides(text: str) -> int:
     return n
 
 
+PREVIEW_WIDTH = 1280
+
+
+def preview_viewport(text: str) -> tuple[int, int]:
+    """The capture viewport for a deck's slides: 1280 px wide, as high as the
+    headmatter's `aspectRatio` says (16/9 when absent). A 3:2 poster rendered
+    in a 16:9 frame is letterboxed and its text a third smaller."""
+    parts = re.split(r"(?m)^---$", text)
+    head = parts[1] if len(parts) > 1 else ""
+    m = re.search(r"(?m)^aspectRatio\s*:\s*['\"]?([^'\"\n#]+)", head)
+    aspect = 16 / 9
+    if m:
+        raw = m.group(1).strip()
+        try:
+            if "/" in raw:
+                num, den = raw.split("/", 1)
+                aspect = float(num) / float(den)
+            else:
+                aspect = float(raw)
+        except (ValueError, ZeroDivisionError):
+            aspect = 16 / 9
+    if aspect <= 0:
+        aspect = 16 / 9
+    return PREVIEW_WIDTH, round(PREVIEW_WIDTH / aspect)
+
+
 def _tail(text: str, n: int = 40) -> str:
     lines = text.rstrip().splitlines()
     return "\n".join(lines[-n:])
@@ -680,7 +707,9 @@ def cmd_render(a) -> int:
         raise DeckError(f"/{a.slug} is not served; run `build --slug {a.slug}` first")
     if not (deck / "node_modules" / "playwright-chromium").exists():
         raise DeckError("playwright-chromium is not in the deck's node_modules")
-    n = count_slides((deck / "slides.md").read_text())
+    text = (deck / "slides.md").read_text()
+    n = count_slides(text)
+    vw, vh = preview_viewport(text)
     if a.slides:
         wanted = []
         for tok in a.slides.split(","):
@@ -700,15 +729,17 @@ def cmd_render(a) -> int:
         shutil.rmtree(out_dir)
     out_dir.mkdir()
     r = subprocess.run([str(NODE_BIN / "node"), "-e", RENDER_JS, str(port), a.slug,
-                        str(out_dir), str(a.clicks), ",".join(map(str, wanted))],
+                        str(out_dir), str(a.clicks), ",".join(map(str, wanted)),
+                        str(vw), str(vh)],
                        cwd=deck, env=_env(), capture_output=True, text=True,
                        timeout=RENDER_TIMEOUT_S)
     if r.returncode != 0:
         raise DeckError(f"render failed: {(r.stderr or r.stdout).strip()[-400:]}")
     pngs = sorted(str(p) for p in out_dir.glob("*.png"))
     print(json.dumps({"status": "ok", "slug": a.slug, "slides": n, "rendered": wanted,
+                      "viewport": f"{vw}x{vh}",
                       "pngs": pngs, "note": "Read each PNG; check overflow past "
-                      "1280x720, collisions, raw LaTeX, empty canvas."}, indent=2))
+                      f"{vw}x{vh}, collisions, raw LaTeX, empty canvas."}, indent=2))
     return 0
 
 

@@ -87,13 +87,17 @@ disagreement.
    This runs the deck's `build_deck.sh`: static build, local server,
    tailnet route, PDF. The JSON line at the end carries `url` and `pdf`.
    The route is created by the mediator; a refusal names the rule.
+   The PDF page follows the headmatter: `aspectRatio` sets its shape, and
+   a poster adds `printWidthIn` (page width in inches) and `printDpi`
+   (240 for print) so the page is the print size with no letterbox.
 
 6. **Render and look.** Mandatory. "Builds" is not "looks right".
    ```bash
    python3 /home/ea-bot/ea-system/preprocessor/deck_tools.py render --slug <slug>
    ```
    Then `Read` every PNG it lists. Check text running past the bottom of
-   the 1280x720 canvas, a table colliding with a figure, raw LaTeX, an
+   the canvas (1280 px wide; the height follows the deck's `aspectRatio`,
+   720 px for 16/9), a table colliding with a figure, raw LaTeX, an
    empty half canvas, a title that overstates its slide. Fix, lint,
    build again, render again. Two passes are normal.
 
