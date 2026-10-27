@@ -29,8 +29,9 @@ Usage:
 
 propose takes propose-meeting's attendee list with one more key per
 attendee, "booking_link": that person's link. Each link's open slots become
-the attendee's "availability". An attendee at the user's own domain is
-"internal", so the solver reads their free/busy as well. The output is
+the attendee's "availability", marked complete: a day the link leaves empty
+is blocked. An attendee at the user's own domain is "internal", so the
+solver reads their free/busy as well. The output is
 propose-meeting's, plus a "booking_links" block saying what each link
 offered. Without --duration the meeting takes the first link's length.
 """
@@ -453,6 +454,9 @@ def build_attendees(attendees: list, days_ahead: int, duration: int | None,
                     f"at {duration} minutes; try a larger --days-ahead or ask "
                     f"{a['name']} for times")
             a["availability"] = read["availability"]
+            # The link lists every open slot in the window: a day without
+            # one is not free, even for an internal attendee.
+            a["availability_complete"] = True
             links.append(_summary(read, a["name"]))
         out.append(a)
     if not links:

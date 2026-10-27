@@ -1874,6 +1874,9 @@ def _build_candidate_slots(
     #     on top of getSchedule data (the person said "only these times work")
     #   - external with availability: stated windows are the ONLY source of
     #     truth. Days without stated availability are fully blocked.
+    #   - "availability_complete": the windows are all the person's free time
+    #     (a booking link's open slots), so a day with none is blocked for an
+    #     internal attendee too; getSchedule still applies on top.
     #   - internal without availability: handled by Step 3 (getSchedule only)
     #   - external/unknown without availability: all working-hours slots feasible
     for attendee in spec.get("attendees", []):
@@ -1886,6 +1889,7 @@ def _build_candidate_slots(
             continue
 
         is_internal = attendee.get("type") == "internal"
+        complete = bool(attendee.get("availability_complete"))
 
         # Build set of slots where this attendee IS available
         avail_slots = set()
@@ -1910,7 +1914,7 @@ def _build_candidate_slots(
             day_base = day_offset * 96
 
             if current_date not in avail_days:
-                if not is_internal:
+                if not is_internal or complete:
                     # External attendee with stated availability but none for
                     # this day: block the entire day
                     for s in range(96):
@@ -2969,7 +2973,8 @@ def build_parser() -> argparse.ArgumentParser:
                         '"excluded_days":["YYYY-MM-DD"],'
                         '"availability":[{"day":"YYYY-MM-DD","start":"HH:MM","end":"HH:MM"}]}]. '
                         'excluded_days block whole days and compose with the zone hours; '
-                        'availability replaces them')
+                        'availability replaces them. "availability_complete":true (a booking '
+                        "link's slots) blocks every day the windows leave out, internal too")
     p.add_argument("--constraints", default="[]",
                    help='JSON array of soft constraints (optional)')
     p.add_argument("--ignore-event", action="append", default=[], metavar="ID",

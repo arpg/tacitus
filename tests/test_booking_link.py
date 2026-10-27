@@ -212,6 +212,7 @@ def test_build_attendees_attaches_windows_and_types():
     assert cal.reads == [("gus", "60min", None), ("gale", "vip", 60)], cal.reads
     assert [a["type"] for a in atts] == ["internal", "internal", "internal", "external"]
     assert all("booking_link" not in a for a in atts)
+    assert [a.get("availability_complete") for a in atts] == [True, True, None, None]
     assert atts[0]["availability"] == [{"day": "2026-10-13", "start": "13:00", "end": "14:00"}]
     assert atts[1]["availability"] == [{"day": "2026-10-13", "start": "12:00", "end": "14:00"}]
     assert "availability" not in atts[2]

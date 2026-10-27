@@ -6,6 +6,12 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A booking link's empty days are not free.** The solver treats an
+  internal attendee's stated windows as partial, so a colleague on the
+  user's own domain who sent a booking link was offered times on days the
+  link left empty. `booking_link.py` now marks the windows
+  `"availability_complete": true`, and the solver blocks every day they
+  leave out; getSchedule still applies on top.
 - **The scheduler footer counts every option.** A chat turn keeps 300
   characters of each tool result, and the solver prints its calendar reads
   before its JSON, so the `:calendar:` footer said "1 options" for an

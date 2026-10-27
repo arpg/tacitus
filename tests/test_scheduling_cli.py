@@ -500,6 +500,31 @@ def test_external_attendee_without_availability_blocks_entire_day():
     )
 
 
+def _internal_with_one_day(complete):
+    att = {"email": "lane@example.edu", "name": "Lane", "type": "internal",
+           "availability": [{"day": "2026-05-27", "start": "09:00", "end": "17:00"}]}
+    if complete:
+        att["availability_complete"] = True
+    spec = {"duration": 30, "num_options": 5, "earliest_date": "2026-05-26",
+            "latest_date": "2026-05-27", "attendees": [att]}
+    with _patched_engine(outlook_events=[], google_events=[]):
+        result = _run_propose_meeting(spec)
+    return {o["start"][:10] for o in result.get("options", [])}
+
+
+def test_internal_stated_availability_leaves_other_days_to_getschedule():
+    """An internal person's stated windows ("Wednesday works") constrain
+    only the days they name."""
+    assert "2026-05-26" in _internal_with_one_day(complete=False)
+
+
+def test_complete_availability_blocks_unnamed_days_for_internal_too():
+    """A booking link lists all of a person's open time: a day it leaves
+    empty is not free, even when getSchedule shows the person free."""
+    dates = _internal_with_one_day(complete=True)
+    assert dates == {"2026-05-27"}, dates
+
+
 # ---------------------------------------------------------------------------
 # Token-based preferences (EA-Managed calendar) + transparency
 # ---------------------------------------------------------------------------

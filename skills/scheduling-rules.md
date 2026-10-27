@@ -494,6 +494,11 @@ makes the meeting, as in Mode B.
    takes the first link's length unless you pass `--duration`. A Safe
    Links URL works as it is. The output is `propose-meeting`'s, plus a
    `booking_links` block: what each link offered, and for which days.
+   A day the link leaves empty is blocked. With `no_options`, say that
+   the link and the user's calendar do not overlap in the window and
+   name the link's open days. For a person on the institution's
+   domains, offer `propose-meeting` times from their free/busy as the
+   other choice.
 2. Propose the options as in Mode B, and wait for the user to choose.
 3. Make the meeting: stage `pending-event.json` with every attendee's
    address, `"online": true` and `"thread_ts"`. The Create button sends
