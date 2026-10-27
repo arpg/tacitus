@@ -1841,7 +1841,7 @@ account holds `owner` on the calendar).
                         --output goes through the same OUTPUT_FLAGS staging
                         as the graph_actions twin)
   poll_filler.py (read-poll, fill-poll)
-  booking_link.py (read, propose: cal.com open slots over a public GET,
+  booking_link.py (read, propose: cal.com/Calendly open slots over a public GET,
                         fed to propose-meeting; it has no booking verb)
   ledger.py (add, update, close, list, search, stats)
   project_store.py, style_profiles.py

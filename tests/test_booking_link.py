@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Tests for booking_link.py, the read-only cal.com reader.
+"""Tests for booking_link.py, the read-only cal.com and Calendly reader.
 
 The link arrives in untrusted email, so these tests pin what it may make
-the tool do: unwrap a redirect, name a cal.com user and event, and nothing
-else. The rest pins the slot-to-window conversion the solver depends on and
-the propose-meeting call it builds. No test contacts cal.com: the HTTP
-reads and the solver run are replaced.
+the tool do: unwrap a redirect, name a cal.com or Calendly user and event,
+and nothing else. The rest pins the slot-to-window conversion the solver
+depends on and the propose-meeting call it builds. No test contacts either
+platform: the HTTP reads and the solver run are replaced.
 
 Usage:
     python3 tests/test_booking_link.py
@@ -51,8 +51,8 @@ def _raises(fn, *args):
 
 def test_safelinks_wrapper_is_unwrapped():
     link = bl.parse_link(SAFELINK)
-    assert link == {"url": "https://cal.com/galehargrove/vip", "username": "galehargrove",
-                    "event_slug": "vip", "duration": 30}, link
+    assert link == {"platform": "cal.com", "url": "https://cal.com/galehargrove/vip",
+                    "username": "galehargrove", "event_slug": "vip", "duration": 30}, link
 
 
 def test_google_redirect_is_unwrapped():
@@ -70,10 +70,28 @@ def test_profile_link_has_no_event():
     assert bl.parse_link("https://cal.com/guscorvino")["event_slug"] is None
 
 
-def test_links_off_cal_com_are_refused():
+def test_plain_calendly_link():
+    link = bl.parse_link("https://calendly.com/jane-roe-example/30min?month=2026-12")
+    assert link == {"platform": "calendly.com",
+                    "url": "https://calendly.com/jane-roe-example/30min",
+                    "username": "jane-roe-example", "event_slug": "30min",
+                    "duration": None}, link
+    wrapped = ("https://nam10.safelinks.protection.outlook.com/?url=https%3A%2F%2F"
+               "www.calendly.com%2Fjane-roe-example&data=x")
+    assert bl.parse_link(wrapped)["event_slug"] is None
+
+
+def test_calendly_poll_links_go_to_the_poll_reader():
+    assert "read-poll" in _raises(bl.parse_link, "https://calendly.com/d/abc-def/x")
+
+
+def test_links_off_the_two_platforms_are_refused():
     for url in ("https://evil.example/cal.com/a/b",
                 "https://cal.com.evil.example/a/b",
+                "https://calendly.com.evil.example/a/b",
+                "https://evil.calendly.com/a/b",
                 "http://cal.com/a/b",
+                "http://calendly.com/a/b",
                 "https://cal.eu/a/b",
                 "javascript:alert(1)",
                 ""):
@@ -85,7 +103,9 @@ def test_odd_paths_are_refused():
                 "https://cal.com/team/acme/intro",
                 "https://cal.com/a/..%2F..%2Fv2%2Fbookings",
                 "https://cal.com/a+b/30min",
-                "https://cal.com/a/b%3Fx"):
+                "https://cal.com/a/b%3Fx",
+                "https://calendly.com/a/b/c",
+                "https://calendly.com/a/..%2Fapi%2Fbooking"):
         _raises(bl.parse_link, url)
 
 
@@ -99,7 +119,8 @@ def test_module_only_reads():
     src = (PROJECT_ROOT / "preprocessor" / "booking_link.py").read_text()
     assert not re.search(r"requests\.(post|put|patch|delete|request|Session)\b", src)
     assert bl.API == "https://api.cal.com/v2"
-    assert "/bookings" not in src
+    assert bl.CALENDLY_API == "https://calendly.com/api/booking"
+    assert "/bookings" not in src and "/invitees" not in src
 
 
 # --- slots to windows -----------------------------------------------------
@@ -251,6 +272,92 @@ def test_propose_passes_everything_to_the_engine():
                          "--ignore-event", "E1"], argv
 
 
+# --- Calendly -------------------------------------------------------------
+
+class _Resp:
+    def __init__(self, body, status=200):
+        self.body, self.status_code = body, status
+
+    def json(self):
+        return self.body
+
+
+def _fake_calendly(lookup, days_by_start, calls):
+    """requests.get for the Calendly booking API: the lookup answer, then
+    per range_start the days that range returns. Records each call."""
+    def get(url, params=None, **kw):
+        calls.append((url, dict(params or {})))
+        if url.endswith("/event_types/lookup"):
+            return _Resp(lookup)
+        if url.endswith("/calendar/range"):
+            return _Resp({"days": days_by_start.get(params["range_start"], [])})
+        return _Resp({}, 404)
+    return get
+
+
+def _spot(iso, status="available"):
+    return {"status": status, "start_time": iso, "invitees_remaining": 1}
+
+
+def test_calendly_spots_become_windows():
+    lookup = {"uuid": "u-1", "name": "30 Minute Meeting", "duration": 30,
+              "booking_method": "instant", "profile": {"name": "Jane Roe"}}
+    days = {"2099-03-02": [{"date": "2099-03-02", "status": "available", "spots": [
+        _spot("2099-03-02T13:30:00-07:00"), _spot("2099-03-02T14:00:00-07:00"),
+        _spot("2099-03-02T14:30:00-07:00", status="unavailable"),
+        _spot("2099-03-02T16:00:00-07:00")]}]}
+    calls = []
+    real = bl.requests.get
+    bl.requests.get = _fake_calendly(lookup, days, calls)
+    try:
+        out = bl.read_link("https://calendly.com/jane-roe/30min",
+                           date(2099, 3, 2), date(2099, 3, 6), DENVER)
+    finally:
+        bl.requests.get = real
+    assert out["platform"] == "calendly.com" and out["host"] == "Jane Roe"
+    assert out["slot_minutes"] == 30 and out["open_slots"] == 3
+    assert out["availability"] == [
+        {"day": "2099-03-02", "start": "13:30", "end": "14:30"},
+        {"day": "2099-03-02", "start": "16:00", "end": "16:30"}], out["availability"]
+    assert calls[0] == (bl.CALENDLY_API + "/event_types/lookup",
+                        {"event_type_slug": "30min", "profile_slug": "jane-roe"})
+    assert all(u.startswith(bl.CALENDLY_API + "/") for u, _ in calls)
+
+
+def test_calendly_long_windows_are_read_in_pieces():
+    # Calendly refuses a range longer than about five weeks.
+    calls = []
+    real = bl.requests.get
+    bl.requests.get = _fake_calendly({"uuid": "u-1", "duration": 30}, {}, calls)
+    try:
+        bl.calendly_slots("u-1", 30, date(2099, 3, 1), date(2099, 4, 30), DENVER)
+    finally:
+        bl.requests.get = real
+    ranges = [(p["range_start"], p["range_end"]) for _, p in calls]
+    assert ranges == [("2099-03-01", "2099-03-28"), ("2099-03-29", "2099-04-25"),
+                      ("2099-04-26", "2099-04-30")], ranges
+
+
+def test_a_calendly_poll_is_not_read_as_a_booking_page():
+    calls = []
+    real = bl.requests.get
+    bl.requests.get = _fake_calendly({"uuid": "u-1", "booking_method": "poll"}, {}, calls)
+    try:
+        msg = _raises(bl.calendly_event, "jane-roe", "pick-a-time")
+    finally:
+        bl.requests.get = real
+    assert "read-poll" in msg, msg
+
+
+def test_a_missing_calendly_page_is_an_error():
+    real = bl.requests.get
+    bl.requests.get = lambda *a, **kw: _Resp({"message": "not found"}, 404)
+    try:
+        assert "no such" in _raises(bl.calendly_event, "jane-roe", "nope")
+    finally:
+        bl.requests.get = real
+
+
 # --- routing --------------------------------------------------------------
 
 def test_cal_com_mail_is_a_scheduling_request():
@@ -260,6 +367,12 @@ def test_cal_com_mail_is_a_scheduling_request():
     assert preprocess.SCHEDULING_PATTERN.search(body)
     assert preprocess.SCHEDULING_PATTERN.search(SAFELINK)
     assert not preprocess.SCHEDULING_PATTERN.search("see local.com/news for details")
+
+
+def test_calendly_message_loads_the_scheduling_guide():
+    import prompt_logic
+    assert "scheduling" in prompt_logic.detect_needed_modules(
+        "Jane's link is https://calendly.com/jane-roe/30min")
 
 
 def test_cal_com_message_loads_the_scheduling_guide():

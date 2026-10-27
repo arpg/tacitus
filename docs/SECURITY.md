@@ -517,7 +517,7 @@ out of untrusted email, so it enforces an SSRF policy in code (B8-01):
   resolved IP, method, outcome) to `~/.ea/logs/fetch-url.log`.
 
 The other modules that reach the network log there too
-(`preprocessor/outbound_log.py`): `booking_link.py`'s cal.com reads,
+(`preprocessor/outbound_log.py`): `booking_link.py`'s cal.com and Calendly reads,
 `list_digest.py`'s redirect walk (each HEAD hop), and `poll_filler.py`'s
 reads and submissions (host, poll id, the fields sent and their sizes). An
 owner process writes the same records to the owner-private

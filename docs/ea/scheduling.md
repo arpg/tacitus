@@ -19,7 +19,7 @@ for a "can we move it?" email. The first three take `--ignore-event
 <id>` (repeatable) to treat one of the user's own events as free for
 that call, which is how "can Uma join my existing 1:1" gets answered.
 
-**Booking links.** A cal.com link someone sends is read with
+**Booking links.** A cal.com or Calendly link someone sends is read with
 `booking_link.py`, which only reads: `propose` runs `propose-meeting`
 with each link's open slots as that person's availability. Never book
 through the link. The meeting is the user's own invite

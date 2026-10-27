@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
 """
-booking_link.py — Read a cal.com booking link's open times for the solver.
+booking_link.py — Read a cal.com or Calendly booking link's open times
+for the solver.
 
-A colleague who sends a cal.com link ("book a time on my cal.com") has
-published their free time. This tool reads it and nothing else: the open
-slots of one event type, through cal.com's public API, with no account and
-no login. The meeting is never booked through the link. The user's own
+A colleague who sends a booking link ("book a time on my cal.com", a
+calendly.com page) has published their free time. This tool reads it and
+nothing else: the open slots of one event type, through the public API the
+booking page itself calls, with no account and no login. The meeting is
+never booked through the link. The user's own
 scheduler makes it: the open times go to scheduling_engine.py
 propose-meeting as that person's stated availability, and the chosen slot
 becomes an Outlook invite staged in pending-event.json behind the Create
 button.
 
-Read only by construction: the module sends GET requests to one fixed host
-(api.cal.com) and has no booking verb. A link supplies only a username, an
-event slug and a duration, each matched against a strict pattern, so a link
-cannot point a request anywhere else. Outlook Safe Links and Google redirect
-wrappers are unwrapped first.
+Read only by construction: the module sends GET requests to two fixed
+hosts (api.cal.com, calendly.com/api/booking) and has no booking verb. A
+link supplies only a username, an event slug and a duration, each matched
+against a strict pattern, so a link cannot point a request anywhere else.
+Outlook Safe Links and Google redirect wrappers are unwrapped first. A
+Calendly meeting poll (calendly.com/d/...) is a vote, not a booking page:
+poll_filler.py reads it.
 
 Usage:
     python3 booking_link.py read --url <link> [--duration MIN] [--days-ahead N]
@@ -55,7 +59,14 @@ SLOTS_API_VERSION = "2024-09-04"
 EVENT_TYPES_API_VERSION = "2024-06-14"
 TIMEOUT_S = 20
 
-LINK_HOSTS = frozenset({"cal.com", "www.cal.com", "app.cal.com"})
+CALENDLY_API = "https://calendly.com/api/booking"
+# Calendly answers "this calendar is currently unavailable" for a range
+# longer than about five weeks; the page itself asks a month at a time.
+CALENDLY_RANGE_DAYS = 28
+
+LINK_HOSTS = {"cal.com": "cal.com", "www.cal.com": "cal.com",
+              "app.cal.com": "cal.com",
+              "calendly.com": "calendly.com", "www.calendly.com": "calendly.com"}
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _GOOGLE_HOST_RE = re.compile(r"^(?:www\.)?google\.[a-z]{2,3}(?:\.[a-z]{2})?$")
 
@@ -65,7 +76,7 @@ NOTE = ("Read only. These are the times each link offered when read; nothing "
 
 
 class LinkError(Exception):
-    """A link this tool cannot read, or an answer cal.com refused."""
+    """A link this tool cannot read, or an answer the platform refused."""
 
 
 def _user_tz() -> ZoneInfo:
@@ -118,31 +129,37 @@ def unwrap(url: str) -> str:
 
 
 def parse_link(url: str) -> dict:
-    """{"url", "username", "event_slug", "duration"} for a cal.com link.
+    """{"platform", "url", "username", "event_slug", "duration"} for a
+    cal.com or Calendly link. platform is "cal.com" or "calendly.com".
     event_slug is None for a profile link (cal.com/<user>), which names a
     person and not an event. Raises LinkError for anything else."""
     url = unwrap(url)
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
     if parts.scheme != "https" or host not in LINK_HOSTS:
-        raise LinkError(f"not a cal.com link: {url!r}")
+        raise LinkError(f"not a cal.com or Calendly link: {url!r}")
+    platform = LINK_HOSTS[host]
     segs = [s for s in parts.path.split("/") if s]
     if not segs:
         raise LinkError(f"the link names no person: {url!r}")
-    if segs[0] == "team":
+    if platform == "cal.com" and segs[0] == "team":
         raise LinkError("cal.com team links are not supported; ask for a "
                         "person's own link or for times")
+    if platform == "calendly.com" and segs[0] == "d":
+        raise LinkError("a calendly.com/d/ link is a meeting poll or a "
+                        "one-off link, not a booking page; read it with "
+                        "poll_filler.py read-poll")
     if len(segs) > 2 or not all(_NAME_RE.match(s) for s in segs):
-        raise LinkError(f"not a cal.com event link (cal.com/<user>/<event>): {url!r}")
+        raise LinkError(f"not a booking link ({platform}/<user>/<event>): {url!r}")
     duration = None
     raw = (parse_qs(parts.query).get("duration") or [""])[0]
-    if raw.isdigit() and 5 <= int(raw) <= 480:
+    if platform == "cal.com" and raw.isdigit() and 5 <= int(raw) <= 480:
         duration = int(raw)
     username = segs[0]
     slug = segs[1] if len(segs) == 2 else None
-    clean = f"https://cal.com/{username}" + (f"/{slug}" if slug else "")
-    return {"url": clean, "username": username, "event_slug": slug,
-            "duration": duration}
+    clean = f"https://{platform}/{username}" + (f"/{slug}" if slug else "")
+    return {"platform": platform, "url": clean, "username": username,
+            "event_slug": slug, "duration": duration}
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +237,84 @@ def public_events(username: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Calendly public booking API (GET only), the calls its booking page makes
+# ---------------------------------------------------------------------------
+
+def _calendly_get(path: str, params: dict | None = None):
+    url = CALENDLY_API + path + (("?" + urlencode(params)) if params else "")
+    try:
+        r = requests.get(CALENDLY_API + path, params=params, timeout=TIMEOUT_S,
+                         headers={"Accept": "application/json"})
+    except requests.RequestException as e:
+        outbound_log.note("error", "booking_link", url=url, method="GET",
+                          reason=str(e)[:200])
+        raise LinkError(f"Calendly did not answer: {e}")
+    outbound_log.note("fetch", "booking_link", url=url, method="GET",
+                      status=r.status_code)
+    if r.status_code == 404:
+        raise LinkError("Calendly has no such booking page")
+    try:
+        body = r.json()
+    except ValueError:
+        raise LinkError(f"Calendly answered HTTP {r.status_code} with no JSON")
+    if r.status_code != 200:
+        fail = body.get("failure") if isinstance(body, dict) else None
+        msg = fail.get("error") if isinstance(fail, dict) else None
+        raise LinkError(f"Calendly refused the request: "
+                        f"{msg or 'HTTP %d' % r.status_code}")
+    return body
+
+
+def calendly_event(profile: str, slug: str) -> dict:
+    """The event type behind calendly.com/<profile>/<slug>: its uuid, title,
+    host and length. A meeting poll is refused (poll_filler reads those)."""
+    et = _calendly_get("/event_types/lookup",
+                       {"event_type_slug": slug, "profile_slug": profile}) or {}
+    if et.get("booking_method") == "poll":
+        raise LinkError("this Calendly link is a meeting poll, not a booking "
+                        "page; read it with poll_filler.py read-poll")
+    if not et.get("uuid"):
+        raise LinkError(f"Calendly named no event for {profile}/{slug}")
+    return {"uuid": et["uuid"], "title": et.get("name"),
+            "host": (et.get("profile") or {}).get("name") or et.get("publishers_list"),
+            "event_length_minutes": et.get("duration")}
+
+
+def calendly_slots(uuid: str, length: int, start: date, end: date,
+                   tz: ZoneInfo) -> list[tuple[datetime, datetime]]:
+    """The event's open slots from start through end, as (start, end)
+    pairs. Calendly gives each spot's start; the event length gives its end."""
+    out, day = [], max(start, date.today())
+    while day <= end:
+        last = min(end, day + timedelta(days=CALENDLY_RANGE_DAYS - 1))
+        body = _calendly_get(f"/event_types/{uuid}/calendar/range",
+                             {"timezone": str(tz), "diagnostics": "false",
+                              "range_start": day.isoformat(),
+                              "range_end": last.isoformat()}) or {}
+        for d in body.get("days") or []:
+            for spot in d.get("spots") or []:
+                if spot.get("status") not in (None, "available"):
+                    continue
+                try:
+                    s = datetime.fromisoformat(str(spot.get("start_time")))
+                except ValueError:
+                    continue
+                if s.tzinfo is None:
+                    s = s.replace(tzinfo=tz)
+                out.append((s, s + timedelta(minutes=length)))
+        day = last + timedelta(days=1)
+    return sorted(out)
+
+
+def calendly_events(profile: str) -> list[dict]:
+    """The person's public event types, for a profile link."""
+    data = _calendly_get(f"/profiles/{profile}/event_types") or []
+    return [{"slug": e.get("slug"), "title": e.get("name"),
+             "length_minutes": e.get("duration")}
+            for e in data if isinstance(e, dict)]
+
+
+# ---------------------------------------------------------------------------
 # Slots to solver windows
 # ---------------------------------------------------------------------------
 
@@ -267,20 +362,27 @@ def read_link(url: str, start: date, end: date, tz: ZoneInfo,
               duration: int | None = None) -> dict:
     """Everything one link says about its owner's free time in [start, end]."""
     link = parse_link(url)
+    calendly = link["platform"] == "calendly.com"
     if not link["event_slug"]:
-        events = public_events(link["username"])
+        events = (calendly_events if calendly else public_events)(link["username"])
         raise LinkError(
             f"{link['url']} names a person, not an event. Their public "
-            f"events: " + (", ".join(f"{link['url']}/{e['slug']} "
-                                      f"({e['length_minutes']} min)"
+            f"events: " + (", ".join(f"{link['url']}/{e['slug']}"
+                                      + (f" ({e['length_minutes']} min)"
+                                         if e["length_minutes"] else "")
                                       for e in events) or "none"))
     asked = duration or link["duration"]
-    slots = fetch_slots(link["username"], link["event_slug"], start, end, tz, asked)
-    info = event_info(link["username"], link["event_slug"])
+    if calendly:
+        info = calendly_event(link["username"], link["event_slug"])
+        slots = calendly_slots(info["uuid"], info["event_length_minutes"] or 30,
+                               start, end, tz)
+    else:
+        slots = fetch_slots(link["username"], link["event_slug"], start, end, tz, asked)
+        info = event_info(link["username"], link["event_slug"])
     slot_minutes = (int((slots[0][1] - slots[0][0]).total_seconds() // 60)
                     if slots else None)
     return {
-        "platform": "cal.com",
+        "platform": link["platform"],
         "url": link["url"],
         "username": link["username"],
         "event_slug": link["event_slug"],
@@ -319,7 +421,7 @@ def cmd_read(args) -> int:
 
 
 def _summary(read: dict, who: str) -> dict:
-    keep = ("url", "title", "host", "listed", "event_length_minutes",
+    keep = ("platform", "url", "title", "host", "listed", "event_length_minutes",
             "slot_minutes", "open_slots", "from", "to", "availability")
     return {"attendee": who, **{k: read[k] for k in keep}}
 
@@ -343,7 +445,7 @@ def build_attendees(attendees: list, days_ahead: int, duration: int | None,
             read = read_link(url, start, end, tz, duration)
             if duration is None:
                 duration = read["slot_minutes"] or 30
-            a["email"] = email or f"{read['username']}@cal.com"
+            a["email"] = email or f"{read['username']}@{read['platform']}"
             a["name"] = a.get("name") or read.get("host") or read["username"]
             if not read["availability"]:
                 raise LinkError(
@@ -403,12 +505,13 @@ def cmd_propose(args) -> int:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        description="Read cal.com booking links (read only) and propose times",
+        description="Read cal.com and Calendly booking links (read only) and propose times",
         allow_abbrev=False)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("read", help="One link's open windows, local time", allow_abbrev=False)
-    p.add_argument("--url", required=True, help="cal.com/<user>/<event> link "
+    p.add_argument("--url", required=True, help="cal.com/<user>/<event> or "
+                   "calendly.com/<user>/<event> link "
                    "(Safe Links wrappers are fine)")
     p.add_argument("--duration", type=int, default=None,
                    help="Meeting length in minutes (default: the link's own)")

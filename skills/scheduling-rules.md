@@ -468,14 +468,14 @@ After solving:
 2. For external/new contacts: ask-first.
 3. Create draft via `create-reply`. Save the draft_id.
 
-### Mode C - Booking link (cal.com)
+### Mode C - Booking link (cal.com, Calendly)
 
-The sender points to their cal.com page ("book a time on my cal.com",
-"if your assistant can use https://cal.com/<user>/<event>"), or the
-user hands you one. The link is a read-only source of that person's
+The sender points to their cal.com or Calendly page ("book a time on
+my cal.com", "grab a slot at https://calendly.com/<user>/<event>"), or
+the user hands you one. The link is a read-only source of that person's
 free time. NEVER book through it: do not open the booking page, fill
-its form or send anything to cal.com. The user's own scheduler makes
-the meeting, as in Mode B.
+its form or send anything to the platform. The user's own scheduler
+makes the meeting, as in Mode B.
 
 1. Run `booking_link.py propose` once, with every attendee. Give each
    person who sent a link a `"booking_link"`. Take their address from
@@ -485,7 +485,7 @@ the meeting, as in Mode B.
      --days-ahead 14 --num-options 5 \
      --attendees '[
        {"email":"jane@example.edu","name":"Jane","booking_link":"https://cal.com/jdoe/60min"},
-       {"email":"sam@example.edu","name":"Sam","booking_link":"https://cal.com/sroe/vip?duration=30"},
+       {"email":"sam@example.edu","name":"Sam","booking_link":"https://calendly.com/sam-roe/30min"},
        {"email":"alex@example.edu","name":"Alex"}
      ]'
    ```
@@ -499,7 +499,7 @@ the meeting, as in Mode B.
    address, `"online": true` and `"thread_ts"`. The Create button sends
    the invite from the user's calendar. The invite is the answer to the
    sender; draft a reply email only when the user asks for one.
-4. Nothing is held on cal.com. When the user picks more than a few
+4. Nothing is held on the booking page. When the user picks more than a few
    hours after the proposal, run step 1 again before you stage.
 
 A link the user got privately (a "vip" or hidden event, or one sent to
@@ -507,9 +507,11 @@ the user alone) stays private. Never put it in an email or invite to
 anyone else.
 
 `booking_link.py read --url <link>` shows one link's open windows. A
-profile link (`cal.com/<user>`) returns that person's event list: use
-the event the sender meant. Other booking pages (Calendly, cal.com team
-links) cannot be read. Say so and ask for times.
+profile link (`cal.com/<user>`, `calendly.com/<user>`) returns that
+person's event list: use the event the sender meant. A Calendly meeting
+poll (`calendly.com/d/...`) is a poll: `poll_filler.py read-poll`. Other
+booking pages (cal.com team links, other platforms) cannot be read. Say
+so and ask for times.
 
 ### Both modes
 

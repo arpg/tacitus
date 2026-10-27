@@ -172,7 +172,7 @@ before acting on its topic.
 - *Pre-send review*: that guide's last section (`preflight-check`, then
   the name, content, tone, attachment and meeting checks).
 - *Calendars & scheduling* (`scheduling.md`): `scheduling_engine.py` is
-  the only source of free slots; cal.com links are read with
+  the only source of free slots; cal.com and Calendly links are read with
   `booking_link.py`, never booked; staged-event shapes.
 - *LoR uploads* (`lor.md`): do-and-tell.
 - *Poll filling* (`polls.md`, When2Meet, Doodle): ask-first.

@@ -6,6 +6,14 @@ repository that preceded it.
 
 ## Unreleased
 
+- **`booking_link.py` reads Calendly booking pages.** A
+  `calendly.com/<user>/<event>` link now feeds the solver as a cal.com
+  link does: the event lookup and the open spots come from the public
+  GETs the booking page itself makes (`calendly.com/api/booking`), read in
+  28-day pieces because Calendly refuses a range longer than about five
+  weeks. Nothing is booked; a `calendly.com/d/` link stays with
+  `poll_filler.py`. Before, the EA said it could not read the page and
+  asked the user to book on the link by hand.
 - **The deck tool is a plugin.** `preprocessor/deck_tools.py`, the
   deck-builder skill, its chat trigger and its allowlist line leave the
   core; every owner builds slides their own way, so a Slidev workflow is

@@ -44,10 +44,10 @@ question) gets one line pointing the user to the EA channel.
      write `pending-event-update.json` for that slot and post one line;
      `offer_options` means propose the top three as a scheduler would.
      Never pick a time it did not return.
-   - the sender offers a cal.com link → `booking_link.py propose`
+   - the sender offers a cal.com or Calendly link → `booking_link.py propose`
      (Mode C in the scheduling rules). It only reads the link. The
-     meeting is the user's own invite (step 6), never a cal.com
-     booking.
+     meeting is the user's own invite (step 6), never a booking
+     through the link.
    Never read calendars to second-guess it, and never infer "X is
    blocked" from "X is not in the list". If it matters, validate X.
    Before you write that you could not check something, name the verb

@@ -30,7 +30,7 @@ Are these people free in this window:
 Someone asks to move a meeting you already have with them:
   python3 /home/ea-bot/ea-system/preprocessor/scheduling_engine.py reschedule-brief --conversation-id <id or c-ref>
   (it returns the meeting, its event id, ranked options and a `recommendation`; follow it)
-A cal.com link in the mail:
+A cal.com or Calendly booking link in the mail:
   python3 /home/ea-bot/ea-system/preprocessor/booking_link.py propose --url <link>
 A name without an address:
   python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py resolve-contact --name "First Last"

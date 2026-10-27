@@ -1,7 +1,7 @@
 """One audit record per outbound request made by EA code other than fetch_url.
 
 fetch_url.py logs its own requests to `~/.ea/logs/fetch-url.log`. The other
-modules that reach the network (booking_link's cal.com reads, list_digest's
+modules that reach the network (booking_link's booking-page reads, list_digest's
 redirect walk, poll_filler's poll reads and submissions, email_to_pdf's
 renderer) and the remote email writer log here, so the daily review
 (outbound_review.py, scripts/outbound-review.py) sees them too:

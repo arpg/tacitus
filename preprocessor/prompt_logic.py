@@ -224,7 +224,7 @@ MODULE_PATTERNS: dict[str, list[re.Pattern]] = {
         re.compile(r"\bmeeting\b.{0,20}\bwith\b"),    # "meeting with [person]"
         re.compile(r"\binvite\b.{0,20}\bto\b"),       # "invite [person] to"
         re.compile(r"\b(?:30|60)\s*min"),              # duration mentions
-        re.compile(r"(?:%2f|\b)cal\.com(?:/|%2f)"),      # a cal.com booking link
+        re.compile(r"(?:%2f|\b)(?:cal|calendly)\.com(?:/|%2f)"),  # a booking link
         # "with times that work", "a slot that suits", "with three times"
         re.compile(r"\b(?:times?|slots?)\s+(?:that\s+|which\s+)?(?:work|works|suit|suits)\b"),
         re.compile(r"\bwith\s+(?:(?:some|a\s+few|two|three|2|3|proposed|open|free)\s+)?(?:times|slots)\b"),

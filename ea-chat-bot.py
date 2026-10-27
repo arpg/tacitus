@@ -13151,7 +13151,7 @@ def _proactive_scheduling_prompt(kind: str, name: str, subject: str,
             "when it comes. Stop there.\n"
             "- The email offers specific times or a poll: check THOSE times (Mode A in "
             "skills/scheduling-rules.md) and say which work.\n"
-            "- The email offers a cal.com booking link: run booking_link.py propose with "
+            "- The email offers a cal.com or Calendly booking link: run booking_link.py propose with "
             "it (Mode C in skills/scheduling-rules.md) and propose times as below. Never "
             "book through the link.\n"
             "- Otherwise run scheduling_engine propose-meeting for the right duration and "
