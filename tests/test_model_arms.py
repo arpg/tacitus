@@ -120,7 +120,7 @@ def test_turns_drafts_and_events_join_into_the_scorecard(store, monkeypatch):
     assert r["topics"] == {"claude": 1, "remote": 1, "pipeline": 0, "codex": 0} and r["arms"]["remote"]["withheld"] == 1
     text = ma._report_text(r)
     assert "sched-channel/remote: turns 2" in text and "sched-channel/claude: turns 2" in text
-    assert ma.summary_lines()[0].startswith("Model A/B (on; share 0.5")
+    assert ma.summary_lines(today=today)[0].startswith("Model A/B (on; share 0.5")
     # Nothing to say while the A/B is off and no topic has an arm.
     monkeypatch.setattr(rl, "config", lambda: _cfg(ab={"share": 0.0, "lanes": []}))
     assert ma.summary_lines() != []            # topics have arms

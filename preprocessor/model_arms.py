@@ -282,7 +282,7 @@ def _pct(xs: list[float], q: float) -> float | None:
     return round(xs[min(len(xs) - 1, int(q * (len(xs) - 1) + 0.5))], 1)
 
 
-def report(since: date | None = None) -> dict:
+def report(since: date | None = None, cfg: dict | None = None, today: date | None = None) -> dict:
     """Per lane and arm: turns, errors, fallbacks, backstop verdicts,
     bounces, drafts and their outcomes, events, latency, cost,
     escalations."""
@@ -347,8 +347,8 @@ def report(since: date | None = None) -> dict:
     arms = _load_arms()
     out["topics"] = {arm: sum(1 for r in arms.values() if r.get("arm") == arm) for arm in ARMS}
     out["pinned"] = sum(1 for r in arms.values() if r.get("pinned"))
-    out["settings"] = settings()
-    out["enabled"] = enabled()
+    out["settings"] = settings(cfg)
+    out["enabled"] = enabled(cfg, today)
     return out
 
 
@@ -372,11 +372,11 @@ def _report_text(r: dict) -> str:
     return "\n".join(lines)
 
 
-def summary_lines(cfg: dict | None = None) -> list[str]:
+def summary_lines(cfg: dict | None = None, today: date | None = None) -> list[str]:
     """The 17:30 report's lines: nothing while the A/B is off and no
     topic has an arm."""
     try:
-        r = report()
+        r = report(cfg=cfg, today=today)
     except Exception as e:
         return [f"Model A/B: report failed: {str(e)[:120]}"]
     if not r["enabled"] and not any(r["topics"].values()):
