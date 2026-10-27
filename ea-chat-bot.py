@@ -2497,10 +2497,11 @@ def _project_index_for(msg: str, project_in_hand: bool) -> str:
 def _project_pack_for(msg: str) -> str:
     """Best-matching project pack for a dispatch message, or "".
 
-    Threshold 3 means a deliberate signal (project id, an alias, or the
-    full project name) or two weaker ones (member + name word) — a lone
-    surname match never drags in a whole project. Failure-silent: the
-    pack is an accelerant, never a dependency."""
+    Threshold 3 means a deliberate signal (project id, a name-like alias,
+    or the full project name) or two weaker ones (member + name word, a
+    common-word alias + anything); a lone surname or common word never
+    drags in a whole project. Failure-silent: the pack is an accelerant,
+    never a dependency."""
     try:
         import project_store  # noqa: PLC0415  (preprocessor/ on sys.path)
         hits = project_store.match_projects(msg or "")

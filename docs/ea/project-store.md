@@ -51,6 +51,11 @@ about and who is in it".
   without this, and a rotted store is worse than none.
 - `match --text "..."` finds the project for a message (aliases, names,
   members). Use it before filing rather than guessing ids.
+- Aliases place mail in a project's room and link ledger rows to it.
+  Write a name, an acronym or a phrase as it is written (`Northwind`,
+  `ORION`, `foundation repair`). One lowercase word (`foundation`) is a
+  common word: alone it places nothing, because unrelated mail carries
+  it too.
 - `index` prints every active project on one screen (id, name, parent,
   open items, next action). Dispatches that carry a project pack, come
   from a project or session room, or talk about filing get it appended

@@ -96,6 +96,30 @@ def test_match_scores_aliases_and_people(d):
     assert project_store.match_projects("nothing relevant here") == []
 
 
+def test_one_lowercase_word_alias_needs_a_second_signal(d):
+    """A common-word alias alone stays under the floor of 3 that places
+    mail in a room or links a row; a name-like alias or a phrase does
+    not, and the common word still adds to another signal."""
+    import importlib
+    import project_store
+    run(d, "add-project", "--id", "dock-repair", "--name", "Lake dock repair",
+        "--domain", "personal", "--aliases", "foundation,pilings,Marlowe,dock rebuild")
+    importlib.reload(project_store)
+    project_store.DB_PATH = Path(d) / "state" / "obligations-ledger.db"
+
+    def score(text):
+        return {h["id"]: h["score"] for h in project_store.match_projects(text)}.get("dock-repair", 0)
+
+    assert score("Request for evaluation from the Science Foundation") == 2
+    assert score("Notice of hearing on the settlement of the pilings case") == 2
+    assert score("Marlowe sent the drawings") == 3
+    assert score("quote for the dock rebuild") == 3
+    assert score("foundation and pilings quote") == 4
+    assert project_store.alias_weight("ORION") == 3
+    assert project_store.alias_weight("4417") == 3
+    assert project_store.alias_weight("foundation") == 2
+
+
 def test_index_brief_lists_every_active_project_by_domain(d):
     """Cross-project awareness: one screen, one line per project, grouped
     by domain, with parent, open count and next action; cut on a line

@@ -516,6 +516,16 @@ def cmd_pack(args) -> int:
     return _out(pack)
 
 
+def alias_weight(alias: str) -> int:
+    """What one alias hit scores. A name, an acronym, a number or a
+    phrase (`Northwind`, `ORION`, `4417`, `foundation repair`) names the
+    project: 3, the floor every caller places on. One lowercase word
+    (`foundation`, `settlement`) is a common word that turns up in
+    unrelated mail (a science foundation, a court settlement): 2, so it
+    places an item only with a second signal."""
+    return 2 if alias.isalpha() and alias.islower() else 3
+
+
 def match_projects(text: str, conn=None) -> list:
     """Deterministic project lookup for dispatch injection: name words,
     aliases, and member names/emails, scored. Returns [{id, score}]."""
@@ -530,9 +540,9 @@ def match_projects(text: str, conn=None) -> list:
     for r in conn.execute("SELECT id,name,aliases,status FROM projects"):
         if r["status"] == "closed":
             continue
-        for alias in filter(None, (r["aliases"] or "").split(",")):
-            if f" {alias.strip().lower()} " in hay:
-                bump(r["id"], 3)
+        for alias in filter(None, (a.strip() for a in (r["aliases"] or "").split(","))):
+            if f" {alias.lower()} " in hay:
+                bump(r["id"], alias_weight(alias))
         name_tokens = [t for t in re.split(r"\W+", r["name"].lower())
                        if len(t) >= 4]
         n_hits = sum(1 for t in name_tokens if f" {t} " in hay)
@@ -895,7 +905,8 @@ def main() -> int:
     p.add_argument("--parent")
     p.add_argument("--summary")
     p.add_argument("--next-actions", dest="next_actions")
-    p.add_argument("--aliases", help="comma-separated match aliases")
+    p.add_argument("--aliases", help="comma-separated match aliases; one lowercase "
+                   "word is a common word and needs a second signal to place mail")
     p.set_defaults(func=cmd_add_project)
 
     p = sub.add_parser("update-project", allow_abbrev=False)
