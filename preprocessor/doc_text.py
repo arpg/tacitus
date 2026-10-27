@@ -9,7 +9,9 @@ so a Word file needs a reader of its own. This one reads, and only reads:
                (`--tracked` marks them `[+inserted+]` and `[-deleted-]`);
                reviewer comments as `[c1]` at their anchor and listed at
                the end with their authors
-  .pdf         through pdf_utils (pypdf or pdftotext)
+  .pdf         through pdf_utils (pypdf or pdftotext); a PDF that
+               compile_letter.py built names its .tex source in the
+               header, also when the PDF was copied or renamed since
   text files   .txt .md .csv .tsv .tex .json .html .xml .rtf as UTF-8
 
 A .docx is a zip; it is opened read-only and only its XML parts are read,
@@ -24,6 +26,8 @@ config/ or logs/.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import sys
 import zipfile
@@ -37,6 +41,7 @@ READ_ROOTS = ("state", "docs", "uploads", "letters", "research")
 MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_PART_BYTES = 40 * 1024 * 1024
 DEFAULT_MAX_CHARS = 60_000
+BUILDS_TAIL_BYTES = 2 * 1024 * 1024
 TEXT_SUFFIXES = {".txt", ".md", ".csv", ".tsv", ".tex", ".json", ".html", ".htm", ".xml", ".rtf"}
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -212,12 +217,39 @@ def docx_text(path: Path, tracked: bool = False) -> str:
 
 # ── the rest ──────────────────────────────────────────────────────────
 
+def letter_source(data: bytes) -> Path | None:
+    """The .tex compile_letter.py built this PDF from: the newest build
+    whose PDF has these bytes, wherever the PDF lives now. None when no
+    build matches or the .tex is gone."""
+    builds = EA_DIR.expanduser() / "state" / "letter-builds.jsonl"
+    try:
+        with open(builds, "rb") as f:
+            f.seek(max(0, os.path.getsize(builds) - BUILDS_TAIL_BYTES))
+            lines = f.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    digest = hashlib.sha256(data).hexdigest()
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("sha256") == digest and row.get("tex"):
+            tex = Path(row["tex"])
+            if tex.is_file():
+                return tex
+    return None
+
+
 def pdf_text(path: Path) -> str:
     import pdf_utils
-    text, status = pdf_utils.extract_text_from_pdf(path.read_bytes(), max_pages=200)
+    data = path.read_bytes()
+    text, status = pdf_utils.extract_text_from_pdf(data, max_pages=200)
     if status != pdf_utils.OK:
         raise DocError(f"{path.name}: no text ({status})")
-    return f"# {path.name} (pdf)\n\n{text}"
+    tex = letter_source(data)
+    built = f"Built by compile_letter.py from {tex}; edit that file and compile again.\n\n" if tex else ""
+    return f"# {path.name} (pdf)\n\n{built}{text}"
 
 
 def document_text(path: Path, tracked: bool = False) -> str:

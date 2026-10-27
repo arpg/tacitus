@@ -113,3 +113,27 @@ def test_long_text_pages(ea, capsys):
     assert out.startswith("# long.txt\n\n" + "a" * 988)
     assert "[1512 more characters: --offset 1000]" in out
     assert dt.main([str(ea / "config")]) == 1
+
+
+def test_a_letter_pdf_names_its_source_also_after_a_copy(ea, monkeypatch, tmp_path):
+    import compile_letter as cl
+    import pdf_utils
+    monkeypatch.setattr(pdf_utils, "extract_text_from_pdf", lambda data, max_pages=200: ("Dear Sam", pdf_utils.OK))
+    (ea / "letters" / "memo").mkdir(parents=True)
+    (ea / "docs" / "proj").mkdir(parents=True)
+    tex = ea / "letters" / "memo" / "memo.tex"
+    tex.write_text("\\documentclass{letter}")
+    built = ea / "letters" / "memo" / "memo.pdf"
+    built.write_bytes(b"%PDF-1.4 memo")
+    cl.record_build(tex, built, builds_file=ea / "state" / "letter-builds.jsonl")
+    # A renamed copy in another folder still finds the .tex by its bytes.
+    copy = ea / "docs" / "proj" / "Memo for the meeting.pdf"
+    copy.write_bytes(built.read_bytes())
+    out = dt.document_text(dt.allowed_path(str(copy), ea))
+    assert f"compile_letter.py from {tex}" in out and "Dear Sam" in out
+    # A PDF no build made, or one whose .tex is gone, has no source line.
+    other = ea / "docs" / "proj" / "scan.pdf"
+    other.write_bytes(b"%PDF-1.4 scan")
+    assert "compile_letter" not in dt.document_text(dt.allowed_path(str(other), ea))
+    tex.unlink()
+    assert "compile_letter" not in dt.document_text(dt.allowed_path(str(copy), ea))

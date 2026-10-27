@@ -2610,6 +2610,9 @@ _BASH_ONLY_TOOLS = (
     # Plain reads, so a search through a draft does not wait on the
     # auto-mode classifier. None of them runs another command.
     "Bash(grep *),Bash(head *),Bash(tail *),Bash(wc *),"
+    # Glob and Grep read no more than Read and Bash(grep *) do. A subagent
+    # (Explore) searches with them; without them it can only guess names.
+    "Glob,Grep,"
     # Write and Edit come from _resident_write_grants(), scoped to the
     # paths the EA writes (preprocessor/resident_write_paths.py).
     "Bash(cat *),Bash(ls *),Read,WebFetch,WebSearch,"

@@ -124,6 +124,8 @@ WRITERS = [
     W("list_digest", lambda m, p: m._append_history({"k": 1}), attr="HISTORY_FILE"),
     W("alert", lambda m, p: m._stage({"id": "x"}), attr="PENDING"),
     W("draft_events", lambda m, p: m.record("created", "d1", "create-draft"), attr="JOURNAL"),
+    W("compile_letter", lambda m, p: m.record_build(Path("x.tex"), _staged(Path(tempfile.mkdtemp(dir=OWNER)) / "x.pdf")),
+      attr="BUILDS_FILE"),
     # resident_io: read-modify-write under the file's lock
     W("calendar_reconciler", lambda m, p: m.log_release("series-1", "Focus"), attr="DECISIONS_FILE"),
     W("scheduling_engine", lambda m, p: m._append_decision({"k": 1}), attr="DECISIONS_FILE"),
