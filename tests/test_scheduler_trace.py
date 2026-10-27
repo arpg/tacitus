@@ -148,6 +148,35 @@ def test_format_scheduler_trace_with_production_shape():
     assert "3 options" in trace
 
 
+def test_the_summary_comes_from_the_whole_result():
+    """A chat turn keeps 300 characters of each result, which cuts a
+    solver answer off before its second option. The capture stores the
+    summary of the whole result as a sixth element, and the footer uses it."""
+    cmd = ("python3 /home/ea-bot/ea-system/preprocessor/scheduling_engine.py "
+           "propose-meeting --duration 30 --num-options 5")
+    full = ("  Google Calendar a@example.com: 33 events\n  EA-Managed calendar: 9 holds\n"
+            + json.dumps({"status": "ok", "options": [
+                {"rank": i, "notes": "x" * 400} for i in range(1, 6)]}))
+    summary = HELPERS["_summarize_scheduler_result"]("propose-meeting", full)
+    assert summary == "5 options", summary
+    tc = _production_shape_tc(cmd, full[:300]) + (summary,)
+    assert "→ 5 options" in HELPERS["_format_scheduler_trace"]([tc])
+
+
+def test_a_help_call_is_not_a_solver_run():
+    cmd = ("python3 /home/ea-bot/ea-system/preprocessor/scheduling_engine.py "
+           "propose-meeting --help")
+    assert HELPERS["_identify_scheduler_call"](_production_shape_tc(cmd)) is None
+
+
+def test_booking_link_propose_is_traced():
+    cmd = ("python3 /home/ea-bot/ea-system/preprocessor/booking_link.py propose "
+           "--attendees '[{\"email\":\"a@example.edu\",\"booking_link\":\"https://calendly.com/a/30min\"}]'")
+    trace = HELPERS["_format_scheduler_trace"](
+        [_production_shape_tc(cmd, '{"options":[{"rank":1},{"rank":2}]}')])
+    assert ":calendar: booking-propose (attendees=1) → 2 options" in trace, trace
+
+
 def test_format_scheduler_trace_skips_when_no_scheduling_tool():
     """Replies that didn't touch the scheduler get no footer."""
     cmd = (

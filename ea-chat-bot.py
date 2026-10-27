@@ -726,10 +726,16 @@ def _run_claude_streaming(
                                     keep = max(keep, AUTHOR_RESULT_CHARS)
                                 result_snippet = str(content)[:keep]
                                 # (name, elapsed, args_summary,
-                                # result_snippet, args_full_dict)
-                                tool_calls.append(
-                                    (tname, telapsed, targs, result_snippet, tfull)
-                                )
+                                # result_snippet, args_full_dict), plus the
+                                # trace footer's summary of a scheduler
+                                # call, read from the whole result: the
+                                # snippet cuts a solver answer off before
+                                # its second option.
+                                row = (tname, telapsed, targs, result_snippet, tfull)
+                                ident = _identify_scheduler_call(row)
+                                if ident:
+                                    row += (_summarize_scheduler_result(ident[0], full_text),)
+                                tool_calls.append(row)
                                 if progress is not None:
                                     progress.end(tname, tfull if isinstance(tfull, dict) else {}, telapsed)
                                 snippet = result_snippet[:120].replace("\n", " ")
@@ -1750,6 +1756,8 @@ _SCHEDULER_TOOL_PATTERNS = [
     ("scheduling_engine.py check-attendees", "check-attendees"),
     ("scheduling_engine.py log-decision",    "log-decision"),
     ("scheduling_engine.py review-patterns", "review-patterns"),
+    ("booking_link.py propose",              "booking-propose"),
+    ("booking_link.py read",                 "booking-read"),
     ("google_calendar_client.py get-events", "gcal get-events"),
     ("google_calendar_client.py create-event", "gcal create-event"),
     ("google_calendar_client.py update-event", "gcal update-event"),
@@ -1787,7 +1795,7 @@ def _identify_scheduler_call(tc):
         args_str = str(tc[4].get("command", "") or "")
     else:
         args_str = str(tc[2] or "") if len(tc) > 2 else ""
-    if not args_str:
+    if not args_str or re.search(r"(?:^|\s)(?:-h|--help)(?:\s|$)", args_str):
         return None
     for substr, label in _SCHEDULER_TOOL_PATTERNS:
         if substr in args_str:
@@ -1802,13 +1810,21 @@ def _identify_scheduler_call(tc):
 
 
 def _summarize_scheduler_result(label, result_snippet):
-    """Pick one diagnostic number from the (truncated) result_snippet.
+    """Pick one diagnostic number from the result: the whole text at
+    capture time, or a truncated snippet.
 
-    propose-meeting → option count; validate-draft → valid/blocked;
-    others → "ok" (we only know it ran without ERR).
+    propose-meeting, booking-propose → option count; validate-draft →
+    valid/blocked; others → "ok" (we only know it ran without ERR).
     """
     s = str(result_snippet or "")
-    if label == "propose-meeting":
+    if label in ("propose-meeting", "booking-propose"):
+        try:
+            # The solver prints its calendar reads before the JSON.
+            options = json.loads(s[s.index("{"):]).get("options")
+            if isinstance(options, list):
+                return f"{len(options)} options"
+        except (ValueError, AttributeError):
+            pass
         n = len(re.findall(r'"rank"\s*:\s*\d+', s))
         if n:
             return f"{n} options"
@@ -1838,7 +1854,8 @@ def _format_scheduler_trace(tool_calls):
         label, kv = ident
         elapsed = tc[1] if len(tc) > 1 else 0.0
         result = tc[3] if len(tc) > 3 else ""
-        result_summary = _summarize_scheduler_result(label, result)
+        result_summary = (tc[5] if len(tc) > 5 and tc[5]
+                          else _summarize_scheduler_result(label, result))
         kv_str = ", ".join(f"{k}={v}" for k, v in kv.items())
         elapsed_str = f"{elapsed:.1f}s"
         if kv_str:
@@ -1891,6 +1908,7 @@ def _write_scheduler_dump(msg_ts, user_msg, thread_ts, needed_modules,
                 "args_summary": tc[2] if len(tc) > 2 else "",
                 "args_full": (tc[4] if len(tc) >= 5 else None),
                 "result_snippet": tc[3] if len(tc) > 3 else "",
+                "result_summary": tc[5] if len(tc) > 5 else None,
                 "scheduler_label": (
                     (_identify_scheduler_call(tc) or (None,))[0]
                 ),

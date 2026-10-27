@@ -6,6 +6,12 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The scheduler footer counts every option.** A chat turn keeps 300
+  characters of each tool result, and the solver prints its calendar reads
+  before its JSON, so the `:calendar:` footer said "1 options" for an
+  answer with five. The capture now summarizes the whole result and the
+  footer uses that. A `--help` call is no longer traced as a solver run,
+  and `booking_link.py propose` and `read` are traced.
 - **`booking_link.py` reads Calendly booking pages.** A
   `calendly.com/<user>/<event>` link now feeds the solver as a cal.com
   link does: the event lookup and the open spots come from the public
