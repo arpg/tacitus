@@ -564,6 +564,25 @@ def match_projects(text: str, conn=None) -> list:
                   key=lambda x: -x["score"])
 
 
+TRACE = 1   # the least word score that confirms the mail tagger's call
+
+
+def checked_call(call: str | None, hits: list) -> list | None:
+    """The mail tagger's project call on an item (mail_tagger.call_for)
+    checked against the item's word match (`hits`, match_projects).
+    [call] when the words show any trace of that project (a member, two
+    name words, an alias: a score of TRACE or more); [] when they show
+    none, or when the tagger named no project; None when the tagger made
+    no call (Gmail, a row from chat, the tagger off), and the word match
+    decides alone. The model reads the whole message and the words keep
+    it honest: a call the words do not echo is most often a guess."""
+    if call is None:
+        return None
+    if call and any(h["id"] == call and h["score"] >= TRACE for h in hits):
+        return [call]
+    return []
+
+
 def suggest_projects(text: str, conn=None, limit: int = 3) -> list:
     """Fuzzy candidates for a project the user named loosely: a guessed id,
     a nickname, a misspelling, a fragment of the name. The strict matcher's

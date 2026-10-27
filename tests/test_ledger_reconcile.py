@@ -177,6 +177,27 @@ def test_groups_place_an_unlinked_row_in_the_one_project_its_words_name(priv, db
                       ).fetchone()[0] == "harbor-survey"
 
 
+def test_the_taggers_call_links_a_row_only_when_its_words_echo_it(priv, db):
+    db.execute("INSERT INTO projects (id,name,domain,status,aliases,created_at,updated_at) "
+               "VALUES ('lumen-array','Lumen array','research','active','',?,?)",
+               ("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"))
+    db.commit()
+    rows = {r["id"]: r for r in _rows(db)}
+    visit = rows["response-visit"]          # its words name harbor-survey
+    assert lr.place_row(visit, db, votes={"messages": {"m-visit": "harbor-survey"}}) == "harbor-survey"
+    # a call the words do not echo, or a call of no project, links nothing
+    assert lr.place_row(visit, db, votes={"messages": {"m-visit": "lumen-array"}}) == ""
+    assert lr.place_row(visit, db, votes={"messages": {"m-visit": ""}}) == ""
+    # a call found by conversation, on a row whose words name nothing
+    assert lr.place_row(rows["badge-form"], db,
+                        votes={"conversations": {"CONV-KEPT": "harbor-survey"}}) == ""
+    # no call: the words alone
+    assert lr.place_row(visit, db, votes={}) == "harbor-survey"
+    _, linked = lr.groups(list(rows.values()), db, link=lambda *a: None,
+                          votes={"messages": {"m-visit": ""}})
+    assert "response-visit" not in {l["id"] for l in linked}
+
+
 def test_a_kept_thread_reaches_the_judge_as_counts_only(priv, db):
     _records()
     rows = _rows(db)

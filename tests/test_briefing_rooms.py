@@ -16,6 +16,15 @@ import remote_briefing as rb  # noqa: E402
 NOW = datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def private(tmp_path, monkeypatch):
+    """No test reads the owner's tagger log."""
+    d = tmp_path / "private"
+    d.mkdir(mode=0o700)
+    monkeypatch.setenv("EA_PRIVATE_DIR", str(d))
+    return d
+
+
 @pytest.fixture
 def conn():
     c = sqlite3.connect(":memory:")
@@ -58,6 +67,28 @@ def test_a_link_beats_a_filed_thread_beats_the_matcher(conn):
     tied = lambda text, conn: [{"id": "kestrel", "score": 3}, {"id": "lumen", "score": 3},
                                {"id": "nohome", "score": 3}]
     assert br.projects_for({"title": "x"}, idx, conn, matcher=tied) == ["kestrel", "lumen"]
+
+
+def test_the_taggers_call_places_an_item_when_its_words_echo_it(conn):
+    conn.execute("CREATE TABLE ledger (id TEXT, source_message_id TEXT)")
+    conn.executemany("INSERT INTO ledger VALUES (?,?)",
+                     [("row-a", "msg-a"), ("row-b", "msg-b"), ("row-c", "msg-c"), ("row-d", "")])
+    votes = {"messages": {"msg-a": "lumen", "msg-b": "lumen", "msg-c": ""},
+             "conversations": {"conv-d": "kestrel"}}
+    idx = br.index(conn, votes)
+    trace = lambda text, conn: [{"id": "lumen", "score": 1}, {"id": "kestrel", "score": 3}]
+    silent = lambda text, conn: [{"id": "kestrel", "score": 3}]
+    # the call wins over a stronger word match when the words echo it
+    assert br.projects_for({"ledger_id": "row-a", "title": "x"}, idx, conn, matcher=trace) == ["lumen"]
+    # a call the words do not echo places nothing, and neither do the words
+    assert br.projects_for({"ledger_id": "row-b", "title": "x"}, idx, conn, matcher=silent) == []
+    # the tagger named no project: the words alone place nothing
+    assert br.projects_for({"ledger_id": "row-c", "title": "x"}, idx, conn, matcher=silent) == []
+    # a call found by conversation
+    assert br.projects_for({"ledger_id": "row-d", "conversation_id": "conv-d", "title": "x"},
+                           idx, conn, matcher=trace) == ["kestrel"]
+    # no call (a Gmail row, a row from chat): the word match alone
+    assert br.projects_for({"ledger_id": "row-x", "title": "x"}, idx, conn, matcher=silent) == ["kestrel"]
 
 
 def test_only_rooms_the_owner_record_names_get_a_post():

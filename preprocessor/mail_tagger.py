@@ -142,6 +142,52 @@ def save_state(state: dict, path: Path | None = None) -> None:
         _atomic.write_text(path, text)
 
 
+def project_votes(project_ids: set[str], path: Path | None = None) -> dict:
+    """The model's project call on each tagged message, from LOG_FILE:
+    {"messages": {id: call}, "conversations": {conversation id: call}}.
+    A call is a project id from `project_ids`, or "" when the model named
+    no project. A conversation takes its latest tagged message. A message
+    given the marker alone (the model never answered) makes no call.
+    Empty when the log cannot be read: the tagger is off, or the caller
+    is not the owner. The default path resolves at call time, so a
+    caller that moves the private directory reads its own log."""
+    path = path or _owner_state_dir() / LOG_FILE.name
+    out: dict = {"messages": {}, "conversations": {}}
+    try:
+        if _owner_trust.is_owner_process() and path.parent == _owner_trust.private_dir():
+            text = _owner_trust.read_owner_file(path).decode("utf-8")
+        else:
+            text = path.read_text(encoding="utf-8")
+    except (OSError, _owner_trust.OwnerTrustError):
+        return out
+    for line in text.splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        cats = rec.get("cats") if isinstance(rec, dict) else None
+        if rec.get("event") != "tagged" or not isinstance(cats, list) or cats == [MARKER]:
+            continue
+        call = next((c for c in cats if c in project_ids), "")
+        if rec.get("id"):
+            out["messages"][rec["id"]] = call
+        if rec.get("conversation_id"):
+            out["conversations"][rec["conversation_id"]] = call
+    return out
+
+
+def call_for(votes: dict, message_id: str = "", conversation_id: str = "") -> str | None:
+    """The tagger's call on one item: its message first, then its
+    conversation. None when the tagger made no call on either."""
+    msgs = (votes or {}).get("messages") or {}
+    convs = (votes or {}).get("conversations") or {}
+    if message_id and message_id in msgs:
+        return msgs[message_id]
+    if conversation_id and conversation_id in convs:
+        return convs[conversation_id]
+    return None
+
+
 def _append_log(rec: dict, path: Path | None = None) -> None:
     path = path or LOG_FILE
     line = json.dumps(rec, ensure_ascii=False) + "\n"
@@ -502,6 +548,7 @@ def tag_messages(msgs: list[dict], *, graph, state: dict, dry_run: bool,
                 if cats != [MARKER]:
                     remember_sender(state, _addr(m.get("from")), final, now)
                 _append_log({"ts": _iso(now), "event": "tagged", "id": mid,
+                             "conversation_id": m.get("conversationId") or "",
                              "from": _addr(m.get("from")),
                              "subject": (m.get("subject") or "")[:120],
                              "cats": final, "usage": usage}, log_path)

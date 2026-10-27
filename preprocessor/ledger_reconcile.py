@@ -16,8 +16,10 @@ composes each thread into a brief, and Claude judges the briefs.
        own distinctive words, its correspondent and the project's people.
        No mailbox search: the index is a local file.
     2. Code groups the rows by project (project_store), linking an
-       unlinked row to the one project its words name. The rest form a
-       loose bucket, chunked.
+       unlinked row to its project: the mail tagger's call on the row's
+       mail when the row's words show a trace of it, or, with no call,
+       the one project the words name. The rest form a loose bucket,
+       chunked.
     3. One tool-less Claude call per group judges the briefs: open, done
        or duplicate, a thread for a row that has none, and one line on
        what changed. Refs it invents are dropped. A kept thread (a
@@ -80,7 +82,7 @@ MSG_CAP = 8             # messages of a thread shown, the latest
 GIST_CHARS = 220
 NOTE_CHARS = 160
 NOTES_CHARS = 400
-LINK_SCORE = 3          # project_store.match score that places a row
+LINK_SCORE = 3          # project_store.match score that places a row with no tagger call
 LINK_GAP = 2            # ... when the runner-up is this far behind
 RARE_DF = 2
 
@@ -278,14 +280,31 @@ def project_map(conn) -> tuple[dict[str, dict], dict[str, str]]:
     return projects, links
 
 
-def place_row(row: dict, conn, projects: dict[str, dict] | None = None) -> str:
-    """The one ACTIVE project the row's words name clearly, else ''. The
-    matcher scores a closed project's people too, so the hits are
-    filtered here."""
+def tagger_votes(projects: dict[str, dict]) -> dict:
+    """The mail tagger's project calls (mail_tagger.project_votes) over
+    these projects; empty when the tagger's log cannot be read."""
+    import mail_tagger
+    return mail_tagger.project_votes(set(projects))
+
+
+def place_row(row: dict, conn, projects: dict[str, dict] | None = None,
+              votes: dict | None = None) -> str:
+    """The one ACTIVE project the row belongs to, else ''. The mail
+    tagger's call on the row's mail decides when the row's words show a
+    trace of it (project_store.checked_call); a call they do not echo, or
+    a call of no project, places nothing. With no call, the project the
+    words name clearly. The matcher scores a closed project's people
+    too, so the hits are filtered here."""
+    import mail_tagger
     import project_store
     projects = projects if projects is not None else project_map(conn)[0]
     hits = [h for h in project_store.match_projects(_row_text(row), conn)
             if (projects.get(h["id"]) or {}).get("status") == "active"]
+    call = mail_tagger.call_for(votes or {}, row.get("source_message_id") or "",
+                                row.get("conversation_id") or "")
+    checked = project_store.checked_call(call, hits)
+    if checked is not None:
+        return checked[0] if checked else ""
     if not hits or hits[0]["score"] < LINK_SCORE:
         return ""
     if len(hits) > 1 and hits[0]["score"] - hits[1]["score"] < LINK_GAP:
@@ -308,19 +327,21 @@ def file_thread(conn, project_id: str, brief: dict, gist: str) -> None:
     conn.commit()
 
 
-def groups(rows: list[dict], conn, *, only: str = "", link=None) -> tuple[list[dict], list[dict]]:
+def groups(rows: list[dict], conn, *, only: str = "", link=None,
+           votes: dict | None = None) -> tuple[list[dict], list[dict]]:
     """[{label, project, name, people, rows}], and the rows this pass
     linked to a project ([{id, project}]). An unlinked row the words
     place is linked here (do-and-tell); the rest go to the loose
     bucket in chunks."""
     projects, links = project_map(conn)
+    votes = votes if votes is not None else tagger_votes(projects)
     linked = []
     by_project: dict[str, list[dict]] = {}
     loose: list[dict] = []
     for row in rows:
         pid = links.get(row["id"]) or ""
         if not pid:
-            pid = place_row(row, conn, projects)
+            pid = place_row(row, conn, projects, votes)
             if pid:
                 (link or link_row)(conn, pid, row["id"])
                 linked.append({"id": row["id"], "project": pid})

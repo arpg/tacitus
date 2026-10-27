@@ -83,6 +83,29 @@ def test_tag_messages_tags_untagged_rows_and_retries_failures(tmp_path):
     assert "Quote request" in seen["prompt"] and "robo-5000 | ROBO 5000" in seen["prompt"]
     lines = (tmp_path / "log.jsonl").read_text().splitlines()
     assert json.loads(lines[0])["event"] == "tagged"
+    assert json.loads(lines[0])["conversation_id"] == "c1"
+
+
+def test_project_votes_read_the_log_by_message_and_conversation(tmp_path):
+    log = tmp_path / "log.jsonl"
+    recs = [
+        {"event": "tagged", "id": "m0", "conversation_id": "c1",
+         "cats": ["auto-tagged", "robo-5000", "fyi"]},
+        {"event": "tagged", "id": "m1", "conversation_id": "c2", "cats": ["auto-tagged", "needs-reply"]},
+        {"event": "tagged", "id": "m2", "cats": ["auto-tagged"]},              # never answered
+        {"event": "tagged", "id": "m3", "cats": ["auto-tagged", "old-closed", "todo"]},
+        {"event": "flipped", "id": "m4", "cats": ["bs-ai"]},
+    ]
+    log.write_text("\n".join(json.dumps(r) for r in recs) + "\nnot json\n")
+    v = mt.project_votes(IDS, path=log)
+    assert v["messages"] == {"m0": "robo-5000", "m1": "", "m3": ""}
+    assert v["conversations"] == {"c1": "robo-5000", "c2": ""}
+    # the message's own call first, then its conversation; else no call
+    assert mt.call_for(v, "m1", "c1") == ""
+    assert mt.call_for(v, "m-unknown", "c1") == "robo-5000"
+    assert mt.call_for(v, "m2", "c-unknown") is None
+    assert mt.project_votes(IDS, path=tmp_path / "absent.jsonl") == {"messages": {},
+                                                                      "conversations": {}}
 
 
 def test_tag_messages_gives_up_with_marker_after_retry_limit(tmp_path):

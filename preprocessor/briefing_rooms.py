@@ -10,9 +10,14 @@ project pack. A room with no item gets no post.
 Which project an item belongs to, strongest first:
   1. its ledger row is linked to a project (project_store link-ledger);
   2. its thread was filed to a project (project_store file-message);
-  3. the strict matcher (project_store.match_projects) on its title and
-     summary, at MATCH_FLOOR or more. Projects tied at the top score all
-     get it, at most MAX_PROJECTS.
+  3. the mail tagger's project call on its mail (mail_tagger.project_votes),
+     when the strict matcher (project_store.match_projects) finds any
+     trace of that project in its title and summary
+     (project_store.checked_call). A call the words do not echo, or a
+     call of no project, places nothing;
+  4. with no call (Gmail, a row from chat, the tagger off), the strict
+     matcher alone, at MATCH_FLOOR or more. Projects tied at the top
+     score all get it, at most MAX_PROJECTS.
 An item with no project stays in the EA post only.
 
 A room gets a post only when the registry binds it to the project, it is
@@ -26,6 +31,7 @@ Switch: `"briefing_rooms": false` in remote-llm.json turns the slices off.
 """
 from __future__ import annotations
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -57,9 +63,11 @@ def enabled(cfg: dict | None = None) -> bool:
 
 # ── which project ─────────────────────────────────────────────────────
 
-def index(conn) -> dict:
+def index(conn, votes: dict | None = None) -> dict:
     """The store's explicit links: {"rows": {ledger id: [project]},
-    "threads": {conversation id: [project]}}, active projects only."""
+    "threads": {conversation id: [project]}}, active projects only; with
+    "sources" {ledger id: source message id} and the mail tagger's
+    "votes" (mail_tagger.project_votes, read here unless given)."""
     live = {r["id"] for r in conn.execute("SELECT id, status FROM projects")
             if r["status"] != "closed"}
     rows: dict[str, list[str]] = {}
@@ -71,7 +79,17 @@ def index(conn) -> dict:
                           "WHERE conversation_id != ''"):
         if r["project_id"] in live and r["project_id"] not in threads.get(r["conversation_id"], []):
             threads.setdefault(r["conversation_id"], []).append(r["project_id"])
-    return {"rows": rows, "threads": threads}
+    sources: dict[str, str] = {}
+    try:
+        for r in conn.execute("SELECT id, source_message_id FROM ledger "
+                              "WHERE COALESCE(source_message_id, '') != ''"):
+            sources[r["id"]] = r["source_message_id"]
+    except sqlite3.OperationalError:
+        pass
+    if votes is None:
+        import mail_tagger
+        votes = mail_tagger.project_votes(live)
+    return {"rows": rows, "threads": threads, "sources": sources, "votes": votes}
 
 
 def projects_for(item: dict, idx: dict, conn, *, matcher=None) -> list[str]:
@@ -83,10 +101,15 @@ def projects_for(item: dict, idx: dict, conn, *, matcher=None) -> list[str]:
     conv = item.get("conversation_id") or ""
     if conv and idx["threads"].get(conv):
         return idx["threads"][conv][:MAX_PROJECTS]
-    if matcher is None:
-        import project_store
-        matcher = project_store.match_projects
+    import mail_tagger
+    import project_store
+    matcher = matcher or project_store.match_projects
     hits = matcher(f"{item.get('title') or ''} {(item.get('summary') or '')[:300]}", conn)
+    call = mail_tagger.call_for(idx.get("votes") or {},
+                                (idx.get("sources") or {}).get(lid, ""), conv)
+    checked = project_store.checked_call(call, hits)
+    if checked is not None:
+        return checked
     if not hits or hits[0]["score"] < MATCH_FLOOR:
         return []
     best = hits[0]["score"]
@@ -178,9 +201,10 @@ def render(heading: str, project_name: str, entries: list[dict], others: list[st
 
 
 def plan_posts(entries: list[dict], *, heading: str, open_rows: list[dict], conn,
-               targets: dict[str, dict], clean, matcher=None) -> list[dict]:
+               targets: dict[str, dict], clean, matcher=None,
+               votes: dict | None = None) -> list[dict]:
     """[{project, channel, room, text, refs}], one per room with items."""
-    idx = index(conn)
+    idx = index(conn, votes)
     names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM projects")}
     posts = []
     for pid, items in slices(entries, targets, conn, matcher=matcher, idx=idx).items():
