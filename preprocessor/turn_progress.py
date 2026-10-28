@@ -41,7 +41,7 @@ SCRIPTS: dict[str, dict[str, str]] = {
                       "get": "reading the project", "list": "reading the project", "journal": "writing the journal"},
     "fetch_url": {"_": "reading a web page"},
     "doc_text": {"_": "reading a document"},
-    "doc_write": {"_": "writing the document"},
+    "doc_write": {"_": "writing the document", "xlsx": "writing the spreadsheet"},
     "poll_filler": {"_": "working the poll", "read-poll": "reading the poll", "fill-poll": "filling the poll"},
     "booking_link": {"_": "reading the booking page"},
     "gmail_client": {"_": "drafting in Gmail", "search": "reading Gmail", "get-message": "reading Gmail",

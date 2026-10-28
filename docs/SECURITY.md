@@ -333,6 +333,8 @@ The LLM can only call whitelisted Python scripts via `--allowedTools`:
 `graph_actions.py`, `gmail_client.py`, `google_calendar_client.py`,
 `scheduling_engine.py`, `fetch_url.py`, `email_to_pdf.py`,
 `doc_text.py` (reads only files under the EA's document folders),
+`doc_write.py` (writes only .docx and .xlsx files under them; a sheet
+value starting with `=` is written as text, never as a formula),
 `poll_filler.py`, `compile_letter.py`, `ledger.py`, `project_store.py`,
 and `style_profiles.py`, plus the scripts of an enabled plugin, one rule per
 entry point (docs/plugins.md). Every lane builds those rules from

@@ -35,6 +35,7 @@ import argparse
 import fcntl
 import html as html_mod
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -1927,6 +1928,12 @@ def cmd_attach_file(args):
         content_bytes = base64.b64encode(f.read()).decode("utf-8")
 
     filename = args.name or filepath.name
+    # The type follows the file's name unless given: a spreadsheet sent as
+    # application/pdf opens as a broken PDF in some clients.
+    content_type = (getattr(args, "content_type", None)
+                    or mimetypes.guess_type(filename)[0]
+                    or mimetypes.guess_type(filepath.name)[0]
+                    or "application/octet-stream")
     url = graph._check_endpoint(f"/me/messages/{args.message_id}/attachments")
     # Graph v1.0 expects the lower-case #microsoft.graph.fileAttachment
     # OData type; the old #Microsoft.OutlookServices.FileAttachment is
@@ -1939,7 +1946,7 @@ def cmd_attach_file(args):
             else "#Microsoft.OutlookServices.FileAttachment"
         ),
         "name": filename,
-        "contentType": args.content_type,
+        "contentType": content_type,
         "contentBytes": content_bytes,
     }
     if not on_graph:
@@ -2446,7 +2453,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--message-id", required=True, help="Draft message ID")
     p.add_argument("--file", required=True, help="Path to file")
     p.add_argument("--name", default=None, help="Filename override")
-    p.add_argument("--content-type", default="application/pdf")
+    p.add_argument("--content-type", default=None,
+                   help="MIME type (default: from the file name)")
     p.set_defaults(func=cmd_attach_file)
 
     # remove-attachment

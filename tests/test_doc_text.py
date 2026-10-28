@@ -1,5 +1,5 @@
-"""doc_text.py: the read-only text of a .docx, PDF or text file for lanes
-that run with an allowlist. A .docx is built here by hand (the XML parts a
+"""doc_text.py: the read-only text of a .docx, .xlsx, PDF or text file for
+lanes that run with an allowlist. A .docx is built here by hand (the XML parts a
 word processor writes, with a tracked change and a reviewer comment);
 every name in it is made up. Nothing reaches the network."""
 import sys
@@ -96,13 +96,56 @@ def test_other_types_say_what_is_read(ea):
     old.write_bytes(b"\xd0\xcf\x11\xe0 not a zip")
     with pytest.raises(dt.DocError, match="not a .docx"):
         dt.document_text(dt.allowed_path(str(old)))
-    sheet = ea / "uploads" / "budget.xlsx"
-    sheet.write_bytes(b"PK")
-    with pytest.raises(dt.DocError, match="reads .docx, .pdf and text files"):
+    sheet = ea / "uploads" / "budget.xls"
+    sheet.write_bytes(b"\xd0\xcf\x11\xe0")
+    with pytest.raises(dt.DocError, match="reads .docx, .xlsx, .pdf and text files"):
         dt.document_text(dt.allowed_path(str(sheet)))
+    fake = ea / "uploads" / "budget.xlsx"
+    fake.write_bytes(b"PK")
+    with pytest.raises(dt.DocError, match="not an .xlsx"):
+        dt.document_text(dt.allowed_path(str(fake)))
     note = ea / "uploads" / "notes.md"
     note.write_text("# Notes\nline")
     assert dt.document_text(dt.allowed_path(str(note))) == "# notes.md\n\n# Notes\nline"
+
+
+def test_an_xlsx_reads_every_sheet_with_cell_addresses(ea):
+    openpyxl = pytest.importorskip("openpyxl")
+    import datetime
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Hires"
+    ws.append(["Name", "Start", "FTE", "Notes"])
+    ws.append(["Ann Lee", datetime.datetime(2027, 1, 1), 0.5, "line one\nline two"])
+    ws.append([])
+    ws.append(["Bo | Co", None, 20.0])
+    wb.create_sheet("Empty")
+    p = ea / "uploads" / "hires.xlsx"
+    wb.save(str(p))
+    text = dt.document_text(dt.allowed_path(str(p)))
+    assert text.splitlines() == [
+        "# hires.xlsx (xlsx, 2 sheets: Hires, Empty)",
+        "",
+        "## Hires",
+        "| | A | B | C | D |",
+        "| 1 | Name | Start | FTE | Notes |",
+        "| 2 | Ann Lee | 2027-01-01 | 0.5 | line one<br>line two |",
+        "| 4 | Bo \\| Co |  | 20 |  |",
+        "",
+        "## Empty",
+        "(empty)",
+    ]
+
+
+def test_an_xlsx_that_unpacks_too_large_is_refused(ea, monkeypatch):
+    openpyxl = pytest.importorskip("openpyxl")
+    wb = openpyxl.Workbook()
+    wb.active["A1"] = "x" * 5000
+    p = ea / "uploads" / "big.xlsx"
+    wb.save(str(p))
+    monkeypatch.setattr(dt, "MAX_PART_BYTES", 2000)
+    with pytest.raises(dt.DocError, match="over"):
+        dt.document_text(dt.allowed_path(str(p)))
 
 
 def test_long_text_pages(ea, capsys):

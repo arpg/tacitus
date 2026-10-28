@@ -6,6 +6,16 @@ repository that preceded it.
 
 ## Unreleased
 
+- **Spreadsheets in the chat lane.** `doc_text.py` reads an .xlsx: every
+  sheet prints as a table with row numbers and column letters.
+  `doc_write.py xlsx --in <rows.csv> --out <path>.xlsx` writes one, and
+  with `--template` it fills a copy of a form: the header, styles, widths
+  and other sheets are kept, `--start-row N --replace` writes the rows
+  from row N and clears the old ones, `--set C4=...` fills one cell. A
+  value starting with `=` stays text. A chat turn had to stop because it
+  could not open the form a department sent or write the updated one.
+  `attach-file` now takes the attachment's type from the file name; it
+  sent every file as application/pdf. `openpyxl` joins requirements.txt.
 - **`validate-draft` says which times may be proposed.** It answers
   `valid: true` for a time outside working hours or on a p0 day, because
   a sender may offer such a time. A scheduling turn used that to fill an

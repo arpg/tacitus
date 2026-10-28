@@ -94,12 +94,20 @@ def test_attach_file_journals_an_update(outlook, capsys, tmp_path, monkeypatch):
     g._check_endpoint = lambda endpoint: g._api_base() + endpoint
     g._headers = lambda: {}
     import requests
-    monkeypatch.setattr(requests, "post", lambda url, headers=None, json=None: types.SimpleNamespace(ok=True))
+    posted = []
+    monkeypatch.setattr(requests, "post", lambda url, headers=None, json=None:
+                        posted.append(json) or types.SimpleNamespace(ok=True))
     f = tmp_path / "rev1.pdf"
     f.write_bytes(b"%PDF")
     ga.cmd_attach_file(Namespace(message_id="D1", file=str(f), name=None, content_type="application/pdf"))
     assert _out(capsys) == {"attached": True, "filename": "rev1.pdf"}
     assert events == [("updated", "D1", "attach-file")]
+    sheet = tmp_path / "update.xlsx"
+    sheet.write_bytes(b"PK")
+    ga.cmd_attach_file(Namespace(message_id="D1", file=str(sheet), name=None, content_type=None))
+    assert _out(capsys)["filename"] == "update.xlsx"
+    assert posted[-1]["contentType"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", \
+        "with no --content-type the type follows the file name, not PDF"
 
 
 class _GmailService:

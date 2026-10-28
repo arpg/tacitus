@@ -9,13 +9,17 @@ so a Word file needs a reader of its own. This one reads, and only reads:
                (`--tracked` marks them `[+inserted+]` and `[-deleted-]`);
                reviewer comments as `[c1]` at their anchor and listed at
                the end with their authors
+  .xlsx .xlsm  every sheet as a `|` table: a header row of column
+               letters, each row led by its number, so a cell has its
+               address (C4) for `doc_write.py xlsx --set`; formulas show
+               their last computed value
   .pdf         through pdf_utils (pypdf or pdftotext); a PDF that
                compile_letter.py built names its .tex source in the
                header, also when the PDF was copied or renamed since
   text files   .txt .md .csv .tsv .tex .json .html .xml .rtf as UTF-8
 
-A .docx is a zip; it is opened read-only and only its XML parts are read,
-each under a size cap, so nothing is extracted to disk.
+A .docx or .xlsx is a zip; it is opened read-only and every part is under
+a size cap, so nothing is extracted to disk.
 
 The path must resolve, after every symlink, to a regular file under one
 of the EA's document folders (READ_ROOTS under ~/.ea), never auth/,
@@ -26,6 +30,7 @@ config/ or logs/.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import os
@@ -43,6 +48,9 @@ MAX_PART_BYTES = 40 * 1024 * 1024
 DEFAULT_MAX_CHARS = 60_000
 BUILDS_TAIL_BYTES = 2 * 1024 * 1024
 TEXT_SUFFIXES = {".txt", ".md", ".csv", ".tsv", ".tex", ".json", ".html", ".htm", ".xml", ".rtf"}
+SHEET_SUFFIXES = {".xlsx", ".xlsm"}
+MAX_SHEET_ROWS = 2000
+MAX_SHEET_COLS = 60
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
@@ -215,6 +223,81 @@ def docx_text(path: Path, tracked: bool = False) -> str:
     return "\n".join(out)
 
 
+# ── .xlsx ────────────────────────────────────────────────────────────
+
+def _cell_text(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, dt.datetime):
+        return v.date().isoformat() if v.time() == dt.time(0) else v.isoformat(sep=" ", timespec="minutes")
+    if isinstance(v, (dt.date, dt.time)):
+        return v.isoformat()
+    if isinstance(v, float) and v.is_integer() and abs(v) < 1e15:
+        return str(int(v))
+    return str(v).replace("|", "\\|").replace("\r\n", "<br>").replace("\n", "<br>")
+
+
+def xlsx_text(path: Path) -> str:
+    """Every sheet as a table: a header row of column letters, then each
+    row that has a value, led by its row number."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            infos = z.infolist()
+    except zipfile.BadZipFile:
+        raise DocError(f"{path.name} is not an .xlsx (not a zip); an old .xls needs a PDF or an .xlsx") from None
+    for info in infos:
+        if info.file_size > MAX_PART_BYTES:
+            raise DocError(f"{info.filename} in the file is over {MAX_PART_BYTES // (1024 * 1024)} MB")
+    if sum(i.file_size for i in infos) > 2 * MAX_PART_BYTES:
+        raise DocError(f"{path.name} unpacks to over {2 * MAX_PART_BYTES // (1024 * 1024)} MB")
+    try:
+        import openpyxl
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        raise DocError("reading .xlsx needs openpyxl (requirements.txt)") from None
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    except Exception as e:
+        raise DocError(f"{path.name}: not a readable workbook ({type(e).__name__})") from None
+    try:
+        names = wb.sheetnames
+        out = [f"# {path.name} (xlsx, {len(names)} sheet{'s' if len(names) != 1 else ''}: "
+               + ", ".join(names) + ")"]
+        for ws in wb.worksheets:
+            rows: list[tuple[int, list[str]]] = []
+            width = 0
+            more_rows = more_cols = False
+            for r, values in enumerate(ws.iter_rows(values_only=True), start=1):
+                cells = [_cell_text(v) for v in values]
+                while cells and not cells[-1]:
+                    cells.pop()
+                if not cells:
+                    continue
+                if len(rows) >= MAX_SHEET_ROWS:
+                    more_rows = True
+                    break
+                if len(cells) > MAX_SHEET_COLS:
+                    cells, more_cols = cells[:MAX_SHEET_COLS], True
+                width = max(width, len(cells))
+                rows.append((r, cells))
+            out += ["", f"## {ws.title}"]
+            if not rows:
+                out.append("(empty)")
+                continue
+            out.append("| | " + " | ".join(get_column_letter(c) for c in range(1, width + 1)) + " |")
+            for r, cells in rows:
+                out.append(f"| {r} | " + " | ".join(cells + [""] * (width - len(cells))) + " |")
+            if more_rows:
+                out.append(f"[stopped after {MAX_SHEET_ROWS} rows with values]")
+            if more_cols:
+                out.append(f"[columns past {get_column_letter(MAX_SHEET_COLS)} left out]")
+    finally:
+        wb.close()
+    return "\n".join(out)
+
+
 # ── the rest ──────────────────────────────────────────────────────────
 
 def letter_source(data: bytes) -> Path | None:
@@ -256,12 +339,14 @@ def document_text(path: Path, tracked: bool = False) -> str:
     suffix = path.suffix.lower()
     if suffix == ".docx":
         return docx_text(path, tracked)
+    if suffix in SHEET_SUFFIXES:
+        return xlsx_text(path)
     if suffix == ".pdf":
         return pdf_text(path)
     if suffix in TEXT_SUFFIXES:
         return f"# {path.name}\n\n" + path.read_text(encoding="utf-8", errors="replace")
-    raise DocError(f"{path.name}: doc_text reads .docx, .pdf and text files, not {suffix or 'this type'}; "
-                   "ask for a .docx or a PDF")
+    raise DocError(f"{path.name}: doc_text reads .docx, .xlsx, .pdf and text files, not {suffix or 'this type'}; "
+                   "ask for one of those")
 
 
 def page(text: str, max_chars: int, offset: int) -> str:
@@ -273,7 +358,7 @@ def page(text: str, max_chars: int, offset: int) -> str:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Print the text of a .docx, PDF or text file.",
+    ap = argparse.ArgumentParser(description="Print the text of a .docx, .xlsx, PDF or text file.",
                                  allow_abbrev=False)
     ap.add_argument("path")
     ap.add_argument("--tracked", action="store_true", help="mark tracked insertions and deletions")

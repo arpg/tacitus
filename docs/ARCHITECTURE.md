@@ -1850,7 +1850,8 @@ account holds `owner` on the calendar).
   ledger.py (add, update, close, list, search, stats)
   project_store.py, style_profiles.py
   fetch_url.py, email_to_pdf.py
-  doc_text.py (read-only text of a .docx, PDF or text file under ~/.ea)
+  doc_text.py (read-only text of a .docx, .xlsx, PDF or text file under ~/.ea)
+  doc_write.py (a .docx from markdown, an .xlsx from CSV rows or a template)
 
   MCP TOOLS (ENUMERATED -- no wildcards anywhere)
   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2272,7 +2273,8 @@ Files that participate in prompt construction and action execution:
 | `preprocessor/scheduled_sends.py` | Deferred-send queue; HMAC approval credential keyed by the owner-only `~/.ea/auth/scheduled-send-hmac.key`, re-verified by the */5 cron before any send |
 | `preprocessor/fetch_url.py` | Web page content extraction and the page's images; `--save-image` keeps one raster image in a deck's folder or `~/.ea/state` |
 | `preprocessor/email_to_pdf.py` | Email body to PDF conversion |
-| `preprocessor/doc_text.py` | Read-only text of a .docx (comments, tracked changes), PDF or text file under the EA's document folders |
+| `preprocessor/doc_text.py` | Read-only text of a .docx (comments, tracked changes), an .xlsx (every sheet, with cell addresses), PDF or text file under the EA's document folders |
+| `preprocessor/doc_write.py` | A .docx from markdown, or an .xlsx from CSV rows, alone or into a copy of a template (header, styles and other sheets kept), under the EA's document folders |
 
 ## Rooms: threads, project channels, session mirrors, DMs, the shell (2026-09-05)
 

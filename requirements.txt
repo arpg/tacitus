@@ -10,6 +10,8 @@ slack-sdk>=3.45.0
 zulip>=0.9.1
 ortools>=9.15.6755
 python-docx>=1.2.0
+# doc_text reads and doc_write writes .xlsx sheets for the chat lane.
+openpyxl>=3.1.5
 # site_tools reads a Jekyll site's _config.yml exclude list; without it the
 # live check would also compare files Jekyll never copies.
 PyYAML>=6.0.3

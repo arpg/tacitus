@@ -2890,13 +2890,19 @@ def _tools_block(body_file: str, needed_modules: set[str] | None = None) -> str:
   preserved. Change the underlying meeting instead.{scheduling_tool_block}
 - Bash(python3 {sd}/preprocessor/fetch_url.py --url <url>) for reading web pages
 - Bash(python3 {sd}/preprocessor/doc_text.py <path>) for the text of a .docx,
-  PDF or text file under ~/.ea (state, docs, uploads, letters, research):
-  comments come at the end; --tracked marks tracked changes
+  .xlsx, PDF or text file under ~/.ea (state, docs, uploads, letters,
+  research): comments come at the end; --tracked marks tracked changes; a
+  sheet prints as a table with row numbers and column letters
 - Bash(python3 {sd}/preprocessor/doc_write.py docx --in <file.md> --out <path>.docx)
   for a Word file: write the content as markdown first (headings, lists,
   tables, **bold**), the output goes under ~/.ea/docs, letters, state or
   research; --template <docx> keeps a letterhead's styles and headers.
-  Never hand-write RTF or XML for a document someone will open in Word."""
+  Never hand-write RTF or XML for a document someone will open in Word.
+- Bash(python3 {sd}/preprocessor/doc_write.py xlsx --in <rows.csv> --out <path>.xlsx)
+  for a spreadsheet: write the rows as CSV first. --template <xlsx> copies
+  a form with its header and styles; --start-row N --replace writes the
+  rows from row N and clears the old ones below; --set C4="text" fills one
+  cell. Read the result back with doc_text.py before you attach it."""
 
 
 def resolve_bot_user_id():
@@ -11601,7 +11607,7 @@ File paths (read ONLY if this specific task requires them — avoid loading file
 
 When the user attaches files (receipts, images, PDFs):
 - Files are downloaded to {EA_DIR}/uploads/ with the local path in the message.
-- For a .docx or a PDF: read it with
+- For a .docx, an .xlsx or a PDF: read it with
   python3 {EA_BOT_SCRIPT_DIR}/preprocessor/doc_text.py <local path>.
 - For receipts: copy to {EA_DIR}/receipts/<trip_name>/ and update the
   obligations ledger entry (via ledger.py update). Confirm what you saved
