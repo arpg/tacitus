@@ -120,6 +120,20 @@ def test_one_lowercase_word_alias_needs_a_second_signal(d):
     assert project_store.alias_weight("foundation") == 2
 
 
+def test_list_projects_carries_parent_summary_and_people(d):
+    """The mail tagger's vocabulary: every project with its parent,
+    summary, aliases and the addresses of its people."""
+    _seed(d)
+    import importlib
+    import project_store
+    importlib.reload(project_store)
+    project_store.DB_PATH = Path(d) / "state" / "obligations-ledger.db"
+    rows = {r["id"]: r for r in project_store.list_projects()}
+    assert rows["orion"]["people"] == ["kai.brightwater15@example.edu"]
+    assert rows["orion"]["aliases"] == "ORION,EX-UNI-NW"
+    assert rows["bs-ai"]["parent_id"] == "ai-dir" and rows["bs-ai"]["people"] == []
+
+
 def test_index_brief_lists_every_active_project_by_domain(d):
     """Cross-project awareness: one screen, one line per project, grouped
     by domain, with parent, open count and next action; cut on a line

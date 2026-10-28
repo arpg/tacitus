@@ -359,6 +359,21 @@ def cmd_get(args) -> int:
     return _out(d)
 
 
+def list_projects(conn=None) -> list[dict]:
+    """Every project with its parent, summary, aliases and the addresses
+    of its people: what the mail tagger needs to tell projects apart."""
+    conn = conn or _get_db()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT id,name,domain,status,parent_id,summary,aliases FROM projects "
+        "ORDER BY domain,name")]
+    people: dict = {}
+    for r in conn.execute("SELECT project_id,email FROM project_people ORDER BY project_id,email"):
+        people.setdefault(r["project_id"], []).append(r["email"])
+    for r in rows:
+        r["people"] = people.get(r["id"], [])
+    return rows
+
+
 def cmd_list(args) -> int:
     conn = _get_db()
     q = "SELECT id,name,domain,kind,status,parent_id,updated_at,horizon FROM projects WHERE 1=1"

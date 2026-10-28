@@ -144,10 +144,10 @@ def test_tick_dry_run_writes_nothing(tmp_path):
     assert not (tmp_path / "st.json").exists()
 
 
-def test_sender_hints_feed_the_prompt_and_are_remembered(tmp_path):
+def test_sender_topic_hints_feed_the_prompt_and_labels_are_remembered(tmp_path):
     g = FakeGraph()
     state = mt._empty_state()
-    state["senders"]["bri.foxworth13@example.org"] = {"cats": ["auto-tagged", "front-range-consortium", "fyi"], "at": "2026-10-01T00:00:00Z"}
+    state["senders"]["bri.foxworth13@example.org"] = {"cats": ["auto-tagged", "front-range-consortium", "fyi", "funding"], "at": "2026-10-01T00:00:00Z"}
     seen = {}
 
     def asker(prompt):
@@ -156,5 +156,26 @@ def test_sender_hints_feed_the_prompt_and_are_remembered(tmp_path):
 
     mt.tag_messages([_msg(0, frm="bri.foxworth13@example.org")], graph=g, state=state, dry_run=False, now=NOW,
                     vocab=VOCAB, asker=asker, log_path=tmp_path / "log.jsonl")
-    assert "bri.foxworth13@example.org: front-range-consortium" in seen["prompt"]
+    # the topic carries over; the project call does not follow the sender
+    assert "bri.foxworth13@example.org: funding" in seen["prompt"]
+    assert "front-range-consortium" not in seen["prompt"]
     assert state["senders"]["bri.foxworth13@example.org"]["cats"] == ["auto-tagged", "bs-ai", "fyi"]
+
+
+def test_project_lines_carry_parent_aliases_people_and_summary():
+    """The model tells projects apart by more than a name: the parent, the
+    aliases, the members' addresses and the first sentence of the summary.
+    Fields left empty stay out of the line; dormant projects stay out of
+    the prompt."""
+    vocab = [{"id": "ai-dir", "name": "AI Faculty Director", "domain": "service", "status": "active"},
+             {"id": "bs-ai", "name": "BS in AI", "domain": "service", "status": "active",
+              "parent": "ai-dir", "aliases": "BS-AIE", "people": ["tamsin.rook@example.edu"],
+              "about": "The new undergraduate degree."},
+             {"id": "old-grant", "name": "Old grant", "domain": "research", "status": "dormant"}]
+    prompt = mt.build_prompt([mt.compact(_msg(0), 0, set())], vocab)
+    assert "\nai-dir | AI Faculty Director | service\n" in prompt
+    assert ("bs-ai | BS in AI | service | under: ai-dir | aka: BS-AIE | "
+            "people: tamsin.rook@example.edu | The new undergraduate degree.") in prompt
+    assert "old-grant" not in prompt
+    assert mt._first_sentence("Two tracks. The second starts in fall.") == "Two tracks."
+    assert mt._first_sentence("x" * 200, cap=20) == "x" * 17 + "..."

@@ -58,3 +58,13 @@ thread's inbox messages with `awaiting-reply`. A tick with nothing new
 is two Graph GETs and no model call. `backfill --days N` labels older
 inbox mail; `status` shows the state file
 (`~/.ea-private/mail-tagger.json`, log beside it as `.jsonl`).
+
+The project tag comes from the project store. The prompt lists each
+active project with its parent, aliases, the addresses of its people and
+the first sentence of its summary, so the model can tell a child project
+from its parent and see who works on what. It names a project only when
+the message is about that project's work, and a domain word otherwise.
+A sender's earlier labels carry only the topic tag forward: the project
+call is made fresh for every message, so one wrong call does not follow
+a sender. Better project summaries and people lists in the store make
+better tags.
