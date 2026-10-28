@@ -14,8 +14,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "preprocessor"))
 import doc_write as dw  # noqa: E402
 
-openpyxl = pytest.importorskip("openpyxl")
-from openpyxl.styles import Font, PatternFill  # noqa: E402
+try:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill
+except ImportError:  # the lane check below still runs
+    openpyxl = None
+needs_openpyxl = pytest.mark.skipif(openpyxl is None, reason="openpyxl is not installed")
 
 HEADER = ["Your email", "Name to hire", "Category", "SpeedType", "Comments"]
 OLD = [["pi@example.edu", "Ann Old", "GRA", "13000001 100%", ""],
@@ -53,6 +57,7 @@ def _rows(path: Path, sheet: str | None = None) -> list[list]:
     return [list(r) for r in ws.iter_rows(values_only=True)]
 
 
+@needs_openpyxl
 def test_a_new_workbook_from_csv_has_a_bold_header_and_keeps_codes_as_text(tmp_path):
     rows = dw.read_rows("﻿Name,Count,Code,Formula\nAnn,3,007,=1+1\nBo,4.5,,\n")
     out = dw.out_path(str(tmp_path / "docs" / "p" / "tally.xlsx"), ea_dir=tmp_path, suffix=".xlsx")
@@ -67,6 +72,7 @@ def test_a_new_workbook_from_csv_has_a_bold_header_and_keeps_codes_as_text(tmp_p
     assert ws["C3"].value is None
 
 
+@needs_openpyxl
 def test_a_template_keeps_its_header_styles_and_sheets_and_replace_clears_old_rows(tmp_path):
     tpl = dw.template_path(str(_template(tmp_path)), ea_dir=tmp_path, suffix=".xlsx")
     out = dw.out_path(str(tmp_path / "docs" / "update.xlsx"), ea_dir=tmp_path, suffix=".xlsx")
@@ -87,6 +93,7 @@ def test_a_template_keeps_its_header_styles_and_sheets_and_replace_clears_old_ro
     assert wb["Instructions"]["A1"].value == "Fill one row per hire."
 
 
+@needs_openpyxl
 def test_rows_append_after_the_last_row_and_look_like_it(tmp_path):
     tpl = _template(tmp_path)
     out = dw.out_path(str(tmp_path / "docs" / "more.xlsx"), ea_dir=tmp_path, suffix=".xlsx")
@@ -98,6 +105,7 @@ def test_rows_append_after_the_last_row_and_look_like_it(tmp_path):
     assert ws["D5"].value == "13000004", "the column holds text, so the number stays text"
 
 
+@needs_openpyxl
 def test_a_header_only_template_never_lends_its_header_style(tmp_path):
     wb = openpyxl.Workbook()
     wb.active.append(HEADER)
@@ -112,6 +120,7 @@ def test_a_header_only_template_never_lends_its_header_style(tmp_path):
     assert ws["B2"].value == "Fay First" and not ws["B2"].font.b
 
 
+@needs_openpyxl
 def test_set_writes_one_cell_and_refuses_a_merged_one(tmp_path):
     tpl = _template(tmp_path)
     out = dw.out_path(str(tmp_path / "docs" / "cells.xlsx"), ea_dir=tmp_path, suffix=".xlsx")
@@ -127,6 +136,7 @@ def test_set_writes_one_cell_and_refuses_a_merged_one(tmp_path):
         dw.build_xlsx([], out, template=tpl, sheet="Budget")
 
 
+@needs_openpyxl
 def test_the_paths_stay_under_the_ea_folders(tmp_path):
     with pytest.raises(dw.DocError, match="outside"):
         dw.out_path(str(tmp_path / "elsewhere" / "a.xlsx"), ea_dir=tmp_path, suffix=".xlsx")
@@ -139,6 +149,7 @@ def test_the_paths_stay_under_the_ea_folders(tmp_path):
         dw.template_path(str(macro), ea_dir=tmp_path, suffix=".xlsx")
 
 
+@needs_openpyxl
 def test_the_cli_fills_a_template_and_reports_json(tmp_path):
     tpl = _template(tmp_path)
     (tmp_path / "state").mkdir()
