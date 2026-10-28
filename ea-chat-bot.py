@@ -523,6 +523,9 @@ from preprocessor import turn_progress as _turn_progress
 # The Claude processes running now, by run id, so a `stop` in a thread
 # can end that thread's turn (_cancel_thread_runs).
 _LIVE_RUNS = _turn_cancel.LiveRuns()
+# Messages the user deleted. One that waits behind a running turn is
+# withdrawn and never starts.
+_WITHDRAWN = _turn_cancel.Withdrawn()
 
 
 class _TurnCancelled(Exception):
@@ -1969,7 +1972,7 @@ def _cancel_thread_runs(channel: str, thread_ts: str) -> list[str]:
     stopped = []
     for rid, d in mine:
         if _LIVE_RUNS.stop(rid, _stop_claude):
-            words = " ".join(str(d.get("user_msg") or "").split())
+            words = " ".join(_turn_cancel.own_words(str(d.get("user_msg") or "")).split())
             stopped.append(words[:60] + ("…" if len(words) > 60 else ""))
             log.info(f"turn {rid} stopped by the user in thread {thread_ts}")
     return stopped
@@ -11326,6 +11329,9 @@ actually want.
             # the turn before may have minted or replaced the session
             session_id, resuming, session_meta = _sessions.lookup(thread_ts)
         held_session_lock = session_lock
+        if _WITHDRAWN.has(msg_ts):
+            log.info(f"message {msg_ts} was deleted while it waited; not starting it")
+            return
         if ack == "hourglass_flowing_sand":
             _swap_reaction(channel, msg_ts, "hourglass_flowing_sand", "eyes")
             ack = "eyes"
@@ -12638,6 +12644,15 @@ def _follow_thread_move(old: str, new: str, channel: str = "",
         log.warning(f"thread move: doc review registry failed: {e}")
     log.info(f"thread moved {old} -> {new}: {done}")
     return done
+
+
+@app.event("delete_message")
+def on_delete_message(payload: dict):
+    """A deleted message that still waits behind a running turn never starts."""
+    ids = _turn_cancel.deleted_ids(payload)
+    for mid in ids:
+        _WITHDRAWN.add(mid)
+    log.info(f"messages deleted: {', '.join(ids) or 'none named'}")
 
 
 @app.event(re.compile(".*"))

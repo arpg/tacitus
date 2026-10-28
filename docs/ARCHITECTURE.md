@@ -2317,7 +2317,9 @@ channel for <project> | for session <uuid> | for this conversation`.
 A `stop` or `cancel` in a thread whose turn is running ends that
 turn's Claude process (`preprocessor/turn_cancel.py`, `_cancel_thread_runs`):
 no reply is posted, and the drafts the run made before the stop keep
-their cards.
+their cards. The check reads the user's words after the room or DM
+header the bot puts before them. A message deleted while it waits
+behind a running turn never starts (`on_delete_message`, `_WITHDRAWN`).
 Channel creation needs the Slack scope `groups:write`; the bot creates the
 private channel, invites the owner, sets the topic, registers it, posts
 the project's opening context (with a link to the board's

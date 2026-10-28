@@ -6,6 +6,13 @@ repository that preceded it.
 
 ## Unreleased
 
+- **`stop` and `cancel` work in rooms and the DM.** The cancel check
+  read the header the bot puts before a room or DM message, so every
+  message there was longer than six words and never a cancel. A `cancel
+  that` in a project room waited behind the turn it was meant to stop,
+  then ran as a turn of its own and retired the drafting rule the turn
+  had just recorded. The check now reads only the user's words. A
+  message deleted while it waits behind a running turn no longer starts.
 - **Spreadsheets in the chat lane.** `doc_text.py` reads an .xlsx: every
   sheet prints as a table with row numbers and column letters.
   `doc_write.py xlsx --in <rows.csv> --out <path>.xlsx` writes one, and
