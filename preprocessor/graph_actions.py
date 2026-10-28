@@ -533,16 +533,20 @@ def cmd_create_reply(args):
             pass  # keep the caller's anchor
 
     cc_addrs = [a.strip() for a in args.cc.split(",")] if getattr(args, "cc", None) else None
-    result = graph.create_draft(
-        to=[],  # ignored for replies
-        subject="",  # ignored for replies
-        body=args.body,
-        cc=cc_addrs,
-        reply_to_id=args.message_id,
-        content_type=args.content_type,
-        reply_all=not args.sender_only,
-        conversation_id=getattr(args, "conversation_id", None),
-    )
+    try:
+        result = graph.create_draft(
+            to=[],  # ignored for replies
+            subject="",  # ignored for replies
+            body=args.body,
+            cc=cc_addrs,
+            reply_to_id=args.message_id,
+            content_type=args.content_type,
+            reply_all=not args.sender_only,
+            conversation_id=getattr(args, "conversation_id", None),
+        )
+    except graph.AmbiguousReplyTarget as e:
+        print(json.dumps({"status": "refused", "reason": str(e)}, indent=2))
+        return
     # --to override: redirect the reply draft to different recipients while
     # KEEPING the quoted thread. createReply fills recipients from the
     # thread, so without this the only way to redirect is a threadless

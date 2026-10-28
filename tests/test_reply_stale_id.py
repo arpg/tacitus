@@ -102,6 +102,36 @@ def test_resolver_picks_latest_non_draft():
         assert gc._resolve_latest_in_conversation(CONV) == "LIVE_LATEST"
 
 
+def _msg(mid, sender, when):
+    return {"id": mid, "isDraft": False, "receivedDateTime": when,
+            "from": {"emailAddress": {"address": sender}}}
+
+
+def test_a_branched_thread_does_not_re_resolve_a_reply():
+    # The user forwarded the request to a colleague, who answered: the
+    # newest message is an aside, and a reply to it would go to the
+    # colleague and quote the aside.
+    branched = {"value": [
+        _msg("REQ", "asker@example.edu", "2026-01-01T00:00:00Z"),
+        _msg("FWD", "owner@example.edu", "2026-01-01T00:05:00Z"),
+        _msg("ASIDE", "colleague@example.edu", "2026-01-01T00:07:00Z")]}
+    with _Patched(get=lambda ep, params=None: branched):
+        assert gc._resolve_latest_in_conversation(CONV) == "ASIDE"   # snooze wake
+        try:
+            gc._resolve_latest_in_conversation(CONV, one_correspondent=True)
+        except gc.AmbiguousReplyTarget as e:
+            assert "colleague@example.edu" in str(e) and "--message-id" in str(e)
+        else:
+            raise AssertionError("a branched thread must not re-resolve a reply")
+
+
+def test_a_two_person_thread_still_re_resolves():
+    pair = {"value": [_msg("A", "asker@example.edu", "2026-01-01T00:00:00Z"),
+                      _msg("B", "owner@example.edu", "2026-01-01T00:05:00Z")]}
+    with _Patched(get=lambda ep, params=None: pair):
+        assert gc._resolve_latest_in_conversation(CONV, one_correspondent=True) == "B"
+
+
 def test_resolver_none_when_only_drafts():
     only_drafts = {"value": [{"id": "D", "isDraft": True, "receivedDateTime": "x"}]}
     with _Patched(get=lambda ep, params=None: only_drafts):

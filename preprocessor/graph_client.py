@@ -1580,18 +1580,30 @@ def _build_quoted_thread_fallback(original_id: str) -> str:
         return ""
 
 
-def _resolve_latest_in_conversation(conversation_id: str) -> Optional[str]:
+class AmbiguousReplyTarget(ValueError):
+    """A stale reply target whose conversation has several correspondents:
+    its newest message may be an aside to someone else."""
+
+
+def _resolve_latest_in_conversation(conversation_id: str, *,
+                                    one_correspondent: bool = False) -> Optional[str]:
     """Return the id of the most recent non-draft message in a conversation.
 
     Recovers when a stored message-id has gone stale: archiving or moving an
     Outlook message changes its id, so a create-reply against the old id
     404s. Re-resolving by conversationId finds the message's current id so
     the reply can still thread instead of degrading to a fresh, quote-less
-    draft. Returns None if nothing resolvable."""
+    draft. Returns None if nothing resolvable.
+
+    one_correspondent (a reply target): the newest message stands in for the
+    stale one only when the thread has at most two senders, the user and one
+    correspondent. A forward the user sent to a colleague joins the same
+    conversation, and a reply to it would go to the colleague and quote the
+    aside. With more senders this raises AmbiguousReplyTarget."""
     try:
         data = graph_get("/me/messages", {
             "$filter": f"conversationId eq '{conversation_id}'",
-            "$select": "id,isDraft,receivedDateTime",
+            "$select": "id,isDraft,receivedDateTime,from",
             "$top": 25,
         })
     except Exception:
@@ -1599,6 +1611,16 @@ def _resolve_latest_in_conversation(conversation_id: str) -> Optional[str]:
     msgs = [m for m in data.get("value", []) if not m.get("isDraft")]
     if not msgs:
         return None
+    if one_correspondent:
+        senders = sorted({((m.get("from") or {}).get("emailAddress") or {})
+                          .get("address", "").lower() for m in msgs} - {""})
+        if len(senders) > 2:
+            raise AmbiguousReplyTarget(
+                "the reply target moved (its id is stale), and its "
+                f"conversation has several senders ({', '.join(senders)}), so "
+                "the newest message may be an aside to someone else. Read "
+                "get-conversation and pass the live --message-id of the "
+                "message to answer, without --conversation-id.")
     # Graph won't reliably $orderby alongside a conversationId $filter, so
     # sort client-side; reply to the most recent message in the thread.
     msgs.sort(key=lambda m: m.get("receivedDateTime", ""), reverse=True)
@@ -1712,7 +1734,8 @@ def create_draft(
                 # the live message in the conversation and retry so the reply
                 # still threads. If we cannot resolve, re-raise rather than
                 # silently producing a quote-less draft.
-                resolved = _resolve_latest_in_conversation(conversation_id)
+                resolved = _resolve_latest_in_conversation(
+                    conversation_id, one_correspondent=True)
                 if not resolved:
                     raise
                 print(f"create-reply target {reply_to_id[:20]}... was stale "

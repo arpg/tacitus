@@ -12,6 +12,12 @@ repository that preceded it.
   skips only when the user's latest message went to the sender being
   answered; it still fails closed when either message cannot be read.
   The skip names `--force` for a reply the user asked for.
+- **A stale reply target in a branched thread is refused.** When a reply's
+  message id had gone stale, `create_draft` re-resolved to the newest
+  message in the conversation. In a thread the user had forwarded to a
+  colleague, that is the aside: the reply went to the colleague and quoted
+  it. The re-resolution now applies only to a thread with at most two
+  senders; otherwise `create-reply` refuses and names the senders.
 - **A booking link's empty days are not free.** The solver treats an
   internal attendee's stated windows as partial, so a colleague on the
   user's own domain who sent a booking link was offered times on days the
