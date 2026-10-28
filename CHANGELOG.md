@@ -6,6 +6,13 @@ repository that preceded it.
 
 ## Unreleased
 
+- **`validate-draft` says which times may be proposed.** It answers
+  `valid: true` for a time outside working hours or on a p0 day, because
+  a sender may offer such a time. A scheduling turn used that to fill an
+  empty day with a Friday 5-7 PM time no one asked for. The answer now
+  carries `proposable` and `not_proposable` (the times that break a rule
+  propose-meeting enforces: wh, nm, p0), and the scheduling prompts say
+  such a time is named only when the sender offered it or the user did.
 - **A forward is not an answer.** `create-reply` skipped every thread
   whose newest message was the user's own, so a request the user had
   forwarded to a colleague could not get a reply draft. The guard now

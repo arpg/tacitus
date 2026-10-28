@@ -834,6 +834,25 @@ def test_ea_managed_all_day_token_is_not_double_counted_as_all_day():
         assert "all_day_event" not in opt["cost_breakdown"], opt
 
 
+def test_validate_draft_marks_an_evening_time_not_proposable():
+    """A time outside the day's working hours stays valid (the sender may
+    have offered it) but is not one the EA may propose on its own."""
+    with _patched_engine():
+        out = _run_validate_draft(["2026-05-26T17:00:00", "2026-05-26T10:00:00",
+                                   "2026-05-26T15:30:00"], duration_minutes=60)
+    assert out["valid"] is True, out
+    assert out["proposable"] is False
+    assert out["not_proposable"] == ["2026-05-26T17:00:00"], out["not_proposable"]
+    assert "sender offered" in out["proposable_note"]
+
+
+def test_validate_draft_inside_hours_is_proposable():
+    # A p2 preference ("prefer mornings") does not stop a proposal.
+    with _patched_engine():
+        out = _run_validate_draft(["2026-05-26T15:30:00"], duration_minutes=60)
+    assert out["proposable"] is True and out["not_proposable"] == [], out
+
+
 def test_validate_draft_flags_a_time_inside_an_all_day_conference():
     """The send-time preflight: a draft proposing Wednesday of a
     conference week must not validate clean."""

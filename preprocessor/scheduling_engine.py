@@ -687,6 +687,15 @@ def _check_preference_violations(slot_start_local: datetime, slot_end_local: dat
     return {"warnings": warnings}
 
 
+def _blocks_a_proposal(warning: str) -> bool:
+    """Whether a _check_preference_violations warning names a rule the
+    solver enforces as a hard block (wh, nm, p0)."""
+    return (warning.startswith("outside working hours")
+            or "has no working-hours (wh) window" in warning
+            or warning.endswith("(no-meeting block)")
+            or warning.endswith("(hard constraint)"))
+
+
 def _get_all_day_events_on_date(target_date: date, all_events: list) -> list[dict]:
     """All-day events covering `target_date`, with the metadata Claude judges
     from (see `_all_day_disposition`). Multi-day events count on every day of
@@ -1170,8 +1179,22 @@ def cmd_validate_draft(args):
     # informational all-day events don't block; an all-day event the engine
     # hard-blocks on (conference, travel, out of office) counts as a conflict.
     hard_issues = [i for i in issues if i["type"] == "conflict"]
+    # A time propose-meeting would never return (outside the day's working
+    # hours, a day with none, a no-meeting block, a p0 event) stays "valid"
+    # for a time the sender offered or the user named, but it is not one to
+    # propose on the EA's own initiative.
+    unproposable = sorted({i["proposed_time"] for i in issues
+                           if i["type"] == "preference_warning"
+                           and _blocks_a_proposal(i.get("detail", ""))})
     output = {
         "valid": len(hard_issues) == 0,
+        "proposable": not hard_issues and not unproposable,
+        "not_proposable": unproposable,
+        "proposable_note": ("not_proposable times break a rule propose-meeting "
+                            "enforces (working hours, a no-meeting block, a p0 "
+                            "event). Offer one only when the sender offered it "
+                            "or the user named it; otherwise say the window "
+                            "has no time and ask.") if unproposable else "",
         "issues": issues,
         # Every all-day event covering a proposed date, with the engine's
         # `classification` and the `effect` it applied. The judgment on an

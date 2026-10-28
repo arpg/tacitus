@@ -50,7 +50,9 @@ where an id is asked for. Never retype a long id.
    - the sender asked when the user is free: propose-meeting, one call;
    - the sender wants to move a meeting: reschedule-brief, one call.
 2. Never name a time that propose-meeting, validate-draft or
-   reschedule-brief did not return as free. Never read the calendar to
+   reschedule-brief did not return as free. A validate-draft time in
+   `not_proposable` (outside working hours, a no-meeting block, a p0
+   event) is named only when the sender offered it or the user did. Never read the calendar to
    second-guess them. Never infer "busy" from "not listed"; validate it.
 3. Quote times to people in {local_zone} with the weekday and date
    ("Tue Oct 14, 2:00-2:30 PM"). For a person in another time zone,

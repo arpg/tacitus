@@ -267,7 +267,7 @@ in `/home/ea-bot/ea-system/docs/ea/scheduling.md`). Pick by the question:
 
 | Question | Subcommand | Returns |
 |---|---|---|
-| "Is THIS specific time free on the USER's calendars?" | `validate-draft` | `valid`, `issues`, `all_day_events`, `ignored_events`, `checked_at` |
+| "Is THIS specific time free on the USER's calendars?" | `validate-draft` | `valid`, `proposable`, `not_proposable`, `issues`, `all_day_events`, `ignored_events`, `checked_at` |
 | "What times work for a NEW meeting?" | `propose-meeting` | `status`, `options`, `conditional_options`, `excluded`, `infeasible_days`, `all_day_events`, `attendees_checked`, `ignored_events`, `calendar_preferences`, `solver_time_ms` |
 | "Are THESE people free in THIS window?" | `check-attendees` | `attendees` (per person: `status` free/busy/tentative/partial/unknown, `not_free` runs), `all_attendees_free`, `organizer_events` (the user's own events in the window, with ids), `organizer_free`, `checked_at` |
 | "Record what the user chose" | `log-decision` | `{status: logged, entry}` (after the fact, for pattern learning) |
