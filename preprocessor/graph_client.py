@@ -1605,15 +1605,13 @@ def _resolve_latest_in_conversation(conversation_id: str) -> Optional[str]:
     return msgs[0].get("id")
 
 
-def conversation_latest_sender(conversation_id: str) -> Optional[str]:
-    """Lowercased from-address of the most recent NON-DRAFT message in a
-    conversation (or None). Lets a caller skip drafting a reply when the user
-    already sent the latest message in the thread: they have handled it, and a
-    briefing snapshot that predates their reply must not produce a draft."""
+def conversation_latest_message(conversation_id: str) -> Optional[dict]:
+    """The most recent NON-DRAFT message in a conversation, as {"from",
+    "recipients"} (lowercased addresses; recipients is To plus Cc), or None."""
     try:
         data = graph_get("/me/messages", {
             "$filter": f"conversationId eq '{conversation_id}'",
-            "$select": "id,isDraft,receivedDateTime,from",
+            "$select": "id,isDraft,receivedDateTime,from,toRecipients,ccRecipients",
             "$top": 25,
         })
     except Exception:
@@ -1622,8 +1620,22 @@ def conversation_latest_sender(conversation_id: str) -> Optional[str]:
     if not msgs:
         return None
     msgs.sort(key=lambda m: m.get("receivedDateTime", ""), reverse=True)
-    addr = (msgs[0].get("from") or {}).get("emailAddress", {}).get("address", "") or ""
-    return addr.lower() or None
+    m = msgs[0]
+
+    def addr(r):
+        return ((r or {}).get("emailAddress") or {}).get("address", "").lower()
+    return {"from": addr(m.get("from")),
+            "recipients": sorted({addr(r) for r in (m.get("toRecipients") or [])
+                                  + (m.get("ccRecipients") or []) if addr(r)})}
+
+
+def conversation_latest_sender(conversation_id: str) -> Optional[str]:
+    """Lowercased from-address of the most recent NON-DRAFT message in a
+    conversation (or None). Lets a caller skip drafting a reply when the user
+    already sent the latest message in the thread: they have handled it, and a
+    briefing snapshot that predates their reply must not produce a draft."""
+    latest = conversation_latest_message(conversation_id)
+    return (latest or {}).get("from") or None
 
 
 def _odata_quote(value: str) -> str:

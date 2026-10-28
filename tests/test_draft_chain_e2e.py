@@ -979,6 +979,46 @@ def test_s6_create_reply_proceeds_when_other_is_latest():
             ga.graph, ga._user_addresses, ga._draft_events = orig_graph, orig_ua, orig_de
 
 
+def _reply_with_latest(latest_recipients, target_sender="sawyer.lark@example.edu"):
+    """create-reply where the user sent the latest message, to
+    latest_recipients, and the message being answered came from
+    target_sender. Returns (output, drafts made)."""
+    with tempfile.TemporaryDirectory() as td:
+        ga = _ga(Path(td))
+        made = []
+        orig_graph, orig_ua, orig_de = ga.graph, ga._user_addresses, ga._draft_events
+        ga._user_addresses = lambda: {"wren.fairbanks84@example.edu"}
+        ga._draft_events = types.SimpleNamespace(record=lambda *a, **k: None)
+        ga.graph = types.SimpleNamespace(
+            conversation_latest_sender=lambda cid: "wren.fairbanks84@example.edu",
+            conversation_latest_message=lambda cid: {
+                "from": "wren.fairbanks84@example.edu", "recipients": latest_recipients},
+            get_message_full=lambda mid: {"conversationId": "CONV1",
+                                          "from": {"emailAddress": {"address": target_sender}}},
+            create_draft=lambda **k: made.append("draft") or {"id": "AAMkNEW="})
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                ga.cmd_create_reply(_reply_args())
+            return json.loads(buf.getvalue()), made
+        finally:
+            ga.graph, ga._user_addresses, ga._draft_events = orig_graph, orig_ua, orig_de
+
+
+def test_s6_a_forward_to_a_colleague_is_not_an_answer():
+    # The user forwarded the request to a colleague; the sender still has
+    # no answer, so a reply to the sender's message drafts.
+    out, made = _reply_with_latest(["colleague@example.edu"])
+    assert out.get("status") == "reply_draft_created", out
+    assert made == ["draft"]
+
+
+def test_s6_a_reply_that_reached_the_sender_still_skips():
+    out, made = _reply_with_latest(["sawyer.lark@example.edu", "teammate@example.edu"])
+    assert out.get("status") == "skipped" and "--force" in out.get("override", ""), out
+    assert made == []
+
+
 def test_s6_create_reply_journals_the_rows_it_names():
     # --ledger-id reaches the journal record, which is what the Send button
     # reads to close exactly those rows.

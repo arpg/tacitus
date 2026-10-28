@@ -6,6 +6,12 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A forward is not an answer.** `create-reply` skipped every thread
+  whose newest message was the user's own, so a request the user had
+  forwarded to a colleague could not get a reply draft. The guard now
+  skips only when the user's latest message went to the sender being
+  answered; it still fails closed when either message cannot be read.
+  The skip names `--force` for a reply the user asked for.
 - **A booking link's empty days are not free.** The solver treats an
   internal attendee's stated windows as partial, so a colleague on the
   user's own domain who sent a booking link was offered times on days the

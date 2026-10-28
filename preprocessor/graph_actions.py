@@ -435,12 +435,32 @@ def _ea_authored_draft_ids(conversation_id: str) -> list:
             if d.get("id") and (d["id"] in captured or d["id"] in journalled)]
 
 
+def _latest_reached_sender(conv: str, message_id: str) -> bool:
+    """Whether the user's latest message in the conversation went to the
+    sender of the message being answered. A forward to a third person (an
+    aside to a colleague) leaves the sender unanswered. Fails closed: when
+    either side cannot be read, the user's latest message counts as the
+    answer."""
+    try:
+        latest = graph.conversation_latest_message(conv) or {}
+        target = graph.get_message_full(message_id) or {}
+    except Exception:
+        return True
+    sender = (((target.get("from") or {}).get("emailAddress") or {})
+              .get("address") or "").lower()
+    if not sender or not latest.get("recipients") or sender in _user_addresses():
+        return True
+    return sender in latest["recipients"]
+
+
 def cmd_create_reply(args):
     # Guard: if the user already sent the most recent message in this
     # conversation, they've handled the thread -- do NOT auto-draft a reply.
     # Fixes the "drafted a reply even though I already replied" bug: a briefing
     # snapshot surfaces the thread, but the user replies before the agent acts,
-    # so the stale item must not produce a draft. `--force` overrides.
+    # so the stale item must not produce a draft. A latest message that did not
+    # go to the sender being answered (a forward to a colleague) is not an
+    # answer, and the reply proceeds. `--force` overrides.
     if not getattr(args, "force", False):
         conv = getattr(args, "conversation_id", None)
         if not conv:
@@ -453,13 +473,17 @@ def cmd_create_reply(args):
                 latest = graph.conversation_latest_sender(conv)
             except Exception:
                 latest = None
-            if latest and latest in _user_addresses():
+            if (latest and latest in _user_addresses()
+                    and _latest_reached_sender(conv, args.message_id)):
                 _draft_events.record("skipped", "", verb="create-reply:user-already-replied")
                 print(json.dumps({
                     "status": "skipped",
                     "reason": ("user already sent the latest message in this "
                                "conversation; not drafting a reply"),
                     "latest_sender": latest,
+                    "override": ("when the user asked for this reply in the "
+                                 "current thread, run the same create-reply "
+                                 "with --force"),
                 }, indent=2))
                 return
     # Idempotency: one reply draft per conversation. A retry after a partial
