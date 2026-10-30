@@ -39,7 +39,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import quote as _url_quote
@@ -1589,6 +1589,64 @@ def waiting_on_reply(entry: dict, today=None) -> dict:
     if (today - since.astimezone().date()).days > WAITING_DAYS:
         return {}
     return {"since": wait["since"], "asked": str(wait.get("asked") or "")}
+
+
+# A remote record's scheduling kinds that make the thread a meeting: the
+# date on such a row is the meeting's date, never a submission date.
+MEETING_KINDS = frozenset({"request", "proposes-times", "reschedule", "booking-link",
+                           "poll", "confirmation"})
+
+
+def is_meeting_date(entry: dict) -> bool:
+    """The row's deadline is a meeting's date: a scheduling row, a row that
+    closes on its event, or a row whose thread brief reads the mail as a
+    meeting (reminder, invitation, time proposal)."""
+    if canonical_type(entry.get("type")) == "scheduling" or closes_on(entry) == "event":
+        return True
+    brief = entry.get("thread_brief")
+    kind = brief.get("scheduling") if isinstance(brief, dict) else ""
+    return str(kind or "").strip().lower() in MEETING_KINDS
+
+
+def acted_since(entry: dict, day) -> str:
+    """The local date of the user's own message in the row's thread after
+    `day` (a local date), from the thread brief's `last_from_user`; ''
+    when there is none."""
+    brief = entry.get("thread_brief")
+    raw = brief.get("last_from_user") if isinstance(brief, dict) else ""
+    if not raw:
+        return ""
+    try:
+        at = datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone().date()
+    except ValueError:
+        return ""
+    return at.isoformat() if at > day else ""
+
+
+def date_spent(entry: dict, today=None) -> str:
+    """Why the row's past deadline is not overdue work, or '' when it is
+    (or the date has not passed). A meeting's date passes when the meeting
+    happens; a date the user has written in the thread since is history
+    (the reminder was taken up). OVERDUE names only a date the user still
+    owes something by."""
+    raw = str(entry.get("deadline") or "").strip()[:10]
+    if len(raw) != 10:
+        return ""
+    try:
+        due = date.fromisoformat(raw)
+    except ValueError:
+        return ""
+    if today is None:
+        today = datetime.now().astimezone().date()
+    if due >= today:
+        return ""
+    if is_meeting_date(entry):
+        return f"the meeting was {due:%b} {due.day}"
+    acted = acted_since(entry, due)
+    if acted:
+        at = date.fromisoformat(acted)
+        return f"you wrote {at:%b} {at.day}"
+    return ""
 
 
 def unanswered_since(entry: dict, today=None) -> str:

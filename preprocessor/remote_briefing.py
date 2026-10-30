@@ -180,11 +180,16 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                 continue  # a row on this thread closed this week
             row = by_mid.get(mid) or by_conv.get(conv) or {}
             rec = it.get("remote_record") or {}
+            due, tags = str(rec.get("deadline") or "")[:10], []
+            d = _date(due)
+            if d and d < today and str(rec.get("scheduling") or "").lower() in _ledger.MEETING_KINDS:
+                # The record's date is the meeting's; held, it is history.
+                tags, due = [f"the meeting was {d:%b} {d.day}"], ""
             item = {"kind": kind, "title": it.get("subject") or "(no subject)",
                     "who": it.get("from_name") or it.get("from") or "", "from": it.get("from") or "",
                     "message_id": mid, "conversation_id": conv,
                     "summary": it.get("body_preview") or "", "ask": rec.get("ask") or "",
-                    "people": rec.get("people") or [], "due": rec.get("deadline") or "",
+                    "people": rec.get("people") or [], "due": due, "tags": tags,
                     "cc_only": bool(it.get("user_is_cc_only")),
                     "in_slack": bool(it.get("mentioned_in_slack")),
                     # Sent mail checked in code (preprocess.split_replied_items):
@@ -217,6 +222,15 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
         unanswered = _ledger.unanswered_since(o, today)
         if unanswered:
             tags.append(f"no answer to your question since {unanswered}")
+        due = str(o.get("deadline") or "")[:10]
+        spent = _ledger.date_spent(o, today)
+        if spent:
+            # A passed date that is not overdue work (the meeting was
+            # held; the user wrote back after it) leaves the date banner
+            # and reaches the model as history, not as a due date.
+            d = _date(due)
+            tags.append(f"its {d:%b} {d.day} date passed; {spent}")
+            due = ""
         brief = o.get("thread_brief") if isinstance(o.get("thread_brief"), dict) else None
         add("L", {"kind": "ledger", "title": o.get("description") or lid,
                   "who": o.get("from_name") or o.get("from_email") or "",
@@ -228,7 +242,7 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                   "conversation_id": o.get("conversation_id") or "",
                   "summary": (o.get("notes") or "")[:400],
                   "last_action": _last_action(o),
-                  "due": str(o.get("deadline") or "")[:10], "tags": tags,
+                  "due": due, "tags": tags,
                   "type": o.get("type") or ""})
     return out
 

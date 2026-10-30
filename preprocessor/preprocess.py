@@ -642,7 +642,13 @@ def build_today_top(needs_resp: list, dropped: list, deadlines: list,
             at = _clock_time_in(ob.get("description") or "")
             reasons.append(f"window opens today{' at ' + at if at else ''}")
         due = _parse_ledger_deadline(ob.get("deadline"))
-        if due:
+        spent = _ledger_mod.date_spent(ob, local_today) if due else ""
+        if spent:
+            # The date passed, but it is not overdue work: a meeting that
+            # has happened, or a reminder the user wrote back on after
+            # its date. The row keeps its place; the date earns nothing.
+            reasons.append(f"its {due:%b %-d} date passed; {spent}")
+        elif due:
             # Ledger deadlines are dates, not instants, so compare whole
             # days. Otherwise anything due today reads as overdue by
             # -1 from mid-morning onward.
@@ -1966,6 +1972,12 @@ def mail_row_kind(item: dict) -> dict:
         return out
     state, deadline = rr.get("state"), str(rr.get("deadline") or "")[:10]
     owes = state in ("todo", "decide")
+    # A meeting's date (a reminder, an invitation, a time proposal) is
+    # when it happens, not a date the user owes something by: it never
+    # mints a deadline row, which would read OVERDUE once the meeting
+    # has been held.
+    if str(rr.get("scheduling") or "").strip().lower() in _ledger_mod.MEETING_KINDS:
+        deadline = ""
     if deadline and (owes or not rr.get("needs_reply")):
         out.update(prefix="deadline-", type="deadline", deadline=deadline,
                    description=f"Due {deadline}: {subject}")

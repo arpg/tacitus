@@ -366,6 +366,11 @@ If an item's status is `completed` or `closed`, it is DONE — do NOT
 report it as overdue regardless of its deadline field. The `list --status open`
 output is the sole source of truth for active items.
 
+OVERDUE names a date the user still owes something by. A meeting's date
+is when it happens: once held, the row is done or stale, never overdue.
+A reminder the user wrote back on after its date is history. `today_top`
+marks both as "its [date] date passed; ..." with no OVERDUE; follow it.
+
 ### 8b. Pending RSVPs (from preprocessor)
 
 If `pending_rsvps` in the briefing JSON has entries:
