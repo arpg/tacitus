@@ -151,10 +151,17 @@ SCHED_CHANNEL_ID = FRONTEND.sched_channel
 MODEL = os.environ.get("EA_MODEL", "claude-opus-5-5[1m]")
 BOT_USER_ID = None  # Resolved at startup
 OWNER_SLACK_USER_ID = FRONTEND.owner_id or None  # Explicit owner; unset = every click is refused
-TIMEOUT_SECONDS = 600  # 10 minutes — polls/scheduling need 3-5 min of tool execution
+# A turn's clocks (preprocessor/turn_watch.py). A turn that keeps calling
+# tools is working, however long: the heartbeat says what it does and
+# `cancel` ends it. STALL_SECONDS of silence on the stream (a hung tool
+# call) stops it; TIMEOUT_SECONDS is the ceiling for the whole turn.
+STALL_SECONDS = 600
+TIMEOUT_SECONDS = 3600
 # A turn in a project or session room: its specialist works a whole brief
 # in one turn.
-ROOM_TIMEOUT_SECONDS = 1200
+ROOM_TIMEOUT_SECONDS = 3600
+# The heartbeat adds "say cancel" once a turn has run this long.
+CANCEL_HINT_S = 540
 # A remote-arm turn keeps this much of each tool result for the backstop.
 BACKSTOP_RESULT_CHARS = 12000
 # A remote-arm turn's own clock: Claude checks or redoes every scheduling
@@ -483,8 +490,10 @@ class ClaudeResult:
     # rarely quotes the id, so this is where an MCP draft is found.
     gmail_draft_ids: list = field(default_factory=list)
     # True only when the run hit its time limit; a run that failed to start
-    # also has returncode -1.
+    # also has returncode -1. `stalled`: the stream went quiet for
+    # STALL_SECONDS, rather than the whole turn reaching its ceiling.
     timed_out: bool = False
+    stalled: bool = False
     # True when the user stopped the run (a `stop` in its thread).
     cancelled: bool = False
 
@@ -519,6 +528,7 @@ def _feed_stdin(proc: subprocess.Popen, text: str) -> None:
 
 from preprocessor import turn_cancel as _turn_cancel
 from preprocessor import turn_progress as _turn_progress
+from preprocessor import turn_watch as _turn_watch
 
 # The Claude processes running now, by run id, so a `stop` in a thread
 # can end that thread's turn (_cancel_thread_runs).
@@ -578,9 +588,12 @@ def _run_claude_streaming(
     result_chars: int = 300,
     cwd: "Path | None" = None,
     progress: "_turn_progress.Progress | None" = None,
+    stall: "float | None" = STALL_SECONDS,
 ) -> ClaudeResult:
     """Run Claude subprocess with stream-json, logging tool calls in real-time.
     `progress` gets each tool call as it starts and ends, for the heartbeat.
+    `timeout` is the run's ceiling; `stall` seconds without a stream line
+    (None: no such limit) stops it earlier, as a hang.
 
     `cwd` is the run's working directory: the deployed tree by default,
     where Claude Code loads CLAUDE.md and CLAUDE.local.md; a lane directory
@@ -641,16 +654,16 @@ def _run_claude_streaming(
                 threading.Thread(target=_feed_stdin, args=(proc, prompt_text),
                                  daemon=True).start()
             _LIVE_RUNS.register(run_id, proc)
-            # The deadline holds while claude prints nothing (a long tool
+            # The clocks hold while claude prints nothing (a long tool
             # call): the watchdog stops the run, and the read loop ends.
-            expired = threading.Event()
-            watchdog = threading.Timer(timeout, lambda p=proc: (expired.set(), _stop_claude(p)))
-            watchdog.daemon = True
+            watchdog = _turn_watch.Watchdog(proc, timeout, stall, _stop_claude)
+            expired = watchdog.expired
             watchdog.start()
 
             for line in proc.stdout:
                 if expired.is_set():
                     break
+                watchdog.alive()
 
                 line = line.strip()
                 if not line:
@@ -751,7 +764,7 @@ def _run_claude_streaming(
             watchdog.cancel()
             if expired.is_set():
                 _stop_claude(proc)
-                raise subprocess.TimeoutExpired(cmd, timeout)
+                raise subprocess.TimeoutExpired(cmd, watchdog.limit)
             proc.wait(timeout=10)
             _LIVE_RUNS.unregister(run_id)
             if _LIVE_RUNS.cancelled(run_id):
@@ -772,14 +785,17 @@ def _run_claude_streaming(
                 return ClaudeResult(output="", tool_calls=tool_calls, returncode=-3, stderr="",
                                     gmail_draft_ids=gmail_draft_ids, cancelled=True)
             elapsed = time.monotonic() - t0
-            log.error(f"[{label}] timed out after {elapsed:.1f}s "
+            stalled = bool(watchdog is not None and watchdog.stalled)
+            log.error(f"[{label}] {'stalled' if stalled else 'timed out'} after {elapsed:.1f}s "
                       f"(tool_calls: {[t[0] for t in tool_calls]})")
             return ClaudeResult(
-                output=f"Timed out after {timeout}s",
+                output=(f"No output for {int(stall or 0)}s" if stalled
+                        else f"Timed out after {timeout}s"),
                 tool_calls=tool_calls,
                 returncode=-1,
                 stderr="",
                 timed_out=True,
+                stalled=stalled,
             )
         except Exception as e:
             if watchdog:
@@ -7081,8 +7097,8 @@ def handle_cancel_publish(ev: "_chat.ActionEvent"):
 # only once no dispatch can still be finishing it. IDLE: nothing is running,
 # so a file this old was written out of band (cron, plugin, maintenance
 # shell). BUSY: something IS running, so wait out the longest dispatch
-# window (mono TIMEOUT_SECONDS = 600 s, ROOM_TIMEOUT_SECONDS = 1200 s in a
-# room, resident await 420 s) before
+# window (the turn ceilings TIMEOUT_SECONDS and ROOM_TIMEOUT_SECONDS,
+# resident await 420 s) before
 # treating the file as abandoned, or the 60 s tick steals a live
 # dispatch's event mid-turn.
 EVENT_SWEEP_IDLE_AGE_S = 120
@@ -11805,7 +11821,8 @@ Reminders:
         # Heartbeat: every 3 minutes, what the turn is doing so far (the
         # tool calls as phrases), in one message edited in place; "Still
         # working" only before the first tool call. It covers the Codex
-        # arm below and the Claude run.
+        # arm below and the Claude run. A long turn is not cut while it
+        # works: past CANCEL_HINT_S the line says how to stop it.
         progress = _turn_progress.Progress()
         heartbeat_stop = threading.Event()
         def _heartbeat():
@@ -11813,6 +11830,8 @@ Reminders:
             while not heartbeat_stop.wait(180):
                 text = progress.summary() or (
                     f":hourglass_flowing_sand: Still working... ({progress.minutes()}m)")
+                if time.monotonic() - progress.started >= CANCEL_HINT_S:
+                    text += " Say `cancel` to stop."
                 try:
                     if ref is not None and FRONTEND.update(ref, text):
                         continue
@@ -11989,7 +12008,7 @@ Reminders:
                 _post_claimed_actions(channel, thread_ts, staged, "mono")
 
         if cr.timed_out:
-            raise subprocess.TimeoutExpired(["claude"], run_timeout)
+            raise subprocess.TimeoutExpired(["claude"], STALL_SECONDS if cr.stalled else run_timeout)
         if cr.returncode == -1:
             raise RuntimeError(cr.output or "claude did not start")
 
@@ -12371,8 +12390,11 @@ Reminders:
                                       "mono-stopped")
             except Exception as e:
                 log.warning(f"Event action detection after a stop failed: {e}")
-    except subprocess.TimeoutExpired:
-        log.error(f"Claude timed out after {run_timeout}s for message: {user_msg[:120]!r}")
+    except subprocess.TimeoutExpired as e:
+        # The stall clock (quiet for STALL_SECONDS) or the turn's ceiling.
+        stalled = e.timeout is not None and e.timeout < run_timeout
+        log.error(f"Claude {'stalled' if stalled else 'timed out'} after {int(e.timeout or run_timeout)}s "
+                  f"for message: {user_msg[:120]!r}")
         _swap_reaction(channel, msg_ts, "eyes", "x")
         # The work done before the cut stands: its drafts get their Send
         # blocks and its staged events their buttons, as after a full run.
@@ -12390,8 +12412,10 @@ Reminders:
         FRONTEND.post(
             channel=channel,
             thread_ts=thread_ts,
-            text=(f"Timed out after {run_timeout // 60} minutes, before the reply. "
-                  "The work done so far is kept, and any drafts it made have their Send "
+            text=((f"No output for {int(e.timeout) // 60} minutes, so the turn was stopped "
+                   "before the reply. " if stalled else
+                   f"Stopped at the {run_timeout // 60} minute limit, before the reply. ")
+                  + "The work done so far is kept, and any drafts it made have their Send "
                   "cards. Reply `continue` to pick up where it stopped."),
         )
     except Exception as e:
@@ -13328,13 +13352,12 @@ def scheduling_proactive_loop():
 # there, which reads those threads: the only mail a scheduled lane hands
 # Claude. One session per briefing, not one per item: each new session
 # pays for the whole operating prompt again. A batch holds at most two
-# items, and its turn gets the mono limit per item up to
-# REMOTE_ESCALATION_TIMEOUT_MAX_S; the rest wait for the next tick.
+# items; the rest wait for the next tick. Its turn runs on the turn's
+# own clocks (STALL_SECONDS, TIMEOUT_SECONDS).
 REMOTE_ESCALATIONS = EA_DIR / "state" / "remote-escalations.json"
 REMOTE_ESCALATIONS_SEEN = _private_state("remote-escalations-seen.json")
 REMOTE_ESCALATION_INTERVAL_S = 120
 REMOTE_ESCALATION_BATCH_MAX = 2
-REMOTE_ESCALATION_TIMEOUT_MAX_S = 1200
 _CONV_ID_RE = re.compile(r"^[A-Za-z0-9=+/_-]{10,400}$")
 
 
@@ -13474,13 +13497,12 @@ def _remote_escalation_tick() -> None:
     for cid in cids:
         seen[cid] = {"ts": stamp, "thread": seed_thread}
     _write_seen()
-    timeout_s = min(TIMEOUT_SECONDS * len(batch), REMOTE_ESCALATION_TIMEOUT_MAX_S)
-    log.info(f"Remote escalation opened in {seed_thread}: {len(batch)} item(s), "
-             f"{timeout_s}s limit")
+    # The turn's own clocks apply: a batch that keeps working runs to the
+    # ceiling, and the stall clock catches a hang.
+    log.info(f"Remote escalation opened in {seed_thread}: {len(batch)} item(s)")
     threading.Thread(
         target=handle_message_async,
         args=(CHANNEL_ID, seed_thread, seed.id, prompt, "remote-escalation", False),
-        kwargs={"timeout_s": timeout_s},
         daemon=True).start()
 
 

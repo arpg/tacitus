@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 BOT_SRC = (ROOT / "ea-chat-bot.py").read_text()
 
+from preprocessor import turn_watch  # noqa: E402
+
 FAKE = textwrap.dedent("""
     import json, os, sys, time
     open(os.environ["FAKE_PID"], "w").write(str(os.getpid()))
@@ -57,6 +59,7 @@ def runner(tmp_path, monkeypatch):
           "time": time, "dataclass": dataclass, "field": field,
           "log": logging.getLogger("test-claude-runner"),
           "EA_BOT_SCRIPT_DIR": tmp_path, "_draft_events": _Journal,
+          "_turn_watch": turn_watch, "STALL_SECONDS": 600,
           "_is_gmail_draft_tool": lambda *a: False,
           "_NOT_LOGGED_IN": "Not logged in", "_LOGIN_LOST_MARKERS": ("Not logged in",),
           "_login_lost_message": lambda: "login lost",
@@ -104,6 +107,21 @@ def test_a_silent_run_is_stopped_at_its_deadline(runner, monkeypatch):
         os.kill(pid, 0)
 
 
+def test_a_quiet_stream_stops_the_run_as_a_stall_before_its_ceiling(runner, monkeypatch):
+    # The ceiling is far off; the stall clock ends a run that prints nothing.
+    ns, tmp = runner
+    monkeypatch.setenv("FAKE_SILENT", "1")
+    monkeypatch.setattr(turn_watch, "TICK_S", 0.2)
+    t0 = time.monotonic()
+    cr = ns["_run_claude_streaming"](_args("wait"), timeout=600, label="t", stall=1)
+    assert cr.timed_out and cr.stalled and cr.returncode == -1
+    assert cr.output == "No output for 1s"
+    assert time.monotonic() - t0 < 15
+    pid = int((tmp / "pid").read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
 def test_a_run_that_cannot_start_is_an_error_not_a_timeout(runner):
     ns, _ = runner
     ns["_sudo_claude_cmd"] = lambda args, run_id="", extra_env=None: ["/nonexistent/claude", *args]
@@ -113,7 +131,7 @@ def test_a_run_that_cannot_start_is_an_error_not_a_timeout(runner):
 
 def test_timeouts_are_sized_for_room_turns():
     # A registration and the event sweeper's busy age outlast a room turn.
-    for line in ("ROOM_TIMEOUT_SECONDS = 1200",
+    for line in ("STALL_SECONDS = 600", "TIMEOUT_SECONDS = 3600", "ROOM_TIMEOUT_SECONDS = 3600",
                  "DISPATCH_TTL_S = ROOM_TIMEOUT_SECONDS + TIMEOUT_SECONDS + 300",
                  "EVENT_SWEEP_BUSY_AGE_S = ROOM_TIMEOUT_SECONDS + 300"):
         assert f"\n{line}\n" in BOT_SRC, line

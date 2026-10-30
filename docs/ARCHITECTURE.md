@@ -1665,9 +1665,9 @@ publish two live buttons for one event (audit B3b-01, B3b-02, B6-04).
 a file written before its turn began belongs to whoever wrote it. The
 sweepers claim with `min_age_s` instead -- `EVENT_SWEEP_IDLE_AGE_S = 120`
 when nothing is running, `EVENT_SWEEP_BUSY_AGE_S` when a dispatch
-is live, `ROOM_TIMEOUT_SECONDS + 300` = 1500 s (longer than the mono
-timeouts, 600 s and 1200 s in a room, and the resident 420 s await).
-So the sweeper is a FALLBACK for aged orphans, never a competitor.
+is live, `ROOM_TIMEOUT_SECONDS + 300` (longer than the turn ceilings,
+`TIMEOUT_SECONDS` and `ROOM_TIMEOUT_SECONDS`, and the resident 420 s
+await). So the sweeper is a FALLBACK for aged orphans, never a competitor.
 
 ```
   WRITER                       CONSUMER                          RESULT
@@ -2320,6 +2320,13 @@ no reply is posted, and the drafts the run made before the stop keep
 their cards. The check reads the user's words after the room or DM
 header the bot puts before them. A message deleted while it waits
 behind a running turn never starts (`on_delete_message`, `_WITHDRAWN`).
+The clock does not cut a turn that is working
+(`preprocessor/turn_watch.py`): a run stops when its stream has been
+quiet for `STALL_SECONDS` (600 s, a hung tool call) or at the turn's
+ceiling (`TIMEOUT_SECONDS`, `ROOM_TIMEOUT_SECONDS`, 3600 s); the
+3-minute heartbeat carries the turn's steps and, past `CANCEL_HINT_S`,
+"Say `cancel` to stop." A stopped turn keeps its work: the drafts get
+their cards, and `continue` resumes the session.
 Channel creation needs the Slack scope `groups:write`; the bot creates the
 private channel, invites the owner, sets the topic, registers it, posts
 the project's opening context (with a link to the board's

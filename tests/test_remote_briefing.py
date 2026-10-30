@@ -401,22 +401,23 @@ def test_the_tick_hands_a_briefing_to_one_turn(tmp_path):
         "re": __import__("re"), "json": _json, "datetime": __import__("datetime").datetime,
         "timezone": __import__("datetime").timezone,
         "REMOTE_ESCALATIONS": tmp_path / "q.json", "REMOTE_ESCALATIONS_SEEN": seen_file,
-        "REMOTE_ESCALATION_BATCH_MAX": 2, "REMOTE_ESCALATION_TIMEOUT_MAX_S": 1200,
-        "TIMEOUT_SECONDS": 600, "_CONV_ID_RE": __import__("re").compile(r"^[A-Za-z0-9]{6,}$"),
+        "REMOTE_ESCALATION_BATCH_MAX": 2,
+        "_CONV_ID_RE": __import__("re").compile(r"^[A-Za-z0-9]{6,}$"),
         "CHANNEL_ID": "C0MAIN", "log": types.SimpleNamespace(info=lambda *a: None, warning=lambda *a: None),
         "_resident_text": lambda p: _json.dumps(queue),
         "_remote_escalations_seen": lambda: (_json.loads(seen_file.read_text()) if seen_file.exists() else {}),
         "FRONTEND": types.SimpleNamespace(post=lambda **k: posts.append(k) or _Seed()),
         "_atomic": types.SimpleNamespace(write_json=lambda p, d, **k: p.write_text(_json.dumps(d))),
         "handle_message_async": None,
-        "threading": types.SimpleNamespace(Thread=lambda target, args, kwargs, daemon: types.SimpleNamespace(
+        "threading": types.SimpleNamespace(Thread=lambda target, args, daemon, kwargs=None: types.SimpleNamespace(
             start=lambda: turns.append((args, kwargs)))),
     })
     exec(_fn("_remote_escalation_tick"), ns)
     ns["_remote_escalation_tick"]()
     assert len(posts) == 1 and len(turns) == 1
     assert "2 items" in posts[0]["text"] and "handed these 2 items" in turns[0][0][3]
-    assert turns[0][1] == {"timeout_s": 1200}
+    # A batch runs on the turn's own clocks: no limit of its own.
+    assert turns[0][1] is None
     assert len(_json.loads(seen_file.read_text())) == 2
     # The items past the cap stay pending for the next ticks.
     ns["_remote_escalation_tick"]()
@@ -424,10 +425,9 @@ def test_the_tick_hands_a_briefing_to_one_turn(tmp_path):
     assert len(turns) == 3 and len(_json.loads(seen_file.read_text())) == 6
     ns["_remote_escalation_tick"]()
     assert len(turns) == 3
-    # One item alone gets the mono limit.
     queue.append({"conversation_id": "AAQk900000", "subject": "S9", "from_name": "P"})
     ns["_remote_escalation_tick"]()
-    assert len(turns) == 4 and turns[3][1] == {"timeout_s": 600}
+    assert len(turns) == 4 and turns[3][1] is None
     assert "handed this one item" in turns[3][0][3]
 
 
@@ -442,15 +442,15 @@ def _tick_ns(tmp_path, post, write_json):
         "json": _json, "datetime": __import__("datetime").datetime,
         "timezone": __import__("datetime").timezone,
         "REMOTE_ESCALATIONS": tmp_path / "q.json", "REMOTE_ESCALATIONS_SEEN": seen_file,
-        "REMOTE_ESCALATION_BATCH_MAX": 2, "REMOTE_ESCALATION_TIMEOUT_MAX_S": 1200,
-        "TIMEOUT_SECONDS": 600, "_CONV_ID_RE": __import__("re").compile(r"^[A-Za-z0-9]{6,}$"),
+        "REMOTE_ESCALATION_BATCH_MAX": 2,
+        "_CONV_ID_RE": __import__("re").compile(r"^[A-Za-z0-9]{6,}$"),
         "CHANNEL_ID": "C0MAIN", "log": types.SimpleNamespace(info=lambda *a: None, warning=lambda *a: None),
         "_resident_text": lambda p: _json.dumps(queue),
         "_remote_escalations_seen": lambda: (_json.loads(seen_file.read_text()) if seen_file.exists() else {}),
         "FRONTEND": types.SimpleNamespace(post=post),
         "_atomic": types.SimpleNamespace(write_json=write_json),
         "handle_message_async": None,
-        "threading": types.SimpleNamespace(Thread=lambda target, args, kwargs, daemon: types.SimpleNamespace(
+        "threading": types.SimpleNamespace(Thread=lambda target, args, daemon, kwargs=None: types.SimpleNamespace(
             start=lambda: turns.append(args))),
     })
     exec(_fn("_remote_escalation_tick"), ns)

@@ -571,7 +571,7 @@ def test_a_timeout_keeps_the_session_and_surfaces_its_drafts():
     assert "journal_offset = None" in body.split("if _DRAINING:")[0]
     assert ('_surface_run_drafts(channel, thread_ts, journal_offset, run_id, "mono",\n'
             '                                tool_calls=cr.tool_calls)') in body
-    handler = body.split('except subprocess.TimeoutExpired:\n        log.error(f"Claude timed out')[1]
+    handler = body.split('except subprocess.TimeoutExpired as e:\n')[1]
     handler = handler.split("\n    except Exception")[0]
     assert '_surface_run_drafts(channel, thread_ts, journal_offset, run_id, "mono-timeout")' in handler
     assert "_claim_event_actions(newer_than=run_started)" in handler
