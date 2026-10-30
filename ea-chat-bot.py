@@ -2075,6 +2075,15 @@ def _unregister_dispatch(run_id: str) -> None:
         _persist_inflight_locked()
 
 
+def _resident_dispatch_live() -> bool:
+    """A resident turn is still registered: it frees the pane's slot before
+    it posts its reply and claims its own drafts, so the slot alone says
+    nothing about who owns a record written in that gap."""
+    with _dispatch_lock:
+        _prune_dispatches_locked()
+        return any(d.get("lane") == "resident" for d in _active_dispatches.values())
+
+
 def _mono_dispatches_active() -> int:
     """Dispatches a restart would kill: the per-thread runs. A resident
     turn survives a restart in its own pane and the pending registry
@@ -9514,7 +9523,7 @@ def _sweep_late_resident_drafts() -> int:
     while _RECENT_RESIDENT_COMPLETIONS and \
             now - _RECENT_RESIDENT_COMPLETIONS[0]["completed"] > LATE_DRAFT_WINDOW_S:
         _RECENT_RESIDENT_COMPLETIONS.popleft()
-    if _resident.inflight_busy():
+    if _resident.inflight_busy() or _resident_dispatch_live():
         return 0  # a live resident turn claims its own records
     if not _SWEEP_JOURNAL_START:
         _SWEEP_JOURNAL_START.append(_draft_events.offset())

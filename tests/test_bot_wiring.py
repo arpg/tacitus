@@ -486,6 +486,25 @@ def test_a_cold_resident_follow_up_carries_the_thread():
     assert "user_msg=dispatch_msg," in fn
 
 
+def test_the_late_draft_sweep_waits_for_a_registered_resident_turn():
+    """A resident turn frees the pane's slot before it posts its reply and
+    claims its drafts. The sweep ran in that gap (seen 2026-10-30), gave a
+    new draft to the previous turn's thread, and the draft got two cards.
+    The sweep now waits while a resident dispatch is still registered."""
+    import threading
+    sweep = _fn_body("_sweep_late_resident_drafts")
+    assert "if _resident.inflight_busy() or _resident_dispatch_live():" in sweep
+    rd = _fn_body("_try_resident_dispatch")
+    assert rd.index("_resident.release_inflight()  # foreground turn done") \
+        < rd.index("_resident_post_run_detection(") < rd.index("_unregister_dispatch(run_id)\n        _note_resident_completion")
+    ns = {"_dispatch_lock": threading.Lock(), "_prune_dispatches_locked": lambda: None,
+          "_active_dispatches": {"r1": {"lane": "mono"}}}
+    exec(_fn_body("_resident_dispatch_live"), ns)
+    assert ns["_resident_dispatch_live"]() is False
+    ns["_active_dispatches"]["r2"] = {"lane": "resident"}
+    assert ns["_resident_dispatch_live"]() is True
+
+
 def test_a_new_message_opens_its_thread_under_the_key_it_already_has():
     """On Zulip a new post already has its thread key (its topic), and every
     follow-up uses that key; keying the first turn by message id split one
