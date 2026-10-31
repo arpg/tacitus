@@ -107,6 +107,19 @@ check_json(
     placeholder_ok=CI_MODE,
 )
 
+# ---- ea-config.json (the template only) ----
+# A live file may leave update out: an install the post-commit hook deploys
+# has no channel (docs/updates.md), so only the template must carry one.
+if CI_MODE:
+    print("\nOperational config:")
+    data = check_json(CONFIG_DIR / "ea-config.json", ["profile", "update.channel"],
+                      placeholder_ok=True)
+    channel = ((data or {}).get("update") or {}).get("channel")
+    if channel in ("auto", "latest", "stable", "off"):
+        green(f"ea-config.json: update.channel is {channel!r}")
+    elif data is not None:
+        red(f"ea-config.json: update.channel {channel!r} is not auto, latest, stable or off")
+
 def _chat_frontend() -> str:
     try:
         cfg = json.loads((CONFIG_DIR / "ea-config.json").read_text())

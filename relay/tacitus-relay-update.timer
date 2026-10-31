@@ -1,0 +1,11 @@
+# Hourly, at a random minute, so relay hosts do not all fetch at once.
+[Unit]
+Description=Tacitus relay updater, hourly
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=55min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

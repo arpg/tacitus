@@ -1,0 +1,328 @@
+# Updates
+
+An install keeps itself current the way Claude Code does: a small job
+checks for a new release every hour, installs it when nothing is running,
+and the user sees one line about it in the next morning briefing. There
+is no update button and no rollback command to learn. A release that does
+not come up healthy is switched back by the same job, and the version it
+refused is held back until a newer one appears.
+
+This page is the design and the operator's reference. The pieces:
+
+| Piece | Where |
+|---|---|
+| The release channel: a signed tag `vX.Y.Z` on every green push to `main` | `.github/workflows/ci.yml`, job `release` |
+| The trust root: the public half of the signing key | `.release-key.pub` |
+| The `stable` channel: a tag the maintainer moves | `scripts/cut-tag.sh --stable` |
+| The updater on an install | `scripts/update.py` |
+| The release layout under `/opt` (made once, as root) | `deploy/harden-permissions.sh`, `deploy/macos/install-services.sh` |
+| The timer | `tacitus-update.timer` (Linux), `<prefix>.tacitus-update` LaunchDaemon (macOS) |
+| What the user sees | the doctor's `updates` row, one briefing line, the `version` chat command |
+| The relay host | `relay/tacitus-relay-update.timer`, `scripts/update.py relay` |
+
+## The channel
+
+### Release tags
+
+Every push to `main` runs the full CI tiers. When they pass, the `release`
+job (after the `ci` summary job, on pushes to `main` only) creates an
+annotated tag on that commit and pushes it:
+
+- The version is the newest `vX.Y.Z` tag in `main`'s history with the
+  patch number raised by one. `#minor` or `#major` anywhere in a commit
+  message since that tag, or a footer line `release: minor` (or `major`),
+  raises that part instead and resets the parts below it. A merge commit
+  carries the pull request's title and body, so the marker goes there.
+- A commit that a newer release already contains gets no tag: two pushes
+  in quick succession can finish out of order, and the older one must
+  never get the higher number. The job runs in a concurrency group of its
+  own, so two releases never compute the same number.
+- The tag is signed with an SSH key held as the repository secret
+  `RELEASE_SIGNING_KEY`: `git -c gpg.format=ssh -c user.signingkey=<file>
+  tag -s`. Before it pushes, the job checks that the secret's public half
+  is the committed `.release-key.pub` and verifies its own tag with it.
+- The lightweight tag `channels/latest` moves to the same commit. It is a
+  pointer for people and dashboards; the updater does not trust it.
+- With no secret set the job prints a warning and tags nothing, so a fork
+  or a repository before the one-time setup stays green.
+
+A tag pushed with the workflow's own token starts no workflow, so a
+release tag does not run CI a second time; the commit it names has just
+passed the tiers. The macOS tiers that run on tags run when the
+maintainer pushes a tag by hand or uses Run workflow.
+
+A hand-cut tag (`scripts/cut-tag.sh vX.Y.Z`) is not signed, and installs
+skip it. To move the minor or major number, put the marker in the merge
+commit instead.
+
+### The trust root
+
+`.release-key.pub` holds one or more SSH public keys, one per line. The
+updater builds an allowed-signers file from the copy in the **installed**
+release (never from the release it is about to install) with the
+principal `tacitus-release` and the namespace `git`, and accepts a tag
+only when all of these hold:
+
+1. It is an annotated tag, and the name inside the tag object is the name
+   of the ref. A ref `v9.9.9` that points at the signed object of
+   `v0.1.3` is refused, so an old release cannot pose as a new one.
+2. It carries an SSH signature (`-----BEGIN SSH SIGNATURE-----`); a PGP
+   block is refused before git sees it.
+3. `git -c gpg.ssh.allowedSignersFile=<file> verify-tag` exits 0 and says
+   `Good "git" signature for tacitus-release`.
+
+A key rotation is an ordinary release: the release that changes
+`.release-key.pub` is signed by the old key, and the updater uses the new
+file from then on. A key that leaks is replaced the same way, as long as
+the maintainer releases the new key before the leaked one signs anything
+else; after that, each install needs the new file by hand.
+
+### Channels
+
+| Channel | Follows | Default for |
+|---|---|---|
+| `latest` | the newest signed `vX.Y.Z` tag | the `assistant` profile |
+| `stable` | the signed `vX.Y.Z` tag at the commit `channels/stable` points to | `email`, `review-only` |
+| `off` | nothing; the install stays where it is | |
+
+`channels/stable` is an annotated tag the maintainer moves with
+`scripts/cut-tag.sh --stable [vX.Y.Z] [--push]`. It runs the release tests
+(docs/EVAL.md, "Release tests") on HEAD, which must be that release, and
+moves the pointer only on a green or amber verdict. The pointer itself is
+not signed: it can only choose among signed releases, and the updater
+never moves an install backwards (below).
+
+The channel is `update.channel` in `~/.ea/config/ea-config.json`: `auto`
+(the profile's default, the value a new install's template carries),
+`latest`, `stable` or `off`. `~/.ea/config` is the EA user's to write, so
+the owner can pin the value where the EA cannot reach it:
+`~/.ea-private/update.json` with `{"channel": "off"}` (or any channel)
+outranks the config file. The repository the updater reads is fixed in
+the code (`https://github.com/arpg/tacitus.git`); only the owner-private
+file can change it (`"repo": "<url>"`), never ea-config.json.
+
+## The updater
+
+`scripts/update.py` uses the standard library and git only. It runs as the
+owner, never as root and never as the EA user.
+
+```
+python3 /opt/ea-system/scripts/update.py status            # what is installed, what the channel offers
+python3 /opt/ea-system/scripts/update.py check             # fetch tags, verify, say whether an update is due
+python3 /opt/ea-system/scripts/update.py apply --dry-run   # everything up to the swap, in a scratch directory
+python3 /opt/ea-system/scripts/update.py apply [--tag vX.Y.Z]
+python3 /opt/ea-system/scripts/update.py run               # what the timer runs: apply on the channel, quiet when current
+python3 /opt/ea-system/scripts/update.py verify            # the health gate, on what runs now
+python3 /opt/ea-system/scripts/update.py rollback          # back to the previous release by hand; holds the current one back
+```
+
+### The release layout
+
+```
+/opt/ea-system                  -> ea-system.releases/current     (root's link, made once)
+/opt/ea-system.releases/        owner:ea 0750
+    current -> v0.1.7           the owner's link, switched with rename()
+    previous -> v0.1.6
+    v0.1.6/  v0.1.7/            each a `git archive` of a verified tag, with .version and .deployed-commit
+```
+
+`/opt` belongs to root, so the owner can create nothing beside
+`/opt/ea-system`. The root step (`deploy/harden-permissions.sh` on Linux,
+`deploy/macos/install-services.sh` on macOS, through
+`scripts/update.py layout`) creates the release directory once and puts
+the root-owned link in place of the code tree. From then on every switch
+happens inside the owner's release directory: a new link named
+`.current.new` is renamed over `current`, which is atomic. A process
+that is running keeps the files it started from, since the release it
+came from stays on disk as `previous`.
+
+The root step converts a tree only when an update channel is on: a new
+install (no `/opt/ea-system` yet, and a template `auto`), or an existing
+one whose `update.channel` (or private `update.json`) names `latest`,
+`stable` or `auto`. A tree the post-commit hook writes and whose config
+has no `update` key stays a plain directory, and the updater leaves it
+alone. That is the maintainer's machine: commits on `main` in the
+checkout deploy through the hook, and nothing updates them from GitHub
+behind it. Once the layout exists the hook in turn leaves `/opt` and the
+EA user's copy alone ("deploy skipped: managed by the updater").
+
+### One update, step by step
+
+1. **Lock.** One updater at a time (`~/.ea-private/update/update.lock`).
+2. **Fetch.** The tags (`v*` and `channels/*`) go into an owner-private
+   bare cache, `~/.ea-private/update/tacitus.git`.
+3. **Pick.** The channel's newest signed release. It must be newer than
+   the installed one (a lower or equal version is never installed), and
+   not the version held back after a failed gate.
+4. **Verify** the tag as above, against the installed `.release-key.pub`.
+5. **Stage.** `git archive` of the tag's commit into
+   `/opt/ea-system.releases/.staging-<tag>`, with `.version` (the tag) and
+   `.deployed-commit` (the short commit) beside the code.
+6. **Smoke.** `python3 tests/validate_config.py --ci` in the staged tree,
+   and every entry point compiles: `ea-chat-bot.py`, `run-agent.sh`
+   (`bash -n`), `scripts/update.py`, `scripts/ea-doctor.py` and
+   `preprocessor/*.py`. A failure deletes the stage and holds the version
+   back.
+7. **Wait for idle.** No bot dispatch in flight (`~/.ea-private/bot-inflight.json`,
+   the lanes other than `resident` and `deferred`, the rule the deploy
+   hook uses) and no `run-agent.sh` or `run-plugin.sh` of the owner
+   running. Up to ten minutes; still busy, the stage is deleted and the
+   next timer run tries again.
+8. **The EA user's copy.** `scripts/deploy.sh --from <cache> --ref
+   refs/tags/<tag>` moves `<ea-bot home>/ea-system` to the same commit,
+   with the deploy hook's checks on that tree.
+9. **Swap.** `current` now names the new release; `previous` the old one.
+10. **Restart** the bot, through the sudoers grant the deploy hook uses
+    (`sudo -n systemctl restart ea-chat-bot.service`, or `launchctl
+    kickstart -k` on macOS), and the mail mediator (a signal; its unit
+    restarts it). Every update restarts both, unlike the hook, which
+    restarts only for code held in memory: each service resolves its own
+    path when it starts, so it keeps reading the release it started from,
+    skills and `CLAUDE.md` included, until it restarts. The release before
+    stays on disk as `previous` for the same reason. The idle wait in
+    step 7 is what makes the restart free.
+11. **Health gate, 60 seconds.** The service is active with the same main
+    process throughout, its log (`~/.ea-private/logs/slack-bot.log`, and
+    the journal or the launchd log) shows the chat frontend connected and,
+    when the instance before it served the web chat, `web chat serving
+    on`, and no `Traceback` and no `refused to start`. The mediator passes
+    on its process alone (and its journal on Linux). With no log to read,
+    a process that stays up 20 seconds passes. On an install with no
+    service to restart the gate is the smoke alone.
+12. **Rollback**, when the gate fails: `current` goes back to the old
+    release, the EA user's copy back to its old commit, the services
+    restart again, and the version is recorded as held back. It stays
+    held back until a newer release appears or `apply --tag` names it.
+13. **Record.** `~/.ea-private/update/status.json` (the owner's copy) and
+    `~/.ea/state/update-status.json` (the copy the EA reads, written as
+    the EA user). Releases older than `previous` are deleted, except the
+    three newest.
+
+### Where it does nothing
+
+- `update.channel` is `off`, or the tree is the hook's plain directory
+  with no channel set: `status` says so and `run` exits 0.
+- In a container (`/.dockerenv`): the code is in the image. `check` still
+  reports, and `apply` says to rebuild: `git fetch --tags && git checkout
+  vX.Y.Z && docker compose build && docker compose up -d`
+  (docs/docker.md, "Upgrade").
+- No `.release-key.pub` in the installed release: nothing can be
+  verified, so nothing is installed.
+
+## The timer
+
+**Linux.** `deploy/harden-permissions.sh` writes two system units when the
+release layout exists, and enables the timer:
+
+```ini
+# /etc/systemd/system/tacitus-update.service
+[Service]
+Type=oneshot
+User=<you>
+Group=<your group>
+SupplementaryGroups=ea
+Environment=HOME=/home/<you>
+ExecStart=<the services' interpreter> /opt/ea-system/scripts/update.py run
+Nice=10
+TimeoutStartSec=45min
+
+# /etc/systemd/system/tacitus-update.timer
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=55min
+Persistent=true
+```
+
+They are system units for the reason the bot's unit is one: a user unit
+keeps the groups its user manager started with and cannot write the EA's
+group-`ea` state. `journalctl -u tacitus-update` has each run.
+
+**macOS.** `deploy/macos/install-services.sh` writes the LaunchDaemon
+`<prefix>.tacitus-update`: `StartInterval` 3600, `run --jitter 900` (the
+updater waits up to 15 minutes first, since launchd has no randomized
+delay), output in `~/.ea-private/logs/update.log`.
+
+## What the user sees
+
+- **The doctor**, `updates`: the installed version, the channel, the
+  newest release on it, the last apply and its result, and any version
+  held back. It warns when a version is held back, when the timer has not
+  checked in two days, or when a channel is set on a tree that still needs
+  the root step. It never fails an install.
+- **The morning briefing**: one line when the installed version changed
+  since the last briefing, `Updated to v0.1.7 (from v0.1.5).`, or a
+  version was held back, `Update v0.1.8 held back; running v0.1.7.`
+  `run-agent.sh` appends it after the model's text, from the owner-private
+  status (`preprocessor/update_status.py briefing-line`), and records it
+  as said only once the post went out.
+- **`version`** (or `/version`) in any chat room: the installed tag, its
+  commit and the channel, with the newest release on the channel and any
+  held-back version. No model call.
+
+## The relay host
+
+The public relay host runs no EA. Its updater is the same script with the
+`relay` verb, run as root by `relay/tacitus-relay-update.timer` (hourly,
+randomized) from the relay's own clone:
+
+```
+/usr/bin/python3 -I /opt/tacitus-relay/src/scripts/update.py relay
+```
+
+It follows `latest` unless `/etc/tacitus-relay/update-channel` names
+another channel (one word: `latest`, `stable` or `off`), keeps its cache
+and status in `/var/lib/tacitus-relay/`, and trusts the
+`.release-key.pub` of the clone it runs from. For a newer signed release
+it exports that tag's tree to a scratch directory and runs **that tree's**
+`relay/install.sh --tag <vX.Y.Z>`. Then the clone must be at the verified
+commit and `http://127.0.0.1:8471/healthz` must answer; otherwise it runs
+the previous release's `install.sh --tag <old>` and holds the version back.
+
+The hook it needs from `relay/install.sh`:
+
+- `--tag vX.Y.Z` installs exactly that tag: the clone at
+  `/opt/tacitus-relay/src` ends at the tag's commit, and the script exits
+  non-zero when the relay does not answer `/healthz`.
+- It installs `relay/tacitus-relay-update.service` and
+  `relay/tacitus-relay-update.timer` into `/etc/systemd/system/` and
+  enables the timer.
+
+Until `install.sh` takes `--tag`, `update.py relay` finds no `--tag`
+option in it, says so and installs nothing.
+
+## One-time setup (the maintainer)
+
+1. Make the signing key, on a machine you trust, with no passphrase (the
+   workflow cannot type one):
+
+   ```bash
+   ssh-keygen -t ed25519 -N '' -C tacitus-release -f tacitus-release
+   ```
+
+2. Add the private half as a repository secret: Settings > Secrets and
+   variables > Actions > New repository secret, name
+   `RELEASE_SIGNING_KEY`, value the whole content of `tacitus-release`.
+   Then delete the private file, or keep it offline.
+3. Commit the public half as `.release-key.pub` on a branch and merge it:
+   `cp tacitus-release.pub .release-key.pub`. The first green push to
+   `main` after that is the first signed release.
+4. If a ruleset protects tags, allow the GitHub Actions app to create
+   `v*` tags and to update `channels/*`.
+5. Mark the first stable release once it has run for a while:
+   `scripts/cut-tag.sh --stable vX.Y.Z --push` on a checkout at that tag.
+
+## Turning it on for an existing install
+
+An install made before the updater has a plain `/opt/ea-system` and no
+`update` key, and it keeps deploying from its checkout's hook until the
+owner turns updates on:
+
+1. Pull the release that carries the updater (`git pull` in the
+   checkout; the hook deploys it).
+2. Set the channel: `"update": {"channel": "auto"}` in
+   `~/.ea/config/ea-config.json`, or `~/.ea-private/update.json`.
+3. Run the root step once: `sudo bash deploy/harden-permissions.sh`
+   (Linux) or `sudo bash deploy/macos/install-services.sh` (macOS). It
+   moves the tree into the release layout and installs the timer.
+4. `python3 /opt/ea-system/scripts/update.py status` shows the result; the
+   next timer run installs the channel's newest release.

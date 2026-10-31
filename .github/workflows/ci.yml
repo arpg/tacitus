@@ -32,6 +32,11 @@
 #
 # Tier 3, the release suite, needs a login and runs on the owner's machine
 # (docs/EVAL.md, "Release tests"). Every action is pinned to a version.
+#
+# `release` runs after `ci` on a push to main that passed: it signs the
+# next vX.Y.Z tag on that commit with the SSH key in the secret
+# RELEASE_SIGNING_KEY and moves channels/latest (docs/updates.md). Installs
+# install only tags that verify against the committed .release-key.pub.
 name: CI
 
 on:
@@ -237,3 +242,68 @@ jobs:
           echo "$RESULTS"
           bad=$(echo "$RESULTS" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(" ".join(k for k,v in d.items() if v["result"] not in ("success","skipped")))')
           if [ -n "$bad" ]; then echo "::error::failed or cancelled: $bad"; exit 1; fi
+
+  release:
+    # Every green push to main is a release (docs/updates.md). The job
+    # signs an annotated tag vX.Y.Z on the commit the tiers just passed:
+    # the patch number one above the newest release in main's history, or
+    # the minor or major one when a commit message since then says #minor,
+    # #major or `release: minor|major`. A commit a newer release already
+    # contains gets none. One release at a time (the concurrency group), so
+    # two runs never compute the same number. Without the secret the job
+    # warns and tags nothing. A tag pushed with the workflow's token starts
+    # no workflow, so the release does not run CI a second time.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.result == 'success'
+    needs: [ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-main
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Next version
+        id: next
+        run: |
+          git fetch --force --tags origin
+          tag=$(python3 scripts/update.py next-version --head "$GITHUB_SHA" --main origin/main)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "next release: ${tag:-none (a newer release contains $GITHUB_SHA)}"
+
+      - name: Sign and push the tag
+        if: steps.next.outputs.tag != ''
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          TAG: ${{ steps.next.outputs.tag }}
+        run: |
+          set -eu
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "::warning::RELEASE_SIGNING_KEY is not set: no release tag (docs/updates.md, One-time setup)"
+            exit 0
+          fi
+          umask 077
+          key="$RUNNER_TEMP/release-key"
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key"
+          trap 'rm -f "$key"' EXIT
+          # The secret's public half must be the committed trust root, or
+          # every install would refuse the tag.
+          pub=$(ssh-keygen -y -f "$key" | awk '{print $2}')
+          if ! grep -qF "$pub" .release-key.pub; then
+            echo "::error::the signing key in RELEASE_SIGNING_KEY is not in .release-key.pub"
+            exit 1
+          fi
+          python3 scripts/update.py allowed-signers --key .release-key.pub > "$RUNNER_TEMP/allowed_signers"
+          git -c user.name="tacitus-release" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              -c gpg.format=ssh -c user.signingkey="$key" \
+              tag -s -m "$TAG" -m "Commit ${GITHUB_SHA::7}; CI run ${GITHUB_RUN_ID}" "$TAG" "$GITHUB_SHA"
+          git -c gpg.ssh.allowedSignersFile="$RUNNER_TEMP/allowed_signers" verify-tag "$TAG"
+          python3 scripts/update.py verify-tag --repo . --tag "$TAG" --key .release-key.pub
+          git tag -f channels/latest "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
+          git push --force origin refs/tags/channels/latest
+          echo "released $TAG at ${GITHUB_SHA::7}"

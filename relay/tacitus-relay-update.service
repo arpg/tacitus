@@ -1,0 +1,15 @@
+# The relay host's updater (docs/updates.md, "The relay host"): the newest
+# signed release on the channel in /etc/tacitus-relay/update-channel
+# (latest when absent), installed by that release's own
+# relay/install.sh --tag. relay/install.sh copies this unit and the timer
+# beside it into /etc/systemd/system and enables the timer.
+[Unit]
+Description=Tacitus relay updater (signed releases)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /opt/tacitus-relay/src/scripts/update.py relay
+Nice=10
+TimeoutStartSec=30min

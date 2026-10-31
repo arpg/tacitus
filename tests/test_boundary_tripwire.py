@@ -201,6 +201,8 @@ UNLISTED = {
     "preprocessor/resident_io.py": "the mechanism itself (tests/test_resident_io.py)",
     "scripts/boundary-audit.py": "its one write is its own state file, in the owner's home",
     "scripts/closure-metrics-checkin.py": "a one-off check-in script",
+    "scripts/update.py": "its one write in resident space is the EA's copy of the update "
+                         "status, through resident_io.replace_text (tests/test_update.py)",
 }
 
 MODES = ("child", "child-file", "fallback")

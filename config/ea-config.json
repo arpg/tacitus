@@ -37,6 +37,10 @@
     "rotate_bytes": 1000000
   },
   "rooms_note": "rotate_bytes: a project room's session starts fresh once its transcript passes this many bytes; the new session starts from the project pack and the room's recent history.",
+  "update": {
+    "channel": "auto"
+  },
+  "update_note": "Automatic updates (scripts/update.py, docs/updates.md). channel: auto (latest on the assistant profile, stable on email and review-only), latest (every signed release from main), stable (the release the maintainer marked stable) or off. An hourly owner job installs a newer signed release when the bot and the cron lanes are idle, and switches back when it does not come up healthy. ~/.ea-private/update.json ({\"channel\": \"off\"}) outranks this value, since this file is the EA user's to write. An install whose code tree the post-commit hook writes, and that has no update key, is left to the hook.",
   "room_reply_check": true,
   "room_reply_check_note": "Project rooms only. After a turn, a reply that states an item's status with no ledger or mail read behind it, or that says something does not exist, goes back to its own session once with the sentences to verify; the second pass returns the reply to post. Each bounce is logged to ~/.ea/logs/reply-check.jsonl. false switches the pass off.",
   "chat": {
