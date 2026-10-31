@@ -16,11 +16,12 @@ Routes:
   POST /r/{install}/c     one phone frame (hello, req, ping); waits for the answer
   POST /r/{install}/sse   the phone's `open` frame; answers a one-time ticket
   GET  /r/{install}/sse   ?t=<ticket>: the phone's event stream
-  GET  /healthz           liveness and counts, for the operator's monitor
-  GET  /...               the static web app from --static
+  GET  /healthz           liveness; the counts only to a monitor on this host
+  GET  /...               the static web app from --static (its own hostname only)
 
 A bot proves its install id with a relay token whose hash is the id, so
-the relay needs no table of installs. A phone shows the client key the
+the relay needs no table of installs; the relay checks the token from the
+headers before it reads a bot's body. A phone shows the client key the
 bot's token derives, in the X-Relay-Key header; the relay checks it before
 it reads a body, and answers a wrong key as it answers an install that is
 offline. The event stream's URL carries only a ticket that works once
@@ -31,7 +32,9 @@ new installs a minute, and a full table makes room by dropping the
 longest-idle install that holds no poll.
 
 Standard library only. Run it behind a TLS terminator (Caddy, nginx) that
-does not buffer the event streams.
+does not buffer the event streams. Serve the app (--static) only on a
+hostname of its own: any other page on that origin can use a paired
+phone's key.
 
 Usage:
   relay_server.py [--bind 127.0.0.1] [--port 8471] [--static DIR]
@@ -44,6 +47,7 @@ import base64
 import binascii
 import hashlib
 import hmac
+import http
 import json
 import mimetypes
 import queue
@@ -83,10 +87,14 @@ STATIC_HEADERS = {
                                 "base-uri 'none'; form-action 'none'"),
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
     "Cache-Control": "no-cache",
 }
-EXTRA_TYPES = {".webmanifest": "application/manifest+json", ".js": "text/javascript",
-               ".mjs": "text/javascript", ".svg": "image/svg+xml"}
+EXTRA_TYPES = {".webmanifest": "application/manifest+json",
+               ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+               ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+               ".svg": "image/svg+xml"}
 
 
 def b64d(text: str) -> bytes:
@@ -380,21 +388,29 @@ class Relay:
         self._drop(install, self.routes[install])
         return True
 
+    def check_bot(self, install: str, auth: Any) -> tuple[int, dict, bytes]:
+        """The check the HTTP layer makes from the headers alone, before it
+        reads a bot's body: (200, {}, token), or the refusal and b""."""
+        text = auth[7:].strip() if isinstance(auth, str) and auth.startswith("Bearer ") else ""
+        try:
+            token = b64d(text) if 0 < len(text) <= 128 else b""
+        except ValueError:
+            token = b""
+        if len(token) < 16:
+            return 401, {"error": "bot token required"}, b""
+        if not hmac.compare_digest(install_id_for(token), install):
+            return 403, {"error": "token does not match install"}, b""
+        if not self.allowed(install):
+            return 403, {"error": "install not activated on this relay"}, b""
+        return 200, {}, token
+
     def bot_exchange(self, install: str, auth: str, body: Any,
                      source: str = "") -> tuple[int, dict]:
         """The bot posts its frames and long-polls for the phone's. `source`
         is the bot's address, which only meters how fast it opens routes."""
-        token_text = auth[7:].strip() if auth.startswith("Bearer ") else ""
-        try:
-            token = b64d(token_text) if token_text else b""
-        except ValueError:
-            token = b""
-        if len(token) < 16:
-            return 401, {"error": "bot token required"}
-        if not hmac.compare_digest(install_id_for(token), install):
-            return 403, {"error": "token does not match install"}
-        if not self.allowed(install):
-            return 403, {"error": "install not activated on this relay"}
+        status, err, token = self.check_bot(install, auth)
+        if status != 200:
+            return status, err
         if not isinstance(body, dict) or not isinstance(body.get("frames", []), list) \
                 or len(body.get("frames", [])) > 64:
             return 400, {"error": "bad poll"}
@@ -607,6 +623,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         for k, v in (CORS.items() if cors else ()):
             self.send_header(k, v)
         self.end_headers()
@@ -639,9 +656,31 @@ class RelayHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(n)
         try:
             return json.loads(raw), n
-        except ValueError:
+        except (ValueError, RecursionError):  # not JSON, or nested past the parser's depth
             self._send_json(400, {"error": "not JSON"}, cors)
             return None, -1
+
+    def send_error(self, code: int, message: Optional[str] = None,
+                   explain: Optional[str] = None) -> None:
+        """http.server's own errors (a bad request line, a method with no
+        handler) as JSON with the status's phrase: no HTML, and nothing of
+        the request."""
+        self.close_connection = True
+        try:
+            phrase = http.HTTPStatus(code).phrase.lower()
+        except ValueError:
+            phrase = "error"
+        try:
+            self._send_json(code, {"error": phrase})
+        except OSError:
+            pass
+
+    def do_HEAD(self) -> None:
+        self.send_response(405)
+        self.send_header("Allow", "GET, POST, OPTIONS")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        self.close_connection = True
 
     def do_OPTIONS(self) -> None:
         m = ROUTE_RE.match(urlsplit(self.path).path)
@@ -665,15 +704,18 @@ class RelayHandler(BaseHTTPRequestHandler):
         relay = self.server.relay
         cors = kind != "bot"
         key = self.headers.get("X-Relay-Key", "")
+        # A phone's key and a bot's token are checked from the headers
+        # before the body is read: a stranger never makes the relay read or
+        # parse one.
         if cors:
-            # A phone's key is checked from the headers before its body is
-            # read: a stranger never makes the relay read or parse one.
             status, err = relay.check_key(install, key)
-            if status != 200:
-                self.close_connection = True
-                n_out = self._send_json(status, err, cors)
-                self._log(kind, install, status, 0, n_out, t0)
-                return
+        else:
+            status, err, _ = relay.check_bot(install, self.headers.get("Authorization", ""))
+        if status != 200:
+            self.close_connection = True
+            n_out = self._send_json(status, err, cors)
+            self._log(kind, install, status, 0, n_out, t0)
+            return
         limit = relay.limits.max_small_frame + 1024 if kind == "sse" else None
         body, n_in = self._read_json(cors, limit)
         if n_in < 0:
@@ -692,7 +734,12 @@ class RelayHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         url = urlsplit(self.path)
         if url.path == "/healthz":
-            self._send_json(200, {"ok": True, **self.server.relay.counts()})
+            # The counts tell who is online: only a monitor on this host gets
+            # them. A request through the proxy (it carries X-Forwarded-For)
+            # gets liveness alone.
+            local = str(self.client_address[0]) in LOOPBACK and \
+                self.headers.get("X-Forwarded-For") is None
+            self._send_json(200, {"ok": True, **(self.server.relay.counts() if local else {})})
             return
         m = ROUTE_RE.match(url.path)
         if m:
@@ -815,7 +862,9 @@ def main(argv: Optional[list] = None) -> int:
     ap = argparse.ArgumentParser(description="The Tacitus web chat relay.")
     ap.add_argument("--bind", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8471)
-    ap.add_argument("--static", default="", help="the web app's folder (index.html, app.js, ...)")
+    ap.add_argument("--static", default="",
+                    help="the web app's folder (index.html, app.js, ...); only on a hostname "
+                         "of its own")
     ap.add_argument("--allow-file", default="", help="serve only the install ids listed here")
     ap.add_argument("--log-file", default="", help="append the access lines here, not stderr")
     ap.add_argument("--max-installs", type=int, default=Limits.max_installs)
@@ -833,6 +882,9 @@ def main(argv: Optional[list] = None) -> int:
     start_reaper(relay)
     relay.log(f"relay: listening on {args.bind}:{server.server_address[1]}"
               f" static={args.static or '-'} allow={args.allow_file or '-'}")
+    if args.static:
+        relay.log("relay: serving the web app; give this relay a hostname of its own "
+                  "(docs/webchat-relay.md, Running the relay)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

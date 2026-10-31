@@ -1200,3 +1200,68 @@ def test_get_chat_keeps_the_relay_block_only_from_chat_json(tmp_path, monkeypatc
     assert "relay" not in ea_config.get_chat()["web"]          # not an owner process
     monkeypatch.setattr(owner, "owner_chat_block", lambda: json.loads(json.dumps(block)))
     assert ea_config.get_chat()["web"]["relay"] == {"url": "https://relay.example.net"}
+
+
+# ── attacks on the relay server, as assertions ─────────────────────
+#
+# Each test is one way a stranger could load the relay or learn from it,
+# and checks that it no longer does.
+
+def _raw(base: str, request: bytes) -> bytes:
+    """Send raw bytes to the relay; everything it answers until it closes."""
+    import socket
+    host, port = base.split("//", 1)[1].split(":")
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(request)
+        answer = b""
+        while chunk := sock.recv(65536):
+            answer += chunk
+    return answer
+
+
+def test_a_bot_token_is_checked_before_the_body_is_read(loop):
+    """A stranger cannot make the relay read and parse 16 MiB on the bot
+    route: no token, a wrong one, or one for another install is refused
+    from the headers, at once, although the body never comes."""
+    base, install = loop["base"], loop["phone"].payload.install_id
+    for auth, want in (("", b"401"), ("Bearer " + rc.b64e(os.urandom(32)), b"403"),
+                       ("Bearer " + "A" * 5000, b"401"), ("Basic x", b"401")):
+        headers = {"Content-Type": "application/json", "Content-Length": "16000000"}
+        if auth:
+            headers["Authorization"] = auth
+        took, answer = _raw_post(base, f"/r/{install}/bot", headers)
+        assert took < 3 and answer.startswith(b"HTTP/1.1 " + want), (auth[:12], answer[:40])
+    # With the right token, a body nested past the parser's depth is a 400.
+    token = rcl.KeyStore(loop["dir"] / "relay-key.json").identity().token
+    body = b"[" * 100000
+    answer = _raw(base, (f"POST /r/{install}/bot HTTP/1.1\r\nHost: x\r\nContent-Length: {len(body)}"
+                         f"\r\nAuthorization: Bearer {rc.b64e(token)}\r\nConnection: close\r\n\r\n"
+                         ).encode() + body)
+    assert answer.startswith(b"HTTP/1.1 400") and answer.endswith(b'{"error":"not JSON"}')
+
+
+def test_healthz_gives_counts_only_to_a_monitor_on_the_host(loop):
+    """Through the proxy (X-Forwarded-For), /healthz says only that the
+    relay is up: the counts would tell a stranger when an install is online."""
+    base = loop["base"]
+    with NO_PROXY.open(base + "/healthz", timeout=5) as r:
+        assert set(json.loads(r.read())) == {"ok", "installs", "streams", "queued_bytes"}
+    req = urllib.request.Request(base + "/healthz", headers={"X-Forwarded-For": "198.51.100.7"})
+    with NO_PROXY.open(req, timeout=5) as r:
+        assert json.loads(r.read()) == {"ok": True}
+
+
+def test_the_relay_answers_in_json_and_sends_the_safety_headers(loop):
+    base = loop["base"]
+    head = _raw(base, b"HEAD / HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert head.startswith(b"HTTP/1.1 405") and head.endswith(b"\r\n\r\n")  # no body
+    put = _raw(base, b"PUT /r/x/c HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+    assert put.startswith(b"HTTP/1.1 501") and put.endswith(b'{"error":"not implemented"}')
+    bad = _raw(base, b"GET /\x01<script> HTTP/9.9\r\n\r\n")
+    assert b"<script>" not in bad and b"html" not in bad.lower()
+    with NO_PROXY.open(base + "/", timeout=5) as r:
+        assert r.headers["Content-Type"] == "text/html; charset=utf-8"
+        assert r.headers["Cross-Origin-Opener-Policy"] == "same-origin"
+        assert r.headers["Cross-Origin-Resource-Policy"] == "same-origin"
+    with NO_PROXY.open(base + "/healthz", timeout=5) as r:
+        assert r.headers["X-Content-Type-Options"] == "nosniff"
