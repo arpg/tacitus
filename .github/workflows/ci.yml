@@ -260,7 +260,9 @@ jobs:
     # tag is pushed, a GitHub Release for it carries the release notes; a
     # Release that cannot be made is a warning, since the signed tag is the
     # release and the notes only describe it.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.result == 'success'
+    # !cancelled() replaces the implicit success() check, which reads as
+    # skipped when the always() summary job sits over skipped tiers.
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.result == 'success' }}
     needs: [ci]
     runs-on: ubuntu-latest
     permissions:
