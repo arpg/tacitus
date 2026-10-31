@@ -1803,3 +1803,218 @@ def test_the_key_file_must_be_the_owners_alone(tmp_path):
             assert f.relay is None and not key_file.exists()
         finally:
             f.stop()
+
+
+# ── rotation (scripts/webchat-relay.py rotate) ────────────────────────
+
+def _relay_cli():
+    """scripts/webchat-relay.py, loaded as a module."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("webchat_relay_cli",
+                                                  ROOT / "scripts" / "webchat-relay.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _add_device(store, key: bytes, pending: bool = False) -> str:
+    """A device record for `key`, written into the key file as a pairing
+    would leave it; its id."""
+    pub = rc.public_of(key)
+    rec = {"id": rc.device_id_for(pub), "public": rc.b64e(pub), "name": "phone",
+           "paired_at": 1793421333, "origin": "own"}
+    if pending:
+        rec.update({"pending": True, "code": "123456"})
+    store._update(lambda data: data["devices"].append(rec))
+    return rec["id"]
+
+
+def _add_open_pairing(store) -> None:
+    store._update(lambda data: data["pairings"].append(
+        {"id": os.urandom(16).hex(), "psk": rc.b64e(os.urandom(32)),
+         "expires": int(time.time()) + 600, "origin": "own"}))
+
+
+def _keyed_store(tmp_path):
+    """A key file with an approved device, a waiting one and an open pairing."""
+    store = rcl.KeyStore.create(tmp_path / "relay.json", relay_url="https://relay.example.net")
+    _add_device(store, rc.generate_private())
+    _add_device(store, rc.generate_private(), pending=True)
+    _add_open_pairing(store)
+    return store
+
+
+def test_rotate_keeps_the_devices_and_the_bot_key(tmp_path):
+    store = _keyed_store(tmp_path)
+    before, devices = store.identity(), store.devices()
+    out = rcl.rotate(store.path, "keep")
+    after = rcl.KeyStore(store.path).identity()
+    assert after.public == before.public and after.token != before.token
+    assert after.install_id != before.install_id and after.client_key != before.client_key
+    assert rcl.KeyStore(store.path).devices() == devices      # the waiting one still waits
+    assert rcl.KeyStore(store.path).load()["pairings"] == []  # their links name the old install
+    assert rcl.KeyStore(store.path).relay_url() == "https://relay.example.net"
+    assert {k: out[k] for k in ("install_id", "old_install_id", "bot_key", "devices",
+                                "device_count", "pairings_dropped", "install_id_changed",
+                                "client_key_changed")} == {
+        "install_id": after.install_id, "old_install_id": before.install_id,
+        "bot_key": "kept", "devices": "kept", "device_count": 2, "pairings_dropped": 1,
+        "install_id_changed": True, "client_key_changed": True}
+
+
+def test_rotate_drops_the_devices_and_the_bot_key(tmp_path):
+    store = _keyed_store(tmp_path)
+    before = store.identity()
+    out = rcl.rotate(store.path, "drop")
+    fresh = rcl.KeyStore(store.path)
+    after = fresh.identity()
+    assert after.public != before.public and after.token != before.token
+    assert fresh.devices() == [] and fresh.load()["pairings"] == []
+    assert (out["bot_key"], out["devices"], out["device_count"]) == ("new", "dropped", 2)
+    with pytest.raises(rcl.RelayError):
+        rcl.rotate(store.path, "some")
+    assert rcl.KeyStore(store.path).identity() == after  # a bad choice changes nothing
+
+
+def test_rotate_keeps_a_private_backup_of_the_old_file(tmp_path):
+    store = _keyed_store(tmp_path)
+    old = store.path.read_bytes()
+    now = time.time()
+    first = Path(rcl.rotate(store.path, "keep", now=now)["backup"])
+    assert first.parent == store.path.parent and first.name.startswith("relay.json.")
+    assert first.read_bytes() == old and (first.stat().st_mode & 0o777) == 0o600
+    assert (store.path.stat().st_mode & 0o777) == 0o600
+    # A second rotation in the same second never writes over the first backup.
+    second = Path(rcl.rotate(store.path, "drop", now=now)["backup"])
+    assert second != first and first.read_bytes() == old
+    assert (second.stat().st_mode & 0o777) == 0o600
+    # A key file the bot would refuse is left as it is, with no backup.
+    os.chmod(store.path, 0o644)
+    kept = store.path.read_bytes()
+    with pytest.raises(rcl.RelayError, match="readable"):
+        rcl.rotate(store.path, "keep")
+    assert store.path.read_bytes() == kept and len(list(tmp_path.glob("*.bak"))) == 2
+
+
+def test_rotate_changes_the_install_id_the_relay_knows(tmp_path, capsys):
+    """The install id and the client key both derive from the relay token,
+    so a rotation changes the id: the relay's allow file must name the new
+    one, the old client key reaches nothing, and a config that pins the old
+    id leaves the relay off at the next start. The CLI says each step."""
+    store = _keyed_store(tmp_path)
+    before = store.identity()
+    allow = tmp_path / "installs.txt"
+    allow.write_text(before.install_id + "\n")
+    relay = rs.Relay(allow_file=str(allow), log=lambda line: None)
+    assert relay.bot_exchange(before.install_id, _bot_auth(before.token), {"wait": 0})[0] == 200
+    cli = _relay_cli()
+    assert cli.run(["rotate", "--key-file", str(store.path), "--devices", "keep"]) == 0
+    out = capsys.readouterr()
+    shown = json.loads(out.out)
+    after = rcl.KeyStore(store.path).identity()
+    assert shown["install_id"] == after.install_id == rs.install_id_for(after.token)
+    assert shown["old_install_id"] == before.install_id
+    for words in (f"--install-id {after.install_id}", "allow file", "pins install_id",
+                  "next poll", shown["backup"]):
+        assert words in out.err, words
+    # Not activated until the allow file names the new id.
+    status, err = relay.bot_exchange(after.install_id, _bot_auth(after.token), {"wait": 0})
+    assert status == 403 and "activated" in err["error"]
+    allow.write_text(after.install_id + "\n")
+    assert relay.bot_exchange(after.install_id, _bot_auth(after.token), {"wait": 0})[0] == 200
+    # The client key in the old links does not reach the new install.
+    assert relay.check_key(after.install_id, before.client_key) == rs.UNAVAILABLE
+    assert relay.check_key(after.install_id, after.client_key)[0] == 200
+    # A config that pins the old id leaves the relay off; the new id starts it.
+    cfg = {"relay": {"url": "https://relay.example.net", "key_file": str(store.path),
+                     "install_id": before.install_id}}
+    assert rcl.start_relay(cfg, "http://127.0.0.1:9/chat") is None
+    cfg["relay"]["install_id"] = after.install_id
+    client = rcl.start_relay(cfg, "http://127.0.0.1:9/chat")
+    assert client is not None and client.install_id == after.install_id
+    client.stop()
+    # The choice is the owner's: no default, and nothing else is taken.
+    for bad in ([], ["--devices", "some"]):
+        with pytest.raises(SystemExit):
+            cli.run(["rotate", "--key-file", str(store.path), *bad])
+    capsys.readouterr()
+    assert cli.run(["show", "--key-file", str(store.path)]) == 0  # the other commands pass on
+    assert json.loads(capsys.readouterr().out)["install_id"] == after.install_id
+
+
+def _phone_holding(base: str, store, key: bytes) -> Phone:
+    """A phone with the device key `key` and what the key file says now
+    (the install id, the bot's key, the client key), as an app that read
+    `/api/relay/status` on the tailnet would hold it."""
+    ident = store.identity()
+    phone = Phone(base, rc.PairingPayload(relay_url=base, install_id=ident.install_id,
+                                          bot_public=ident.public, client_key=ident.client_key,
+                                          pairing_id="0" * 32, psk=bytes(32), expires=0))
+    phone.key = key
+    return phone
+
+
+def _until(cond, timeout: float = 10.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if cond():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_a_running_client_takes_the_rotated_key(tmp_path):
+    """The bot polls on under the new install id after a rotation, with no
+    restart: the old id goes offline at the relay, the old sessions end,
+    a kept device that holds the new id and client key says a plain hello,
+    and after `drop` the same device is refused."""
+    relay = rs.Relay(rs.Limits(keepalive=0.3, client_timeout=1, offline_after=0.5),
+                     log=lambda line: None)
+    server = _serve(rs.RelayHTTPServer(("127.0.0.1", 0), relay))
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    store = rcl.KeyStore.create(tmp_path / "relay.json", relay_url=base)
+    key = rc.generate_private()
+    _add_device(store, key)
+    client = rcl.RelayClient(base, store, "http://127.0.0.1:9/chat", wait=1).start()
+    try:
+        assert _until(lambda: client.connected), client.last_error
+        old = _phone_holding(base, store, key)
+        assert old.hello(pairing=False)[1]["k"] == "welcome"
+        assert len(client._sessions) == 1
+        out = rcl.rotate(store.path, "keep")
+        assert _until(lambda: client.install_id == out["install_id"] and client.connected
+                      and out["install_id"] in relay.routes)
+        assert client._sessions == {}
+        assert client.status()["client_key"] == rcl.KeyStore(store.path).identity().client_key
+        # The old install id answers nothing once its route is gone.
+        assert _until(lambda: old.hello(pairing=False)[0] == 503)
+        kept = _phone_holding(base, store, key)
+        assert kept.hello(pairing=False)[1]["k"] == "welcome"
+        ping = kept.session.seal("ping", rc.new_id(), rc.pack({}))
+        assert "pong" in rc.unpack(kept.session.open(kept.post(ping)[1]))[0]
+        # drop: a new bot key and no device. The phone that learns the new
+        # install id is still refused.
+        out = rcl.rotate(store.path, "drop")
+        assert _until(lambda: client.install_id == out["install_id"] and client.connected
+                      and out["install_id"] in relay.routes)
+        assert _phone_holding(base, store, key).hello(pairing=False)[1]["e"] == "auth"
+    finally:
+        client.stop()
+        server.shutdown()
+
+
+def test_a_key_file_that_does_not_read_keeps_the_identity(tmp_path, caplog):
+    store = rcl.KeyStore.create(tmp_path / "relay.json")
+    client = rcl.RelayClient("https://relay.example.net", store, "http://127.0.0.1:9/chat")
+    install = client.install_id
+    good = store.path.read_bytes()
+    store.path.write_text("not a key file")
+    with caplog.at_level(logging.WARNING, logger="chat.relay"):
+        assert client.reload() is False and client.reload() is False
+    assert client.install_id == install
+    assert sum("did not read" in r.getMessage() for r in caplog.records) == 1
+    store.path.write_bytes(good)
+    assert client.reload() is False   # the same identity: nothing to do
+    rcl.rotate(store.path, "keep")
+    assert client.reload() is True and client.install_id != install
+    assert client._bot_url.endswith(f"/r/{client.install_id}/bot")

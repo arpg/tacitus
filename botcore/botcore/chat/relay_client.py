@@ -671,9 +671,46 @@ class RelayClient:
         self.connected = False
         return floor
 
+    # The key file's last read failure, logged once (reload).
+    _key_error = ""
+
+    def reload(self) -> bool:
+        """Take a new identity from the key file (`rotate`): the polls go out
+        under its install id and token from now on, and every session and
+        event stream of the old identity ends (a phone says hello again).
+        True when the identity changed. A key file that does not read keeps
+        the identity in use, with one log line. The poll loop calls this
+        before each poll; a restart of the bot does the same."""
+        try:
+            ident = self.store.identity()
+        except (RelayError, OSError) as exc:
+            text = _printable(str(exc))
+            if text != self._key_error:
+                self.log.warning("relay: the key file did not read (%s); the identity in "
+                                 "use stays", text)
+            self._key_error = text
+            return False
+        self._key_error = ""
+        if ident == self.identity:
+            return False
+        with self._mu:
+            old, self.connected = self.install_id, False
+            self.identity, self.install_id = ident, ident.install_id
+            self._bot_url = f"{self.relay_url}/r/{self.install_id}/bot"
+            self._auth = "Bearer " + rc.b64e(ident.token)
+            streams = list(self._streams.values())
+            self._streams.clear()
+            self._sessions.clear()
+        for st in streams:
+            st.stop()
+        self.log.warning("relay: the key file holds a new identity; install %s, was %s",
+                         self.install_id, old)
+        return True
+
     def _poll_loop(self) -> None:
         backoff = 1.0
         while not self._stop.is_set():
+            self.reload()
             t0 = time.monotonic()
             try:
                 frames = self._exchange([], self.wait)
@@ -1052,6 +1089,79 @@ def start_relay(frontend_cfg: Mapping[str, Any], local_base_url: str, *,
         lg.error("relay: off, %s", exc)
         return None
     return client.start()
+
+
+# ── rotation ──────────────────────────────────────────────────────────
+
+ROTATE_DEVICES = ("keep", "drop")
+
+
+def _write_backup(path: Path, raw: bytes, now: float) -> Path:
+    """`raw` in a new file `<key file>.<UTC time>.bak` beside the key file,
+    mode 0600, never over an existing file; its path."""
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now))
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    for n in range(100):
+        dest = path.with_name(f"{path.name}.{stamp}{f'-{n}' if n else ''}.bak")
+        try:
+            fd = os.open(dest, flags, 0o600)
+        except FileExistsError:
+            continue
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                os.fchmod(fh.fileno(), 0o600)
+                fh.write(raw)
+                fh.flush()
+                os.fsync(fh.fileno())
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(dest)
+            raise
+        return dest
+    raise RelayError(f"no free backup name beside {path}")
+
+
+def rotate(path: str | os.PathLike, devices: str, *, now: Optional[float] = None) -> dict:
+    """Give the key file a new relay token. The install id and the client
+    key derive from the token (relay_crypto.install_id_for and
+    client_key_for), so both change: the client key that every pairing link
+    ever shown carried stops reaching the bot, and the relay knows the
+    install by the new id. `devices` is "keep" (the bot's static key and
+    the paired devices stay) or "drop" (a new static key as well, and no
+    device). The open pairings go in both cases: their links name the old
+    install. The old file is copied first to `<key file>.<UTC time>.bak`,
+    mode 0600; the new one replaces it through a temp file and a rename,
+    under the key file's lock. A running RelayClient takes the new identity
+    at its next poll (`RelayClient.reload`). Returns what changed."""
+    if devices not in ROTATE_DEVICES:
+        raise RelayError(f"devices is one of {ROTATE_DEVICES}")
+    rc._need()
+    now = time.time() if now is None else now
+    store = KeyStore(path)
+    with store._locked():
+        data = store._read()
+        raw = store.path.read_bytes()
+        try:
+            old = rc.BotIdentity(rc.b64d(data["bot_private"]), rc.b64d(data["relay_token"]))
+        except (KeyError, rc.FrameError) as exc:
+            raise RelayError(f"{store.path} has no usable identity") from exc
+        backup = _write_backup(store.path, raw, now)
+        fresh = rc.BotIdentity.generate()
+        private = old.private if devices == "keep" else fresh.private
+        open_pairings = sum(1 for p in data["pairings"] if p.get("expires", 0) > now)
+        had = len(data["devices"])
+        data.update({"bot_private": rc.b64e(private), "relay_token": rc.b64e(fresh.token),
+                     "devices": data["devices"] if devices == "keep" else [],
+                     "pairings": []})
+        store._write(data)
+    new = rc.BotIdentity(private, fresh.token)
+    return {"key_file": str(store.path), "backup": str(backup),
+            "install_id": new.install_id, "old_install_id": old.install_id,
+            "install_id_changed": new.install_id != old.install_id,
+            "client_key_changed": new.client_key != old.client_key,
+            "bot_key": "kept" if devices == "keep" else "new",
+            "devices": "kept" if devices == "keep" else "dropped", "device_count": had,
+            "pairings_dropped": open_pairings}
 
 
 # ── the owner's CLI ───────────────────────────────────────────────────

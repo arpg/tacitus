@@ -16,9 +16,9 @@ This is part D of the Tacitus web chat: A is the web front end
 | `botcore/botcore/chat/webui/app.js` | The app's relay transport: the same protocol in WebCrypto, the pairing, "Pair a phone" |
 | `botcore/botcore/chat/webui/qr.js` | The QR encoder for the pairing link (byte mode, level M, versions 1 to 40) |
 | `botcore/botcore/chat/relay_qr.py` | The same encoder in Python, for the CLI's QR code on a terminal |
-| `scripts/webchat-relay.py` | The owner CLI: `init`, `show`, `pair`, `approve`, `revoke` |
+| `scripts/webchat-relay.py` | The owner CLI: `init`, `show`, `pair`, `approve`, `revoke`, `rotate` |
 | `relay/install.sh`, `relay/snippets/` | The operator's install: a pinned commit, a confined unit, the nginx blocks |
-| `tests/test_relay.py` | Crypto, relay rules, the web front end's routes, a loopback run of the whole path, and each attack the security review found |
+| `tests/test_relay.py` | Crypto, relay rules, the web front end's routes, a loopback run of the whole path, each attack the security review found, and rotation |
 | `tests/test_relay_install.py` | The install script's checks, the unit it writes, the nginx rules |
 | `tests/fixtures/relay_vectors.json` | The protocol with fixed keys, made by `relay_crypto`; the app reproduces it in a browser (`tests/test_webui.py`) |
 
@@ -358,7 +358,9 @@ tickets not yet spent, a rate bucket and whether a phone has used it. A
 route goes 60 s after the bot's last poll. Per source address, a bucket
 that meters new routes (the address itself is never logged). Nothing goes
 to disk. There are no accounts. A restart drops every route: bots
-reconnect within seconds and phones say hello again.
+reconnect within seconds and phones say hello again. After a `rotate`
+(Rotation, below) the bot polls under a new install id, and the old
+route goes 60 s after the last poll under it.
 
 The optional `--allow-file` lists the install ids the relay serves (the
 hosted tier's activation list); it is reloaded when it changes.
@@ -468,9 +470,9 @@ It **can**:
   POST, that the bot may have it anyway), and never drops its keys over
   one;
 - keep the bot's relay token and the client key. They let it act as this
-  install's bot at a relay, which it already is; moving to another relay
-  means a new key file (`init`), since the token is the install's
-  identity there;
+  install's bot at a relay, which it already is. `rotate` retires both
+  with the install id (Rotation), so a token the relay kept names an
+  install that no bot uses;
 - on a phone paired through the relay's origin (only when the owner
   opted in), serve changed code: read everything that phone shows and
   post as the owner, without the card actions unless the owner chose
@@ -503,7 +505,7 @@ The `relay` block sits inside the `web` block of the chat config
 |---|---|
 | `url` | The relay's base URL. Required. `https`. |
 | `key_file` | The key file, owner-private, mode 0600. Default: `webchat-relay.json` beside the web chat's store (the owner-private directory). Created on the first start when missing and `install_id` is not set. The relay stays off when the file is not a regular file of the bot's uid with mode 0600, when its directory is writable by another user, or when it is inside the resident's tree. |
-| `install_id` | Optional pin: the bot refuses to start the relay when the key file is another install's, or missing. |
+| `install_id` | Optional pin: the bot refuses to start the relay when the key file is another install's, or missing. After a `rotate`, set it to the new id. |
 | `app_url` | Where a pairing link opens the app. Default: the web block's `public_url` (own origin). A device is own-origin only when this is `public_url`'s origin; the tailnet UI pairs nothing else (409 without `public_url`). |
 | `relay_origin_access` | What a device paired through the relay's origin may do: `"off"` (nothing; the default), `"read"` (GET only), `"chat"` (all but card actions), `"all"`. Any value but `"off"` is one of the two opt-ins for such a device; `pair --relay-origin` is the other. |
 | `wait` | The long-poll's wait in seconds (default 25, at most 55; the relay caps it at 25). |
@@ -528,6 +530,50 @@ neither, so it cannot pair a device, read a session or move the bot to
 another relay. `ea_config.get_chat` keeps a `relay` block only from the
 owner-private `chat.json`: one in `ea-config.json`, which the resident can
 write, is dropped.
+
+## Rotation
+
+`webchat-relay.py rotate --key-file <key file> --devices keep|drop` gives
+the key file a new relay token. The install id is a hash of the token and
+the client key is an HMAC under it (Transport), so both change with it.
+The bot's static key does not come from the token.
+
+- The client key in every pairing link shown so far, which a removed
+  device also kept, reaches nothing: the relay answers a phone that shows
+  it `unavailable`, as it answers for an install that is offline.
+- The relay knows the install by the new id. A hosted relay serves it
+  only when its allow file names it (Operator steps, 6): give the
+  operator the new id, and ask that the old one be removed. A relay
+  without an allow file needs nothing. A `relay` block that pins
+  `install_id` must name the new id; with the old one the next start
+  leaves the relay off.
+- `--devices keep` keeps the bot's static key and the device records,
+  approved or waiting. `--devices drop` makes a new static key as well
+  and removes every device; their push subscriptions go at the next
+  push. There is no default. Both drop the open pairings, whose links
+  name the old install.
+- The old file is copied first to `<key file>.<UTC time>.bak` beside it,
+  mode 0600, never over another backup. The new file then replaces the
+  old one through a temp file and a rename, under the key file's lock.
+  The backup holds the old token and keys: delete it once the new key
+  works.
+- The running bot takes the new identity before its next poll
+  (`RelayClient.reload` compares the key file with the identity in use,
+  so it comes at most one long-poll wait later). It polls under the new
+  id, and every session and event stream of the old one ends. A restart
+  of the bot does the same.
+- A phone keeps the relay URL, the install id, the client key and the
+  bot's key it took at pairing, and the app does not yet take new ones
+  from the bot. So today every phone pairs again after a rotation, in
+  either mode, and after `keep` the owner removes its old entry (Later
+  work). `keep` is for the app that follows a rotation: its device then
+  needs no new pairing and no new approval.
+
+The command prints the old and new install ids, what it kept and
+dropped, and the backup's path as JSON, and the owner's steps on stderr.
+Moving to another relay is a change of `url` in the relay block and a
+restart; a rotation first leaves the old relay a token that names an
+install no bot uses.
 
 ## For the web front end (A)
 
@@ -774,9 +820,14 @@ command as the owner.
    subscriptions at the next push. A subscription made before this
    change names no device: Revoke it under Notifications in the drawer,
    or replace the pairing token, which drops them all. The client key in
-   the phone's links stays valid until a `rotate` exists (Later work); it
-   lets a holder spend the relay's limits for this install, not reach
-   the bot.
+   the phone's links stays valid: it lets a holder spend the relay's
+   limits for this install, not reach the bot. Step 8 retires it.
+8. A pairing link that leaked, or the links of a removed phone:
+   `python3 <code>/scripts/webchat-relay.py rotate --key-file ~/.ea-private/webchat-relay.json --devices drop`
+   (Rotation). It prints the new install id: give it to the hosted
+   relay's operator, set it as `install_id` in the relay block when the
+   block pins one, and pair each phone again. The running bot takes the
+   new key within a minute; a restart works too.
 
 ## Later work
 
@@ -784,8 +835,10 @@ command as the owner.
   thousand installs.
 - A version in `/api/me`, so a relay-origin app notices that it is older
   or newer than the bot.
-- A `rotate` command for a new token, install id and client key with the
-  same paired devices, for moving between relays; it also retires the
-  client key that every pairing link ever shown carried.
+- The app follows a rotation: on the tailnet it reads
+  `/api/relay/status`, and when the bot's key is the one it holds, it
+  takes the new relay URL, install id and client key in place. A device
+  that `rotate --devices keep` kept then needs no new pairing. Until then
+  `keep` spares only the bot's key and the device records.
 - Signed release tags (the auto-update work), so the operator installs
   with `--tag`.

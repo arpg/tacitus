@@ -11,6 +11,15 @@ On a Slack install there is no server-side schedule; `send_direct`
 falls back to an urgent post in the personal channel with a mention, and
 `schedule_direct` raises.
 
+On the web chat alone (`"frontend": "web"`) the store is the chat:
+`schedule_direct` queues the post in the store (`scheduled_posts`), and
+the bot posts it in the owner's DM channel when it is due
+(`WebFrontend.post_due`, on its tail thread). `cancel_scheduled` drops a
+queued one and `list_scheduled` lists them, as on Zulip. The bot must be
+up to post it; one it was down for goes out when it is back. Only an
+owner process opens that store: in any other `frontend()` raises, so
+alert.py stages the alert for the owner's flush.
+
 Requires the owner's chat credential (owner_trust), so these run in owner
 lanes: the owner's shell, cron as the owner, and `alert.py flush`.
 
@@ -39,11 +48,28 @@ except ImportError:  # pragma: no cover
 
 
 def frontend():
-    return load_frontend(for_cli=True)
+    fe = load_frontend(for_cli=True)
+    if is_web(fe) and not _owner_process():
+        raise PermissionError("the web chat's store is the owner's, and this process is not "
+                              "(docs/webchat.md, CLI senders)")
+    return fe
 
 
 def is_zulip(fe) -> bool:
     return hasattr(fe, "client") and hasattr(fe, "owner_id") and hasattr(fe, "_call")
+
+
+def is_web(fe) -> bool:
+    """The web chat alone (`"frontend": "web"`), not a composite."""
+    return getattr(fe, "name", "") == "web" and hasattr(fe, "schedule_post")
+
+
+def _owner_process() -> bool:
+    try:  # the chat package's owner_trust, which the tests patch
+        from . import owner_trust
+    except ImportError:  # pragma: no cover
+        import owner_trust  # type: ignore
+    return owner_trust.is_owner_process()
 
 
 def owner_mention(fe) -> str:
@@ -72,10 +98,13 @@ def send_direct(text: str, fe=None) -> dict:
 
 def schedule_direct(text: str, when: datetime, fe=None) -> int:
     """Schedule `text` as a direct message to the owner at `when` (an
-    aware datetime). Returns the server's scheduled_message_id."""
+    aware datetime). Returns the server's scheduled_message_id; on the web
+    chat alone, the id of the post queued in its store."""
     fe = fe or frontend()
+    if is_web(fe):
+        return _schedule_web(text, when, fe)
     if not is_zulip(fe):
-        raise RuntimeError("scheduled direct messages need the Zulip frontend")
+        raise RuntimeError("scheduled direct messages need the Zulip or the web frontend")
     if when.tzinfo is None:
         raise ValueError("`when` must be timezone-aware")
     res = fe._call("scheduled_messages", "POST", {
@@ -86,9 +115,23 @@ def schedule_direct(text: str, when: datetime, fe=None) -> int:
     return int(res["scheduled_message_id"])
 
 
+def _schedule_web(text: str, when: datetime, fe) -> int:
+    """The post waits in the web chat's store; the bot posts it in the DM
+    channel at `when`."""
+    if when.tzinfo is None:
+        raise ValueError("`when` must be timezone-aware")
+    if not _owner_process():
+        raise PermissionError("the web chat's store is the owner's, and this process is not")
+    return int(fe.schedule_post(fe.dm_channel(fe.owner_id), text, when.timestamp()))
+
+
 def list_scheduled(fe=None) -> list[dict]:
     """The bot's pending scheduled messages, direct ones only."""
     fe = fe or frontend()
+    if is_web(fe):
+        dm = fe.dm_channel(fe.owner_id)
+        return [{"id": int(r["id"]), "at": datetime.fromtimestamp(r["due_at"], timezone.utc),
+                 "content": r["text"] or ""} for r in fe.scheduled_posts() if r["channel"] == dm]
     if not is_zulip(fe):
         return []
     res = fe._call("scheduled_messages")
@@ -104,6 +147,8 @@ def list_scheduled(fe=None) -> list[dict]:
 
 def cancel_scheduled(sid: int, fe=None) -> bool:
     fe = fe or frontend()
+    if is_web(fe):
+        return fe.cancel_scheduled_post(int(sid))
     if not is_zulip(fe):
         return False
     res = fe._call(f"scheduled_messages/{int(sid)}", "DELETE")
