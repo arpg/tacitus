@@ -199,6 +199,10 @@ for every reschedule or delete.
 
 ## Guestless events need no Create card
 
+On by default; `"guestless_events": {"enabled": false}` in
+`ea-config.json` turns it off, and then every staged event gets its
+Create card.
+
 A staged Outlook event with no attendees and no optional attendees mails
 no one, so `_post_staged_action` creates it through
 `_create_guestless_event` before any card is drawn: the bot mints the

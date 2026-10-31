@@ -45,6 +45,10 @@ DEFAULTS = {
     # admissions-inquiries and is summarised weekly. Off unless the install
     # turns it on; a faculty install with heavy applicant mail sets true.
     "admissions_filter": {"enabled": False},
+    # Guestless events (ea-chat-bot.py _create_guestless_event): a staged
+    # Outlook event with no attendees is created at once, with no Create
+    # card. On unless the install turns it off; off, every event is carded.
+    "guestless_events": {"enabled": True},
     # Mail tagger (preprocessor/mail_tagger.py): new inbox mail gets Outlook
     # categories (project or domain, state, topic) from one small model
     # call per batch, on a two-minute owner cron. Off unless turned on.
@@ -359,6 +363,13 @@ def admissions_filter_enabled(config_path: Path | None = None) -> bool:
     turns it on."""
     val = load(config_path).get("admissions_filter")
     return isinstance(val, dict) and val.get("enabled") is True
+
+
+def guestless_events_enabled(config_path: Path | None = None) -> bool:
+    """Is a guestless Outlook event created with no Create card? Only a
+    literal false turns it off."""
+    val = load(config_path).get("guestless_events")
+    return not (isinstance(val, dict) and val.get("enabled") is False)
 
 
 def mail_tagger_enabled(config_path: Path | None = None) -> bool:

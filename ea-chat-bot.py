@@ -7700,11 +7700,18 @@ def _guestless_release(key: str) -> None:
             pass
 
 
+def _guestless_enabled() -> bool:
+    """ea-config.json "guestless_events": {"enabled": false} turns this off;
+    then every staged event gets its Create card."""
+    from preprocessor import ea_config as _ea_config
+    return _ea_config.guestless_events_enabled()
+
+
 def _create_guestless_event(channel: str, thread_ts: str | None, ev: dict) -> bool:
     """Create a staged guestless Outlook event at once. False sends it to a
     Create card: it has guests, is on a Google calendar, is past the cap, or
-    the create failed."""
-    if not _is_guestless(ev):
+    the create failed, or the install turned the option off."""
+    if not _guestless_enabled() or not _is_guestless(ev):
         return False
     start, end = _event_time_local(ev.get("start", "")), _event_time_local(ev.get("end", ""))
     subject = str(ev.get("subject", ""))
