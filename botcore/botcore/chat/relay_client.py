@@ -13,8 +13,9 @@ and on the phone. The phone never chooses where a request goes: only
 owner's credential added here and every header but a short list dropped.
 
 `KeyStore` is the key file (owner-private, mode 0600): the bot's X25519
-key, the relay token, the paired devices and the open pairings. A new
-device waits for the owner's approval on the tailnet. The CLI at the
+key, the relay token, the Ed25519 key that signs the web app, the paired
+devices and the open pairings. A new device waits for the owner's
+approval on the tailnet. The CLI at the
 bottom (`scripts/webchat-relay.py` runs it) creates the file, shows the
 install id, opens a pairing, and approves and revokes a device.
 
@@ -80,13 +81,22 @@ RETURN_HEADERS = ("content-type", "content-disposition")
 # reached by an `open` frame, never by a plain request.
 DENIED_PREFIXES = ("/api/pair/", "/api/relay/")
 EVENTS_PATH = "/api/events"
+# The one relay route a phone reaches through the relay: after it checks
+# the app's code against the bot's signed manifest it posts the bundle hash
+# here, and the web front end records it on the device (docs/webchat.md,
+# Code integrity). A device at any level but "off" may post it.
+ATTEST_PATH = "/api/relay/attest"
 # What a device paired through the relay's own origin may do. The relay
 # serves that copy of the web app, so a compromised relay could change its
 # code, read what the phone shows and type as the owner. Such a device is
 # refused unless the owner-private chat.json opts in ("read", "chat" or
 # "all"), and never reaches the card actions (the Send and Create
-# buttons) below "all". A device paired through the bot's own origin (the
-# tailnet) runs code the relay never touches, and may do everything.
+# buttons) below "all" unless the owner allows them for that device
+# (`cards_allowed`, set by `approve(..., cards=True)` only). Its check of
+# its code (`bundle_verified`) is recorded but grants nothing: the code
+# that runs the check came from the relay. A device paired through the
+# bot's own origin (the tailnet) runs code the relay never touches, and
+# may do everything.
 ACCESS_LEVELS = ("off", "read", "chat", "all")
 DEFAULT_RELAY_ORIGIN_ACCESS = "off"
 RELAY_ORIGIN_WARNING = ("a relay-origin device runs the copy of the app the relay serves: whoever "
@@ -277,13 +287,16 @@ class KeyStore:
         self._update(reg)
         return dict(record)
 
-    def approve(self, device_id: str) -> bool:
-        """Let a waiting device in; False when there is no such device."""
+    def approve(self, device_id: str, cards: bool = False) -> bool:
+        """Let a waiting device in, and set whether it may press card
+        buttons (`cards_allowed`; approving again changes it). False when
+        there is no such device."""
         def app(data: dict) -> bool:
             for d in data["devices"]:
                 if d.get("id") == device_id:
                     d.pop("pending", None)
                     d.pop("code", None)
+                    d["cards_allowed"] = cards is True
                     return True
             return False
         return self._update(app)
@@ -294,6 +307,55 @@ class KeyStore:
             data["devices"] = [d for d in data["devices"] if d.get("id") != device_id]
             return len(data["devices"]) != before
         return self._update(rev)
+
+    # the web app's signing key (docs/webchat.md, Code integrity)
+
+    def signing_keypair(self) -> tuple[bytes, bytes]:
+        """The Ed25519 pair the bot signs its web app with (raw private, raw
+        public): `sign_private` and `sign_public`, made and written into
+        this file on first use."""
+        have = self._signing(self.load())
+        return have if have is not None else self._update(self._add_signing)
+
+    def _signing(self, data: dict) -> Optional[tuple[bytes, bytes]]:
+        if not data.get("sign_private"):
+            return None
+        try:
+            priv, pub = rc.signing_keypair(rc.b64d(data["sign_private"]))
+        except (rc.FrameError, ValueError) as exc:
+            raise RelayError(f"{self.path} holds a signing key that does not load") from exc
+        if data.get("sign_public") != rc.b64e(pub):
+            raise RelayError(f"{self.path}: sign_public is not the key of sign_private")
+        return priv, pub
+
+    def _add_signing(self, data: dict) -> tuple[bytes, bytes]:
+        have = self._signing(data)  # another process may have made it first
+        if have is None:
+            have = rc.signing_keypair()
+            data["sign_private"], data["sign_public"] = rc.b64e(have[0]), rc.b64e(have[1])
+        return have
+
+    def attest(self, device_id: str, bundle: str, release: str = "",
+               now: Optional[float] = None) -> bool:
+        """Record a device's last check of its app: `bundle_verified`, the
+        `attested_bundle` hash it matched and the bot's `attested_release`
+        then; "" records a failed check. It grants nothing (`cards_allowed`
+        does). False when there is no such device."""
+        now = time.time() if now is None else now
+
+        def att(data: dict) -> bool:
+            for d in data["devices"]:
+                if d.get("id") == device_id:
+                    d["bundle_verified"] = bool(bundle)
+                    d["attested_at"] = int(now)
+                    for key, value in (("attested_bundle", bundle), ("attested_release", release)):
+                        if bundle and value:
+                            d[key] = value
+                        else:
+                            d.pop(key, None)
+                    return True
+            return False
+        return self._update(att)
 
 
 # ── helpers ───────────────────────────────────────────────────────────
@@ -373,7 +435,7 @@ def access_allows(level: str, method: str, path: str) -> bool:
         return True
     if level not in ACCESS_LEVELS or level == "off":
         return False
-    if method == "GET":
+    if method == "GET" or (method == "POST" and _plain_route(path) == ATTEST_PATH):
         return True
     if level != "chat":
         return False
@@ -395,7 +457,26 @@ def path_allowed(path: Any) -> bool:
     # routes are compared decoded and lowercased: no spelling of them
     # (`/api/%72elay/pair`, `/api/Pair`) gets through.
     plain = re.sub(r"/{2,}", "/", urllib.parse.unquote(route).lower())
+    if plain == ATTEST_PATH:
+        return True
     return not any(plain.startswith(p) or plain + "/" == p for p in DENIED_PREFIXES)
+
+
+def device_row(d: Mapping[str, Any]) -> dict:
+    """A device as the owner's list shows it: id, name, paired_at, origin,
+    `pending` (and the pairing `code` while pending); for a relay-origin
+    device also `cards_allowed`, `bundle_verified` (its last check of its
+    app) and the `release` it checked against."""
+    row = {k: d.get(k) for k in ("id", "name", "paired_at", "origin")}
+    row["pending"] = bool(d.get("pending"))
+    if row["pending"]:
+        row["code"] = str(d.get("code") or "")
+    if d.get("origin") != "own":
+        row["cards_allowed"] = d.get("cards_allowed") is True
+        row["bundle_verified"] = d.get("bundle_verified") is True
+        if row["bundle_verified"]:
+            row["release"] = str(d.get("attested_release") or "")
+    return row
 
 
 def _plain_route(path: str) -> str:
@@ -568,13 +649,18 @@ class RelayClient:
 
     def status(self) -> dict:
         """The client's state for the tailnet UI. `bot_public` and
-        `client_key` let the app check a pairing link against the bot."""
+        `client_key` let the app check a pairing link against the bot;
+        `sign_public` is the key the bot signs its web app with."""
         with self._mu:
             sessions, streams = len(self._sessions), len(self._streams)
         devices = self.store.devices()
+        try:
+            sign_public = rc.b64e(self.store.signing_keypair()[1])
+        except (RelayError, OSError):
+            sign_public = ""
         return {"install_id": self.install_id, "relay_url": self.relay_url,
                 "bot_public": rc.b64e(self.identity.public),
-                "client_key": self.identity.client_key,
+                "client_key": self.identity.client_key, "sign_public": sign_public,
                 "connected": self.connected, "last_ok": self.last_ok,
                 "last_error": self.last_error, "sessions": sessions,
                 "streams": streams, "devices": len(devices),
@@ -584,8 +670,22 @@ class RelayClient:
 
     def level(self, device: Mapping[str, Any]) -> str:
         """What a device may do: "all" for one paired on the bot's own
-        origin, else `relay_origin_access`."""
-        return "all" if device.get("origin") == "own" else self.relay_origin_access
+        origin. For one paired on the relay's origin: "chat" when it was
+        paired against the bot's signed bundle (`bundle`), else
+        `relay_origin_access` ("off" keeps it out); "all" when the owner
+        allowed it card buttons (`cards_allowed`)."""
+        if device.get("origin") == "own":
+            return "all"
+        base = "chat" if device.get("bundle") else self.relay_origin_access
+        if base == "off":
+            return "off"
+        return "all" if device.get("cards_allowed") is True else base
+
+    def attest(self, device_id: str, bundle: str, release: str = "") -> bool:
+        """Record a device's check of its app: the bundle hash it matched
+        and the bot's release then, or "" for a failed one. It grants
+        nothing. False for an unknown device."""
+        return self.store.attest(device_id, bundle, release)
 
     def new_pairing(self, app_url: Optional[str] = None, ttl: int = rc.PAIRING_TTL,
                     relay_origin: bool = False) -> str:
@@ -605,20 +705,13 @@ class RelayClient:
         return payload.to_string(url)
 
     def devices(self) -> list[dict]:
-        """id, name, paired_at, origin and `pending`; a device that waits
-        for approval also has its pairing `code`."""
-        out = []
-        for d in self.store.devices():
-            row = {k: d.get(k) for k in ("id", "name", "paired_at", "origin")}
-            row["pending"] = bool(d.get("pending"))
-            if row["pending"]:
-                row["code"] = str(d.get("code") or "")
-            out.append(row)
-        return out
+        """`device_row` of each paired device."""
+        return [device_row(d) for d in self.store.devices()]
 
-    def approve(self, device_id: str) -> bool:
-        """Let a waiting device in; its next request works."""
-        return self.store.approve(device_id)
+    def approve(self, device_id: str, cards: bool = False) -> bool:
+        """Let a waiting device in (its next request works), and set
+        whether it may press card buttons."""
+        return self.store.approve(device_id, cards=cards)
 
     def revoke(self, device_id: str) -> bool:
         """Remove a device: its sessions end at once, and each event stream
@@ -1083,6 +1176,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             p.add_argument("--ttl", type=int, default=rc.PAIRING_TTL)
         if name in ("approve", "revoke"):
             p.add_argument("--device", required=True)
+        if name == "approve":
+            p.add_argument("--cards", action="store_true",
+                           help="also let a relay-origin device press card buttons (Send, "
+                                "Create); its code comes from the relay")
     args = ap.parse_args(argv)
     if not rc.AVAILABLE:
         print("the relay needs the cryptography package", file=sys.stderr)
@@ -1101,13 +1198,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
         store = KeyStore(path)
         if args.cmd == "show":
-            devices = []
-            for d in store.devices():
-                row = {k: d.get(k) for k in ("id", "name", "paired_at", "origin")}
-                row["pending"] = bool(d.get("pending"))
-                if row["pending"]:
-                    row["code"] = d.get("code") or ""
-                devices.append(row)
+            devices = [device_row(d) for d in store.devices()]
             print(json.dumps({"install_id": store.identity().install_id,
                               "relay_url": store.relay_url(), "devices": devices,
                               "open_pairings": len([p for p in store.load()["pairings"]
@@ -1139,7 +1230,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                   file=sys.stderr)
             return 0
         if args.cmd in ("approve", "revoke"):
-            ok = store.approve(args.device) if args.cmd == "approve" else store.revoke(args.device)
+            ok = store.approve(args.device, cards=args.cards) if args.cmd == "approve" \
+                else store.revoke(args.device)
             print(("approved" if args.cmd == "approve" else "revoked") if ok else "no such device")
             return 0 if ok else 1
     except (RelayError, OSError) as exc:

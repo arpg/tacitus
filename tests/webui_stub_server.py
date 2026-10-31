@@ -17,7 +17,12 @@ streams (and can refuse the next ones); `streams` records how each stream
 request asked to resume. `--pair-token T` makes every API route answer
 401 until the browser pairs with T.
 
-    python3 tests/webui_stub_server.py [--port 8471] [--tick 5] [--pair-token T]
+With `sign=True` (or `--sign`) it signs the app's files as the bot does
+(web_bundle, which needs the cryptography package) and serves the signed
+manifest at /chat/manifest.sig.json; `files` maps a file's name to the
+bytes served in its place, as a server that changed it would.
+
+    python3 tests/webui_stub_server.py [--port 8471] [--tick 5] [--pair-token T] [--sign]
 """
 from __future__ import annotations
 
@@ -53,8 +58,18 @@ WEEKLY = "stream:9:topic:weekly%20plan"
 class Stub:
     """The in-memory store: channels, messages, files and the event log."""
 
-    def __init__(self, tick: float = 0.0, pair_token: str | None = None, echo: bool = True):
+    def __init__(self, tick: float = 0.0, pair_token: str | None = None, echo: bool = True,
+                 sign: bool = False):
         self.cond = threading.Condition()
+        # The signed bundle of WEBUI (web_bundle.Bundle) when `sign`; the
+        # bytes served in place of a file, by name.
+        self.bundle = None
+        self.files_served: dict[str, bytes] = {}
+        if sign:
+            import sys
+            sys.path.insert(0, str(WEBUI.parents[2]))
+            from botcore.chat import relay_crypto, web_bundle
+            self.bundle = web_bundle.Bundle(WEBUI, relay_crypto.signing_keypair()[0])
         self.pair_token = pair_token
         self.echo = echo
         self.closed = False
@@ -280,6 +295,10 @@ class Handler(BaseHTTPRequestHandler):
         if not path.startswith(BASE + "/"):
             return self._json(404, {"error": "not found"})
         rest = path[len(BASE) + 1:]
+        if rest == "manifest.sig.json":
+            if self.stub.bundle is None:
+                return self._json(404, {"error": "not found"})
+            return self._send(200, self.stub.bundle.body, "application/json")
         if not rest.startswith("api/"):
             return self._static(rest or "index.html")
         if not self._owner():
@@ -288,7 +307,8 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(url.query)
         s = self.stub
         if parts == ["me"]:
-            return self._json(200, {"owner": "owner", "bot": "bot", "public_url": None})
+            return self._json(200, {"owner": "owner", "bot": "bot", "public_url": None,
+                                    "bundle": s.bundle.hash if s.bundle else ""})
         if parts == ["relay", "status"]:
             return self._json(200, {"enabled": True, "install_id": STUB_INSTALL, "connected": False,
                                     "relay_url": "https://relay.example.net",
@@ -363,7 +383,9 @@ class Handler(BaseHTTPRequestHandler):
         path = (WEBUI / name).resolve()
         if path.parent != WEBUI or not path.is_file():
             return self._json(404, {"error": "not found"})
-        self._send(200, path.read_bytes(), TYPES.get(path.suffix, "application/octet-stream"),
+        data = self.stub.files_served.get(path.name, None)
+        self._send(200, path.read_bytes() if data is None else data,
+                   TYPES.get(path.suffix, "application/octet-stream"),
                    {"Content-Security-Policy": CSP} if path.suffix == ".html" else None)
 
     def _events(self, q: dict) -> None:
@@ -423,8 +445,9 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8471)
     ap.add_argument("--tick", type=float, default=0.0, help="post a bot message every N seconds")
     ap.add_argument("--pair-token", default=None, help="require pairing with this token")
+    ap.add_argument("--sign", action="store_true", help="sign the app's files as the bot does")
     args = ap.parse_args()
-    server, stub = serve(args.port, tick=args.tick, pair_token=args.pair_token)
+    server, stub = serve(args.port, tick=args.tick, pair_token=args.pair_token, sign=args.sign)
     print(f"stub web chat on http://127.0.0.1:{server.server_address[1]}{BASE}/", flush=True)
     try:
         threading.Event().wait()
