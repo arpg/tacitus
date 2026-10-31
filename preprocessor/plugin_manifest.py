@@ -181,7 +181,19 @@ def _empty_capabilities() -> dict:
                                         "keep_from_anthropic_domains": []},
             "network": {"domains": [], "local": []}, "secrets": [],
             "owner_hooks": {"verbs": [], "auth_sources": [], "cron": []},
-            "claude_plugin": "", "mail_triggers": []}
+            "claude_plugin": "", "mail_triggers": [], "ledger_types": {}}
+
+
+def _norm_ledger_types(block, errors: list) -> dict:
+    """The plugin's own ledger types, shape only: each one's meaning and
+    traits are checked by ledger.config_types when the ledger loads them."""
+    if block is None:
+        return {}
+    if not isinstance(block, dict) or not all(
+            isinstance(k, str) and isinstance(v, dict) for k, v in block.items()):
+        errors.append("capabilities.ledger_types must be an object of type name to definition")
+        return {}
+    return block
 
 
 def _norm_chat(chat: dict, errors: list, strict: bool) -> dict | None:
@@ -492,6 +504,7 @@ def _normalize_v2(raw: dict, dir_name: str, errors: list) -> dict:
     caps["cards"] = cards
     caps["mail_rules"] = _norm_mail_rules(caps_raw.get("mail_rules"), errors)
     caps["mail_triggers"] = _norm_mail_triggers(caps_raw.get("mail_triggers"), errors)
+    caps["ledger_types"] = _norm_ledger_types(caps_raw.get("ledger_types"), errors)
     caps["network"] = _norm_network(caps_raw.get("network"), errors)
     secrets = _strs(caps_raw.get("secrets"))
     for s in secrets:
@@ -610,6 +623,10 @@ def capability_summary(norm: dict) -> dict:
     # the digest the owner accepted.
     if caps.get("mail_triggers"):
         summary["mail_triggers"] = caps["mail_triggers"]
+    # Traits decide what closes a row, so a declaration needs consent; only
+    # when declared, as above.
+    if caps.get("ledger_types"):
+        summary["ledger_types"] = caps["ledger_types"]
     return summary
 
 
@@ -663,6 +680,9 @@ def describe(summary: dict) -> list[str]:
         lines.append(f"mail rule: mail from *{s}* never closes a ledger row")
     for d in mr["keep_from_anthropic_domains"]:
         lines.append(f"mail rule: mail from {d} stays with the remote model")
+    for name, spec in (summary.get("ledger_types") or {}).items():
+        on = [t for t, v in (spec.get("traits") or {}).items() if v]
+        lines.append(f"ledger type: {name} ({', '.join(on) or 'no traits on'})")
     for t in summary.get("mail_triggers") or []:
         what = []
         if t["from"]:

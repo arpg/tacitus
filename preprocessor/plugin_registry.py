@@ -875,6 +875,14 @@ def card_spec(action_type: str, lock=None):
     return None
 
 
+def ledger_types(lock=None) -> dict:
+    """{plugin name: its ledger_types block} for the enabled plugins that
+    declare one, as the owner accepted it."""
+    return {lp.name: lp.manifest["capabilities"]["ledger_types"]
+            for lp in managed_plugins(lock=lock)
+            if lp.manifest["capabilities"].get("ledger_types")}
+
+
 def mail_rules(lock=None) -> dict:
     """The enabled plugins' mail rules, merged and sorted."""
     out = {"closure_confirm_senders": set(), "closure_exclude_senders": set(),

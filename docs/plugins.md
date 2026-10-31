@@ -456,6 +456,16 @@ lifecycle (snooze, follow-up, deadline-watchdog, closing a row when its
 email is archived) works for plugin rows unchanged, as long as the plugin
 stores `source_message_id`.
 
+A plugin row keeps any type. A v2 plugin may also declare its types under
+`capabilities.ledger_types`, in the shape of `ledger_types` in
+`ea-config.json`: a `meaning` and every trait stated (`ledger.py types`
+lists the traits). The rules then read the type by its traits. A
+declaration is optional, and a type left undeclared keeps the behaviour
+it had before. The ledger refuses a declared type whose name is a core or
+config type, an alias, or another plugin's type, and lists the reason
+under `plugin_errors` in `ledger.py types`. A declaration is part of what
+the owner consents to.
+
 ## Moving a core feature into a plugin
 
 1. Create the plugin repo ([arpg/tacitus-plugin-template](https://github.com/arpg/tacitus-plugin-template)
