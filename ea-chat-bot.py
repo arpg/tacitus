@@ -8624,15 +8624,19 @@ def _thread_channel(thread_ts: str) -> str | None:
 
 
 def _web_thread_channel(thread_ts: str) -> str | None:
-    """The web chat channel that holds thread `thread_ts`, from the web
-    front end's store (`thread_channel`); None on any other front end, a
-    composite included (its keys are the primary's), and for a key the
-    store does not hold."""
+    """The web chat channel that holds thread `thread_ts`, a web key
+    (`t<seq>`, or a message's `w<seq>`), from the web front end's store
+    (`thread_channel`). None for any other key (a Slack ts, a Zulip key),
+    on any other front end, a composite included (its keys are the
+    primary's), and for a key the store does not hold."""
+    key = str(thread_ts or "")
+    if not re.fullmatch(r"[tw]\d+", key):
+        return None
     find = getattr(FRONTEND, "thread_channel", None)
     if not callable(find):
         return None
     try:
-        return find(str(thread_ts or "")) or None
+        return find(key) or None
     except Exception as e:
         log.warning(f"web chat thread lookup failed: {e}")
         return None
