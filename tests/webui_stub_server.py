@@ -43,8 +43,10 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' 
        "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 
 DM, MAIN, SCHED, ROOM, OLD = "stream:7", "stream:9", "stream:11", "r1", "r2"
-# The install id /api/relay/status names; a pairing link for another is refused.
+# The install /api/relay/status names; a pairing link for another is refused.
 STUB_INSTALL = "a" * 26
+STUB_BOT_PUBLIC = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"  # 32 bytes of 1, base64url
+STUB_CLIENT_KEY = "c" * 43
 WEEKLY = "stream:9:topic:weekly%20plan"
 
 
@@ -288,7 +290,9 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["me"]:
             return self._json(200, {"owner": "owner", "bot": "bot", "public_url": None})
         if parts == ["relay", "status"]:
-            return self._json(200, {"enabled": True, "install_id": STUB_INSTALL, "connected": False})
+            return self._json(200, {"enabled": True, "install_id": STUB_INSTALL, "connected": False,
+                                    "relay_url": "https://relay.example.net",
+                                    "bot_public": STUB_BOT_PUBLIC, "client_key": STUB_CLIENT_KEY})
         if parts == ["channels"]:
             rows = []
             for c in s.channels.values():

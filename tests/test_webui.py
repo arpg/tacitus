@@ -238,7 +238,7 @@ def test_the_service_worker_never_caches_the_api():
     guard = re.search(r"if \(url\.pathname\.includes\('/api/'\)\) return;", handler)
     assert guard, "the fetch handler must hand every /api/ request back to the browser"
     assert guard.start() < handler.index("respondWith")
-    relay = re.search(r"if \(RELAY_ROUTE\.test\(url\.pathname\) \|\| url\.pathname === '/healthz'\) return;",
+    relay = re.search(r"if \(RELAY_ROUTE\.test\(url\.pathname\) \|\| url\.pathname\.endsWith\('/healthz'\)\) return;",
                       handler)
     assert relay and relay.start() < handler.index("respondWith"), "the relay's routes stay uncached"
     assert re.search(r"const RELAY_ROUTE = /\\/r\\/\[a-z2-7\]\{26\}\\//;", sw)
@@ -261,7 +261,9 @@ def test_the_drawer_has_the_notifications_toggle():
     assert "$('notify-row').hidden = false" in js
     assert "call('GET', '/push/vapid')" in js
     assert re.search(r"pushManager\.subscribe\(\{ userVisibleOnly: true, applicationServerKey: keyBytes\(key\) \}\)", js)
-    assert "call('POST', '/push/subscribe', sub.toJSON())" in js
+    assert "call('POST', '/push/subscribe', await subBody(sub))" in js
+    # The subscription names this browser's relay device, which takes it along when removed.
+    assert "({ ...sub.toJSON(), device: (await loadPairing())?.device || undefined })" in js
     assert "call('POST', '/push/unsubscribe', { endpoint: sub.endpoint })" in js
 
 
@@ -309,8 +311,9 @@ def test_nothing_comes_from_elsewhere():
 
 def test_the_app_stays_small():
     lines = sum(len(read(n).splitlines()) for n in TEXT_FILES)
-    # 1,600 for the chat, and about 900 more for qr.js and the relay transport (docs/webchat-relay.md).
-    assert lines <= 2500, f"{lines} lines: the contract keeps the app near 2,400 with the relay"
+    # 1,600 for the chat, about 900 for qr.js and the relay transport (docs/webchat-relay.md),
+    # and 60 for the relay's device approval, the pairing checks and the file rule.
+    assert lines <= 2560, f"{lines} lines: the contract keeps the app near 2,500 with the relay"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -873,6 +876,29 @@ def test_the_pairing_dialog_is_in_the_drawer():
     js = read("app.js")
     assert "call('POST', '/relay/pair', {})" in js and "QR.draw($('phone-qr'), out.qr, 4)" in js
     assert "Boolean(S.me.relay) && !T.relay" in js  # on the tailnet only
+    assert "call('POST', `/relay/${verb}`, { device: d.id })" in js  # Approve and Remove
+    assert "Never send this link through chat or mail." in js
+
+
+def test_the_relay_transport_takes_only_its_own_answers():
+    """An answer opens only as the answer to its own request (or an event
+    of its own stream); a POST is never sent twice on an err frame, which
+    the relay can forge after the bot ran it."""
+    js = read("app.js")
+    transport = js[js.index("function relayTransport"):js.index("async function pickTransport")]
+    assert "openFrame(s, await post('c', await sealFrame(s, 'req', id, plain)), 'res', id)" in transport
+    assert "openFrame(s, fr, 'sse', opener.id)" in transport
+    assert "frame.k !== kind || frame.id !== id" in js
+    assert "if (attempt || method !== 'GET') throw new RelayError('unsure');" in transport
+    assert "if (s.ctr >= 2 ** 48)" in js
+
+
+def test_a_relayed_file_is_a_raster_image_or_plain_bytes():
+    js = read("app.js")
+    body = js[js.index("function relayFile"):js.index("const norm =")]
+    assert "const RASTER = /^image\\/(png|jpeg|gif|webp)$/;" in js
+    assert "RASTER.test(type) ? type : 'application/octet-stream'" in body
+    assert "a.setAttribute('download', f.name || 'file');" in body and "a.removeAttribute('target');" in body
 
 
 def _vector_check(page, v):
@@ -893,12 +919,15 @@ def _vector_check(page, v):
         out.device = s.device;
         out.req_plaintext = b64e(pack(v.req.meta, b64d(v.req.body)));
         out.req = await sealFrame(s, 'req', v.req.frame.id, pack(v.req.meta, b64d(v.req.body)));
-        const [meta, body] = unpack(await openFrame(s, v.res.frame));
+        try { await openFrame(s, v.res.frame, 'res', 'not-my-request'); out.other = 'opened'; } catch (e) { out.other = e.message; }
+        try { await openFrame(s, v.res.frame, 'sse', v.res.frame.id); out.kind = 'opened'; } catch (e) { out.kind = e.message; }
+        const [meta, body] = unpack(await openFrame(s, v.res.frame, 'res', v.res.frame.id));
         out.res = { meta, body: b64e(body) };
-        out.sse = unpack(await openFrame(s, v.sse.frame))[0];
-        try { await openFrame(s, v.res.frame); out.replay = 'opened'; } catch (e) { out.replay = e.message; }
+        out.sse = unpack(await openFrame(s, v.sse.frame, 'sse', v.sse.frame.id))[0];
+        try { await openFrame(s, v.res.frame, 'res', v.res.frame.id); out.replay = 'opened'; } catch (e) { out.replay = e.message; }
         const bent = { ...v.sse.frame, id: 'another' };
-        try { await openFrame({ ...s, seen: new Set(), top: -1 }, bent); out.moved = 'opened'; } catch (e) { out.moved = e.name; }
+        try { await openFrame({ ...s, seen: new Set(), top: -1 }, bent, 'sse', 'another'); out.moved = 'opened'; } catch (e) { out.moved = e.name; }
+        out.code = await pairCode(unhex(v.hello.h));
         const plainEph = { priv: await pkcs8(v.plain_hello.phone_ephemeral.private),
                            pub: b64d(v.plain_hello.phone_ephemeral.public) };
         out.plain = (await relayHello(rec, null, { eph: plainEph, payload: b64d(v.hello.payload),
@@ -924,6 +953,8 @@ def test_the_app_crypto_reproduces_the_python_vectors(app):
     assert out["res"] == {"meta": v["res"]["meta"], "body": v["res"]["body"]}
     assert out["sse"] == v["sse"]["event"]
     assert out["replay"] == "replayed frame" and out["moved"] == "OperationError"
+    assert out["other"] == "bad frame" and out["kind"] == "bad frame"
+    assert out["code"] == v["hello"]["code"]  # the pairing code the bot shows
     assert out["plain"] == v["plain_hello"]["frame"]
     assert not errors, errors
 
@@ -993,7 +1024,8 @@ def relay_bot(tmp_path):
     rbase = f"http://127.0.0.1:{rsrv.server_address[1]}"
     port = _free_port()
     public = f"http://127.0.0.1:{port}/chat"
-    fe = WebFrontend({"port": port, "public_url": public, "relay": {"url": rbase, "wait": 1}},
+    fe = WebFrontend({"port": port, "public_url": public,
+                      "relay": {"url": rbase, "wait": 1, "relay_origin_access": "chat"}},
                      store_path=tmp_path / "priv" / "webchat.sqlite", webui_dir=WEBUI,
                      trusted_config=True)
     fe.poll_s = fe.pair_delay_s = 0.05
@@ -1016,59 +1048,80 @@ def _send_card(fe):
     return fe.post_card("dm", card)
 
 
-def _phone_page(browser, link, contexts, off_tailnet=False, **ctx_kw):
-    """A page that opens a pairing link; (context, page, errors, urls asked).
-    `off_tailnet` refuses the bot's own API, as a phone off the tailnet
-    finds it, while the page itself still loads."""
-    ctx = browser.new_context(**ctx_kw)
+def _owner_context(browser, fe, contexts):
+    """A browser context signed in to the web chat as the owner (on the
+    tailnet the identity header does this; here the pairing cookie)."""
+    ctx = browser.new_context(service_workers="block")
     contexts.append(ctx)
-    if off_tailnet:
-        ctx.route(re.compile(r".*/chat/api/.*"), lambda route: route.abort())
+    ctx.add_cookies([{"name": "ea_web", "value": fe.pair_token(), "domain": "127.0.0.1",
+                      "path": "/chat", "httpOnly": True, "sameSite": "Strict"}])
+    return ctx
+
+
+def _pair_and_approve(browser, relay_bot, contexts):
+    """The owner opens "Pair a phone" on the tailnet; the phone, on the
+    tailnet too and signed in, opens the link and shows its code; the owner
+    approves the phone whose code matches; then the phone leaves the
+    tailnet. (owner page, phone page, phone errors, URLs the phone asked)."""
+    from playwright.sync_api import expect
+    fe = relay_bot["fe"]
+    tail = _owner_context(browser, fe, contexts).new_page()
+    tail.goto(relay_bot["public"] + "/")
+    tail.click("#pair-phone")
+    expect(tail.locator("#phone-devices")).to_contain_text("No phone is paired yet.")
+    wait_for(lambda: tail.input_value("#phone-link"), 10)
+    link = tail.input_value("#phone-link")
+    assert link.startswith(relay_bot["public"] + "/#tr1=")
+    expect(tail.locator("#phone-note")).to_contain_text("Never send this link through chat or mail.")
+    # The canvas holds the code of exactly that link, module for module.
+    wrong = tail.evaluate("""(link) => {
+        const grid = QR.encode(link);
+        const g = $('phone-qr').getContext('2d');
+        let bad = 0;
+        grid.forEach((row, y) => row.forEach((on, x) => {
+            const px = g.getImageData((x + 4) * 4 + 2, (y + 4) * 4 + 2, 1, 1).data[0];
+            if ((px < 128) !== on) bad++;
+        }));
+        return bad;
+    }""", link)
+    assert wrong == 0
+
+    ctx = _owner_context(browser, fe, contexts)
     page = ctx.new_page()
     errors, asked = [], []
     page.on("pageerror", lambda e: errors.append(str(e)))
     page.on("request", lambda r: asked.append(r.url))
     page.goto(link)
-    return ctx, page, errors, asked
+    expect(page.locator("#relay-note")).to_contain_text("waits for approval", timeout=15000)
+    assert "tr1=" not in page.url
+    shown = re.search(r"code (\d{3} \d{3})", page.inner_text("#relay-note")).group(1)
+    # The owner's list shows the new phone under the same code, and the DM says so.
+    row = tail.locator("#phone-devices li", has_text="waits for approval")
+    expect(row).to_contain_text(f"code {shown}", timeout=10000)
+    assert [d["pending"] for d in fe.relay.devices()] == [True]
+    dm = [m["text"] for m in fe.store.threads("dm", 50, None)]
+    assert any(shown in t for t in dm), dm
+    row.locator("button", has_text="Approve").click()
+    expect(tail.locator("#phone-devices")).not_to_contain_text("waits for approval", timeout=10000)
+    assert [d["pending"] for d in fe.relay.devices()] == [False]
+    # Off the tailnet now: the bot's own API is out of reach.
+    ctx.route(re.compile(r".*/chat/api/.*"), lambda route: route.abort())
+    page.reload()
+    expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+    expect(page.locator("#live.on")).to_be_attached(timeout=10000)
+    return tail, page, errors, asked
 
 
 def test_a_phone_pairs_on_the_tailnet_and_chats_through_the_relay(browser, relay_bot):
     """The owner opens "Pair a phone" on the tailnet origin; a phone opens
-    the link on that origin with the API out of reach (off the tailnet),
-    pairs, and reads, writes and confirms a card through the relay."""
+    the link on that origin while on the tailnet, waits for the owner's
+    approval by its code, then reads, writes and confirms a card through
+    the relay from off the tailnet."""
     from playwright.sync_api import expect
     fe, got = relay_bot["fe"], relay_bot["got"]
     contexts = []
     try:
-        owner = browser.new_context()
-        contexts.append(owner)
-        owner.add_cookies([{"name": "ea_web", "value": fe.pair_token(), "domain": "127.0.0.1",
-                            "path": "/chat", "httpOnly": True, "sameSite": "Strict"}])
-        tail = owner.new_page()
-        tail.goto(relay_bot["public"] + "/")
-        tail.click("#pair-phone")
-        expect(tail.locator("#phone-devices")).to_contain_text("No phone is paired yet.")
-        wait_for(lambda: tail.input_value("#phone-link"), 10)
-        link = tail.input_value("#phone-link")
-        assert link.startswith(relay_bot["public"] + "/#tr1=")
-        # The canvas holds the code of exactly that link, module for module.
-        wrong = tail.evaluate("""(link) => {
-            const grid = QR.encode(link);
-            const g = $('phone-qr').getContext('2d');
-            let bad = 0;
-            grid.forEach((row, y) => row.forEach((on, x) => {
-                const px = g.getImageData((x + 4) * 4 + 2, (y + 4) * 4 + 2, 1, 1).data[0];
-                if ((px < 128) !== on) bad++;
-            }));
-            return bad;
-        }""", link)
-        assert wrong == 0
-
-        ctx, page, errors, asked = _phone_page(browser, link, contexts, off_tailnet=True,
-                                               service_workers="block")
-        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
-        assert "tr1=" not in page.url
-        expect(page.locator("#live.on")).to_be_attached(timeout=10000)
+        tail, page, errors, asked = _pair_and_approve(browser, relay_bot, contexts)
         devices = fe.relay.devices()
         assert [d["origin"] for d in devices] == ["own"]
         stored = page.evaluate("""async () => { const r = await loadPairing();
@@ -1076,6 +1129,7 @@ def test_a_phone_pairs_on_the_tailnet_and_chats_through_the_relay(browser, relay
                      local: localStorage.length }; }""")
         assert stored == {"type": "private", "extractable": False, "device": devices[0]["id"],
                           "local": 0}
+        expect(page.locator("#relay-note")).to_be_hidden()  # approved: the note went
 
         fe.post("dm", "Hello through the relay")
         item = page.locator(".thread-item:has-text('Hello through the relay')")
@@ -1114,17 +1168,66 @@ def test_a_phone_pairs_on_the_tailnet_and_chats_through_the_relay(browser, relay
             c.close()
 
 
+def test_a_forged_error_never_sends_a_message_twice(browser, relay_bot):
+    """The relay lets a POST through to the bot, drops the answer and forges
+    `err session`: the phone says hello again but does not send the message
+    a second time, and tells the owner it may have arrived."""
+    from playwright.sync_api import expect
+    fe, got = relay_bot["fe"], relay_bot["got"]
+    contexts = []
+    try:
+        _tail, page, errors, _asked = _pair_and_approve(browser, relay_bot, contexts)
+        page.locator(".chan .c-name").first.click()
+        forge = {"armed": False, "posts": 0}
+
+        def relay_c(route):
+            if not forge["armed"]:
+                return route.continue_()
+            forge["armed"] = False
+            forge["posts"] += 1
+            route.fetch()  # the bot gets the frame and runs the request
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"id": "x", "k": "err", "e": "session"}))
+        page.route(re.compile(r".*/r/[a-z2-7]{26}/c$"), relay_c)
+        page.locator("#new-thread").click()
+        forge["armed"] = True
+        page.fill("#text", "Sent once through the relay")
+        page.press("#text", "Enter")
+        expect(page.locator("#composer-note")).to_contain_text("may have it anyway", timeout=10000)
+        wait_for(lambda: any(getattr(m, "text", "") == "Sent once through the relay" for m in got), 10)
+        time.sleep(1.5)
+        assert [getattr(m, "text", "") for m in got].count("Sent once through the relay") == 1
+        assert forge["posts"] == 1
+        assert not errors, errors
+    finally:
+        for c in contexts:
+            c.close()
+
+
 def test_a_phone_paired_on_the_relays_origin_cannot_press_card_buttons(browser, relay_bot):
+    """A relay-origin phone (chat.json opts in, the pairing asks for it) is
+    warned that the relay can read its chat, waits for approval, and then
+    cannot press a card's buttons."""
     from playwright.sync_api import expect
     fe = relay_bot["fe"]
     contexts = []
     try:
-        link = fe.relay.new_pairing(app_url=relay_bot["rbase"] + "/")
+        link = fe.relay.new_pairing(app_url=relay_bot["rbase"] + "/", relay_origin=True)
         assert link.startswith(relay_bot["rbase"] + "/#tr1=")
         _send_card(fe)
-        ctx, page, errors, asked = _phone_page(browser, link, contexts)
-        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
-        assert [d["origin"] for d in fe.relay.devices()] == ["relay"]
+        ctx = browser.new_context()
+        contexts.append(ctx)
+        page = ctx.new_page()
+        errors, said = [], []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("dialog", lambda d: (said.append(d.message), d.accept()))
+        page.goto(link)
+        expect(page.locator("#relay-note")).to_contain_text("waits for approval", timeout=15000)
+        assert said and "can read this phone's chat and type as you" in said[0]
+        devices = fe.relay.devices()
+        assert [(d["origin"], d["pending"]) for d in devices] == [("relay", True)]
+        fe.relay.approve(devices[0]["id"])
+        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=20000)
         assert page.evaluate("S.me.card_actions") is False
         page.locator(".thread-item:has-text('Send this draft?')").click()
         expect(page.locator(".card button.primary")).to_be_disabled()
@@ -1135,6 +1238,72 @@ def test_a_phone_paired_on_the_relays_origin_cannot_press_card_buttons(browser, 
     finally:
         for c in contexts:
             c.close()
+
+
+def test_a_relayed_file_opens_only_as_a_raster_image(app):
+    """Through the relay, a stored file becomes a blob with this page's
+    origin: an SVG or an HTML file is plain bytes there, and every link
+    downloads instead of opening a page."""
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    out = page.evaluate("""async () => {
+        const kept = T;
+        const files = { svg: ['<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>', 'image/svg+xml'],
+                        png: ['not really a png', 'image/png'], html: ['<p>page</p>', 'text/html'] };
+        T = { relay: true, api: async (m, p) => { const [b, t] = files[p.split('/').pop()];
+                                                   return new Response(b, { headers: { 'content-type': t } }); } };
+        const made = new Map();  // blob URL -> the type the app gave its blob
+        const create = URL.createObjectURL;
+        URL.createObjectURL = (b) => { const u = create(b); made.set(u, b.type); return u; };
+        const out = {};
+        for (const [id, [, type]] of Object.entries(files)) {
+            const box = renderFile({ id, name: `f.${id}`, mimetype: type, size: 1 });
+            document.body.append(box);
+            const link = box.querySelector('a.file-link');
+            link.dispatchEvent(new MouseEvent('click', { cancelable: true }));
+            await new Promise((r) => setTimeout(r, 300));
+            const img = box.querySelector('img');
+            const href = img ? img.src : link.href;
+            out[id] = { type: made.get(href) || href,
+                        download: [...box.querySelectorAll('a')].every((a) => a.hasAttribute('download')),
+                        target: [...box.querySelectorAll('a')].some((a) => a.hasAttribute('target')) };
+            box.remove();
+        }
+        T = kept;
+        URL.createObjectURL = create;
+        return out;
+    }""")
+    assert out == {"svg": {"type": "application/octet-stream", "download": True, "target": False},
+                   "png": {"type": "image/png", "download": True, "target": False},
+                   "html": {"type": "application/octet-stream", "download": True, "target": False}}
+
+
+def test_the_app_crypto_reproduces_the_vectors_in_webkit(stub_factory):
+    """The same vectors in WebKit (Safari's engine), where it is installed."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    try:
+        pw = sync_api.sync_playwright().start()
+    except Exception as e:  # noqa: BLE001 - no driver on this machine
+        pytest.skip(f"playwright cannot start: {e}")
+    try:
+        try:
+            wk = pw.webkit.launch()
+        except Exception as e:  # noqa: BLE001 - no WebKit installed
+            pytest.skip(f"no webkit for playwright: {e}")
+        try:
+            url, _stub = stub_factory()
+            page = wk.new_page()
+            page.goto(url)
+            page.wait_for_selector(".thread-item")
+            v = json.loads(VECTORS.read_text())
+            out = _vector_check(page, v)
+            assert out["hello"] == v["hello"]["frame"] and out["session"] == v["session"]
+            assert out["req"] == v["req"]["frame"] and out["sse"] == v["sse"]["event"]
+            assert out["code"] == v["hello"]["code"] and out["plain"] == v["plain_hello"]["frame"]
+        finally:
+            wk.close()
+    finally:
+        pw.stop()
 
 
 def _link_payload(**over) -> str:
@@ -1148,16 +1317,22 @@ def _link_payload(**over) -> str:
 
 
 def test_a_bad_pairing_link_is_refused_and_leaves_the_address_bar(browser, stub_factory):
-    """On the tailnet the bot names its install: a link for another one is
-    refused, as is an expired one; the fragment goes either way, and no
-    pairing is kept."""
+    """On the tailnet the bot names its install and its key: a link for
+    another install or another key is refused, as is an expired one, and a
+    link opened where the bot does not answer (off the tailnet); the
+    fragment goes either way, and no pairing is kept."""
     from playwright.sync_api import expect
     import webui_stub_server as W
     url, stub = stub_factory()
-    for payload, says in ((_link_payload(), "another install"),
-                          (_link_payload(i=W.STUB_INSTALL, x=int(time.time()) - 1), "expired"),
-                          ("bm90LWpzb24", "Pairing failed")):
+    mine = {"i": W.STUB_INSTALL, "k": W.STUB_BOT_PUBLIC}
+    for payload, says, off in ((_link_payload(), "another install", False),
+                               (_link_payload(i=W.STUB_INSTALL), "another install", False),
+                               (_link_payload(**mine, x=int(time.time()) - 1), "expired", False),
+                               (_link_payload(**mine), "on the tailnet", True),
+                               ("bm90LWpzb24", "Pairing failed", False)):
         ctx = browser.new_context()
+        if off:
+            ctx.route(re.compile(r".*/api/relay/status$"), lambda route: route.abort())
         try:
             page = ctx.new_page()
             page.goto(url + "#tr1=" + payload)

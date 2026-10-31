@@ -70,9 +70,11 @@ A `relay` block in the web block starts the relay client
 (relay_client.start_relay, docs/webchat-relay.md) once the server runs:
 a phone off the tailnet reaches this server through a public relay that
 sees only ciphertext. The owner manages it from the tailnet under
-`/api/relay/`; a relayed request (`X-Tacitus-Relay`) never reaches those
-routes or `/api/pair`, and `/api/me` tells the app whether its requests
-may confirm a card (`X-Tacitus-Relay-Cards`).
+`/api/relay/` (pair, approve, revoke); a relayed request
+(`X-Tacitus-Relay`) never reaches those routes or `/api/pair`, and
+`/api/me` tells the app whether its requests may confirm a card
+(`X-Tacitus-Relay-Cards`). A new device is announced in the DM channel;
+removing one drops its push subscriptions.
 """
 from __future__ import annotations
 
@@ -87,6 +89,7 @@ import os
 import queue
 import re
 import secrets
+import select
 import socket
 import sqlite3
 import stat
@@ -150,6 +153,9 @@ DEFAULT_BASE = "/chat"
 
 # Seconds between the comment lines that keep an idle event stream open.
 PING_S = 20.0
+# How often an idle event stream checks that its client is still there: a
+# client that left frees its connection slot within this, not at the ping.
+GONE_CHECK_S = 1.0
 # Seconds between the serving process's reads of the event log for the
 # events another process (a command-line sender) appended.
 TAIL_S = 1.0
@@ -197,6 +203,8 @@ FILE_CSP = "sandbox; default-src 'none'"
 # A relay's origin as the page's connect-src names it: a scheme and a host,
 # nothing a policy could read as another directive.
 _ORIGIN_RE = re.compile(r"^https?://(\[[0-9a-f:.]+\]|[a-z0-9.-]+)(:\d{1,5})?$")
+# A relay URL's path as connect-src may carry it: plain segments only.
+_RELAY_PATH_RE = re.compile(r"^(/(?!\.+(?:/|$))[A-Za-z0-9._~-]+)*$")
 _DEVICE_RE = re.compile(r"^[0-9a-f]{16}$")
 
 STATIC_TYPES = {
@@ -237,7 +245,7 @@ CREATE TABLE IF NOT EXISTS files(
 CREATE TABLE IF NOT EXISTS reads(channel TEXT PRIMARY KEY, seq INT);
 CREATE TABLE IF NOT EXISTS push_subscriptions(
     endpoint TEXT PRIMARY KEY, keys TEXT, created_at REAL, last_ok REAL,
-    failures INT DEFAULT 0, last_seen REAL);
+    failures INT DEFAULT 0, last_seen REAL, device TEXT);
 CREATE TABLE IF NOT EXISTS push_queue(
     tag TEXT PRIMARY KEY, due_at REAL, payload TEXT, urgency TEXT, created_at REAL);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -575,6 +583,9 @@ class WebStore:
             if "last_seen" not in cols:
                 # A store from before: a subscription counts as posted when made.
                 self._conn.execute("ALTER TABLE push_subscriptions ADD COLUMN last_seen REAL")
+            if "device" not in cols:
+                # A store from before: no subscription names a relay device.
+                self._conn.execute("ALTER TABLE push_subscriptions ADD COLUMN device TEXT")
             self._conn.commit()
         self._subs: list[_Sub] = []
         self._pending: list[tuple[int, str, str]] = []
@@ -1034,18 +1045,21 @@ class WebStore:
     # web push: the browsers' subscriptions and the pushes queued for later
 
     def push_subscribe(self, endpoint: str, keys: dict,
-                       keep: int = web_push.MAX_SUBSCRIPTIONS) -> None:
+                       keep: int = web_push.MAX_SUBSCRIPTIONS, device: str | None = None) -> None:
         """Keep a subscription (a renewed one starts with no failures, and
         `last_seen` is now); past `keep`, the ones that have gone longest
-        without a delivery go."""
+        without a delivery go. `device` is the relay device it belongs to
+        (removing that device drops it); a renewal without one keeps the
+        one recorded."""
         now = time.time()
         with self._lock:
             with self._conn:
                 self._conn.execute(
                     "INSERT INTO push_subscriptions(endpoint, keys, created_at, last_ok, failures, "
-                    "last_seen) VALUES (?,?,?,NULL,0,?) ON CONFLICT(endpoint) DO UPDATE SET "
-                    "keys=excluded.keys, failures=0, last_seen=excluded.last_seen",
-                    (endpoint, json.dumps(keys), now, now))
+                    "last_seen, device) VALUES (?,?,?,NULL,0,?,?) ON CONFLICT(endpoint) DO UPDATE "
+                    "SET keys=excluded.keys, failures=0, last_seen=excluded.last_seen, "
+                    "device=COALESCE(excluded.device, push_subscriptions.device)",
+                    (endpoint, json.dumps(keys), now, now, device))
                 self._conn.execute(
                     "DELETE FROM push_subscriptions WHERE endpoint NOT IN (SELECT endpoint FROM "
                     "push_subscriptions ORDER BY MAX(COALESCE(last_ok, 0), created_at) DESC "
@@ -1110,6 +1124,21 @@ class WebStore:
             log.warning("web push: the pairing token changed; %d subscription(s) dropped",
                         dropped)
         return dropped
+
+    def push_drop_devices(self, keep: set[str]) -> int:
+        """Drop each subscription that names a relay device not in `keep`
+        (a device removed); the number dropped."""
+        with self._lock:
+            with self._conn:
+                rows = self._conn.execute("SELECT endpoint, device FROM push_subscriptions "
+                                          "WHERE device IS NOT NULL").fetchall()
+                gone = [r["endpoint"] for r in rows if r["device"] not in keep]
+                for endpoint in gone:
+                    self._conn.execute("DELETE FROM push_subscriptions WHERE endpoint=?",
+                                       (endpoint,))
+        if gone:
+            log.info("web push: %d subscription(s) of a removed relay device dropped", len(gone))
+        return len(gone)
 
     def push_drop_stale(self, before: float) -> int:
         """Drop each subscription the app has not posted since `before`."""
@@ -1315,7 +1344,8 @@ class WebFrontend(ChatFrontend):
         with self._store_lock:
             if self._push is None:
                 self._push = web_push.Pusher(store, self.store_path.parent / web_push.KEY_FILE,
-                                             subject=self.push_subject, pair_hash=self.pair_hash)
+                                             subject=self.push_subject, pair_hash=self.pair_hash,
+                                             devices=self._relay_device_ids)
             return self._push
 
     # lifecycle
@@ -1390,14 +1420,41 @@ class WebFrontend(ChatFrontend):
         origin = f"{parts.scheme}://{parts.netloc}".lower()
         return origin if _ORIGIN_RE.match(origin) else ""
 
-    def _html_csp(self) -> str:
-        """The pages' policy: with a relay configured, connect-src names its
-        origin, so the app served here can reach the relay when this server
-        cannot be reached (off the tailnet)."""
+    def relay_source(self) -> str:
+        """The relay as connect-src names it: its origin, and its path as a
+        prefix (`https://host/relay/`) when it has one, so the page reaches
+        that path of a shared host and nothing else there. "" when the URL
+        is not a plain origin and path."""
         origin = self.relay_origin()
-        if not origin:
+        path = urllib.parse.urlsplit(str(self.relay_block().get("url") or "")).path.rstrip("/")
+        if not origin or not _RELAY_PATH_RE.match(path):
+            return ""
+        return f"{origin}{path}/" if path else origin
+
+    def _html_csp(self) -> str:
+        """The pages' policy: with a relay configured, connect-src names it,
+        so the app served here can reach the relay when this server cannot
+        be reached (off the tailnet)."""
+        source = self.relay_source()
+        if not source:
             return HTML_CSP
-        return HTML_CSP.replace("connect-src 'self'", f"connect-src 'self' {origin}")
+        return HTML_CSP.replace("connect-src 'self'", f"connect-src 'self' {source}")
+
+    def _relay_device_ids(self) -> set[str] | None:
+        """The relay devices still paired; None when no relay runs. A push
+        subscription that names another device is dropped."""
+        relay = self.relay
+        if relay is None:
+            return None
+        try:
+            return {d["id"] for d in relay.devices()}
+        except Exception:
+            log.exception("web chat: the relay's devices could not be read")
+            return None
+
+    def _relay_notice(self, text: str) -> None:
+        """A notice from the relay client (a new device) in the owner's DM."""
+        self.post(DM_ID, text)
 
     def loopback_url(self) -> str:
         """This server on loopback, base path included: where the relay
@@ -1421,10 +1478,29 @@ class WebFrontend(ChatFrontend):
             cfg["pair_token_file"] = str(self.pair_token_file)
             if not relay.get("key_file"):
                 cfg["relay"] = {**relay, "key_file": str(self.store_path.parent / RELAY_KEY_FILE)}
-            self.relay = start_relay(cfg, self.loopback_url(), logger=log)
+            why = self._key_file_refusal(Path(os.path.expanduser(str(cfg["relay"]["key_file"]))))
+            if why:
+                log.error("web chat: the relay is off: %s", why)
+                return
+            self.relay = start_relay(cfg, self.loopback_url(), logger=log,
+                                     notify=self._relay_notice)
         except Exception:
             log.exception("web chat: the relay did not start")
             self.relay = None
+
+    def _key_file_refusal(self, path: Path) -> str | None:
+        """Why the relay key file may not live at `path`: inside the
+        resident's tree, in a directory another user may write (where the
+        file could be deleted for a new identity, or an old copy put back
+        with a removed device in it), or a file not this user's alone."""
+        root = _inside(path, self.untrusted_roots)
+        if root is not None:
+            return f"{path} is inside {root}, which another user controls"
+        if os.path.lexists(path.parent):
+            why = _guarded_dir_problem(path.parent)
+            if why:
+                return why
+        return private_problem(path, "file") if os.path.lexists(path) else None
 
     def _config_refusal(self) -> str | None:
         if not self.trusted_config:
@@ -2511,9 +2587,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         return cards == "allow"
 
     def _relay_api(self, method: str, rest: list[str]) -> None:
-        """`/api/relay/...`: the owner pairs a phone, lists and revokes the
-        paired devices and reads the client's state. `_api` has refused a
-        relayed request already."""
+        """`/api/relay/...`: the owner pairs a phone, lists, approves and
+        revokes the paired devices and reads the client's state. `_api` has
+        refused a relayed request already. The tailnet UI pairs own-origin
+        devices only; a relay-origin pairing is the CLI's, on purpose."""
         relay = self.fe.relay
         if method == "GET" and rest == ["status"]:
             self._json(200, {"enabled": relay is not None, **(relay.status() if relay else {})})
@@ -2525,24 +2602,27 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         if method == "POST" and rest == ["pair"]:
             self._drain()
-            from .relay_client import origin_of
+            from .relay_client import RelayError
             from .relay_crypto import PairingPayload
             try:
                 link = relay.new_pairing()
                 expires = PairingPayload.from_string(link).expires
+            except RelayError as e:
+                raise _HttpError(409, str(e)) from None
             except Exception:
                 log.exception("web chat: the relay could not open a pairing")
                 raise _HttpError(503, "the relay could not open a pairing") from None
             # The link is the QR code's text; the app draws the code itself.
-            self._json(200, {"link": link, "qr": link, "expires": expires,
-                             "origin": origin_of(relay.app_url, relay.public_url, relay.relay_url)})
+            self._json(200, {"link": link, "qr": link, "expires": expires, "origin": "own"})
             return
-        if method == "POST" and rest == ["revoke"]:
+        if method == "POST" and rest in (["approve"], ["revoke"]):
             device = self._read_json().get("device")
             if not isinstance(device, str) or not _DEVICE_RE.match(device):
                 raise _HttpError(400, "device is a 16-character device id")
-            if not relay.revoke(device):
+            if not (relay.approve(device) if rest == ["approve"] else relay.revoke(device)):
                 raise _HttpError(404, "no such device")
+            if rest == ["revoke"] and web_push.AVAILABLE:
+                self.fe.push.prune()  # the removed device's push subscriptions go now
             self._json(200, {"ok": True})
             return
         raise _HttpError(404, "not found")
@@ -2745,7 +2825,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 raise ValueError("auth")
         except ValueError:
             raise _HttpError(400, "the keys are not a P-256 key and a 16-byte secret") from None
-        pusher.store.push_subscribe(endpoint, {"p256dh": keys["p256dh"], "auth": keys["auth"]})
+        # The relay device the subscription belongs to: the relay client's
+        # mark on a relayed request, else the one the app names (a phone
+        # paired for the relay, on the tailnet now). Removing the device
+        # drops the subscription.
+        device = self.headers.get("X-Tacitus-Relay")
+        if device is None and isinstance(body.get("device"), str):
+            device = body["device"]
+        pusher.store.push_subscribe(endpoint, {"p256dh": keys["p256dh"], "auth": keys["auth"]},
+                                    device=device if device and _DEVICE_RE.match(device) else None)
 
     def _pair(self) -> None:
         """Set the cookie for the right token. The body is read only up to
@@ -2810,7 +2898,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def _events(self, query: dict) -> None:
         """The event stream: replay after Last-Event-ID (or ?since=), then
-        live events, with a comment line every ping_s seconds."""
+        live events, with a comment line every ping_s seconds. A client that
+        closed its end is noticed within GONE_CHECK_S, so streams opened and
+        dropped fast (by a relayed device, say) do not hold the connection
+        slots until the next ping."""
         raw = self.headers.get("Last-Event-ID") or (query.get("since") or [None])[0]
         since = None
         if raw not in (None, ""):
@@ -2842,12 +2933,18 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     if len(batch) < 500:
                         break
             self.wfile.flush()
+            next_ping = time.monotonic() + fe.ping_s
             while not fe._stop.is_set() and not sub.dropped:
                 try:
-                    item = sub.q.get(timeout=fe.ping_s)
+                    item = sub.q.get(timeout=max(0.01, min(GONE_CHECK_S,
+                                                           next_ping - time.monotonic())))
                 except queue.Empty:
-                    self.wfile.write(b": ping\n\n")
-                    self.wfile.flush()
+                    if self._client_gone():
+                        break
+                    if time.monotonic() >= next_ping:
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+                        next_ping = time.monotonic() + fe.ping_s
                     continue
                 if item is None:
                     break
@@ -2862,6 +2959,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             pass
         finally:
             store.unsubscribe(sub)
+
+    def _client_gone(self) -> bool:
+        """True when the client closed its end. An event stream's client
+        sends nothing after its request, so a readable socket is one at EOF
+        (or one that broke)."""
+        try:
+            readable, _, _ = select.select([self.connection], [], [], 0)
+            return bool(readable) and not self.connection.recv(1, socket.MSG_PEEK)
+        except (OSError, ValueError):
+            return True
 
     def _event(self, item: tuple[int, str, str]) -> None:
         seq, typ, payload = item

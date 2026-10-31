@@ -3,8 +3,9 @@
  * them fresh whenever it can; a fetch that has not answered in four
  * seconds (the host off the tailnet) gives way to the copy. API requests
  * (every path with /api/ in it: messages, files, the event stream,
- * pairing) and the relay's routes (/r/<install>/...) are never answered
- * from or written to the cache; the worker leaves them to the browser. */
+ * pairing) and the relay's routes (/r/<install>/..., /healthz) are never
+ * answered from or written to the cache; the worker leaves them to the
+ * browser. */
 'use strict';
 
 const CACHE = 'tacitus-webchat-v2';
@@ -67,7 +68,7 @@ self.addEventListener('fetch', (event) => {
   const scope = new URL(self.registration.scope);
   if (req.method !== 'GET' || url.origin !== scope.origin) return;
   if (url.pathname.includes('/api/')) return;
-  if (RELAY_ROUTE.test(url.pathname) || url.pathname === '/healthz') return;
+  if (RELAY_ROUTE.test(url.pathname) || url.pathname.endsWith('/healthz')) return;
   if (!url.pathname.startsWith(scope.pathname)) return;
   const copy = () => caches.match(req, { ignoreSearch: true })
     .then((hit) => hit || caches.match(new URL('./', scope).href));
