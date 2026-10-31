@@ -738,6 +738,123 @@ def test_with_no_trust_root_nothing_installs_and_the_error_is_recorded(install):
     assert "release-key" in us.load_status(paths.private)["last_error"]["error"]
 
 
+# ── release notes ───────────────────────────────────────────────────
+
+def test_an_update_records_the_release_notes_from_the_history(install, capsys):
+    paths, host = install["paths"], FakeHost()
+    assert update.apply(paths, host, channel="latest", gate_kw=fast_gate(), idle_probe=lambda: []) == 0
+    st = us.load_status(paths.private)
+    notes = st["notes"]
+    assert notes["tag"] == "v0.1.2" and notes["previous"] == "v0.1.1" and notes["source"] == "git"
+    assert notes["notes_url"] == "", "a repository that is not on GitHub has no Release page"
+    assert [(c["subject"], c["pr"]) for c in notes["changes"]] == [("runtime change", None)]
+    assert notes["count"] == 1 and notes["owner_steps"] == [] and st["notes_history"] == []
+    assert "behind" not in st
+    shared = json.loads((install["ea"] / "state" / "update-status.json").read_text())
+    assert shared["notes"]["changes"][0]["subject"] == "runtime change"
+    # a pull request merged with a merge commit, with an owner step on its branch
+    origin = install["origin"]
+    git(origin, "checkout", "-q", "-b", "topic")
+    commit(origin, "skills/a.md", "words\n", "Branch work\n\nOwner-steps: run the root step once")
+    git(origin, "checkout", "-q", "main")
+    git(origin, "merge", "-q", "--no-ff", "topic", "-m",
+        "Merge pull request #5 from someone/topic\n\nSkills say more")
+    commit(origin, "preprocessor/thing.py", "X = 4\n", "The thing counts to four (#6)")
+    sign_tag(origin, "v0.1.3", install["key"])
+    assert update.apply(paths, host, channel="latest", gate_kw=fast_gate(), idle_probe=lambda: []) == 0
+    st = us.load_status(paths.private)
+    assert [(c["subject"], c["pr"]) for c in st["notes"]["changes"]] == \
+        [("Skills say more", 5), ("The thing counts to four", 6)]
+    assert [s["step"] for s in st["notes"]["owner_steps"]] == ["run the root step once"]
+    assert [h["tag"] for h in st["notes_history"]] == ["v0.1.2"]
+    assert us.installed_notes(paths.live, paths.private)["tag"] == "v0.1.3"
+    capsys.readouterr()
+    args = ["--live", str(paths.live), "--private", str(paths.private), "--ea-dir", str(paths.ea),
+            "--lanes", str(install["lanes"])]
+    assert update.main(args + ["status"]) == 0
+    out = capsys.readouterr().out
+    assert "changes:    2 in v0.1.3 since v0.1.2" in out and "- Skills say more" in out
+    assert "owner step: run the root step once" in out
+
+
+def test_the_history_keeps_the_newest_notes():
+    st = {}
+    for n in range(1, 14):
+        update.record_notes(st, {"tag": f"v0.1.{n}", "changes": []})
+    update.record_notes(st, {"tag": "v0.1.13", "changes": [{"subject": "again"}]})
+    assert st["notes"]["tag"] == "v0.1.13" and st["notes"]["changes"] == [{"subject": "again"}]
+    assert [h["tag"] for h in st["notes_history"]] == [f"v0.1.{n}" for n in range(3, 13)]
+
+
+def test_the_notes_come_from_the_github_release_when_the_api_answers(install):
+    import urllib.error
+    update.fetch_tags(install["paths"].cache, str(install["origin"]))
+    gh = update.Paths(live=install["live"], private=install["priv"], ea=install["ea"],
+                      lanes=install["lanes"], repo_url="https://github.com/arpg/tacitus.git")
+    page = "https://github.com/arpg/tacitus/releases/tag/v0.1.2"
+    body = ("## Changes since v0.1.1\n\n"
+            "- The thing counts to two ([#4](https://github.com/arpg/tacitus/pull/4), abcdef1)\n\n"
+            "## Owner steps\n\n- restart the bot ([#4](https://github.com/arpg/tacitus/pull/4))\n")
+    asked = []
+
+    def answer(slug, tag):
+        asked.append((slug, tag))
+        return {"html_url": page, "body": body}
+
+    notes = update.release_notes(gh, "v0.1.2", "v0.1.1", fetch=answer)
+    assert asked == [("arpg/tacitus", "v0.1.2")]
+    assert notes["source"] == "api" and notes["notes_url"] == page and notes["previous"] == "v0.1.1"
+    assert notes["changes"] == [{"subject": "The thing counts to two", "pr": 4, "sha": "abcdef1"}]
+    assert notes["owner_steps"][0]["step"] == "restart the bot"
+    # an install that skipped a release reads the whole span from the history, and keeps the link
+    first = git(install["origin"], "rev-parse", "v0.1.1^{commit}")
+    notes = update.release_notes(gh, "v0.1.2", first, fetch=answer)
+    assert notes["source"] == "git" and notes["notes_url"] == page
+    assert [c["subject"] for c in notes["changes"]] == ["runtime change"]
+    # a Release with no notes in its body: the history
+    notes = update.release_notes(gh, "v0.1.2", "v0.1.1",
+                                 fetch=lambda s, t: {"html_url": page, "body": "Release v0.1.2.\n"})
+    assert notes["source"] == "git" and notes["changes"][0]["subject"] == "runtime change"
+
+    def down(slug, tag):
+        raise urllib.error.URLError("no network")
+
+    notes = update.release_notes(gh, "v0.1.2", "v0.1.1", fetch=down)
+    assert notes["source"] == "git" and notes["notes_url"] == page, "the Release page CI makes"
+
+    def missing(slug, tag):
+        raise urllib.error.HTTPError("https://api.github.com/x", 404, "Not Found", {}, None)
+
+    notes = update.release_notes(gh, "v0.1.2", "v0.1.1", fetch=missing)
+    assert notes["source"] == "git" and notes["notes_url"] == "", "no Release: no link"
+
+
+def test_notes_that_cannot_be_read_never_fail_an_update(install, monkeypatch):
+    monkeypatch.setattr(update, "_notes_module", lambda: None)
+    paths, host = install["paths"], FakeHost()
+    assert update.apply(paths, host, channel="latest", gate_kw=fast_gate(), idle_probe=lambda: []) == 0
+    st = us.load_status(paths.private)
+    assert st["installed"] == "v0.1.2" and "notes" not in st
+
+
+def test_a_check_counts_the_changes_behind_and_the_doctor_shows_them(install):
+    paths = install["paths"]
+    commit(install["origin"], "skills/a.md", "more\n", "Skills say more (#7)")
+    sign_tag(install["origin"], "v0.1.3", install["key"])
+    st = update.base_status(paths)
+    assert update.resolve_target(paths, st, channel="latest", tag=None)[0] == "v0.1.3"
+    assert st["behind"] == {"tag": "v0.1.3", "since": "v0.1.1", "changes": 2}
+    st["checked_at"] = update.now_iso()
+    update.save_status(paths, st)
+    status, detail, _ = us.doctor_row(paths.live, paths.private, paths.ea)
+    assert status == "PASS" and "newest on the channel v0.1.3 (2 changes behind)" in detail
+    assert update.apply(paths, FakeHost(), channel="latest", gate_kw=fast_gate(), idle_probe=lambda: []) == 0
+    st = us.load_status(paths.private)
+    assert "behind" not in st and st["notes"]["count"] == 2
+    status, detail, _ = us.doctor_row(paths.live, paths.private, paths.ea)
+    assert "behind" not in detail and "newest on the channel v0.1.3;" in detail
+
+
 def test_the_cli_status_and_channel_on_a_hook_tree(env, capsys):
     env["live"].mkdir()
     (env["live"] / ".deployed-commit").write_text("abc1234\n")
@@ -850,6 +967,63 @@ def test_the_briefing_line_says_an_update_once(env):
     assert us.briefing_line(env["live"], env["priv"]) == ""
     st = os.stat(us.briefed_file(env["priv"]))
     assert st.st_mode & 0o077 == 0
+
+
+def _notes(tag, previous, subjects, count=None, steps=(), url=""):
+    return {"tag": tag, "previous": previous, "notes_url": url, "source": "api",
+            "count": count if count is not None else len(subjects),
+            "changes": [{"subject": s, "pr": i + 1, "sha": f"{i:06x}{tag[-1]}"}
+                        for i, s in enumerate(subjects)],
+            "owner_steps": [{"step": s, "pr": 1, "sha": ""} for s in steps]}
+
+
+def test_the_briefing_line_counts_and_names_the_changes_since_the_last_briefing(env):
+    _layout_at(env, "v0.1.2")
+    us.mark_briefed(env["live"], env["priv"])
+    _layout_at(env, "v0.1.4")
+    _status(env, notes=_notes("v0.1.4", "v0.1.3", ["Skills say more", "The doctor counts"], count=3,
+                              steps=["run the root step once"]),
+            notes_history=[_notes("v0.1.2", "v0.1.1", ["already briefed"]),
+                           _notes("v0.1.3", "v0.1.2", ["The relay key rotates", "Web alerts post",
+                                                       "x" * 120])])
+    line = us.briefing_line(env["live"], env["priv"])
+    assert line == (":gear: Updated to v0.1.4 (6 changes: The relay key rotates; Web alerts post…)."
+                    " Owner step: run the root step once.")
+    us.mark_briefed(env["live"], env["priv"])
+    _layout_at(env, "v0.1.5")
+    _status(env, notes=_notes("v0.1.5", "v0.1.4", ["One change"]))
+    assert us.briefing_line(env["live"], env["priv"]) == ":gear: Updated to v0.1.5 (1 change: One change)."
+    us.mark_briefed(env["live"], env["priv"])
+    _layout_at(env, "v0.1.6")
+    _status(env, notes=_notes("v0.1.6", "v0.1.5", ["A" * 200, "B"]))
+    line = us.briefing_line(env["live"], env["priv"])
+    assert line == f":gear: Updated to v0.1.6 (2 changes: {'A' * 79}…; B)."
+    us.mark_briefed(env["live"], env["priv"])
+    # notes recorded for another release than the one installed: the plain line
+    _layout_at(env, "v0.1.7")
+    assert us.briefing_line(env["live"], env["priv"]) == ":gear: Updated to v0.1.7 (from v0.1.6)."
+
+
+def test_the_version_answer_lists_the_first_three_changes(env):
+    set_config(env["ea"], profile="assistant", update={"channel": "latest"})
+    _layout_at(env, "v0.1.2")
+    url = "https://github.com/arpg/tacitus/releases/tag/v0.1.2"
+    _status(env, latest_on_channel="v0.1.2",
+            notes=_notes("v0.1.2", "v0.1.1", ["First", "Second", "Third", "Fourth"], count=5,
+                         steps=["restart the bot"], url=url))
+    text = us.version_text(env["live"], env["priv"], env["ea"])
+    assert "\n5 changes in v0.1.2 since v0.1.1:\n- First (#1)\n- Second (#2)\n- Third (#3)\n- and 2 more\n" in text
+    assert "Owner step: restart the bot" in text and f"Release notes: {url}" in text
+    assert "Fourth" not in text
+    _status(env, notes=_notes("v0.1.1", "v0.1.0", ["Older"]))
+    assert "change" not in us.version_text(env["live"], env["priv"], env["ea"])
+    r = subprocess.run([sys.executable, str(REPO / "preprocessor" / "update_status.py"), "notes", "--json"],
+                       capture_output=True, text=True, env=dict(os.environ))
+    assert r.returncode == 0 and json.loads(r.stdout) == {}
+    _status(env, notes=_notes("v0.1.2", "v0.1.1", ["First", "Second", "Third", "Fourth"]))
+    r = subprocess.run([sys.executable, str(REPO / "preprocessor" / "update_status.py"), "notes"],
+                       capture_output=True, text=True, env=dict(os.environ))
+    assert r.returncode == 0 and "- Fourth (#4)" in r.stdout and "more" not in r.stdout
 
 
 def test_run_agent_appends_the_line_to_the_morning_briefing_only():
@@ -987,7 +1161,7 @@ def test_the_release_job_signs_after_a_green_main_only():
     cond = job["if"]
     assert "github.event_name == 'push'" in cond and "refs/heads/main" in cond
     assert "needs.ci.result == 'success'" in cond
-    assert job["permissions"] == {"contents": "write"}
+    assert job["permissions"] == {"contents": "write", "pull-requests": "read"}
     assert job["concurrency"]["cancel-in-progress"] is False
     steps = "\n".join(str(s.get("run", "")) for s in job["steps"])
     assert "scripts/update.py next-version" in steps
@@ -1000,6 +1174,34 @@ def test_the_release_job_signs_after_a_green_main_only():
         for s in j.get("steps", []):
             if "uses" in s:
                 assert re.search(r"@v\d+\.\d+\.\d+$", s["uses"]), (name, s["uses"])
+
+
+def test_the_release_job_creates_a_github_release_with_the_notes_and_never_fails_on_it():
+    wf = REPO / ".github" / "workflows" / "ci.yml"
+    if not wf.exists():
+        print("  (no workflow files in this tree; the Docker image leaves .github out)")
+        return
+    yaml = pytest.importorskip("yaml")
+    steps = yaml.safe_load(wf.read_text())["jobs"]["release"]["steps"]
+    sign = next(s for s in steps if s.get("name") == "Sign and push the tag")
+    i = steps.index(sign)
+    notes = steps[i + 1]
+    assert sign["id"] == "sign"
+    run = sign["run"]
+    assert run.index('git push origin "refs/tags/$TAG"') < run.index('echo "pushed=true" >> "$GITHUB_OUTPUT"')
+    assert run.index("exit 0") < run.index("pushed=true"), "no secret: no tag, no Release"
+    assert notes["if"] == "steps.sign.outputs.pushed == 'true'"
+    assert notes["continue-on-error"] is True
+    assert notes["env"]["GH_TOKEN"] == "${{ github.token }}"
+    body = notes["run"]
+    assert "python3 scripts/release_notes.py --tag \"$TAG\"" in body and "--pr-bodies" in body
+    assert "gh release create \"$TAG\" --verify-tag" in body and "--notes-file \"$notes\"" in body
+    assert body.count("::warning::") == 2 and "exit 1" not in body
+    for line in body.splitlines():
+        if line.lstrip().startswith(("python3 scripts/release_notes.py", "gh release create")):
+            raise AssertionError(f"a failure must reach the warning, under an `if`: {line}")
+    assert body.count("if ! python3 scripts/release_notes.py") == 1
+    assert body.count("if gh release create") == 1
 
 
 def test_cut_tag_parses():

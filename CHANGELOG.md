@@ -6,6 +6,18 @@ repository that preceded it.
 
 ## Unreleased
 
+- **Releases say what they changed.** The CI `release` job creates a
+  GitHub Release for each signed tag, its body the notes
+  `scripts/release_notes.py` writes: the pull request titles merged since
+  the previous release, each linked, and the owner steps named by an
+  `Owner-steps:` line in a pull request body or commit message
+  (CONTRIBUTING.md). The updater records the installed release's notes in
+  its status file, from the GitHub Release or made again from its cache
+  when the API does not answer. The morning briefing line counts the
+  changes and names the first two (`Updated to v0.1.7 (3 changes: ...)`)
+  with any owner step, `version` lists the first three and the link, and
+  the doctor's `updates` row says how many changes the install is behind.
+
 - **Installs update themselves.** Every push to `main` that passes the
   full CI tiers becomes a release: the `release` job signs the next
   `vX.Y.Z` tag with an SSH key held as a repository secret, and

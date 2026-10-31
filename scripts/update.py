@@ -383,6 +383,124 @@ def base_status(paths: Paths) -> dict:
     return st
 
 
+# ── release notes ────────────────────────────────────────────────────
+
+# What the status file keeps of the notes: the changes listed per release
+# (the count says how many there were), and the notes of the releases
+# installed before, which the briefing reads back to its last post.
+NOTES_CHANGES_MAX = 100
+NOTES_STEPS_MAX = 20
+NOTES_HISTORY = 10
+
+
+def _notes_module():
+    """scripts/release_notes.py beside this file, or None. Loaded by path,
+    since `relay` runs this script with -I, which keeps its directory off
+    sys.path."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("tacitus_release_notes",
+                                                      HERE / "release_notes.py")
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
+
+
+def _has_commit(repo: Path, ref: str) -> bool:
+    return bool(ref) and git(repo, "rev-parse", "-q", "--verify", f"{ref}^{{commit}}",
+                             check=False).returncode == 0
+
+
+def release_notes(paths: Paths, tag: str, since: str = "", *, fetch=None) -> dict | None:
+    """The notes of `tag` as the status file keeps them: {"tag", "previous",
+    "notes_url", "count", "changes", "owner_steps", "source"}. The body of
+    the GitHub Release (the notes CI wrote) when the API answers and that
+    release starts at `since`, the version installed before; else the
+    cache's history since `since` (no API, or an install that skipped a
+    release). None when neither can be read; an update never fails on it."""
+    rn = _notes_module()
+    if rn is None:
+        return None
+    slug = rn.github_slug(paths.repo_url)
+    url, notes = "", None
+    if slug:
+        try:
+            got = (fetch or rn.fetch_release)(slug, tag)
+            url = got.get("html_url") or ""
+            parsed = rn.parse_markdown(got.get("body") or "")
+            if parsed["changes"] and (not since or parsed["previous"] == since):
+                notes = dict(parsed, source="api")
+        except Exception as e:
+            # A 404 is an answer: the tag has no GitHub Release, so no link.
+            if getattr(e, "code", None) != 404:
+                url = rn.release_url(slug, tag)
+            say(f"release notes for {tag}: no GitHub Release read ({str(e)[:120]}); "
+                "reading the history instead")
+    if notes is None:
+        try:
+            prev = since if _has_commit(paths.cache, since) else None
+            notes = dict(rn.collect(paths.cache, tag, prev, warn=say), source="git")
+        except Exception as e:
+            say(f"release notes for {tag}: {e}")
+            return None
+    changes = [c for c in notes.get("changes") or [] if isinstance(c, dict)]
+    return {"tag": tag, "previous": notes.get("previous") or "", "notes_url": url,
+            "count": len(changes), "changes": changes[:NOTES_CHANGES_MAX],
+            "owner_steps": (notes.get("owner_steps") or [])[:NOTES_STEPS_MAX],
+            "source": notes["source"]}
+
+
+def record_notes(st: dict, notes: dict) -> None:
+    """`notes` become st["notes"]; the notes there before move to
+    st["notes_history"], of which the newest NOTES_HISTORY stay."""
+    old = st.get("notes")
+    hist = [h for h in (st.get("notes_history") or [])
+            if isinstance(h, dict) and h.get("tag") != notes.get("tag")]
+    if isinstance(old, dict) and old.get("tag") and old.get("tag") != notes.get("tag"):
+        hist.append(old)
+    st["notes_history"] = hist[-NOTES_HISTORY:]
+    st["notes"] = notes
+
+
+def changes_behind(paths: Paths, st: dict) -> dict | None:
+    """{"tag", "since", "changes"} when the newest release on the channel
+    is newer than the installed one: how many changes lie between them in
+    the cache's history. None when current, or when the cache does not
+    hold what is installed."""
+    latest = st.get("latest_on_channel") or ""
+    lk = us.version_key(latest)
+    if lk is None:
+        return None
+    inst = st.get("installed") or ""
+    ik = us.version_key(inst)
+    if ik is not None and ik >= lk:
+        return None
+    since = inst if ik is not None else (st.get("installed_commit") or "")
+    rn = _notes_module()
+    if rn is None or not _has_commit(paths.cache, since):
+        return None
+    try:
+        got = rn.collect(paths.cache, latest, since, warn=say)
+    except Exception:
+        return None
+    return {"tag": latest, "since": since, "changes": len(got["changes"])}
+
+
+def _set_behind(paths: Paths, st: dict) -> None:
+    try:
+        behind = changes_behind(paths, st)
+    except (UpdateError, OSError, subprocess.SubprocessError):
+        behind = None
+    if behind:
+        st["behind"] = behind
+    else:
+        st.pop("behind", None)
+
+
 # ── staging and the swap ─────────────────────────────────────────────
 
 def _ea_gid() -> int:
@@ -849,6 +967,7 @@ def resolve_target(paths: Paths, st: dict, *, channel: str, tag: str | None) -> 
     fetch_tags(paths.cache, paths.repo_url)
     st["checked_at"] = now_iso()
     st["latest_on_channel"] = newest_signed(paths.cache, channel, paths.signers) if channel in us.CHANNELS else ""
+    _set_behind(paths, st)
     if tag:
         return tag, verify_tag(paths.cache, tag, paths.signers)
     held = (st.get("held_back") or {}).get("version", "")
@@ -891,6 +1010,11 @@ def apply(paths: Paths, host=None, *, channel: str, tag: str | None = None, dry_
                 staged = export_tree(paths.cache, commit, scratch / new_tag, new_tag)
                 problems = smoke(staged)
                 say("smoke: " + ("passed" if not problems else "; ".join(problems)))
+                notes = release_notes(paths, new_tag, old_tag)
+                if notes:
+                    say(f"notes: {notes['count']} change(s) since {notes['previous'] or 'the start'}"
+                        f" ({notes['source']})" + "".join(f"\n  - {c['subject']}"
+                                                        for c in notes["changes"][:5]))
                 say("would restart: " + (", ".join(installed_services(host).values()) or "nothing"))
                 busy = idle_probe() if idle_probe else busy_reasons(paths)
                 say("idle now" if not busy else "busy now: " + ", ".join(busy))
@@ -970,6 +1094,16 @@ def apply(paths: Paths, host=None, *, channel: str, tag: str | None = None, dry_
                     us.version_key(st["held_back"]["version"]) and \
                     us.version_key(st["held_back"]["version"]) <= us.version_key(new_tag):
                 st.pop("held_back", None)
+            try:
+                notes = release_notes(paths, new_tag, old_tag)
+            except Exception as e:      # the notes never undo an update
+                notes = None
+                say(f"release notes for {new_tag}: {e}")
+            if notes:
+                record_notes(st, notes)
+                say(f"{new_tag}: {notes['count']} change(s) since "
+                    f"{notes['previous'] or 'the start'} ({notes['source']})")
+            _set_behind(paths, st)
             prune(paths.releases)
             save_status(paths, st)
             return 0
@@ -1210,8 +1344,20 @@ def _print_status(st: dict, as_json: bool) -> None:
     print(f"mode:       {st.get('mode')}")
     print(f"channel:    {st.get('channel')} ({st.get('channel_source')})")
     print(f"installed:  {st.get('installed') or '-'} ({st.get('installed_commit') or '?'})")
+    behind = st.get("behind") or {}
     print(f"newest:     {st.get('latest_on_channel') or '-'}"
-          + (f" (checked {st['checked_at']})" if st.get("checked_at") else ""))
+          + (f" (checked {st['checked_at']})" if st.get("checked_at") else "")
+          + (f", {behind['changes']} change(s) behind"
+             if behind.get("changes") and behind.get("tag") == st.get("latest_on_channel") else ""))
+    notes = st.get("notes") or {}
+    if notes.get("tag") and notes["tag"] == st.get("installed"):
+        print(f"changes:    {notes.get('count', 0)} in {notes['tag']} since "
+              f"{notes.get('previous') or 'the start'}"
+              + (f" ({notes['notes_url']})" if notes.get("notes_url") else ""))
+        for c in (notes.get("changes") or [])[:3]:
+            print(f"            - {c.get('subject')}")
+        for s in notes.get("owner_steps") or []:
+            print(f"owner step: {s.get('step')}")
     last = st.get("last_apply") or {}
     if last:
         print(f"last apply: {last.get('at')} {last.get('from') or '?'} -> {last.get('to')}: "

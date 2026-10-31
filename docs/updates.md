@@ -12,6 +12,7 @@ This page is the design and the operator's reference. The pieces:
 | Piece | Where |
 |---|---|
 | The release channel: a signed tag `vX.Y.Z` on every green push to `main` | `.github/workflows/ci.yml`, job `release` |
+| The release notes: a GitHub Release per tag, and what an install records of it | `scripts/release_notes.py` |
 | The trust root: the public half of the signing key | `.release-key.pub` |
 | The `stable` channel: a tag the maintainer moves | `scripts/cut-tag.sh --stable` |
 | The updater on an install | `scripts/update.py` |
@@ -45,6 +46,10 @@ annotated tag on that commit and pushes it:
   pointer for people and dashboards; the updater does not trust it.
 - With no secret set the job prints a warning and tags nothing, so a fork
   or a repository before the one-time setup stays green.
+- Once the tag is pushed, the job creates a GitHub Release for it whose
+  body is the release notes (below), with `gh release create --verify-tag
+  --notes-file`. A Release that cannot be made is a warning and the job
+  stays green: the signed tag is the release, and the notes describe it.
 
 A tag pushed with the workflow's own token starts no workflow, so a
 release tag does not run CI a second time; the commit it names has just
@@ -54,6 +59,44 @@ maintainer pushes a tag by hand or uses Run workflow.
 A hand-cut tag (`scripts/cut-tag.sh vX.Y.Z`) is not signed, and installs
 skip it. To move the minor or major number, put the marker in the merge
 commit instead.
+
+### Release notes
+
+`scripts/release_notes.py` writes the notes from the history between the
+previous release and the new tag, in merge order:
+
+- **Changes**: one line per first-parent commit. A merge commit gives the
+  pull request's title (the line after `Merge pull request #N from ...`),
+  a squash commit its subject without the trailing `(#N)`, a direct
+  commit its subject. A title states the mechanism in one line
+  (CONTRIBUTING.md), so the line is the change. Each line links its pull
+  request and names the commit.
+- **Owner steps**, when there are any: each line that starts with
+  `Owner-steps:` in a commit message of the range (the merge or squash
+  commit and the commits a merge brings in) or, in CI, in a pull request's
+  body (`--pr-bodies`, through the API). The line names one step; with
+  nothing after the colon, the list items under it are the steps. Fenced
+  code is skipped, and `none` is no step.
+
+The previous release is the newest `vX.Y.Z` tag in the new tag's history
+below it; with none, the tag is the first release and every commit in its
+history is a change.
+
+```
+python3 scripts/release_notes.py v1.2.2..v1.2.3          # Markdown, the Release body
+python3 scripts/release_notes.py --tag v1.2.3 --json     # {"tag", "previous", "changes": [{"subject", "pr", "sha"}], "owner_steps": [...]}
+python3 scripts/release_notes.py --tag HEAD              # what the next release would say
+```
+
+An install records the notes when an update comes up healthy (step 13):
+the body of the tag's GitHub Release, read with the API, when that release
+starts at the version installed before; otherwise, when the API does not
+answer or the install skipped a release, the notes made again from the
+history in the updater's cache since the version installed before. Made
+again from the history, they carry only the owner steps written in commit
+messages. The status file keeps them under `notes` (`tag`, `previous`,
+`notes_url`, `count`, `changes`, `owner_steps`, `source`), and the notes of
+the ten releases installed before under `notes_history`.
 
 ### The trust root
 
@@ -195,8 +238,8 @@ EA user's copy alone ("deploy skipped: managed by the updater").
     held back until a newer release appears or `apply --tag` names it.
 13. **Record.** `~/.ea-private/update/status.json` (the owner's copy) and
     `~/.ea/state/update-status.json` (the copy the EA reads, written as
-    the EA user). Releases older than `previous` are deleted, except the
-    three newest.
+    the EA user), with the new release's notes ("Release notes", above).
+    Releases older than `previous` are deleted, except the three newest.
 
 ### Where it does nothing
 
@@ -245,21 +288,27 @@ delay), output in `~/.ea-private/logs/update.log`.
 ## What the user sees
 
 - **The doctor**, `updates`: the installed version, the channel, the
-  newest release on it, the last apply and its result, and any version
-  held back. It warns when a version is held back, when the last apply
-  failed or the last run stopped on an error (no `.release-key.pub` yet,
-  no network), when the timer has not checked in two days, or when a
-  channel is set on a tree that still needs the root step. It never
-  fails an install.
+  newest release on it, with `N changes behind` when it is newer than the
+  installed one (counted in the cache's history at each check), the last
+  apply and its result, and any version held back. It warns when a
+  version is held back, when the last apply failed or the last run
+  stopped on an error (no `.release-key.pub` yet, no network), when the
+  timer has not checked in two days, or when a channel is set on a tree
+  that still needs the root step. It never fails an install.
 - **The morning briefing**: one line when the installed version changed
-  since the last briefing, `Updated to v0.1.7 (from v0.1.5).`, or a
-  version was held back, `Update v0.1.8 held back; running v0.1.7.`
+  since the last briefing, with the number of changes since then and the
+  first two subjects, `Updated to v0.1.7 (3 changes: <first>; <second>…).`,
+  and `Owner step: <step>.` when a release names one (`Updated to v0.1.7
+  (from v0.1.5).` when no notes were recorded); or a version was held
+  back, `Update v0.1.8 held back; running v0.1.7.`
   `run-agent.sh` appends it after the model's text, from the owner-private
   status (`preprocessor/update_status.py briefing-line`), and records it
   as said only once the post went out.
 - **`version`** (or `/version`) in any chat room: the installed tag, its
-  commit and the channel, with the newest release on the channel and any
-  held-back version. No model call.
+  commit and the channel, with the newest release on the channel, the
+  first three changes of the installed release, its owner steps and the
+  link to its notes, and any held-back version. No model call.
+  `python3 preprocessor/update_status.py notes` prints every change.
 
 ## The relay host
 
