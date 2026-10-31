@@ -280,11 +280,19 @@ with `http.client` is a later optimisation.
   relay devices happen on the tailnet only. The web front end refuses
   those routes again for any request that carries `X-Tacitus-Relay`.
 - From the phone's headers only `content-type`, `accept` and
-  `last-event-id`. The bot adds the owner's credential itself (the
-  `ea_web` cookie from `pair_token_file`, else `Tailscale-User-Login`),
-  `X-Tacitus-Relay: <device id>`, so A can tell a relayed request, and
-  `X-Tacitus-Relay-Cards: allow` or `deny`: whether this request may
-  confirm a card.
+  `last-event-id`. The bot adds the rest itself: the owner's credential,
+  which is the `ea_web` cookie from `pair_token_file` and nothing else
+  (A takes `Tailscale-User-Login` only on a connection from tailscaled,
+  and refuses it from any other loopback client, so the relay client
+  never sends it; without a readable token file every relayed request is
+  a 401); `Host`, the loopback base URL's host and port, which A requires
+  of an `/api` request (else 421); on a POST, `Origin`, the loopback base
+  URL's origin (`http://127.0.0.1:<port>`), which A takes from a loopback
+  client without the identity header; `X-Tacitus-Relay: <device id>`, so
+  A can tell a relayed request; and `X-Tacitus-Relay-Cards: allow` or
+  `deny`, whether this request may confirm a card (A's card action route
+  answers 403 on `deny`). It sends no `Sec-Fetch-Site`, which A refuses
+  as `cross-site` or `same-site`, and the phone cannot add one.
 - Back to the phone only `content-type` and `content-disposition`.
 - Bodies up to 10 MiB each way (the chat's file cap), about 13.4 MiB as
   a frame.

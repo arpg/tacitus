@@ -266,7 +266,9 @@ def _check_local_url(url: str) -> str:
 
 def owner_headers_for(web_cfg: Mapping[str, Any]) -> dict[str, str]:
     """The credential the local server takes as the owner: the pair-token
-    cookie when its file is readable, else the tailscale login header."""
+    cookie from `pair_token_file`, else none. Never the Tailscale login
+    header: the web front end takes that only on a connection from
+    tailscaled, and refuses it from any other loopback client."""
     tok_file = web_cfg.get("pair_token_file")
     if tok_file:
         try:
@@ -275,8 +277,7 @@ def owner_headers_for(web_cfg: Mapping[str, Any]) -> dict[str, str]:
             tok = ""
         if tok:
             return {"Cookie": f"ea_web={tok}"}
-    login = web_cfg.get("tailscale_login")
-    return {"Tailscale-User-Login": str(login)} if login else {}
+    return {}
 
 
 def _origin(url: Optional[str]) -> Optional[tuple[str, str, int]]:
@@ -390,6 +391,10 @@ class RelayClient:
         rc._need()
         self.relay_url = _check_relay_url(relay_url)
         self.local = _check_local_url(local_base_url)
+        # A replayed POST carries the loopback origin the local server takes
+        # from a client without the identity header; Host is the URL's.
+        parts = urllib.parse.urlsplit(self.local)
+        self.local_origin = f"{parts.scheme}://{parts.netloc}"
         self.store = store
         self.identity = store.identity()
         self.install_id = self.identity.install_id
@@ -624,11 +629,11 @@ class RelayClient:
             self._open_stream(session, fid, req)
 
     def _headers(self, device: str, extra: Mapping[str, Any] | None = None,
-                 level: str = "read") -> dict[str, str]:
-        """The phone's allowed headers, the owner's credential, and the
-        relay marks: the device id, and whether this request may confirm a
-        card (`X-Tacitus-Relay-Cards`). A local server that resolves typed
-        card codes skips that on "deny"."""
+                 level: str = "read", method: str = "GET") -> dict[str, str]:
+        """The phone's allowed headers, the owner's credential, the local
+        origin on a POST, and the relay marks: the device id, and whether
+        this request may confirm a card (`X-Tacitus-Relay-Cards`). A local
+        server that resolves typed card codes skips that on "deny"."""
         headers: dict[str, str] = {}
         for name, value in (extra or {}).items():
             key = str(name).lower()
@@ -636,6 +641,8 @@ class RelayClient:
                     and len(value) <= 256 and not re.search(r"[\r\n]", value):
                 headers[key] = value
         headers.update(self._owner_headers())
+        if method == "POST":
+            headers["Origin"] = self.local_origin
         headers["X-Tacitus-Relay"] = device
         headers["X-Tacitus-Relay-Cards"] = "allow" if level == "all" else "deny"
         return headers
@@ -654,7 +661,7 @@ class RelayClient:
             return _response(413, "body too large")
         hdrs = req.get("h") if isinstance(req.get("h"), dict) else {}
         request = urllib.request.Request(self.local + path, data=body, method=method,
-                                         headers=self._headers(device, hdrs, level))
+                                         headers=self._headers(device, hdrs, level, method))
         try:
             resp = self._local_opener.open(request, timeout=LOCAL_TIMEOUT)
         except urllib.error.HTTPError as exc:

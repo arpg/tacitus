@@ -36,6 +36,7 @@ from botcore.chat import relay_crypto as rc  # noqa: E402
 
 PAIR_TOKEN = "pair-token-for-tests"
 OWN_URL = "https://host.example.test/chat"
+LOGIN = "owner@example.test"
 REPLY_MARKER = "relay-reply-marker-7f3a2b"
 EVENT_MARKER = "relay-event-marker-91c2d4"
 REQUEST_MARKER = "relay-request-marker-55e1aa"
@@ -566,6 +567,17 @@ def test_request_through_the_relay(loop):
     assert "Tailscale-User-Login" not in hdrs
     assert hdrs["X-Tacitus-Relay"] == phone.session.device
     assert hdrs["X-Tacitus-Relay-Cards"] == "deny"  # paired on the relay's origin
+    assert "Origin" not in hdrs  # a GET
+    local = urllib.parse.urlsplit(loop["client"].local)
+    assert hdrs["Host"] == local.netloc
+    posted = next(h for m, p, h in reversed(FakeAPI.seen) if m == "POST")
+    assert posted["Origin"] == f"http://{local.netloc}" and posted["Host"] == local.netloc
+    assert "Tailscale-User-Login" not in posted
+    # The bot signs in with the pairing cookie only, never the identity header.
+    assert rcl.owner_headers_for({"tailscale_login": LOGIN}) == {}
+    assert rcl.owner_headers_for({"tailscale_login": LOGIN,
+                                  "pair_token_file": str(loop["dir"] / "pair.token")}) == {
+        "Cookie": f"ea_web={PAIR_TOKEN}"}
 
 
 def test_large_bodies_cross_once_encoded(loop):
@@ -986,7 +998,6 @@ def test_shared_vectors_match_relay_crypto():
 
 # ── the web front end's side: start, routes, policy ───────────────────
 
-LOGIN = "owner@example.test"
 OWNER_H = {"Tailscale-User-Login": LOGIN}
 
 
