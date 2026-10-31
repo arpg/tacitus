@@ -13,6 +13,11 @@ falls back to an urgent post in the personal channel with a mention, and
 
 Requires the owner's chat credential (owner_trust), so these run in owner
 lanes: the owner's shell, cron as the owner, and `alert.py flush`.
+
+With the web chat as a shadow, `frontend()` is the composite
+(docs/webchat.md, CLI senders); its client is the primary's. A Zulip
+direct message is not mirrored into the web chat: it lives outside the
+streams the web chat holds.
 """
 from __future__ import annotations
 
