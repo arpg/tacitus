@@ -251,7 +251,11 @@ channel of its own:
   the owner's devices, and a scheduled one is held and delivered by the
   Zulip server, so it fires whatever the bot is doing. On Slack there is
   no server-side schedule: `send_direct` falls back to an urgent post in
-  the personal channel and `schedule_direct` raises.
+  the personal channel and `schedule_direct` raises. On the web chat
+  alone, `schedule_direct` queues the post in the web chat's store
+  (`scheduled_posts`) and the bot's tail thread posts it in the DM channel
+  at its moment; `cancel_scheduled` drops it (docs/webchat.md, CLI
+  senders).
 - `preprocessor/alert.py schedule --id <ledger id> --at <ISO local>
   [--lead 15]` schedules that message for `lead` minutes before the
   moment and records it on the row (`alert_at`, `alert_scheduled_id`),

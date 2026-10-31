@@ -133,6 +133,9 @@ under a ShadowFrontend the composite switches the shadow off
   `reaction`, `card`, `status`, `file`, `channel`.
 - `files(id TEXT PK, channel TEXT, name TEXT, path TEXT, mimetype TEXT, size INT, at REAL)`;
   uploads land under `<store dir>/webchat-files/`.
+- `scheduled_posts(id INTEGER PK AUTOINCREMENT, channel TEXT, text TEXT,
+  due_at REAL, created_at REAL)`: the bot's posts queued for a later
+  moment (a scheduled alert on the web chat alone, CLI senders).
 
 Standalone ids: messages `w<seq>`, threads `t<seq of the parent>`,
 rooms `r<n>`, files `f<n>`. In shadow mode every id is the primary's
@@ -358,6 +361,20 @@ open (`<ea_dir>/state/webchat.sqlite`) is one the bot never reads.
   outbox instead; the bot's drain finds the channel that holds a web
   thread key through the store (`WebFrontend.thread_channel`) and posts
   there when it is one of the owner's.
+- Standalone, a scheduled direct message (`chat/direct.py`
+  `schedule_direct`, which alert.py calls for a loud alert) is a row in
+  `scheduled_posts`: the DM channel, the text and the moment. The bot's
+  tail thread posts it in the DM as the bot, in a new thread, once it is
+  due (`WebFrontend.post_due`), and the event goes to the open streams.
+  The id it returns is the row's, which the ledger row keeps as
+  `alert_scheduled_id`: `cancel_scheduled` deletes the row (False once
+  it went out, as on Zulip), and `list_scheduled` reads the DM's rows. The
+  post carries no push of its own: alert.py queues the alert's push for
+  the same moment (`web_notify`). The bot must be up to post it; one it
+  was down for goes out when it is back. In a process that is not the
+  owner's, `direct.frontend()` raises, so alert.py stages the alert for
+  the owner's `alert.py flush`. `send_direct` posts as `chat_notify.post`
+  does to the `personal` key.
 - Not mirrored: a Slack webhook post (no message id comes back), and a
   Zulip direct message or scheduled direct message from
   `chat/direct.py` (they live outside the streams the web chat holds; the
@@ -372,6 +389,9 @@ events before one of them, those go first, read back from the log. The
 store keeps the last seq it handed on, so no event goes out twice (a
 stream also skips any seq at or below its last). With no stream open the
 new events are passed over: a stream that opens later replays the log.
+The same thread then posts the scheduled posts now due: a plain read
+finds none in the common case, and the due ones leave the queue in one
+transaction before they are posted.
 
 **SQLite.** One file, the default rollback journal and a 10-second busy
 wait on each connection. Writers take turns, so the seqs commit in
@@ -653,7 +673,9 @@ builds the web front end (`chat.load_web_frontend`, not started) and
 sends or queues through it, and does nothing when the chat block runs no
 web front end or its store does not exist. A queued alert therefore goes
 out while the bot runs; the Zulip direct message, held by the Zulip
-server, does not need the bot.
+server, does not need the bot. On the web chat alone the alert's post
+waits in the store as well (`scheduled_posts`, CLI senders), so both go
+out from the bot.
 
 **The app.** The toggle sits at the foot of the channel drawer and shows
 once `/api/me` says `push`. Under it, the list of subscribed browsers

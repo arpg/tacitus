@@ -22,8 +22,10 @@ hands its own events to the streams at once; a tail thread reads the
 log every `tail_s` seconds (one `SELECT MAX(seq)` when nothing is new)
 and hands on the events another process appended, in seq order and as
 the same JSON. The store keeps the last seq it handed on, so no event
-reaches a stream twice. A process that is not the owner's never opens
-the owner-private store: its posts reach the primary only
+reaches a stream twice. The same thread posts the scheduled posts a
+sender queued (`scheduled_posts`, chat.direct.schedule_direct on the web
+chat alone) once they are due. A process that is not the owner's never
+opens the owner-private store: its posts reach the primary only
 (chat.load_frontend).
 
 Identity, standalone: the owner is "owner", the bot is "bot"; messages
@@ -248,6 +250,9 @@ CREATE TABLE IF NOT EXISTS push_subscriptions(
     failures INT DEFAULT 0, last_seen REAL, device TEXT);
 CREATE TABLE IF NOT EXISTS push_queue(
     tag TEXT PRIMARY KEY, due_at REAL, payload TEXT, urgency TEXT, created_at REAL);
+CREATE TABLE IF NOT EXISTS scheduled_posts(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, text TEXT, due_at REAL,
+    created_at REAL);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 """
 
@@ -1211,6 +1216,49 @@ class WebStore:
                 raise
             return rows
 
+    # scheduled posts (chat.direct.schedule_direct on the web chat alone)
+
+    def post_defer(self, channel: str, text: str, due_at: float) -> int:
+        """Queue the bot's post of `text` in `channel` for `due_at`; its id."""
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute(
+                    "INSERT INTO scheduled_posts(channel, text, due_at, created_at) "
+                    "VALUES (?,?,?,?)", (channel, text, float(due_at), time.time()))
+            return int(cur.lastrowid)
+
+    def post_cancel(self, post_id: int) -> bool:
+        """Drop a scheduled post; False when it is gone (posted or dropped)."""
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute("DELETE FROM scheduled_posts WHERE id=?",
+                                         (int(post_id),))
+            return cur.rowcount > 0
+
+    def posts_queued(self) -> list[dict]:
+        return [dict(r) for r in
+                self._all("SELECT * FROM scheduled_posts ORDER BY due_at, id")]
+
+    def post_claim_due(self, now: float) -> list[dict]:
+        """Take the scheduled posts due by `now` off the queue in one
+        transaction, so two processes never both post one. A plain read
+        comes first: the bot asks every tail_s seconds."""
+        if self._one("SELECT 1 FROM scheduled_posts WHERE due_at <= ? LIMIT 1",
+                     (now,)) is None:
+            return []
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = [dict(r) for r in self._conn.execute(
+                    "SELECT * FROM scheduled_posts WHERE due_at <= ? ORDER BY due_at, id",
+                    (now,))]
+                self._conn.execute("DELETE FROM scheduled_posts WHERE due_at <= ?", (now,))
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+            return rows
+
 
 class _HttpError(Exception):
     def __init__(self, status: int, message: str) -> None:
@@ -1557,13 +1605,15 @@ class WebFrontend(ChatFrontend):
 
     def _tail_events(self) -> None:
         """Every tail_s seconds, hand the open streams the events other
-        processes wrote to the store (WebStore.deliver_new)."""
+        processes wrote to the store (WebStore.deliver_new), then post the
+        scheduled posts now due (post_due)."""
         while not self._stop.wait(self.tail_s):
             try:
                 self.store.deliver_new()
             except Exception as e:
                 # The next read tries again: a busy or failed read loses nothing.
                 log.warning("web chat: reading the event log failed: %s", e)
+            self.post_due()
 
     def run_forever(self) -> None:
         """Block until stop(); the server runs on its own thread."""
@@ -1827,6 +1877,47 @@ class WebFrontend(ChatFrontend):
         except Exception:
             log.exception("web chat: a queued push could not be cancelled")
             return False
+
+    # scheduled posts (chat.direct.schedule_direct on the web chat alone)
+
+    def schedule_post(self, channel: str, text: str, at: float) -> int:
+        """Queue `text` as the bot's post in `channel` at `at` (a Unix time);
+        the serving bot posts it when it is due (post_due). Its id, which
+        cancel_scheduled_post takes. A writer-only copy queues it as well."""
+        return self.store.post_defer(channel, text or "", float(at))
+
+    def cancel_scheduled_post(self, post_id: int) -> bool:
+        """Drop a queued post; False when it went out already or never was."""
+        return self.store.post_cancel(int(post_id))
+
+    def scheduled_posts(self) -> list[dict]:
+        """The queued posts: id, channel, text, due_at, created_at."""
+        return self.store.posts_queued()
+
+    def post_due(self, now: float | None = None) -> int:
+        """Post each scheduled post now due as the bot, each one a new
+        thread; the number posted. One the bot was down for goes out when it
+        is back. It carries no push of its own: the sender queues the push
+        for the same moment (chat.direct.web_notify). A post whose channel
+        is gone is dropped, with a log line. Never raises."""
+        try:
+            rows = self.store.post_claim_due(time.time() if now is None else now)
+        except Exception as e:
+            log.warning("web chat: reading the scheduled posts failed: %s", e)
+            return 0
+        posted = 0
+        for row in rows:
+            try:
+                if self.store.channel(row["channel"]) is None:
+                    log.warning("web chat: scheduled post %s dropped: channel %s is gone",
+                                row["id"], row["channel"])
+                    continue
+                self.store.add_message(row["channel"], mid=None, thread_key=None, author=BOT,
+                                       kind="message", text=self._out(row["text"]))
+                posted += 1
+            except Exception:
+                log.exception("web chat: scheduled post %s failed", row["id"])
+        return posted
 
     def app_url(self) -> str:
         """The web app's own address: public_url, else the base path."""

@@ -1,8 +1,10 @@
 """alert.py and page_watch.py: the loud channel for a moment with a clock time."""
 import json
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -139,3 +141,173 @@ def test_page_watch_condition_and_single_fire(tmp_path, monkeypatch):
     r = pw.check()
     assert "skipped" in r["watches"][0]
     assert pw.condition_holds(opened, {"present": "tickets are available"}) == (True, "pattern appeared")
+
+
+# ── the web chat alone ("frontend": "web") ────────────────────────────
+
+@pytest.fixture
+def web_only(tmp_path, monkeypatch):
+    """A web-only chat block in the owner-private chat.json, read by an
+    owner process; the bot serves the store beside it, and the ledger is a
+    dict that `update --set` changes."""
+    import chat
+    import ea_config
+    cfg = tmp_path / "ea-config.json"
+    cfg.write_text("{}")
+    monkeypatch.setattr(ea_config, "CONFIG_FILE", cfg)
+    monkeypatch.setenv("EA_DIR", str(tmp_path / "ea"))
+    monkeypatch.setattr(alert, "PENDING", tmp_path / "pending-alerts.jsonl")
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    (private / "chat.json").write_text(json.dumps(
+        {"frontend": "web", "web": {"port": 0, "tailscale_login": "owner@example.test"}}))
+    (private / "chat.json").chmod(0o600)
+    monkeypatch.setenv("EA_PRIVATE_DIR", str(private))
+    monkeypatch.setattr(chat.owner_trust, "is_owner_process", lambda: True)
+    rows: dict = {}
+
+    def ledger(args):
+        if args[:1] == ["update"]:
+            for kv in args[args.index("--set") + 1:]:
+                key, _, value = kv.partition("=")
+                rows[args[2]][key] = value
+        return {}
+    monkeypatch.setattr(alert, "_ledger", ledger)
+    monkeypatch.setattr(alert, "_row", lambda lid: dict(rows.get(lid, {})))
+    bot = chat.load_frontend(env={})
+    assert bot.name == "web" and not bot.writer_only
+    bot.tail_s = 0.05
+    pushed: list = []
+    bot.notify = lambda *a, **kw: pushed.append(a) or {}
+    bot.start()
+    from chat.web_frontend import WebStore
+    yield SimpleNamespace(bot=bot, rows=rows, store=WebStore(private / "webchat.sqlite"),
+                          chat=chat, pushed=pushed)
+    bot.stop()
+
+
+def _until(cond, timeout: float = 5.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_a_web_only_alert_waits_in_the_store_and_the_bot_posts_it_in_the_dm(web_only,
+                                                                            web_pushes):
+    web_only.rows["tix"] = {"id": "tix", "description": "Tickets at 10:00am"}
+    at = datetime.now(timezone.utc) + timedelta(hours=3)
+    out = alert.schedule("tix", at, 15, None)
+    assert out["ok"] and out["kind"] == "scheduled", out
+    (queued,) = web_only.store.posts_queued()
+    assert (queued["id"], queued["channel"], queued["text"]) == (out["scheduled_id"], "dm",
+                                                                  out["text"])
+    assert queued["due_at"] == pytest.approx((at - timedelta(minutes=15)).timestamp())
+    assert web_only.rows["tix"]["alert_scheduled_id"] == str(queued["id"])
+    # the push is queued for the same moment, as on Zulip
+    assert web_pushes == [("notify", out["text"], {"tag": "alert:tix",
+                                                   "when": at - timedelta(minutes=15)})]
+    # `list` names the row from the queued post
+    (listed,) = alert.list_alerts()["scheduled"]
+    assert (listed["scheduled_id"], listed["ledger_id"]) == (queued["id"], "tix")
+    # not due: the bot's tail thread posts nothing
+    time.sleep(0.3)
+    assert web_only.store.threads("dm") == [] and len(web_only.store.posts_queued()) == 1
+    # due (the clock moved on): the bot posts it in the DM, once, as itself
+    with web_only.store._lock, web_only.store._conn:
+        web_only.store._conn.execute("UPDATE scheduled_posts SET due_at=?", (time.time() - 1,))
+    assert _until(lambda: web_only.store.threads("dm"))
+    (posted,) = web_only.store.threads("dm")
+    assert posted["author"] == "bot" and posted["text"] == web_only.bot._out(out["text"])
+    assert posted["text"].endswith("Ledger `tix`.")
+    assert web_only.store.posts_queued() == [] and web_only.bot.post_due() == 0
+    assert web_only.store.threads("main") == [] and web_only.pushed == []
+    # posted already: cancel finds nothing, as Zulip's would
+    from chat import direct
+    assert direct.cancel_scheduled(queued["id"]) is False
+
+
+def test_cancel_drops_a_web_only_alert_before_it_posts(web_only, web_pushes):
+    web_only.rows["tix"] = {"id": "tix", "description": "Tickets at 10:00am"}
+    at = datetime.now(timezone.utc) + timedelta(hours=3)
+    first = alert.schedule("tix", at, 15, None)
+    # --force replaces it: the first queued post goes, the new one stays
+    second = alert.schedule("tix", at, 30, None, force=True)
+    assert [q["id"] for q in web_only.store.posts_queued()] == [second["scheduled_id"]]
+    assert second["scheduled_id"] != first["scheduled_id"]
+    out = alert.cancel("tix")
+    assert out == {"ok": True, "cancelled": str(second["scheduled_id"])}
+    assert web_only.store.posts_queued() == [] and alert.list_alerts()["scheduled"] == []
+    assert web_pushes[-1] == ("cancel", "alert:tix", {})
+    assert web_only.bot.post_due(now=time.time() + 86400) == 0
+    assert web_only.store.threads("dm") == []
+
+
+def test_a_lane_that_is_not_the_owners_stages_a_web_only_alert(tmp_path, monkeypatch):
+    """The web chat's store is the owner's: a lane that is not the owner's
+    never writes one the bot does not read. Its alert is staged for the
+    owner's flush, as on Zulip without the credential."""
+    import chat
+    from chat import direct
+    from chat.web_frontend import WebFrontend
+    other = tmp_path / "state" / "webchat.sqlite"
+    monkeypatch.setattr(direct, "load_frontend", lambda **kw: WebFrontend.from_config(
+        {}, store_path=other, writer_only=True))
+    monkeypatch.setattr(chat.owner_trust, "is_owner_process", lambda: False)
+    monkeypatch.setattr(alert, "PENDING", tmp_path / "pending-alerts.jsonl")
+    monkeypatch.setattr(alert, "_row", lambda lid: {"id": lid, "description": "Tickets"})
+    out = alert.schedule("tix", datetime.now(timezone.utc) + timedelta(hours=3), 15, None)
+    assert out.get("staged") is True and "PermissionError" in out["reason"], out
+    with pytest.raises(PermissionError):
+        direct.schedule_direct("x", datetime.now(timezone.utc) + timedelta(hours=1),
+                               WebFrontend.from_config({}, store_path=other, writer_only=True))
+    assert not other.exists()
+
+
+def test_the_zulip_path_is_unchanged(monkeypatch):
+    """The scheduled direct message on Zulip: the same requests as before
+    the web chat could hold one, and no owner check of the web's."""
+    import chat
+    from chat import direct
+    from chat.memory_frontend import MemoryFrontend
+    calls = []
+
+    class Zulip:
+        name = "zulip"
+        owner_id = "8"
+        client = object()
+
+        def _call(self, *args):
+            calls.append(args)
+            if args[1:2] == ("POST",):
+                return {"result": "success", "scheduled_message_id": 42}
+            if args[1:2] == ("DELETE",):
+                return {"result": "success"}
+            return {"result": "success", "scheduled_messages": [
+                {"scheduled_message_id": 42, "type": "private", "content": "hi",
+                 "scheduled_delivery_timestamp": 1793421333},
+                {"scheduled_message_id": 43, "type": "stream", "content": "not direct",
+                 "scheduled_delivery_timestamp": 1793421333}]}
+
+    monkeypatch.setattr(chat.owner_trust, "is_owner_process",
+                        lambda: pytest.fail("the Zulip path asks for no owner check"))
+    monkeypatch.setattr(direct, "load_frontend", lambda **kw: Zulip())
+    when = datetime.now(timezone.utc) + timedelta(hours=1)
+    assert direct.schedule_direct("hi", when) == 42
+    assert direct.list_scheduled() == [
+        {"id": 42, "at": datetime.fromtimestamp(1793421333, timezone.utc), "content": "hi"}]
+    assert direct.cancel_scheduled(42) is True
+    assert calls == [
+        ("scheduled_messages", "POST", {"type": "direct", "to": "[8]", "content": "hi",
+                                        "scheduled_delivery_timestamp": int(when.timestamp())}),
+        ("scheduled_messages",),
+        ("scheduled_messages/42", "DELETE")]
+    with pytest.raises(ValueError):
+        direct.schedule_direct("hi", when.replace(tzinfo=None), Zulip())
+    # A front end with no schedule of its own (Slack, the in-memory one) still raises.
+    other = MemoryFrontend()
+    with pytest.raises(RuntimeError):
+        direct.schedule_direct("hi", when, other)
+    assert direct.list_scheduled(other) == [] and direct.cancel_scheduled(1, other) is False
