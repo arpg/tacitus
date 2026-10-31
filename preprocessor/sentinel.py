@@ -624,6 +624,14 @@ def check_deploy_integrity() -> tuple[bool, str]:
                        f"directory owned by {os.getenv('USER') or 'the owner'} and "
                        f"writable by no one else; the deploy hook refuses it too")
     deployed_head = r.stdout.strip()
+    release = _updater_release()
+    if release is not None:
+        # The updater's release layout (docs/updates.md): the release it
+        # installed is what ea-bot's copy must match, not the owner's
+        # checkout, which no longer deploys.
+        repo_head = (deployed_head if release and deployed_head
+                     and (deployed_head.startswith(release) or release.startswith(deployed_head))
+                     else release)
     if not repo_head or not deployed_head:
         return (True, "deploy-integrity check skipped (unreadable HEADs)")
     if repo_head != deployed_head:
@@ -658,6 +666,19 @@ def check_deploy_integrity() -> tuple[bool, str]:
                        f"`sudo systemctl restart ea-chat-bot`")
     return (True, f"deploy integrity OK: repo==deployed==instance "
                   f"@ {repo_head}")
+
+
+def _updater_release(live: Path | None = None) -> str | None:
+    """The short commit of the release the updater installed, when the
+    services' tree is its release layout (a link, docs/updates.md); None
+    for a plain tree, which the deploy hook keeps at the checkout's HEAD."""
+    live = live or Path(os.environ.get("EA_LIVE_DIR") or "/opt/ea-system")
+    if not live.is_symlink():
+        return None
+    try:
+        return (live / ".deployed-commit").read_text().strip()
+    except OSError:
+        return ""
 
 
 # The files whose change means the running process is stale. The deploy

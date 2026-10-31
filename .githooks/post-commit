@@ -64,7 +64,13 @@ deploy_git() (
 # and misses runtime code in the ones before it. Empty (no deployed copy
 # yet) falls back to HEAD~1.
 OLD_HEAD=""
-if [ -d "$DEPLOY_DIR/.git" ]; then
+if [ -L "$LIVE_DIR" ]; then
+    # An install the updater manages (docs/updates.md): $LIVE_DIR is the
+    # link into its release directory, and the code there and in ea-bot's
+    # copy comes from signed release tags only. A commit here deploys
+    # nothing and restarts nothing; the tests below still run.
+    echo "[deploy] skipped: $LIVE_DIR is managed by the updater (python3 $LIVE_DIR/scripts/update.py status)"
+elif [ -d "$DEPLOY_DIR/.git" ]; then
     echo "[deploy] Pulling to $DEPLOY_DIR..."
     if ! ( cd -P -- "$DEPLOY_DIR" 2>/dev/null && deploy_tree_ok ); then
         echo -e "\033[31m[deploy] ✗ UNSAFE DEPLOY TREE: $DEPLOY_DIR and its .git must be real directories (not symlinks), owned by $(id -un) and writable by no one else. NOT deploying, NOT restarting.\033[0m"

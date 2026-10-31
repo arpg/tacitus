@@ -44,6 +44,13 @@ deploy_git() (
     exec git --git-dir=.git --work-tree=. "$@"
 )
 
+# An install the updater manages (docs/updates.md) takes its code from
+# signed release tags only: a commit here deploys nothing.
+if [ -L "$LIVE_DIR" ]; then
+    echo "[deploy] skipped: $LIVE_DIR is managed by the updater (python3 $LIVE_DIR/scripts/update.py status)"
+    exit 0
+fi
+
 REPO_HEAD="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 OLD_HEAD="$(deploy_git rev-parse HEAD 2>/dev/null)"
 if [ $? -eq 97 ]; then

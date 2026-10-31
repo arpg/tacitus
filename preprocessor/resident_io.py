@@ -448,7 +448,11 @@ def _default_child_file() -> str | None:
             return None
     except Exception:
         return None
-    path = CHILD_FILE
+    # Resolved first: on the updater's release layout the services' tree is
+    # a link into its release directory (docs/updates.md), and the walk in
+    # _child_file_usable accepts no link, so it checks every directory of
+    # the resolved path instead.
+    path = os.path.realpath(CHILD_FILE)
     if path not in _CHILD_FILE_OK:
         _CHILD_FILE_OK[path] = _child_file_usable(path)
     return path if _CHILD_FILE_OK[path] else None

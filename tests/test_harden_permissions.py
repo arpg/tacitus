@@ -37,9 +37,11 @@ def test_harden_moves_both_services_off_ea_bot_tree():
     assert "VENV_PY=" in HARDEN and "systemctl show -p ExecStart --value ea-chat-bot" in HARDEN
     for unit in ("ea-chat-bot.service.d", "ea-mail-mediator.service.d"):
         assert unit in HARDEN
-    # ExecStart is reset then repointed at the live tree for both units
+    # ExecStart is reset then repointed at the live tree for both units; the
+    # updater's own unit (docs/updates.md) runs from the live tree too
     assert HARDEN.count("ExecStart=\n") == 2
-    assert HARDEN.count("ExecStart=$VENV_PY $LIVE/") == 2
+    assert HARDEN.count("ExecStart=$VENV_PY $LIVE/") == 3
+    assert "ExecStart=$VENV_PY $LIVE/scripts/update.py run" in HARDEN
     # the bot's environment file is crh-owned, and the ea-bot .env is dropped
     assert "BOT_ENV=\"$OWNER_HOME/.ea-private/bot.env\"" in HARDEN
     assert "EnvironmentFile=\n" in HARDEN and "EnvironmentFile=$BOT_ENV" in HARDEN
