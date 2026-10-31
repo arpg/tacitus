@@ -90,7 +90,9 @@ one key, `tasks`:
 - **Changing it.** The web chat's Settings screen (owner only, never on
   a relayed copy) or, as the owner, `model_routing.py set <task>
   local|hosted|auto`. Each change is one line in `routing-changes.jsonl`
-  in the remote-LLM store.
+  in the remote-LLM store: the time, `via` (`web` or `cli`), what changed
+  and, for a web save, the credential that signed the request in
+  (`cookie` or `header`) and the device of a relayed request.
 
 ## How the lanes read it
 
@@ -144,12 +146,17 @@ Two rules in code sit under every value. No file lowers them.
    **Not built:** the stakes rule on every task. A draft the local writer
    is asked for, and a briefing item, that match the stakes rule are not
    moved to the hosted model by the table.
-2. **The keep floor.** `mail` and `tagging` read every new message in an
-   owner process, so `hosted` there would hand kept mail to Claude. While
-   the keep list (`keep_from_anthropic` in `remote-llm.json`) names a
-   domain or an address, `hosted` on either reads `auto`, and a save of
-   `hosted` is refused. The mail gate and the mediator's kept checks then
-   keep that mail from every other task, as before the table.
+2. **The keep floor.** `mail`, `tagging` and `digests` read new mail in
+   an owner process (`digests` the list and admissions mail), so `hosted`
+   there would hand kept mail to Claude. While the keep list
+   (`keep_from_anthropic` in `remote-llm.json`) keeps anything (a domain,
+   an address, or the admissions rule, which is on unless it says
+   `"admissions": false`), `hosted` on any of the three reads `auto`, and
+   a save of `hosted` is refused. The mail gate and the mediator's kept
+   checks then keep that mail from every other task, as before the
+   table. An install with no local model keeps the admissions rule on
+   too, so its Settings screen offers `local` and `auto` for these
+   three; `auto` runs them on Claude there, as before.
 
 **When both apply** (a contract question from a kept domain), neither
 model decides: the local model writes its record, and the item goes to
@@ -187,8 +194,9 @@ today.
 - **Judgment stays hosted.** `review` cannot be moved to the local model,
   and the stakes rule sits over a local table value in chat and
   scheduling turns. Drafts and briefing items: not built (above).
-- **The keep floor on the tasks that read every message.** `mail` and
-  `tagging` cannot go to Claude while the keep list has entries.
+- **The keep floor on the tasks that read new mail.** `mail`, `tagging`
+  and `digests` cannot go to Claude while the keep list keeps anything,
+  the admissions rule included.
 - **No change until the owner sets a value.** Every task but `review`
   defaults to `auto`, so a new install and an install with its switches
   set both run as before. The design's `hosted` default for a task with

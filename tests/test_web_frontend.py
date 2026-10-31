@@ -1115,6 +1115,39 @@ def test_the_settings_routes_answer_the_owner_and_save_the_routing_table(fe, rou
     assert saved["chat"] == "local" and saved["drafting"] == "hosted"
     assert (priv / "routing.json").stat().st_mode & 0o777 == 0o600
     assert owner(fe, "GET", "/api/settings/other")[0] == 404
+    # the change log names the credential that signed the save in
+    log = [json.loads(ln) for ln in (priv / "remote-llm" / "routing-changes.jsonl").read_text().splitlines()]
+    assert log[-1]["via"] == "web" and log[-1]["credential"] == "header" and "device" not in log[-1]
+    assert log[-1]["changed"]["chat"] == ["auto", "local"]
+
+
+def test_a_settings_save_hands_the_page_who_made_it(fe):
+    """A page whose save takes `who` gets the credential (the pairing
+    cookie here) and, on a relayed request, the device; a page without
+    the parameter is called as before."""
+    got = []
+
+    class Page:
+        def get(self):
+            return {}
+
+        def save(self, body, who=None):
+            got.append(who)
+            return {"saved": True}
+
+    class Plain:
+        def get(self):
+            return {}
+
+        def save(self, body):
+            got.append("plain")
+            return {"saved": True}
+    fe.settings_pages.update(page=Page(), plain=Plain())
+    token = fe.pair_token()
+    cookie = {"Cookie": f"{wf.COOKIE}={token}", "Host": PUBLIC_HOST, "Origin": PUBLIC_ORIGIN}
+    assert call(fe, "POST", "/api/settings/page", {"x": 1}, cookie)[0] == 200
+    assert owner(fe, "POST", "/api/settings/plain", {"x": 1})[0] == 200
+    assert got == [{"credential": "cookie"}, "plain"]
 
 
 def test_the_settings_routes_need_the_owner_and_the_app_s_own_origin(fe, routing_page):

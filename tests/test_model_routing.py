@@ -23,11 +23,16 @@ import remote_llm as rl  # noqa: E402
 TASKS = ("mail", "tagging", "drafting", "digests", "briefing", "audit", "scheduling", "chat", "review")
 
 
+EMPTY_KEEP = {"domains": [], "addresses": [], "admissions": False}
+
+
 def remote(**over) -> dict:
     """A remote config as remote_llm.config() returns it, with a made-up
-    endpoint, every switch off and an empty keep list unless `over` says."""
+    endpoint, every switch off and an empty keep list (no domain, no
+    address, the admissions rule off) unless `over` says."""
     cfg = rl._off()
-    cfg.update(endpoint="https://llm.example.test/v1", model="local-27b")
+    cfg.update(endpoint="https://llm.example.test/v1", model="local-27b",
+               keep_from_anthropic=dict(EMPTY_KEEP))
     cfg.update(over)
     return cfg
 
@@ -122,6 +127,28 @@ def test_the_keep_floor_holds_mail_and_tagging_off_hosted_while_the_list_has_ent
     empty = remote(mail="enforce")
     assert mr.choice("mail", cfg=empty) == "hosted" and rl.mode("mail", empty) == "off"
     assert {r["task"]: r for r in mr.rows(cfg=empty)}["mail"]["floor"] == ""
+
+
+def test_the_admissions_rule_alone_holds_the_floor_and_digests_are_floored(table):
+    """The admissions rule keeps mail too (it is on unless set false, as
+    remote_llm.config reads it), and the digest lane reads list and
+    admissions mail: hosted waits on every reader of new mail."""
+    assert rl._off()["keep_from_anthropic"]["admissions"] is True, "on by default"
+    admissions = remote(mail="enforce", digests="remote",
+                        keep_from_anthropic={"domains": [], "addresses": [], "admissions": True})
+    assert mr.keep_listed(admissions) and not mr.keep_listed(remote())
+    table(mail="hosted", tagging="hosted", digests="hosted")
+    for task in ("mail", "tagging", "digests"):
+        assert mr.choice(task, cfg=admissions) == "auto", task
+    assert mr.local("digests", switch_local=True, cfg=admissions)
+    rows = {r["task"]: r for r in mr.rows(cfg=admissions, tiers=ea_config.tiers_from_block({}))}
+    assert rows["digests"]["allowed"] == ["local", "auto"] and "admissions" in rows["digests"]["floor"]
+    assert rows["digests"]["effective"] == "local" and "keep floor" in rows["digests"]["why"]
+    for task in ("mail", "tagging", "digests"):
+        with pytest.raises(mr.RoutingRefused, match=f"{task} cannot be hosted"):
+            mr.save({task: "hosted"}, cfg=admissions)
+    # with the rule off and nothing listed, digests may be hosted
+    assert mr.choice("digests", cfg=remote(digests="remote")) == "hosted"
 
 
 def test_local_with_no_local_model_reads_hosted(table):

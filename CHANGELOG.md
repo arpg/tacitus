@@ -6,6 +6,17 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The keep floor covers the admissions rule and the digests.** The
+  routing table's keep floor counted only listed domains and addresses;
+  it now counts the admissions rule (on unless set false) too, and holds
+  `digests` off `hosted` like `mail` and `tagging`. The routing change
+  log records the credential of a web save (`cookie` or `header`) and the
+  device of a relayed one.
+- **Only update.json turns updates off.** `update.channel` in
+  ea-config.json, which the EA user can write, now reads as `auto`; the
+  doctor warns when it names `latest`, `stable` or `off`, and the owner
+  moves it to `~/.ea-private/update.json`. The root step reads the same
+  rule.
 - **The published app's trust statement is corrected.** An owner of the
   Entra registration can add a redirect URI and a secret without a new
   consent, so the docs no longer say the project cannot widen its own

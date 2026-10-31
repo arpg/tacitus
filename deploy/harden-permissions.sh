@@ -42,9 +42,10 @@
 #     removed. Its linger is switched off unless the deck builder, which
 #     needs it, is enabled. scripts/boundary-audit.py reports all of it.
 #
-#   The code tree and updates: with an update channel on (update.channel in
-#     ea-config.json or the owner-private update.json; a new install's
-#     template says auto), /opt/ea-system becomes the updater's release
+#   The code tree and updates: with an update channel on (the owner-private
+#     update.json, or any update.channel in ea-config.json, which counts
+#     only as auto since ea-bot writes it; a new install's template says
+#     auto), /opt/ea-system becomes the updater's release
 #     layout, a root-owned link into the owner's /opt/ea-system.releases
 #     (scripts/update.py layout), and the hourly tacitus-update.timer runs
 #     the updater as the owner. A layout already there is the updater's, and
@@ -191,8 +192,9 @@ export_head() {
           | tar -x -C "$1" -f - )
 }
 # The update channel decides the tree's shape (docs/updates.md): latest or
-# stable makes it the updater's release layout; off (or no channel on a
-# tree the hook keeps) leaves it the plain directory.
+# stable makes it the updater's release layout; off (only update.json can
+# say it; or no channel on a tree the hook keeps) leaves it the plain
+# directory. update.py channel applies that rule.
 CHANNEL="$(as_owner "$VENV_PY" "$REPO_DIR/scripts/update.py" --live "$LIVE" channel 2>/dev/null || echo off)"
 UPDATER=0
 if [ -L "$LIVE" ]; then

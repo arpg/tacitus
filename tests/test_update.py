@@ -213,8 +213,7 @@ def test_auto_and_explicit_channels_and_the_private_file_outranks_config(env):
     env["live"].mkdir()
     set_config(env["ea"], profile="review-only", update={"channel": "auto"})
     assert us.effective_channel(env["live"], env["priv"], env["ea"]) == ("stable", "ea-config.json")
-    set_config(env["ea"], profile="review-only", update={"channel": "latest"})
-    assert us.effective_channel(env["live"], env["priv"], env["ea"]) == ("latest", "ea-config.json")
+    assert us.misplaced_channel(env["priv"], env["ea"]) == ""
     set_config(env["ea"], profile="assistant", update={"channel": "nonsense"})
     assert us.effective_channel(env["live"], env["priv"], env["ea"]) == ("off", "hook")
     pin = env["priv"] / "update.json"
@@ -222,9 +221,42 @@ def test_auto_and_explicit_channels_and_the_private_file_outranks_config(env):
     os.chmod(pin, 0o600)
     set_config(env["ea"], profile="assistant", update={"channel": "latest"})
     assert us.effective_channel(env["live"], env["priv"], env["ea"]) == ("off", "update.json")
+    assert us.misplaced_channel(env["priv"], env["ea"]) == "", "update.json decides; nothing to move"
     # a private file others can write is not the owner's word
     os.chmod(pin, 0o666)
     assert us.effective_channel(env["live"], env["priv"], env["ea"]) == ("latest", "ea-config.json")
+
+
+def test_only_the_private_file_turns_updates_off_or_pins_a_channel(env, capsys):
+    """ea-config.json is the EA user's to write: a channel there reads as
+    auto, so the resident can neither stop updates nor pick a channel,
+    and the doctor says to move the setting. The root step reads the same
+    rule (it asks `update.py channel`)."""
+    env["live"].mkdir()
+    (env["live"] / ".deployed-commit").write_text("abc1234\n")
+    for said, profile, want in (("off", "assistant", "latest"), ("latest", "review-only", "stable"),
+                                ("stable", "assistant", "latest")):
+        set_config(env["ea"], profile=profile, update={"channel": said})
+        assert us.effective_channel(env["live"], env["priv"], env["ea"]) == (want, "ea-config.json")
+        assert us.misplaced_channel(env["priv"], env["ea"]) == said
+        status, detail, fix = us.doctor_row(env["live"], env["priv"], env["ea"])
+        assert status == "WARN" and f"update.channel {said}" in detail and "counts as auto" in detail
+        assert fix.startswith("channel set in ea-bot space; move it to update.json") \
+            and f'"channel": "{said}"' in fix
+    args = ["--live", str(env["live"]), "--private", str(env["priv"]), "--ea-dir", str(env["ea"])]
+    set_config(env["ea"], profile="assistant", update={"channel": "off"})
+    capsys.readouterr()
+    assert update.main(args + ["channel"]) == 0
+    assert capsys.readouterr().out.strip() == "latest"
+    pin = env["priv"] / "update.json"
+    pin.write_text(json.dumps({"channel": "off"}))
+    os.chmod(pin, 0o600)
+    assert update.main(args + ["channel"]) == 0
+    assert capsys.readouterr().out.strip() == "off"
+    status, detail, _ = us.doctor_row(env["live"], env["priv"], env["ea"])
+    assert status == "PASS" and "update.channel is off (update.json)" in detail
+    harden = (REPO / "deploy" / "harden-permissions.sh").read_text()
+    assert 'update.py" --live "$LIVE" channel' in harden, "the root step asks the same rule"
 
 
 def test_in_a_container_the_image_is_the_release(env, monkeypatch, capsys):
@@ -686,7 +718,7 @@ def install(env, tmp_path):
     (seed / ".version").write_text("v0.1.1\n")
     (seed / ".deployed-commit").write_text(first[:7] + "\n")
     update.layout(env["live"], _me(), seed=seed)
-    set_config(env["ea"], profile="assistant", update={"channel": "latest"})
+    set_config(env["ea"], profile="assistant", update={"channel": "auto"})
     paths = update.Paths(live=env["live"], private=env["priv"], ea=env["ea"], lanes=lanes,
                          repo_url=str(origin))
     return dict(env, origin=origin, key=key, lanes=lanes, paths=paths, first=first)

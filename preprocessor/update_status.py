@@ -126,21 +126,38 @@ def tree_kind(live: Path) -> str:
     return "none"
 
 
+def config_channel(ea: Path) -> str:
+    """update.channel as ea-config.json says it, "" when it says none."""
+    try:
+        import ea_config
+        return ea_config.get_update_channel(ea / "config" / "ea-config.json") or ""
+    except Exception:
+        return ""
+
+
 def channel_setting(private: Path, ea: Path) -> tuple[str, str]:
-    """(value, source): the owner-private update.json first, then
-    update.channel in ea-config.json; ("", "unset") when neither names one
-    of SETTINGS."""
+    """(value, source): the owner-private update.json, the only place a
+    channel other than auto counts. ea-config.json is the EA user's to
+    write, so any update.channel there reads as "auto" (the doctor warns
+    when it says more), and only update.json can turn updates off or pin
+    a channel. ("", "unset") when neither names one of SETTINGS."""
     doc = read_owner_json(private / "update.json") or {}
     if doc.get("channel") in SETTINGS:
         return doc["channel"], "update.json"
-    try:
-        import ea_config
-        val = ea_config.get_update_channel(ea / "config" / "ea-config.json")
-    except Exception:
-        val = ""
-    if val:
-        return val, "ea-config.json"
+    if config_channel(ea):
+        return "auto", "ea-config.json"
     return "", "unset"
+
+
+def misplaced_channel(private: Path, ea: Path) -> str:
+    """The channel ea-config.json names when it is one auto does not mean
+    (latest, stable or off) and update.json names none: a setting in the
+    EA user's space that the updater reads as auto. "" otherwise."""
+    doc = read_owner_json(private / "update.json") or {}
+    if doc.get("channel") in SETTINGS:
+        return ""
+    val = config_channel(ea)
+    return val if val in SETTINGS and val != "auto" else ""
 
 
 def profile(ea: Path) -> str:
@@ -319,6 +336,13 @@ def doctor_row(live: Path, private: Path, ea: Path,
     if kind == "container":
         return ("PASS", f"{_label(inst)}; the code is in the image",
                 "docs/docker.md 'Upgrade'")
+    stray = misplaced_channel(private, ea)
+    if stray:
+        return ("WARN", f"{_label(inst)}; update.channel {stray} is set in ea-config.json, which "
+                        f"the EA user can write, so it counts as auto ({channel})",
+                f"channel set in ea-bot space; move it to update.json: "
+                f"{{\"channel\": \"{stray}\"}} in ~/.ea-private/update.json (0600), and "
+                "remove it from ea-config.json (docs/updates.md, Channels)")
     if channel == "off":
         why = ("deployed by the post-commit hook" if source == "hook"
                else f"update.channel is off ({source})")

@@ -157,14 +157,19 @@ moves the pointer only on a green or amber verdict. The pointer itself is
 not signed: it can only choose among signed releases, and the updater
 never moves an install backwards (below).
 
-The channel is `update.channel` in `~/.ea/config/ea-config.json`: `auto`
-(the profile's default, the value a new install's template carries),
-`latest`, `stable` or `off`. `~/.ea/config` is the EA user's to write, so
-the owner can pin the value where the EA cannot reach it:
-`~/.ea-private/update.json` with `{"channel": "off"}` (or any channel)
-outranks the config file. The repository the updater reads is fixed in
-the code (`https://github.com/arpg/tacitus.git`); only the owner-private
-file can change it (`"repo": "<url>"`), never ea-config.json.
+The channel is `channel` in the owner-private `~/.ea-private/update.json`
+(0600, the owner's): `auto` (the profile's default), `latest`, `stable`
+or `off`, for example `{"channel": "off"}`. Only that file can turn
+updates off or pin a channel. `update.channel` in
+`~/.ea/config/ea-config.json` (the template carries `auto`) is in the EA
+user's space, so any value there reads as `auto`: the EA can neither stop
+updates nor choose its channel. The doctor's `updates` row warns when
+ea-config.json names `latest`, `stable` or `off` and update.json names
+none ("channel set in ea-bot space; move it to update.json"). The root
+step reads the same rule (`update.py channel`). The repository the
+updater reads is fixed in the code (`https://github.com/arpg/tacitus.git`);
+only the owner-private file can change it (`"repo": "<url>"`), never
+ea-config.json.
 
 ## The updater
 
@@ -203,10 +208,11 @@ came from stays on disk as `previous`.
 
 The root step converts a tree only when an update channel is on: a new
 install (no `/opt/ea-system` yet, and a template `auto`), or an existing
-one whose `update.channel` (or private `update.json`) names `latest`,
-`stable` or `auto`. A tree the post-commit hook writes and whose config
-has no `update` key stays a plain directory, and the updater leaves it
-alone. That is the maintainer's machine: commits on `main` in the
+one whose private `update.json` names `latest`, `stable` or `auto`, or
+whose `ea-config.json` has any `update.channel` (it reads as `auto`). A
+tree the post-commit hook writes, with no `update` key in its config and
+no channel in `update.json`, stays a plain directory, and the updater
+leaves it alone; so does one whose `update.json` says `off`. That is the maintainer's machine: commits on `main` in the
 checkout deploy through the hook, and nothing updates them from GitHub
 behind it. Once the layout exists the hook in turn leaves `/opt` and the
 EA user's copy alone ("deploy skipped: managed by the updater").
@@ -267,8 +273,8 @@ EA user's copy alone ("deploy skipped: managed by the updater").
 
 ### Where it does nothing
 
-- `update.channel` is `off`, or the tree is the hook's plain directory
-  with no channel set: `status` says so and `run` exits 0.
+- `update.json` says `"channel": "off"`, or the tree is the hook's plain
+  directory with no channel set: `status` says so and `run` exits 0.
 - In a container (`/.dockerenv`): the code is in the image. `check` still
   reports, and `apply` says to rebuild: `git fetch --tags && git checkout
   vX.Y.Z && docker compose build && docker compose up -d`
@@ -466,8 +472,9 @@ owner turns updates on:
 
 1. Pull the release that carries the updater (`git pull` in the
    checkout; the hook deploys it).
-2. Set the channel: `"update": {"channel": "auto"}` in
-   `~/.ea/config/ea-config.json`, or `~/.ea-private/update.json`.
+2. Set the channel: `{"channel": "auto"}` (or `latest`, `stable`) in
+   `~/.ea-private/update.json`, mode 0600; `"update": {"channel": "auto"}`
+   in `~/.ea/config/ea-config.json` turns updates on too, as `auto`.
 3. Run the root step once: `sudo bash deploy/harden-permissions.sh`
    (Linux) or `sudo bash deploy/macos/install-services.sh` (macOS). It
    moves the tree into the release layout and installs the timer.

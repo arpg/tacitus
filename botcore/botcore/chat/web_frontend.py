@@ -84,7 +84,10 @@ Settings screens: the host registers a page in `settings_pages` (a name
 and an object with `get()` and `save(body)`; the EA's routing table is
 `routing`, model_routing.WebSettings). `/api/me` lists the names, and
 `/api/settings/<name>` answers the owner: GET is the page's data, POST
-hands the JSON body to `save`, whose ValueError is a 400 with its text.
+hands the JSON body to `save`, whose ValueError is a 400 with its text. A
+`save` that takes `who` also gets the credential that signed the request
+in (`cookie` or `header`) and the device a relayed request names, for its
+change log.
 A POST must pass the same Host, Sec-Fetch-Site and Origin checks as
 every other, and a relayed one (`X-Tacitus-Relay`) is refused: settings
 change only in the owner's own web chat.
@@ -109,6 +112,7 @@ import hashlib
 import hmac
 import http.cookies
 import http.server
+import inspect
 import json
 import logging
 import mimetypes
@@ -2867,8 +2871,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if self.headers.get("X-Tacitus-Relay") is not None:
             raise _HttpError(403, "settings change only in the owner's own web chat")
         body = self._read_json()
+        # Who made the change, for a page that logs it: the credential that
+        # signed this request in, and the device a relayed request names.
+        who = {"credential": getattr(self, "_credential", "") or "unknown"}
+        device = (self.headers.get("X-Tacitus-Relay") or "").strip()
+        if device:
+            who["device"] = device
         try:
-            out = page.save(body)
+            if "who" in inspect.signature(page.save).parameters:
+                out = page.save(body, who=who)
+            else:
+                out = page.save(body)
         except ValueError as e:
             raise _HttpError(400, str(e)[:500]) from None
         self._json(200, out)
@@ -3016,6 +3029,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         client sent; any other local process could forge it), or the
         pairing cookie."""
         fe = self.fe
+        self._credential = ""
         if fe.tailscale_login and fe.trust_tailscale_header \
                 and self.client_address[0] in LOOPBACK:
             got = self.headers.get("Tailscale-User-Login") or ""
@@ -3026,11 +3040,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 except OSError:
                     local = None
                 if local is not None and fe.peer_is_tailscaled(self.client_address, local):
+                    self._credential = "header"
                     return True
         token = fe.pair_token()
         if token:
             cookie = self._cookie(COOKIE)
             if cookie and hmac.compare_digest(cookie.encode("utf-8"), token.encode("utf-8")):
+                self._credential = "cookie"
                 return True
         return False
 
