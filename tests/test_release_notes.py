@@ -11,7 +11,6 @@ import json
 import os
 import subprocess
 import sys
-import urllib.error
 from pathlib import Path
 
 import pytest
@@ -168,24 +167,22 @@ def test_the_owner_steps_footer():
     assert rn.owner_steps("") == [] and rn.owner_steps("Owner-steps: n/a\nOwner-steps: -") == []
 
 
-def test_pull_request_bodies_add_owner_steps_and_a_missing_one_only_warns(repo):
-    asked, warned = [], []
-
-    def fetch(slug, number):
-        asked.append((slug, number))
-        if number == 13:
-            raise urllib.error.URLError("no route")
-        return "Body text.\r\n\r\nOwner-steps: rotate the relay key\r\nOwner-steps: restart the bot\r\n"
-
-    notes = rn.collect(repo, "v0.1.1", github_repo="someone/tacitus", pr_bodies=True,
-                       fetch=fetch, warn=warned.append)
-    assert asked == [("someone/tacitus", 12), ("someone/tacitus", 13)]
-    steps = [(s["step"], s["pr"]) for s in notes["owner_steps"]]
-    assert ("rotate the relay key", 12) in steps
-    assert steps.count(("restart the bot", 13)) == 1, "a step the commits already name is listed once"
-    assert len(warned) == 1 and "#13" in warned[0]
-    assert rn.collect(repo, "v0.1.1", pr_bodies=True, fetch=fetch)["owner_steps"] == \
-        rn.collect(repo, "v0.1.1")["owner_steps"], "no repository named: no API call"
+def test_owner_steps_come_from_the_signed_history_never_a_pull_request_body(repo):
+    """A pull request body and a Release body can change after the merge;
+    the commits and the tag's own message cannot. Only those name steps."""
+    import inspect
+    assert "pr_bodies" not in inspect.signature(rn.collect).parameters
+    with pytest.raises(SystemExit):
+        rn.main(["--tag", "v0.1.1", "--repo", str(repo), "--pr-bodies"])
+    commit(repo, "f.txt", "1", "A change with no step")
+    git(repo, "tag", "-a", "-m", "v0.1.2", "-m", "Owner-steps: rotate the relay key", "v0.1.2")
+    steps = rn.collect(repo, "v0.1.2")["owner_steps"]
+    assert steps == [{"step": "rotate the relay key", "pr": None,
+                      "sha": git(repo, "rev-parse", "v0.1.2^{commit}")}]
+    # a lightweight tag has no message
+    git(repo, "tag", "v0.1.3")
+    assert rn.collect(repo, "v0.1.3", previous="v0.1.2")["owner_steps"] == []
+    assert rn.tag_message(repo, "HEAD") == ""
 
 
 # ── Markdown and JSON ───────────────────────────────────────────────

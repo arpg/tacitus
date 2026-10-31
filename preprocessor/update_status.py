@@ -81,11 +81,11 @@ def in_container() -> bool:
     return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
 
 
-def read_owner_json(path: Path) -> dict | None:
+def read_owner_json(path: Path, uid: int | None = None) -> dict | None:
     """A JSON object from an owner-private file: a regular file reached with
-    no link at its last name, owned by this user and writable by no one
-    else, checked on the descriptor it is read from. None when missing,
-    refused or not an object."""
+    no link at its last name, owned by this user (or `uid`, for root's
+    layout step) and writable by no one else, checked on the descriptor it
+    is read from. None when missing, refused or not an object."""
     try:
         fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
                      | getattr(os, "O_CLOEXEC", 0))
@@ -93,7 +93,7 @@ def read_owner_json(path: Path) -> dict | None:
         return None
     try:
         st = os.fstat(fd)
-        if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid()
+        if (not stat.S_ISREG(st.st_mode) or st.st_uid != (os.geteuid() if uid is None else uid)
                 or st.st_mode & 0o022 or st.st_size > 1_000_000):
             return None
         with os.fdopen(fd, "rb", closefd=False) as fh:
@@ -345,9 +345,15 @@ def doctor_row(live: Path, private: Path, ea: Path,
     err = st.get("last_error") or {}
     if err.get("error"):
         return ("WARN", f"{detail}; the last run stopped: {err['error'][:200]}",
-                f"python3 {live}/scripts/update.py check says it again; a missing "
-                ".release-key.pub means the install's release carries no trust root yet "
-                "(docs/updates.md, One-time setup)")
+                f"python3 {live}/scripts/update.py check says it again; with no release_key "
+                "in ~/.ea-private/update.json and no .release-key.pub in the installed release "
+                "there is no trust root yet (docs/updates.md, Supply chain)")
+    change = st.get("key_change") or {}
+    if change.get("version"):
+        return ("WARN", f"{detail}; {change['version']} changes the release key and is not "
+                        "installed",
+                "check the new key with the maintainer's announcement, then add its line to "
+                "release_key in ~/.ea-private/update.json (docs/updates.md, Supply chain)")
     if held.get("version"):
         return ("WARN", f"{detail}; {held['version']} held back: {held.get('reason', '?')}",
                 "it installs with the next newer release, or by hand: python3 "

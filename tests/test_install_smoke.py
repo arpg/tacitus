@@ -95,8 +95,10 @@ def test_workflow_has_the_tiers_on_pinned_actions():
     assert "tests/run_wall.py" in text and "tests/secrets_lint.sh" in text
     assert "tests/validate_config.py --ci" in text
     assert "tests/install/smoke.sh" in text
-    for line in re.findall(r"uses:\s*(\S+)", text):
-        assert re.search(r"@v\d+\.\d+\.\d+$", line), f"{line} is not pinned to a full version"
+    for line in re.findall(r"uses:\s*(\S+.*)$", text, re.M):
+        assert re.search(r"@v\d+\.\d+\.\d+$", line) or \
+            re.search(r"@[0-9a-f]{40} # v\d+\.\d+\.\d+$", line), \
+            f"{line} is not pinned to a full version or a commit with its version"
     assert "macos-latest" in text and "ubuntu-22.04" in text
     assert "workflow_dispatch" in text
     assert "HOME=" in text, "the wall job sets a fake HOME"

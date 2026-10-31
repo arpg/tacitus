@@ -6,6 +6,19 @@ repository that preceded it.
 
 ## Unreleased
 
+- **Updates trust only signed releases on main, against a pinned key.**
+  An install pins the release key in the owner-private `update.json`
+  (`release_key`), written once by the root step from the first release,
+  and verifies every release against it, never against a file in a
+  release; a release that changes the key waits for the owner. The
+  updater fetches `main` and installs a tag only when its commit is in
+  `main`'s history, accepts only ED25519 signatures, and `check` warns
+  when no release qualifies. The relay pins its key in its state
+  directory. The CI `release` job runs in the `release` environment, pins
+  its action by commit, and passes the signing key to one shell step and
+  no Python step. Owner steps come only from commit messages and the
+  signed tag, never from a Release or pull request body
+  (docs/updates.md, Supply chain).
 - **One routing table, task by task.** The owner says which model does
   each task (`mail`, `tagging`, `drafting`, `digests`, `briefing`,
   `audit`, `scheduling`, `chat`, `review`): `local`, `hosted` or `auto`,
