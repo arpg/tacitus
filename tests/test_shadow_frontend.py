@@ -973,3 +973,15 @@ def test_history_copy_pauses_after_each_read_of_the_primary(tmp_path):
     naps.clear()
     fe.backfill()
     assert naps == []
+
+
+def test_a_relay_notice_reaches_the_primary_dm_and_the_shadow(tmp_path):
+    primary, web = MemoryFrontend(), _web(tmp_path)
+    fe = ShadowFrontend(primary, web)
+    fe.mirror_channels()
+    web._relay_notice("New phone paired: code 123456")
+    dm = primary.dm_channel(primary.owner_id)
+    assert any(p.get("channel") == dm and "123456" in (p.get("text") or "") for p in primary.posts)
+    rows = web.store.thread_list(dm, limit=5) if hasattr(web.store, "thread_list") else None
+    mirrored = web.store.message(dm, primary.posts[-1]["id"]) if primary.posts[-1].get("id") else None
+    assert mirrored is not None and "123456" in mirrored["text"]

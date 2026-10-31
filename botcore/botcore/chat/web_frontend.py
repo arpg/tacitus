@@ -1378,6 +1378,7 @@ class WebFrontend(ChatFrontend):
         # Shadow mode: the composite takes the owner's web input here
         # (docs/webchat.md); None dispatches it through self.registry.
         self.inbound: Inbound | None = None
+        self.notice: Callable[[str], None] | None = None
         self.ping_s = PING_S
         self.tail_s = TAIL_S
         # Seconds the server loop waits between shutdown checks, and the
@@ -1554,8 +1555,13 @@ class WebFrontend(ChatFrontend):
             return None
 
     def _relay_notice(self, text: str) -> None:
-        """A notice from the relay client (a new device) in the owner's DM."""
-        self.post(DM_ID, text)
+        """A notice from the relay client (a new device) in the owner's DM.
+        In shadow mode the composite sets `notice`, which posts in the
+        primary's DM and mirrors it; standalone, the web DM is `dm`."""
+        if self.notice is not None:
+            self.notice(text)
+        else:
+            self.post(DM_ID, text)
 
     def loopback_url(self) -> str:
         """This server on loopback, base path included: where the relay

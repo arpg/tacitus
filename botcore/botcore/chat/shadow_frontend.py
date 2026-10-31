@@ -277,6 +277,7 @@ class ShadowFrontend(ChatFrontend):
         registry.dispatch_event = self._primary_event
         primary.on_outbound = self._primary_outbound
         shadow.inbound = self._from_shadow
+        shadow.notice = self._notice_owner
 
     def __getattr__(self, name: str) -> Any:
         # Runs only for a name the composite lacks: a platform's own
@@ -875,6 +876,12 @@ class ShadowFrontend(ChatFrontend):
 
     def llm_tool_grants(self) -> str:
         return self.primary.llm_tool_grants()
+
+    def _notice_owner(self, text: str) -> None:
+        """A notice for the owner (a new relay device): posted in the
+        primary's DM through the composite, so the shadow mirrors it."""
+        p = self.primary
+        self.post(p.dm_channel(p.owner_id), text)
 
     # inbound from the primary
 
