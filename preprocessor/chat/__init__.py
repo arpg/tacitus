@@ -269,23 +269,9 @@ def _build_web(cfg: dict, *, writer_only: bool = False, trusted: bool = False) -
 def untrusted_roots() -> tuple[Path, ...]:
     """The trees the web chat's store and pairing token must lie outside:
     the EA tree in use, the one the install names, and the home of the
-    tree's owner (the resident) when that is another user."""
-    import pwd
-    roots: list[Path] = []
-    for tree in (owner_trust.ea_dir(), owner_trust.install_ea_dir()):
-        try:
-            real = Path(os.path.realpath(tree))
-        except (OSError, ValueError):
-            continue
-        roots.append(real)
-        try:
-            uid = os.stat(real).st_uid
-            home = Path(os.path.realpath(pwd.getpwuid(uid).pw_dir))
-        except (OSError, ValueError, KeyError):
-            continue
-        if uid != os.geteuid() and home == real.parent:
-            roots.append(home)
-    return tuple(dict.fromkeys(r for r in roots if str(r) not in ("/", "")))
+    tree's owner (the resident) when that is another user
+    (owner_trust.resident_roots, which the chat seed checks too)."""
+    return owner_trust.resident_roots()
 
 
 def _load_primary(cfg: dict, *, for_cli: bool, ea_dir: str | Path | None,

@@ -59,7 +59,9 @@ CLI (run as the owner):
                         [--chat-frontend F --chat-site URL --chat-bot-email E
                          --chat-owner-id ID] [--chat-stream S
                          --chat-sched-stream S --chat-dm-stream S
-                         --chat-notify KEY=STREAM ...] [--calendar-id ID]
+                         --chat-notify KEY=STREAM ...] [--chat-public-url URL
+                         --chat-port N --chat-tailscale-login L
+                         --chat-pair-token-file PATH] [--calendar-id ID]
                         [--calendar-account ADDR] [--profile-name NAME]
                                         create secrets.env, chat.json,
                                         calendars.json and profile.json in the
@@ -68,10 +70,13 @@ CLI (run as the owner):
                                         They are copied from ea-bot space, so
                                         every value is shown and each trusted
                                         one (the chat server, bot and owner,
-                                        every stream the bot posts to, the
-                                        calendar, the name) is typed back at
-                                        the terminal or passed with its flag;
-                                        otherwise nothing is written
+                                        every stream the bot posts to, the web
+                                        chat's address, port, login and token
+                                        file, the calendar, the name) is typed
+                                        back at the terminal or passed with its
+                                        flag; otherwise nothing is written. A
+                                        web chat store or token file in the
+                                        resident's tree is refused
     owner_trust.py token-modes [--ea-dir DIR]
                                         set every harvested token file in the
                                         auth directory to token_file_mode()
@@ -167,6 +172,41 @@ def hosts_ea_tree() -> bool:
         return os.path.dirname(tree) == os.path.realpath(owner_home())
     except (OSError, RuntimeError, ValueError, KeyError):
         return False
+
+
+def resident_roots(*trees) -> tuple[Path, ...]:
+    """The trees an owner-private file must lie outside: the EA tree in
+    use, the one the install names, each tree passed, and the home of a
+    tree's owner (the resident) when that is another user whose home holds
+    the tree. Resolved; never `/`."""
+    roots: list[Path] = []
+    for tree in (ea_dir(), install_ea_dir(), *trees):
+        try:
+            real = Path(os.path.realpath(tree))
+        except (OSError, ValueError):
+            continue
+        roots.append(real)
+        try:
+            uid = os.stat(real).st_uid
+            home = Path(os.path.realpath(pwd.getpwuid(uid).pw_dir))
+        except (OSError, ValueError, KeyError):
+            continue
+        if uid != os.geteuid() and home == real.parent:
+            roots.append(home)
+    return tuple(dict.fromkeys(r for r in roots if str(r) not in ("/", "")))
+
+
+def inside_roots(path, roots) -> Path | None:
+    """The first of `roots` that `path` resolves into, else None."""
+    try:
+        real = Path(os.path.realpath(path))
+    except (OSError, ValueError):
+        return None
+    for root in roots:
+        root = Path(root)
+        if real == root or real.is_relative_to(root):
+            return root
+    return None
 
 
 def is_owner_process() -> bool:
@@ -678,8 +718,8 @@ def _flat(block, prefix: str = "") -> list[tuple[str, str]]:
 # What each trusted value is and what a wrong one would do, shown before the
 # operator is asked to type it back. A notify.<key>.stream key uses "notify".
 CONFIRM_HELP = {
-    "frontend": ("the chat platform the bot uses (zulip or slack)",
-                 "a wrong one points the bot at the other platform"),
+    "frontend": ("the chat platform the bot uses (web, zulip or slack)",
+                 "a wrong one points the bot at another platform"),
     "site": ("the address of your chat server",
              "the bot sends its chat API key there, so a wrong one hands the key to that server"),
     "bot_email": ("the bot's own account on the chat server",
@@ -696,6 +736,19 @@ CONFIRM_HELP = {
                   "your drafts to whoever reads that stream"),
     "notify": ("a channel the owner-side jobs post notices to",
                "health and digest notices go there"),
+    "web.public_url": ("the address you open the web chat at: your tailnet host and the "
+                       "chat's own HTTPS port",
+                       "the bot answers only requests made to this address, so a wrong one "
+                       "lets a page at that address reach your chat"),
+    "web.port": ("the loopback port the bot serves the web chat on",
+                 "your `tailscale serve` line forwards to it; a wrong one serves the chat "
+                 "where another program expects its own port"),
+    "web.tailscale_login": ("your Tailscale login, as `tailscale whois` shows it",
+                            "a request from this login is you: it reads every draft and "
+                            "presses Send, so a wrong one gives that to another login"),
+    "web.pair_token_file": ("the file that holds the web chat's pairing token",
+                            "whoever reads it can pair a browser as you, so it must stay in "
+                            "your private directory"),
     "ea_managed_calendar_id": ("the EA-Managed calendar: the one calendar the EA may write "
                                "without asking you",
                                "your own cron copies your schedule there every 30 minutes, so a "
@@ -840,6 +893,58 @@ CHAT_ROUTING = (("stream", "--chat-stream"),
                 ("dm_stream", "--chat-dm-stream"))
 
 
+# The web chat keys (docs/webchat.md, Config): (key in the confirm step,
+# key in the `web` block, flag). They decide which address the bot answers
+# to, who signs in and where the pairing token lives, so each one set in
+# ea-bot's copy or passed with its flag is confirmed like the server; the
+# store and the token file must lie outside the resident's tree.
+CHAT_WEB = (("web.public_url", "public_url", "--chat-public-url"),
+            ("web.port", "port", "--chat-port"),
+            ("web.tailscale_login", "tailscale_login", "--chat-tailscale-login"),
+            ("web.pair_token_file", "pair_token_file", "--chat-pair-token-file"))
+WEB_DEFAULT_PORT = 8470
+
+
+def runs_web(block: dict, frontend: str | None = None) -> bool:
+    """True when the chat block runs the web chat, alone or as the shadow."""
+    return (frontend or block.get("frontend")) == "web" or block.get("shadow") == "web"
+
+
+def _web_must(web: dict, given: dict) -> list[tuple[str, str, str]]:
+    """The web values to confirm: each one set in ea-bot's copy or passed
+    on the command line."""
+    must = []
+    for key, wkey, flag in CHAT_WEB:
+        val = web.get(wkey)
+        val = "" if val is None else str(val)
+        if val or given.get(key) is not None:
+            must.append((key, val, flag))
+    return must
+
+
+def web_block_refusal(web: dict, tree=None) -> str | None:
+    """Why the owner side may not take this `web` block, or None: a port
+    that is not one, or a store or pairing token file that is relative or
+    lies in the resident's tree (`resident_roots`), where the bot refuses
+    to serve the web chat."""
+    port = web.get("port")
+    if port not in (None, "") and not (str(port).isdigit() and 0 < int(port) < 65536):
+        return f"web.port {port!r} is not a port number"
+    roots = resident_roots(*((tree,) if tree else ()))
+    for wkey in ("store_path", "pair_token_file"):
+        val = str(web.get(wkey) or "").strip()
+        if not val:
+            continue
+        if not os.path.isabs(val):
+            return f"web.{wkey} {val!r} is not an absolute path"
+        root = inside_roots(val, roots)
+        if root is not None:
+            return (f"web.{wkey} {val} is inside {root}, which the resident controls; the "
+                    f"bot does not serve the web chat from there. Leave it empty (the "
+                    f"owner-private directory) or name a path outside that tree")
+    return None
+
+
 def _notify_flag(nkey: str) -> str:
     return f"--chat-notify {nkey}=<stream>"
 
@@ -914,6 +1019,16 @@ def _seed_chat(priv: Path, tree: Path, given: dict | None = None) -> int:
             must.append(("owner_user_id", slack_owner, "--chat-owner-id"))
         if frontend == "zulip":
             must += _routing_must(z, given)
+        web = block.get("web") if isinstance(block.get("web"), dict) else {}
+        if runs_web(block, frontend):
+            # The values that would be written: ea-bot's copy, or the flag.
+            planned = {**web, **{wkey: given[key] for key, wkey, _ in CHAT_WEB
+                                 if given.get(key) is not None}}
+            why = web_block_refusal(planned, tree)
+            if why:
+                print(f"  chat: NOT written: {why}", file=sys.stderr)
+                return 1
+            must += _web_must(web, given)
         ok = _confirm("chat", _flat(block) or [("frontend", "slack")], must, given)
         if ok is None:
             return 1
@@ -937,6 +1052,12 @@ def _seed_chat(priv: Path, tree: Path, given: dict | None = None) -> int:
                 if not isinstance(notify.get(nkey), dict):
                     notify[nkey] = {}
                 notify[nkey]["stream"] = val
+        for key, wkey, _ in CHAT_WEB:
+            if key in ok:
+                if not isinstance(block.get("web"), dict):
+                    block["web"] = {}
+                val = ok[key]
+                block["web"][wkey] = int(val) if wkey == "port" and val.isdigit() else val
         write_owner_file(target, json.dumps(block, indent=2) + "\n", mode=0o600)
         print(f"  chat: {target} created from the confirmed values")
     z = block.get("zulip") if isinstance(block.get("zulip"), dict) else {}
@@ -953,6 +1074,17 @@ def _seed_chat(priv: Path, tree: Path, given: dict | None = None) -> int:
     for nkey in sorted(notify, key=str):
         t = notify[nkey] if isinstance(notify[nkey], dict) else {}
         print(f"    notify.{nkey}.stream = {t.get('stream', '')}")
+    if runs_web(block):
+        w = block.get("web") if isinstance(block.get("web"), dict) else {}
+        print(f"    shadow        = {block.get('shadow', '')}")
+        print(f"    web.public_url = {w.get('public_url', '')}")
+        print(f"    web.port      = {w.get('port') or WEB_DEFAULT_PORT}")
+        print(f"    web.tailscale_login = {w.get('tailscale_login', '')}")
+        print(f"    web.pair_token_file = "
+              f"{w.get('pair_token_file') or '(the default, beside the store)'}")
+        why = web_block_refusal(w, tree)
+        if why:
+            print(f"  WARNING: {why}")
     print(f"  If any value is not yours, fix {target} and restart the bot.")
     return 0
 
@@ -1018,6 +1150,9 @@ def main(argv=None) -> int:
                    metavar="KEY=STREAM",
                    help="a zulip notify target's stream to write, confirmed without a "
                         "prompt (repeat for each key)")
+    for key, wkey, flag in CHAT_WEB:
+        p.add_argument(flag, dest=f"chat_web_{wkey}", default=None,
+                       help=f"the web chat's {wkey} to write, confirmed without a prompt")
     p.add_argument("--profile-name", dest="profile_name", default=None,
                    help="the display name for profile.json, confirmed without a prompt")
     p.add_argument("--calendar-id", dest="calendar_id", default=None,
@@ -1062,6 +1197,7 @@ def main(argv=None) -> int:
             given = {key: getattr(a, f"chat_{key}") for key, _, _ in CHAT_TRUSTED}
             given.update({key: getattr(a, f"chat_{key}") for key, _ in CHAT_ROUTING})
             given.update(parse_notify_flags(a.chat_notify))
+            given.update({key: getattr(a, f"chat_web_{wkey}") for key, wkey, _ in CHAT_WEB})
             rc |= _seed_chat(priv, tree, given)
         if a.calendar or every:
             # The root step runs the bare seed before step 4d may be done;
