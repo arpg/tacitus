@@ -39,8 +39,9 @@ self.addEventListener('push', (event) => {
   }));
 });
 
-// A tap opens the app at the push's url, in a window already open if
-// there is one. Only a page of this app opens; anything else opens the app.
+// A tap opens the app at the push's url: in the app's window last in front
+// (on iOS the installed app's own), which gets the url as a message where
+// navigate() fails, else in a new one. Anything outside the app opens the app.
 function appUrl(raw) {
   const scope = new URL(self.registration.scope);
   try {
@@ -56,7 +57,7 @@ self.addEventListener('notificationclick', (event) => {
   event.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) => {
     const win = wins.find((w) => w.url.startsWith(self.registration.scope));
     if (!win) return self.clients.openWindow(url);
-    return win.focus().then(() => win.navigate(url)).catch(() => {});
+    return win.focus().then(() => win.navigate(url)).catch(() => win.postMessage({ open: url }));
   }));
 });
 

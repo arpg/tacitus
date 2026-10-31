@@ -204,9 +204,12 @@ const join = (names) => names.map((n) => INLINE[n].source).join('|');
 const MD_SRC = join(['inert', 'code', 'mdlink', 'angle', 'mention', 'bold', 'strike', 'star', 'emoji', 'url']);
 const CARD_SRC = join(['inert', 'code', 'angle', 'bold', 'strike', 'star', 'under', 'tilde', 'emoji', 'url']);
 
+// A permalink into this app (the base path and a #/ route) opens in it, also
+// installed; any other link opens in the browser, outside the app's window.
 function link(url, label) {
-  if (!/^(https?:|mailto:)/i.test(url)) return null;
-  return h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, label || url);
+  const own = (url.startsWith(location.origin + '/') ? url.slice(location.origin.length) : url).startsWith(BASE + '/#/');
+  if (!own && !/^(https?:|mailto:)/i.test(url)) return null;
+  return h('a', own ? { href: url } : { href: url, target: '_blank', rel: 'noopener noreferrer' }, label || url);
 }
 
 function emojiNode(name) {
@@ -937,13 +940,12 @@ const sameKey = (buf, key) => !buf || String(new Uint8Array(buf)) === String(key
 // The drawer's toggle. A subscription this browser already holds is posted
 // again, so the server keeps it after a reset; one made with another key
 // (the server's key was replaced) is dropped. iOS takes notifications only
-// in the app added to the Home Screen (navigator.standalone is true there).
+// in the app added to the Home Screen; outside it the install line says how.
 async function initPush() {
   const box = $('notify');
   if (!S.me.push || !('serviceWorker' in navigator)) return;
-  $('drawer-foot').hidden = false;
   $('notify-row').hidden = false;
-  $('notify-hint').hidden = navigator.standalone !== false;
+  footer();
   box.disabled = true;
   if (!('PushManager' in window) || !('Notification' in window)) return;
   const reg = await navigator.serviceWorker.ready;
@@ -990,6 +992,39 @@ async function toggleNotify() {
     box.disabled = false;
     listSubs();
   }
+}
+
+/* -- Installing the app, and the phone's viewport -------------------- */
+
+// Outside the installed app a line at the drawer's foot says how to install
+// it: on iOS (navigator.standalone false) Share, then Add to Home Screen; in
+// Chrome its own prompt. Hidden, it stays so 30 days, in this browser only.
+const INSTALL_KEY = 'tacitus-install-hidden';
+let installPrompt = null;
+let installHidden = 0;
+try { installHidden = Number(localStorage.getItem(INSTALL_KEY)) || 0; } catch { /* no storage: shown each visit */ }
+
+function installHint(prompt) {
+  if (prompt !== undefined) installPrompt = prompt;
+  const ios = navigator.standalone === false;
+  const installed = navigator.standalone ?? !matchMedia('(display-mode: browser)').matches;
+  $('install-text').textContent = installPrompt ? 'Install Tacitus as an app.'
+    : 'Tap Share, then Add to Home Screen, so notifications work.';
+  $('install-btn').hidden = !installPrompt;
+  $('install').hidden = installed || !(installPrompt || ios) || Date.now() - installHidden < 30 * 864e5;
+  footer();
+}
+
+const footer = () => { $('drawer-foot').hidden = $('notify-row').hidden && $('install').hidden && $('pair-phone').hidden; };
+
+// iOS shrinks only the visual viewport for the keyboard: the app takes its
+// height (--app-h) at the top, so the composer stays above the keyboard.
+function fitViewport() {
+  const vv = window.visualViewport;
+  const root = document.documentElement.style;
+  if (Math.abs(vv.scale - 1) > 0.01) { root.removeProperty('--app-h'); return; } // zoomed in
+  root.setProperty('--app-h', `${vv.height}px`);
+  if (window.scrollY || vv.offsetTop) window.scrollTo(0, 0);
 }
 
 /* -- The relay: crypto (relay_crypto.py is the reference) ------------ */
@@ -1480,7 +1515,7 @@ async function boot() {
   // Pairing a phone happens on the tailnet only, where the API answers.
   const phones = Boolean(S.me.relay) && !T.relay;
   $('pair-phone').hidden = !phones;
-  if (phones) $('drawer-foot').hidden = false;
+  footer();
 }
 
 async function init() {
@@ -1505,6 +1540,21 @@ async function init() {
     if (f) upload(f);
   });
   $('pair-form').addEventListener('submit', pair);
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installHint(e); });
+  window.addEventListener('appinstalled', () => installHint(null));
+  $('install-btn').addEventListener('click', () => { const p = installPrompt; installHint(null); p?.prompt(); });
+  $('install-close').addEventListener('click', () => {
+    installHidden = Date.now();
+    try { localStorage.setItem(INSTALL_KEY, String(installHidden)); } catch { /* hidden for this visit */ }
+    installHint();
+  });
+  installHint();
+  if (window.visualViewport) ['resize', 'scroll'].forEach((t) => visualViewport.addEventListener(t, fitViewport));
+  // The thread holds its newest message in view while its pane shrinks (the keyboard opening).
+  let stuck = true;
+  $('messages').addEventListener('scroll', () => { stuck = nearBottom(); }, { passive: true });
+  new ResizeObserver(() => { if (stuck) toBottom(); }).observe($('messages'));
+  document.addEventListener('touchstart', () => {}, { passive: true }); // iOS applies :active only then
   $('pair-phone').addEventListener('click', pairPhone);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.body.classList.remove('drawer'); });
   document.addEventListener('visibilitychange', () => {
@@ -1515,6 +1565,11 @@ async function init() {
   });
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register(`${BASE}/sw.js`, { scope: `${BASE}/` }).catch(() => {});
+    // sw.js names a tapped notification's url when it cannot navigate this window.
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      const url = String((e.data && e.data.open) || '');
+      if (url.startsWith(`${location.origin}${BASE}/#/`)) location.hash = url.slice(url.indexOf('#'));
+    });
   }
   const pairing = /^#tr1=([A-Za-z0-9_-]+)$/.exec(location.hash);
   if (pairing) await pairFromLink(pairing[1]);

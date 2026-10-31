@@ -46,7 +46,8 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 
-html, body { height: 100%; margin: 0; }
+html { background: var(--bg); -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; margin: 0; overscroll-behavior: none; }
 
 body {
   background: var(--bg);
@@ -54,7 +55,8 @@ body {
   font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   display: grid;
   grid-template-columns: 240px 320px minmax(0, 1fr);
-  height: 100dvh;
+  height: var(--app-h, 100dvh); /* the visual viewport (app.js): the composer stays above the keyboard */
+  padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
   overflow: hidden;
   -webkit-text-size-adjust: 100%;
 }
@@ -70,6 +72,7 @@ body {
 #threads { border-right: 1px solid var(--border); }
 
 .scroll { flex: 1; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+#channel-list, #thread-list { padding-bottom: env(safe-area-inset-bottom); }
 
 .bar {
   display: flex;
@@ -132,6 +135,8 @@ button, select, textarea, input { font: inherit; color: inherit; }
   cursor: pointer;
 }
 .icon:hover { background: var(--hover); }
+.icon:active, .chan:active, .thread-item:active, .btn:not(.primary):active { background: var(--hover); }
+.btn.primary:active { filter: brightness(.92); }
 .icon svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .menu-btn, .back-btn { display: none; }
 .menu-btn { position: relative; }
@@ -197,7 +202,8 @@ button, select, textarea, input { font: inherit; color: inherit; }
 .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 #pair-phone { margin-top: 8px; }
 .toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
-.hint { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+.install { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--muted); font-size: 13px; }
+.install > span { flex: 1; }
 .subs { list-style: none; margin: 6px 0 0; padding: 0; color: var(--muted); font-size: 13px; }
 .subs li { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
 .archived summary { padding: 8px 18px; color: var(--muted); cursor: pointer; font-size: 14px; }
@@ -421,7 +427,8 @@ th { background: var(--code-bg); }
   #channels {
     position: fixed;
     inset: 0 auto 0 0;
-    width: min(280px, 85vw);
+    width: calc(min(280px, 85vw) + env(safe-area-inset-left));
+    padding-left: env(safe-area-inset-left);
     z-index: 30;
     transform: translateX(-100%);
     transition: transform .2s ease;
