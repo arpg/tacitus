@@ -69,8 +69,10 @@ primary alone.
 A `relay` block in the web block starts the relay client
 (relay_client.start_relay, docs/webchat-relay.md) once the server runs:
 a phone off the tailnet reaches this server through a public relay that
-sees only ciphertext. The owner manages it from the tailnet under
-`/api/relay/` (pair, approve, revoke); a relayed request
+sees only ciphertext. The owner manages it from their own web chat (the
+tailnet, or this machine) under `/api/relay/` (pair, approve, revoke): a
+phone pairs on the bot's own origin, or on the relay's copy of the app
+with the signed bundle's hash in the link; a relayed request
 (`X-Tacitus-Relay`) never reaches those routes or `/api/pair`, and
 `/api/me` tells the app whether its requests may confirm a card
 (`X-Tacitus-Relay-Cards`). A new device is announced in the DM channel;
@@ -2494,7 +2496,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._check_origin()
         if segs and segs[0] in ("pair", "relay") and self.headers.get("X-Tacitus-Relay") is not None:
             # The relay client never forwards these; this is the second lock.
-            raise _HttpError(403, "pairing and relay devices are managed on the tailnet")
+            raise _HttpError(403, "pairing and relay devices are managed in the owner's own web chat")
         if method == "POST" and segs == ["pair"]:
             self._pair()
             return None
@@ -2608,11 +2610,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def _relay_api(self, method: str, rest: list[str]) -> None:
         """`/api/relay/...`: the owner pairs a phone, lists, approves and
         revokes the paired devices and reads the client's state. `_api` has
-        refused a relayed request already. The tailnet UI pairs own-origin
-        devices only; a relay-origin pairing is the CLI's, on purpose."""
+        refused a relayed request already, so these answer only in the
+        owner's own web chat (the tailnet, or this machine). A pairing
+        opens the app on the bot's own origin, or with `{"via": "relay"}`
+        on the relay's copy, which checks its code against the hash of the
+        signed app bundle the link carries."""
         relay = self.fe.relay
         if method == "GET" and rest == ["status"]:
-            self._json(200, {"enabled": relay is not None, **(relay.status() if relay else {})})
+            self._json(200, {"enabled": relay is not None, **(relay.status() if relay else {}),
+                             **(self._pair_ways(relay) if relay else {})})
             return
         if relay is None:
             raise _HttpError(404, "the relay is off")
@@ -2620,19 +2626,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._json(200, relay.devices())
             return
         if method == "POST" and rest == ["pair"]:
-            self._drain()
-            from .relay_client import RelayError
-            from .relay_crypto import PairingPayload
-            try:
-                link = relay.new_pairing()
-                expires = PairingPayload.from_string(link).expires
-            except RelayError as e:
-                raise _HttpError(409, str(e)) from None
-            except Exception:
-                log.exception("web chat: the relay could not open a pairing")
-                raise _HttpError(503, "the relay could not open a pairing") from None
-            # The link is the QR code's text; the app draws the code itself.
-            self._json(200, {"link": link, "qr": link, "expires": expires, "origin": "own"})
+            self._relay_pair(relay)
             return
         if method == "POST" and rest in (["approve"], ["revoke"]):
             device = self._read_json().get("device")
@@ -2645,6 +2639,48 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._json(200, {"ok": True})
             return
         raise _HttpError(404, "not found")
+
+    def _pair_ways(self, relay: Any) -> dict:
+        """How "Pair a phone" can pair: `pair_own`, a link to the bot's own
+        origin (public_url); `pair_relay`, a link to the relay's copy of
+        the app with the signed bundle's hash (`bundle`)."""
+        from .relay_client import bundle_hash_of
+        bundle = bundle_hash_of(self.fe)
+        return {"pair_own": relay.can_pair_own(), "pair_relay": bool(bundle),
+                "bundle": bundle or None}
+
+    def _relay_pair(self, relay: Any) -> None:
+        """`POST /api/relay/pair`, `{}` or `{"via": "own" | "relay"}`: a
+        one-time pairing link. Through the relay the link opens the
+        relay's copy of the app and carries the bundle hash; that device
+        reads only (`access`) until its code is verified."""
+        from .relay_client import UNVERIFIED_ACCESS, RelayError, bundle_hash_of, relay_app_url
+        from .relay_crypto import PairingPayload
+        sized = self.headers.get("Content-Length") not in (None, "0") \
+            or self.headers.get("Transfer-Encoding")
+        via = (self._read_json(MAX_PAIR_BYTES) if sized else {}).get("via", "own")
+        if via not in ("own", "relay"):
+            raise _HttpError(400, 'via is "own" or "relay"')
+        bundle = bundle_hash_of(self.fe)
+        if via == "relay" and not bundle:
+            raise _HttpError(409, "pairing through the relay needs the signed app bundle, "
+                                  "which this build does not have")
+        try:
+            if via == "relay":
+                link = relay.new_pairing(app_url=relay_app_url(relay.relay_url),
+                                         relay_origin=True, bundle=bundle)
+            else:
+                link = relay.new_pairing(bundle=bundle)
+            expires = PairingPayload.from_string(link).expires
+        except RelayError as e:
+            raise _HttpError(409, str(e)) from None
+        except Exception:
+            log.exception("web chat: the relay could not open a pairing")
+            raise _HttpError(503, "the relay could not open a pairing") from None
+        # The link is the QR code's text; the app draws the code itself.
+        self._json(200, {"link": link, "qr": link, "expires": expires, "origin": via,
+                         "bundle": bundle or None,
+                         "access": UNVERIFIED_ACCESS if via == "relay" else "all"})
 
     # checks and inputs
 

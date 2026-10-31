@@ -15,13 +15,16 @@ click is recorded in `clicks` and the card turns into a status line.
 `--tick N` posts one every N seconds. `drop_streams` closes the open
 streams (and can refuse the next ones); `streams` records how each stream
 request asked to resume. `--pair-token T` makes every API route answer
-401 until the browser pairs with T.
+401 until the browser pairs with T. `relay_pairing=True` runs a relay that
+pairs only through its own copy of the app (a bot with no public_url, on
+this machine): /api/me says `relay`, and `pairs` records each pairing.
 
     python3 tests/webui_stub_server.py [--port 8471] [--tick 5] [--pair-token T]
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import threading
 import time
@@ -47,15 +50,24 @@ DM, MAIN, SCHED, ROOM, OLD = "stream:7", "stream:9", "stream:11", "r1", "r2"
 STUB_INSTALL = "a" * 26
 STUB_BOT_PUBLIC = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"  # 32 bytes of 1, base64url
 STUB_CLIENT_KEY = "c" * 43
+STUB_BUNDLE = "b" * 64  # a made-up hash of the bot's signed app bundle
+
+
+def _b64(data: str | bytes) -> str:
+    raw = data.encode() if isinstance(data, str) else data
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 WEEKLY = "stream:9:topic:weekly%20plan"
 
 
 class Stub:
     """The in-memory store: channels, messages, files and the event log."""
 
-    def __init__(self, tick: float = 0.0, pair_token: str | None = None, echo: bool = True):
+    def __init__(self, tick: float = 0.0, pair_token: str | None = None, echo: bool = True,
+                 relay_pairing: bool = False):
         self.cond = threading.Condition()
         self.pair_token = pair_token
+        self.relay_pairing = relay_pairing
+        self.pairs: list[dict] = []
         self.echo = echo
         self.closed = False
         self.seq = 0
@@ -288,11 +300,16 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(url.query)
         s = self.stub
         if parts == ["me"]:
-            return self._json(200, {"owner": "owner", "bot": "bot", "public_url": None})
+            return self._json(200, {"owner": "owner", "bot": "bot", "public_url": None,
+                                    **({"relay": True} if s.relay_pairing else {})})
         if parts == ["relay", "status"]:
             return self._json(200, {"enabled": True, "install_id": STUB_INSTALL, "connected": False,
                                     "relay_url": "https://relay.example.net",
-                                    "bot_public": STUB_BOT_PUBLIC, "client_key": STUB_CLIENT_KEY})
+                                    "bot_public": STUB_BOT_PUBLIC, "client_key": STUB_CLIENT_KEY,
+                                    "pair_own": False, "pair_relay": s.relay_pairing,
+                                    "bundle": STUB_BUNDLE if s.relay_pairing else None})
+        if parts == ["relay", "devices"] and s.relay_pairing:
+            return self._json(200, [])
         if parts == ["channels"]:
             rows = []
             for c in s.channels.values():
@@ -352,6 +369,18 @@ class Handler(BaseHTTPRequestHandler):
                 tk = fields.get("thread_key", (None, b""))[1].decode() or None
                 ref = {"id": fid, "name": fname, "url": "", "mimetype": mime, "size": len(data)}
                 return self._json(200, s.post(parts[1], text, tk, file=ref))
+        if parts == ["relay", "pair"] and s.relay_pairing:
+            body = json.loads(self._body() or b"{}")
+            s.pairs.append(body)
+            if body.get("via") != "relay":
+                return self._json(409, {"error": "the link would not open the app on the bot's "
+                                                 "own origin: set public_url in the web block"})
+            link = "https://relay.example.net/#tr2=" + _b64(json.dumps({
+                "v": 2, "r": "https://relay.example.net", "i": STUB_INSTALL, "k": STUB_BOT_PUBLIC,
+                "c": STUB_CLIENT_KEY, "p": "0" * 32, "s": _b64(bytes(32)),
+                "x": int(time.time()) + 600, "b": STUB_BUNDLE, "a": "https://relay.example.net/"}))
+            return self._json(200, {"link": link, "qr": link, "expires": int(time.time()) + 600,
+                                    "origin": "relay", "bundle": STUB_BUNDLE, "access": "read"})
         if len(parts) == 4 and parts[0] == "cards" and parts[3] == "actions":
             body = json.loads(self._body() or b"{}")
             if s.click(parts[1], parts[2], body):

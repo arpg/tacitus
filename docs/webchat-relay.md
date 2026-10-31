@@ -24,10 +24,11 @@ This is part D of the Tacitus web chat: A is the web front end
 
 ## What it is for
 
-The owner reaches the web chat over the tailnet. A phone off the tailnet
-(on cellular, without Tailscale, or on a managed device that cannot run
-it) reaches it through the relay: a small public service that Tacitus
-runs. The relay must never be able to read a message. An install's mail
+The owner reaches the web chat over the tailnet, or on the bot's own
+machine (`http://127.0.0.1:8470/chat/`) with no Tailscale at all. A phone
+off the tailnet (on cellular, without Tailscale, or on a managed device
+that cannot run it) reaches it through the relay: a small public service
+that Tacitus runs. The relay must never be able to read a message. An install's mail
 content passes through it only as ciphertext, and the threat model
 (`docs/SECURITY.md`) treats the relay operator as honest but curious at
 best and possibly compromised.
@@ -65,7 +66,7 @@ serve a changed app, and a changed app reads everything the phone shows.
 No cryptography inside the page changes that. So the phone gets its code
 in one of two ways, and the bot records which at pairing.
 
-**Own origin (the default, and the only kind the tailnet UI pairs).**
+**Own origin (the default on the tailnet).**
 The owner pairs while the phone is on the tailnet. The pairing link
 opens the app from the bot's own origin (`public_url`, the tailnet
 address), and B's service worker caches the static files there.
@@ -76,18 +77,46 @@ credentials, since the client key header and the sealed frames are the
 only authentication. The relay never delivers code to this device. A
 compromised relay sees ciphertext and nothing else.
 
-**Relay origin (off unless the owner opts in twice).** For a phone that
-never joins the tailnet, a relay on a hostname of its own can serve a
-copy of the app (`--static`). With an honest relay, the guarantee is the
-same. A compromised relay can serve changed code to that phone, read
-what it shows, and type as the owner. So the bot marks such a device
-(`origin: "relay"`) and refuses it unless the owner-private `chat.json`
-sets `relay_origin_access` (default `"off"`), and the pairing itself
-takes `webchat-relay.py pair --relay-origin`, which prints that warning;
-the app on the relay's copy asks before it pairs, with the same words.
-Even let in, it never reaches a card action below `"all"`: `"read"` is
-GET only, `"chat"` everything but the card actions, and `"all"` lifts
-the limit as the owner's explicit choice.
+**Relay origin ("Pair through the relay", and every pairing without a
+tailnet).** For a phone that never joins the tailnet, and for an install
+with no Tailscale at all, a relay on a hostname of its own serves a copy
+of the app (`--static`, which `relay/install.sh --with-app` sets). The
+owner chooses it in "Pair a phone" ("Pair through the relay"), which the
+dialog offers once the bot signs its app bundle. That pairing link opens
+the relay's copy (`a`, the relay URL as a folder) and carries the bundle
+hash (`b`): the sha256 hex of the canonical manifest of `webui/` that the
+bot signs (`WebFrontend.bundle_hash()`, the signed-bundle work). The QR
+carries the hash from the owner's screen to the phone, past the relay.
+The relay's copy keeps it with the pairing and goes no further than the
+pairing until its code verifies against it (`verifyBundle`), then tells
+the bot so with a sealed `POST /api/relay/attest`, and the bot marks the
+device `bundle_verified`. A copy that cannot verify (an older release)
+shows "Code verification unavailable" and pairs nothing; one whose code
+does not match stops after approval, shows nothing, and says so. The bot
+records the device as `origin: "relay"` with its `bundle`, and lets it
+read only (GET, and the attest) until it is verified; then it may do
+everything, card actions included. `relay_origin_access` may stay
+`"off"`: this pairing does not use it.
+
+What the check stops, and what it does not. It stops a copy of another
+release (the relay and the bot out of step, Running the relay) and a
+copy whose change the honest check sees. It runs in the code the relay
+delivered, so a relay that is compromised when the phone loads the app
+can serve code that skips the check and claims the attest; that phone
+then reads what it shows and acts as the owner. The six-digit code and
+Approve still keep the relay from pairing a phone of its own, and the
+list under "Pair a phone" shows where each phone's code comes from, so
+the owner can remove a relay copy at once. Where that risk is too much,
+pair on the tailnet (own origin).
+
+A relay-origin pairing without a bundle hash (`webchat-relay.py pair
+--relay-origin` on a build that signs no bundle) is the older kind: the
+bot refuses it unless the owner-private `chat.json` sets
+`relay_origin_access` (default `"off"`), and the current app refuses a
+link to the relay's copy that holds no hash. Let in, such a device never
+reaches a card action below `"all"`: `"read"` is GET only, `"chat"`
+everything but the card actions, and `"all"` lifts the limit as the
+owner's explicit choice.
 
 The bot records `"own"` only when the link's app URL has the origin of
 the web block's `public_url`, compared normalized: the scheme, the host
@@ -95,7 +124,8 @@ lowercased and without a trailing dot, and the port written out
 (`https://host:443` is `https://host`). Any other app URL, the relay's
 origin under any spelling, a URL with a backslash or user info, or a
 bot with no `public_url`, makes a `"relay"` device, which `new_pairing`
-refuses unless asked for one.
+refuses unless asked for one; with a bundle hash the app URL must also
+have the relay's own origin (`on_relay_origin`).
 
 The origin is a property of the device key, not a claim the phone makes.
 The pairing secret travels in the fragment of a link that opens one
@@ -105,39 +135,56 @@ the storage of the own-origin app (same-origin policy).
 
 ## Pairing
 
-1. On the tailnet web chat the owner opens "Pair a phone" (in the
-   channel drawer, shown only when the app reaches the bot directly and
-   `/api/me` says `relay`). A's route calls `RelayClient.new_pairing()`
-   and B draws the returned string as a QR code on a canvas (`qr.js`),
-   with the link as text beside it and the paired phones below. Without
-   the UI, `scripts/webchat-relay.py pair` draws the same QR code on the
-   terminal (`relay_qr.py`; `--print-link` prints the text).
-2. The string is a link, `<app url>#tr1=<base64url JSON>`. The JSON holds
-   `v` (1), `r` (the relay URL), `i` (the install id), `k` (the bot's
+1. In the web chat the owner opens "Pair a phone" (in the channel
+   drawer, shown when the app reaches the bot directly and `/api/me` says
+   `relay`): on the tailnet, or on the bot's own machine (a loopback
+   page, signed in with the pairing token). On the bot's own origin (the
+   page has `public_url`'s origin and is a secure context) the dialog
+   opens an own-origin pairing at once (`POST /api/relay/pair` with `{}`)
+   and offers "Pair through the relay" for a phone without Tailscale. On
+   any other page (loopback, or a LAN address over plain http, where a
+   phone has no WebCrypto) a phone could not pair on the page's origin,
+   so the dialog makes no link until the owner taps "Pair through the
+   relay" (`{"via": "relay"}`), which it offers when
+   `/api/relay/status` says `pair_relay` (the bot has a bundle hash). A's
+   route calls `RelayClient.new_pairing()` and B draws the returned string
+   as a QR code on a canvas (`qr.js`), with the link as text beside it,
+   what the phone may do until its code is verified, and the paired
+   phones below. Without the UI, `scripts/webchat-relay.py pair` draws the
+   same QR code on the terminal (`relay_qr.py`; `--print-link` prints the
+   text; `--relay-origin` opens the relay's copy).
+2. The string is a link, `<app url>#tr2=<base64url JSON>`. The JSON holds
+   `v` (2), `r` (the relay URL), `i` (the install id), `k` (the bot's
    X25519 public key), `c` (the client key), `p` (the pairing id, 16
-   bytes as hex), `s` (the pairing secret, 32 bytes) and `x` (the expiry,
-   Unix seconds, ten minutes ahead). A browser never sends a fragment to
-   a server, so opening the link does not put the secret in any log.
-   The link is a bearer credential while it lasts: never send it through
-   chat or mail.
+   bytes as hex), `s` (the pairing secret, 32 bytes), `x` (the expiry,
+   Unix seconds, ten minutes ahead), `a` (the app URL the link opens:
+   `public_url`'s app, or `<relay url>/` for the relay's copy) and `b`
+   (the bundle hash, 64 hex, when the bot has one). A link of version 1
+   (`#tr1=`, `v` 1, neither `a` nor `b`) from an older bot still pairs on
+   the bot's own origin. A browser never sends a fragment to a server, so
+   opening the link does not put the secret in any log. The link is a
+   bearer credential while it lasts: never send it through chat or mail.
 3. The app reads the fragment and removes it from the address bar
-   (`history.replaceState`, before anything else). On the bot's own
+   (`history.replaceState`, before anything else), and refuses a link
+   whose `a` names another origin than the page's. On the bot's own
    origin it takes only `p`, `s` and `x` from the link: the relay URL,
    the install id, the bot's key and the client key come from
    `/api/relay/status`, which must answer (the phone is on the tailnet
    and signed in to the chat), and a link that names another install or
    key is refused. A link whose relay is the page's own origin is one for
-   the relay's copy of the app, where no bot answers; the app checks its
-   fields and asks first ("whoever runs the relay can read this phone's
-   chat and type as you"). It makes its own X25519 key pair (WebCrypto,
-   private key non-extractable), keeps it in IndexedDB before it sends
-   the pairing hello through the relay (so a lost welcome leaves a key
-   the bot knows), and asks before it replaces an earlier pairing; a
-   pairing that fails keeps the earlier one.
+   the relay's copy of the app, where no bot answers: the app refuses it
+   without `b`, and stops with "Code verification unavailable" when this
+   copy has no `verifyBundle`, before it makes a key. It makes its own
+   X25519 key pair (WebCrypto, private key non-extractable), keeps it,
+   with `b` on the relay's copy, in IndexedDB before it sends the pairing
+   hello through the relay (so a lost welcome leaves a key the bot
+   knows), and asks before it replaces an earlier pairing; a pairing that
+   fails keeps the earlier one.
 4. The bot checks the hello, records the device (id: the first 8 bytes of
    SHA-256 of its public key, as hex; the name the phone gave, cleaned and
-   cut to 40 characters; the origin), spends the pairing and answers with
-   a welcome. A relay-origin pairing is refused while
+   cut to 40 characters; the origin; the bundle hash the pairing
+   carried), spends the pairing and answers with a welcome. A
+   relay-origin pairing without a bundle hash is refused while
    `relay_origin_access` is `"off"`, and stays unspent.
 5. The new device waits for approval (`pending`, with its pairing code).
    The phone and the bot each derive the code from the hello's
@@ -152,6 +199,14 @@ the storage of the own-origin app (same-origin policy).
    (`{"pending": true}`) and an `open` ends with 403. Someone else who
    spent the link first shows another code, or the owner's phone fails
    to pair: the owner removes that device instead.
+6. On the relay's copy, once approved, the app checks its code against
+   `b` (`verifyBundle(b, transport)`) before it opens the event stream or
+   reads a channel, at every start. A match goes on (and the attest marks
+   the device `bundle_verified`); a mismatch stops the app with "This copy
+   of the app does not match the bot's code" and the reason the check
+   gives (the version mismatch). The list under "Pair a phone", and
+   `show`, give each device's origin and, for a relay copy, whether its
+   code is verified (`bundle_verified`).
 
 A pairing works once, expires in ten minutes, and at most eight are open
 at a time; an expired pairing's secret leaves the key file at the next
@@ -319,7 +374,8 @@ with `http.client` is a later optimisation.
   `/api/pair...` or `/api/relay/...`, compared decoded and lowercased (the
   local server decodes each segment before it routes, so
   `/api/%72elay/pair` is refused too): pairing the web chat and managing
-  relay devices happen on the tailnet only. The web front end refuses
+  relay devices happen in the owner's own web chat only (the tailnet, or
+  the bot's machine). The web front end refuses
   those routes again for any request that carries `X-Tacitus-Relay`.
   Never `/api/events` as a request: the event stream opens with an
   `open` frame, and an answer that turns out to be an event stream is
@@ -343,7 +399,9 @@ with `http.client` is a later optimisation.
   a frame.
 - The local URL must be `http` on loopback; the relay URL must be `https`
   (plain `http` only on loopback, for tests).
-- A device paired through the relay's origin gets `relay_origin_access`
+- A device paired through the relay's origin with a bundle hash reads
+  (GET, and the attest) until it is `bundle_verified`, then gets
+  everything; one paired there without a hash gets `relay_origin_access`
   (above; nothing at `"off"`, the default); one paired through the bot's
   own origin gets everything; one waiting for approval gets nothing.
 - Neither the relay nor the loopback server can redirect the bot: a 3xx
@@ -437,8 +495,9 @@ It **cannot**:
 - pair a device of its own: the pairing secret travels only in a link's
   fragment, and every new device waits for the owner's approval by its
   code. The exception is a link that opens the relay's own origin, where
-  changed code could read it; that takes the owner's opt-in twice, and
-  such a device still waits for approval;
+  changed code could read it; that takes the owner's choice ("Pair
+  through the relay", or `pair --relay-origin`), and such a device still
+  waits for approval;
 - make the phone pair with another bot: on the bot's own origin the app
   takes the relay, install and keys from the bot, not from the link;
 - make the phone send a message or press a button twice: the app sends
@@ -472,11 +531,13 @@ It **can**:
   means a new key file (`init`), since the token is the install's
   identity there;
 - on a phone paired through the relay's origin (only when the owner
-  opted in), serve changed code: read everything that phone shows and
-  post as the owner, without the card actions unless the owner chose
-  `"all"`. A phone paired through the own origin is out of its reach,
-  as long as nothing else is served on the relay's origin with it (the
-  hosting rule under Running the relay).
+  chose it), serve changed code when the phone loads the app: code that
+  skips the check against the bundle hash and claims the attest reads
+  everything that phone shows and acts as the owner. A copy of another
+  release, or one changed where the honest check looks, stops instead
+  (Where the app's code comes from). A phone paired through the own
+  origin is out of its reach, as long as nothing else is served on the
+  relay's origin with it (the hosting rule under Running the relay).
 
 ## Config
 
@@ -504,8 +565,8 @@ The `relay` block sits inside the `web` block of the chat config
 | `url` | The relay's base URL. Required. `https`. |
 | `key_file` | The key file, owner-private, mode 0600. Default: `webchat-relay.json` beside the web chat's store (the owner-private directory). Created on the first start when missing and `install_id` is not set. The relay stays off when the file is not a regular file of the bot's uid with mode 0600, when its directory is writable by another user, or when it is inside the resident's tree. |
 | `install_id` | Optional pin: the bot refuses to start the relay when the key file is another install's, or missing. |
-| `app_url` | Where a pairing link opens the app. Default: the web block's `public_url` (own origin). A device is own-origin only when this is `public_url`'s origin; the tailnet UI pairs nothing else (409 without `public_url`). |
-| `relay_origin_access` | What a device paired through the relay's origin may do: `"off"` (nothing; the default), `"read"` (GET only), `"chat"` (all but card actions), `"all"`. Any value but `"off"` is one of the two opt-ins for such a device; `pair --relay-origin` is the other. |
+| `app_url` | Where an own-origin pairing link opens the app. Default: the web block's `public_url`. A device is own-origin only when this is `public_url`'s origin. Without `public_url` (no tailnet) "Pair a phone" pairs only through the relay (an own-origin pairing is a 409). |
+| `relay_origin_access` | What a relay-origin device paired without a bundle hash may do: `"off"` (nothing; the default), `"read"` (GET only), `"chat"` (all but card actions), `"all"`. A phone paired with "Pair through the relay" (with the bundle hash) needs none of it: it reads until its code is verified, then does everything. |
 | `wait` | The long-poll's wait in seconds (default 25, at most 55; the relay caps it at 25). |
 | `enabled` | `false` keeps the block but leaves the relay off. |
 
@@ -516,12 +577,18 @@ under an flock on `<key file>.lock`):
 {"v": 1, "bot_private": "<base64url, 32 bytes>", "relay_token": "<base64url, 32 bytes>",
  "relay_url": "https://relay.example.net",
  "devices": [{"id": "b15625d7ae6abe8d", "public": "<base64url>", "name": "phone",
-              "paired_at": 1793421333, "origin": "own"}],
- "pairings": [{"id": "<32 hex>", "psk": "<base64url>", "expires": 1793421933, "origin": "own"}]}
+              "paired_at": 1793421333, "origin": "own"},
+             {"id": "4f0c2a9e81d3b7c6", "public": "<base64url>", "name": "tablet",
+              "paired_at": 1793421400, "origin": "relay", "bundle": "<64 hex>",
+              "bundle_verified": true}],
+ "pairings": [{"id": "<32 hex>", "psk": "<base64url>", "expires": 1793421933,
+               "origin": "relay", "bundle": "<64 hex>"}]}
 ```
 
 A device record waiting for approval also has `"pending": true` and its
-`"code"`; Approve removes both. The bot refuses a key file that group or
+`"code"`; Approve removes both. A relay-origin pairing, and the device
+that spends it, keep the `bundle` hash the link carried; the attest adds
+`"bundle_verified": true`. The bot refuses a key file that group or
 others can read, that another uid owns, or that is a symlink. The key
 file and the `relay` block are the owner's: the resident (`ea-bot`) can read
 neither, so it cannot pair a device, read a session or move the bot to
@@ -554,17 +621,17 @@ settings. It returns None when there is
 no `relay` block, it is disabled, `cryptography` is missing or the config
 is wrong; it logs why, and the web chat keeps working on the tailnet.
 
-A also adds owner-only routes for the tailnet UI, which the relay never
+A also adds owner-only routes for the owner's web chat, which the relay never
 forwards (`/api/relay/` is denied on the bot side), and refuses them, and
 `/api/pair`, with 403 when a request carries `X-Tacitus-Relay`:
 
 | Route | Answers |
 |---|---|
-| `POST /api/relay/pair` | `{"link", "qr", "expires", "origin"}`: `link` from `self.relay.new_pairing()`, `qr` the QR code's text (the same string), `expires` in Unix seconds, `origin` `"own"`; 409 when the link would not open the bot's own origin (no `public_url`) |
-| `GET /api/relay/devices` | `self.relay.devices()` (id, name, paired_at, origin, pending, and `code` while pending) |
+| `POST /api/relay/pair` | `{}` or `{"via": "own" or "relay"}` → `{"link", "qr", "expires", "origin", "bundle", "access"}`: `link` from `self.relay.new_pairing()` (version 2, with `b` when the bot has a bundle hash), `qr` the QR code's text (the same string), `expires` in Unix seconds, `origin` the `via`, `access` what the device may do before its code is verified (`"all"` own, `"read"` relay); own: 409 when the link would not open the bot's own origin (no `public_url`); relay: the link opens `<relay url>/`, 409 when the bot has no bundle hash; 400 for another `via` |
+| `GET /api/relay/devices` | `self.relay.devices()` (id, name, paired_at, origin, pending, `code` while pending, and `bundle_verified` for a relay-origin device) |
 | `POST /api/relay/approve` | `{"device": <16 hex>}` → `{"ok": true}`: `self.relay.approve(id)`, the device's next request works; 400 for a malformed id, 404 for an unknown one |
 | `POST /api/relay/revoke` | `{"device": <16 hex>}` → `{"ok": true}`: `self.relay.revoke(id)`; its sessions and its open event streams end at once (a stream with `err auth`), and its push subscriptions are dropped; 400 for a malformed id, 404 for an unknown one |
-| `GET /api/relay/status` | `{"enabled": bool, ...self.relay.status()}` (install_id, relay_url, bot_public, client_key, connected, last_ok, last_error, sessions, streams, devices, pending); `{"enabled": false}` with no relay running |
+| `GET /api/relay/status` | `{"enabled": bool, ...self.relay.status()}` (install_id, relay_url, bot_public, client_key, connected, last_ok, last_error, sessions, streams, devices, pending), and how "Pair a phone" can pair: `pair_own` (a link to the bot's own origin), `pair_relay` and `bundle` (the bundle hash, or null); `{"enabled": false}` with no relay running |
 
 With no relay running the other four answer 404. A push subscription
 records the relay device it came through (`X-Tacitus-Relay`), or the
@@ -611,8 +678,11 @@ adds nothing.
   The device key pair is generated non-extractable and kept, with the
   relay, the install, the client key and the bot's public key, in
   IndexedDB (`tacitus-relay`); Web Storage holds none of it.
-- On a link with `#tr1=`, remove the fragment, then pair (Pairing, above),
-  and show the pairing code until the phone's requests work.
+- On a link with `#tr2=` (or `#tr1=`), remove the fragment, then pair
+  (Pairing, above), and show the pairing code until the phone's requests
+  work. On the relay's copy, check the code against `b` before the event
+  stream opens or a channel loads (Pairing, step 6); without
+  `verifyBundle` or with a mismatch, stop on a full-page notice.
 - Open an answer only as the answer to its own request (kind `res`, the
   request's frame id) and an event only of its own stream (kind `sse`,
   the `open` frame's id).
@@ -623,8 +693,8 @@ adds nothing.
   `auth`, show "the bot did not accept this phone" and keep trying; never
   drop the keys over an `err` frame. A 403 marked `pending` shows the
   pairing code again. A phone whose `/api/me` says `card_actions: false`
-  sees card buttons greyed out with "approve this on the tailnet", and a
-  403 from a card action says the same.
+  sees card buttons greyed out with "approve this in the web chat on your
+  computer", and a 403 from a card action says the same.
 - A stored file comes through the transport as a blob, and a blob page
   has the app's origin. So only a png, jpeg, gif or webp keeps its type
   (an image shows from it); anything else, an SVG or an HTML file among
@@ -661,14 +731,23 @@ past that, the same protocol moves to an asyncio server with no change to
 bots or phones.
 
 **The hosting rule.** A browser gives a paired phone's key to every page
-of the origin that holds it (IndexedDB is per origin). So a relay that
-serves the app (`--static`) needs a hostname of its own, with nothing
-else on it. A relay under a path of a host with other pages (a lab site,
-a dashboard) runs without `--static`: it serves no app, and only
-own-origin devices exist. `relay/install.sh` installs it so unless
-`--with-app` is given. Keep the relay host off the tailnet, or keep it
-from the bot host with the tailnet's ACL: the relay only ever needs the
-bot to dial out.
+of the origin that holds it (IndexedDB is per origin). So a relay serves
+the app (`--static`, `relay/install.sh --with-app`) only on a hostname
+of its own, with nothing else on it, and never on a vhost it shares with
+other pages (a lab site, a dashboard). A relay under a path of such a
+host runs without `--static`: it serves no app, and only own-origin
+devices exist; `relay/install.sh` installs it so unless `--with-app` is
+given. A relay serves the app only from a release whose bot signs its
+app bundle: the copy it serves is the pinned commit's `webui/`, and a
+phone takes it only when it matches the bot's signed manifest. So the
+relay host and the bot run the same release; the auto-update channel
+keeps them aligned (docs/updates.md: the bot's updater and the relay's
+`tacitus-relay-update.timer` follow the same channel). When they drift,
+one updated and the other not yet, the phone refuses the relay's copy
+and shows the version mismatch ("This copy of the app does not match the
+bot's code"); it opens again once both run the same release. Keep the
+relay host off the tailnet, or keep it from the bot host with the
+tailnet's ACL: the relay only ever needs the bot to dial out.
 
 **The healthz rule.** `/healthz` gives its counts (online installs,
 streams, queued bytes) only to a request from the relay host itself
@@ -730,43 +809,54 @@ Operator steps (the maintainer, for the hosted relay):
 
 For an install using the hosted relay (or the owner's own). `<code>` is
 the install's code tree (`/opt/ea-system` after hardening); run each
-command as the owner.
+command as the owner. Tailscale is optional: these steps need none.
 
 1. Create the key file:
    `python3 <code>/scripts/webchat-relay.py init --key-file ~/.ea-private/webchat-relay.json --relay-url https://<relay>`.
    It prints the install id and the `relay` block.
 2. Hosted relay only: give the install id at sign-up, so the operator
-   activates it.
+   activates it. A relay of your own serves the app with
+   `relay/install.sh --with-app`, on a hostname of its own, at the
+   release your bot runs (Running the relay).
 3. Add the `relay` block to the `web` block of `~/.ea-private/chat.json`
    (`url` and `install_id`; `key_file` may stay out when the file is
-   `webchat-relay.json` in the private directory). Keep `public_url` set
-   in the web block: it is what makes a paired phone an own-origin one,
-   and without it the tailnet UI pairs nothing.
+   `webchat-relay.json` in the private directory). `public_url` may stay
+   out when you have no tailnet.
 4. Restart the bot: `sudo systemctl restart ea-chat-bot`. The log says
-   `relay: connected`, and `GET /api/relay/status` on the tailnet says
+   `relay: connected`, and `GET /api/relay/status` in the web chat says
    `"connected": true`.
-5. Pair the phone while it is on the tailnet and signed in to the web
-   chat: open the drawer of the web chat on a screen you control, tap
-   "Pair a phone", and scan the code with the phone. The phone opens the
-   app, pairs, and shows "This phone waits for approval" with a
-   six-digit code; your DM gets a notice with the device's name and
+5. Open the web chat on the bot's machine itself:
+   `http://127.0.0.1:8470/chat/` (the web block's `port` and
+   `base_path`). Paste the pairing token from
+   `<private dir>/webchat-pair.token` when it asks (docs/webchat.md,
+   Identity and auth).
+6. Open the drawer, tap "Pair a phone", then "Pair through the relay",
+   and scan the code with the phone's camera. The phone opens the app
+   from the relay, pairs, and shows "This phone waits for approval" with
+   a six-digit code; your DM gets a notice with the device's name and
    code. Under "Pair a phone" the new phone waits with its code: tap
    Approve only when the two codes match. If a device you do not know
-   waits there, tap Remove. Without the UI,
+   waits there, tap Remove. The phone then checks its code against the
+   bot's and opens the chat; until it has verified its code, the bot lets
+   it read only. If it says "Code verification unavailable", or that its
+   code does not match the bot's, the relay and the bot run different
+   releases: update the one that is behind (docs/updates.md) and open the
+   app again. Never send a pairing link through chat or mail: whoever
+   opens it first gets the pairing. Add the app to the home screen; it
+   works anywhere through the relay.
+7. With Tailscale you may pair on the tailnet instead: with `public_url`
+   set, open "Pair a phone" on the web chat's tailnet address while the
+   phone is on the tailnet and signed in. That link opens the app on the
+   bot's own origin; that phone runs code from the bot, never from the
+   relay, and works off the tailnet through the relay too.
+   Without the UI,
    `python3 <code>/scripts/webchat-relay.py pair --key-file ~/.ea-private/webchat-relay.json --public-url https://<host>.ts.net/chat`
-   draws the QR code on the terminal (`--print-link` prints the link),
-   and `show` and `approve --device <id>` do the rest. Never send a
-   pairing link through chat or mail: whoever opens it first gets the
-   pairing. Add the app to the home screen; it now works off the tailnet
-   too.
-6. A phone that never joins the tailnet is a relay-origin device: whoever
-   runs the relay can read its chat and type as you. It takes two
-   opt-ins, a relay that serves the app on a hostname of its own, and
-   approval. Set `relay_origin_access` in the relay block (`"read"`,
-   `"chat"` or `"all"`; card buttons stay on the tailnet below `"all"`),
-   restart the bot, then run `pair --relay-origin` (the link opens the
-   relay's copy of the app) and approve the phone by its code.
-7. A lost phone: Remove beside it under "Pair a phone", or
+   (own origin) or `pair --key-file ... --relay-origin` (the relay's
+   copy, with the bundle hash when the build signs one) draws the QR
+   code on the terminal (`--print-link` prints the link); `show` lists
+   each device's origin and whether its code is verified, and
+   `approve --device <id>` lets it in.
+8. A lost phone: Remove beside it under "Pair a phone", or
    `python3 <code>/scripts/webchat-relay.py revoke --key-file ~/.ea-private/webchat-relay.json --device <id>`
    (`show` lists the ids). Remove in the UI ends its sessions and its
    open event stream at once and drops its push subscriptions; with the
@@ -782,8 +872,8 @@ command as the owner.
 
 - Kept-alive connections on the bot side; an asyncio relay past about a
   thousand installs.
-- A version in `/api/me`, so a relay-origin app notices that it is older
-  or newer than the bot.
+- A version in `/api/me`, so a relay copy whose code does not match can
+  name both releases, not only the reason its check gives.
 - A `rotate` command for a new token, install id and client key with the
   same paired devices, for moving between relays; it also retires the
   client key that every pairing link ever shown carried.

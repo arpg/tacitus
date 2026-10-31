@@ -1458,21 +1458,25 @@ do depends on where its code comes from, recorded at pairing:
 
 | Device | Its code comes from | What it may do |
 |---|---|---|
-| Own origin (the default and the only kind the tailnet UI pairs) | the bot's tailnet origin, cached by the service worker | everything, card actions included |
-| Relay origin | the relay's copy of the app, which a compromised relay can change (read what the phone shows, type as the owner) | nothing unless the owner-private `chat.json` sets `relay_origin_access`: `"read"` (GET only), `"chat"` (everything but the card actions) or `"all"`; the default is `"off"`, and the pairing also takes `webchat-relay.py pair --relay-origin` |
+| Own origin (the default on the tailnet) | the bot's tailnet origin, cached by the service worker | everything, card actions included |
+| Relay origin, paired with the bundle hash ("Pair through the relay") | the relay's copy of the app, which checks itself against the hash of the bot's signed app bundle that the QR carries; a relay compromised when the phone loads the app can serve code that skips the check and claims it passed | reads only (GET, and the attest) until its code is verified (`bundle_verified`), then everything; no `chat.json` opt-in |
+| Relay origin without a hash (`webchat-relay.py pair --relay-origin` on a build that signs no bundle) | the relay's copy, unchecked, which a compromised relay can change (read what the phone shows, type as the owner) | nothing unless the owner-private `chat.json` sets `relay_origin_access`: `"read"` (GET only), `"chat"` (everything but the card actions) or `"all"`; the default is `"off"` |
 | Waiting for approval | either | nothing: every request is a 403 and no event stream opens |
 
 A pairing link is a bearer credential for ten minutes: whoever spends it
 first registers a device. So every new device waits until the owner
-approves it on the tailnet, where the owner compares a six-digit code
-from the handshake's transcript hash (the phone shows it; "Pair a phone"
-and `webchat-relay.py show` list it), and the bot posts a notice of each
-new device in the owner's DM. On the bot's own origin the app takes only
-the pairing secret from a link and the relay, install and keys from
-`/api/relay/status` on the tailnet, so a crafted link cannot replace a
-pairing. Never send a pairing link through chat or mail. Removing a
-device ends its sessions and its open event streams at once and drops
-the push subscriptions made through it or naming it.
+approves it in the web chat (on the tailnet or the bot's machine), where
+the owner compares a six-digit code from the handshake's transcript hash
+(the phone shows it; "Pair a phone" and `webchat-relay.py show` list
+it), and the bot posts a notice of each new device in the owner's DM. On
+the bot's own origin the app takes only the pairing secret from a link
+and the relay, install and keys from `/api/relay/status` on the tailnet,
+so a crafted link cannot replace a pairing. A relay that serves the app
+runs the bot's release: a copy of another release fails its check
+against the bundle hash and stops. Never send a pairing link through
+chat or mail. Removing a device ends its sessions and its open event
+streams at once and drops the push subscriptions made through it or
+naming it.
 
 The relay client marks each request `X-Tacitus-Relay-Cards: allow` or
 `deny`, and the web front end itself refuses a card action, a push

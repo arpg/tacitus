@@ -76,15 +76,18 @@
 <dialog id="phone" aria-labelledby="phone-title">
   <form method="dialog">
     <h2 id="phone-title">Pair a phone</h2>
-    <p>Off the tailnet, a paired phone reaches Tacitus through the relay, which sees only sealed data.</p>
+    <p>A paired phone reaches Tacitus through the relay, which sees only sealed data.</p>
     <canvas id="phone-qr" width="0" height="0" role="img" aria-label="Pairing code"></canvas>
     <p id="phone-note" aria-live="polite"></p>
+    <button type="button" id="phone-relay" class="btn" hidden>Pair through the relay</button>
     <input id="phone-link" readonly aria-label="Pairing link">
     <h3>Paired phones</h3>
     <ul id="phone-devices"></ul>
     <button type="submit" class="btn">Close</button>
   </form>
 </dialog>
+
+<div id="halt" hidden><div role="alert"><h2>Stopped</h2><p id="halt-text"></p></div></div>
 
 <div id="pair" hidden>
   <form id="pair-form">

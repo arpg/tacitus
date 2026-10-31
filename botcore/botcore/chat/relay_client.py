@@ -14,7 +14,7 @@ owner's credential added here and every header but a short list dropped.
 
 `KeyStore` is the key file (owner-private, mode 0600): the bot's X25519
 key, the relay token, the paired devices and the open pairings. A new
-device waits for the owner's approval on the tailnet. The CLI at the
+device waits for the owner's approval under "Pair a phone". The CLI at the
 bottom (`scripts/webchat-relay.py` runs it) creates the file, shows the
 install id, opens a pairing, and approves and revokes a device.
 
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import json
 import logging
 import os
@@ -76,22 +77,32 @@ LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
 FORWARD_HEADERS = ("content-type", "accept", "last-event-id")
 RETURN_HEADERS = ("content-type", "content-disposition")
 # The local routes the relay never reaches: pairing the web chat and
-# managing relay devices happen on the tailnet only. The event stream is
+# managing relay devices happen in the owner's own web chat (the tailnet,
+# or the bot's machine itself), never through the relay. The event stream is
 # reached by an `open` frame, never by a plain request.
 DENIED_PREFIXES = ("/api/pair/", "/api/relay/")
 EVENTS_PATH = "/api/events"
 # What a device paired through the relay's own origin may do. The relay
 # serves that copy of the web app, so a compromised relay could change its
-# code, read what the phone shows and type as the owner. Such a device is
-# refused unless the owner-private chat.json opts in ("read", "chat" or
-# "all"), and never reaches the card actions (the Send and Create
-# buttons) below "all". A device paired through the bot's own origin (the
-# tailnet) runs code the relay never touches, and may do everything.
+# code, read what the phone shows and type as the owner. A device paired
+# with the hash of the bot's signed app bundle (`bundle`, the QR's `b`)
+# checks its code against it: it reads only (UNVERIFIED_ACCESS) until it
+# attests that its code is the bot's (`bundle_verified`), then may do
+# everything. A relay-origin device paired without a hash (the CLI's
+# `--relay-origin` on a build with no signed bundle) is refused unless the
+# owner-private chat.json opts in ("read", "chat" or "all"), and never
+# reaches the card actions (the Send and Create buttons) below "all". A
+# device paired through the bot's own origin runs code the relay never
+# touches, and may do everything.
 ACCESS_LEVELS = ("off", "read", "chat", "all")
 DEFAULT_RELAY_ORIGIN_ACCESS = "off"
+UNVERIFIED_ACCESS = "read"
 RELAY_ORIGIN_WARNING = ("a relay-origin device runs the copy of the app the relay serves: whoever "
                         "runs the relay can read this phone's chat and type as you")
 _CARD_ACTION_PREFIX = "/api/cards/"
+# The one POST a device that reads only may make: its attestation that its
+# code is the bot's signed bundle.
+ATTEST_PATH = "/api/relay/attest"
 _PATH_RE = re.compile(r"^/api/[A-Za-z0-9._~%!$&'()*+,;=:@/-]*(\?[A-Za-z0-9._~%!$&'()*+,;=:@/?-]*)?$")
 
 
@@ -224,18 +235,26 @@ class KeyStore:
         return next((dict(d) for d in self.load()["devices"] if d.get("id") == device_id), None)
 
     def add_pairing(self, ttl: int = rc.PAIRING_TTL, now: Optional[float] = None,
-                    relay_url: str = "", origin: str = "relay") -> rc.PairingPayload:
+                    relay_url: str = "", origin: str = "relay", bundle: str = "",
+                    app_url: str = "") -> rc.PairingPayload:
         """A new one-time pairing, stored here (the expired ones dropped).
         `origin` is where its link opens the app: "own" (the bot's own
-        origin) or "relay"; the device that spends it keeps that mark."""
+        origin) or "relay"; the device that spends it keeps that mark, and
+        the `bundle` hash it was paired against. `bundle` and `app_url`
+        also go in the link (`b` and `a`, payload version 2)."""
+        if bundle and not rc.BUNDLE_RE.match(bundle):
+            raise RelayError("a bundle hash is 64 hex characters")
         now = time.time() if now is None else now
-        payload = rc.new_pairing(self.identity(), relay_url or self.relay_url(), ttl=ttl, now=now)
+        payload = dataclasses.replace(
+            rc.new_pairing(self.identity(), relay_url or self.relay_url(), ttl=ttl, now=now),
+            bundle=bundle, app=app_url)
 
         def add(data: dict) -> None:
             live = [p for p in data["pairings"] if p.get("expires", 0) > now]
             live.append({"id": payload.pairing_id, "psk": rc.b64e(payload.psk),
                          "expires": payload.expires,
-                         "origin": "own" if origin == "own" else "relay"})
+                         "origin": "own" if origin == "own" else "relay",
+                         **({"bundle": bundle} if bundle else {})})
             data["pairings"] = live[-MAX_PAIRINGS:]
         self._update(add)
         return payload
@@ -254,6 +273,15 @@ class KeyStore:
         p = self._pairing(pairing_id)
         return ("own" if p.get("origin") == "own" else "relay") if p else ""
 
+    def pairing_device(self, pairing_id: str) -> dict:
+        """What the device that spends an open pairing will be: its
+        `origin` and the `bundle` hash it pairs against ({} when gone)."""
+        p = self._pairing(pairing_id)
+        if not p:
+            return {}
+        return {"origin": "own" if p.get("origin") == "own" else "relay",
+                **({"bundle": p["bundle"]} if p.get("bundle") else {})}
+
     def register(self, pairing_id: str, public: bytes, name: str = "",
                  now: Optional[float] = None, code: str = "") -> dict:
         """Spend an open pairing on a device key. The device waits for the
@@ -271,6 +299,8 @@ class KeyStore:
             if not live:
                 raise RelayError("pairing is used, expired or unknown")
             record["origin"] = "own" if live[0].get("origin") == "own" else "relay"
+            if live[0].get("bundle"):
+                record["bundle"] = live[0]["bundle"]
             data["pairings"] = [p for p in data["pairings"] if p.get("id") != pairing_id]
             data["devices"] = [d for d in data["devices"] if d.get("id") != record["id"]]
             data["devices"].append(record)
@@ -365,20 +395,67 @@ def origin_of(app_url: Optional[str], public_url: Optional[str],
     return "own"
 
 
+def relay_app_url(relay_url: str) -> str:
+    """Where the relay serves its copy of the app: its URL as a folder.
+    A pairing link that carries a bundle hash opens the app there and on
+    no other relay-side origin (`on_relay_origin`)."""
+    return relay_url.split("#", 1)[0].rstrip("/") + "/"
+
+
+def on_relay_origin(app_url: Optional[str], relay_url: Optional[str]) -> bool:
+    """True when `app_url` has the relay's origin, compared as origin_of does."""
+    app = _origin(app_url)
+    return app is not None and app == _origin(relay_url)
+
+
+def bundle_hash_of(frontend: Any) -> str:
+    """The hash of the bot's signed app bundle (64 hex) from a web front
+    end, when this build signs one; "" otherwise, and then no pairing goes
+    through the relay's copy of the app without the chat.json opt-in."""
+    # TODO(signed-bundle): WebFrontend.bundle_hash() ships with the signed bundle.
+    fn = getattr(frontend, "bundle_hash", None)
+    if not callable(fn):
+        return ""
+    try:
+        got = fn()
+    except Exception:
+        log.exception("relay: the app bundle's hash could not be read")
+        return ""
+    return got if isinstance(got, str) and rc.BUNDLE_RE.match(got) else ""
+
+
+def device_row(d: Mapping[str, Any]) -> dict:
+    """A device as the owner's list shows it: id, name, paired_at,
+    origin, `pending` (and the pairing `code` while pending), and for a
+    relay-origin device whether its code is verified."""
+    row = {k: d.get(k) for k in ("id", "name", "paired_at", "origin")}
+    row["pending"] = bool(d.get("pending"))
+    if row["pending"]:
+        row["code"] = str(d.get("code") or "")
+    if d.get("origin") != "own":
+        # TODO(signed-bundle): the attest sets bundle_verified on the device record.
+        row["bundle_verified"] = d.get("bundle_verified") is True
+    return row
+
+
 def access_allows(level: str, method: str, path: str) -> bool:
     """Whether a relay-origin device at `level` may make this request. The
     path is compared decoded and lowercased, so no spelling of a card
-    action reaches a router that normalizes it."""
+    action reaches a router that normalizes it. A device that reads may
+    also post its attestation (ATTEST_PATH), which is how it leaves
+    UNVERIFIED_ACCESS."""
     if level == "all":
         return True
     if level not in ACCESS_LEVELS or level == "off":
         return False
     if method == "GET":
         return True
+    route = re.sub(r"/{2,}", "/", urllib.parse.unquote(path.split("?", 1)[0]).lower())
+    if route.rstrip("/") == ATTEST_PATH:
+        return method == "POST"
     if level != "chat":
         return False
-    route = urllib.parse.unquote(path.split("?", 1)[0]).lower()
-    return not re.sub(r"/{2,}", "/", route).startswith(_CARD_ACTION_PREFIX.rstrip("/"))
+    return not route.startswith(_CARD_ACTION_PREFIX.rstrip("/"))
 
 
 def path_allowed(path: Any) -> bool:
@@ -484,7 +561,7 @@ def _read_capped(resp: Any, limit: int, deadline: float) -> Optional[bytes]:
     return bytes(out)
 
 
-PENDING = "this phone waits for the owner's approval on the tailnet"
+PENDING = "this phone waits for the owner's approval under Pair a phone"
 
 
 class RelayClient:
@@ -567,7 +644,7 @@ class RelayClient:
         self._pool.shutdown(wait=False)
 
     def status(self) -> dict:
-        """The client's state for the tailnet UI. `bot_public` and
+        """The client's state for the owner's web chat. `bot_public` and
         `client_key` let the app check a pairing link against the bot."""
         with self._mu:
             sessions, streams = len(self._sessions), len(self._streams)
@@ -580,41 +657,54 @@ class RelayClient:
                 "streams": streams, "devices": len(devices),
                 "pending": sum(1 for d in devices if d.get("pending"))}
 
-    # pairing, for the tailnet web chat
+    # pairing, for the owner's web chat
 
     def level(self, device: Mapping[str, Any]) -> str:
         """What a device may do: "all" for one paired on the bot's own
-        origin, else `relay_origin_access`."""
-        return "all" if device.get("origin") == "own" else self.relay_origin_access
+        origin; for one paired on the relay's origin against a bundle hash,
+        UNVERIFIED_ACCESS until its code is verified, then "all"; for any
+        other relay-origin device, `relay_origin_access`."""
+        if device.get("origin") == "own":
+            return "all"
+        if device.get("bundle"):
+            # TODO(signed-bundle): the attest sets bundle_verified on the device record.
+            return "all" if device.get("bundle_verified") is True else UNVERIFIED_ACCESS
+        return self.relay_origin_access
+
+    def can_pair_own(self) -> bool:
+        """True when a pairing link would open the app on the bot's own origin."""
+        return origin_of(self.app_url, self.public_url, self.relay_url) == "own"
 
     def new_pairing(self, app_url: Optional[str] = None, ttl: int = rc.PAIRING_TTL,
-                    relay_origin: bool = False) -> str:
-        """A one-time pairing link (the QR code's text) for a new phone. A
-        link that opens the app anywhere but the bot's own origin makes a
-        relay-origin device; it takes `relay_origin` and a chat.json whose
-        `relay_origin_access` is not "off". RelayError otherwise."""
-        url = app_url or self.app_url
+                    relay_origin: bool = False, bundle: str = "") -> str:
+        """A one-time pairing link (the QR code's text) for a new phone,
+        payload version 2: `a` the app URL it opens, `b` the `bundle` hash
+        when given. A link that opens the app anywhere but the bot's own
+        origin makes a relay-origin device and takes `relay_origin`. With a
+        bundle hash it must open the relay's own copy of the app
+        (`relay_app_url`), and the device reads only until its code is
+        verified; without one, chat.json's `relay_origin_access` must not
+        be "off". RelayError otherwise."""
+        url = app_url or self.app_url or relay_app_url(self.relay_url)
         origin = origin_of(url, self.public_url, self.relay_url)
         if origin != "own" and not relay_origin:
             raise RelayError("the link would not open the app on the bot's own origin: set "
                              "public_url in the web block")
-        if origin != "own" and self.relay_origin_access == "off":
+        if origin != "own" and bundle and not on_relay_origin(url, self.relay_url):
+            raise RelayError("a relay-origin link with a bundle hash opens the relay's own copy "
+                             "of the app")
+        if origin != "own" and not bundle and self.relay_origin_access == "off":
             raise RelayError("relay_origin_access is off in chat.json: the bot refuses a "
-                             "relay-origin device")
-        payload = self.store.add_pairing(ttl=ttl, relay_url=self.relay_url, origin=origin)
+                             "relay-origin device paired without the app bundle's hash")
+        payload = self.store.add_pairing(ttl=ttl, relay_url=self.relay_url, origin=origin,
+                                         bundle=bundle, app_url=url)
         return payload.to_string(url)
 
     def devices(self) -> list[dict]:
-        """id, name, paired_at, origin and `pending`; a device that waits
-        for approval also has its pairing `code`."""
-        out = []
-        for d in self.store.devices():
-            row = {k: d.get(k) for k in ("id", "name", "paired_at", "origin")}
-            row["pending"] = bool(d.get("pending"))
-            if row["pending"]:
-                row["code"] = str(d.get("code") or "")
-            out.append(row)
-        return out
+        """`device_row` of each paired device: id, name, paired_at, origin,
+        `pending` (with its pairing `code`), and `bundle_verified` for a
+        relay-origin device."""
+        return [device_row(d) for d in self.store.devices()]
 
     def approve(self, device_id: str) -> bool:
         """Let a waiting device in; its next request works."""
@@ -747,7 +837,7 @@ class RelayClient:
         try:
             self.notify(f"A new device asks to reach Tacitus through the relay: "
                         f"\"{dev.get('name')}\", pairing code {code[:3]} {code[3:]}. "
-                        "Approve it under Pair a phone on the tailnet only when the phone "
+                        "Approve it under Pair a phone in the web chat only when the phone "
                         "shows the same code. If you did not pair a phone now, remove it there.")
         except Exception:
             self.log.exception("relay: the notice of a new device failed")
@@ -758,8 +848,7 @@ class RelayClient:
             acc = rc.bot_accept(self.identity, frame, psk_for=self.store.pairing_psk,
                                 seen=self._hellos.seen)
             if acc.pairing_id:
-                if self.store.pairing_origin(acc.pairing_id) == "relay" \
-                        and self.relay_origin_access == "off":
+                if self.level(self.store.pairing_device(acc.pairing_id)) == "off":
                     raise RelayError("relay-origin devices are off (relay_origin_access)")
                 name = acc.info.get("name", "") if isinstance(acc.info, dict) else ""
                 dev = self.store.register(acc.pairing_id, acc.device_public, name, code=acc.code)
@@ -842,7 +931,7 @@ class RelayClient:
             self._send(session.seal("res", fid, rc.pack(*_response(400, "bad request"))))
             return
         if device.get("pending"):
-            # Paired, not yet approved on the tailnet: nothing reaches the
+            # Paired, not yet approved by the owner: nothing reaches the
             # web chat, and the phone shows its pairing code.
             if kind == "req":
                 self._send(session.seal("res", fid, rc.pack(*_response(403, PENDING, pending=True))))
@@ -1056,6 +1145,19 @@ def start_relay(frontend_cfg: Mapping[str, Any], local_base_url: str, *,
 
 # ── the owner's CLI ───────────────────────────────────────────────────
 
+def _cli_bundle_hash(key_file: Path, relay_url: str) -> str:
+    """The bundle hash a CLI pairing carries: the one the bot's web front
+    end puts in its links, when this build signs an app bundle."""
+    try:
+        from .web_frontend import WebFrontend
+    except ImportError:
+        return ""
+    if not hasattr(WebFrontend, "bundle_hash"):  # TODO(signed-bundle): ships with it
+        return ""
+    return bundle_hash_of(WebFrontend({"relay": {"url": relay_url, "key_file": str(key_file)}},
+                                      store_path=key_file.parent / "webchat.sqlite"))
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="webchat-relay",
                                  description="The web chat relay's key file: create, show, "
@@ -1074,7 +1176,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             p.add_argument("--public-url", default="",
                            help="the web block's public_url: the link opens the app there")
             p.add_argument("--relay-origin", action="store_true",
-                           help=f"pair a relay-origin device on purpose ({RELAY_ORIGIN_WARNING}); "
+                           help="the link opens the relay's copy of the app; with the signed "
+                                "app bundle's hash the phone checks its code against the bot's "
+                                f"and reads only until it does; without one ({RELAY_ORIGIN_WARNING}) "
                                 "chat.json must set relay_origin_access too")
             p.add_argument("--app-url", default="",
                            help="open another app url (own origin only if it is public_url's)")
@@ -1101,13 +1205,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
         store = KeyStore(path)
         if args.cmd == "show":
-            devices = []
-            for d in store.devices():
-                row = {k: d.get(k) for k in ("id", "name", "paired_at", "origin")}
-                row["pending"] = bool(d.get("pending"))
-                if row["pending"]:
-                    row["code"] = d.get("code") or ""
-                devices.append(row)
+            devices = [device_row(d) for d in store.devices()]
             print(json.dumps({"install_id": store.identity().install_id,
                               "relay_url": store.relay_url(), "devices": devices,
                               "open_pairings": len([p for p in store.load()["pairings"]
@@ -1116,26 +1214,39 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
         if args.cmd == "pair":
             url = _check_relay_url(args.relay_url or store.relay_url())
-            app = args.app_url or (args.public_url.rstrip("/") + "/" if args.public_url else "")
+            public = args.public_url.rstrip("/")
+            app = args.app_url or (relay_app_url(url) if args.relay_origin
+                                   else public + "/" if public else "")
             origin = origin_of(app, args.public_url, url)
             if origin != "own" and not args.relay_origin:
                 print("error: the link would not open the app on the bot's own origin. Give "
                       "--public-url (the web block's public_url). --relay-origin pairs a "
                       "relay-origin device on purpose.", file=sys.stderr)
                 return 1
-            if origin != "own":
-                print(f"warning: {RELAY_ORIGIN_WARNING}. The bot lets it in only when "
-                      "chat.json sets relay_origin_access.", file=sys.stderr)
-            payload = store.add_pairing(ttl=args.ttl, relay_url=url, origin=origin)
-            link = payload.to_string(app or None)
+            bundle = _cli_bundle_hash(path, url)
+            if origin != "own" and bundle and not on_relay_origin(app, url):
+                print("error: a relay-origin link with the app bundle's hash opens the relay's "
+                      "own copy of the app; leave out --app-url.", file=sys.stderr)
+                return 1
+            if origin != "own" and bundle:
+                print("note: the phone loads the app from the relay and checks its code against "
+                      f"this bot's (bundle {bundle[:12]}); until it does, the bot lets it read "
+                      "only.", file=sys.stderr)
+            elif origin != "own":
+                print(f"warning: {RELAY_ORIGIN_WARNING}. This build has no signed app bundle, "
+                      "so the bot lets it in only when chat.json sets relay_origin_access.",
+                      file=sys.stderr)
+            payload = store.add_pairing(ttl=args.ttl, relay_url=url, origin=origin,
+                                        bundle=bundle, app_url=app)
+            link = payload.to_string(app)
             if args.print_link:
                 print(link)
             else:
                 from . import relay_qr
                 print(relay_qr.terminal(link))
             print("Scan it with the phone; it works once, for ten minutes. Then approve the "
-                  "phone here (show, then approve --device <id>) or under Pair a phone on the "
-                  "tailnet, when its code matches. Never send this link through chat or mail.",
+                  "phone here (show, then approve --device <id>) or under Pair a phone in the "
+                  "web chat, when its code matches. Never send this link through chat or mail.",
                   file=sys.stderr)
             return 0
         if args.cmd in ("approve", "revoke"):

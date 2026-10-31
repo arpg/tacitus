@@ -312,8 +312,9 @@ def test_nothing_comes_from_elsewhere():
 def test_the_app_stays_small():
     lines = sum(len(read(n).splitlines()) for n in TEXT_FILES)
     # 1,600 for the chat, about 900 for qr.js and the relay transport (docs/webchat-relay.md),
-    # and 60 for the relay's device approval, the pairing checks and the file rule.
-    assert lines <= 2560, f"{lines} lines: the contract keeps the app near 2,500 with the relay"
+    # 60 for the relay's device approval, the pairing checks and the file rule, and 50 for
+    # pairing through the relay's copy of the app and its code check.
+    assert lines <= 2610, f"{lines} lines: the contract keeps the app near 2,500 with the relay"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -873,9 +874,10 @@ def test_the_pairing_dialog_is_in_the_drawer():
     nav = html[html.index('<nav id="channels"'):html.index("</nav>")]
     assert '<button type="button" id="pair-phone" class="btn small" hidden>Pair a phone</button>' in nav
     assert '<dialog id="phone"' in html and '<canvas id="phone-qr"' in html
+    assert '<button type="button" id="phone-relay" class="btn" hidden>Pair through the relay</button>' in html
     js = read("app.js")
-    assert "call('POST', '/relay/pair', {})" in js and "QR.draw($('phone-qr'), out.qr, 4)" in js
-    assert "Boolean(S.me.relay) && !T.relay" in js  # on the tailnet only
+    assert "call('POST', '/relay/pair', via ? { via } : {})" in js and "QR.draw($('phone-qr'), out.qr, 4)" in js
+    assert "Boolean(S.me.relay) && !T.relay" in js  # where the API answers: the tailnet or this machine
     assert "call('POST', `/relay/${verb}`, { device: d.id })" in js  # Approve and Remove
     assert "Never send this link through chat or mail." in js
 
@@ -1071,7 +1073,7 @@ def _pair_and_approve(browser, relay_bot, contexts):
     expect(tail.locator("#phone-devices")).to_contain_text("No phone is paired yet.")
     wait_for(lambda: tail.input_value("#phone-link"), 10)
     link = tail.input_value("#phone-link")
-    assert link.startswith(relay_bot["public"] + "/#tr1=")
+    assert link.startswith(relay_bot["public"] + "/#tr2=")
     expect(tail.locator("#phone-note")).to_contain_text("Never send this link through chat or mail.")
     # The canvas holds the code of exactly that link, module for module.
     wrong = tail.evaluate("""(link) => {
@@ -1093,7 +1095,7 @@ def _pair_and_approve(browser, relay_bot, contexts):
     page.on("request", lambda r: asked.append(r.url))
     page.goto(link)
     expect(page.locator("#relay-note")).to_contain_text("waits for approval", timeout=15000)
-    assert "tr1=" not in page.url
+    assert "tr2=" not in page.url
     shown = re.search(r"code (\d{3} \d{3})", page.inner_text("#relay-note")).group(1)
     # The owner's list shows the new phone under the same code, and the DM says so.
     row = tail.locator("#phone-devices li", has_text="waits for approval")
@@ -1204,40 +1206,93 @@ def test_a_forged_error_never_sends_a_message_twice(browser, relay_bot):
             c.close()
 
 
-def test_a_phone_paired_on_the_relays_origin_cannot_press_card_buttons(browser, relay_bot):
-    """A relay-origin phone (chat.json opts in, the pairing asks for it) is
-    warned that the relay can read its chat, waits for approval, and then
-    cannot press a card's buttons."""
+def test_the_relays_copy_of_the_app_goes_no_further_than_pairing_unverified(browser, relay_bot):
+    """A phone that loads the app from the relay's origin holds the bundle
+    hash from the QR and goes no further than its pairing until its code
+    verifies: with no verifier it pairs nothing; with a mismatch it stops
+    after approval and shows nothing; with a match it chats, and presses
+    no card button until the bot hears its attest. chat.json stays "off"."""
     from playwright.sync_api import expect
+    from botcore.chat.relay_client import relay_app_url
     fe = relay_bot["fe"]
+    fe.relay.relay_origin_access = "off"
+    bundle = "cd" * 32
     contexts = []
-    try:
-        link = fe.relay.new_pairing(app_url=relay_bot["rbase"] + "/", relay_origin=True)
-        assert link.startswith(relay_bot["rbase"] + "/#tr1=")
-        _send_card(fe)
+
+    def phone(init=None):
         ctx = browser.new_context()
         contexts.append(ctx)
+        if init:
+            ctx.add_init_script(init)
         page = ctx.new_page()
-        errors, said = [], []
+        errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
-        page.on("dialog", lambda d: (said.append(d.message), d.accept()))
-        page.goto(link)
+        page.goto(fe.relay.new_pairing(app_url=relay_app_url(relay_bot["rbase"]),
+                                       relay_origin=True, bundle=bundle))
+        return page, errors
+
+    def approve_new():
+        waiting = [d for d in fe.relay.devices() if d["pending"]]
+        assert [(d["origin"], d["bundle_verified"]) for d in waiting] == [("relay", False)]
+        fe.relay.approve(waiting[0]["id"])
+
+    try:
+        _send_card(fe)
+        # TODO(signed-bundle): with verifyBundle in app.js, stub it away here.
+        page, errors = phone()
+        expect(page.locator("#halt")).to_contain_text("Code verification unavailable", timeout=10000)
+        assert "tr2=" not in page.url and fe.relay.devices() == []
+        assert page.evaluate("loadPairing().then((r) => r === undefined)")
+        assert not errors, errors
+
+        page, errors = phone("window.verifyBundle = async () => ({ ok: false, reason: 'version mismatch' });")
         expect(page.locator("#relay-note")).to_contain_text("waits for approval", timeout=15000)
-        assert said and "can read this phone's chat and type as you" in said[0]
-        devices = fe.relay.devices()
-        assert [(d["origin"], d["pending"]) for d in devices] == [("relay", True)]
-        fe.relay.approve(devices[0]["id"])
+        approve_new()
+        expect(page.locator("#halt")).to_contain_text("does not match the bot's code (version mismatch)",
+                                                      timeout=20000)
+        expect(page.locator(".chan")).to_have_count(0)
+        assert not errors, errors
+
+        page, errors = phone("window.verifyBundle = async (hash) => { window.checked = hash; return true; };")
+        expect(page.locator("#relay-note")).to_contain_text("waits for approval", timeout=15000)
+        approve_new()
         expect(page.locator(".chan .c-name").first).to_be_visible(timeout=20000)
+        assert page.evaluate("window.checked") == bundle
         assert page.evaluate("S.me.card_actions") is False
         page.locator(".thread-item:has-text('Send this draft?')").click()
         expect(page.locator(".card button.primary")).to_be_disabled()
-        expect(page.locator(".card .card-note")).to_contain_text("Approve this on the tailnet")
-        # The drawer offers no pairing off the tailnet.
-        expect(page.locator("#pair-phone")).to_be_hidden()
+        expect(page.locator(".card .card-note")).to_contain_text("does not press card buttons")
+        expect(page.locator("#pair-phone")).to_be_hidden()  # pairing happens where the API answers
         assert not errors, errors
     finally:
         for c in contexts:
             c.close()
+
+
+def test_pair_a_phone_offers_the_relay_on_this_machines_own_address(app):
+    """On a loopback origin (no public_url: no tailnet) "Pair a phone" makes
+    no link a phone could not open. It offers "Pair through the relay",
+    which asks for a link to the relay's copy of the app and says what the
+    phone may do until its code is verified."""
+    from playwright.sync_api import expect
+    page, stub, errors = app(relay_pairing=True)
+    page.wait_for_selector(".thread-item")
+    page.click("#pair-phone")
+    expect(page.locator("#phone-note")).to_contain_text("A phone cannot open this address. Pair through the relay")
+    button = page.locator("#phone-relay")
+    expect(button).to_be_visible()
+    expect(button).to_have_text("Pair through the relay")
+    assert stub.pairs == [] and not page.input_value("#phone-link")
+    button.click()
+    wait_for(lambda: page.input_value("#phone-link"), 5)
+    assert stub.pairs == [{"via": "relay"}]
+    assert page.input_value("#phone-link").startswith("https://relay.example.net/#tr2=")
+    expect(page.locator("#phone-note")).to_contain_text(
+        "Until the phone verifies its code, it can read but not post or press buttons.")
+    expect(page.locator("#phone-note")).to_contain_text("Never send this link through chat or mail.")
+    expect(button).to_be_hidden()
+    assert page.evaluate("$('phone-qr').width") > 0
+    assert not errors, errors
 
 
 def test_a_relayed_file_opens_only_as_a_raster_image(app):
@@ -1314,6 +1369,32 @@ def _link_payload(**over) -> str:
            "x": int(time.time()) + 600}
     obj.update(over)
     return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+
+def test_a_relay_copy_link_without_the_bundle_hash_is_refused(browser, stub_factory):
+    """A link to the relay's copy of the app (its relay is the page's own
+    origin) must carry the hash of the bot's code: a version 1 link, or a
+    version 2 one without `b`, pairs nothing; nor does a link whose `a`
+    names another origin."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    url, stub = stub_factory()
+    here = url.rstrip("/").rsplit("/chat", 1)[0]
+    mine = {"r": here, "i": W.STUB_INSTALL, "k": W.STUB_BOT_PUBLIC, "c": W.STUB_CLIENT_KEY}
+    for kind, payload, says in (("tr1", _link_payload(**mine), "no hash of the bot's code"),
+                                ("tr2", _link_payload(**mine, v=2, a=url), "no hash of the bot's code"),
+                                ("tr2", _link_payload(**mine, v=2, b="e" * 64, a="https://elsewhere.example.net/"),
+                                 "opens the app elsewhere"),
+                                ("tr1", _link_payload(**mine, v=2, b="e" * 64), "not a pairing link")):
+        ctx = browser.new_context()
+        try:
+            page = ctx.new_page()
+            page.goto(url + f"#{kind}=" + payload)
+            expect(page.locator("#toast")).to_contain_text(says)
+            assert f"{kind}=" not in page.url
+            assert page.evaluate("loadPairing().then((r) => r === undefined)")
+        finally:
+            ctx.close()
 
 
 def test_a_bad_pairing_link_is_refused_and_leaves_the_address_bar(browser, stub_factory):
