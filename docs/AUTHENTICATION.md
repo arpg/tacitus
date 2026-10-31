@@ -14,6 +14,7 @@ failure modes.
 | **Outlook** (confidential) | Auth-code + client secret | ~1h access / long-lived refresh | Auto (silent refresh) | Re-auth on password/secret change |
 | **Outlook** (MSAL public) | OAuth2 device-code/interactive | Months (refresh token) | Auto (silent refresh) | Re-auth on password change |
 | **Outlook** (owner plugin) | A token an owner-zone plugin's auth source returns | Set by the source | The plugin's own | See the plugin's README |
+| **Outlook** (published app) | The Tacitus app: auth-code with PKCE, or device code | Months (refresh token) | Auto (silent refresh) | IT consents once per tenant ([published-oauth-apps.md](published-oauth-apps.md)) |
 | **Slack** | Bot + App tokens | Indefinite | None needed | Only if app is reinstalled |
 | **Google Calendar** | OAuth2 desktop app | Indefinite (refresh token) | Auto | Re-auth if revoked |
 | **Google (MCP)** | Claude Code OAuth | Indefinite (refresh token) | Auto (Claude manages) | Re-auth on first use |
@@ -192,11 +193,14 @@ only without public client flows. The symptoms are the same everywhere:
 | IT-provisioned app with a secret, public client flows off | **Option A** (confidential), no cron |
 | Tenant that allows a public-client app registration | **Option B** (MSAL interactive or device code), simpler |
 | Tenant that blocks app registrations entirely | An owner plugin's token source, such as [outlook-web-auth](https://github.com/arpg/tacitus-plugin-outlook-web-auth) |
+| Tenant whose IT consents to the project's published app | **Option D** (SETUP.md), no registration; the doctor names it ([published-oauth-apps.md](published-oauth-apps.md)) |
 | Headless server with no display (not even xvfb) | Option A or B with one sign-in from a desktop, or an owner plugin's token source |
 
 The auth method is selected via `GRAPH_AUTH_METHOD` in `~/.ea/.env`
 (`confidential` | `device_code` | `interactive`); if unset, a client secret
-implies `confidential`, otherwise the public-client path is used. The bot's
+implies `confidential`, otherwise the public-client path is used. With no
+`GRAPH_CLIENT_ID` and the project's published app registered, the
+published app (always a public client) signs in instead. The bot's
 `authenticate()` function tries MSAL silent auth (cached refresh token)
 first, then the auth sources of enabled owner-zone plugins, then the
 configured interactive seeding method.

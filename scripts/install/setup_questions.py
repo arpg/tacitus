@@ -55,6 +55,7 @@ with a front end's own way to answer each.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 README = Path(__file__).resolve().parents[2] / "README.md"
@@ -99,8 +100,6 @@ _WEB_CHOSEN = [_CHAT_PROFILE, {"key": "chat-platform", "is": "web"}]
 WEB_PORT = 8470
 WEB_BASE_PATH = "/chat"
 WEB_SERVE_PORT = 8444
-_GRAPH_APP = {"key": "graph-auth-method", "not_in": ["skip"]}
-_GRAPH_SECRET = {"key": "graph-auth-method", "in": ["confidential"]}
 
 
 def _tier_question(i: int, task: str, desc: str, tier: str) -> dict:
@@ -110,6 +109,117 @@ def _tier_question(i: int, task: str, desc: str, tier: str) -> dict:
     if i == 0:
         q["note"] = ["\n  For each task type, choose: ask-first, do-and-tell, or fire-and-forget.\n"]
     return q
+
+
+def published_graph_client_id() -> str:
+    """The project's published Graph client id (preprocessor/published_apps.py,
+    docs/published-oauth-apps.md), "" until the maintainer registers it."""
+    path = str(Path(__file__).resolve().parents[2] / "preprocessor")
+    if path not in sys.path:
+        sys.path.append(path)  # appended: never shadows a module the caller has
+    import published_apps
+    return published_apps.PUBLISHED_GRAPH_CLIENT_ID
+
+
+def _auth_phase(published: bool) -> dict:
+    """The auth phase. With the project's published Graph app registered
+    (`published`), its sign-in comes first, as 0, and is the default; the
+    registration methods keep their numbers 1 to 4, so an answers file or a
+    habit that names one by number still means it, and the registration
+    questions follow only them. Without it, the phase offers the
+    registration methods alone, as it always has."""
+    registration = {"key": "graph-auth-method",
+                    "not_in": ["skip", "published"] if published else ["skip"]}
+    secret = {"key": "graph-auth-method", "in": ["confidential"]}
+    sign_in = {"key": "graph-auth-method", "not_in": ["skip"]}
+    # (value, page text, the terminal menu's two columns and its second line)
+    rows = [
+        ["confidential", "confidential: auth-code flow and a client secret "
+                         "(public client flows off)",
+         "confidential  Auth-code flow + client secret",
+         "(app registration; public client flows OFF)"],
+        ["device_code", "device_code: a code you enter in any browser "
+                        "(public client flows on)",
+         "device_code   MSAL device code", "(app registration; public client flows ON)"],
+        ["interactive", "interactive: a browser sign-in on this machine",
+         "interactive   MSAL browser sign-in", "(app registration; public-client redirect URI)"],
+        ["skip", "skip: set up later", "skip          Set up later", ""],
+    ]
+    web_intro = [
+        "  The EA reads Outlook through your organization's app registration.",
+        "  Give its values here; the sign-in itself runs on the machine after",
+        "  this page, and the last screen has the command. docs/AUTHENTICATION.md",
+        "  says how to pick a method. With no app registration, choose skip:",
+        "  docs/it-request.md asks IT for one, and the owner plugin",
+        "  outlook-web-auth can supply the token instead.",
+    ]
+    if published:
+        rows.insert(0, ["published", "published: sign in with Microsoft, no registration "
+                                     "(the Tacitus app; your IT consents once)",
+                        "published     Sign in with Microsoft (no registration)",
+                        "(the Tacitus app; your IT consents once)"])
+        web_intro = [
+            "  Sign in with Microsoft through the Tacitus app: no app registration,",
+            "  and your institution's IT consents once for everyone",
+            "  (docs/it-request.md, 'No registration: consent to the Tacitus app').",
+            "  The sign-in itself runs on the machine after this page, and the last",
+            "  screen has the command. With your own app registration, choose its",
+            "  method and give its values; docs/AUTHENTICATION.md says how to pick.",
+        ]
+    first = 0 if published else 1
+    menu: list[str] = []
+    for n, row in enumerate(rows, first):
+        menu.append(f"    {n}) {row[2]}")
+        if row[3]:
+            menu.append(f"                     {row[3]}")
+    methods = [[row[0], row[1], str(n)] for n, row in enumerate(rows, first)]
+    return {
+        "id": "auth", "web": True,
+        "header": "Phase 8: Authentication Setup",
+        "title": "Outlook and chat",
+        "web_intro": web_intro,
+        "intro": [
+            "  The EA needs access to your email and calendar. This phase",
+            "  walks you through authenticating with each service.\n",
+            "  --- Microsoft Graph API (Outlook) ---\n",
+            "  Choose how the EA authenticates to Microsoft Graph:",
+            *menu,
+            "  See docs/AUTHENTICATION.md for how to pick. With no app registration,",
+            "  the owner plugin outlook-web-auth can supply the token (skip here, then",
+            "  see https://github.com/arpg/tacitus-plugin-outlook-web-auth).\n",
+        ],
+        "questions": [
+            _q("graph-auth-method", f"Graph auth method [{first}-4]", "choice",
+               web_label="How the EA signs in to Microsoft Graph",
+               choices=methods,
+               default=([["ctx", "graph_method"]] if published else []) + [_lit(str(first))]),
+            _q("graph-client-id", "Application (client) ID", required=True, when=registration),
+            _q("graph-tenant-id", "Tenant ID (blank = multi-tenant 'common')", when=registration),
+            _q("graph-redirect-uri", "Redirect URI (Web platform)", check="url",
+               default=[_lit("http://localhost:8400/callback")], when=secret),
+            _q("graph-client-secret", "Client secret value", "secret", required=True,
+               when=secret),
+            _q("graph-sign-in-now", "Sign in to Microsoft Graph now?", "yesno",
+               default=[_lit(True)], when=sign_in, terminal_only=True),
+            _q("google-calendar-now", "Set up Google Calendar now?", "yesno",
+               note=["\n  --- Google Calendar ---\n"], default=[_lit(True)], terminal_only=True),
+            _q("slack-bot-token", "Slack Bot Token (xoxb-..., or 'skip')", "secret",
+               web_label="Slack bot token (xoxb-...; empty skips it)",
+               note=["\n  --- Slack ---\n",
+                     "  The EA communicates with you via a private Slack channel.",
+                     "  You need a Bot Token (xoxb-...) and App Token (xapp-...).\n"],
+               default=[_lit("skip")], when=_CHAT_ASKED),
+            _q("slack-app-token", "Slack App Token (xapp-..., or 'skip')", "secret",
+               web_label="Slack app token (xapp-...; empty skips it)",
+               default=[_lit("skip")], when=_CHAT_ASKED),
+            _q("slack-channel-id", "EA Slack Channel ID (C..., or 'skip')",
+               default=[_lit("skip")], when=_CHAT_ASKED),
+            _q("slack-channel-name-env", "EA Slack Channel Name (or 'skip')",
+               default=[_lit("skip")], when=_CHAT_ASKED),
+            _q("slack-owner-id", "Your Slack member ID (U..., or 'skip')",
+               default=[_lit("skip")], when=_CHAT_ASKED),
+        ],
+    }
 
 
 PHASES: list[dict] = [
@@ -383,73 +493,7 @@ PHASES: list[dict] = [
                default=[["ctx", "web_login"]], when=_WEB_CHOSEN),
         ],
     },
-    {
-        "id": "auth", "web": True,
-        "header": "Phase 8: Authentication Setup",
-        "title": "Outlook and chat",
-        "web_intro": [
-            "  The EA reads Outlook through your organization's app registration.",
-            "  Give its values here; the sign-in itself runs on the machine after",
-            "  this page, and the last screen has the command. docs/AUTHENTICATION.md",
-            "  says how to pick a method. With no app registration, choose skip:",
-            "  docs/it-request.md asks IT for one, and the owner plugin",
-            "  outlook-web-auth can supply the token instead.",
-        ],
-        "intro": [
-            "  The EA needs access to your email and calendar. This phase",
-            "  walks you through authenticating with each service.\n",
-            "  --- Microsoft Graph API (Outlook) ---\n",
-            "  Choose how the EA authenticates to Microsoft Graph:",
-            "    1) confidential  Auth-code flow + client secret",
-            "                     (app registration; public client flows OFF)",
-            "    2) device_code   MSAL device code",
-            "                     (app registration; public client flows ON)",
-            "    3) interactive   MSAL browser sign-in",
-            "                     (app registration; public-client redirect URI)",
-            "    4) skip          Set up later",
-            "  See docs/AUTHENTICATION.md for how to pick. With no app registration,",
-            "  the owner plugin outlook-web-auth can supply the token (skip here, then",
-            "  see https://github.com/arpg/tacitus-plugin-outlook-web-auth).\n",
-        ],
-        "questions": [
-            _q("graph-auth-method", "Graph auth method [1-4]", "choice",
-               web_label="How the EA signs in to Microsoft Graph",
-               choices=[
-                   ["confidential", "confidential: auth-code flow and a client secret "
-                                    "(public client flows off)", "1"],
-                   ["device_code", "device_code: a code you enter in any browser "
-                                   "(public client flows on)", "2"],
-                   ["interactive", "interactive: a browser sign-in on this machine", "3"],
-                   ["skip", "skip: set up later", "4"],
-               ],
-               default=[_lit("1")]),
-            _q("graph-client-id", "Application (client) ID", required=True, when=_GRAPH_APP),
-            _q("graph-tenant-id", "Tenant ID (blank = multi-tenant 'common')", when=_GRAPH_APP),
-            _q("graph-redirect-uri", "Redirect URI (Web platform)", check="url",
-               default=[_lit("http://localhost:8400/callback")], when=_GRAPH_SECRET),
-            _q("graph-client-secret", "Client secret value", "secret", required=True,
-               when=_GRAPH_SECRET),
-            _q("graph-sign-in-now", "Sign in to Microsoft Graph now?", "yesno",
-               default=[_lit(True)], when=_GRAPH_APP, terminal_only=True),
-            _q("google-calendar-now", "Set up Google Calendar now?", "yesno",
-               note=["\n  --- Google Calendar ---\n"], default=[_lit(True)], terminal_only=True),
-            _q("slack-bot-token", "Slack Bot Token (xoxb-..., or 'skip')", "secret",
-               web_label="Slack bot token (xoxb-...; empty skips it)",
-               note=["\n  --- Slack ---\n",
-                     "  The EA communicates with you via a private Slack channel.",
-                     "  You need a Bot Token (xoxb-...) and App Token (xapp-...).\n"],
-               default=[_lit("skip")], when=_CHAT_ASKED),
-            _q("slack-app-token", "Slack App Token (xapp-..., or 'skip')", "secret",
-               web_label="Slack app token (xapp-...; empty skips it)",
-               default=[_lit("skip")], when=_CHAT_ASKED),
-            _q("slack-channel-id", "EA Slack Channel ID (C..., or 'skip')",
-               default=[_lit("skip")], when=_CHAT_ASKED),
-            _q("slack-channel-name-env", "EA Slack Channel Name (or 'skip')",
-               default=[_lit("skip")], when=_CHAT_ASKED),
-            _q("slack-owner-id", "Your Slack member ID (U..., or 'skip')",
-               default=[_lit("skip")], when=_CHAT_ASKED),
-        ],
-    },
+    _auth_phase(bool(published_graph_client_id())),
     {
         "id": "tone", "web": False,
         "header": "Phase 9: Writing Style Detection",

@@ -158,7 +158,8 @@ plugin can supply tokens from another source (`docs/plugins.md`): the
 published one is
 [outlook-web-auth](https://github.com/arpg/tacitus-plugin-outlook-web-auth),
 which saves the token Outlook on the web holds for your own signed-in
-session (Option C below).
+session (Option C below). Once the project publishes its own app, an
+install signs in with no registration at all (Option D below).
 
 ### Option A: confidential client
 
@@ -232,6 +233,36 @@ The sign-in cookies last about 90 days; the harvest alerts in the EA
 channel a week before, and `outlook_web.py login` renews them. The
 plugin's README has the token lifetimes and the recovery steps.
 
+### Option D: no registration (the published app)
+
+The Tacitus project registers one multitenant Entra app, a public client
+with no secret, and every install can sign in through it
+([published-oauth-apps.md](published-oauth-apps.md) is the design). It
+works once `PUBLISHED_GRAPH_CLIENT_ID` in `preprocessor/published_apps.py`
+holds the app's id; until the project registers it, the id is empty and
+this option does not appear.
+
+1. Your institution's IT consents to the app once, for everyone:
+   [it-request.md](it-request.md), "No registration: consent to the
+   Tacitus app", is the paragraph to send them, with the link
+   `python3 preprocessor/published_apps.py admin-consent-url` prints.
+2. `python3 scripts/install/user_init.py --phase auth`, choice 0
+   (`published`, the default). It clears `GRAPH_CLIENT_ID`, `GRAPH_AUTH_METHOD` and
+   `GRAPH_AUTHORITY` in `~/.ea/.env`, writes the least `GRAPH_SCOPES` your
+   profile needs, and signs in. By hand: leave `GRAPH_CLIENT_ID` unset and
+   run `python3 preprocessor/graph_client.py`.
+3. The sign-in opens a browser on this machine and catches the redirect
+   on `localhost:8400`. With no browser here (SSH, no display), it prints
+   a code to enter in any browser. Where IT blocks that device-code flow,
+   set `GRAPH_AUTH_METHOD=interactive`, connect with
+   `ssh -L 8400:localhost:8400 <host>`, and open the printed link on your
+   laptop.
+
+`GRAPH_CLIENT_ID` in `~/.ea/.env` always wins over the published app, so
+Options A and B work as before. An "AADSTS65001" or "AADSTS90094" answer
+means the tenant has not consented yet: step 1. `ea-doctor.py` names the
+path in use (`auth: graph sign-in path`).
+
 ### Test the Graph sign-in
 
 ```bash
@@ -246,7 +277,11 @@ recovered on load (the client keeps its first JSON object).
 
 Each install needs its own Google Cloud project; the EA reads your
 Google calendars with it and, when a Gmail account is configured, drafts
-there.
+there. Once the project publishes its desktop client
+(`PUBLISHED_GOOGLE_CLIENT_ID` in `preprocessor/published_apps.py`,
+[published-oauth-apps.md](published-oauth-apps.md)), skip steps 1 to 4:
+with no `~/.ea/auth/google_client_secret.json`, the sign-in in step 5
+uses the published client. A client secret file of your own always wins.
 
 1. At [console.cloud.google.com](https://console.cloud.google.com/)
    create a project (for example "EA Assistant").
@@ -1364,8 +1399,8 @@ accounts (`docs/install-testing.md`).
 | `profile`, `config: <name>`, `validate_config.py` | [Config files](#config-files) |
 | `~/.ea/.env`, `env: <KEY>`, `secret: <KEY>`, `~/.ea-private/secrets.env` | [Secrets](#secrets); [The Slack environment files](#the-slack-environment-files) |
 | `chat: frontend`, `web chat: *`, `zulip: *`, `slack: *` | [Web chat](#web-chat), [Zulip server](#zulip-server), [Slack](#slack) |
-| `auth: msal_token_cache.json`, `auth: graph token source` | [Microsoft Graph app registration](#microsoft-graph-app-registration) |
-| `auth: google tokens`, `EA-Managed calendar`, `EA-Managed calendar (owner copy)` | [Google OAuth app](#google-oauth-app), [The EA-Managed calendar](#the-ea-managed-calendar) |
+| `auth: graph sign-in path`, `auth: msal_token_cache.json`, `auth: graph token source` | [Microsoft Graph app registration](#microsoft-graph-app-registration) |
+| `auth: google client`, `auth: google tokens`, `EA-Managed calendar`, `EA-Managed calendar (owner copy)` | [Google OAuth app](#google-oauth-app), [The EA-Managed calendar](#the-ea-managed-calendar) |
 | `auth: scheduled-send-hmac.key`, `owner trust: scheduled-send key` | [The deferred-send signing key](#the-deferred-send-signing-key) |
 | `native accounts*`, `auth: graph and google tokens` | [macos-native-accounts.md](macos-native-accounts.md) (a Mac on the native backend) |
 | `install overlay: rendered`, `install overlay: in the lanes' tree` | [The install overlay](#the-install-overlay) |

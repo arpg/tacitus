@@ -281,15 +281,18 @@ def test_failed_refresh_does_not_return_stale_credentials():
     token.write_text(_json.dumps({"token": "x"}))
     orig_from_file = g.Credentials.from_authorized_user_file
     orig_secret = g.CLIENT_SECRET_FILE
+    orig_published = g._published.PUBLISHED_GOOGLE_CLIENT_ID
     try:
         g.Credentials.from_authorized_user_file = staticmethod(lambda *_a, **_k: _Creds())
         g.CLIENT_SECRET_FILE = Path(tempfile.mkdtemp()) / "missing.json"
+        g._published.PUBLISHED_GOOGLE_CLIENT_ID = ""  # no client at all, not even the project's
         assert g.authenticate_account(email, interactive=False) is None
         # interactive: falls to the browser flow, which stops at the missing secret
         assert g.authenticate_account(email, interactive=True) is None
     finally:
         g.Credentials.from_authorized_user_file = orig_from_file
         g.CLIENT_SECRET_FILE = orig_secret
+        g._published.PUBLISHED_GOOGLE_CLIENT_ID = orig_published
 
 
 OTHER = "jules.ellery0@example.com"   # an account's own calendar, not EA-Managed

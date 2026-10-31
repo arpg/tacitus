@@ -366,7 +366,8 @@ What a second tenant, or another institution, needs:
 Per-user registration is the install's heaviest step on every platform:
 an IT request for an Azure app, or a Google Cloud project per user. The
 lasting fix is that the Tacitus project registers once and every install
-uses that registration:
+uses that registration. [published-oauth-apps.md](published-oauth-apps.md)
+is the design, and the code is in place with the ids empty:
 
 - **Microsoft.** One multitenant Entra app ("Accounts in any
   organizational directory") published by the project, a **public
@@ -375,16 +376,19 @@ uses that registration:
   flow with PKCE on a loopback redirect, or the device-code flow. Each
   institution's administrator consents once for the whole tenant
   (`prompt=consent`, or the admin consent URL); after that no user of that
-  tenant is asked [S25]. The client id ships in the code as the default
-  `GRAPH_CLIENT_ID`. Tokens stay in the owner-private MSAL cache on the
-  user's machine; the project holds no token and runs no server.
+  tenant is asked [S25]. The client id ships in the code
+  (`PUBLISHED_GRAPH_CLIENT_ID` in `preprocessor/published_apps.py`) and
+  applies when `GRAPH_CLIENT_ID` is empty. Tokens stay in the
+  owner-private MSAL cache on the user's machine; the project holds no
+  token and runs no server.
 - **Google.** One OAuth client of the desktop type, published by the
   project: a public client with PKCE and a loopback redirect [S26]. Gmail
   scopes are restricted, so the project passes Google's verification and
   an annual security assessment once, for every user [S27]. Calendar-only
   use needs the lighter sensitive-scope review.
-- **On every platform.** SETUP.md Options A and B become "sign in"; the
-  Google Cloud steps disappear. Linux, macOS and Docker installs use the
+- **On every platform.** SETUP.md Option D is that sign-in, and Options
+  A and B stay for an install with a registration of its own; the Google
+  Cloud steps disappear. Linux, macOS and Docker installs use the
   same two client ids. Option C (outlook-web-auth) stays for a tenant
   whose administrator will not consent.
 - **Beside the native backend.** The two compose. A Mac keeps mail and

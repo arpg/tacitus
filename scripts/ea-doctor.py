@@ -881,8 +881,67 @@ def check_native_accounts(ea_dir: Path) -> None:
         rec(r["status"], r["name"], r["detail"], r["fix"])
 
 
-def check_auth(ea_dir: Path):
+def _published_apps():
+    """preprocessor/published_apps.py, or None when it cannot load."""
+    try:
+        import published_apps
+        return published_apps
+    except Exception:
+        return None
+
+
+def _cached_graph_clients(cache: Path) -> set:
+    """The client ids that hold a refresh token in the MSAL cache file."""
+    try:
+        data = json.loads(cache.read_text())
+        return {rt.get("client_id") for rt in (data.get("RefreshToken") or {}).values()
+                if isinstance(rt, dict)}
+    except Exception:
+        return set()
+
+
+# Microsoft Graph PowerShell's client id, graph_client's default before the
+# published app (graph_client.GRAPH_POWERSHELL_CLIENT_ID).
+GRAPH_POWERSHELL_CLIENT_ID = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
+
+
+def graph_sign_in_path(env: dict, cache: Path, sources: list[str]) -> str:
+    """Which Microsoft sign-in this install uses, the way graph_client
+    picks it: the user's registration (GRAPH_CLIENT_ID), else the project's
+    published app, else nothing of its own; an owner plugin's token source
+    when there is no MSAL cache."""
+    if sources and not cache.exists():
+        return f"an owner plugin's token source: {', '.join(sources)} (Option C)"
+    cid = env.get("GRAPH_CLIENT_ID", "")
+    method = (env.get("GRAPH_AUTH_METHOD") or "").strip().lower()
+    if cid:
+        if method == "confidential" or (not method and env.get("GRAPH_CLIENT_SECRET")):
+            return "your app registration, confidential client (Option A)"
+        return f"your app registration, public client (Option B, {method or 'interactive'})"
+    pub = _published_apps()
+    published = pub.PUBLISHED_GRAPH_CLIENT_ID if pub else ""
+    if published:
+        held = _cached_graph_clients(cache)
+        if GRAPH_POWERSHELL_CLIENT_ID in held and published not in held:
+            return ("Microsoft Graph PowerShell's client, from a sign-in before the Tacitus app; "
+                    "it stays while its token works")
+        return "the Tacitus app, no registration (Option D)"
+    return "no app registration of your own (GRAPH_CLIENT_ID unset)"
+
+
+def google_client_path(auth: Path) -> str:
+    """Which Google client signs a new account in: the user's own, the
+    project's published one, or "" for neither."""
+    pub = _published_apps()
+    source = pub.google_client_source(auth / "google_client_secret.json") if pub else (
+        "file" if (auth / "google_client_secret.json").exists() else "")
+    return {"file": "your Google Cloud client (google_client_secret.json)",
+            "published": "the Tacitus desktop client, no Google Cloud project"}.get(source, "")
+
+
+def check_auth(ea_dir: Path, env: dict | None = None):
     auth = ea_dir / "auth"
+    env = _read_env(ea_dir / ".env") if env is None else env
     b = _backends(ea_dir)
     if b["mail"] == "macos" and b["calendar"] == "macos" and b["availability"] != "graph":
         # Mail and calendars come through the Mac's own accounts, and other
@@ -896,6 +955,7 @@ def check_auth(ea_dir: Path):
         return
     p = auth / "msal_token_cache.json"
     sources = [] if p.exists() else _graph_auth_sources()
+    ok("auth: graph sign-in path", graph_sign_in_path(env, p, sources))
     if sources:
         # No MSAL cache: an owner plugin's auth source supplies the token
         # (docs/plugins.md). Ask it for one now.
@@ -914,6 +974,9 @@ def check_auth(ea_dir: Path):
                                "docs/SETUP.md 'Microsoft Graph app registration'; a torn file: keep its first JSON object (graph_client does this on load)")
     else:
         fail("auth: msal_token_cache.json", "missing", "docs/SETUP.md 'Microsoft Graph app registration', then python3 preprocessor/graph_actions.py list-mail --folder inbox --top 1")
+    gclient = google_client_path(auth)
+    if gclient:
+        ok("auth: google client", gclient)
     toks = sorted(auth.glob("google_token_*.json")) if auth.exists() else []
     (ok if toks else warn)("auth: google tokens", f"{len(toks)} account file(s)",
                            "docs/SETUP.md 'Google OAuth app': google_calendar_client.py --setup for each Google account in scheduling-preferences.json")
@@ -1723,7 +1786,7 @@ def main() -> int:
         if NEEDS_SLACK:
             check_private(ea_dir)
         env = check_env(ea_dir)
-        check_auth(ea_dir)
+        check_auth(ea_dir, env)
         check_native_accounts(ea_dir)
         check_outlook_web_path(env)
         check_owner_trust(ea_dir)

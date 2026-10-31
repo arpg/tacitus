@@ -24,8 +24,10 @@ import requests
 
 try:
     import owner_trust as _owner_trust
+    import published_apps as _published
 except ModuleNotFoundError:  # imported as preprocessor.graph_client
     from preprocessor import owner_trust as _owner_trust
+    from preprocessor import published_apps as _published
 
 # -------------------------------------------------------------------
 # Configuration – edit these or override via environment variables
@@ -73,7 +75,10 @@ GRAPH_AUTH_METHOD = os.environ.get("GRAPH_AUTH_METHOD", "").strip().lower()
 
 
 def _use_confidential() -> bool:
-    """True when the confidential auth-code + secret flow should be used."""
+    """True when the confidential auth-code + secret flow should be used.
+    Never for the project's published app, a public client with no secret."""
+    if CLIENT_PATH == "published":
+        return False
     if GRAPH_AUTH_METHOD == "confidential":
         return True
     if GRAPH_AUTH_METHOD in ("device_code", "interactive"):
@@ -157,10 +162,15 @@ def _full_scope(s: str) -> str:
 
 
 def _effective_scopes() -> list:
-    """Scopes to request: the setup-aligned GRAPH_SCOPES override if present,
-    otherwise the full default SCOPES superset."""
+    """Scopes to request: the setup-aligned GRAPH_SCOPES override if present;
+    otherwise, for the project's published app, the permissions it registers
+    for the assistant profile (a request outside them would ask the tenant
+    for a consent it has not given); otherwise the full default SCOPES
+    superset."""
     if GRAPH_SCOPES:
         return [_full_scope(s) for s in GRAPH_SCOPES]
+    if CLIENT_PATH == "published":
+        return [_full_scope(s) for s in _published.PUBLISHED_GRAPH_SCOPES]
     return SCOPES
 
 
@@ -544,6 +554,15 @@ def _source_token() -> Optional[str]:
 # -------------------------------------------------------------------
 # WSL browser fix
 # -------------------------------------------------------------------
+def _is_wsl() -> bool:
+    """True under Windows Subsystem for Linux."""
+    try:
+        with open("/proc/version") as f:
+            return "microsoft" in f.read().lower()
+    except OSError:
+        return False
+
+
 def _patch_wsl_browser():
     """
     In WSL, Python's webbrowser module can't find the Windows browser.
@@ -553,12 +572,8 @@ def _patch_wsl_browser():
     and truncate the URL at the first query parameter, which Entra reports
     as AADSTS900144 (scope missing).
     """
-    try:
-        with open("/proc/version") as f:
-            if "microsoft" not in f.read().lower():
-                return  # Not WSL
-    except OSError:
-        return
+    if not _is_wsl():
+        return  # Not WSL
 
     def _wsl_open(url, new=0, autoraise=True):
         # Print URL first so user can click/copy it regardless of browser behavior
@@ -593,6 +608,45 @@ except PermissionError as _pe:
         "which forwards SAFE verbs to the owner-side mediator. There is no "
         "supported direct-import path for ea-bot."
     ) from None
+
+
+def _cached_client_ids() -> set:
+    """The client ids that hold a refresh token in the MSAL cache."""
+    try:
+        lookup = getattr(_cache, "search", None) or _cache.find  # find: msal before search
+        return {rt.get("client_id") for rt in
+                lookup(msal.TokenCache.CredentialType.REFRESH_TOKEN)}
+    except Exception:
+        return set()
+
+
+def _client_choice() -> tuple[str, str]:
+    """(path, client id) for the MSAL app: "custom" for the user's own
+    registration (GRAPH_CLIENT_ID); "published" for the project's app
+    (published_apps.PUBLISHED_GRAPH_CLIENT_ID) when the user configured
+    none; else "graph_powershell", the earlier default. A cache whose
+    refresh token came from the earlier default, and none from the
+    published app, keeps the earlier default, so its silent sign-in goes
+    on working."""
+    path, cid = _published.graph_client_id(CUSTOM_CLIENT_ID)
+    if path == "published":
+        held = _cached_client_ids()
+        if GRAPH_POWERSHELL_CLIENT_ID in held and cid not in held:
+            path = ""
+    if not path:
+        return "graph_powershell", GRAPH_POWERSHELL_CLIENT_ID
+    return path, cid
+
+
+CLIENT_PATH, _CLIENT_ID = _client_choice()
+if CLIENT_PATH == "published":
+    WELL_KNOWN_CLIENTS = [("published", _CLIENT_ID)]
+    # The published app signs in work and school accounts of any tenant;
+    # a tenant the user named in GRAPH_AUTHORITY, or an explicit common,
+    # stays.
+    if (AUTHORITY == _DEFAULT_AUTHORITY
+            and os.environ.get("GRAPH_AUTHORITY", "").strip() != _DEFAULT_AUTHORITY):
+        AUTHORITY = _published.PUBLISHED_GRAPH_AUTHORITY
 
 
 def _build_app(client_id: str):
@@ -633,7 +687,6 @@ def _confidential_auth_code_flow(scopes=None) -> str:
     fail with AADSTS7000218). Requires GRAPH_CLIENT_SECRET and a redirect URI
     registered under the app's "Web" platform matching GRAPH_REDIRECT_URI.
     """
-    from http.server import BaseHTTPRequestHandler, HTTPServer
     import urllib.parse as _up
 
     scopes = scopes if scopes is not None else _effective_scopes()
@@ -652,26 +705,8 @@ def _confidential_auth_code_flow(scopes=None) -> str:
     _patch_wsl_browser()
     webbrowser.open(flow["auth_uri"])
 
-    captured: dict = {}
-
-    class _Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            captured.update(_up.parse_qsl(_up.urlparse(self.path).query))
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            self.wfile.write(
-                b"<html><body><h2>Sign-in complete.</h2>"
-                b"You can close this tab and return to the terminal.</body></html>"
-            )
-
-        def log_message(self, *_):
-            pass  # silence default request logging
-
     print(f"Waiting for the sign-in redirect on {host}:{port} ...", file=sys.stderr)
-    server = HTTPServer((host, port), _Handler)
-    server.handle_request()  # blocks until the redirect arrives
-    server.server_close()
+    captured = _await_redirect(host, port)  # blocks until the redirect arrives
 
     if "error" in captured:
         raise RuntimeError(
@@ -689,6 +724,38 @@ def _confidential_auth_code_flow(scopes=None) -> str:
     user = result.get("id_token_claims", {}).get("preferred_username", "?")
     print(f"Confidential auth-code sign-in successful for {user}.", file=sys.stderr)
     return result["access_token"]
+
+
+def _await_redirect(host: str, port: int, timeout: Optional[float] = None) -> dict:
+    """The query of the first request to a loopback server on host:port,
+    which is the sign-in redirect; {} when none arrives within `timeout`
+    seconds (None waits for ever)."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import urllib.parse as _up
+
+    captured: dict = {}
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            captured.update(_up.parse_qsl(_up.urlparse(self.path).query))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(
+                b"<html><body><h2>Sign-in complete.</h2>"
+                b"You can close this tab and return to the terminal.</body></html>"
+            )
+
+        def log_message(self, *_):
+            pass  # silence default request logging
+
+    server = HTTPServer((host, port), _Handler)
+    server.timeout = timeout
+    try:
+        server.handle_request()
+    finally:
+        server.server_close()
+    return captured
 
 
 def setup_confidential_and_align() -> dict:
@@ -756,6 +823,8 @@ def authenticate() -> str:
          an app registration.
       3. First-run / re-auth interactive seeding, by configured method:
          - confidential: auth-code + client secret (public client flows OFF)
+         - the project's published app (no GRAPH_CLIENT_ID): auth-code with
+           PKCE on a loopback redirect, or a device code with no browser
          - otherwise: MSAL interactive (browser) with device-code fallback
     """
     # 1. MSAL silent path — use cached refresh token
@@ -792,6 +861,10 @@ def authenticate() -> str:
     # client loop — we use the registered app + secret directly).
     if _use_confidential():
         return _confidential_auth_code_flow()
+
+    # The project's published app, when the user registered none.
+    if CLIENT_PATH == "published":
+        return _published_seed()
 
     return _interactive_seed()
 
@@ -868,6 +941,147 @@ def _interactive_seed(seed_scopes=None, clients=None,
         break
 
     raise RuntimeError(f"Authentication failed: {last_error}")
+
+
+# -------------------------------------------------------------------
+# The project's published app (docs/published-oauth-apps.md)
+# -------------------------------------------------------------------
+# How long the browser sign-in waits for the redirect before it gives the
+# user a device code instead.
+_PUBLISHED_BROWSER_WAIT = 300
+
+# Entra error codes a sign-in through the published app can end in, with
+# the step that fixes each.
+_PUBLISHED_ERRORS = (
+    (("AADSTS65001", "AADSTS90094", "AADSTS90095"),
+     "your institution has not consented to the Tacitus app. Send your IT group "
+     "docs/it-request.md, 'No registration: consent to the Tacitus app'"),
+    (("AADSTS50105",),
+     "your institution requires assignment to the Tacitus app; ask your IT group "
+     "to assign you to it"),
+    (("AADSTS53003",),
+     "a Conditional Access policy blocked this sign-in (often the device-code "
+     "flow). Sign in with a browser on this machine, or through an SSH tunnel "
+     "(docs/SETUP.md 'Option D: no registration (the published app)')"),
+)
+
+
+def _browser_available() -> bool:
+    """Whether a browser can open on this machine and reach its loopback
+    address: on a Mac or under WSL unless over SSH, on Linux only with a
+    display, and elsewhere where Python finds a browser."""
+    ssh = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"))
+    display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    if sys.platform == "darwin" or _is_wsl():
+        return not ssh
+    if sys.platform.startswith("linux") and not display:
+        return False
+    try:
+        webbrowser.get()
+    except webbrowser.Error:
+        return False
+    return True
+
+
+def _published_flow() -> str:
+    """The first sign-in flow for the published app: "browser" (the
+    authorization-code flow with PKCE on a loopback redirect) when a
+    browser can reach this machine, or when GRAPH_AUTH_METHOD=interactive
+    says the user opens the link through a tunnel; "device_code" when
+    GRAPH_AUTH_METHOD=device_code or no browser can."""
+    if GRAPH_AUTH_METHOD == "device_code":
+        return "device_code"
+    if GRAPH_AUTH_METHOD == "interactive" or _browser_available():
+        return "browser"
+    return "device_code"
+
+
+def _published_redirect_uri() -> str:
+    """http://localhost:<port>, the redirect the published app registers
+    (Entra ignores a localhost redirect's port): the port GRAPH_REDIRECT_URI
+    names, else 8400. Never its path, which the registration lacks."""
+    import urllib.parse as _up
+    port = _up.urlparse(GRAPH_REDIRECT_URI).port
+    return f"http://localhost:{port or _published.PUBLISHED_GRAPH_REDIRECT_PORT}"
+
+
+def _loopback_sign_in(app, scopes: list, redirect_uri: str,
+                      wait: Optional[float] = None) -> dict:
+    """A public client's authorization-code sign-in with PKCE (MSAL makes
+    the code verifier) on a loopback redirect: print the link, open a
+    browser, catch the redirect, redeem the code. The MSAL result, or
+    {"error": "timeout"} when no redirect came within `wait` seconds."""
+    import urllib.parse as _up
+
+    flow = app.initiate_auth_code_flow(scopes, redirect_uri=redirect_uri)
+    if "auth_uri" not in flow:
+        return {"error": "flow", "error_description": str(flow)}
+    print(f"\nOpen this URL in your browser to sign in:\n{flow['auth_uri']}\n",
+          file=sys.stderr)
+    _patch_wsl_browser()
+    try:
+        webbrowser.open(flow["auth_uri"])
+    except Exception:
+        pass  # the link is printed above; a browser elsewhere works through a tunnel
+    parsed = _up.urlparse(redirect_uri)
+    host, port = parsed.hostname or "localhost", parsed.port or 80
+    print(f"Waiting for the sign-in redirect on {host}:{port} ...", file=sys.stderr)
+    captured = _await_redirect(host, port, timeout=wait)
+    if not captured:
+        return {"error": "timeout",
+                "error_description": f"no redirect within {wait} seconds"}
+    if "error" in captured:
+        return captured
+    try:
+        return app.acquire_token_by_auth_code_flow(flow, captured)
+    except ValueError as e:  # a state that does not match: not this sign-in's redirect
+        return {"error": "state", "error_description": str(e)}
+
+
+def _published_failure(result: dict) -> str:
+    """The error a failed published-app sign-in raises, with the next step
+    when the Entra code names one."""
+    err = f"{result.get('error', '')}: {result.get('error_description', result)}"
+    for codes, fix in _PUBLISHED_ERRORS:
+        if any(code in err for code in codes):
+            return f"Authentication failed: {err}\n  Next step: {fix}."
+    return f"Authentication failed: {err}"
+
+
+def _published_seed(scopes=None) -> str:
+    """First sign-in through the project's published app, a public client
+    with no secret: a browser sign-in on the loopback redirect, which falls
+    back to a device code when the browser never redirects; or a device
+    code at once when no browser can reach this machine. An error from
+    Entra (a consent the tenant has not given, a blocked flow) is final:
+    another flow meets the same policy."""
+    scopes = scopes if scopes is not None else _effective_scopes()
+    result: dict = {}
+    if _published_flow() == "browser":
+        try:
+            result = _loopback_sign_in(_app, scopes, _published_redirect_uri(),
+                                       wait=_PUBLISHED_BROWSER_WAIT)
+        except OSError as e:  # the port is taken, or no loopback here
+            result = {"error": "loopback", "error_description": str(e)}
+        if result.get("error") in ("timeout", "loopback"):
+            print(f"  The browser sign-in did not finish "
+                  f"({str(result.get('error_description'))[:100]}); "
+                  "using a device code instead.", file=sys.stderr)
+            result = {}
+        elif "access_token" not in result:
+            raise RuntimeError(_published_failure(result))
+    if not result:
+        flow = _app.initiate_device_flow(scopes)
+        if "user_code" not in flow:
+            raise RuntimeError(_published_failure(flow))
+        print(flow["message"], file=sys.stderr)
+        result = _app.acquire_token_by_device_flow(flow)
+    if "access_token" not in result:
+        raise RuntimeError(_published_failure(result))
+    _save_cache(_cache)
+    user = result.get("id_token_claims", {}).get("preferred_username", "?")
+    print(f"Signed in as {user} through the Tacitus app.", file=sys.stderr)
+    return result["access_token"]
 
 
 def _headers() -> dict:

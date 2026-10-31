@@ -98,8 +98,37 @@ limited basis: a confidential client with a secret, delegated permissions,
 admin consent, and public client flows off. The EA is built for that setup,
 and works with a public client where policy allows one.
 
+## No registration: consent to the Tacitus app
+
+When the Tacitus project publishes its own app, IT registers nothing.
+The project registers one multitenant Microsoft Entra application, a
+public client: it has no client secret, runs only on the user's machine,
+and asks only for delegated permissions (no application permissions).
+Its redirect is `http://localhost`, so the authorization code reaches
+only the user's machine; the project runs no server and holds no token. The
+permissions are `Mail.Read`, `Mail.ReadWrite`, `Mail.Send`,
+`Calendars.ReadBasic`, `Calendars.Read`, `Calendars.ReadWrite`,
+`MailboxSettings.Read`, `offline_access`, `openid` and `profile`; each
+user's install asks for the least its profile needs (the table in
+`docs/published-oauth-apps.md`). A tenant that limits the EA to other
+people's free/busy consents to `Calendars.ReadBasic` alone.
+
+Please grant tenant-wide admin consent once, with this link (an
+administrator with the right to consent for the organization signs in
+and accepts):
+
+`<the link that python3 preprocessor/published_apps.py admin-consent-url --tenant <tenant id> prints>`
+
+An administrator can instead sign in to Tacitus once and tick "Consent
+on behalf of your organization". To limit who can use the app, set
+"Assignment required?" to Yes on the Tacitus enterprise application and assign
+the users. A Conditional Access policy that blocks the device-code flow
+leaves the browser sign-in working. Revoking the consent under
+Enterprise applications, Permissions, stops every install in the tenant.
+
 ## After IT answers
 
 Put the IDs in `~/.ea/.env` and the secret in `~/.ea-private/secrets.env`,
 then run `python3 scripts/install/user_init.py --phase auth`. SETUP.md "Microsoft Graph app registration"
-has the details.
+has the details. After a consent to the Tacitus app, the same command
+with the choice `published` signs in (SETUP.md "Option D: no registration (the published app)").

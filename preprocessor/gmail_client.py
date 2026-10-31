@@ -48,11 +48,13 @@ try:
     import draft_lock as _draft_lock
     import mail_links as _mail_links
     import owner_trust as _owner_trust
+    import published_apps as _published
 except ModuleNotFoundError:  # imported as preprocessor.<mod>
     from preprocessor import draft_fingerprint as _dfp
     from preprocessor import draft_lock as _draft_lock
     from preprocessor import mail_links as _mail_links
     from preprocessor import owner_trust as _owner_trust
+    from preprocessor import published_apps as _published
 
 
 # -------------------------------------------------------------------
@@ -141,7 +143,16 @@ def _save_token(token_file: Path, creds: Credentials) -> None:
         pass
 
 
+def _client_source() -> str:
+    """The client a new sign-in uses: "file" (the user's own client secret,
+    which always wins), "published" (the project's desktop client,
+    docs/published-oauth-apps.md) or "" (neither)."""
+    return _published.google_client_source(CLIENT_SECRET_FILE)
+
+
 def _client_flow() -> InstalledAppFlow:
+    if _client_source() == "published":
+        return InstalledAppFlow.from_client_config(_published.google_client_config(), SCOPES)
     if _checked_token_io():
         return InstalledAppFlow.from_client_config(_load_json_file(CLIENT_SECRET_FILE), SCOPES)
     return InstalledAppFlow.from_client_secrets_file(str(CLIENT_SECRET_FILE), SCOPES)
@@ -180,7 +191,8 @@ def authenticate_account(email: str, interactive: bool = True) -> Optional[Crede
               file=sys.stderr)
         return None
 
-    if not CLIENT_SECRET_FILE.exists():
+    source = _client_source()
+    if not source:
         print(
             f"ERROR: Google client secret not found at {CLIENT_SECRET_FILE}\n"
             f"Download from Google Cloud Console > APIs & Services > Credentials",
@@ -189,8 +201,9 @@ def authenticate_account(email: str, interactive: bool = True) -> Optional[Crede
         return None
 
     print(f"\nAuthenticating Gmail for: {email}", file=sys.stderr)
-    print("Make sure the Gmail API is enabled in your Google Cloud project:", file=sys.stderr)
-    print("  APIs & Services > Library > search 'Gmail API' > Enable\n", file=sys.stderr)
+    if source == "file":
+        print("Make sure the Gmail API is enabled in your Google Cloud project:", file=sys.stderr)
+        print("  APIs & Services > Library > search 'Gmail API' > Enable\n", file=sys.stderr)
 
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
     flow = _client_flow()
