@@ -167,6 +167,13 @@ RATE_WAIT_MAX = 5.0
 # longer and more often: it runs off the event loop.
 HISTORY_RATE_RETRIES = 6
 HISTORY_RATE_WAIT_MAX = 30.0
+# A channel's history read takes HISTORY_PAGE messages at a time. A caller
+# that asks for more roots than one page holds (the shadow's history copy)
+# gets the pages before it while its window is not covered, at most
+# HISTORY_PAGES_MAX pages a call, HISTORY_PAGE_PACE_S seconds apart.
+HISTORY_PAGE = 200
+HISTORY_PAGES_MAX = 10
+HISTORY_PAGE_PACE_S = 0.4
 
 # Unicode code points of the reactions that confirm or cancel a card,
 # mapped to a name REACTION_ROLES knows, so a reaction resolves whatever
@@ -1687,8 +1694,11 @@ class ZulipFrontend(ChatFrontend):
             return [{"operator": "channel", "operand": stream_id_of(channel)}]
         return [{"operator": "dm", "operand": _dm_ids(channel)}]
 
-    def _history(self, narrow: list[dict], limit: int) -> tuple[list[dict], bool]:
-        req = {"anchor": "newest", "num_before": int(limit), "num_after": 0,
+    def _history(self, narrow: list[dict], limit: int,
+                 anchor: int | str = "newest") -> tuple[list[dict], bool]:
+        """(messages oldest first, found_oldest): up to `limit` messages of
+        the narrow at or before `anchor`."""
+        req = {"anchor": anchor, "num_before": int(limit), "num_after": 0,
                "apply_markdown": False, "narrow": narrow}
         res = self._rate_limited(lambda: self.client.get_messages(req),
                                  retries=HISTORY_RATE_RETRIES, wait_max=HISTORY_RATE_WAIT_MAX)
@@ -1721,14 +1731,33 @@ class ZulipFrontend(ChatFrontend):
 
     def recent_messages(self, channel: str, since_s: float, limit: int = 200, *,
                         since_id: str | None = None) -> list[InboundMessage]:
-        """One root per topic among the newest 200 messages posted after
-        since_s (and after since_id when given): the topic's earliest such
-        message, with reply_count the number of later ones."""
-        msgs, _ = self._history(self._narrow_for_channel(channel), 200)
+        """One root per topic among the messages posted after since_s (and
+        after since_id when given): the topic's earliest such message, with
+        reply_count the number of later ones. The read takes the newest
+        HISTORY_PAGE messages. When `limit` is more than one page holds, it
+        takes the page before while the oldest message in hand is inside
+        the window, the server has older ones and fewer than `limit`
+        messages are in hand, up to HISTORY_PAGES_MAX pages."""
+        narrow = self._narrow_for_channel(channel)
         floor = int(since_id) if since_id else 0
+        page, found_oldest = self._history(narrow, HISTORY_PAGE)
+        msgs = {int(m.get("id", 0)): m for m in page}
+        pages = 1
+        while (limit > HISTORY_PAGE and page and not found_oldest and len(msgs) < limit
+               and pages < HISTORY_PAGES_MAX):
+            oldest = int(page[0].get("id", 0))
+            if float(page[0].get("timestamp") or 0) <= since_s or oldest <= floor:
+                break
+            self._sleep(HISTORY_PAGE_PACE_S)
+            page, found_oldest = self._history(narrow, HISTORY_PAGE, anchor=oldest - 1)
+            pages += 1
+            # Only older messages count, so a page the server repeats ends the read.
+            page = [m for m in page if int(m.get("id", 0)) < oldest]
+            msgs.update((int(m.get("id", 0)), m) for m in page)
         roots: dict[str, InboundMessage] = {}
-        for m in msgs:
-            if float(m.get("timestamp") or 0) <= since_s or int(m.get("id", 0)) <= floor:
+        for mid in sorted(msgs):
+            m = msgs[mid]
+            if float(m.get("timestamp") or 0) <= since_s or mid <= floor:
                 continue
             msg = self._to_inbound(m, is_reply=False)
             if msg is None:
