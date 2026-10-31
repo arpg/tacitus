@@ -71,6 +71,7 @@ SESSION_IDLE = 12 * 3600
 MAX_PAIRINGS = 8
 NAME_MAX = 40
 REFUSED_LOG_EVERY = 60.0        # at most one "hello refused" line a minute
+STOP_WAIT = 2.0                 # stop() waits this long for the workers that run
 
 LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
 # Headers a phone's request may carry to the local server; every other one
@@ -675,6 +676,8 @@ class RelayClient:
         # The frames waiting for a worker; past this many a frame is dropped.
         self._slots = threading.BoundedSemaphore(workers * 8)
         self._thread: Optional[threading.Thread] = None
+        # The "hello refused" line's count and time, shared by the workers.
+        self._refused_mu = threading.Lock()
         self._refused_at = float("-inf")
         self._refused = 0
         self.dropped = 0
@@ -690,7 +693,12 @@ class RelayClient:
         self.log.info("relay: polling %s as install %s", self.relay_url, self.install_id)
         return self
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = STOP_WAIT) -> None:
+        """Stop polling and end every session and stream. The frames that
+        wait for a worker are dropped, and stop() waits up to `timeout`
+        seconds for the workers that run, so none of them reaches the relay
+        or the log once the client is stopped. A stopped client logs no
+        failure: the relay going away then is expected."""
         self._stop.set()
         with self._mu:
             streams = list(self._streams.values())
@@ -698,7 +706,10 @@ class RelayClient:
             self._sessions.clear()
         for st in streams:
             st.stop()
-        self._pool.shutdown(wait=False)
+        drain = threading.Thread(target=self._pool.shutdown, name="relay-stop", daemon=True,
+                                 kwargs={"wait": True, "cancel_futures": True})
+        drain.start()
+        drain.join(timeout)
 
     def status(self) -> dict:
         """The client's state for the owner's web chat. `bot_public` and
@@ -824,7 +835,7 @@ class RelayClient:
                 text += " (the relay does not take this install's token, or has not activated it)"
         else:
             text = _printable(f"{type(exc).__name__}: {exc}")
-        if text != self.last_error:
+        if text != self.last_error and not self._stop.is_set():
             self.log.warning("relay: %s", text)
         self.last_error = text
         self.connected = False
@@ -927,13 +938,16 @@ class RelayClient:
             self._slots.release()
 
     def _refused_line(self, exc: BaseException) -> None:
-        """A refused hello, logged at most once a minute with a count."""
-        self._refused += 1
-        now = time.monotonic()
-        if now - self._refused_at >= REFUSED_LOG_EVERY:
-            self.log.info("relay: hello refused: %s (%d since the last such line)",
-                          exc, self._refused)
-            self._refused_at, self._refused = now, 0
+        """A refused hello, logged at most once a minute with a count. The
+        workers refuse hellos at once, so the count and the time change
+        under a lock: two of them never both log."""
+        with self._refused_mu:
+            self._refused += 1
+            now = time.monotonic()
+            if now - self._refused_at < REFUSED_LOG_EVERY:
+                return
+            self._refused_at, count, self._refused = now, self._refused, 0
+        self.log.info("relay: hello refused: %s (%d since the last such line)", exc, count)
 
     def _tell_owner(self, dev: Mapping[str, Any]) -> None:
         """The owner's notice of a new device, in the DM channel."""

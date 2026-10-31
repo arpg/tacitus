@@ -1990,22 +1990,58 @@ def test_a_waiting_device_opens_no_stream(web):
 def test_one_frame_id_holds_one_stream(web):
     """Seventy `open` frames with one id leave one stream at the bot, and
     the owner's own requests still get a connection."""
+    from botcore.chat.web_frontend import GONE_CHECK_S
     f = web["fe"]
     client = f.relay
     phone = _phone(web, client.new_pairing())
     sent: list = []
     client._send = sent.append  # the relay's side swallows what the bot posts
     fid = "a" * 32
-    for _ in range(70):
+    opened, handled = [], []
+    handle = client._handle
+
+    def counted(frame):  # each frame a worker has finished with
+        try:
+            handle(frame)
+        finally:
+            handled.append(frame)
+    client._handle = counted
+
+    def open_stream():
+        opened.append(fid)
         client._dispatch([phone.session.seal("open", fid, rc.pack({}))])
-    deadline = time.time() + 20  # a connect past the listen backlog waits for its retry
-    while time.time() < deadline:
-        live = [t for t in threading.enumerate() if t.name == f"relay-sse-{fid[:8]}"]
-        if len(live) <= 1:
+
+    def threads():
+        return [t for t in threading.enumerate() if t.name == f"relay-sse-{fid[:8]}"]
+
+    def settled():  # every frame handled or dropped, none in a worker
+        return len(handled) + client.dropped == len(opened)
+
+    for _ in range(70):
+        open_stream()
+    # Polled, not asserted once: on a slow runner the workers open the
+    # streams late, and the local server holds a dropped stream's
+    # connection for up to GONE_CHECK_S. A last `open` the server closed at
+    # once (all its connections held) ends with an `end` frame, and the
+    # phone then opens again; so does this test.
+    deadline, reopen = time.time() + 20, time.time() + 2
+    while not (settled() and client.status()["streams"] == 1 and len(threads()) == 1):
+        assert time.time() < deadline, (client.status()["streams"], len(threads()), client.dropped)
+        if time.time() > reopen and settled() and not threads():
+            open_stream()
+            reopen = time.time() + 2
+        time.sleep(0.1)
+    # The streams it replaced are gone; the owner's request gets a
+    # connection once the server has seen them go.
+    deadline = time.time() + GONE_CHECK_S + 4
+    while True:
+        try:
+            assert _call(f, "GET", "/api/me", headers=_owner(f))[0] == 200
             break
-        time.sleep(0.2)
-    assert client.status()["streams"] == 1 and len(live) <= 1
-    assert _call(f, "GET", "/api/me", headers=_owner(f))[0] == 200
+        except OSError:  # a connection the server closed at once: its slots are still held
+            assert time.time() < deadline
+            time.sleep(0.2)
+    assert client.status()["streams"] == 1 and len(threads()) == 1
     client._on_close(fid)
 
 

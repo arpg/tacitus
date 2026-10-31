@@ -967,9 +967,11 @@ command as the owner. Tailscale is optional: these steps need none.
    and type as you, at pairing and at each update of the app on the
    phone; with card buttons on, it could also press Send. When you accept
    that for one phone, tick "Allow card buttons on this phone" beside it
-   under "Pair a phone" (or run `webchat-relay.py approve --device <id>
-   --cards`); untick it to take them back. Without them, you press card
-   buttons in the web chat on your computer.
+   under "Pair a phone", or run
+   `python3 <code>/scripts/webchat-relay.py approve --key-file ~/.ea-private/webchat-relay.json --device <id> --cards`
+   (`show` lists the ids); untick it, or `approve` without `--cards`, to
+   take them back. Without them, you press card buttons in the web chat
+   on your computer.
 8. With Tailscale you may pair on the tailnet instead: with `public_url`
    set, open "Pair a phone" on the web chat's tailnet address while the
    phone is on the tailnet and signed in. That link opens the app on the
