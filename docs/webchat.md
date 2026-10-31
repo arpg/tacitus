@@ -42,7 +42,8 @@ The chat block (`~/.ea-private/chat.json` for owner processes, read by
     "base_path": "/chat",
     "public_url": "https://<host>.ts.net/chat",
     "tailscale_login": "<owner login as tailscale serve reports it>",
-    "pair_token_file": "<private_dir>/webchat-pair.token"
+    "pair_token_file": "<private_dir>/webchat-pair.token",
+    "backfill_days": 7
   }
 }
 ```
@@ -51,8 +52,11 @@ The chat block (`~/.ea-private/chat.json` for owner processes, read by
 `"shadow": "web"` with any primary wraps the primary in `ShadowFrontend`.
 `FRONTENDS` in `preprocessor/chat/__init__.py` gains `"web"`.
 `get_chat` defaults every `web` key (port 8470, base_path `/chat`, bind
-loopback). The store is `<private_dir>/webchat.sqlite` (owner process) or
-`<ea_dir>/state/webchat.sqlite` otherwise; a `store_path` key overrides.
+loopback, backfill_days 7). The store is `<private_dir>/webchat.sqlite`
+(owner process) or `<ea_dir>/state/webchat.sqlite` otherwise; a
+`store_path` key overrides.
+`backfill_days` is the history a shadow copies in when the bot starts
+(see Shadow mode); 0 copies none.
 
 ## Identity and auth
 
@@ -75,10 +79,11 @@ served without auth; every `/api/` route needs it.
   kind is `main`, `sched`, `dm` or `room`.
 - `messages(seq INTEGER PK AUTOINCREMENT, channel TEXT, id TEXT, thread_key TEXT,
   author TEXT, kind TEXT, text TEXT, card TEXT, file TEXT, reactions TEXT,
-  posted_at REAL, updated_at REAL, UNIQUE(channel, id))`.
+  posted_at REAL, updated_at REAL, history INT, UNIQUE(channel, id))`.
   `author` is `bot` or `owner`; `kind` is `message`, `card`, `status`
   (a card replaced by its final line) or `file`; `card`/`file`/`reactions`
-  are JSON text or NULL.
+  are JSON text or NULL. `history` is 1 on a row copied from the
+  primary's past (Shadow mode); such a row never counts as unread.
 - `events(seq INTEGER PK AUTOINCREMENT, at REAL, type TEXT, channel TEXT,
   id TEXT, payload TEXT)`: the SSE log; `type` is `message`, `update`,
   `reaction`, `card`, `status`, `file`, `channel`.
@@ -150,7 +155,10 @@ Mirror entry points for shadow mode, all idempotent on `(channel, id)`:
 `mirror_channel(id, name, kind, archived)`, `mirror_post(ref, text, author)`,
 `mirror_update(ref, text)`, `mirror_card(ref, card)`, `mirror_card_status(ref, text)`,
 `mirror_reaction(channel, msg_id, status, on: bool)`, `mirror_file(ref, file: FileRef, author)`.
-Each writes the row and appends the event.
+Each writes the row and appends the event. Two more serve the history
+copy and moved threads: `mirror_backfilled(channel)` appends one
+`channel` event, and `mirror_move(old_channel, old_key, new_channel,
+new_key)` re-keys a thread's rows, with an `update` event each.
 
 Inbound dispatch from the HTTP layer goes through `self.registry`
 (`dispatch_message`, `dispatch_action`) with `user_id = self.owner_id`.
@@ -166,8 +174,24 @@ dispatching it itself (see below).
   `card_registry`, `registry`, `thread_namer`) come from the primary;
   `name` is `"<primary>+<shadow>"`.
 - `start()` starts both; on start it mirrors the channel list it knows
-  (main, sched, DM and the registered rooms from `archived_map()`).
+  (main, sched, DM and the rooms from `archived_map()` that
+  `room_filter` keeps; the bot keeps the rooms it made for the owner, so
+  no other private stream reaches the web), then starts the history copy.
   `run_forever()` runs the shadow's server thread and the primary's loop.
+- History copy (`backfill_days`, from `web.backfill_days`): on a daemon
+  thread, for each mirrored channel, `recent_messages` over the window,
+  then `thread_replies` per thread, each message mirrored quietly
+  (`mirror_post`/`mirror_file` with `quiet=True`) under the primary's id
+  and time, author `owner` for the primary's owner id (and for a
+  `**You (web):**` post) else `bot`; a card goes in as the text the
+  primary shows. A quiet row has no event and never counts as unread, a
+  stored row is left as it is (a second start adds nothing), and a row
+  older than its thread's newest is left out, so a thread stays in time
+  order. One `mirror_backfilled` event per channel that took rows; at
+  most 5,000 messages; a read the primary fails ends that channel's
+  copy. Live mirroring waits for the copy (up to 60 s), so the replies
+  the bot posts on waking land after the history of their thread; an
+  upload and the owner's web input never wait.
 - Outbound: `post`, `update`, `react`, `unreact`, `post_card`,
   `update_card`, `replace_card_with_status`, `upload` call the primary,
   then mirror the result into the shadow with the primary's refs. A
@@ -181,8 +205,17 @@ dispatching it itself (see below).
   to the primary.
 - Inbound from the primary: the composite wraps the primary's registry
   dispatch so an owner `InboundMessage` is mirrored into the shadow
-  (`author = "owner"`) before the core handles it; an `ActionEvent` is
-  passed through.
+  (`author = "owner"`) before the core handles it and a `channel_rename`
+  renames the row; a `thread_moved` event (a whole Zulip topic move)
+  re-keys the thread's rows when its new channel is mirrored; an
+  `ActionEvent` is passed through.
+- The primary's own writes: the composite sets `primary.on_outbound`
+  (an optional `ChatFrontend` attribute, None elsewhere). Zulip calls it
+  for the owner's card code (never dispatched as a message), its done
+  reaction and the reply to an unknown word; for an edit past the edit
+  window (the web row is updated in place); and for a stream's
+  description or archive change. The chips on a Zulip card are not
+  mirrored: the web card has its buttons.
 - Inbound from the shadow (the owner typed or clicked on the web): a
   message is first posted into the primary **as the bot** with the
   prefix `**You (web):** ` so it has a primary id and sits in the
@@ -331,5 +364,12 @@ the prompts use it as an adjective ("a real-time {platform} message").
   channel row, `mirror_reaction` True when the message is stored. A
   mirror into a channel not yet described makes a placeholder row (kind
   `room`, name the id) that `mirror_channel` corrects.
+- Keywords for the history copy: `mirror_post` and `mirror_file` take
+  `quiet=True` (a history row: no event, `history` 1, None returned for
+  a row stored already or older than its thread's newest) and
+  `markdown=True` (the bot's text is Markdown already, as Zulip's
+  history is, and is stored as given). `mirror_channel` takes
+  `description=`; None keeps the stored one. A store from before the
+  `history` column gains it on open, its rows all live ones.
 - `stop()` stops the server and closes the open streams; `url` is the
   loopback URL with the base path.

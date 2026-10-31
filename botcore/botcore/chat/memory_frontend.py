@@ -217,7 +217,8 @@ class MemoryFrontend(ChatFrontend):
         if any(info.name == name for info in self.rooms.values()):
             raise RoomNameTaken(name)
         cid = f"C_{next(self._room_ids)}"
-        self.rooms[cid] = ChannelInfo(cid, name, is_private=True, is_member=True)
+        self.rooms[cid] = ChannelInfo(cid, name, is_private=True, is_member=True,
+                                      description=description or "")
         room = RoomRef(cid, name, self.room_url(cid))
         self.created_rooms.append(room)
         self.room_ops.append({"op": "create", "channel": cid, "name": name,
@@ -230,6 +231,8 @@ class MemoryFrontend(ChatFrontend):
         self.room_ops.append({"op": "invite", "channel": channel, "user_id": user_id})
 
     def set_description(self, channel: str, text: str) -> None:
+        if channel in self.rooms:
+            self.rooms[channel].description = text or ""
         self.room_ops.append({"op": "describe", "channel": channel, "text": text})
 
     def _room(self, channel: str) -> ChannelInfo:

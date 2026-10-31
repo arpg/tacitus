@@ -1533,3 +1533,149 @@ def test_a_rendered_card_uses_only_zulip_emoji_names():
     assert "locked" in names
     slack_only = [n for n in names if n in EMOJI_ALIASES]
     assert not slack_only, slack_only
+
+
+# shadow mode: the writes this frontend makes on its own reach the shadow
+
+
+def _shadowed(tmp_path):
+    """A started Zulip frontend inside a ShadowFrontend whose shadow is a
+    real web chat store (no server); the channel rows are copied."""
+    from chat.shadow_frontend import ShadowFrontend
+    from chat.web_frontend import WebFrontend
+    fe, c = make(tmp_path)
+    web = WebFrontend({"port": 0}, store_path=tmp_path / "web" / "webchat.sqlite",
+                      webui_dir=tmp_path / "webui")
+    comp = ShadowFrontend(fe, web)
+    comp.mirror_channels()
+    return comp, fe, c, web
+
+
+def test_a_typed_code_reaches_the_shadow_through_the_hook(tmp_path):
+    comp, fe, c, web = _shadowed(tmp_path)
+    dm = f"stream:{DM}"
+    answered = []
+
+    @comp.registry.action("cancel_send")
+    def cancel(ev):
+        answered.append(ev)
+        comp.replace_card_with_status(ev.card, ":x: Cancelled")
+
+    cref = comp.post_card(dm, _card())
+    assert web.store.message(dm, cref.id)["reactions"] == []     # the chips stay on Zulip
+    code = fe.last_card_row["code"]
+    fe.handle_event(_code_event(f"cancel {code}", fe=fe))
+    assert [(a.action_id, a.source) for a in answered] == [("cancel_send", "code")]
+    row = web.store.message(dm, "500")
+    assert (row["author"], row["text"], row["thread_key"]) == ("owner", f"cancel {code}",
+                                                               cref.thread_key)
+    assert row["reactions"] == ["white_check_mark"]                # the done mark
+    card_row = web.store.message(dm, cref.id)
+    assert card_row["kind"] == "status" and card_row["text"] == ":x: Cancelled"
+
+    comp.post_card(dm, _card())
+    code2 = fe.last_card_row["code"]
+    fe.handle_event(_code_event(f"archive {code2}", mid=501, fe=fe))
+    assert web.store.message(dm, "501")["author"] == "owner"
+    reply = web.store.message(dm, str(c._next_id))                # the frontend's answer
+    assert reply["author"] == "bot" and reply["text"].startswith(f"Card **{code2}** takes")
+    assert reply["thread_key"] == web.store.message(dm, "501")["thread_key"]
+
+
+def test_a_chip_tap_whose_status_edit_is_refused_reaches_the_shadow(tmp_path):
+    comp, fe, c, web = _shadowed(tmp_path)
+    dm = f"stream:{DM}"
+
+    @comp.registry.action("approve_send")
+    def send(ev):
+        assert comp.replace_card_with_status(ev.card, ":white_check_mark: Sent") is False
+
+    cref = comp.post_card(dm, _chip_card())
+    chips = [r["emoji_name"] for r in c.named("add_reaction")]
+    assert chips and web.store.message(dm, cref.id)["reactions"] == []
+    c.update_results = [fx("api_edit_time_limit")]
+    fe.handle_event(dict(fx("event_reaction_add"), emoji_name="+1", emoji_code="1f44d",
+                         message_id=int(cref.id)))
+    sent = c.named("send_message")[-1]
+    assert sent["content"].endswith(":check: Sent")                # a new message on Zulip
+    row = web.store.message(dm, cref.id)                           # the same row on the web
+    assert row["kind"] == "status" and row["text"] == ":white_check_mark: Sent"
+    assert web.store.message(dm, str(c._next_id)) is None          # and no second one
+
+
+def test_edits_past_the_edit_window_reach_the_shadow(tmp_path):
+    comp, fe, c, web = _shadowed(tmp_path)
+    ea, dm = f"stream:{EA}", f"stream:{DM}"
+    ref = comp.post(ea, "status: working")
+    c.update_results = [fx("api_edit_time_limit")]
+    assert comp.update(ref, "status: *done*") is False
+    assert web.store.message(ea, ref.id)["text"] == "status: **done**"
+    cref = comp.post_card(dm, _card())
+    revised = dataclasses.replace(_card(), title="Send the revised reply?")
+    c.update_results = [fx("api_edit_time_limit")]
+    assert comp.update_card(cref, revised) is False
+    assert web.store.message(dm, cref.id)["card"]["title"] == "Send the revised reply?"
+
+
+def test_stream_changes_reach_the_shadow(tmp_path):
+    comp, fe, c, web = _shadowed(tmp_path)
+    assert web.store.channel("stream:21")["archived"] is True      # ea-proj, from the start
+    fe.handle_event(fx("event_stream_description"))
+    assert web.store.channel("stream:21")["description"] == "Updated description"
+    fe.handle_event({"id": 15, "type": "stream", "op": "create",
+                     "streams": [{"stream_id": 21, "name": "ea-proj"}]})
+    assert web.store.channel("stream:21")["archived"] is False
+    fe.handle_event({"id": 16, "type": "stream", "op": "delete",
+                     "streams": [{"stream_id": 21, "name": "ea-proj"}]})
+    assert web.store.channel("stream:21")["archived"] is True
+    fe.handle_event(fx("event_stream_rename"))
+    assert web.store.channel("stream:21")["name"] == "ea-new-name"
+    fe.handle_event(dict(fx("event_stream_description"), stream_id=30))
+    assert web.store.channel("stream:30") is None                  # not a stream it holds
+
+
+def test_channel_changes_from_event_shapes():
+    assert zf.channel_changes_from_event(fx("event_stream_description")) == [
+        ("stream:21", {"description": "Updated description"})]
+    assert zf.channel_changes_from_event(fx("event_stream_rename")) == []
+    assert zf.channel_changes_from_event({"type": "stream", "op": "update", "stream_id": 4,
+                                          "property": "is_archived", "value": True}) == [
+        ("stream:4", {"archived": True})]
+    assert zf.channel_changes_from_event({"type": "stream", "op": "delete", "streams": [
+        {"stream_id": 4}, {"stream_id": 5}, "junk"]}) == [
+        ("stream:4", {"archived": True}), ("stream:5", {"archived": True})]
+    assert zf.channel_changes_from_event(fx("event_stream_message")) == []
+
+
+def test_a_topic_move_rekeys_the_shadow(tmp_path):
+    comp, fe, c, web = _shadowed(tmp_path)
+    ea = f"stream:{EA}"
+    first = comp.post(ea, "the draft", thread_ts=OLD_KEY)
+    second = comp.post(ea, "a revision", thread_ts=OLD_KEY)
+    fe.handle_event(fx("event_topic_move"))          # the owner's whole-topic move
+    assert [m["id"] for m in web.store.thread(ea, NEW_KEY)] == [first.id, second.id]
+    assert web.store.thread(ea, OLD_KEY) == []
+
+
+def test_zulip_history_reaches_the_shadow_as_written(tmp_path):
+    comp, fe, c, web = _shadowed(tmp_path)
+    assert fe.history_markdown is True
+    msgs = fx("api_messages_channel")
+    for m in msgs["messages"]:
+        if m["id"] == 203:
+            m["content"] = "Done, *at nine*."                     # Zulip's italic
+    c.messages = msgs
+    report = comp.backfill(days=3650)
+    assert report["channels"][f"stream:{EA}"] == len(msgs["messages"])
+    assert report["channels"][f"stream:{DM}"] == 0                # another stream's rows
+    row = web.store.message(f"stream:{EA}", "203")
+    assert (row["author"], row["text"]) == ("bot", "Done, *at nine*.")
+    assert web.store.message(f"stream:{EA}", "202")["author"] == "owner"
+    assert row["thread_key"] == zf.thread_key_for(EA, "alpha")
+    assert comp.backfill(days=3650)["copied"] == 0
+
+
+def test_channel_info_carries_the_description(tmp_path):
+    fe, c = make(tmp_path)
+    c.streams["streams"][0]["description"] = "The EA stream"
+    assert fe.channel_info(f"stream:{EA}").description == "The EA stream"

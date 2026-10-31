@@ -429,6 +429,95 @@ def test_mirror_file_keeps_the_bytes_when_given_a_path(tmp_path):
         f.stop()
 
 
+def test_quiet_history_rows_have_no_event_and_are_never_unread(tmp_path):
+    f = make(tmp_path)
+    f.mirror_channel("stream:7", "ea", "main")
+    key = "stream:7:topic:plans"
+    start = f.store.max_event_seq()
+    row = f.mirror_post(MessageRef("stream:7", "10", key, 1000.0), "*the plan*", quiet=True)
+    assert row["text"] == "**the plan**" and row["posted_at"] == row["updated_at"] == 1000.0
+    f.mirror_post(MessageRef("stream:7", "11", key, 1010.0), "fine", "owner", quiet=True)
+    f.mirror_post(MessageRef("stream:7", "12", key, 1020.0), "Done, *at nine*.",
+                  quiet=True, markdown=True)
+    assert f.store.message("stream:7", "12")["text"] == "Done, *at nine*."   # kept as written
+    f.mirror_file(MessageRef("stream:7", "13", key, 1030.0),
+                  FileRef("a.pdf", url="https://chat.example.test/u/a.pdf"), quiet=True,
+                  text="the file")
+    assert f.store.events_since(start) == []
+    assert f.store.channel("stream:7")["unread"] == 0
+    assert [m["id"] for m in f.store.thread("stream:7", key)] == ["10", "11", "12", "13"]
+    # a row it holds is left as it is
+    assert f.mirror_post(MessageRef("stream:7", "10", key, 1000.0), "changed", quiet=True) is None
+    assert f.mirror_file(MessageRef("stream:7", "13", key, 1030.0), FileRef("b.pdf"),
+                         quiet=True) is None
+    assert f.store.message("stream:7", "10")["text"] == "**the plan**"
+    # an older message never goes in after a newer one of its thread
+    assert f.mirror_post(MessageRef("stream:7", "9", key, 990.0), "older", quiet=True) is None
+    # a live post still counts, and a history row from the owner does not reset it
+    f.mirror_post(MessageRef("stream:7", "20", key, 2000.0), "live")
+    f.mirror_post(MessageRef("stream:7", "21", "stream:7:topic:other", 2100.0), "old ask",
+                  "owner", quiet=True)
+    assert f.store.channel("stream:7")["unread"] == 1
+
+
+def test_mirror_backfilled_sends_one_channel_event(tmp_path):
+    f = make(tmp_path)
+    f.mirror_channel("stream:7", "ea", "main", description="the EA stream")
+    f.mirror_post(MessageRef("stream:7", "10", "k", 1000.0), "old", quiet=True)
+    start = f.store.max_event_seq()
+    row = f.mirror_backfilled("stream:7")
+    assert row["last_at"] == 1000.0 and row["unread"] == 0
+    assert [t for _s, t, _p in f.store.events_since(start)] == ["channel"]
+    assert f.mirror_backfilled("stream:404") is None
+
+
+def test_mirror_channel_keeps_a_description_not_given(tmp_path):
+    f = make(tmp_path)
+    f.mirror_channel("stream:9", "ea-atlas", "room", description="the atlas project")
+    f.mirror_channel("stream:9", "ea-atlas", "room", True)
+    row = f.store.channel("stream:9")
+    assert row["description"] == "the atlas project" and row["archived"] is True
+    f.mirror_channel("stream:9", "ea-atlas", "room", True, description="")
+    assert f.store.channel("stream:9")["description"] == ""
+
+
+def test_mirror_move_rekeys_a_thread(tmp_path):
+    f = make(tmp_path)
+    old, new = "stream:7:topic:draft", "stream:7:topic:draft%20v2"
+    for i in range(2):
+        f.mirror_post(MessageRef("stream:7", f"3{i}", old, 1000.0 + i), f"m{i}")
+    start = f.store.max_event_seq()
+    assert f.mirror_move("stream:7", old, "stream:7", new) == 2
+    assert [m["id"] for m in f.store.thread("stream:7", new)] == ["30", "31"]
+    assert f.store.thread("stream:7", old) == []
+    assert [t for _s, t, _p in f.store.events_since(start)] == ["update", "update"]
+    # to another stream, where one of the messages is held already
+    f.mirror_post(MessageRef("stream:8", "31", "stream:8:topic:x", 1001.0), "m1")
+    assert f.mirror_move("stream:7", new, "stream:8", "stream:8:topic:x") == 1
+    assert [m["id"] for m in f.store.thread("stream:8", "stream:8:topic:x")] == ["30", "31"]
+    assert f.store.message("stream:7", "31") is None
+
+
+def test_a_store_from_before_history_rows_takes_the_column(tmp_path):
+    import sqlite3
+    path = tmp_path / "old" / "webchat.sqlite"
+    path.parent.mkdir()
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE messages(seq INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, id TEXT, "
+        "thread_key TEXT, author TEXT, kind TEXT, text TEXT, card TEXT, file TEXT, "
+        "reactions TEXT, posted_at REAL, updated_at REAL, UNIQUE(channel, id));"
+        "INSERT INTO messages(channel, id, thread_key, author, kind, text, reactions, posted_at, "
+        "updated_at) VALUES ('main', '1', 't', 'bot', 'message', 'kept', '[]', 1.0, 1.0);")
+    conn.commit()
+    conn.close()
+    store = wf.WebStore(path)
+    store.upsert_channel("main", "ea", "main")
+    assert store.message("main", "1")["text"] == "kept"
+    assert store.channel("main")["unread"] == 1
+    store.close()
+
+
 # HTTP
 
 
@@ -784,5 +873,6 @@ def test_get_chat_defaults_the_web_block(tmp_path):
     web = ea_config.get_chat(p)["web"]
     assert web["port"] == 9000 and web["bind"] == "127.0.0.1" and web["base_path"] == "/chat"
     assert set(web) == {"bind", "port", "base_path", "public_url", "tailscale_login",
-                        "pair_token_file", "store_path"}
+                        "pair_token_file", "store_path", "backfill_days"}
+    assert web["backfill_days"] == 7
     assert ea_config.get_chat(tmp_path / "missing.json")["web"]["port"] == 8470

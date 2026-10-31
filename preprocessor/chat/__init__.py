@@ -159,7 +159,19 @@ def load_frontend(*, for_cli: bool = False, ea_dir: str | Path | None = None,
         logging.getLogger("chat").exception(
             "the %s shadow did not build; %s runs alone", shadow, cfg.get("frontend"))
         return primary
-    return ShadowFrontend(primary, web)
+    return ShadowFrontend(primary, web, backfill_days=_backfill_days(cfg))
+
+
+def _backfill_days(cfg: dict) -> float:
+    """`web.backfill_days` of the chat block: the days of history the
+    shadow copies in when the bot starts (0 copies none). A value that is
+    not a number takes the default."""
+    web = cfg.get("web") if isinstance(cfg.get("web"), dict) else {}
+    default = ea_config.DEFAULTS["chat"]["web"]["backfill_days"]
+    try:
+        return max(0.0, float(web.get("backfill_days", default)))
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def _web_class():

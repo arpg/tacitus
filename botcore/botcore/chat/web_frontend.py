@@ -18,6 +18,9 @@ are `w<seq>`, a thread is `t<seq of its first message>`, rooms are
 shadow mode (docs/webchat.md, Shadow mode) the composite writes through
 the `mirror_*` methods with the primary's ids and the store mints none;
 the owner's web input goes to `self.inbound` instead of the registry.
+The history the composite copies in when it starts goes in quietly
+(`quiet=True`): a history row has no event of its own, never counts as
+unread, and never goes before a newer row of its thread.
 
 Outbound text is the LLM's Slack mrkdwn, converted the way the Zulip
 frontend converts it (chat.text.mrkdwn_to_zulip), so the web app renders
@@ -149,7 +152,7 @@ CREATE TABLE IF NOT EXISTS channels(
 CREATE TABLE IF NOT EXISTS messages(
     seq INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, id TEXT, thread_key TEXT,
     author TEXT, kind TEXT, text TEXT, card TEXT, file TEXT, reactions TEXT,
-    posted_at REAL, updated_at REAL, UNIQUE(channel, id));
+    posted_at REAL, updated_at REAL, history INT DEFAULT 0, UNIQUE(channel, id));
 CREATE INDEX IF NOT EXISTS messages_thread ON messages(channel, thread_key, seq);
 CREATE TABLE IF NOT EXISTS events(
     seq INTEGER PRIMARY KEY AUTOINCREMENT, at REAL, type TEXT, channel TEXT, id TEXT,
@@ -278,6 +281,10 @@ class WebStore:
             os.chmod(self.path, 0o600)
         with self._lock:
             self._conn.executescript(SCHEMA)
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(messages)")}
+            if "history" not in cols:
+                # A store from before the history copy: its rows are live ones.
+                self._conn.execute("ALTER TABLE messages ADD COLUMN history INT DEFAULT 0")
             self._conn.commit()
         self._subs: list[_Sub] = []
         self._pending: list[tuple[int, str, str]] = []
@@ -310,10 +317,13 @@ class WebStore:
     def _channel_json(self, row: sqlite3.Row) -> dict:
         cid = row["id"]
         last = self._one("SELECT MAX(posted_at) AS t FROM messages WHERE channel=?", (cid,))
+        # A history row (copied from the primary's past) counts neither as
+        # unread nor as the owner's last message.
         unread = self._one(
-            "SELECT COUNT(*) AS n FROM messages WHERE channel=? AND author=? AND seq > MAX("
-            "COALESCE((SELECT seq FROM reads WHERE channel=?), 0),"
-            "COALESCE((SELECT MAX(seq) FROM messages WHERE channel=? AND author=?), 0))",
+            "SELECT COUNT(*) AS n FROM messages WHERE channel=? AND author=? AND history=0 "
+            "AND seq > MAX(COALESCE((SELECT seq FROM reads WHERE channel=?), 0),"
+            "COALESCE((SELECT MAX(seq) FROM messages WHERE channel=? AND author=? "
+            "AND history=0), 0))",
             (cid, BOT, cid, cid, OWNER))
         return {"id": cid, "name": row["name"] or "", "kind": row["kind"] or "room",
                 "archived": bool(row["archived"]), "description": row["description"] or "",
@@ -519,22 +529,24 @@ class WebStore:
     def add_message(self, channel: str, *, mid: str | None, thread_key: str | None,
                     author: str, kind: str, text: str = "", card: dict | None = None,
                     file: dict | None = None, posted_at: float | None = None,
-                    event: str | None = None) -> dict:
+                    event: str | None = None, history: bool = False) -> dict:
         """Insert a message and its event. With no mid the store mints
         `w<seq>`, and with no thread_key the message opens `t<seq>`. Its
         updated_at starts at posted_at; every change raises it (the app
-        reads a row whose two times differ as an edit)."""
+        reads a row whose two times differ as an edit). A `history` row (a
+        message from the primary's past) gets no event and never counts as
+        unread."""
         now = time.time()
 
         def run() -> dict:
             cur = self._conn.execute(
                 "INSERT INTO messages(channel, id, thread_key, author, kind, text, card, file, "
-                "reactions, posted_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "reactions, posted_at, updated_at, history) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (channel, mid, thread_key, author, kind, text or "",
                  json.dumps(card) if card is not None else None,
                  json.dumps(file) if file is not None else None, "[]",
                  posted_at if posted_at is not None else now,
-                 posted_at if posted_at is not None else now))
+                 posted_at if posted_at is not None else now, int(bool(history))))
             seq = int(cur.lastrowid)
             if mid is None or thread_key is None:
                 self._conn.execute("UPDATE messages SET id=?, thread_key=? WHERE seq=?",
@@ -542,8 +554,54 @@ class WebStore:
                                     thread_key if thread_key is not None else f"t{seq}", seq))
             row = self._conn.execute("SELECT * FROM messages WHERE seq=?", (seq,)).fetchone()
             out = self._msg_json(row)
-            self._emit(event or ("message" if kind == "message" else kind), channel, row["id"], out)
+            if not history:
+                self._emit(event or ("message" if kind == "message" else kind), channel,
+                           row["id"], out)
             return out
+        return self._transaction(run)
+
+    def newest_in_thread(self, channel: str, thread_key: str) -> float | None:
+        """The posted_at of the thread's newest message; None for a thread
+        with none."""
+        row = self._one("SELECT MAX(posted_at) AS t FROM messages WHERE channel=? AND "
+                        "thread_key=?", (channel, thread_key))
+        return float(row["t"]) if row and row["t"] is not None else None
+
+    def touch_channel(self, cid: str) -> dict | None:
+        """Append a `channel` event carrying the channel's row as it is now
+        (its last_at and unread), so an open app reads it again; None when
+        there is no such channel."""
+        def run() -> dict | None:
+            row = self._conn.execute("SELECT * FROM channels WHERE id=?", (cid,)).fetchone()
+            if row is None:
+                return None
+            out = self._channel_json(row)
+            self._emit("channel", cid, cid, out)
+            return out
+        return self._transaction(run)
+
+    def move_thread(self, old_channel: str, old_key: str, new_channel: str,
+                    new_key: str) -> int:
+        """Re-key every message of a thread to its new channel and key, with
+        an `update` event each; a message the new channel holds already is
+        dropped from the old one. The number of messages moved."""
+        def run() -> int:
+            rows = self._conn.execute("SELECT * FROM messages WHERE channel=? AND thread_key=? "
+                                      "ORDER BY seq", (old_channel, old_key)).fetchall()
+            moved = 0
+            for row in rows:
+                if new_channel != old_channel and self._conn.execute(
+                        "SELECT 1 FROM messages WHERE channel=? AND id=?",
+                        (new_channel, row["id"])).fetchone():
+                    self._conn.execute("DELETE FROM messages WHERE seq=?", (row["seq"],))
+                    continue
+                self._conn.execute("UPDATE messages SET channel=?, thread_key=? WHERE seq=?",
+                                   (new_channel, new_key, row["seq"]))
+                out = self._msg_json(self._conn.execute("SELECT * FROM messages WHERE seq=?",
+                                                        (row["seq"],)).fetchone())
+                self._emit("update", new_channel, row["id"], out)
+                moved += 1
+            return moved
         return self._transaction(run)
 
     def change_message(self, channel: str, mid: str, event: str,
@@ -1090,17 +1148,53 @@ class WebFrontend(ChatFrontend):
 
     # shadow mode: the composite's writes, with the primary's ids
 
-    def mirror_channel(self, id: str, name: str, kind: str, archived: bool = False) -> dict:
-        """Write a channel row as the primary describes it."""
-        return self.store.upsert_channel(id, name, kind, archived)
+    def mirror_channel(self, id: str, name: str, kind: str, archived: bool = False, *,
+                       description: str | None = None) -> dict:
+        """Write a channel row as the primary describes it; a description
+        not given keeps the stored one."""
+        return self.store.upsert_channel(id, name, kind, archived, description)
+
+    def mirror_backfilled(self, channel: str) -> dict | None:
+        """The composite copied history into the channel quietly: one
+        `channel` event, so an open app reads the channel's threads again."""
+        return self.store.touch_channel(channel)
+
+    def mirror_move(self, old_channel: str, old_key: str, new_channel: str,
+                    new_key: str) -> int:
+        """A thread the primary moved (a renamed or moved Zulip topic): its
+        messages take the new channel and key. The number moved."""
+        self._ensure_channel(new_channel)
+        return self.store.move_thread(old_channel, old_key, new_channel, new_key)
+
+    def _history_row(self, ref: MessageRef, *, author: str, kind: str, text: str,
+                     file: dict | None = None) -> dict | None:
+        """Store a message from the primary's past as a history row (no
+        event, never unread). None when the row is stored already, or when
+        the thread holds a newer message: the rows of a thread stay in time
+        order, so a thread mirrored live before keeps its older history out."""
+        if self.store.message(ref.channel, ref.id) is not None:
+            return None
+        key = ref.thread_key or ref.id
+        newest = self.store.newest_in_thread(ref.channel, key)
+        if newest is not None and ref.posted_at is not None and newest > float(ref.posted_at):
+            return None
+        try:
+            return self.store.add_message(ref.channel, mid=ref.id, thread_key=key,
+                                          author=author, kind=kind, text=text, file=file,
+                                          posted_at=ref.posted_at, history=True)
+        except sqlite3.IntegrityError:
+            return None
 
     def _mirror_upsert(self, ref: MessageRef, event: str, *, author: str, kind: str,
                        text: str, card: dict | None = None, file: dict | None = None,
-                       set_kind: bool = True) -> dict:
+                       set_kind: bool = True, quiet: bool = False) -> dict | None:
         """Insert the message under the primary's ref, or bring the stored
         row in line and append `event` when anything changed. `kind` applies
-        to a stored row only with set_kind."""
+        to a stored row only with set_kind. `quiet` stores a history row
+        (_history_row) and leaves a stored row as it is."""
         self._ensure_channel(ref.channel)
+        if quiet:
+            return self._history_row(ref, author=author, kind=kind, text=text, file=file)
         row = self.store.message(ref.channel, ref.id)
         if row is None:
             try:
@@ -1125,13 +1219,17 @@ class WebFrontend(ChatFrontend):
             return row
         return self.store.change_message(ref.channel, ref.id, event, **fields) or row
 
-    def mirror_post(self, ref: MessageRef, text: str, author: str = BOT) -> dict:
+    def mirror_post(self, ref: MessageRef, text: str, author: str = BOT, *,
+                    quiet: bool = False, markdown: bool = False) -> dict | None:
         """Store a message the primary posted, under its ref. The bot's text
-        is converted as post() converts it; the owner's is kept as typed."""
+        is converted as post() converts it, unless `markdown` says it is
+        Markdown already (Zulip's history); the owner's is kept as typed.
+        `quiet` copies history: no event, never unread, a stored row left as
+        it is and None returned for it."""
         author = OWNER if author == OWNER else BOT
-        out = self._out(text) if author == BOT else (text or "")
+        out = self._out(text) if author == BOT and not markdown else (text or "")
         return self._mirror_upsert(ref, "update", author=author, kind="message", text=out,
-                                   set_kind=False)
+                                   set_kind=False, quiet=quiet)
 
     def mirror_update(self, ref: MessageRef, text: str) -> dict:
         """Replace a stored message's text (a missing one is stored)."""
@@ -1154,12 +1252,16 @@ class WebFrontend(ChatFrontend):
         return self.store.message(channel, msg_id) is not None
 
     def mirror_file(self, ref: MessageRef, file: FileRef, author: str = BOT, *,
-                    path: str | Path | None = None, text: str = "") -> dict:
+                    path: str | Path | None = None, text: str = "", quiet: bool = False,
+                    markdown: bool = False) -> dict | None:
         """Store a file message the primary posted. With `path` the bytes are
         kept too, under the primary's file id, and the web app downloads
         them from this server; without it the file has no id here and its
-        link is the primary's absolute `file.url`."""
+        link is the primary's absolute `file.url`. `quiet` and `markdown`
+        are mirror_post's."""
         author = OWNER if author == OWNER else BOT
+        if quiet and self.store.message(ref.channel, ref.id) is not None:
+            return None
         fid = file.id or file.url or f"{ref.channel}:{ref.id}"
         name = safe_name(file.name)
         mimetype = self._mimetype(name, file.mimetype)
@@ -1172,8 +1274,9 @@ class WebFrontend(ChatFrontend):
             fj = self._file_json(fid, name, mimetype, int(kept["size"] or 0))
         else:
             fj = self._file_json("", name, mimetype, 0, file.url)
-        out = self._out(text) if author == BOT else (text or "")
-        return self._mirror_upsert(ref, "file", author=author, kind="file", text=out, file=fj)
+        out = self._out(text) if author == BOT and not markdown else (text or "")
+        return self._mirror_upsert(ref, "file", author=author, kind="file", text=out, file=fj,
+                                   quiet=quiet)
 
     # the owner's input from the web app
 

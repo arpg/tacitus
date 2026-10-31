@@ -13673,6 +13673,10 @@ if __name__ == "__main__":
 
     _validate_channel_privacy()
     FRONTEND.thread_namer = _thread_title
+    if getattr(FRONTEND, "shadow", None) is not None:
+        # A shadow web chat copies, and fills with history, only the rooms
+        # the bot made for the owner, never every private stream it is in.
+        FRONTEND.room_filter = _owned_room
     # start() identifies the bot and registers the frontend's listeners;
     # every handler above is already in the registry.
     # The chat server may still be coming up after a reboot (Zulip runs in

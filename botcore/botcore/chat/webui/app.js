@@ -714,7 +714,13 @@ function apply(type, data) {
     const i = S.channels.findIndex((c) => c.id === data.id);
     if (i >= 0) S.channels[i] = { ...S.channels[i], ...data }; else S.channels.push(data);
     renderChannels();
-    if (data.id === S.channel) $('channel-name').textContent = channelName(chan(data.id));
+    // A channel event can follow rows stored with no event of their own (the
+    // history the bot copies in when it starts): the open channel reads its
+    // threads again. Another channel reads them when it is opened.
+    if (data.id === S.channel) {
+      $('channel-name').textContent = channelName(chan(data.id));
+      loadThreads(data.id);
+    }
     return;
   }
   if (data.channel && data.id) ingest(data, CREATED.has(type));

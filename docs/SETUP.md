@@ -332,7 +332,9 @@ in either; the web side never blocks the Zulip side.
    key moves it) and enter it once in the app.
 
 The store is `<private dir>/webchat.sqlite`; files you upload from the
-app sit beside it.
+app sit beside it. Each start copies the last week of Zulip history
+into it (`"backfill_days"` in the `web` block; 0 turns the copy off), so
+the app opens with your recent threads.
 
 ## Zulip server
 

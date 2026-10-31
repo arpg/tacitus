@@ -147,6 +147,8 @@ DEFAULTS = {
         },
         # The bot's own web chat (docs/webchat.md). Empty pair_token_file and
         # store_path mean the defaults beside the store (chat.load_frontend).
+        # backfill_days: the days of the primary's history a shadow web chat
+        # copies in when the bot starts; 0 copies none.
         "web": {
             "bind": "127.0.0.1",
             "port": 8470,
@@ -155,6 +157,7 @@ DEFAULTS = {
             "tailscale_login": "",
             "pair_token_file": "",
             "store_path": "",
+            "backfill_days": 7,
         },
     },
 }
