@@ -30,10 +30,14 @@ job (after the `ci` summary job, on pushes to `main` only) creates an
 annotated tag on that commit and pushes it:
 
 - The version is the newest `vX.Y.Z` tag in `main`'s history with the
-  patch number raised by one. `#minor` or `#major` anywhere in a commit
-  message since that tag, or a footer line `release: minor` (or `major`),
-  raises that part instead and resets the parts below it. A merge commit
-  carries the pull request's title and body, so the marker goes there.
+  patch number raised by one. `#minor` or `#major` in the released commit
+  (the merge or squash commit) or in the body of the pull request it
+  merged, or a footer line `release: minor` (or `major`) there, raises
+  that part instead and resets the parts below it. A marker is a whole
+  token between spaces or line ends: `#minor,` or a quoted `` `#major` ``
+  raises nothing. Older commits are never read, so a message that only
+  mentions a marker cannot raise a later release. The marker goes in the
+  pull request's title or body.
 - A commit that a newer release already contains gets no tag: two pushes
   in quick succession can finish out of order, and the older one must
   never get the higher number. The job runs in a concurrency group of its

@@ -368,6 +368,63 @@ def test_the_next_version_bumps_patch_minor_and_major(tmp_path):
     assert update.bump("v1.4.9", "nothing") == "v1.4.10"
 
 
+def test_a_marker_in_an_older_commit_never_raises_the_version(tmp_path):
+    repo = tmp_path / "r"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "first")
+    git(repo, "tag", "-a", "-m", "v0.1.0", "v0.1.0")
+    git(repo, "commit", "-q", "--allow-empty", "-m",
+        "The updater docs\n\nThe patch goes up; #minor,\n  #major or a `release: minor|major` footer\n"
+        "raises that part.\n\nrelease: major")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "Merge pull request #9 from someone/fix\n\nA plain fix")
+    assert update.next_version(repo) == "v0.1.1", "only the released commit's message counts"
+
+
+def test_a_marker_stands_alone():
+    for text in ("A new verb #minor", "#minor", "Title\n\n#Minor\n", "Body\n\nrelease: minor\n",
+                 "x\nrelease:minor"):
+        assert update.bump("v0.1.4", text) == "v0.2.0", text
+    for text in ("Break it #major", "Body\n\nRelease: Major\n"):
+        assert update.bump("v0.1.4", text) == "v1.0.0", text
+    for text in ("#minor, #major, or", "see `#major`", "the #majority", "issue#minor",
+                 "a `release: minor|major` footer", "release: major soon", "(#major)"):
+        assert update.bump("v0.1.4", text) == "v0.1.5", text
+
+
+def test_the_pull_request_body_of_the_released_commit_may_hold_the_marker(tmp_path, capsys):
+    repo = tmp_path / "r"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "first")
+    git(repo, "tag", "-a", "-m", "v0.1.0", "v0.1.0")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "An old change (#3)\n\n#major")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "Merge pull request #9 from someone/verb\n\nA new verb")
+    asked = []
+
+    def body(slug, number):
+        asked.append((slug, number))
+        return "What it does.\n\nrelease: minor\n"
+
+    assert update.next_version(repo, github_repo="o/n", fetch=body) == "v0.2.0"
+    assert asked == [("o/n", 9)], "only the released commit's pull request"
+
+    def down(slug, number):
+        raise OSError("no network")
+
+    assert update.next_version(repo, github_repo="o/n", fetch=down) == "v0.1.1"
+    assert "#9 did not come" in capsys.readouterr().err
+    git(repo, "commit", "-q", "--allow-empty", "-m", "A direct commit")
+    asked.clear()
+    assert update.next_version(repo, github_repo="o/n", fetch=body) == "v0.1.1" and asked == []
+    git(repo, "commit", "-q", "--allow-empty", "-m", "A squashed verb (#11)")
+    assert update.next_version(repo, github_repo="o/n", fetch=body) == "v0.2.0" and asked == [("o/n", 11)]
+    r = subprocess.run([sys.executable, str(REPO / "scripts" / "update.py"), "next-version",
+                        "--repo", str(repo)], capture_output=True, text=True,
+                       env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")})
+    assert r.returncode == 0 and r.stdout == "v0.1.1\n", "stdout is the tag alone"
+
+
 def test_an_older_commit_finishing_late_gets_no_tag(tmp_path):
     repo = tmp_path / "r"
     repo.mkdir()
@@ -1165,6 +1222,9 @@ def test_the_release_job_signs_after_a_green_main_only():
     assert job["concurrency"]["cancel-in-progress"] is False
     steps = "\n".join(str(s.get("run", "")) for s in job["steps"])
     assert "scripts/update.py next-version" in steps
+    nxt = next(s for s in job["steps"] if s.get("name") == "Next version")
+    assert '--github-repo "$GITHUB_REPOSITORY"' in nxt["run"]
+    assert nxt["env"]["GH_TOKEN"] == "${{ github.token }}"
     assert "gpg.format=ssh" in steps and "tag -s" in steps and "verify-tag" in steps
     assert "channels/latest" in steps and "secrets.RELEASE_SIGNING_KEY" in wf.read_text()
     checkout = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@")]

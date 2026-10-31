@@ -142,7 +142,8 @@ CI lints every pull request once it is ready for review; a draft runs
 nothing. A push to `main` that passes the full tiers is a release: CI
 signs the next `vX.Y.Z` tag on it, and installs pick it up within the
 hour ([docs/updates.md](docs/updates.md)). The patch number goes up by
-default; `#minor` or `#major` in the merge commit raises that part.
+default; `#minor` or `#major` as a word of its own in the pull request's
+title or body raises that part.
 A step each install's owner must take by hand goes in a line `Owner-steps: <the step>`
 in the pull request body or a commit message; the release notes list it.
 The full tiers (the wall on Linux and macOS, the Docker wall, the install

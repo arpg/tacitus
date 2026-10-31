@@ -249,8 +249,10 @@ jobs:
     # Every green push to main is a release (docs/updates.md). The job
     # signs an annotated tag vX.Y.Z on the commit the tiers just passed:
     # the patch number one above the newest release in main's history, or
-    # the minor or major one when a commit message since then says #minor,
-    # #major or `release: minor|major`. A commit a newer release already
+    # the minor or major one when the released commit itself (the merge or
+    # squash commit) or its pull request's body has a standalone #minor or
+    # #major, or a footer line `release: minor` (or major); an older
+    # commit's message never raises it. A commit a newer release already
     # contains gets none. One release at a time (the concurrency group), so
     # two runs never compute the same number. Without the secret the job
     # warns and tags nothing. A tag pushed with the workflow's token starts
@@ -263,7 +265,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      # The notes read the owner steps of each pull request's body.
+      # The version marker and the owner steps in pull request bodies.
       pull-requests: read
     concurrency:
       group: release-main
@@ -275,9 +277,12 @@ jobs:
 
       - name: Next version
         id: next
+        env:
+          # The pull request's body may hold the marker.
+          GH_TOKEN: ${{ github.token }}
         run: |
           git fetch --force --tags origin
-          tag=$(python3 scripts/update.py next-version --head "$GITHUB_SHA" --main origin/main)
+          tag=$(python3 scripts/update.py next-version --head "$GITHUB_SHA" --main origin/main --github-repo "$GITHUB_REPOSITORY")
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "next release: ${tag:-none (a newer release contains $GITHUB_SHA)}"
 

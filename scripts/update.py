@@ -18,7 +18,8 @@ when they do not come up healthy.
     update.py rollback                   switch back to the previous release
     update.py channel                    the effective channel (the root step reads it)
     update.py layout --owner NAME [--seed DIR]          root, once: the release layout
-    update.py next-version [--head SHA] [--main REF]    CI: the next tag, or nothing
+    update.py next-version [--head SHA] [--main REF] [--github-repo OWNER/NAME]
+                                         CI: the next tag, or nothing
     update.py allowed-signers --key FILE                CI and cut-tag.sh
     update.py verify-tag --repo DIR --tag vX.Y.Z [--key FILE]
     update.py relay [--dry-run]          the relay host's updater (root)
@@ -247,8 +248,12 @@ def newest_signed(repo: Path, channel: str, signers: Path) -> str:
 
 # ── versions for CI ──────────────────────────────────────────────────
 
-BUMP_MAJOR_RE = re.compile(r"#major\b|^release:\s*major\s*$", re.I | re.M)
-BUMP_MINOR_RE = re.compile(r"#minor\b|^release:\s*minor\s*$", re.I | re.M)
+# A marker stands alone: `#major` or `#minor` as a whole token between
+# spaces or line ends, or a footer line `release: major` (`minor`). Text
+# that only mentions one (`#minor,`, a quoted `#major`, "release:
+# minor|major") raises nothing.
+BUMP_MAJOR_RE = re.compile(r"(?<!\S)#major(?!\S)|^release:[ \t]*major[ \t]*$", re.I | re.M)
+BUMP_MINOR_RE = re.compile(r"(?<!\S)#minor(?!\S)|^release:[ \t]*minor[ \t]*$", re.I | re.M)
 
 
 def bump(version: str, messages: str) -> str:
@@ -260,11 +265,32 @@ def bump(version: str, messages: str) -> str:
     return f"v{major}.{minor}.{patch + 1}"
 
 
-def next_version(repo: Path, head: str = "HEAD", main: str = "HEAD") -> str:
+def release_message(repo: Path, head_sha: str, github_repo: str | None = None,
+                    fetch=None) -> str:
+    """The text the bump markers are read from: the released commit's own
+    message and, with `github_repo`, the body of the one pull request that
+    commit merged or squashed (through the API; a body that does not come
+    counts as empty). Never an older commit's message, so a marker that a
+    past message only mentions cannot raise the version."""
+    text = git_out(repo, "log", "-1", "--format=%B", head_sha)
+    rn = _notes_module() if github_repo else None
+    pr = rn.change_of(head_sha, text)["pr"] if rn else None
+    if pr is not None:
+        try:
+            text += "\n\n" + (fetch or rn.fetch_pr_body)(github_repo, pr)
+        except Exception as e:
+            print(f"[update] next-version: the body of #{pr} did not come ({str(e)[:120]}); "
+                  "the commit message alone decides", file=sys.stderr)
+    return text
+
+
+def next_version(repo: Path, head: str = "HEAD", main: str = "HEAD",
+                 github_repo: str | None = None, fetch=None) -> str:
     """The tag the release job puts on `head`, or "" when a release already
     contains it (a re-run, or a newer push that finished first). The last
-    release is the newest vX.Y.Z tag in `main`'s history; the commit
-    messages since it may raise the minor or the major number."""
+    release is the newest vX.Y.Z tag in `main`'s history; the released
+    commit's message, and its pull request's body with `github_repo`, may
+    raise the minor or the major number (release_message)."""
     head_sha = git_out(repo, "rev-parse", f"{head}^{{commit}}")
     tags = release_tags(repo, merged=main)
     if not tags:
@@ -273,8 +299,7 @@ def next_version(repo: Path, head: str = "HEAD", main: str = "HEAD") -> str:
     last_sha = git_out(repo, "rev-parse", f"refs/tags/{last}^{{commit}}")
     if git(repo, "merge-base", "--is-ancestor", head_sha, last_sha, check=False).returncode == 0:
         return ""
-    messages = git_out(repo, "log", "--format=%B", f"{last_sha}..{head_sha}")
-    nxt = bump(last, messages)
+    nxt = bump(last, release_message(repo, head_sha, github_repo, fetch))
     if git(repo, "rev-parse", "-q", "--verify", f"refs/tags/{nxt}", check=False).returncode == 0:
         raise UpdateError(f"{nxt} already exists outside {main}'s history; tag by hand")
     return nxt
@@ -1398,6 +1423,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--repo", default=".")
     p.add_argument("--head", default="HEAD")
     p.add_argument("--main", default="HEAD")
+    p.add_argument("--github-repo", help="OWNER/NAME: also read the markers in the body of the "
+                                         "pull request the released commit merged (CI)")
     p = sub.add_parser("allowed-signers")
     p.add_argument("--key", default=str(TREE / KEY_FILE))
     p = sub.add_parser("verify-tag")
@@ -1411,7 +1438,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if a.cmd == "next-version":
-            out = next_version(Path(a.repo), a.head, a.main)
+            out = next_version(Path(a.repo), a.head, a.main, a.github_repo)
             if out:
                 print(out)
             return 0

@@ -17,6 +17,12 @@ repository that preceded it.
   changes and names the first two (`Updated to v0.1.7 (3 changes: ...)`)
   with any owner step, `version` lists the first three and the link, and
   the doctor's `updates` row says how many changes the install is behind.
+- **A version bump reads only the released commit.** `update.py
+  next-version` read `#minor` and `#major` in every commit message since
+  the last release, so a message that described the markers raised the
+  next release to a new major version. It now reads the released merge or
+  squash commit and, in CI, the body of its pull request, and a marker
+  counts only as a word of its own or a `release:` footer line.
 
 - **Installs update themselves.** Every push to `main` that passes the
   full CI tiers becomes a release: the `release` job signs the next
