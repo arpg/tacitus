@@ -58,6 +58,9 @@ start() refuses (Identity and auth):
 ```
 
 `"frontend": "web"` with no `shadow` runs the web front end alone. An
+optional `notify` map takes the notifier's channel keys and names a web
+channel for each (`{"personal": {"channel": "dm"}}`); a key it does not
+name posts to the EA channel (CLI senders). An
 optional `push_subject` key (a `mailto:` or `https:` URL) is the contact
 the push services see (Notifications, below). An optional `relay` block
 turns on the relay (`docs/webchat-relay.md`, Config); it counts only from
@@ -316,9 +319,10 @@ owner too: Claude runs inside them as `ea-bot`, and the wrapper posts its
 output as the owner (`slack_notifier.post_to_slack`, then
 `chat_notify.post`). Owner plugins, scheduled sends, the alert flush and
 `chat/direct.py` are owner processes as well. The resident (`ea-bot`)
-holds no chat credential: `chat_upload.py` run as ea-bot stages its job
-(`slack_outbox`), and the bot sends it through the composite, which
-mirrors it.
+holds no chat credential and may not open the store: `chat_upload.py`
+run as ea-bot stages its job in the outbox (`slack_outbox`, which serves
+every front end), and the bot sends it through its own front end (the
+composite, which mirrors it, or the web front end alone).
 
 **The rule.** A command-line sender writes the store when it is an owner
 process, so the store it computes is the bot's file and the user is the
@@ -343,6 +347,16 @@ open (`<ea_dir>/state/webchat.sqlite`) is one the bot never reads.
   side converts as its `post` would. The channel row is written only
   when the store lacks it, so the bot's row (name, archived) stands. A
   mirror failure is printed and the post stands.
+- Standalone (`"frontend": "web"`), `chat_notify.post` and `post_as_bot`
+  post each part into the store as the bot through the writer-only web
+  front end, all parts of a post in one new thread, in the channel the
+  `notify` entry names, else the EA channel (`main`); the EA channel and
+  the DM are made when the bot has not made them yet, and another
+  channel must exist. A process that is not the owner's posts nothing
+  and says so. `chat_upload.py` in such a process stages its job in the
+  outbox instead; the bot's drain finds the channel that holds a web
+  thread key through the store (`WebFrontend.thread_channel`) and posts
+  there when it is one of the owner's.
 - Not mirrored: a Slack webhook post (no message id comes back), and a
   Zulip direct message or scheduled direct message from
   `chat/direct.py` (they live outside the streams the web chat holds; the
@@ -369,7 +383,8 @@ the owner, so the 0600 store, its journal and `webchat-files/` need no
 change. In Docker the bot and scheduler containers share the
 `ea-private` volume. Standalone (`"frontend": "web"`), a command-line
 sender gets the bare `WebFrontend`, writer-only, on the store its own
-process computes.
+process computes; only an owner process's is the bot's (the senders
+above check).
 
 ## The web app (B)
 
@@ -442,7 +457,9 @@ are `r<n>`, files `f<n>`, messages `w<seq>`, threads `t<seq>`. A channel
 row also carries `description`. `unread` counts the bot's messages after
 the owner's last message in the channel or the channel's read mark;
 `GET .../threads` and `GET .../threads/{key}` move the read mark to the
-newest message.
+newest message. `thread_channel(key)` names the one channel that holds a
+thread key or message id (None for none or several), for a caller that
+has the key alone (the bot delivering a staged job).
 
 **Thread list.** Threads come newest first by their first message. Each
 item is that message with `reply_count` and `last_at` (the thread's
