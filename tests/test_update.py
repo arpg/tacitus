@@ -156,6 +156,13 @@ def fast_gate():
     return {"timeout": 30, "stable": 3, "sleep": c.sleep, "clock": c}
 
 
+@pytest.fixture(autouse=True)
+def _not_in_a_container(monkeypatch):
+    """The Docker wall runs this file inside a container, where every tree
+    would read as the image's; each test says when it means one."""
+    monkeypatch.setattr(us, "in_container", lambda: False)
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """EA_DIR, EA_PRIVATE_DIR and EA_LIVE_DIR in the temp dir, so nothing
@@ -215,6 +222,19 @@ def test_auto_and_explicit_channels_and_the_private_file_outranks_config(env):
     # a private file others can write is not the owner's word
     os.chmod(pin, 0o666)
     assert us.effective_channel(env["live"], env["priv"], env["ea"]) == ("latest", "ea-config.json")
+
+
+def test_in_a_container_the_image_is_the_release(env, monkeypatch, capsys):
+    env["live"].mkdir()
+    set_config(env["ea"], profile="assistant", update={"channel": "latest"})
+    monkeypatch.setattr(us, "in_container", lambda: True)
+    assert us.tree_kind(env["live"]) == "container"
+    status, detail, fix = us.doctor_row(env["live"], env["priv"], env["ea"])
+    assert status == "PASS" and "image" in detail and "docker.md" in fix
+    args = ["--live", str(env["live"]), "--private", str(env["priv"]), "--ea-dir", str(env["ea"])]
+    assert update.main(args + ["run"]) == 0
+    assert update.main(args + ["apply"]) == 1
+    assert "docker compose build" in capsys.readouterr().out
 
 
 def test_the_config_template_and_the_default():
@@ -709,6 +729,15 @@ def test_rollback_by_hand_switches_to_previous_and_holds_the_release(install):
     assert git(install["lanes"], "rev-parse", "HEAD") == install["first"]
 
 
+def test_with_no_trust_root_nothing_installs_and_the_error_is_recorded(install):
+    (install["live"] / ".release-key.pub").unlink()
+    paths, host = install["paths"], FakeHost()
+    with pytest.raises(update.VerifyError, match="nothing can be verified"):
+        update.apply(paths, host, channel="latest", gate_kw=fast_gate(), idle_probe=lambda: [])
+    assert us.installed(paths.live)["version"] == "v0.1.1" and host.restarts == []
+    assert "release-key" in us.load_status(paths.private)["last_error"]["error"]
+
+
 def test_the_cli_status_and_channel_on_a_hook_tree(env, capsys):
     env["live"].mkdir()
     (env["live"] / ".deployed-commit").write_text("abc1234\n")
@@ -787,6 +816,9 @@ def test_the_doctor_row(env):
     assert status == "WARN" and "v0.1.3 held back" in detail and "--tag v0.1.3" in fix
     _status(env, checked_at=iso(4 * 86400))
     assert us.doctor_row(env["live"], env["priv"], env["ea"], now=now)[0] == "WARN"
+    _status(env, checked_at=iso(600), last_error={"at": iso(600), "error": "no .release-key.pub at x"})
+    status, detail, fix = us.doctor_row(env["live"], env["priv"], env["ea"], now=now)
+    assert status == "WARN" and "release-key" in detail and "One-time setup" in fix
 
 
 def test_the_doctor_calls_the_updates_row(env, monkeypatch):

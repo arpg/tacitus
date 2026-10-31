@@ -246,9 +246,11 @@ delay), output in `~/.ea-private/logs/update.log`.
 
 - **The doctor**, `updates`: the installed version, the channel, the
   newest release on it, the last apply and its result, and any version
-  held back. It warns when a version is held back, when the timer has not
-  checked in two days, or when a channel is set on a tree that still needs
-  the root step. It never fails an install.
+  held back. It warns when a version is held back, when the last apply
+  failed or the last run stopped on an error (no `.release-key.pub` yet,
+  no network), when the timer has not checked in two days, or when a
+  channel is set on a tree that still needs the root step. It never
+  fails an install.
 - **The morning briefing**: one line when the installed version changed
   since the last briefing, `Updated to v0.1.7 (from v0.1.5).`, or a
   version was held back, `Update v0.1.8 held back; running v0.1.7.`

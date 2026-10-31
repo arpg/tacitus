@@ -238,6 +238,12 @@ def doctor_row(live: Path, private: Path, ea: Path,
         return ("WARN", f"{detail}: {last.get('detail', '?')}",
                 "the next run tries again; a restart that sudo refuses needs the grant "
                 "deploy/harden-permissions.sh writes (/etc/sudoers.d/ea-chat-bot)")
+    err = st.get("last_error") or {}
+    if err.get("error"):
+        return ("WARN", f"{detail}; the last run stopped: {err['error'][:200]}",
+                f"python3 {live}/scripts/update.py check says it again; a missing "
+                ".release-key.pub means the install's release carries no trust root yet "
+                "(docs/updates.md, One-time setup)")
     if held.get("version"):
         return ("WARN", f"{detail}; {held['version']} held back: {held.get('reason', '?')}",
                 "it installs with the next newer release, or by hand: python3 "
