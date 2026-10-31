@@ -484,3 +484,24 @@ def test_a_bad_scripted_answer_names_its_key(monkeypatch, tmp_path):
         key = [k for k in bad if k not in ("full-name", "conservative-defaults")][0]
         with pytest.raises(SystemExit, match=key):
             _run_answers(monkeypatch, tmp_path / phase, answers, "--phase", phase)
+
+
+def test_the_terminal_google_sign_in_calls_the_client_setup(tmp_path, monkeypatch, capsys):
+    """google_sign_in calls the function the client module has; a name
+    that does not exist there made every terminal sign-in print "auth
+    failed" and move on."""
+    import sys as _sys, types as _types
+    import importlib
+    ui = importlib.import_module("user_init") if "user_init" in _sys.modules else None
+    if ui is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("user_init", str(ROOT / "scripts" / "install" / "user_init.py"))
+        ui = importlib.util.module_from_spec(spec); spec.loader.exec_module(ui)
+    monkeypatch.setattr(ui, "AUTH_DIR", tmp_path)
+    (tmp_path / "google_client_secret.json").write_text("{}")
+    calls = []
+    fake = _types.ModuleType("google_calendar_client"); fake.setup_all_accounts = lambda: calls.append("setup")
+    monkeypatch.setitem(_sys.modules, "google_calendar_client", fake)
+    ui.google_sign_in()
+    out = capsys.readouterr().out
+    assert calls == ["setup"] and "successful" in out and "failed" not in out

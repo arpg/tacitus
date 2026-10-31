@@ -856,7 +856,7 @@ def google_sign_in() -> None:
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
         import google_calendar_client as gcal
-        gcal.authenticate_all()
+        gcal.setup_all_accounts()
         print("  Google Calendar authentication successful!")
     except Exception as e:
         print(f"  Google Calendar auth failed: {e}")
