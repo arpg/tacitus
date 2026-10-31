@@ -166,6 +166,10 @@ BACKFILL_ROOTS = 500
 # Seconds live mirroring waits for the history copy, and the writes it
 # keeps waiting at most, before it writes them and goes on.
 BACKFILL_HOLD_S = 60.0
+# The pause after each read of the primary during the history copy, so a
+# copy of many channels and threads stays under the primary's API rate
+# limit and leaves room for the bot's live calls.
+BACKFILL_PACE_S = 0.4
 HOLD_MAX = 2000
 
 # The subtypes the core reads as a person's message.
@@ -230,6 +234,8 @@ class ShadowFrontend(ChatFrontend):
         self.backfill_days = max(0.0, float(backfill_days or 0))
         self.backfill_cap = int(backfill_cap)
         self.backfill_hold_s = BACKFILL_HOLD_S
+        self.backfill_pace_s = BACKFILL_PACE_S
+        self._sleep: Callable[[float], None] = time.sleep
         # Picks the rooms of archived_map that start() copies; None takes all.
         self.room_filter: Callable[[str], bool] | None = None
         # What the last history copy did (backfill's report), None before one.
@@ -587,6 +593,7 @@ class ShadowFrontend(ChatFrontend):
             log.warning("shadow: history copy of %s: the primary's history read failed",
                         channel, exc_info=True)
             return 0, False
+        self._pace()
         copied = 0
         threads: set[str] = set()
         for root in roots:
@@ -600,11 +607,16 @@ class ShadowFrontend(ChatFrontend):
                 log.warning("shadow: history copy of %s: the primary's thread read failed",
                             channel, exc_info=True)
                 return copied, False
+            self._pace()
             for msg in msgs:
                 if copied >= room:
                     return copied, True
                 copied += self._backfill_message(channel, key, msg, until, opts, files_take)
         return copied, True
+
+    def _pace(self) -> None:
+        if self.backfill_pace_s > 0:
+            self._sleep(self.backfill_pace_s)
 
     def _history_author(self, msg: InboundMessage) -> tuple[str, str]:
         """(author, text) of a message from the primary's past: the owner's

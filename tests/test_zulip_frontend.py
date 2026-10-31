@@ -1679,3 +1679,19 @@ def test_channel_info_carries_the_description(tmp_path):
     fe, c = make(tmp_path)
     c.streams["streams"][0]["description"] = "The EA stream"
     assert fe.channel_info(f"stream:{EA}").description == "The EA stream"
+
+
+def test_a_rate_limited_history_read_is_tried_again(tmp_path):
+    fe, c = make(tmp_path)
+    limited = {"result": "error", "code": "RATE_LIMIT_HIT", "retry-after": 2.0,
+               "msg": "API usage exceeded rate limit"}
+    answers = [dict(limited), dict(limited), {**OK, "messages": [], "found_oldest": True}]
+    c.get_messages = lambda req: answers.pop(0)
+    msgs, oldest = fe._history([{"operator": "channel", "operand": 4}], 200)
+    assert msgs == [] and oldest and not answers
+    assert c.named("sleep") == [2.0, 2.0]
+    # a read limited past every retry raises, as a plain failure does
+    c.get_messages = lambda req: dict(limited)
+    with pytest.raises(ChatError):
+        fe._history([{"operator": "channel", "operand": 4}], 200)
+    assert len(c.named("sleep")) == 2 + zf.HISTORY_RATE_RETRIES

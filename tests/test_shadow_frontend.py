@@ -945,3 +945,23 @@ def test_load_frontend_passes_the_days_of_history(tmp_path, monkeypatch):
         fe = chat.load_frontend(ea_dir=_ea_dir(ea_dir, {"frontend": "memory", "shadow": "web",
                                                         "web": block}), env={})
         assert fe.backfill_days == days, block
+
+
+def test_history_copy_pauses_after_each_read_of_the_primary(tmp_path):
+    primary, web = MemoryFrontend(), _web(tmp_path)
+    fe = ShadowFrontend(primary, web, backfill_days=7)
+    now = time.time()
+    for i in range(3):
+        _said(primary, "C_MAIN", f"t{i}", f"thread {i}", now - 100 + i)
+    _said(primary, "C_MAIN", "t0r", "a reply", now - 50, thread="t0")
+    naps = []
+    fe._sleep = naps.append
+    fe.mirror_channels()
+    assert fe.backfill()["copied"] == 4
+    # one pause after each channel read (main and the DM), one after each of
+    # the three thread reads
+    assert naps == [fe.backfill_pace_s] * 5 and fe.backfill_pace_s > 0
+    fe.backfill_pace_s = 0
+    naps.clear()
+    fe.backfill()
+    assert naps == []

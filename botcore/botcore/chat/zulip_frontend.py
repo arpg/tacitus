@@ -163,6 +163,10 @@ CHIP_REFRESH_AT = (75.0, 600.0)
 # RATE_WAIT_MAX seconds, up to RATE_RETRIES times.
 RATE_RETRIES = 3
 RATE_WAIT_MAX = 5.0
+# A history read (the shadow's history copy makes hundreds in a row) waits
+# longer and more often: it runs off the event loop.
+HISTORY_RATE_RETRIES = 6
+HISTORY_RATE_WAIT_MAX = 30.0
 
 # Unicode code points of the reactions that confirm or cancel a card,
 # mapped to a name REACTION_ROLES knows, so a reaction resolves whatever
@@ -1297,21 +1301,27 @@ class ZulipFrontend(ChatFrontend):
             return (cached, *(c for c in cands if c != cached))
         return cands
 
-    def _reaction_call(self, verb: str, msg_id: str, name: str) -> Any:
-        """add_reaction ("add") or remove_reaction ("remove"), tried again
-        after the server's retry-after while it answers RATE_LIMIT_HIT."""
-        call = self.client.add_reaction if verb == "add" else self.client.remove_reaction
-        for attempt in range(RATE_RETRIES + 1):
-            res = call({"message_id": int(msg_id), "emoji_name": name})
-            if attempt == RATE_RETRIES or not (isinstance(res, dict)
-                                               and res.get("code") == "RATE_LIMIT_HIT"):
+    def _rate_limited(self, call: Callable[[], Any], *, retries: int = RATE_RETRIES,
+                      wait_max: float = RATE_WAIT_MAX) -> Any:
+        """`call()`, tried again after the server's retry-after (capped at
+        `wait_max`) while it answers RATE_LIMIT_HIT, up to `retries` times."""
+        for attempt in range(retries + 1):
+            res = call()
+            if attempt == retries or not (isinstance(res, dict)
+                                          and res.get("code") == "RATE_LIMIT_HIT"):
                 return res
             try:
                 wait = float(res.get("retry-after") or 1.0)
             except (TypeError, ValueError):
                 wait = 1.0
-            self._sleep(min(max(wait, 0.0), RATE_WAIT_MAX))
+            self._sleep(min(max(wait, 0.0), wait_max))
         return res
+
+    def _reaction_call(self, verb: str, msg_id: str, name: str) -> Any:
+        """add_reaction ("add") or remove_reaction ("remove"), tried again
+        after the server's retry-after while it answers RATE_LIMIT_HIT."""
+        call = self.client.add_reaction if verb == "add" else self.client.remove_reaction
+        return self._rate_limited(lambda: call({"message_id": int(msg_id), "emoji_name": name}))
 
     def react(self, channel: str, msg_id: str, status: Status | str) -> bool:
         key = status.value if isinstance(status, Status) else str(status)
@@ -1678,9 +1688,10 @@ class ZulipFrontend(ChatFrontend):
         return [{"operator": "dm", "operand": _dm_ids(channel)}]
 
     def _history(self, narrow: list[dict], limit: int) -> tuple[list[dict], bool]:
-        res = self.client.get_messages({"anchor": "newest", "num_before": int(limit),
-                                        "num_after": 0, "apply_markdown": False,
-                                        "narrow": narrow})
+        req = {"anchor": "newest", "num_before": int(limit), "num_after": 0,
+               "apply_markdown": False, "narrow": narrow}
+        res = self._rate_limited(lambda: self.client.get_messages(req),
+                                 retries=HISTORY_RATE_RETRIES, wait_max=HISTORY_RATE_WAIT_MAX)
         if not _ok(res):
             raise ChatError(f"zulip get_messages failed: {_err(res)}")
         msgs = sorted(res.get("messages") or [], key=lambda m: int(m.get("id", 0)))
