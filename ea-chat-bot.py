@@ -8611,15 +8611,35 @@ def _remote_llm_note(fn_name: str, *args) -> None:
 
 
 def _thread_channel(thread_ts: str) -> str | None:
-    """The channel a thread key names: a Zulip stream topic's stream, or a
-    Zulip DM key itself. None for a key that names no channel (a Slack ts)."""
+    """The channel a thread key names: a Zulip stream topic's stream, a
+    Zulip DM key itself, or the web chat channel that holds a web key. None
+    for a key that names no channel (a Slack ts)."""
     key = str(thread_ts or "")
     head, sep, _ = key.partition(":topic:")
     if sep and head.startswith("stream:"):
         return head
     if key.startswith("dm:"):
         return key
-    return None
+    return _web_thread_channel(key)
+
+
+def _web_thread_channel(thread_ts: str) -> str | None:
+    """The web chat channel that holds thread `thread_ts`, a web key
+    (`t<seq>`, or a message's `w<seq>`), from the web front end's store
+    (`thread_channel`). None for any other key (a Slack ts, a Zulip key),
+    on any other front end, a composite included (its keys are the
+    primary's), and for a key the store does not hold."""
+    key = str(thread_ts or "")
+    if not re.fullmatch(r"[tw]\d+", key):
+        return None
+    find = getattr(FRONTEND, "thread_channel", None)
+    if not callable(find):
+        return None
+    try:
+        return find(key) or None
+    except Exception as e:
+        log.warning(f"web chat thread lookup failed: {e}")
+        return None
 
 
 def _staged_route(route: dict, channel: str, thread_ts: str | None) -> tuple:
@@ -12729,10 +12749,14 @@ def _delivery_channel(thread_ts: str) -> str:
     A Zulip thread key names its stream, and the frontend refuses a thread
     outside the channel it is given; the key's stream is used when it is
     one of the EA's own (the main, scheduling or DM stream, or a
-    registered room). A Slack ts names no channel: the EA channel."""
+    registered room). A web chat key names its channel only in the web
+    store, which says which holds the thread, under the same rule. A
+    Slack ts names no channel: the EA channel."""
     head, sep, _ = str(thread_ts or "").partition(":topic:")
     if not (sep and head.startswith("stream:")):
-        return CHANNEL_ID
+        head = _web_thread_channel(thread_ts)
+        if not head:
+            return CHANNEL_ID
     return head if _owner_destination(head) else CHANNEL_ID
 
 
@@ -12832,11 +12856,13 @@ def resident_router_loop():
     while True:
         time.sleep(ROUTER_POLL_S)
         try:
-            # Bot-mediated delivery: the resident (ea-bot) has no Slack
-            # token, so it stages files -- and text destined for a THREAD,
+            # Bot-mediated delivery: the resident (ea-bot) has no chat
+            # credential (and on the web chat no access to the owner's
+            # store), so it stages files -- and text destined for a THREAD,
             # which incoming webhooks cannot reach -- in the outbox; send
-            # them here with the bot's token. Independent of pane liveness
-            # -- anything staged before a rotation should still go out.
+            # them here through the bot's own front end. Independent of
+            # pane liveness -- anything staged before a rotation should
+            # still go out.
             try:
                 from preprocessor import slack_outbox as _outbox
 

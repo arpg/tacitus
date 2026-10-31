@@ -112,7 +112,7 @@ def _ns(monkeypatch, *, registry=None, owner="U_OWNER", dm="D_OWNER", owned=None
           "_CHANNEL_SCOPE_CACHE": {}, "ROOM_MEMBERS_TTL_S": 300, "_ROOM_MEMBERS_CACHE": {},
           "_resolve_dm_channel": lambda: dm,
           "_owner_rooms": _Rooms(list(reg) if owned is None else owned), **extra}
-    for name in (*ROOM_HELPERS, "_thread_channel", "_staged_route",
+    for name in (*ROOM_HELPERS, "_thread_channel", "_web_thread_channel", "_staged_route",
                  "_owner_dm_channels", "_owner_destination", "_delivery_channel",
                  "_is_owner_message", "_owner_card_channel", "_deliver_confirmation"):
         exec(compile(_fn_body(name), f"ea-chat-bot.py[{name}]", "exec"), ns)
@@ -177,6 +177,24 @@ def test_background_delivery_uses_the_same_check(monkeypatch):
     fe.members["stream:36"] = {"U_OWNER", "U_BOT", "U_GUEST"}
     ns["_ROOM_MEMBERS_CACHE"].clear()
     assert deliver("stream:36:topic:a") == "C_MAIN"
+
+
+def test_a_web_thread_key_finds_its_channel_through_the_store(monkeypatch):
+    """A web chat key (t<seq>) names no channel in its text: the web
+    front end's store says which channel holds it, and the owner rule
+    still decides whether the bot posts there."""
+    ns, fe, _ = _ns(monkeypatch, dm="D_OWNER")
+    held = {"t5": "D_OWNER", "t6": ROOM, "t7": STRANGER_ROOM}
+    fe.thread_channel = lambda key: held.get(key)
+    ns["CHANNEL_ID"] = "C_MAIN"
+    deliver, route = ns["_delivery_channel"], ns["_staged_route"]
+    assert (deliver("t5"), deliver("t6"), deliver("t7"), deliver("t8")) == \
+        ("D_OWNER", ROOM, "C_MAIN", "C_MAIN")
+    assert route({"thread_ts": "t6"}, "C_MAIN", None) == (ROOM, "t6")
+    assert route({"thread_ts": "t7"}, "C_MAIN", "9.9") == ("C_MAIN", "9.9")
+    # a front end without the lookup (Slack, Zulip, a composite) is as before
+    del fe.thread_channel
+    assert deliver("t5") == "C_MAIN" and ns["_thread_channel"]("1.2") is None
 
 
 # ── finding: the room registry is ea-bot space ────────────────────────

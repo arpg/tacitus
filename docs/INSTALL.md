@@ -108,9 +108,10 @@ question at a time.
    `EA-Managed` calendar, and your working hours.
 5. **The service account.** Creates the `ea-bot` user that Claude runs
    as, and turns on the mail mediator.
-6. **Chat** (`assistant` only). Setup asks for Zulip or Slack today. For
-   the web chat, ask Claude Code to follow SETUP.md "Web chat": it writes
-   the settings and gives you the `tailscale serve` line (step 8 below).
+6. **Chat** (`assistant` only). Setup asks which: the web chat
+   (recommended), Zulip or Slack. For the web chat it asks this
+   machine's tailnet name and your Tailscale login, writes the settings
+   and gives you the `tailscale serve` line (step 8 below).
 7. **Extras** (optional). Claude Code connectors, and the model you host.
 8. **Acceptance.** Locks down permissions, installs the scheduled jobs,
    runs the health check and one briefing so you can see where it lands.
@@ -154,7 +155,9 @@ where you do it and what it does.
    logged in with: Gmail and Google Calendar under Settings > Connectors.
 10. **Harden and start the bot.** In the second terminal:
     `sudo bash deploy/harden-permissions.sh` moves the services to
-    `/opt/ea-system`, then writes and starts the bot's service.
+    `/opt/ea-system`, has you type back the web chat's address and your
+    login as it copies the chat settings into your private directory,
+    then writes and starts the bot's service.
 11. **Run the remaining root steps.** In the second terminal:
     `sudo bash /opt/ea-system/deploy/apply-host.sh` runs each root script
     that the boundary audit still finds missing.
@@ -186,22 +189,11 @@ The web chat can also run beside Zulip (shadow mode): each post appears
 in both, and you answer in either. Moving between Zulip and Slack is one
 config key and a restart ([docs/zulip-switch.md](zulip-switch.md)).
 
-**Status (2026-10-31).** The web chat is new. The maintainer's install
-runs it beside Zulip, and a web-only install (`"frontend": "web"`) has
-not had daily use yet. For a web-only install, three parts are not done:
-
-- The scheduled reports (the briefings, the digests and the plugins'
-  posts) go to Zulip or Slack only. With the web chat alone, each run
-  still writes its report to `~/.ea/state/reports/<agent>-latest.md`
-  and logs a failed post.
-- The doctor fails `chat: frontend` with "unknown frontend 'web'".
-- `/setup` asks for Zulip or Slack, so the web chat's settings come from
-  SETUP.md "Web chat".
-
-The web chat also has no scheduling channel: you ask for a meeting in
-the `ea` channel, as on Zulip with no scheduling stream. Until the
-reports reach the web chat, run it beside Zulip if you want the
-briefings in your chat.
+The web chat is new: the maintainer's install runs it beside Zulip. On
+its own it carries the same traffic: the briefings, the digests and the
+plugins' posts land in the `ea` channel, and the doctor checks its
+settings. It has no scheduling channel: you ask for a meeting in the
+`ea` channel, as on Zulip with no scheduling stream.
 
 ## 4. Check the install
 

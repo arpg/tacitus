@@ -558,27 +558,43 @@ calendar, in the staged files and in its own thread.
 
 The bot core talks to its chat platform through one interface,
 `ChatFrontend` (`botcore/botcore/chat/base.py`, aliased as
-`preprocessor/chat/base.py`). Zulip, self-hosted, is
-the recommended platform; Slack is the alternative and behaves exactly
-as it did before the layer existed (an install with no `chat` block
-runs Slack); an in-memory frontend serves the tests. The platform is
-`chat.frontend` in `~/.ea/config/ea-config.json`, and
-`chat.load_frontend()` builds it at startup. The bot binds the result
-to the module name `FRONTEND`.
+`preprocessor/chat/base.py`). The web chat, which the bot serves
+itself, is the recommended platform; Zulip, self-hosted, suits an
+install that runs it already, and the web chat can mirror it (shadow
+mode); Slack is the alternative and behaves exactly as it did before the
+layer existed (an install with no `chat` block runs Slack); an
+in-memory frontend serves the tests. The platform is `chat.frontend`
+(and `chat.shadow`) in the chat block, which owner processes read from
+`~/.ea-private/chat.json`, and `chat.load_frontend()` builds it at
+startup. The bot binds the result to the module name `FRONTEND`.
+
+The senders outside the bot follow the same block. `chat_notify` (the
+briefings, the digests, the plugins' posts, the quiet-hours flush) runs
+in owner processes: on Slack a webhook, on Zulip the bot's key, on the
+web chat a writer-only web front end that adds each post to the store
+the bot serves, whose tail thread pushes it to the open streams. The
+resident holds no credential and may not open that store, so
+`chat_upload` run as ea-bot stages its file or thread text in the outbox
+(`slack_outbox`), and the bot posts it through its own front end, in the
+channel the thread key names (docs/webchat.md, CLI senders).
 
 ```mermaid
 flowchart LR
     core["Bot core (ea-chat-bot.py)<br/>handlers take InboundMessage and ActionEvent<br/>confirmations are ConfirmationCard"]
     abc["ChatFrontend interface (chat/base.py)<br/>post, update, react, post_card, rooms, files, history<br/>capabilities and limits"]
     core --> abc
+    abc --> web["WebFrontend<br/>the bot's own web app and API,<br/>SQLite store, SSE, card buttons"]
     abc --> slack["SlackFrontend<br/>bolt Socket Mode, Block Kit buttons"]
     abc --> zulip["ZulipFrontend<br/>event queue, topics as threads,<br/>reaction chips and codes"]
     abc --> mem["MemoryFrontend<br/>the tests"]
+    web --> W[("Store in the owner-private dir")]
     slack --> S[("Slack cloud")]
     zulip --> Z[("Zulip, self-hosted")]
-    cli["chat_notify, chat_read, chat_upload<br/>cron agents, the briefing reader, staged uploads"]
-    cli -. "routed by chat.frontend" .-> S
+    cli["chat_notify, chat_read, chat_upload<br/>cron agents, the briefing reader, owner uploads"]
+    cli -. "routed by chat.frontend" .-> W
+    cli -.-> S
     cli -.-> Z
+    res["chat_upload as ea-bot"] -. "outbox, drained by the bot" .-> core
 ```
 
 The core never names a platform: it asks `supports()` for a capability,

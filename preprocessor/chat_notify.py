@@ -20,6 +20,13 @@ ea-config.json):
     (ea_config.get_chat). With `chat.shadow` "web", an owner process
     also mirrors each part into the web chat's store under the ids the
     bot's Zulip frontend gives it (docs/webchat.md, CLI senders).
+  * web: the parts go into the web chat's store as the bot, all in one
+    new thread, through the writer-only web front end
+    (chat.load_frontend(for_cli=True)); the bot's tail thread pushes
+    them to the open streams. The channel is the one
+    `chat.web.notify[<channel_key>].channel` names, else the EA channel.
+    Only an owner process writes the store, which is the owner's; any
+    other process posts nothing and says so.
   * memory: parts are recorded in MEMORY_POSTS (tests).
 
 post_as_bot() is the direct post with bot credentials that owner-side
@@ -362,6 +369,72 @@ def room_mention(channel_id: str) -> str:
         return f"#{row.get('name') or channel_id}"
 
 
+# ── The web chat alone ────────────────────────────────────────────────
+# With `"frontend": "web"` the store is the chat: a post goes into it as
+# the bot, and the bot's tail thread pushes it to the open streams
+# (docs/webchat.md, CLI senders). The `web.notify` map takes the Zulip
+# map's channel keys, each naming a web channel id
+# ({"ea-assistant": {"channel": "main"}}); a key it does not name goes to
+# the EA channel.
+
+def _web_cfg() -> dict:
+    web = _chat_cfg().get("web")
+    return web if isinstance(web, dict) else {}
+
+
+def _web_target(channel_key: str) -> str:
+    """The web channel `web.notify[<channel_key>]` names, or ""."""
+    notify = _web_cfg().get("notify")
+    entry = notify.get(channel_key) if isinstance(notify, dict) else None
+    return str(entry.get("channel") or "") if isinstance(entry, dict) else ""
+
+
+def _web_sender():
+    """The writer-only web front end on the owner's store, or None (with
+    the reason printed) in a process that is not the owner's: the copy such
+    a process could open is one the bot never reads."""
+    if not _owner_trust().is_owner_process():
+        print("WARNING: the web chat's store is the owner's and this process is not; "
+              "nothing posted (docs/webchat.md, CLI senders)")
+        return None
+    fe = _room_frontend()
+    fe.start()
+    return fe
+
+
+def _web_channel(fe, cid: str) -> bool:
+    """True when the store holds channel `cid`. The EA channel and the DM
+    are made here when the bot has not made them yet, as the bot would."""
+    if fe.store.channel(cid) is not None:
+        return True
+    dm = fe.dm_channel(fe.owner_id)
+    own = {fe.main_channel: (getattr(fe, "main_channel_name", "") or fe.main_channel, "main"),
+           dm: (dm, "dm")}
+    if cid not in own:
+        return False
+    fe.store.upsert_channel(cid, *own[cid])
+    return True
+
+
+def _send_web(channel_key: str, parts: list[str]) -> bool:
+    try:
+        fe = _web_sender()
+        if fe is None:
+            return False
+        cid = _web_target(channel_key) or fe.main_channel
+        if not _web_channel(fe, cid):
+            print(f"WARNING: web chat channel {cid!r} (for '{channel_key}') does not exist; "
+                  "nothing posted")
+            return False
+        first = fe.post(cid, parts[0])
+        for part in parts[1:]:
+            fe.post(cid, part, thread_ts=first.thread_key)
+        return True
+    except Exception as e:
+        print(f"Web chat post failed: {e}")
+        return False
+
+
 def _send_room(channel_key: str, parts: list[str]) -> bool:
     cid = channel_key[len(ROOM_KEY_PREFIX):]
     if _owner_room(cid) is None:
@@ -423,6 +496,8 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
         return _send_slack(channel_key, parts, blocks)
     if name == "zulip":
         return _send_zulip(channel_key, parts, blocks)
+    if name == "web":
+        return _send_web(channel_key, parts)
     if name == "memory":
         for i, part in enumerate(parts):
             MEMORY_POSTS.append((channel_key, part,
@@ -441,6 +516,8 @@ def scheduling_channel_key() -> str:
     if name == "zulip":
         target = (_chat_cfg()["zulip"].get("notify") or {}).get("scheduling")
         return "scheduling" if isinstance(target, dict) and target.get("stream") else "ea-assistant"
+    if name == "web":
+        return "scheduling" if _web_target("scheduling") else "ea-assistant"
     return "ea-assistant"
 
 
@@ -456,6 +533,8 @@ def calendar_channel_key() -> str:
         if isinstance(target, dict) and target.get("stream"):
             return "calendar"
         return scheduling_channel_key()
+    if name == "web":
+        return "calendar" if _web_target("calendar") else scheduling_channel_key()
     return "ea-assistant"
 
 
@@ -469,6 +548,8 @@ def health_channel_key() -> str:
     if name == "zulip":
         target = (_chat_cfg()["zulip"].get("notify") or {}).get("health")
         return "health" if isinstance(target, dict) and target.get("stream") else "ea-assistant"
+    if name == "web":
+        return "health" if _web_target("health") else "ea-assistant"
     return "ea-assistant"
 
 
@@ -478,9 +559,10 @@ def post_as_bot(channel: str, text: str, *, token: Optional[str] = None,
 
     Slack: a bearer POST to chat.postMessage with {"channel", "text"};
     `token` defaults to SLACK_BOT_TOKEN in the environment, and a missing
-    token or channel posts nothing. Zulip: `channel` is ignored and the
-    text goes to the "ea-assistant" notify target. `log`, when given, is
-    called with a one-line reason on failure. Returns True when the
+    token or channel posts nothing. Zulip and the web chat: `channel` is
+    ignored and the text goes to the "ea-assistant" notify target (on the
+    web chat, the EA channel unless `web.notify` names another). `log`,
+    when given, is called with a one-line reason on failure. Returns True when the
     platform accepted the message.
     """
     def _fail(detail: str) -> bool:
@@ -513,6 +595,8 @@ def post_as_bot(channel: str, text: str, *, token: Optional[str] = None,
         if not isinstance(target, dict) or not target.get("stream"):
             return _fail("no Zulip notify target for 'ea-assistant'")
         return True if _zulip_post_parts(zcfg, target, [text]) else _fail("Zulip post failed")
+    if name == "web":
+        return True if _send_web("ea-assistant", [text]) else _fail("web chat post failed")
     if name == "memory":
         MEMORY_POSTS.append((channel, text, None))
         return True

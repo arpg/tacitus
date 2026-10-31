@@ -723,7 +723,10 @@ def check_owner_trust(ea_dir: Path):
             fail("owner trust: chat settings", str(e)[:200], f"fix or recreate {chat} (mode 600)")
         else:
             z = block.get("zulip") if isinstance(block.get("zulip"), dict) else {}
+            w = block.get("web") if isinstance(block.get("web"), dict) else {}
             ok("owner trust: chat settings",
+               f"{chat}: frontend web, public_url {w.get('public_url', '')}, "
+               f"login {w.get('tailscale_login', '')}" if block.get("frontend") == "web" else
                f"{chat}: frontend {block.get('frontend', 'slack')}, site {z.get('site', '')}, "
                f"bot {z.get('bot_email', '')}, owner {z.get('owner_user_id', '')}")
             shared = _read_config_chat(ea_dir)
@@ -1039,7 +1042,8 @@ def check_zulip(env: dict, zcfg: dict):
 
 
 def check_chat(env: dict):
-    """The chat platform checks for the configured frontend."""
+    """The chat platform checks for the configured frontend, and the web
+    chat's when it runs alone or as the shadow (both are reported)."""
     if CHAT_FRONTEND == "slack":
         check_slack(env)
     elif CHAT_FRONTEND == "zulip":
@@ -1048,10 +1052,158 @@ def check_chat(env: dict):
         if not NEEDS_SLACK:
             return
         warn("chat: memory frontend", "checks skipped; the memory frontend is for tests",
-             "set chat.frontend to slack or zulip in ~/.ea/config/ea-config.json")
-    else:
+             "set chat.frontend to web, zulip or slack in ~/.ea/config/ea-config.json")
+    elif CHAT_FRONTEND != "web":
         fail("chat: frontend", f"unknown frontend {CHAT_FRONTEND!r}",
-             "set chat.frontend to slack or zulip in ~/.ea/config/ea-config.json")
+             "set chat.frontend to web, zulip or slack in ~/.ea/config/ea-config.json")
+    if NEEDS_SLACK and "web" in (CHAT_FRONTEND, CHAT_CFG.get("shadow")):
+        check_web(CHAT_CFG.get("web") if isinstance(CHAT_CFG.get("web"), dict) else {})
+
+
+# The HTTPS port docs/SETUP.md "Web chat" publishes the chat on, and the
+# shortest pairing token the bot takes (botcore/botcore/chat/web_frontend.py).
+WEB_SERVE_PORT = 8444
+WEB_MIN_TOKEN = 16
+
+
+def _web_private_problem(path: Path, kind: str) -> str | None:
+    """None when `path` is a `kind` ("dir" or "file") this user owns, not a
+    symlink, with no permission for group or others; else what is wrong
+    (the bot's own rule, web_frontend.private_problem). Metadata only."""
+    try:
+        st = os.lstat(path)
+    except OSError as e:
+        return f"{path}: {e.strerror or e}"
+    if stat.S_ISLNK(st.st_mode):
+        return f"{path} is a symlink"
+    if not (stat.S_ISDIR(st.st_mode) if kind == "dir" else stat.S_ISREG(st.st_mode)):
+        return f"{path} is not a {'directory' if kind == 'dir' else 'regular file'}"
+    if st.st_uid != os.geteuid():
+        return f"{path} is owned by uid {st.st_uid}, not by you"
+    if st.st_mode & 0o077:
+        return f"{path} has mode {oct(st.st_mode & 0o777)}; it must be {'0700' if kind == 'dir' else '0600'}"
+    return None
+
+
+def check_web(wcfg: dict) -> None:
+    """The web chat's block as the bot serves it (docs/webchat.md, Config
+    and Identity and auth), in three rows: the settings (from the
+    owner-private chat.json, a port, a base path, and a public_url with the
+    chat's own HTTPS port under that path), the sign-in (the Tailscale
+    login, or a private pairing token) and the store (a directory that is
+    yours alone, outside the resident's tree). Each row passes or warns
+    with its fix. Nothing is written and no secret is read."""
+    try:
+        ot = _owner_trust()
+    except Exception as e:
+        warn("web chat: settings", f"preprocessor/owner_trust.py not importable: {e}")
+        return
+    chat_json = _private_dir() / ot.CHAT_FILE
+    restart = "then sudo systemctl restart ea-chat-bot (docs/SETUP.md 'Web chat')"
+    roots = ot.resident_roots()
+
+    # the settings
+    trusted = _trusted_chat_block()
+    if trusted is None or not ot.runs_web(trusted):
+        warn("web chat: settings",
+             f"the web block comes from ea-config.json; the bot serves the web chat only "
+             f"from {chat_json}",
+             "python3 preprocessor/owner_trust.py seed --chat (as yourself, at a terminal)")
+    else:
+        why, fixes = [], []
+        port = wcfg.get("port", 8470)
+        if not (str(port).isdigit() and 0 < int(port) < 65536):
+            why.append(f"port {port!r} is not a port number")
+            fixes.append("set web.port to 8470")
+        base = "/" + str(wcfg.get("base_path") if wcfg.get("base_path") is not None
+                         else "/chat").strip().strip("/")
+        base = "" if base == "/" else base
+        if not re.fullmatch(r"(/[A-Za-z0-9._~-]+)*", base):
+            why.append(f"base_path {wcfg.get('base_path')!r} is not a plain path")
+            fixes.append("set web.base_path to /chat")
+        url = str(wcfg.get("public_url") or "").strip().rstrip("/")
+        example = f"https://<host>.<tailnet>.ts.net:{WEB_SERVE_PORT}{base}"
+        if not url:
+            why.append("no public_url")
+            fixes.append(f"set web.public_url to {example}, the address `tailscale serve "
+                         f"--https={WEB_SERVE_PORT}` gives")
+        else:
+            import urllib.parse
+            try:
+                parts = urllib.parse.urlsplit(url)
+                url_port = parts.port
+            except ValueError:
+                parts, url_port = None, None
+            if parts is None or parts.scheme != "https" or not parts.hostname:
+                why.append(f"public_url {url} is not an https address")
+                fixes.append(f"set web.public_url to {example}")
+            elif url_port is None:
+                why.append(f"public_url {url} has no port; the chat needs an HTTPS port of "
+                           f"its own (one app per origin)")
+                fixes.append(f"add the `tailscale serve --https` port: {example}")
+            elif parts.path.rstrip("/") != base:
+                why.append(f"public_url's path {parts.path or '/'} is not the base_path "
+                           f"{base or '/'}")
+                fixes.append(f"end web.public_url with {base or '/'}")
+        if why:
+            warn("web chat: settings", "; ".join(why),
+                 f"{'; '.join(fixes)} in {chat_json}, {restart}")
+        else:
+            ok("web chat: settings", f"{url} serves 127.0.0.1:{int(port)}{base} (from {chat_json})")
+
+    store = Path(str(wcfg.get("store_path") or "") or _private_dir() / "webchat.sqlite")
+    store_dir = store.parent
+
+    # the sign-in
+    token = Path(str(wcfg.get("pair_token_file") or "") or store_dir / "webchat-pair.token")
+    login = str(wcfg.get("tailscale_login") or "").strip()
+    trust = wcfg.get("trust_tailscale_header", True)
+    header_on = trust is not False and str(trust).strip().lower() not in ("false", "0", "no", "off", "")
+    token_why = None
+    inside = ot.inside_roots(token, roots)
+    if inside is not None:
+        token_why = f"the pairing token file {token} is inside {inside}, which the resident controls"
+    elif os.path.lexists(token):
+        token_why = _web_private_problem(token, "file")
+        if token_why is None and os.lstat(token).st_size < WEB_MIN_TOKEN:
+            token_why = f"the pairing token in {token} is shorter than {WEB_MIN_TOKEN} characters"
+    if token_why:
+        warn("web chat: sign-in", f"{token_why}; the bot does not serve the web chat with it",
+             f"leave web.pair_token_file empty in {chat_json}, or replace the file with a token "
+             f"of {WEB_MIN_TOKEN} or more characters, mode 600, yours; {restart}")
+    elif login and header_on:
+        ok("web chat: sign-in", f"Tailscale login {login}"
+           + (f"; pairing token at {token}" if os.path.lexists(token) else ""))
+    elif os.path.lexists(token):
+        ok("web chat: sign-in", f"pairing token at {token}")
+    else:
+        warn("web chat: sign-in",
+             f"no way to sign in yet: no tailscale_login{'' if header_on else ' (header off)'} "
+             f"and no pairing token at {token}",
+             f"set web.tailscale_login in {chat_json} to your login (`tailscale whois` shows "
+             f"it), or start the bot once: it writes the pairing token there; {restart}")
+
+    # the store
+    inside = ot.inside_roots(store, roots)
+    if inside is not None:
+        warn("web chat: store", f"{store} is inside {inside}, which the resident controls",
+             f"leave web.store_path empty (the owner-private directory) in {chat_json}; "
+             f"{restart}")
+        return
+    if not os.path.lexists(store_dir):
+        warn("web chat: store", f"{store_dir} does not exist",
+             f"mkdir -m 700 {store_dir}, or leave web.store_path empty in {chat_json}")
+        return
+    why = _web_private_problem(store_dir, "dir")
+    if why is None and os.path.lexists(store):
+        why = _web_private_problem(store, "file")
+    if why:
+        warn("web chat: store", f"{why}; the bot does not serve the web chat from it",
+             f"chmod 700 {store_dir}; chmod 600 {store} (both must be yours; never chown "
+             f"another user's file, move it aside)")
+    else:
+        ok("web chat: store", f"{store} ({'present' if os.path.lexists(store) else 'made on the bot start'}, "
+           f"in a directory only you can open)")
 
 
 def _launchd_jobs() -> tuple:

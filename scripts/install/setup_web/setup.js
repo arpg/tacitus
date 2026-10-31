@@ -207,7 +207,8 @@
       return;
     }
     const saved = (r.data.saved || []).map((p) => p.split('/').pop());
-    if (!(await load({ phases: ph.id === 'profile' }))) return;
+    // The profile and the chat platform decide what the later screens ask.
+    if (!(await load({ phases: ph.id === 'profile' || ph.id === 'chat' }))) return;
     status(saved.length ? `Saved ${saved.join(', ')}.` : 'Saved.');
     S.idx += 1;
     if (S.idx < S.phases.length) showPhase(); else await finish();

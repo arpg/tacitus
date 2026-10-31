@@ -90,11 +90,12 @@ missing. An install made by hand records it the same way:
 
 The defaults in the code are the full system's, not the recommended
 start: an `ea-config.json` with no `"profile"` (and `scripts/install/setup.sh` with no
-`--profile`) means `assistant`, an absent `chat` block means Slack, and
-`scripts/install/user_init.py --chat` defaults to the `chat` block's
-frontend, else `slack`. The `/setup` skill always
-records the profile you choose, and `scripts/zulip_bootstrap.py` prints a
-`chat` block with `"frontend": "zulip"`, so neither default applies to an
+`--profile`) means `assistant`, and an absent `chat` block means Slack.
+The `chat` phase of `scripts/install/user_init.py` (and `--chat web`,
+`zulip` or `slack`) offers the platform the install already chose, else
+the web chat. The `/setup` skill always records the profile and the chat
+platform you choose, and `scripts/zulip_bootstrap.py` prints a `chat`
+block with `"frontend": "zulip"`, so neither code default applies to an
 install it makes.
 
 ### Phone push
@@ -339,17 +340,24 @@ phone you add it to the Home Screen, where it runs as an app (a PWA). A
 phone off the tailnet can pair through a relay that sees only ciphertext
 ([docs/webchat-relay.md](webchat-relay.md)). The contract and the API
 are in [docs/webchat.md](webchat.md), the security rules in
-docs/SECURITY.md "Web chat". The web chat is new: the table in
+docs/SECURITY.md "Web chat". The table in
 [INSTALL.md](INSTALL.md#choosing-a-chat-platform) compares it with Zulip
-and Slack, and the status note under it says what a web-only install
-does not do yet (the scheduled reports post to Zulip or Slack only, and
-the doctor fails `chat: frontend`).
+and Slack.
 
 You need Tailscale on this machine and on your phone. If HTTPS is off
 for your tailnet, the first `tailscale serve` says how to turn it on.
 
-1. **The settings.** As yourself, write the chat block to
-   `~/.ea-private/chat.json` (mode 600, in the 0700 directory):
+1. **The settings.** `/setup` asks for this machine's tailnet name and
+   your Tailscale login and writes the chat block into `ea-config.json`
+   (`scripts/install/user_init.py --chat web --web-host <name>
+   --web-login <login>` does the same). [Hardening](#hardening) copies it
+   into `~/.ea-private/chat.json` (mode 600, in the 0700 directory) once
+   you type back the frontend, `public_url`, `port`, `tailscale_login`
+   and `pair_token_file` (`owner_trust.py seed --chat`; the
+   `--chat-public-url`, `--chat-port`, `--chat-tailscale-login` and
+   `--chat-pair-token-file` flags give them instead), and refuses a store
+   or token file in ea-bot's tree. By hand, as yourself, write the block
+   to `chat.json` directly:
 
    ```json
    {
@@ -364,9 +372,9 @@ for your tailnet, the first `tailscale serve` says how to turn it on.
    The bot serves the web chat only from this owner-private file; a
    block in `ea-config.json`, which the resident can change, never
    serves. The other keys take their defaults: `bind` 127.0.0.1, `port`
-   8470, `base_path` `/chat` (docs/webchat.md, Config). Write the file
-   before [Hardening](#hardening), which keeps a `chat.json` that exists
-   and starts the bot on it.
+   8470, `base_path` `/chat` (docs/webchat.md, Config). Hardening keeps
+   a `chat.json` that exists and starts the bot on it. The doctor's
+   `web chat:` rows check the settings, the sign-in and the store.
 2. **Publish it on your tailnet**, on an HTTPS port of its own:
 
    ```bash
@@ -406,7 +414,11 @@ for your tailnet, the first `tailscale serve` says how to turn it on.
 The store is `<private dir>/webchat.sqlite`; files you upload from the
 app sit beside it. Standalone, the chat has the `ea` channel, your DM
 and the project rooms, and no scheduling channel: ask for a meeting in
-`ea`.
+`ea`. The scheduled reports (the briefings, the digests, the plugins'
+posts) land in `ea`, each in a thread of its own; a `notify` map in the
+`web` block sends a notifier key elsewhere, such as
+`"notify": {"personal": {"channel": "dm"}}`. A file the EA attaches in a
+thread goes through the bot, which posts it in that thread.
 
 ### Beside Zulip (shadow mode)
 
@@ -1349,7 +1361,7 @@ accounts (`docs/install-testing.md`).
 | `dir: ~/.ea/<name>`, `private dir`, `private store:`, `webhooks:` | the service account and [Hardening](#hardening) |
 | `profile`, `config: <name>`, `validate_config.py` | [Config files](#config-files) |
 | `~/.ea/.env`, `env: <KEY>`, `secret: <KEY>`, `~/.ea-private/secrets.env` | [Secrets](#secrets); [The Slack environment files](#the-slack-environment-files) |
-| `chat: frontend`, `zulip: *`, `slack: *` | [Web chat](#web-chat) (the check fails for `"frontend": "web"` today), [Zulip server](#zulip-server), [Slack](#slack) |
+| `chat: frontend`, `web chat: *`, `zulip: *`, `slack: *` | [Web chat](#web-chat), [Zulip server](#zulip-server), [Slack](#slack) |
 | `auth: msal_token_cache.json`, `auth: graph token source` | [Microsoft Graph app registration](#microsoft-graph-app-registration) |
 | `auth: google tokens`, `EA-Managed calendar`, `EA-Managed calendar (owner copy)` | [Google OAuth app](#google-oauth-app), [The EA-Managed calendar](#the-ea-managed-calendar) |
 | `auth: scheduled-send-hmac.key`, `owner trust: scheduled-send key` | [The deferred-send signing key](#the-deferred-send-signing-key) |

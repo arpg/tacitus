@@ -1,12 +1,14 @@
 # Switching the EA between Slack and Zulip
 
 The EA's chat platform is one config key, `chat.frontend` in
-`~/.ea/config/ea-config.json`: `"zulip"` (recommended: self-hosted, so
-the conversation stays on your machine) or `"slack"` (what an install
-with no `chat` block runs). The core, the ledger, the drafts and the
-resident are the same on both. This
-page is the switch, the rollback, what carries over, and the checks to
-run. How the layer works is in [ARCHITECTURE.md](ARCHITECTURE.md)
+`~/.ea/config/ea-config.json`: `"web"` (recommended: the chat the bot
+serves itself, with no chat server; [SETUP.md](SETUP.md#web-chat) "Web
+chat"), `"zulip"` (self-hosted, so the conversation stays on your
+machine too) or `"slack"` (what an install with no `chat` block runs).
+The web chat can also mirror Zulip (`"shadow": "web"`). The core, the
+ledger, the drafts and the resident are the same on all three. This
+page is the switch between Slack and Zulip, the rollback, what carries
+over, and the checks to run. How the layer works is in [ARCHITECTURE.md](ARCHITECTURE.md)
 ("Chat front-end layer"); how the gate is anchored on each platform is in
 [SECURITY.md](SECURITY.md) (Layer 4).
 

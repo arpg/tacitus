@@ -59,8 +59,10 @@ out turns that feature off; nothing else breaks.
   self-hosted model can read raw mail first, so that Claude gets a summary
   instead of the text. A keep list holds chosen domains and senders away
   from Claude completely.
-- **The chat interface.** I talk to the EA in a chat server that runs on
-  the same machine (Zulip), or in Slack if I choose it.
+- **The chat interface.** I talk to the EA in a web chat that the EA's
+  own service serves from the same machine over my private network
+  (Tailscale), or in a chat server on that machine (Zulip), or in Slack
+  if I choose it.
 - **No vendor server.** There is no service in the middle. The code runs
   on my machine, and nothing goes to the software's authors.
 

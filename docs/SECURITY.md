@@ -1150,9 +1150,13 @@ rules, and where each is enforced:
   the file only after the operator types back each trusted one (frontend,
   site, bot email, owner id; on Zulip every stream the bot posts to:
   `stream`, `sched_stream`, `dm_stream` and each `notify.<key>.stream`;
-  the EA-Managed calendar id) or passes it with its flag (`--chat-site`,
+  on the web chat, alone or as the shadow, `web.public_url`, `web.port`,
+  `web.tailscale_login` and `web.pair_token_file`; the EA-Managed
+  calendar id) or passes it with its flag (`--chat-site`,
   `--chat-owner-id`, `--chat-dm-stream`, `--chat-notify KEY=STREAM`,
-  `--calendar-id`, ...). profile.json (the one name the EA may put on an
+  `--chat-public-url`, `--chat-tailscale-login`, `--calendar-id`, ...).
+  It refuses a web `store_path` or `pair_token_file` that is relative or
+  lies in ea-bot's tree, the rule the bot itself serves by. profile.json (the one name the EA may put on an
   outside poll) is written the same way (`--profile-name`).
   Slack webhooks are read from `~/.ea-private/slack_webhooks.json` only.
 - **Where the bot posts is the owner's choice.** A staged file, a thread

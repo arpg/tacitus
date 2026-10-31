@@ -683,6 +683,107 @@ def test_the_chat_seed_types_back_a_notify_stream(owner, monkeypatch):
     assert not (owner.priv / "chat.json").exists()
 
 
+WEB_URL = "https://host.tail0000.ts.net:8444/chat"
+WEB_LOGIN = "owner@example.test"
+WEB_FLAGS = ["--chat-frontend", "web", "--chat-public-url", WEB_URL, "--chat-port", "8470",
+             "--chat-tailscale-login", WEB_LOGIN]
+
+
+def _web_tree(owner, web: dict, **top):
+    block = {"frontend": "web", "web": web, **top}
+    _write(owner.tree / "config" / "ea-config.json", json.dumps({"chat": block}), 0o644)
+
+
+def test_the_chat_seed_confirms_the_web_chat_values(owner, monkeypatch, capsys):
+    """The web block says which address the bot answers to, whose login is
+    the owner and where the pairing token lives; ea-bot can write its copy,
+    so each value is typed back or passed with its flag."""
+    token = str(owner.priv / "pair.token")
+    _web_tree(owner, {"public_url": WEB_URL, "port": 8470, "tailscale_login": WEB_LOGIN,
+                      "pair_token_file": token})
+    monkeypatch.setattr(ot, "_interactive", lambda: False)
+    assert _seed(owner, "--chat") == 1
+    captured = capsys.readouterr()
+    assert f"web.public_url = {WEB_URL}" in captured.out
+    for flag in ("--chat-frontend", "--chat-public-url", "--chat-port",
+                 "--chat-tailscale-login", "--chat-pair-token-file"):
+        assert flag in captured.err, flag
+    assert not (owner.priv / "chat.json").exists()
+    # one value typed differently: nothing is written
+    monkeypatch.setattr(ot, "_interactive", lambda: True)
+    typed = iter(["web", WEB_URL, "8470", "someone.else@example.test", token])
+    monkeypatch.setattr(ot, "_prompt", lambda q: next(typed))
+    assert _seed(owner, "--chat") == 1
+    assert not (owner.priv / "chat.json").exists()
+    typed = iter(["web", WEB_URL, "8470", WEB_LOGIN, token])
+    assert _seed(owner, "--chat") == 0
+    block = json.loads((owner.priv / "chat.json").read_text())
+    assert block["frontend"] == "web"
+    assert block["web"] == {"public_url": WEB_URL, "port": 8470, "tailscale_login": WEB_LOGIN,
+                            "pair_token_file": token}
+    out = capsys.readouterr().out
+    for line in (f"web.public_url = {WEB_URL}", "web.port      = 8470",
+                 f"web.tailscale_login = {WEB_LOGIN}", f"web.pair_token_file = {token}"):
+        assert line in out, line
+    for key, _, _ in ot.CHAT_WEB:
+        assert ot._help(key), key
+
+
+def test_a_web_value_from_a_flag_wins_and_unset_ones_take_the_defaults(owner, monkeypatch,
+                                                                       capsys):
+    _web_tree(owner, {"public_url": "https://elsewhere.example:8444/chat",
+                      "tailscale_login": "someone.else@example.test"})
+    monkeypatch.setattr(ot, "_interactive", lambda: False)
+    assert _seed(owner, "--chat", *WEB_FLAGS) == 0
+    web = json.loads((owner.priv / "chat.json").read_text())["web"]
+    assert (web["public_url"], web["port"], web["tailscale_login"]) == (WEB_URL, 8470, WEB_LOGIN)
+    assert "pair_token_file" not in web
+    assert "web.pair_token_file = (the default, beside the store)" in capsys.readouterr().out
+
+
+def test_the_chat_seed_refuses_a_web_store_or_token_in_the_residents_tree(owner, monkeypatch,
+                                                                         capsys):
+    """The bot serves the web chat only from a store and a token outside the
+    resident's tree; the seed refuses such a block before anything is
+    asked, whether ea-bot's copy or a flag names the path."""
+    monkeypatch.setattr(ot, "_interactive", lambda: False)
+    base = {"public_url": WEB_URL, "port": 8470, "tailscale_login": WEB_LOGIN}
+    no_port = WEB_FLAGS[:4] + WEB_FLAGS[6:]
+    for planted, flags in (({"store_path": str(owner.tree / "state" / "webchat.sqlite")},
+                            WEB_FLAGS),
+                           ({"pair_token_file": str(owner.tree / "webchat-pair.token")},
+                            WEB_FLAGS),
+                           ({"pair_token_file": "webchat-pair.token"}, WEB_FLAGS),
+                           ({"port": "8470; other"}, no_port)):
+        _web_tree(owner, {**base, **planted})
+        assert _seed(owner, "--chat", *flags) == 1, planted
+        assert "NOT written: web." in capsys.readouterr().err
+        assert not (owner.priv / "chat.json").exists()
+    _web_tree(owner, base)
+    assert _seed(owner, "--chat", *WEB_FLAGS,
+                 "--chat-pair-token-file", str(owner.tree / "token")) == 1
+    assert "inside" in capsys.readouterr().err
+    # beside a Zulip primary the web shadow takes the same rule
+    _write(owner.tree / "config" / "ea-config.json", json.dumps({"chat": {
+        "frontend": "zulip", "shadow": "web", "zulip": {"site": "https://z.mine"},
+        "web": {**base, "store_path": str(owner.tree / "w.sqlite")}}}), 0o644)
+    assert _seed(owner, "--chat") == 1
+    assert "web.store_path" in capsys.readouterr().err
+    assert not (owner.priv / "chat.json").exists()
+    # the owner-private directory is where the token belongs
+    _web_tree(owner, base)
+    assert _seed(owner, "--chat", *WEB_FLAGS,
+                 "--chat-pair-token-file", str(owner.priv / "pair.token")) == 0
+
+
+def test_the_seed_and_the_web_chat_name_the_same_resident_tree(owner):
+    assert chat.untrusted_roots() == ot.resident_roots()
+    assert owner.tree.resolve() in ot.resident_roots()
+    assert ot.inside_roots(owner.tree / "state" / "x", ot.resident_roots()) == \
+        owner.tree.resolve()
+    assert ot.inside_roots(owner.priv / "x", ot.resident_roots()) is None
+
+
 def test_a_notify_flag_needs_a_key():
     with pytest.raises(ValueError):
         ot.parse_notify_flags(["ea-health"])

@@ -79,8 +79,9 @@ keyboard fails there (Python's `input()` ends in EOFError). So:
   `run_in_background` (`--bind <tailscale ip -4>` for a phone or laptop
   on their tailnet) and give the user the printed address with its `#t=`
   token, to them only. It asks sections 1, 2, 2b, 3's app values, 4's
-  calendars and the push, writes the same files and signs in to nothing
-  (docs/setup-web.md). After they press Done, run section 0 and go on.
+  calendars, 6's platform and the push, writes the same files and signs
+  in to nothing (docs/setup-web.md). After they press Done, run section
+  0 and go on.
 
 ## 0. Resume
 
@@ -113,9 +114,10 @@ the first one that is not.
 ## 1. Profile
 
 This is the first question, before any other. Ask which profile they
-want, and recommend `email` for a first install: no chat server, about
-an hour once IT has given them the Outlook app. `assistant` is the
-upgrade path, about half a day, most of it the chat server. The three:
+want, and recommend `email` for a first install: no chat, about an
+hour once IT has given them the Outlook app. `assistant` is the upgrade
+path: with the web chat a few steps more, with Zulip about half a day,
+most of it the chat server. The three:
 
 - `email` (recommended first): the EA reads Outlook, keeps the ledger,
   drafts replies in the user's voice and proposes meeting times in its
@@ -123,9 +125,10 @@ upgrade path, about half a day, most of it the chat server. The three:
   in the Claude Code shell and sends every draft from Outlook. Briefings
   land in `~/.ea/state/reports/<agent>-latest.md`, by phone push when set up.
 - `review-only`: `email` without drafting; nothing is written to the mailbox.
-- `assistant`: everything, plus the chat platform (Zulip or Slack): the
-  EA channel, the scheduling channel, the direct message, project and
-  session rooms, the Send and Create buttons, the resident session, plugins.
+- `assistant`: everything, plus the chat platform (the web chat, Zulip
+  or Slack): the EA channel, the direct message, project and session
+  rooms, the Send and Create buttons, the resident session, plugins, and
+  on Zulip and Slack a scheduling channel.
 
 Then show the notice: print the "Your responsibility" paragraph of
 `README.md` word for word and ask whether they have read it and accept
@@ -293,16 +296,31 @@ to `user-profile.json`.
 
 ## 6. Chat platform (assistant profile only)
 
-Ask once which chat platform they want, and recommend Zulip: a
-self-hosted server on the EA's machine, reached over their tailnet,
-where every message, file and confirmation card stays on that machine.
-Slack is acceptable when they would rather not run a chat server and
-accept that everything the EA shows them, drafts and quoted mail
-included, is stored by Slack. The comparison is the "Choosing a chat
-platform" table in docs/INSTALL.md.
+Ask once which chat platform they want, and recommend the web chat:
+the bot serves it itself, as an app on their phone over their tailnet,
+with no chat server, and every message, file and card stays on this
+machine. Zulip suits someone who already runs it. Slack is acceptable
+when they accept that everything the EA shows them, drafts and quoted
+mail included, is stored by Slack. The comparison is the "Choosing a
+chat platform" table in docs/INSTALL.md. The answer goes in
+`answers-chat.json` as `"chat-platform"` (`web`, `zulip` or `slack`),
+and the `chat` phase records it in the chat block.
 
-For Zulip, docs/SETUP.md "Zulip server": the docker-zulip stack in
-`deploy/zulip/README.md`; then
+For the web chat, docs/SETUP.md "Web chat": Tailscale on this machine
+and their phone. Offer this machine's tailnet name (`Self.DNSName` in
+`tailscale status --json`, without the last dot) and their login
+(`tailscale whois <this machine's tailnet IP>`), each with "Other", as
+`web-chat-host` and `web-chat-login` in the same file, then run the
+phase. It writes the `web` block: port 8470, base path `/chat`,
+`public_url` `https://<name>:8444/chat`, `tailscale_login`. Then a step the user
+types in the second terminal:
+`sudo tailscale serve --bg --https=8444 --set-path /chat http://127.0.0.1:8470/chat`.
+Check: `tailscale serve status` lists `/chat`. The hardening step in
+section 8 has them type each web value back as it copies the block to
+`~/.ea-private/chat.json`; the doctor's `web chat:` rows then pass.
+
+For Zulip or Slack, run the phase first. For Zulip, docs/SETUP.md
+"Zulip server": the docker-zulip stack in `deploy/zulip/README.md`; then
 `python3 scripts/zulip_bootstrap.py --site <site> --owner-email <you> --owner-key <key>`,
 which prints the `chat` block (with `"frontend": "zulip"`) to paste into
 `ea-config.json` and the `ZULIP_API_KEY=` line for

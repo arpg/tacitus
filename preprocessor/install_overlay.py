@@ -133,7 +133,15 @@ def _chat_section(cfg: dict, profile: dict) -> list[str]:
                      "out by phone push when one is configured; the user works with the EA "
                      "in the Claude Code shell and sends drafts from Outlook.")
         return lines
-    if frontend == "zulip":
+    if frontend == "web":
+        web = _web_prompt_strings()
+        lines.append(f"- Platform: the {web['platform']}, which the bot serves itself. "
+                     "Channels: `ea` (the EA channel) and `dm` (the DM); project rooms are "
+                     "rooms in the web chat. There is no scheduling channel: meeting requests "
+                     "come in `ea`.")
+        lines.append(f"- Each confirmation card goes to the DM with a one-line pointer in the "
+                     f"thread: say \"{web['confirm_location']}\", never \"above\".")
+    elif frontend == "zulip":
         z = chat.get("zulip") if isinstance(chat.get("zulip"), dict) else {}
         streams = [f"`{z[k]}` ({label})" for k, label in
                    (("stream", "the EA channel"), ("dm_stream", "the DM stream"),
@@ -143,8 +151,28 @@ def _chat_section(cfg: dict, profile: dict) -> list[str]:
     else:
         channel = profile.get("slack_channel_name") or ""
         lines.append(f"- Platform: Slack. EA channel: `{channel or 'see user-profile.json'}`.")
+    if frontend != "web" and chat.get("shadow") == "web":
+        lines.append(f"- The {_web_prompt_strings()['platform']} mirrors every post (shadow "
+                     "mode); the user may answer in either.")
     lines.append(f"- Install profile: `{profile_name}`.")
     return lines
+
+
+# The web chat's own phrases (WebFrontend.PROMPT_STRINGS), for a render
+# where the chat package does not load.
+_WEB_WORDING = {"platform": "Tacitus web chat",
+                "confirm_location": "the Send button is on the card in your DM thread"}
+
+
+def _web_prompt_strings() -> dict:
+    """The web front end's prompt wording: its platform name and where
+    the Send button is, as the bot's own prompts say them."""
+    try:
+        from chat.web_frontend import WebFrontend
+        got = WebFrontend.PROMPT_STRINGS
+        return {k: str(got.get(k) or v) for k, v in _WEB_WORDING.items()}
+    except Exception:
+        return dict(_WEB_WORDING)
 
 
 def _accounts_section(profile: dict) -> list[str]:
