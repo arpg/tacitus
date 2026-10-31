@@ -2274,7 +2274,7 @@ Files that participate in prompt construction and action execution:
 | `preprocessor/fetch_url.py` | Web page content extraction and the page's images; `--save-image` keeps one raster image in a deck's folder or `~/.ea/state` |
 | `preprocessor/email_to_pdf.py` | Email body to PDF conversion |
 | `preprocessor/doc_text.py` | Read-only text of a .docx (comments, tracked changes), an .xlsx (every sheet, with cell addresses), PDF or text file under the EA's document folders |
-| `preprocessor/doc_write.py` | A .docx from markdown, or an .xlsx from CSV rows, alone or into a copy of a template (header, styles and other sheets kept), under the EA's document folders |
+| `preprocessor/doc_write.py` | A .docx from markdown (with Word comments anchored on its text), or an .xlsx from CSV rows, alone or into a copy of a template (header, styles and other sheets kept), under the EA's document folders |
 
 ## Rooms: threads, project channels, session mirrors, DMs, the shell (2026-09-05)
 

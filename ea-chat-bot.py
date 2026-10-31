@@ -2915,7 +2915,10 @@ def _tools_block(body_file: str, needed_modules: set[str] | None = None) -> str:
 - Bash(python3 {sd}/preprocessor/doc_write.py docx --in <file.md> --out <path>.docx)
   for a Word file: write the content as markdown first (headings, lists,
   tables, **bold**), the output goes under ~/.ea/docs, letters, state or
-  research; --template <docx> keeps a letterhead's styles and headers.
+  research; --template <docx> keeps a letterhead's styles and headers;
+  --comments <file.json> adds Word comments, each {"anchor": "text as it
+  reads in the document", "text": "the comment"}, and the result's
+  comments_missing names the anchors it did not find.
   Never hand-write RTF or XML for a document someone will open in Word.
 - Bash(python3 {sd}/preprocessor/doc_write.py xlsx --in <rows.csv> --out <path>.xlsx)
   for a spreadsheet: write the rows as CSV first. --template <xlsx> copies

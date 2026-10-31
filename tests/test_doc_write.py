@@ -111,3 +111,66 @@ def test_the_lanes_allow_the_writer():
     assert 'preprocessor/doc_write.py *)' in agent
     core = (ROOT / "CLAUDE.md").read_text()
     assert "doc_write.py" in core and "docx --in <md> --out <path>" in core
+
+
+COMMENTED = """# Review notes
+
+The method uses **a Kalman filter** on the raw stream. The method is sound.
+
+## Results
+
+The method is sound here too, but the table needs units.
+
+| Run | Error |
+|-----|-------|
+| 1 | 0.4 |
+"""
+
+
+def test_comments_anchor_on_their_text_across_runs_headings_and_cells(tmp_path):
+    out = dw.out_path(str(tmp_path / "docs" / "r.docx"), ea_dir=tmp_path)
+    comments = [
+        {"anchor": "Kalman filter on the raw", "text": "Which variant?"},
+        {"anchor": "The method is sound", "text": "First."},
+        {"anchor": "The method is sound", "text": "Second.\n\nTwo paragraphs.", "author": "Rob"},
+        {"anchor": "Error", "text": "Units?"},
+        {"anchor": "Review notes", "text": "On the title."},
+        {"anchor": "not in the document", "text": "dropped"},
+    ]
+    res = dw.build(COMMENTED, out, comments=comments, author="Jane Doe")
+    assert res["comments"] == 5 and res["comments_missing"] == ["not in the document"]
+    d = docx.Document(str(out))
+    got = {c.text: (c.author, c.initials) for c in d.comments}
+    assert got["Which variant?"] == ("Jane Doe", "JD") and got["Second.\nTwo paragraphs."] == ("Rob", "R")
+    # the anchor spans a bold run and a plain one, split where the anchor starts and ends
+    body = next(p for p in d.paragraphs if p.text.startswith("The method uses"))
+    assert [r.text for r in body.runs if r.text] == \
+        ["The method uses ", "a ", "Kalman filter", " on the raw", " stream. ", "The method is sound", "."]
+    assert [r.text for r in body.runs if r.bold] == ["a ", "Kalman filter"]
+    # the repeated phrase: the second comment takes the next occurrence
+    import doc_text as dt
+    text = dt.docx_text(out)
+    assert "The method is sound[c3]." in text and "The method is sound[c4] here too" in text
+    assert "Error[c5]" in text and "Review notes[c1]" in text
+
+
+def test_the_cli_takes_a_comments_file_and_refuses_a_bad_one(tmp_path):
+    (tmp_path / "docs").mkdir()
+    src = tmp_path / "docs" / "in.md"
+    src.write_text("# Hi\n\nA body sentence.\n")
+    env = {"EA_DIR": str(tmp_path), "HOME": str(Path.home()), "PATH": "/usr/bin:/bin"}
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "user-profile.json").write_text(json.dumps({"name": "Jane Doe"}))
+    cj = tmp_path / "docs" / "c.json"
+    cj.write_text(json.dumps([{"anchor": "body sentence", "text": "Say more."}]))
+    cmd = [sys.executable, str(ROOT / "preprocessor" / "doc_write.py"), "docx", "--in", str(src),
+           "--out", str(tmp_path / "docs" / "out.docx"), "--comments", str(cj)]
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    d = json.loads(r.stdout)
+    assert d["ok"] and d["comments"] == 1 and d["comments_missing"] == []
+    c = next(iter(docx.Document(d["path"]).comments))
+    assert c.author == "Jane Doe" and c.text == "Say more."
+    cj.write_text(json.dumps([{"text": "no anchor"}]))
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    assert r.returncode == 1 and "anchor" in json.loads(r.stdout)["error"]

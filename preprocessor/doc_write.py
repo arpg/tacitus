@@ -13,6 +13,17 @@ EA writes the content as markdown (the Write tool), then
 template's body is replaced and its styles, headers and footers kept,
 which is how a letterhead comes along.
 
+`--comments <file.json>` adds Word comments (the review balloons in the
+margin). The file is a JSON list; each item is `{"anchor": "...",
+"text": "..."}`, with an optional `"author"`. The anchor is text as it
+reads in the finished document (markdown marks stripped), inside one
+paragraph, heading or table cell; the comment highlights exactly that
+text. Anchors are looked up in document order from the previous
+comment's paragraph, so a repeated phrase takes the next occurrence.
+The comment author is `--author`, else the user's name from the
+profile. The result's `comments_missing` lists the anchors that were
+not found; those comments were not written.
+
 Markdown understood: `#`..`####` headings, paragraphs (blank-line
 separated), `-`/`*` bullets and `1.` numbers (two-space indent nests one
 level), `>` quotes, pipe tables (the `|---|` row is the header rule),
@@ -53,6 +64,7 @@ EA_DIR = Path(os.environ.get("EA_DIR", str(Path.home() / ".ea")))
 WRITE_ROOTS = ("docs", "letters", "state", "research")
 MAX_CHARS = 2_000_000
 MAX_CELLS = 200_000
+MAX_COMMENTS = 500
 
 
 class DocError(Exception):
@@ -207,8 +219,122 @@ def _clear_body(doc):
         body.remove(child)
 
 
+def _split_run(run, at: int):
+    """Split `run` at character offset `at` (same formatting both sides);
+    the new run holding the tail is returned."""
+    from copy import deepcopy
+    from docx.text.run import Run
+    text = run.text
+    tail_r = deepcopy(run._r)
+    run._r.addnext(tail_r)
+    run.text = text[:at]
+    tail = Run(tail_r, run._parent)
+    tail.text = text[at:]
+    return tail
+
+
+def _split_at(runs: list, offset: int) -> None:
+    """Split the run that straddles `offset` so a run boundary falls there."""
+    pos = 0
+    for i, r in enumerate(runs):
+        n = len(r.text)
+        if pos < offset < pos + n:
+            runs.insert(i + 1, _split_run(r, offset - pos))
+            return
+        pos += n
+
+
+def _anchor_runs(paragraph, anchor: str, after: int = 0) -> tuple[list, int] | None:
+    """The runs that together hold exactly `anchor` in `paragraph` at or
+    past character `after`, runs split where the anchor starts or ends
+    inside one, and the offset where the anchor ends; None when the
+    paragraph does not contain it there."""
+    runs = list(paragraph.runs)
+    start = "".join(r.text for r in runs).find(anchor, after)
+    if start < 0:
+        return None
+    end = start + len(anchor)
+    _split_at(runs, start)
+    _split_at(runs, end)
+    picked, pos = [], 0
+    for r in runs:
+        n = len(r.text)
+        if n and pos >= start and pos + n <= end:
+            picked.append(r)
+        pos += n
+    return picked, end
+
+
+def _all_paragraphs(doc) -> list:
+    out = list(doc.paragraphs)
+    for t in doc.tables:
+        for row in t.rows:
+            for cell in row.cells:
+                out.extend(cell.paragraphs)
+    return out
+
+
+def _initials(author: str) -> str:
+    return "".join(w[0] for w in author.split() if w[0].isalnum())[:3].upper()
+
+
+def add_comments(doc, comments: list[dict], author: str) -> tuple[int, list[str]]:
+    """Anchor each comment on its text in `doc`; (written, missing anchors).
+    Anchors are searched from the end of the previous comment's anchor
+    onward, then from the top, so an in-order list takes the next
+    occurrence of a repeated phrase."""
+    paras = _all_paragraphs(doc)
+    written, missing, at, after = 0, [], 0, 0
+    for c in comments:
+        anchor = c["anchor"]
+        order = [(at, after)] + [(i, 0) for i in range(at + 1, len(paras))] + [(i, 0) for i in range(0, at + 1)]
+        found = None
+        for i, off in order:
+            found = _anchor_runs(paras[i], anchor, off)
+            if found:
+                at, (runs, after) = i, found
+                break
+        if not found:
+            missing.append(anchor)
+            continue
+        who = str(c.get("author") or author)
+        parts = [t.strip() for t in re.split(r"\n\s*\n", str(c["text"])) if t.strip()] or [""]
+        comment = doc.add_comment(runs, text=parts[0], author=who, initials=_initials(who))
+        for extra in parts[1:]:
+            comment.add_paragraph(extra)
+        written += 1
+    return written, missing
+
+
+def load_comments(raw: str) -> list[dict]:
+    """The comment list from a JSON file, each item checked; DocError otherwise."""
+    src = Path(raw).expanduser()
+    if not src.is_file():
+        raise DocError(f"no such comments file: {raw}")
+    try:
+        items = json.loads(src.read_text(encoding="utf-8"))
+    except ValueError as e:
+        raise DocError(f"{raw}: not JSON ({e})") from None
+    if not isinstance(items, list) or len(items) > MAX_COMMENTS:
+        raise DocError(f"{raw}: a JSON list of at most {MAX_COMMENTS} comments")
+    for i, c in enumerate(items):
+        if not isinstance(c, dict) or not str(c.get("anchor") or "").strip() or "text" not in c:
+            raise DocError(f"{raw}: comment {i + 1} needs a non-empty \"anchor\" and a \"text\"")
+        c["anchor"] = str(c["anchor"])
+    return items
+
+
+def default_author(ea_dir: Path | None = None) -> str:
+    try:
+        prof = json.loads(((ea_dir or EA_DIR) / "config" / "user-profile.json").read_text())
+        return str(prof.get("name") or "").strip() or "EA"
+    except (OSError, ValueError, AttributeError):
+        return "EA"
+
+
 def build(text: str, out: Path, *, title: str = "", template: Path | None = None,
-          font: str | None = None, size: float | None = None) -> dict:
+          font: str | None = None, size: float | None = None,
+          comments: list[dict] | None = None, author: str = "") -> dict:
     from docx import Document
     if len(text) > MAX_CHARS:
         raise DocError(f"the content is over {MAX_CHARS:,} characters")
@@ -265,6 +391,8 @@ def build(text: str, out: Path, *, title: str = "", template: Path | None = None
             counts["tables"] += 1
         elif kind == "break":
             doc.add_page_break()
+    if comments:
+        counts["comments"], counts["comments_missing"] = add_comments(doc, comments, author or default_author())
     doc.save(str(out))
     return {"ok": True, "path": str(out), **counts}
 
@@ -422,7 +550,9 @@ def cmd_docx(args) -> int:
             text = args.text
         out = out_path(args.out)
         tpl = template_path(args.template) if args.template else None
-        res = build(text, out, title=args.title or "", template=tpl, font=args.font, size=args.size)
+        comments = load_comments(args.comments) if args.comments else None
+        res = build(text, out, title=args.title or "", template=tpl, font=args.font, size=args.size,
+                    comments=comments, author=args.author or "")
     except DocError as e:
         print(json.dumps({"ok": False, "error": str(e)}))
         return 1
@@ -475,6 +605,9 @@ def main(argv=None) -> int:
     p.add_argument("--template", help="an existing .docx whose styles, headers and footers to keep")
     p.add_argument("--font", help="the body font, e.g. Calibri")
     p.add_argument("--size", type=float, help="the body size in points")
+    p.add_argument("--comments", help='a JSON list of Word comments: [{"anchor": "text in the document", '
+                   '"text": "the comment", "author": "optional"}]')
+    p.add_argument("--author", help="the comment author (default: the user's name from the profile)")
     p.set_defaults(func=cmd_docx)
     p = sub.add_parser("xlsx", help="write an .xlsx from CSV rows, or fill a template", allow_abbrev=False)
     p.add_argument("--in", dest="inp", help="the rows as CSV (.tsv: tab-separated)")
