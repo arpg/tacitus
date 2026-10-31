@@ -658,6 +658,19 @@ class WebStore:
         row = self._row(channel, key)
         return row["thread_key"] if row else None
 
+    def thread_channel(self, key: str | None) -> str | None:
+        """The one channel that holds thread `key` (or the message whose id
+        it is); None when no channel or more than one does. A standalone
+        key (`t<seq>`, `w<seq>`) is unique across the store."""
+        if not key:
+            return None
+        for col in ("thread_key", "id"):
+            rows = self._all(f"SELECT DISTINCT channel FROM messages WHERE {col}=? LIMIT 2",
+                             (key,))
+            if rows:
+                return rows[0]["channel"] if len(rows) == 1 else None
+        return None
+
     def thread(self, channel: str, key: str, limit: int = 1000) -> list[dict]:
         """The thread's messages, oldest first: its first message, then the
         replies."""
@@ -1680,6 +1693,12 @@ class WebFrontend(ChatFrontend):
         if known:
             return known
         return thread_ts if THREAD_KEY_RE.match(thread_ts) else None
+
+    def thread_channel(self, thread_ts: str | None) -> str | None:
+        """The channel that holds a thread, for a caller that has only the
+        thread key (the bot delivering a staged job): a web key names no
+        channel in its text. None when the store does not know it."""
+        return self.store.thread_channel(thread_ts)
 
     def _channel_or_raise(self, channel: str) -> dict:
         row = self.store.channel(channel)

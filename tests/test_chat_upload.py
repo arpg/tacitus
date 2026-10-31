@@ -319,3 +319,70 @@ def test_legacy_secret_only_from_an_owner_file(sandbox, monkeypatch):
     rc, out = _run(_fresh().main, TEXT_JOB, monkeypatch)
     assert rc == 0 and out[0]["status"] == "queued" and not fe.posts
     _drain_outbox()
+
+
+# ── the web chat alone ("frontend": "web") ────────────────────────────
+
+def _web_bot(store):
+    """The bot's web front end on the store at `store`, its EA channel and
+    DM made, with a thread the owner opened in the DM."""
+    from chat.web_frontend import WebFrontend
+    bot = WebFrontend.from_config({}, store_path=store, writer_only=True)
+    bot.start()
+    bot.store.upsert_channel("main", "ea", "main")
+    bot.store.upsert_channel("dm", "dm", "dm")
+    return bot, bot.post("dm", "send me the report")
+
+
+def test_a_resident_upload_reaches_the_web_bot_through_the_outbox(sandbox, monkeypatch):
+    """The resident cannot open the owner's store, and the copy it could
+    open is one the bot never reads: it stages the job, and the bot's drain
+    posts it through its own web front end, in the channel that holds the
+    thread."""
+    sandbox.cfg.write_text(json.dumps({"chat": {"frontend": "web"}}))
+    bot, asked = _web_bot(sandbox.tmp / "owner" / "webchat.sqlite")
+    built = []
+    monkeypatch.setattr(chat, "load_frontend", lambda **kw: built.append(kw))
+    rc, out = _run(chat_upload.main, ["--channel", "dm", "--thread-ts", asked.thread_key,
+                                      "--file", str(sandbox.src), "--comment", "the report"],
+                   monkeypatch)
+    assert rc == 0 and out[0]["status"] == "queued" and built == []
+    rc, out = _run(chat_upload.main, ["--channel", "dm", "--thread-ts", asked.thread_key,
+                                      "--text", "done"], monkeypatch)
+    assert rc == 0 and out[0]["status"] == "queued"
+    assert not list(sandbox.ea.rglob("webchat.sqlite"))
+
+    # the bot's drain (resident_router_loop): the channel comes from the
+    # store, never from the job
+    def upload(channel, thread_ts, file, filename, title, initial_comment):
+        bot.upload(bot.thread_channel(thread_ts) or channel, file, thread_ts=thread_ts,
+                   filename=filename, title=title, comment=initial_comment or "")
+
+    def post(channel, thread_ts, text):
+        bot.post(bot.thread_channel(thread_ts) or channel, text, thread_ts=thread_ts)
+    results = slack_outbox.drain(upload, channel=bot.main_channel, post_fn=post)
+    assert sorted(r["status"] for r in results) == ["sent", "sent"]
+    thread = bot.store.thread("dm", asked.thread_key)
+    assert thread[0]["text"] == "send me the report"
+    assert sorted((m["author"], m["kind"], m["text"]) for m in thread[1:]) == [
+        ("bot", "file", "the report"), ("bot", "message", "done")]
+    (sent,) = [m for m in thread if m["kind"] == "file"]
+    assert sent["file"]["name"] == "report.pdf"
+    assert Path(bot.store.file(sent["file"]["id"])["path"]).read_bytes() == b"%PDF-1.4 test"
+    assert bot.store.threads("main") == []
+    assert list(slack_outbox.outbox_dir().glob("*" + SC)) == []
+
+
+def test_an_owner_upload_writes_the_web_store_directly(sandbox, monkeypatch):
+    """An owner process holds the store the bot serves: the upload goes in
+    at once, and nothing is staged."""
+    sandbox.private.mkdir(mode=0o700)
+    _write(sandbox.private / owner_trust.CHAT_FILE, json.dumps({"frontend": "web"}))
+    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: True)
+    bot, asked = _web_bot(sandbox.private / "webchat.sqlite")
+    rc, out = _run(chat_upload.main, ["--channel", "dm", "--thread-ts", asked.thread_key,
+                                      "--file", str(sandbox.src)], monkeypatch)
+    assert rc == 0 and out[0]["filename"] == "report.pdf"
+    thread = bot.store.thread("dm", asked.thread_key)
+    assert [m["kind"] for m in thread] == ["message", "file"]
+    assert list(slack_outbox.outbox_dir().glob("*" + SC)) == []

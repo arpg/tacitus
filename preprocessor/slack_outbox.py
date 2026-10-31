@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Bot-mediated Slack file (and thread-text) delivery for the resident EA.
+"""Bot-mediated file (and thread-text) delivery for the resident EA, on
+every chat front end.
 
-The resident Claude runs as the ``ea-bot`` user and, by design, has no
-``SLACK_BOT_TOKEN`` (the security model keeps the token out of its reach, so
-a prompt-injected resident cannot exfiltrate it). It therefore cannot upload
-files to Slack directly. This module is the bridge:
+The resident Claude runs as the ``ea-bot`` user and, by design, holds no
+chat credential (``SLACK_BOT_TOKEN``, ``ZULIP_API_KEY``) and cannot open the
+web chat's store, which is the owner's (the security model keeps all of
+them out of its reach, so a prompt-injected resident cannot exfiltrate or
+forge them). It therefore cannot post files to the chat directly. This
+module is the bridge:
 
   * the resident STAGES a file into a shared outbox  -> ``stage()``
-  * the main bot (which holds the token) DRAINS it   -> ``drain()``
+  * the main bot (which holds the credential, or serves the web chat's
+    store) DRAINS it through its own front end      -> ``drain()``
 
-The token never leaves the bot. Layout under ``EA_DIR/state/outbox/``::
+The credential never leaves the bot. Layout under ``EA_DIR/state/outbox/``::
 
     <stamp>.<name>                  the staged file (copied from the resident)
     <stamp>.<name>.deliver.json     sidecar: {thread_ts, comment, title,

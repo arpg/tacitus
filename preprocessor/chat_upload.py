@@ -13,6 +13,9 @@ SLACK_BOT_TOKEN; on Zulip, ZULIP_API_KEY. The caller never sees it. With a
 credential the job goes through the configured chat frontend
 (`chat.load_frontend(for_cli=True)`); with the web chat as a shadow, an
 owner process's job is mirrored into it too (docs/webchat.md, CLI senders).
+The web chat alone needs no credential: its store is the owner's, so an
+owner process writes the job into it and the bot's event stream pushes
+it, and any other process stages the job as below.
 
 If NO credential is reachable (the resident runs as the ea-bot user, which
 by design cannot read it), this falls back to bot-mediated delivery: the
@@ -66,6 +69,9 @@ SETTING_KEYS = frozenset({"EA_SLACK_CHANNEL_ID", "EA_SLACK_CHANNEL_NAME",
 
 # The credential each frontend needs; memory needs none.
 CREDENTIAL_NAMES = {"slack": "SLACK_BOT_TOKEN", "zulip": "ZULIP_API_KEY"}
+# Front ends whose store only an owner process writes; another process
+# (the resident) stages its job for the bot.
+OWNER_STORE_FRONTENDS = frozenset({"web"})
 
 
 def _chat_pkg():
@@ -141,7 +147,8 @@ def _stage_for_delivery(args) -> int:
     except ImportError:
         import slack_outbox  # when run as a script from preprocessor/
     if not args.thread_ts:
-        print("ERROR: no SLACK_BOT_TOKEN available in this context, and "
+        print("ERROR: this process cannot post to the chat itself (no bot "
+              "credential, or the web chat's store is the owner's), and "
               "--thread-ts is required to stage for bot-mediated delivery "
               "(pass the thread_ts from your dispatch marker).",
               file=sys.stderr)
@@ -242,6 +249,10 @@ def main() -> int:
 
     name = _frontend_name()
     cred_name = CREDENTIAL_NAMES.get(name)
+    if name in OWNER_STORE_FRONTENDS and not _owner_trust.is_owner_process():
+        # The copy of the store this process could open is one the bot
+        # never reads: the bot posts the job through its own front end.
+        return _stage_for_delivery(args)
     if cred_name is None:
         env = dict(os.environ)
     else:

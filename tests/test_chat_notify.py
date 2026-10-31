@@ -11,6 +11,7 @@ always sent; the LLM grants name tools, never a wildcard.
 import ast
 import io
 import json
+import os
 import subprocess
 import sys
 import types
@@ -401,3 +402,117 @@ def test_the_health_senders_route_through_the_health_key():
               "scripts/outbound-review.py", "scripts/preferences-digest.py",
               "tests/evals/run_full_if_changed.sh"):
         assert "health_channel_key()" in (root / f).read_text(), f
+
+
+# ── the web chat alone ("frontend": "web") ────────────────────────────
+
+WEB_LOGIN = "owner@example.test"
+
+
+@pytest.fixture
+def web_env(env, monkeypatch):
+    """A web-only chat block in the owner-private chat.json, read by an
+    owner process, with the store beside it; tailscaled is this process,
+    so the stream below signs in with the login header."""
+    import chat
+    from chat import web_frontend as wf
+    private = env.tmp / "private"
+    private.mkdir(mode=0o700)
+    monkeypatch.setenv("EA_DIR", str(env.tmp / "ea"))
+    monkeypatch.setattr(chat.owner_trust, "is_owner_process", lambda: True)
+    monkeypatch.setattr(chat_notify, "_ROOM_FE", [])
+    monkeypatch.setattr(wf, "tailscaled_uid", lambda refresh=False: os.geteuid())
+    if not wf.PROC_NET[0].exists():
+        monkeypatch.setattr(wf, "peer_uid", lambda peer, local: os.geteuid())
+
+    def block(web: dict) -> None:
+        (private / "chat.json").write_text(json.dumps({"frontend": "web", "web": web}))
+        (private / "chat.json").chmod(0o600)
+    block({"port": 0, "tailscale_login": WEB_LOGIN})
+    return types.SimpleNamespace(private=private, store=private / "webchat.sqlite",
+                                 block=block, chat=chat, wf=wf, cfg=env.cfg)
+
+
+class _WebStream:
+    """The bot's event stream, opened as the owner before anything is
+    posted, so what it reads went out live (the tail thread), not from a
+    replay of the log."""
+
+    def __init__(self, fe) -> None:
+        import http.client
+        self.conn = http.client.HTTPConnection("127.0.0.1", fe.port, timeout=5)
+        self.conn.request("GET", f"{fe.base_path}/api/events",
+                          headers={"Tailscale-User-Login": WEB_LOGIN})
+        self.resp = self.conn.getresponse()
+        while self.resp.fp.readline().decode().rstrip("\n") != "retry: 3000":
+            pass
+
+    def events(self, kind: str = "message", count: int = 1) -> list:
+        got, cur = [], {}
+        while len(got) < count:
+            line = self.resp.fp.readline().decode().rstrip("\n")
+            if line == "" and "data" in cur:
+                if cur.get("event") == kind:
+                    got.append(json.loads(cur["data"]))
+                cur = {}
+                continue
+            key, _, val = line.partition(": ")
+            if key in ("event", "data"):
+                cur[key] = val
+        return got
+
+    def close(self) -> None:
+        self.conn.close()
+
+
+def test_a_web_only_post_lands_in_the_store_and_the_bots_stream_delivers_it(web_env):
+    bot = web_env.chat.load_frontend(env={})
+    assert bot.trusted_config is True and not bot.writer_only
+    bot.start()
+    stream = None
+    try:
+        stream = _WebStream(bot)
+        text = "*Morning* briefing" + chat_notify.SPLIT_MARKER + "second part"
+        assert chat_notify.post("ea-assistant", text, _bypass_quiet=True)
+        first, second = stream.events(count=2)
+        assert (first["channel"], first["author"], first["text"]) == ("main", "bot",
+                                                                      "**Morning** briefing")
+        assert (second["channel"], second["thread_key"], second["text"]) == \
+            ("main", first["thread_key"], "second part")
+        # post_as_bot ignores the Slack channel id and goes to the EA channel
+        assert chat_notify.post_as_bot("C_IGNORED", ":warning: held")
+        (alert,) = [m for m in web_env.wf.WebStore(web_env.store).threads("main")
+                    if m["text"] == ":warning: held"]
+        assert alert["author"] == "bot" and alert["thread_key"] != first["thread_key"]
+    finally:
+        if stream is not None:
+            stream.close()
+        bot.stop()
+
+
+def test_a_web_notify_entry_names_the_channel_and_the_keys_follow_it(web_env, capsys):
+    web_env.block({"notify": {"personal": {"channel": "dm"}, "health": {"channel": "r9"},
+                              "scheduling": {"channel": "main"}}})
+    assert chat_notify.post("personal", "a note for you", _bypass_quiet=True)
+    store = web_env.wf.WebStore(web_env.store)
+    (row,) = store.threads("dm")
+    assert row["text"] == "a note for you" and store.channel("dm")["kind"] == "dm"
+    # a room the bot never made posts nothing
+    assert chat_notify.post("health", "x", _bypass_quiet=True) is False
+    assert "'r9'" in capsys.readouterr().out and store.channel("r9") is None
+    assert (chat_notify.scheduling_channel_key(), chat_notify.calendar_channel_key(),
+            chat_notify.health_channel_key()) == ("scheduling", "scheduling", "health")
+    web_env.block({})
+    assert (chat_notify.scheduling_channel_key(), chat_notify.calendar_channel_key(),
+            chat_notify.health_channel_key()) == ("ea-assistant",) * 3
+    assert chat_notify.llm_tool_grants() == ""
+
+
+def test_a_web_post_from_a_process_that_is_not_the_owners_posts_nothing(web_env, monkeypatch,
+                                                                        capsys):
+    monkeypatch.setattr(web_env.chat.owner_trust, "is_owner_process", lambda: False)
+    _set_chat(web_env, {"frontend": "web"})
+    assert chat_notify.post("ea-assistant", "x", _bypass_quiet=True) is False
+    assert chat_notify.post_as_bot("C1", "x") is False
+    assert "store is the owner's" in capsys.readouterr().out
+    assert not list(web_env.private.parent.rglob("webchat.sqlite"))
