@@ -17,6 +17,10 @@ with no I/O:
   replay window. Each frame's session id, kind and id are authenticated
   data, so the relay cannot move a sealed body to another request.
 - `pack`, `unpack`: a sealed plaintext, a JSON head and a raw body.
+- `signing_keypair`, `sign_manifest`, `verify_manifest`: the Ed25519 key
+  the bot signs its web app with, and the signed manifest of the app's
+  files (docs/webchat.md, Code integrity). `bundle_hash` is the hash of
+  the canonical manifest, the value a pairing QR code carries.
 
 The crypto comes from the `cryptography` package (installed with msal).
 Without it `AVAILABLE` is False and every key operation raises
@@ -41,8 +45,12 @@ from typing import Any, Callable, Optional
 from urllib.parse import urlsplit
 
 try:
-    from cryptography.exceptions import InvalidTag
+    from cryptography.exceptions import InvalidSignature, InvalidTag
     from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PrivateKey,
+        Ed25519PublicKey,
+    )
     from cryptography.hazmat.primitives.asymmetric.x25519 import (
         X25519PrivateKey,
         X25519PublicKey,
@@ -640,3 +648,107 @@ def client_finish(pending: PendingHello, frame: dict) -> Session:
         raise HandshakeError("welcome does not authenticate") from exc
     session.device = str(session.info.get("device", ""))
     return session
+
+
+# ── the signed app bundle (docs/webchat.md, Code integrity) ───────────
+
+MANIFEST_VERSION = 1
+# A file of the app as the manifest names it: a path under webui/ of plain
+# ASCII parts, so its canonical form is the same in Python and in the app.
+MANIFEST_PATH_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$")
+MANIFEST_KEYS = frozenset({"v", "files", "built_at", "key"})
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class ManifestError(ValueError):
+    """A manifest or signed manifest that does not check."""
+
+
+def canonical_json(obj: Any) -> bytes:
+    """The bytes a manifest is hashed and signed as: keys sorted, no
+    spaces, UTF-8. The app (webui/bundle.js) writes the same bytes."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                      allow_nan=False).encode("utf-8")
+
+
+def check_manifest(manifest: Any) -> dict:
+    """`manifest` when it has the shape `sign_manifest` writes and nothing
+    else; ManifestError otherwise."""
+    if not isinstance(manifest, dict) or set(manifest) != MANIFEST_KEYS:
+        raise ManifestError("a manifest has exactly v, files, built_at and key")
+    if manifest["v"] != MANIFEST_VERSION or isinstance(manifest["v"], bool):
+        raise ManifestError("unknown manifest version")
+    built = manifest["built_at"]
+    if not isinstance(built, int) or isinstance(built, bool) or not 0 <= built < 1 << 53:
+        raise ManifestError("built_at is a Unix time in seconds")
+    files = manifest["files"]
+    if not isinstance(files, dict):
+        raise ManifestError("files maps each path to its sha256")
+    for path, digest in files.items():
+        if not isinstance(path, str) or not MANIFEST_PATH_RE.match(path) \
+                or not isinstance(digest, str) or not _SHA256_HEX_RE.match(digest):
+            raise ManifestError(f"bad file entry {path!r}")
+    try:
+        key = b64d(manifest["key"])
+    except FrameError as exc:
+        raise ManifestError("key is base64url") from exc
+    if len(key) != 32 or b64e(key) != manifest["key"]:
+        raise ManifestError("key is an Ed25519 public key, base64url")
+    return manifest
+
+
+def bundle_hash(manifest: Any) -> str:
+    """The bundle hash: sha256 hex of the canonical manifest. A pairing QR
+    code carries it; the phone attests it after its check."""
+    return hashlib.sha256(canonical_json(check_manifest(manifest))).hexdigest()
+
+
+def signing_keypair(private: Optional[bytes] = None) -> tuple[bytes, bytes]:
+    """(raw Ed25519 private key, raw public key): a new pair, or the public
+    key of `private`."""
+    _need()
+    key = Ed25519PrivateKey.generate() if private is None \
+        else Ed25519PrivateKey.from_private_bytes(private)
+    raw = key.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw,
+                            serialization.NoEncryption())
+    pub = key.public_key().public_bytes(serialization.Encoding.Raw,
+                                        serialization.PublicFormat.Raw)
+    return raw, pub
+
+
+def sign_manifest(manifest: dict, private: bytes) -> dict:
+    """The served document `{"manifest": ..., "signature": ...}`: Ed25519
+    over the manifest's canonical bytes, base64url. The manifest's `key`
+    must be the public key of `private`."""
+    check_manifest(manifest)
+    _priv, pub = signing_keypair(private)
+    if manifest["key"] != b64e(pub):
+        raise ManifestError("the manifest names another key")
+    sig = Ed25519PrivateKey.from_private_bytes(private).sign(canonical_json(manifest))
+    return {"manifest": dict(manifest), "signature": b64e(sig)}
+
+
+def verify_manifest(doc: Any, public: Optional[bytes] = None,
+                    expected_hash: Optional[str] = None) -> dict:
+    """The manifest of a signed document, once its signature checks under
+    the key it names; with `public`, that key must be it, and with
+    `expected_hash`, the bundle hash must be that. ManifestError otherwise."""
+    _need()
+    if not isinstance(doc, dict) or set(doc) != {"manifest", "signature"}:
+        raise ManifestError("a signed manifest has exactly manifest and signature")
+    manifest = check_manifest(doc["manifest"])
+    try:
+        sig = b64d(doc["signature"])
+    except FrameError as exc:
+        raise ManifestError("signature is base64url") from exc
+    key = b64d(manifest["key"])
+    if public is not None and not hmac.compare_digest(key, public):
+        raise ManifestError("signed by another key")
+    try:
+        Ed25519PublicKey.from_public_bytes(key).verify(sig, canonical_json(manifest))
+    except (InvalidSignature, ValueError) as exc:
+        raise ManifestError("the signature does not check") from exc
+    if expected_hash is not None and not hmac.compare_digest(
+            bundle_hash(manifest), str(expected_hash)):
+        raise ManifestError("another bundle than the one expected")
+    return manifest

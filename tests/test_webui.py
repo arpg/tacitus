@@ -12,7 +12,10 @@ every control is 44px high and nothing scrolls sideways, and the
 service worker caches no API response. The relay's crypto reproduces the
 Python vectors (tests/fixtures/relay_vectors.json), the QR encoder draws
 codes a decoder reads, and a phone pairs and chats through a real relay
-with the real web front end.
+with the real web front end. The app checks its code against the bot's
+signed manifest (bundle.js): the service worker serves the signed files
+and refuses a changed one, and a copy of the app from the relay attests
+its check, while only the owner lets it press card buttons.
 """
 import json
 import re
@@ -27,9 +30,9 @@ import pytest
 
 TESTS = Path(__file__).resolve().parent
 WEBUI = TESTS.parent / "botcore" / "botcore" / "chat" / "webui"
-FILES = ["index.html", "app.js", "qr.js", "app.css", "manifest.webmanifest", "sw.js",
+FILES = ["index.html", "app.js", "qr.js", "bundle.js", "app.css", "manifest.webmanifest", "sw.js",
          "icon-180.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png", "favicon.svg"]
-TEXT_FILES = ["index.html", "app.js", "qr.js", "app.css", "manifest.webmanifest", "sw.js"]
+TEXT_FILES = ["index.html", "app.js", "qr.js", "bundle.js", "app.css", "manifest.webmanifest", "sw.js"]
 sys.path.insert(0, str(TESTS))
 
 
@@ -63,7 +66,7 @@ def test_the_page_loads_its_files_by_relative_path():
     tags = refs()
     scripts = [a.get("src") for t, a in tags if t == "script"]
     links = {a.get("rel"): a.get("href") for t, a in tags if t == "link"}
-    assert scripts == ["qr.js", "app.js"]
+    assert scripts == ["bundle.js", "qr.js", "app.js"]
     assert links["stylesheet"] == "app.css"
     assert links["manifest"] == "manifest.webmanifest"
     assert links["icon"] == "favicon.svg"
@@ -247,6 +250,20 @@ def test_the_service_worker_never_caches_the_api():
     assert "POST" not in sw and "req.method !== 'GET'" in handler
 
 
+def test_the_worker_checks_files_against_the_signed_manifest():
+    """The worker loads the check the page uses, leaves the signed manifest
+    to the browser, and its refusal page runs no script."""
+    sw = read("sw.js")
+    assert "importScripts('bundle.js');" in sw
+    handler = _handler(sw, "fetch")
+    assert "url.pathname.endsWith('/manifest.sig.json')) return;" in handler
+    assert handler.index("manifest.sig.json") < handler.index("respondWith")
+    refusal = sw[sw.index("function refusal"):sw.index("async function adopt")]
+    assert "<script" not in refusal and "'Content-Security-Policy': \"default-src 'none'" in refusal
+    bundle = read("bundle.js")
+    assert "{ name: 'Ed25519' }" in bundle and "Object.assign(self, { BundleError, verifyBundle" in bundle
+
+
 def test_the_drawer_has_the_notifications_toggle():
     """A checkbox in the channel drawer turns Web Push on; on iOS the install
     line beside it says how notifications come. A headless browser cannot
@@ -312,8 +329,9 @@ def test_nothing_comes_from_elsewhere():
 def test_the_app_stays_small():
     lines = sum(len(read(n).splitlines()) for n in TEXT_FILES)
     # 1,600 for the chat, about 900 for qr.js and the relay transport (docs/webchat-relay.md),
-    # and 60 for the relay's device approval, the pairing checks and the file rule.
-    assert lines <= 2560, f"{lines} lines: the contract keeps the app near 2,500 with the relay"
+    # 60 for the relay's device approval, the pairing checks and the file rule, and
+    # 280 for the check of the app's code (bundle.js, the worker's and the page's part).
+    assert lines <= 2840, f"{lines} lines: the contract keeps the app near 2,800 with the relay"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -835,6 +853,83 @@ def test_the_service_worker_caches_no_api_response(app):
     assert not errors, errors
 
 
+# -- the app's code against the bot's signed manifest (docs/webchat.md) ----
+
+def _worker_state(page, name):
+    """One entry of the service worker's state (the trusted manifest, a
+    refusal), as the page reads it from Cache Storage."""
+    return page.evaluate("""async (name) => {
+        const scope = (await navigator.serviceWorker.ready).scope;
+        const hit = await (await caches.open('tacitus-webchat-v3-bundle')).match(new URL(`__bundle/${name}`, scope).href);
+        return hit ? hit.json() : null;
+    }""", name)
+
+
+def test_verify_bundle_checks_the_signature_the_key_and_the_hash(app):
+    """bundle.js writes a manifest's canonical bytes as relay_crypto does,
+    so the page's bundle hash is the bot's; a wrong hash, another key, a
+    changed manifest or signature, or a field it does not know is refused."""
+    pytest.importorskip("cryptography")
+    page, stub, errors = app(sign=True)
+    page.wait_for_selector(".thread-item")
+    out = page.evaluate("""async ([doc, hash]) => {
+        const res = {};
+        const run = async (name, ...args) => {
+            try { res[name] = (await verifyBundle(...args)).hash; }
+            catch (e) { res[name] = (e instanceof BundleError ? 'refused: ' : 'error: ') + e.message; }
+        };
+        const copy = (fn) => { const d = structuredClone(doc); fn(d); return d; };
+        await run('plain', doc);
+        await run('hash', doc, hash);
+        await run('pinned', doc, null, doc.manifest.key);
+        await run('wrongHash', doc, '0'.repeat(64));
+        await run('otherKey', doc, null, 'A'.repeat(43));
+        await run('changed', copy((d) => { d.manifest.files['app.js'] = 'f'.repeat(64); }));
+        await run('signature', copy((d) => { d.signature = (d.signature[0] === 'A' ? 'B' : 'A') + d.signature.slice(1); }));
+        await run('extra', copy((d) => { d.manifest.note = 'x'; }));
+        await run('float', copy((d) => { d.manifest.built_at += 0.5; }));
+        return res;
+    }""", [stub.bundle.doc, stub.bundle.hash])
+    assert out["plain"] == out["hash"] == out["pinned"] == stub.bundle.hash, out
+    for name in ("wrongHash", "otherKey", "changed", "signature", "extra", "float"):
+        assert out[name].startswith("refused: "), (name, out[name])
+    assert not errors, errors
+
+
+def test_the_worker_serves_the_signed_app_and_refuses_a_changed_file(app):
+    """With the bot's signed manifest the service worker serves the app's
+    files that match it. A changed app.js from the server stops the app:
+    every page shows the refusal, which runs no script, and the kept copy
+    is gone. "Check again" runs the app once the server sends the signed
+    file again."""
+    pytest.importorskip("cryptography")
+    from playwright.sync_api import expect
+    page, stub, errors = app(sign=True)
+    page.wait_for_selector(".thread-item")
+    trusted = wait_for(lambda: _worker_state(page, "trusted"), 15)
+    assert trusted["hash"] == stub.bundle.hash and trusted["pin"] is False
+    page.reload()
+    page.wait_for_selector(".thread-item")
+    assert page.evaluate("Boolean(navigator.serviceWorker.controller)")
+    assert not errors, errors
+
+    stub.files_served["app.js"] = (WEBUI / "app.js").read_bytes() + b"\n// changed\n"
+    page.reload()
+    expect(page.locator("h1")).to_have_text("Tacitus stopped", timeout=15000)
+    expect(page.locator("body")).to_contain_text("app.js")
+    assert page.locator("script").count() == 0
+    assert page.evaluate("caches.keys()") == ["tacitus-webchat-v3-bundle"]  # no copy is kept
+    assert _worker_state(page, "refused") == {"file": "app.js"}
+    page.reload()  # a refused app stays refused
+    expect(page.locator("h1")).to_have_text("Tacitus stopped")
+
+    stub.files_served.clear()
+    page.click("text=Check again")
+    page.wait_for_selector(".thread-item", timeout=15000)
+    assert wait_for(lambda: _worker_state(page, "trusted"), 15)["hash"] == stub.bundle.hash
+    assert _worker_state(page, "refused") is None
+
+
 # -- the relay (docs/webchat-relay.md) -----------------------------------
 
 ROOT = TESTS.parent
@@ -1012,6 +1107,21 @@ def _free_port() -> int:
 def relay_bot(tmp_path):
     """A relay server (serving the app on its own origin too) and the real
     web front end, whose relay block names it."""
+    yield from _relay_bot(tmp_path, WEBUI)
+
+
+@pytest.fixture
+def relay_bot_changed(tmp_path):
+    """As relay_bot, with a relay whose copy of the app has a changed app.js."""
+    copy = tmp_path / "relay-webui"
+    copy.mkdir()
+    for f in WEBUI.iterdir():
+        (copy / f.name).write_bytes(f.read_bytes())
+    (copy / "app.js").write_bytes((WEBUI / "app.js").read_bytes() + b"\n// changed\n")
+    yield from _relay_bot(tmp_path, copy)
+
+
+def _relay_bot(tmp_path, static):
     pytest.importorskip("cryptography")
     sys.path.insert(0, str(ROOT / "relay"))
     sys.path.insert(0, str(ROOT / "botcore"))
@@ -1019,7 +1129,7 @@ def relay_bot(tmp_path):
     import relay_server as rs
     from botcore.chat.web_frontend import WebFrontend
     relay = rs.Relay(rs.Limits(keepalive=0.5, client_timeout=15), log=lambda line: None)
-    rsrv = rs.RelayHTTPServer(("127.0.0.1", 0), relay, str(WEBUI))
+    rsrv = rs.RelayHTTPServer(("127.0.0.1", 0), relay, str(static))
     threading.Thread(target=rsrv.serve_forever, daemon=True).start()
     rbase = f"http://127.0.0.1:{rsrv.server_address[1]}"
     port = _free_port()
@@ -1204,37 +1314,83 @@ def test_a_forged_error_never_sends_a_message_twice(browser, relay_bot):
             c.close()
 
 
-def test_a_phone_paired_on_the_relays_origin_cannot_press_card_buttons(browser, relay_bot):
-    """A relay-origin phone (chat.json opts in, the pairing asks for it) is
-    warned that the relay can read its chat, waits for approval, and then
-    cannot press a card's buttons."""
+def _relay_origin_phone(browser, relay_bot, contexts):
+    """A phone that opens a relay-origin pairing link (chat.json opts in,
+    the pairing asks for it), is warned that the relay can read its chat,
+    and waits for approval; the owner approves it. (page, errors, device id)."""
     from playwright.sync_api import expect
     fe = relay_bot["fe"]
+    link = fe.relay.new_pairing(app_url=relay_bot["rbase"] + "/", relay_origin=True)
+    assert link.startswith(relay_bot["rbase"] + "/#tr1=")
+    ctx = browser.new_context()
+    contexts.append(ctx)
+    page = ctx.new_page()
+    errors, said = [], []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.on("dialog", lambda d: (said.append(d.message), d.accept()))
+    page.goto(link)
+    expect(page.locator("#relay-note")).to_contain_text("waits for approval", timeout=15000)
+    assert said and "can read this phone's chat and type as you" in said[0]
+    devices = fe.relay.devices()
+    assert [(d["origin"], d["pending"], d["bundle_verified"]) for d in devices] == [("relay", True, False)]
+    fe.relay.approve(devices[0]["id"])
+    return page, errors, devices[0]["id"]
+
+
+def test_a_relay_origin_phone_checks_its_app_and_presses_cards_when_the_owner_allows(browser, relay_bot):
+    """A relay-origin phone runs the relay's copy of the app. Once approved,
+    it fetches the bot's signed manifest through the relay, its service
+    worker finds every file of the copy in it, and the phone attests the
+    bundle: the bot records the check, which grants nothing. The card
+    buttons stay greyed out until the owner allows them for this device."""
+    from playwright.sync_api import expect
+    fe, got = relay_bot["fe"], relay_bot["got"]
     contexts = []
     try:
-        link = fe.relay.new_pairing(app_url=relay_bot["rbase"] + "/", relay_origin=True)
-        assert link.startswith(relay_bot["rbase"] + "/#tr1=")
         _send_card(fe)
-        ctx = browser.new_context()
-        contexts.append(ctx)
-        page = ctx.new_page()
-        errors, said = [], []
-        page.on("pageerror", lambda e: errors.append(str(e)))
-        page.on("dialog", lambda d: (said.append(d.message), d.accept()))
-        page.goto(link)
-        expect(page.locator("#relay-note")).to_contain_text("waits for approval", timeout=15000)
-        assert said and "can read this phone's chat and type as you" in said[0]
-        devices = fe.relay.devices()
-        assert [(d["origin"], d["pending"]) for d in devices] == [("relay", True)]
-        fe.relay.approve(devices[0]["id"])
+        page, errors, device = _relay_origin_phone(browser, relay_bot, contexts)
         expect(page.locator(".chan .c-name").first).to_be_visible(timeout=20000)
+        (row,) = fe.relay.devices()
+        assert row["bundle_verified"] is True and row["cards_allowed"] is False
+        trusted = _worker_state(page, "trusted")
+        assert trusted["hash"] == fe.bundle_hash() and trusted["pin"] is True
+        assert page.evaluate("loadPairing().then((r) => r.signKey)") == fe.bundle.public
         assert page.evaluate("S.me.card_actions") is False
         page.locator(".thread-item:has-text('Send this draft?')").click()
         expect(page.locator(".card button.primary")).to_be_disabled()
         expect(page.locator(".card .card-note")).to_contain_text("Approve this on the tailnet")
         # The drawer offers no pairing off the tailnet.
         expect(page.locator("#pair-phone")).to_be_hidden()
+
+        # The owner allows card buttons for this device.
+        assert fe.relay.approve(device, cards=True)
+        page.reload()
+        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=20000)
+        assert page.evaluate("S.me.card_actions") is True
+        page.locator(".thread-item:has-text('Send this draft?')").click()
+        page.locator(".card button.primary").click()
+        wait_for(lambda: any(getattr(m, "action_id", "") == "approve_send" for m in got), 10)
         assert not errors, errors
+    finally:
+        for c in contexts:
+            c.close()
+
+
+def test_a_relay_origin_phone_refuses_a_copy_the_bot_did_not_sign(browser, relay_bot_changed):
+    """The relay serves a copy of the app whose app.js the bot did not sign:
+    once the phone has the bot's manifest, its service worker refuses the
+    copy and drops it, and the phone attests nothing."""
+    from playwright.sync_api import expect
+    fe = relay_bot_changed["fe"]
+    contexts = []
+    try:
+        page, errors, device = _relay_origin_phone(browser, relay_bot_changed, contexts)
+        expect(page.locator("h1")).to_have_text("Tacitus stopped", timeout=20000)
+        expect(page.locator("body")).to_contain_text("app.js")
+        assert page.evaluate("caches.keys()") == ["tacitus-webchat-v3-bundle"]
+        (row,) = fe.relay.devices()
+        assert row["bundle_verified"] is False and row["cards_allowed"] is False
+        assert "attested_bundle" not in fe.relay.store.device_by_id(device)
     finally:
         for c in contexts:
             c.close()

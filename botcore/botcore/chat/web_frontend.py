@@ -77,6 +77,19 @@ sees only ciphertext. The owner manages it from the tailnet under
 `/api/me` tells the app whether its requests may confirm a card
 (`X-Tacitus-Relay-Cards`). A new device is announced in the DM channel;
 removing one drops its push subscriptions.
+
+At start the bot signs the app's files (web_bundle, docs/webchat.md, Code
+integrity): every file under `webui/` and its sha256, signed with an
+Ed25519 key that lives in the relay key file (a key for this process
+alone when no relay runs). It serves the signed manifest at
+`<base>/manifest.sig.json` without auth and at `/api/bundle` (the route the
+relay reaches); the app's service worker serves a file only when it
+matches. A phone whose copy of the app checks posts the bundle hash to
+`/api/relay/attest` through the relay, which records the check on the
+device and grants nothing: only the owner's approval with `cards` lets a
+relay-origin device press card buttons. The bot logs a warning when a
+file on disk no longer matches what it signed; `refresh_bundle()` signs
+again.
 """
 from __future__ import annotations
 
@@ -108,7 +121,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import files as _files
-from . import web_push
+from . import relay_crypto, web_bundle, web_push
 from .base import (
     AlreadyArchived,
     ChatError,
@@ -182,6 +195,9 @@ PAIR_WAIT_S = 10.0
 MAX_CONNECTIONS = 64
 # Socket reads and writes; a stalled client is dropped.
 HANDLER_TIMEOUT_S = 30
+# Seconds between the serving process's checks of the app's files against
+# the manifest it signed (a changed file is logged once).
+BUNDLE_CHECK_S = 60.0
 
 KINDS = ("main", "sched", "dm", "room")
 EVENT_TYPES = ("message", "update", "reaction", "card", "status", "file", "channel")
@@ -208,6 +224,7 @@ _ORIGIN_RE = re.compile(r"^https?://(\[[0-9a-f:.]+\]|[a-z0-9.-]+)(:\d{1,5})?$")
 # A relay URL's path as connect-src may carry it: plain segments only.
 _RELAY_PATH_RE = re.compile(r"^(/(?!\.+(?:/|$))[A-Za-z0-9._~-]+)*$")
 _DEVICE_RE = re.compile(r"^[0-9a-f]{16}$")
+_BUNDLE_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 STATIC_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -1374,6 +1391,12 @@ class WebFrontend(ChatFrontend):
         # The relay client (relay_client.RelayClient) while it runs.
         self.relay: Any = None
         self.html_csp = self._html_csp()
+        # The app's signed bundle (web_bundle.Bundle) once start() signed it.
+        self._bundle: web_bundle.Bundle | None = None
+        self._bundle_lock = threading.Lock()
+        self._bundle_warned: set = set()
+        self._own_sign_key: bytes | None = None
+        self.bundle_check_s = BUNDLE_CHECK_S
 
     @classmethod
     def from_config(cls, cfg: dict | None, *, store_path: str | Path | None = None,
@@ -1464,6 +1487,7 @@ class WebFrontend(ChatFrontend):
                 self.push.start()
             log.info("web chat serving on %s:%d%s/", self.bind, self.port, self.base_path)
             self._start_relay()
+            self.refresh_bundle()
 
     # the relay (docs/webchat-relay.md)
 
@@ -1606,7 +1630,9 @@ class WebFrontend(ChatFrontend):
     def _tail_events(self) -> None:
         """Every tail_s seconds, hand the open streams the events other
         processes wrote to the store (WebStore.deliver_new), then post the
-        scheduled posts now due (post_due)."""
+        scheduled posts now due (post_due); every bundle_check_s, check the
+        app's files against the signed bundle."""
+        next_check = time.monotonic() + self.bundle_check_s
         while not self._stop.wait(self.tail_s):
             try:
                 self.store.deliver_new()
@@ -1614,6 +1640,114 @@ class WebFrontend(ChatFrontend):
                 # The next read tries again: a busy or failed read loses nothing.
                 log.warning("web chat: reading the event log failed: %s", e)
             self.post_due()
+            if time.monotonic() >= next_check:
+                next_check = time.monotonic() + self.bundle_check_s
+                try:
+                    self.check_bundle()
+                except Exception as e:
+                    log.warning("web chat: checking the app's files failed: %s", e)
+
+    # the signed app bundle (docs/webchat.md, Code integrity)
+
+    @property
+    def bundle(self) -> web_bundle.Bundle | None:
+        """The app's signed bundle; None before start() or without the
+        cryptography package."""
+        return self._bundle
+
+    def bundle_hash(self) -> str:
+        """The bundle hash the bot signs now; "" when it signs none. A front
+        end that is not serving (the owner's CLI) signs on first use when
+        its block names a relay, with the relay key file's key, so its hash
+        is the serving bot's for the same files."""
+        if self._bundle is None and self.relay_block() and relay_crypto.AVAILABLE \
+                and self._server is None:
+            self.refresh_bundle()
+        bundle = self._bundle
+        return bundle.hash if bundle is not None else ""
+
+    def _key_file(self) -> Path | None:
+        """The relay key file the relay block names (or its default beside
+        the store), when it is there and may be trusted."""
+        relay = self.relay_block()
+        if not relay:
+            return None
+        path = Path(os.path.expanduser(str(relay.get("key_file")
+                                           or self.store_path.parent / RELAY_KEY_FILE)))
+        return path if os.path.lexists(path) and not self._key_file_refusal(path) else None
+
+    def _signing_key(self) -> bytes:
+        """The Ed25519 key that signs the app: the relay key file's when a
+        relay is configured (the key a relay-origin phone pins), else one
+        made for this process."""
+        try:
+            if self.relay is not None:
+                return self.relay.store.signing_keypair()[0]
+            path = self._key_file()
+            if path is not None:
+                from .relay_client import KeyStore
+                return KeyStore(path).signing_keypair()[0]
+        except Exception as e:
+            log.error("web chat: the relay key file holds no signing key (%s); the app is "
+                      "signed with a key of this process alone", e)
+        if self._own_sign_key is None:
+            self._own_sign_key = relay_crypto.signing_keypair()[0]
+        return self._own_sign_key
+
+    def refresh_bundle(self) -> str:
+        """Hash and sign the files under webui/ again, and serve the new
+        manifest; the bundle hash, or "" when the bot cannot sign (no
+        cryptography package). A phone's check then compares with this one."""
+        if not relay_crypto.AVAILABLE:
+            log.warning("web chat: the app is not signed: the cryptography package is missing")
+            return ""
+        try:
+            new = web_bundle.Bundle(self.webui_dir, self._signing_key())
+        except Exception:
+            log.exception("web chat: signing the app failed")
+            return ""
+        with self._bundle_lock:
+            old, self._bundle = self._bundle, new
+            self._bundle_warned = set()
+        if new.skipped:
+            log.warning("web chat: the manifest leaves out %s", ", ".join(new.skipped))
+        if old is None:
+            log.info("web chat: signed the app, %d files, bundle %s", len(new.files),
+                     new.hash[:16])
+        elif old.hash != new.hash:
+            log.warning("web chat: signed the app again, bundle %s; changed: %s", new.hash[:16],
+                        ", ".join(web_bundle.diff(old.files, new.files)) or "built_at")
+        return new.hash
+
+    def _warn_unsigned(self, paths: list[str], why: str) -> None:
+        key = (tuple(paths), why)
+        with self._bundle_lock:
+            if key in self._bundle_warned:
+                return
+            self._bundle_warned.add(key)
+        log.warning("web chat: %s no longer match%s the app the bot signed at start (%s); a "
+                    "phone refuses them until the bot signs again (refresh_bundle or a restart)",
+                    ", ".join(paths), "es" if len(paths) == 1 else "", why)
+
+    def check_bundle(self) -> list[str]:
+        """The files under webui/ that no longer match the signed bundle
+        (changed, added or gone); each change is logged once."""
+        bundle = self._bundle
+        if bundle is None:
+            return []
+        changed = bundle.changes()
+        if changed:
+            self._warn_unsigned(changed, "on disk")
+        return changed
+
+    def note_served(self, rel: str, data: bytes) -> bool:
+        """Whether `data`, served as `rel`, is the file the bot signed; a
+        file that is not is logged once."""
+        bundle = self._bundle
+        if bundle is None or bundle.matches(rel, data):
+            return True
+        self._warn_unsigned([rel], "served " + web_bundle.sha256_hex(data)[:16])
+        return False
 
     def run_forever(self) -> None:
         """Block until stop(); the server runs on its own thread."""
@@ -2553,7 +2687,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if not path.startswith(base + "/"):
                 raise _HttpError(404, "not found")
             rest = path[len(base):]
-            if rest == "/api" or rest.startswith("/api/"):
+            if rest == "/" + web_bundle.MANIFEST_NAME and method == "GET":
+                self._manifest()
+            elif rest == "/api" or rest.startswith("/api/"):
                 segs = [urllib.parse.unquote(s) for s in rest.split("/")[2:]]
                 query = urllib.parse.parse_qs(parts.query)
                 after = self._api(method, segs, query)
@@ -2583,8 +2719,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self._check_fetch_site()
         if method == "POST":
             self._check_origin()
-        if segs and segs[0] in ("pair", "relay") and self.headers.get("X-Tacitus-Relay") is not None:
+        if segs and segs[0] in ("pair", "relay") and self.headers.get("X-Tacitus-Relay") is not None \
+                and segs != ["relay", "attest"]:
             # The relay client never forwards these; this is the second lock.
+            # A phone's attestation of its app is the one relay route it reaches.
             raise _HttpError(403, "pairing and relay devices are managed on the tailnet")
         if method == "POST" and segs == ["pair"]:
             self._pair()
@@ -2599,10 +2737,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                  "public_url": fe.public_url or None,
                                  "base_path": fe.base_path, "push": web_push.AVAILABLE,
                                  "relay": fe.relay is not None,
-                                 "card_actions": self._relay_cards_allowed()})
+                                 "card_actions": self._relay_cards_allowed(),
+                                 "bundle": fe.bundle_hash()})
                 return None
             if segs == ["push", "vapid"]:
                 self._json(200, {"key": self._pusher().vapid.public_key})
+                return None
+            if segs == ["bundle"]:
+                # The signed manifest, for an app that reaches the bot through the relay.
+                self._manifest()
                 return None
             if segs == ["push", "subscriptions"]:
                 pusher = self._pusher()
@@ -2697,16 +2840,33 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         return cards == "allow"
 
     def _relay_api(self, method: str, rest: list[str]) -> None:
-        """`/api/relay/...`: the owner pairs a phone, lists, approves and
+        """`/api/relay/...`: the owner pairs a phone, lists, approves (and
+        chooses whether a relay-origin device may press card buttons) and
         revokes the paired devices and reads the client's state. `_api` has
-        refused a relayed request already. The tailnet UI pairs own-origin
-        devices only; a relay-origin pairing is the CLI's, on purpose."""
+        refused a relayed request already, except a phone's attestation.
+        The tailnet UI pairs own-origin devices only; a relay-origin
+        pairing is the CLI's, on purpose."""
         relay = self.fe.relay
         if method == "GET" and rest == ["status"]:
-            self._json(200, {"enabled": relay is not None, **(relay.status() if relay else {})})
+            extra = {**relay.status(), "bundle": self.fe.bundle_hash()} if relay else {}
+            self._json(200, {"enabled": relay is not None, **extra})
             return
         if relay is None:
             raise _HttpError(404, "the relay is off")
+        if method == "POST" and rest == ["approve"]:
+            body = self._read_json()
+            device, cards = body.get("device"), body.get("cards", False)
+            if not isinstance(device, str) or not _DEVICE_RE.match(device):
+                raise _HttpError(400, "device is a 16-character device id")
+            if not isinstance(cards, bool):
+                raise _HttpError(400, "cards is true or false")
+            if not relay.approve(device, cards=cards):
+                raise _HttpError(404, "no such device")
+            self._json(200, {"ok": True})
+            return
+        if method == "POST" and rest == ["attest"]:
+            self._attest(relay)
+            return
         if method == "GET" and rest == ["devices"]:
             self._json(200, relay.devices())
             return
@@ -2725,17 +2885,50 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             # The link is the QR code's text; the app draws the code itself.
             self._json(200, {"link": link, "qr": link, "expires": expires, "origin": "own"})
             return
-        if method == "POST" and rest in (["approve"], ["revoke"]):
+        if method == "POST" and rest == ["revoke"]:
             device = self._read_json().get("device")
             if not isinstance(device, str) or not _DEVICE_RE.match(device):
                 raise _HttpError(400, "device is a 16-character device id")
-            if not (relay.approve(device) if rest == ["approve"] else relay.revoke(device)):
+            if not relay.revoke(device):
                 raise _HttpError(404, "no such device")
-            if rest == ["revoke"] and web_push.AVAILABLE:
+            if web_push.AVAILABLE:
                 self.fe.push.prune()  # the removed device's push subscriptions go now
             self._json(200, {"ok": True})
             return
         raise _HttpError(404, "not found")
+
+    def _attest(self, relay: Any) -> None:
+        """A phone's check of its app (docs/webchat.md, Code integrity): it
+        posts, through the relay, the bundle hash it verified. The device's
+        record says `bundle_verified`, with the hash and the bot's release,
+        when that is the hash the bot signs now; any other hash clears it.
+        The record grants nothing: the code that checked came from the
+        relay, so only the owner lets a device press card buttons."""
+        device = (self.headers.get("X-Tacitus-Relay") or "").strip()
+        if not _DEVICE_RE.match(device):
+            raise _HttpError(400, "a phone attests its app through the relay")
+        bundle = self._read_json().get("bundle")
+        if not isinstance(bundle, str) or not _BUNDLE_HASH_RE.match(bundle):
+            raise _HttpError(400, "bundle is a sha256 in hex")
+        current = self.fe.bundle_hash()
+        ok = bool(current) and hmac.compare_digest(bundle, current)
+        release = web_bundle.release()
+        if not relay.attest(device, bundle if ok else "", release):
+            raise _HttpError(404, "no such device")
+        if not ok:
+            self._json(409, {"error": "not the bundle the bot signs now",
+                             "bundle_verified": False})
+            return
+        self._json(200, {"ok": True, "bundle_verified": True, "release": release})
+
+    def _manifest(self) -> None:
+        """The signed manifest of the app's files: public data, never
+        cached (docs/webchat.md, Code integrity)."""
+        bundle = self.fe.bundle
+        if bundle is None:
+            raise _HttpError(404, "the app is not signed")
+        self._send(200, bundle.body, "application/json; charset=utf-8",
+                   (("Cache-Control", "no-store"),))
 
     # checks and inputs
 
@@ -3102,7 +3295,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             # A path with no file extension is a route inside the app.
             if "." in parts[-1] and rel != "index.html":
                 raise _HttpError(404, "not found")
-            target = root / "index.html"
+            target, rel = root / "index.html", "index.html"
         if not target.is_file():
             if target.name == "index.html":
                 self._send(200, PLACEHOLDER_PAGE, STATIC_TYPES[".html"],
@@ -3115,4 +3308,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         headers: list[tuple[str, str]] = [("Cache-Control", "no-cache")]
         if ctype.startswith("text/html"):
             headers.append(("Content-Security-Policy", self.fe.html_csp))
-        self._send(200, target.read_bytes(), ctype, tuple(headers))
+        data = target.read_bytes()
+        self.fe.note_served(rel, data)  # a file changed since the bot signed it is logged
+        self._send(200, data, ctype, tuple(headers))

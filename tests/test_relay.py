@@ -259,8 +259,10 @@ def test_relay_strips_fields_it_does_not_route():
 
 def test_path_policy():
     ok = ["/api/me", "/api/channels", "/api/channels/C%3A1/threads?limit=50&before=9",
-          "/api/files/f1", "/api/cards/C1/w12/actions"]
+          "/api/files/f1", "/api/cards/C1/w12/actions", "/api/bundle", "/api/relay/attest",
+          "/api/%72elay/attest"]
     bad = ["/api/pair", "/api/pair/", "/api/pair/x", "/api/PAIR/x", "/api/relay/pair",
+           "/api/relay/attest/", "/api/relay/attestx", "/api/relay/attest/../pair",
            "/api/relay", "/api/relay/approve", "/index.html",
            "/api/relay/devices", "/api/relay/revoke", "/api/relay/status", "/api/pair?x=1",
            "/api/%72elay/pair", "/api/p%61ir", "/api/Relay/devices", "/api/PAIR",
@@ -278,6 +280,10 @@ def test_access_policy_for_relay_origin_devices():
     assert rcl.access_allows("chat", "POST", "/api/channels/C1/messages")
     assert not rcl.access_allows("chat", "POST", card)
     assert rcl.access_allows("all", "POST", card)
+    # A phone attests its app at any level but "off" ("read" posts nothing else).
+    assert rcl.access_allows("read", "POST", "/api/relay/attest")
+    assert not rcl.access_allows("off", "POST", "/api/relay/attest")
+    assert not rcl.access_allows("off", "GET", "/api/bundle")
     for spelling in ("/api//cards/C1/w1/actions", "/api/%63ards/C1/w1/actions",
                      "/api/CARDS/C1/w1/actions", "/api/cards", "/api/cards?x=1"):
         assert not rcl.access_allows("chat", "POST", spelling), spelling
@@ -1271,6 +1277,92 @@ def test_a_relay_origin_phone_never_confirms_a_card(web):
     time.sleep(0.2)
     assert [type(x) for x in got] == [InboundMessage] and got[0].text == "send K7Q2"
     assert not any(isinstance(x, ActionEvent) for x in got)
+
+
+def _attest(phone, bundle: str) -> dict:
+    return phone.call("POST", "/api/relay/attest", json.dumps({"bundle": bundle}).encode())[1]
+
+
+def test_a_relay_origin_phone_presses_cards_only_when_the_owner_allows_it(web):
+    """A relay-origin device gets `X-Tacitus-Relay-Cards: deny` whatever it
+    attests: the code that checks itself came from the relay. Its check is
+    recorded (`bundle_verified`, the release). Only the owner's approval
+    with `cards` gives it `allow`, and approving again without takes it
+    back. "off" in chat.json still keeps it out, and a "read" device may
+    post its attestation and nothing else."""
+    from botcore.chat.cards import CardAction, ConfirmationCard
+    f = web["fe"]
+    got = []
+    f.registry.action("approve_send")(got.append)
+    card = ConfirmationCard(kind="send", title="Send this draft?", body="Hello.",
+                            actions=[CardAction("approve_send", "Send", {"t": 1}, "primary", "send")])
+    ref = f.post_card("dm", card)
+    click = json.dumps({"action_id": "approve_send"}).encode()
+    f.relay.relay_origin_access = "chat"
+    phone = _phone(web, f.relay.new_pairing(app_url=web["base"] + "/", relay_origin=True))
+    device = phone.session.device
+
+    def me():
+        return json.loads(phone.call("GET", "/api/me")[1]["body"])
+
+    def row():
+        return {d["id"]: d for d in f.relay.devices()}[device]
+    assert me()["card_actions"] is False and row()["cards_allowed"] is False
+    # The phone checks the bot's signed manifest, fetched through the relay.
+    out = phone.call("GET", "/api/bundle")[1]
+    assert out["s"] == 200
+    m = rc.verify_manifest(json.loads(out["body"]))
+    assert rc.bundle_hash(m) == f.bundle_hash() == me()["bundle"]
+    out = _attest(phone, "0" * 64)
+    assert out["s"] == 409 and row()["bundle_verified"] is False
+    out = _attest(phone, rc.bundle_hash(m))
+    assert out["s"] == 200 and row()["bundle_verified"] is True
+    # Verified, and still no card buttons.
+    assert me()["card_actions"] is False
+    assert phone.call("POST", f"/api/cards/dm/{ref.id}/actions", click)[1]["s"] == 403
+    # The owner allows them for this device.
+    assert _call(f, "POST", "/api/relay/approve", {"device": device, "cards": True},
+                 _owner(f))[0] == 200
+    assert me()["card_actions"] is True and row()["cards_allowed"] is True
+    assert phone.call("POST", f"/api/cards/dm/{ref.id}/actions", click)[1]["s"] == 200
+    deadline = time.time() + 5
+    while not got and time.time() < deadline:
+        time.sleep(0.05)
+    assert [a.action_id for a in got] == ["approve_send"]
+    # Approved again without `cards`: denied again.
+    assert f.relay.approve(device) and me()["card_actions"] is False
+    # "off" keeps every relay-origin device out, whatever the owner allowed.
+    f.relay.approve(device, cards=True)
+    f.relay.relay_origin_access = "off"
+    out = phone.call("GET", "/api/me")[1]
+    assert out["k"] == "err" and out["e"] == "auth"
+    # At "read" a device posts its attestation and nothing else.
+    f.relay.relay_origin_access = "read"
+    reader = _phone(web, f.relay.new_pairing(app_url=web["base"] + "/", relay_origin=True))
+    body = json.dumps({"text": "hello"}).encode()
+    assert reader.call("POST", "/api/channels/dm/messages", body)[1]["s"] == 403
+    assert _attest(reader, f.bundle_hash())["s"] == 200
+    assert reader.call("POST", "/api/channels/dm/messages", body)[1]["s"] == 403
+
+
+def test_the_cli_approves_with_card_buttons(tmp_path, capsys):
+    """`approve --cards` lets a relay-origin device press card buttons;
+    `approve` alone does not, and `show` lists both and the check."""
+    key = tmp_path / "relay-key.json"
+    store = rcl.KeyStore.create(key, relay_url="https://relay.example.net")
+    pairing = store.add_pairing(relay_url="https://relay.example.net", origin="relay")
+    device = store.register(pairing.pairing_id, bytes(range(32)), "phone")["id"]
+    store.attest(device, "a" * 64, "v1.2.3")
+    assert rcl.main(["approve", "--key-file", str(key), "--device", device, "--cards"]) == 0
+    assert store.device_by_id(device)["cards_allowed"] is True
+    assert rcl.main(["approve", "--key-file", str(key), "--device", device]) == 0
+    assert store.device_by_id(device)["cards_allowed"] is False
+    capsys.readouterr()
+    assert rcl.main(["show", "--key-file", str(key)]) == 0
+    (row,) = json.loads(capsys.readouterr().out)["devices"]
+    assert row == {"id": device, "name": "phone", "paired_at": row["paired_at"], "origin": "relay",
+                   "pending": False, "cards_allowed": False, "bundle_verified": True,
+                   "release": "v1.2.3"}
 
 
 def test_the_page_policy_names_the_relay_origin(tmp_path):

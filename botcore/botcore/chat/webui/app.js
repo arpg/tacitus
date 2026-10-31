@@ -777,6 +777,7 @@ async function reconnect(handle) {
   try {
     await pickTransport();
     await call('GET', '/me');
+    if (relayCopy() && !(await checkBundle())) return;
     connect();
   } catch {
     if ($('pair').hidden) setTimeout(() => reconnect(handle), Math.min(30000, 1000 * 2 ** S.retry++));
@@ -1507,6 +1508,78 @@ async function phoneAct(verb, d) {
   listPhones();
 }
 
+/* -- Code integrity (docs/webchat.md, Code integrity) ---------------- */
+
+// The bot signs the app's files when it starts. The page fetches the signed
+// manifest, checks it (verifyBundle, bundle.js) and hands it to the service
+// worker, which then serves a file only when it matches. The bot's own copy
+// checks on this origin, after start-up. The relay's copy checks before the
+// chat runs, through the relay's sealed channel: against the bundle its
+// pairing named (`bundle`) the first time and the key that signed it
+// (`signKey`) after that. It then tells the bot the bundle it checked; the
+// bot records it, and the owner alone lets such a phone press card buttons.
+const relayCopy = () => Boolean(T.relay && new URL(T.rec.relay).origin === location.origin);
+
+async function checkBundle() {
+  const rec = T.relay ? T.rec : null;
+  let doc;
+  if (rec) doc = await call('GET', '/bundle');
+  else if (!S.me.bundle) return null; // a bot that signs nothing (no cryptography package)
+  else {
+    const res = await fetch(`${BASE}/manifest.sig.json`, { credentials: 'same-origin', cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    doc = await res.json();
+  }
+  let v;
+  try {
+    v = await verifyBundle(doc, rec && !rec.signKey ? rec.bundle || null : null, rec ? rec.signKey || null : null);
+  } catch (e) {
+    if (e instanceof BundleError) return refuseApp('manifest.sig.json');
+    throw e;
+  }
+  if (rec && !rec.signKey) await savePairing(Object.assign(rec, { signKey: v.key }));
+  const out = (await toWorker({ bundle: doc, pin: Boolean(rec) })) || (await checkFiles(v.files));
+  if (out.refused) return refuseApp(out.refused, true);
+  if (out.error) throw new Error(out.error);
+  if (out.updated) toast('A new version of the app is ready. Close the app and open it again.');
+  if (rec) await call('POST', '/relay/attest', { bundle: v.hash });
+  return v;
+}
+
+// The service worker's answer, or null without one (none yet, or blocked).
+async function toWorker(msg) {
+  if (!('serviceWorker' in navigator)) return null;
+  const reg = await Promise.race([navigator.serviceWorker.ready, new Promise((r) => { setTimeout(r, 5000); })]);
+  if (!reg || !reg.active) return null;
+  return new Promise((resolve) => {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = (e) => resolve(e.data || {});
+    setTimeout(() => resolve({ error: 'the service worker did not answer' }), 60000);
+    reg.active.postMessage(msg, [ch.port2]);
+  });
+}
+
+// Without a service worker the page checks the files itself, fetched fresh.
+async function checkFiles(files) {
+  for (const [path, want] of Object.entries(files)) {
+    const res = await fetch(`${BASE}/${path === 'index.html' ? '' : path}`, { cache: 'no-store' }).catch(() => null);
+    if (res && res.ok && (await sha256Hex(new Uint8Array(await res.arrayBuffer()))) !== want) return { refused: path };
+  }
+  return {};
+}
+
+// A file that is not the signed one: the worker (`told` when it knows)
+// drops its copy and moves each page to its refusal; this page stops here
+// too, in case it cannot.
+async function refuseApp(path, told) {
+  if (S.es) { S.es.close(); S.es = null; }
+  S.ready = false;
+  document.body.replaceChildren(h('main', { class: 'refusal' }, h('h1', {}, 'Tacitus stopped'),
+    h('p', {}, `This copy of the app is not the code your bot signed: ${path} does not match it. Open the app on the tailnet, or tell the person who runs the relay.`)));
+  if (!told) await toWorker({ refuse: path }).catch(() => {});
+  return null;
+}
+
 /* -- Pairing and start-up ------------------------------------------- */
 
 function showPair() {
@@ -1539,6 +1612,8 @@ async function boot() {
   try {
     await pickTransport();
     S.me = await call('GET', '/me');
+    // A copy of the app from the relay runs the chat only once its code checks.
+    if (relayCopy() && !(await checkBundle())) return;
   } catch (e) {
     if ($('pair').hidden) toast(`Could not reach the bot: ${e.message}`);
     if (T.relay) setTimeout(boot, Math.min(30000, 1000 * 2 ** S.retry++));
@@ -1564,6 +1639,7 @@ async function boot() {
   const phones = Boolean(S.me.relay) && !T.relay;
   $('pair-phone').hidden = !phones;
   footer();
+  if (!T.relay) checkBundle().catch(() => {}); // the bot's own copy: checked meanwhile
 }
 
 async function init() {
@@ -1616,6 +1692,7 @@ async function init() {
     navigator.serviceWorker.register(`${BASE}/sw.js`, { scope: `${BASE}/` }).catch(() => {});
     // sw.js names a tapped notification's url when it cannot navigate this window.
     navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data && e.data.refused) refuseApp(String(e.data.refused), true);
       const url = String((e.data && e.data.open) || '');
       if (url.startsWith(`${location.origin}${BASE}/#/`)) location.hash = url.slice(url.indexOf('#'));
     });
