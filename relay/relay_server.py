@@ -14,14 +14,21 @@ A restart drops every route; bots reconnect and phones say hello again.
 Routes:
   POST /r/{install}/bot   the bot: posts its frames, long-polls for the phone's
   POST /r/{install}/c     one phone frame (hello, req, ping); waits for the answer
-  GET  /r/{install}/sse   a phone event stream, opened by the `open` frame in ?f=
+  POST /r/{install}/sse   the phone's `open` frame; answers a one-time ticket
+  GET  /r/{install}/sse   ?t=<ticket>: the phone's event stream
   GET  /healthz           liveness and counts, for the operator's monitor
   GET  /...               the static web app from --static
 
 A bot proves its install id with a relay token whose hash is the id, so
 the relay needs no table of installs. A phone shows the client key the
-bot's token derives. With --allow-file, only the listed install ids are
-served (the hosted tier's activation list).
+bot's token derives, in the X-Relay-Key header; the relay checks it before
+it reads a body, and answers a wrong key as it answers an install that is
+offline. The event stream's URL carries only a ticket that works once
+and for 30 seconds, so a proxy's access log holds no key and no frame.
+With --allow-file, only the listed install ids are served (the hosted
+tier's activation list). Without one, a source address may open a few
+new installs a minute, and a full table makes room by dropping the
+longest-idle install that holds no poll.
 
 Standard library only. Run it behind a TLS terminator (Caddy, nginx) that
 does not buffer the event streams.
@@ -41,6 +48,7 @@ import json
 import mimetypes
 import queue
 import re
+import secrets
 import sys
 import threading
 import time
@@ -57,6 +65,13 @@ B64_RE = re.compile(r"^[A-Za-z0-9_-]*$")
 CLIENT_KINDS = frozenset({"hello", "req", "ping"})
 BOT_KINDS = frozenset({"welcome", "res", "sse", "end", "err"})
 ERR_CODES = frozenset({"session", "auth", "replay", "bad", "busy", "offline", "timeout"})
+# Kinds whose frame is small: a cap of their own, so no large body passes as one.
+SMALL_KINDS = frozenset({"hello", "ping", "open"})
+TICKET_RE = re.compile(r"^[0-9a-f]{32}$")
+LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
+# One answer for an install that is offline and for a wrong client key, so
+# a stranger who knows an install id cannot tell whether it is online.
+UNAVAILABLE = (503, {"error": "unavailable"})
 CORS = {"Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, X-Relay-Key",
@@ -118,6 +133,12 @@ class Limits:
     max_installs: int = 1000
     max_total_bytes: int = 512 << 20
     max_connections: int = 2048
+    max_small_frame: int = 4096       # a hello, ping or open frame, bytes
+    ticket_ttl: float = 30.0          # an event stream ticket's life
+    max_tickets: int = 8              # unredeemed tickets per install
+    new_route_rate: float = 0.1       # new installs per second per source address
+    new_route_burst: int = 20
+    max_sources: int = 10000          # source addresses tracked for that rate
 
 
 def clean_frame(obj: Any, kinds: frozenset) -> Optional[dict]:
@@ -183,6 +204,11 @@ class Route:
         self.streams: "OrderedDict[str, Stream]" = OrderedDict()
         self.tokens = float(limits.burst)
         self.refill_at = now
+        # Event stream tickets: ticket -> (the open frame, its expiry).
+        self.tickets: "OrderedDict[str, tuple[dict, float]]" = OrderedDict()
+        # Whether a phone frame ever came: an install never used goes first
+        # when the table is full.
+        self.used = False
 
 
 class Relay:
@@ -202,6 +228,8 @@ class Relay:
         self.lock = threading.Lock()
         self.routes: dict[str, Route] = {}
         self.total_bytes = 0
+        # Per source address: [tokens, refilled at], for opening new routes.
+        self._sources: dict[str, list[float]] = {}
 
     # activation
 
@@ -323,8 +351,39 @@ class Relay:
 
     # the three endpoints
 
-    def bot_exchange(self, install: str, auth: str, body: Any) -> tuple[int, dict]:
-        """The bot posts its frames and long-polls for the phone's."""
+    def _source_ok(self, source: str, now: float) -> bool:
+        """Whether `source` may open another route now (a token bucket per
+        address); called with the lock held."""
+        lim = self.limits
+        if len(self._sources) > lim.max_sources:
+            full = lim.new_route_burst / max(lim.new_route_rate, 1e-9)
+            for key in [k for k, (_, t) in self._sources.items() if now - t > full]:
+                del self._sources[key]
+            if len(self._sources) > lim.max_sources:
+                self._sources.clear()
+        tokens, at = self._sources.get(source, (float(lim.new_route_burst), now))
+        tokens = min(float(lim.new_route_burst), tokens + (now - at) * lim.new_route_rate)
+        if tokens < 1.0:
+            self._sources[source] = [tokens, now]
+            return False
+        self._sources[source] = [tokens - 1.0, now]
+        return True
+
+    def _make_room(self) -> bool:
+        """With the table full, drop the idle route (no poll open) that saw
+        no phone frame, else the one idle longest; False when every route
+        holds a poll. Called with the lock held."""
+        idle = [(r.used, r.last_poll, i) for i, r in self.routes.items() if r.polls == 0]
+        if not idle:
+            return False
+        _, _, install = min(idle)
+        self._drop(install, self.routes[install])
+        return True
+
+    def bot_exchange(self, install: str, auth: str, body: Any,
+                     source: str = "") -> tuple[int, dict]:
+        """The bot posts its frames and long-polls for the phone's. `source`
+        is the bot's address, which only meters how fast it opens routes."""
         token_text = auth[7:].strip() if auth.startswith("Bearer ") else ""
         try:
             token = b64d(token_text) if token_text else b""
@@ -348,7 +407,9 @@ class Relay:
             now = self.clock()
             route = self._online(install, now)
             if route is None:
-                if len(self.routes) >= lim.max_installs:
+                if not self._source_ok(source, now):
+                    return 429, {"error": "too many new installs from this address"}
+                if len(self.routes) >= lim.max_installs and not self._make_room():
                     return 503, {"error": "relay full"}
                 route = Route(install, client_key_for(token), self.lock, lim, now)
                 self.routes[install] = route
@@ -374,19 +435,33 @@ class Relay:
                 route.polls -= 1
         return 200, {"frames": out}
 
+    def _keyed(self, install: str, key: Any, now: float) -> Optional[Route]:
+        """The install's route when it is online and `key` is its client
+        key; None for either failure alike. Called with the lock held."""
+        route = self._online(install, now)
+        if route is None or not isinstance(key, str) or not hmac.compare_digest(
+                key.encode(), route.client_key.encode()):
+            return None
+        return route
+
+    def check_key(self, install: str, key: Any) -> tuple[int, dict]:
+        """The check the HTTP layer makes from the headers alone, before it
+        reads a phone's body: (200, {}) or the unavailable answer."""
+        with self.lock:
+            return (200, {}) if self._keyed(install, key, self.clock()) else UNAVAILABLE
+
     def _admit(self, install: str, key: str, frame: Optional[dict],
                now: float) -> tuple[Optional[Route], int, dict]:
         """Checks shared by /c and /sse, with the lock held."""
         if frame is None:
             return None, 400, {"error": "bad frame"}
-        if _size(frame) > self.limits.max_frame + 160:
+        if _size(frame) > self.limits.max_frame + 160 or (
+                frame["k"] in SMALL_KINDS and _size(frame) > self.limits.max_small_frame):
             return None, 413, {"error": "frame too large"}
-        route = self._online(install, now)
+        route = self._keyed(install, key, now)
         if route is None:
-            return None, 503, {"error": "bot offline"}
-        if not isinstance(key, str) or not hmac.compare_digest(key.encode(),
-                                                               route.client_key.encode()):
-            return None, 403, {"error": "wrong client key"}
+            return (None, *UNAVAILABLE)
+        route.used = True
         if not self._rate_ok(route, now):
             return None, 429, {"error": "rate limited"}
         if frame["id"] in route.waiting or frame["id"] in route.streams:
@@ -426,8 +501,10 @@ class Relay:
             return 504, {"id": fid, "k": "err", "e": "timeout"}
         return 200, w.frame
 
-    def open_stream(self, install: str, key: str, obj: Any) -> tuple[int, Any]:
-        """Register a phone event stream; (200, Stream) or an error."""
+    def stream_ticket(self, install: str, key: str, obj: Any) -> tuple[int, dict]:
+        """Take a phone's `open` frame and answer a ticket for the stream:
+        it works once, within `ticket_ttl` seconds. The frame reaches the
+        bot when the ticket is used."""
         frame = clean_frame(obj, frozenset({"open"}))
         with self.lock:
             now = self.clock()
@@ -435,6 +512,30 @@ class Relay:
             if route is None:
                 return status, err
             assert frame is not None
+            for t in [t for t, (_, exp) in route.tickets.items() if exp <= now]:
+                del route.tickets[t]
+            while len(route.tickets) >= self.limits.max_tickets:
+                route.tickets.popitem(last=False)
+            ticket = secrets.token_hex(16)
+            route.tickets[ticket] = (frame, now + self.limits.ticket_ttl)
+        return 200, {"ticket": ticket, "ttl": self.limits.ticket_ttl}
+
+    def open_stream(self, install: str, ticket: Any) -> tuple[int, Any]:
+        """Spend a ticket on a phone event stream; (200, Stream) or an
+        error. An unknown, used or late ticket gets the unavailable answer."""
+        with self.lock:
+            now = self.clock()
+            route = self._online(install, now)
+            entry = None
+            if route is not None and isinstance(ticket, str) and TICKET_RE.match(ticket):
+                entry = route.tickets.pop(ticket, None)
+            if route is None or entry is None or entry[1] <= now:
+                return UNAVAILABLE
+            frame = entry[0]
+            if frame["id"] in route.waiting or frame["id"] in route.streams:
+                return 409, {"error": "frame id in use"}
+            if not self._room(route, _size(frame)):
+                return 503, {"error": "queue full"}
             while len(route.streams) >= self.limits.max_streams:
                 oldest = next(iter(route.streams.values()))
                 self._end_stream(route, oldest, "busy")
@@ -511,14 +612,26 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         return len(body)
 
-    def _read_json(self, cors: bool) -> tuple[Any, int]:
+    def _source(self) -> str:
+        """The client's address, for the new-route meter only (never
+        logged). Behind the TLS terminator on this host (a loopback peer)
+        it is the last X-Forwarded-For entry, the one the terminator added."""
+        peer = str(self.client_address[0])
+        if peer in LOOPBACK:
+            last = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
+            if last:
+                return last
+        return peer
+
+    def _read_json(self, cors: bool, limit: Optional[int] = None) -> tuple[Any, int]:
         """(parsed body, its size), or (None, -1) with the error sent."""
         length = self.headers.get("Content-Length")
         if length is None or not length.isdigit():
             self._send_json(411, {"error": "content length required"}, cors)
+            self.close_connection = True
             return None, -1
         n = int(length)
-        if n > self.server.relay.limits.max_frame + 4096:
+        if n > (limit if limit is not None else self.server.relay.limits.max_frame + 4096):
             self._send_json(413, {"error": "too large"}, cors)
             self.close_connection = True
             return None, -1
@@ -543,20 +656,35 @@ class RelayHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         t0 = time.monotonic()
         m = ROUTE_RE.match(urlsplit(self.path).path)
-        if not m or m.group(2) == "sse":
+        if not m:
             self._send_json(404, {"error": "not found"})
+            self.close_connection = True
             return
         install, kind = m.group(1), m.group(2)
-        cors = kind == "c"
-        body, n_in = self._read_json(cors)
+        relay = self.server.relay
+        cors = kind != "bot"
+        key = self.headers.get("X-Relay-Key", "")
+        if cors:
+            # A phone's key is checked from the headers before its body is
+            # read: a stranger never makes the relay read or parse one.
+            status, err = relay.check_key(install, key)
+            if status != 200:
+                self.close_connection = True
+                n_out = self._send_json(status, err, cors)
+                self._log(kind, install, status, 0, n_out, t0)
+                return
+        limit = relay.limits.max_small_frame + 1024 if kind == "sse" else None
+        body, n_in = self._read_json(cors, limit)
         if n_in < 0:
             self._log(kind, install, 400, 0, 0, t0)
             return
-        relay = self.server.relay
         if kind == "bot":
-            status, out = relay.bot_exchange(install, self.headers.get("Authorization", ""), body)
+            status, out = relay.bot_exchange(install, self.headers.get("Authorization", ""),
+                                             body, self._source())
+        elif kind == "sse":
+            status, out = relay.stream_ticket(install, key, body)
         else:
-            status, out = relay.client_request(install, self.headers.get("X-Relay-Key", ""), body)
+            status, out = relay.client_request(install, key, body)
         n_out = self._send_json(status, out, cors)
         self._log(kind, install, status, n_in, n_out, t0)
 
@@ -579,14 +707,8 @@ class RelayHandler(BaseHTTPRequestHandler):
 
     def _sse(self, install: str, query: str) -> None:
         t0 = time.monotonic()
-        q = parse_qs(query)
-        key = self.headers.get("X-Relay-Key") or q.get("key", [""])[0]
-        try:
-            frame = json.loads(b64d(q.get("f", [""])[0]))
-        except ValueError:
-            frame = None
         relay = self.server.relay
-        status, st = relay.open_stream(install, key, frame)
+        status, st = relay.open_stream(install, parse_qs(query).get("t", [""])[0])
         if status != 200:
             self._send_json(status, st, cors=True)
             self._log("sse", install, status, 0, 0, t0)

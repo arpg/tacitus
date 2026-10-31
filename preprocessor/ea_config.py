@@ -233,12 +233,18 @@ def get_chat(config_path: Path | None = None) -> dict:
 def get_chat_source(config_path: Path | None = None) -> tuple[dict, bool]:
     """(get_chat's block, True when it came from the owner-private
     chat.json). Only such a block is trusted to say where the bot serves
-    the web chat and who signs in to it (docs/webchat.md)."""
+    the web chat and who signs in to it (docs/webchat.md). The web block's
+    `relay` block (docs/webchat-relay.md) holds trust settings too (which
+    relay, what a relay-origin device may do): a block read from anywhere
+    else loses it."""
     val = _owner_trust().owner_chat_block() if config_path is None else None
     trusted = val is not None
     if val is None:
         val = load(config_path).get("chat")
-    return chat_from_block(val), trusted
+    cfg = chat_from_block(val)
+    if not trusted:
+        cfg["web"].pop("relay", None)
+    return cfg, trusted
 
 
 def chat_from_block(val) -> dict:

@@ -279,15 +279,37 @@ def owner_headers_for(web_cfg: Mapping[str, Any]) -> dict[str, str]:
     return {"Tailscale-User-Login": str(login)} if login else {}
 
 
-def origin_of(app_url: Optional[str], relay_url: str) -> str:
-    """"relay" when a pairing link opens the app on the relay's origin (or
-    names no app url), "own" when it opens it anywhere else."""
-    if not app_url:
+def _origin(url: Optional[str]) -> Optional[tuple[str, str, int]]:
+    """(scheme, host, port) of an http(s) URL, normalized: the host
+    lowercased and without a trailing dot, the default port written out.
+    None for anything else."""
+    if not url:
+        return None
+    try:
+        parts = urllib.parse.urlsplit(str(url))
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").rstrip(".").lower()
+    if scheme not in ("http", "https") or not host:
+        return None
+    return scheme, host, port or (443 if scheme == "https" else 80)
+
+
+def origin_of(app_url: Optional[str], public_url: Optional[str],
+              relay_url: Optional[str] = None) -> str:
+    """"own" when a pairing link opens the app on the bot's own origin: the
+    web block's `public_url`, compared normalized (scheme, host without a
+    trailing dot, explicit port). Anything else is "relay": no public_url,
+    another origin, or the relay's own origin under any spelling. Its code
+    may come from a server that is not the bot."""
+    app, own = _origin(app_url), _origin(public_url)
+    if app is None or app != own:
         return "relay"
-    a, r = urllib.parse.urlsplit(app_url), urllib.parse.urlsplit(relay_url)
-    same = (a.scheme, (a.hostname or "").lower(), a.port) == \
-        (r.scheme, (r.hostname or "").lower(), r.port)
-    return "relay" if same else "own"
+    if relay_url and _origin(relay_url) == app:
+        return "relay"
+    return "own"
 
 
 def access_allows(level: str, method: str, path: str) -> bool:
@@ -314,9 +336,13 @@ def path_allowed(path: Any) -> bool:
         return False
     if any(s in (".", "..") or urllib.parse.unquote(s) in (".", "..") for s in segments):
         return False
-    if route.rstrip("/") in DENIED_PATHS:
+    # The local server decodes each segment before it routes, so the denied
+    # routes are compared decoded and lowercased: no spelling of them
+    # (`/api/%72elay/pair`, `/api/Pair`) gets through.
+    plain = re.sub(r"/{2,}", "/", urllib.parse.unquote(route).lower())
+    if plain.rstrip("/") in DENIED_PATHS:
         return False
-    return not any(route.startswith(p) or route + "/" == p for p in DENIED_PREFIXES)
+    return not any(plain.startswith(p) or plain + "/" == p for p in DENIED_PREFIXES)
 
 
 def parse_sse(lines: list[str]) -> Optional[dict]:
@@ -356,7 +382,7 @@ class RelayClient:
     def __init__(self, relay_url: str, store: KeyStore, local_base_url: str, *,
                  owner_headers: Callable[[], Mapping[str, str]] | Mapping[str, str] | None = None,
                  wait: float = DEFAULT_WAIT, workers: int = 8,
-                 app_url: Optional[str] = None,
+                 app_url: Optional[str] = None, public_url: Optional[str] = None,
                  relay_origin_access: str = DEFAULT_RELAY_ORIGIN_ACCESS,
                  logger: Optional[logging.Logger] = None) -> None:
         rc._need()
@@ -366,6 +392,9 @@ class RelayClient:
         self.identity = store.identity()
         self.install_id = self.identity.install_id
         self.app_url = app_url
+        # The bot's own origin (the web block's public_url): a pairing link
+        # that opens the app there makes an "own" device.
+        self.public_url = public_url
         if relay_origin_access not in ACCESS_LEVELS:
             raise RelayError(f"relay_origin_access is one of {ACCESS_LEVELS}")
         self.relay_origin_access = relay_origin_access
@@ -428,7 +457,7 @@ class RelayClient:
         """A one-time pairing link (the QR code's text) for a new phone."""
         url = app_url or self.app_url
         payload = self.store.add_pairing(ttl=ttl, relay_url=self.relay_url,
-                                         origin=origin_of(url, self.relay_url))
+                                         origin=origin_of(url, self.public_url, self.relay_url))
         return payload.to_string(url)
 
     def devices(self) -> list[dict]:
@@ -755,6 +784,7 @@ def start_relay(frontend_cfg: Mapping[str, Any], local_base_url: str, *,
                              owner_headers=lambda: owner_headers_for(frontend_cfg),
                              wait=float(relay.get("wait", DEFAULT_WAIT)),
                              app_url=relay.get("app_url") or frontend_cfg.get("public_url"),
+                             public_url=frontend_cfg.get("public_url") or None,
                              relay_origin_access=str(relay.get("relay_origin_access",
                                                                DEFAULT_RELAY_ORIGIN_ACCESS)),
                              logger=lg)
@@ -779,7 +809,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         if name in ("init", "pair"):
             p.add_argument("--relay-url", default="")
         if name == "pair":
-            p.add_argument("--app-url", default="")
+            p.add_argument("--public-url", default="",
+                           help="the web block's public_url: the link opens the app there")
+            p.add_argument("--app-url", default="",
+                           help="open another app url (own origin only if it is public_url's)")
             p.add_argument("--ttl", type=int, default=rc.PAIRING_TTL)
         if name == "revoke":
             p.add_argument("--device", required=True)
@@ -812,9 +845,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
         if args.cmd == "pair":
             url = _check_relay_url(args.relay_url or store.relay_url())
-            payload = store.add_pairing(ttl=args.ttl, relay_url=url,
-                                        origin=origin_of(args.app_url, url))
-            print(payload.to_string(args.app_url or None))
+            app = args.app_url or (args.public_url.rstrip("/") + "/" if args.public_url else "")
+            origin = origin_of(app, args.public_url, url)
+            if app and origin == "relay":
+                print(f"note: {app} is not the bot's own origin (--public-url); the device "
+                      "is paired as a relay-origin device", file=sys.stderr)
+            payload = store.add_pairing(ttl=args.ttl, relay_url=url, origin=origin)
+            print(payload.to_string(app or None))
             return 0
         if args.cmd == "revoke":
             ok = store.revoke(args.device)
