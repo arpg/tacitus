@@ -1359,6 +1359,17 @@ def check_persistence_digest(now: float | None = None):
         ok(name, f"last completed run {hours:.0f} h ago")
 
 
+def check_updates(ea_dir: Path) -> None:
+    """The updater (scripts/update.py, docs/updates.md): the installed
+    version, the channel, the newest release on it, the last apply and any
+    version held back. PASS or WARN: an install that does not update still
+    works, so this row never fails it."""
+    import update_status
+    status, detail, fix = update_status.doctor_row(
+        update_status.live_dir(), update_status.private_dir(), ea_dir)
+    (ok if status == "PASS" else warn)("updates", detail, fix)
+
+
 # project_dashboard.FALLBACK_FILE, spelled here so the doctor does not
 # import the dashboard and its store (a test keeps the two equal).
 DASH_FALLBACK_FILE = "dashboard-bind-fallback.json"
@@ -1520,6 +1531,7 @@ def main() -> int:
             check_push()
         check_cron()
         check_persistence_digest()
+        check_updates(ea_dir)
         if a.probe_claude:
             check_claude_probe()
         if a.probe_codex:

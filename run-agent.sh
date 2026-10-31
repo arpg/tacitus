@@ -1096,6 +1096,19 @@ if [[ "$AGENT" == "list-digest" && "$VALIDATION" == "ok" ]]; then
     fi
 fi
 
+# One line under the morning briefing when the installed release changed
+# since the last briefing that posted, or an update was held back
+# (scripts/update.py, docs/updates.md). Code writes it, from the updater's
+# owner-private status; the model never sees it. Recorded as said only
+# once the post went out (mark-briefed, below).
+if [[ "$AGENT" == "morning-briefing" && -n "$CLAUDE_OUTPUT" ]]; then
+    UPDATE_LINE=$("$PYTHON3" "$SCRIPT_DIR/preprocessor/update_status.py" briefing-line 2>>"$LOG_FILE" || true)
+    if [[ -n "$UPDATE_LINE" ]]; then
+        CLAUDE_OUTPUT="${CLAUDE_OUTPUT}"$'\n\n'"${UPDATE_LINE}"
+        log "Update line added: $UPDATE_LINE"
+    fi
+fi
+
 # Post to Slack via bot token (runs as the owner, has direct Slack access).
 # Every report is written to a file first; the post is for profiles that
 # have Slack. The report dir is ea-bot space, so the file is written as
@@ -1154,6 +1167,10 @@ sys.exit(0 if (msg and slack.post_to_slack('ea-assistant', msg)) else 1)
         # monitors get a marker. The marker is ea-bot space: the old one is
         # read and the new one written as ea-bot, and a failed merge leaves
         # the old one in place.
+        if [[ "$AGENT" == "morning-briefing" ]]; then
+            "$PYTHON3" "$SCRIPT_DIR/preprocessor/update_status.py" mark-briefed 2>>"$LOG_FILE" \
+                || log "WARNING: could not record the update line as said."
+        fi
         case "$AGENT" in
             morning-briefing|afternoon-catchup|weekly-audit)
                 POST_MARKER="$STATE_DIR/agent-post-success.json"

@@ -139,7 +139,10 @@ On `main` in the deploying checkout, the post-commit hook copies each
 commit to the bot's tree, runs the wall and the evals, and restarts the
 bot only when running code changed, after any thread in progress ends.
 CI lints every pull request once it is ready for review; a draft runs
-nothing. The full tiers (the wall on Linux and macOS, the Docker wall,
+nothing. A push to `main` that passes the full tiers is a release: CI
+signs the next `vX.Y.Z` tag on it, and installs pick it up within the
+hour ([docs/updates.md](docs/updates.md)). The patch number goes up by
+default; `#minor` or `#major` in the merge commit raises that part. The full tiers (the wall on Linux and macOS, the Docker wall,
 the install smoke) run only when a maintainer adds the `full-ci` label,
 or with Actions > CI > Run workflow on a branch. Run the wall locally
 before you ask for it.

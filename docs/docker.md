@@ -433,10 +433,14 @@ realm, the bot and the streams.
 ## Upgrade
 
 ```bash
-git pull
+git pull                     # or a release: git fetch --tags && git checkout vX.Y.Z
 docker compose build
 docker compose up -d
 ```
+
+The updater (`scripts/update.py`, [updates.md](updates.md)) does not run
+in a container: the code is in the image. `update.py check` inside one
+still says which signed release is newest on the channel.
 
 The volumes keep the state, the config and the logins. To move Claude Code
 to a new version, set `CLAUDE_CODE_VERSION` in the Dockerfile and the two

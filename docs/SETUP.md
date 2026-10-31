@@ -713,6 +713,11 @@ system unit beside it, since two bots would both take the chat events:
 `systemctl --user disable --now ea-chat-bot`, remove the file,
 `systemctl --user daemon-reload`, then run the script again.
 
+With an update channel on, the same script also writes
+`tacitus-update.service` and `tacitus-update.timer` (hourly, as you, with
+the `ea` group) and makes `/opt/ea-system` the updater's release layout
+([Updates](#updates)).
+
 `systemctl status ea-chat-bot` should show `active (running)` and
 `journalctl -u ea-chat-bot -n 20 --no-pager` the startup line. Do not add
 `StandardOutput=append:` lines: the bot has its own `logging.FileHandler`,
@@ -738,6 +743,23 @@ missing. The design, the
 deploy hook and the troubleshooting are in
 [docs/macos-services.md](macos-services.md).
 
+## Updates
+
+An install with an update channel installs each new signed release
+itself: `scripts/update.py`, run hourly by `tacitus-update.timer` (Linux)
+or the `<prefix>.tacitus-update` LaunchDaemon (macOS), as you. It installs
+a release only when its tag verifies against `.release-key.pub`, only
+when the bot and the cron lanes are idle, and switches back when the
+services do not come up healthy. The channel is `update.channel` in
+`ea-config.json` (`auto`, `latest`, `stable` or `off`), or the
+owner-private `~/.ea-private/update.json`, which outranks it. The root
+step that makes the release layout and installs the timer is the
+hardening script (`deploy/harden-permissions.sh`, or
+`deploy/macos/install-services.sh`). An install with no channel set keeps
+deploying from its checkout's post-commit hook. Design, commands and
+the steps to turn it on for an existing install:
+[docs/updates.md](updates.md).
+
 ## Cron schedule
 
 The cron jobs are owner processes (`docs/SECURITY.md`, "Owner trust
@@ -747,7 +769,7 @@ when you confirm, or with `--install-cron`; a non-interactive run
 input) without that flag saves them to
 `~/.ea-private/crontab-template.txt` instead. Run it again after
 hardening so the lines run `/opt/ea-system` (the committed code the
-deploy hook keeps in step), never the checkout. Output goes to the
+deploy hook, or the updater, keeps in step), never the checkout. Output goes to the
 owner-private `~/.ea-private/logs` (mode 700). Times are the machine's
 local timezone.
 
@@ -915,7 +937,8 @@ sudo bash deploy/harden-permissions.sh
 
 It derives the owner from `$SUDO_USER` (or `--owner NAME`), copies the
 code to `/opt/ea-system` (parent `/opt` is root-owned; the deploy hook
-keeps it at HEAD), points both services there with the interpreter from
+keeps it at HEAD, or with an update channel on, the updater keeps it at
+the newest signed release), points both services there with the interpreter from
 your private home, loads `EA_MODEL` from an owner-owned
 `~/.ea-private/bot.env` instead of ea-bot's `.env`, copies the chat block
 to the owner-private `chat.json` the bot trusts, and copies a legacy

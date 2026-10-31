@@ -9590,6 +9590,7 @@ def _sweep_late_resident_drafts() -> int:
 
 
 _CONVERSATIONS_RE = re.compile(r"^\s*(?:list\s+)?conversations\s*$", re.I)
+_VERSION_RE = re.compile(r"^\s*/?version\s*[?.!]?\s*$", re.I)
 _NAME_THREAD_RE = re.compile(
     r"^\s*(?:name|call)\s+this\s+(?:conversation|thread)\s+(.+?)\s*$", re.I | re.S)
 _ROOM_VERB = r"(?:open|create|make|start|spin\s+up)\s+(?:up\s+)?(?:me\s+)?(?:a\s+)?(?:new\s+)?(?:private\s+)?(?:project\s+)?(?:channel|room)"
@@ -9624,16 +9625,26 @@ def _channel_label(channel_id: str) -> str:
 
 def _colleague_command(channel: str, thread_ts: str, msg_ts: str,
                        user_msg: str) -> dict | None:
-    """The three commands that make threads and channels navigable:
+    """The three commands that make threads and channels navigable, and
+    the installed version:
 
       conversations                      the index of recent threads
       name this conversation <title>     title the current thread
       open a channel for <project>       spawn a private project channel
+      version (or /version)              the installed release and its channel
 
     Returns None when the message is not one of them; otherwise
     {"ok": bool, "text": reply}. No Claude call on this path."""
     from preprocessor import slack_sessions as _sessions_mod
     text = (user_msg or "").strip()
+
+    if _VERSION_RE.match(text):
+        # The installed release (the tree the services run, which the
+        # updater switches), its channel and what the updater last did
+        # (docs/updates.md); this process's own tree when it is behind.
+        from preprocessor import update_status as _us
+        return {"ok": True, "text": _us.version_text(
+            _us.live_dir(), _us.private_dir(), EA_DIR, running=SCRIPT_DIR)}
 
     if _CONVERSATIONS_RE.match(text):
         rows = _sessions_mod.recent(limit=12)
@@ -10300,7 +10311,7 @@ def _handle_bot_command(channel: str, thread_ts: str, msg_ts: str,
                         user_msg: str) -> bool:
     """Answer the messages the bot handles itself, with no Claude call:
     `adopt session`, `conversations`, `name this conversation`, `open a
-    channel`. True when the message was one of them (and is now
+    channel`, `version`. True when the message was one of them (and is now
     answered); False to continue into the normal dispatch. Lives outside
     handle_message_async so that function stays within the window the
     style-guard wiring test inspects."""
