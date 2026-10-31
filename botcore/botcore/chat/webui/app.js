@@ -137,6 +137,7 @@ async function call(method, path, body) {
   let data = null;
   try { data = await res.json(); } catch { /* an empty or non-JSON body */ }
   if (res.status === 401 && !T.relay) { showPair(); throw new Error('This browser is not paired.'); }
+  if (T.relay) relayNote(res.status === 403 && data && data.pending ? pendingNote(T.rec.code) : '');
   if (!res.ok) throw Object.assign(new Error((data && data.error) || `HTTP ${res.status}`), { status: res.status });
   return data;
 }
@@ -424,15 +425,21 @@ function renderFile(f) {
 
 // Through the relay a stored file has no address the phone can reach: an
 // image shows from a blob, and a link takes the blob's address on a tap.
+// A blob page has this page's origin, so only a raster image keeps its
+// type; anything else (SVG, HTML) is plain bytes, and every link downloads.
+const RASTER = /^image\/(png|jpeg|gif|webp)$/;
 function relayFile(f, box) {
   let got = null;
   const blob = () => (got ||= T.api('GET', `/files/${enc(f.id)}`).then(async (res) => {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return URL.createObjectURL(await res.blob());
+    const type = String(res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    return URL.createObjectURL(new Blob([await res.arrayBuffer()], { type: RASTER.test(type) ? type : 'application/octet-stream' }));
   }).catch((e) => { got = null; throw e; }));
   const img = box.querySelector('img');
   if (img) blob().then((u) => { img.src = u; img.parentElement.href = u; }).catch(() => {});
   for (const a of box.querySelectorAll('a')) {
+    a.setAttribute('download', f.name || 'file');
+    a.removeAttribute('target');
     a.addEventListener('click', async (e) => {
       if (a.href.startsWith('blob:')) return;
       e.preventDefault();
@@ -942,6 +949,10 @@ const sameKey = (buf, key) => !buf || String(new Uint8Array(buf)) === String(key
 // again, so the server keeps it after a reset; one made with another key
 // (the server's key was replaced) is dropped. iOS takes notifications only
 // in the app added to the Home Screen; outside it the install line says how.
+// A subscription names this browser's relay device, if it has one: removing
+// the device on the tailnet drops it.
+const subBody = async (sub) => ({ ...sub.toJSON(), device: (await loadPairing())?.device || undefined });
+
 async function initPush() {
   const box = $('notify');
   if (!S.me.push || !('serviceWorker' in navigator)) return;
@@ -953,7 +964,7 @@ async function initPush() {
   const { key } = await call('GET', '/push/vapid');
   let sub = await reg.pushManager.getSubscription();
   if (sub && !sameKey(sub.options.applicationServerKey, key)) { await sub.unsubscribe(); sub = null; }
-  if (sub && Notification.permission === 'granted') await call('POST', '/push/subscribe', sub.toJSON());
+  if (sub && Notification.permission === 'granted') await call('POST', '/push/subscribe', await subBody(sub));
   S.push = { reg, key, sub };
   box.checked = Boolean(sub) && Notification.permission === 'granted';
   box.disabled = false;
@@ -978,7 +989,7 @@ async function toggleNotify() {
     if (on) {
       // subscribe() asks for the permission; Safari asks only straight from a tap.
       sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
-      await call('POST', '/push/subscribe', sub.toJSON());
+      await call('POST', '/push/subscribe', await subBody(sub));
     } else if (sub) {
       await call('POST', '/push/unsubscribe', { endpoint: sub.endpoint });
       await sub.unsubscribe();
@@ -1173,6 +1184,7 @@ async function relayFinish(p, frame) {
 }
 
 async function sealFrame(s, kind, id, data) {
+  if (s.ctr >= 2 ** 48) throw new RelayError('session'); // spent: hello again
   const n = s.ctr++;
   const c = await gcm(s.send, nonce('c2b\0', n), pad(data), frameAad(s.sid, kind, id));
   return { id, k: kind, sid: s.sid, n, c: b64e(c) };
@@ -1197,10 +1209,19 @@ async function openRaw(s, kind, id, n, ct) {
   return unpad(plain);
 }
 
-function openFrame(s, frame) {
-  if (!frame || !['res', 'sse', 'end'].includes(frame.k) || frame.sid !== s.sid) throw new Error('bad frame');
+// A frame of the kind and id this side waits for (the answer to its
+// request, an event of its stream), and nothing else.
+function openFrame(s, frame, kind, id) {
+  if (!frame || frame.k !== kind || frame.id !== id || frame.sid !== s.sid) throw new Error('bad frame');
   return openRaw(s, frame.k, frame.id, frame.n, b64d(frame.c));
 }
+
+// The pairing code: six digits of the hello's transcript hash, which the
+// bot shows beside the device on the tailnet (relay_crypto.pairing_code).
+async function pairCode(h) {
+  return String(u32(await sha256(TE.encode(`${PROTO} code`), Uint8Array.of(0), h)) % 1e6).padStart(6, '0');
+}
+const spaced = (code) => String(code || '').replace(/^(\d{3})/, '$1 ');
 
 /* -- The relay: this browser's pairing and the transport ------------- */
 
@@ -1238,7 +1259,9 @@ const RELAY_SAYS = {
   offline: 'The bot cannot be reached through the relay now.',
   timeout: 'The bot did not answer in time.',
   busy: 'The relay is busy.',
+  unsure: 'the relay broke off, and the bot may have it anyway. Look in the thread before you send it again.',
 };
+const pendingNote = (code) => `This phone waits for approval. Under "Pair a phone" on the tailnet, approve the phone with code ${spaced(code)}.`;
 
 class RelayError extends Error {
   constructor(code, text) {
@@ -1274,8 +1297,9 @@ function relayTransport(rec) {
 
   self.hello = async (pairing) => {
     const { frame, pending } = await relayHello(rec, pairing);
+    if (pairing) self.code = await pairCode(pending.h);
     self.session = await relayFinish(pending, await post('c', frame));
-    relayNote('');
+    if (!pairing) relayNote('');
     return self.session;
   };
   const session = () => (self.session ? Promise.resolve(self.session)
@@ -1297,14 +1321,18 @@ function relayTransport(rec) {
     const plain = pack({ m: method, p: '/api' + path, h }, data);
     for (let attempt = 0; ; attempt++) {
       const s = await session();
+      const id = newId();
       try {
-        const [meta, bytes] = unpack(await openFrame(s, await post('c', await sealFrame(s, 'req', newId(), plain))));
+        const [meta, bytes] = unpack(await openFrame(s, await post('c', await sealFrame(s, 'req', id, plain)), 'res', id));
         const status = meta.s >= 200 && meta.s <= 599 ? meta.s : 502;
         return new Response([204, 205, 304].includes(status) ? null : bytes, { status, headers: meta.h || {} });
       } catch (e) {
-        // A bot that restarted has forgotten the session: hello again, once.
-        if (attempt || !['session', 'replay', 'bad'].includes(e.code)) throw e;
+        if (!['session', 'replay', 'bad'].includes(e.code)) throw e;
+        // A bot that restarted has forgotten the session: hello again. Only
+        // a GET goes twice; an err frame is not sealed (the relay can forge
+        // one after the bot ran a POST), so a POST is not sent again.
         forget(s);
+        if (attempt || method !== 'GET') throw new RelayError('unsure');
       }
     }
   };
@@ -1340,7 +1368,7 @@ function relayTransport(rec) {
             if (fr.k === 'err') throw new RelayError(fr.e);
             if (fr.k === 'end') return;
             if (fr.k !== 'sse') continue;
-            const [ev] = unpack(await openFrame(s, fr));
+            const [ev] = unpack(await openFrame(s, fr, 'sse', opener.id));
             if (!opened) { opened = true; sink.open(); }
             if (ev.event || ev.data) sink.event(String(ev.event || 'message'), String(ev.id ?? ''), String(ev.data ?? ''));
           }
@@ -1386,43 +1414,59 @@ async function directGet(path) {
 // A pairing link (`<app>#tr1=<payload>`, from "Pair a phone" on the
 // tailnet) opened here: the fragment leaves the address bar first, then
 // this browser makes its key pair, keeps it, and pairs through the relay.
+// The new phone then waits for the owner's approval, by its code.
 async function pairFromLink(text) {
   history.replaceState(null, '', location.pathname + location.search);
+  const old = await loadPairing();
+  let saved = false;
   try {
     const p = JSON.parse(TD.decode(b64d(text)));
-    if (!p || p.v !== 1 || !/^[0-9a-f]{32}$/.test(p.p) || typeof p.i !== 'string' || typeof p.c !== 'string') {
+    if (!p || p.v !== 1 || !/^[0-9a-f]{32}$/.test(p.p) || b64d(String(p.s)).length !== 32) {
       throw new Error('this is not a pairing link');
     }
     if (!(p.x * 1000 > Date.now())) throw new Error('the link has expired; open a new one on the tailnet');
-    const url = new URL(p.r);
+    // On the bot's own origin the link gives only the pairing secret: the
+    // relay, the install and the keys come from the bot, which answers on
+    // the tailnet. A link whose relay is this page's origin is for the
+    // relay's copy of the app, where no bot answers.
+    let at = p;
+    if (new URL(p.r).origin !== location.origin) {
+      const got = await directGet('/relay/status');
+      const st = got && got.status === 200 ? await got.json().catch(() => null) : null;
+      if (!st || !st.install_id) throw new Error('open the link while this phone is on the tailnet');
+      if (st.install_id !== p.i || st.bot_public !== p.k) throw new Error('the link is for another install');
+      at = { r: st.relay_url, i: st.install_id, k: st.bot_public, c: st.client_key };
+    } else if (!confirm('This copy of the app comes from the relay: whoever runs the relay can read '
+      + 'this phone\'s chat and type as you. Pair it anyway?')) return;
+    const url = new URL(at.r);
     if (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOOPBACK_HOSTS.includes(url.hostname))) {
       throw new Error('the relay must use https');
     }
-    // On the tailnet the bot says which install it is: a link for another
-    // one is refused.
-    const got = await directGet('/relay/status');
-    const st = got && got.ok ? await got.json().catch(() => null) : null;
-    if (st && st.install_id && st.install_id !== p.i) throw new Error('the link is for another install');
-    if (await loadPairing() && !confirm('This browser is paired already. Replace that pairing?')) return;
+    if (!/^[a-z2-7]{26}$/.test(at.i) || b64d(String(at.k)).length !== 32 || !/^[A-Za-z0-9_-]{43}$/.test(at.c)) {
+      throw new Error('this is not a pairing link');
+    }
+    if (old && !confirm('This browser is paired already. Replace that pairing?')) return;
     const keys = await newKeys();
-    const rec = { v: 1, relay: String(p.r).replace(/\/+$/, ''), install: p.i, clientKey: p.c,
-      botPublic: b64d(p.k), priv: keys.priv, pub: keys.pub, device: '' };
+    const rec = { v: 1, relay: String(at.r).replace(/\/+$/, ''), install: at.i, clientKey: at.c,
+      botPublic: b64d(at.k), priv: keys.priv, pub: keys.pub, device: '' };
     // Kept before the hello: a phone whose welcome is lost says a plain
     // hello next time, with the key the bot registered.
     await savePairing(rec);
+    saved = true;
     const relay = relayTransport(rec);
     await relay.hello({ id: p.p, psk: b64d(p.s) });
-    rec.device = relay.session.device;
+    Object.assign(rec, { device: relay.session.device, code: relay.code });
     await savePairing(rec);
     RELAY = relay;
-    toast('This phone is paired. Off the tailnet it reaches Tacitus through the relay.');
+    relayNote(pendingNote(rec.code));
   } catch (e) {
+    if (saved && old) await savePairing(old).catch(() => {}); // a failed pairing keeps the earlier one
     toast(`Pairing failed: ${e.message}`);
   }
 }
 
 // "Pair a phone", on the tailnet: a one-time link as a QR code, and the
-// phones paired so far.
+// phones paired so far; a new one waits for Approve, beside its code.
 async function pairPhone() {
   const dlg = $('phone');
   $('phone-link').value = '';
@@ -1432,12 +1476,13 @@ async function pairPhone() {
     const out = await call('POST', '/relay/pair', {});
     QR.draw($('phone-qr'), out.qr, 4);
     $('phone-link').value = out.link;
-    $('phone-note').textContent = (out.origin === 'own' ? ''
-      : 'This link opens the relay\'s copy of the app, so card buttons stay on the tailnet. ')
-      + `Scan it with the phone's camera on the tailnet. It works once, until ${when(out.expires)}.`;
+    $('phone-note').textContent = `Scan it with the phone's camera on the tailnet. It works once, until ${when(out.expires)}. `
+      + 'Approve the phone below only when its code is the one the phone shows. Never send this link through chat or mail.';
   } catch (e) {
     $('phone-note').textContent = `Could not open a pairing: ${e.message}`;
   }
+  clearInterval(pairPhone.timer);
+  pairPhone.timer = setInterval(() => (dlg.open ? listPhones() : clearInterval(pairPhone.timer)), 3000);
   listPhones();
 }
 
@@ -1445,18 +1490,20 @@ async function listPhones() {
   const box = $('phone-devices');
   try {
     const rows = await call('GET', '/relay/devices');
-    box.replaceChildren(...rows.map((d) => h('li', {},
-      h('span', {}, `${d.name}, paired ${when(d.paired_at, true)}${d.origin === 'own' ? '' : ' on the relay'}`),
-      h('button', { type: 'button', class: 'btn small plain', onclick: () => removePhone(d) }, 'Remove'))));
+    box.replaceChildren(...rows.map((d) => h('li', { 'data-device': d.id },
+      h('span', {}, d.pending ? `${d.name}, code ${spaced(d.code)}, waits for approval`
+        : `${d.name}, paired ${when(d.paired_at, true)}${d.origin === 'own' ? '' : ' on the relay'}`),
+      d.pending ? h('button', { type: 'button', class: 'btn small primary', onclick: () => phoneAct('approve', d) }, 'Approve') : null,
+      h('button', { type: 'button', class: 'btn small plain', onclick: () => phoneAct('revoke', d) }, 'Remove'))));
     if (!rows.length) box.append(h('li', { class: 'empty' }, 'No phone is paired yet.'));
   } catch (e) {
     box.replaceChildren(h('li', { class: 'error' }, e.message));
   }
 }
 
-async function removePhone(d) {
-  if (!confirm(`Remove ${d.name}? It can no longer reach the bot through the relay.`)) return;
-  try { await call('POST', '/relay/revoke', { device: d.id }); } catch (e) { toast(e.message); }
+async function phoneAct(verb, d) {
+  if (verb === 'revoke' && !confirm(`Remove ${d.name}? It can no longer reach the bot through the relay.`)) return;
+  try { await call('POST', `/relay/${verb}`, { device: d.id }); } catch (e) { toast(e.message); }
   listPhones();
 }
 
@@ -1557,6 +1604,7 @@ async function init() {
   new ResizeObserver(() => { if (stuck) toBottom(); }).observe($('messages'));
   document.addEventListener('touchstart', () => {}, { passive: true }); // iOS applies :active only then
   $('pair-phone').addEventListener('click', pairPhone);
+  $('relay-note').addEventListener('click', () => relayNote(''));
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.body.classList.remove('drawer'); });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && S.thread && S.threadUnread.delete(tkey(S.channel, S.thread))) {

@@ -175,15 +175,16 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/push/unsubscribe` | `{"endpoint"}` → `{"ok": true, "removed": bool}` |
 | GET | `/api/push/subscriptions` | `[{"id", "host", "created_at", "last_seen", "last_ok", "failures"}]`; `id` is a hash of the endpoint, which is never shown |
 | POST | `/api/push/revoke` | `{"id"}` → `{"ok": true, "removed": bool}` |
-| POST | `/api/relay/pair` | `{}` → `{"link", "qr", "expires", "origin"}`: a one-time pairing link for a phone (the relay) |
-| GET | `/api/relay/devices` | `[{"id", "name", "paired_at", "origin"}]`, the phones paired with the relay |
-| POST | `/api/relay/revoke` | `{"device"}` → `{"ok": true}`; 404 for an unknown device |
-| GET | `/api/relay/status` | `{"enabled": bool, ...}`: the relay client's state (`connected`, `install_id`, `devices`, ...) |
+| POST | `/api/relay/pair` | `{}` → `{"link", "qr", "expires", "origin"}`: a one-time pairing link for a phone (the relay), on the bot's own origin; 409 without `public_url` |
+| GET | `/api/relay/devices` | `[{"id", "name", "paired_at", "origin", "pending", "code"?}]`, the phones paired with the relay; a new one waits with its pairing code |
+| POST | `/api/relay/approve` | `{"device"}` → `{"ok": true}`: let a waiting phone in; 404 for an unknown device |
+| POST | `/api/relay/revoke` | `{"device"}` → `{"ok": true}`: its sessions and streams end, its push subscriptions go; 404 for an unknown device |
+| GET | `/api/relay/status` | `{"enabled": bool, ...}`: the relay client's state (`connected`, `install_id`, `bot_public`, `client_key`, `devices`, `pending`, ...) |
 
-The four `/api/relay/` routes, and `/api/pair`, answer only on the
+The five `/api/relay/` routes, and `/api/pair`, answer only on the
 tailnet: a request the relay client marks with `X-Tacitus-Relay` gets
 403, and the client never forwards them. With no relay running,
-`/api/relay/status` says `{"enabled": false}` and the other three answer
+`/api/relay/status` says `{"enabled": false}` and the other four answer
 404. `card_actions` is false for a request the relay marks as one that may
 not confirm a card (`docs/webchat-relay.md`, Where the app's code comes
 from).

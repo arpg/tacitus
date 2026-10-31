@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import sys
 import threading
@@ -259,7 +260,8 @@ def test_relay_strips_fields_it_does_not_route():
 def test_path_policy():
     ok = ["/api/me", "/api/channels", "/api/channels/C%3A1/threads?limit=50&before=9",
           "/api/files/f1", "/api/cards/C1/w12/actions"]
-    bad = ["/api/pair", "/api/pair/", "/api/relay/pair", "/api/relay", "/index.html",
+    bad = ["/api/pair", "/api/pair/", "/api/pair/x", "/api/PAIR/x", "/api/relay/pair",
+           "/api/relay", "/api/relay/approve", "/index.html",
            "/api/relay/devices", "/api/relay/revoke", "/api/relay/status", "/api/pair?x=1",
            "/api/%72elay/pair", "/api/p%61ir", "/api/Relay/devices", "/api/PAIR",
            "/api/relay%2Fpair", "/api/%2572elay/pair".replace("%25", "%"),
@@ -295,6 +297,11 @@ def test_own_origin_is_public_urls_origin_only():
                 "https://other.example.ts.net/chat/", "javascript:alert(1)", "https://:0/"):
         assert rcl.origin_of(app, own, relay) == "relay", app
     assert rcl.origin_of("https://host.example.ts.net/chat/", None, relay) == "relay"
+    # A backslash or user info: a browser and urllib may read different hosts.
+    for app in ("https://evil.example\\@host.example.ts.net/chat/",
+                "https://evil.example@host.example.ts.net/chat/",
+                "https://user:pw@host.example.ts.net/chat/"):
+        assert rcl.origin_of(app, own, relay) == "relay", app
     assert rcl.origin_of("https://host.example.ts.net/chat/", "", relay) == "relay"
     # A public_url that is the relay's own origin never makes an own device.
     assert rcl.origin_of("https://relay.example.net/", "https://relay.example.net:443", relay) \
@@ -317,39 +324,107 @@ def test_key_store_pairing_is_one_time(tmp_path):
     p = store.add_pairing()
     pub = rc.public_of(rc.generate_private())
     assert store.pairing_psk(p.pairing_id) == p.psk
-    dev = store.register(p.pairing_id, pub, "phone <script>")
+    dev = store.register(p.pairing_id, pub, "phone <script>", code="123456")
     assert dev["name"] == "phone script" and store.device(pub)["id"] == dev["id"]
+    # A new device waits for the owner, with its pairing code.
+    assert dev["pending"] is True and store.device(pub)["code"] == "123456"
+    assert store.approve(dev["id"]) and "pending" not in store.device(pub)
+    assert not store.approve("0" * 16)
     with pytest.raises(rcl.RelayError):
         store.register(p.pairing_id, pub)
     late = store.add_pairing(ttl=1, now=time.time() - 10)
     assert store.pairing_psk(late.pairing_id) is None
+    # An expired pairing's secret leaves the file at the next write.
+    assert late.pairing_id not in json.dumps(store.load()["pairings"])
     assert store.revoke(dev["id"]) and store.device(pub) is None
     os.chmod(store.path, 0o644)
     with pytest.raises(rcl.RelayError, match="readable"):
         rcl.KeyStore(store.path).load()
+    os.chmod(store.path, 0o600)
+    link = tmp_path / "link.json"
+    link.symlink_to(store.path)
+    with pytest.raises(rcl.RelayError, match="regular file"):
+        rcl.KeyStore(link).load()
+
+
+def _link_of(key: str, pairing: dict, app: str | None) -> str:
+    """The link a stored pairing makes, from the key file alone."""
+    store = rcl.KeyStore(key)
+    ident = store.identity()
+    return rc.PairingPayload(relay_url=store.relay_url(), install_id=ident.install_id,
+                             bot_public=ident.public, client_key=ident.client_key,
+                             pairing_id=pairing["id"], psk=rc.b64d(pairing["psk"]),
+                             expires=pairing["expires"]).to_string(app)
 
 
 def test_owner_cli(tmp_path, capsys):
+    from botcore.chat import relay_qr
     key = str(tmp_path / "relay.json")
+    own = "https://host.example.ts.net/chat"
     assert rcl.main(["init", "--key-file", key, "--relay-url", "https://relay.example.net"]) == 0
     made = json.loads(capsys.readouterr().out)
     assert made["relay"] == {"url": "https://relay.example.net",
                              "install_id": made["install_id"], "key_file": key}
     assert rcl.main(["init", "--key-file", key]) == 1  # never replaces an identity
     capsys.readouterr()
-    assert rcl.main(["pair", "--key-file", key, "--public-url", "https://host.example.ts.net/chat"]) == 0
+    # A QR code on the terminal, not the link's text; the advice on stderr.
+    assert rcl.main(["pair", "--key-file", key, "--public-url", own]) == 0
+    out = capsys.readouterr()
+    assert "#tr1=" not in out.out and "Never send this link" in out.err
+    first = rcl.KeyStore(key).load()["pairings"][0]
+    assert out.out.rstrip("\n") == relay_qr.terminal(_link_of(key, first, own + "/"))
+    assert rcl.main(["pair", "--key-file", key, "--public-url", own, "--print-link"]) == 0
     link = capsys.readouterr().out.strip()
     p = rc.PairingPayload.from_string(link)
-    assert link.startswith("https://host.example.ts.net/chat/#tr1=")
+    assert link.startswith(own + "/#tr1=")
     assert p.install_id == made["install_id"] and p.relay_url == "https://relay.example.net"
-    assert rcl.main(["pair", "--key-file", key, "--app-url", "https://host.example.ts.net/chat/"]) == 0
+    # Any other origin is refused unless --relay-origin, which warns.
+    for args in (["--app-url", own + "/"], []):
+        assert rcl.main(["pair", "--key-file", key, "--print-link", *args]) == 1
+        assert "own origin" in capsys.readouterr().err
+    assert rcl.main(["pair", "--key-file", key, "--relay-origin", "--print-link"]) == 0
     out = capsys.readouterr()
-    assert "relay-origin" in out.err  # an app url alone is not the bot's own origin
+    assert "read this phone's chat and type as you" in out.err
+    assert out.out.startswith("https://relay.example.net/#tr1=")
     pairings = rcl.KeyStore(key).load()["pairings"]
-    assert [x["origin"] for x in pairings] == ["own", "relay"]
+    assert [x["origin"] for x in pairings] == ["own", "own", "relay"]
     assert rcl.main(["show", "--key-file", key]) == 0
-    assert json.loads(capsys.readouterr().out)["open_pairings"] == 2
+    assert json.loads(capsys.readouterr().out)["open_pairings"] == 3
+    # A device that spent a pairing waits; show lists its code, approve lets it in.
+    store = rcl.KeyStore(key)
+    dev = store.register(p.pairing_id, rc.public_of(rc.generate_private()), "phone", code="042917")
+    assert rcl.main(["show", "--key-file", key]) == 0
+    assert json.loads(capsys.readouterr().out)["devices"] == [
+        {"id": dev["id"], "name": "phone", "paired_at": dev["paired_at"], "origin": "own",
+         "pending": True, "code": "042917"}]
+    assert rcl.main(["approve", "--key-file", key, "--device", dev["id"]]) == 0
+    assert capsys.readouterr().out.strip() == "approved"
+    assert rcl.main(["show", "--key-file", key]) == 0
+    assert json.loads(capsys.readouterr().out)["devices"][0]["pending"] is False
+    assert rcl.main(["approve", "--key-file", key, "--device", "0" * 16]) == 1
     assert rcl.main(["revoke", "--key-file", key, "--device", "0" * 16]) == 1
+    assert rcl.main(["revoke", "--key-file", key, "--device", dev["id"]]) == 0
+
+
+def test_the_terminal_qr_is_the_apps_code():
+    """relay_qr encodes module for module as the app's qr.js (the codes
+    tests/test_webui.py pins), and the terminal drawing holds that grid."""
+    import hashlib
+    from botcore.chat import relay_qr
+    from test_webui import QR_BASE, QR_PINNED
+    for n, (sha, _decodable) in QR_PINNED.items():
+        rows = ["".join("1" if c else "0" for c in r) for r in relay_qr.encode(QR_BASE[:n])]
+        assert hashlib.sha256("\n".join(rows).encode()).hexdigest() == sha, n
+    link = QR_BASE[:460]
+    grid = relay_qr.encode(link)
+    top = {" ": (0, 0), "\u2580": (1, 0), "\u2584": (0, 1), "\u2588": (1, 1)}
+    drawn = []
+    for line in relay_qr.terminal(link).splitlines():
+        cells = line.removeprefix("\x1b[30;107m").removesuffix("\x1b[0m")
+        drawn += [[top[c][0] for c in cells], [top[c][1] for c in cells]]
+    n = len(grid)
+    assert [r[4:4 + n] for r in drawn[4:4 + n]] == [[int(c) for c in r] for r in grid]
+    assert not any(any(r) for r in drawn[:4] + drawn[4 + n:])  # the quiet zone
 
 
 def test_start_relay_needs_a_relay_block(tmp_path):
@@ -403,6 +478,25 @@ class FakeAPI(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", "leak=1")
             self.end_headers()
             self.wfile.write(FILE_MARKER)
+        elif self.path == "/chat/api/redirect":
+            # A loopback server that redirects: the bot does not follow.
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:9/elsewhere")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        elif self.path == "/chat/api/sneaky":
+            # An event stream on a plain path: a request never holds it open.
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            try:
+                for _ in range(100):
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    if FakeAPI.stop.wait(0.1):
+                        break
+            except OSError:
+                pass
         elif self.path.startswith("/chat/api/events"):
             since = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("since", ["-"])[0]
             self.send_response(200)
@@ -456,6 +550,7 @@ class Phone:
         self.url = f"{base}/r/{payload.install_id}"
         self.key = rc.generate_private()
         self.session: rc.Session | None = None
+        self.code = ""  # the pairing code this phone shows
 
     def ticket(self, opener: dict) -> str:
         """A one-time ticket for the event stream the `open` frame asks for."""
@@ -479,6 +574,8 @@ class Phone:
         frame, pending = rc.client_hello(p.bot_public, p.install_id, self.key,
                                          pairing=(p.pairing_id, p.psk) if pairing else None,
                                          info={"name": "loopback phone"})
+        if pairing:
+            self.code = rc.pairing_code(pending.h)
         status, answer = self.post(frame)
         if status == 200 and answer.get("k") == "welcome":
             self.session = rc.client_finish(pending, answer)
@@ -516,16 +613,19 @@ def loop(tmp_path_factory):
     server = _serve(rs.RelayHTTPServer(("127.0.0.1", 0), relay, str(d / "webui")))
     base = f"http://127.0.0.1:{server.server_address[1]}"
     web_cfg = {"pair_token_file": str(d / "pair.token"), "public_url": OWN_URL,
-               "relay": {"url": base, "key_file": str(d / "relay-key.json"), "wait": 1}}
+               "relay": {"url": base, "key_file": str(d / "relay-key.json"), "wait": 1,
+                         "relay_origin_access": "chat"}}
     client = rcl.start_relay(web_cfg, f"http://127.0.0.1:{api.server_address[1]}/chat")
     assert client is not None
     deadline = time.time() + 10
     while not client.connected and time.time() < deadline:
         time.sleep(0.05)
     assert client.connected, client.last_error
-    phone = Phone(base, rc.PairingPayload.from_string(client.new_pairing(app_url=base + "/")))
+    phone = Phone(base, rc.PairingPayload.from_string(
+        client.new_pairing(app_url=base + "/", relay_origin=True)))
     status, welcome = phone.hello()
     assert status == 200 and welcome["k"] == "welcome", welcome
+    assert client.approve(phone.session.device)
     yield {"relay": relay, "server": server, "base": base, "client": client, "phone": phone,
            "taps": taps, "logs": logs, "dir": d, "cfg": web_cfg}
     FakeAPI.stop.set()
@@ -614,7 +714,7 @@ def test_card_actions_need_a_device_paired_on_the_own_origin(loop):
     assert out["s"] == 403 and "origin" in json.loads(out["body"])["error"]
     assert len(FakeAPI.seen) == n
     own = Phone(loop["base"], rc.PairingPayload.from_string(client.new_pairing(app_url=OWN_URL + "/")))
-    assert own.hello()[0] == 200
+    assert own.hello()[0] == 200 and client.approve(own.session.device)
     assert {d["id"]: d["origin"] for d in client.devices()}[own.session.device] == "own"
     _, out = own.call("POST", "/api/cards/C1/w1/actions", click)
     assert out["s"] == 200 and json.loads(out["body"]) == {"ok": True, "action_id": "approve_send"}
@@ -696,6 +796,7 @@ def test_revoked_device_loses_its_session(loop):
     client, phone = loop["client"], loop["phone"]
     other = Phone(loop["base"], rc.PairingPayload.from_string(client.new_pairing()))
     assert other.hello()[0] == 200 and other.session is not None
+    assert client.approve(other.session.device)
     assert other.call("GET", "/api/me")[1]["s"] == 200
     assert client.revoke(other.session.device)
     _, out = other.call("GET", "/api/me")
@@ -963,7 +1064,7 @@ def relay_vectors() -> dict:
                     "expires": payload.expires,
                     "link": payload.to_string("https://host.example.test/chat/")},
         "hello": {"payload": rc.b64e(json.dumps({**info, "t": now}).encode()),
-                  "frame": hello, "h": hexs(pending.h)},
+                  "frame": hello, "h": hexs(pending.h), "code": acc.code},
         "plain_hello": {"phone_ephemeral": {"private": hexs(plain_pending.e_private),
                                             "public": rc.b64e(rc.public_of(plain_pending.e_private))},
                         "frame": plain},
@@ -993,6 +1094,7 @@ def test_shared_vectors_match_relay_crypto():
     assert acc.pairing_id == v["pairing"]["id"]
     assert rc.b64e(acc.device_public) == v["device"]["public"]
     assert acc.info == {"name": "vector phone", "t": v["now"]}
+    assert acc.code == v["hello"]["code"] == rc.pairing_code(bytes.fromhex(v["hello"]["h"]))
     assert rc.PairingPayload.from_string(v["pairing"]["link"]).psk == psk
 
 
@@ -1049,10 +1151,13 @@ def web(tmp_path):
     server.shutdown()
 
 
-def _phone(web, link):
+def _phone(web, link, approve=True):
+    """A phone that pairs with `link`; the owner approves it unless told not to."""
     phone = Phone(web["base"], rc.PairingPayload.from_string(link))
     status, welcome = phone.hello()
     assert status == 200 and welcome["k"] == "welcome", welcome
+    if approve:
+        assert web["fe"].relay.approve(phone.session.device)
     return phone
 
 
@@ -1068,20 +1173,36 @@ def test_the_web_front_end_runs_the_relay_client(web):
     assert f.relay is None and client._stop.is_set()
 
 
-def test_the_relay_routes_pair_list_and_revoke(web):
+def test_the_relay_routes_pair_list_approve_and_revoke(web):
     f = web["fe"]
     status, _h, out = _call(f, "POST", "/api/relay/pair", {}, _owner(f))
     assert status == 200 and out["qr"] == out["link"] and out["origin"] == "own"
     assert out["link"].startswith(OWN_URL + "/#tr1=")
     assert abs(out["expires"] - (time.time() + rc.PAIRING_TTL)) < 5
     assert _call(f, "GET", "/api/relay/devices", headers=_owner(f))[2] == []
-    phone = _phone(web, out["link"])
+    phone = _phone(web, out["link"], approve=False)
     devices = _call(f, "GET", "/api/relay/devices", headers=_owner(f))[2]
+    # The new phone waits, under the code the phone itself shows.
+    assert len(phone.code) == 6 and phone.code.isdigit()
     assert devices == [{"id": phone.session.device, "name": "loopback phone",
-                        "paired_at": devices[0]["paired_at"], "origin": "own"}]
+                        "paired_at": devices[0]["paired_at"], "origin": "own",
+                        "pending": True, "code": phone.code}]
+    # The owner hears of it in the DM channel, code included.
+    dm = [m["text"] for m in f.store.threads("dm", 50, None)]
+    assert any("loopback phone" in t and f"{phone.code[:3]} {phone.code[3:]}" in t for t in dm), dm
+    _, out = phone.call("GET", "/api/me")
+    assert out["s"] == 403 and json.loads(out["body"])["pending"] is True
     status, _h, st = _call(f, "GET", "/api/relay/status", headers=_owner(f))
-    assert st["enabled"] and st["connected"] and st["devices"] == 1
+    assert st["enabled"] and st["connected"] and st["devices"] == 1 and st["pending"] == 1
     assert st["install_id"] == phone.payload.install_id
+    # The app checks a link against these.
+    assert st["bot_public"] == rc.b64e(phone.payload.bot_public)
+    assert st["client_key"] == phone.payload.client_key and st["relay_url"] == web["base"]
+    assert _call(f, "POST", "/api/relay/approve", {"device": "0" * 16}, _owner(f))[0] == 404
+    assert _call(f, "POST", "/api/relay/approve", {"device": phone.session.device},
+                 _owner(f))[:3:2] == (200, {"ok": True})
+    assert phone.call("GET", "/api/me")[1]["s"] == 200
+    assert _call(f, "GET", "/api/relay/devices", headers=_owner(f))[2][0]["pending"] is False
     assert _call(f, "POST", "/api/relay/revoke", {"device": "nope"}, _owner(f))[0] == 400
     assert _call(f, "POST", "/api/relay/revoke", {"device": "0" * 16}, _owner(f))[0] == 404
     assert _call(f, "POST", "/api/relay/revoke", {"device": phone.session.device},
@@ -1092,6 +1213,7 @@ def test_the_relay_routes_pair_list_and_revoke(web):
     # The routes are the owner's.
     assert _call(f, "POST", "/api/relay/pair", {})[0] == 401
     assert _call(f, "GET", "/api/relay/devices")[0] == 401
+    assert _call(f, "POST", "/api/relay/approve", {"device": "0" * 16})[0] == 401
 
 
 def test_relayed_requests_never_reach_the_pairing_routes(web):
@@ -1099,13 +1221,15 @@ def test_relayed_requests_never_reach_the_pairing_routes(web):
     marks = {**_owner(f), "X-Tacitus-Relay": "0123456789abcdef", "X-Tacitus-Relay-Cards": "allow"}
     for method, path in (("POST", "/api/relay/pair"), ("GET", "/api/relay/devices"),
                          ("GET", "/api/relay/status"), ("POST", "/api/relay/revoke"),
+                         ("POST", "/api/relay/approve"),
                          ("POST", "/api/pair"), ("POST", "/api/%72elay/pair")):
         assert _call(f, method, path, {} if method == "POST" else None, marks)[0] == 403, path
     own = _phone(web, _call(f, "POST", "/api/relay/pair", {}, _owner(f))[2]["link"])
     before = len(f.relay.store.load()["pairings"])
     for method, path in (("POST", "/api/relay/pair"), ("POST", "/api/%72elay/pair"),
                          ("GET", "/api/relay/devices"), ("GET", "/api/Relay/status"),
-                         ("POST", "/api/p%61ir"), ("POST", "/api/relay/revoke")):
+                         ("POST", "/api/p%61ir"), ("POST", "/api/relay/revoke"),
+                         ("POST", "/api/relay/approve"), ("POST", "/api/pair/x")):
         _, out = own.call(method, path, b"{}")
         assert out["s"] == 403, path
     assert len(f.relay.store.load()["pairings"]) == before
@@ -1126,7 +1250,8 @@ def test_a_relay_origin_phone_never_confirms_a_card(web):
                             actions=[CardAction("approve_send", "Send", {"t": 1}, "primary", "send")])
     ref = f.post_card("dm", card)
     f.card_registry.add(ref, card, code="K7Q2")
-    phone = _phone(web, f.relay.new_pairing(app_url=web["base"] + "/"))
+    f.relay.relay_origin_access = "chat"  # as chat.json opting in would set it
+    phone = _phone(web, f.relay.new_pairing(app_url=web["base"] + "/", relay_origin=True))
     assert {d["id"]: d["origin"] for d in f.relay.devices()}[phone.session.device] == "relay"
     _, me = phone.call("GET", "/api/me")
     assert json.loads(me["body"])["card_actions"] is False
@@ -1153,8 +1278,12 @@ def test_the_page_policy_names_the_relay_origin(tmp_path):
     (tmp_path / "webui" / "index.html").write_text("<!doctype html><title>t</title>")
     cases = [
         (None, "connect-src 'self';"),
-        ({"url": "https://Relay.Example.net:8443/x"},
+        ({"url": "https://Relay.Example.net:8443"},
          "connect-src 'self' https://relay.example.net:8443;"),
+        # A relay under a path of a shared host: that path only.
+        ({"url": "https://Relay.Example.net:8443/relay/"},
+         "connect-src 'self' https://relay.example.net:8443/relay/;"),
+        ({"url": "https://relay.example.net/a/../b"}, "connect-src 'self';"),
         ({"url": "https://relay.example.net", "enabled": False}, "connect-src 'self';"),
         ({"url": "https://relay.example.net; script-src *"}, "connect-src 'self';"),
         ({"url": "https://user@relay.example.net"}, "connect-src 'self';"),
@@ -1200,3 +1329,477 @@ def test_get_chat_keeps_the_relay_block_only_from_chat_json(tmp_path, monkeypatc
     assert "relay" not in ea_config.get_chat()["web"]          # not an owner process
     monkeypatch.setattr(owner, "owner_chat_block", lambda: json.loads(json.dumps(block)))
     assert ea_config.get_chat()["web"]["relay"] == {"url": "https://relay.example.net"}
+
+
+# ── attacks on the relay, the bot and its key file, as assertions ─────
+#
+# Each test is one way a stranger, a compromised relay or another user on
+# the bot host could get in, and checks that it no longer does.
+
+def _raw(base: str, request: bytes) -> bytes:
+    """Send raw bytes to the relay; everything it answers until it closes."""
+    import socket
+    host, port = base.split("//", 1)[1].split(":")
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(request)
+        answer = b""
+        while chunk := sock.recv(65536):
+            answer += chunk
+    return answer
+
+
+def test_a_bot_token_is_checked_before_the_body_is_read(loop):
+    """A stranger cannot make the relay read and parse 16 MiB on the bot
+    route: no token, a wrong one, or one for another install is refused
+    from the headers, at once, although the body never comes."""
+    base, install = loop["base"], loop["phone"].payload.install_id
+    for auth, want in (("", b"401"), ("Bearer " + rc.b64e(os.urandom(32)), b"403"),
+                       ("Bearer " + "A" * 5000, b"401"), ("Basic x", b"401")):
+        headers = {"Content-Type": "application/json", "Content-Length": "16000000"}
+        if auth:
+            headers["Authorization"] = auth
+        took, answer = _raw_post(base, f"/r/{install}/bot", headers)
+        assert took < 3 and answer.startswith(b"HTTP/1.1 " + want), (auth[:12], answer[:40])
+    # With the right token, a body nested past the parser's depth is a 400.
+    token = rcl.KeyStore(loop["dir"] / "relay-key.json").identity().token
+    body = b"[" * 100000
+    answer = _raw(base, (f"POST /r/{install}/bot HTTP/1.1\r\nHost: x\r\nContent-Length: {len(body)}"
+                         f"\r\nAuthorization: Bearer {rc.b64e(token)}\r\nConnection: close\r\n\r\n"
+                         ).encode() + body)
+    assert answer.startswith(b"HTTP/1.1 400") and answer.endswith(b'{"error":"not JSON"}')
+
+
+def test_healthz_gives_counts_only_to_a_monitor_on_the_host(loop):
+    """Through the proxy (X-Forwarded-For), /healthz says only that the
+    relay is up: the counts would tell a stranger when an install is online."""
+    base = loop["base"]
+    with NO_PROXY.open(base + "/healthz", timeout=5) as r:
+        assert set(json.loads(r.read())) == {"ok", "installs", "streams", "queued_bytes"}
+    req = urllib.request.Request(base + "/healthz", headers={"X-Forwarded-For": "198.51.100.7"})
+    with NO_PROXY.open(req, timeout=5) as r:
+        assert json.loads(r.read()) == {"ok": True}
+
+
+def test_the_relay_answers_in_json_and_sends_the_safety_headers(loop):
+    base = loop["base"]
+    head = _raw(base, b"HEAD / HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert head.startswith(b"HTTP/1.1 405") and head.endswith(b"\r\n\r\n")  # no body
+    put = _raw(base, b"PUT /r/x/c HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+    assert put.startswith(b"HTTP/1.1 501") and put.endswith(b'{"error":"not implemented"}')
+    bad = _raw(base, b"GET /\x01<script> HTTP/9.9\r\n\r\n")
+    assert b"<script>" not in bad and b"html" not in bad.lower()
+    with NO_PROXY.open(base + "/", timeout=5) as r:
+        assert r.headers["Content-Type"] == "text/html; charset=utf-8"
+        assert r.headers["Cross-Origin-Opener-Policy"] == "same-origin"
+        assert r.headers["Cross-Origin-Resource-Policy"] == "same-origin"
+    with NO_PROXY.open(base + "/healthz", timeout=5) as r:
+        assert r.headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_a_counter_jump_takes_no_memory():
+    """A counter far ahead starts a new bitmap; shifting the old one by the
+    jump would build an integer of that many bits (gigabytes)."""
+    w = rc.ReplayWindow()
+    w.mark(0)
+    t0 = time.monotonic()
+    w.mark(1 << 40)
+    assert time.monotonic() - t0 < 0.1 and w.bits == 1 and w.top == 1 << 40
+    assert w.seen(1 << 40) and not w.seen((1 << 40) - 1) and w.seen(0)
+    w.mark((1 << 40) - 3)
+    assert w.seen((1 << 40) - 3) and w.bits == 0b1001
+
+
+def test_a_hello_cannot_be_replayed_while_its_clock_still_passes():
+    """A hello stamped up to HELLO_SKEW ahead passes the clock check for
+    2 * HELLO_SKEW: the cache keeps its key that long."""
+    bot = rc.BotIdentity.generate()
+    t = 2_000_000_000
+    frame, _ = rc.client_hello(bot.public, bot.install_id, rc.generate_private(), now=t + 590)
+    cache, clock = rc.HelloCache(), {"now": t}
+    seen = lambda k: cache.seen(k, now=clock["now"])  # noqa: E731
+    rc.bot_accept(bot, frame, psk_for=lambda p: None, seen=seen, now=t)
+    for dt in (300, 601, 1100, 1189, 1191):
+        clock["now"] = t + dt
+        with pytest.raises(rc.HandshakeError, match="replayed|clock"):
+            rc.bot_accept(bot, frame, psk_for=lambda p: None, seen=seen, now=t + dt)
+
+
+def test_a_full_hello_cache_refuses_rather_than_forgets():
+    cache = rc.HelloCache(ttl=10, limit=2)
+    assert [cache.seen(k, now=0) for k in (b"a", b"b", b"c")] == [False, False, True]
+    assert cache.seen(b"c", now=11) is False  # the old keys aged out
+
+
+def test_a_hello_with_a_huge_clock_is_refused(monkeypatch):
+    ident = rc.BotIdentity.generate()
+
+    class Shim:
+        @staticmethod
+        def dumps(obj, **kw):
+            return '{"name": "x", "t": 1%s}' % ("0" * 400)
+    monkeypatch.setattr(rc, "json", Shim)
+    hello, _ = rc.client_hello(ident.public, ident.install_id, rc.generate_private())
+    monkeypatch.undo()
+    with pytest.raises(rc.HandshakeError, match="payload"):
+        rc.bot_accept(ident, hello, psk_for=lambda pid: None)
+
+
+def test_the_pairing_code_is_the_same_on_both_sides():
+    ident = rc.BotIdentity.generate()
+    payload = rc.new_pairing(ident, "https://relay.example.net")
+    hello, pending = rc.client_hello(payload.bot_public, payload.install_id, rc.generate_private(),
+                                     pairing=(payload.pairing_id, payload.psk))
+    acc = rc.bot_accept(ident, hello, psk_for=lambda pid: payload.psk)
+    assert acc.code == rc.pairing_code(pending.h) and len(acc.code) == 6 and acc.code.isdigit()
+    other, pending2 = rc.client_hello(payload.bot_public, payload.install_id, rc.generate_private(),
+                                      pairing=(payload.pairing_id, payload.psk))
+    assert rc.pairing_code(pending2.h) != acc.code or pending2.h != pending.h
+
+
+class _Evil(BaseHTTPRequestHandler):
+    """A relay under an attacker's control; `answer(handler, body)` answers."""
+    answer = None
+    calls: list = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        type(self).calls.append(body)
+        type(self).answer(self, body)
+
+    do_GET = do_POST
+
+
+def _evil(answer) -> tuple[ThreadingHTTPServer, str]:
+    handler = type("Evil", (_Evil,), {"answer": staticmethod(answer), "calls": []})
+    server = _serve(ThreadingHTTPServer(("127.0.0.1", 0), handler))
+    server.daemon_threads = True
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+def _json_answer(h, status, obj, length=None):
+    data = json.dumps(obj).encode()
+    h.send_response(status)
+    h.send_header("Content-Length", str(len(data) if length is None else length))
+    h.end_headers()
+    try:
+        h.wfile.write(data)
+    except OSError:
+        pass
+
+
+def _client(tmp_path, relay_url, local="http://127.0.0.1:9/chat", **kw):
+    store = rcl.KeyStore.create(tmp_path / f"k{len(list(tmp_path.iterdir()))}.json")
+    return rcl.RelayClient(relay_url, store, local, **kw)
+
+
+def test_neither_opener_follows_a_redirect(tmp_path, loop):
+    """A relay that answers 302 to a loopback service gets an error, not a
+    request carrying the relay token; nor does the loopback server move a
+    replayed request (and the owner's cookie) elsewhere."""
+    hits = []
+    target, target_url = _evil(lambda h, b: (hits.append(h.path), _json_answer(h, 200, {"frames": []})))
+
+    def redirect(h, body):
+        h.send_response(302)
+        h.send_header("Location", target_url + "/internal?x=1")
+        h.send_header("Content-Length", "0")
+        h.end_headers()
+    relay, relay_url = _evil(redirect)
+    try:
+        client = _client(tmp_path, relay_url, wait=1)
+        with pytest.raises(urllib.error.HTTPError) as e:
+            client._exchange([], 0)
+        assert e.value.code == 302 and hits == []
+        e.value.close()
+    finally:
+        relay.shutdown()
+        target.shutdown()
+    _, out = loop["phone"].call("GET", "/api/redirect")
+    assert out["s"] == 302 and "location" not in out["h"]
+
+
+def test_an_early_empty_answer_pauses_the_poll(tmp_path):
+    """A relay that answers every long-poll at once with nothing cannot
+    spin the bot's poll loop."""
+    relay, relay_url = _evil(lambda h, b: _json_answer(h, 200, {"frames": []}))
+    client = _client(tmp_path, relay_url, wait=25)
+    try:
+        client.start()
+        time.sleep(2.2)
+        assert 1 <= len(relay.RequestHandlerClass.calls) <= 4
+    finally:
+        client.stop()
+        relay.shutdown()
+
+
+def test_a_flood_from_the_relay_is_bounded(tmp_path, caplog):
+    """5,000 bogus hellos per answer: the bot takes 64 of an answer, queues
+    a bounded number for its workers, drops the rest, and logs one line."""
+    def flood(h, body):
+        if body.get("frames"):
+            return _json_answer(h, 200, {"frames": []})
+        time.sleep(0.3)
+        n = len(h.calls)
+        _json_answer(h, 200, {"frames": [{"id": f"f{n}x{i}", "k": "hello", "c": "AAAA"}
+                                         for i in range(5000)]})
+    relay, relay_url = _evil(flood)
+    lg = logging.getLogger("test.relay.flood")
+    client = _client(tmp_path, relay_url, wait=25, logger=lg)
+    try:
+        with caplog.at_level(logging.INFO, logger="test.relay.flood"):
+            client.start()
+            time.sleep(2.5)
+            backlog = client._pool._work_queue.qsize()
+        assert backlog <= 64 and client.dropped > 5000
+        refused = [r for r in caplog.records if "hello refused" in r.getMessage()]
+        assert len(refused) == 1, [r.getMessage() for r in caplog.records]
+    finally:
+        client.stop()
+        relay.shutdown()
+
+
+def test_the_relays_words_never_reach_the_log(tmp_path, caplog):
+    """An error body is not read: a forged log line in it goes nowhere, and
+    a body of hundreds of MiB costs nothing."""
+    def forged(h, body):
+        _json_answer(h, 500, {"error": "x\nWARNING chat.relay: relay: connected (forged)"})
+    relay, relay_url = _evil(forged)
+    lg = logging.getLogger("test.relay.words")
+    client = _client(tmp_path, relay_url, wait=1, logger=lg)
+    try:
+        with caplog.at_level(logging.INFO, logger="test.relay.words"):
+            with pytest.raises(urllib.error.HTTPError) as e:
+                client._exchange([], 0)
+            client._note_error(e.value)
+        assert [r.getMessage() for r in caplog.records] == ["relay: HTTP 500"]
+        assert client.status()["last_error"] == "HTTP 500"
+    finally:
+        relay.shutdown()
+
+    def huge(h, body):
+        h.send_response(500)
+        h.send_header("Content-Length", str(400 << 20))
+        h.end_headers()
+        try:
+            for _ in range(400):
+                h.wfile.write(b"[" * (1 << 20))
+        except OSError:
+            pass
+    relay, relay_url = _evil(huge)
+    try:
+        client = _client(tmp_path, relay_url, wait=1, logger=lg)
+        t0 = time.monotonic()
+        with pytest.raises(urllib.error.HTTPError) as e:
+            client._exchange([], 0)
+        client._note_error(e.value)
+        assert time.monotonic() - t0 < 3 and client.last_error == "HTTP 500"
+    finally:
+        relay.shutdown()
+
+
+def test_header_values_are_printable_ascii(tmp_path):
+    client = _client(tmp_path, "https://relay.example.net")
+    got = client._headers("d" * 16, {"accept": "text/plain ", "content-type": "café",
+                                     "last-event-id": "7"})
+    assert "accept" not in got and "content-type" not in got and got["last-event-id"] == "7"
+
+
+def test_a_plain_request_never_holds_an_event_stream(loop):
+    """A `req` for the event stream is refused (an `open` frame opens it),
+    and an answer that turns out to be a stream is cut at once: eight such
+    requests no longer tie up the bot's workers."""
+    phone = loop["phone"]
+    for path in ("/api/events", "/api/events?since=1", "/api/%65vents", "/api/Events/"):
+        assert phone.call("GET", path)[1]["s"] == 403, path
+    t0 = time.monotonic()
+    _, out = phone.call("GET", "/api/sneaky")
+    assert out["s"] == 502 and time.monotonic() - t0 < 5
+    frame = phone.session.seal("ping", rc.new_id(), rc.pack({}))
+    assert "pong" in rc.unpack(phone.session.open(phone.post(frame)[1]))[0]
+
+
+def test_sessions_are_capped_per_device(tmp_path):
+    client = _client(tmp_path, "https://relay.example.net")
+    for i in range(rcl.MAX_DEVICE_SESSIONS + 3):
+        s = rc.Session(f"{i:032x}", os.urandom(32), os.urandom(32), "bot", device="a" * 16)
+        s.last_used = time.time() - 100 + i
+        client._add_session(s)
+    client._add_session(rc.Session("f" * 32, os.urandom(32), os.urandom(32), "bot", device="b" * 16))
+    mine = [s for s in client._sessions.values() if s.device == "a" * 16]
+    assert len(mine) == rcl.MAX_DEVICE_SESSIONS and len(client._sessions) == rcl.MAX_DEVICE_SESSIONS + 1
+
+
+def _stream_reader(phone, fid, since=None):
+    """Open the phone's event stream through the relay; (frames seen, the
+    response). A thread appends each frame as it comes."""
+    ticket = phone.ticket(phone.session.seal("open", fid, rc.pack({"since": since} if since else {})))
+    resp = NO_PROXY.open(f"{phone.url}/sse?t={ticket}", timeout=15)
+    frames: list = []
+
+    def read():
+        try:
+            for raw in resp:
+                line = raw.decode().strip()
+                if line.startswith("data: "):
+                    frames.append((time.monotonic(), json.loads(line[6:])))
+        except (OSError, ValueError):
+            pass
+    threading.Thread(target=read, daemon=True).start()
+    return frames, resp
+
+
+def test_a_removed_device_loses_its_open_event_stream(web):
+    """Removing a phone ends its open stream with `err auth` at once; no
+    event posted after reaches it."""
+    f = web["fe"]
+    phone = _phone(web, f.relay.new_pairing())
+    fid = rc.new_id()
+    frames, resp = _stream_reader(phone, fid)
+    deadline = time.time() + 10
+    while not frames and time.time() < deadline:
+        time.sleep(0.05)
+    assert frames and frames[0][1]["k"] == "sse"  # the stream is open at the bot
+    t0 = time.monotonic()
+    assert _call(f, "POST", "/api/relay/revoke", {"device": phone.session.device},
+                 _owner(f))[0] == 200
+    f.post("main", "posted after the phone was removed")
+    deadline = time.time() + 10
+    while not any(fr["k"] == "err" for _, fr in frames) and time.time() < deadline:
+        time.sleep(0.05)
+    after = [fr for t, fr in frames if t > t0]
+    assert {"id": fid, "k": "err", "e": "auth"} in after
+    assert not [fr for fr in after if fr["k"] == "sse"]
+    assert f.relay.status()["streams"] == 0
+    resp.close()
+
+
+def test_a_waiting_device_opens_no_stream(web):
+    f = web["fe"]
+    phone = _phone(web, f.relay.new_pairing(), approve=False)
+    fid = rc.new_id()
+    frames, resp = _stream_reader(phone, fid)
+    deadline = time.time() + 10
+    while not frames and time.time() < deadline:
+        time.sleep(0.05)
+    assert frames and frames[0][1]["k"] == "end"
+    assert rc.unpack(phone.session.open(frames[0][1]))[0] == {"s": 403}
+    resp.close()
+
+
+def test_one_frame_id_holds_one_stream(web):
+    """Seventy `open` frames with one id leave one stream at the bot, and
+    the owner's own requests still get a connection."""
+    f = web["fe"]
+    client = f.relay
+    phone = _phone(web, client.new_pairing())
+    sent: list = []
+    client._send = sent.append  # the relay's side swallows what the bot posts
+    fid = "a" * 32
+    for _ in range(70):
+        client._dispatch([phone.session.seal("open", fid, rc.pack({}))])
+    deadline = time.time() + 20  # a connect past the listen backlog waits for its retry
+    while time.time() < deadline:
+        live = [t for t in threading.enumerate() if t.name == f"relay-sse-{fid[:8]}"]
+        if len(live) <= 1:
+            break
+        time.sleep(0.2)
+    assert client.status()["streams"] == 1 and len(live) <= 1
+    assert _call(f, "GET", "/api/me", headers=_owner(f))[0] == 200
+    client._on_close(fid)
+
+
+def test_relay_origin_devices_are_off_unless_chat_json_opts_in(web, tmp_path):
+    """By default the bot makes no relay-origin pairing and lets no
+    relay-origin device in; the UI never makes one."""
+    f = web["fe"]
+    client = f.relay
+    assert client.relay_origin_access == "off"
+    with pytest.raises(rcl.RelayError, match="own origin"):
+        client.new_pairing(app_url=web["base"] + "/")
+    with pytest.raises(rcl.RelayError, match="off"):
+        client.new_pairing(app_url=web["base"] + "/", relay_origin=True)
+    # A relay-origin pairing written to the key file (the CLI with
+    # --relay-origin) is refused at the hello, and stays unspent.
+    payload = client.store.add_pairing(relay_url=client.relay_url, origin="relay")
+    phone = Phone(web["base"], payload)
+    status, answer = phone.hello()
+    assert answer == {"id": answer["id"], "k": "err", "e": "auth"}
+    assert client.store.pairing_psk(payload.pairing_id) == payload.psk
+    # One paired while the config let it in is refused once it does not.
+    client.relay_origin_access = "chat"
+    assert phone.hello()[1]["k"] == "welcome" and client.approve(phone.session.device)
+    assert phone.call("GET", "/api/me")[1]["s"] == 200
+    client.relay_origin_access = "off"
+    _, out = phone.call("GET", "/api/me")
+    assert out["k"] == "err" and out["e"] == "auth"
+    assert phone.hello(pairing=False)[1]["e"] == "auth"
+    # A web block without public_url: the UI pairs nothing.
+    g = _web(tmp_path / "nopublic", {"url": web["base"], "wait": 1}, public_url="")
+    g.start()
+    try:
+        deadline = time.time() + 10
+        while g.relay is not None and not g.relay.connected and time.time() < deadline:
+            time.sleep(0.05)
+        status, _h, out = _call(g, "POST", "/api/relay/pair", {}, _owner(g))
+        assert status == 409 and "public_url" in out["error"]
+    finally:
+        g.stop()
+
+
+def test_push_subscriptions_go_with_their_device(web):
+    """A subscription made through the relay, or naming the phone's device
+    on the tailnet, goes when the device is removed: from the UI at once,
+    from the CLI at the next push."""
+    from botcore.chat import web_push as wp
+    if not wp.AVAILABLE:
+        pytest.skip("web push needs the cryptography package")
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives import serialization
+
+    def sub(n):
+        key = ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
+            serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+        return {"endpoint": f"https://fcm.googleapis.com/fcm/send/made-up-{n}",
+                "keys": {"p256dh": wp.b64u(key), "auth": wp.b64u(os.urandom(16))}}
+    f = web["fe"]
+    one = _phone(web, f.relay.new_pairing())
+    two = _phone(web, f.relay.new_pairing())
+    assert one.call("POST", "/api/push/subscribe", json.dumps(sub(1)).encode())[1]["s"] == 200
+    assert _call(f, "POST", "/api/push/subscribe", {**sub(2), "device": one.session.device},
+                 _owner(f))[0] == 200
+    assert _call(f, "POST", "/api/push/subscribe", sub(3), _owner(f))[0] == 200
+    assert two.call("POST", "/api/push/subscribe", json.dumps(sub(4)).encode())[1]["s"] == 200
+    devices = {r["endpoint"][-1]: r["device"] for r in f.store.push_subscriptions()}
+    assert devices == {"1": one.session.device, "2": one.session.device, "3": None,
+                       "4": two.session.device}
+    assert _call(f, "POST", "/api/relay/revoke", {"device": one.session.device}, _owner(f))[0] == 200
+    assert sorted(r["endpoint"][-1] for r in f.store.push_subscriptions()) == ["3", "4"]
+    f.relay.store.revoke(two.session.device)  # as the CLI does, in the key file
+    f.push.prune()
+    assert [r["endpoint"][-1] for r in f.store.push_subscriptions()] == ["3"]
+
+
+def test_the_key_file_must_be_the_owners_alone(tmp_path):
+    """A key file in a directory another user may write (or inside the
+    resident's tree) leaves the relay off: there it could be deleted for a
+    new identity, or an old copy put back with a removed device in it."""
+    from botcore.chat.web_frontend import WebFrontend
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    os.chmod(shared, 0o777)
+    resident = tmp_path / "resident"
+    resident.mkdir(mode=0o700)
+    for i, (key_file, roots) in enumerate(((shared / "k.json", ()),
+                                           (resident / "k.json", (resident,)))):
+        f = WebFrontend({"port": 0, "public_url": OWN_URL,
+                         "relay": {"url": "https://relay.example.net", "key_file": str(key_file)}},
+                        store_path=tmp_path / f"priv{i}" / "webchat.sqlite",
+                        webui_dir=tmp_path / "webui", trusted_config=True, untrusted_roots=roots)
+        f.start()
+        try:
+            assert f.relay is None and not key_file.exists()
+        finally:
+            f.stop()

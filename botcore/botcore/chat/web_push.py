@@ -341,12 +341,15 @@ class Pusher:
 
     def __init__(self, store: Any, key_file: str | Path, *,
                  subject: str = DEFAULT_SUBJECT,
-                 pair_hash: Any = None) -> None:
+                 pair_hash: Any = None, devices: Any = None) -> None:
         self.store = store
         self.vapid = Vapid(key_file, subject)
         # The hash of the pairing token now (a callable; "" when there is
         # none): a change drops every subscription (prune).
         self.pair_hash = pair_hash
+        # The relay devices still paired and approved (a callable; None when
+        # no relay runs): a subscription that names another one is dropped.
+        self.devices = devices
         self.max_age_s = SUBSCRIPTION_MAX_AGE_S
         # The check every endpoint passes, at subscription and at send.
         self.allow = endpoint_allowed
@@ -474,14 +477,17 @@ class Pusher:
 
     def prune(self, now: float | None = None) -> int:
         """Drop the subscriptions that may no longer be the owner's: all of
-        them when the pairing token changed since they were made, and each
-        one the app has not posted again for max_age_s. The number dropped;
-        never raises."""
+        them when the pairing token changed since they were made, each one
+        of a relay device that was removed, and each one the app has not
+        posted again for max_age_s. The number dropped; never raises."""
         now = time.time() if now is None else now
         dropped = 0
         try:
             if callable(self.pair_hash):
                 dropped += self.store.push_check_token(self.pair_hash())
+            keep = self.devices() if callable(self.devices) else None
+            if keep is not None:
+                dropped += self.store.push_drop_devices(set(keep))
             dropped += self.store.push_drop_stale(now - self.max_age_s)
         except Exception:
             log.exception("web push: the subscriptions could not be pruned")

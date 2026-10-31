@@ -35,6 +35,7 @@ import re
 import secrets
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 from urllib.parse import urlsplit
@@ -61,9 +62,11 @@ PAD = 256
 # (concurrent requests reach the other side in any order).
 WINDOW = 4096
 MAX_COUNTER = 1 << 48
-# How far a hello's clock may be from the bot's, in seconds; also how long
-# the bot remembers a hello's ephemeral key to refuse a replay.
+# How far a hello's clock may be from the bot's, in seconds. The bot
+# remembers a hello's ephemeral key for twice that: a hello stamped
+# HELLO_SKEW ahead passes the clock check until 2 * HELLO_SKEW after it came.
 HELLO_SKEW = 600
+HELLO_CACHE_MAX = 50000
 PAIRING_TTL = 600
 
 # Frame kinds. Sealed kinds carry ciphertext under the session keys.
@@ -339,7 +342,10 @@ class ReplayWindow:
     def mark(self, n: int) -> None:
         if n > self.top:
             shift = n - self.top
-            self.bits = ((self.bits << shift) | 1) & ((1 << self.size) - 1)
+            # A jump past the window starts a new bitmap: shifting first
+            # would build an integer of `shift` bits (gigabytes for a large n).
+            self.bits = 1 if shift >= self.size else \
+                ((self.bits << shift) | 1) & ((1 << self.size) - 1)
             self.top = n
         else:
             self.bits |= 1 << (self.top - n)
@@ -428,21 +434,25 @@ def error_frame(frame_id: str, code: str) -> dict:
 # ── the handshake ─────────────────────────────────────────────────────
 
 class HelloCache:
-    """Ephemeral keys of the hellos taken in the last HELLO_SKEW seconds:
-    a replayed hello is refused, and an older one fails the clock check."""
+    """Ephemeral keys of the hellos taken in the last 2 * HELLO_SKEW
+    seconds: a replayed hello is refused, and an older one fails the clock
+    check. Full (`limit` keys), it refuses every new hello until keys age
+    out, rather than forget one that could then be replayed."""
 
-    def __init__(self, ttl: float = HELLO_SKEW) -> None:
+    def __init__(self, ttl: float = 2 * HELLO_SKEW, limit: int = HELLO_CACHE_MAX) -> None:
         self.ttl = ttl
-        self._seen: dict[bytes, float] = {}
+        self.limit = limit
+        self._seen: "OrderedDict[bytes, float]" = OrderedDict()
         self._lock = threading.Lock()
 
     def seen(self, key: bytes, now: Optional[float] = None) -> bool:
-        """True when `key` was taken before; records it otherwise."""
+        """True when `key` was taken before (or the cache is full); records
+        it otherwise."""
         now = time.time() if now is None else now
         with self._lock:
-            for k in [k for k, t in self._seen.items() if now - t > self.ttl]:
-                del self._seen[k]
-            if key in self._seen:
+            while self._seen and now - next(iter(self._seen.values())) > self.ttl:
+                self._seen.popitem(last=False)
+            if key in self._seen or len(self._seen) >= self.limit:
                 return True
             self._seen[key] = now
             return False
@@ -463,12 +473,22 @@ class PendingHello:
 @dataclass
 class Accepted:
     """A hello that verified. The caller checks the device (registered, or
-    pairing with `pairing_id`) before it sends `welcome`."""
+    pairing with `pairing_id`) before it sends `welcome`. `code` is the
+    hello's pairing code (`pairing_code`), which the phone shows too."""
     session: Session
     welcome: dict
     device_public: bytes
     pairing_id: Optional[str]
     info: dict
+    code: str = ""
+
+
+def pairing_code(h: bytes) -> str:
+    """Six digits from a hello's transcript hash (after c_p). The phone and
+    the bot each compute them; the owner approves a new device on the
+    tailnet only when the code there matches the one on the phone."""
+    n = int.from_bytes(_h(PROTOCOL, b" code\x00", h)[:4], "big") % 1_000_000
+    return f"{n:06d}"
 
 
 def _header(pairing_id: Optional[str]) -> bytes:
@@ -572,13 +592,14 @@ def bot_accept(identity: BotIdentity, frame: dict, *,
     try:
         info = json.loads(body, parse_constant=_no_constant)
         t = float(info["t"])
-    except (ValueError, KeyError, TypeError) as exc:
+    except (ValueError, KeyError, TypeError, OverflowError) as exc:
         raise HandshakeError("bad hello payload") from exc
     now = time.time() if now is None else now
     if not math.isfinite(t) or abs(now - t) > HELLO_SKEW:
         raise HandshakeError("hello clock out of range")
     if seen is not None and seen(e_pub):
         raise HandshakeError("hello replayed")
+    code = pairing_code(h)
     eb = X25519PrivateKey.generate()
     eb_priv, eb_pub = _raw_private(eb), _raw_public(eb)
     ee = _dh(eb_priv, e_pub)
@@ -588,7 +609,7 @@ def bot_accept(identity: BotIdentity, frame: dict, *,
     session = Session(sid, k_b2c, k_c2b, "bot", device=device_id_for(s_pub))
     n, ct = session._seal_raw("welcome", fid, pack({"device": session.device, "t": int(now)}))
     welcome = {"id": fid, "k": "welcome", "sid": sid, "n": n, "c": b64e(eb_pub + ct)}
-    return Accepted(session, welcome, s_pub, pid, info if isinstance(info, dict) else {})
+    return Accepted(session, welcome, s_pub, pid, info if isinstance(info, dict) else {}, code)
 
 
 def client_finish(pending: PendingHello, frame: dict) -> Session:
