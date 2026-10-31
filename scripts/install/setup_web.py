@@ -139,6 +139,13 @@ def next_steps(ctx: dict, platform: str = sys.platform, env: dict | None = None)
         steps.append({"title": "Outlook sign-in",
                       "text": "Prints a link and a code for any browser.",
                       "commands": ["python3 preprocessor/graph_client.py"]})
+    elif not (env or {}).get("GRAPH_CLIENT_ID") and Q.published_graph_client_id():
+        steps.append({"title": "Outlook sign-in (no registration)",
+                      "text": "Signs in through the Tacitus app: a browser on this machine, or "
+                              "a code for any browser. Your institution's IT consents to the "
+                              "app once (docs/it-request.md, 'No registration: consent to the "
+                              "Tacitus app').",
+                      "commands": ["python3 preprocessor/graph_client.py"]})
     else:
         steps.append({"title": "Outlook sign-in",
                       "text": "No app registration yet: docs/it-request.md asks IT for one, and "
@@ -412,9 +419,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if method == "GET" and route == "phases":
             with srv.lock:
                 ctx = srv.context()
-                # The Outlook method picks the sign-in step; the file is
-                # the resident's later, so only that key is read.
-                env = owner_trust.read_env_values(srv.ea_dir / ".env", ("GRAPH_AUTH_METHOD",))
+                # The Outlook method and client id pick the sign-in step;
+                # the file is the resident's later, so only those keys are read.
+                env = owner_trust.read_env_values(srv.ea_dir / ".env",
+                                                  ("GRAPH_AUTH_METHOD", "GRAPH_CLIENT_ID"))
                 self._json(200, {"phases": Q.describe(ctx), "context": self._public(ctx),
                                  "finish": next_steps(ctx, env=env)})
             return

@@ -473,7 +473,27 @@ def context(chat: str | None = None, load: bool = True, tz=None) -> dict:
         "detected_timezone": tz or _once(lambda: detect_system_timezone()),
         "private_dir": str(private_dir()),
         "vips": read_vips(),
+        "graph_method": recorded_graph_method(),
     }
+
+
+def recorded_graph_method() -> str:
+    """The Graph method ~/.ea/.env records for the user's own registration
+    (GRAPH_CLIENT_ID and GRAPH_AUTH_METHOD both set), else "". With the
+    project's published app on offer, it keeps an existing registration's
+    method as the auth phase's default."""
+    env = {}
+    try:
+        for line in (EA_DIR / ".env").read_text().splitlines():
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip()
+    except OSError:
+        return ""
+    method = env.get("GRAPH_AUTH_METHOD", "")
+    if env.get("GRAPH_CLIENT_ID") and method in ("confidential", "device_code", "interactive"):
+        return method
+    return ""
 
 
 def print_intro(pid: str, ctx: dict) -> None:
@@ -779,6 +799,17 @@ def write_style(values: dict, ctx: dict | None = None) -> dict:
     return style
 
 
+def published_graph_env(profile: str | None) -> dict:
+    """The ~/.ea/.env keys for the project's published Graph app: the
+    user's own client id, method and tenant cleared (an earlier
+    registration's values would win over the app), and GRAPH_SCOPES set to
+    the least the profile needs (preprocessor/published_apps.py)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
+    import published_apps
+    return {"GRAPH_AUTH_METHOD": "", "GRAPH_CLIENT_ID": "", "GRAPH_AUTHORITY": "",
+            "GRAPH_SCOPES": " ".join(published_apps.graph_scopes(profile))}
+
+
 def graph_sign_in(method: str) -> None:
     """The Microsoft Graph sign-in, in this process (the terminal only)."""
     print("\n  Starting Graph API authentication...")
@@ -814,7 +845,9 @@ def graph_sign_in(method: str) -> None:
 def google_sign_in() -> None:
     """The Google Calendar sign-in, in this process (the terminal only)."""
     secret_file = AUTH_DIR / "google_client_secret.json"
-    if not secret_file.exists():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
+    import published_apps
+    if not published_apps.google_client_source(secret_file):
         print(f"\n  Place your Google OAuth2 client secret at:")
         print(f"    {secret_file}")
         print("  Then re-run: python3 scripts/install/user_init.py --phase auth")
@@ -888,7 +921,12 @@ def write_auth(values: dict, ctx: dict, sign_in: bool = False) -> None:
         print("  Skipped. You can authenticate later via:")
         print("    python3 preprocessor/graph_client.py")
     else:
-        env_data = {"GRAPH_AUTH_METHOD": method, "GRAPH_CLIENT_ID": values["graph-client-id"]}
+        if method == "published":
+            # The project's app (docs/published-oauth-apps.md): no client id,
+            # method or tenant of the user's own, and the profile's scopes.
+            env_data = published_graph_env(ctx.get("profile"))
+        else:
+            env_data = {"GRAPH_AUTH_METHOD": method, "GRAPH_CLIENT_ID": values["graph-client-id"]}
         tenant = values.get("graph-tenant-id") or ""
         if tenant:
             env_data["GRAPH_AUTHORITY"] = f"https://login.microsoftonline.com/{tenant}"

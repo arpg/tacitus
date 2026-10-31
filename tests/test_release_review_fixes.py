@@ -394,6 +394,7 @@ def test_the_graph_sign_in_command_runs_with_no_terminal(monkeypatch):
     monkeypatch.setattr(gc, "_source_token", lambda: None)
     monkeypatch.setattr(gc, "_use_confidential", lambda: False)
     monkeypatch.setattr(gc, "_interactive_seed", lambda *a, **k: "signed-in")
+    monkeypatch.setattr(gc, "_published_seed", lambda *a, **k: "signed-in")
     monkeypatch.setattr(gc, "_SIGN_IN_REQUESTED", False)
     with pytest.raises(RuntimeError, match="no refresh token"):
         gc.authenticate()

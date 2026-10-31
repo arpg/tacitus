@@ -92,6 +92,10 @@ def test_align_returns_full_urls():
 # --------------------------------------------------------------------------
 
 def _reload_with_env(**env):
+    # These are the user's own registration (Options A and B): with no
+    # GRAPH_CLIENT_ID the project's published app, once registered, would
+    # take its place (tests/test_published_oauth.py).
+    env.setdefault("GRAPH_CLIENT_ID", "00000000-1111-2222-3333-444444444444")
     saved = {k: os.environ.get(k) for k in env}
     try:
         for k, v in env.items():

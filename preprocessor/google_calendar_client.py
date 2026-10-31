@@ -42,8 +42,10 @@ from googleapiclient.errors import HttpError
 
 try:
     import owner_trust as _owner_trust
+    import published_apps as _published
 except ModuleNotFoundError:  # imported as preprocessor.<mod>
     from preprocessor import owner_trust as _owner_trust
+    from preprocessor import published_apps as _published
 
 
 # -------------------------------------------------------------------
@@ -147,7 +149,16 @@ def _save_token(token_file: Path, creds: Credentials) -> None:
     token_file.write_text(creds.to_json())
 
 
+def _client_source() -> str:
+    """The client a new sign-in uses: "file" (the user's own client secret,
+    which always wins), "published" (the project's desktop client,
+    docs/published-oauth-apps.md) or "" (neither)."""
+    return _published.google_client_source(CLIENT_SECRET_FILE)
+
+
 def _client_flow() -> InstalledAppFlow:
+    if _client_source() == "published":
+        return InstalledAppFlow.from_client_config(_published.google_client_config(), SCOPES)
     if _checked_token_io():
         return InstalledAppFlow.from_client_config(_load_json_file(CLIENT_SECRET_FILE), SCOPES)
     return InstalledAppFlow.from_client_secrets_file(str(CLIENT_SECRET_FILE), SCOPES)
@@ -198,7 +209,7 @@ def authenticate_account(email: str, interactive: bool = True) -> Optional[Crede
         print(f"No valid token for {email} and not in interactive mode.", file=sys.stderr)
         return None
 
-    if not CLIENT_SECRET_FILE.exists():
+    if not _client_source():
         print(
             f"ERROR: Google client secret not found at {CLIENT_SECRET_FILE}\n"
             f"Download it from Google Cloud Console → APIs & Services → Credentials\n"
@@ -1163,7 +1174,7 @@ def setup_all_accounts():
         print("Add entries with type 'google_calendar_mcp' to the calendars section.")
         return
 
-    if not CLIENT_SECRET_FILE.exists():
+    if not _client_source():
         print(f"\nERROR: Client secret not found at {CLIENT_SECRET_FILE}")
         print("\nSetup steps:")
         print("1. Go to https://console.cloud.google.com/")

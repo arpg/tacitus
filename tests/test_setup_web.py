@@ -354,7 +354,10 @@ def test_the_answers_view_is_the_update_view(start, tmp_path):
     values = c.call("GET", "/api/answers")[1]["values"]
     assert values["full-name"] == "" and values["university"] == ""
     assert values["timezone"] == "America/Denver" and values["profile"] == "email"
-    assert values["graph-auth-method"] == "confidential" and values["default-duration-minutes"] == 30
+    # The first method is the default: the project's published app once it
+    # is registered (docs/published-oauth-apps.md), else the confidential client.
+    first = "published" if setup_web.Q.published_graph_client_id() else "confidential"
+    assert values["graph-auth-method"] == first and values["default-duration-minutes"] == 30
     assert c.post("identity", {"full-name": "Pat Example", "work-email": "pat@uni.example",
                                "university": "Uni Example"})[0] == 200
     values = c.call("GET", "/api/answers")[1]["values"]

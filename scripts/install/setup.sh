@@ -205,13 +205,16 @@ echo "=== Microsoft Graph API Authentication ==="
 # signs in (docs/SETUP.md 'Microsoft Graph app registration').
 GRAPH_SIGNIN="python3 $SCRIPT_DIR/preprocessor/graph_client.py"
 [[ "${GRAPH_AUTH_METHOD:-}" == confidential ]] && GRAPH_SIGNIN="$GRAPH_SIGNIN --align --write"
+# The project's published app signs in an install with no registration of
+# its own; empty until the maintainer registers it (docs/published-oauth-apps.md).
+PUBLISHED_GRAPH_ID="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import published_apps; print(published_apps.PUBLISHED_GRAPH_CLIENT_ID)' "$SCRIPT_DIR/preprocessor" 2>/dev/null || true)"
 if [[ "$NONINTERACTIVE" == 1 ]]; then
     # Never a sign-in here: with no token it would stop at a browser or a
     # prompt that nobody can answer.
     if [[ -f "$EA_DIR/auth/msal_token_cache.json" ]]; then
         echo "A Graph token is already in $EA_DIR/auth; the sign-in is skipped."
         echo "  Check it with: python3 $SCRIPT_DIR/preprocessor/graph_actions.py calendar-view --days 1"
-    elif [[ -z "${GRAPH_CLIENT_ID:-}" ]]; then
+    elif [[ -z "${GRAPH_CLIENT_ID:-}" && -z "$PUBLISHED_GRAPH_ID" ]]; then
         echo "No Graph sign-in yet, and no GRAPH_CLIENT_ID in $EA_DIR/.env: write the app"
         echo "registration first (python3 $SCRIPT_DIR/scripts/install/user_init.py --phase auth), then sign in with:"
         echo "  $GRAPH_SIGNIN"
