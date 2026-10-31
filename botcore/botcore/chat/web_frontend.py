@@ -71,8 +71,8 @@ A `relay` block in the web block starts the relay client
 a phone off the tailnet reaches this server through a public relay that
 sees only ciphertext. The owner manages it from the tailnet under
 `/api/relay/`; a relayed request (`X-Tacitus-Relay`) never reaches those
-routes or `/api/pair`, and one marked `X-Tacitus-Relay-Cards: deny`
-never confirms a card.
+routes or `/api/pair`, and `/api/me` tells the app whether its requests
+may confirm a card (`X-Tacitus-Relay-Cards`).
 """
 from __future__ import annotations
 

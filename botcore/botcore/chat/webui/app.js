@@ -5,6 +5,10 @@
  * channel and the open thread, and follows the server's event stream.
  * Text from the server reaches the page only as text nodes: the markdown
  * renderer builds every element itself and never parses HTML.
+ *
+ * Off the tailnet a paired phone reaches the bot through the relay
+ * (docs/webchat-relay.md): the same calls, sealed end to end with
+ * WebCrypto (X25519, HKDF, AES-GCM), behind the one transport interface.
  */
 'use strict';
 
@@ -97,20 +101,43 @@ function h(tag, attrs, ...kids) {
   return el;
 }
 
-function api(path) { return BASE + '/api' + path; }
+// Two ways to the bot behind one interface (docs/webchat-relay.md, For the
+// web app): api(method, path, body) answers a Response, and events(since,
+// sink) opens the event stream and calls sink.open(), sink.event(type, id,
+// data) and sink.down(closed). DIRECT is fetch and EventSource on the base
+// path; relayTransport (below) seals each call for the bot.
+const apiUrl = (path) => BASE + '/api' + path;
+
+const DIRECT = {
+  relay: false,
+  api(method, path, body) {
+    const opt = { method, credentials: 'same-origin', headers: { Accept: 'application/json' } };
+    if (body instanceof FormData) opt.body = body;
+    else if (body !== undefined) {
+      opt.body = JSON.stringify(body);
+      opt.headers['Content-Type'] = 'application/json';
+    }
+    return fetch(apiUrl(path), opt);
+  },
+  events(since, sink) {
+    const es = new EventSource(apiUrl('/events') + (since ? `?since=${since}` : ''));
+    EVENT_TYPES.forEach((t) => es.addEventListener(t, (ev) => sink.event(t, ev.lastEventId, ev.data)));
+    es.addEventListener('open', () => sink.open());
+    // A dropped connection reconnects by itself with Last-Event-ID; a
+    // refused one (an HTTP error) is closed, so the app reconnects.
+    es.addEventListener('error', () => sink.down(es.readyState === EventSource.CLOSED));
+    return { close: () => es.close() };
+  },
+};
+let T = DIRECT;
+let RELAY = null; // the relay transport of this browser's pairing, once made
 
 async function call(method, path, body) {
-  const opt = { method, credentials: 'same-origin', headers: { Accept: 'application/json' } };
-  if (body instanceof FormData) opt.body = body;
-  else if (body !== undefined) {
-    opt.body = JSON.stringify(body);
-    opt.headers['Content-Type'] = 'application/json';
-  }
-  const res = await fetch(api(path), opt);
+  const res = await T.api(method, path, body);
   let data = null;
   try { data = await res.json(); } catch { /* an empty or non-JSON body */ }
-  if (res.status === 401) { showPair(); throw new Error('This browser is not paired.'); }
-  if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+  if (res.status === 401 && !T.relay) { showPair(); throw new Error('This browser is not paired.'); }
+  if (!res.ok) throw Object.assign(new Error((data && data.error) || `HTTP ${res.status}`), { status: res.status });
   return data;
 }
 
@@ -373,16 +400,38 @@ function fileUrl(f) {
 
 function renderFile(f) {
   const url = fileUrl(f);
+  const viaRelay = Boolean(T.relay && f.id); // the bytes come through the transport
+  const href = viaRelay ? '#' : url;
   const box = h('div', { class: 'file' });
   if (url && /^image\//.test(f.mimetype || '')) {
-    box.append(h('a', { href: url, target: '_blank', rel: 'noopener' },
-      h('img', { src: url, alt: f.name || 'image', loading: 'lazy' })));
+    box.append(h('a', { href, target: '_blank', rel: 'noopener' },
+      h('img', { src: viaRelay ? null : url, alt: f.name || 'image', loading: 'lazy' })));
   }
   const label = [emojiNode('paperclip'), ' ', h('span', { class: 'file-name' }, f.name || 'file'),
     f.size != null ? h('span', { class: 'size' }, size(f.size)) : null];
-  box.append(url ? h('a', { class: 'file-link', href: url, download: f.name || true }, label)
+  box.append(url ? h('a', { class: 'file-link', href, download: f.name || true }, label)
     : h('span', { class: 'file-link' }, label));
+  if (viaRelay) relayFile(f, box);
   return box;
+}
+
+// Through the relay a stored file has no address the phone can reach: an
+// image shows from a blob, and a link takes the blob's address on a tap.
+function relayFile(f, box) {
+  let got = null;
+  const blob = () => (got ||= T.api('GET', `/files/${enc(f.id)}`).then(async (res) => {
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return URL.createObjectURL(await res.blob());
+  }).catch((e) => { got = null; throw e; }));
+  const img = box.querySelector('img');
+  if (img) blob().then((u) => { img.src = u; img.parentElement.href = u; }).catch(() => {});
+  for (const a of box.querySelectorAll('a')) {
+    a.addEventListener('click', async (e) => {
+      if (a.href.startsWith('blob:')) return;
+      e.preventDefault();
+      try { a.href = await blob(); a.click(); } catch (err) { toast(`Could not fetch the file: ${err.message}`); }
+    });
+  }
 }
 
 const norm = (w) => String(w || '').toLowerCase().split(/\s+/).filter(Boolean).join(' ');
@@ -416,11 +465,13 @@ async function act(msg, body, box) {
     await call('POST', `/cards/${enc(msg.channel)}/${enc(msg.id)}/actions`, body);
     note.textContent = 'Sent. The card updates when the bot answers.';
   } catch (e) {
-    note.textContent = `Not sent: ${e.message}`;
+    note.textContent = e.status === 403 && T.relay ? NO_CARDS : `Not sent: ${e.message}`;
   } finally {
     controls.forEach((c) => { c.disabled = false; });
   }
 }
+
+const NO_CARDS = 'Approve this on the tailnet: this phone does not press card buttons through the relay.';
 
 function renderCard(msg) {
   const c = msg.card || {};
@@ -466,7 +517,11 @@ function renderCard(msg) {
     row.append(btn);
   }
   if (row.firstChild) box.append(row);
-  box.append(h('div', { class: 'card-note', 'aria-live': 'polite' }));
+  // A phone the bot does not let confirm cards (paired on the relay's own
+  // origin) sees the buttons but cannot press them.
+  const locked = Boolean(row.firstChild && S.me && S.me.card_actions === false);
+  if (locked) row.querySelectorAll('button, select').forEach((c) => { c.disabled = true; });
+  box.append(h('div', { class: 'card-note', 'aria-live': 'polite' }, locked ? NO_CARDS : null));
   if (c.footer) box.append(cardText(c.footer, 'card-footer'));
   return box;
 }
@@ -534,7 +589,10 @@ function renderChannels() {
 function renderThreads() {
   const box = $('thread-list');
   const th = S.threads.get(S.channel);
-  if (!th) { box.replaceChildren(h('p', { class: 'empty' }, 'Loading...')); return; }
+  if (!th || (th.loading && !th.list.length)) {
+    box.replaceChildren(h('p', { class: 'empty' }, 'Loading...'));
+    return;
+  }
   const sorted = [...th.list].sort((a, b) => (b.last_at || b.posted_at || 0) - (a.last_at || a.posted_at || 0));
   box.replaceChildren(...sorted.map((p) => {
     const tk = threadOf(p);
@@ -555,7 +613,11 @@ function renderThreads() {
 function remember(m) { S.known.add(tkey(m.channel, m.id)); }
 
 async function loadThreads(ch, older) {
-  const th = S.threads.get(ch) || { list: [], more: false };
+  // A channel read for the first time gets its list at once, marked as
+  // loading: a message the stream brings during the read lands in it, and
+  // the merge below keeps it (the read may predate it).
+  if (!S.threads.has(ch)) S.threads.set(ch, { list: [], more: false, loading: true });
+  const th = S.threads.get(ch);
   const oldest = older ? Math.min(...th.list.map((p) => p.seq || Infinity)) : 0;
   let q = `?limit=${PAGE}`;
   if (older && Number.isFinite(oldest)) q += `&before=${oldest}`;
@@ -570,7 +632,7 @@ async function loadThreads(ch, older) {
     S.threads.set(ch, { list, more: rows.length >= PAGE });
   } catch (e) {
     toast(`Could not load threads: ${e.message}`);
-    if (!S.threads.has(ch)) S.threads.set(ch, th);
+    th.loading = false;
   }
   if (ch === S.channel) renderThreads();
 }
@@ -674,38 +736,44 @@ function setLive(state) {
   el.title = { on: 'Live', off: 'Reconnecting', wait: 'Connecting' }[state];
 }
 
+// The event stream on the transport in use; `ready` settles once it opens.
+// A stream that ends for good reconnects from here, with ?since= (or the
+// relay's `open` frame) naming the last event seen.
 function connect() {
   if (S.es) S.es.close();
-  const es = new EventSource(api('/events') + (S.lastSeq ? `?since=${S.lastSeq}` : ''));
-  S.es = es;
   setLive('wait');
-  EVENT_TYPES.forEach((t) => es.addEventListener(t, (ev) => onEvent(t, ev)));
-  es.addEventListener('open', () => { S.retry = 0; setLive('on'); });
-  es.addEventListener('error', () => {
-    setLive('off');
-    // A dropped connection reconnects by itself with Last-Event-ID; a
-    // refused one (an HTTP error) is closed, so it reconnects from here.
-    if (es.readyState === EventSource.CLOSED) setTimeout(() => reconnect(es), Math.min(30000, 1000 * 2 ** S.retry++));
+  let opened;
+  const handle = { ready: new Promise((resolve) => { opened = resolve; }) };
+  const es = T.events(S.lastSeq, {
+    open: () => { S.retry = 0; setLive('on'); opened(); },
+    event: onEvent,
+    down: (closed) => {
+      setLive('off');
+      if (closed) setTimeout(() => reconnect(handle), Math.min(30000, 1000 * 2 ** S.retry++));
+    },
   });
-  return es;
+  handle.close = es.close;
+  S.es = handle;
+  return handle;
 }
 
-async function reconnect(es) {
-  if (S.es !== es) return;
+async function reconnect(handle) {
+  if (S.es !== handle) return;
   try {
+    await pickTransport();
     await call('GET', '/me');
     connect();
   } catch {
-    if ($('pair').hidden) setTimeout(() => reconnect(es), Math.min(30000, 1000 * 2 ** S.retry++));
+    if ($('pair').hidden) setTimeout(() => reconnect(handle), Math.min(30000, 1000 * 2 ** S.retry++));
   }
 }
 
-function onEvent(type, ev) {
-  const seq = Number(ev.lastEventId) || 0;
+function onEvent(type, id, raw) {
+  const seq = Number(id) || 0;
   if (seq && seq <= S.lastSeq) return;
   if (seq) S.lastSeq = seq;
   let data;
-  try { data = JSON.parse(ev.data); } catch { return; }
+  try { data = JSON.parse(raw); } catch { return; }
   if (!data || typeof data !== 'object') return;
   if (S.ready) apply(type, data); else S.queue.push([type, data]);
 }
@@ -838,6 +906,10 @@ function send() {
 
 function upload(file) {
   const text = $('text').value;
+  if (T.relay && file.size > RELAY_MAX_BODY) {
+    note('Through the relay a file can be at most 10 MB. Send larger ones on the tailnet.');
+    return;
+  }
   note(`Uploading ${file.name} (${size(file.size)})...`);
   submit((ch, tk) => {
     const fd = new FormData();
@@ -866,6 +938,7 @@ async function initPush() {
   const box = $('notify');
   if (!S.me.push || !('serviceWorker' in navigator)) return;
   $('drawer-foot').hidden = false;
+  $('notify-row').hidden = false;
   $('notify-hint').hidden = navigator.standalone !== false;
   box.disabled = true;
   if (!('PushManager' in window) || !('Notification' in window)) return;
@@ -915,6 +988,438 @@ async function toggleNotify() {
   }
 }
 
+/* -- The relay: crypto (relay_crypto.py is the reference) ------------ */
+
+// Byte for byte as relay_crypto.py, which tests/fixtures/relay_vectors.json
+// pins: X25519 for every agreement, HKDF-SHA256, AES-256-GCM, a 256-byte
+// padding, and frames bound to their session, kind and id.
+const TE = new TextEncoder();
+const TD = new TextDecoder();
+const PROTO = 'tacitus-relay/1';
+const RELAY_PAD = 256;
+const RELAY_WINDOW = 4096;
+const RELAY_MAX_BODY = 10 * 1024 * 1024;
+const ZERO_NONCE = new Uint8Array(12);
+const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '[::1]'];
+
+function b64e(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function b64d(text) {
+  if (typeof text !== 'string' || !/^[A-Za-z0-9_-]*$/.test(text)) throw new Error('not base64url');
+  const s = atob(text.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (text.length % 4)) % 4));
+  return Uint8Array.from(s, (c) => c.charCodeAt(0));
+}
+
+function cat(...parts) {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  parts.reduce((at, p) => { out.set(p, at); return at + p.length; }, 0);
+  return out;
+}
+
+const bytesOf = (buf) => new Uint8Array(buf);
+const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+const unhex = (s) => Uint8Array.from(String(s).match(/../g) || [], (x) => parseInt(x, 16));
+const newId = () => hex(crypto.getRandomValues(new Uint8Array(16)));
+const u32 = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(0);
+const frameAad = (sid, kind, id) => TE.encode(`${PROTO}|${sid}|${kind}|${id}`);
+
+const sha256 = async (...parts) => bytesOf(await crypto.subtle.digest('SHA-256', cat(...parts)));
+
+async function hkdf(ikm, salt, info, length = 32) {
+  const key = await crypto.subtle.importKey('raw', ikm, 'HKDF', false, ['deriveBits']);
+  return bytesOf(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info: TE.encode(info) },
+    key, length * 8));
+}
+
+async function dh(priv, pub) {
+  const key = await crypto.subtle.importKey('raw', pub, { name: 'X25519' }, true, []);
+  return bytesOf(await crypto.subtle.deriveBits({ name: 'X25519', public: key }, priv, 256));
+}
+
+const gcmKey = (raw) => crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+const gcm = async (key, iv, data, aad) => bytesOf(await crypto.subtle.encrypt(
+  { name: 'AES-GCM', iv, additionalData: aad, tagLength: 128 }, key, data));
+const ungcm = async (key, iv, data, aad) => bytesOf(await crypto.subtle.decrypt(
+  { name: 'AES-GCM', iv, additionalData: aad, tagLength: 128 }, key, data));
+
+// A sealed plaintext: its length in 4 bytes, the data, then zeros up to a
+// multiple of 256 bytes, so the relay sees sizes only that coarsely.
+function pad(data) {
+  const out = new Uint8Array(Math.ceil((data.length + 4) / RELAY_PAD) * RELAY_PAD);
+  new DataView(out.buffer).setUint32(0, data.length);
+  out.set(data, 4);
+  return out;
+}
+
+function unpad(data) {
+  if (data.length < 4 || u32(data) > data.length - 4) throw new Error('bad padding');
+  return data.subarray(4, 4 + u32(data));
+}
+
+// A frame's plaintext: a 4-byte length, a JSON head, then the raw body.
+function pack(meta, body = new Uint8Array(0)) {
+  const head = TE.encode(JSON.stringify(meta));
+  const out = cat(new Uint8Array(4), head, body);
+  new DataView(out.buffer).setUint32(0, head.length);
+  return out;
+}
+
+function unpack(data) {
+  if (data.length < 4 || u32(data) > data.length - 4) throw new Error('bad plaintext');
+  const meta = JSON.parse(TD.decode(data.subarray(4, 4 + u32(data))));
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) throw new Error('bad plaintext');
+  return [meta, data.subarray(4 + u32(data))];
+}
+
+// A direction tag and an 8-byte counter.
+function nonce(dir, n) {
+  const out = new Uint8Array(12);
+  out.set(TE.encode(dir));
+  const v = new DataView(out.buffer);
+  v.setUint32(4, Math.floor(n / 2 ** 32));
+  v.setUint32(8, n % 2 ** 32);
+  return out;
+}
+
+async function newKeys() {
+  const pair = await crypto.subtle.generateKey({ name: 'X25519' }, false, ['deriveBits']);
+  return { priv: pair.privateKey, pub: bytesOf(await crypto.subtle.exportKey('raw', pair.publicKey)) };
+}
+
+// The phone's hello (docs/webchat-relay.md, Handshake and sessions): its
+// ephemeral key in the clear, its static key sealed under es, then the
+// clock and its name sealed under es and ss; when it pairs, the pairing
+// secret goes into both keys. `fixed` (the test vectors) gives the
+// ephemeral pair, the payload and the frame id.
+async function relayHello(rec, pairing, fixed = {}) {
+  const eph = fixed.eph || await newKeys();
+  const psk = pairing ? pairing.psk : new Uint8Array(0);
+  const header = pairing ? cat(Uint8Array.of(1, 1), unhex(pairing.id)) : Uint8Array.of(1, 0);
+  const zero = Uint8Array.of(0);
+  let h = await sha256(TE.encode(PROTO), zero, TE.encode(rec.install), zero, rec.botPublic, header, eph.pub);
+  const es = await dh(eph.priv, rec.botPublic);
+  const cS = await gcm(await gcmKey(await hkdf(cat(es, psk), h, `${PROTO} static`)), ZERO_NONCE, rec.pub, h);
+  h = await sha256(h, cS);
+  const ss = await dh(rec.priv, rec.botPublic);
+  const payload = fixed.payload
+    || TE.encode(JSON.stringify({ name: deviceName(), t: Math.floor(Date.now() / 1000) }));
+  const cP = await gcm(await gcmKey(await hkdf(cat(es, ss, psk), h, `${PROTO} hello`)), ZERO_NONCE, pad(payload), h);
+  h = await sha256(h, cP);
+  const id = fixed.id || newId();
+  return { frame: { id, k: 'hello', c: b64e(cat(header, eph.pub, cS, cP)) }, pending: { id, eph, rec, psk, es, ss, h } };
+}
+
+// The keys a welcome's ephemeral key gives: c2b, b2c and the session id.
+async function sessionKeys(p, eb) {
+  const ee = await dh(p.eph.priv, eb);
+  const se = await dh(p.rec.priv, eb);
+  const okm = await hkdf(cat(p.es, p.ss, ee, se, p.psk), await sha256(p.h, eb), `${PROTO} session`, 80);
+  return { c2b: okm.slice(0, 32), b2c: okm.slice(32, 64), sid: hex(okm.slice(64, 80)) };
+}
+
+// Only the holder of the bot's private key makes a welcome that opens here.
+async function relayFinish(p, frame) {
+  if (!frame || frame.k !== 'welcome' || frame.id !== p.id) throw new Error('not the welcome for this hello');
+  const blob = b64d(frame.c);
+  const keys = await sessionKeys(p, blob.subarray(0, 32));
+  if (frame.sid !== keys.sid) throw new Error('the welcome names another session');
+  const s = { sid: keys.sid, send: await gcmKey(keys.c2b), recv: await gcmKey(keys.b2c), ctr: 0, top: -1, seen: new Set() };
+  s.device = String(unpack(await openRaw(s, 'welcome', frame.id, frame.n, blob.subarray(32)))[0].device || '');
+  return s;
+}
+
+async function sealFrame(s, kind, id, data) {
+  const n = s.ctr++;
+  const c = await gcm(s.send, nonce('c2b\0', n), pad(data), frameAad(s.sid, kind, id));
+  return { id, k: kind, sid: s.sid, n, c: b64e(c) };
+}
+
+// Each counter opens once, within RELAY_WINDOW of the newest; a frame that
+// fails to open does not spend its counter.
+const fresh = (s, n) => n > s.top || (s.top - n < RELAY_WINDOW && !s.seen.has(n));
+
+async function openRaw(s, kind, id, n, ct) {
+  if (!Number.isSafeInteger(n) || n < 0 || n >= 2 ** 48 || !/^[A-Za-z0-9_-]{1,64}$/.test(String(id))) {
+    throw new Error('bad frame');
+  }
+  if (!fresh(s, n)) throw new Error('replayed frame');
+  const plain = await ungcm(s.recv, nonce('b2c\0', n), ct, frameAad(s.sid, kind, id));
+  if (!fresh(s, n)) throw new Error('replayed frame');
+  s.seen.add(n);
+  if (n > s.top) {
+    s.top = n;
+    if (s.seen.size > 2 * RELAY_WINDOW) for (const k of s.seen) if (s.top - k >= RELAY_WINDOW) s.seen.delete(k);
+  }
+  return unpad(plain);
+}
+
+function openFrame(s, frame) {
+  if (!frame || !['res', 'sse', 'end'].includes(frame.k) || frame.sid !== s.sid) throw new Error('bad frame');
+  return openRaw(s, frame.k, frame.id, frame.n, b64d(frame.c));
+}
+
+/* -- The relay: this browser's pairing and the transport ------------- */
+
+// The pairing lives in IndexedDB: the relay, the install, the bot's public
+// key and this browser's key pair, whose private half WebCrypto made
+// non-extractable. Web Storage holds none of it.
+function idb(mode, fn) {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open('tacitus-relay', 1);
+    open.onupgradeneeded = () => open.result.createObjectStore('kv');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction('kv', mode);
+      const req = fn(tx.objectStore('kv'));
+      tx.oncomplete = () => { db.close(); resolve(req.result); };
+      tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
+    };
+  });
+}
+const loadPairing = () => idb('readonly', (st) => st.get('pairing')).catch(() => undefined);
+const savePairing = (rec) => idb('readwrite', (st) => st.put(rec, 'pairing'));
+
+function deviceName() {
+  const ua = navigator.userAgent;
+  const kind = ['iPhone', 'iPad', 'Android', 'Mac', 'Windows', 'Linux'].find((k) => ua.includes(k));
+  return `${kind || 'Browser'} web app`;
+}
+
+// What a relay error says. An err frame is not authenticated (the relay
+// can forge one), so it is only a hint: the app reports it and tries
+// again, and never drops its keys over one.
+const RELAY_SAYS = {
+  auth: 'The bot did not accept this phone. If it was removed, pair it again from the tailnet.',
+  offline: 'The bot cannot be reached through the relay now.',
+  timeout: 'The bot did not answer in time.',
+  busy: 'The relay is busy.',
+};
+
+class RelayError extends Error {
+  constructor(code, text) {
+    super(RELAY_SAYS[code] || text || 'The relay did not answer.');
+    this.code = code;
+  }
+}
+
+function relayNote(text) {
+  $('relay-note').textContent = text || '';
+  $('relay-note').hidden = !text;
+}
+
+function relayTransport(rec) {
+  const base = `${rec.relay}/r/${rec.install}`;
+  const headers = { 'Content-Type': 'application/json', 'X-Relay-Key': rec.clientKey };
+  const self = { relay: true, rec, session: null, helloing: null };
+
+  // One frame to the relay; its answer frame. The key rides in a header.
+  async function post(route, frame) {
+    const res = await fetch(`${base}/${route}`, {
+      method: 'POST', credentials: 'omit', cache: 'no-store', headers, body: JSON.stringify(frame),
+    });
+    let out = null;
+    try { out = await res.json(); } catch { /* not JSON */ }
+    if (out && out.k === 'err') {
+      if (out.e === 'auth') relayNote(RELAY_SAYS.auth);
+      throw new RelayError(out.e);
+    }
+    if (!res.ok || !out) throw new RelayError(res.status === 503 ? 'offline' : '', out && out.error);
+    return out;
+  }
+
+  self.hello = async (pairing) => {
+    const { frame, pending } = await relayHello(rec, pairing);
+    self.session = await relayFinish(pending, await post('c', frame));
+    relayNote('');
+    return self.session;
+  };
+  const session = () => (self.session ? Promise.resolve(self.session)
+    : (self.helloing ||= self.hello(null).finally(() => { self.helloing = null; })));
+  const forget = (s) => { if (self.session === s) self.session = null; };
+
+  self.api = async (method, path, body) => {
+    let ctype = '';
+    let data = new Uint8Array(0);
+    if (body instanceof FormData) {
+      const r = new Response(body);
+      ctype = r.headers.get('content-type');
+      data = bytesOf(await r.arrayBuffer());
+    } else if (body !== undefined) {
+      ctype = 'application/json';
+      data = TE.encode(JSON.stringify(body));
+    }
+    const h = { accept: 'application/json', ...(ctype ? { 'content-type': ctype } : {}) };
+    const plain = pack({ m: method, p: '/api' + path, h }, data);
+    for (let attempt = 0; ; attempt++) {
+      const s = await session();
+      try {
+        const [meta, bytes] = unpack(await openFrame(s, await post('c', await sealFrame(s, 'req', newId(), plain))));
+        const status = meta.s >= 200 && meta.s <= 599 ? meta.s : 502;
+        return new Response([204, 205, 304].includes(status) ? null : bytes, { status, headers: meta.h || {} });
+      } catch (e) {
+        // A bot that restarted has forgotten the session: hello again, once.
+        if (attempt || !['session', 'replay', 'bad'].includes(e.code)) throw e;
+        forget(s);
+      }
+    }
+  };
+
+  // The stream opens with a one-time ticket for its sealed `open` frame,
+  // so its URL carries neither the key nor the frame. `since` resumes
+  // after the last event seen; EventSource's own retry would replay the
+  // same frame, so the app reconnects with a fresh one instead.
+  self.events = (since, sink) => {
+    const ctl = new AbortController();
+    (async () => {
+      const s = await session();
+      try {
+        const opener = await sealFrame(s, 'open', newId(), pack(since ? { since } : {}));
+        const { ticket } = await post('sse', opener);
+        const res = await fetch(`${base}/sse?t=${enc(ticket)}`, { credentials: 'omit', cache: 'no-store', signal: ctl.signal });
+        if (!res.ok || !res.body) throw new RelayError(res.status === 503 ? 'offline' : '');
+        // Open once the bot's first frame comes (its stream's `retry`): the
+        // relay answers before the bot has its own stream, and an event in
+        // between would be lost.
+        let opened = false;
+        const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+        let buf = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) return;
+          buf += value;
+          for (let at = buf.indexOf('\n'); at >= 0; at = buf.indexOf('\n')) {
+            const line = buf.slice(0, at);
+            buf = buf.slice(at + 1);
+            if (!line.startsWith('data: ')) continue;
+            const fr = JSON.parse(line.slice(6));
+            if (fr.k === 'err') throw new RelayError(fr.e);
+            if (fr.k === 'end') return;
+            if (fr.k !== 'sse') continue;
+            const [ev] = unpack(await openFrame(s, fr));
+            if (!opened) { opened = true; sink.open(); }
+            if (ev.event || ev.data) sink.event(String(ev.event || 'message'), String(ev.id ?? ''), String(ev.data ?? ''));
+          }
+        }
+      } catch (e) {
+        if (['session', 'replay', 'bad'].includes(e.code)) forget(s);
+        if (e.code === 'auth') relayNote(RELAY_SAYS.auth);
+        throw e;
+      }
+    })().catch(() => {}).finally(() => { if (!ctl.signal.aborted) sink.down(true); });
+    return { close: () => ctl.abort() };
+  };
+  return self;
+}
+
+// The relay carries the chat when this origin's API does not answer (off
+// the tailnet, or on the relay's own copy of the app) and this browser
+// holds a pairing. Without a pairing nothing changes: the API, and the
+// token form on a 401.
+async function pickTransport() {
+  const rec = await loadPairing();
+  if (!rec) { T = DIRECT; return; }
+  const res = await directGet('/me');
+  if (res && res.status === 200) { T = DIRECT; return; }
+  if (!RELAY || b64e(RELAY.rec.pub) !== b64e(rec.pub)) RELAY = relayTransport(rec);
+  T = RELAY;
+}
+
+// A GET on this origin's API, given up after four seconds (a host off the
+// tailnet may not answer at all); null without an answer.
+async function directGet(path) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 4000);
+  try {
+    return await fetch(apiUrl(path), { credentials: 'same-origin', cache: 'no-store', signal: ctl.signal });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// A pairing link (`<app>#tr1=<payload>`, from "Pair a phone" on the
+// tailnet) opened here: the fragment leaves the address bar first, then
+// this browser makes its key pair, keeps it, and pairs through the relay.
+async function pairFromLink(text) {
+  history.replaceState(null, '', location.pathname + location.search);
+  try {
+    const p = JSON.parse(TD.decode(b64d(text)));
+    if (!p || p.v !== 1 || !/^[0-9a-f]{32}$/.test(p.p) || typeof p.i !== 'string' || typeof p.c !== 'string') {
+      throw new Error('this is not a pairing link');
+    }
+    if (!(p.x * 1000 > Date.now())) throw new Error('the link has expired; open a new one on the tailnet');
+    const url = new URL(p.r);
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOOPBACK_HOSTS.includes(url.hostname))) {
+      throw new Error('the relay must use https');
+    }
+    // On the tailnet the bot says which install it is: a link for another
+    // one is refused.
+    const got = await directGet('/relay/status');
+    const st = got && got.ok ? await got.json().catch(() => null) : null;
+    if (st && st.install_id && st.install_id !== p.i) throw new Error('the link is for another install');
+    if (await loadPairing() && !confirm('This browser is paired already. Replace that pairing?')) return;
+    const keys = await newKeys();
+    const rec = { v: 1, relay: String(p.r).replace(/\/+$/, ''), install: p.i, clientKey: p.c,
+      botPublic: b64d(p.k), priv: keys.priv, pub: keys.pub, device: '' };
+    // Kept before the hello: a phone whose welcome is lost says a plain
+    // hello next time, with the key the bot registered.
+    await savePairing(rec);
+    const relay = relayTransport(rec);
+    await relay.hello({ id: p.p, psk: b64d(p.s) });
+    rec.device = relay.session.device;
+    await savePairing(rec);
+    RELAY = relay;
+    toast('This phone is paired. Off the tailnet it reaches Tacitus through the relay.');
+  } catch (e) {
+    toast(`Pairing failed: ${e.message}`);
+  }
+}
+
+// "Pair a phone", on the tailnet: a one-time link as a QR code, and the
+// phones paired so far.
+async function pairPhone() {
+  const dlg = $('phone');
+  $('phone-link').value = '';
+  $('phone-note').textContent = 'Opening a pairing...';
+  if (!dlg.open) dlg.showModal();
+  try {
+    const out = await call('POST', '/relay/pair', {});
+    QR.draw($('phone-qr'), out.qr, 4);
+    $('phone-link').value = out.link;
+    $('phone-note').textContent = (out.origin === 'own' ? ''
+      : 'This link opens the relay\'s copy of the app, so card buttons stay on the tailnet. ')
+      + `Scan it with the phone's camera on the tailnet. It works once, until ${when(out.expires)}.`;
+  } catch (e) {
+    $('phone-note').textContent = `Could not open a pairing: ${e.message}`;
+  }
+  listPhones();
+}
+
+async function listPhones() {
+  const box = $('phone-devices');
+  try {
+    const rows = await call('GET', '/relay/devices');
+    box.replaceChildren(...rows.map((d) => h('li', {},
+      h('span', {}, `${d.name}, paired ${when(d.paired_at, true)}${d.origin === 'own' ? '' : ' on the relay'}`),
+      h('button', { type: 'button', class: 'btn small plain', onclick: () => removePhone(d) }, 'Remove'))));
+    if (!rows.length) box.append(h('li', { class: 'empty' }, 'No phone is paired yet.'));
+  } catch (e) {
+    box.replaceChildren(h('li', { class: 'error' }, e.message));
+  }
+}
+
+async function removePhone(d) {
+  if (!confirm(`Remove ${d.name}? It can no longer reach the bot through the relay.`)) return;
+  try { await call('POST', '/relay/revoke', { device: d.id }); } catch (e) { toast(e.message); }
+  listPhones();
+}
+
 /* -- Pairing and start-up ------------------------------------------- */
 
 function showPair() {
@@ -930,7 +1435,7 @@ async function pair(e) {
   if (!token) return;
   $('pair-error').textContent = '';
   try {
-    const res = await fetch(api('/pair'), {
+    const res = await fetch(apiUrl('/pair'), {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
     });
@@ -945,17 +1450,16 @@ async function pair(e) {
 
 async function boot() {
   try {
+    await pickTransport();
     S.me = await call('GET', '/me');
   } catch (e) {
     if ($('pair').hidden) toast(`Could not reach the bot: ${e.message}`);
+    if (T.relay) setTimeout(boot, Math.min(30000, 1000 * 2 ** S.retry++));
     return;
   }
   const es = connect();
   // Wait for the stream before the first reads, so no event falls between them.
-  await new Promise((resolve) => {
-    es.addEventListener('open', resolve, { once: true });
-    setTimeout(resolve, 3000);
-  });
+  await Promise.race([es.ready, new Promise((resolve) => { setTimeout(resolve, 3000); })]);
   try {
     const rows = await call('GET', '/channels');
     S.channels = rows || [];
@@ -969,9 +1473,13 @@ async function boot() {
   renderChannels();
   route();
   if (S.push === undefined) { S.push = null; initPush().catch(() => {}); }
+  // Pairing a phone happens on the tailnet only, where the API answers.
+  const phones = Boolean(S.me.relay) && !T.relay;
+  $('pair-phone').hidden = !phones;
+  if (phones) $('drawer-foot').hidden = false;
 }
 
-function init() {
+async function init() {
   window.addEventListener('hashchange', route);
   $('menu').addEventListener('click', () => document.body.classList.toggle('drawer'));
   $('scrim').addEventListener('click', () => document.body.classList.remove('drawer'));
@@ -993,6 +1501,7 @@ function init() {
     if (f) upload(f);
   });
   $('pair-form').addEventListener('submit', pair);
+  $('pair-phone').addEventListener('click', pairPhone);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.body.classList.remove('drawer'); });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && S.thread && S.threadUnread.delete(tkey(S.channel, S.thread))) {
@@ -1003,6 +1512,8 @@ function init() {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register(`${BASE}/sw.js`, { scope: `${BASE}/` }).catch(() => {});
   }
+  const pairing = /^#tr1=([A-Za-z0-9_-]+)$/.exec(location.hash);
+  if (pairing) await pairFromLink(pairing[1]);
   boot();
 }
 

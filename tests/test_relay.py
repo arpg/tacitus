@@ -304,6 +304,7 @@ def test_sse_block_parsing():
     assert rcl.parse_sse(["id: 7", "event: message", "data: {\"a\":1}"]) == {
         "id": "7", "event": "message", "data": "{\"a\":1}"}
     assert rcl.parse_sse([": ping"]) is None
+    assert rcl.parse_sse(["retry: 3000"]) == {"retry": "3000", "data": ""}
     assert rcl.parse_sse(["data: a", "data: b"]) == {"data": "a\nb"}
 
 
@@ -816,8 +817,7 @@ def test_stream_tickets_expire_and_are_capped():
     assert status == 200 and st.id == "o1"
     assert relay.open_stream(install, t1) == rs.UNAVAILABLE  # once only
     late = relay.stream_ticket(install, key, opener(2))[1]["ticket"]
-    now[0] += 31
-    relay.bot_exchange(install, "Bearer x", {})  # keeps nothing alive: a bad token
+    now[0] += 31  # the install stays online (60 s); the ticket does not
     assert relay.open_stream(install, late) == rs.UNAVAILABLE
     # At most max_tickets wait; the oldest goes first.
     tickets = [relay.stream_ticket(install, key, opener(i))[1]["ticket"] for i in (3, 4, 5)]
@@ -952,7 +952,9 @@ def relay_vectors() -> dict:
                     "link": payload.to_string("https://host.example.test/chat/")},
         "hello": {"payload": rc.b64e(json.dumps({**info, "t": now}).encode()),
                   "frame": hello, "h": hexs(pending.h)},
-        "plain_hello": {"phone_ephemeral": hexs(plain_pending.e_private), "frame": plain},
+        "plain_hello": {"phone_ephemeral": {"private": hexs(plain_pending.e_private),
+                                            "public": rc.b64e(rc.public_of(plain_pending.e_private))},
+                        "frame": plain},
         "session": {"k_c2b": hexs(k_c2b), "k_b2c": hexs(k_b2c), "sid": sid},
         "welcome": {"frame": acc.welcome, "info": {"device": acc.session.device, "t": now}},
         "req": {"meta": req_meta, "body": rc.b64e(req_body),
@@ -968,7 +970,7 @@ def test_shared_vectors_match_relay_crypto():
     it again after a deliberate protocol change."""
     made = relay_vectors()
     if os.environ.get("RELAY_VECTORS_WRITE") == "1":
-        VECTORS.write_text(json.dumps(made, indent=1, sort_keys=True) + "\n")
+        VECTORS.write_text(json.dumps(made, indent=1) + "\n")  # key order is part of a frame
     assert json.loads(VECTORS.read_text()) == made
     v = made
     # The bot's side of the fixture: the hello verifies and the frames open.

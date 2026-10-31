@@ -346,8 +346,10 @@ def path_allowed(path: Any) -> bool:
 
 
 def parse_sse(lines: list[str]) -> Optional[dict]:
-    """One SSE event block as {"id"?, "event"?, "data"}; None for a block of
-    comments only."""
+    """One SSE event block as {"id"?, "event"?, "retry"?, "data"}; None for
+    a block of comments only. The local stream's first block (`retry:`) is
+    kept: it reaches the phone as the sign that the bot's stream is open,
+    so no event falls between the phone's open and the bot's."""
     ev: dict[str, str] = {}
     data: list[str] = []
     for line in lines:
@@ -359,7 +361,7 @@ def parse_sse(lines: list[str]) -> Optional[dict]:
             data.append(value)
         elif name in ("id", "event", "retry"):
             ev[name] = value
-    if not data and "event" not in ev:
+    if not data and "event" not in ev and "retry" not in ev:
         return None
     ev["data"] = "\n".join(data)
     return ev

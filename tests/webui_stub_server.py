@@ -43,6 +43,8 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' 
        "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 
 DM, MAIN, SCHED, ROOM, OLD = "stream:7", "stream:9", "stream:11", "r1", "r2"
+# The install id /api/relay/status names; a pairing link for another is refused.
+STUB_INSTALL = "a" * 26
 WEEKLY = "stream:9:topic:weekly%20plan"
 
 
@@ -285,6 +287,8 @@ class Handler(BaseHTTPRequestHandler):
         s = self.stub
         if parts == ["me"]:
             return self._json(200, {"owner": "owner", "bot": "bot", "public_url": None})
+        if parts == ["relay", "status"]:
+            return self._json(200, {"enabled": True, "install_id": STUB_INSTALL, "connected": False})
         if parts == ["channels"]:
             rows = []
             for c in s.channels.values():

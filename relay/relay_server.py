@@ -590,8 +590,9 @@ class RelayHandler(BaseHTTPRequestHandler):
     server: "RelayHTTPServer"
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        """The default access line carries the query string (a frame); the
-        relay writes its own line instead (`_log`)."""
+        """The default access line carries the query string (a stream's
+        ticket) and the client's address; the relay writes its own line
+        instead (`_log`)."""
 
     def _log(self, kind: str, install: str, status: int, n_in: int, n_out: int,
              t0: float) -> None:

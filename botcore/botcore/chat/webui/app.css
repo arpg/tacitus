@@ -195,6 +195,7 @@ button, select, textarea, input { font: inherit; color: inherit; }
   font-size: 14px;
 }
 .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+#pair-phone { margin-top: 8px; }
 .toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
 .hint { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
 .subs { list-style: none; margin: 6px 0 0; padding: 0; color: var(--muted); font-size: 13px; }
@@ -378,6 +379,40 @@ th { background: var(--code-bg); }
 #pair h2, #pair p { margin: 0; }
 #pair input { padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); font-size: 16px; }
 .error { color: var(--danger); min-height: 1em; }
+#relay-note {
+  position: fixed;
+  top: calc(8px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(calc(100% - 32px), 480px);
+  padding: 10px 14px;
+  border: 1px solid var(--warn);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  z-index: 45;
+}
+
+/* pairing a phone: the code is dark on light in either scheme */
+
+#phone {
+  width: min(calc(100% - 32px), 420px);
+  max-height: calc(100dvh - 32px);
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+#phone::backdrop { background: rgba(0, 0, 0, .45); }
+#phone form { display: grid; gap: 10px; }
+#phone h2, #phone h3, #phone p { margin: 0; }
+#phone h3 { font-size: 14px; color: var(--muted); }
+#phone-qr { width: 100%; max-width: 320px; justify-self: center; image-rendering: pixelated; background: #fff; }
+#phone-link { padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: 12px var(--mono); }
+#phone-devices { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+#phone-devices li { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
 /* narrow: the channels in a drawer */
 

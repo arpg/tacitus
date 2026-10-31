@@ -4,7 +4,8 @@ Tacitus ships its own chat interface so an install needs no Zulip or
 Slack. The bot process serves a small web app (a PWA) over HTTP on
 loopback; the owner reaches it over their tailnet (`tailscale serve`
 proxies a path on an HTTPS port of the chat's own to the port and adds
-identity headers) or, later, through a Tacitus relay. In **shadow mode**
+identity headers) or, off the tailnet, through a Tacitus relay that sees
+only ciphertext (`docs/webchat-relay.md`). In **shadow mode**
 the bot keeps its primary front end (Zulip today) and mirrors every
 post, update, card and reaction into the web front end, and accepts
 input from either side, so the owner can try the new interface against
@@ -58,7 +59,9 @@ start() refuses (Identity and auth):
 
 `"frontend": "web"` with no `shadow` runs the web front end alone. An
 optional `push_subject` key (a `mailto:` or `https:` URL) is the contact
-the push services see (Notifications, below).
+the push services see (Notifications, below). An optional `relay` block
+turns on the relay (`docs/webchat-relay.md`, Config); it counts only from
+the owner-private `chat.json`.
 `"shadow": "web"` with any primary wraps the primary in `ShadowFrontend`.
 `FRONTENDS` in `preprocessor/chat/__init__.py` gains `"web"`.
 `get_chat` defaults every `web` key (port 8470, base_path `/chat`, bind
@@ -157,7 +160,7 @@ subset and escapes everything else; it never injects HTML from text.
 
 | Verb | Path | Body / result |
 |---|---|---|
-| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool}` |
+| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool, "relay": bool, "card_actions": bool}` |
 | GET | `/api/channels` | `[{"id","name","kind","archived","last_at","unread"}]` |
 | GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count` and `last_at` |
 | GET | `/api/channels/{ch}/threads/{thread_key}` | the thread, oldest first, parent first |
@@ -172,6 +175,18 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/push/unsubscribe` | `{"endpoint"}` → `{"ok": true, "removed": bool}` |
 | GET | `/api/push/subscriptions` | `[{"id", "host", "created_at", "last_seen", "last_ok", "failures"}]`; `id` is a hash of the endpoint, which is never shown |
 | POST | `/api/push/revoke` | `{"id"}` → `{"ok": true, "removed": bool}` |
+| POST | `/api/relay/pair` | `{}` → `{"link", "qr", "expires", "origin"}`: a one-time pairing link for a phone (the relay) |
+| GET | `/api/relay/devices` | `[{"id", "name", "paired_at", "origin"}]`, the phones paired with the relay |
+| POST | `/api/relay/revoke` | `{"device"}` → `{"ok": true}`; 404 for an unknown device |
+| GET | `/api/relay/status` | `{"enabled": bool, ...}`: the relay client's state (`connected`, `install_id`, `devices`, ...) |
+
+The four `/api/relay/` routes, and `/api/pair`, answer only on the
+tailnet: a request the relay client marks with `X-Tacitus-Relay` gets
+403, and the client never forwards them. With no relay running,
+`/api/relay/status` says `{"enabled": false}` and the other three answer
+404. `card_actions` is false for a request the relay marks as one that may
+not confirm a card (`docs/webchat-relay.md`, Where the app's code comes
+from).
 
 Channel ids in URLs are URL-encoded (Zulip ids carry characters). A
 thread_key is likewise encoded.
@@ -381,8 +396,16 @@ seen seq, reconnect handled by the browser. Composer: Enter sends,
 Shift+Enter newline; a paperclip button posts to `/api/files`. Pairing:
 on 401 show a token field that posts to `/api/pair`.
 
+Every call goes through one transport interface (`api(method, path,
+body)`, `events(since, sink)`). A browser paired with the relay uses it
+when the base path does not answer (off the tailnet, or on the relay's
+copy of the app); the relay transport, the pairing link (`#tr1=`), the
+"Pair a phone" entry in the drawer and the QR encoder (`qr.js`) are in
+`docs/webchat-relay.md` (For the web app).
+
 Dark and light from `prefers-color-scheme`. Keep the whole app under
-~1,500 lines; readable by one maintainer.
+~2,500 lines with the relay transport and the QR encoder; readable by one
+maintainer.
 
 ## Implementation notes (A)
 
@@ -435,8 +458,9 @@ most 1 KiB, and one attempt runs at a time (a wrong token waits
 a 429). Errors are 400, 401 and 404; 421 for a wrong `Host`; 403 for
 another site, a POST without this app's `Origin`, and a card action,
 push subscription or revoke from a device paired on the relay's origin
-below `"all"` (`X-Tacitus-Relay-Cards: deny`); 429 for pairing; and 500
-for an unexpected failure.
+below `"all"` (`X-Tacitus-Relay-Cards: deny`), and a relayed request
+(`X-Tacitus-Relay`) to `/api/pair` or `/api/relay/`; 429 for pairing; 503
+when the relay cannot open a pairing; and 500 for an unexpected failure.
 
 **Bodies.** A body has a `Content-Length` of digits only, or is chunked
 (no other `Transfer-Encoding`): each chunk size is 1 to 8 hex digits, and
@@ -454,7 +478,9 @@ falls 2,000 events behind is closed, and the browser reconnects with
 **Static files.** `webui/` is served with `Cache-Control: no-cache`. An
 HTML page carries `Content-Security-Policy` with `script-src 'self';
 style-src 'self'` and `form-action 'none'` (no inline
-script, no inline style, nothing from another origin). Every answer,
+script, no inline style, nothing from another origin; with a relay
+configured, `connect-src` also names the relay's origin, so the app can
+reach the relay when this server cannot be reached). Every answer,
 static or API, carries `Cross-Origin-Resource-Policy: same-origin`. `<base_path>`
 answers 301 to `<base_path>/`. A path whose last part has no extension
 serves `index.html`. With no `webui/index.html` a placeholder page
