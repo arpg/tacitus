@@ -98,7 +98,7 @@ __all__ = [
     "primary_action", "resolve_code", "resolve_reaction",
     "CODE_ALPHABET", "THREAD_KEY_RE", "ActionEvent", "ChannelInfo", "FileRef",
     "InboundMessage", "MessageRef", "RoomRef", "Status", "ViewEvent",
-    "load_frontend", "prompt_strings_for_config", "private_dir",
+    "load_frontend", "load_web_frontend", "prompt_strings_for_config", "private_dir",
 ]
 
 FRONTENDS = ("slack", "zulip", "memory", "web")
@@ -160,6 +160,17 @@ def load_frontend(*, for_cli: bool = False, ea_dir: str | Path | None = None,
             "the %s shadow did not build; %s runs alone", shadow, cfg.get("frontend"))
         return primary
     return ShadowFrontend(primary, web)
+
+
+def load_web_frontend(*, ea_dir: str | Path | None = None) -> ChatFrontend | None:
+    """The web chat front end the chat block runs (as `frontend` or as
+    `shadow`), built and not started, for a process outside the bot that
+    only notifies through it (alert.py); None when the block runs no web
+    front end."""
+    cfg = ea_config.get_chat(_config_path(ea_dir))
+    if "web" not in (cfg.get("frontend"), cfg.get("shadow")):
+        return None
+    return _build_web(_with_web_store(cfg, ea_dir))
 
 
 def _web_class():

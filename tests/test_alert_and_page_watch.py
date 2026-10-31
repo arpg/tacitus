@@ -19,6 +19,19 @@ def direct_resident_io(monkeypatch):
     monkeypatch.setattr(rio, "_owner_check", lambda: False)
 
 
+@pytest.fixture(autouse=True)
+def web_pushes(monkeypatch):
+    """The web chat pushes alert.py asks for, recorded: a test never reads
+    the owner's chat block or reaches a push service."""
+    import chat.direct as direct
+    calls: list = []
+    monkeypatch.setattr(direct, "web_notify",
+                        lambda text, **kw: calls.append(("notify", text, kw)) or {"queued": True})
+    monkeypatch.setattr(direct, "web_cancel",
+                        lambda tag, **kw: calls.append(("cancel", tag, kw)) or True)
+    return calls
+
+
 def test_parse_at_defaults_to_mountain_time():
     dt = alert.parse_at("2026-10-06T10:00")
     assert dt.tzinfo is not None and dt.utcoffset() == timedelta(hours=-6)
@@ -52,7 +65,7 @@ def test_schedule_without_a_credential_stages_for_flush(tmp_path, monkeypatch):
     assert "past" in out.get("error", "")
 
 
-def test_schedule_records_on_the_row_and_is_idempotent(monkeypatch):
+def test_schedule_records_on_the_row_and_is_idempotent(monkeypatch, web_pushes):
     calls = []
     monkeypatch.setattr(alert, "_ledger", lambda args: calls.append(args) or {})
     row = {"id": "tix", "description": "Tickets at 10:00am"}
@@ -66,6 +79,10 @@ def test_schedule_records_on_the_row_and_is_idempotent(monkeypatch):
     at = datetime.now(timezone.utc) + timedelta(hours=3)
     out = alert.schedule("tix", at, 15, None)
     assert out["ok"] and out["scheduled_id"] == 77 and out["kind"] == "scheduled"
+    # the web chat gets the same text, queued for the moment the alert fires
+    assert web_pushes == [("notify", out["text"], {"tag": "alert:tix",
+                                                   "when": at - timedelta(minutes=15)})]
+    assert out["web"] == {"queued": True}
     assert calls and calls[0][:3] == ["update", "--id", "tix"]
     assert any(a.startswith("alert_scheduled_id=77") for a in calls[0])
     # the row now carries the alert (ledger.py merges metadata keys into the row): a second schedule does nothing
@@ -78,6 +95,9 @@ def test_schedule_records_on_the_row_and_is_idempotent(monkeypatch):
     row["alert_scheduled_id"] = ""
     out3 = alert.schedule("tix", datetime.now(timezone.utc) + timedelta(minutes=5), 15, None)
     assert out3["ok"] and out3["kind"].startswith("sent now") and sent
+    # sent now: the push goes now, and one queued for the row before is dropped
+    assert web_pushes[-2:] == [("cancel", "alert:tix", {}),
+                               ("notify", sent[0], {"tag": "alert:tix"})]
     assert sent[0].endswith("Ledger `tix`."), sent[0]
     # a custom text gets the ledger tag too, so `list` can name the row
     out4 = alert.schedule("tix", datetime.now(timezone.utc) + timedelta(minutes=5), 15, "custom words")

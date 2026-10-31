@@ -238,7 +238,9 @@ channel of its own:
   so the verb is idempotent and `cancel` can undo it. A lane without the
   owner's chat credential (the resident runs as ea-bot) appends the
   request to `state/pending-alerts.jsonl`; the owner's cron runs
-  `alert.py flush` every five minutes.
+  `alert.py flush` every five minutes. When the chat block runs the web
+  chat, `direct.web_notify` also queues the alert as a Web Push for the
+  same moment, which the bot's push worker sends.
 - `preprocessor/page_watch.py` watches a URL for a sentence to
   disappear (`--absent`) or appear (`--present`); the owner's cron runs
   `check` every 15 minutes, and a change sends the direct message, posts
@@ -612,7 +614,11 @@ check, cross, ...).
   one server-sent event stream with replay from the last seen sequence.
   The owner reaches it over the tailnet (`tailscale serve` proxies a
   path to the port and its identity header is the login) or by a pair
-  token. The contract is `docs/webchat.md`.
+  token. With the app closed, a new card, a bot message in the DM and a
+  loud alert arrive as Web Push notifications (`chat/web_push.py`:
+  VAPID and `aes128gcm` with the `cryptography` package, to the
+  browser vendors' push services only). The contract is
+  `docs/webchat.md`.
 - `ShadowFrontend` (`chat/shadow_frontend.py`) drives a primary (Zulip)
   and mirrors every post, update, card, status line, reaction and file
   into a shadow (the web front end) under the primary's ids, and takes

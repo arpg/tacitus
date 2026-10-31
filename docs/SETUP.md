@@ -330,6 +330,13 @@ in either; the web side never blocks the Zulip side.
 4. Without Tailscale on the phone, pairing by token works: write a
    token to `<private dir>/webchat-pair.token` (the `pair_token_file`
    key moves it) and enter it once in the app.
+5. For notifications with the app closed (a new card, a message from the
+   bot in your DM, an alert), open the channel drawer and turn on
+   **Notifications**. On an iPhone or iPad this works only in the app
+   added to the Home Screen. The bot then sends encrypted pushes over
+   https to your browser's push service (Google, Apple, Mozilla or
+   Microsoft); it needs the `cryptography` package, which the install
+   already has.
 
 The store is `<private dir>/webchat.sqlite`; files you upload from the
 app sit beside it.

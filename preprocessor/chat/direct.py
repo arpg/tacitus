@@ -13,6 +13,12 @@ falls back to an urgent post in the personal channel with a mention, and
 
 Requires the owner's chat credential (owner_trust), so these run in owner
 lanes: the owner's shell, cron as the owner, and `alert.py flush`.
+
+`web_notify` also pushes the message to the browsers that turned on
+notifications in the web chat (docs/webchat.md, Notifications), now or,
+for a scheduled alert, at its moment: the bot's push worker sends a push
+queued in the web chat's store. Without a web front end in the chat
+block it does nothing.
 """
 from __future__ import annotations
 
@@ -22,9 +28,9 @@ from pathlib import Path
 from typing import Any
 
 try:  # package import (preprocessor.chat.direct) or path import (chat.direct)
-    from . import load_frontend
+    from . import load_frontend, load_web_frontend
 except ImportError:  # pragma: no cover
-    from chat import load_frontend  # type: ignore
+    from chat import load_frontend, load_web_frontend  # type: ignore
 
 
 def frontend():
@@ -97,3 +103,34 @@ def cancel_scheduled(sid: int, fe=None) -> bool:
         return False
     res = fe._call(f"scheduled_messages/{int(sid)}", "DELETE")
     return res.get("result") == "success"
+
+
+def web_notify(text: str, *, tag: str = "", when: datetime | None = None,
+               ea_dir: str | Path | None = None) -> dict:
+    """Push `text` (its first line) to the web chat's subscribed browsers at
+    high urgency: now, or at `when` (aware) through the store's queue under
+    `tag`, replacing a push queued there before. {"web": "off"} when the
+    chat block runs no web front end or its store does not exist yet;
+    never raises, so the chat alert stands whatever push does."""
+    try:
+        fe = load_web_frontend(ea_dir=ea_dir)
+        if fe is None:
+            return {"web": "off"}
+        if not Path(fe.store_path).exists():
+            return {"web": "off", "why": "no web chat store yet"}
+        at = when.timestamp() if when is not None else None
+        return fe.notify("Tacitus", text, fe.app_url(), tag, urgency="high", at=at, wait=True)
+    except Exception as e:
+        return {"web": "error", "why": f"{type(e).__name__}: {e}"}
+
+
+def web_cancel(tag: str, *, ea_dir: str | Path | None = None) -> bool:
+    """Drop the web push queued under `tag`; False when there was none or
+    there is no web front end. Never raises."""
+    try:
+        fe = load_web_frontend(ea_dir=ea_dir)
+        if fe is None or not Path(fe.store_path).exists():
+            return False
+        return bool(fe.cancel_notify(tag))
+    except Exception:
+        return False

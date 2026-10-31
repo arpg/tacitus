@@ -16,6 +16,10 @@ twice and can be cancelled.
   alert.py cancel --id <ledger id>
   alert.py flush            # schedule alerts staged by lanes without the chat credential
 
+The web chat (when the chat block runs it) also gets the alert as a push
+notification at the same moment (chat.direct.web_notify), queued under
+the tag `alert:<ledger id>`, which `cancel` and `--force` replace.
+
 `--at` is the user's local time (user_tz) unless it carries an offset. A lane
 that cannot reach the owner's chat credential (the resident runs as
 ea-bot) stages the request in state/pending-alerts.jsonl and prints
@@ -123,13 +127,17 @@ def schedule(ledger_id: str, at: datetime, lead: int, text: str | None,
             return {"error": "could not stage the alert", "text": body}
         return {"staged": True, "reason": f"no chat credential here ({type(e).__name__})",
                 "flush": "alert.py flush runs as the owner"}
+    tag = f"alert:{ledger_id}"
     if when <= now:
         res = direct.send_direct(body, fe)
         sid = res.get("id", 0)
         kind = "sent now (lead already passed)"
+        direct.web_cancel(tag)  # a push queued for this row before is superseded
+        web = direct.web_notify(body, tag=tag)
     else:
         sid = direct.schedule_direct(body, when, fe)
         kind = "scheduled"
+        web = direct.web_notify(body, tag=tag, when=when)
     if meta.get("alert_scheduled_id") and force:
         try:
             direct.cancel_scheduled(int(meta["alert_scheduled_id"]), fe)
@@ -139,7 +147,7 @@ def schedule(ledger_id: str, at: datetime, lead: int, text: str | None,
              f"alert_at={at.isoformat()}", f"alert_scheduled_id={sid}",
              f"alert_lead_min={lead}", f"alert_fires_at={when.isoformat()}"])
     return {"ok": True, "kind": kind, "ledger_id": ledger_id, "scheduled_id": sid,
-            "fires_at": when.astimezone(LOCAL_TZ).isoformat(), "text": body}
+            "fires_at": when.astimezone(LOCAL_TZ).isoformat(), "text": body, "web": web}
 
 
 def cancel(ledger_id: str) -> dict:
@@ -149,6 +157,7 @@ def cancel(ledger_id: str) -> dict:
         return {"error": f"no alert recorded on {ledger_id}"}
     from chat import direct  # type: ignore
     ok = direct.cancel_scheduled(int(sid))
+    direct.web_cancel(f"alert:{ledger_id}")
     _ledger(["update", "--id", ledger_id, "--set", "alert_scheduled_id=",
              "alert_at=", "alert_fires_at="])
     return {"ok": ok, "cancelled": sid}

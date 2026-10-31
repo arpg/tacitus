@@ -29,7 +29,10 @@ The HTTP layer is `http.server.ThreadingHTTPServer` on a daemon thread.
 Static files come from `webui/` beside this module without auth; every
 `/api/` route needs the owner (the Tailscale login header from a loopback
 peer, or the pairing cookie). A POST from another origin is refused.
-Standard library only.
+Standard library only, except Web Push (web_push.py), which needs the
+`cryptography` package and is off without it: a new card, a bot message
+in the DM and a loud alert (`notify`) reach the browsers that turned
+notifications on, even with the app closed.
 """
 from __future__ import annotations
 
@@ -58,6 +61,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import files as _files
+from . import web_push
 from .base import (
     AlreadyArchived,
     ChatError,
@@ -158,6 +162,11 @@ CREATE TABLE IF NOT EXISTS files(
     id TEXT PRIMARY KEY, channel TEXT, name TEXT, path TEXT, mimetype TEXT, size INT,
     at REAL);
 CREATE TABLE IF NOT EXISTS reads(channel TEXT PRIMARY KEY, seq INT);
+CREATE TABLE IF NOT EXISTS push_subscriptions(
+    endpoint TEXT PRIMARY KEY, keys TEXT, created_at REAL, last_ok REAL,
+    failures INT DEFAULT 0);
+CREATE TABLE IF NOT EXISTS push_queue(
+    tag TEXT PRIMARY KEY, due_at REAL, payload TEXT, urgency TEXT, created_at REAL);
 """
 
 
@@ -625,6 +634,82 @@ class WebStore:
                     "FROM messages WHERE channel=?)) ON CONFLICT(channel) DO UPDATE SET "
                     "seq=excluded.seq", (channel, channel))
 
+    # web push: the browsers' subscriptions and the pushes queued for later
+
+    def push_subscribe(self, endpoint: str, keys: dict,
+                       keep: int = web_push.MAX_SUBSCRIPTIONS) -> None:
+        """Keep a subscription (a renewed one starts with no failures); past
+        `keep`, the ones that have gone longest without a delivery go."""
+        now = time.time()
+        with self._lock:
+            with self._conn:
+                self._conn.execute(
+                    "INSERT INTO push_subscriptions(endpoint, keys, created_at, last_ok, failures) "
+                    "VALUES (?,?,?,NULL,0) ON CONFLICT(endpoint) DO UPDATE SET "
+                    "keys=excluded.keys, failures=0", (endpoint, json.dumps(keys), now))
+                self._conn.execute(
+                    "DELETE FROM push_subscriptions WHERE endpoint NOT IN (SELECT endpoint FROM "
+                    "push_subscriptions ORDER BY MAX(COALESCE(last_ok, 0), created_at) DESC "
+                    "LIMIT ?)", (int(keep),))
+
+    def push_unsubscribe(self, endpoint: str) -> bool:
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute("DELETE FROM push_subscriptions WHERE endpoint=?",
+                                         (endpoint,))
+            return cur.rowcount > 0
+
+    def push_subscriptions(self) -> list[dict]:
+        rows = self._all("SELECT * FROM push_subscriptions ORDER BY created_at")
+        return [{**dict(r), "keys": _loads(r["keys"]) or {}} for r in rows]
+
+    def push_count(self) -> int:
+        row = self._one("SELECT COUNT(*) AS n FROM push_subscriptions")
+        return int(row["n"]) if row else 0
+
+    def push_result(self, endpoint: str, ok: bool) -> None:
+        """Record a delivery (last_ok, failures back to 0) or a failure."""
+        with self._lock:
+            with self._conn:
+                if ok:
+                    self._conn.execute("UPDATE push_subscriptions SET last_ok=?, failures=0 "
+                                       "WHERE endpoint=?", (time.time(), endpoint))
+                else:
+                    self._conn.execute("UPDATE push_subscriptions SET failures=failures+1 "
+                                       "WHERE endpoint=?", (endpoint,))
+
+    def push_defer(self, tag: str, due_at: float, payload: str, urgency: str) -> None:
+        """Queue a push for `due_at`, replacing one queued under the same tag."""
+        with self._lock:
+            with self._conn:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO push_queue(tag, due_at, payload, urgency, created_at) "
+                    "VALUES (?,?,?,?,?)", (tag, float(due_at), payload, urgency, time.time()))
+
+    def push_cancel(self, tag: str) -> bool:
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute("DELETE FROM push_queue WHERE tag=?", (tag,))
+            return cur.rowcount > 0
+
+    def push_queued(self) -> list[dict]:
+        return [dict(r) for r in self._all("SELECT * FROM push_queue ORDER BY due_at")]
+
+    def push_claim_due(self, now: float) -> list[dict]:
+        """Take the queued pushes due by `now` off the queue, in one
+        transaction, so two processes never both send one."""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = [dict(r) for r in self._conn.execute(
+                    "SELECT * FROM push_queue WHERE due_at <= ? ORDER BY due_at", (now,))]
+                self._conn.execute("DELETE FROM push_queue WHERE due_at <= ?", (now,))
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+            return rows
+
 
 class _HttpError(Exception):
     def __init__(self, status: int, message: str) -> None:
@@ -688,6 +773,7 @@ class WebFrontend(ChatFrontend):
         self.pair_token_file = Path(cfg.get("pair_token_file")
                                     or self.store_path.parent / PAIR_FILE)
         self.webui_dir = Path(webui_dir) if webui_dir else WEBUI_DIR
+        self.push_subject = str(cfg.get("push_subject") or "").strip() or web_push.DEFAULT_SUBJECT
         self.owner_id = OWNER
         self.bot_user_id = BOT
         self.main_channel = MAIN_ID
@@ -703,6 +789,7 @@ class WebFrontend(ChatFrontend):
         self.pair_delay_s = 0.5
         self._store: WebStore | None = None
         self._store_lock = threading.Lock()
+        self._push: web_push.Pusher | None = None
         self._life_lock = threading.Lock()
         self._dispatch_lock = threading.Lock()
         self._rooms_lock = threading.Lock()
@@ -729,6 +816,16 @@ class WebFrontend(ChatFrontend):
                 self._store = WebStore(self.store_path)
             return self._store
 
+    @property
+    def push(self) -> web_push.Pusher:
+        """The Web Push sender; its VAPID key sits beside the store."""
+        store = self.store
+        with self._store_lock:
+            if self._push is None:
+                self._push = web_push.Pusher(store, self.store_path.parent / web_push.KEY_FILE,
+                                             subject=self.push_subject)
+            return self._push
+
     # lifecycle
 
     def start(self) -> None:
@@ -753,6 +850,8 @@ class WebFrontend(ChatFrontend):
                                             kwargs={"poll_interval": self.poll_s},
                                             name="webchat-http", daemon=True)
             self._thread.start()
+            if web_push.AVAILABLE:
+                self.push.start()
             log.info("web chat serving on %s:%d%s/", self.bind, self.port, self.base_path)
 
     def run_forever(self) -> None:
@@ -767,6 +866,8 @@ class WebFrontend(ChatFrontend):
             srv, self._server = self._server, None
         if self._store is not None:
             self._store.close_subscribers()
+        if self._push is not None:
+            self._push.stop()
         if srv is not None:
             srv.shutdown()
             srv.server_close()
@@ -864,6 +965,64 @@ class WebFrontend(ChatFrontend):
                 "url": f"{self.base_path}/api/files/{urllib.parse.quote(fid, safe='')}",
                 "mimetype": mimetype, "size": int(size)}
 
+    # notifications (Web Push)
+
+    def notify(self, title: str, body: str = "", url: str = "", tag: str = "", *,
+               urgency: str = "normal", at: float | None = None, wait: bool = False) -> dict:
+        """Push a notification to every browser that turned them on: the
+        title, the first line of `body`, and `url` to open on a tap. `tag`
+        names the thread: one notification per tag on the device, and at
+        most one push per thread in 30 s (web_push.Pusher.notify). `at`
+        (a Unix time ahead) queues it for the worker; `wait` sends before
+        returning. Never raises: push is an extra, and a failure is logged."""
+        if not web_push.AVAILABLE:
+            return {"sent": 0, "push": "off"}
+        try:
+            return self.push.notify(title, body, url, tag, urgency=urgency, at=at, wait=wait)
+        except Exception:
+            log.exception("web chat: a push failed")
+            return {"sent": 0, "error": "push failed"}
+
+    def cancel_notify(self, tag: str) -> bool:
+        """Drop the push queued under `tag`; never raises."""
+        try:
+            return web_push.AVAILABLE and self.push.cancel(tag)
+        except Exception:
+            log.exception("web chat: a queued push could not be cancelled")
+            return False
+
+    def app_url(self) -> str:
+        """The web app's own address: public_url, else the base path."""
+        return self._site() + "/"
+
+    @staticmethod
+    def _push_tag(row: dict) -> str:
+        """A thread's notification tag: one notification per thread."""
+        return f"{row['channel']}/{row['thread_key']}"
+
+    def _push_message(self, row: dict | None) -> None:
+        """A new bot message in the DM channel is pushed."""
+        if not row or row.get("author") != BOT or row.get("kind") != "message":
+            return
+        ch = self.store.channel(row["channel"])
+        if not ch or ch["kind"] != "dm":
+            return
+        self.notify("Tacitus", row.get("text") or "",
+                    self._permalink(row["channel"], row["thread_key"], row["id"]),
+                    self._push_tag(row))
+
+    def _push_card(self, row: dict | None, card: ConfirmationCard) -> None:
+        """A new card is pushed at high urgency: its title, then its first
+        line (a line of the card, a field, else the body)."""
+        if not row:
+            return
+        first = [*(card.lines or []), *(f"{f.label}: {f.value}" for f in card.fields or []),
+                 card.body or ""]
+        body = next((ln for ln in first if web_push.plain_line(ln)), "")
+        self.notify(card.title or "Confirm", body,
+                    self._permalink(row["channel"], row["thread_key"], row["id"]),
+                    self._push_tag(row), urgency="high")
+
     # messages
 
     def post(self, channel: str, text: str, *, thread_ts: str | None = None,
@@ -872,6 +1031,7 @@ class WebFrontend(ChatFrontend):
         row = self.store.add_message(channel, mid=None,
                                      thread_key=self._thread_for(channel, thread_ts),
                                      author=BOT, kind="message", text=self._out(text))
+        self._push_message(row)
         return self._ref(row)
 
     def update(self, ref: MessageRef, text: str) -> bool:
@@ -904,6 +1064,7 @@ class WebFrontend(ChatFrontend):
                                      thread_key=self._thread_for(channel, thread_ts),
                                      author=BOT, kind="card", text=self._card_text(card),
                                      card=self._card_json(card))
+        self._push_card(row, card)
         return self._ref(row)
 
     def card_fits(self, card: ConfirmationCard) -> bool:
@@ -1130,8 +1291,12 @@ class WebFrontend(ChatFrontend):
         is converted as post() converts it; the owner's is kept as typed."""
         author = OWNER if author == OWNER else BOT
         out = self._out(text) if author == BOT else (text or "")
-        return self._mirror_upsert(ref, "update", author=author, kind="message", text=out,
-                                   set_kind=False)
+        new = self.store.message(ref.channel, ref.id) is None
+        row = self._mirror_upsert(ref, "update", author=author, kind="message", text=out,
+                                  set_kind=False)
+        if new:
+            self._push_message(row)
+        return row
 
     def mirror_update(self, ref: MessageRef, text: str) -> dict:
         """Replace a stored message's text (a missing one is stored)."""
@@ -1142,8 +1307,13 @@ class WebFrontend(ChatFrontend):
                                    set_kind=False)
 
     def mirror_card(self, ref: MessageRef, card: ConfirmationCard) -> dict:
-        return self._mirror_upsert(ref, "card", author=BOT, kind="card",
-                                   text=self._card_text(card), card=self._card_json(card))
+        """Store a card the primary posted or changed; a new one is pushed."""
+        new = self.store.message(ref.channel, ref.id) is None
+        row = self._mirror_upsert(ref, "card", author=BOT, kind="card",
+                                  text=self._card_text(card), card=self._card_json(card))
+        if new:
+            self._push_card(row, card)
+        return row
 
     def mirror_card_status(self, ref: MessageRef, text: str) -> dict:
         return self._mirror_upsert(ref, "status", author=BOT, kind="status", text=text or "")
@@ -1416,7 +1586,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if segs == ["me"]:
                 self._json(200, {"owner": fe.owner_id, "bot": fe.bot_user_id,
                                  "public_url": fe.public_url or None,
-                                 "base_path": fe.base_path})
+                                 "base_path": fe.base_path, "push": web_push.AVAILABLE})
+                return None
+            if segs == ["push", "vapid"]:
+                self._json(200, {"key": self._pusher().vapid.public_key})
                 return None
             if segs == ["channels"]:
                 self._json(200, store.channels())
@@ -1457,6 +1630,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return after
             if n == 3 and segs[0] == "channels" and segs[2] == "files":
                 return self._upload(segs[1])
+            if segs == ["push", "subscribe"]:
+                self._push_subscribe(self._read_json())
+                self._json(200, {"ok": True})
+                return None
+            if segs == ["push", "unsubscribe"]:
+                endpoint = self._read_json().get("endpoint")
+                if not isinstance(endpoint, str) or not endpoint:
+                    raise _HttpError(400, "endpoint is required")
+                self._json(200, {"ok": True,
+                                 "removed": self._pusher().store.push_unsubscribe(endpoint)})
+                return None
             if n == 4 and segs[0] == "cards" and segs[3] == "actions":
                 body = self._read_json()
                 action_id = body.get("action_id")
@@ -1596,6 +1780,33 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         return body
 
     # routes with bodies of their own
+
+    def _pusher(self) -> web_push.Pusher:
+        if not web_push.AVAILABLE:
+            raise _HttpError(404, "web push is off: the cryptography package is missing")
+        return self.fe.push
+
+    def _push_subscribe(self, body: dict) -> None:
+        """Keep a browser's PushSubscription (its toJSON()). The endpoint must
+        be on a known push service and the keys well formed. A device paired
+        through the relay's origin below "all" may not subscribe: the relay
+        serves that page's code, and a subscription outlives the pairing."""
+        if (self.headers.get("X-Tacitus-Relay-Cards") or "").lower() == "deny":
+            raise _HttpError(403, "not from a device paired on the relay's origin")
+        pusher = self._pusher()
+        endpoint = body.get("endpoint")
+        keys = body.get("keys")
+        if not isinstance(endpoint, str) or not pusher.allow(endpoint):
+            raise _HttpError(400, "the endpoint is not a known push service")
+        if not isinstance(keys, dict):
+            raise _HttpError(400, "keys are required")
+        try:
+            web_push.check_public(web_push.unb64u(keys.get("p256dh")))
+            if len(web_push.unb64u(keys.get("auth"))) != 16:
+                raise ValueError("auth")
+        except ValueError:
+            raise _HttpError(400, "the keys are not a P-256 key and a 16-byte secret") from None
+        pusher.store.push_subscribe(endpoint, {"p256dh": keys["p256dh"], "auth": keys["auth"]})
 
     def _pair(self) -> None:
         body = self._read_json()
