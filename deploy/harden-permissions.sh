@@ -42,6 +42,15 @@
 #     removed. Its linger is switched off unless the deck builder, which
 #     needs it, is enabled. scripts/boundary-audit.py reports all of it.
 #
+#   The code tree and updates: with an update channel on (update.channel in
+#     ea-config.json or the owner-private update.json; a new install's
+#     template says auto), /opt/ea-system becomes the updater's release
+#     layout, a root-owned link into the owner's /opt/ea-system.releases
+#     (scripts/update.py layout), and the hourly tacitus-update.timer runs
+#     the updater as the owner. A layout already there is the updater's, and
+#     its code is left alone. With no channel the tree stays the plain
+#     directory the post-commit hook keeps at HEAD (docs/updates.md).
+#
 #   The bot unit: the chat bot runs as a system unit, ea-chat-bot.service,
 #     as the owner with SupplementaryGroups=ea (a user unit keeps the groups
 #     its user manager started with, and loses the ea group it needs). On a
@@ -124,6 +133,7 @@ for p in "$EABOT_TREE/ea-chat-bot.py" "$VENV_PY" \
     [ -e "$p" ] || { echo "missing expected path: $p" >&2; exit 1; }
 done
 echo "[harden] owner=$OWNER  interpreter=$VENV_PY  live=$LIVE  private=$PRIV"
+OWNER_GROUP="$(id -gn "$OWNER")"
 
 # Owner-side steps run AS the owner, never as root: they read files in ea-bot
 # space, and the owner's ownership checks are what decide what is copied.
@@ -145,7 +155,6 @@ elif [ -e "$USER_UNIT" ]; then
     BOT_RETIRE=1
 elif as_owner "$VENV_PY" "$REPO_DIR/preprocessor/ea_config.py" feature chat >/dev/null 2>&1; then
     echo "[harden] no ea-chat-bot unit yet and the profile has a chat platform: writing /etc/systemd/system/ea-chat-bot.service"
-    OWNER_GROUP="$(id -gn "$OWNER")"
     cat > /etc/systemd/system/ea-chat-bot.service <<EOF
 # Written by deploy/harden-permissions.sh. ExecStart, WorkingDirectory and
 # the environment files come from ea-chat-bot.service.d/harden.conf.
@@ -175,17 +184,51 @@ fi
 echo "[harden] 1/7  owner-owned code tree at $LIVE"
 # The code comes from the owner's own repo (the one this script is in), as
 # `git archive` of its HEAD run as the owner, never from ea-bot's copy.
-install -d -o "$OWNER" -g ea -m 750 "$LIVE"
-EXPORT="$(mktemp -d)"
-chmod 755 "$EXPORT"
-( set -o pipefail
-  runuser -u "$OWNER" -- git -C "$REPO_DIR" -c tar.umask=022 archive --format=tar HEAD \
-      | tar -x -C "$EXPORT" -f - ) \
-    || { rm -rf "$EXPORT"; echo "git archive of $REPO_DIR failed; $LIVE unchanged" >&2; exit 1; }
-rsync -a --delete --exclude .git "$EXPORT/" "$LIVE/"
-rm -rf "$EXPORT"
-runuser -u "$OWNER" -- git -C "$REPO_DIR" rev-parse --short HEAD > "$LIVE/.deployed-commit" 2>/dev/null || true
-chown -R "$OWNER":ea "$LIVE"
+# export_head DIR: that export into DIR (an empty directory).
+export_head() {
+    ( set -o pipefail
+      runuser -u "$OWNER" -- git -C "$REPO_DIR" -c tar.umask=022 archive --format=tar HEAD \
+          | tar -x -C "$1" -f - )
+}
+# The update channel decides the tree's shape (docs/updates.md): latest or
+# stable makes it the updater's release layout; off (or no channel on a
+# tree the hook keeps) leaves it the plain directory.
+CHANNEL="$(as_owner "$VENV_PY" "$REPO_DIR/scripts/update.py" --live "$LIVE" channel 2>/dev/null || echo off)"
+UPDATER=0
+if [ -L "$LIVE" ]; then
+    echo "  $LIVE is the updater's release layout (channel $CHANNEL); its code is the updater's to change"
+    "$VENV_PY" -I "$REPO_DIR/scripts/update.py" --live "$LIVE" layout --owner "$OWNER"
+    UPDATER=1
+elif [ "$CHANNEL" = latest ] || [ "$CHANNEL" = stable ]; then
+    echo "  update channel $CHANNEL: $LIVE becomes the updater's release layout (docs/updates.md)"
+    if [ -d "$LIVE" ]; then
+        "$VENV_PY" -I "$REPO_DIR/scripts/update.py" --live "$LIVE" layout --owner "$OWNER"
+    else
+        # The first release is the checkout's HEAD; the version file names it
+        # when HEAD is a release tag, and the updater moves on from there.
+        SEED="$(mktemp -d)"
+        chmod 755 "$SEED"
+        export_head "$SEED" \
+            || { rm -rf "$SEED"; echo "git archive of $REPO_DIR failed; $LIVE unchanged" >&2; exit 1; }
+        runuser -u "$OWNER" -- git -C "$REPO_DIR" rev-parse --short HEAD > "$SEED/.deployed-commit" 2>/dev/null || true
+        runuser -u "$OWNER" -- git -C "$REPO_DIR" describe --tags --exact-match --match 'v[0-9]*' HEAD \
+            > "$SEED/.version" 2>/dev/null || rm -f "$SEED/.version"
+        "$VENV_PY" -I "$REPO_DIR/scripts/update.py" --live "$LIVE" layout --owner "$OWNER" --seed "$SEED" \
+            || { rm -rf "$SEED"; echo "the release layout failed; $LIVE unchanged" >&2; exit 1; }
+        rm -rf "$SEED"
+    fi
+    UPDATER=1
+else
+    install -d -o "$OWNER" -g ea -m 750 "$LIVE"
+    EXPORT="$(mktemp -d)"
+    chmod 755 "$EXPORT"
+    export_head "$EXPORT" \
+        || { rm -rf "$EXPORT"; echo "git archive of $REPO_DIR failed; $LIVE unchanged" >&2; exit 1; }
+    rsync -a --delete --exclude .git "$EXPORT/" "$LIVE/"
+    rm -rf "$EXPORT"
+    runuser -u "$OWNER" -- git -C "$REPO_DIR" rev-parse --short HEAD > "$LIVE/.deployed-commit" 2>/dev/null || true
+    chown -R "$OWNER":ea "$LIVE"
+fi
 
 echo "[harden] 2/7  owner-owned env file for the bot ($BOT_ENV)"
 install -d -o "$OWNER" -g "$OWNER" -m 700 "$OWNER_HOME/.ea-private"
@@ -296,6 +339,54 @@ $(mediator_sandbox "$OWNER_HOME" "$EABOT_HOME")
 EOF
 else
 echo "[harden] 6/7  ea-mail-mediator drop-in: skipped (no unit)"
+fi
+
+if [ "$UPDATER" = 1 ]; then
+echo "[harden] 6b/7 the update timer (tacitus-update.timer, hourly)"
+# The updater runs as the owner with the ea group, as the bot does: it
+# writes the release directory, the owner-private status and, as ea-bot,
+# the EA's copy of the status. It restarts the bot through the grant
+# below, the one the deploy hook uses.
+cat > /etc/systemd/system/tacitus-update.service <<UNIT
+# Written by deploy/harden-permissions.sh: scripts/update.py installs the
+# newest signed release on the channel (docs/updates.md).
+[Unit]
+Description=Tacitus updater (signed releases)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=$OWNER
+Group=$OWNER_GROUP
+SupplementaryGroups=ea
+Environment=HOME=$OWNER_HOME
+ExecStart=$VENV_PY $LIVE/scripts/update.py run
+Nice=10
+TimeoutStartSec=45min
+UNIT
+cat > /etc/systemd/system/tacitus-update.timer <<UNIT
+# Written by deploy/harden-permissions.sh.
+[Unit]
+Description=Tacitus updater, hourly
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=55min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+chmod 644 /etc/systemd/system/tacitus-update.service /etc/systemd/system/tacitus-update.timer
+systemctl daemon-reload
+if systemctl enable --now tacitus-update.timer >/dev/null 2>&1; then
+    echo "  enabled: systemctl list-timers tacitus-update.timer; each run is in journalctl -u tacitus-update"
+else
+    echo "  WARNING: could not enable tacitus-update.timer" >&2
+fi
+else
+echo "[harden] 6b/7 the update timer: skipped (updates off; the post-commit hook deploys this tree)"
 fi
 
 UNITS=""

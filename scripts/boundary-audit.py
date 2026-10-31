@@ -550,9 +550,16 @@ def check_code_trees(ctx: Ctx) -> list[dict]:
     else:
         problems = []
         real = os.path.realpath(live)
+        # The updater's release layout (docs/updates.md): the tree is a link
+        # into <live>.releases, which the owner holds so the updater can
+        # switch releases without root. The owner may own that one
+        # directory; everything above it is still root's alone.
+        layout = os.path.islink(live)
+        releases = os.path.realpath(str(live) + ".releases") if layout else None
         for d in _prefixes(os.path.dirname(real)):
             st = _lstat(d)
-            if st is None or st.st_uid != 0 or st.st_mode & 0o022:
+            owners = (0, os.geteuid()) if d == releases else (0,)
+            if st is None or st.st_uid not in owners or st.st_mode & 0o022:
                 problems.append(f"{d} above it is not root's alone")
         st = _lstat(real)
         if st is not None and (st.st_uid not in (0, os.geteuid()) or st.st_mode & 0o022):
@@ -576,6 +583,13 @@ def check_code_trees(ctx: Ctx) -> list[dict]:
             out.append(res("PASS", live_name, f"{live}: under root-owned directories, nothing the "
                            "resident can change"))
         deployed = (_read_owner_tree(live / ".deployed-commit") or b"").decode(errors="replace").strip()
+        if layout:
+            # Signed releases reach this tree, not the owner's checkout.
+            version = (_read_owner_tree(live / ".version") or b"").decode(errors="replace").strip()
+            out.append(res("PASS", "code: the services' tree is the committed HEAD",
+                           f"the updater's release {version or '?'} ({deployed or '?'}); "
+                           "the checkout's HEAD does not deploy here"))
+            deployed = ""
         head = _git(ctx, "rev-parse", "--short", "HEAD")
         head = head.stdout.decode().strip() if head is not None and head.returncode == 0 else ""
         if deployed and head and not (deployed.startswith(head) or head.startswith(deployed)):

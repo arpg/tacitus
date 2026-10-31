@@ -40,6 +40,26 @@ parked, in its own channel and thread, with one line saying so; a
 resident turn is left alone because its pane kept working and the
 router delivers its reply.
 
+## Signed releases update an install
+
+A green push to `main` is a release: CI's `release` job signs the next
+`vX.Y.Z` tag (SSH key in a repository secret; `.release-key.pub` is the
+trust root). On an install with an update channel, `scripts/update.py`
+runs hourly as the owner: it fetches the tags into an owner-private
+cache, picks the channel's newest release that verifies against the
+installed `.release-key.pub` and is newer than what runs, exports it to
+`/opt/ea-system.releases/<tag>`, runs a smoke, waits until no chat turn
+or cron lane runs, moves ea-bot's copy with `scripts/deploy.sh`, renames
+a new `current` link over the old one (`/opt/ea-system` is a root-owned
+link to it), restarts the bot and the mediator, and reads the bot's log
+for 60 seconds: one main process, the frontend connected, no traceback.
+A failure switches the link back and holds the version back. The
+services resolve their own path at start, so each keeps the release it
+started from until its restart; that is why every update restarts both,
+and why the release before stays on disk. A tree the post-commit hook
+writes, with no channel set, is left to the hook, and the hook leaves a
+release layout alone. Design: docs/updates.md.
+
 ## Rooms follow their project, and Slack decides what is archived
 
 The room hygiene pass reads Slack's archived flag for every private
@@ -2316,6 +2336,8 @@ Files that participate in prompt construction and action execution:
 | `preprocessor/fetch_url.py` | Web page content extraction and the page's images; `--save-image` keeps one raster image in a deck's folder or `~/.ea/state` |
 | `preprocessor/email_to_pdf.py` | Email body to PDF conversion |
 | `preprocessor/doc_text.py` | Read-only text of a .docx (comments, tracked changes), an .xlsx (every sheet, with cell addresses), PDF or text file under the EA's document folders |
+| `scripts/update.py` | The updater: fetch and verify signed release tags (`git verify-tag` against `.release-key.pub`, the tag's own name bound to its ref), stage and smoke a release, wait for idle, move ea-bot's copy, switch `/opt/ea-system.releases/current`, restart, the 60-second health gate and its rollback; `layout` (root, once), `next-version` (CI), `relay` (the relay host) |
+| `preprocessor/update_status.py` | The updater's read side: the effective channel (`update.json`, then `update.channel`, then the tree's kind), the installed version, and the doctor's `updates` row, the `version` answer and the morning briefing's one line |
 | `preprocessor/doc_write.py` | A .docx from markdown (with Word comments anchored on its text), or an .xlsx from CSV rows, alone or into a copy of a template (header, styles and other sheets kept), under the EA's document folders |
 
 ## Rooms: threads, project channels, session mirrors, DMs, the shell (2026-09-05)
@@ -2352,10 +2374,11 @@ routing holds: the resident lane refuses scoped rooms
 spilling to its own session only while the pane is busy. A per-thread
 run claims only the draft-journal records labelled with its own run id
 (`claim_since(..., accept_unlabelled=False)`); unlabelled records (the
-resident's, a shell's) go to the late-draft sweep. The bot answers four commands itself, with no Claude call
+resident's, a shell's) go to the late-draft sweep. The bot answers five commands itself, with no Claude call
 and before the EA switch (`_handle_bot_command`): `adopt session <uuid>
 [as <model>]`, `conversations`, `name this conversation <t>`, `open a
-channel for <project> | for session <uuid> | for this conversation`.
+channel for <project> | for session <uuid> | for this conversation`,
+and `version` (the installed release, `preprocessor/update_status.py`).
 A `stop` or `cancel` in a thread whose turn is running ends that
 turn's Claude process (`preprocessor/turn_cancel.py`, `_cancel_thread_runs`):
 no reply is posted, and the drafts the run made before the stop keep

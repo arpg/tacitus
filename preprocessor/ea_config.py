@@ -55,6 +55,12 @@ DEFAULTS = {
     # "resident": the main channel and the DM share the resident pane's one
     # session, and a topic gets its own only when the pane is busy.
     "chat_sessions": "per-topic",
+    # Automatic updates (scripts/update.py, docs/updates.md): "auto" follows
+    # the profile's channel (latest on assistant, stable otherwise),
+    # "latest", "stable" or "off". Empty means not set: a code tree the
+    # post-commit hook writes stays the hook's, and the updater leaves it.
+    # The owner-private update.json outranks this value.
+    "update": {"channel": ""},
     # Timezone-aware quiet hours: proactive Slack posts that would land
     # during this local window are held and flushed as one digest when the
     # window ends (see preprocessor/quiet_hours.py). The window is
@@ -398,6 +404,18 @@ def mail_tagger_model(config_path: Path | None = None) -> str:
     val = load(config_path).get("mail_tagger")
     model = val.get("model") if isinstance(val, dict) else None
     return model if isinstance(model, str) and model.strip() else DEFAULTS["mail_tagger"]["model"]
+
+
+UPDATE_CHANNELS = ("auto", "latest", "stable", "off")
+
+
+def get_update_channel(config_path: Path | None = None) -> str:
+    """update.channel as written, or "" when it is absent or not one of
+    UPDATE_CHANNELS. "" is not "off": scripts/update.py decides what an
+    unset channel means from the code tree (docs/updates.md)."""
+    block = load(config_path).get("update")
+    val = block.get("channel") if isinstance(block, dict) else None
+    return val if val in UPDATE_CHANNELS else ""
 
 
 def get_profile(config_path: Path | None = None) -> str:

@@ -11,6 +11,11 @@
 # <prefix> is org.ea-system on a new install; an install deployed under the
 # legacy prefix keeps that one.
 #
+# With an update channel on (docs/updates.md), /opt/ea-system becomes the
+# updater's release layout (scripts/update.py layout) and a third
+# LaunchDaemon, <prefix>.tacitus-update, runs the updater as the owner every
+# hour. Without one, the tree stays the plain directory deploy.sh keeps.
+#
 # Same guarantees as the hardened Linux units: code from /opt/ea-system (an
 # owner-owned export of the owner's repo under root-owned /opt, not ea-bot's
 # clone), the interpreter from the owner's private home, and environment only
@@ -65,6 +70,7 @@ for _n in ea-chat-bot ea-mail-mediator; do
 done
 BOT=$LABEL_PREFIX.ea-chat-bot
 MED=$LABEL_PREFIX.ea-mail-mediator
+UPD=$LABEL_PREFIX.tacitus-update
 PATH_LIST="$REPO_DIR/.venv/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 plist_of() { echo "/Library/LaunchDaemons/$1.plist"; }
@@ -81,23 +87,23 @@ job_line() {   # one line of state for a job
 
 status() {
     echo "== jobs"
-    for j in "$BOT" "$MED"; do printf '  %-32s %s\n' "$j" "$(job_line "$j")"; done
+    for j in "$BOT" "$MED" "$UPD"; do printf '  %-32s %s\n' "$j" "$(job_line "$j")"; done
     echo "== code"
-    echo "  live:  $(cat "$LIVE/.deployed-commit" 2>/dev/null || echo none)  ($LIVE)"
+    echo "  live:  $(cat "$LIVE/.version" 2>/dev/null || true) $(cat "$LIVE/.deployed-commit" 2>/dev/null || echo none)  ($LIVE)"
     echo "  repo:  $(sudo -u "$OWNER" git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo ?)  ($REPO_DIR)"
     echo "== files"
-    ls -l "$LAUNCHER" "$(plist_of "$BOT")" "$(plist_of "$MED")" "$SUDOERS" 2>&1 | sed 's/^/  /'
+    ls -l "$LAUNCHER" "$(plist_of "$BOT")" "$(plist_of "$MED")" "$(plist_of "$UPD")" "$SUDOERS" 2>&1 | sed 's/^/  /'
     ls -l "$BOT_ENV" "$SECRETS" "$PRIV/chat.json" 2>&1 | sed 's/^/  /'
 }
 
 if [ "${1:-}" = --status ]; then status; exit 0; fi
 if [ "${1:-}" = --remove ]; then
-    for j in "$BOT" "$MED"; do
+    for j in "$BOT" "$MED" "$UPD"; do
         launchctl bootout "system/$j" 2>/dev/null || true
         rm -f "$(plist_of "$j")"
     done
     rm -f "$LAUNCHER" "$SUDOERS"
-    echo "Removed both LaunchDaemons, the launcher and $SUDOERS."
+    echo "Removed the LaunchDaemons, the launcher and $SUDOERS."
     echo "Left in place: $LIVE and $PRIV (bot.env, secrets.env, chat.json)."
     exit 0
 fi
@@ -131,18 +137,47 @@ else
 fi
 
 echo "[services] 1/7  owner-owned code tree at $LIVE (git archive of $REPO_DIR HEAD)"
-install -d -o "$OWNER" -g ea -m 750 "$LIVE"
-EXPORT="$(mktemp -d)"
-chmod 755 "$EXPORT"
-( set -o pipefail
-  sudo -u "$OWNER" git -C "$REPO_DIR" -c tar.umask=022 archive --format=tar HEAD \
-      | tar -x -C "$EXPORT" -f - ) \
-    || { rm -rf "$EXPORT"; echo "ERROR: git archive failed; $LIVE unchanged" >&2; exit 1; }
-rsync -a --delete --exclude .git "$EXPORT/" "$LIVE/"
-rm -rf "$EXPORT"
-sudo -u "$OWNER" git -C "$REPO_DIR" rev-parse --short HEAD > "$LIVE/.deployed-commit"
-chown -R "$OWNER:ea" "$LIVE"
-chmod 750 "$LIVE"
+# export_head DIR: the owner's HEAD into DIR (an empty directory).
+export_head() {
+    ( set -o pipefail
+      sudo -u "$OWNER" git -C "$REPO_DIR" -c tar.umask=022 archive --format=tar HEAD \
+          | tar -x -C "$1" -f - )
+}
+# The update channel decides the tree's shape (docs/updates.md), as in
+# deploy/harden-permissions.sh.
+CHANNEL="$(as_owner "$VENV_PY" "$REPO_DIR/scripts/update.py" --live "$LIVE" channel 2>/dev/null || echo off)"
+UPDATER=0
+if [ -L "$LIVE" ]; then
+    echo "  $LIVE is the updater's release layout (channel $CHANNEL); its code is the updater's to change"
+    "$VENV_PY" -I "$REPO_DIR/scripts/update.py" --live "$LIVE" layout --owner "$OWNER"
+    UPDATER=1
+elif [ "$CHANNEL" = latest ] || [ "$CHANNEL" = stable ]; then
+    echo "  update channel $CHANNEL: $LIVE becomes the updater's release layout (docs/updates.md)"
+    if [ -d "$LIVE" ]; then
+        "$VENV_PY" -I "$REPO_DIR/scripts/update.py" --live "$LIVE" layout --owner "$OWNER"
+    else
+        SEED="$(mktemp -d)"
+        chmod 755 "$SEED"
+        export_head "$SEED" || { rm -rf "$SEED"; echo "ERROR: git archive failed; $LIVE unchanged" >&2; exit 1; }
+        sudo -u "$OWNER" git -C "$REPO_DIR" rev-parse --short HEAD > "$SEED/.deployed-commit"
+        sudo -u "$OWNER" git -C "$REPO_DIR" describe --tags --exact-match --match 'v[0-9]*' HEAD \
+            > "$SEED/.version" 2>/dev/null || rm -f "$SEED/.version"
+        "$VENV_PY" -I "$REPO_DIR/scripts/update.py" --live "$LIVE" layout --owner "$OWNER" --seed "$SEED" \
+            || { rm -rf "$SEED"; echo "ERROR: the release layout failed; $LIVE unchanged" >&2; exit 1; }
+        rm -rf "$SEED"
+    fi
+    UPDATER=1
+else
+    install -d -o "$OWNER" -g ea -m 750 "$LIVE"
+    EXPORT="$(mktemp -d)"
+    chmod 755 "$EXPORT"
+    export_head "$EXPORT" || { rm -rf "$EXPORT"; echo "ERROR: git archive failed; $LIVE unchanged" >&2; exit 1; }
+    rsync -a --delete --exclude .git "$EXPORT/" "$LIVE/"
+    rm -rf "$EXPORT"
+    sudo -u "$OWNER" git -C "$REPO_DIR" rev-parse --short HEAD > "$LIVE/.deployed-commit"
+    chown -R "$OWNER:ea" "$LIVE"
+    chmod 750 "$LIVE"
+fi
 
 echo "[services] 2/7  owner-owned bot environment ($BOT_ENV)"
 MODEL_LINE="$(grep -E '^EA_MODEL=' "$EA_TREE/.env" 2>/dev/null || true)"
@@ -211,6 +246,52 @@ EOF
 case " $JOBS " in *" $BOT "*) write_plist "$BOT" ea-chat-bot.py "" 10 ;; esac
 write_plist "$MED" preprocessor/mail_mediator.py "
         <key>EA_DIR</key><string>$EA_TREE</string>" 5
+
+# The updater: hourly, as the owner, with its own wait of up to 15 minutes
+# first (launchd has no randomized delay). Not KeepAlive: each run ends.
+if [ "$UPDATER" = 1 ]; then
+    install -d -o "$OWNER" -g "$OWNER_GROUP" -m 700 "$PRIV/logs"
+    [ -e "$PRIV/logs/update.log" ] || install -o "$OWNER" -g "$OWNER_GROUP" -m 600 /dev/null "$PRIV/logs/update.log"
+    cat > "$(plist_of "$UPD").tmp" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Written by deploy/macos/install-services.sh. Do not edit; re-run it. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>$UPD</string>
+    <key>UserName</key><string>$OWNER</string>
+    <key>InitGroups</key><true/>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$VENV_PY</string>
+        <string>$LIVE/scripts/update.py</string>
+        <string>run</string>
+        <string>--jitter</string><string>900</string>
+    </array>
+    <key>WorkingDirectory</key><string>$OWNER_HOME</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key><string>$OWNER_HOME</string>
+        <key>PATH</key><string>$PATH_LIST</string>
+        <key>PYTHONUNBUFFERED</key><string>1</string>
+    </dict>
+    <key>StartInterval</key><integer>3600</integer>
+    <key>RunAtLoad</key><false/>
+    <key>StandardOutPath</key><string>$PRIV/logs/update.log</string>
+    <key>StandardErrorPath</key><string>$PRIV/logs/update.log</string>
+</dict>
+</plist>
+PLIST
+    plutil -lint "$(plist_of "$UPD").tmp" >/dev/null
+    chown root:wheel "$(plist_of "$UPD").tmp"; chmod 644 "$(plist_of "$UPD").tmp"
+    mv -f "$(plist_of "$UPD").tmp" "$(plist_of "$UPD")"
+    launchctl bootout "system/$UPD" 2>/dev/null || true
+    launchctl bootstrap system "$(plist_of "$UPD")"
+    echo "  $UPD: hourly; output in $PRIV/logs/update.log"
+else
+    launchctl bootout "system/$UPD" 2>/dev/null || true
+    rm -f "$(plist_of "$UPD")"
+fi
 
 # The post-commit deploy restarts the two jobs; these exact commands only.
 cat > "$SUDOERS.tmp" <<EOF

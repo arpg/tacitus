@@ -398,6 +398,12 @@ Exit codes: 0 green, 1 red or amber, 2 harness, 3 skipped.
   unless `--force`. The verdict line is in the tag message (`git tag -n3`).
   Tags are for new functionality; a bug fix found during the week ships
   on main and is covered by the Saturday run.
+- Marking a release stable: `scripts/cut-tag.sh --stable [vX.Y.Z]
+  [--push]` on a checkout at that release (CI signs a `vX.Y.Z` tag on
+  every green push to main, docs/updates.md). It verifies the tag
+  against `.release-key.pub`, runs the suite on HEAD as that tag, and on
+  green or amber moves `channels/stable` there, the verdict line in its
+  message. Installs on the `stable` channel follow it.
 - A tag push, or a manual dispatch, on GitHub:
   `.github/workflows/release-suite.yml` (next section).
 

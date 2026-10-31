@@ -270,7 +270,17 @@ python3 scripts/install/user_init.py --update              # every phase, showin
 
 ## Upgrade
 
-From your checkout, on `main`:
+**Updates install themselves.** On an install with an update channel (a
+new install's template says `auto`), an hourly job installs each new
+signed release once nothing is running, and switches back on its own
+when the release does not come up healthy. The morning briefing says
+`Updated to vX.Y.Z` once, the doctor's `updates` row and the `version`
+chat command say what runs, and `python3 /opt/ea-system/scripts/update.py
+status` says the rest. [docs/updates.md](updates.md) is the design, and
+says how to turn updates on for an install made before them.
+
+An install with no channel (no `update` key in `ea-config.json`) updates
+from its checkout. From your checkout, on `main`:
 
 ```bash
 git pull                                       # fetch the new code; the post-merge hook deploys it

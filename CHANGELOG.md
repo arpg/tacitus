@@ -6,6 +6,23 @@ repository that preceded it.
 
 ## Unreleased
 
+- **Installs update themselves.** Every push to `main` that passes the
+  full CI tiers becomes a release: the `release` job signs the next
+  `vX.Y.Z` tag with an SSH key held as a repository secret, and
+  `.release-key.pub` is the only trust root. `scripts/update.py`, run
+  hourly by `tacitus-update.timer` (or a LaunchDaemon on macOS), installs
+  the newest signed release on the install's channel (`update.channel`:
+  `auto`, `latest`, `stable`, `off`): it verifies the tag, stages the
+  tree under `/opt/ea-system.releases/`, runs a smoke, waits until no
+  chat turn or cron lane runs, moves ea-bot's copy, switches a link,
+  restarts the services and gives them 60 seconds to come up connected.
+  A release that fails is switched back and held back. The doctor gains
+  an `updates` row, the morning briefing one line when the version
+  changed, and the chat bot a `version` command. `scripts/cut-tag.sh
+  --stable` moves the `stable` channel. An install whose tree the
+  post-commit hook writes and that has no `update` key is left to the
+  hook (docs/updates.md).
+
 - **`stop` and `cancel` work in rooms and the DM.** The cancel check
   read the header the bot puts before a room or DM message, so every
   message there was longer than six words and never a cancel. A `cancel

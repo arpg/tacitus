@@ -37,6 +37,7 @@ undoes (it leaves `/opt/ea-system` and `~/.ea-private`).
 | `~/.ea-private/chat.json` | owner 600 | the chat server, bot and owner id the bot trusts (seeded once) |
 | `~/.ea-private/logs/<label>.launchd.log` | owner 600 | each service's stdout and stderr |
 | `/etc/sudoers.d/ea-services` | root 440 | owner may run `launchctl kickstart -k` for these two labels only |
+| `/Library/LaunchDaemons/org.ea-system.tacitus-update.plist` | root:wheel 644 | with an update channel on: runs `/opt/ea-system/scripts/update.py run --jitter 900` as the owner every hour; output in `~/.ea-private/logs/update.log` ([updates.md](updates.md)) |
 
 The labels start with `org.ea-system` on a new install. An install that
 was deployed under the legacy prefix keeps its labels: the installers and
