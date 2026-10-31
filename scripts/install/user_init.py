@@ -801,13 +801,21 @@ def write_style(values: dict, ctx: dict | None = None) -> dict:
 
 def published_graph_env(profile: str | None) -> dict:
     """The ~/.ea/.env keys for the project's published Graph app: the
-    user's own client id, method and tenant cleared (an earlier
-    registration's values would win over the app), and GRAPH_SCOPES set to
-    the least the profile needs (preprocessor/published_apps.py)."""
+    user's own client id, method, tenant and scopes cleared (an earlier
+    registration's values would win over the app). The scopes go in the
+    owner-private file (published_graph_private)."""
+    return {"GRAPH_AUTH_METHOD": "", "GRAPH_CLIENT_ID": "", "GRAPH_AUTHORITY": "",
+            "GRAPH_SCOPES": ""}
+
+
+def published_graph_private(profile: str | None) -> dict:
+    """The owner-private secrets.env keys for the published app:
+    GRAPH_SCOPES, the least the profile needs (preprocessor/published_apps.py).
+    An owner process takes the published app's settings only from there
+    (graph_client, PUBLISHED_SETTING_KEYS)."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
     import published_apps
-    return {"GRAPH_AUTH_METHOD": "", "GRAPH_CLIENT_ID": "", "GRAPH_AUTHORITY": "",
-            "GRAPH_SCOPES": " ".join(published_apps.graph_scopes(profile))}
+    return {"GRAPH_SCOPES": " ".join(published_apps.graph_scopes(profile))}
 
 
 def graph_sign_in(method: str) -> None:
@@ -921,10 +929,14 @@ def write_auth(values: dict, ctx: dict, sign_in: bool = False) -> None:
         print("  Skipped. You can authenticate later via:")
         print("    python3 preprocessor/graph_client.py")
     else:
+        private_data: dict = {}
         if method == "published":
             # The project's app (docs/published-oauth-apps.md): no client id,
-            # method or tenant of the user's own, and the profile's scopes.
+            # method or tenant of the user's own, and the profile's scopes
+            # in the owner-private file.
             env_data = published_graph_env(ctx.get("profile"))
+            private_data = published_graph_private(ctx.get("profile"))
+            merge_env_file(private_secrets_file(), private_data)
         else:
             env_data = {"GRAPH_AUTH_METHOD": method, "GRAPH_CLIENT_ID": values["graph-client-id"]}
         tenant = values.get("graph-tenant-id") or ""
@@ -938,7 +950,7 @@ def write_auth(values: dict, ctx: dict, sign_in: bool = False) -> None:
                 os.environ["GRAPH_CLIENT_SECRET"] = secret
         merge_env_file(EA_DIR / ".env", env_data)
         if sign_in and values.get("graph-sign-in-now"):
-            for k, v in env_data.items():
+            for k, v in {**env_data, **private_data}.items():
                 os.environ[k] = v  # so the in-process sign-in picks them up
             graph_sign_in(method)
         else:

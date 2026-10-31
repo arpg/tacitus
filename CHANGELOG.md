@@ -6,6 +6,17 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The published app's trust statement is corrected.** An owner of the
+  Entra registration can add a redirect URI and a secret without a new
+  consent, so the docs no longer say the project cannot widen its own
+  access; they name the guards (a dedicated tenant, two owners with FIDO2
+  keys, audit alerts on credential and redirect changes, publisher
+  verification). The admin-consent link asks for the `email` profile's
+  scopes unless `--profile` names another, and `it-request.md`
+  recommends "Assignment required". For the published app an owner
+  process takes `GRAPH_SCOPES`, `GRAPH_REDIRECT_URI` and
+  `GRAPH_AUTH_METHOD` only from `~/.ea-private/secrets.env`, where setup
+  now writes the profile's scopes.
 - **Updates trust only signed releases on main, against a pinned key.**
   An install pins the release key in the owner-private `update.json`
   (`release_key`), written once by the root step from the first release,

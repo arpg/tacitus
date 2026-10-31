@@ -95,18 +95,23 @@ def graph_client_id(configured: str = "") -> tuple[str, str]:
     return "", ""
 
 
+# The profile whose scopes the admin-consent link asks for when none is
+# named: drafts, filing and reading the calendar, no Send and no Create.
+CONSENT_DEFAULT_PROFILE = "email"
+
+
 def admin_consent_url(profile: str | None = None, tenant: str = "organizations") -> str:
     """The link an institution's administrator opens once to consent to the
     published app for the whole tenant (Microsoft's v2 admin-consent
-    endpoint). With no profile it asks for every scope the registration
-    lists; with one, for that profile's scopes and the sign-in scopes. ""
-    while the app is not registered."""
+    endpoint): the sign-in scopes and one profile's scopes, the email
+    profile's unless `profile` names another. "all" asks for every scope
+    the registration lists. "" while the app is not registered."""
     if not PUBLISHED_GRAPH_CLIENT_ID:
         return ""
-    if profile:
-        names = list(GRAPH_SIGN_IN_SCOPES) + graph_scopes(profile)
-    else:
+    if profile == "all":
         names = graph_registered_scopes()
+    else:
+        names = list(GRAPH_SIGN_IN_SCOPES) + graph_scopes(profile or CONSENT_DEFAULT_PROFILE)
     scope = " ".join(n if n in GRAPH_SIGN_IN_SCOPES else f"https://graph.microsoft.com/{n}"
                      for n in names)
     query = urlencode({"client_id": PUBLISHED_GRAPH_CLIENT_ID, "scope": scope,
@@ -159,8 +164,10 @@ if __name__ == "__main__":
     sub = ap.add_subparsers(dest="cmd", required=True)
     url = sub.add_parser("admin-consent-url",
                          help="print the link an institution's administrator opens once")
-    url.add_argument("--profile", choices=sorted(GRAPH_SCOPES_BY_PROFILE),
-                     help="ask for this profile's scopes only (default: every registered scope)")
+    url.add_argument("--profile", choices=sorted(GRAPH_SCOPES_BY_PROFILE) + ["all"],
+                     default=CONSENT_DEFAULT_PROFILE,
+                     help="ask for this profile's scopes (default: email; assistant adds Send "
+                          "and calendar writes; all: every scope the registration lists)")
     url.add_argument("--tenant", default="organizations",
                      help="the tenant id or domain (default: organizations)")
     args = ap.parse_args()

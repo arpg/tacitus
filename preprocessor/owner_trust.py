@@ -537,6 +537,30 @@ DOTENV_SETTING_KEYS = frozenset({
 })
 
 
+# Settings the published Graph app's sign-in takes in an owner process only
+# from the owner-private secrets.env (graph_client): each one steers what
+# the sign-in asks for or where its code goes, and ~/.ea/.env is the
+# resident's. The legacy registered-app flows still read them as
+# DOTENV_SETTING_KEYS.
+PRIVATE_SETTING_KEYS = frozenset({"GRAPH_AUTH_METHOD", "GRAPH_REDIRECT_URI", "GRAPH_SCOPES"})
+
+
+def private_settings(keys=PRIVATE_SETTING_KEYS) -> dict[str, str]:
+    """The `keys` the owner-private secrets.env sets, read as data; {}
+    when this is not an owner process or the file is absent or refused."""
+    if not is_owner_process():
+        return {}
+    p = private_dir() / SECRETS_FILE
+    try:
+        data = read_owner_file(p)
+    except FileNotFoundError:
+        return {}
+    except (OwnerTrustError, OSError) as e:
+        _warn_once(f"owner secrets file refused: {e}")
+        return {}
+    return parse_env(data.decode("utf-8", errors="replace"), keys)
+
+
 def load_owner_env(secret_names=SECRET_KEYS, setting_keys=DOTENV_SETTING_KEYS) -> None:
     """Fill os.environ, without overriding it, for an owner process: the
     secrets in `secret_names` by the owner_secret rule, then `setting_keys`

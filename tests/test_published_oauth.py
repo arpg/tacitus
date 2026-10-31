@@ -167,7 +167,15 @@ def test_admin_consent_url(monkeypatch):
     assert q["redirect_uri"] == published_apps.PUBLISHED_GRAPH_CONSENT_REDIRECT
     scopes = q["scope"].split()
     assert scopes[:3] == ["openid", "profile", "offline_access"]
-    assert "https://graph.microsoft.com/Mail.Send" in scopes
+    # the default is one profile's scopes, the email profile's: no Send, no calendar writes
+    assert scopes[3:] == [f"https://graph.microsoft.com/{s}" for s in published_apps.graph_scopes("email")]
+    assert "https://graph.microsoft.com/Mail.Send" not in scopes
+
+    def scopes_of(*a, **k):
+        return dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(
+            published_apps.admin_consent_url(*a, **k)).query))["scope"].split()
+    assert "https://graph.microsoft.com/Mail.Send" in scopes_of("assistant")
+    assert len(scopes_of("all")) == len(published_apps.graph_registered_scopes())
     one = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(
         published_apps.admin_consent_url("availability", tenant="tenant-guid")).query))
     assert one["scope"].split() == ["openid", "profile", "offline_access",
@@ -518,17 +526,68 @@ def test_an_existing_registration_keeps_its_method_as_the_default(monkeypatch, t
 
 
 def test_the_published_answer_writes_the_profiles_scopes(monkeypatch, tmp_path):
+    """The scopes go in the owner-private secrets.env, which an owner
+    process reads for the published app; ~/.ea/.env has them cleared."""
     import user_init
     ea = tmp_path / "ea"
     (ea / ".env").parent.mkdir(parents=True)
-    (ea / ".env").write_text("GRAPH_CLIENT_ID=old\nGRAPH_AUTH_METHOD=confidential\nEA_MODEL=x\n")
+    (ea / ".env").write_text("GRAPH_CLIENT_ID=old\nGRAPH_AUTH_METHOD=confidential\nEA_MODEL=x\n"
+                             "GRAPH_SCOPES=Mail.Send\n")
+    priv = tmp_path / "priv"
+    monkeypatch.setenv("EA_PRIVATE_DIR", str(priv))
     monkeypatch.setattr(user_init, "EA_DIR", ea)
     monkeypatch.setattr(user_init, "AUTH_DIR", ea / "auth")
     user_init.write_auth({"graph-auth-method": "published"}, {"profile": "email"})
     env = dict(line.split("=", 1) for line in (ea / ".env").read_text().splitlines())
     assert env["GRAPH_CLIENT_ID"] == "" and env["GRAPH_AUTH_METHOD"] == ""
     assert env["GRAPH_AUTHORITY"] == "" and env["EA_MODEL"] == "x"
-    assert env["GRAPH_SCOPES"] == "Mail.ReadWrite Calendars.Read MailboxSettings.Read"
+    assert env["GRAPH_SCOPES"] == ""
+    secret = dict(line.split("=", 1) for line in (priv / "secrets.env").read_text().splitlines())
+    assert secret["GRAPH_SCOPES"] == "Mail.ReadWrite Calendars.Read MailboxSettings.Read"
+    assert os.stat(priv / "secrets.env").st_mode & 0o777 == 0o600
+
+
+def test_an_owner_takes_the_published_settings_from_the_private_file_only(monkeypatch, tmp_path):
+    """The environment of an owner process may carry ~/.ea/.env's values
+    (run-agent.sh exports them), and the resident writes that file: for
+    the published app, GRAPH_SCOPES, GRAPH_REDIRECT_URI and
+    GRAPH_AUTH_METHOD come from the owner-private secrets.env alone. A
+    registered app's flows keep the environment's values."""
+    import owner_trust
+    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: True)
+    private = {"GRAPH_SCOPES": "Calendars.ReadBasic"}
+    monkeypatch.setattr(owner_trust, "private_settings", lambda *a, **k: dict(private))
+    planted = {"GRAPH_SCOPES": "Mail.Send", "GRAPH_REDIRECT_URI": "http://localhost:9999/x",
+               "GRAPH_AUTH_METHOD": "interactive"}
+    m = _reload_gc(monkeypatch, tmp_path, published=APP_ID, env=planted)
+    assert m.CLIENT_PATH == "published"
+    assert m._effective_scopes() == ["https://graph.microsoft.com/Calendars.ReadBasic"]
+    assert m.GRAPH_REDIRECT_URI == "http://localhost:8400/callback" and m.GRAPH_AUTH_METHOD == ""
+    assert m._published_redirect_uri() == "http://localhost:8400"
+    private.clear()
+    m = _reload_gc(monkeypatch, tmp_path, published=APP_ID, env=planted)
+    assert m._effective_scopes() == [f"https://graph.microsoft.com/{s}"
+                                     for s in published_apps.PUBLISHED_GRAPH_SCOPES]
+    private.update(GRAPH_AUTH_METHOD="device_code", GRAPH_REDIRECT_URI="http://localhost:9123")
+    m = _reload_gc(monkeypatch, tmp_path, published=APP_ID, env=planted)
+    assert m.GRAPH_AUTH_METHOD == "device_code" and m._published_redirect_uri() == "http://localhost:9123"
+    # the user's own registration: the environment stands
+    m = _reload_gc(monkeypatch, tmp_path, published=APP_ID, env=dict(planted, GRAPH_CLIENT_ID=OWN_ID))
+    assert m.CLIENT_PATH == "custom" and m.GRAPH_AUTH_METHOD == "interactive"
+    assert m.GRAPH_SCOPES == ["Mail.Send"]
+
+
+def test_private_settings_reads_only_its_keys(monkeypatch, tmp_path):
+    import owner_trust
+    priv = tmp_path / "priv"
+    priv.mkdir(mode=0o700)
+    (priv / "secrets.env").write_text("GRAPH_SCOPES=Mail.Read\nGRAPH_CLIENT_SECRET=s\nEA_DIR=/x\n")
+    os.chmod(priv / "secrets.env", 0o600)
+    monkeypatch.setattr(owner_trust, "private_dir", lambda: priv)
+    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: False)
+    assert owner_trust.private_settings() == {}
+    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: True)
+    assert owner_trust.private_settings() == {"GRAPH_SCOPES": "Mail.Read"}
 
 
 def test_the_setup_page_names_the_published_sign_in_only_with_an_id(monkeypatch):

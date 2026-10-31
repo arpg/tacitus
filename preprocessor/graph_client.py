@@ -639,6 +639,38 @@ def _client_choice() -> tuple[str, str]:
 
 
 CLIENT_PATH, _CLIENT_ID = _client_choice()
+
+# The published app's sign-in settings in an owner process come only from
+# the owner-private secrets.env (docs/published-oauth-apps.md, Trust): the
+# environment may carry GRAPH_SCOPES, GRAPH_REDIRECT_URI and
+# GRAPH_AUTH_METHOD from the resident's ~/.ea/.env (run-agent.sh exports
+# them), and they decide what the sign-in asks for and where its code goes.
+# A registered app's flows, and a process that is not the owner's, keep the
+# environment's values.
+PUBLISHED_SETTING_KEYS = ("GRAPH_SCOPES", "GRAPH_REDIRECT_URI", "GRAPH_AUTH_METHOD")
+
+
+def _published_owner_settings() -> Optional[dict]:
+    """The three settings from the private secrets.env for the published
+    app in an owner process, else None (the environment stands)."""
+    if CLIENT_PATH != "published" or not _owner_trust.is_owner_process():
+        return None
+    return _owner_trust.private_settings()
+
+
+_PRIVATE_SETTINGS = _published_owner_settings()
+if _PRIVATE_SETTINGS is not None:
+    _ignored = [k for k in PUBLISHED_SETTING_KEYS
+                if os.environ.get(k, "").strip()
+                and os.environ.get(k, "").strip() != _PRIVATE_SETTINGS.get(k, "").strip()]
+    GRAPH_SCOPES = _PRIVATE_SETTINGS.get("GRAPH_SCOPES", "").replace(",", " ").split()
+    GRAPH_REDIRECT_URI = _loopback_redirect_uri(_PRIVATE_SETTINGS.get("GRAPH_REDIRECT_URI", ""))
+    GRAPH_AUTH_METHOD = _PRIVATE_SETTINGS.get("GRAPH_AUTH_METHOD", "").strip().lower()
+    if _ignored and (os.environ.get("EA_DEBUG") or sys.stderr.isatty()):
+        print(f"graph_client: the published app takes {', '.join(_ignored)} from the "
+              "owner-private secrets.env only; the environment's value is ignored",
+              file=sys.stderr)
+
 if CLIENT_PATH == "published":
     WELL_KNOWN_CLIENTS = [("published", _CLIENT_ID)]
     # The published app signs in work and school accounts of any tenant;
