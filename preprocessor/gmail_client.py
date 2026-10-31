@@ -542,6 +542,19 @@ def mark_read(email: str, message_id: str) -> dict:
     return {"status": "marked_read", "message_id": message_id}
 
 
+def mark_unread(email: str, message_id: str) -> dict:
+    """Mark a Gmail message unread (adds the UNREAD label) in place."""
+    service = _get_service(email)
+    if not service:
+        return {"error": f"No Gmail credentials for {email}"}
+    try:
+        service.users().messages().modify(
+            userId="me", id=message_id, body={"addLabelIds": ["UNREAD"]}).execute()
+    except HttpError as e:
+        return {"error": f"Gmail API error: {e}"}
+    return {"status": "marked_unread", "message_id": message_id}
+
+
 def _message_fingerprint(service, message_id: str) -> str:
     """The content fingerprint (draft_fingerprint.py) of one Gmail message,
     from its RFC 822 form. A Gmail message never changes: an edit to a draft
@@ -1396,6 +1409,11 @@ def build_parser() -> argparse.ArgumentParser:
     mread.add_argument("--email", required=True, help="Gmail address")
     mread.add_argument("--message-id", required=True)
 
+    munread = sub.add_parser("mark-unread", help="Mark a message unread in place (adds UNREAD)",
+                             allow_abbrev=False)
+    munread.add_argument("--email", required=True, help="Gmail address")
+    munread.add_argument("--message-id", required=True)
+
     ddraft = sub.add_parser("delete-draft", help="Delete a draft by ID", allow_abbrev=False)
     ddraft.add_argument("--email", required=True,
                         help="Gmail account whose draft to delete")
@@ -1585,6 +1603,12 @@ def main():
 
     elif args.command == "mark-read":
         result = mark_read(args.email, args.message_id)
+        print(json.dumps(result, indent=2))
+        if "error" in result:
+            sys.exit(1)
+
+    elif args.command == "mark-unread":
+        result = mark_unread(args.email, args.message_id)
         print(json.dumps(result, indent=2))
         if "error" in result:
             sys.exit(1)

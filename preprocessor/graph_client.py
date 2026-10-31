@@ -1077,6 +1077,12 @@ def mark_message_read(message_id: str) -> dict:
     return {"marked_read": True, "message_id": message_id}
 
 
+def mark_message_unread(message_id: str) -> dict:
+    """Mark a message unread in place. Does NOT move or archive it."""
+    graph_patch(f"/me/messages/{_id(message_id)}", {"isRead": False})
+    return {"marked_unread": True, "message_id": message_id}
+
+
 def graph_delete(endpoint: str) -> None:
     """DELETE request to Graph/Outlook API. Returns nothing on success."""
     url = _check_endpoint(endpoint)
