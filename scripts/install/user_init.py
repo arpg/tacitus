@@ -6,6 +6,11 @@ Interactive setup for new users. Captures preferences, authenticates
 with email/calendar services, and optionally analyzes writing style
 from sent mail to build per-contact communication profiles.
 
+The questions are data in scripts/install/setup_questions.py; this
+script asks them at the terminal, and scripts/install/setup_web.py asks
+the same ones in a browser. Both check an answer with the same code and
+write it with the same writer (the write_* functions below).
+
 Usage:
     python3 scripts/install/user_init.py                     # Full interactive setup
     python3 scripts/install/user_init.py --update            # Re-run on existing config
@@ -14,6 +19,8 @@ Usage:
                                              # The style baseline to FILE, not the
                                              # config dir (the container's owner side)
     python3 scripts/install/user_init.py --phase scheduling  # Run a single phase
+    python3 scripts/install/user_init.py --phase profile     # The profile and the notice,
+                                             # as setup.sh --acknowledged records them
     python3 scripts/install/user_init.py --ea-dir /tmp/test  # Override EA directory
     python3 scripts/install/user_init.py --chat zulip --zulip-site https://chat.example.edu \
         --zulip-bot-email ea-bot@chat.example.edu --zulip-owner-id 8
@@ -32,8 +39,11 @@ import re
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import setup_questions as Q  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -45,7 +55,7 @@ STATE_DIR = EA_DIR / "state"
 AUTH_DIR = EA_DIR / "auth"
 
 ALL_PHASES = [
-    "identity", "scheduling", "inbox", "autonomy", "groups",
+    "profile", "identity", "scheduling", "inbox", "autonomy", "groups",
     "deadlines", "style", "auth", "tone", "reimbursement",
     "vip", "preferences", "push", "state", "summary",
 ]
@@ -62,6 +72,7 @@ ALL_PHASES = [
 # and names the key. The keys are the explicit `key` of each prompt;
 # docs/install-testing.md lists them, tests/install/answers-email.json
 # is a complete example. Keys the run looked up go in ANSWERS_USED.
+# setup_questions.parse reads a value the same way for the setup page.
 ANSWERS: dict | None = None
 ANSWERS_USED: set[str] = set()
 
@@ -95,33 +106,38 @@ def _read(display: str) -> str:
 
 
 def prompt(question: str, default: str = "", required: bool = False,
-           key: str | None = None) -> str:
-    """Ask a question with optional default. Returns stripped input."""
+           key: str | None = None, check=None) -> str:
+    """Ask a question with optional default. Returns stripped input.
+    `check(answer)` names what is wrong with a non-empty answer, or None:
+    the terminal asks again, an answers file stops the run."""
     key = key or answer_key(question)
     if ANSWERS is not None:
         found, value = _scripted(key)
-        answer = "" if value is None else str(value).strip()
-        if answer:
-            return answer
-        if default:
-            return default
-        if required:
-            raise SystemExit(f"--answers: '{key}' ({question}) is required and "
-                             f"{'empty' if found else 'missing'} in the answers file")
-        return ""
+        answer = Q.parse("text", value, default)
+        if not answer:
+            if required:
+                raise SystemExit(f"--answers: '{key}' ({question}) is required and "
+                                 f"{'empty' if found else 'missing'} in the answers file")
+            return ""
+        err = check(answer) if check else None
+        if err:
+            raise SystemExit(f"--answers: '{key}' ({question.strip()}): {err}")
+        return answer
     if default:
         display = f"{question} [{default}]: "
     else:
         display = f"{question}: "
     while True:
-        answer = _read(display).strip()
+        answer = _read(display).strip() or default
         if not answer:
-            if default:
-                return default
             if required:
                 print("  This field is required.")
                 continue
             return ""
+        err = check(answer) if check else None
+        if err:
+            print(f"  {err}")
+            continue
         return answer
 
 
@@ -129,12 +145,8 @@ def prompt_yn(question: str, default: bool = True, key: str | None = None) -> bo
     """Ask a yes/no question."""
     key = key or answer_key(question)
     if ANSWERS is not None:
-        found, value = _scripted(key)
-        if not found or value is None or value == "":
-            return default
-        if isinstance(value, bool):
-            return value
-        return str(value).strip().lower().startswith("y")
+        _found, value = _scripted(key)
+        return Q.parse("yesno", value, default)
     suffix = "[Y/n]" if default else "[y/N]"
     answer = _read(f"{question} {suffix}: ").strip().lower()
     if not answer:
@@ -146,30 +158,16 @@ def prompt_list(question: str, example: str = "", key: str | None = None) -> lis
     """Ask for a comma-separated list."""
     key = key or answer_key(question)
     if ANSWERS is not None:
-        found, value = _scripted(key)
-        if not found or value is None:
-            return []
-        if isinstance(value, list):
-            return [str(item).strip() for item in value if str(item).strip()]
-        raw = str(value).strip()
-    else:
-        hint = f" (e.g., {example})" if example else ""
-        raw = _read(f"{question}{hint}: ").strip()
-    if not raw:
-        return []
-    return [item.strip() for item in raw.split(",") if item.strip()]
+        _found, value = _scripted(key)
+        return Q.parse("list", value)
+    hint = f" (e.g., {example})" if example else ""
+    return Q.parse("list", _read(f"{question}{hint}: "))
 
 
 def prompt_time(question: str, default: str = "09:00", key: str | None = None) -> str:
     """Ask for a time in HH:MM format."""
-    while True:
-        answer = prompt(question, default, key=key)
-        if re.match(r"^\d{1,2}:\d{2}$", answer):
-            return answer
-        if ANSWERS is not None:
-            raise SystemExit(f"--answers: '{key or answer_key(question)}' must be HH:MM, "
-                             f"not {answer!r}")
-        print("  Please enter time as HH:MM (e.g., 09:00, 17:30)")
+    return prompt(question, default, key=key,
+                  check=lambda answer: Q.problem({"kind": "time"}, answer))
 
 
 def private_dir() -> Path:
@@ -334,161 +332,217 @@ def detect_system_timezone() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Phase 1: Identity
+# The questions: setup_questions.py, for the terminal and the setup page
 # ---------------------------------------------------------------------------
 
-def phase_identity(existing: dict = None) -> dict:
-    """Collect user identity and profile information."""
-    section_header("Phase 1: Identity & Profile")
+class AnswerError(Exception):
+    """Answers a writer refuses, as {answer key: message}; the key "_phase"
+    holds a message about the phase as a whole. The terminal prints them
+    and stops; the setup page shows each under its field."""
 
-    print("  Basic information about you. This is used for drafting emails,")
-    print("  scheduling, and letter composition.\n")
+    def __init__(self, errors: dict):
+        super().__init__("; ".join(f"{k}: {v}" for k, v in errors.items()))
+        self.errors = errors
 
-    # Defaults come from what the user wrote, never from the template's
-    # placeholders; the template's other keys are kept in the merge below.
-    kept = existing or {}
-    ex = without_template(kept, template_values("user-profile.json"))
-    profile = {
-        "name": prompt("Full name", ex.get("name", ""), required=True, key="full-name"),
-        "email": prompt("Primary work email", ex.get("email", ""), required=True,
-                        key="work-email"),
-        "role_description": prompt(
-            "Role description (title, focus area)",
-            ex.get("role_description", ""), key="role-description",
-        ),
-        "department": prompt("Department", ex.get("department", ""), key="department"),
-        "university": prompt("University/Organization", ex.get("university", ""),
-                             key="university"),
-        "office": prompt("Office location (optional)", ex.get("office", ""), key="office"),
-        "slack_channel_name": prompt(
-            "Slack channel name for EA communication",
-            ex.get("slack_channel_name", "ea-assistant"), key="slack-channel-name",
-        ),
-        "bio_blurb": prompt(
-            "Brief professional bio (for letter drafting, optional)",
-            ex.get("bio_blurb", ""), key="bio-blurb",
-        ),
-        "calendar_accounts": prompt_list(
-            "Google Calendar email(s), comma-separated",
-            "you@gmail.com, shared@example.com", key="calendar-accounts",
-        ) or ex.get("calendar_accounts", []),
+
+def use_ea_dir(path) -> None:
+    """Point every writer at the EA directory `path`."""
+    global EA_DIR, CONFIG_DIR, STATE_DIR, AUTH_DIR
+    EA_DIR = Path(path)
+    CONFIG_DIR = EA_DIR / "config"
+    STATE_DIR = EA_DIR / "state"
+    AUTH_DIR = EA_DIR / "auth"
+
+
+def make_tree() -> None:
+    """The directories of a new EA directory."""
+    for subdir in ["auth", "state", "logs", "config", "receipts", "letters", "templates"]:
+        (EA_DIR / subdir).mkdir(parents=True, exist_ok=True)
+
+
+def read_vips() -> list[str]:
+    """The addresses in vip_senders.txt, comments left out."""
+    vip_path = CONFIG_DIR / "vip_senders.txt"
+    if not vip_path.exists():
+        return []
+    return [line.strip() for line in vip_path.read_text().splitlines()
+            if line.strip() and not line.startswith("#")]
+
+
+def _once(fn):
+    """`fn`, called at most once."""
+    memo: list = []
+
+    def call():
+        if not memo:
+            memo.append(fn())
+        return memo[0]
+    return call
+
+
+def context(chat: str | None = None, load: bool = True, tz=None) -> dict:
+    """The facts the questions and the writers read.
+
+    files: the existing user-profile.json, scheduling-preferences.json and
+           autonomy-tiers.json, kept where a phase asks nothing (empty when
+           `load` is false: a full run without --update);
+    ex:    the same, offered as defaults, the profile without the template's
+           placeholders;
+    profile, chat: what ea-config.json records (`chat` wins over the file);
+    acknowledged: whether the README notice is recorded as accepted;
+    detected_timezone: `tz`, else this machine's zone, looked up on use."""
+    cfg = load_existing("ea-config.json")
+    files = {name: (load_existing(name) if load else {})
+             for name in (Q.PROFILE_FILE, Q.SCHED_FILE, Q.AUTONOMY_FILE)}
+    ex = dict(files)
+    ex[Q.PROFILE_FILE] = without_template(files[Q.PROFILE_FILE],
+                                          template_values(Q.PROFILE_FILE))
+    ack = cfg.get("acknowledged") if isinstance(cfg.get("acknowledged"), dict) else {}
+    block = cfg.get("chat") if isinstance(cfg.get("chat"), dict) else {}
+    recorded = cfg.get("profile") if cfg.get("profile") in ("email", "review-only", "assistant") else None
+    return {
+        "files": files,
+        "ex": ex,
+        "recorded_profile": recorded,
+        "profile": recorded or "assistant",
+        "chat": chat or str(block.get("frontend") or "slack"),
+        "acknowledged": bool(ack.get("responsibility")),
+        "acknowledged_on": str(ack.get("responsibility") or ""),
+        "detected_timezone": tz or _once(lambda: detect_system_timezone()),
+        "private_dir": str(private_dir()),
+        "vips": read_vips(),
     }
-    profile["institution"] = institution_block(profile, ex)
-    # The Create button reads the top-level link when it adds the meeting
-    # link to an event; the institution block carries the same value.
-    profile["zoom_link"] = profile["institution"]["video"]["link"]
-
-    # Keys the template carries that this phase does not ask about
-    # (gmail_accounts, family, the notes) stay as the existing file has them.
-    merged = dict(kept)
-    merged.update(profile)
-    save_config("user-profile.json", merged)
-    return merged
 
 
-def institution_block(profile: dict, existing: dict) -> dict:
-    """The `institution` block of user-profile.json (preprocessor/
-    institution.py documents every key), asked after the identity
-    questions. The mail domain of the work address is the first internal
-    domain and the safety-rail domain unless the user says otherwise."""
-    print("\n  Your institution. CLAUDE.md names none; these answers are rendered")
-    print("  into the install overlay that every session carries.\n")
-    ex = existing.get("institution") if isinstance(existing.get("institution"), dict) else {}
-    own_domain = profile["email"].rsplit("@", 1)[-1].lower() if "@" in profile["email"] else ""
-    name = prompt("Institution name", ex.get("name") or profile.get("university", ""),
-                  key="institution-name")
-    domains = prompt_list(
-        "Mail domains that count as internal, comma-separated",
-        own_domain or "example.edu", key="institution-domains",
-    ) or list(ex.get("domains") or ([own_domain] if own_domain else []))
-    related = prompt_list(
-        "Sister-campus domains the admissions filter treats as internal (optional)",
-        "med.example.edu", key="institution-related-domains",
-    ) or list(ex.get("related_domains") or [])
-    rail = prompt(
-        "Safety-rail domain (a first email outside it is never sent on its own)",
-        ex.get("safety_rail_domain") or (domains[0] if domains else ""),
-        key="institution-safety-rail-domain",
-    )
-    ex_video = ex.get("video") if isinstance(ex.get("video"), dict) else {}
-    platform = prompt("Video-meeting platform", ex_video.get("platform") or "Zoom",
-                      key="video-platform")
-    link = prompt("Your personal meeting link on it (optional)",
-                  ex_video.get("link") or existing.get("zoom_link", ""), key="video-link")
-    block = {
-        "name": name,
-        "domains": [d.lower().lstrip("@") for d in domains],
-        "related_domains": [d.lower().lstrip("@") for d in related],
-        "safety_rail_domain": rail.lower().lstrip("@"),
-        "video": {"platform": platform, "link": link},
-        "boilerplate_tokens": list(ex.get("boilerplate_tokens") or []),
-        "boilerplate_phrases": list(ex.get("boilerplate_phrases") or []),
-        "letterhead": ex.get("letterhead") if isinstance(ex.get("letterhead"), dict) else {
+def print_intro(pid: str, ctx: dict) -> None:
+    ph = Q.phase(pid)
+    section_header(ph["header"])
+    for line in ph.get("intro") or []:
+        if "{private_dir}" in line:
+            line = line.replace("{private_dir}", str(ctx.get("private_dir") or private_dir()))
+        print(line)
+
+
+def print_notice() -> None:
+    """The README's "Your responsibility" paragraph, word for word."""
+    import textwrap
+    for para in Q.notice_text().split("\n"):
+        print(textwrap.fill(para, width=72, initial_indent="  ", subsequent_indent="  "))
+        print()
+
+
+def ask_phase(pid: str, ctx: dict) -> dict:
+    """The phase's answers, asked at the terminal or taken from the answers
+    file: the questions of setup_questions.py, in their order, each with
+    its notes, default and check."""
+    def answer(q, default, values):
+        for line in q.get("note") or []:
+            print(line)
+        if q.get("notice"):
+            print_notice()
+        label = Q.label_of(q, values)
+        key, kind = q["key"], q["kind"]
+        if kind == "yesno":
+            got = prompt_yn(label, default=default, key=key)
+            err = Q.problem(q, got)
+            if err:
+                raise SystemExit(f"  {err}")
+            return got
+        if kind == "list":
+            while True:
+                got = prompt_list(label, Q.example_of(q, values, ctx), key=key) or list(default)
+                err = Q.problem(q, got)
+                if not err:
+                    return got
+                if ANSWERS is not None:
+                    raise SystemExit(f"--answers: '{key}' ({label.strip()}): {err}")
+                print(f"  {err}")
+        got = prompt(label, default, required=bool(q.get("required")), key=key,
+                     check=lambda text: Q.problem(q, text))
+        return Q.typed(q, got)
+
+    again = None
+    spec = Q.phase(pid).get("again")
+    if spec and ANSWERS is None:
+        # An answers file gives one entry: the loop's questions share their keys.
+        def again(values):
+            return prompt_yn(spec["label"], default=Q.default_of(spec, values, ctx), key=spec["key"])
+    return Q.walk(pid, ctx, answer, "terminal", again)
+
+
+# ---------------------------------------------------------------------------
+# The writers: one per phase, the same for the terminal and the setup page
+# ---------------------------------------------------------------------------
+
+def write_profile(values: dict, ctx: dict) -> dict:
+    """The profile and, once, the date the notice was accepted, in
+    ea-config.json, as scripts/install/setup.sh --profile <name> --acknowledged
+    records them. With no file yet it starts from the template, which
+    setup.sh would have copied first; setup.sh run later keeps both."""
+    path = CONFIG_DIR / "ea-config.json"
+    data = load_existing("ea-config.json") if path.exists() else template_values("ea-config.json")
+    data["profile"] = values["profile"]
+    ack = data.get("acknowledged") if isinstance(data.get("acknowledged"), dict) else {}
+    if values.get("acknowledged") and not ack.get("responsibility"):
+        ack["responsibility"] = date.today().isoformat()
+        data["acknowledged"] = ack
+    save_config("ea-config.json", data)
+    return data
+
+
+def write_identity(values: dict, ctx: dict) -> dict:
+    """user-profile.json: the identity answers and the `institution` block
+    (preprocessor/institution.py documents every key). Keys the phase
+    does not ask about (gmail_accounts, family, the notes, the
+    institution's boilerplate and letterhead) stay as the file has them."""
+    kept = ctx["files"][Q.PROFILE_FILE]
+    raw_inst = kept.get("institution") if isinstance(kept.get("institution"), dict) else {}
+    profile = {
+        "name": values["full-name"],
+        "email": values["work-email"],
+        "role_description": values["role-description"],
+        "department": values["department"],
+        "university": values["university"],
+        "office": values["office"],
+        "slack_channel_name": values["slack-channel-name"],
+        "bio_blurb": values["bio-blurb"],
+        "calendar_accounts": values["calendar-accounts"],
+    }
+    letterhead = raw_inst.get("letterhead")
+    profile["institution"] = {
+        "name": values["institution-name"],
+        "domains": [d.lower().lstrip("@") for d in values["institution-domains"]],
+        "related_domains": [d.lower().lstrip("@") for d in values["institution-related-domains"]],
+        "safety_rail_domain": values["institution-safety-rail-domain"].lower().lstrip("@"),
+        "video": {"platform": values["video-platform"], "link": values["video-link"]},
+        "boilerplate_tokens": list(raw_inst.get("boilerplate_tokens") or []),
+        "boilerplate_phrases": list(raw_inst.get("boilerplate_phrases") or []),
+        "letterhead": letterhead if isinstance(letterhead, dict) and letterhead else {
             "template_dir": "~/.ea/templates/letterhead",
             "asset_dirs": [],
             "required_assets": [],
         },
     }
-    return block
+    # The Create button reads the top-level link when it adds the meeting
+    # link to an event; the institution block carries the same value.
+    profile["zoom_link"] = profile["institution"]["video"]["link"]
+    merged = dict(kept)
+    merged.update(profile)
+    save_config(Q.PROFILE_FILE, merged)
+    return merged
 
 
-# ---------------------------------------------------------------------------
-# Phase 2: Scheduling Preferences
-# ---------------------------------------------------------------------------
-
-def phase_scheduling(existing: dict = None) -> dict:
-    """Collect scheduling preferences."""
-    section_header("Phase 2: Scheduling Preferences")
-
-    print("  These control how the EA proposes meeting times, protects your")
-    print("  focus blocks, and handles VIP contacts.\n")
-
-    kept = existing or {}
-    ex = kept
-    ex_slot = ex.get("slot_selection", {})
-    ex_wh = ex.get("working_hours", {})
-
-    detected_tz = detect_system_timezone()
-    tz = prompt("Timezone (IANA format)", ex.get("timezone") or detected_tz, key="timezone")
-
-    print("  Working hours, no-meeting days, lunch, and time-of-day preferences")
-    print("  are NOT stored in config anymore. They live as tokened recurring")
-    print("  events on your EA-Managed Google calendar, so you can drag/edit them")
-    print("  any time without a config change. Tokens (leading word of the title):")
-    print("    wh = working hours (meetings only inside these)")
-    print("    nm = no meetings (protected)   p0/p1/p2 = hard/soft/preference")
-    print("    wr = working remotely (informational)")
-    print("  After setup, add to the EA-Managed calendar e.g. 'wh Working Hours'")
-    print("  9-5 Mon-Fri, 'nm Lunch' 12-1, and 'nm No-meeting Friday' (all day).")
-    print("  See skills/scheduling-rules.md for the full model.\n")
-
-    # Slot selection
-    print("\n  Meeting scheduling behavior:")
-    contiguous = prompt_yn(
-        "Cluster meetings together (protect focus blocks)?",
-        default=ex_slot.get("prefer_contiguous", True), key="cluster-meetings",
-    )
-    default_duration = int(prompt(
-        "Default meeting duration (minutes)",
-        str(ex_slot.get("preferred_duration_minutes", 30)), key="default-duration-minutes",
-    ))
-
-    print("\n  VIP contacts get extended hours and more time options.")
-    vip_end = prompt_time(
-        "Extended end time for VIP contacts",
-        "17:00", key="vip-end-time",
-    )
-
-    # Calendar setup
-    print("\n  Calendar configuration:")
-    print("  Your Outlook calendar is always included (via Graph API).")
-    google_accounts = prompt_list(
-        "Google Calendar email(s) that block availability",
-        "you@gmail.com", key="google-calendars",
-    )
-
+def write_scheduling(values: dict, ctx: dict) -> dict:
+    """scheduling-preferences.json. The reply styles (the style phase) and
+    the VIP contacts the EA learned stay as the file has them, so this
+    phase can run again; so do the keys it does not ask about
+    (ea_managed_calendar, the family calendars, their notes)."""
+    kept = ctx["files"][Q.SCHED_FILE]
+    vip_end = values["vip-end-time"]
+    style = kept.get("response_style")
+    vips = kept.get("vip_contacts")
     prefs = {
-        "timezone": tz,
+        "timezone": values["timezone"],
         "_preferences_note": (
             "Day/time scheduling preferences (working hours, no-meeting blocks, "
             "lunch, no-meeting days, morning preference) live as tokened recurring "
@@ -500,74 +554,41 @@ def phase_scheduling(existing: dict = None) -> dict:
             },
         },
         "slot_selection": {
-            "preferred_duration_minutes": default_duration,
-            "prefer_contiguous": contiguous,
+            "preferred_duration_minutes": values["default-duration-minutes"],
+            "prefer_contiguous": values["cluster-meetings"],
             "contiguous_note": "If I have a meeting at 10:00-10:30, prefer suggesting 10:30 or 9:30 over a random 2pm slot. Cluster meetings together to preserve focus blocks.",
             "max_slot_duration_to_propose_minutes": 60,
             "vip_override": f"If user says someone is 'very important' or 'VIP', expand to all available times within working hours extended to {vip_end}, and remember that person as VIP for future requests.",
         },
-        "response_style": {},  # Populated in Phase 7
-        "vip_contacts": {
+        "response_style": style if isinstance(style, dict) else {},  # the style phase writes it
+        "vip_contacts": vips if isinstance(vips, dict) else {
             "note": "Populated automatically when user says someone is important in Slack.",
             "addresses": [],
         },
     }
-
-    # Add Google calendar entries
-    for i, acct in enumerate(google_accounts):
+    for i, acct in enumerate(values["google-calendars"]):
         key = "google_primary" if i == 0 else f"google_{i+1}"
         prefs["calendars"][key] = {
             "email": acct,
             "type": "google_calendar_mcp",
             "blocks_availability": True,
         }
-
-    # Keys this phase does not ask about (ea_managed_calendar, the family
-    # calendars, their notes) stay as the existing file has them.
     merged = {k: v for k, v in kept.items() if k not in prefs}
     merged.update(prefs)
-    save_config("scheduling-preferences.json", merged)
+    save_config(Q.SCHED_FILE, merged)
     return merged
 
 
-# ---------------------------------------------------------------------------
-# Phase 3: Inbox Philosophy
-# ---------------------------------------------------------------------------
-
-def phase_inbox(existing_autonomy: dict = None) -> dict:
-    """Configure inbox management philosophy."""
-    section_header("Phase 3: Inbox Management Philosophy")
-
-    print("  The EA can treat your inbox in different ways:\n")
-    print("  INBOX ZERO: Your inbox is a task queue. Every message in it is a")
-    print("  potential action item. When you archive an email, it means 'handled.'")
-    print("  The EA reads your entire inbox on each run.\n")
-    print("  RELAXED: Your inbox is for reference. You may keep emails around")
-    print("  without them being action items. Obligations are tracked")
-    print("  independently via the ledger. The EA reads only recent messages.\n")
-
-    inbox_zero = prompt_yn("Use Inbox Zero philosophy?", default=True, key="inbox-zero")
-
-    print()
-    if inbox_zero:
-        print("  ARCHIVE-AS-COMPLETION: When you manually archive an email (from")
-        print("  Outlook, your phone, etc.), the EA automatically marks the")
-        print("  corresponding tracked item as 'done.'\n")
-        archive_completes = prompt_yn("Enable archive-as-completion?", default=True,
-                                      key="archive-as-completion")
-    else:
-        archive_completes = False
+def write_inbox(values: dict, ctx: dict | None = None) -> dict:
+    """preprocessor-config.json; returns what the autonomy phase reads."""
+    inbox_zero = values["inbox-zero"]
+    archive_completes = bool(values.get("archive-as-completion")) if inbox_zero else False
+    if not inbox_zero:
         print("  Archive-as-completion disabled (not applicable in relaxed mode).\n")
-
-    print("  STALE THREAD THRESHOLD: How many days without a reply before the")
-    print("  EA flags a conversation as potentially dropped?\n")
-    stale_days = int(prompt("Stale thread threshold (days)", "3", key="stale-thread-days"))
-    stale_days_weekly = max(stale_days - 1, 1)
-
-    # Save preprocessor config
+    stale_days = values["stale-thread-days"]
     preproc = {
         "stale_thread_days": stale_days,
-        "stale_thread_days_weekly_audit": stale_days_weekly,
+        "stale_thread_days_weekly_audit": max(stale_days - 1, 1),
         "writing_style_window_days": 14,
         "inbox_philosophy": {
             "mode": "inbox_zero" if inbox_zero else "relaxed",
@@ -575,7 +596,6 @@ def phase_inbox(existing_autonomy: dict = None) -> dict:
         },
     }
     save_config("preprocessor-config.json", preproc)
-
     return {
         "inbox_zero": inbox_zero,
         "archive_completes": archive_completes,
@@ -583,91 +603,59 @@ def phase_inbox(existing_autonomy: dict = None) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Phase 4: Autonomy Tiers
-# ---------------------------------------------------------------------------
+def archive_default(ctx: dict) -> bool:
+    """archive-as-completion for an autonomy phase with no inbox phase
+    before it: what autonomy-tiers.json says now, else on."""
+    block = ctx["files"][Q.AUTONOMY_FILE].get("inbox_as_completion")
+    if isinstance(block, dict) and isinstance(block.get("enabled"), bool):
+        return block["enabled"]
+    return True
 
-def phase_autonomy(inbox_config: dict, existing: dict = None) -> dict:
-    """Configure autonomy tiers."""
-    section_header("Phase 4: Autonomy Tiers")
 
-    print("  The EA has three autonomy levels:\n")
-    print("  ASK-FIRST:       Post what it wants to do in Slack, wait for approval.")
-    print("  DO-AND-TELL:     Do it, then tell you what it did in Slack.")
-    print("  FIRE-AND-FORGET: Do it silently, include in next briefing.\n")
+CONSERVATIVE_TIERS = {
+    "draft_email_response": {
+        "tier": "ask-first",
+        "note": "Show draft in Slack, wait for 'send' or edits.",
+    },
+    "send_scheduling_availability": {
+        "tier": "ask-first",
+        "promotable_per_contact": True,
+        "note": "Can be promoted to do-and-tell for specific contacts.",
+    },
+    "upload_letter_of_recommendation": {
+        "tier": "ask-first",
+        "note": "Match LoR request against known letters, show in Slack for approval.",
+    },
+    "prep_reimbursement_email": {
+        "tier": "ask-first",
+        "note": "Compile receipts, draft email, show in Slack for approval.",
+    },
+    "create_calendar_hold": {
+        "tier": "ask-first",
+        "note": "Block focus time or travel time. Ask first.",
+    },
+    "archive_organize_inbox": {
+        "tier": "ask-first",
+        "note": "Move processed items, apply categories. Ask first.",
+    },
+    "update_obligations_ledger": {
+        "tier": "fire-and-forget",
+        "note": "Internal bookkeeping. Always autonomous.",
+    },
+    "post_slack_summary": {
+        "tier": "fire-and-forget",
+        "note": "Briefings and status updates. Always autonomous.",
+    },
+}
 
-    ex = existing or {}
-    conservative = prompt_yn(
-        "Start with conservative defaults (all user-facing tasks = ask-first)?",
-        default=True, key="conservative-defaults",
-    )
 
-    if conservative:
-        task_tiers = {
-            "draft_email_response": {
-                "tier": "ask-first",
-                "note": "Show draft in Slack, wait for 'send' or edits.",
-            },
-            "send_scheduling_availability": {
-                "tier": "ask-first",
-                "promotable_per_contact": True,
-                "note": "Can be promoted to do-and-tell for specific contacts.",
-            },
-            "upload_letter_of_recommendation": {
-                "tier": "ask-first",
-                "note": "Match LoR request against known letters, show in Slack for approval.",
-            },
-            "prep_reimbursement_email": {
-                "tier": "ask-first",
-                "note": "Compile receipts, draft email, show in Slack for approval.",
-            },
-            "create_calendar_hold": {
-                "tier": "ask-first",
-                "note": "Block focus time or travel time. Ask first.",
-            },
-            "archive_organize_inbox": {
-                "tier": "ask-first",
-                "note": "Move processed items, apply categories. Ask first.",
-            },
-            "update_obligations_ledger": {
-                "tier": "fire-and-forget",
-                "note": "Internal bookkeeping. Always autonomous.",
-            },
-            "post_slack_summary": {
-                "tier": "fire-and-forget",
-                "note": "Briefings and status updates. Always autonomous.",
-            },
-        }
+def write_autonomy(values: dict, ctx: dict, archive_completes: bool) -> dict:
+    """autonomy-tiers.json."""
+    if values["conservative-defaults"]:
+        task_tiers = {k: dict(v) for k, v in CONSERVATIVE_TIERS.items()}
     else:
-        print("\n  For each task type, choose: ask-first, do-and-tell, or fire-and-forget.\n")
-        task_types = [
-            ("draft_email_response", "Drafting email responses", "ask-first"),
-            ("send_scheduling_availability", "Sending scheduling availability", "ask-first"),
-            ("upload_letter_of_recommendation", "Uploading letters of recommendation", "do-and-tell"),
-            ("prep_reimbursement_email", "Preparing reimbursement emails", "ask-first"),
-            ("create_calendar_hold", "Creating calendar holds/focus blocks", "do-and-tell"),
-            ("archive_organize_inbox", "Archiving/organizing processed inbox items", "do-and-tell"),
-            ("update_obligations_ledger", "Updating the obligations ledger", "fire-and-forget"),
-            ("post_slack_summary", "Posting briefing summaries to Slack", "fire-and-forget"),
-        ]
-        task_tiers = {}
-        for key, desc, default_tier in task_types:
-            answer_name = "tier-" + key.replace("_", "-")
-            tier = prompt(f"  {desc}", default_tier, key=answer_name)
-            while tier not in ("ask-first", "do-and-tell", "fire-and-forget"):
-                if ANSWERS is not None:
-                    raise SystemExit(f"--answers: '{answer_name}' must be ask-first, "
-                                     f"do-and-tell or fire-and-forget, not {tier!r}")
-                print("    Choose: ask-first, do-and-tell, or fire-and-forget")
-                tier = prompt(f"  {desc}", default_tier, key=answer_name)
-            task_tiers[key] = {"tier": tier}
-
-    threshold = int(prompt(
-        "\nAuto-promote threshold (after N successes without edits, suggest promotion)",
-        str(ex.get("escalation_rules", {}).get("promote_after_n_successes", {}).get("threshold", 5)),
-        key="auto-promote-threshold",
-    ))
-
+        task_tiers = {task: {"tier": values["tier-" + task.replace("_", "-")]}
+                      for task, _desc, _tier in Q.TASK_TYPES}
     autonomy = {
         "_doc": "Controls how much autonomy the EA has for different task types.",
         "task_tiers": task_tiers,
@@ -676,7 +664,7 @@ def phase_autonomy(inbox_config: dict, existing: dict = None) -> dict:
         },
         "inbox_as_completion": {
             "_doc": "When enabled, archiving an email automatically closes the corresponding ledger item.",
-            "enabled": inbox_config.get("archive_completes", True),
+            "enabled": archive_completes,
         },
         "escalation_rules": {
             "never_autonomous": [
@@ -686,273 +674,327 @@ def phase_autonomy(inbox_config: dict, existing: dict = None) -> dict:
                 "Declining invitations or requests",
             ],
             "promote_after_n_successes": {
-                "threshold": threshold,
+                "threshold": values["auto-promote-threshold"],
             },
         },
     }
-
-    save_config("autonomy-tiers.json", autonomy)
+    save_config(Q.AUTONOMY_FILE, autonomy)
     return autonomy
 
 
-# ---------------------------------------------------------------------------
-# Phase 5: Group Email Lists
-# ---------------------------------------------------------------------------
-
-def phase_groups() -> dict:
-    """Configure group email lists for noisy thread detection."""
-    section_header("Phase 5: Group Email Lists")
-
-    print("  If you belong to group email lists (scouts, church, HOA, department")
-    print("  committees, etc.) that produce reply-all storms, the EA can detect")
-    print("  these and offer to summarize them instead of treating each reply as")
-    print("  a separate action item.\n")
-
+def write_groups(values: dict, ctx: dict | None = None) -> dict:
+    """group-senders.json: each group with at least one address."""
     groups = {}
-    if prompt_yn("Do you have group email lists to configure?", default=False,
-                 key="groups-configure"):
-        while True:
-            name = prompt("Group name (e.g., 'book_club', 'hoa')", required=True,
-                          key="group-name")
-            addresses = prompt_list(
-                f"  Email addresses in '{name}' group (comma-separated)",
-                "alice@gmail.com, bob@gmail.com", key="group-addresses",
-            )
-            if addresses:
-                groups[name] = addresses
-                print(f"  Added group '{name}' with {len(addresses)} addresses.")
-            # An answers file names one group: the loop's questions share
-            # their keys, so a scripted "add another" would repeat it.
-            if ANSWERS is not None or not prompt_yn("\nAdd another group?", default=False,
-                                                    key="group-add-another"):
-                break
-
+    for entry in values["_entries"] if values["groups-configure"] else []:
+        name, addresses = entry["group-name"], entry["group-addresses"]
+        if addresses:
+            groups[name] = addresses
+            print(f"  Added group '{name}' with {len(addresses)} addresses.")
     save_config("group-senders.json", groups)
     return groups
 
 
-# ---------------------------------------------------------------------------
-# Phase 6: Deadline Sender Categories
-# ---------------------------------------------------------------------------
-
-def phase_deadlines() -> dict:
-    """Configure deadline sender domain categories."""
-    section_header("Phase 6: Deadline Sender Categories")
-
-    print("  When the EA detects deadline keywords in emails, it can categorize")
-    print("  them by the sender's domain. This helps prioritize: a grant deadline")
-    print("  from nsf.gov is different from a utility bill from your HOA.\n")
-    print("  Examples:")
-    print("    example.edu   -> university")
-    print("    nsf.gov       -> grants")
-    print("    statefarm.com -> financial")
-    print("    irs.gov       -> taxes\n")
-
+def write_deadlines(values: dict, ctx: dict | None = None) -> dict:
+    """deadline-senders.json: sender domain -> category."""
     senders = {}
-    if prompt_yn("Configure deadline sender categories?", default=False,
-                 key="deadlines-configure"):
-        while True:
-            domain = prompt("Sender domain (e.g., 'nsf.gov')", key="deadline-domain")
-            category = prompt(f"  Category for '{domain}'", "general", key="deadline-category")
-            senders[domain] = category
-            # One entry from an answers file (the loop's keys repeat).
-            if ANSWERS is not None or not prompt_yn("Add another?", default=True,
-                                                    key="deadline-add-another"):
-                break
-
+    for entry in values["_entries"] if values["deadlines-configure"] else []:
+        senders[entry["deadline-domain"]] = entry["deadline-category"]
     save_config("deadline-senders.json", senders)
     return senders
 
 
-# ---------------------------------------------------------------------------
-# Phase 7: Response Style Defaults
-# ---------------------------------------------------------------------------
-
-def phase_response_style(scheduling_prefs: dict) -> dict:
-    """Configure default response styles."""
-    section_header("Phase 7: Response Style Defaults")
-
-    print("  How should the EA draft responses? These are defaults that can")
-    print("  be overridden per-contact based on writing style analysis.\n")
-
+def write_style(values: dict, ctx: dict | None = None) -> dict:
+    """The reply styles, into scheduling-preferences.json as it is now."""
     style = {
-        "default": prompt(
-            "Default style",
-            "Propose 2-3 specific times. Short, professional.", key="style-default",
-        ),
-        "internal": prompt(
-            "Style for colleagues at your organization",
-            "Friendly but efficient.", key="style-internal",
-        ),
-        "external_academic": prompt(
-            "Style for external academics",
-            "Professional, slightly more formal. Include timezone.",
-            key="style-external-academic",
-        ),
-        "student": prompt(
-            "Style for students",
-            "Warm, brief.", key="style-student",
-        ),
+        "default": values["style-default"],
+        "internal": values["style-internal"],
+        "external_academic": values["style-external-academic"],
+        "student": values["style-student"],
     }
-
-    scheduling_prefs["response_style"] = style
-    save_config("scheduling-preferences.json", scheduling_prefs)
+    prefs = load_existing(Q.SCHED_FILE)
+    prefs["response_style"] = style
+    save_config(Q.SCHED_FILE, prefs)
     return style
 
 
-# ---------------------------------------------------------------------------
-# Phase 8: Auth Setup
-# ---------------------------------------------------------------------------
+def graph_sign_in(method: str) -> None:
+    """The Microsoft Graph sign-in, in this process (the terminal only)."""
+    print("\n  Starting Graph API authentication...")
+    print("  This will open a browser window for Microsoft login.\n")
+    try:
+        import importlib
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
+        import graph_client as graph
+        importlib.reload(graph)  # re-read the env vars set before the call
+        if method == "confidential":
+            # Sign in, discover the app's granted scopes, and align the
+            # requested scopes to them (default stays the full superset).
+            info = graph.setup_confidential_and_align()
+            print(f"  Signed in as {info['user']}.")
+            print(f"  App grants: {', '.join(info['granted']) or '(none)'}")
+            print(f"  Requesting scopes: {', '.join(info['aligned_short'])}")
+            merge_env_file(
+                EA_DIR / ".env",
+                {"GRAPH_SCOPES": " ".join(info["aligned_short"])})
+            if info["dropped_short"]:
+                print("  Dropped (not granted by your app): "
+                      f"{', '.join(info['dropped_short'])}")
+                print("  Ask your Entra admin to add these if you need "
+                      "those features.")
+        else:
+            graph.authenticate()
+        print("  Graph API authentication successful!")
+    except Exception as e:
+        print(f"  Graph API auth failed: {e}")
+        print("  Retry later: python3 preprocessor/graph_client.py")
 
-def phase_auth(chat: str = "slack"):
-    """Guide user through authentication setup."""
-    section_header("Phase 8: Authentication Setup")
 
+def google_sign_in() -> None:
+    """The Google Calendar sign-in, in this process (the terminal only)."""
+    secret_file = AUTH_DIR / "google_client_secret.json"
+    if not secret_file.exists():
+        print(f"\n  Place your Google OAuth2 client secret at:")
+        print(f"    {secret_file}")
+        print("  Then re-run: python3 scripts/install/user_init.py --phase auth")
+        print("  See docs/SETUP.md 'Google OAuth app' for how to create the secret.")
+        return
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
+        import google_calendar_client as gcal
+        gcal.authenticate_all()
+        print("  Google Calendar authentication successful!")
+    except Exception as e:
+        print(f"  Google Calendar auth failed: {e}")
+        print("  You can set this up later.")
+
+
+SLACK_SECRETS = (("slack-bot-token", "SLACK_BOT_TOKEN"), ("slack-app-token", "SLACK_APP_TOKEN"))
+SLACK_ENV = (("slack-channel-id", "EA_SLACK_CHANNEL_ID"),
+             ("slack-channel-name-env", "EA_SLACK_CHANNEL_NAME"),
+             ("slack-owner-id", "EA_SLACK_OWNER_ID"))
+
+
+def write_auth(values: dict, ctx: dict, sign_in: bool = False) -> None:
+    """The Graph settings into ~/.ea/.env and the client secret into the
+    owner-private secrets.env, never into ~/.ea (ea-bot space once the
+    service account exists); the Slack ids into ~/.ea/.env (0640) and the
+    Slack tokens into secrets.env. With `sign_in` (the terminal) it also
+    signs in when the answers say now."""
     AUTH_DIR.mkdir(parents=True, exist_ok=True)
-
-    print("  The EA needs access to your email and calendar. This phase")
-    print("  walks you through authenticating with each service.\n")
-
-    # Graph API
-    print("  --- Microsoft Graph API (Outlook) ---\n")
-    print("  Choose how the EA authenticates to Microsoft Graph:")
-    print("    1) confidential  Auth-code flow + client secret")
-    print("                     (app registration; public client flows OFF)")
-    print("    2) device_code   MSAL device code")
-    print("                     (app registration; public client flows ON)")
-    print("    3) interactive   MSAL browser sign-in")
-    print("                     (app registration; public-client redirect URI)")
-    print("    4) skip          Set up later")
-    print("  See docs/AUTHENTICATION.md for how to pick. With no app registration,")
-    print("  the owner plugin outlook-web-auth can supply the token (skip here, then")
-    print("  see https://github.com/arpg/tacitus-plugin-outlook-web-auth).\n")
-
-    choice = prompt("Graph auth method [1-4]", "1", key="graph-auth-method")
-    method = {"1": "confidential", "2": "device_code", "3": "interactive",
-              "4": "skip", "confidential": "confidential", "device_code": "device_code",
-              "interactive": "interactive", "skip": "skip"}.get(choice, "confidential")
-
+    method = values["graph-auth-method"]
     if method == "skip":
         print("  Skipped. You can authenticate later via:")
         print("    python3 preprocessor/graph_client.py")
     else:
-        env_data = {"GRAPH_AUTH_METHOD": method}
-        env_data["GRAPH_CLIENT_ID"] = prompt(
-            "Application (client) ID", required=True, key="graph-client-id")
-        tenant = prompt("Tenant ID (blank = multi-tenant 'common')", "", key="graph-tenant-id")
+        env_data = {"GRAPH_AUTH_METHOD": method, "GRAPH_CLIENT_ID": values["graph-client-id"]}
+        tenant = values.get("graph-tenant-id") or ""
         if tenant:
-            env_data["GRAPH_AUTHORITY"] = (
-                f"https://login.microsoftonline.com/{tenant}")
-
+            env_data["GRAPH_AUTHORITY"] = f"https://login.microsoftonline.com/{tenant}"
         if method == "confidential":
-            redirect = prompt("Redirect URI (Web platform)",
-                              "http://localhost:8400/callback", key="graph-redirect-uri")
-            env_data["GRAPH_REDIRECT_URI"] = redirect
-            secret = prompt("Client secret value", required=True, key="graph-client-secret")
-            # The secret goes in the owner-private secrets.env, never in
-            # ~/.ea (ea-bot space once the service account exists).
+            env_data["GRAPH_REDIRECT_URI"] = values["graph-redirect-uri"]
+            secret = values["graph-client-secret"]
             merge_env_file(private_secrets_file(), {"GRAPH_CLIENT_SECRET": secret})
-            os.environ["GRAPH_CLIENT_SECRET"] = secret
-
+            if sign_in:
+                os.environ["GRAPH_CLIENT_SECRET"] = secret
         merge_env_file(EA_DIR / ".env", env_data)
-        for k, v in env_data.items():
-            os.environ[k] = v  # so the in-process sign-in below picks them up
-
-        if prompt_yn("Sign in to Microsoft Graph now?", default=True, key="graph-sign-in-now"):
-            print("\n  Starting Graph API authentication...")
-            print("  This will open a browser window for Microsoft login.\n")
-            try:
-                import importlib
-                sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
-                import graph_client as graph
-                importlib.reload(graph)  # re-read the env vars set above
-                if method == "confidential":
-                    # Sign in, discover the app's granted scopes, and align the
-                    # requested scopes to them (default stays the full superset).
-                    info = graph.setup_confidential_and_align()
-                    print(f"  Signed in as {info['user']}.")
-                    print(f"  App grants: {', '.join(info['granted']) or '(none)'}")
-                    print(f"  Requesting scopes: {', '.join(info['aligned_short'])}")
-                    merge_env_file(
-                        EA_DIR / ".env",
-                        {"GRAPH_SCOPES": " ".join(info["aligned_short"])})
-                    if info["dropped_short"]:
-                        print("  Dropped (not granted by your app): "
-                              f"{', '.join(info['dropped_short'])}")
-                        print("  Ask your Entra admin to add these if you need "
-                              "those features.")
-                else:
-                    graph.authenticate()
-                print("  Graph API authentication successful!")
-            except Exception as e:
-                print(f"  Graph API auth failed: {e}")
-                print("  Retry later: python3 preprocessor/graph_client.py")
+        if sign_in and values.get("graph-sign-in-now"):
+            for k, v in env_data.items():
+                os.environ[k] = v  # so the in-process sign-in picks them up
+            graph_sign_in(method)
         else:
             print("  Config saved. Sign in later with:")
             print("    python3 preprocessor/graph_client.py")
 
-    # Google Calendar
-    print("\n  --- Google Calendar ---\n")
-    if prompt_yn("Set up Google Calendar now?", default=True, key="google-calendar-now"):
-        secret_file = AUTH_DIR / "google_client_secret.json"
-        if not secret_file.exists():
-            print(f"\n  Place your Google OAuth2 client secret at:")
-            print(f"    {secret_file}")
-            print("  Then re-run: python3 scripts/install/user_init.py --phase auth")
-            print("  See docs/SETUP.md 'Google OAuth app' for how to create the secret.")
+    if sign_in:
+        if values.get("google-calendar-now"):
+            google_sign_in()
         else:
-            try:
-                sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
-                import google_calendar_client as gcal
-                gcal.authenticate_all()
-                print("  Google Calendar authentication successful!")
-            except Exception as e:
-                print(f"  Google Calendar auth failed: {e}")
-                print("  You can set this up later.")
-    else:
-        print("  Skipped.")
+            print("  Skipped.")
 
-    if load_existing("ea-config.json").get("profile") in ("email", "review-only"):
+    if ctx.get("profile") in ("email", "review-only"):
         return  # no chat platform on this profile: no chat credentials to ask
-
-    if chat == "zulip":
+    if ctx.get("chat") == "zulip":
         print("\n  --- Zulip ---\n")
         print("  The EA talks to you in private Zulip streams (chat block in")
         print("  ea-config.json). Put the bot's API key in the owner-private")
-        print(f"  {private_secrets_file()} (mode 600) as ZULIP_API_KEY=...")
+        print(f"  {private_dir() / 'secrets.env'} (mode 600) as ZULIP_API_KEY=...")
         print("  scripts/zulip_bootstrap.py prints that line for you.")
         return
-
-    # Slack
-    print("\n  --- Slack ---\n")
-    print("  The EA communicates with you via a private Slack channel.")
-    print("  You need a Bot Token (xoxb-...) and App Token (xapp-...).\n")
-
     # The tokens go in the owner-private secrets.env; the ids in ~/.ea/.env
     # (mode 640, non-secret), as docs/SETUP.md 'The Slack environment files' says.
-    secrets = {}
-    bot_token = prompt("Slack Bot Token (xoxb-..., or 'skip')", "skip", key="slack-bot-token")
-    if bot_token != "skip":
-        secrets["SLACK_BOT_TOKEN"] = bot_token
-    app_token = prompt("Slack App Token (xapp-..., or 'skip')", "skip", key="slack-app-token")
-    if app_token != "skip":
-        secrets["SLACK_APP_TOKEN"] = app_token
-
-    env_data = {}
-    channel_id = prompt("EA Slack Channel ID (C..., or 'skip')", "skip", key="slack-channel-id")
-    if channel_id != "skip":
-        env_data["EA_SLACK_CHANNEL_ID"] = channel_id
-    channel_name = prompt("EA Slack Channel Name (or 'skip')", "skip", key="slack-channel-name-env")
-    if channel_name != "skip":
-        env_data["EA_SLACK_CHANNEL_NAME"] = channel_name
-    owner_id = prompt("Your Slack member ID (U..., or 'skip')", "skip", key="slack-owner-id")
-    if owner_id != "skip":
-        env_data["EA_SLACK_OWNER_ID"] = owner_id
-
+    secrets = {name: values[key] for key, name in SLACK_SECRETS
+               if values.get(key, "skip") != "skip"}
+    env_data = {name: values[key] for key, name in SLACK_ENV
+                if values.get(key, "skip") != "skip"}
     if secrets:
         merge_env_file(private_secrets_file(), secrets)
     if env_data:
         merge_env_file(EA_DIR / ".env", env_data, mode=0o640)
+
+
+def write_reimbursement(values: dict, ctx: dict | None = None) -> dict | None:
+    """reimbursement-config.json, when the answers turn it on."""
+    if not values["reimbursement-configure"]:
+        print("  Skipped.")
+        return None
+    config = {
+        "submitter": {
+            "first_name": values["reimbursement-first-name"],
+            "last_name": values["reimbursement-last-name"],
+            "email": values["reimbursement-email"],
+            "affiliation": values["reimbursement-affiliation"],
+        },
+        "form_url": values["reimbursement-form-url"],
+        "receipts_dir": str(EA_DIR / "receipts"),
+    }
+    save_config("reimbursement-config.json", config)
+    return config
+
+
+def write_vip(values: dict, ctx: dict | None = None) -> list[str]:
+    """vip_senders.txt: the addresses already there and the new ones."""
+    vip_path = CONFIG_DIR / "vip_senders.txt"
+    existing = read_vips()
+    addresses = values["vip-addresses"]
+    if not (addresses or existing):
+        print("  No VIPs configured. The EA will learn them over time.")
+        return []
+    all_vips = sorted(set(existing + addresses))
+    lines = [
+        "# VIP senders -- one email per line.",
+        "# These contacts get priority alerts and extended scheduling hours.",
+        "# The EA adds entries when you say 'this person is very important' in Slack.",
+        "",
+    ] + all_vips
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    vip_path.write_text("\n".join(lines) + "\n")
+    print(f"  -> Saved {vip_path} ({len(all_vips)} VIPs)")
+    return all_vips
+
+
+# push_notify's problem lines start with the setting they name.
+PUSH_KEYS = (("ntfy_url", "push-ntfy-url"), ("topic", "push-topic"), ("click", "push-click"))
+
+
+def write_push(values: dict, ctx: dict | None = None) -> dict | None:
+    """The ntfy push for an install with no chat platform (preprocessor/
+    push_notify.py): the settings go in the owner-private push.json,
+    never in ea-config.json, so the EA cannot choose where reports go.
+    push_notify.problems checks them; AnswerError names what it refused."""
+    if not values["push-configure"]:
+        print("  Skipped. docs/SETUP.md 'Phone push' says how to add it later.")
+        return None
+    settings = {
+        "ntfy_url": values["push-ntfy-url"],
+        "topic": values["push-topic"],
+        "include_text": values["push-include-text"],
+    }
+    if values.get("push-click"):
+        settings["click"] = values["push-click"]
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
+    import push_notify
+    bad = push_notify.problems(settings)
+    if bad:
+        errors: dict = {}
+        for line in bad:
+            key = next((k for word, k in PUSH_KEYS if line.startswith(word)), "_phase")
+            errors[key] = f"{errors[key]} {line}" if key in errors else line
+        raise AnswerError(errors)
+    for line in push_notify.warnings(settings):
+        print(f"  note: {line}")
+
+    priv = private_dir()
+    priv.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = priv / push_notify.SETTINGS_FILE
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(settings, indent=2) + "\n")
+    os.chmod(path, 0o600)
+    print(f"  -> Saved {path}")
+    print("  python3 preprocessor/push_notify.py test sends one push.")
+    return settings
+
+
+def apply_phase(pid: str, values: dict, ctx: dict, inbox: dict | None = None):
+    """Write one phase's checked answers: the setup page's way in to the
+    writers the terminal phases call. `inbox` is the inbox phase's
+    result, when the autonomy phase follows it."""
+    if pid == "autonomy":
+        archive = inbox["archive_completes"] if inbox else archive_default(ctx)
+        return write_autonomy(values, ctx, archive)
+    if pid == "state":
+        make_tree()
+        return write_state()
+    writer = {
+        "profile": write_profile, "identity": write_identity,
+        "scheduling": write_scheduling, "inbox": write_inbox,
+        "groups": write_groups, "deadlines": write_deadlines, "style": write_style,
+        "auth": write_auth, "reimbursement": write_reimbursement, "vip": write_vip,
+        "push": write_push,
+    }[pid]
+    return writer(values, ctx)
+
+
+# ---------------------------------------------------------------------------
+# The phases at the terminal: header, notes, questions, writer
+# ---------------------------------------------------------------------------
+
+def phase_profile(ctx: dict) -> dict:
+    """The install profile and the README notice (setup.sh records the
+    same two; /setup and the setup page ask them first)."""
+    print_intro("profile", ctx)
+    if ctx.get("acknowledged"):
+        print(f"  The notice was accepted on {ctx.get('acknowledged_on')}.\n")
+    return write_profile(ask_phase("profile", ctx), ctx)
+
+
+def phase_identity(ctx: dict) -> dict:
+    """Collect user identity and profile information."""
+    print_intro("identity", ctx)
+    return write_identity(ask_phase("identity", ctx), ctx)
+
+
+def phase_scheduling(ctx: dict) -> dict:
+    """Collect scheduling preferences."""
+    print_intro("scheduling", ctx)
+    return write_scheduling(ask_phase("scheduling", ctx), ctx)
+
+
+def phase_inbox(ctx: dict) -> dict:
+    """Configure inbox management philosophy."""
+    print_intro("inbox", ctx)
+    return write_inbox(ask_phase("inbox", ctx), ctx)
+
+
+def phase_autonomy(ctx: dict, inbox_config: dict | None = None) -> dict:
+    """Configure autonomy tiers."""
+    print_intro("autonomy", ctx)
+    return apply_phase("autonomy", ask_phase("autonomy", ctx), ctx, inbox_config)
+
+
+def phase_groups(ctx: dict) -> dict:
+    """Configure group email lists for noisy thread detection."""
+    print_intro("groups", ctx)
+    return write_groups(ask_phase("groups", ctx), ctx)
+
+
+def phase_deadlines(ctx: dict) -> dict:
+    """Configure deadline sender domain categories."""
+    print_intro("deadlines", ctx)
+    return write_deadlines(ask_phase("deadlines", ctx), ctx)
+
+
+def phase_response_style(ctx: dict) -> dict:
+    """Configure default response styles."""
+    print_intro("style", ctx)
+    return write_style(ask_phase("style", ctx), ctx)
+
+
+def phase_auth(ctx: dict):
+    """Guide user through authentication setup."""
+    print_intro("auth", ctx)
+    write_auth(ask_phase("auth", ctx), ctx, sign_in=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1119,20 +1161,16 @@ def analyze_writing_style_deep(sent: list, min_contact_emails: int = 2) -> dict:
     return result
 
 
-def phase_tone(out: Path | None = None):
+def phase_tone(out: Path | None = None, ctx: dict | None = None):
     """Run deep writing style analysis on sent mail.
 
     `out` takes the baseline JSON instead of the config dir: the caller that
     holds the mail token is not the user who writes ea-bot's config, so it
     computes here and hands the file to that user."""
-    section_header("Phase 9: Writing Style Detection")
+    ctx = ctx or {}
+    print_intro("tone", ctx)
 
-    print("  This scans your last 90 days of sent email to learn your")
-    print("  communication style: greetings, closings, formality level,")
-    print("  and per-contact tone. This helps the EA draft replies that")
-    print("  sound like you.\n")
-
-    if not prompt_yn("Run writing style analysis now?", default=True, key="style-analysis-now"):
+    if not ask_phase("tone", ctx)["style-analysis-now"]:
         print("  Skipped. You can run this later:")
         print("    python3 scripts/install/user_init.py --style-only")
         return
@@ -1172,130 +1210,34 @@ def phase_tone(out: Path | None = None):
 
 
 # ---------------------------------------------------------------------------
-# Phase 10: Reimbursement Config (optional)
+# Phases 10-12: reimbursement, VIP senders, phone push
 # ---------------------------------------------------------------------------
 
-def phase_reimbursement():
+def phase_reimbursement(ctx: dict):
     """Configure reimbursement settings."""
-    section_header("Phase 10: Reimbursement Configuration (Optional)")
-
-    print("  If your institution has a travel reimbursement form, the EA can")
-    print("  help collect receipts and prepare submissions.\n")
-
-    if not prompt_yn("Configure reimbursement automation?", default=False,
-                     key="reimbursement-configure"):
-        print("  Skipped.")
-        return
-
-    config = {
-        "submitter": {
-            "first_name": prompt("Your first name", required=True, key="reimbursement-first-name"),
-            "last_name": prompt("Your last name", required=True, key="reimbursement-last-name"),
-            "email": prompt("Submission email (may differ from work email)",
-                            key="reimbursement-email"),
-            "affiliation": prompt("Affiliation", "Faculty / Staff", key="reimbursement-affiliation"),
-        },
-        "form_url": prompt(
-            "Reimbursement form URL (or leave empty if none)", key="reimbursement-form-url",
-        ),
-        "receipts_dir": str(EA_DIR / "receipts"),
-    }
-
-    save_config("reimbursement-config.json", config)
+    print_intro("reimbursement", ctx)
+    write_reimbursement(ask_phase("reimbursement", ctx), ctx)
 
 
-# ---------------------------------------------------------------------------
-# Phase 11: VIP Senders
-# ---------------------------------------------------------------------------
-
-def phase_vip():
+def phase_vip(ctx: dict):
     """Seed VIP senders list."""
-    section_header("Phase 11: VIP Senders")
-
-    print("  VIP senders get priority alerts and extended scheduling hours.")
-    print("  You can seed this list now, or let the EA learn VIPs over time")
-    print("  when you say 'this person is very important' in Slack.\n")
-
-    vip_path = CONFIG_DIR / "vip_senders.txt"
-    existing = []
-    if vip_path.exists():
-        existing = [
-            l.strip() for l in vip_path.read_text().splitlines()
-            if l.strip() and not l.startswith("#")
-        ]
-
+    print_intro("vip", ctx)
+    existing = read_vips()
     if existing:
         print(f"  Current VIPs: {', '.join(existing)}\n")
-
-    addresses = prompt_list(
-        "VIP email addresses (comma-separated, or leave empty)",
-        "dean@example.edu, program-officer@example.org", key="vip-addresses",
-    )
-    if addresses or existing:
-        all_vips = sorted(set(existing + addresses))
-        lines = [
-            "# VIP senders -- one email per line.",
-            "# These contacts get priority alerts and extended scheduling hours.",
-            "# The EA adds entries when you say 'this person is very important' in Slack.",
-            "",
-        ] + all_vips
-        vip_path.write_text("\n".join(lines) + "\n")
-        print(f"  -> Saved {vip_path} ({len(all_vips)} VIPs)")
-    else:
-        print("  No VIPs configured. The EA will learn them over time.")
+    write_vip(ask_phase("vip", ctx), ctx)
 
 
-# ---------------------------------------------------------------------------
-# Phase 12: Phone push (optional)
-# ---------------------------------------------------------------------------
-
-def phase_push():
-    """The ntfy push for an install with no chat platform (preprocessor/
-    push_notify.py): the settings go in the owner-private push.json,
-    never in ea-config.json, so the EA cannot choose where reports go."""
-    section_header("Phase 12: Phone Push (Optional)")
-
-    print("  An email or review-only install has no chat channel: a report is")
-    print("  a file in ~/.ea/state/reports/. With the ntfy app on your phone,")
-    print("  each report also sends a short push. The settings are written to")
-    print(f"  {private_dir() / 'push.json'} (owner-only, mode 600).\n")
-
-    if not prompt_yn("Send each report to your phone through ntfy?", default=False,
-                     key="push-configure"):
-        print("  Skipped. docs/SETUP.md 'Phone push' says how to add it later.")
-        return
-
-    settings = {
-        "ntfy_url": prompt("ntfy server URL", "https://ntfy.sh", key="push-ntfy-url"),
-        "topic": prompt("Topic (a long random name; on a public server it is the password)",
-                        required=True, key="push-topic"),
-        "include_text": prompt_yn("Include the report text in the push?", default=False,
-                                  key="push-include-text"),
-    }
-    click = prompt("Web board URL to open from the push (optional)", "", key="push-click")
-    if click:
-        settings["click"] = click
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
-    import push_notify
-    bad = push_notify.problems(settings)
-    if bad:
-        for line in bad:
+def phase_push(ctx: dict):
+    """The ntfy push for an install with no chat platform."""
+    print_intro("push", ctx)
+    try:
+        write_push(ask_phase("push", ctx), ctx)
+    except AnswerError as e:
+        for line in e.errors.values():
             print(f"  {line}")
         raise SystemExit("  push.json not written: fix the values above and run "
                          "python3 scripts/install/user_init.py --phase push again")
-    for line in push_notify.warnings(settings):
-        print(f"  note: {line}")
-
-    priv = private_dir()
-    priv.mkdir(mode=0o700, exist_ok=True)
-    path = priv / push_notify.SETTINGS_FILE
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(json.dumps(settings, indent=2) + "\n")
-    os.chmod(path, 0o600)
-    print(f"  -> Saved {path}")
-    print("  python3 preprocessor/push_notify.py test sends one push.")
 
 
 # ---------------------------------------------------------------------------
@@ -1347,7 +1289,12 @@ def phase_preferences():
 def phase_state():
     """Create empty state files."""
     section_header("Phase 13: Initializing State Files")
+    write_state()
 
+
+def write_state() -> int:
+    """The empty state files a new install needs; one already there is
+    kept. Returns how many it created."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
     state_files = {
@@ -1369,6 +1316,7 @@ def phase_state():
     print(f"  Initialized {created} state files in {STATE_DIR}")
     if created < len(state_files):
         print(f"  ({len(state_files) - created} already existed, not overwritten)")
+    return created
 
 
 # ---------------------------------------------------------------------------
@@ -1404,7 +1352,7 @@ def phase_summary():
 # ---------------------------------------------------------------------------
 
 def main():
-    global EA_DIR, CONFIG_DIR, STATE_DIR, AUTH_DIR, ANSWERS
+    global ANSWERS
 
     parser = argparse.ArgumentParser(
         description="EA System User Initialization",
@@ -1442,8 +1390,9 @@ def main():
              "(tests/install/answers-email.json is a complete example)",
     )
     parser.add_argument(
-        "--chat", choices=["slack", "zulip"], default="slack",
-        help="Chat platform the EA talks to you on (default: slack)",
+        "--chat", choices=["slack", "zulip"], default=None,
+        help="Chat platform the EA talks to you on (default: the chat block in "
+             "ea-config.json, else slack)",
     )
     parser.add_argument("--zulip-site", default="",
                         help="Zulip server URL (required with --chat zulip)")
@@ -1469,11 +1418,7 @@ def main():
             parser.error(f"--chat zulip requires {', '.join(missing)}")
 
     # Override EA_DIR if specified
-    if args.ea_dir:
-        EA_DIR = Path(args.ea_dir)
-    CONFIG_DIR = EA_DIR / "config"
-    STATE_DIR = EA_DIR / "state"
-    AUTH_DIR = EA_DIR / "auth"
+    use_ea_dir(args.ea_dir or EA_DIR)
 
     # Safety check
     profile_path = CONFIG_DIR / "user-profile.json"
@@ -1498,25 +1443,24 @@ def main():
         phase_tone(args.out)
         return
 
-    # Single phase mode
+    # Single phase mode: the existing config gives the defaults and the
+    # keys a phase does not ask about.
     if args.phase:
-        existing_profile = load_existing("user-profile.json")
-        existing_sched = load_existing("scheduling-preferences.json")
-        existing_autonomy = load_existing("autonomy-tiers.json")
-
+        ctx = context(args.chat)
         phase_map = {
-            "identity": lambda: phase_identity(existing_profile),
-            "scheduling": lambda: phase_scheduling(existing_sched),
-            "inbox": lambda: phase_inbox(existing_autonomy),
-            "autonomy": lambda: phase_autonomy({"archive_completes": True}, existing_autonomy),
-            "groups": phase_groups,
-            "deadlines": phase_deadlines,
-            "style": lambda: phase_response_style(existing_sched),
-            "auth": lambda: phase_auth(args.chat),
-            "tone": lambda: phase_tone(args.out),
-            "reimbursement": phase_reimbursement,
-            "vip": phase_vip,
-            "push": phase_push,
+            "profile": lambda: phase_profile(ctx),
+            "identity": lambda: phase_identity(ctx),
+            "scheduling": lambda: phase_scheduling(ctx),
+            "inbox": lambda: phase_inbox(ctx),
+            "autonomy": lambda: phase_autonomy(ctx),
+            "groups": lambda: phase_groups(ctx),
+            "deadlines": lambda: phase_deadlines(ctx),
+            "style": lambda: phase_response_style(ctx),
+            "auth": lambda: phase_auth(ctx),
+            "tone": lambda: phase_tone(args.out, ctx),
+            "reimbursement": lambda: phase_reimbursement(ctx),
+            "vip": lambda: phase_vip(ctx),
+            "push": lambda: phase_push(ctx),
             "preferences": phase_preferences,
             "state": phase_state,
             "summary": phase_summary,
@@ -1537,28 +1481,24 @@ def main():
     print("  Press Enter to accept defaults shown in [brackets].")
     print()
 
-    # Create directory tree
-    for subdir in ["auth", "state", "logs", "config", "receipts", "letters", "templates"]:
-        (EA_DIR / subdir).mkdir(parents=True, exist_ok=True)
+    make_tree()
 
-    # Load existing configs for --update mode
-    existing_profile = load_existing("user-profile.json") if args.update else {}
-    existing_sched = load_existing("scheduling-preferences.json") if args.update else {}
-    existing_autonomy = load_existing("autonomy-tiers.json") if args.update else {}
+    # The existing configs give the defaults only with --update.
+    ctx = context(args.chat, load=args.update)
 
     # Run phases
-    profile = phase_identity(existing_profile)
-    sched_prefs = phase_scheduling(existing_sched)
-    inbox_config = phase_inbox(existing_autonomy)
-    phase_autonomy(inbox_config, existing_autonomy)
-    phase_groups()
-    phase_deadlines()
-    phase_response_style(sched_prefs)
-    phase_auth(args.chat)
-    phase_tone()
-    phase_reimbursement()
-    phase_vip()
-    phase_push()
+    phase_identity(ctx)
+    phase_scheduling(ctx)
+    inbox_config = phase_inbox(ctx)
+    phase_autonomy(ctx, inbox_config)
+    phase_groups(ctx)
+    phase_deadlines(ctx)
+    phase_response_style(ctx)
+    phase_auth(ctx)
+    phase_tone(ctx=ctx)
+    phase_reimbursement(ctx)
+    phase_vip(ctx)
+    phase_push(ctx)
     if prompt_yn("Answer the first-week preference questions now?", default=False):
         phase_preferences()
     else:

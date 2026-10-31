@@ -3,13 +3,15 @@
 Install with `./install.sh`: it installs Claude Code, clones this
 repository, installs the Python packages and opens Claude Code on
 `/setup`. The `/setup` skill (`.claude/skills/setup/SKILL.md`) asks the
-questions, one at a time, and runs every command. This file is what to
+questions, one at a time, and runs every command; it offers the
+[setup page in a browser](#setup-in-the-browser) first. This file is what to
 read when a step needs background: the appendices below are named, not
 numbered, and the skill and the doctor's fix texts point into them by
 name.
 
 - [Prerequisites](#prerequisites)
 - [Choose a profile](#choose-a-profile)
+- [Setup in the browser](#setup-in-the-browser)
 - [Microsoft Graph app registration](#microsoft-graph-app-registration)
 - [Google OAuth app](#google-oauth-app)
 - [Web chat (shadow mode today)](#web-chat-shadow-mode-today)
@@ -85,7 +87,8 @@ missing. An install made by hand records it the same way:
 The defaults in the code are the full system's, not the recommended
 start: an `ea-config.json` with no `"profile"` (and `scripts/install/setup.sh` with no
 `--profile`) means `assistant`, an absent `chat` block means Slack, and
-`scripts/install/user_init.py --chat` defaults to `slack`. The `/setup` skill always
+`scripts/install/user_init.py --chat` defaults to the `chat` block's
+frontend, else `slack`. The `/setup` skill always
 records the profile you choose, and `scripts/zulip_bootstrap.py` prints a
 `chat` block with `"frontend": "zulip"`, so neither default applies to an
 install it makes.
@@ -109,6 +112,32 @@ ntfy server), `"click": "<URL>"` to open a page from the push, and
 `python3 preprocessor/push_notify.py test` sends one push. The file is
 owner-private on purpose: `ea-config.json` is the EA's own space, and the
 EA must not choose where report text goes.
+
+## Setup in the browser
+
+The install questions also come as a page you answer on a phone or a
+laptop, the first option `/setup` offers:
+
+```bash
+python3 scripts/install/setup_web.py                    # this machine only
+python3 scripts/install/setup_web.py --bind "$(tailscale ip -4)"   # your tailnet
+```
+
+Open the address it prints, with its `#t=` token (a new one each run).
+From a laptop over SSH, `ssh -L 8480:127.0.0.1:8480 <host>` and the
+default bind work too. The page asks the profile and the notice, then
+every phase of `scripts/install/user_init.py` that writes config, one per
+screen, with the same checks and the same files as `user_init.py
+--answers`; the definitions are one list, `scripts/install/setup_questions.py`.
+It signs in to nothing and runs no root step: its last screen runs the
+doctor and lists, word for word, the commands that are left (`setup.sh`,
+the sign-ins, the service account, the overlay, the hardening, the cron
+lines). Run it before `scripts/install/setup-ea-user.sh`, as you would
+the `user_init.py` phases: after that script `~/.ea` belongs to ea-bot.
+It binds only a loopback or a Tailscale address, stops on Done or after
+an hour without a request, and puts the client secret and the chat
+tokens in `~/.ea-private/secrets.env`. [docs/setup-web.md](setup-web.md)
+is the design.
 
 ## Microsoft Graph app registration
 

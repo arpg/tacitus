@@ -332,3 +332,55 @@ def test_template_placeholders_are_never_offered_as_defaults(monkeypatch, tmp_pa
     user_init.main()
     after = json.loads((cfg / "scheduling-preferences.json").read_text())
     assert "ea_managed_calendar" in sched and after["ea_managed_calendar"] == sched["ea_managed_calendar"]
+
+
+def test_the_profile_phase_records_the_profile_and_the_notice_once(monkeypatch, tmp_path, capsys):
+    """`--phase profile` asks what /setup and the setup page ask first, and
+    records both the way setup.sh --acknowledged does, starting from the
+    template when ea-config.json does not exist yet."""
+    answers = tmp_path / "answers-profile.json"
+    answers.write_text(json.dumps({"profile": "review-only", "acknowledged": True}))
+    _run_answers(monkeypatch, tmp_path, answers, "--phase", "profile")
+    cfg = json.loads((tmp_path / "config" / "ea-config.json").read_text())
+    assert cfg["profile"] == "review-only" and cfg["acknowledged"]["responsibility"]
+    assert "quiet_hours" in cfg, "the template's keys come along"
+    assert "Tacitus is not an ordinary program." in capsys.readouterr().out
+    # accepted once: a second run neither asks again nor moves the date
+    cfg["acknowledged"]["responsibility"] = "2026-01-02"
+    (tmp_path / "config" / "ea-config.json").write_text(json.dumps(cfg))
+    answers.write_text(json.dumps({"profile": "email"}))
+    _run_answers(monkeypatch, tmp_path, answers, "--phase", "profile")
+    cfg = json.loads((tmp_path / "config" / "ea-config.json").read_text())
+    assert cfg["profile"] == "email" and cfg["acknowledged"]["responsibility"] == "2026-01-02"
+    # a no stops the install
+    fresh = tmp_path / "fresh"
+    answers.write_text(json.dumps({"profile": "email", "acknowledged": False}))
+    with pytest.raises(SystemExit, match="accept the notice"):
+        _run_answers(monkeypatch, fresh, answers, "--phase", "profile")
+    assert not (fresh / "config" / "ea-config.json").exists()
+
+
+def test_the_chat_platform_defaults_to_the_chat_block(monkeypatch, tmp_path, capsys):
+    """With a Zulip chat block in ea-config.json and no --chat, the auth
+    phase asks no Slack token."""
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "ea-config.json").write_text(json.dumps({"profile": "assistant",
+                                                    "chat": {"frontend": "zulip"}}))
+    answers = tmp_path / "answers-auth.json"
+    answers.write_text(json.dumps({"graph-auth-method": "skip", "google-calendar-now": False}))
+    _run_answers(monkeypatch, tmp_path, answers, "--phase", "auth")
+    assert "slack-bot-token" not in user_init.ANSWERS_USED
+    assert "--- Zulip ---" in capsys.readouterr().out
+
+
+def test_a_bad_scripted_answer_names_its_key(monkeypatch, tmp_path):
+    answers = tmp_path / "answers.json"
+    for phase, bad in (("identity", {"full-name": "A B", "work-email": "not-an-address"}),
+                       ("scheduling", {"default-duration-minutes": "half an hour"}),
+                       ("autonomy", {"conservative-defaults": False,
+                                     "tier-create-calendar-hold": "sometimes"})):
+        answers.write_text(json.dumps(bad))
+        key = [k for k in bad if k not in ("full-name", "conservative-defaults")][0]
+        with pytest.raises(SystemExit, match=key):
+            _run_answers(monkeypatch, tmp_path / phase, answers, "--phase", phase)
