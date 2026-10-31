@@ -134,6 +134,8 @@ read and the next digest.
 The switches name parts of the code; the owner thinks in tasks. The
 routing table gives each task one value, and each lane asks it at the
 point where it already reads its switch (`preprocessor/model_routing.py`).
+Why the table exists, and what it means on a Mac with the native
+backend, is in [model-routing.md](model-routing.md).
 
 | Value | Meaning |
 |---|---|

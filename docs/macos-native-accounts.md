@@ -423,8 +423,8 @@ server on the Mac behind https (the remote layer refuses http, so a TLS
 proxy such as `tailscale serve` or Caddy fronts it), set up with
 `remote_llm.py init`. A 27B model at 4-bit quantization is about 15 GB
 of weights, so a Mac with 32 GB or more of unified memory. Which lanes
-can be local today, and the per-task routing table with the stakes rule
-as its floor, are in [model-routing.md](model-routing.md).
+can be local, and the per-task routing table with its stakes and keep
+floors, are in [model-routing.md](model-routing.md).
 
 ## Owner steps
 

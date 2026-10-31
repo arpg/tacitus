@@ -1,9 +1,12 @@
 # Model routing: one table, task by task
 
-- **Status:** design (2026-10-31). Nothing here is built; there is no UI
-  and none is proposed yet. It describes one owner-private table that
-  says, for each task, whether a local model or a hosted one does it, and
-  the floors no entry can lower.
+- **Status:** built in part (2026-10-31). The table, its two floors, the
+  web chat's Settings screen, the `routing` chat command and the doctor's
+  `model routing` row are in `preprocessor/model_routing.py`, with
+  `ea_config.get_routing` and `tests/test_model_routing.py`.
+  [llm-lanes.md](llm-lanes.md) section 1.1 is the reference for what the
+  code does. This page keeps why the table exists and what it means on a
+  Mac. A part marked **Not built** is design the code does not have.
 - **Asked for by:** the user who asked for the macOS native backend
   ([macos-native-accounts.md](macos-native-accounts.md)): with mail and
   calendars kept on the Mac, the next question is which model reads them.
@@ -19,130 +22,178 @@
   on a colleague's. The endpoint must be https; a model on the same Mac
   sits behind a TLS proxy (`tailscale serve`, Caddy).
 - **hosted**: Claude through Claude Code, on the `opus` or `fable` tier.
+- **auto**: the remote layer's switches and the `tiers` block decide, as
+  they did before the table.
 - **task**: one kind of model work with its own inputs, for example
-  "write an email body" or "read a new message into a record".
+  "write an email body" or "read a new message into a record". The code
+  has nine: `mail`, `tagging`, `drafting`, `digests`, `briefing`,
+  `audit`, `scheduling`, `chat` and `review`.
 
-## What can be local today
+## The tasks
 
-Every row is a switch that exists now (`remote_llm.py switches`, the
-`tiers` block). "Local" in the third column means the local model does
-the work when the switch is set; "hosted" means Claude does it.
+Each task names work that one or more switches already served. `auto`
+keeps that switch; `local` and `hosted` outrank it. "What the local
+model sees" is what reaches the endpoint when the task runs there.
 
-| Task | Today's switch | Local today? | What the local model sees |
+| Task | The work | The switch `auto` keeps | What the local model sees |
 |---|---|---|---|
-| Read each new message into a record (class, ask, deadline, people) | `mail` = enforce, ghost or sealed | yes | every new message |
-| Thread briefs on ledger rows | `mail` = sealed (built, not the plan) | yes | each open row's thread |
-| Mail tagging (Outlook categories) | follows `mail` | yes | each new message |
-| Email bodies in the user's voice | `drafting` = remote | yes; the `email-author` subagent (hosted) is the fallback and writes letters | the brief, the thread, the draft |
-| List and admissions digests | `digests` = remote | yes | the digest mail |
-| Morning briefing, afternoon update | `briefings` = remote | yes; hard items are handed to Claude one thread each | ledger, records, calendar |
-| The briefing's pre-send "still open?" check | `briefing_audit` = claude or remote | yes, when set to remote | evidence with kept mail removed |
-| Sunday audit | `audits` = remote | yes; flagged items go to Claude | ledger, briefing JSON |
-| Scheduling turns (channel and proactive) | `scheduling` = shadow or enforce; `tiers.lanes` sched-channel = local | yes; every write passes the Claude backstop | the thread, solver output |
-| Chat turns in a topic or lane | `tiers` (`@local`, `use local`, `tiers.lanes`) | yes, except high-stakes messages | the topic's transcript |
-| Nightly ledger reconcile | `reconcile` = nightly | **no**: one Claude call per project | the local model's records |
-| The scheduling backstop | none | **no**: it is Claude by design | the local model's writes |
-| Hand-offs from the briefings and the audit | none | **no**: those are the items the local model passed up | one thread each |
-| Letters | none | **no**: the `email-author` subagent | the request |
+| `mail` | read each new message into a record (class, ask, deadline, people); the thread briefs on ledger rows with `mail = sealed` | `mail` (`enforce`, `ghost`, `sealed`) | every new message; each open row's thread |
+| `tagging` | Outlook categories on new mail | follows the mail gate | each new message |
+| `drafting` | email bodies in the user's voice | `drafting` (`remote`, `ab`) | the brief, the thread, the draft |
+| `digests` | list and admissions digests | `digests` | the digest mail |
+| `briefing` | the morning briefing and the afternoon update; hard items are handed to Claude one thread each | `briefings` | ledger, records, calendar |
+| `audit` | the Sunday audit; flagged items go to Claude | `audits` | ledger, briefing JSON |
+| `scheduling` | the scheduling channel and the proactive scheduler; every local write passes the Claude backstop | `scheduling`; `tiers.lanes` sched-channel and proactive | the thread, solver output |
+| `chat` | turns in topics, rooms and the DM | `tiers.lanes` main, dm and room; `@local`, `use local` | the topic's transcript |
+| `review` | the briefing's still-open check, the nightly ledger reconcile, the scheduling backstop, the hand-offs from the briefings and the audit | none: hosted only | nothing |
+
+Letters have no task: the `email-author` subagent writes them, whatever
+`drafting` says.
 
 ## The routing table
 
-One owner-private file, `<private dir>/routing.json` (0600; the
-resident cannot read or write it, as for `remote-llm.json`):
+One owner-private file, `<private dir>/routing.json` (0600). It holds
+one key, `tasks`:
 
 ```json
 {
-  "default": "hosted",
   "tasks": {
-    "mail.read":        "local",
-    "mail.tag":         "local",
-    "mail.draft":       "local",
-    "digests":          "local",
-    "briefings":        "local",
-    "briefing.check":   "hosted",
-    "audit.weekly":     "hosted",
-    "ledger.reconcile": "hosted",
-    "scheduling":       "local",
-    "chat":             "hosted",
-    "chat.room":        "hosted",
-    "chat.dm":          "hosted",
-    "letters":          "hosted"
-  },
-  "floors": {
-    "stakes": "hosted",
-    "keep_from_anthropic": "local"
+    "mail": "local",
+    "tagging": "local",
+    "drafting": "local",
+    "digests": "local",
+    "briefing": "local",
+    "audit": "hosted",
+    "scheduling": "local",
+    "chat": "auto",
+    "review": "hosted"
   }
 }
 ```
 
-- **Values** are `local` or `hosted`; a task not listed takes `default`.
-  `local` on an install with no endpoint reads `hosted`, as `@local` does
-  today ("no local model set up" in the footer).
-- **The table compiles to today's switches.** `remote_llm.py routing
-  apply` would write `mail`, `drafting`, `digests`, `briefings`,
-  `briefing_audit`, `audits`, `scheduling` and `tiers.lanes` from it, and
-  `routing show` would print the table beside the switches it produced.
-  No lane reads the table itself at first, so no code path changes; the
-  switches stay the single source each lane reads.
-- **Mapping:** `mail.read` and `mail.tag` → `mail` (`enforce` when local,
-  `off` when hosted); `mail.draft` → `drafting` (`remote` / `off`);
-  `digests` → `digests`; `briefings` → `briefings`; `briefing.check` →
-  `briefing_audit` (`remote` / `claude`); `audit.weekly` → `audits`;
-  `scheduling` → `scheduling` (`enforce` / `off`) and `tiers.lanes`
-  sched-channel; `chat`, `chat.room`, `chat.dm` → `tiers.default` and
-  `tiers.lanes` main, room, dm (`local` / `opus`).
-- **Tasks with no local path** (`ledger.reconcile`, `letters`, the
-  backstop, the hand-offs) accept only `hosted`; `routing apply` refuses
-  `local` there with the reason, rather than writing a switch that does
-  not exist.
-- **The ghost-week gates stay.** `mail sealed` and `scheduling enforce`
-  still need the ghost week's GO; `routing apply` reports a refused switch
-  as the remote layer does today.
+- **Values** are `local`, `hosted` or `auto`. A task the file does not
+  name takes its default: `auto` for every task but `review`, which is
+  `hosted`. So an install with no file runs as it did before the table.
+- **`local` with no endpoint** (`remote-llm.json` names no endpoint and
+  model) reads `hosted`, as `@local` does in chat ("no local model set
+  up" in the footer).
+- **Only owner processes read it.** `ea_config.get_routing` takes the
+  table from `routing.json` through `owner_trust.owner_routing_block`
+  and nowhere else. The `routing` block in `ea-config.json` is the
+  template's copy and shapes only what the resident shows: that file is
+  the EA user's to write, and the table moves mail between models. A
+  `routing.json` that fails the owner checks, or is not a JSON object,
+  reads as the defaults, and the doctor's row FAILs.
+- **Unknown tasks and values** are dropped on read (`routing_from_block`).
+  `model_routing.py set` and the Settings screen refuse them with the
+  reason (`routing_problems`).
+- **Changing it.** The web chat's Settings screen (owner only, never on
+  a relayed copy) or, as the owner, `model_routing.py set <task>
+  local|hosted|auto`. Each change is one line in `routing-changes.jsonl`
+  in the remote-LLM store.
+
+## How the lanes read it
+
+There is no compile step and no `apply`: each lane asks the table at the
+point where it already reads its switch, on its next run or turn, with
+no restart. A table that cannot be read leaves each switch as it is.
+
+| Task | Decision point | `local` | `hosted` |
+|---|---|---|---|
+| `mail` | `remote_llm.mode("mail")` (`model_routing.mail_mode`) | `off` and `shadow` read `enforce`; `ghost` and `sealed` stay | the gate is off |
+| `tagging` | `mail_tagger._remote_mode` | the local model tags | Claude Haiku tags |
+| `drafting` | `email_writer.writer_on`, `draft_ab.mode` | the writer (`remote`) | the `email-author` subagent |
+| `digests` | `remote_digests.main` | the remote lane | the Claude lane |
+| `briefing` | `remote_briefing.active` | the remote lane | the Claude lane |
+| `audit` | `remote_audit.active` | the remote lane | the Claude lane |
+| `scheduling` | `model_tiers.resolve` (lanes sched-channel, proactive); `remote_llm.mode("scheduling")` | the lane's tier is `local`; `scheduling enforce` still needs its ghost-week GO | the agent is off, and the lane's local picks run on `opus` |
+| `chat` | `model_tiers.resolve` (lanes main, dm, room) | the lane's tier is `local` | a pick that would run on `local` runs on `opus` |
+| `review` | `remote_briefing.audit_judge` | refused | always |
+
+`remote_llm.py switches` shows each switch's `effective` value with the
+table applied.
+
+**Precedence in chat and scheduling turns**, strongest first:
+
+1. the message's tag (`@local`, `@opus`, `@fable`);
+2. the topic's pin (`use local`);
+3. the topic's name (`[fable] ...`);
+4. the table's `local` or `hosted` for the lane's task;
+5. `tiers.lanes`;
+6. where today's knobs put the turn: an adopted session's model, a
+   room's specialist, the A/B's drawn arm, or the bot's own model.
+
+`hosted` moves only a pick that would run on `local`; a room keeps its
+specialist's model, and a `fable` lane default stays `fable`. The stakes
+rule sits over every pick but the tag (below).
 
 ## The floors
 
-Two rules sit under every entry. No table value lowers them.
+Two rules in code sit under every value. No file lowers them.
 
-1. **The stakes floor (`stakes: hosted`).** The autonomy rails as a
-   routing rule, as `model_tiers.STAKES_RE` applies them to chat today:
-   an item that names money, a contract, a dean, a program officer, a
-   decline, tenure, personnel or a complaint is never decided by the
-   local model, whatever its task's entry says. Today this holds for chat
-   turns only; the table extends it to every task: a briefing item, a
-   draft and a scheduling turn that match go to the hosted model. The
-   user's own `@local` tag stays the one exception, as now.
-2. **The keep floor (`keep_from_anthropic: local`).** Mail from the
-   domains and addresses on the keep list, and admissions mail when that
-   is on, never reaches the hosted model, whatever its task's entry says.
-   This is today's `keep_from_anthropic` list, applied per task instead of
-   only by the mail gate.
+1. **The stakes floor.** `review` is hosted only: `routing_from_block`
+   gives it `hosted` whatever the file says, and a save of `local` is
+   refused. In chat and scheduling turns the per-message stakes rule
+   (`model_tiers.STAKES_RE`: money, a budget, a contract, a legal matter,
+   a dean or a program officer, a decline, tenure, personnel, a
+   complaint) moves a `local` pick to `opus`, as it does a lane default.
+   The user's own `@local` tag stays the one exception. The local
+   briefing keeps its own rails in `remote_briefing`: no draft to a dean
+   or a program officer, on money, a contract or a legal matter, or for a
+   decline; each becomes a decision for the user.
+   **Not built:** the stakes rule on every task. A draft the local writer
+   is asked for, and a briefing item, that match the stakes rule are not
+   moved to the hosted model by the table.
+2. **The keep floor.** `mail` and `tagging` read every new message in an
+   owner process, so `hosted` there would hand kept mail to Claude. While
+   the keep list (`keep_from_anthropic` in `remote-llm.json`) names a
+   domain or an address, `hosted` on either reads `auto`, and a save of
+   `hosted` is refused. The mail gate and the mediator's kept checks then
+   keep that mail from every other task, as before the table.
 
 **When both apply** (a contract question from a kept domain), neither
-model decides. The local model writes its record, and the item goes to
-the user as a decision with that record only, the way a kept message that
-asks for something becomes a `kept-` ledger row today. The user answers
-it or tags it `@local` or `@opus` to say who may.
+model decides: the local model writes its record, and the item goes to
+the user as a decision with that record only, the way a kept message
+that asks for something becomes a `kept-` ledger row. **Not built** as a
+routing rule; the `kept-` row and the briefing's rails are the paths
+today.
 
 ## Visible, and checked
 
-- The doctor's "remote LLM" row gains the table: each task, its value,
-  and any floor that moved an item this week.
-- The 17:30 report's tier line gains one line per task: local and hosted
-  counts and the floor moves, from the existing `tier-turns.jsonl` and
-  `remote-llm/calls.jsonl` (sizes and timings only, never text).
-- A test checks that `routing apply` writes exactly the documented
-  switches, refuses `local` for the hosted-only tasks, and that every
-  floor holds on a fixture item for each task.
+- The doctor's `model routing` row (its own row, beside "remote LLM")
+  names the tasks on each model now (local, mixed, hosted), the local
+  model's state from its breaker and its last call, and where the table
+  came from. It WARNs on a task set to `local` with no local model and on
+  a local model that does not answer, and FAILs on a refused
+  `routing.json`. **Not built:** the floor moves of the past week in that
+  row.
+- The `routing` chat command prints each task's value, the model it runs
+  on now and why.
+- **Not built:** per-task lines in the 17:30 report (local and hosted
+  counts and the floor moves, from `tier-turns.jsonl` and
+  `remote-llm/calls.jsonl`, sizes and timings only, never text).
+- `tests/test_model_routing.py` checks the defaults against the
+  template, that each lane follows the table at its decision point, that
+  every floor holds against a file and a save, that `local` with no local
+  model keeps every lane on Claude, that only owner processes read and
+  write `routing.json`, and that a table that cannot be read leaves each
+  switch as it is.
 
-## What a per-task toggle adds over today
+## What the table adds over the switches
 
-- **One place.** Today the choice is spread over nine switches in
+- **One place.** The choice was spread over the switches in
   `remote-llm.json` and the `tiers` block of `ea-config.json`; the table
   names tasks the way the owner thinks of them.
-- **The stakes floor everywhere,** not only in chat.
-- **The keep floor per task,** not only at the mail gate.
-- **A default for new tasks:** a lane added later is `hosted` until the
-  owner says otherwise.
+- **Judgment stays hosted.** `review` cannot be moved to the local model,
+  and the stakes rule sits over a local table value in chat and
+  scheduling turns. Drafts and briefing items: not built (above).
+- **The keep floor on the tasks that read every message.** `mail` and
+  `tagging` cannot go to Claude while the keep list has entries.
+- **No change until the owner sets a value.** Every task but `review`
+  defaults to `auto`, so a new install and an install with its switches
+  set both run as before. The design's `hosted` default for a task with
+  no entry was not built; a task added later takes the default
+  `ea_config.DEFAULTS` gives it.
 
 What it does not add: a model choice inside a task (that stays the
 switches and the tiers), or any change to what the mediator lets either
@@ -155,6 +206,9 @@ The `local` endpoint can be the Mac itself: an OpenAI-compatible server
 or Caddy for https, then `remote_llm.py init --endpoint https://...`. A
 27B model at 4-bit quantization is about 15 GB of weights, so 32 GB or
 more of unified memory. With the native backend
-([macos-native-accounts.md](macos-native-accounts.md)) and every `local`
-entry set, mail and calendars stay on the Mac and only the hosted tasks,
-under the two floors, send text to Claude.
+([macos-native-accounts.md](macos-native-accounts.md)) and every task but
+`review` set to `local` in the Settings screen, mail and calendars stay
+on the Mac. Claude then sees only the `review` work, letters, the stakes
+turns and the owner's own `@opus` or `@fable` picks, and the mail gate
+and the mediator's kept checks keep the keep list's mail from all of
+them.
