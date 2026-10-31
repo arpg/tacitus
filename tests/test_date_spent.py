@@ -56,12 +56,14 @@ def test_a_meeting_date_or_a_date_the_user_wrote_after_is_spent():
 
 
 def test_the_ranked_queue_gives_a_spent_date_no_overdue_credit():
-    now = datetime.now(timezone.utc)
+    # The ranker and the helper compare local dates, so the rows are built
+    # on the local clock: after 18:00 MT a UTC "yesterday" is today here.
+    now = datetime.now().astimezone()
     past = (now - timedelta(days=2)).date().isoformat()
+    wrote_at = (now - timedelta(days=1)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     held = _row("robo", deadline=past, thread_brief={"scheduling": "confirmation"})
     wrote = _row("goals", deadline=past,
-                 thread_brief={"scheduling": "none",
-                               "last_from_user": (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")})
+                 thread_brief={"scheduling": "none", "last_from_user": wrote_at})
     late = _row("letter", deadline=past)
     top, _rest = build_today_top([], [], [], [], [held, wrote, late], [], floor=0)
     by = {t["ref"]: t for t in top}
