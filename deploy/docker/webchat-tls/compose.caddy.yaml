@@ -1,0 +1,30 @@
+# Caddy as the TLS proxy in front of the web chat (docs/docker.md, Web
+# chat). Copy this file next to compose.yaml as compose.override.yaml, set
+# WEBCHAT_HOST (and WEBCHAT_PUBLIC_URL) in .env, then
+#
+#   docker compose --profile assistant up -d
+#
+# starts Caddy with the bot. Caddy reaches the bot as bot:8470 on the
+# compose network and keeps its certificates in the webchat-tls volume.
+# Paths here are relative to compose.yaml's directory.
+services:
+  webchat-tls:
+    # Caddy 2.10.2
+    image: "caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d"
+    profiles: ["assistant"]
+    restart: unless-stopped
+    ports:
+      - "${WEBCHAT_HTTPS_PORT:-443}:443"
+      - "${WEBCHAT_HTTP_PORT:-80}:80"
+    environment:
+      WEBCHAT_HOST: "${WEBCHAT_HOST:?set WEBCHAT_HOST in .env to the host name of WEBCHAT_PUBLIC_URL}"
+    volumes:
+      - "./deploy/docker/webchat-tls/Caddyfile:/etc/caddy/Caddyfile:ro"
+      - "webchat-tls:/data"
+      # An institution certificate: its directory, named in the Caddyfile.
+      # - "./certs:/certs:ro"
+    depends_on:
+      - bot
+
+volumes:
+  webchat-tls:

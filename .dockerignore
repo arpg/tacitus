@@ -19,6 +19,8 @@ venv
 # An install's own overlay (preprocessor/install_overlay.py); each
 # container renders and installs its own at start.
 CLAUDE.local.md
+# A container install's own compose additions.
+compose.override.yaml
 deploy/zulip/.env
 **/*.log
 node_modules

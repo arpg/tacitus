@@ -1,0 +1,25 @@
+# TLS in front of the EA's web chat in Docker (docs/docker.md, Web chat).
+#
+# Caddy answers for WEBCHAT_HOST, the host name of WEBCHAT_PUBLIC_URL, and
+# passes each request to the bot on the compose network as sent: the same
+# Host header, path and body. The bot answers an API request only when
+# Host is public_url's host and port, and a POST only with public_url's
+# Origin. The chat needs an origin of its own (docs/SECURITY.md, Web
+# chat): serve nothing else on this host name and port.
+#
+# The certificate: for a public DNS name that reaches this machine on
+# ports 80 and 443, Caddy gets one from Let's Encrypt and renews it. For
+# a certificate from your institution, mount its files into the container
+# (compose.caddy.yaml shows where) and uncomment the tls line.
+
+{$WEBCHAT_HOST} {
+	# tls /certs/fullchain.pem /certs/privkey.pem
+
+	# The bot serves the chat under its base path; the bare host opens it.
+	redir / /chat/
+
+	reverse_proxy bot:8470 {
+		# The event stream reaches the browser as the bot writes it.
+		flush_interval -1
+	}
+}

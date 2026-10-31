@@ -1102,6 +1102,14 @@ def check_chat(env: dict):
 # shortest pairing token the bot takes (botcore/botcore/chat/web_frontend.py).
 WEB_SERVE_PORT = 8444
 WEB_MIN_TOKEN = 16
+# A container install (compose.yaml sets it): the web chat sits behind a
+# TLS proxy on a host name of its own, not behind `tailscale serve`.
+WEB_CONTAINER_SEED = ("docker compose run --rm owner python3 /opt/ea-system/deploy/docker/"
+                      "chat_seed.py web --public-url https://<host>/chat")
+
+
+def _in_container() -> bool:
+    return os.environ.get("EA_CONTAINER") == "docker"
 
 
 def _web_private_problem(path: Path, kind: str) -> str | None:
@@ -1137,7 +1145,9 @@ def check_web(wcfg: dict) -> None:
         warn("web chat: settings", f"preprocessor/owner_trust.py not importable: {e}")
         return
     chat_json = _private_dir() / ot.CHAT_FILE
-    restart = "then sudo systemctl restart ea-chat-bot (docs/SETUP.md 'Web chat')"
+    container = _in_container()
+    restart = ("then docker compose restart bot (docs/docker.md 'Web chat')" if container
+               else "then sudo systemctl restart ea-chat-bot (docs/SETUP.md 'Web chat')")
     roots = ot.resident_roots()
 
     # the settings
@@ -1146,6 +1156,7 @@ def check_web(wcfg: dict) -> None:
         warn("web chat: settings",
              f"the web block comes from ea-config.json; the bot serves the web chat only "
              f"from {chat_json}",
+             WEB_CONTAINER_SEED if container else
              "python3 preprocessor/owner_trust.py seed --chat (as yourself, at a terminal)")
     else:
         why, fixes = [], []
@@ -1160,10 +1171,17 @@ def check_web(wcfg: dict) -> None:
             why.append(f"base_path {wcfg.get('base_path')!r} is not a plain path")
             fixes.append("set web.base_path to /chat")
         url = str(wcfg.get("public_url") or "").strip().rstrip("/")
-        example = f"https://<host>.<tailnet>.ts.net:{WEB_SERVE_PORT}{base}"
+        bind = str(wcfg.get("bind") or "127.0.0.1")
+        example = (f"https://<host>{base}" if container
+                   else f"https://<host>.<tailnet>.ts.net:{WEB_SERVE_PORT}{base}")
+        if container and bind in ("127.0.0.1", "::1", "localhost"):
+            why.append(f"bind {bind} is the container's own loopback, which no proxy reaches")
+            fixes.append("set web.bind to 0.0.0.0 (chat_seed.py web does)")
         if not url:
             why.append("no public_url")
-            fixes.append(f"set web.public_url to {example}, the address `tailscale serve "
+            fixes.append(f"set web.public_url to {example}, the address your TLS proxy serves "
+                         f"(WEBCHAT_PUBLIC_URL; {WEB_CONTAINER_SEED})" if container else
+                         f"set web.public_url to {example}, the address `tailscale serve "
                          f"--https={WEB_SERVE_PORT}` gives")
         else:
             import urllib.parse
@@ -1175,7 +1193,7 @@ def check_web(wcfg: dict) -> None:
             if parts is None or parts.scheme != "https" or not parts.hostname:
                 why.append(f"public_url {url} is not an https address")
                 fixes.append(f"set web.public_url to {example}")
-            elif url_port is None:
+            elif url_port is None and not container:
                 why.append(f"public_url {url} has no port; the chat needs an HTTPS port of "
                            f"its own (one app per origin)")
                 fixes.append(f"add the `tailscale serve --https` port: {example}")
@@ -1187,7 +1205,8 @@ def check_web(wcfg: dict) -> None:
             warn("web chat: settings", "; ".join(why),
                  f"{'; '.join(fixes)} in {chat_json}, {restart}")
         else:
-            ok("web chat: settings", f"{url} serves 127.0.0.1:{int(port)}{base} (from {chat_json})")
+            ok("web chat: settings", f"{url} serves {bind}:{int(port)}{base} (from {chat_json})"
+               + ("; serve nothing else on that host name and port" if container else ""))
 
     store = Path(str(wcfg.get("store_path") or "") or _private_dir() / "webchat.sqlite")
     store_dir = store.parent
@@ -1214,6 +1233,10 @@ def check_web(wcfg: dict) -> None:
            + (f"; pairing token at {token}" if os.path.lexists(token) else ""))
     elif os.path.lexists(token):
         ok("web chat: sign-in", f"pairing token at {token}")
+    elif container:
+        warn("web chat: sign-in", f"no pairing token at {token} yet",
+             "start the bot (docker compose --profile assistant up -d): it writes the token "
+             "there (docs/docker.md 'Web chat')")
     else:
         warn("web chat: sign-in",
              f"no way to sign in yet: no tailscale_login{'' if header_on else ' (header off)'} "

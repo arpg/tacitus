@@ -11,10 +11,17 @@ host install's split and pins what it downloads.
 - The Dockerfile pins the base image by digest and Claude Code and
   supercronic by checksum, loads no floating frontend, and gives the
   image's interpreter the /usr/bin/python3 name the host tools use.
-- compose.yaml publishes no port except Zulip's, on loopback, pins every
-  outside image by digest, starts only init, the mediator and the
-  scheduler without a profile, and derives the owner's home from one
-  OWNER_USER value.
+- compose.yaml publishes no port except Zulip's and the web chat's, both
+  on loopback, pins every outside image by digest, starts only init, the
+  mediator and the scheduler without a profile, and derives the owner's
+  home from one OWNER_USER value.
+- The web chat: the bot publishes port 8470 on loopback as WEBCHAT_PORT
+  and checks its health through the entrypoint; the chat seed writes a
+  web block that binds the container's interfaces with the identity
+  header off and public_url from WEBCHAT_PUBLIC_URL, as the owner, mode
+  0600; the entrypoint keeps the private volume 0700 with the chat files
+  0600; the health check wants the API's 401; the Caddy example is pinned
+  and passes the request as sent.
 - The Python lock holds exact versions for every top-level package.
 - The entrypoint runs every owner role from /opt/ea-system, never from
   the tree in ea-bot's home, renders the install overlay as ea-bot and
@@ -43,6 +50,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCKER = ROOT / "deploy" / "docker"
+TLS = DOCKER / "webchat-tls"
 FIXTURE_PLUGINS = ROOT / "tests" / "fixtures" / "plugins"
 sys.path.insert(0, str(ROOT / "preprocessor"))
 
@@ -311,7 +319,7 @@ def test_compose_ports_images_and_profiles():
         if image != ea_image:
             assert re.search(r"@sha256:[0-9a-f]{64}$", image), (name, image)
         for port in s.get("ports") or []:
-            assert name == "zulip" and str(port).startswith("127.0.0.1:"), (name, port)
+            assert name in ("zulip", "bot") and str(port).startswith("127.0.0.1:"), (name, port)
     mounts = services["mediator"]["volumes"]
     assert "ea-data:/home/ea-bot/.ea" in mounts
     # One OWNER_USER value names the owner in the image and its home, so
@@ -322,12 +330,13 @@ def test_compose_ports_images_and_profiles():
 
 
 def test_compose_settings_are_in_the_example():
-    compose = (ROOT / "compose.yaml").read_text()
     example = (DOCKER / "env.example").read_text()
-    used = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*)", compose))
-    used |= set(re.findall(r'environment: "([A-Z][A-Z0-9_]*)"', compose))
     defined = set(re.findall(r"^([A-Z][A-Z0-9_]*)=", example, re.M))
-    assert used - {"EA_IMAGE"} <= defined, sorted(used - defined)
+    for path in (ROOT / "compose.yaml", TLS / "compose.caddy.yaml"):
+        compose = path.read_text()
+        used = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*)", compose))
+        used |= set(re.findall(r'environment: "([A-Z][A-Z0-9_]*)"', compose))
+        assert used - {"EA_IMAGE"} <= defined, (path.name, sorted(used - defined))
 
 
 def test_python_lock_is_exact_and_covers_the_top_level():
@@ -356,7 +365,8 @@ def test_shell_scripts_parse_and_new_files_have_no_dashes():
         r = subprocess.run(["bash", "-n", str(DOCKER / script)], capture_output=True, text=True)
         assert r.returncode == 0, (script, r.stderr)
     files = [ROOT / "Dockerfile", ROOT / "compose.yaml", ROOT / ".dockerignore",
-             ROOT / "docs" / "docker.md", *sorted(p for p in DOCKER.iterdir() if p.is_file())]
+             ROOT / "docs" / "docker.md", *sorted(p for p in DOCKER.iterdir() if p.is_file()),
+             *sorted(p for p in TLS.iterdir() if p.is_file())]
     for f in files:
         text = f.read_text()
         assert "—" not in text and "–" not in text, f
@@ -390,12 +400,12 @@ def test_owner_roles_run_from_the_owner_copy():
     ea-bot tree, lives in its own function, not in a role's command."""
     text = (DOCKER / "entrypoint.sh").read_text()
     assert 'CODE_DIR=/opt/ea-system' in text
-    for role in ("bot", "mediator", "scheduler", "owner"):
+    for role in ("bot", "health", "mediator", "scheduler", "owner"):
         body = _role(text, role)
         commands = "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
         for bad in ("/home/ea-bot", "$DEPLOY_DIR", "$EA_BOT_HOME", "ea-system"):
             assert bad not in commands, (role, bad, commands)
-    for role in ("bot", "mediator", "scheduler"):
+    for role in ("bot", "health", "mediator", "scheduler"):
         assert '"$CODE_DIR' in _role(text, role), role
 
 
@@ -422,7 +432,7 @@ def test_entrypoint_renders_and_installs_the_overlay_as_the_right_users():
     for role in ("bot", "agent", "owner"):
         body = _role(text, role)
         assert body.index("install_overlay") < body.index("cd "), role
-    for role in ("mediator", "scheduler"):
+    for role in ("mediator", "scheduler", "health"):
         assert "overlay" not in _role(text, role), role
     assert "CLAUDE.local.md" in (ROOT / ".dockerignore").read_text().splitlines()
 
@@ -729,6 +739,281 @@ def test_docs_say_what_setup_asks_and_how_its_network_works():
     assert compose.count("network_mode: host") == 2, "setup and signin"
     assert "network_mode: host" in docs and "Enable host networking" in docs
     assert "device_code" in docs[docs.index("network_mode: host"):][:900]
+
+
+def _docker_module(name: str):
+    spec = importlib.util.spec_from_file_location(f"ea_docker_{name}", DOCKER / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _private_dir() -> Path:
+    """A scratch private directory of this user's, mode 0700, as the
+    ea-private volume holds it."""
+    priv = Path(tempfile.mkdtemp(prefix="ea-test-docker-chat-")) / "private"
+    priv.mkdir(mode=0o700)
+    priv.chmod(0o700)
+    return priv
+
+
+def _mode(path: Path) -> int:
+    return path.lstat().st_mode & 0o777
+
+
+def test_compose_bot_publishes_the_web_chat_on_loopback_and_checks_its_health():
+    """The bot's web chat port goes to the host's loopback only, as
+    WEBCHAT_PORT, and to the compose network; the health check runs the
+    entrypoint's role; every EA service gets the public address (the
+    setup role seeds it) and the container flag (the doctor's wording)."""
+    yaml = pytest.importorskip("yaml")
+    doc = yaml.safe_load((ROOT / "compose.yaml").read_text())
+    bot = doc["services"]["bot"]
+    assert bot["ports"] == ["127.0.0.1:${WEBCHAT_PORT:-8470}:8470"]
+    assert [str(p) for p in bot["expose"]] == ["8470"]
+    hc = bot["healthcheck"]
+    assert hc["test"] == ["CMD", "/usr/local/bin/ea-entrypoint", "health"]
+    for key in ("interval", "timeout", "retries", "start_period"):
+        assert key in hc, key
+    for name in ("setup", "bot", "owner", "scheduler"):
+        env = doc["services"][name]["environment"]
+        assert env["WEBCHAT_PUBLIC_URL"] == "${WEBCHAT_PUBLIC_URL:-}", name
+        assert env["EA_CONTAINER"] == "docker", name
+    seed = _docker_module("chat_seed")
+    assert (seed.WEB_BIND, seed.WEB_PORT) == ("0.0.0.0", 8470), "the port compose publishes"
+
+
+def test_chat_seed_writes_the_web_block_with_the_header_off():
+    """The seed, as the owner: the web chat alone, bound to the container's
+    interfaces on the port compose publishes, public_url from
+    WEBCHAT_PUBLIC_URL with the base path, the identity header off, in a
+    0600 chat.json. The bot reads it so."""
+    priv = _private_dir()
+    env = dict(os.environ, EA_PRIVATE_DIR=str(priv), WEBCHAT_PUBLIC_URL="https://chat.example.test")
+
+    def seed(*args, env=env, stdin=None):
+        return subprocess.run([sys.executable, str(DOCKER / "chat_seed.py"), *args], env=env,
+                              input=stdin, capture_output=True, text=True)
+
+    r = seed("web")
+    assert r.returncode == 0, r.stderr
+    path = priv / "chat.json"
+    assert _mode(path) == 0o600 and _mode(priv) == 0o700
+    block = json.loads(path.read_text())
+    assert block["frontend"] == "web" and block["shadow"] == ""
+    assert block["web"] == {"bind": "0.0.0.0", "port": 8470, "base_path": "/chat",
+                            "public_url": "https://chat.example.test/chat",
+                            "trust_tailscale_header": False}
+
+    import ea_config
+    from chat.web_frontend import WebFrontend
+    web = ea_config.chat_from_block(block)["web"]
+    fe = WebFrontend.from_config(web, store_path=priv / "webchat.sqlite", trusted_config=True)
+    assert fe.trust_tailscale_header is False, "no tailscaled in the stack: the token signs in"
+    assert (fe.bind, fe.port, fe.base_path) == ("0.0.0.0", 8470, "/chat")
+    assert fe.loopback_url() == "http://127.0.0.1:8470/chat", "the relay client stays on loopback"
+    assert fe.pair_token_file == priv / "webchat-pair.token"
+    assert fe.public_origin() == ("https", "chat.example.test", 443)
+    # a proxy passes the public Host; one that names the bot's service is misdirected
+    assert fe.host_allowed("chat.example.test") and not fe.host_allowed("bot:8470")
+
+    # a later run keeps every other key, and with no address the one there
+    block["web"]["notify"] = {"personal": {"channel": "dm"}}
+    path.write_text(json.dumps(block))
+    r = seed("web", env=dict(env, WEBCHAT_PUBLIC_URL=""))
+    assert r.returncode == 0, r.stderr
+    web = json.loads(path.read_text())["web"]
+    assert web["public_url"] == "https://chat.example.test/chat"
+    assert web["notify"] == {"personal": {"channel": "dm"}}
+    r = seed("web", "--public-url", "https://other.example.test/tacitus/")
+    web = json.loads(path.read_text())["web"]
+    assert (web["public_url"], web["base_path"]) == ("https://other.example.test/tacitus",
+                                                     "/tacitus")
+
+    # the relay block (docs/webchat-relay.md, Config), and its removal
+    install = "abcdefghijklmnopqrstuvwxyz"
+    r = seed("relay", "--url", "https://relay.example.test/", "--install-id", install)
+    assert r.returncode == 0, r.stderr
+    relay = json.loads(path.read_text())["web"]["relay"]
+    assert relay == {"url": "https://relay.example.test", "install_id": install}
+    assert seed("relay", "--url", "http://relay.example.test").returncode == 2
+    assert seed("relay", "--off").returncode == 0
+    assert "relay" not in json.loads(path.read_text())["web"]
+    assert _mode(path) == 0o600
+
+    # refused: an address that is not one, a link planted at chat.json, a
+    # private directory that is not a directory of this user's
+    for bad in ("ftp://chat.example.test/chat", "https://chat.example.test/chat?x=1",
+                "https://someone@chat.example.test/chat", "chat.example.test"):
+        assert seed("web", "--public-url", bad).returncode == 2, bad
+    path.unlink()
+    target = priv.parent / "elsewhere.json"
+    target.write_text("{}")
+    path.symlink_to(target)
+    assert seed("web").returncode == 1
+    assert target.read_text() == "{}"
+    path.unlink()
+    r = seed("web", env=dict(env, EA_PRIVATE_DIR=str(target)))
+    assert r.returncode != 0 and "run it as the owner" in r.stderr
+    # the whole block from stdin, for Zulip or Slack
+    r = seed("write", stdin=json.dumps({"frontend": "zulip", "zulip": {"site": "https://z.test"}}))
+    assert r.returncode == 0, r.stderr
+    assert json.loads(path.read_text())["frontend"] == "zulip" and _mode(path) == 0o600
+
+
+def test_chat_seed_shadow_keeps_the_primary():
+    seed = _docker_module("chat_seed")
+    zulip = {"frontend": "zulip", "zulip": {"site": "https://z.example.test"}}
+    block = seed.chat_block(zulip, "https://chat.example.test/chat", shadow=True)
+    assert block["frontend"] == "zulip" and block["shadow"] == "web"
+    assert block["zulip"] == zulip["zulip"] and block["web"]["trust_tailscale_header"] is False
+    with pytest.raises(ValueError):
+        seed.chat_block({}, "https://chat.example.test/chat", shadow=True)
+    assert seed.check_public_url("https://h.example.test") == ("https://h.example.test/chat",
+                                                               "/chat")
+
+
+def test_entrypoint_seeds_the_web_chat_as_the_owner():
+    """The setup role offers the web chat first, takes its address from
+    WEBCHAT_PUBLIC_URL unless typed, and writes chat.json as the owner
+    through the seed; ea-bot's copy only names the platform."""
+    text = (DOCKER / "entrypoint.sh").read_text()
+    chat = _shell_fn(text, "setup_chat_env")
+    assert 'ask chat-frontend "Chat platform: web, zulip or slack" web' in chat
+    assert "ask webchat-public-url" in chat and '"${WEBCHAT_PUBLIC_URL:-}"' in chat
+    assert 'write_owner_web_chat "$url"' in chat and "SETUP_CHAT_ARGS=(--chat web)" in chat
+    assert "webchat-pair.token" in chat, "the role says how to read the token"
+    web = _shell_fn(text, "write_owner_web_chat")
+    assert 'run_as_owner python3 "$CODE_DIR/deploy/docker/chat_seed.py" web --public-url "$1"' in web
+    assert "ea_bot" not in web
+    whole = _shell_fn(text, "write_owner_chat")
+    assert 'run_as_owner python3 "$CODE_DIR/deploy/docker/chat_seed.py" write' in whole
+    health = _role(text, "health")
+    assert 'as_owner python3 "$CODE_DIR/deploy/docker/healthcheck.py"' in health
+
+
+def test_entrypoint_keeps_the_private_volume_0700_with_the_chat_files_0600():
+    """Run the entrypoint's prepare_private_volume with chown and install
+    stubbed (the test is not root): the directory ends 0700 and the chat
+    settings, the pairing token and the relay key 0600, and a symlink is
+    left as it is."""
+    tmp = Path(tempfile.mkdtemp(prefix="docker-private-"))
+    bindir = tmp / "bin"
+    bindir.mkdir()
+    (bindir / "chown").write_text('#!/bin/bash\necho "chown $*" >> "$CALLS"\n')
+    (bindir / "install").write_text(
+        '#!/bin/bash\nmode=0755\nwhile [ $# -gt 1 ]; do case "$1" in -m) mode="$2"; shift 2;; '
+        '-o|-g) shift 2;; *) shift;; esac; done\nmkdir -p "$1"; chmod "$mode" "$1"\n')
+    for stub in bindir.iterdir():
+        stub.chmod(0o755)
+    priv = tmp / "private"
+    priv.mkdir()
+    priv.chmod(0o755)
+    names = ("chat.json", "webchat-pair.token", "webchat-relay.json", "secrets.env")
+    for name in names:
+        (priv / name).write_text("x\n")
+        (priv / name).chmod(0o644)
+    outside = tmp / "outside"
+    outside.write_text("x\n")
+    outside.chmod(0o644)
+    (priv / "bot.env").symlink_to(outside)
+    calls = tmp / "calls.log"
+    calls.write_text("")
+    text = (DOCKER / "entrypoint.sh").read_text()
+    script = "set -euo pipefail\n" + _shell_fn(text, "prepare_private_volume") + "prepare_private_volume\n"
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+               CALLS=str(calls), PRIV_DIR=str(priv), OWNER_USER="owner")
+    r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert _mode(priv) == 0o700 and _mode(priv / "logs") == 0o700
+    for name in names:
+        assert _mode(priv / name) == 0o600, name
+        assert f"chown owner:owner {priv / name}" in calls.read_text(), name
+    assert _mode(outside) == 0o644 and "bot.env" not in calls.read_text()
+    assert 'prepare_private_volume' in _shell_fn(text, "prepare_volumes")
+
+
+def test_healthcheck_wants_the_apis_401_from_the_web_chat():
+    hc = _docker_module("healthcheck")
+    assert hc.probe_url({"bind": "0.0.0.0", "port": 8470, "base_path": "/chat"}) == (
+        "http://127.0.0.1:8470/chat/api/me", "127.0.0.1:8470")
+    assert hc.probe_url({"bind": "::", "port": 9, "base_path": ""})[0] == "http://[::1]:9/api/me"
+    from chat.web_frontend import WebFrontend
+    priv = _private_dir()
+    fe = WebFrontend({"bind": "127.0.0.1", "port": 0, "base_path": "/chat",
+                      "public_url": "https://chat.example.test/chat",
+                      "trust_tailscale_header": False},
+                     store_path=priv / "webchat.sqlite", trusted_config=True)
+    fe.poll_s = 0.05
+    fe.start()
+    try:
+        ok, line = hc.check({"bind": "0.0.0.0", "port": fe.port, "base_path": "/chat"})
+        assert ok, line
+        assert "owner check on" in line
+        assert _mode(priv / "webchat.sqlite") == 0o600 and _mode(priv / "webchat-pair.token") == 0o600
+        ok, line = hc.check({"bind": "0.0.0.0", "port": fe.port, "base_path": "/other"})
+        assert not ok and "404" in line
+    finally:
+        fe.stop()
+    ok, line = hc.check({"bind": "127.0.0.1", "port": fe.port, "base_path": "/chat"}, timeout=2)
+    assert not ok and "does not answer" in line
+
+
+def test_healthcheck_passes_a_block_without_the_web_chat():
+    """Run as a process that is not the owner's (the test), the check reads
+    ea-config.json: no web chat passes; a web chat from there fails, since
+    the bot serves none from it."""
+    base = Path(tempfile.mkdtemp(prefix="ea-test-docker-health-"))
+    ea = base / "ea"
+    (ea / "config").mkdir(parents=True)
+    env = dict(os.environ, EA_DIR=str(ea), EA_PRIVATE_DIR=str(base / "none"))
+    cfg = ea / "config" / "ea-config.json"
+    for block, rc, words in (({"frontend": "zulip"}, 0, "no web chat"),
+                             ({"frontend": "web"}, 1, "owner-private chat.json")):
+        cfg.write_text(json.dumps({"chat": block}))
+        r = subprocess.run([sys.executable, str(DOCKER / "healthcheck.py")], env=env,
+                           capture_output=True, text=True, timeout=60)
+        assert r.returncode == rc, (block, r.stdout, r.stderr)
+        assert words in r.stdout, r.stdout
+
+
+def test_caddy_example_is_pinned_and_passes_the_request_as_sent():
+    """deploy/docker/webchat-tls/: the image by digest, on the assistant
+    profile with the bot, its Caddyfile path relative to compose.yaml's
+    directory, and a Caddyfile that proxies to bot:8470 without rewriting
+    the Host or the path and streams the events."""
+    yaml = pytest.importorskip("yaml")
+    doc = yaml.safe_load((TLS / "compose.caddy.yaml").read_text())
+    svc = doc["services"]["webchat-tls"]
+    assert re.search(r"@sha256:[0-9a-f]{64}$", svc["image"]), svc["image"]
+    assert svc["profiles"] == ["assistant"] and "bot" in svc["depends_on"]
+    assert svc["environment"]["WEBCHAT_HOST"].startswith("${WEBCHAT_HOST:?")
+    mount = next(v for v in svc["volumes"] if "Caddyfile" in v)
+    assert (ROOT / mount.split(":")[0]).resolve() == (TLS / "Caddyfile").resolve()
+    assert mount.endswith(":ro")
+    assert "webchat-tls" in doc["volumes"]
+    caddy = (TLS / "Caddyfile").read_text()
+    code = "\n".join(ln.split("#", 1)[0] for ln in caddy.splitlines())
+    assert "{$WEBCHAT_HOST} {" in code
+    assert "reverse_proxy bot:8470" in code and "flush_interval -1" in code
+    for bad in ("header_up", "strip_prefix", "handle_path", "rewrite"):
+        assert bad not in code, bad
+    assert "compose.override.yaml" in (ROOT / ".gitignore").read_text().splitlines()
+    assert "compose.override.yaml" in (ROOT / ".dockerignore").read_text().splitlines()
+
+
+def test_docs_say_how_to_pair_and_put_tls_in_front():
+    docs = (ROOT / "docs" / "docker.md").read_text()
+    start = docs.index("## Web chat")
+    web = docs[start:docs.index("\n## ", start + 1)]
+    for must in ("WEBCHAT_PUBLIC_URL", "WEBCHAT_PORT", "WEBCHAT_HOST",
+                 '"trust_tailscale_header": false', "webchat-pair.token",
+                 "cp deploy/docker/webchat-tls/compose.caddy.yaml compose.override.yaml",
+                 "proxy_set_header Host $http_host", "chat_seed.py web", "chat_seed.py relay",
+                 "webchat-relay.py init", "relay: connected", "healthy", "0700", "0600"):
+        assert must in web, must
+    example = (DOCKER / "env.example").read_text()
+    assert "WEBCHAT_PUBLIC_URL=" in example and "WEBCHAT_PORT=8470" in example
 
 
 if __name__ == "__main__":
