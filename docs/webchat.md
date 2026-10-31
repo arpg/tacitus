@@ -3,11 +3,14 @@
 Tacitus ships its own chat interface so an install needs no Zulip or
 Slack. The bot process serves a small web app (a PWA) over HTTP on
 loopback; the owner reaches it over their tailnet (`tailscale serve`
-proxies a path to the port and adds identity headers) or, later, through
-a Tacitus relay. In **shadow mode** the bot keeps its primary front end
-(Zulip today) and mirrors every post, update, card and reaction into the
-web front end, and accepts input from either side, so the owner can try
-the new interface against live traffic.
+proxies a path on an HTTPS port of the chat's own to the port and adds
+identity headers) or, later, through a Tacitus relay. In **shadow mode**
+the bot keeps its primary front end (Zulip today) and mirrors every
+post, update, card and reaction into the web front end, and accepts
+input from either side, so the owner can try the new interface against
+live traffic. The security rules (who is the owner, the origin rule,
+what the bot serves at all) are in docs/SECURITY.md, Web chat; each is
+restated below where it applies.
 
 Three parts, built in parallel against this contract:
 
@@ -30,7 +33,11 @@ not edited here.
 ## Config
 
 The chat block (`~/.ea-private/chat.json` for owner processes, read by
-`preprocessor/ea_config.get_chat`; `ea-config.json` otherwise):
+`preprocessor/ea_config.get_chat`; `ea-config.json` otherwise). The bot
+serves the web chat only from the owner-private file
+(`ea_config.get_chat_source` tells, and `chat.load_frontend` passes
+`trusted_config`); a block from `ea-config.json` builds a front end whose
+start() refuses (Identity and auth):
 
 ```json
 "chat": {
@@ -40,8 +47,9 @@ The chat block (`~/.ea-private/chat.json` for owner processes, read by
     "bind": "127.0.0.1",
     "port": 8470,
     "base_path": "/chat",
-    "public_url": "https://<host>.ts.net/chat",
+    "public_url": "https://<host>.ts.net:8444/chat",
     "tailscale_login": "<owner login as tailscale serve reports it>",
+    "trust_tailscale_header": true,
     "pair_token_file": "<private_dir>/webchat-pair.token",
     "backfill_days": 7
   }
@@ -54,7 +62,9 @@ the push services see (Notifications, below).
 `"shadow": "web"` with any primary wraps the primary in `ShadowFrontend`.
 `FRONTENDS` in `preprocessor/chat/__init__.py` gains `"web"`.
 `get_chat` defaults every `web` key (port 8470, base_path `/chat`, bind
-loopback, backfill_days 7). The store is `<private_dir>/webchat.sqlite`
+loopback, trust_tailscale_header true, backfill_days 7). `public_url`
+carries the chat's own HTTPS port: one app per origin (Identity and
+auth). The store is `<private_dir>/webchat.sqlite`
 (owner process) or `<ea_dir>/state/webchat.sqlite` otherwise; a
 `store_path` key overrides.
 `backfill_days` is the history a shadow copies in when the bot starts
@@ -65,15 +75,41 @@ loopback, backfill_days 7). The store is `<private_dir>/webchat.sqlite`
 One owner, one bot. Standalone, `owner_id = "owner"` and
 `bot_user_id = "bot"`. A request is the owner when either holds:
 
-1. Header `Tailscale-User-Login` equals `tailscale_login` (tailscale
-   serve sets it and strips a client-supplied one; the server binds
-   loopback so nothing else reaches it), or
+1. Header `Tailscale-User-Login` equals `tailscale_login`, on a
+   connection tailscaled itself opened. tailscale serve sets the header
+   and strips a client-supplied one, but the server binds loopback, and
+   every local process (and a page that rebinds a name to 127.0.0.1)
+   reaches it. So the header counts only when the client end of the TCP
+   connection, found in `/proc/net/tcp` and `/proc/net/tcp6`, belongs
+   to tailscaled's uid (`peer_uid`, `tailscaled_uid`). Off Linux, and
+   with `"trust_tailscale_header": false`, this path is off. Or:
 2. Cookie `ea_web` equals the pair token. `POST /api/pair` with
    `{"token": "..."}` matching `pair_token_file` sets the cookie
-   (HttpOnly, SameSite=Strict, Secure when `public_url` is https).
+   (HttpOnly, SameSite=Strict, Secure when `public_url` is https). A
+   token file shorter than 16 characters is refused with a log line.
 
 Anything else: 401 JSON `{"error": "not the owner"}`. Static files are
 served without auth; every `/api/` route needs it.
+
+Before auth, every `/api/` request (the origin rule; one app per
+origin, so a deck on another port of the host is another origin):
+
+- `Host` is exactly `public_url`'s host and port, or `127.0.0.1`,
+  `[::1]` or `localhost` with the server's port; else 421.
+- `Sec-Fetch-Site` of `cross-site` or `same-site` is refused (403), a
+  GET too.
+- A POST carries an `Origin` equal to `public_url`'s scheme, host and
+  port; a missing one is refused (403). A loopback client that sends no
+  identity header (the relay client) may send the server's loopback
+  origin, `http://127.0.0.1:<port>`.
+
+The bot serves only a trusted block (`trusted_config`), a store
+directory of mode 0700 and a store and token file of mode 0600 that it
+owns, outside the resident's tree (`untrusted_roots`:
+`chat.untrusted_roots()`, the EA tree and the resident's home). Else
+start() sets `refused` and logs why: standalone it raises ChatError, and
+under a ShadowFrontend the composite switches the shadow off
+(`shadow_off`) and the bot runs on the primary alone.
 
 ## Store (SQLite)
 
@@ -134,14 +170,18 @@ subset and escapes everything else; it never injects HTML from text.
 | GET | `/api/push/vapid` | `{"key": "<base64url P-256 point>"}`, the `applicationServerKey`; 404 when push is off |
 | POST | `/api/push/subscribe` | the browser's `PushSubscription.toJSON()` → `{"ok": true}` |
 | POST | `/api/push/unsubscribe` | `{"endpoint"}` → `{"ok": true, "removed": bool}` |
+| GET | `/api/push/subscriptions` | `[{"id", "host", "created_at", "last_seen", "last_ok", "failures"}]`; `id` is a hash of the endpoint, which is never shown |
+| POST | `/api/push/revoke` | `{"id"}` → `{"ok": true, "removed": bool}` |
 
 Channel ids in URLs are URL-encoded (Zulip ids carry characters). A
 thread_key is likewise encoded.
 
-Errors: JSON `{"error": "..."}` with 400/401/404. The server is
-`http.server.ThreadingHTTPServer` on a daemon thread started by
-`start()`; `run_forever()` blocks on a stop event; SSE handlers block on a
-per-connection `queue.Queue` fed by the store's event fan-out.
+Errors: JSON `{"error": "..."}` with 400/401/403/404/421/429. The server
+is `http.server.ThreadingHTTPServer` on a daemon thread started by
+`start()`, at most 64 connections at once (one more is closed at once)
+and a 30-second socket timeout per connection; `run_forever()` blocks on
+a stop event; SSE handlers block on a per-connection `queue.Queue` fed
+by the store's event fan-out.
 
 ## The front end's verbs (A)
 
@@ -187,9 +227,11 @@ dispatching it itself (see below).
   thread, for each mirrored channel, `recent_messages` over the window,
   then `thread_replies` per thread, each message mirrored quietly
   (`mirror_post`/`mirror_file` with `quiet=True`) under the primary's id
-  and time, author `owner` for the primary's owner id (and for a
-  `**You (web):**` post) else `bot`; a card goes in as the text the
-  primary shows. A quiet row has no event and never counts as unread, a
+  and time, author `owner` for the primary's owner id and for a bot post
+  whose id the web side recorded as the owner's input (`owner_posted`;
+  its `**You (web):**` mark is dropped), else `bot`. A bot post that
+  only starts with the mark stays the bot's. A card goes in as the text
+  the primary shows. A quiet row has no event and never counts as unread, a
   stored row is left as it is (a second start adds nothing), and a row
   older than its thread's newest is left out, so a thread stays in time
   order. One `mirror_backfilled` event per channel that took rows; at
@@ -226,7 +268,12 @@ dispatching it itself (see below).
   prefix `**You (web):** ` so it has a primary id and sits in the
   primary thread, then dispatched to the core as an `InboundMessage`
   with `user_id = primary.owner_id`, that primary id and thread key; the
-  web row is stored under the primary id as `author = "owner"`. A click
+  web row is stored under the primary id as `author = "owner"`. The web
+  side keeps that primary id in `<store dir>/webchat-owner-ids.json`
+  (mode 0600, the newest 5,000; `note_owner_post`, `owner_posted`): the
+  history copy and `chat_read.py` take a bot post as the owner's only by
+  this list, never by the prefix, which anything that posts as the bot
+  could write. A click
   is dispatched as an `ActionEvent` whose `card` ref is already the
   primary's. A file goes through `primary.upload` the same way.
 - Tests use two `MemoryFrontend`s (or a `MemoryFrontend` primary and a
@@ -379,13 +426,23 @@ the card; a `value` from the browser is ignored. For a select,
 already replaced by its status line is a 400.
 
 **Auth.** The `Tailscale-User-Login` header counts only when
-`tailscale_login` is set and the peer is loopback. `start()` writes the
-pairing token file (mode 0600) when there is none. The cookie's `Path`
-is `base_path`. A POST whose `Origin` is not the request's host (or
-`public_url`'s, or a loopback proxy's `X-Forwarded-Host`) is a 401.
-Errors are 400, 401 and 404, 403 for a push subscription from a device
-paired on the relay's origin (Notifications, below), and 500 for an
-unexpected failure.
+`tailscale_login` is set, `trust_tailscale_header` is on, the peer is
+loopback and the peer's socket is tailscaled's (Identity and auth).
+`start()` writes the pairing token file (mode 0600) when there is none,
+then checks it. The cookie's `Path` is `base_path`. Pairing reads at
+most 1 KiB, and one attempt runs at a time (a wrong token waits
+`pair_delay_s` under the lock; a request that waits 10 s for the lock is
+a 429). Errors are 400, 401 and 404; 421 for a wrong `Host`; 403 for
+another site, a POST without this app's `Origin`, and a card action,
+push subscription or revoke from a device paired on the relay's origin
+below `"all"` (`X-Tacitus-Relay-Cards: deny`); 429 for pairing; and 500
+for an unexpected failure.
+
+**Bodies.** A body has a `Content-Length` of digits only, or is chunked
+(no other `Transfer-Encoding`): each chunk size is 1 to 8 hex digits, and
+a chunk that would pass the route's limit is refused before it is read.
+An error answer reads at most 64 KiB of an unread body (1 KiB on the
+pairing route) and leaves a larger one unread.
 
 **Event stream.** The stream opens with `retry: 3000`. With neither
 `Last-Event-ID` nor `since` it sends only new events; with both,
@@ -396,8 +453,9 @@ falls 2,000 events behind is closed, and the browser reconnects with
 
 **Static files.** `webui/` is served with `Cache-Control: no-cache`. An
 HTML page carries `Content-Security-Policy` with `script-src 'self';
-style-src 'self'` (no inline
-script, no inline style, nothing from another origin). `<base_path>`
+style-src 'self'` and `form-action 'none'` (no inline
+script, no inline style, nothing from another origin). Every answer,
+static or API, carries `Cross-Origin-Resource-Policy: same-origin`. `<base_path>`
 answers 301 to `<base_path>/`. A path whose last part has no extension
 serves `index.html`. With no `webui/index.html` a placeholder page
 answers. `botcore/pyproject.toml` ships `webui/*` as package data.
@@ -463,9 +521,9 @@ it `/api/me` says `"push": false`, the app hides the toggle and nothing
 else changes. No other dependency.
 
 **What is pushed.** A new card (`post_card`, or `mirror_card` for a row
-not stored yet), at urgency `high`: the card's title, and its first line
-(a line of the card, else its first field as `Label: value`, else the
-body). A new bot message in a `dm` channel (`post`, or `mirror_post` for
+not stored yet), at urgency `high`: "Tacitus" and the card's title. Never
+a field, a line or the body: they hold addresses and mail text, and a
+notification shows on a locked screen. A new bot message in a `dm` channel (`post`, or `mirror_post` for
 a new row by the bot), at urgency `normal`: "Tacitus" and the first line
 of the text. A loud alert: `chat.direct.web_notify` (alert.py, next to
 the direct message, and page_watch.py) at urgency `high`. Edits, card
@@ -475,7 +533,8 @@ pushed. The text loses its emoji shortcodes and Markdown marks
 240.
 
 **Payload.** JSON `{"title", "body", "url", "tag"}`, encrypted to the
-subscription (RFC 8291, `aes128gcm` of RFC 8188, one 4096-byte record).
+subscription (RFC 8291, `aes128gcm` of RFC 8188, one 4096-byte record),
+padded after the delimiter to a multiple of 256 bytes.
 `url` is the message's web permalink; `tag` is `<channel>/<thread key>`,
 so the device keeps one notification per thread and a new one alerts
 again. TTL is one hour.
@@ -497,10 +556,18 @@ owner turns the toggle on again.
 **Subscriptions.** The `push_subscriptions` table (`endpoint` primary
 key, `keys` JSON, `created_at`, `last_ok`, `failures`), at most 20 (the
 ones longest without a delivery go first). `subscribe` takes only an
-https endpoint on a known push service (`web_push.PUSH_HOSTS`: Google,
-Mozilla, Apple, Microsoft), with a P-256 key and a 16-byte auth secret;
-the bot follows no redirect, so a browser cannot steer it to another
-host. A request the relay marks `X-Tacitus-Relay-Cards: deny` (a device
+https endpoint on a known push service, by exact host
+(`web_push.PUSH_HOSTS`: `fcm.googleapis.com`,
+`updates.push.services.mozilla.com`, `web.push.apple.com`; and
+`PUSH_HOST_PATTERNS`: `jmt<n>.google.com` and one name under
+`notify.windows.com`), with a P-256 key and a 16-byte auth secret; the
+bot follows no redirect, so a browser cannot steer it to another host.
+Each row also keeps `last_seen`, the last time the app posted it. Before
+a send, a list or a subscription, `Pusher.prune` drops every row when
+the pairing token's hash differs from the one the store recorded (the
+`meta` table; the first hash a store sees is recorded with its rows
+kept, and a process that cannot read the token changes nothing), and
+each row the app has not posted for 30 days. A request the relay marks `X-Tacitus-Relay-Cards: deny` (a device
 paired through the relay's origin below `"all"`) is refused with 403: the
 relay serves that page's code, and a subscription outlives the pairing.
 On sending, 404 and 410 drop the subscription, 429 holds that endpoint
@@ -521,7 +588,9 @@ out while the bot runs; the Zulip direct message, held by the Zulip
 server, does not need the bot.
 
 **The app.** The toggle sits at the foot of the channel drawer and shows
-once `/api/me` says `push`. Turning it on calls
+once `/api/me` says `push`. Under it, the list of subscribed browsers
+(host and date) has a Revoke button each; this browser's own is the
+toggle. Turning it on calls
 `pushManager.subscribe({userVisibleOnly: true, applicationServerKey})`
 straight from the tap (Safari asks for the permission only then) and
 posts the subscription; off unsubscribes on both sides. At start the app

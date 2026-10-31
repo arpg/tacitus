@@ -9,6 +9,12 @@ so the same code serves Slack and Zulip. Zero Claude tokens.
 The dicts it returns keep the shape slack_reader always produced; see
 fetch_recent_messages and summarize_for_briefing.
 
+The owner's web chat messages sit on the primary as the bot's posts
+(docs/webchat.md, Shadow mode). A message counts as the owner's only
+when its id is in the web chat's owner-private list
+(`owner_posted`), which an owner process reads through the composite;
+the text's "You (web)" mark proves nothing and is only dropped.
+
 CLI:
     chat_read.py [--hours 24]                     briefing summary as JSON
     chat_read.py --thread <key> --channel <id>    one thread as JSON
@@ -46,6 +52,36 @@ def _is_bot(msg, bot_user_id: str) -> bool:
                 or (bot_user_id and msg.user_id == bot_user_id))
 
 
+def _owner_check(fe):
+    """The frontend's owner_posted(channel, msg_id) when it has one (the
+    web chat composite in an owner process), else a check that says no."""
+    check = getattr(type(fe), "owner_posted", None) and getattr(fe, "owner_posted", None)
+    if not callable(check):
+        return lambda channel, msg_id: False
+
+    def owned(channel, msg_id) -> bool:
+        try:
+            return bool(check(channel, msg_id))
+        except Exception:
+            return False
+    return owned
+
+
+def _strip_web_prefix(text: str) -> str:
+    import importlib
+    mod = importlib.import_module(_chat_pkg().__name__ + ".shadow_frontend")
+    return mod.strip_web_prefix(text)
+
+
+def _sender_and_text(msg, channel: str, bot_user_id: str, owned) -> tuple[bool, str]:
+    """(is the bot's, text) of a message: a bot post whose id the web chat
+    recorded as the owner's input is the owner's, its mark dropped."""
+    text = (msg.text or "").strip()
+    if _is_bot(msg, bot_user_id) and owned(msg.channel or channel, msg.msg_id or ""):
+        return False, _strip_web_prefix(text).strip()
+    return _is_bot(msg, bot_user_id), text
+
+
 def _file_entries(msg) -> list[dict]:
     """[{name, type}] for a message's files. The platform's own file type
     (Slack `filetype`) comes from the raw event when it is there."""
@@ -61,7 +97,7 @@ def _has_files(msg) -> bool:
     return bool(msg.files or raw_files)
 
 
-def _thread_parent(fe, channel: str, thread_key: str, bot_user_id: str) -> str:
+def _thread_parent(fe, channel: str, thread_key: str, bot_user_id: str, owned=None) -> str:
     """A short summary of what the parent message was about."""
     try:
         msgs = fe.thread_replies(channel, thread_key, limit=1)
@@ -69,12 +105,12 @@ def _thread_parent(fe, channel: str, thread_key: str, bot_user_id: str) -> str:
         return ""
     if not msgs:
         return ""
-    parent = msgs[0]
-    parent_text = (parent.text or "").strip()
+    is_bot, parent_text = _sender_and_text(msgs[0], channel, bot_user_id,
+                                           owned or _owner_check(None))
     # Truncate long bot messages to just the first 200 chars
     if len(parent_text) > 200:
         parent_text = parent_text[:200] + "..."
-    sender = "bot" if _is_bot(parent, bot_user_id) else "user"
+    sender = "bot" if is_bot else "user"
     return f"[{sender}]: {parent_text}"
 
 
@@ -100,6 +136,7 @@ def fetch_recent_messages(hours_back: int = 24) -> list[dict]:
         print("  Chat reader: no token or channel ID, skipping", file=sys.stderr)
         return []
     bot_user_id = fe.bot_user_id or ""
+    owned = _owner_check(fe)
 
     oldest = (datetime.now(timezone.utc) - timedelta(hours=hours_back)).timestamp()
 
@@ -113,8 +150,7 @@ def fetch_recent_messages(hours_back: int = 24) -> list[dict]:
 
     results = []
     for msg in raw_messages:
-        is_bot = _is_bot(msg, bot_user_id)
-        text = (msg.text or "").strip()
+        is_bot, text = _sender_and_text(msg, channel, bot_user_id, owned)
         if not text and not _has_files(msg):
             continue
         # Slack history carried over by the porter: old, whatever its time.
@@ -140,7 +176,7 @@ def fetch_recent_messages(hours_back: int = 24) -> list[dict]:
         thread_ts = msg.thread_key
         if thread_ts and thread_ts != ts:
             entry["thread_ts"] = thread_ts
-            entry["thread_context"] = _thread_parent(fe, channel, thread_ts, bot_user_id)
+            entry["thread_context"] = _thread_parent(fe, channel, thread_ts, bot_user_id, owned)
 
         # File uploads (receipts, screenshots)
         if _has_files(msg):
@@ -184,6 +220,7 @@ def fetch_thread(channel: str, thread_key: str, limit: int = 200) -> list[dict]:
     if fe is None:
         return []
     bot_user_id = fe.bot_user_id or ""
+    owned = _owner_check(fe)
     try:
         msgs = fe.thread_replies(channel, thread_key, limit=limit)
     except Exception as e:
@@ -193,9 +230,10 @@ def fetch_thread(channel: str, thread_key: str, limit: int = 200) -> list[dict]:
     for msg in msgs:
         ts_dt = (datetime.fromtimestamp(float(msg.posted_at), tz=timezone.utc)
                  if msg.posted_at else None)
+        is_bot, text = _sender_and_text(msg, channel, bot_user_id, owned)
         out.append({"ts": msg.msg_id,
-                    "sender": "bot" if _is_bot(msg, bot_user_id) else "user",
-                    "text": (msg.text or "").strip(),
+                    "sender": "bot" if is_bot else "user",
+                    "text": text,
                     "time": ts_dt.strftime("%Y-%m-%d %H:%M UTC") if ts_dt else ""})
     return out
 

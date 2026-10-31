@@ -286,14 +286,21 @@ def test_the_vapid_key_is_written_without_hard_links(tmp_path, monkeypatch):
 def test_only_push_service_endpoints_pass():
     for url in (FCM, "https://updates.push.services.mozilla.com/wpush/v2/x",
                 "https://web.push.apple.com/abc", "https://wns2-by3p.notify.windows.com/w/?token=x",
-                "https://FCM.googleapis.com:443/fcm/send/x", "https://jmt17.google.com/fcm/send/x"):
+                "https://FCM.googleapis.com:443/fcm/send/x", "https://jmt17.google.com/fcm/send/x",
+                "https://jmt0.google.com/fcm/send/x"):
         assert wp.endpoint_allowed(url), url
     for url in ("http://fcm.googleapis.com/fcm/send/x", "https://127.0.0.1/x",
                 "https://fcm.googleapis.com.evil.example/x", "https://evilpush.apple.com/x",
                 "https://google.com.evil.example/x", "https://notgoogle.com/x",
                 "https://user@fcm.googleapis.com/x", "https://fcm.googleapis.com:8443/x",
                 "https://localhost/x", "javascript:alert(1)", "", None,
-                "https://fcm.googleapis.com/" + "x" * 3000):
+                "https://fcm.googleapis.com/" + "x" * 3000,
+                # the suffix rules this list replaced let these through
+                "https://storage.googleapis.com/x", "https://sites.google.com/x",
+                "https://www.google.com/x", "https://jmt.google.com/x",
+                "https://jmt17x.google.com/x", "https://a.jmt17.google.com/x",
+                "https://other.push.services.mozilla.com/x", "https://api.push.apple.com/x",
+                "https://notify.windows.com/x", "https://a.b.notify.windows.com/x"):
         assert not wp.endpoint_allowed(url), url
 
 
@@ -325,7 +332,7 @@ def test_the_subscription_routes(fe):
         assert owner(fe, "POST", "/api/push/subscribe", body)[0] == 400, body
     assert call(fe, "POST", "/api/push/subscribe", sub)[0] == 401
     assert owner(fe, "POST", "/api/push/subscribe", sub,
-                 {"Origin": "https://evil.example.test"})[0] == 401
+                 {"Origin": "https://evil.example.test"})[0] == 403
     # a device paired through the relay's origin below "all" may not subscribe
     assert owner(fe, "POST", "/api/push/subscribe", sub,
                  {"X-Tacitus-Relay": "d1", "X-Tacitus-Relay-Cards": "deny"})[0] == 403
@@ -368,6 +375,9 @@ def test_notify_posts_an_encrypted_push_with_vapid_headers(fe, svc):
     assert json.loads(decrypt(req["body"], key, auth)) == {
         "title": "Confirm send", "body": "To: someone@example.test",
         "url": "/chat/#/dm/t1/w1", "tag": "dm/t1"}
+    # the sealed record is padded to a multiple of 256 bytes (86 header bytes,
+    # a 16-byte tag), so its length tells the push service little
+    assert (len(req["body"]) - 86 - 16) % wp.PAD_BLOCK == 0
     row = fe.store.push_subscriptions()[0]
     assert row["last_ok"] and row["failures"] == 0
     # the service says the subscription is gone: it is dropped
@@ -423,7 +433,7 @@ def test_a_card_and_a_dm_post_are_pushed_once_per_thread(fe, svc):
     req = svc.wait(1)[0]
     assert req["headers"]["urgency"] == "high"
     got = json.loads(decrypt(req["body"], key, auth))
-    assert got["title"] == "Confirm send" and got["body"] == "To: someone@example.test"
+    assert got["title"] == "Tacitus" and got["body"] == "Confirm send"
     assert got["url"].endswith(f"#/dm/{c.thread_key}/{c.id}") and got["tag"] == f"dm/{c.thread_key}"
     # a bot reply in the thread: a message push, which a card push does not hold back
     fe.post("dm", "Reply *one*", thread_ts=c.thread_key)
@@ -439,17 +449,21 @@ def test_a_card_and_a_dm_post_are_pushed_once_per_thread(fe, svc):
     assert [p[5] for p in pushes] == [{"queued": True}, {"queued": True},
                                       {"sent": 0, "skipped": "rate limit"}, {"queued": True}]
     assert [p[4] for p in pushes] == ["high", "normal", "normal", "normal"]
-    assert pushes[0][1] == "To: someone@example.test"
+    assert pushes[0][1] == ":lock: *Confirm send*"
     time.sleep(0.2)
     assert len(svc.requests) == 3
 
 
-def test_the_first_line_of_a_card_is_a_line_then_a_field_then_the_body(fe, svc):
+def test_a_card_push_shows_the_title_and_never_a_field_line_or_body(fe, svc):
     subscribe_fake(fe, svc)
     pushes = spy(fe)
     fe.post_card("dm", card(lines=["", ":warning: *Check the date*"]))
-    fe.post_card("main", card(fields=[], lines=[]))
-    assert [wp.plain_line(p[1]) for p in pushes] == ["Check the date", "Hello there."]
+    fe.post_card("main", card(fields=[], lines=[], title=""))
+    assert [(p[0], wp.plain_line(p[1])) for p in pushes] == [
+        ("Tacitus", "Confirm send"), ("Tacitus", "A card to confirm")]
+    for p in pushes:
+        assert "someone@example.test" not in p[1] and "Hello there" not in p[1]
+        assert "Plans" not in p[1] and "Check the date" not in p[1]
 
 
 def test_shadow_mirrors_push_new_cards_and_the_bots_dm_posts(tmp_path):
@@ -478,8 +492,8 @@ def test_shadow_mirrors_push_new_cards_and_the_bots_dm_posts(tmp_path):
             time.sleep(0.02)
         time.sleep(0.1)
         assert [(s["title"], s["body"], u) for s, u in sent] == [
-            ("Tacitus", "hi", "normal"), ("Confirm send", "To: someone@example.test", "high")]
-        assert sent[0][0]["url"] == "/chat/#/stream%3A7/stream%3A7%3Atopic%3Ahello/1001"
+            ("Tacitus", "hi", "normal"), ("Tacitus", "Confirm send", "high")]
+        assert sent[0][0]["url"] == f"{f.public_url}/#/stream%3A7/stream%3A7%3Atopic%3Ahello/1001"
     finally:
         f.stop()
 

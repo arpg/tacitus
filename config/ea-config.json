@@ -67,10 +67,11 @@
       "base_path": "/chat",
       "public_url": "",
       "tailscale_login": "",
+      "trust_tailscale_header": true,
       "pair_token_file": "",
       "store_path": "",
       "backfill_days": 7
     }
   },
-  "chat_note": "Chat platform (ea_config.get_chat()): frontend is slack, zulip, web or memory (tests only). The web block configures the bot's own web chat (docs/webchat.md): the loopback bind and port, the path under which it serves, the public URL the owner opens, the Tailscale login that counts as the owner, the pairing token file and store (empty: beside the store, in the owner-private directory), and backfill_days, the days of history a shadow web chat copies in when the bot starts (0: none). The zulip block names the server site, the bot's email, the owner's Zulip user id and the private streams (stream for the EA channel, sched_stream optional, dm_stream standing in for the DM); notify maps each notifier channel key to a stream and topic. The Zulip API key is ZULIP_API_KEY in .env.secrets, never here. get_chat() re-defaults every missing subkey, so a partial block is safe."
+  "chat_note": "Chat platform (ea_config.get_chat()): frontend is slack, zulip, web or memory (tests only). The web block configures the bot's own web chat (docs/webchat.md): the loopback bind and port, the path under which it serves, the public URL the owner opens, the Tailscale login that counts as the owner (trust_tailscale_header false turns that sign-in off), the pairing token file and store (empty: beside the store, in the owner-private directory), and backfill_days, the days of history a shadow web chat copies in when the bot starts (0: none). The zulip block names the server site, the bot's email, the owner's Zulip user id and the private streams (stream for the EA channel, sched_stream optional, dm_stream standing in for the DM); notify maps each notifier channel key to a stream and topic. The Zulip API key is ZULIP_API_KEY in .env.secrets, never here. get_chat() re-defaults every missing subkey, so a partial block is safe."
 }

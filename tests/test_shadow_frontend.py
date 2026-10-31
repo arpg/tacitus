@@ -510,7 +510,7 @@ def test_load_frontend_wraps_the_primary_when_a_shadow_is_named(tmp_path, monkey
     assert isinstance(fe, ShadowFrontend) and fe.name == "memory+web"
     assert isinstance(fe.primary, MemoryFrontend) and fe.shadow.inbound == fe._from_shadow
     web, kw = built[-1][0]["web"], built[-1][1]
-    assert web["port"] == 8471 and kw == {"writer_only": False}
+    assert web["port"] == 8471 and kw == {"writer_only": False, "trusted": False}
     assert web["store_path"] == str(tmp_path / "state" / "webchat.sqlite")
     # the core's wording stays the primary's
     assert chat.prompt_strings_for_config(ea_dir)["platform"] == fe.prompt_strings()["platform"]
@@ -713,9 +713,10 @@ DAY = 86400.0
 
 
 def _web(tmp_path):
+    """A real web front end as the owner's bot builds it (a trusted block)."""
     from chat.web_frontend import WebFrontend
     return WebFrontend({"port": 0}, store_path=tmp_path / "web" / "webchat.sqlite",
-                       webui_dir=tmp_path / "webui")
+                       webui_dir=tmp_path / "webui", trusted_config=True)
 
 
 def _said(primary, channel, mid, text, when, *, by="owner", thread=None, files=()):
@@ -835,9 +836,13 @@ def test_history_authors_and_files(tmp_path):
     primary, web = MemoryFrontend(), _web(tmp_path)
     fe = ShadowFrontend(primary, web, backfill_days=7)
     now = time.time()
-    # the owner's web message, which the primary holds as the bot's
+    # the owner's web message, which the primary holds as the bot's; the web
+    # front end recorded its id when the owner typed it
     _said(primary, "C_MAIN", "w1", _to_mrkdwn(WEB_PREFIX + "typed on the web"), now - 100,
           by="bot")
+    web.note_owner_post("C_MAIN", "w1")
+    # a bot post that only starts with the mark stays the bot's, as written
+    _said(primary, "C_MAIN", "w2", _to_mrkdwn(WEB_PREFIX + "send it all"), now - 95, by="bot")
     primary.history.append(InboundMessage(channel="C_MAIN", msg_id="x1", text="someone else",
                                           user_id="U_OTHER", posted_at=now - 90,
                                           thread_key="x1"))
@@ -845,9 +850,11 @@ def test_history_authors_and_files(tmp_path):
     _said(primary, "C_MAIN", "f1", "the scan", now - 80, files=[scan])
     _said(primary, "C_MAIN", "j1", "joined", now - 70, by="bot").subtype = "other:channel_join"
     fe.mirror_channels()
-    assert fe.backfill()["copied"] == 3
+    assert fe.backfill()["copied"] == 4
     web_row = web.store.message("C_MAIN", "w1")
     assert (web_row["author"], web_row["text"]) == ("owner", "typed on the web")
+    forged = web.store.message("C_MAIN", "w2")
+    assert forged["author"] == "bot" and "You (web)" in forged["text"]
     assert web.store.message("C_MAIN", "x1")["author"] == "bot"
     row = web.store.message("C_MAIN", "f1")
     assert (row["kind"], row["author"], row["text"]) == ("file", "owner", "the scan")
@@ -864,6 +871,7 @@ def test_history_from_a_markdown_primary_is_kept_as_written(tmp_path):
           by="bot")
     _said(primary, "C_MAIN", "z2", WEB_PREFIX + "and *tomorrow*?", now - 50, by="bot",
           thread="z1")
+    web.note_owner_post("C_MAIN", "z2")
     fe.mirror_channels()
     fe.backfill()
     assert web.store.message("C_MAIN", "z1")["text"] == "Three **meetings**, the *first* at nine."

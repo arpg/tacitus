@@ -149,19 +149,24 @@ def load_frontend(*, for_cli: bool = False, ea_dir: str | Path | None = None,
     (docs/webchat.md, CLI senders). A sender that is not an owner process
     gets the frontend alone, logged once: the store is the owner's. A
     shadow that fails to build or open is logged and the frontend runs
-    alone."""
-    cfg = ea_config.get_chat(_config_path(ea_dir))
+    alone.
+
+    The web front end serves only a chat block from the owner-private
+    chat.json (`trusted`), from a store and pairing token outside the
+    resident's tree; its start() refuses otherwise (docs/webchat.md,
+    Identity and auth)."""
+    cfg, trusted = ea_config.get_chat_source(_config_path(ea_dir))
     shadow = str(cfg.get("shadow") or "")
     if shadow and shadow not in SHADOWS:
         raise ChatError(f"unknown chat shadow {shadow!r}; expected one of {', '.join(SHADOWS)}")
-    primary = _load_primary(cfg, for_cli=for_cli, ea_dir=ea_dir, env=env)
+    primary = _load_primary(cfg, for_cli=for_cli, ea_dir=ea_dir, env=env, trusted=trusted)
     if not shadow or shadow == cfg.get("frontend"):
         return primary
     if for_cli and not _cli_may_write_web(cfg):
         return primary
     from .shadow_frontend import ShadowFrontend
     try:
-        web = _build_web(_with_web_store(cfg, ea_dir), writer_only=for_cli)
+        web = _build_web(_with_web_store(cfg, ea_dir), writer_only=for_cli, trusted=trusted)
         if for_cli:
             web.start()
     except Exception:
@@ -207,13 +212,13 @@ def web_writer(*, ea_dir: str | Path | None = None) -> ChatFrontend | None:
     client) and mirrors the post itself. None unless the chat block names
     the `web` shadow and this is an owner process (as load_frontend), and
     None when the store does not open (logged)."""
-    cfg = ea_config.get_chat(_config_path(ea_dir))
+    cfg, trusted = ea_config.get_chat_source(_config_path(ea_dir))
     if str(cfg.get("shadow") or "") != "web" or cfg.get("frontend") == "web":
         return None
     if not _cli_may_write_web(cfg):
         return None
     try:
-        web = _build_web(_with_web_store(cfg, ea_dir), writer_only=True)
+        web = _build_web(_with_web_store(cfg, ea_dir), writer_only=True, trusted=trusted)
         web.start()
     except Exception:
         logging.getLogger("chat").exception(
@@ -227,10 +232,10 @@ def load_web_frontend(*, ea_dir: str | Path | None = None) -> ChatFrontend | Non
     `shadow`), built and not started, for a process outside the bot that
     only notifies through it (alert.py); None when the block runs no web
     front end."""
-    cfg = ea_config.get_chat(_config_path(ea_dir))
+    cfg, trusted = ea_config.get_chat_source(_config_path(ea_dir))
     if "web" not in (cfg.get("frontend"), cfg.get("shadow")):
         return None
-    return _build_web(_with_web_store(cfg, ea_dir))
+    return _build_web(_with_web_store(cfg, ea_dir), trusted=trusted)
 
 
 def _web_class():
@@ -253,14 +258,38 @@ def _with_web_store(cfg: dict, ea_dir: str | Path | None) -> dict:
     return {**cfg, "web": web}
 
 
-def _build_web(cfg: dict, *, writer_only: bool = False) -> ChatFrontend:
+def _build_web(cfg: dict, *, writer_only: bool = False, trusted: bool = False) -> ChatFrontend:
     """The web chat front end for the chat block `cfg`, built from its
-    `web` section; `writer_only` for a command-line sender."""
-    return _web_class().from_config(cfg.get("web") or {}, writer_only=writer_only)
+    `web` section; `writer_only` for a command-line sender, `trusted` when
+    the block came from the owner-private chat.json."""
+    return _web_class().from_config(cfg.get("web") or {}, writer_only=writer_only,
+                                    trusted_config=trusted, untrusted_roots=untrusted_roots())
+
+
+def untrusted_roots() -> tuple[Path, ...]:
+    """The trees the web chat's store and pairing token must lie outside:
+    the EA tree in use, the one the install names, and the home of the
+    tree's owner (the resident) when that is another user."""
+    import pwd
+    roots: list[Path] = []
+    for tree in (owner_trust.ea_dir(), owner_trust.install_ea_dir()):
+        try:
+            real = Path(os.path.realpath(tree))
+        except (OSError, ValueError):
+            continue
+        roots.append(real)
+        try:
+            uid = os.stat(real).st_uid
+            home = Path(os.path.realpath(pwd.getpwuid(uid).pw_dir))
+        except (OSError, ValueError, KeyError):
+            continue
+        if uid != os.geteuid() and home == real.parent:
+            roots.append(home)
+    return tuple(dict.fromkeys(r for r in roots if str(r) not in ("/", "")))
 
 
 def _load_primary(cfg: dict, *, for_cli: bool, ea_dir: str | Path | None,
-                  env: Mapping[str, str] | None) -> ChatFrontend:
+                  env: Mapping[str, str] | None, trusted: bool = False) -> ChatFrontend:
     """The frontend `cfg["frontend"]` names (see load_frontend)."""
     env = os.environ if env is None else env
     legacy = Path(ea_dir) / owner_trust.LEGACY_SECRETS_FILE if ea_dir else None
@@ -285,7 +314,8 @@ def _load_primary(cfg: dict, *, for_cli: bool, ea_dir: str | Path | None,
         mod = _platform_module("web")
         web = cfg.get("web") or {}
         return mod.WebFrontend.from_config(web, store_path=_web_store_path(web, ea_dir),
-                                           writer_only=for_cli)
+                                           writer_only=for_cli, trusted_config=trusted,
+                                           untrusted_roots=untrusted_roots())
     raise ChatError(f"unknown chat frontend {name!r}; expected one of {', '.join(FRONTENDS)}")
 
 
