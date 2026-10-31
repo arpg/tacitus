@@ -619,7 +619,12 @@ check, cross, ...).
   the owner's input from either side: a web message is posted into the
   primary as the bot with a `**You (web):**` prefix, then dispatched to
   the core as the owner. A shadow failure is logged and never reaches
-  the core. `chat.shadow` in the chat block names it.
+  the core. `chat.shadow` in the chat block names it. At start it copies
+  the last `web.backfill_days` of the primary's history on a daemon
+  thread, as quiet rows (no event, never unread), and only the rooms the
+  bot made for the owner (`room_filter`). Writes the primary makes on
+  its own (Zulip's card codes, edit-window reposts, stream changes) reach
+  it through the primary's optional `on_outbound` hook.
 
 **The handler registry, and why the name `app` survives.** Each frontend
 carries a `HandlerRegistry` with `action`, `view` and `event`
