@@ -89,3 +89,17 @@ if __name__ == "__main__":
             print(f"FAIL {t.__name__}: {e}")
     print(f"{len(tests) - failed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
+
+
+def test_tools_block_renders_with_every_placeholder_stubbed():
+    """The block is an f-string: a literal brace in its prose (a JSON example)
+    becomes a format spec and raises on every chat turn, which py_compile
+    does not catch. Render it with each placeholder stubbed."""
+    import ast
+    text = BOT.read_text()
+    start = text.index('return f"""Tools available:') + len("return ")
+    end = text.index('"""', start + 4) + 3
+    tree = ast.parse(text[start:end], mode="eval")
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    out = eval(compile(tree, "<tools-block>", "eval"), {n: "x" for n in names})
+    assert out.startswith("Tools available")
