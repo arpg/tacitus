@@ -10,7 +10,6 @@ sentinel.
 import os
 import sys
 import tempfile
-import time
 import traceback
 from pathlib import Path
 
@@ -69,21 +68,30 @@ def test_success_closes_and_resets():
         assert not b.is_open(), "success must reset the consecutive count"
 
 
+def _age(service: str, seconds: float) -> None:
+    """Move the entry's opening `seconds` into the past. The clock is not
+    slept on: a short cooldown lets a slow write on a loaded runner pass
+    the cooldown before the next check."""
+    state = rp._load_all()
+    state[service]["opened_at"] -= seconds
+    rp._save_all(state)
+
+
 def test_half_open_after_cooldown():
     with tempfile.TemporaryDirectory() as td:
         _setup(Path(td))
-        b = _breaker(threshold=2, cooldown=0.05)
+        b = _breaker(threshold=2, cooldown=300.0)
         b.record_failure("a")
         b.record_failure("b")
         assert b.is_open()
-        time.sleep(0.08)
+        _age("graph", 301)
         b._cached = None
         assert not b.is_open(), "past cooldown -> half-open, probe allowed"
         # Probe fails -> reopens with fresh opened_at
         b.record_failure("probe failed")
         assert b.is_open()
         # Probe succeeds -> closes
-        time.sleep(0.08)
+        _age("graph", 301)
         b._cached = None
         b.record_success()
         assert not b.is_open()

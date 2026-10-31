@@ -41,7 +41,9 @@ stderr line). Files a call creates get umask 002 (mode 664), like the rest
 of ~/.ea. The final name of a path is never followed: a symlink there is
 refused (append, update, ensure_file, make_dir, read_*) or replaced
 (replace_*, move). A file that is not a single-linked regular file is
-refused by append, update, ensure_file and read_*.
+refused by append, update, ensure_file and read_*. A read whose file has
+no link left after the open (a writer renamed a new file over the name in
+between) opens the name once more and checks that file the same way.
 
 In an owner process (owner_trust.is_owner_process()) each call runs one
 isolated child as the resident: `sudo -n -u ea-bot /usr/bin/python3 -I
@@ -149,10 +151,11 @@ MAX_READ = 134217728
 FLAGS = os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
 
 
-def plain(fd, path):
-    st = os.fstat(fd)
+def plain(fd, path, st=None):
+    st = os.fstat(fd) if st is None else st
     if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
         raise OSError(path + " is not a plain single-linked file")
+    return st
 
 
 def put(fd, data):
@@ -264,19 +267,23 @@ def main(op, mode, paths):
         os.rename(path, paths[1])
         reply(0)
     elif op == "read":
-        try:
-            fd = os.open(path, os.O_RDONLY | FLAGS)
-        except FileNotFoundError:
-            sys.stdout.buffer.write(MISSING)
-            sys.stdout.buffer.flush()
-            return
-        try:
-            plain(fd, path)
-            if os.fstat(fd).st_size > MAX_READ:
-                raise OSError(path + " is larger than " + str(MAX_READ) + " bytes")
-            data = take(fd)
-        finally:
-            os.close(fd)
+        for last in (False, True):
+            try:
+                fd = os.open(path, os.O_RDONLY | FLAGS)
+            except FileNotFoundError:
+                sys.stdout.buffer.write(MISSING)
+                sys.stdout.buffer.flush()
+                return
+            try:
+                st = os.fstat(fd)
+                if not last and st.st_nlink == 0:
+                    continue
+                if plain(fd, path, st).st_size > MAX_READ:
+                    raise OSError(path + " is larger than " + str(MAX_READ) + " bytes")
+                data = take(fd)
+            finally:
+                os.close(fd)
+            break
         if len(data) > MAX_READ:
             raise OSError(path + " is larger than " + str(MAX_READ) + " bytes")
         reply(len(data), data)
@@ -618,10 +625,13 @@ def _check_move(src: str, dst: str) -> None:
 
 # ── direct writes (non-owner processes, and the fallback) ─────────────
 
-def _check_plain(fd: int, path: str) -> None:
-    st = os.fstat(fd)
+def _check_plain(fd: int, path: str, st: os.stat_result | None = None) -> os.stat_result:
+    """Raise OSError unless the file open at `fd` (`st`, its fstat when
+    given) is a regular file with one link; return the stat."""
+    st = os.fstat(fd) if st is None else st
     if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
         raise OSError(f"{path} is not a plain single-linked file")
+    return st
 
 
 def _write_all(fd: int, data: bytes) -> None:
@@ -740,18 +750,24 @@ def _direct_move(src: str, dst: str) -> None:
 
 
 def _direct_read(path: str) -> bytes | None:
-    """The file's bytes, or None when it is missing."""
-    try:
-        fd = os.open(path, os.O_RDONLY | _OPEN_FLAGS)
-    except FileNotFoundError:
-        return None
-    try:
-        _check_plain(fd, path)
-        if os.fstat(fd).st_size > MAX_READ_BYTES:
-            raise OSError(f"{path} is larger than {MAX_READ_BYTES} bytes")
-        data = _read_all(fd)
-    finally:
-        os.close(fd)
+    """The file's bytes, or None when it is missing. A file with no link
+    left after the open was replaced by a writer's rename in between: the
+    name is opened once more, and that file gets the same check."""
+    for last in (False, True):
+        try:
+            fd = os.open(path, os.O_RDONLY | _OPEN_FLAGS)
+        except FileNotFoundError:
+            return None
+        try:
+            st = os.fstat(fd)
+            if not last and st.st_nlink == 0:
+                continue
+            if _check_plain(fd, path, st).st_size > MAX_READ_BYTES:
+                raise OSError(f"{path} is larger than {MAX_READ_BYTES} bytes")
+            data = _read_all(fd)
+        finally:
+            os.close(fd)
+        break
     if len(data) > MAX_READ_BYTES:
         raise OSError(f"{path} is larger than {MAX_READ_BYTES} bytes")
     return data

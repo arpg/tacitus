@@ -10,7 +10,11 @@ read-modify-write (docs/SECURITY.md, "Owner trust rules"):
     state, and the write replaces the name with a plain file;
   * in an owner process the read runs in the resident child;
   * only entries in the shape the module writes are carried over, and a
-    file of another shape reads as no state, never as an exception.
+    file of another shape reads as no state, never as an exception;
+  * a state another process renames over the name between the read's
+    open and its check is read from the name once more, so the count and
+    the other entries survive; the file found then gets the same check,
+    and a second rename is a failed read.
 
 Each case runs as the resident (direct), as an owner process whose sudo
 preflight fails (direct, O_NOFOLLOW) and as an owner process with the
@@ -170,3 +174,98 @@ def test_only_the_fields_the_module_writes_are_carried_over(mode, state):
     written = json.loads(state.read_text())
     assert set(written) == {"graph", "gmail"}
     assert "extra" not in written["graph"] and written["gmail"]["failures"] == 2
+
+
+# ── another writer's rename between the read's open and its check ─────
+
+def _renames_at_check(state: Path, *replacements: Path) -> str:
+    """Python source that patches os.fstat: a check of a descriptor open on
+    the file now at the state name first renames the next of
+    `replacements` still there over that name, as another process's
+    atomic write can between a read's open and its check. Each one is
+    renamed in once, in whichever process (or child) checks first."""
+    return f"""
+import os
+_real_fstat = os.fstat
+_queue = {[str(r) for r in replacements]!r}
+def _fstat(fd):
+    st = _real_fstat(fd)
+    while _queue and not os.path.lexists(_queue[0]):
+        _queue.pop(0)
+    try:
+        here = os.stat({str(state)!r}, follow_symlinks=False)
+    except OSError:
+        return st
+    if _queue and (here.st_dev, here.st_ino) == (st.st_dev, st.st_ino):
+        os.replace(_queue.pop(0), {str(state)!r})
+        st = _real_fstat(fd)
+    return st
+os.fstat = _fstat
+"""
+
+
+def _race(kind: str, monkeypatch, source: str) -> None:
+    """Run `source` where the read runs: in each resident child that reads
+    (ahead of the child program), or in this process."""
+    if kind == "child":
+        spawn = rio._spawn
+
+        def racing(argv):
+            argv = list(argv)
+            assert argv[2] == "-c"
+            if argv[4] == "read":
+                argv[3] = source + argv[3]
+            return spawn(argv)
+        monkeypatch.setattr(rio, "_spawn", racing)
+    else:
+        monkeypatch.setattr(os, "fstat", os.fstat)   # put back after the test
+        exec(source, {})
+
+
+def test_a_state_renamed_in_during_the_read_is_read_again(mode, state, monkeypatch, capsys):
+    kind, calls = mode
+    state.write_text(json.dumps({"graph": {"failures": 2, "opened_at": 0.0}}))
+    newer = state.with_name("newer.json")
+    newer.write_text(json.dumps({"graph": {"failures": 2, "opened_at": 0.0},
+                                 "gmail": {"failures": 1, "last_error": "x"}}))
+    _race(kind, monkeypatch, _renames_at_check(state, newer))
+
+    _breaker().record_failure("timeout")
+
+    assert not newer.exists(), "the rename did not happen"
+    written = json.loads(state.read_text())
+    assert written["graph"]["failures"] == 3
+    assert written["gmail"] == {"failures": 1, "last_error": "x"}
+    assert _breaker().is_open()
+    assert "could not read" not in capsys.readouterr().err
+    assert (kind == "child") == ("read" in _ops(calls))
+
+
+def test_a_hard_link_renamed_in_during_the_read_is_refused(mode, state, monkeypatch,
+                                                           tmp_path, capsys):
+    kind, _calls = mode
+    decoy, _mark = _decoy(tmp_path)
+    state.write_text(json.dumps({"graph": {"failures": 1}}))
+    linked = state.with_name("linked.json")
+    os.link(decoy, linked)
+    _race(kind, monkeypatch, _renames_at_check(state, linked))
+
+    assert rio.read_text(state) is None
+
+    assert not linked.exists(), "the rename did not happen"
+    assert os.stat(state).st_ino == os.stat(decoy).st_ino
+    assert "could not read" in capsys.readouterr().err
+
+
+def test_a_second_rename_during_the_read_is_a_failed_read(mode, state, monkeypatch, capsys):
+    kind, _calls = mode
+    state.write_text("{}")
+    first, second = state.with_name("first.json"), state.with_name("second.json")
+    first.write_text('{"graph": {"failures": 1}}')
+    second.write_text('{"graph": {"failures": 2}}')
+    _race(kind, monkeypatch, _renames_at_check(state, first, second))
+
+    assert rio.read_text(state) is None
+
+    assert not first.exists() and not second.exists(), "the renames did not happen"
+    assert "could not read" in capsys.readouterr().err

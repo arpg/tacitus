@@ -15,10 +15,11 @@ MAX_READ = 134217728
 FLAGS = os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
 
 
-def plain(fd, path):
-    st = os.fstat(fd)
+def plain(fd, path, st=None):
+    st = os.fstat(fd) if st is None else st
     if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
         raise OSError(path + " is not a plain single-linked file")
+    return st
 
 
 def put(fd, data):
@@ -130,19 +131,23 @@ def main(op, mode, paths):
         os.rename(path, paths[1])
         reply(0)
     elif op == "read":
-        try:
-            fd = os.open(path, os.O_RDONLY | FLAGS)
-        except FileNotFoundError:
-            sys.stdout.buffer.write(MISSING)
-            sys.stdout.buffer.flush()
-            return
-        try:
-            plain(fd, path)
-            if os.fstat(fd).st_size > MAX_READ:
-                raise OSError(path + " is larger than " + str(MAX_READ) + " bytes")
-            data = take(fd)
-        finally:
-            os.close(fd)
+        for last in (False, True):
+            try:
+                fd = os.open(path, os.O_RDONLY | FLAGS)
+            except FileNotFoundError:
+                sys.stdout.buffer.write(MISSING)
+                sys.stdout.buffer.flush()
+                return
+            try:
+                st = os.fstat(fd)
+                if not last and st.st_nlink == 0:
+                    continue
+                if plain(fd, path, st).st_size > MAX_READ:
+                    raise OSError(path + " is larger than " + str(MAX_READ) + " bytes")
+                data = take(fd)
+            finally:
+                os.close(fd)
+            break
         if len(data) > MAX_READ:
             raise OSError(path + " is larger than " + str(MAX_READ) + " bytes")
         reply(len(data), data)
