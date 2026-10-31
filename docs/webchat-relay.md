@@ -789,5 +789,3 @@ command as the owner.
   client key that every pairing link ever shown carried.
 - Signed release tags (the auto-update work), so the operator installs
   with `--tag`.
-- Entries for these files in `docs/ARCHITECTURE.md`'s file index once the
-  web chat lands.
