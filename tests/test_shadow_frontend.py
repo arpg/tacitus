@@ -938,7 +938,7 @@ def test_no_copy_without_days_or_without_a_quiet_shadow(tmp_path):
 
 
 def test_load_frontend_passes_the_days_of_history(tmp_path, monkeypatch):
-    monkeypatch.setattr(chat, "_build_web", lambda cfg: WebShadow())
+    monkeypatch.setattr(chat, "_build_web", lambda cfg, **kw: WebShadow())
     for block, days in (({}, 7), ({"backfill_days": 2}, 2.0), ({"backfill_days": 0}, 0.0),
                         ({"backfill_days": "soon"}, 7)):
         ea_dir = tmp_path / f"d{len(list(tmp_path.iterdir()))}"
