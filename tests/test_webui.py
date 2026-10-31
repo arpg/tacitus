@@ -174,6 +174,7 @@ def test_nothing_comes_from_elsewhere():
 
 def test_the_app_stays_small():
     lines = sum(len(read(n).splitlines()) for n in TEXT_FILES)
+    # 1,600 for the chat, and about 900 more for qr.js and the relay transport (docs/webchat-relay.md).
     assert lines <= 2500, f"{lines} lines: the contract keeps the app near 2,400 with the relay"
 
 
@@ -497,7 +498,6 @@ def test_the_service_worker_caches_no_api_response(app):
 
 ROOT = TESTS.parent
 VECTORS = TESTS / "fixtures" / "relay_vectors.json"
-LOGIN = "owner@example.test"
 
 
 def test_the_relay_keys_stay_in_webcrypto_and_indexeddb():
@@ -653,9 +653,9 @@ def relay_bot(tmp_path):
     rbase = f"http://127.0.0.1:{rsrv.server_address[1]}"
     port = _free_port()
     public = f"http://127.0.0.1:{port}/chat"
-    fe = WebFrontend({"port": port, "tailscale_login": LOGIN, "public_url": public,
-                      "relay": {"url": rbase, "wait": 1}},
-                     store_path=tmp_path / "priv" / "webchat.sqlite", webui_dir=WEBUI)
+    fe = WebFrontend({"port": port, "public_url": public, "relay": {"url": rbase, "wait": 1}},
+                     store_path=tmp_path / "priv" / "webchat.sqlite", webui_dir=WEBUI,
+                     trusted_config=True)
     fe.poll_s = fe.pair_delay_s = 0.05
     got = []
     fe.registry.event("message")(got.append)
@@ -700,8 +700,10 @@ def test_a_phone_pairs_on_the_tailnet_and_chats_through_the_relay(browser, relay
     fe, got = relay_bot["fe"], relay_bot["got"]
     contexts = []
     try:
-        owner = browser.new_context(extra_http_headers={"Tailscale-User-Login": LOGIN})
+        owner = browser.new_context()
         contexts.append(owner)
+        owner.add_cookies([{"name": "ea_web", "value": fe.pair_token(), "domain": "127.0.0.1",
+                            "path": "/chat", "httpOnly": True, "sameSite": "Strict"}])
         tail = owner.new_page()
         tail.goto(relay_bot["public"] + "/")
         tail.click("#pair-phone")

@@ -998,24 +998,30 @@ def test_shared_vectors_match_relay_crypto():
 
 # ── the web front end's side: start, routes, policy ───────────────────
 
-OWNER_H = {"Tailscale-User-Login": LOGIN}
-
-
 def _web(tmp_path, relay_cfg=None, **cfg):
+    """A web front end as the owner's bot builds it: a trusted block and a
+    private store. The owner signs in with the pairing cookie (`_owner`)."""
     from botcore.chat.web_frontend import WebFrontend
-    base = {"port": 0, "tailscale_login": LOGIN, "public_url": OWN_URL}
+    base = {"port": 0, "public_url": OWN_URL}
     if relay_cfg is not None:
         base["relay"] = relay_cfg
     base.update(cfg)
     f = WebFrontend(base, store_path=tmp_path / "priv" / "webchat.sqlite",
-                    webui_dir=tmp_path / "webui")
+                    webui_dir=tmp_path / "webui", trusted_config=True)
     f.poll_s = f.pair_delay_s = 0.02
     return f
 
 
+def _owner(f) -> dict:
+    return {"Cookie": f"ea_web={f.pair_token()}"}
+
+
 def _call(f, method, path, body=None, headers=None):
+    """A request from a loopback client: a POST carries the loopback origin."""
     data = json.dumps(body).encode() if body is not None else None
     h = {"Content-Type": "application/json"} if body is not None else {}
+    if method == "POST":
+        h["Origin"] = f"http://127.0.0.1:{f.port}"
     h.update(headers or {})
     req = urllib.request.Request(f.url + path, data=data, method=method, headers=h)
     try:
@@ -1056,7 +1062,7 @@ def test_the_web_front_end_runs_the_relay_client(web):
     assert isinstance(client, rcl.RelayClient) and client.local == f.loopback_url()
     # The key file defaults to the store's (owner-private) directory.
     assert (web["dir"] / "priv" / "webchat-relay.json").stat().st_mode & 0o077 == 0
-    status, _h, me = _call(f, "GET", "/api/me", headers=OWNER_H)
+    status, _h, me = _call(f, "GET", "/api/me", headers=_owner(f))
     assert status == 200 and me["relay"] is True and me["card_actions"] is True
     f.stop()
     assert f.relay is None and client._stop.is_set()
@@ -1064,23 +1070,23 @@ def test_the_web_front_end_runs_the_relay_client(web):
 
 def test_the_relay_routes_pair_list_and_revoke(web):
     f = web["fe"]
-    status, _h, out = _call(f, "POST", "/api/relay/pair", {}, OWNER_H)
+    status, _h, out = _call(f, "POST", "/api/relay/pair", {}, _owner(f))
     assert status == 200 and out["qr"] == out["link"] and out["origin"] == "own"
     assert out["link"].startswith(OWN_URL + "/#tr1=")
     assert abs(out["expires"] - (time.time() + rc.PAIRING_TTL)) < 5
-    assert _call(f, "GET", "/api/relay/devices", headers=OWNER_H)[2] == []
+    assert _call(f, "GET", "/api/relay/devices", headers=_owner(f))[2] == []
     phone = _phone(web, out["link"])
-    devices = _call(f, "GET", "/api/relay/devices", headers=OWNER_H)[2]
+    devices = _call(f, "GET", "/api/relay/devices", headers=_owner(f))[2]
     assert devices == [{"id": phone.session.device, "name": "loopback phone",
                         "paired_at": devices[0]["paired_at"], "origin": "own"}]
-    status, _h, st = _call(f, "GET", "/api/relay/status", headers=OWNER_H)
+    status, _h, st = _call(f, "GET", "/api/relay/status", headers=_owner(f))
     assert st["enabled"] and st["connected"] and st["devices"] == 1
     assert st["install_id"] == phone.payload.install_id
-    assert _call(f, "POST", "/api/relay/revoke", {"device": "nope"}, OWNER_H)[0] == 400
-    assert _call(f, "POST", "/api/relay/revoke", {"device": "0" * 16}, OWNER_H)[0] == 404
+    assert _call(f, "POST", "/api/relay/revoke", {"device": "nope"}, _owner(f))[0] == 400
+    assert _call(f, "POST", "/api/relay/revoke", {"device": "0" * 16}, _owner(f))[0] == 404
     assert _call(f, "POST", "/api/relay/revoke", {"device": phone.session.device},
-                 OWNER_H)[:3:2] == (200, {"ok": True})
-    assert _call(f, "GET", "/api/relay/devices", headers=OWNER_H)[2] == []
+                 _owner(f))[:3:2] == (200, {"ok": True})
+    assert _call(f, "GET", "/api/relay/devices", headers=_owner(f))[2] == []
     _, out = phone.call("GET", "/api/me")
     assert out["k"] == "err" and out["e"] in ("session", "auth")
     # The routes are the owner's.
@@ -1090,12 +1096,12 @@ def test_the_relay_routes_pair_list_and_revoke(web):
 
 def test_relayed_requests_never_reach_the_pairing_routes(web):
     f = web["fe"]
-    marks = {**OWNER_H, "X-Tacitus-Relay": "0123456789abcdef", "X-Tacitus-Relay-Cards": "allow"}
+    marks = {**_owner(f), "X-Tacitus-Relay": "0123456789abcdef", "X-Tacitus-Relay-Cards": "allow"}
     for method, path in (("POST", "/api/relay/pair"), ("GET", "/api/relay/devices"),
                          ("GET", "/api/relay/status"), ("POST", "/api/relay/revoke"),
                          ("POST", "/api/pair"), ("POST", "/api/%72elay/pair")):
         assert _call(f, method, path, {} if method == "POST" else None, marks)[0] == 403, path
-    own = _phone(web, _call(f, "POST", "/api/relay/pair", {}, OWNER_H)[2]["link"])
+    own = _phone(web, _call(f, "POST", "/api/relay/pair", {}, _owner(f))[2]["link"])
     before = len(f.relay.store.load()["pairings"])
     for method, path in (("POST", "/api/relay/pair"), ("POST", "/api/%72elay/pair"),
                          ("GET", "/api/relay/devices"), ("GET", "/api/Relay/status"),
@@ -1164,9 +1170,9 @@ def test_the_page_policy_names_the_relay_origin(tmp_path):
         req = urllib.request.Request(f.url + "/")
         with NO_PROXY.open(req, timeout=5) as r:
             assert "connect-src 'self';" in r.headers["Content-Security-Policy"]
-        assert _call(f, "GET", "/api/relay/status", headers=OWNER_H)[2] == {"enabled": False}
-        assert _call(f, "POST", "/api/relay/pair", {}, OWNER_H)[0] == 404
-        assert _call(f, "GET", "/api/me", headers=OWNER_H)[2]["relay"] is False
+        assert _call(f, "GET", "/api/relay/status", headers=_owner(f))[2] == {"enabled": False}
+        assert _call(f, "POST", "/api/relay/pair", {}, _owner(f))[0] == 404
+        assert _call(f, "GET", "/api/me", headers=_owner(f))[2]["relay"] is False
     finally:
         f.stop()
 
@@ -1176,7 +1182,7 @@ def test_a_relay_that_cannot_start_leaves_the_chat_running(tmp_path):
     f.start()
     try:
         assert f.relay is None  # plain http off loopback: refused, logged
-        assert _call(f, "GET", "/api/me", headers=OWNER_H)[0] == 200
+        assert _call(f, "GET", "/api/me", headers=_owner(f))[0] == 200
     finally:
         f.stop()
 
