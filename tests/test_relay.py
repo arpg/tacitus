@@ -11,6 +11,8 @@ log lines or in what it holds.
 from __future__ import annotations
 
 import base64
+import dataclasses
+import hashlib
 import json
 import logging
 import os
@@ -22,6 +24,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -44,6 +47,8 @@ REQUEST_MARKER = "relay-request-marker-55e1aa"
 FILE_MARKER = b"relay-file-marker-0c9e33"
 MARKERS = [REPLY_MARKER.encode(), EVENT_MARKER.encode(), REQUEST_MARKER.encode(), FILE_MARKER]
 NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+# A made-up hash of a signed app bundle, as WebFrontend.bundle_hash() gives one.
+BUNDLE = hashlib.sha256(b"made-up app bundle").hexdigest()
 
 
 def _needles(marker: bytes) -> list[bytes]:
@@ -186,6 +191,40 @@ def test_pairing_payload_round_trip_keeps_the_secret_in_the_fragment():
         rc.PairingPayload.from_string("https://relay.example.net/#tr1=bm90LWpzb24")
 
 
+def test_pairing_payload_v2_carries_the_bundle_hash_and_the_app_url():
+    """`#tr2=`: the fields of version 1 plus `b` (the bundle hash) and `a`
+    (the app URL the link opens). A `#tr1=` link still parses."""
+    ident = rc.BotIdentity.generate()
+    app = "https://relay.example.net/"
+    p = dataclasses.replace(rc.new_pairing(ident, "https://relay.example.net"),
+                            bundle=BUNDLE, app=app)
+    link = p.to_string()
+    assert link.startswith(app + "#tr2=") and p.version == 2
+    obj = json.loads(rc.b64d(link.split("#tr2=", 1)[1]))
+    assert set(obj) == {"v", "r", "i", "k", "c", "p", "s", "x", "b", "a"}
+    assert (obj["v"], obj["b"], obj["a"]) == (2, BUNDLE, app)
+    assert rc.PairingPayload.from_string(link) == p
+    # The hash alone, on a link that opens the bot's own origin.
+    own = dataclasses.replace(p, app="").to_string("https://host.example.ts.net/chat/")
+    assert own.startswith("https://host.example.ts.net/chat/#tr2=")
+    assert rc.PairingPayload.from_string(own).bundle == BUNDLE
+    # A link from before: version 1 under #tr1=, no hash, no app.
+    old = dataclasses.replace(p, bundle="", app="")
+    assert old.to_string().startswith(app + "#tr1=")
+    back = rc.PairingPayload.from_string(old.to_string())
+    assert back == old and back.version == 1 and back.bundle == back.app == ""
+
+    def bent(drop=(), **over):
+        return rc.b64e(json.dumps({**{k: v for k, v in obj.items() if k not in drop},
+                                   **over}).encode())
+    for frag in ("tr1=" + bent(), "tr2=" + bent(v=1), "tr2=" + bent(v=3),
+                 "tr2=" + bent(b="AB" * 32), "tr2=" + bent(b="ab"), "tr2=" + bent(b=None),
+                 "tr2=" + bent(a="javascript:alert(1)"), "tr2=" + bent(a=7),
+                 "tr2=" + bent(a="https://[::1/"), "tr2=" + bent(drop=("a", "b"))):
+        with pytest.raises(rc.HandshakeError):
+            rc.PairingPayload.from_string(app + "#" + frag)
+
+
 def test_relay_and_bot_derive_the_same_ids():
     for _ in range(5):
         token = os.urandom(32)
@@ -259,8 +298,12 @@ def test_relay_strips_fields_it_does_not_route():
 
 def test_path_policy():
     ok = ["/api/me", "/api/channels", "/api/channels/C%3A1/threads?limit=50&before=9",
-          "/api/files/f1", "/api/cards/C1/w12/actions"]
+          "/api/files/f1", "/api/cards/C1/w12/actions", "/api/bundle", "/api/relay/attest"]
+    # The attestation passes in exactly one spelling; nothing else under /api/relay/ does.
     bad = ["/api/pair", "/api/pair/", "/api/pair/x", "/api/PAIR/x", "/api/relay/pair",
+           "/api/relay/attest/", "/api/relay/attestx", "/api/relay/attest/../pair",
+           "/api/%72elay/attest", "/api/relay/%61ttest", "/api/Relay/attest", "/api/relay//attest",
+           "/api/relay/attest?x=1", "/api//relay/attest",
            "/api/relay", "/api/relay/approve", "/index.html",
            "/api/relay/devices", "/api/relay/revoke", "/api/relay/status", "/api/pair?x=1",
            "/api/%72elay/pair", "/api/p%61ir", "/api/Relay/devices", "/api/PAIR",
@@ -278,9 +321,75 @@ def test_access_policy_for_relay_origin_devices():
     assert rcl.access_allows("chat", "POST", "/api/channels/C1/messages")
     assert not rcl.access_allows("chat", "POST", card)
     assert rcl.access_allows("all", "POST", card)
+    # A phone attests its app at any level but "off" ("read" posts nothing else).
+    assert rcl.access_allows("read", "POST", "/api/relay/attest")
+    assert not rcl.access_allows("off", "POST", "/api/relay/attest")
+    assert not rcl.access_allows("off", "GET", "/api/bundle")
     for spelling in ("/api//cards/C1/w1/actions", "/api/%63ards/C1/w1/actions",
                      "/api/CARDS/C1/w1/actions", "/api/cards", "/api/cards?x=1"):
         assert not rcl.access_allows("chat", "POST", spelling), spelling
+    for level in ("read", "chat", "all"):
+        assert rcl.access_allows(level, "POST", rcl.ATTEST_PATH), level
+    for spelling in ("/api/relay/%61ttest", "/api/relay/attest/more", "/api/relay/attest?x=1"):
+        assert not rcl.access_allows("read", "POST", spelling), spelling
+
+
+def test_a_device_paired_against_a_bundle_hash_chats_and_presses_cards_only_when_allowed(tmp_path):
+    """Own origin: everything. Relay origin with the bundle hash: "chat"
+    whether or not it attested, whatever chat.json says, and "all" only
+    when the owner approved it with card buttons. Relay origin without
+    one: chat.json's level ("off" keeps it out, cards or not)."""
+    store = rcl.KeyStore.create(tmp_path / "relay.json", relay_url="https://relay.example.net")
+    client = rcl.RelayClient("https://relay.example.net", store, "http://127.0.0.1:9/chat",
+                             public_url=OWN_URL)
+    paired = {"origin": "relay", "bundle": BUNDLE}
+    assert client.level({"origin": "own"}) == "all"
+    assert client.level({"origin": "relay"}) == "off"
+    assert client.level(paired) == rcl.BUNDLE_ACCESS == "chat"
+    assert client.level({**paired, "bundle_verified": True}) == "chat"  # the check grants nothing
+    assert client.level({**paired, "cards_allowed": True}) == "all"
+    assert client.level({**paired, "cards_allowed": "yes"}) == "chat"
+    assert client.level({"origin": "relay", "cards_allowed": True}) == "off"
+    client.relay_origin_access = "read"
+    assert client.level({"origin": "relay"}) == "read"
+    assert client.level({"origin": "relay", "cards_allowed": True}) == "all"
+    assert client.level(paired) == "chat"
+    # A link with the hash opens the relay's own copy of the app, nowhere else.
+    client.relay_origin_access = "off"
+    for app in ("https://other.example.net/", "https://relay.example.net:8443/"):
+        with pytest.raises(rcl.RelayError, match="relay's own copy"):
+            client.new_pairing(app_url=app, relay_origin=True, bundle=BUNDLE)
+    with pytest.raises(rcl.RelayError, match="64 hex"):
+        client.new_pairing(app_url="https://relay.example.net/", relay_origin=True, bundle="ab")
+    link = client.new_pairing(app_url=rcl.relay_app_url(client.relay_url), relay_origin=True,
+                              bundle=BUNDLE)
+    p = rc.PairingPayload.from_string(link)
+    assert (p.bundle, p.app) == (BUNDLE, "https://relay.example.net/")
+    # The hash travels from the pairing to the device that spends it.
+    assert store.pairing_device(p.pairing_id) == {"origin": "relay", "bundle": BUNDLE}
+    dev = store.register(p.pairing_id, rc.public_of(rc.generate_private()), "phone", code="1")
+    assert dev["bundle"] == BUNDLE and dev["origin"] == "relay"
+    assert client.devices()[0]["bundle_verified"] is False
+    assert store.pairing_device(p.pairing_id) == {}
+
+
+def test_the_bundle_hash_comes_from_the_web_front_end(tmp_path):
+    """A pairing carries WebFrontend.bundle_hash(); a malformed or failing
+    one counts as none. The CLI's hash is the one the bot signs."""
+    from botcore.chat.web_frontend import WebFrontend
+    fe = WebFrontend({}, store_path=tmp_path / "webchat.sqlite")
+    with mock.patch.object(WebFrontend, "bundle_hash", lambda self: BUNDLE):
+        assert rcl.bundle_hash_of(fe) == BUNDLE
+        assert rcl._cli_bundle_hash(tmp_path / "relay.json", "https://relay.example.net") == BUNDLE
+    for bad in (lambda self: "ab", lambda self: None, lambda self: 1 / 0):
+        with mock.patch.object(WebFrontend, "bundle_hash", bad):
+            assert rcl.bundle_hash_of(fe) == ""
+    key = tmp_path / "priv" / "relay.json"
+    key.parent.mkdir(mode=0o700)
+    rcl.KeyStore.create(key, relay_url="https://relay.example.net")
+    bot = WebFrontend({"relay": {"url": "https://relay.example.net", "key_file": str(key)}},
+                      store_path=key.parent / "webchat.sqlite")
+    assert rcl._cli_bundle_hash(key, "https://relay.example.net") == bot.bundle_hash() != ""
 
 
 
@@ -354,10 +463,11 @@ def _link_of(key: str, pairing: dict, app: str | None) -> str:
     return rc.PairingPayload(relay_url=store.relay_url(), install_id=ident.install_id,
                              bot_public=ident.public, client_key=ident.client_key,
                              pairing_id=pairing["id"], psk=rc.b64d(pairing["psk"]),
-                             expires=pairing["expires"]).to_string(app)
+                             expires=pairing["expires"], bundle=pairing.get("bundle", ""),
+                             app=app or "").to_string(app)
 
 
-def test_owner_cli(tmp_path, capsys):
+def test_owner_cli(tmp_path, capsys, monkeypatch):
     from botcore.chat import relay_qr
     key = str(tmp_path / "relay.json")
     own = "https://host.example.ts.net/chat"
@@ -370,13 +480,15 @@ def test_owner_cli(tmp_path, capsys):
     # A QR code on the terminal, not the link's text; the advice on stderr.
     assert rcl.main(["pair", "--key-file", key, "--public-url", own]) == 0
     out = capsys.readouterr()
-    assert "#tr1=" not in out.out and "Never send this link" in out.err
+    assert "#tr2=" not in out.out and "Never send this link" in out.err
     first = rcl.KeyStore(key).load()["pairings"][0]
     assert out.out.rstrip("\n") == relay_qr.terminal(_link_of(key, first, own + "/"))
     assert rcl.main(["pair", "--key-file", key, "--public-url", own, "--print-link"]) == 0
     link = capsys.readouterr().out.strip()
     p = rc.PairingPayload.from_string(link)
-    assert link.startswith(own + "/#tr1=")
+    # The link carries the hash of the app the bot signs, as the bot's own links do.
+    bundle = rcl._cli_bundle_hash(Path(key), "https://relay.example.net")
+    assert link.startswith(own + "/#tr2=") and p.app == own + "/" and p.bundle == bundle != ""
     assert p.install_id == made["install_id"] and p.relay_url == "https://relay.example.net"
     # Any other origin is refused unless --relay-origin, which warns.
     for args in (["--app-url", own + "/"], []):
@@ -384,12 +496,20 @@ def test_owner_cli(tmp_path, capsys):
         assert "own origin" in capsys.readouterr().err
     assert rcl.main(["pair", "--key-file", key, "--relay-origin", "--print-link"]) == 0
     out = capsys.readouterr()
-    assert "read this phone's chat and type as you" in out.err
-    assert out.out.startswith("https://relay.example.net/#tr1=")
+    assert "checks its code against this bot's" in out.err and "approve --cards" in out.err
+    assert out.out.startswith("https://relay.example.net/#tr2=")
+    relayed = rc.PairingPayload.from_string(out.out.strip())
+    assert (relayed.app, relayed.bundle) == ("https://relay.example.net/", bundle)
+    # A bot that signs no app: the old warning, and the chat.json opt-in.
+    monkeypatch.setattr(rcl, "_cli_bundle_hash", lambda path, url: "")
+    assert rcl.main(["pair", "--key-file", key, "--relay-origin", "--print-link"]) == 0
+    out = capsys.readouterr()
+    assert "read this phone's chat and type as you" in out.err and "relay_origin_access" in out.err
+    assert not rc.PairingPayload.from_string(out.out.strip()).bundle
     pairings = rcl.KeyStore(key).load()["pairings"]
-    assert [x["origin"] for x in pairings] == ["own", "own", "relay"]
+    assert [x["origin"] for x in pairings] == ["own", "own", "relay", "relay"]
     assert rcl.main(["show", "--key-file", key]) == 0
-    assert json.loads(capsys.readouterr().out)["open_pairings"] == 3
+    assert json.loads(capsys.readouterr().out)["open_pairings"] == 4
     # A device that spent a pairing waits; show lists its code, approve lets it in.
     store = rcl.KeyStore(key)
     dev = store.register(p.pairing_id, rc.public_of(rc.generate_private()), "phone", code="042917")
@@ -404,6 +524,43 @@ def test_owner_cli(tmp_path, capsys):
     assert rcl.main(["approve", "--key-file", key, "--device", "0" * 16]) == 1
     assert rcl.main(["revoke", "--key-file", key, "--device", "0" * 16]) == 1
     assert rcl.main(["revoke", "--key-file", key, "--device", dev["id"]]) == 0
+
+
+def test_owner_cli_pairs_through_the_relay_with_the_bundle_hash(tmp_path, capsys, monkeypatch):
+    """With a signed app bundle, `pair --relay-origin` prints a v2 link to
+    the relay's copy with the bundle hash, needing no chat.json opt-in;
+    `show` lists each device's origin and whether its code is verified."""
+    monkeypatch.setattr(rcl, "_cli_bundle_hash", lambda path, url: BUNDLE)
+    key = str(tmp_path / "relay.json")
+    assert rcl.main(["init", "--key-file", key, "--relay-url", "https://relay.example.net"]) == 0
+    capsys.readouterr()
+    assert rcl.main(["pair", "--key-file", key, "--relay-origin", "--print-link"]) == 0
+    out = capsys.readouterr()
+    p = rc.PairingPayload.from_string(out.out.strip())
+    assert out.out.startswith("https://relay.example.net/#tr2=")
+    assert (p.bundle, p.app) == (BUNDLE, "https://relay.example.net/")
+    assert "checks its code against this bot's" in out.err
+    assert "relay_origin_access" not in out.err
+    # The hash only goes with a link to the relay's own copy.
+    assert rcl.main(["pair", "--key-file", key, "--relay-origin", "--print-link",
+                     "--app-url", "https://other.example.net/"]) == 1
+    assert "relay's own copy" in capsys.readouterr().err
+    store = rcl.KeyStore(key)
+    relay_dev = store.register(p.pairing_id, rc.public_of(rc.generate_private()), "phone",
+                               code="123456")
+    assert rcl.main(["pair", "--key-file", key, "--public-url", OWN_URL, "--print-link"]) == 0
+    own = rc.PairingPayload.from_string(capsys.readouterr().out.strip())
+    assert own.bundle == BUNDLE and own.app == OWN_URL + "/"
+    own_dev = store.register(own.pairing_id, rc.public_of(rc.generate_private()), "laptop")
+    assert store.approve(own_dev["id"])
+    assert rcl.main(["show", "--key-file", key]) == 0
+    devices = json.loads(capsys.readouterr().out)["devices"]
+    assert devices == [
+        {"id": relay_dev["id"], "name": "phone", "paired_at": relay_dev["paired_at"],
+         "origin": "relay", "pending": True, "code": "123456", "cards_allowed": False,
+         "bundle_verified": False},
+        {"id": own_dev["id"], "name": "laptop", "paired_at": own_dev["paired_at"],
+         "origin": "own", "pending": False}]
 
 
 def test_the_terminal_qr_is_the_apps_code():
@@ -1177,7 +1334,7 @@ def test_the_relay_routes_pair_list_approve_and_revoke(web):
     f = web["fe"]
     status, _h, out = _call(f, "POST", "/api/relay/pair", {}, _owner(f))
     assert status == 200 and out["qr"] == out["link"] and out["origin"] == "own"
-    assert out["link"].startswith(OWN_URL + "/#tr1=")
+    assert out["link"].startswith(OWN_URL + "/#tr2=") and out["access"] == "all"
     assert abs(out["expires"] - (time.time() + rc.PAIRING_TTL)) < 5
     assert _call(f, "GET", "/api/relay/devices", headers=_owner(f))[2] == []
     phone = _phone(web, out["link"], approve=False)
@@ -1214,6 +1371,61 @@ def test_the_relay_routes_pair_list_approve_and_revoke(web):
     assert _call(f, "POST", "/api/relay/pair", {})[0] == 401
     assert _call(f, "GET", "/api/relay/devices")[0] == 401
     assert _call(f, "POST", "/api/relay/approve", {"device": "0" * 16})[0] == 401
+
+
+def test_the_owner_pairs_a_phone_through_the_relay_without_the_opt_in(web):
+    """"Pair through the relay" in the owner's dialog: a v2 link to the
+    relay's copy of the app with the bundle hash the bot signs, allowed
+    while chat.json keeps relay_origin_access "off". The device waits for
+    approval, then reads and chats, attested or not; its attestation
+    records the check and grants nothing, and card buttons wait for the
+    owner's `cards`."""
+    from botcore.chat.web_frontend import WebFrontend
+    f = web["fe"]
+    f.registry.event("message")(lambda m: None)
+    assert f.relay.relay_origin_access == "off"
+    bundle = f.bundle_hash()
+    st = _call(f, "GET", "/api/relay/status", headers=_owner(f))[2]
+    assert (st["pair_own"], st["pair_relay"], st["bundle"]) == (True, True, bundle)
+    assert _call(f, "POST", "/api/relay/pair", {"via": "elsewhere"}, _owner(f))[0] == 400
+    # A bot that signs no app bundle: the relay way is closed, and says why.
+    with mock.patch.object(WebFrontend, "bundle_hash", lambda self: ""):
+        st = _call(f, "GET", "/api/relay/status", headers=_owner(f))[2]
+        assert (st["pair_own"], st["pair_relay"], st["bundle"]) == (True, False, None)
+        status, _h, out = _call(f, "POST", "/api/relay/pair", {"via": "relay"}, _owner(f))
+        assert status == 409 and "bundle" in out["error"]
+    status, _h, out = _call(f, "POST", "/api/relay/pair", {"via": "relay"}, _owner(f))
+    own = _call(f, "POST", "/api/relay/pair", {}, _owner(f))[2]
+    assert status == 200 and (out["origin"], out["access"], out["bundle"]) == ("relay", "chat", bundle)
+    assert out["qr"] == out["link"] and out["link"].startswith(web["base"] + "/#tr2=")
+    p = rc.PairingPayload.from_string(out["link"])
+    assert (p.bundle, p.app, p.relay_url) == (bundle, web["base"] + "/", web["base"])
+    assert own["origin"] == "own" and own["access"] == "all"
+    assert rc.PairingPayload.from_string(own["link"]).bundle == bundle
+    phone = _phone(web, out["link"], approve=False)
+    device = phone.session.device
+    dev = {d["id"]: d for d in f.relay.devices()}[device]
+    assert (dev["origin"], dev["pending"], dev["bundle_verified"]) == ("relay", True, False)
+    assert phone.call("GET", "/api/me")[1]["s"] == 403  # approval first, as for any device
+    assert _attest(phone, bundle)["s"] == 403  # nor may it attest while it waits
+    assert f.relay.approve(device)
+    _, me = phone.call("GET", "/api/me")
+    assert me["s"] == 200 and json.loads(me["body"])["card_actions"] is False
+    text = json.dumps({"text": "from a phone that has not attested"}).encode()
+    assert phone.call("POST", "/api/channels/dm/messages", text)[1]["s"] == 200
+    click = json.dumps({"action_id": "approve_send"}).encode()
+    assert phone.call("POST", "/api/cards/dm/w1/actions", click)[1]["s"] == 403
+    # Its attestation is recorded and grants nothing.
+    assert _attest(phone, bundle)["s"] == 200
+    _, me = phone.call("GET", "/api/me")
+    assert json.loads(me["body"])["card_actions"] is False
+    assert phone.call("POST", "/api/cards/dm/w1/actions", click)[1]["s"] == 403
+    rows = _call(f, "GET", "/api/relay/devices", headers=_owner(f))[2]
+    assert [(d["id"], d["bundle_verified"], d["cards_allowed"]) for d in rows] == [(device, True, False)]
+    # The owner's `cards` lets it confirm a card.
+    assert _call(f, "POST", "/api/relay/approve", {"device": device, "cards": True}, _owner(f))[0] == 200
+    _, me = phone.call("GET", "/api/me")
+    assert json.loads(me["body"])["card_actions"] is True
 
 
 def test_relayed_requests_never_reach_the_pairing_routes(web):
@@ -1271,6 +1483,92 @@ def test_a_relay_origin_phone_never_confirms_a_card(web):
     time.sleep(0.2)
     assert [type(x) for x in got] == [InboundMessage] and got[0].text == "send K7Q2"
     assert not any(isinstance(x, ActionEvent) for x in got)
+
+
+def _attest(phone, bundle: str) -> dict:
+    return phone.call("POST", "/api/relay/attest", json.dumps({"bundle": bundle}).encode())[1]
+
+
+def test_a_relay_origin_phone_presses_cards_only_when_the_owner_allows_it(web):
+    """A relay-origin device gets `X-Tacitus-Relay-Cards: deny` whatever it
+    attests: the code that checks itself came from the relay. Its check is
+    recorded (`bundle_verified`, the release). Only the owner's approval
+    with `cards` gives it `allow`, and approving again without takes it
+    back. "off" in chat.json still keeps it out, and a "read" device may
+    post its attestation and nothing else."""
+    from botcore.chat.cards import CardAction, ConfirmationCard
+    f = web["fe"]
+    got = []
+    f.registry.action("approve_send")(got.append)
+    card = ConfirmationCard(kind="send", title="Send this draft?", body="Hello.",
+                            actions=[CardAction("approve_send", "Send", {"t": 1}, "primary", "send")])
+    ref = f.post_card("dm", card)
+    click = json.dumps({"action_id": "approve_send"}).encode()
+    f.relay.relay_origin_access = "chat"
+    phone = _phone(web, f.relay.new_pairing(app_url=web["base"] + "/", relay_origin=True))
+    device = phone.session.device
+
+    def me():
+        return json.loads(phone.call("GET", "/api/me")[1]["body"])
+
+    def row():
+        return {d["id"]: d for d in f.relay.devices()}[device]
+    assert me()["card_actions"] is False and row()["cards_allowed"] is False
+    # The phone checks the bot's signed manifest, fetched through the relay.
+    out = phone.call("GET", "/api/bundle")[1]
+    assert out["s"] == 200
+    m = rc.verify_manifest(json.loads(out["body"]))
+    assert rc.bundle_hash(m) == f.bundle_hash() == me()["bundle"]
+    out = _attest(phone, "0" * 64)
+    assert out["s"] == 409 and row()["bundle_verified"] is False
+    out = _attest(phone, rc.bundle_hash(m))
+    assert out["s"] == 200 and row()["bundle_verified"] is True
+    # Verified, and still no card buttons.
+    assert me()["card_actions"] is False
+    assert phone.call("POST", f"/api/cards/dm/{ref.id}/actions", click)[1]["s"] == 403
+    # The owner allows them for this device.
+    assert _call(f, "POST", "/api/relay/approve", {"device": device, "cards": True},
+                 _owner(f))[0] == 200
+    assert me()["card_actions"] is True and row()["cards_allowed"] is True
+    assert phone.call("POST", f"/api/cards/dm/{ref.id}/actions", click)[1]["s"] == 200
+    deadline = time.time() + 5
+    while not got and time.time() < deadline:
+        time.sleep(0.05)
+    assert [a.action_id for a in got] == ["approve_send"]
+    # Approved again without `cards`: denied again.
+    assert f.relay.approve(device) and me()["card_actions"] is False
+    # "off" keeps every relay-origin device out, whatever the owner allowed.
+    f.relay.approve(device, cards=True)
+    f.relay.relay_origin_access = "off"
+    out = phone.call("GET", "/api/me")[1]
+    assert out["k"] == "err" and out["e"] == "auth"
+    # At "read" a device posts its attestation and nothing else.
+    f.relay.relay_origin_access = "read"
+    reader = _phone(web, f.relay.new_pairing(app_url=web["base"] + "/", relay_origin=True))
+    body = json.dumps({"text": "hello"}).encode()
+    assert reader.call("POST", "/api/channels/dm/messages", body)[1]["s"] == 403
+    assert _attest(reader, f.bundle_hash())["s"] == 200
+    assert reader.call("POST", "/api/channels/dm/messages", body)[1]["s"] == 403
+
+
+def test_the_cli_approves_with_card_buttons(tmp_path, capsys):
+    """`approve --cards` lets a relay-origin device press card buttons;
+    `approve` alone does not, and `show` lists both and the check."""
+    key = tmp_path / "relay-key.json"
+    store = rcl.KeyStore.create(key, relay_url="https://relay.example.net")
+    pairing = store.add_pairing(relay_url="https://relay.example.net", origin="relay")
+    device = store.register(pairing.pairing_id, bytes(range(32)), "phone")["id"]
+    store.attest(device, "a" * 64, "v1.2.3")
+    assert rcl.main(["approve", "--key-file", str(key), "--device", device, "--cards"]) == 0
+    assert store.device_by_id(device)["cards_allowed"] is True
+    assert rcl.main(["approve", "--key-file", str(key), "--device", device]) == 0
+    assert store.device_by_id(device)["cards_allowed"] is False
+    capsys.readouterr()
+    assert rcl.main(["show", "--key-file", str(key)]) == 0
+    (row,) = json.loads(capsys.readouterr().out)["devices"]
+    assert row == {"id": device, "name": "phone", "paired_at": row["paired_at"], "origin": "relay",
+                   "pending": False, "cards_allowed": False, "bundle_verified": True,
+                   "release": "v1.2.3"}
 
 
 def test_the_page_policy_names_the_relay_origin(tmp_path):
@@ -1692,28 +1990,65 @@ def test_a_waiting_device_opens_no_stream(web):
 def test_one_frame_id_holds_one_stream(web):
     """Seventy `open` frames with one id leave one stream at the bot, and
     the owner's own requests still get a connection."""
+    from botcore.chat.web_frontend import GONE_CHECK_S
     f = web["fe"]
     client = f.relay
     phone = _phone(web, client.new_pairing())
     sent: list = []
     client._send = sent.append  # the relay's side swallows what the bot posts
     fid = "a" * 32
-    for _ in range(70):
+    opened, handled = [], []
+    handle = client._handle
+
+    def counted(frame):  # each frame a worker has finished with
+        try:
+            handle(frame)
+        finally:
+            handled.append(frame)
+    client._handle = counted
+
+    def open_stream():
+        opened.append(fid)
         client._dispatch([phone.session.seal("open", fid, rc.pack({}))])
-    deadline = time.time() + 20  # a connect past the listen backlog waits for its retry
-    while time.time() < deadline:
-        live = [t for t in threading.enumerate() if t.name == f"relay-sse-{fid[:8]}"]
-        if len(live) <= 1:
+
+    def threads():
+        return [t for t in threading.enumerate() if t.name == f"relay-sse-{fid[:8]}"]
+
+    def settled():  # every frame handled or dropped, none in a worker
+        return len(handled) + client.dropped == len(opened)
+
+    for _ in range(70):
+        open_stream()
+    # Polled, not asserted once: on a slow runner the workers open the
+    # streams late, and the local server holds a dropped stream's
+    # connection for up to GONE_CHECK_S. A last `open` the server closed at
+    # once (all its connections held) ends with an `end` frame, and the
+    # phone then opens again; so does this test.
+    deadline, reopen = time.time() + 20, time.time() + 2
+    while not (settled() and client.status()["streams"] == 1 and len(threads()) == 1):
+        assert time.time() < deadline, (client.status()["streams"], len(threads()), client.dropped)
+        if time.time() > reopen and settled() and not threads():
+            open_stream()
+            reopen = time.time() + 2
+        time.sleep(0.1)
+    # The streams it replaced are gone; the owner's request gets a
+    # connection once the server has seen them go.
+    deadline = time.time() + GONE_CHECK_S + 4
+    while True:
+        try:
+            assert _call(f, "GET", "/api/me", headers=_owner(f))[0] == 200
             break
-        time.sleep(0.2)
-    assert client.status()["streams"] == 1 and len(live) <= 1
-    assert _call(f, "GET", "/api/me", headers=_owner(f))[0] == 200
+        except OSError:  # a connection the server closed at once: its slots are still held
+            assert time.time() < deadline
+            time.sleep(0.2)
+    assert client.status()["streams"] == 1 and len(threads()) == 1
     client._on_close(fid)
 
 
 def test_relay_origin_devices_are_off_unless_chat_json_opts_in(web, tmp_path):
-    """By default the bot makes no relay-origin pairing and lets no
-    relay-origin device in; the UI never makes one."""
+    """By default the bot makes no relay-origin pairing without the app
+    bundle's hash and lets no such device in. A bot with no public_url
+    (no tailnet) pairs only through the relay, with the hash."""
     f = web["fe"]
     client = f.relay
     assert client.relay_origin_access == "off"
@@ -1745,6 +2080,11 @@ def test_relay_origin_devices_are_off_unless_chat_json_opts_in(web, tmp_path):
             time.sleep(0.05)
         status, _h, out = _call(g, "POST", "/api/relay/pair", {}, _owner(g))
         assert status == 409 and "public_url" in out["error"]
+        st = _call(g, "GET", "/api/relay/status", headers=_owner(g))[2]
+        assert (st["pair_own"], st["pair_relay"], st["bundle"]) == (False, True, g.bundle_hash())
+        status, _h, out = _call(g, "POST", "/api/relay/pair", {"via": "relay"}, _owner(g))
+        assert status == 200 and out["origin"] == "relay" and out["bundle"] == g.bundle_hash()
+        assert out["link"].startswith(web["base"] + "/#tr2=")
     finally:
         g.stop()
 

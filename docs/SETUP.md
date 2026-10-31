@@ -408,8 +408,10 @@ for your tailnet, the first `tailscale serve` says how to turn it on.
    already has. The drawer lists the browsers that get notifications,
    each with a Revoke button.
 6. Off the tailnet, a phone reaches the chat through a relay: a key file,
-   a `relay` block in the `web` block, and a pairing done once on the
-   tailnet ([docs/webchat-relay.md](webchat-relay.md), "Owner steps").
+   a `relay` block in the `web` block, and a pairing done once from "Pair
+   a phone" in the web chat, on the tailnet or on this machine
+   (`http://127.0.0.1:8470/chat/`, no Tailscale needed)
+   ([docs/webchat-relay.md](webchat-relay.md), "Owner steps").
 
 The store is `<private dir>/webchat.sqlite`; files you upload from the
 app sit beside it. Standalone, the chat has the `ea` channel, your DM

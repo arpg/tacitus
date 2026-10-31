@@ -3,26 +3,46 @@
  * them fresh whenever it can; a fetch that has not answered in four
  * seconds (the host off the tailnet) gives way to the copy. API requests
  * (every path with /api/ in it: messages, files, the event stream,
- * pairing) and the relay's routes (/r/<install>/..., /healthz) are never
- * answered from or written to the cache; the worker leaves them to the
- * browser. */
+ * pairing), the relay's routes (/r/<install>/..., /healthz) and the signed
+ * manifest are never answered from or written to the cache; the worker
+ * leaves them to the browser.
+ *
+ * It serves only code the bot signed (docs/webchat.md, Code integrity):
+ * once the page hands it the bot's signed manifest (adopt), a file from the
+ * network is served and kept only when its sha256 is the manifest's. Before
+ * that (a first load) it keeps each file, and the first manifest must match
+ * them all. A file that matches no signed manifest stops the app: the copy
+ * goes, and each page shows a refusal with no script until "Check again". */
 'use strict';
 
-const CACHE = 'tacitus-webchat-v2';
-const SHELL = ['./', 'app.js', 'qr.js', 'app.css', 'manifest.webmanifest', 'favicon.svg', 'icon-192.png', 'icon-512.png'];
+importScripts('bundle.js');
+
+const CACHE = 'tacitus-webchat-v3';
+// The trusted manifest, a refusal, a suspect file: kept with the copies they speak for.
+const STATE = `${CACHE}-bundle`;
+const SHELL = ['./', 'app.js', 'qr.js', 'bundle.js', 'app.css', 'manifest.webmanifest', 'favicon.svg', 'icon-192.png', 'icon-512.png'];
 const RELAY_ROUTE = /\/r\/[a-z2-7]{26}\//;
 const SLOW_MS = 4000;
 
+const stateKey = (name) => new URL(`__bundle/${name}`, self.registration.scope).href;
+const getState = (name) => caches.open(STATE).then((c) => c.match(stateKey(name))).then((r) => (r ? r.json() : null));
+const setState = (name, value) => caches.open(STATE).then((c) => (value == null ? c.delete(stateKey(name))
+  : c.put(stateKey(name), new Response(JSON.stringify(value)))));
+const hashOf = async (res) => sha256Hex(new Uint8Array(await res.clone().arrayBuffer()));
+const kept = (req) => caches.open(CACHE).then((c) => c.match(req, { ignoreSearch: true }));
+const keep = (req, res) => caches.open(CACHE).then((c) => c.put(req, res.clone())).catch(() => {});
+
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE)
-    .then((cache) => cache.addAll(SHELL))
+  // A worker that follows one with a trusted manifest keeps its checked copies.
+  event.waitUntil(getState('trusted')
+    .then((trusted) => trusted || caches.open(CACHE).then((cache) => cache.addAll(SHELL)))
     .catch(() => {})
     .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(caches.keys()
-    .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+    .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== STATE).map((k) => caches.delete(k))))
     .then(() => self.clients.claim()));
 });
 
@@ -69,21 +89,112 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET' || url.origin !== scope.origin) return;
   if (url.pathname.includes('/api/')) return;
   if (RELAY_ROUTE.test(url.pathname) || url.pathname.endsWith('/healthz')) return;
-  if (!url.pathname.startsWith(scope.pathname)) return;
-  const copy = () => caches.match(req, { ignoreSearch: true })
-    .then((hit) => hit || caches.match(new URL('./', scope).href));
-  const net = fetch(req).then((res) => {
-    if (res.ok && res.type === 'basic') {
-      const fresh = res.clone();
-      caches.open(CACHE).then((cache) => cache.put(req, fresh));
-    }
-    return res;
-  });
-  event.respondWith(new Promise((resolve) => {
-    const slow = setTimeout(() => copy().then((hit) => hit && resolve(hit)), SLOW_MS);
-    net.then((res) => { clearTimeout(slow); resolve(res); }).catch(() => {
+  if (!url.pathname.startsWith(scope.pathname) || url.pathname.endsWith('/manifest.sig.json')) return;
+  event.respondWith(serve(req, url, scope));
+});
+
+// The network's answer, or the kept copy when the network fails or is slow
+// ({res, copy: true}); a page with no copy of its own gets the start page.
+function fetchOrCopy(req, scope) {
+  const copy = () => kept(req).then((hit) => hit
+    || (req.mode === 'navigate' ? kept(new URL('./', scope).href) : undefined));
+  const net = fetch(req);
+  return new Promise((resolve) => {
+    const slow = setTimeout(() => copy().then((hit) => hit && resolve({ res: hit, copy: true })), SLOW_MS);
+    net.then((res) => { clearTimeout(slow); resolve({ res, copy: false }); }).catch(() => {
       clearTimeout(slow);
-      copy().then((hit) => resolve(hit || Response.error()));
+      copy().then((hit) => resolve({ res: hit || Response.error(), copy: true }));
     });
-  }));
+  });
+}
+
+async function serve(req, url, scope) {
+  const refused = await getState('refused');
+  if (refused) {
+    if (req.mode !== 'navigate' || !url.searchParams.has('recheck')) return refusal(req, refused.file);
+    // "Check again": a first load again, which the next manifest checks.
+    await Promise.all(['refused', 'trusted', 'suspect'].map((k) => setState(k, null)));
+    return Response.redirect(new URL('./', scope).href, 303);
+  }
+  const { res, copy } = await fetchOrCopy(req, scope);
+  if (!res.ok || res.type !== 'basic' || copy) return res; // a kept copy was checked when kept
+  const trusted = await getState('trusted');
+  if (!trusted) return keep(req, res).then(() => res); // the first manifest checks it (adopt)
+  const path = bundlePath(url, scope, trusted.files);
+  if (trusted.files[path] === await hashOf(res)) return keep(req, res).then(() => res);
+  // Not the signed file. The checked copy serves until the page brings the
+  // bot's manifest, which tells a new release from a changed file (adopt).
+  const old = await kept(req);
+  if (old) return setState('suspect', true).then(() => old);
+  await refuse(path);
+  return refusal(req, path);
+}
+
+// Stops the app: no copy is kept, and each page of the app goes to the
+// refusal (a page this worker does not control hears it as a message).
+async function refuse(path) {
+  await caches.delete(CACHE);
+  await setState('refused', { file: path });
+  const start = new URL('./', self.registration.scope).href;
+  const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  wins.forEach((w) => w.navigate(start).catch(() => w.postMessage({ refused: path })));
+  return { refused: path };
+}
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+
+function refusal(req, path) {
+  if (req.mode !== 'navigate') return Response.error();
+  const page = '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width, initial-scale=1"><title>Tacitus stopped</title></head><body>'
+    + '<h1>Tacitus stopped</h1>'
+    + `<p>This copy of the app is not the code your bot signed: <code>${esc(path)}</code> does not match it. `
+    + 'The phone deleted its copy of the app and runs none of it.</p>'
+    + '<p>The server that sent the app sent a file that the bot did not sign: a copy from another release, '
+    + 'or a changed file. Open the app on the tailnet, or tell the person who runs the relay.</p>'
+    + '<p><a href="./?recheck">Check again</a></p></body></html>';
+  return new Response(page, { headers: { 'Content-Type': 'text/html; charset=utf-8',
+    'Content-Security-Policy': "default-src 'none'; base-uri 'none'; form-action 'none'" } });
+}
+
+// The page hands over the bot's signed manifest (it fetched it from the
+// bot and checked it); `pin` keeps its key, so the relay's copy of the app
+// takes a later one only under it. The first manifest must match every file
+// kept so far. A kept copy it does not name is replaced by the network's,
+// which must match; after a suspect file every file is fetched again.
+async function adopt(doc, pin) {
+  const old = await getState('trusted');
+  const v = await verifyBundle(doc, null, old && old.pin ? old.key : null);
+  const suspect = await getState('suspect');
+  if (old && old.hash === v.hash && !suspect) return { ok: true };
+  const scope = new URL(self.registration.scope);
+  const cache = await caches.open(CACHE);
+  if (!old) {
+    for (const req of await cache.keys()) {
+      const path = bundlePath(new URL(req.url), scope, v.files);
+      if (v.files[path] !== await hashOf(await cache.match(req))) return refuse(path);
+    }
+  }
+  let updated = false;
+  for (const [path, want] of Object.entries(v.files)) {
+    const url = new URL(path === 'index.html' ? './' : path, scope).href;
+    const had = await cache.match(url);
+    const good = Boolean(had) && await hashOf(had) === want;
+    if (good && !suspect) continue;
+    const res = await fetch(url, { cache: 'no-store' }).catch(() => null);
+    if (!res || !res.ok) continue; // out of reach: the copy stays
+    if (await hashOf(res) !== want) return refuse(path);
+    await cache.put(url, res);
+    updated ||= Boolean(had) && !good;
+  }
+  await setState('trusted', { hash: v.hash, key: v.key, files: v.files, pin: Boolean(pin || (old && old.pin)) });
+  await setState('suspect', null);
+  return { ok: true, updated };
+}
+
+self.addEventListener('message', (event) => {
+  const msg = event.data || {};
+  const reply = (out) => event.ports[0] && event.ports[0].postMessage(out);
+  if (msg.bundle) event.waitUntil(adopt(msg.bundle, msg.pin).then(reply, (e) => reply({ error: String(e.message || e) })));
+  else if (msg.refuse) event.waitUntil(refuse(String(msg.refuse)).then(reply));
 });

@@ -485,7 +485,7 @@ async function act(msg, body, box) {
   }
 }
 
-const NO_CARDS = 'Approve this on the tailnet: this phone does not press card buttons through the relay.';
+const NO_CARDS = 'Approve this in the web chat on your computer: this phone does not press card buttons unless you allow it there.';
 
 function renderCard(msg) {
   const c = msg.card || {};
@@ -777,6 +777,7 @@ async function reconnect(handle) {
   try {
     await pickTransport();
     await call('GET', '/me');
+    if (relayCopy() && !(await checkBundle())) return;
     connect();
   } catch {
     if ($('pair').hidden) setTimeout(() => reconnect(handle), Math.min(30000, 1000 * 2 ** S.retry++));
@@ -1255,13 +1256,13 @@ function deviceName() {
 // can forge one), so it is only a hint: the app reports it and tries
 // again, and never drops its keys over one.
 const RELAY_SAYS = {
-  auth: 'The bot did not accept this phone. If it was removed, pair it again from the tailnet.',
+  auth: 'The bot did not accept this phone. If it was removed, pair it again under "Pair a phone".',
   offline: 'The bot cannot be reached through the relay now.',
   timeout: 'The bot did not answer in time.',
   busy: 'The relay is busy.',
   unsure: 'the relay broke off, and the bot may have it anyway. Look in the thread before you send it again.',
 };
-const pendingNote = (code) => `This phone waits for approval. Under "Pair a phone" on the tailnet, approve the phone with code ${spaced(code)}.`;
+const pendingNote = (code) => `This phone waits for approval. In the web chat, under "Pair a phone", approve the phone with code ${spaced(code)}.`;
 
 class RelayError extends Error {
   constructor(code, text) {
@@ -1411,24 +1412,26 @@ async function directGet(path) {
   }
 }
 
-// A pairing link (`<app>#tr1=<payload>`, from "Pair a phone" on the
-// tailnet) opened here: the fragment leaves the address bar first, then
-// this browser makes its key pair, keeps it, and pairs through the relay.
-// The new phone then waits for the owner's approval, by its code.
-async function pairFromLink(text) {
+// A pairing link (`<app>#tr2=<payload>`, or `#tr1=` from before, made by
+// "Pair a phone") opened here: the fragment leaves the address bar first,
+// then this browser makes its key pair, keeps it, and pairs through the
+// relay. The new phone then waits for the owner's approval, by its code.
+async function pairFromLink(kind, text) {
   history.replaceState(null, '', location.pathname + location.search);
   const old = await loadPairing();
   let saved = false;
   try {
     const p = JSON.parse(TD.decode(b64d(text)));
-    if (!p || p.v !== 1 || !/^[0-9a-f]{32}$/.test(p.p) || b64d(String(p.s)).length !== 32) {
+    if (!p || p.v !== (kind === 'tr2' ? 2 : 1) || !/^[0-9a-f]{32}$/.test(p.p) || b64d(String(p.s)).length !== 32
+      || (p.b !== undefined && !/^[0-9a-f]{64}$/.test(p.b))) {
       throw new Error('this is not a pairing link');
     }
-    if (!(p.x * 1000 > Date.now())) throw new Error('the link has expired; open a new one on the tailnet');
+    if (p.a !== undefined && new URL(p.a).origin !== location.origin) throw new Error('this link opens the app elsewhere');
+    if (!(p.x * 1000 > Date.now())) throw new Error('the link has expired; open a new one under "Pair a phone"');
     // On the bot's own origin the link gives only the pairing secret: the
-    // relay, the install and the keys come from the bot, which answers on
-    // the tailnet. A link whose relay is this page's origin is for the
-    // relay's copy of the app, where no bot answers.
+    // relay, the install and the keys come from the bot, which answers
+    // there. A link whose relay is this page's origin is for the relay's
+    // copy of the app, where no bot answers: it needs the bot's hash (`b`).
     let at = p;
     if (new URL(p.r).origin !== location.origin) {
       const got = await directGet('/relay/status');
@@ -1436,8 +1439,8 @@ async function pairFromLink(text) {
       if (!st || !st.install_id) throw new Error('open the link while this phone is on the tailnet');
       if (st.install_id !== p.i || st.bot_public !== p.k) throw new Error('the link is for another install');
       at = { r: st.relay_url, i: st.install_id, k: st.bot_public, c: st.client_key };
-    } else if (!confirm('This copy of the app comes from the relay: whoever runs the relay can read '
-      + 'this phone\'s chat and type as you. Pair it anyway?')) return;
+    } else if (!p.b) throw new Error('the link has no hash of the bot\'s code; open a new one under "Pair a phone"');
+    else if (typeof verifyBundle !== 'function') return halt(UNCHECKED); // before it makes a key
     const url = new URL(at.r);
     if (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOOPBACK_HOSTS.includes(url.hostname))) {
       throw new Error('the relay must use https');
@@ -1448,7 +1451,7 @@ async function pairFromLink(text) {
     if (old && !confirm('This browser is paired already. Replace that pairing?')) return;
     const keys = await newKeys();
     const rec = { v: 1, relay: String(at.r).replace(/\/+$/, ''), install: at.i, clientKey: at.c,
-      botPublic: b64d(at.k), priv: keys.priv, pub: keys.pub, device: '' };
+      botPublic: b64d(at.k), priv: keys.priv, pub: keys.pub, device: '', bundle: p.b || '' };
     // Kept before the hello: a phone whose welcome is lost says a plain
     // hello next time, with the key the bot registered.
     await savePairing(rec);
@@ -1465,21 +1468,35 @@ async function pairFromLink(text) {
   }
 }
 
-// "Pair a phone", on the tailnet: a one-time link as a QR code, and the
-// phones paired so far; a new one waits for Approve, beside its code.
-async function pairPhone() {
+// "Pair a phone": a one-time link as a QR code, and the phones paired so
+// far; a new one waits for Approve, beside its code. A phone opens only the
+// bot's own address (public_url, a secure context); elsewhere (loopback, or
+// plain http on a LAN) the dialog offers the relay's copy of the app.
+async function pairPhone(via) {
   const dlg = $('phone');
   $('phone-link').value = '';
+  $('phone-qr').width = 0;
   $('phone-note').textContent = 'Opening a pairing...';
   if (!dlg.open) dlg.showModal();
-  try {
-    const out = await call('POST', '/relay/pair', {});
-    QR.draw($('phone-qr'), out.qr, 4);
-    $('phone-link').value = out.link;
-    $('phone-note').textContent = `Scan it with the phone's camera on the tailnet. It works once, until ${when(out.expires)}. `
-      + 'Approve the phone below only when its code is the one the phone shows. Never send this link through chat or mail.';
-  } catch (e) {
-    $('phone-note').textContent = `Could not open a pairing: ${e.message}`;
+  const st = await call('GET', '/relay/status').catch(() => ({}));
+  const here = isSecureContext && Boolean(S.me.public_url) && new URL(S.me.public_url, location.href).origin === location.origin;
+  $('phone-relay').hidden = via === 'relay' || !st.pair_relay;
+  if (via !== 'relay' && !(here && st.pair_own)) {
+    $('phone-note').textContent = `A phone cannot open this address. ${st.pair_relay ? 'Pair through the relay: the phone loads the app '
+      + 'from the relay and checks its code against this bot\'s.' : st.pair_own ? 'Open the web chat on its tailnet address.'
+      : 'Pairing through the relay needs the signed app bundle, which this build does not have.'}`;
+  } else {
+    try {
+      const out = await call('POST', '/relay/pair', via === 'relay' ? { via } : {});
+      QR.draw($('phone-qr'), out.qr, 4);
+      $('phone-link').value = out.link;
+      $('phone-note').textContent = `${out.origin === 'relay' ? 'Scan it with the phone\'s camera; it opens the app from the relay '
+        + 'and checks its code against this bot\'s. Once approved it can read and chat, and press card buttons only if you allow it below. '
+        : 'Scan it with the phone\'s camera on the tailnet. '}It works once, until ${when(out.expires)}. Approve the phone below `
+        + 'only when its code is the one the phone shows. Never send this link through chat or mail.';
+    } catch (e) {
+      $('phone-note').textContent = `Could not open a pairing: ${e.message}`;
+    }
   }
   clearInterval(pairPhone.timer);
   pairPhone.timer = setInterval(() => (dlg.open ? listPhones() : clearInterval(pairPhone.timer)), 3000);
@@ -1491,8 +1508,10 @@ async function listPhones() {
   try {
     const rows = await call('GET', '/relay/devices');
     box.replaceChildren(...rows.map((d) => h('li', { 'data-device': d.id },
-      h('span', {}, d.pending ? `${d.name}, code ${spaced(d.code)}, waits for approval`
-        : `${d.name}, paired ${when(d.paired_at, true)}${d.origin === 'own' ? '' : ' on the relay'}`),
+      h('span', {}, d.pending ? `${d.name}, code ${spaced(d.code)}, waits for approval` : `${d.name}, paired ${when(d.paired_at, true)}`
+        + (d.origin === 'own' ? '' : `, through the relay, ${d.bundle_verified ? `verified copy of ${d.release || 'this release'}` : 'code not verified'}`)),
+      d.origin === 'own' ? null : h('label', {}, h('input', { type: 'checkbox', checked: d.pending ? CARDS.has(d.id) : d.cards_allowed,
+        onchange: (e) => cardsFor(d, e.target.checked) }), 'Allow card buttons on this phone'),
       d.pending ? h('button', { type: 'button', class: 'btn small primary', onclick: () => phoneAct('approve', d) }, 'Approve') : null,
       h('button', { type: 'button', class: 'btn small plain', onclick: () => phoneAct('revoke', d) }, 'Remove'))));
     if (!rows.length) box.append(h('li', { class: 'empty' }, 'No phone is paired yet.'));
@@ -1501,10 +1520,96 @@ async function listPhones() {
   }
 }
 
+// Card buttons on a relay-origin phone are the owner's choice: sent with Approve, or by approving again.
+const CARDS = new Set();
+const cardsFor = (d, on) => { CARDS[on ? 'add' : 'delete'](d.id); if (!d.pending) phoneAct('approve', d); };
+
 async function phoneAct(verb, d) {
   if (verb === 'revoke' && !confirm(`Remove ${d.name}? It can no longer reach the bot through the relay.`)) return;
-  try { await call('POST', `/relay/${verb}`, { device: d.id }); } catch (e) { toast(e.message); }
+  const cards = verb === 'approve' ? CARDS.has(d.id) : undefined; // revoke takes the device alone
+  try { await call('POST', `/relay/${verb}`, { device: d.id, cards }); } catch (e) { toast(e.message); }
   listPhones();
+}
+
+/* -- Code integrity (docs/webchat.md, Code integrity) ---------------- */
+
+// The bot signs the app's files at start. The page checks the signed manifest
+// (verifyBundle, bundle.js) and hands it to the service worker, which serves
+// only matching files. The bot's own copy checks after start-up; the relay's
+// before the chat runs, through the sealed channel, against its pairing's
+// `bundle` (the QR's hash) first and the key that signed it (`signKey`) after.
+// With neither, or no check that runs, it stops; checked, it attests.
+const relayCopy = () => Boolean(T.relay && new URL(T.rec.relay).origin === location.origin);
+const UNCHECKED = 'Code verification unavailable: this copy of the app from the relay cannot check its code against the bot\'s. '
+  + 'Pair this phone again once the relay serves the current release.';
+
+async function checkBundle() {
+  const rec = T.relay ? T.rec : null;
+  if (rec && !rec.bundle) return halt('This phone was paired without the hash of the bot\'s code. Pair it again.');
+  let doc;
+  if (rec) doc = await call('GET', '/bundle');
+  else if (!S.me.bundle) return null; // a bot that signs nothing (no cryptography package)
+  else {
+    const res = await fetch(`${BASE}/manifest.sig.json`, { credentials: 'same-origin', cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    doc = await res.json();
+  }
+  let v;
+  try {
+    v = await verifyBundle(doc, rec && !rec.signKey ? rec.bundle || null : null, rec ? rec.signKey || null : null);
+  } catch (e) {
+    if (e instanceof BundleError) return refuseApp('manifest.sig.json');
+    if (rec) return halt(`${UNCHECKED} (${e.message})`); // no check ran: no chat either
+    throw e;
+  }
+  if (rec && !rec.signKey) await savePairing(Object.assign(rec, { signKey: v.key }));
+  const out = (await toWorker({ bundle: doc, pin: Boolean(rec) })) || (await checkFiles(v.files));
+  if (out.refused) return refuseApp(out.refused, true);
+  if (out.error) throw new Error(out.error);
+  if (out.updated) toast('A new version of the app is ready. Close the app and open it again.');
+  if (rec) await call('POST', '/relay/attest', { bundle: v.hash });
+  return v;
+}
+
+// The service worker's answer, or null without one (none yet, or blocked).
+async function toWorker(msg) {
+  if (!('serviceWorker' in navigator)) return null;
+  const reg = await Promise.race([navigator.serviceWorker.ready, new Promise((r) => { setTimeout(r, 5000); })]);
+  if (!reg || !reg.active) return null;
+  return new Promise((resolve) => {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = (e) => resolve(e.data || {});
+    setTimeout(() => resolve({ error: 'the service worker did not answer' }), 60000);
+    reg.active.postMessage(msg, [ch.port2]);
+  });
+}
+
+// Without a service worker the page checks the files itself, fetched fresh.
+async function checkFiles(files) {
+  for (const [path, want] of Object.entries(files)) {
+    const res = await fetch(`${BASE}/${path === 'index.html' ? '' : path}`, { cache: 'no-store' }).catch(() => null);
+    if (res && res.ok && (await sha256Hex(new Uint8Array(await res.arrayBuffer()))) !== want) return { refused: path };
+  }
+  return {};
+}
+
+// A file that is not the signed one: the worker (`told` when it knows)
+// drops its copy and moves each page to its refusal; this page stops here
+// too, in case it cannot.
+async function refuseApp(path, told) {
+  halt(`This copy of the app is not the code your bot signed: ${path} does not match it. The relay and the bot run `
+    + 'different releases, or the app was changed. Open the app on the tailnet, or tell the person who runs the relay.');
+  if (!told) await toWorker({ refuse: path }).catch(() => {});
+  return null;
+}
+
+// The app stops on a notice, and nothing runs past it (boot and reconnect).
+function halt(text) {
+  if (S.es) { S.es.close(); S.es = null; }
+  S.ready = false;
+  S.halted = true;
+  document.body.replaceChildren(h('main', { class: 'refusal', role: 'alert' }, h('h1', {}, 'Tacitus stopped'), h('p', {}, text)));
+  return null;
 }
 
 /* -- Pairing and start-up ------------------------------------------- */
@@ -1536,9 +1641,12 @@ async function pair(e) {
 }
 
 async function boot() {
+  if (S.halted) return;
   try {
     await pickTransport();
     S.me = await call('GET', '/me');
+    // A copy of the app from the relay runs the chat only once its code checks.
+    if (relayCopy() && !(await checkBundle())) return;
   } catch (e) {
     if ($('pair').hidden) toast(`Could not reach the bot: ${e.message}`);
     if (T.relay) setTimeout(boot, Math.min(30000, 1000 * 2 ** S.retry++));
@@ -1560,14 +1668,15 @@ async function boot() {
   renderChannels();
   route();
   if (S.push === undefined) { S.push = null; initPush().catch(() => {}); }
-  // Pairing a phone happens on the tailnet only, where the API answers.
+  // Pairing a phone happens where the API answers: the tailnet or this machine.
   const phones = Boolean(S.me.relay) && !T.relay;
   $('pair-phone').hidden = !phones;
   footer();
+  if (!T.relay) checkBundle().catch(() => {}); // the bot's own copy: checked meanwhile
 }
 
 async function init() {
-  window.addEventListener('hashchange', route);
+  window.addEventListener('hashchange', () => S.halted || route()); // a stopped app renders nothing
   $('menu').addEventListener('click', () => document.body.classList.toggle('drawer'));
   $('scrim').addEventListener('click', () => document.body.classList.remove('drawer'));
   // A tap on the open channel changes no hash, so the drawer closes here.
@@ -1601,13 +1710,14 @@ async function init() {
   // The thread holds its newest message in view while its pane shrinks (the keyboard opening).
   let stuck = true;
   $('messages').addEventListener('scroll', () => { stuck = nearBottom(); }, { passive: true });
-  new ResizeObserver(() => { if (stuck) toBottom(); }).observe($('messages'));
+  new ResizeObserver(() => { if (stuck && !S.halted) toBottom(); }).observe($('messages'));
   document.addEventListener('touchstart', () => {}, { passive: true }); // iOS applies :active only then
-  $('pair-phone').addEventListener('click', pairPhone);
+  $('pair-phone').addEventListener('click', () => pairPhone());
+  $('phone-relay').addEventListener('click', () => pairPhone('relay'));
   $('relay-note').addEventListener('click', () => relayNote(''));
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.body.classList.remove('drawer'); });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && S.thread && S.threadUnread.delete(tkey(S.channel, S.thread))) {
+    if (document.visibilityState === 'visible' && !S.halted && S.thread && S.threadUnread.delete(tkey(S.channel, S.thread))) {
       renderChannels();
       renderThreads();
     }
@@ -1616,12 +1726,13 @@ async function init() {
     navigator.serviceWorker.register(`${BASE}/sw.js`, { scope: `${BASE}/` }).catch(() => {});
     // sw.js names a tapped notification's url when it cannot navigate this window.
     navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data && e.data.refused) refuseApp(String(e.data.refused), true);
       const url = String((e.data && e.data.open) || '');
       if (url.startsWith(`${location.origin}${BASE}/#/`)) location.hash = url.slice(url.indexOf('#'));
     });
   }
-  const pairing = /^#tr1=([A-Za-z0-9_-]+)$/.exec(location.hash);
-  if (pairing) await pairFromLink(pairing[1]);
+  const pairing = /^#(tr[12])=([A-Za-z0-9_-]+)$/.exec(location.hash);
+  if (pairing) await pairFromLink(pairing[1], pairing[2]);
   boot();
 }
 

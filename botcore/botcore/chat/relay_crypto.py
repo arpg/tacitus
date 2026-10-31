@@ -6,8 +6,8 @@ with no I/O:
 
 - `BotIdentity`: the bot's X25519 key and relay token, and what derives
   from them (the install id, the client key, the public key).
-- `PairingPayload`: what the tailnet web chat shows as a QR code, as a
-  plain string (a link whose fragment carries the payload).
+- `PairingPayload`: what "Pair a phone" shows as a QR code, as a plain
+  string (a link whose fragment carries the payload).
 - `client_hello`, `bot_accept`, `client_finish`: the handshake. It follows
   the Noise IK pattern (the phone knows the bot's static key from the QR)
   without being wire-compatible with Noise: four X25519 results (es, ss,
@@ -17,6 +17,10 @@ with no I/O:
   replay window. Each frame's session id, kind and id are authenticated
   data, so the relay cannot move a sealed body to another request.
 - `pack`, `unpack`: a sealed plaintext, a JSON head and a raw body.
+- `signing_keypair`, `sign_manifest`, `verify_manifest`: the Ed25519 key
+  the bot signs its web app with, and the signed manifest of the app's
+  files (docs/webchat.md, Code integrity). `bundle_hash` is the hash of
+  the canonical manifest, the value a pairing QR code carries.
 
 The crypto comes from the `cryptography` package (installed with msal).
 Without it `AVAILABLE` is False and every key operation raises
@@ -41,8 +45,12 @@ from typing import Any, Callable, Optional
 from urllib.parse import urlsplit
 
 try:
-    from cryptography.exceptions import InvalidTag
+    from cryptography.exceptions import InvalidSignature, InvalidTag
     from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PrivateKey,
+        Ed25519PublicKey,
+    )
     from cryptography.hazmat.primitives.asymmetric.x25519 import (
         X25519PrivateKey,
         X25519PublicKey,
@@ -81,6 +89,8 @@ ERR_CODES = frozenset({"session", "auth", "replay", "bad", "busy", "offline",
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 SID_RE = re.compile(r"^[0-9a-f]{32}$")
 PAIRING_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+# A bundle hash: sha256 hex of the bot's signed app manifest.
+BUNDLE_RE = re.compile(r"^[0-9a-f]{64}$")
 _B64_RE = re.compile(r"^[A-Za-z0-9_-]*$")
 _ZERO_NONCE = bytes(12)
 _C2B = b"c2b\x00"
@@ -260,9 +270,12 @@ class PairingPayload:
     """What a phone needs to pair: where the relay is, which install, the
     bot's public key, the client key, and a one-time pairing secret.
 
-    `to_string` gives a link whose fragment carries the payload; a browser
-    never sends a fragment to the server, so opening the link does not hand
-    the pairing secret to the relay's logs."""
+    Version 2 (`#tr2=`) adds `bundle` (`b`: the hash of the bot's signed
+    app bundle, 64 hex) and `app` (`a`: the app URL the link opens), each
+    when set; a payload with neither is version 1 (`#tr1=`), which a phone
+    still takes. `to_string` gives a link whose fragment carries the
+    payload; a browser never sends a fragment to the server, so opening the
+    link does not hand the pairing secret to the relay's logs."""
     relay_url: str
     install_id: str
     bot_public: bytes
@@ -270,44 +283,71 @@ class PairingPayload:
     pairing_id: str
     psk: bytes = field(repr=False)
     expires: int
+    bundle: str = ""
+    app: str = ""
 
-    PREFIX = "tr1="
+    PREFIXES = {1: "tr1=", 2: "tr2="}
+
+    @property
+    def version(self) -> int:
+        return 2 if self.bundle or self.app else 1
 
     def encode(self) -> str:
-        obj = {"v": VERSION, "r": self.relay_url, "i": self.install_id,
+        obj = {"v": self.version, "r": self.relay_url, "i": self.install_id,
                "k": b64e(self.bot_public), "c": self.client_key,
                "p": self.pairing_id, "s": b64e(self.psk), "x": int(self.expires)}
+        if self.bundle:
+            obj["b"] = self.bundle
+        if self.app:
+            obj["a"] = self.app
         return b64e(json.dumps(obj, separators=(",", ":"), sort_keys=True).encode())
 
     def to_string(self, app_url: Optional[str] = None) -> str:
-        base = (app_url or self.relay_url).split("#", 1)[0]
+        base = (app_url or self.app or self.relay_url).split("#", 1)[0]
         last = urlsplit(base).path.rsplit("/", 1)[-1]
         if not base.endswith("/") and "." not in last:  # a folder, not a file
             base += "/"
-        return f"{base}#{self.PREFIX}{self.encode()}"
+        return f"{base}#{self.PREFIXES[self.version]}{self.encode()}"
 
     @classmethod
     def from_string(cls, text: str) -> "PairingPayload":
         frag = text.split("#", 1)[1] if "#" in text else text
-        if frag.startswith(cls.PREFIX):
-            frag = frag[len(cls.PREFIX):]
+        named = next((v for v, pre in cls.PREFIXES.items() if frag.startswith(pre)), None)
+        if named:
+            frag = frag[len(cls.PREFIXES[named]):]
         try:
             obj = json.loads(b64d(frag.strip()))
         except (FrameError, ValueError) as exc:
             raise HandshakeError("not a pairing payload") from exc
-        if not isinstance(obj, dict) or obj.get("v") != VERSION:
+        if not isinstance(obj, dict) or obj.get("v") not in cls.PREFIXES \
+                or named not in (None, obj["v"]):
             raise HandshakeError("unknown pairing payload version")
+        v2 = obj["v"] == 2
         try:
             out = cls(relay_url=str(obj["r"]), install_id=str(obj["i"]),
                       bot_public=b64d(obj["k"]), client_key=str(obj["c"]),
                       pairing_id=str(obj["p"]), psk=b64d(obj["s"]),
-                      expires=int(obj["x"]))
+                      expires=int(obj["x"]), bundle=obj.get("b", "") if v2 else "",
+                      app=obj.get("a", "") if v2 else "")
         except (KeyError, TypeError, ValueError) as exc:
             raise HandshakeError("incomplete pairing payload") from exc
         if (len(out.bot_public) != 32 or len(out.psk) != 32
-                or not PAIRING_ID_RE.match(out.pairing_id)):
+                or not PAIRING_ID_RE.match(out.pairing_id)
+                or not isinstance(out.bundle, str) or not isinstance(out.app, str)
+                or (out.bundle and not BUNDLE_RE.match(out.bundle))
+                or (out.app and not _web_url(out.app))
+                or (v2 and not (out.bundle or out.app))):
             raise HandshakeError("malformed pairing payload")
         return out
+
+
+def _web_url(url: str) -> bool:
+    """True for an http(s) URL with a host."""
+    try:
+        parts = urlsplit(url)
+        return parts.scheme in ("http", "https") and bool(parts.hostname)
+    except ValueError:
+        return False
 
 
 def new_pairing(identity: BotIdentity, relay_url: str, *, ttl: int = PAIRING_TTL,
@@ -640,3 +680,107 @@ def client_finish(pending: PendingHello, frame: dict) -> Session:
         raise HandshakeError("welcome does not authenticate") from exc
     session.device = str(session.info.get("device", ""))
     return session
+
+
+# ── the signed app bundle (docs/webchat.md, Code integrity) ───────────
+
+MANIFEST_VERSION = 1
+# A file of the app as the manifest names it: a path under webui/ of plain
+# ASCII parts, so its canonical form is the same in Python and in the app.
+MANIFEST_PATH_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$")
+MANIFEST_KEYS = frozenset({"v", "files", "built_at", "key"})
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class ManifestError(ValueError):
+    """A manifest or signed manifest that does not check."""
+
+
+def canonical_json(obj: Any) -> bytes:
+    """The bytes a manifest is hashed and signed as: keys sorted, no
+    spaces, UTF-8. The app (webui/bundle.js) writes the same bytes."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                      allow_nan=False).encode("utf-8")
+
+
+def check_manifest(manifest: Any) -> dict:
+    """`manifest` when it has the shape `sign_manifest` writes and nothing
+    else; ManifestError otherwise."""
+    if not isinstance(manifest, dict) or set(manifest) != MANIFEST_KEYS:
+        raise ManifestError("a manifest has exactly v, files, built_at and key")
+    if manifest["v"] != MANIFEST_VERSION or isinstance(manifest["v"], bool):
+        raise ManifestError("unknown manifest version")
+    built = manifest["built_at"]
+    if not isinstance(built, int) or isinstance(built, bool) or not 0 <= built < 1 << 53:
+        raise ManifestError("built_at is a Unix time in seconds")
+    files = manifest["files"]
+    if not isinstance(files, dict):
+        raise ManifestError("files maps each path to its sha256")
+    for path, digest in files.items():
+        if not isinstance(path, str) or not MANIFEST_PATH_RE.match(path) \
+                or not isinstance(digest, str) or not _SHA256_HEX_RE.match(digest):
+            raise ManifestError(f"bad file entry {path!r}")
+    try:
+        key = b64d(manifest["key"])
+    except FrameError as exc:
+        raise ManifestError("key is base64url") from exc
+    if len(key) != 32 or b64e(key) != manifest["key"]:
+        raise ManifestError("key is an Ed25519 public key, base64url")
+    return manifest
+
+
+def bundle_hash(manifest: Any) -> str:
+    """The bundle hash: sha256 hex of the canonical manifest. A pairing QR
+    code carries it; the phone attests it after its check."""
+    return hashlib.sha256(canonical_json(check_manifest(manifest))).hexdigest()
+
+
+def signing_keypair(private: Optional[bytes] = None) -> tuple[bytes, bytes]:
+    """(raw Ed25519 private key, raw public key): a new pair, or the public
+    key of `private`."""
+    _need()
+    key = Ed25519PrivateKey.generate() if private is None \
+        else Ed25519PrivateKey.from_private_bytes(private)
+    raw = key.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw,
+                            serialization.NoEncryption())
+    pub = key.public_key().public_bytes(serialization.Encoding.Raw,
+                                        serialization.PublicFormat.Raw)
+    return raw, pub
+
+
+def sign_manifest(manifest: dict, private: bytes) -> dict:
+    """The served document `{"manifest": ..., "signature": ...}`: Ed25519
+    over the manifest's canonical bytes, base64url. The manifest's `key`
+    must be the public key of `private`."""
+    check_manifest(manifest)
+    _priv, pub = signing_keypair(private)
+    if manifest["key"] != b64e(pub):
+        raise ManifestError("the manifest names another key")
+    sig = Ed25519PrivateKey.from_private_bytes(private).sign(canonical_json(manifest))
+    return {"manifest": dict(manifest), "signature": b64e(sig)}
+
+
+def verify_manifest(doc: Any, public: Optional[bytes] = None,
+                    expected_hash: Optional[str] = None) -> dict:
+    """The manifest of a signed document, once its signature checks under
+    the key it names; with `public`, that key must be it, and with
+    `expected_hash`, the bundle hash must be that. ManifestError otherwise."""
+    _need()
+    if not isinstance(doc, dict) or set(doc) != {"manifest", "signature"}:
+        raise ManifestError("a signed manifest has exactly manifest and signature")
+    manifest = check_manifest(doc["manifest"])
+    try:
+        sig = b64d(doc["signature"])
+    except FrameError as exc:
+        raise ManifestError("signature is base64url") from exc
+    key = b64d(manifest["key"])
+    if public is not None and not hmac.compare_digest(key, public):
+        raise ManifestError("signed by another key")
+    try:
+        Ed25519PublicKey.from_public_bytes(key).verify(sig, canonical_json(manifest))
+    except (InvalidSignature, ValueError) as exc:
+        raise ManifestError("the signature does not check") from exc
+    if expected_hash is not None and not hmac.compare_digest(
+            bundle_hash(manifest), str(expected_hash)):
+        raise ManifestError("another bundle than the one expected")
+    return manifest

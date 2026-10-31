@@ -16,6 +16,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-180.png" sizes="180x180">
+<script src="bundle.js" defer></script>
 <script src="qr.js" defer></script>
 <script src="app.js" defer></script>
 </head>
@@ -76,9 +77,10 @@
 <dialog id="phone" aria-labelledby="phone-title">
   <form method="dialog">
     <h2 id="phone-title">Pair a phone</h2>
-    <p>Off the tailnet, a paired phone reaches Tacitus through the relay, which sees only sealed data.</p>
+    <p>A paired phone reaches Tacitus through the relay, which sees only sealed data.</p>
     <canvas id="phone-qr" width="0" height="0" role="img" aria-label="Pairing code"></canvas>
     <p id="phone-note" aria-live="polite"></p>
+    <button type="button" id="phone-relay" class="btn" hidden>Pair through the relay</button>
     <input id="phone-link" readonly aria-label="Pairing link">
     <h3>Paired phones</h3>
     <ul id="phone-devices"></ul>

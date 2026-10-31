@@ -367,6 +367,7 @@ th { background: var(--code-bg); }
   box-shadow: var(--shadow);
 }
 #pair h2, #pair p { margin: 0; }
+.refusal { grid-column: 1 / -1; padding: 24px; max-width: 40em; }
 #pair input { padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); font-size: 16px; }
 .error { color: var(--danger); min-height: 1em; }
 #relay-note {
