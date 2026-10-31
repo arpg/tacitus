@@ -2,11 +2,13 @@
 
 The files the server serves are there and well formed, the service worker
 leaves the API and the relay alone, the app never parses text as HTML and
-fetches nothing from elsewhere. Where Playwright and a browser are
-installed, the app runs against the stub server (tests/webui_stub_server.py):
+fetches nothing from elsewhere, and its colours meet WCAG AA in both
+themes. Where Playwright and a browser are installed, the app runs against
+the stub server (tests/webui_stub_server.py):
 a thread renders, markup in text stays text, a card's buttons and select
 post to the actions route, an event appends a message and marks unread,
-the composer and the paperclip post, pairing answers a 401, and the
+the composer and the paperclip post, pairing answers a 401, on a phone
+every control is 44px high and nothing scrolls sideways, and the
 service worker caches no API response. The relay's crypto reproduces the
 Python vectors (tests/fixtures/relay_vectors.json), the QR encoder draws
 codes a decoder reads, and a phone pairs and chats through a real relay
@@ -192,6 +194,44 @@ def test_the_layout_keeps_clear_of_the_notch_and_the_home_indicator():
     assert "overscroll-behavior: contain" in rule(".scroll")  # the thread pane scrolls itself only
 
 
+def _theme_colours() -> dict[str, dict[str, str]]:
+    """The colour variables of each theme, the dark one over the light."""
+    css = read("app.css")
+    at = css.index("@media (prefers-color-scheme: dark)")
+    light = dict(re.findall(r"--([a-z-]+):\s*(#[0-9a-f]{6});", css[:at]))
+    dark = dict(re.findall(r"--([a-z-]+):\s*(#[0-9a-f]{6});", css[at:css.index("}\n}", at)]))
+    return {"light": light, "dark": {**light, **dark}}
+
+
+def _contrast(a: str, b: str) -> float:
+    def lum(c: str) -> float:
+        rgb = [int(c[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        r, g, b = [x / 12.92 if x <= .04045 else ((x + .055) / 1.055) ** 2.4 for x in rgb]
+        return .2126 * r + .7152 * g + .0722 * b
+    hi, lo = sorted((lum(a), lum(b)), reverse=True)
+    return (hi + .05) / (lo + .05)
+
+
+def test_the_colours_meet_wcag_aa_in_both_themes():
+    """Text 4.5:1 on every surface it sits on (WCAG AA), the status dots
+    3:1 on the panel; the white of a badge and the text of a primary
+    danger button are the colours the rules use."""
+    css = read("app.css")
+    assert re.search(r"\.badge \{[^}]*\bcolor: #fff;", css)
+    assert ".btn.primary.danger { background: var(--danger); color: var(--accent-text); }" in css
+    assert "#text::placeholder { color: var(--muted); }" in css
+    text = [("text", s) for s in ("bg", "panel", "own", "accent-soft", "hover", "code-bg")]
+    text += [("muted", s) for s in ("bg", "panel", "own", "accent-soft", "hover", "code-bg")]
+    text += [("accent", "bg"), ("accent", "panel"), ("accent", "own"), ("accent-text", "accent"),
+             ("accent-text", "danger"), ("danger", "bg"), ("danger", "panel"), ("#ffffff", "badge")]
+    for theme, v in _theme_colours().items():
+        def ratio(a, b):
+            return _contrast(v.get(a, a), v.get(b, b))
+        low = [(a, b, round(ratio(a, b), 2)) for a, b in text if ratio(a, b) < 4.5]
+        low += [(a, "panel", round(ratio(a, "panel"), 2)) for a in ("ok", "warn") if ratio(a, "panel") < 3]
+        assert not low, (theme, low)
+
+
 def test_the_service_worker_never_caches_the_api():
     sw = read("sw.js")
     handler = sw[sw.index("addEventListener('fetch'"):]
@@ -312,9 +352,9 @@ def app(browser, stub_factory):
     page errors and console errors (a CSP refusal among them)."""
     contexts = []
 
-    def open_app(viewport=None, init=None, **kw):
+    def open_app(viewport=None, init=None, context=None, **kw):
         url, stub = stub_factory(**kw)
-        ctx = browser.new_context(viewport=viewport or {"width": 1280, "height": 800})
+        ctx = browser.new_context(viewport=viewport or {"width": 1280, "height": 800}, **(context or {}))
         contexts.append(ctx)
         if init:
             ctx.add_init_script(init)
@@ -576,6 +616,45 @@ def test_the_phone_layout_shows_one_pane(app):
     assert not errors, errors
 
 
+# The controls a finger presses, and the ones under 44px of the visible ones.
+SMALL_TARGETS = """() => [...document.querySelectorAll(
+    'button, select, textarea, summary, a.chan, a.thread-item, label.toggle')].filter((el) => {
+  const r = el.getBoundingClientRect();
+  if (!r.width || getComputedStyle(el).visibility === 'hidden' || r.bottom < 0 || r.top > innerHeight) return false;
+  return r.height < 44 || (el.classList.contains('icon') && r.width < 44);
+}).map((el) => `${el.tagName} ${el.id || el.className} ${Math.round(el.getBoundingClientRect().height)}`)"""
+SIDEWAYS = "[document.documentElement.scrollWidth - innerWidth, $('messages').scrollWidth - $('messages').clientWidth]"
+
+
+def test_a_phone_gets_44px_targets_and_never_scrolls_sideways(app):
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app(viewport={"width": 390, "height": 844},
+                             context={"has_touch": True, "is_mobile": True, "device_scale_factor": 3})
+    page.wait_for_selector(".thread-item")
+    # Closed, the drawer is out of the tab order.
+    assert page.evaluate("getComputedStyle($('channels')).visibility") == "hidden"
+    assert page.evaluate(SMALL_TARGETS) == []
+    page.click("#menu")
+    expect(page.locator("#channels")).to_be_in_viewport()
+    assert page.evaluate(SMALL_TARGETS) == []
+    page.click("#scrim", position={"x": 370, "y": 400})
+    open_thread(page, "Draft a reply")
+    page.evaluate("document.querySelector('.card-actions').scrollIntoView({ block: 'center' })")
+    assert page.evaluate(SMALL_TARGETS) == []
+    page.click("#back")
+    open_thread(page, "Open a room")
+    assert page.evaluate(SMALL_TARGETS) == []
+    assert page.evaluate(SIDEWAYS) == [0, 0]
+    stub.emit_bot(W.DM, "Wide: https://e.example/" + "a/" * 80 + " " + "x" * 120
+                  + "\n\n```\n" + "y = 1  " * 40 + "\n```\n\n| a | b | c |\n|---|---|---|\n"
+                  + "| one two three four | five six seven eight | nine ten eleven twelve |")
+    page.click("#back")
+    open_thread(page, "Wide:")
+    assert page.evaluate(SIDEWAYS) == [0, 0]
+    assert not errors, errors
+
+
 # -- installing on a phone -------------------------------------------------
 
 # navigator.standalone exists on iOS only: false in Safari, true in the app
@@ -617,11 +696,14 @@ def test_ios_safari_shows_the_install_line_until_it_is_hidden(app):
     assert abs(hidden_at / 1000 - time.time()) < 60
     page.reload()
     page.wait_for_selector(".thread-item")
+    page.click("#menu")  # closed, the drawer shows nothing
+    expect(page.locator("#channels")).to_be_in_viewport()
     expect(line).to_be_hidden()
     # Thirty days on, it is back.
     page.evaluate("localStorage.setItem('tacitus-install-hidden', String(Date.now() - 31 * 864e5))")
     page.reload()
     page.wait_for_selector(".thread-item")
+    page.click("#menu")
     expect(line).to_be_visible()
     assert not errors, errors
 

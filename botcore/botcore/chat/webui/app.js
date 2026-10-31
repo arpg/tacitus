@@ -385,7 +385,7 @@ function when(ts, short) {
   if (!ts) return '';
   const d = new Date(ts * 1000);
   const now = new Date();
-  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   if (d.toDateString() === now.toDateString()) return time;
   const opts = (now - d) < 6 * 864e5 ? { weekday: 'short' }
     : { month: 'short', day: 'numeric', ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) };
@@ -608,9 +608,9 @@ function renderThreads() {
     return h('a', { class: 'thread-item' + (tk === S.thread ? ' active' : '') + (n ? ' unread' : ''), href: hashFor(S.channel, tk) },
       h('span', { class: 't-title' }, threadTitle(p)),
       h('span', { class: 't-meta' }, `${replies} ${replies === 1 ? 'reply' : 'replies'} · ${when(p.last_at || p.posted_at, true)}`),
-      n ? h('span', { class: 'badge' }, String(n)) : null);
+      n ? h('span', { class: 'badge', 'aria-label': `${n} unread` }, String(n)) : null);
   }));
-  if (!th.list.length) box.append(h('p', { class: 'empty' }, 'No threads yet. Write a message to start one.'));
+  if (!th.list.length) box.append(h('p', { class: 'empty' }, 'No threads yet. Start one with New thread.'));
   if (th.more) {
     box.append(h('button', { type: 'button', class: 'btn plain more', onclick: () => loadThreads(S.channel, true) },
       'Load older threads'));
@@ -669,7 +669,8 @@ async function openThread(ch, tk, token) {
   $('text').placeholder = isNew ? `Start a thread in ${channelName(chan(ch))}` : 'Reply';
   if (isNew) {
     $('thread-title').textContent = 'New thread';
-    box.replaceChildren(h('p', { class: 'empty' }, 'Pick a thread, or write a message to start a new one.'));
+    box.replaceChildren(h('p', { class: 'empty' }, tk ? 'Write the first message of the new thread below.'
+      : 'Pick a thread, or write a message to start a new one.'));
     return;
   }
   const key = tkey(ch, tk);
