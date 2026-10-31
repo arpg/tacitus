@@ -1351,6 +1351,118 @@ The buttons the bot does post fall into two groups:
 
 ---
 
+## Web chat
+
+The bot's own web chat (docs/webchat.md) holds the owner's DM, every card
+with its Send button, and the recent history. The bot serves it over
+HTTP on loopback; `tailscale serve` publishes it on the tailnet. These
+rules are in code (`botcore/botcore/chat/web_frontend.py`, its tests in
+`tests/test_web_hardening.py`).
+
+**What makes a request the owner's.** One of two credentials:
+
+1. The `Tailscale-User-Login` header equal to `web.tailscale_login`, on a
+   connection that tailscaled itself opened. tailscaled sets the header
+   and strips one a client sent, but any other local process can send
+   it to the loopback port. So the bot finds the client end of the TCP
+   connection in `/proc/net/tcp` and `/proc/net/tcp6` and requires the
+   uid of the `tailscaled` process (its `/proc/<pid>/status`, else the
+   owner of its control socket; kept, and looked up again on a
+   mismatch). Off Linux this path is off. `web.trust_tailscale_header:
+   false` turns it off.
+2. The `ea_web` cookie equal to the pairing token in `pair_token_file`
+   (HttpOnly, SameSite=Strict, Secure on https). A token file shorter
+   than 16 characters is refused with a log line. Pairing attempts run
+   one at a time under one lock, with a pause after a wrong token, and
+   the pairing route reads at most 1 KiB.
+
+**The loopback rule.** The server binds loopback, and loopback is not
+trust: every local user reaches the port, and a page can rebind a name
+to 127.0.0.1. A loopback peer is the owner only with the cookie, or with
+the header on tailscaled's own connection.
+
+**What the bot serves at all.** `WebFrontend.start()` serves only a chat
+block from the owner-private `chat.json` (`ea_config.get_chat_source`
+says where the block came from; `chat.load_frontend` passes it on), so
+the resident cannot choose the bind address, the public URL, the login
+or the token file through `ea-config.json`. The store directory must be
+the bot user's, mode 0700; the store and the token file mode 0600 with
+one link; the token's directory writable by no one else; and none of
+them inside the EA tree or the resident's home. Otherwise start()
+refuses: standalone it raises, and in shadow mode it logs why and the
+bot runs on its primary alone (the composite writes nothing to the web
+store and copies no history). A command-line sender's writer-only side
+serves nothing and runs only in owner processes.
+
+**The origin rule: one app per origin.** A browser isolates pages by
+origin (scheme, host and port). A page on the chat's origin, a deck on
+the same host and port for one, could call the API with the owner's
+cookie, and `tailscale serve` adds the owner's login to every request on
+that host and port. So the chat has an HTTPS port of its own
+(`tailscale serve --bg --https=8444 --set-path /chat
+http://127.0.0.1:8470/chat`, docs/SETUP.md), and `deck_serve.py` refuses
+a deck route on the chat's port (the port in `public_url`, or a route on
+443 to the chat's loopback port). In code, before auth, every `/api/`
+request:
+
+- names this server in `Host`: exactly `public_url`'s host and port, or
+  `127.0.0.1`, `[::1]` or `localhost` with the server's port. Anything
+  else is 421: a rebound name arrives with the attacker's host.
+- is refused (403) with `Sec-Fetch-Site: cross-site` or `same-site`, a
+  GET too. A page on another port of the same host is same-site.
+- as a POST, carries an `Origin` equal to `public_url`'s scheme, host and
+  port. A missing Origin is refused. A loopback client that sends no
+  identity header (the relay client) may send this server's loopback
+  origin instead.
+
+Every answer carries `Cross-Origin-Resource-Policy: same-origin`, and
+the app's pages a CSP with `script-src 'self'`, `frame-ancestors 'none'`
+and `form-action 'none'`.
+
+**Bounds.** At most 64 open connections (one more is closed at once); a
+client stalled for 30 seconds is dropped; a chunked body takes chunk
+sizes of 1 to 8 hex digits only, and a chunk past the body limit is
+refused before it is read; an error answer reads at most 64 KiB of an
+unread body first.
+
+**Notifications.** The bot pushes only to exact push-service hosts
+(`fcm.googleapis.com`, `updates.push.services.mozilla.com`,
+`web.push.apple.com`, `jmt<n>.google.com`, one name under
+`notify.windows.com`) and follows no redirect. The store records a hash
+of the pairing token: when the token changes, every subscription is
+dropped, so replacing the token cuts each device off from notifications
+as well as from the API. A subscription the app has not posted again
+for 30 days is dropped too. The drawer lists the subscriptions (`GET
+/api/push/subscriptions`: the push service's host and the dates, never
+the endpoint) with a Revoke button (`POST /api/push/revoke`). A card's
+notification shows "Tacitus" and the card's title, never a field, a line
+or the body (a recipient address must not show on a locked screen), and
+each payload is padded to a multiple of 256 bytes.
+
+**The owner's web messages.** In shadow mode the owner's web message is
+posted into the primary as the bot, after a "You (web)" mark. The mark
+proves nothing: anything that can post as the bot can write it. The web
+front end keeps the primary id of each such message in
+`<store dir>/webchat-owner-ids.json` (mode 0600, the newest 5,000), and
+the history copy and `chat_read.py` take a bot message as the owner's
+only by that list.
+
+**The relay's trust levels** (docs/webchat-relay.md). A device paired
+through the bot's own origin runs code the relay never serves and may do
+everything. A device paired through the relay's origin runs code the
+relay serves, which a compromised relay could change, so it gets
+`relay_origin_access`: `"read"` (GET only), `"chat"` (everything but the
+card actions; the default) or `"all"` (the owner's explicit choice). The
+relay client marks each request `X-Tacitus-Relay-Cards: allow` or
+`deny`, and the web front end itself refuses a card action, a push
+subscription and a revoke on `deny` (403). The relay client never
+forwards `/api/pair` or `/api/relay/...`, nor any header of the phone's
+but `content-type`, `accept` and `last-event-id`. It must sign in with
+the pairing cookie (the login header from the bot's own process is not
+tailscaled's) and post with this server's loopback origin.
+
+---
+
 ## Multi-User Isolation
 
 Each user creates their own free Slack workspace and runs their own EA
@@ -1427,6 +1539,7 @@ to start without it.
 | `scripts/install/setup-ea-user.sh` | Creates `ea-bot` user, `ea` group, file permissions |
 | `ea-chat-bot.py` | Button handlers, token issuance, user verification |
 | `preprocessor/chat/` | Chat frontends; owner check and code/reaction capture on Zulip; the card registry |
+| `botcore/botcore/chat/web_frontend.py` | Web chat: serves only the owner-private block and files; Host, Sec-Fetch-Site and Origin checks; the login header only on tailscaled's connection (Web chat, above) |
 | `/home/<you>/.ea-private/` | owner-only `0700`: card registry, Zulip queue position, button stores, Slack webhook file |
 | `preprocessor/graph_actions.py` | CLI-level token validation (defense layer 1) |
 | `preprocessor/graph_client.py` | Library-level token validation (defense layer 2) |

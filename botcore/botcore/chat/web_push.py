@@ -16,11 +16,18 @@ shows the notification. The push service carries only ciphertext.
   with the browser's auth secret and a random salt derive the key and the
   nonce, and AES-128-GCM seals the payload in one record.
 
-The bot POSTs only to https URLs on the known push services (PUSH_HOSTS)
-and follows no redirect: a subscription is input from a browser, and it
-must not steer the bot into calling another host. A 404 or 410 answer
-drops the subscription; a 429 holds that endpoint back for its
-Retry-After; any other failure is counted on the row and logged by host.
+The bot POSTs only to https URLs on the known push services (PUSH_HOSTS,
+exact names) and follows no redirect: a subscription is input from a
+browser, and it must not steer the bot into calling another host. A 404
+or 410 answer drops the subscription; a 429 holds that endpoint back for
+its Retry-After; any other failure is counted on the row and logged by
+host. Before each send the subscriptions are pruned (`Pusher.prune`):
+all of them when the pairing token changed since they were made (the
+owner replaced the token to cut devices off), and each one the app has
+not posted again for 30 days.
+
+Each payload is padded to a multiple of 256 bytes before it is sealed,
+so its length tells the push service little about the text.
 
 Sending runs on one worker thread (`Pusher.start`). A push for a later
 time (an alert) waits in the store's `push_queue` table, keyed by its
@@ -80,11 +87,18 @@ RECORD_SIZE = 4096
 MAX_PAYLOAD = 3000
 MAX_SUBSCRIPTIONS = 20
 URGENCIES = ("very-low", "low", "normal", "high")
-# The push services' hosts; an entry with a leading dot is a suffix.
-# Chrome's endpoints are on fcm.googleapis.com and, lately, on hosts such
-# as jmt17.google.com.
-PUSH_HOSTS = (".googleapis.com", ".google.com", ".push.services.mozilla.com",
-              ".push.apple.com", ".notify.windows.com")
+# The push services' hosts, by exact name. Chrome's endpoints are on
+# fcm.googleapis.com and, lately, on hosts such as jmt17.google.com;
+# Windows' are one name under notify.windows.com.
+PUSH_HOSTS = ("fcm.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com")
+PUSH_HOST_PATTERNS = (re.compile(r"^jmt\d+\.google\.com$"),
+                      re.compile(r"^[a-z0-9-]+\.notify\.windows\.com$"))
+# A sealed record's plaintext (payload, delimiter, padding) is a multiple
+# of this many bytes.
+PAD_BLOCK = 256
+# A subscription the app has not posted again for this long is dropped:
+# the app posts its own at every start.
+SUBSCRIPTION_MAX_AGE_S = 30 * 86400
 
 _SHORTCODE_RE = re.compile(r":[a-z0-9_+-]+:")
 _MD_LINK_RE = re.compile(r"\[([^\]\n]*)\]\([^)\s]*\)")
@@ -148,7 +162,7 @@ def endpoint_allowed(url: Any) -> bool:
     host = (parts.hostname or "").lower()
     if parts.scheme != "https" or not host or parts.username or port not in (None, 443):
         return False
-    return any(host.endswith(h) if h.startswith(".") else host == h for h in PUSH_HOSTS)
+    return host in PUSH_HOSTS or any(r.match(host) for r in PUSH_HOST_PATTERNS)
 
 
 def _hmac(key: bytes, data: bytes) -> bytes:
@@ -193,17 +207,23 @@ def derive(ecdh_secret: bytes, auth_secret: bytes, ua_public: bytes, as_public: 
 
 def encrypt(plaintext: bytes, ua_public: bytes, auth_secret: bytes, *,
             salt: bytes | None = None, as_private: bytes | None = None,
-            rs: int = RECORD_SIZE) -> bytes:
+            rs: int = RECORD_SIZE, pad_to: int = 0) -> bytes:
     """The aes128gcm body of one push: the header (salt, record size, the
     sender's public key) and one sealed record. `salt` and `as_private`
     (the sender's 32-byte scalar) are fresh unless given; a test passes
-    them to reproduce RFC 8291's example."""
+    them to reproduce RFC 8291's example. With `pad_to`, zero bytes after
+    the delimiter (RFC 8188 section 2) make the record's plaintext a
+    multiple of that many bytes, as far as the record holds."""
     _need()
     check_public(ua_public)
     if len(auth_secret) != 16:
         raise ValueError("the auth secret is 16 bytes")
     if len(plaintext) + 1 + 16 > rs:
         raise ValueError("the payload does not fit in one record")
+    pad = 0
+    if pad_to > 0:
+        size = len(plaintext) + 1
+        pad = min(-size % pad_to, rs - 16 - size)
     key = private_key(as_private) if as_private is not None else ec.generate_private_key(
         ec.SECP256R1())
     as_public = _public_bytes(key)
@@ -213,8 +233,8 @@ def encrypt(plaintext: bytes, ua_public: bytes, auth_secret: bytes, *,
     if len(salt) != 16:
         raise ValueError("the salt is 16 bytes")
     cek, nonce = derive(secret, auth_secret, ua_public, as_public, salt)
-    # One record, the last: the plaintext, then the delimiter 0x02.
-    sealed = AESGCM(cek).encrypt(nonce, plaintext + b"\x02", None)
+    # One record, the last: the plaintext, the delimiter 0x02, the padding.
+    sealed = AESGCM(cek).encrypt(nonce, plaintext + b"\x02" + b"\x00" * pad, None)
     return salt + struct.pack(">IB", rs, len(as_public)) + as_public + sealed
 
 
@@ -320,9 +340,14 @@ class Pusher:
     """Pushes to every subscription a WebStore holds."""
 
     def __init__(self, store: Any, key_file: str | Path, *,
-                 subject: str = DEFAULT_SUBJECT) -> None:
+                 subject: str = DEFAULT_SUBJECT,
+                 pair_hash: Any = None) -> None:
         self.store = store
         self.vapid = Vapid(key_file, subject)
+        # The hash of the pairing token now (a callable; "" when there is
+        # none): a change drops every subscription (prune).
+        self.pair_hash = pair_hash
+        self.max_age_s = SUBSCRIPTION_MAX_AGE_S
         # The check every endpoint passes, at subscription and at send.
         self.allow = endpoint_allowed
         self.ttl = TTL_S
@@ -445,11 +470,29 @@ class Pusher:
         """Drop the push queued under `tag`; True when there was one."""
         return bool(tag) and self.store.push_cancel(tag)
 
+    # the subscriptions
+
+    def prune(self, now: float | None = None) -> int:
+        """Drop the subscriptions that may no longer be the owner's: all of
+        them when the pairing token changed since they were made, and each
+        one the app has not posted again for max_age_s. The number dropped;
+        never raises."""
+        now = time.time() if now is None else now
+        dropped = 0
+        try:
+            if callable(self.pair_hash):
+                dropped += self.store.push_check_token(self.pair_hash())
+            dropped += self.store.push_drop_stale(now - self.max_age_s)
+        except Exception:
+            log.exception("web push: the subscriptions could not be pruned")
+        return dropped
+
     # sending
 
     def send_all(self, payload: bytes, urgency: str = "normal") -> dict:
         counts = {"sent": 0, "failed": 0, "dropped": 0, "held": 0}
         now = time.time()
+        self.prune(now)
         for sub in self.store.push_subscriptions():
             endpoint = sub["endpoint"]
             if self._retry_at.get(endpoint, 0.0) > now:
@@ -468,7 +511,8 @@ class Pusher:
             return "dropped"
         try:
             keys = sub["keys"] if isinstance(sub["keys"], dict) else json.loads(sub["keys"])
-            body = encrypt(payload, unb64u(keys["p256dh"]), unb64u(keys["auth"]))
+            body = encrypt(payload, unb64u(keys["p256dh"]), unb64u(keys["auth"]),
+                           pad_to=PAD_BLOCK)
             req = urllib.request.Request(endpoint, data=body, method="POST", headers={
                 "Authorization": self.vapid.authorization(endpoint),
                 "Content-Encoding": "aes128gcm",

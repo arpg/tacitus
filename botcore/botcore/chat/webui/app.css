@@ -197,6 +197,8 @@ button, select, textarea, input { font: inherit; color: inherit; }
 .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
 .hint { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+.subs { list-style: none; margin: 6px 0 0; padding: 0; color: var(--muted); font-size: 13px; }
+.subs li { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
 .archived summary { padding: 8px 18px; color: var(--muted); cursor: pointer; font-size: 14px; }
 .empty { color: var(--muted); padding: 16px; margin: 0; }
 .more { display: block; margin: 8px auto 16px; }

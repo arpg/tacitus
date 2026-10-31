@@ -7,6 +7,11 @@ card ref and file the core sees is the primary's, and every read goes to
 the primary. The shadow holds a copy keyed by the primary's ids, and is a
 second place where the owner can type and click.
 
+A shadow that refuses to serve (the web front end's `refused`: its chat
+block or its files are not the owner's) is switched off: start() logs
+why, and the composite writes nothing to it and copies no history; the
+bot runs on the primary alone.
+
 Attributes. `registry`, `card_registry`, `capabilities`, `limits`, the
 channel ids, `owner_id`, `bot_user_id` and `thread_namer` are the
 primary's (the core's writes to `card_registry` and `thread_namer` land on
@@ -31,8 +36,10 @@ copies none; load_frontend passes the chat block's web.backfill_days):
 in each channel the shadow holds, every thread with a top-level message
 in the window (recent_messages), whole (thread_replies), under the
 primary's ids and times. The author is the owner for the primary's
-owner id and for a web message (WEB_PREFIX), else the bot; a card goes
-in as the plain text the primary shows. The shadow takes these rows
+owner id and for a message the shadow recorded as the owner's web input
+(its `owner_posted`, an owner-private list of primary ids; never the
+text, which anyone who can post as the bot could write), else the bot; a
+card goes in as the plain text the primary shows. The shadow takes these rows
 quietly (mirror_post and mirror_file with quiet=True): no event per row,
 never unread, a row it holds left as it is, so a second start copies
 nothing twice. Each channel that took rows then gets one
@@ -157,6 +164,8 @@ if TYPE_CHECKING:
 log = logging.getLogger("chat.shadow")
 
 # Marks the owner's web message where the primary shows it as the bot's.
+# A display mark only: what makes a message the owner's is its id in the
+# shadow's owner list (owner_posted).
 WEB_PREFIX = "**You (web):** "
 
 # Messages the history copy takes at most, over every channel.
@@ -195,6 +204,16 @@ def _to_mrkdwn(text: str) -> str:
         return _MD_LINK_RE.sub(r"<\2|\1>", part)
     parts = _MD_CODE_RE.split(text or "")
     return "".join(p if i % 2 else plain(p) for i, p in enumerate(parts))
+
+
+def strip_web_prefix(text: str) -> str:
+    """`text` without the WEB_PREFIX mark the primary shows, in either form
+    (Markdown or the Slack mrkdwn post() took)."""
+    text = text or ""
+    for prefix in (WEB_PREFIX, _to_mrkdwn(WEB_PREFIX)):
+        if text.startswith(prefix):
+            return text[len(prefix):]
+    return text
 
 
 def _from_primary(attr: str) -> property:
@@ -249,6 +268,8 @@ class ShadowFrontend(ChatFrontend):
         self._hold_until = 0.0
         self._hold_lock = threading.Lock()
         self._release_lock = threading.Lock()
+        # Why the shadow is off (it refused to serve); None while it is on.
+        self.shadow_off: str | None = None
         registry = primary.registry
         self._dispatch_message = registry.dispatch_message
         registry.dispatch_message = self._primary_message
@@ -277,14 +298,33 @@ class ShadowFrontend(ChatFrontend):
 
     def start(self) -> None:
         """Start the primary (its failure raises), then the shadow, then
-        copy the channel list into the shadow and start the history copy."""
+        copy the channel list into the shadow and start the history copy.
+        A shadow that refused to serve is switched off (shadow_off)."""
         self.primary.start()
         try:
             self.shadow.start()
         except Exception:
             log.exception("shadow: the shadow front end did not start")
+        refused = getattr(self.shadow, "refused", None)
+        if isinstance(refused, str) and refused:
+            self.shadow_off = refused
+            log.error("shadow: %s is off (%s); the bot runs on %s alone", self.shadow.name,
+                      refused, self.primary.name)
+            return
         self.mirror_channels()
         self.start_backfill()
+
+    def owner_posted(self, channel: str, msg_id: str) -> bool:
+        """True when the shadow recorded the primary's message as the
+        owner's web input (posted into the primary as the bot)."""
+        check = getattr(self.shadow, "owner_posted", None)
+        if self.shadow_off or not callable(check):
+            return False
+        try:
+            return bool(check(channel, msg_id))
+        except Exception:
+            log.warning("shadow: the owner's web ids could not be read", exc_info=True)
+            return False
 
     def run_forever(self) -> None:
         """Run the shadow's loop on a daemon thread and the primary's here."""
@@ -365,6 +405,8 @@ class ShadowFrontend(ChatFrontend):
         A value not given comes from the row written before, else from the
         primary's channel_info; a description not given and not read there
         leaves the shadow's own."""
+        if self.shadow_off:
+            return False
         with self._lock:
             known = self._channels.get(channel)
         if known is not None:
@@ -414,6 +456,8 @@ class ShadowFrontend(ChatFrontend):
         self._write(what, channel, write)
 
     def _write(self, what: str, channel: str, write: Callable[[], Any]) -> None:
+        if self.shadow_off:
+            return
         try:
             self._ensure_channel(channel)
             write()
@@ -515,7 +559,7 @@ class ShadowFrontend(ChatFrontend):
         channels the shadow holds, holding live writes until it ends; the
         thread, or None when backfill_days is 0, the shadow takes no quiet
         history, or a copy is running."""
-        if self.backfill_days <= 0:
+        if self.backfill_days <= 0 or self.shadow_off:
             return None
         if self._takes("mirror_post", "quiet") != {"quiet"} or \
                 self._takes("mirror_file", "quiet") != {"quiet"}:
@@ -551,6 +595,8 @@ class ShadowFrontend(ChatFrontend):
         "failed": [channel], "capped": bool}."""
         days = self.backfill_days if days is None else max(0.0, float(days))
         cap = self.backfill_cap if cap is None else int(cap)
+        if self.shadow_off:
+            channels = []
         if channels is None:
             with self._lock:
                 channels = list(self._channels)
@@ -618,18 +664,19 @@ class ShadowFrontend(ChatFrontend):
         if self.backfill_pace_s > 0:
             self._sleep(self.backfill_pace_s)
 
-    def _history_author(self, msg: InboundMessage) -> tuple[str, str]:
+    def _history_author(self, channel: str, msg: InboundMessage) -> tuple[str, str]:
         """(author, text) of a message from the primary's past: the owner's
-        own, the owner's web message (posted as the bot after WEB_PREFIX),
-        or the bot's."""
+        own, the owner's web message (posted as the bot, its id in the
+        shadow's owner list; the prefix is only dropped from its text), or
+        the bot's. A bot message that only starts with WEB_PREFIX stays the
+        bot's."""
         p = self.primary
         text = msg.text or ""
         if p.owner_id and str(msg.user_id) == str(p.owner_id) and not msg.is_self:
             return "owner", text
-        if msg.is_self or (p.bot_user_id and str(msg.user_id) == str(p.bot_user_id)):
-            for prefix in (WEB_PREFIX, _to_mrkdwn(WEB_PREFIX)):
-                if text.startswith(prefix):
-                    return "owner", text[len(prefix):]
+        if (msg.is_self or (p.bot_user_id and str(msg.user_id) == str(p.bot_user_id))) \
+                and self.owner_posted(msg.channel or channel, msg.msg_id):
+            return "owner", strip_web_prefix(text)
         return "bot", text
 
     def _backfill_message(self, channel: str, key: str, msg: InboundMessage, until: float,
@@ -640,7 +687,7 @@ class ShadowFrontend(ChatFrontend):
                 or (msg.posted_at or 0) > until or sub == "channel_rename" \
                 or (sub.startswith("other:") and sub != "other:bot_message"):
             return 0
-        author, text = self._history_author(msg)
+        author, text = self._history_author(channel, msg)
         ref = MessageRef(channel, msg.msg_id, msg.thread_key or key, msg.posted_at)
         try:
             if not msg.files:

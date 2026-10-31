@@ -148,13 +148,15 @@ DEFAULTS = {
         # The bot's own web chat (docs/webchat.md). Empty pair_token_file and
         # store_path mean the defaults beside the store (chat.load_frontend).
         # backfill_days: the days of the primary's history a shadow web chat
-        # copies in when the bot starts; 0 copies none.
+        # copies in when the bot starts; 0 copies none. trust_tailscale_header
+        # false turns the Tailscale sign-in off (the pairing cookie only).
         "web": {
             "bind": "127.0.0.1",
             "port": 8470,
             "base_path": "/chat",
             "public_url": "",
             "tailscale_login": "",
+            "trust_tailscale_header": True,
             "pair_token_file": "",
             "store_path": "",
             "backfill_days": 7,
@@ -225,10 +227,18 @@ def get_chat(config_path: Path | None = None) -> dict:
     names the seed step), so no owner process runs a frontend on ea-bot's
     copy. Other processes read ea-config.json, where the block only shapes
     wording."""
+    return get_chat_source(config_path)[0]
+
+
+def get_chat_source(config_path: Path | None = None) -> tuple[dict, bool]:
+    """(get_chat's block, True when it came from the owner-private
+    chat.json). Only such a block is trusted to say where the bot serves
+    the web chat and who signs in to it (docs/webchat.md)."""
     val = _owner_trust().owner_chat_block() if config_path is None else None
+    trusted = val is not None
     if val is None:
         val = load(config_path).get("chat")
-    return chat_from_block(val)
+    return chat_from_block(val), trusted
 
 
 def chat_from_block(val) -> dict:

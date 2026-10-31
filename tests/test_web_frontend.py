@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import sys
 import threading
 import time
@@ -29,15 +30,34 @@ import ea_config  # noqa: E402
 
 LOGIN = "owner@example.test"
 OWNER_H = {"Tailscale-User-Login": LOGIN}
+PUBLIC_URL = "https://host.example.test:8444/chat"
+PUBLIC_HOST = "host.example.test:8444"
+PUBLIC_ORIGIN = "https://host.example.test:8444"
 
 
-def make(tmp_path, **cfg) -> WebFrontend:
-    base = {"port": 0, "tailscale_login": LOGIN}
+def as_tailscaled(f: WebFrontend) -> WebFrontend:
+    """Take this test process's own connections as tailscaled's: the
+    client's uid still comes from /proc/net/tcp, as on the host. Without
+    /proc (macOS, where the header path is off) every loopback peer is
+    taken as tailscaled's, so the routes are tested there too."""
+    uid = os.geteuid()
+    if wf.PROC_NET[0].exists():
+        f.peer_is_tailscaled = lambda peer, local: wf.peer_uid(peer, local) == uid
+    else:
+        f.peer_is_tailscaled = lambda peer, local: True
+    return f
+
+
+def make(tmp_path, *, tailscaled: bool = True, **cfg) -> WebFrontend:
+    """A frontend as the owner's bot builds it: a trusted chat block, a
+    private store, and (unless `tailscaled` is False) this process's
+    connections taken as tailscaled's."""
+    base = {"port": 0, "tailscale_login": LOGIN, "public_url": PUBLIC_URL}
     base.update(cfg)
     f = WebFrontend.from_config(base, store_path=tmp_path / "priv" / "webchat.sqlite",
-                                webui_dir=tmp_path / "webui")
+                                webui_dir=tmp_path / "webui", trusted_config=True)
     f.poll_s = f.pair_delay_s = 0.02
-    return f
+    return as_tailscaled(f) if tailscaled else f
 
 
 def card(**kw) -> ConfirmationCard:
@@ -60,9 +80,14 @@ def fe(tmp_path):
 
 
 def call(f: WebFrontend, method: str, path: str, body=None, headers=None, raw=None):
+    """A loopback request; a POST carries this server's loopback Origin
+    unless `headers` names one (None leaves it out)."""
     data = json.dumps(body).encode() if body is not None else raw
     h = {"Content-Type": "application/json"} if body is not None else {}
+    if method == "POST":
+        h["Origin"] = f"http://127.0.0.1:{f.port}"
     h.update(headers or {})
+    h = {k: v for k, v in h.items() if v is not None}
     req = urllib.request.Request(f.url + path, data=data, method=method, headers=h)
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
@@ -72,7 +97,12 @@ def call(f: WebFrontend, method: str, path: str, body=None, headers=None, raw=No
 
 
 def owner(f, method, path, body=None, headers=None, raw=None):
-    return call(f, method, path, body, {**OWNER_H, **(headers or {})}, raw)
+    """A request as tailscale serve forwards the owner's: the login header,
+    the public Host and, on a POST, the public Origin."""
+    h = {**OWNER_H, "Host": PUBLIC_HOST}
+    if method == "POST":
+        h["Origin"] = PUBLIC_ORIGIN
+    return call(f, method, path, body, {**h, **(headers or {})}, raw)
 
 
 def catcher(f: WebFrontend):
@@ -296,7 +326,7 @@ def test_rooms(tmp_path):
 
 
 def test_upload_and_download(tmp_path, monkeypatch):
-    monkeypatch.setenv("EA_DIR", str(tmp_path))
+    monkeypatch.setenv("EA_DIR", str(tmp_path / "ea"))
     f = make(tmp_path)
     f.start()
     try:
@@ -539,6 +569,7 @@ def test_api_needs_the_owner_and_static_files_do_not(tmp_path):
         assert status == 200 and b"<title>t</title>" in body
         csp = h["Content-Security-Policy"]
         assert "script-src 'self'" in csp and "style-src 'self';" in csp and "unsafe" not in csp
+        assert "form-action 'none'" in csp and h["Cross-Origin-Resource-Policy"] == "same-origin"
         status, h, _b = call(f, "GET", "/app.js")
         assert status == 200 and h["Content-Type"].startswith("text/javascript")
         conn = http.client.HTTPConnection("127.0.0.1", f.port, timeout=5)
@@ -582,11 +613,13 @@ def test_pairing_sets_the_cookie(tmp_path):
 
 
 def test_a_post_from_another_origin_is_refused(fe):
-    status, _h, _b = owner(fe, "POST", "/api/channels/main/messages", {"text": "x"},
-                           {"Origin": "https://evil.example.test"})
-    assert status == 401
-    status, _h, _b = owner(fe, "POST", "/api/channels/main/messages", {"text": "x"},
-                           {"Origin": f"http://127.0.0.1:{fe.port}"})
+    for origin in ("https://evil.example.test", "https://host.example.test",
+                   "https://host.example.test:443", "http://host.example.test:8444",
+                   "https://host.example.test:8445", f"http://127.0.0.1:{fe.port}", None, "null"):
+        status, _h, _b = owner(fe, "POST", "/api/channels/main/messages", {"text": "x"},
+                               {"Origin": origin})
+        assert status == 403, origin
+    status, _h, _b = owner(fe, "POST", "/api/channels/main/messages", {"text": "x"})
     assert status == 200
 
 
@@ -643,7 +676,7 @@ def test_a_card_click_dispatches_an_action_with_the_stored_value(fe):
 
 
 def test_an_upload_stores_the_file_and_dispatches_a_file_ref(fe, tmp_path, monkeypatch):
-    monkeypatch.setenv("EA_DIR", str(tmp_path))
+    monkeypatch.setenv("EA_DIR", str(tmp_path / "ea"))
     got, ev = catcher(fe)
     data = b"%PDF-1.4\r\n\x00\x01binary\r\n"
     body, ctype = multipart({"text": "please read",
@@ -751,7 +784,8 @@ def test_a_chunked_body_is_read(fe):
         conn.request("POST", "/chat/api/channels/main/messages",
                      body=iter([b'{"text": ', b'"in chunks"}']),
                      headers={**OWNER_H, "Content-Type": "application/json",
-                              "Transfer-Encoding": "chunked"}, encode_chunked=True)
+                              "Origin": PUBLIC_ORIGIN, "Transfer-Encoding": "chunked"},
+                     encode_chunked=True)
         resp = conn.getresponse()
         assert resp.status == 200 and json.loads(resp.read())["text"] == "in chunks"
     finally:
@@ -791,6 +825,7 @@ def writer(f: WebFrontend) -> WebFrontend:
 
 
 def test_a_writer_only_frontend_opens_the_store_and_serves_nothing(tmp_path):
+    # untrusted too: a writer-only side checks nothing and serves nothing
     w = WebFrontend.from_config({"port": 0}, store_path=tmp_path / "priv" / "webchat.sqlite",
                                 writer_only=True)
     w.start()
@@ -983,12 +1018,13 @@ def test_load_frontend_builds_the_web_frontend(tmp_path):
     assert f.base_path == "/c" and f.bind == "127.0.0.1"
     assert prompt_strings_for_config(ea)["confirm_location"] == \
         "the Send button is on the card in your DM thread"
-    f.start()
-    try:
-        assert f.port and f.ping()
-        assert call(f, "GET", "/api/me")[0] == 401
-    finally:
-        f.stop()
+    # ea-config.json is not the owner's file: built, but it serves nothing
+    # (tests/test_web_hardening.py has the owner's block)
+    assert f.trusted_config is False
+    with pytest.raises(ChatError, match="not serving"):
+        f.start()
+    assert f._server is None and f.refused and not f.ping()
+    assert not (tmp_path / "state" / "webchat.sqlite").exists()
 
 
 def test_load_frontend_takes_the_store_path_key(tmp_path):
@@ -1010,6 +1046,7 @@ def test_get_chat_defaults_the_web_block(tmp_path):
     web = ea_config.get_chat(p)["web"]
     assert web["port"] == 9000 and web["bind"] == "127.0.0.1" and web["base_path"] == "/chat"
     assert set(web) == {"bind", "port", "base_path", "public_url", "tailscale_login",
-                        "pair_token_file", "store_path", "backfill_days"}
-    assert web["backfill_days"] == 7
+                        "trust_tailscale_header", "pair_token_file", "store_path",
+                        "backfill_days"}
+    assert web["backfill_days"] == 7 and web["trust_tailscale_header"] is True
     assert ea_config.get_chat(tmp_path / "missing.json")["web"]["port"] == 8470

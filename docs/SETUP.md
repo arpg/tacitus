@@ -307,8 +307,10 @@ the off-tailnet relay, designed and not yet wired, is in
 mode** beside Zulip: the bot posts to both, and you can read and answer
 in either; the web side never blocks the Zulip side.
 
-1. Add a `web` block to the chat block the bot reads
-   (`~/.ea-private/chat.json` after hardening, else `ea-config.json`):
+1. Add a `web` block to the chat block in `~/.ea-private/chat.json`.
+   The bot serves the web chat only from that owner-private file (after
+   hardening); a block in `ea-config.json`, which the resident can
+   change, never serves:
 
    ```json
    "shadow": "web",
@@ -316,27 +318,37 @@ in either; the web side never blocks the Zulip side.
      "bind": "127.0.0.1",
      "port": 8470,
      "base_path": "/chat",
-     "public_url": "https://<host>.<tailnet>.ts.net/chat",
+     "public_url": "https://<host>.<tailnet>.ts.net:8444/chat",
      "tailscale_login": "<your Tailscale login, as `tailscale whois` reports it>"
    }
    ```
 
    `"frontend": "web"` with no `shadow` runs the web chat alone.
-2. Publish the port on your tailnet, as the owner:
-   `tailscale serve --bg --set-path /chat http://127.0.0.1:8470/chat`.
-   Tailscale adds your login as a request header, which is the sign-in.
+2. Publish the port on your tailnet, as the owner, on an HTTPS port of
+   its own:
+   `tailscale serve --bg --https=8444 --set-path /chat http://127.0.0.1:8470/chat`.
+   The chat needs its own origin: one app per origin. A deck or any other
+   page on the chat's origin could call the chat as you, so decks stay
+   on 443 and `deck_serve.py` refuses a deck on the chat's port. The port
+   in `public_url` must be the `--https` port. Tailscale adds your login
+   as a request header, which is the sign-in; the bot takes it only on
+   tailscaled's own connection (`"trust_tailscale_header": false` turns
+   it off, and pairing by token is then the only sign-in).
 3. `sudo systemctl restart ea-chat-bot`, then open the `public_url` on
    your phone and add it to the home screen.
-4. Without Tailscale on the phone, pairing by token works: write a
-   token to `<private dir>/webchat-pair.token` (the `pair_token_file`
-   key moves it) and enter it once in the app.
+4. Without Tailscale on the phone, pairing by token works: the bot
+   writes a token to `<private dir>/webchat-pair.token` (the
+   `pair_token_file` key moves it; mode 0600, at least 16 characters)
+   and you enter it once in the app. Replacing the token signs every
+   paired browser out and drops their notification subscriptions.
 5. For notifications with the app closed (a new card, a message from the
    bot in your DM, an alert), open the channel drawer and turn on
    **Notifications**. On an iPhone or iPad this works only in the app
    added to the Home Screen. The bot then sends encrypted pushes over
    https to your browser's push service (Google, Apple, Mozilla or
    Microsoft); it needs the `cryptography` package, which the install
-   already has.
+   already has. The drawer lists the browsers that get notifications,
+   each with a Revoke button.
 
 The store is `<private dir>/webchat.sqlite`; files you upload from the
 app sit beside it. Each start copies the last week of Zulip history

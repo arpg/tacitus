@@ -10,6 +10,7 @@ from __future__ import annotations
 import http.client
 import json
 import logging
+import os
 import subprocess
 import sys
 import textwrap
@@ -30,10 +31,21 @@ from chat import direct  # noqa: E402
 from chat.memory_frontend import MemoryFrontend  # noqa: E402
 from chat.shadow_frontend import ShadowFrontend  # noqa: E402
 from chat.types import MessageRef  # noqa: E402
+from chat import web_frontend as wf  # noqa: E402
 from chat.web_frontend import WebFrontend, WebStore  # noqa: E402
 from chat.zulip_frontend import thread_key_for  # noqa: E402
 
 LOGIN = "owner@example.test"
+
+
+@pytest.fixture(autouse=True)
+def _tailscaled_is_this_process(monkeypatch):
+    """The streams below sign in with the login header; take this test
+    process's connections as tailscaled's (the uid still comes from
+    /proc/net/tcp; without /proc, as on macOS, every peer is this user's)."""
+    monkeypatch.setattr(wf, "tailscaled_uid", lambda refresh=False: os.geteuid())
+    if not wf.PROC_NET[0].exists():
+        monkeypatch.setattr(wf, "peer_uid", lambda peer, local: os.geteuid())
 
 
 def _ea_dir(tmp_path: Path, block: dict) -> Path:
@@ -136,15 +148,20 @@ def test_web_writer_needs_the_web_shadow(tmp_path, monkeypatch):
 # ── from the sender to the bot's open stream ──
 
 def test_an_owner_cli_post_reaches_the_bots_open_stream(tmp_path, monkeypatch):
+    # the owner's bot reads its block from the private chat.json and keeps
+    # the store beside it, as on a hardened host
     _owner(monkeypatch)
-    ea = _ea_dir(tmp_path, {"frontend": "memory", "shadow": "web",
-                            "web": {"port": 0, "tailscale_login": LOGIN}})
-    bot = chat.load_frontend(ea_dir=ea, env={})
+    _private_chat(tmp_path, monkeypatch, {"frontend": "memory", "shadow": "web",
+                                          "web": {"port": 0, "tailscale_login": LOGIN}})
+    bot = chat.load_frontend(env={})
+    assert bot.shadow.trusted_config is True
     bot.start()
     try:
+        assert bot.shadow_off is None
+        assert bot.shadow.store_path == tmp_path / "priv" / "webchat.sqlite"
         s = Stream(bot.shadow)
         try:
-            cli = chat.load_frontend(ea_dir=ea, env={}, for_cli=True)
+            cli = chat.load_frontend(env={}, for_cli=True)
             t0 = time.monotonic()
             ref = cli.post("C_MAIN", "the morning briefing")
             ev = s.event()
@@ -160,7 +177,8 @@ def test_an_owner_cli_post_reaches_the_bots_open_stream(tmp_path, monkeypatch):
 
 def test_a_writer_in_another_process_reaches_the_stream(tmp_path):
     path = tmp_path / "priv" / "webchat.sqlite"
-    bot = WebFrontend.from_config({"port": 0, "tailscale_login": LOGIN}, store_path=path)
+    bot = WebFrontend.from_config({"port": 0, "tailscale_login": LOGIN}, store_path=path,
+                                  trusted_config=True)
     bot.start()
     try:
         bot.mirror_channel("stream:7", "ea", "main")

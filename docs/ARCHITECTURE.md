@@ -612,9 +612,12 @@ check, cross, ...).
   build step) and a JSON API over loopback HTTP, stdlib only. Messages,
   cards, reactions and files live in a SQLite store; the browser follows
   one server-sent event stream with replay from the last seen sequence.
-  The owner reaches it over the tailnet (`tailscale serve` proxies a
-  path to the port and its identity header is the login) or by a pair
-  token. With the app closed, a new card, a bot message in the DM and a
+  The owner reaches it over the tailnet on an origin of its own
+  (`tailscale serve --https=<port>` proxies a path to the port; its
+  identity header is the login, on tailscaled's own connection only) or
+  by a pair token. It serves only the owner-private chat block, from
+  private files outside the resident's tree (docs/SECURITY.md, Web
+  chat). With the app closed, a new card, a bot message in the DM and a
   loud alert arrive as Web Push notifications (`chat/web_push.py`:
   VAPID and `aes128gcm` with the `cryptography` package, to the
   browser vendors' push services only). The contract is
@@ -623,8 +626,10 @@ check, cross, ...).
   and mirrors every post, update, card, status line, reaction and file
   into a shadow (the web front end) under the primary's ids, and takes
   the owner's input from either side: a web message is posted into the
-  primary as the bot with a `**You (web):**` prefix, then dispatched to
-  the core as the owner. A shadow failure is logged and never reaches
+  primary as the bot with a `**You (web):**` mark, its primary id kept in
+  the web chat's owner-private list (which the history copy and
+  `chat_read.py` go by, never the mark), then dispatched to the core as
+  the owner. A shadow failure is logged and never reaches
   the core. `chat.shadow` in the chat block names it. At start it copies
   the last `web.backfill_days` of the primary's history on a daemon
   thread, as quiet rows (no event, never unread), and only the rooms the

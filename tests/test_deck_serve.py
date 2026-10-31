@@ -96,6 +96,43 @@ def test_validate_serve():
     _refused(D.validate_serve, "Bad Slug", 3052, CFG, uid_of, RESIDENT)
 
 
+def test_a_deck_never_shares_the_web_chats_origin():
+    """One app per origin: no deck route on the HTTPS port the web chat
+    uses, nor beside a route on that port to the chat's loopback port."""
+    D.validate_serve("new-deck", 3052, CFG, uid_of, RESIDENT, (8444, 8470))   # its own port
+    D.validate_serve("new-deck", 3052, CFG, uid_of, RESIDENT, (None, 8470))   # no web chat
+    msg = _refused(D.validate_serve, "new-deck", 3052, CFG, uid_of, RESIDENT, (443, 8470))
+    assert "one app per origin" in msg and "--https=" in msg
+    old_route = {**CFG, "Web": {"host.example.ts.net:443": {"Handlers": {
+        **CFG["Web"]["host.example.ts.net:443"]["Handlers"],
+        "/chat": {"Proxy": "http://127.0.0.1:8470/chat"}}}}}
+    msg = _refused(D.validate_serve, "new-deck", 3052, old_route, uid_of, RESIDENT, (8444, 8470))
+    assert "/chat" in msg and "one app per origin" in msg
+
+
+def test_chat_web_reads_the_public_port(monkeypatch=None):
+    import ea_config
+    real = ea_config.get_chat
+    try:
+        for url, want in (("https://host.example.ts.net:8444/chat", (8444, 8470)),
+                          ("https://host.example.ts.net/chat", (443, 8470)),
+                          ("", (None, 8470)), ("http://127.0.0.1:8470/chat", (None, 8470))):
+            ea_config.get_chat = lambda url=url: {"frontend": "zulip", "shadow": "web",
+                                                  "web": {"public_url": url, "port": 8470}}
+            assert D.chat_web() == want, url
+        # a block that runs no web chat
+        ea_config.get_chat = lambda: {"frontend": "zulip", "web": {
+            "public_url": "https://host.example.ts.net/chat", "port": 8471}}
+        assert D.chat_web() == (None, 8471)
+
+        def broken():
+            raise RuntimeError("no chat.json")
+        ea_config.get_chat = broken
+        assert D.chat_web() == (None, 8470)
+    finally:
+        ea_config.get_chat = real
+
+
 def test_validate_off():
     assert D.validate_off("nothing-here", CFG, uid_of, RESIDENT) is None
     assert D.validate_off("ea-deck", CFG, uid_of, RESIDENT) == 3050

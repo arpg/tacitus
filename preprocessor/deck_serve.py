@@ -24,7 +24,11 @@ The owner side refuses, whatever the caller says:
   * `serve` or `off` on a path whose current route is not the resident's
     (another user's staged deck keeps its route);
   * `serve` while any Funnel is enabled on the node. Funnel applies per
-    host:port, so one funneled route would make every deck public.
+    host:port, so one funneled route would make every deck public;
+  * `serve` on the HTTPS port the web chat uses (its `public_url`, or a
+    route there to the chat's loopback port). One app per origin: a deck
+    on the chat's origin could call the chat's API as the owner, so the
+    chat has its own `--https=<port>` (docs/SETUP.md, Web chat).
 After a `serve` the config is re-read; a funnel flag on the node removes
 the new route again and fails the call.
 
@@ -41,6 +45,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -192,9 +197,63 @@ def is_resident_route(port: int | None, uid_of, resident: int) -> bool:
     return uid is None or uid == resident
 
 
-def validate_serve(slug: str, port: int, cfg: dict, uid_of, resident: int) -> None:
+def chat_web() -> tuple[int | None, int]:
+    """(the HTTPS port of the web chat's public_url or None, the chat's
+    loopback port) from the chat block this process trusts. A block that
+    cannot be read gives (None, the default port): no web chat runs on it,
+    and the route check still covers the default."""
+    try:
+        import ea_config
+    except ModuleNotFoundError:
+        from preprocessor import ea_config
+    default = int(ea_config.DEFAULTS["chat"]["web"]["port"])
+    try:
+        block = ea_config.get_chat()
+        web = block.get("web") or {}
+    except Exception as e:
+        print(f"deck_serve: the chat block could not be read ({e}); taking the "
+              f"web chat's default port", file=sys.stderr)
+        return None, default
+    try:
+        local = int(web.get("port") or default)
+    except (TypeError, ValueError):
+        local = default
+    url = str(web.get("public_url") or "").strip()
+    if not url or "web" not in (block.get("frontend"), block.get("shadow")):
+        return None, local
+    try:
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None, local
+    if parts.scheme != "https":
+        return None, local
+    return (port if port is not None else 443), local
+
+
+def check_chat_origin(cfg: dict, chat: tuple[int | None, int]) -> None:
+    """Refuse a deck route on the web chat's origin: the chat's public
+    port is HTTPS_PORT, or a route on HTTPS_PORT already proxies to the
+    chat's loopback port."""
+    public, local = chat
+    rule = ("one app per origin: a page on the chat's origin can call the chat's API "
+            "as the owner, so the web chat needs its own port (tailscale serve "
+            f"--https=<port>, docs/SETUP.md) and decks stay on {HTTPS_PORT}")
+    if public == HTTPS_PORT:
+        raise Refused(f"the web chat's public_url is on https port {HTTPS_PORT}, the port "
+                      f"decks use; {rule}")
+    for path, target in routes(cfg).items():
+        if target == local:
+            raise Refused(f"{path} on https port {HTTPS_PORT} proxies to the web chat's "
+                          f"port {local}; {rule}")
+
+
+def validate_serve(slug: str, port: int, cfg: dict, uid_of, resident: int,
+                   chat: tuple[int | None, int] | None = None) -> None:
     check_slug(slug)
     check_port(port)
+    if chat is not None:
+        check_chat_origin(cfg, chat)
     if funnel_active(cfg):
         raise Refused("a Funnel is enabled on this node, so a route added now "
                       "would be public; turn Funnel off first")
@@ -237,7 +296,7 @@ def cmd_serve(slug: str, port: int) -> dict:
     check_port(port)          # for a request that is malformed on its face
     resident = resident_uid()
     cfg = serve_config()
-    validate_serve(slug, port, cfg, listening_uid, resident)
+    validate_serve(slug, port, cfg, listening_uid, resident, chat_web())
     target = f"http://127.0.0.1:{port}/{slug}"
     r = _run(["serve", "--bg", f"--https={HTTPS_PORT}", f"--set-path=/{slug}", target])
     if r.returncode != 0:

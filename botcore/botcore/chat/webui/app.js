@@ -878,6 +878,15 @@ async function initPush() {
   box.checked = Boolean(sub) && Notification.permission === 'granted';
   box.disabled = false;
   box.addEventListener('change', toggleNotify);
+  listSubs();
+}
+
+// Every browser the bot pushes to, each with a Revoke button (this one's own is the toggle).
+async function listSubs() {
+  const subs = await call('GET', '/push/subscriptions').catch(() => []);
+  $('push-subs').replaceChildren(...subs.map((s) => h('li', null, `${s.host}, ${when(s.created_at, true)} `,
+    h('button', { type: 'button', class: 'btn small', onclick: () => call('POST', '/push/revoke', { id: s.id })
+      .then(listSubs, (e) => toast(`Notifications: ${e.message}`)) }, 'Revoke'))));
 }
 
 async function toggleNotify() {
@@ -902,6 +911,7 @@ async function toggleNotify() {
       ? 'Notifications are blocked for this site in the browser settings.' : `Notifications: ${e.message}`);
   } finally {
     box.disabled = false;
+    listSubs();
   }
 }
 

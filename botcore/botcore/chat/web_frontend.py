@@ -42,14 +42,29 @@ one Markdown subset. A card is stored as `dataclasses.asdict` JSON and
 the web app draws it; a click carries only the action id, and the value
 the core receives is the one stored with the card.
 
-The HTTP layer is `http.server.ThreadingHTTPServer` on a daemon thread.
-Static files come from `webui/` beside this module without auth; every
-`/api/` route needs the owner (the Tailscale login header from a loopback
-peer, or the pairing cookie). A POST from another origin is refused.
-Standard library only, except Web Push (web_push.py), which needs the
-`cryptography` package and is off without it: a new card, a bot message
-in the DM and a loud alert (`notify`) reach the browsers that turned
-notifications on, even with the app closed.
+The HTTP layer is `http.server.ThreadingHTTPServer` on a daemon thread,
+with a cap on open connections and a 30-second socket timeout. Static
+files come from `webui/` beside this module without auth; every `/api/`
+route needs the owner (the Tailscale login header on a connection from
+tailscaled itself, or the pairing cookie). Before that, an `/api/`
+request must name this server in `Host` (public_url's host and port, or
+the loopback port), must not come from another site (`Sec-Fetch-Site`),
+and a POST must carry the exact `Origin` of public_url (a loopback
+client without the identity header may use the loopback origin). The
+app is one per origin: a page from another port of the same host (a
+deck) is another origin and is refused. Standard library only, except
+Web Push (web_push.py), which needs the `cryptography` package and is
+off without it: a new card, a bot message in the DM and a loud alert
+(`notify`) reach the browsers that turned notifications on, even with
+the app closed.
+
+The bot serves only a chat block it can trust (`trusted_config`, set by
+chat.load_frontend when the block came from the owner-private chat.json)
+and only from a store directory and pairing token file that this user
+owns, that no other user can read, and that lie outside the resident's
+tree (`untrusted_roots`). Otherwise start() refuses: standalone it
+raises; under a ShadowFrontend it logs why and the bot runs on its
+primary alone.
 """
 from __future__ import annotations
 
@@ -66,6 +81,8 @@ import re
 import secrets
 import socket
 import sqlite3
+import stat
+import struct
 import threading
 import time
 import urllib.parse
@@ -110,6 +127,11 @@ DM_ID, DM_NAME = "dm", "dm"
 STORE_FILE = "webchat.sqlite"
 FILES_DIR = "webchat-files"
 PAIR_FILE = "webchat-pair.token"
+# The primary ids of the owner's web messages (shadow mode), which the
+# primary holds as the bot's: the history copy and chat_read take them as
+# the owner's from this list, never from the text.
+OWNER_IDS_FILE = "webchat-owner-ids.json"
+OWNER_IDS_MAX = 5000
 COOKIE = "ea_web"
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
 
@@ -131,10 +153,27 @@ MAX_JSON_BYTES = 1 << 20
 MAX_UPLOAD_BYTES = 50 << 20
 MAX_TEXT_CHARS = 20000
 COOKIE_MAX_AGE = 365 * 86400
+# The pairing route reads at most this many bytes.
+MAX_PAIR_BYTES = 1024
+# An error answer reads at most this much of an unread body first.
+MAX_DRAIN_BYTES = 64 << 10
+# A pairing token file holding a shorter token is refused.
+MIN_PAIR_TOKEN = 16
+# Seconds a request waits for the pairing lock before a 429.
+PAIR_WAIT_S = 10.0
+# Open connections the server takes at once; more are closed at once.
+MAX_CONNECTIONS = 64
+# Socket reads and writes; a stalled client is dropped.
+HANDLER_TIMEOUT_S = 30
 
 KINDS = ("main", "sched", "dm", "room")
 EVENT_TYPES = ("message", "update", "reaction", "card", "status", "file", "channel")
 LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
+# Host names a loopback client (the relay client, a test) puts in Host and
+# Origin, with this server's port.
+LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+_CHUNK_SIZE_RE = re.compile(rb"[0-9A-Fa-f]{1,8}")
+_LENGTH_RE = re.compile(r"[0-9]{1,12}")
 # Emoji shortcodes, held aside while text converts (WebFrontend._out).
 _SHORTCODE_RE = re.compile(r":[a-z0-9_+-]+:")
 _HELD_RE = re.compile("\x02(\\d+)\x02")
@@ -142,7 +181,8 @@ _HELD_RE = re.compile("\x02(\\d+)\x02")
 # The web app's pages load only their own files: nothing inline, nothing
 # from another origin.
 HTML_CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; "
-            "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+            "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; "
+            "form-action 'none'")
 # A stored file opened directly runs nothing.
 FILE_CSP = "sandbox; default-src 'none'"
 
@@ -184,9 +224,10 @@ CREATE TABLE IF NOT EXISTS files(
 CREATE TABLE IF NOT EXISTS reads(channel TEXT PRIMARY KEY, seq INT);
 CREATE TABLE IF NOT EXISTS push_subscriptions(
     endpoint TEXT PRIMARY KEY, keys TEXT, created_at REAL, last_ok REAL,
-    failures INT DEFAULT 0);
+    failures INT DEFAULT 0, last_seen REAL);
 CREATE TABLE IF NOT EXISTS push_queue(
     tag TEXT PRIMARY KEY, due_at REAL, payload TEXT, urgency TEXT, created_at REAL);
+CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 """
 
 
@@ -240,6 +281,210 @@ def _write_private(path: Path, data: bytes) -> None:
         except OSError:
             pass
         raise
+
+
+# who is on the other end of a loopback connection (Linux)
+
+PROC_NET = (Path("/proc/net/tcp"), Path("/proc/net/tcp6"))
+TAILSCALED_SOCKETS = ("/run/tailscale/tailscaled.sock", "/var/run/tailscale/tailscaled.sock",
+                      "/var/snap/tailscale/common/socket/tailscaled.sock")
+# Seconds between two lookups of tailscaled's uid after a mismatch.
+TAILSCALED_RECHECK_S = 5.0
+_TCP_TIME_WAIT, _TCP_LISTEN = "06", "0A"
+_ts_lock = threading.Lock()
+_ts_cache: dict[str, Any] = {"uid": None, "at": 0.0}
+
+
+def _proc_hex(ip: str) -> list[tuple[int, str]]:
+    """(index into PROC_NET, the address as /proc/net/tcp* prints it) for
+    an IP: each 32-bit word in host byte order, as uppercase hex. An
+    IPv4-mapped IPv6 address is looked up in both tables."""
+    try:
+        if ":" not in ip:
+            packed = socket.inet_aton(ip)
+            return [(0, "%08X" % struct.unpack("=I", packed)[0])]
+        packed = socket.inet_pton(socket.AF_INET6, ip.split("%", 1)[0])
+    except (OSError, ValueError):
+        return []
+    words = "".join("%08X" % struct.unpack("=I", packed[i:i + 4])[0] for i in range(0, 16, 4))
+    out = [(1, words)]
+    if packed[:12] == b"\x00" * 10 + b"\xff\xff":
+        out.append((0, "%08X" % struct.unpack("=I", packed[12:])[0]))
+    return out
+
+
+def peer_uid(peer: tuple, local: tuple) -> int | None:
+    """The uid owning the client socket of a TCP connection, from
+    /proc/net/tcp and /proc/net/tcp6: the entry whose local end is `peer`
+    and whose remote end is `local` (this server's end). None off Linux,
+    when no live entry matches, or when the matches disagree."""
+    try:
+        pip, pport = str(peer[0]), int(peer[1])
+        lip, lport = str(local[0]), int(local[1])
+    except (IndexError, TypeError, ValueError):
+        return None
+    uids: set[int] = set()
+    lhex = dict(_proc_hex(lip))
+    for table, phex in _proc_hex(pip):
+        want_local = f"{phex}:{pport:04X}"
+        rhex = lhex.get(table)
+        if rhex is None:
+            continue
+        want_remote = f"{rhex}:{lport:04X}"
+        try:
+            text = PROC_NET[table].read_text()
+        except OSError:
+            continue
+        for line in text.splitlines()[1:]:
+            f = line.split()
+            if len(f) < 10 or f[1].upper() != want_local or f[2].upper() != want_remote:
+                continue
+            if f[3] in (_TCP_TIME_WAIT, _TCP_LISTEN) or f[9] == "0":
+                continue
+            try:
+                uids.add(int(f[7]))
+            except ValueError:
+                continue
+    return uids.pop() if len(uids) == 1 else None
+
+
+def _lookup_tailscaled_uid() -> int | None:
+    """tailscaled's uid: the effective uid of the `tailscaled` processes in
+    /proc, else the owner of its control socket. When the processes run as
+    several users, the socket's owner decides among them."""
+    procs: set[int] = set()
+    try:
+        entries = [e for e in os.listdir("/proc") if e.isdigit()]
+    except OSError:
+        entries = []
+    for pid in entries:
+        try:
+            if Path(f"/proc/{pid}/comm").read_text().strip() != "tailscaled":
+                continue
+            for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+                if line.startswith("Uid:"):
+                    procs.add(int(line.split()[2]))
+                    break
+        except (OSError, ValueError, IndexError):
+            continue
+    sock = None
+    for path in TAILSCALED_SOCKETS:
+        try:
+            st = os.lstat(path)
+        except OSError:
+            continue
+        if stat.S_ISSOCK(st.st_mode):
+            sock = st.st_uid
+            break
+    if len(procs) == 1:
+        return procs.pop()
+    if sock is not None and (not procs or sock in procs):
+        return sock
+    return None
+
+
+def tailscaled_uid(refresh: bool = False) -> int | None:
+    """tailscaled's uid, looked up once and kept; `refresh` looks again
+    (at most once in TAILSCALED_RECHECK_S), for a mismatch that a restarted
+    daemon may explain. None off Linux or when it cannot be found."""
+    now = time.monotonic()
+    with _ts_lock:
+        have = _ts_cache["at"] > 0
+        if have and not refresh:
+            return _ts_cache["uid"]
+        if have and now - _ts_cache["at"] < TAILSCALED_RECHECK_S:
+            return _ts_cache["uid"]
+        _ts_cache["uid"] = _lookup_tailscaled_uid()
+        _ts_cache["at"] = now
+        return _ts_cache["uid"]
+
+
+# the owner checks on the store and the pairing token
+
+def private_problem(path: Path, kind: str) -> str | None:
+    """None when `path` is a `kind` ("dir" or "file") that this euid owns,
+    not a symlink, with no permission for group or others (a file with one
+    link); else what is wrong with it."""
+    try:
+        st = os.lstat(path)
+    except OSError as e:
+        return f"{path}: {e.strerror or e}"
+    want = "0700" if kind == "dir" else "0600"
+    if stat.S_ISLNK(st.st_mode):
+        return f"{path} is a symlink"
+    if not (stat.S_ISDIR(st.st_mode) if kind == "dir" else stat.S_ISREG(st.st_mode)):
+        return f"{path} is not a {'directory' if kind == 'dir' else 'regular file'}"
+    euid = os.geteuid() if hasattr(os, "geteuid") else None
+    if euid is not None and st.st_uid != euid:
+        return f"{path} is owned by uid {st.st_uid}, not by this process's uid {euid}"
+    if st.st_mode & 0o077:
+        return f"{path} has mode {oct(st.st_mode & 0o777)}; it must be {want}"
+    if kind == "file" and st.st_nlink != 1:
+        return f"{path} has {st.st_nlink} links"
+    return None
+
+
+def _guarded_dir_problem(path: Path) -> str | None:
+    """None when directory `path` is this euid's and no other user can
+    write it (so no one else can swap a file in it)."""
+    try:
+        st = os.lstat(path)
+    except OSError as e:
+        return f"{path}: {e.strerror or e}"
+    euid = os.geteuid() if hasattr(os, "geteuid") else None
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        return f"{path} is not a directory"
+    if euid is not None and st.st_uid != euid:
+        return f"{path} is owned by uid {st.st_uid}, not by this process's uid {euid}"
+    if st.st_mode & 0o022:
+        return f"{path} is writable by group or others (mode {oct(st.st_mode & 0o777)})"
+    return None
+
+
+def _inside(path: Path, roots: tuple[Path, ...]) -> Path | None:
+    """The first of `roots` that `path` resolves into, else None."""
+    try:
+        real = Path(os.path.realpath(path))
+    except (OSError, ValueError):
+        return None
+    for root in roots:
+        try:
+            if real == Path(os.path.realpath(root)) or real.is_relative_to(
+                    Path(os.path.realpath(root))):
+                return Path(root)
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _hostport(value: str) -> tuple[str, int | None] | None:
+    """(host lowercased, port or None) of a Host header's value; None when
+    it is not a bare host[:port]."""
+    value = (value or "").strip()
+    if not value or any(c in value for c in "/?#@\\ \t"):
+        return None
+    try:
+        parts = urllib.parse.urlsplit("//" + value)
+        port = parts.port
+    except ValueError:
+        return None
+    host = (parts.hostname or "").lower()
+    return (host, port) if host else None
+
+
+def _origin_key(url: str) -> tuple[str, str, int] | None:
+    """(scheme, host, port) of an origin or URL, the port defaulted by the
+    scheme; None for anything that is not http or https."""
+    try:
+        parts = urllib.parse.urlsplit((url or "").strip())
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    if scheme not in ("http", "https") or not host or parts.username is not None:
+        return None
+    return scheme, host, port if port is not None else (443 if scheme == "https" else 80)
 
 
 def parse_multipart(content_type: str, body: bytes) -> dict[str, dict]:
@@ -313,6 +558,10 @@ class WebStore:
             if "history" not in cols:
                 # A store from before the history copy: its rows are live ones.
                 self._conn.execute("ALTER TABLE messages ADD COLUMN history INT DEFAULT 0")
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(push_subscriptions)")}
+            if "last_seen" not in cols:
+                # A store from before: a subscription counts as posted when made.
+                self._conn.execute("ALTER TABLE push_subscriptions ADD COLUMN last_seen REAL")
             self._conn.commit()
         self._subs: list[_Sub] = []
         self._pending: list[tuple[int, str, str]] = []
@@ -773,15 +1022,17 @@ class WebStore:
 
     def push_subscribe(self, endpoint: str, keys: dict,
                        keep: int = web_push.MAX_SUBSCRIPTIONS) -> None:
-        """Keep a subscription (a renewed one starts with no failures); past
-        `keep`, the ones that have gone longest without a delivery go."""
+        """Keep a subscription (a renewed one starts with no failures, and
+        `last_seen` is now); past `keep`, the ones that have gone longest
+        without a delivery go."""
         now = time.time()
         with self._lock:
             with self._conn:
                 self._conn.execute(
-                    "INSERT INTO push_subscriptions(endpoint, keys, created_at, last_ok, failures) "
-                    "VALUES (?,?,?,NULL,0) ON CONFLICT(endpoint) DO UPDATE SET "
-                    "keys=excluded.keys, failures=0", (endpoint, json.dumps(keys), now))
+                    "INSERT INTO push_subscriptions(endpoint, keys, created_at, last_ok, failures, "
+                    "last_seen) VALUES (?,?,?,NULL,0,?) ON CONFLICT(endpoint) DO UPDATE SET "
+                    "keys=excluded.keys, failures=0, last_seen=excluded.last_seen",
+                    (endpoint, json.dumps(keys), now, now))
                 self._conn.execute(
                     "DELETE FROM push_subscriptions WHERE endpoint NOT IN (SELECT endpoint FROM "
                     "push_subscriptions ORDER BY MAX(COALESCE(last_ok, 0), created_at) DESC "
@@ -797,6 +1048,66 @@ class WebStore:
     def push_subscriptions(self) -> list[dict]:
         rows = self._all("SELECT * FROM push_subscriptions ORDER BY created_at")
         return [{**dict(r), "keys": _loads(r["keys"]) or {}} for r in rows]
+
+    @staticmethod
+    def push_id(endpoint: str) -> str:
+        """A subscription's id in the app's list: a hash of its endpoint, so
+        the list never shows the endpoint's secret path."""
+        return hashlib.sha256(endpoint.encode("utf-8")).hexdigest()[:16]
+
+    def push_list(self) -> list[dict]:
+        """The subscriptions as the app lists them: id, the push service's
+        host, when made, last posted by the app and last delivered."""
+        out = []
+        for r in self._all("SELECT endpoint, created_at, last_ok, failures, last_seen "
+                           "FROM push_subscriptions ORDER BY created_at"):
+            out.append({"id": self.push_id(r["endpoint"]),
+                        "host": urllib.parse.urlsplit(r["endpoint"]).hostname or "",
+                        "created_at": r["created_at"],
+                        "last_seen": r["last_seen"] or r["created_at"],
+                        "last_ok": r["last_ok"], "failures": int(r["failures"] or 0)})
+        return out
+
+    def push_revoke(self, sub_id: str) -> bool:
+        """Drop the subscription whose id (push_id) is `sub_id`."""
+        with self._lock:
+            for r in self._conn.execute("SELECT endpoint FROM push_subscriptions").fetchall():
+                if hmac.compare_digest(self.push_id(r["endpoint"]), str(sub_id)):
+                    return self.push_unsubscribe(r["endpoint"])
+        return False
+
+    def push_check_token(self, pair_hash: str) -> int:
+        """Drop every subscription when the pairing token's hash differs
+        from the one recorded; record it. The number dropped. An empty hash
+        (no token readable here) changes nothing, and the first hash a
+        store sees is recorded with its subscriptions kept."""
+        if not pair_hash:
+            return 0
+        with self._lock:
+            with self._conn:
+                row = self._conn.execute("SELECT value FROM meta WHERE key='pair_hash'").fetchone()
+                if row is not None and hmac.compare_digest(str(row["value"]), pair_hash):
+                    return 0
+                dropped = 0
+                if row is not None:
+                    dropped = self._conn.execute("DELETE FROM push_subscriptions").rowcount
+                self._conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES "
+                                   "('pair_hash', ?)", (pair_hash,))
+        if dropped:
+            log.warning("web push: the pairing token changed; %d subscription(s) dropped",
+                        dropped)
+        return dropped
+
+    def push_drop_stale(self, before: float) -> int:
+        """Drop each subscription the app has not posted since `before`."""
+        with self._lock:
+            with self._conn:
+                n = self._conn.execute(
+                    "DELETE FROM push_subscriptions WHERE COALESCE(last_seen, created_at) < ?",
+                    (float(before),)).rowcount
+        if n:
+            log.info("web push: %d subscription(s) not posted by the app for 30 days dropped", n)
+        return n
 
     def push_count(self) -> int:
         row = self._one("SELECT COUNT(*) AS n FROM push_subscriptions")
@@ -894,11 +1205,21 @@ class WebFrontend(ChatFrontend):
     }
 
     def __init__(self, cfg: dict | None = None, *, store_path: str | Path,
-                 webui_dir: str | Path | None = None, writer_only: bool = False) -> None:
+                 webui_dir: str | Path | None = None, writer_only: bool = False,
+                 trusted_config: bool = False,
+                 untrusted_roots: tuple[str | Path, ...] = ()) -> None:
         super().__init__()
         # A command-line sender's copy: start() opens the store and serves
         # nothing; the bot's tail thread hands its events to the streams.
         self.writer_only = bool(writer_only)
+        # True only when `cfg` came from the owner-private chat block: the
+        # server serves nothing otherwise (start()).
+        self.trusted_config = bool(trusted_config)
+        # Trees the store and the pairing token must lie outside (the
+        # resident's), checked by start().
+        self.untrusted_roots = tuple(Path(r) for r in untrusted_roots if r)
+        # Why start() refused to serve; None while it serves or before.
+        self.refused: str | None = None
         cfg = dict(cfg or {})
         self.cfg = cfg
         self.bind = str(cfg.get("bind") or DEFAULT_BIND)
@@ -907,6 +1228,11 @@ class WebFrontend(ChatFrontend):
         self.base_path = _norm_base(cfg.get("base_path"))
         self.public_url = str(cfg.get("public_url") or "").rstrip("/")
         self.tailscale_login = str(cfg.get("tailscale_login") or "").strip()
+        trust = cfg.get("trust_tailscale_header", True)
+        # The owner may turn the identity header off; the cookie then is
+        # the only sign-in.
+        self.trust_tailscale_header = trust is not False and str(trust).strip().lower() not in (
+            "false", "0", "no", "off", "")
         self.store_path = Path(store_path)
         self.pair_token_file = Path(cfg.get("pair_token_file")
                                     or self.store_path.parent / PAIR_FILE)
@@ -932,6 +1258,12 @@ class WebFrontend(ChatFrontend):
         self._life_lock = threading.Lock()
         self._dispatch_lock = threading.Lock()
         self._rooms_lock = threading.Lock()
+        # One pairing attempt at a time, so the pause after a wrong token
+        # bounds the rate of guesses.
+        self._pair_lock = threading.Lock()
+        self._short_token_logged = ""
+        self._owner_ids_lock = threading.Lock()
+        self._owner_ids: tuple[tuple, frozenset] | None = None
         self._stop = threading.Event()
         self._server: http.server.ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -940,15 +1272,18 @@ class WebFrontend(ChatFrontend):
     @classmethod
     def from_config(cls, cfg: dict | None, *, store_path: str | Path | None = None,
                     webui_dir: str | Path | None = None,
-                    writer_only: bool = False) -> WebFrontend:
+                    writer_only: bool = False, trusted_config: bool = False,
+                    untrusted_roots: tuple[str | Path, ...] = ()) -> WebFrontend:
         """Build one from the chat block's `web` section. The store is
         `store_path`, else the block's `store_path`; ChatError with
-        neither. `writer_only` is a command-line sender's copy."""
+        neither. `writer_only` is a command-line sender's copy;
+        `trusted_config` and `untrusted_roots` are start()'s checks."""
         cfg = dict(cfg or {})
         path = store_path or cfg.get("store_path")
         if not path:
             raise ChatError("web chat: no store path")
-        return cls(cfg, store_path=path, webui_dir=webui_dir, writer_only=writer_only)
+        return cls(cfg, store_path=path, webui_dir=webui_dir, writer_only=writer_only,
+                   trusted_config=trusted_config, untrusted_roots=untrusted_roots)
 
     @property
     def store(self) -> WebStore:
@@ -964,7 +1299,7 @@ class WebFrontend(ChatFrontend):
         with self._store_lock:
             if self._push is None:
                 self._push = web_push.Pusher(store, self.store_path.parent / web_push.KEY_FILE,
-                                             subject=self.push_subject)
+                                             subject=self.push_subject, pair_hash=self.pair_hash)
             return self._push
 
     # lifecycle
@@ -973,18 +1308,37 @@ class WebFrontend(ChatFrontend):
         """Open the store, make the standalone channels (unless a composite
         drives this frontend), write the pairing token if there is none,
         serve HTTP on a daemon thread and tail the event log on another.
-        Writer-only, open the store and nothing else. Idempotent."""
+        Writer-only, open the store and nothing else. Idempotent.
+
+        It serves only a trusted chat block, a private store directory and
+        a private pairing token outside the resident's tree (the module
+        docstring). Otherwise it sets `refused` and logs why; standalone
+        (no `inbound`) it also raises ChatError, since there is no primary
+        to run on."""
         with self._life_lock:
             if self.writer_only:
                 _ = self.store
                 return
             if self._server is not None:
                 return
-            store = self.store
+            # The paths are checked before anything is written there.
+            why = self._config_refusal() or self._place_refusal()
+            store = None if why else self.store
+            if store is not None:
+                why = self._store_refusal()
+            if store is not None and not why:
+                self._ensure_pair_token()
+                why = self._token_refusal()
+            if why:
+                self.refused = why
+                log.error("web chat: not serving: %s", why)
+                if self.inbound is None:
+                    raise ChatError(f"web chat: not serving: {why}")
+                return
+            self.refused = None
             store.prune_events()
             if self.inbound is None:
                 self._ensure_own_channels()
-            self._ensure_pair_token()
             cls = _Server6 if ":" in self.bind else _Server
             srv = cls((self.bind, self.port), _Handler)
             srv.frontend = self
@@ -999,8 +1353,49 @@ class WebFrontend(ChatFrontend):
                                           daemon=True)
             self._tail.start()
             if web_push.AVAILABLE:
+                self.push.prune()
                 self.push.start()
             log.info("web chat serving on %s:%d%s/", self.bind, self.port, self.base_path)
+
+    def _config_refusal(self) -> str | None:
+        if not self.trusted_config:
+            return ("the chat block does not come from the owner-private chat.json, so its "
+                    "bind, public_url, login and token file may not be the owner's; the web "
+                    "chat serves only that block (docs/SECURITY.md, Web chat)")
+        return None
+
+    def _place_refusal(self) -> str | None:
+        """Why the store or the pairing token may not live where the block
+        puts them, checked before either is opened or written: inside the
+        resident's tree, or in a directory that is there and not this
+        user's alone (the store's) or that others may write (the token's)."""
+        d, p = self.store_path.parent, self.pair_token_file
+        for path in (d, p):
+            root = _inside(path, self.untrusted_roots)
+            if root is not None:
+                return f"{path} is inside {root}, which another user controls"
+        if os.path.lexists(d):
+            why = private_problem(d, "dir")
+            if why:
+                return why
+        if os.path.lexists(p.parent):
+            return _guarded_dir_problem(p.parent)
+        return None
+
+    def _store_refusal(self) -> str | None:
+        """Why the opened store may not be served: its directory and file
+        must be this user's alone."""
+        return (private_problem(self.store_path.parent, "dir")
+                or private_problem(self.store_path, "file"))
+
+    def _token_refusal(self) -> str | None:
+        """Why the pairing token file may not be trusted. A missing file is
+        no refusal (the cookie is then off); one that is there must be this
+        user's alone, in a directory no other user can write."""
+        p = self.pair_token_file
+        if not os.path.lexists(p):
+            return None
+        return _guarded_dir_problem(p.parent) or private_problem(p, "file")
 
     def _tail_events(self) -> None:
         """Every tail_s seconds, hand the open streams the events other
@@ -1035,7 +1430,7 @@ class WebFrontend(ChatFrontend):
             tail.join(timeout=5)
 
     def ping(self) -> bool:
-        if not self.store.ok():
+        if self.refused or not self.store.ok():
             return False
         return self._thread is None or self._thread.is_alive()
 
@@ -1068,11 +1463,124 @@ class WebFrontend(ChatFrontend):
 
     def pair_token(self) -> str:
         """The pairing token, read fresh so a replaced file takes effect; ""
-        when there is none."""
+        when there is none, or when the file holds fewer than
+        MIN_PAIR_TOKEN characters (refused, with a log line)."""
         try:
-            return self.pair_token_file.read_text().strip()
+            token = self.pair_token_file.read_text().strip()
         except OSError:
             return ""
+        if len(token) < MIN_PAIR_TOKEN:
+            if token:
+                mark = hashlib.sha256(token.encode("utf-8")).hexdigest()
+                if mark != self._short_token_logged:
+                    self._short_token_logged = mark
+                    log.warning("web chat: the pairing token in %s is shorter than %d "
+                                "characters; pairing by token is off until it is replaced",
+                                self.pair_token_file, MIN_PAIR_TOKEN)
+            return ""
+        return token
+
+    def pair_hash(self) -> str:
+        """A hash of the pairing token now; "" when there is none. Push
+        subscriptions made under another token are dropped (web_push)."""
+        token = self.pair_token()
+        return hashlib.sha256(token.encode("utf-8")).hexdigest() if token else ""
+
+    # who is the owner
+
+    def peer_is_tailscaled(self, peer: tuple, local: tuple) -> bool:
+        """True when the client end of this connection belongs to
+        tailscaled's uid (Linux): only then is the identity header the
+        proxy's. A mismatch looks tailscaled up again (rate-limited)."""
+        uid = peer_uid(peer, local)
+        if uid is None:
+            return False
+        if uid == tailscaled_uid():
+            return True
+        return uid == tailscaled_uid(refresh=True)
+
+    def host_allowed(self, host: str) -> bool:
+        """True when a request's Host names this server: public_url's host
+        and port, or a loopback name with this server's port."""
+        got = _hostport(host)
+        if got is None:
+            return False
+        name, port = got
+        pub = self.public_origin()
+        if pub is not None and name == pub[1]:
+            return (port if port is not None else (443 if pub[0] == "https" else 80)) == pub[2]
+        return name in LOOPBACK_HOSTS and (port if port is not None else 80) == self.port
+
+    def public_origin(self) -> tuple[str, str, int] | None:
+        """(scheme, host, port) of public_url; None when there is none."""
+        return _origin_key(self.public_url) if self.public_url else None
+
+    def loopback_origin(self, key: tuple[str, str, int] | None) -> bool:
+        """True for an http origin on a loopback name and this server's port."""
+        return key is not None and key[0] == "http" and key[1] in LOOPBACK_HOSTS \
+            and key[2] == self.port
+
+    # the owner's web messages, by primary id (shadow mode)
+
+    @property
+    def owner_ids_file(self) -> Path:
+        return self.store_path.parent / OWNER_IDS_FILE
+
+    def _read_owner_ids(self) -> frozenset:
+        """The (channel, id) pairs in the owner-ids file, read again when
+        the file changed. Empty when it is missing or is not this user's
+        alone (a file another user could write proves nothing)."""
+        p = self.owner_ids_file
+        try:
+            st = os.lstat(p)
+        except OSError:
+            return frozenset()
+        # A change of content, mode, owner or links reads it (and checks it) again.
+        stamp = (st.st_mtime_ns, st.st_size, st.st_mode, st.st_uid, st.st_ino, st.st_nlink)
+        with self._owner_ids_lock:
+            if self._owner_ids is not None and self._owner_ids[0] == stamp:
+                return self._owner_ids[1]
+        if private_problem(p, "file"):
+            log.warning("web chat: %s is not this user's alone; it is ignored", p)
+            return frozenset()
+        try:
+            data = json.loads(p.read_text())
+            ids = frozenset((str(c), str(m)) for c, m in data.get("ids") or [])
+        except (OSError, ValueError, TypeError, AttributeError):
+            return frozenset()
+        with self._owner_ids_lock:
+            self._owner_ids = (stamp, ids)
+        return ids
+
+    def owner_posted(self, channel: str, msg_id: str) -> bool:
+        """True when the primary's message `msg_id` in `channel` carries the
+        owner's web input (posted as the bot): the history copy and
+        chat_read take it as the owner's."""
+        return bool(msg_id) and (str(channel), str(msg_id)) in self._read_owner_ids()
+
+    def note_owner_post(self, channel: str, msg_id: str) -> None:
+        """Record that the primary's message carries the owner's web input;
+        the file keeps the newest OWNER_IDS_MAX. A failure is logged."""
+        if not msg_id:
+            return
+        p = self.owner_ids_file
+        with self._owner_ids_lock:
+            try:
+                data = json.loads(p.read_text()) if p.exists() else {}
+                ids = [list(x) for x in data.get("ids") or []
+                       if isinstance(x, list) and len(x) == 2]
+            except (OSError, ValueError, AttributeError):
+                ids = []
+            item = [str(channel), str(msg_id)]
+            if item not in ids:
+                ids.append(item)
+            ids = ids[-OWNER_IDS_MAX:]
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                _write_private(p, json.dumps({"v": 1, "ids": ids}).encode("utf-8"))
+            except OSError as e:
+                log.warning("web chat: the owner's message ids could not be kept: %s", e)
+            self._owner_ids = None
 
     # helpers
 
@@ -1174,14 +1682,12 @@ class WebFrontend(ChatFrontend):
                     self._push_tag(row))
 
     def _push_card(self, row: dict | None, card: ConfirmationCard) -> None:
-        """A new card is pushed at high urgency: its title, then its first
-        line (a line of the card, a field, else the body)."""
+        """A new card is pushed at high urgency: "Tacitus", then the card's
+        title. Never a field, a line or the body: they hold addresses and
+        mail text, and a notification shows on a locked screen."""
         if not row:
             return
-        first = [*(card.lines or []), *(f"{f.label}: {f.value}" for f in card.fields or []),
-                 card.body or ""]
-        body = next((ln for ln in first if web_push.plain_line(ln)), "")
-        self.notify(card.title or "Confirm", body,
+        self.notify("Tacitus", card.title or "A card to confirm",
                     self._permalink(row["channel"], row["thread_key"], row["id"]),
                     self._push_tag(row), urgency="high")
 
@@ -1596,6 +2102,7 @@ class WebFrontend(ChatFrontend):
             ref = self._hand_in(msg)
             if ref is None:
                 return {"ok": True}, None
+            self.note_owner_post(ref.channel, ref.id)
             row = self.store.message(ref.channel, ref.id) or self.mirror_post(ref, text, OWNER)
             return row, None
         row = self.store.add_message(channel, mid=None, thread_key=key, author=OWNER,
@@ -1638,6 +2145,7 @@ class WebFrontend(ChatFrontend):
             ref = self._hand_in(msg)
             if ref is None:
                 return {"ok": True}
+            self.note_owner_post(ref.channel, ref.id)
             row = self.store.message(ref.channel, ref.id)
             if row is None:
                 return self.mirror_file(ref, FileRef(name=name, mimetype=mimetype,
@@ -1691,9 +2199,33 @@ class WebFrontend(ChatFrontend):
 
 
 class _Server(http.server.ThreadingHTTPServer):
+    """One thread per connection, at most MAX_CONNECTIONS at once: one more
+    is closed at once, so a flood of connections cannot use up the
+    process's threads."""
     daemon_threads = True
     allow_reuse_address = True
     frontend: WebFrontend
+
+    def __init__(self, addr: tuple, handler: type,
+                 max_connections: int = MAX_CONNECTIONS) -> None:
+        super().__init__(addr, handler)
+        self._slots = threading.BoundedSemaphore(max_connections)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
 
 
 class _Server6(_Server):
@@ -1704,6 +2236,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     server_version = "Tacitus"
     sys_version = ""
     server: _Server
+    # Socket reads and writes; a stalled client is dropped. An event
+    # stream writes a comment every ping_s seconds, well inside it.
+    timeout = HANDLER_TIMEOUT_S
 
     def log_message(self, fmt: str, *args: Any) -> None:
         log.debug("web chat %s: " + fmt, self.client_address[0], *args)
@@ -1723,6 +2258,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def _common_headers(self) -> None:
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "same-origin")
+        # No page of another origin (a deck on another port of the host)
+        # may load an answer of this one.
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
 
     def _send(self, status: int, body: bytes, ctype: str,
               headers: tuple[tuple[str, str], ...] = ()) -> None:
@@ -1745,6 +2283,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def _route(self, method: str) -> None:
         after = None
         self._body_read = False
+        self._drain_limit = MAX_DRAIN_BYTES
         try:
             parts = urllib.parse.urlsplit(self.path)
             base = self.fe.base_path
@@ -1780,6 +2319,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             after()
 
     def _api(self, method: str, segs: list[str], query: dict) -> Callable[[], None] | None:
+        if segs == ["pair"]:
+            self._drain_limit = MAX_PAIR_BYTES
+        self._check_host()
+        self._check_fetch_site()
         if method == "POST":
             self._check_origin()
         if method == "POST" and segs == ["pair"]:
@@ -1797,6 +2340,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return None
             if segs == ["push", "vapid"]:
                 self._json(200, {"key": self._pusher().vapid.public_key})
+                return None
+            if segs == ["push", "subscriptions"]:
+                pusher = self._pusher()
+                pusher.prune()
+                self._json(200, pusher.store.push_list())
                 return None
             if segs == ["channels"]:
                 self._json(200, store.channels())
@@ -1848,7 +2396,18 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 self._json(200, {"ok": True,
                                  "removed": self._pusher().store.push_unsubscribe(endpoint)})
                 return None
+            if segs == ["push", "revoke"]:
+                self._refuse_relay_deny("revoke a subscription")
+                sub_id = self._read_json().get("id")
+                if not isinstance(sub_id, str) or not sub_id:
+                    raise _HttpError(400, "id is required")
+                self._json(200, {"ok": True,
+                                 "removed": self._pusher().store.push_revoke(sub_id)})
+                return None
             if n == 4 and segs[0] == "cards" and segs[3] == "actions":
+                # The Send and Create buttons: never from a device paired on
+                # the relay's origin below "all", whatever its relay allows.
+                self._refuse_relay_deny("act on a card")
                 body = self._read_json()
                 action_id = body.get("action_id")
                 if not isinstance(action_id, str) or not action_id:
@@ -1863,12 +2422,22 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     # checks and inputs
 
     def _is_owner(self) -> bool:
+        """The owner: the Tailscale login header on a connection that
+        tailscaled itself opened (it sets the header and strips one a
+        client sent; any other local process could forge it), or the
+        pairing cookie."""
         fe = self.fe
-        if fe.tailscale_login and self.client_address[0] in LOOPBACK:
+        if fe.tailscale_login and fe.trust_tailscale_header \
+                and self.client_address[0] in LOOPBACK:
             got = self.headers.get("Tailscale-User-Login") or ""
             if got and hmac.compare_digest(got.encode("utf-8"),
                                            fe.tailscale_login.encode("utf-8")):
-                return True
+                try:
+                    local = self.connection.getsockname()
+                except OSError:
+                    local = None
+                if local is not None and fe.peer_is_tailscaled(self.client_address, local):
+                    return True
         token = fe.pair_token()
         if token:
             cookie = self._cookie(COOKIE)
@@ -1886,19 +2455,41 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         morsel = jar.get(name)
         return morsel.value if morsel is not None else ""
 
+    def _check_host(self) -> None:
+        """An API request names this server: public_url's host and port, or
+        a loopback name with this server's port. Anything else (a page on a
+        name rebound to this host) is misdirected."""
+        if not self.fe.host_allowed(self.headers.get("Host") or ""):
+            raise _HttpError(421, "this server does not answer for that host")
+
+    def _check_fetch_site(self) -> None:
+        """A request a page of another origin made (a deck on another port
+        of this host is same-site) is refused, a GET too."""
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if site in ("cross-site", "same-site"):
+            raise _HttpError(403, "not from this app's own pages")
+
     def _check_origin(self) -> None:
-        """A POST from a page on another origin is refused: the cookie is
+        """A POST carries the exact Origin of public_url (scheme, host and
+        port). A loopback client that sends no identity header (the relay
+        client, which sets it) may send this server's loopback origin.
+        Anything else, a missing Origin too, is refused: the cookie is
         SameSite=Strict, and this is the second lock."""
-        origin = self.headers.get("Origin")
-        if origin is None:
+        got = _origin_key(self.headers.get("Origin") or "")
+        if got is None:
+            raise _HttpError(403, "a POST must carry this app's Origin")
+        if got == self.fe.public_origin():
             return
-        allowed = {self.headers.get("Host") or ""}
-        if self.client_address[0] in LOOPBACK:
-            allowed.add(self.headers.get("X-Forwarded-Host") or "")
-        if self.fe.public_url:
-            allowed.add(urllib.parse.urlsplit(self.fe.public_url).netloc)
-        if urllib.parse.urlsplit(origin).netloc not in allowed - {""}:
-            raise _HttpError(401, "not the owner")
+        if self.client_address[0] in LOOPBACK and "Tailscale-User-Login" not in self.headers \
+                and self.fe.loopback_origin(got):
+            return
+        raise _HttpError(403, "not from this app's origin")
+
+    def _refuse_relay_deny(self, what: str) -> None:
+        """403 for a request the relay marks `X-Tacitus-Relay-Cards: deny`
+        (a device paired through the relay's origin below "all")."""
+        if (self.headers.get("X-Tacitus-Relay-Cards") or "").strip().lower() == "deny":
+            raise _HttpError(403, f"a device paired on the relay's origin may not {what}")
 
     def _need_channel(self, cid: str) -> dict:
         row = self.fe.store.channel(cid)
@@ -1929,57 +2520,68 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         return val
 
     def _drain(self) -> None:
-        """Read an unread request body before an error answer, so closing
-        the socket does not reset the connection under the client's read."""
+        """Read a small unread request body before an error answer, so
+        closing the socket does not reset the connection under the client's
+        read. A body over the drain limit (the pairing route's own cap
+        there) is left unread."""
         if self._body_read:
             return
         self._body_read = True
-        try:
-            n = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
+        length = (self.headers.get("Content-Length") or "").strip()
+        if self.headers.get("Transfer-Encoding") or not _LENGTH_RE.fullmatch(length):
             return
-        if 0 < n <= MAX_UPLOAD_BYTES:
+        n = int(length)
+        if 0 < n <= self._drain_limit:
             try:
                 self.rfile.read(n)
             except OSError:
                 pass
 
     def _read_chunked(self, limit: int) -> bytes:
-        """A chunked request body (a proxy may forward one)."""
+        """A chunked request body (a proxy may forward one). A chunk size is
+        1 to 8 hex digits and nothing else (no sign, no prefix); a chunk
+        that would take the body past `limit` is refused before it is read."""
         out = bytearray()
         while True:
             line = self.rfile.readline(1024)
-            try:
-                size = int(line.split(b";", 1)[0].strip() or b"x", 16)
-            except ValueError:
-                raise _HttpError(400, "bad chunked body") from None
+            if not line.endswith(b"\n"):
+                raise _HttpError(400, "bad chunked body")
+            size_text = line.split(b";", 1)[0].strip()
+            if not _CHUNK_SIZE_RE.fullmatch(size_text):
+                raise _HttpError(400, "bad chunked body")
+            size = int(size_text, 16)
             if size == 0:
-                while self.rfile.readline(1024) not in (b"\r\n", b"\n", b""):
-                    pass
-                return bytes(out)
+                for _ in range(64):
+                    if self.rfile.readline(1024) in (b"\r\n", b"\n", b""):
+                        return bytes(out)
+                raise _HttpError(400, "bad chunked body")
             if len(out) + size > limit:
                 raise _HttpError(400, "the body is too large")
-            out += self.rfile.read(size)
-            self.rfile.readline(1024)
+            data = self.rfile.read(size)
+            if len(data) != size or self.rfile.readline(1024) not in (b"\r\n", b"\n"):
+                raise _HttpError(400, "bad chunked body")
+            out += data
 
     def _read_body(self, limit: int) -> bytes:
         self._body_read = True
-        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+        te = (self.headers.get("Transfer-Encoding") or "").strip().lower()
+        if te:
+            if te != "chunked":
+                raise _HttpError(400, "only a chunked or a plain body is taken")
             return self._read_chunked(limit)
         length = self.headers.get("Content-Length")
         if length is None:
             raise _HttpError(400, "Content-Length is required")
-        try:
-            n = int(length)
-        except ValueError:
-            raise _HttpError(400, "bad Content-Length") from None
-        if n < 0 or n > limit:
+        if not _LENGTH_RE.fullmatch(length.strip()):
+            raise _HttpError(400, "bad Content-Length")
+        n = int(length.strip())
+        if n > limit:
             raise _HttpError(400, "the body is too large")
         return self.rfile.read(n)
 
-    def _read_json(self) -> dict:
+    def _read_json(self, limit: int = MAX_JSON_BYTES) -> dict:
         try:
-            body = json.loads(self._read_body(MAX_JSON_BYTES) or b"{}")
+            body = json.loads(self._read_body(limit) or b"{}")
         except ValueError:
             raise _HttpError(400, "the body is not JSON") from None
         if not isinstance(body, dict):
@@ -2001,6 +2603,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if (self.headers.get("X-Tacitus-Relay-Cards") or "").lower() == "deny":
             raise _HttpError(403, "not from a device paired on the relay's origin")
         pusher = self._pusher()
+        # A token change drops the old subscriptions before this one is kept.
+        pusher.prune()
         endpoint = body.get("endpoint")
         keys = body.get("keys")
         if not isinstance(endpoint, str) or not pusher.allow(endpoint):
@@ -2016,13 +2620,22 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         pusher.store.push_subscribe(endpoint, {"p256dh": keys["p256dh"], "auth": keys["auth"]})
 
     def _pair(self) -> None:
-        body = self._read_json()
-        token = self.fe.pair_token()
-        got = body.get("token")
-        if not token or not isinstance(got, str) or not hmac.compare_digest(
-                got.strip().encode("utf-8"), token.encode("utf-8")):
-            time.sleep(self.fe.pair_delay_s)
-            raise _HttpError(401, "not the owner")
+        """Set the cookie for the right token. The body is read only up to
+        MAX_PAIR_BYTES, and one attempt runs at a time, with a pause after a
+        wrong token, so guesses come at most one per pause."""
+        body = self._read_json(MAX_PAIR_BYTES)
+        fe = self.fe
+        if not fe._pair_lock.acquire(timeout=PAIR_WAIT_S):
+            raise _HttpError(429, "too many pairing attempts; try again later")
+        try:
+            token = fe.pair_token()
+            got = body.get("token")
+            if not token or not isinstance(got, str) or not hmac.compare_digest(
+                    got.strip().encode("utf-8"), token.encode("utf-8")):
+                time.sleep(fe.pair_delay_s)
+                raise _HttpError(401, "not the owner")
+        finally:
+            fe._pair_lock.release()
         attrs = [f"{COOKIE}={token}", f"Path={self.fe.base_path or '/'}", "HttpOnly",
                  "SameSite=Strict", f"Max-Age={COOKIE_MAX_AGE}"]
         if self.fe.public_url.startswith("https:"):
