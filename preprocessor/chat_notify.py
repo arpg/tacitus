@@ -17,7 +17,9 @@ ea-config.json):
     (ZULIP_API_KEY, found by owner_trust.owner_secret). Text passes
     through mrkdwn_to_zulip; blocks are ignored. An owner process takes
     the server and streams from the owner-private chat.json
-    (ea_config.get_chat).
+    (ea_config.get_chat). With `chat.shadow` "web", an owner process
+    also mirrors each part into the web chat's store under the ids the
+    bot's Zulip frontend gives it (docs/webchat.md, CLI senders).
   * memory: parts are recorded in MEMORY_POSTS (tests).
 
 post_as_bot() is the direct post with bot credentials that owner-side
@@ -32,9 +34,11 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -213,6 +217,7 @@ def _zulip_post_parts(zcfg: dict, target: dict, parts: list[str]) -> bool:
     stream = target.get("stream", "")
     topic = target.get("topic") or _zulip_new_topic(client, stream, parts[0] if parts else "")
     all_ok = True
+    sent: list[tuple[int, str]] = []
     for part in parts:
         request = {"type": "stream", "to": stream, "topic": topic,
                    "content": text_mod.mrkdwn_to_zulip(part)}
@@ -226,7 +231,75 @@ def _zulip_post_parts(zcfg: dict, target: dict, parts: list[str]) -> bool:
             detail = resp.get("msg", resp) if isinstance(resp, dict) else resp
             print(f"Zulip post failed: {detail}")
             all_ok = False
+            continue
+        if resp.get("id") is not None:
+            sent.append((int(resp["id"]), part))
+    _mirror_zulip(zcfg, client, stream, topic, sent)
     return all_ok
+
+
+# ── The web chat's copy ───────────────────────────────────────────────
+# With `chat.shadow` "web" the bot mirrors its own posts into its web
+# chat. A Zulip post from here goes out on the raw client, so it is
+# mirrored here: into the store the bot serves, under the ids the bot's
+# Zulip frontend gives the same post, and the bot's tail thread pushes it
+# to the open streams. Only an owner process writes the store
+# (chat.web_writer). A Slack webhook returns no message id, so a Slack
+# post is not mirrored.
+
+_WEB: list = []
+
+
+def _web_writer():
+    """The web chat's store opened writer-only, once per process; None
+    when the chat block names no web shadow or this process may not write
+    it."""
+    if not _WEB:
+        try:
+            _WEB.append(_chat_pkg().web_writer())
+        except Exception as e:
+            print(f"Web chat mirror unavailable: {e}")
+            _WEB.append(None)
+    return _WEB[0]
+
+
+def _zulip_kind(zcfg: dict, stream: str) -> str:
+    """The web chat's kind for a stream: the EA, scheduling or DM stream
+    the zulip block names, else a room."""
+    if stream == (zcfg.get("stream") or "ea"):
+        return "main"
+    if zcfg.get("sched_stream") and stream == zcfg["sched_stream"]:
+        return "sched"
+    if stream == (zcfg.get("dm_stream") or "ea-dm"):
+        return "dm"
+    return "room"
+
+
+def _mirror_zulip(zcfg: dict, client, stream: str, topic: str,
+                  sent: list[tuple[int, str]]) -> None:
+    """Copy the parts Zulip took, (message id, mrkdwn text) in one topic,
+    into the web chat. The channel row is written only when the store
+    lacks it: the bot's own row (name, archived) wins. A failure is
+    printed and the post stands."""
+    if not sent:
+        return
+    web = _web_writer()
+    if web is None:
+        return
+    chat = _chat_pkg()
+    try:
+        res = client.get_stream_id(stream)
+        if not isinstance(res, dict) or res.get("result") != "success":
+            raise RuntimeError(f"no stream id for {stream!r}")
+        sid = int(res["stream_id"])
+        channel = f"stream:{sid}"
+        key = importlib.import_module(f"{chat.__name__}.zulip_frontend").thread_key_for(sid, topic)
+        if web.store.channel(channel) is None:
+            web.mirror_channel(channel, stream, _zulip_kind(zcfg, stream))
+        for mid, part in sent:
+            web.mirror_post(chat.MessageRef(channel, str(mid), key, time.time()), part, "bot")
+    except Exception as e:
+        print(f"Web chat mirror failed: {e}")
 
 
 def _send_zulip(channel_key: str, parts: list[str], blocks: Optional[list]) -> bool:

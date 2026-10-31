@@ -98,7 +98,7 @@ __all__ = [
     "primary_action", "resolve_code", "resolve_reaction",
     "CODE_ALPHABET", "THREAD_KEY_RE", "ActionEvent", "ChannelInfo", "FileRef",
     "InboundMessage", "MessageRef", "RoomRef", "Status", "ViewEvent",
-    "load_frontend", "prompt_strings_for_config", "private_dir",
+    "load_frontend", "prompt_strings_for_config", "private_dir", "web_writer",
 ]
 
 FRONTENDS = ("slack", "zulip", "memory", "web")
@@ -142,19 +142,28 @@ def load_frontend(*, for_cli: bool = False, ea_dir: str | Path | None = None,
     lookup in `env` did.
 
     A `shadow` in the chat block wraps the frontend in a ShadowFrontend
-    that mirrors it into that one. A command-line sender gets the frontend
-    alone: the web chat's store and event stream belong to the bot. A
-    shadow that fails to build is logged and the frontend runs alone."""
+    that mirrors it into that one. A command-line sender in an owner
+    process gets the composite too, its web side writer-only and its store
+    open: a post mirrors its row and event into the store the bot serves,
+    and the bot's tail thread pushes them to the open streams
+    (docs/webchat.md, CLI senders). A sender that is not an owner process
+    gets the frontend alone, logged once: the store is the owner's. A
+    shadow that fails to build or open is logged and the frontend runs
+    alone."""
     cfg = ea_config.get_chat(_config_path(ea_dir))
     shadow = str(cfg.get("shadow") or "")
     if shadow and shadow not in SHADOWS:
         raise ChatError(f"unknown chat shadow {shadow!r}; expected one of {', '.join(SHADOWS)}")
     primary = _load_primary(cfg, for_cli=for_cli, ea_dir=ea_dir, env=env)
-    if not shadow or for_cli or shadow == cfg.get("frontend"):
+    if not shadow or shadow == cfg.get("frontend"):
+        return primary
+    if for_cli and not _cli_may_write_web(cfg):
         return primary
     from .shadow_frontend import ShadowFrontend
     try:
-        web = _build_web(_with_web_store(cfg, ea_dir))
+        web = _build_web(_with_web_store(cfg, ea_dir), writer_only=for_cli)
+        if for_cli:
+            web.start()
     except Exception:
         logging.getLogger("chat").exception(
             "the %s shadow did not build; %s runs alone", shadow, cfg.get("frontend"))
@@ -172,6 +181,45 @@ def _backfill_days(cfg: dict) -> float:
         return max(0.0, float(web.get("backfill_days", default)))
     except (TypeError, ValueError):
         return float(default)
+
+
+# Set once this process has said that its posts skip the web chat.
+_CLI_ALONE_LOGGED: list[bool] = []
+
+
+def _cli_may_write_web(cfg: Mapping) -> bool:
+    """True when this command-line process may write the web chat's store:
+    an owner process, as the bot is. Any other process would open a store
+    the bot never reads, or one it may not open; it says so once."""
+    if owner_trust.is_owner_process():
+        return True
+    if not _CLI_ALONE_LOGGED:
+        _CLI_ALONE_LOGGED.append(True)
+        logging.getLogger("chat").warning(
+            "this process is not the owner's, so its posts reach %s only: the web chat's "
+            "store is the owner's (docs/webchat.md, CLI senders)", cfg.get("frontend"))
+    return False
+
+
+def web_writer(*, ea_dir: str | Path | None = None) -> ChatFrontend | None:
+    """The web chat's store opened writer-only, for a command-line sender
+    that posts to the primary without a frontend (chat_notify's Zulip
+    client) and mirrors the post itself. None unless the chat block names
+    the `web` shadow and this is an owner process (as load_frontend), and
+    None when the store does not open (logged)."""
+    cfg = ea_config.get_chat(_config_path(ea_dir))
+    if str(cfg.get("shadow") or "") != "web" or cfg.get("frontend") == "web":
+        return None
+    if not _cli_may_write_web(cfg):
+        return None
+    try:
+        web = _build_web(_with_web_store(cfg, ea_dir), writer_only=True)
+        web.start()
+    except Exception:
+        logging.getLogger("chat").exception(
+            "the web chat's store did not open; posts reach %s only", cfg.get("frontend"))
+        return None
+    return web
 
 
 def _web_class():
@@ -194,10 +242,10 @@ def _with_web_store(cfg: dict, ea_dir: str | Path | None) -> dict:
     return {**cfg, "web": web}
 
 
-def _build_web(cfg: dict) -> ChatFrontend:
+def _build_web(cfg: dict, *, writer_only: bool = False) -> ChatFrontend:
     """The web chat front end for the chat block `cfg`, built from its
-    `web` section."""
-    return _web_class().from_config(cfg.get("web") or {})
+    `web` section; `writer_only` for a command-line sender."""
+    return _web_class().from_config(cfg.get("web") or {}, writer_only=writer_only)
 
 
 def _load_primary(cfg: dict, *, for_cli: bool, ea_dir: str | Path | None,
@@ -225,7 +273,8 @@ def _load_primary(cfg: dict, *, for_cli: bool, ea_dir: str | Path | None,
     if name == "web":
         mod = _platform_module("web")
         web = cfg.get("web") or {}
-        return mod.WebFrontend.from_config(web, store_path=_web_store_path(web, ea_dir))
+        return mod.WebFrontend.from_config(web, store_path=_web_store_path(web, ea_dir),
+                                           writer_only=for_cli)
     raise ChatError(f"unknown chat frontend {name!r}; expected one of {', '.join(FRONTENDS)}")
 
 

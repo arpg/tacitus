@@ -229,7 +229,80 @@ dispatching it itself (see below).
   every post, update, card, status and reaction with the same ids.
 
 `load_frontend` returns the composite when the chat block names a
-`shadow`; `"frontend": "web"` returns a bare `WebFrontend`.
+`shadow`; `"frontend": "web"` returns a bare `WebFrontend`. A
+command-line sender in an owner process gets the composite too, with a
+writer-only web side (see CLI senders).
+
+## CLI senders
+
+Much of what the owner reads is posted from outside the bot process: the
+morning briefing, the cron lanes' reports, the room posts, the uploads.
+The store and the event streams live in the bot, so a sender writes the
+store and the bot pushes what it wrote.
+
+**Who runs what.** The bot (`ea-chat-bot.py`) runs as the owner from the
+owner's code tree (`/opt` on a host install, the `bot` service in
+Docker); it is an owner process (`owner_trust.is_owner_process`), and
+its store is `<private_dir>/webchat.sqlite`, mode 0600 in the 0700
+private dir. The cron lanes (`run-agent.sh`, `run-plugin.sh`) run as the
+owner too: Claude runs inside them as `ea-bot`, and the wrapper posts its
+output as the owner (`slack_notifier.post_to_slack`, then
+`chat_notify.post`). Owner plugins, scheduled sends, the alert flush and
+`chat/direct.py` are owner processes as well. The resident (`ea-bot`)
+holds no chat credential: `chat_upload.py` run as ea-bot stages its job
+(`slack_outbox`), and the bot sends it through the composite, which
+mirrors it.
+
+**The rule.** A command-line sender writes the store when it is an owner
+process, so the store it computes is the bot's file and the user is the
+bot's user. Any other process posts to the primary alone and logs one
+warning per process: the store is the owner's, and the copy it could
+open (`<ea_dir>/state/webchat.sqlite`) is one the bot never reads.
+
+**The senders.**
+
+- `chat.load_frontend(for_cli=True)` (chat_upload, chat_read, the room
+  posts of chat_notify, `chat/direct.py`) returns the composite with the
+  web side writer-only (`WebFrontend(..., writer_only=True)`): `start()`
+  opens the store and nothing else (no HTTP server, no event stream, no
+  pairing token, no channels made), and load_frontend calls it. The
+  mirrors run as in the bot, under the primary's ids. A store that does
+  not open is logged and the sender runs the primary alone.
+- `chat_notify.post` and `post_as_bot` on Zulip send with a bare Zulip
+  client, so they mirror each part themselves through
+  `chat.web_writer()`: channel `stream:<id>`, the Zulip message id, the
+  thread key `stream:<id>:topic:<topic>` (what the Zulip frontend's
+  `post` returns for the same post) and the core's mrkdwn, which the web
+  side converts as its `post` would. The channel row is written only
+  when the store lacks it, so the bot's row (name, archived) stands. A
+  mirror failure is printed and the post stands.
+- Not mirrored: a Slack webhook post (no message id comes back), and a
+  Zulip direct message or scheduled direct message from
+  `chat/direct.py` (they live outside the streams the web chat holds; the
+  Zulip server delivers a scheduled one later).
+
+**The bot's side.** The serving `WebFrontend` runs a tail thread that
+reads `SELECT MAX(seq) FROM events` every `tail_s` seconds (1) and hands
+the events after the last seq it delivered to the open streams, in seq
+order and with the payload as logged: the JSON the in-process path
+sends. The bot's own writes go out at once; when another process logged
+events before one of them, those go first, read back from the log. The
+store keeps the last seq it handed on, so no event goes out twice (a
+stream also skips any seq at or below its last). With no stream open the
+new events are passed over: a stream that opens later replays the log.
+
+**SQLite.** One file, the default rollback journal and a 10-second busy
+wait on each connection. Writers take turns, so the seqs commit in
+order; the journal takes the database file's mode. A file id the store
+mints (`f<n>`, standalone only) is inserted before the bytes take its
+name, and minted again when another process took it.
+
+**Permissions.** The bot and every sender that writes the store run as
+the owner, so the 0600 store, its journal and `webchat-files/` need no
+change. In Docker the bot and scheduler containers share the
+`ea-private` volume. Standalone (`"frontend": "web"`), a command-line
+sender gets the bare `WebFrontend`, writer-only, on the store its own
+process computes.
 
 ## The web app (B)
 
@@ -371,5 +444,5 @@ the prompts use it as an adjective ("a real-time {platform} message").
   history is, and is stored as given). `mirror_channel` takes
   `description=`; None keeps the stored one. A store from before the
   `history` column gains it on open, its rows all live ones.
-- `stop()` stops the server and closes the open streams; `url` is the
-  loopback URL with the base path.
+- `stop()` stops the server and the tail thread and closes the open
+  streams; `url` is the loopback URL with the base path.

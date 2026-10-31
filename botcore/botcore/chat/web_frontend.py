@@ -12,6 +12,20 @@ message or a channel appends an event in the same transaction and hands
 it to each open event stream, so a browser that reconnects with
 `Last-Event-ID` replays exactly what it missed.
 
+Several processes write one store (docs/webchat.md, CLI senders). The
+bot serves it. A command-line sender in an owner process (chat_notify,
+chat_upload, a cron lane's post) opens it writer-only: `start()` opens
+the store and serves nothing, and its mirrors write their rows and
+events into the same tables under the primary's ids. SQLite takes one
+writer at a time, so the event seqs commit in order. The serving store
+hands its own events to the streams at once; a tail thread reads the
+log every `tail_s` seconds (one `SELECT MAX(seq)` when nothing is new)
+and hands on the events another process appended, in seq order and as
+the same JSON. The store keeps the last seq it handed on, so no event
+reaches a stream twice. A process that is not the owner's never opens
+the owner-private store: its posts reach the primary only
+(chat.load_frontend).
+
 Identity, standalone: the owner is "owner", the bot is "bot"; messages
 are `w<seq>`, a thread is `t<seq of its first message>`, rooms are
 `r<n>`, files `f<n>`; the EA channel is `main` and the DM is `dm`. In
@@ -101,6 +115,9 @@ DEFAULT_BASE = "/chat"
 
 # Seconds between the comment lines that keep an idle event stream open.
 PING_S = 20.0
+# Seconds between the serving process's reads of the event log for the
+# events another process (a command-line sender) appended.
+TAIL_S = 1.0
 # Events kept for replay; a browser away longer reloads its view.
 EVENT_KEEP_S = 14 * 86400
 # Events a stream may fall behind by before it is closed; the browser
@@ -267,7 +284,9 @@ class WebStore:
     One connection, shared by every thread under one lock. A write to a
     message or a channel and its event go in one transaction; the event
     then goes to every subscriber's queue while the lock is held, so each
-    queue sees events in seq order."""
+    queue sees events in seq order. Other processes may write the same
+    file: `deliver_new` hands their events on, and `_delivered` (the last
+    seq handed on) keeps any event from going out twice."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -289,6 +308,9 @@ class WebStore:
         self._subs: list[_Sub] = []
         self._pending: list[tuple[int, str, str]] = []
         self._emitted = 0
+        # The last event seq handed to the streams, or passed over while
+        # none was open: a stream that opens later replays from the log.
+        self._delivered = self.max_event_seq()
 
     def close(self) -> None:
         with self._lock:
@@ -421,9 +443,13 @@ class WebStore:
         row = self._one("SELECT MAX(seq) AS s FROM events")
         return int(row["s"] or 0) if row else 0
 
-    def events_since(self, seq: int, limit: int = 500) -> list[tuple[int, str, str]]:
-        rows = self._all("SELECT seq, type, payload FROM events WHERE seq > ? ORDER BY seq "
-                         "LIMIT ?", (int(seq), int(limit)))
+    def events_since(self, seq: int, limit: int = 500,
+                     upto: int | None = None) -> list[tuple[int, str, str]]:
+        """(seq, type, payload) of the logged events after `seq`, through
+        `upto` when given, oldest first."""
+        rows = self._all("SELECT seq, type, payload FROM events WHERE seq > ? AND "
+                         "(? IS NULL OR seq <= ?) ORDER BY seq LIMIT ?",
+                         (int(seq), upto, upto, int(limit)))
         return [(int(r["seq"]), r["type"], r["payload"]) for r in rows]
 
     # writes
@@ -447,14 +473,55 @@ class WebStore:
             except BaseException:
                 self._pending = []
                 raise
-            for item in self._pending:
-                self._fan_out(item)
-            self._emitted += len(self._pending)
-            self._pending = []
+            items, self._pending = self._pending, []
+            self._deliver(items)
+            self._emitted += len(items)
             if self._emitted >= 1000:
                 self._emitted = 0
                 self.prune_events()
             return result
+
+    def _deliver(self, items: list[tuple[int, str, str]]) -> None:
+        """Hand this process's committed events to the streams at once.
+        When another process logged events after the last one handed on,
+        those go first, read back from the log, so each stream sees the
+        seqs in order. Caller holds the lock."""
+        if not items:
+            return
+        if self._subs and items[0][0] > self._delivered + 1:
+            self._catch_up(items[-1][0])
+        else:
+            for item in items:
+                self._fan_out(item)
+        self._delivered = max(self._delivered, items[-1][0])
+
+    def _catch_up(self, upto: int | None = None) -> int:
+        """Hand on the logged events after the last one handed on, through
+        `upto` (all of them when None), oldest first; how many. Caller
+        holds the lock."""
+        n = 0
+        while True:
+            batch = self.events_since(self._delivered, 500, upto)
+            for item in batch:
+                self._fan_out(item)
+                self._delivered = item[0]
+            n += len(batch)
+            if len(batch) < 500:
+                return n
+
+    def deliver_new(self) -> int:
+        """Hand the streams the events another process appended since the
+        last one handed on; how many. One `SELECT MAX(seq)` when there is
+        nothing new; with no stream open the new events are passed over,
+        since a stream that opens later replays from the log."""
+        with self._lock:
+            top = self.max_event_seq()
+            if top <= self._delivered:
+                return 0
+            if not self._subs:
+                self._delivered = top
+                return 0
+            return self._catch_up(top)
 
     def _fan_out(self, item: tuple[int, str, str]) -> None:
         for sub in list(self._subs):
@@ -654,22 +721,32 @@ class WebStore:
     def add_file(self, fid: str | None, channel: str, name: str, data: bytes,
                  mimetype: str) -> dict:
         """Keep a file's bytes under the files dir and record them; the
-        row. With no fid the store mints the next `f<n>` under its lock, so
-        two uploads never share an id."""
+        row. With no fid the store mints the next `f<n>`; the row goes in
+        before the bytes take its name, and a minted id another process
+        took first is minted again, so two uploads never share an id."""
         self.files_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         tmp = self.files_dir / f"incoming-{secrets.token_hex(12)}"
         _write_private(tmp, data)
+        mint = fid is None
+        verb = "INSERT" if mint else "INSERT OR REPLACE"
         try:
             with self._lock:
-                if fid is None:
-                    fid = f"f{self.next_number('files', 'f')}"
-                disk = self.files_dir / hashlib.sha256(fid.encode("utf-8")).hexdigest()[:32]
+                while True:
+                    if mint:
+                        fid = f"f{self.next_number('files', 'f')}"
+                    disk = self.files_dir / hashlib.sha256(fid.encode("utf-8")).hexdigest()[:32]
+                    try:
+                        with self._conn:
+                            self._conn.execute(
+                                f"{verb} INTO files(id, channel, name, path, mimetype, size, "
+                                "at) VALUES (?,?,?,?,?,?,?)",
+                                (fid, channel, name, str(disk), mimetype, len(data), time.time()))
+                    except sqlite3.IntegrityError:
+                        if mint:
+                            continue
+                        raise
+                    break
                 os.replace(tmp, disk)
-                with self._conn:
-                    self._conn.execute(
-                        "INSERT OR REPLACE INTO files(id, channel, name, path, mimetype, size, "
-                        "at) VALUES (?,?,?,?,?,?,?)",
-                        (fid, channel, name, str(disk), mimetype, len(data), time.time()))
                 return self.file(fid) or {}
         finally:
             if tmp.exists():
@@ -732,8 +809,11 @@ class WebFrontend(ChatFrontend):
     }
 
     def __init__(self, cfg: dict | None = None, *, store_path: str | Path,
-                 webui_dir: str | Path | None = None) -> None:
+                 webui_dir: str | Path | None = None, writer_only: bool = False) -> None:
         super().__init__()
+        # A command-line sender's copy: start() opens the store and serves
+        # nothing; the bot's tail thread hands its events to the streams.
+        self.writer_only = bool(writer_only)
         cfg = dict(cfg or {})
         self.cfg = cfg
         self.bind = str(cfg.get("bind") or DEFAULT_BIND)
@@ -755,6 +835,7 @@ class WebFrontend(ChatFrontend):
         # (docs/webchat.md); None dispatches it through self.registry.
         self.inbound: Inbound | None = None
         self.ping_s = PING_S
+        self.tail_s = TAIL_S
         # Seconds the server loop waits between shutdown checks, and the
         # pause after a wrong pairing token; tests shorten both.
         self.poll_s = 0.5
@@ -767,18 +848,20 @@ class WebFrontend(ChatFrontend):
         self._stop = threading.Event()
         self._server: http.server.ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._tail: threading.Thread | None = None
 
     @classmethod
     def from_config(cls, cfg: dict | None, *, store_path: str | Path | None = None,
-                    webui_dir: str | Path | None = None) -> WebFrontend:
+                    webui_dir: str | Path | None = None,
+                    writer_only: bool = False) -> WebFrontend:
         """Build one from the chat block's `web` section. The store is
         `store_path`, else the block's `store_path`; ChatError with
-        neither."""
+        neither. `writer_only` is a command-line sender's copy."""
         cfg = dict(cfg or {})
         path = store_path or cfg.get("store_path")
         if not path:
             raise ChatError("web chat: no store path")
-        return cls(cfg, store_path=path, webui_dir=webui_dir)
+        return cls(cfg, store_path=path, webui_dir=webui_dir, writer_only=writer_only)
 
     @property
     def store(self) -> WebStore:
@@ -791,9 +874,13 @@ class WebFrontend(ChatFrontend):
 
     def start(self) -> None:
         """Open the store, make the standalone channels (unless a composite
-        drives this frontend), write the pairing token if there is none, and
-        serve HTTP on a daemon thread. Idempotent."""
+        drives this frontend), write the pairing token if there is none,
+        serve HTTP on a daemon thread and tail the event log on another.
+        Writer-only, open the store and nothing else. Idempotent."""
         with self._life_lock:
+            if self.writer_only:
+                _ = self.store
+                return
             if self._server is not None:
                 return
             store = self.store
@@ -811,7 +898,20 @@ class WebFrontend(ChatFrontend):
                                             kwargs={"poll_interval": self.poll_s},
                                             name="webchat-http", daemon=True)
             self._thread.start()
+            self._tail = threading.Thread(target=self._tail_events, name="webchat-tail",
+                                          daemon=True)
+            self._tail.start()
             log.info("web chat serving on %s:%d%s/", self.bind, self.port, self.base_path)
+
+    def _tail_events(self) -> None:
+        """Every tail_s seconds, hand the open streams the events other
+        processes wrote to the store (WebStore.deliver_new)."""
+        while not self._stop.wait(self.tail_s):
+            try:
+                self.store.deliver_new()
+            except Exception as e:
+                # The next read tries again: a busy or failed read loses nothing.
+                log.warning("web chat: reading the event log failed: %s", e)
 
     def run_forever(self) -> None:
         """Block until stop(); the server runs on its own thread."""
@@ -819,15 +919,19 @@ class WebFrontend(ChatFrontend):
             pass
 
     def stop(self) -> None:
-        """Stop serving and close every event stream."""
+        """Stop serving, stop tailing the event log and close every event
+        stream."""
         self._stop.set()
         with self._life_lock:
             srv, self._server = self._server, None
+            tail, self._tail = self._tail, None
         if self._store is not None:
             self._store.close_subscribers()
         if srv is not None:
             srv.shutdown()
             srv.server_close()
+        if tail is not None and tail is not threading.current_thread():
+            tail.join(timeout=5)
 
     def ping(self) -> bool:
         if not self.store.ok():

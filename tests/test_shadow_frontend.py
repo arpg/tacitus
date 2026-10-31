@@ -500,8 +500,8 @@ def test_get_chat_defaults_the_shadow_to_none(tmp_path):
 def test_load_frontend_wraps_the_primary_when_a_shadow_is_named(tmp_path, monkeypatch):
     built = []
 
-    def build(cfg):
-        built.append(cfg)
+    def build(cfg, **kw):
+        built.append((cfg, kw))
         return WebShadow()
     monkeypatch.setattr(chat, "_build_web", build)
     ea_dir = _ea_dir(tmp_path, {"frontend": "memory", "shadow": "web",
@@ -509,12 +509,13 @@ def test_load_frontend_wraps_the_primary_when_a_shadow_is_named(tmp_path, monkey
     fe = chat.load_frontend(ea_dir=ea_dir, env={})
     assert isinstance(fe, ShadowFrontend) and fe.name == "memory+web"
     assert isinstance(fe.primary, MemoryFrontend) and fe.shadow.inbound == fe._from_shadow
-    web = built[-1]["web"]
-    assert web["port"] == 8471
+    web, kw = built[-1][0]["web"], built[-1][1]
+    assert web["port"] == 8471 and kw == {"writer_only": False}
     assert web["store_path"] == str(tmp_path / "state" / "webchat.sqlite")
     # the core's wording stays the primary's
     assert chat.prompt_strings_for_config(ea_dir)["platform"] == fe.prompt_strings()["platform"]
-    # a command-line sender gets the primary alone
+    # a command-line sender that is not the owner's gets the primary alone
+    # (tests/test_web_cli_senders.py has the owner's)
     assert type(chat.load_frontend(ea_dir=ea_dir, env={}, for_cli=True)) is MemoryFrontend
 
 
@@ -525,7 +526,7 @@ def test_an_unknown_shadow_is_refused(tmp_path):
 
 
 def test_a_shadow_that_does_not_build_leaves_the_primary_running(tmp_path, monkeypatch, caplog):
-    def broken(cfg):
+    def broken(cfg, **kw):
         raise OSError("the store is not writable")
     monkeypatch.setattr(chat, "_build_web", broken)
     ea_dir = _ea_dir(tmp_path, {"frontend": "memory", "shadow": "web"})
