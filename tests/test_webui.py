@@ -1,13 +1,16 @@
 """The web chat's static app (botcore/botcore/chat/webui/).
 
 The files the server serves are there and well formed, the service worker
-leaves the API alone, the app never parses text as HTML and fetches
-nothing from elsewhere. Where Playwright and a browser are installed, the
-app runs against the stub server (tests/webui_stub_server.py): a thread
-renders, markup in text stays text, a card's buttons and select post to
-the actions route, an event appends a message and marks unread, the
-composer and the paperclip post, pairing answers a 401, and the service
-worker caches no API response.
+leaves the API and the relay alone, the app never parses text as HTML and
+fetches nothing from elsewhere. Where Playwright and a browser are
+installed, the app runs against the stub server (tests/webui_stub_server.py):
+a thread renders, markup in text stays text, a card's buttons and select
+post to the actions route, an event appends a message and marks unread,
+the composer and the paperclip post, pairing answers a 401, and the
+service worker caches no API response. The relay's crypto reproduces the
+Python vectors (tests/fixtures/relay_vectors.json), the QR encoder draws
+codes a decoder reads, and a phone pairs and chats through a real relay
+with the real web front end.
 """
 import json
 import re
@@ -21,9 +24,9 @@ import pytest
 
 TESTS = Path(__file__).resolve().parent
 WEBUI = TESTS.parent / "botcore" / "botcore" / "chat" / "webui"
-FILES = ["index.html", "app.js", "app.css", "manifest.webmanifest", "sw.js",
+FILES = ["index.html", "app.js", "qr.js", "app.css", "manifest.webmanifest", "sw.js",
          "icon-192.png", "icon-512.png", "favicon.svg"]
-TEXT_FILES = ["index.html", "app.js", "app.css", "manifest.webmanifest", "sw.js"]
+TEXT_FILES = ["index.html", "app.js", "qr.js", "app.css", "manifest.webmanifest", "sw.js"]
 sys.path.insert(0, str(TESTS))
 
 
@@ -57,7 +60,7 @@ def test_the_page_loads_its_files_by_relative_path():
     tags = refs()
     scripts = [a.get("src") for t, a in tags if t == "script"]
     links = {a.get("rel"): a.get("href") for t, a in tags if t == "link"}
-    assert scripts == ["app.js"]
+    assert scripts == ["qr.js", "app.js"]
     assert links["stylesheet"] == "app.css"
     assert links["manifest"] == "manifest.webmanifest"
     assert links["icon"] == "favicon.svg"
@@ -102,8 +105,12 @@ def test_the_service_worker_never_caches_the_api():
     guard = re.search(r"if \(url\.pathname\.includes\('/api/'\)\) return;", handler)
     assert guard, "the fetch handler must hand every /api/ request back to the browser"
     assert guard.start() < handler.index("respondWith")
+    relay = re.search(r"if \(RELAY_ROUTE\.test\(url\.pathname\) \|\| url\.pathname === '/healthz'\) return;",
+                      handler)
+    assert relay and relay.start() < handler.index("respondWith"), "the relay's routes stay uncached"
+    assert re.search(r"const RELAY_ROUTE = /\\/r\\/\[a-z2-7\]\{26\}\\//;", sw)
     shell = re.search(r"const SHELL = \[(.*?)\];", sw).group(1)
-    assert "api" not in shell
+    assert "api" not in shell and "'qr.js'" in shell
     assert "POST" not in sw and "req.method !== 'GET'" in handler
 
 
@@ -113,11 +120,12 @@ def test_the_drawer_has_the_notifications_toggle():
     checks."""
     html = read("index.html")
     nav = html[html.index('<nav id="channels"'):html.index("</nav>")]
-    toggle = re.search(r'<input type="checkbox" id="notify">', nav)
+    toggle = re.search(r'<label class="toggle" id="notify-row" hidden><input type="checkbox" id="notify">', nav)
     assert toggle and 'id="notify-hint"' in nav and "Add to Home Screen" in nav
     assert re.search(r'<footer id="drawer-foot" hidden>', nav), "hidden until the server offers push"
     js = read("app.js")
     assert "S.me.push" in js and "navigator.standalone !== false" in js
+    assert "$('notify-row').hidden = false" in js
     assert "call('GET', '/push/vapid')" in js
     assert re.search(r"pushManager\.subscribe\(\{ userVisibleOnly: true, applicationServerKey: keyBytes\(key\) \}\)", js)
     assert "call('POST', '/push/subscribe', sub.toJSON())" in js
@@ -166,7 +174,8 @@ def test_nothing_comes_from_elsewhere():
 
 def test_the_app_stays_small():
     lines = sum(len(read(n).splitlines()) for n in TEXT_FILES)
-    assert lines <= 1600, f"{lines} lines: the contract keeps the app near 1,500"
+    # 1,600 for the chat, and about 900 more for qr.js and the relay transport (docs/webchat-relay.md).
+    assert lines <= 2500, f"{lines} lines: the contract keeps the app near 2,400 with the relay"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -483,3 +492,338 @@ def test_the_service_worker_caches_no_api_response(app):
     assert any(u.endswith("/chat/app.js") for u in cached), cached
     assert not [u for u in cached if "/api/" in u], cached
     assert not errors, errors
+
+
+# -- the relay (docs/webchat-relay.md) -----------------------------------
+
+ROOT = TESTS.parent
+VECTORS = TESTS / "fixtures" / "relay_vectors.json"
+
+
+def test_the_relay_keys_stay_in_webcrypto_and_indexeddb():
+    js = read("app.js")
+    assert "localStorage" not in js and "sessionStorage" not in js
+    assert "indexedDB.open('tacitus-relay', 1)" in js
+    # the device's private key is made non-extractable and never exported
+    assert "generateKey({ name: 'X25519' }, false, ['deriveBits'])" in js
+    assert "exportKey('raw', pair.publicKey)" in js and "exportKey('pkcs8'" not in js
+    # the pairing secret leaves the address bar before anything else runs
+    body = js[js.index("async function pairFromLink"):]
+    assert body.split("\n")[1].strip() == "history.replaceState(null, '', location.pathname + location.search);"
+    # an err frame is a hint: nothing deletes or clears the stored pairing
+    for word in (".delete(", ".clear(", "deleteDatabase"):
+        assert word not in js[js.index("function idb"):js.index("function deviceName")], word
+    assert "st.delete" not in js and "deleteDatabase" not in js
+
+
+def test_the_relay_key_never_rides_in_a_url():
+    js = read("app.js")
+    transport = js[js.index("function relayTransport"):js.index("async function pickTransport")]
+    assert "'X-Relay-Key': rec.clientKey" in transport
+    assert "/sse?t=${enc(ticket)}" in transport
+    assert "key=" not in transport and "?f=" not in transport
+    assert transport.count("credentials: 'omit'") == 2
+
+
+def test_the_pairing_dialog_is_in_the_drawer():
+    html = read("index.html")
+    nav = html[html.index('<nav id="channels"'):html.index("</nav>")]
+    assert '<button type="button" id="pair-phone" class="btn small" hidden>Pair a phone</button>' in nav
+    assert '<dialog id="phone"' in html and '<canvas id="phone-qr"' in html
+    js = read("app.js")
+    assert "call('POST', '/relay/pair', {})" in js and "QR.draw($('phone-qr'), out.qr, 4)" in js
+    assert "Boolean(S.me.relay) && !T.relay" in js  # on the tailnet only
+
+
+def _vector_check(page, v):
+    return page.evaluate("""async (v) => {
+        const pkcs8 = (h) => crypto.subtle.importKey('pkcs8',
+            cat(unhex('302e020100300506032b656e04220420'), unhex(h)), { name: 'X25519' }, false, ['deriveBits']);
+        const rec = { install: v.bot.install_id, botPublic: b64d(v.bot.public),
+                      priv: await pkcs8(v.device.private), pub: b64d(v.device.public) };
+        const eph = { priv: await pkcs8(v.phone_ephemeral.private), pub: b64d(v.phone_ephemeral.public) };
+        const out = {};
+        const { frame, pending } = await relayHello(rec, { id: v.pairing.id, psk: b64d(v.pairing.psk) },
+            { eph, payload: b64d(v.hello.payload), id: v.hello.frame.id });
+        out.hello = frame;
+        out.h = hex(pending.h);
+        const keys = await sessionKeys(pending, b64d(v.bot_ephemeral.public));
+        out.session = { k_c2b: hex(keys.c2b), k_b2c: hex(keys.b2c), sid: keys.sid };
+        const s = await relayFinish(pending, v.welcome.frame);
+        out.device = s.device;
+        out.req_plaintext = b64e(pack(v.req.meta, b64d(v.req.body)));
+        out.req = await sealFrame(s, 'req', v.req.frame.id, pack(v.req.meta, b64d(v.req.body)));
+        const [meta, body] = unpack(await openFrame(s, v.res.frame));
+        out.res = { meta, body: b64e(body) };
+        out.sse = unpack(await openFrame(s, v.sse.frame))[0];
+        try { await openFrame(s, v.res.frame); out.replay = 'opened'; } catch (e) { out.replay = e.message; }
+        const bent = { ...v.sse.frame, id: 'another' };
+        try { await openFrame({ ...s, seen: new Set(), top: -1 }, bent); out.moved = 'opened'; } catch (e) { out.moved = e.name; }
+        const plainEph = { priv: await pkcs8(v.plain_hello.phone_ephemeral.private),
+                           pub: b64d(v.plain_hello.phone_ephemeral.public) };
+        out.plain = (await relayHello(rec, null, { eph: plainEph, payload: b64d(v.hello.payload),
+                                                   id: v.plain_hello.frame.id })).frame;
+        return out;
+    }""", v)
+
+
+def test_the_app_crypto_reproduces_the_python_vectors(app):
+    """The WebCrypto side of the protocol, byte for byte against the
+    vectors relay_crypto made (tests/test_relay.py checks the file is
+    what relay_crypto makes)."""
+    v = json.loads(VECTORS.read_text())
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    out = _vector_check(page, v)
+    assert out["hello"] == v["hello"]["frame"]
+    assert out["h"] == v["hello"]["h"]
+    assert out["session"] == v["session"]
+    assert out["device"] == v["welcome"]["info"]["device"] == v["device"]["id"]
+    assert out["req_plaintext"] == v["req"]["plaintext"]
+    assert out["req"] == v["req"]["frame"]
+    assert out["res"] == {"meta": v["res"]["meta"], "body": v["res"]["body"]}
+    assert out["sse"] == v["sse"]["event"]
+    assert out["replay"] == "replayed frame" and out["moved"] == "OperationError"
+    assert out["plain"] == v["plain_hello"]["frame"]
+    assert not errors, errors
+
+
+# Texts and the sha256 of each code's rows ("0"/"1", one row per line), as
+# qr.js draws them. Each matched an independent encoder module for module
+# (same mask) when pinned; versions 2, 7 (version information), 17 (the size
+# of a pairing link) and 21.
+QR_BASE = "https://host.example.test/chat/#tr1=" + "abcdefghijklmnopqrstuvwxyz0123456789-_" * 30
+QR_PINNED = {
+    20: ("4be9aa8f8e1321eecfe7179f523e9698365caa11ecc03bf98490d9106827193b", True),
+    120: ("c3a6af83ee8ed179950024eafdf0f5322aea3e66580f20acd0cc95157a2be475", True),
+    460: ("3e2c2f45d89bf51d44cb1a20b00cf48446ebe49148f275cc38c70bcf83c27349", False),
+    700: ("ceb0b5e0444cb4410746dcac8d79256ee1eb57e4661c506ec4414897e1253ebc", True),
+}
+
+
+def test_the_qr_encoder_draws_codes_a_decoder_reads(app):
+    """The pinned codes, and where OpenCV is installed, its decoder reads
+    them (its decoder misses some valid version 16 and 17 codes, those of
+    the independent encoder too, so the 460-byte text is pinned only)."""
+    import hashlib
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    grids = page.evaluate("(texts) => texts.map((t) => QR.encode(t).map((r) => r.map(Number).join('')))",
+                          [QR_BASE[:n] for n in QR_PINNED])
+    for (n, (sha, decodable)), rows in zip(QR_PINNED.items(), grids):
+        assert hashlib.sha256("\n".join(rows).encode()).hexdigest() == sha, n
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return
+    det = cv2.QRCodeDetector()
+    for (n, (sha, decodable)), rows in zip(QR_PINNED.items(), grids):
+        if not decodable:
+            continue
+        g = np.array([[c == "1" for c in r] for r in rows], dtype=np.uint8)
+        m = g.shape[0]
+        img = np.full((m + 8, m + 8), 255, np.uint8)
+        img[4:4 + m, 4:4 + m] = np.where(g == 1, 0, 255)
+        img = cv2.resize(img, ((m + 8) * 8, (m + 8) * 8), interpolation=cv2.INTER_NEAREST)
+        assert det.detectAndDecode(img)[0] == QR_BASE[:n], n
+    assert not errors, errors
+
+
+def _free_port() -> int:
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture
+def relay_bot(tmp_path):
+    """A relay server (serving the app on its own origin too) and the real
+    web front end, whose relay block names it."""
+    pytest.importorskip("cryptography")
+    sys.path.insert(0, str(ROOT / "relay"))
+    sys.path.insert(0, str(ROOT / "botcore"))
+    import threading
+    import relay_server as rs
+    from botcore.chat.web_frontend import WebFrontend
+    relay = rs.Relay(rs.Limits(keepalive=0.5, client_timeout=15), log=lambda line: None)
+    rsrv = rs.RelayHTTPServer(("127.0.0.1", 0), relay, str(WEBUI))
+    threading.Thread(target=rsrv.serve_forever, daemon=True).start()
+    rbase = f"http://127.0.0.1:{rsrv.server_address[1]}"
+    port = _free_port()
+    public = f"http://127.0.0.1:{port}/chat"
+    fe = WebFrontend({"port": port, "public_url": public, "relay": {"url": rbase, "wait": 1}},
+                     store_path=tmp_path / "priv" / "webchat.sqlite", webui_dir=WEBUI,
+                     trusted_config=True)
+    fe.poll_s = fe.pair_delay_s = 0.05
+    got = []
+    fe.registry.event("message")(got.append)
+    fe.registry.action("approve_send")(got.append)
+    fe.start()
+    wait_for(lambda: fe.relay is not None and fe.relay.connected, 10)
+    yield {"fe": fe, "relay": relay, "rbase": rbase, "public": public, "got": got}
+    fe.stop()
+    rsrv.shutdown()
+    rsrv.server_close()
+
+
+def _send_card(fe):
+    from botcore.chat.cards import CardAction, ConfirmationCard
+    card = ConfirmationCard(kind="send", title=":lock: Send this draft?", body="Hello there.",
+                            actions=[CardAction("approve_send", "Send", {"t": 1}, "primary", "send"),
+                                     CardAction("cancel_send", "Cancel", {"t": 1}, "", "cancel")])
+    return fe.post_card("dm", card)
+
+
+def _phone_page(browser, link, contexts, off_tailnet=False, **ctx_kw):
+    """A page that opens a pairing link; (context, page, errors, urls asked).
+    `off_tailnet` refuses the bot's own API, as a phone off the tailnet
+    finds it, while the page itself still loads."""
+    ctx = browser.new_context(**ctx_kw)
+    contexts.append(ctx)
+    if off_tailnet:
+        ctx.route(re.compile(r".*/chat/api/.*"), lambda route: route.abort())
+    page = ctx.new_page()
+    errors, asked = [], []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.on("request", lambda r: asked.append(r.url))
+    page.goto(link)
+    return ctx, page, errors, asked
+
+
+def test_a_phone_pairs_on_the_tailnet_and_chats_through_the_relay(browser, relay_bot):
+    """The owner opens "Pair a phone" on the tailnet origin; a phone opens
+    the link on that origin with the API out of reach (off the tailnet),
+    pairs, and reads, writes and confirms a card through the relay."""
+    from playwright.sync_api import expect
+    fe, got = relay_bot["fe"], relay_bot["got"]
+    contexts = []
+    try:
+        owner = browser.new_context()
+        contexts.append(owner)
+        owner.add_cookies([{"name": "ea_web", "value": fe.pair_token(), "domain": "127.0.0.1",
+                            "path": "/chat", "httpOnly": True, "sameSite": "Strict"}])
+        tail = owner.new_page()
+        tail.goto(relay_bot["public"] + "/")
+        tail.click("#pair-phone")
+        expect(tail.locator("#phone-devices")).to_contain_text("No phone is paired yet.")
+        wait_for(lambda: tail.input_value("#phone-link"), 10)
+        link = tail.input_value("#phone-link")
+        assert link.startswith(relay_bot["public"] + "/#tr1=")
+        # The canvas holds the code of exactly that link, module for module.
+        wrong = tail.evaluate("""(link) => {
+            const grid = QR.encode(link);
+            const g = $('phone-qr').getContext('2d');
+            let bad = 0;
+            grid.forEach((row, y) => row.forEach((on, x) => {
+                const px = g.getImageData((x + 4) * 4 + 2, (y + 4) * 4 + 2, 1, 1).data[0];
+                if ((px < 128) !== on) bad++;
+            }));
+            return bad;
+        }""", link)
+        assert wrong == 0
+
+        ctx, page, errors, asked = _phone_page(browser, link, contexts, off_tailnet=True,
+                                               service_workers="block")
+        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+        assert "tr1=" not in page.url
+        expect(page.locator("#live.on")).to_be_attached(timeout=10000)
+        devices = fe.relay.devices()
+        assert [d["origin"] for d in devices] == ["own"]
+        stored = page.evaluate("""async () => { const r = await loadPairing();
+            return { type: r.priv.type, extractable: r.priv.extractable, device: r.device,
+                     local: localStorage.length }; }""")
+        assert stored == {"type": "private", "extractable": False, "device": devices[0]["id"],
+                          "local": 0}
+
+        fe.post("dm", "Hello through the relay")
+        item = page.locator(".thread-item:has-text('Hello through the relay')")
+        expect(item).to_be_visible(timeout=10000)
+        item.click()
+        page.fill("#text", "Answer from the phone")
+        page.press("#text", "Enter")
+        wait_for(lambda: any(getattr(m, "text", "") == "Answer from the phone" for m in got), 10)
+
+        _send_card(fe)
+        card = page.locator(".thread-item:has-text('Send this draft?')")
+        expect(card).to_be_visible(timeout=10000)
+        card.click()
+        page.locator(".card button.primary").click()
+        wait_for(lambda: any(getattr(m, "action_id", "") == "approve_send" for m in got), 10)
+
+        # The URLs the relay saw carry a one-time ticket, never the key.
+        key = json.loads(page.evaluate("JSON.stringify(RELAY.rec.clientKey)"))
+        relayed = [u for u in asked if u.startswith(relay_bot["rbase"] + "/r/")]
+        assert relayed and all(re.search(r"/(c|sse)(\?t=[0-9a-f]{32})?$", u) for u in relayed), relayed
+        assert any("/sse?t=" in u for u in relayed)
+        assert not [u for u in asked if key in u]
+
+        # The keys outlive a reload: a plain hello opens a new session.
+        page.reload()
+        expect(page.locator("#live.on")).to_be_attached(timeout=15000)
+
+        # A removed phone hears "auth" and says so; it keeps its keys.
+        fe.relay.revoke(devices[0]["id"])
+        page.reload()
+        expect(page.locator("#relay-note")).to_contain_text("did not accept this phone", timeout=15000)
+        assert page.evaluate("loadPairing().then((r) => Boolean(r && r.priv))")
+        assert not errors, errors
+    finally:
+        for c in contexts:
+            c.close()
+
+
+def test_a_phone_paired_on_the_relays_origin_cannot_press_card_buttons(browser, relay_bot):
+    from playwright.sync_api import expect
+    fe = relay_bot["fe"]
+    contexts = []
+    try:
+        link = fe.relay.new_pairing(app_url=relay_bot["rbase"] + "/")
+        assert link.startswith(relay_bot["rbase"] + "/#tr1=")
+        _send_card(fe)
+        ctx, page, errors, asked = _phone_page(browser, link, contexts)
+        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+        assert [d["origin"] for d in fe.relay.devices()] == ["relay"]
+        assert page.evaluate("S.me.card_actions") is False
+        page.locator(".thread-item:has-text('Send this draft?')").click()
+        expect(page.locator(".card button.primary")).to_be_disabled()
+        expect(page.locator(".card .card-note")).to_contain_text("Approve this on the tailnet")
+        # The drawer offers no pairing off the tailnet.
+        expect(page.locator("#pair-phone")).to_be_hidden()
+        assert not errors, errors
+    finally:
+        for c in contexts:
+            c.close()
+
+
+def _link_payload(**over) -> str:
+    import base64
+    obj = {"v": 1, "r": "https://relay.example.net", "i": "b" * 26,
+           "k": base64.urlsafe_b64encode(bytes(32)).rstrip(b"=").decode(), "c": "made-up-key",
+           "p": "0" * 32, "s": base64.urlsafe_b64encode(bytes(32)).rstrip(b"=").decode(),
+           "x": int(time.time()) + 600}
+    obj.update(over)
+    return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+
+def test_a_bad_pairing_link_is_refused_and_leaves_the_address_bar(browser, stub_factory):
+    """On the tailnet the bot names its install: a link for another one is
+    refused, as is an expired one; the fragment goes either way, and no
+    pairing is kept."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    url, stub = stub_factory()
+    for payload, says in ((_link_payload(), "another install"),
+                          (_link_payload(i=W.STUB_INSTALL, x=int(time.time()) - 1), "expired"),
+                          ("bm90LWpzb24", "Pairing failed")):
+        ctx = browser.new_context()
+        try:
+            page = ctx.new_page()
+            page.goto(url + "#tr1=" + payload)
+            expect(page.locator("#toast")).to_contain_text(says)
+            assert "tr1=" not in page.url
+            assert page.evaluate("loadPairing().then((r) => r === undefined)")
+            expect(page.locator(".thread-item").first).to_be_visible()  # the chat still starts
+        finally:
+            ctx.close()

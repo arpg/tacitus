@@ -12,6 +12,7 @@
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="stylesheet" href="app.css">
+<script src="qr.js" defer></script>
 <script src="app.js" defer></script>
 </head>
 <body data-view="threads">
@@ -23,9 +24,10 @@
   </header>
   <div id="channel-list" class="scroll"></div>
   <footer id="drawer-foot" hidden>
-    <label class="toggle"><input type="checkbox" id="notify"> Notifications</label>
+    <label class="toggle" id="notify-row" hidden><input type="checkbox" id="notify"> Notifications</label>
     <ul id="push-subs" class="subs" aria-label="Browsers that get notifications"></ul>
     <p id="notify-hint" class="hint" hidden>On iPhone and iPad, notifications reach only the installed app: tap Share, then Add to Home Screen, and open Tacitus from there.</p>
+    <button type="button" id="pair-phone" class="btn small" hidden>Pair a phone</button>
   </footer>
 </nav>
 
@@ -63,6 +65,20 @@
 
 <div id="scrim"></div>
 <div id="toast" role="status" hidden></div>
+<div id="relay-note" role="status" hidden></div>
+
+<dialog id="phone" aria-labelledby="phone-title">
+  <form method="dialog">
+    <h2 id="phone-title">Pair a phone</h2>
+    <p>Off the tailnet, a paired phone reaches Tacitus through the relay, which sees only sealed data.</p>
+    <canvas id="phone-qr" width="0" height="0" role="img" aria-label="Pairing code"></canvas>
+    <p id="phone-note" aria-live="polite"></p>
+    <input id="phone-link" readonly aria-label="Pairing link">
+    <h3>Paired phones</h3>
+    <ul id="phone-devices"></ul>
+    <button type="submit" class="btn">Close</button>
+  </form>
+</dialog>
 
 <div id="pair" hidden>
   <form id="pair-form">

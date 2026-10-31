@@ -30,6 +30,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import math
 import re
 import secrets
 import threading
@@ -181,6 +182,11 @@ def unpack(data: bytes) -> tuple[dict, bytes]:
     if not isinstance(meta, dict):
         raise FrameError("plaintext head is not an object")
     return meta, data[4 + n:]
+
+
+def _no_constant(name: str) -> Any:
+    """json's hook for NaN and Infinity: a hello carries neither."""
+    raise ValueError(f"{name} is not a number a hello carries")
 
 
 def _h(*parts: bytes) -> bytes:
@@ -564,12 +570,12 @@ def bot_accept(identity: BotIdentity, frame: dict, *,
         raise HandshakeError("hello does not authenticate") from exc
     h = _h(h, c_p)
     try:
-        info = json.loads(body)
+        info = json.loads(body, parse_constant=_no_constant)
         t = float(info["t"])
     except (ValueError, KeyError, TypeError) as exc:
         raise HandshakeError("bad hello payload") from exc
     now = time.time() if now is None else now
-    if abs(now - t) > HELLO_SKEW:
+    if not math.isfinite(t) or abs(now - t) > HELLO_SKEW:
         raise HandshakeError("hello clock out of range")
     if seen is not None and seen(e_pub):
         raise HandshakeError("hello replayed")

@@ -65,6 +65,14 @@ owns, that no other user can read, and that lie outside the resident's
 tree (`untrusted_roots`). Otherwise start() refuses: standalone it
 raises; under a ShadowFrontend it logs why and the bot runs on its
 primary alone.
+
+A `relay` block in the web block starts the relay client
+(relay_client.start_relay, docs/webchat-relay.md) once the server runs:
+a phone off the tailnet reaches this server through a public relay that
+sees only ciphertext. The owner manages it from the tailnet under
+`/api/relay/`; a relayed request (`X-Tacitus-Relay`) never reaches those
+routes or `/api/pair`, and `/api/me` tells the app whether its requests
+may confirm a card (`X-Tacitus-Relay-Cards`).
 """
 from __future__ import annotations
 
@@ -132,6 +140,7 @@ PAIR_FILE = "webchat-pair.token"
 # the owner's from this list, never from the text.
 OWNER_IDS_FILE = "webchat-owner-ids.json"
 OWNER_IDS_MAX = 5000
+RELAY_KEY_FILE = "webchat-relay.json"
 COOKIE = "ea_web"
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
 
@@ -185,6 +194,10 @@ HTML_CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 's
             "form-action 'none'")
 # A stored file opened directly runs nothing.
 FILE_CSP = "sandbox; default-src 'none'"
+# A relay's origin as the page's connect-src names it: a scheme and a host,
+# nothing a policy could read as another directive.
+_ORIGIN_RE = re.compile(r"^https?://(\[[0-9a-f:.]+\]|[a-z0-9.-]+)(:\d{1,5})?$")
+_DEVICE_RE = re.compile(r"^[0-9a-f]{16}$")
 
 STATIC_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -1268,6 +1281,9 @@ class WebFrontend(ChatFrontend):
         self._server: http.server.ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._tail: threading.Thread | None = None
+        # The relay client (relay_client.RelayClient) while it runs.
+        self.relay: Any = None
+        self.html_csp = self._html_csp()
 
     @classmethod
     def from_config(cls, cfg: dict | None, *, store_path: str | Path | None = None,
@@ -1356,6 +1372,59 @@ class WebFrontend(ChatFrontend):
                 self.push.prune()
                 self.push.start()
             log.info("web chat serving on %s:%d%s/", self.bind, self.port, self.base_path)
+            self._start_relay()
+
+    # the relay (docs/webchat-relay.md)
+
+    def relay_block(self) -> dict:
+        """The web block's `relay` block; {} when there is none or it is
+        off (`enabled: false`)."""
+        relay = self.cfg.get("relay")
+        if not isinstance(relay, dict) or not relay or relay.get("enabled", True) is False:
+            return {}
+        return relay
+
+    def relay_origin(self) -> str:
+        """The configured relay's origin (scheme, host, port), or ""."""
+        parts = urllib.parse.urlsplit(str(self.relay_block().get("url") or ""))
+        origin = f"{parts.scheme}://{parts.netloc}".lower()
+        return origin if _ORIGIN_RE.match(origin) else ""
+
+    def _html_csp(self) -> str:
+        """The pages' policy: with a relay configured, connect-src names its
+        origin, so the app served here can reach the relay when this server
+        cannot be reached (off the tailnet)."""
+        origin = self.relay_origin()
+        if not origin:
+            return HTML_CSP
+        return HTML_CSP.replace("connect-src 'self'", f"connect-src 'self' {origin}")
+
+    def loopback_url(self) -> str:
+        """This server on loopback, base path included: where the relay
+        client replays a phone's requests."""
+        host = {"": "127.0.0.1", "0.0.0.0": "127.0.0.1", "::": "::1"}.get(self.bind, self.bind)
+        host = f"[{host}]" if ":" in host else host
+        return f"http://{host}:{self.port}{self.base_path}"
+
+    def _start_relay(self) -> None:
+        """Start the relay client when the web block names a relay. The
+        block is a trust setting: ea_config.get_chat keeps it only from the
+        owner-private chat.json. The key file defaults to the store's
+        directory (the owner-private one). A relay that does not start is
+        logged, and the chat goes on serving the tailnet."""
+        relay = self.relay_block()
+        if not relay:
+            return
+        try:
+            from .relay_client import start_relay
+            cfg = dict(self.cfg)
+            cfg["pair_token_file"] = str(self.pair_token_file)
+            if not relay.get("key_file"):
+                cfg["relay"] = {**relay, "key_file": str(self.store_path.parent / RELAY_KEY_FILE)}
+            self.relay = start_relay(cfg, self.loopback_url(), logger=log)
+        except Exception:
+            log.exception("web chat: the relay did not start")
+            self.relay = None
 
     def _config_refusal(self) -> str | None:
         if not self.trusted_config:
@@ -1413,12 +1482,15 @@ class WebFrontend(ChatFrontend):
             pass
 
     def stop(self) -> None:
-        """Stop serving, stop tailing the event log and close every event
-        stream."""
+        """Stop the relay client, stop serving, stop tailing the event log
+        and close every event stream."""
         self._stop.set()
         with self._life_lock:
             srv, self._server = self._server, None
             tail, self._tail = self._tail, None
+            relay, self.relay = self.relay, None
+        if relay is not None:
+            relay.stop()
         if self._store is not None:
             self._store.close_subscribers()
         if self._push is not None:
@@ -2325,6 +2397,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self._check_fetch_site()
         if method == "POST":
             self._check_origin()
+        if segs and segs[0] in ("pair", "relay") and self.headers.get("X-Tacitus-Relay") is not None:
+            # The relay client never forwards these; this is the second lock.
+            raise _HttpError(403, "pairing and relay devices are managed on the tailnet")
         if method == "POST" and segs == ["pair"]:
             self._pair()
             return None
@@ -2336,7 +2411,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if segs == ["me"]:
                 self._json(200, {"owner": fe.owner_id, "bot": fe.bot_user_id,
                                  "public_url": fe.public_url or None,
-                                 "base_path": fe.base_path, "push": web_push.AVAILABLE})
+                                 "base_path": fe.base_path, "push": web_push.AVAILABLE,
+                                 "relay": fe.relay is not None,
+                                 "card_actions": self._relay_cards_allowed()})
                 return None
             if segs == ["push", "vapid"]:
                 self._json(200, {"key": self._pusher().vapid.public_key})
@@ -2372,6 +2449,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if segs == ["events"]:
                 self._events(query)
                 return None
+        if segs and segs[0] == "relay":
+            self._relay_api(method, segs[1:])
+            return None
         if method == "POST":
             if n == 3 and segs[0] == "channels" and segs[2] == "messages":
                 body = self._read_json()
@@ -2417,6 +2497,54 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                       selected if isinstance(selected, str) else "")
                 self._json(200, {"ok": True})
                 return after
+        raise _HttpError(404, "not found")
+
+    # the relay's owner routes (docs/webchat-relay.md, For the web front end)
+
+    def _relay_cards_allowed(self) -> bool:
+        """False for a request the relay client marks as one that may not
+        confirm a card: `X-Tacitus-Relay-Cards: deny`, or a relayed request
+        (`X-Tacitus-Relay`) without `allow`. The app reads it in /api/me."""
+        cards = (self.headers.get("X-Tacitus-Relay-Cards") or "").strip().lower()
+        if self.headers.get("X-Tacitus-Relay") is None and not cards:
+            return True
+        return cards == "allow"
+
+    def _relay_api(self, method: str, rest: list[str]) -> None:
+        """`/api/relay/...`: the owner pairs a phone, lists and revokes the
+        paired devices and reads the client's state. `_api` has refused a
+        relayed request already."""
+        relay = self.fe.relay
+        if method == "GET" and rest == ["status"]:
+            self._json(200, {"enabled": relay is not None, **(relay.status() if relay else {})})
+            return
+        if relay is None:
+            raise _HttpError(404, "the relay is off")
+        if method == "GET" and rest == ["devices"]:
+            self._json(200, relay.devices())
+            return
+        if method == "POST" and rest == ["pair"]:
+            self._drain()
+            from .relay_client import origin_of
+            from .relay_crypto import PairingPayload
+            try:
+                link = relay.new_pairing()
+                expires = PairingPayload.from_string(link).expires
+            except Exception:
+                log.exception("web chat: the relay could not open a pairing")
+                raise _HttpError(503, "the relay could not open a pairing") from None
+            # The link is the QR code's text; the app draws the code itself.
+            self._json(200, {"link": link, "qr": link, "expires": expires,
+                             "origin": origin_of(relay.app_url, relay.public_url, relay.relay_url)})
+            return
+        if method == "POST" and rest == ["revoke"]:
+            device = self._read_json().get("device")
+            if not isinstance(device, str) or not _DEVICE_RE.match(device):
+                raise _HttpError(400, "device is a 16-character device id")
+            if not relay.revoke(device):
+                raise _HttpError(404, "no such device")
+            self._json(200, {"ok": True})
+            return
         raise _HttpError(404, "not found")
 
     # checks and inputs
@@ -2761,12 +2889,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if not target.is_file():
             if target.name == "index.html":
                 self._send(200, PLACEHOLDER_PAGE, STATIC_TYPES[".html"],
-                           (("Cache-Control", "no-cache"), ("Content-Security-Policy", HTML_CSP)))
+                           (("Cache-Control", "no-cache"),
+                            ("Content-Security-Policy", self.fe.html_csp)))
                 return
             raise _HttpError(404, "not found")
         ctype = (STATIC_TYPES.get(target.suffix.lower())
                  or mimetypes.guess_type(target.name)[0] or "application/octet-stream")
         headers: list[tuple[str, str]] = [("Cache-Control", "no-cache")]
         if ctype.startswith("text/html"):
-            headers.append(("Content-Security-Policy", HTML_CSP))
+            headers.append(("Content-Security-Policy", self.fe.html_csp))
         self._send(200, target.read_bytes(), ctype, tuple(headers))
