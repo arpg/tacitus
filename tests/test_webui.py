@@ -291,6 +291,11 @@ def test_the_renderers_build_elements_and_keep_text_as_text(app):
     out = md("at 10:30:00 :lock:")
     assert out.startswith("<p>at 10:30:00 <span") and "\U0001f512" in out
     assert md(":no_such_name:") == "<p>:no_such_name:</p>"
+    # Zulip mentions and stream links show their names, never the id.
+    assert md("@**Jane Doe|8** and @_**Jane Doe|8** in #**ea**") == (
+        '<p><span class="mention">@Jane Doe</span> and <span class="mention">@Jane Doe</span> '
+        'in <span class="mention">#ea</span></p>')
+    assert page.evaluate("plainLine('@**Jane Doe|8** :lock: **done**')") == "@Jane Doe \U0001f512 done"
     # Card text is Slack mrkdwn: *bold*, and a labelled link shows its target.
     assert card("*Confirm* <https://e.example|here>") == (
         '<strong>Confirm</strong> here (<a href="https://e.example" target="_blank" '

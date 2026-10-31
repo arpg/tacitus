@@ -446,3 +446,5 @@ th { background: var(--code-bg); }
 @media (prefers-reduced-motion: reduce) {
   #channels { transition: none; }
 }
+
+.mention { font-weight: 600; }
