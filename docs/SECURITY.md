@@ -1447,19 +1447,53 @@ front end keeps the primary id of each such message in
 the history copy and `chat_read.py` take a bot message as the owner's
 only by that list.
 
-**The relay's trust levels** (docs/webchat-relay.md). A device paired
-through the bot's own origin runs code the relay never serves and may do
-everything. A device paired through the relay's origin runs code the
-relay serves, which a compromised relay could change, so it gets
-`relay_origin_access`: `"read"` (GET only), `"chat"` (everything but the
-card actions; the default) or `"all"` (the owner's explicit choice). The
-relay client marks each request `X-Tacitus-Relay-Cards: allow` or
+**The relay's trust levels** (docs/webchat-relay.md). The relay is a
+public service that forwards frames sealed end to end; it is treated as
+honest but curious at best and possibly compromised. What a device may
+do depends on where its code comes from, recorded at pairing:
+
+| Device | Its code comes from | What it may do |
+|---|---|---|
+| Own origin (the default and the only kind the tailnet UI pairs) | the bot's tailnet origin, cached by the service worker | everything, card actions included |
+| Relay origin | the relay's copy of the app, which a compromised relay can change (read what the phone shows, type as the owner) | nothing unless the owner-private `chat.json` sets `relay_origin_access`: `"read"` (GET only), `"chat"` (everything but the card actions) or `"all"`; the default is `"off"`, and the pairing also takes `webchat-relay.py pair --relay-origin` |
+| Waiting for approval | either | nothing: every request is a 403 and no event stream opens |
+
+A pairing link is a bearer credential for ten minutes: whoever spends it
+first registers a device. So every new device waits until the owner
+approves it on the tailnet, where the owner compares a six-digit code
+from the handshake's transcript hash (the phone shows it; "Pair a phone"
+and `webchat-relay.py show` list it), and the bot posts a notice of each
+new device in the owner's DM. On the bot's own origin the app takes only
+the pairing secret from a link and the relay, install and keys from
+`/api/relay/status` on the tailnet, so a crafted link cannot replace a
+pairing. Never send a pairing link through chat or mail. Removing a
+device ends its sessions and its open event streams at once and drops
+the push subscriptions made through it or naming it.
+
+The relay client marks each request `X-Tacitus-Relay-Cards: allow` or
 `deny`, and the web front end itself refuses a card action, a push
 subscription and a revoke on `deny` (403). The relay client never
-forwards `/api/pair` or `/api/relay/...`, nor any header of the phone's
-but `content-type`, `accept` and `last-event-id`. It must sign in with
-the pairing cookie (the login header from the bot's own process is not
-tailscaled's) and post with this server's loopback origin.
+forwards `/api/pair...`, `/api/relay/...` or a plain request for the
+event stream, nor any header of the phone's but `content-type`, `accept`
+and `last-event-id` (printable ASCII). It must sign in with the pairing
+cookie (the login header from the bot's own process is not tailscaled's)
+and post with this server's loopback origin. It follows no redirect from
+the relay or the loopback server, takes at most 64 frames from an
+answer, bounds the work waiting for its workers, never reads or logs the
+relay's error text, and pauses after an early empty answer. The key file
+must be a regular file of the bot's uid, mode 0600, in a directory no
+other user may write, outside the resident's tree.
+
+**The shared-origin rule for the relay.** The rule above holds for the
+relay too: a browser gives a paired phone's key to every page of the
+origin that holds it. A relay that serves the app (`--static`) gets a
+hostname of its own. On a host with other pages, the relay runs without
+`--static` (`relay/install.sh` does so unless `--with-app`), so only
+own-origin devices exist, and the nginx block takes `/relay/` with `^~`,
+ignores the relay's `X-Accel-*` headers, hides its `Set-Cookie` and
+`Service-Worker-Allowed`, and answers `/relay/healthz` with 404 (the
+counts there are for a monitor on the relay host). The relay host stays
+off the tailnet, or the tailnet's ACL keeps it from the bot host.
 
 ---
 
