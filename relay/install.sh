@@ -12,9 +12,12 @@
 #                     /etc/tacitus-relay/release-key.pub. Releases are not signed
 #                     yet; until they are, use --commit.
 #   --install-id ID   add this install id to the allow file (repeatable)
-#   --with-app        also serve the web app (--static). Only on a hostname of the
-#                     relay's own: any other page on that origin could use a
-#                     paired phone's key (docs/webchat-relay.md, Running the relay).
+#   --with-app        also serve the web app (--static), for phones paired with
+#                     "Pair through the relay". Only on a hostname of the relay's
+#                     own: any other page on that origin could use a paired phone's
+#                     key. Only at the release the bots it serves run: a phone takes
+#                     the copy only when it matches its bot's signed app bundle
+#                     (docs/webchat-relay.md, Running the relay).
 #   --repo URL        the repository to clone (https; default the public one)
 #
 # The relay is one standard-library Python process on 127.0.0.1:8471, under a

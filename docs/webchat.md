@@ -183,21 +183,22 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/push/unsubscribe` | `{"endpoint"}` → `{"ok": true, "removed": bool}` |
 | GET | `/api/push/subscriptions` | `[{"id", "host", "created_at", "last_seen", "last_ok", "failures"}]`; `id` is a hash of the endpoint, which is never shown |
 | POST | `/api/push/revoke` | `{"id"}` → `{"ok": true, "removed": bool}` |
-| POST | `/api/relay/pair` | `{}` → `{"link", "qr", "expires", "origin"}`: a one-time pairing link for a phone (the relay), on the bot's own origin; 409 without `public_url` |
+| POST | `/api/relay/pair` | `{}` or `{"via": "relay"}` → `{"link", "qr", "expires", "origin", "bundle", "access"}`: a one-time pairing link for a phone (the relay), on the bot's own origin (409 without `public_url`) or on the relay's copy of the app with the signed bundle's hash (409 without one); `access` is what the phone may do once approved (`"all"` own, `"chat"` relay) |
 | GET | `/api/relay/devices` | `[{"id", "name", "paired_at", "origin", "pending", "code"?}]`, the phones paired with the relay; a new one waits with its pairing code. A relay-origin phone also has `cards_allowed` (the owner let it press card buttons), `bundle_verified` (its last check of its app matched) and, when verified, the bot's `release` at that check |
 | POST | `/api/relay/approve` | `{"device", "cards"?}` → `{"ok": true}`: let a waiting phone in, and set whether a relay-origin phone may press card buttons (`cards`, default false; approving again changes it); 400 for a `cards` that is not true or false, 404 for an unknown device |
 | POST | `/api/relay/revoke` | `{"device"}` → `{"ok": true}`: its sessions and streams end, its push subscriptions go; 404 for an unknown device |
-| GET | `/api/relay/status` | `{"enabled": bool, ...}`: the relay client's state (`connected`, `install_id`, `bot_public`, `client_key`, `sign_public`, `bundle`, `devices`, `pending`, ...) |
+| GET | `/api/relay/status` | `{"enabled": bool, ...}`: the relay client's state (`connected`, `install_id`, `bot_public`, `client_key`, `sign_public`, `devices`, `pending`, ...) and how a phone can pair (`pair_own`, `pair_relay`, and `bundle`, the bundle hash or null) |
 | POST | `/api/relay/attest` | `{"bundle": "<hash>"}`, from a phone through the relay only → `{"ok": true, "bundle_verified": true, "release"}`, or 409 `{"error", "bundle_verified": false}` for another hash; it records the check and grants nothing (Code integrity) |
 
 The five owner routes under `/api/relay/`, and `/api/pair`, answer only
-on the tailnet: a request the relay client marks with `X-Tacitus-Relay`
-gets 403, and the client never forwards them. `/api/relay/attest` is the
-other way round: it takes only a request the relay client marks (400
-otherwise). With no relay running, `/api/relay/status` says
-`{"enabled": false}` and the others answer 404. `card_actions` is false for a request the relay marks as one that may
-not confirm a card (`docs/webchat-relay.md`, Where the app's code comes
-from).
+in the owner's own web chat (the tailnet, or the bot's machine): a
+request the relay client marks with `X-Tacitus-Relay` gets 403, and the
+client never forwards them. `/api/relay/attest` is the other way round:
+it takes only a request the relay client marks (400 otherwise). With no
+relay running, `/api/relay/status` says `{"enabled": false}` and the
+others answer 404. `card_actions` is false for a request the relay marks
+as one that may not confirm a card (`docs/webchat-relay.md`, Where the
+app's code comes from).
 
 Channel ids in URLs are URL-encoded (Zulip ids carry characters). A
 thread_key is likewise encoded.
@@ -441,13 +442,15 @@ on 401 show a token field that posts to `/api/pair`.
 Every call goes through one transport interface (`api(method, path,
 body)`, `events(since, sink)`). A browser paired with the relay uses it
 when the base path does not answer (off the tailnet, or on the relay's
-copy of the app); the relay transport, the pairing link (`#tr1=`), the
-"Pair a phone" entry in the drawer and the QR encoder (`qr.js`) are in
+copy of the app); the relay transport, the pairing link (`#tr2=`, and
+`#tr1=` from before), the "Pair a phone" entry in the drawer (also on
+the bot's machine, where it offers "Pair through the relay"), the code
+check on the relay's copy and the QR encoder (`qr.js`) are in
 `docs/webchat-relay.md` (For the web app).
 
 Dark and light from `prefers-color-scheme`. Keep the whole app under
-~2,800 lines with the relay transport, the QR encoder and the code
-check; readable by one maintainer.
+~2,850 lines with the relay transport, the QR encoder, the code check
+and the per-phone card-button choice; readable by one maintainer.
 
 Installing on a phone. The manifest (`display: standalone`, `scope` and
 `start_url` `./`, so the base path with its slash, since the page links
@@ -789,7 +792,9 @@ of the files (`tacitus-webchat-v3`).
 after start-up: it fetches `manifest.sig.json`, checks the signature
 (`verifyBundle`) and gives the manifest to the worker. The copy of the
 app that the relay serves (on the relay's origin) checks before the chat
-runs:
+runs. It refuses a pairing link without the bundle hash (`b`), and stops
+with "Code verification unavailable" before it makes a key when it has no
+`verifyBundle` (docs/webchat-relay.md, Pairing). Then, at every start:
 
 1. It fetches the manifest through the relay's sealed channel
    (`/api/bundle`).
@@ -802,7 +807,10 @@ runs:
 4. When the worker finds each file in the manifest, the page sends
    `POST /api/relay/attest {"bundle": "<hash>"}` through the relay.
 
-A mismatch shows the refusal, and the page attests nothing.
+A mismatch shows the refusal ("Tacitus stopped", with the file), and
+the page attests nothing. A check that cannot run (a browser without
+Ed25519, a pairing record without the hash) stops the relay's copy too:
+it runs no chat it has not checked.
 
 `verifyBundle(doc, expectedHash, pinnedKey)` (`bundle.js`) checks the
 shape (exactly `v`, `files`, `built_at` and `key`; `v` 1; an integer
@@ -811,7 +819,8 @@ key that the manifest names, that key against `pinnedKey`, and the
 bundle hash against `expectedHash` (each only when given). It returns
 `{hash, key, files, builtAt}`, or throws a `BundleError`. It needs
 Ed25519 in WebCrypto (Chrome 137, Safari 17 and Firefox 129, or later);
-a browser without it gets a plain error, which the own origin ignores.
+a browser without it gets a plain error, which the own origin ignores and
+which stops the relay's copy.
 
 **The attestation.** `POST /api/relay/attest` is the one route under
 `/api/relay/` that the relay client forwards, from a device at any level
@@ -828,17 +837,20 @@ record in the key file:
   "bundle_verified": false}`;
 - an unknown device: 404.
 
-The record is information for the owner ("verified copy of v1.2.3" under
-"Pair a phone"). It grants nothing: the code that made the check came
-from the relay, so a dishonest relay can post the same hash. A
-relay-origin device gets `X-Tacitus-Relay-Cards: allow` only when the
-owner allows it card buttons (`POST /api/relay/approve {"device", "cards":
-true}`, or `webchat-relay.py approve --cards`; docs/webchat-relay.md).
+The record is information for the owner: the list under "Pair a phone"
+shows "verified copy of v1.2.3" or "code not verified". It grants
+nothing: the code that made the check came from the relay, so a
+dishonest relay can post the same hash. An approved relay-origin device
+reads and chats whether or not it attested, and gets
+`X-Tacitus-Relay-Cards: allow` only when the owner allows it card buttons
+("Allow card buttons on this phone" beside it under "Pair a phone",
+which sends `POST /api/relay/approve {"device", "cards": true}`, or
+`webchat-relay.py approve --cards`; docs/webchat-relay.md).
 
 **The bootstrap, and what the check does not cover.** The first load of
 the relay's copy of the app runs before any check. It can only pair: the
 chat waits for the check. The bundle hash in the pairing QR code (shown
-on the tailnet) closes this window for an honest copy: a copy from
+in the owner's web chat) closes this window for an honest copy: a copy from
 another release fails the check. It cannot close the window against a
 relay that serves changed code on purpose from the first load. That code
 can skip the check, and it can post the bundle hash, which is public. The

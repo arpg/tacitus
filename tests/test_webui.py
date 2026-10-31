@@ -329,9 +329,10 @@ def test_nothing_comes_from_elsewhere():
 def test_the_app_stays_small():
     lines = sum(len(read(n).splitlines()) for n in TEXT_FILES)
     # 1,600 for the chat, about 900 for qr.js and the relay transport (docs/webchat-relay.md),
-    # 60 for the relay's device approval, the pairing checks and the file rule, and
-    # 280 for the check of the app's code (bundle.js, the worker's and the page's part).
-    assert lines <= 2840, f"{lines} lines: the contract keeps the app near 2,800 with the relay"
+    # 60 for the relay's device approval, the pairing checks and the file rule, 280 for the
+    # check of the app's code (bundle.js, the worker's and the page's part), and 10 for the
+    # card-button choice per relay-origin phone under "Pair a phone".
+    assert lines <= 2850, f"{lines} lines: the contract keeps the app near 2,850 with the relay"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -968,10 +969,12 @@ def test_the_pairing_dialog_is_in_the_drawer():
     nav = html[html.index('<nav id="channels"'):html.index("</nav>")]
     assert '<button type="button" id="pair-phone" class="btn small" hidden>Pair a phone</button>' in nav
     assert '<dialog id="phone"' in html and '<canvas id="phone-qr"' in html
+    assert '<button type="button" id="phone-relay" class="btn" hidden>Pair through the relay</button>' in html
     js = read("app.js")
-    assert "call('POST', '/relay/pair', {})" in js and "QR.draw($('phone-qr'), out.qr, 4)" in js
-    assert "Boolean(S.me.relay) && !T.relay" in js  # on the tailnet only
-    assert "call('POST', `/relay/${verb}`, { device: d.id })" in js  # Approve and Remove
+    assert "call('POST', '/relay/pair', via === 'relay' ? { via } : {})" in js and "QR.draw($('phone-qr'), out.qr, 4)" in js
+    assert "Boolean(S.me.relay) && !T.relay" in js  # where the API answers: the tailnet or this machine
+    assert "call('POST', `/relay/${verb}`, { device: d.id, cards })" in js  # Approve and Remove
+    assert "'Allow card buttons on this phone'" in js  # beside a relay-origin phone, off by default
     assert "Never send this link through chat or mail." in js
 
 
@@ -1135,7 +1138,7 @@ def _relay_bot(tmp_path, static):
     port = _free_port()
     public = f"http://127.0.0.1:{port}/chat"
     fe = WebFrontend({"port": port, "public_url": public,
-                      "relay": {"url": rbase, "wait": 1, "relay_origin_access": "chat"}},
+                      "relay": {"url": rbase, "wait": 1}},
                      store_path=tmp_path / "priv" / "webchat.sqlite", webui_dir=WEBUI,
                      trusted_config=True)
     fe.poll_s = fe.pair_delay_s = 0.05
@@ -1181,7 +1184,7 @@ def _pair_and_approve(browser, relay_bot, contexts):
     expect(tail.locator("#phone-devices")).to_contain_text("No phone is paired yet.")
     wait_for(lambda: tail.input_value("#phone-link"), 10)
     link = tail.input_value("#phone-link")
-    assert link.startswith(relay_bot["public"] + "/#tr1=")
+    assert link.startswith(relay_bot["public"] + "/#tr2=")
     expect(tail.locator("#phone-note")).to_contain_text("Never send this link through chat or mail.")
     # The canvas holds the code of exactly that link, module for module.
     wrong = tail.evaluate("""(link) => {
@@ -1203,7 +1206,7 @@ def _pair_and_approve(browser, relay_bot, contexts):
     page.on("request", lambda r: asked.append(r.url))
     page.goto(link)
     expect(page.locator("#relay-note")).to_contain_text("waits for approval", timeout=15000)
-    assert "tr1=" not in page.url
+    assert "tr2=" not in page.url
     shown = re.search(r"code (\d{3} \d{3})", page.inner_text("#relay-note")).group(1)
     # The owner's list shows the new phone under the same code, and the DM says so.
     row = tail.locator("#phone-devices li", has_text="waits for approval")
@@ -1314,56 +1317,73 @@ def test_a_forged_error_never_sends_a_message_twice(browser, relay_bot):
             c.close()
 
 
-def _relay_origin_phone(browser, relay_bot, contexts):
-    """A phone that opens a relay-origin pairing link (chat.json opts in,
-    the pairing asks for it), is warned that the relay can read its chat,
-    and waits for approval; the owner approves it. (page, errors, device id)."""
+def _relay_origin_phone(browser, relay_bot, contexts, bundle=None, approve=True):
+    """A phone that opens a link to the relay's copy of the app with the
+    bot's bundle hash (or `bundle`), as "Pair through the relay" makes one,
+    pairs with no chat.json opt-in, and waits for approval; the bot
+    approves it unless `approve` is false. (page, errors, device id)."""
     from playwright.sync_api import expect
+    from botcore.chat.relay_client import relay_app_url
     fe = relay_bot["fe"]
-    link = fe.relay.new_pairing(app_url=relay_bot["rbase"] + "/", relay_origin=True)
-    assert link.startswith(relay_bot["rbase"] + "/#tr1=")
+    assert fe.relay.relay_origin_access == "off"
+    link = fe.relay.new_pairing(app_url=relay_app_url(relay_bot["rbase"]), relay_origin=True,
+                                bundle=bundle or fe.bundle_hash())
+    assert link.startswith(relay_bot["rbase"] + "/#tr2=")
     ctx = browser.new_context()
     contexts.append(ctx)
     page = ctx.new_page()
-    errors, said = [], []
+    errors = []
     page.on("pageerror", lambda e: errors.append(str(e)))
-    page.on("dialog", lambda d: (said.append(d.message), d.accept()))
     page.goto(link)
     expect(page.locator("#relay-note")).to_contain_text("waits for approval", timeout=15000)
-    assert said and "can read this phone's chat and type as you" in said[0]
+    assert "tr2=" not in page.url
     devices = fe.relay.devices()
     assert [(d["origin"], d["pending"], d["bundle_verified"]) for d in devices] == [("relay", True, False)]
-    fe.relay.approve(devices[0]["id"])
+    if approve:
+        fe.relay.approve(devices[0]["id"])
     return page, errors, devices[0]["id"]
 
 
 def test_a_relay_origin_phone_checks_its_app_and_presses_cards_when_the_owner_allows(browser, relay_bot):
-    """A relay-origin phone runs the relay's copy of the app. Once approved,
-    it fetches the bot's signed manifest through the relay, its service
-    worker finds every file of the copy in it, and the phone attests the
-    bundle: the bot records the check, which grants nothing. The card
-    buttons stay greyed out until the owner allows them for this device."""
+    """A relay-origin phone runs the relay's copy of the app. The owner
+    approves it under "Pair a phone" with card buttons left off (the
+    default). It fetches the bot's signed manifest through the relay, its
+    service worker finds every file of the copy in it, and the phone
+    attests the bundle: the owner's list says "verified copy", which grants
+    nothing. It chats, its card buttons stay greyed out, and they work once
+    the owner ticks "Allow card buttons on this phone" for it."""
     from playwright.sync_api import expect
     fe, got = relay_bot["fe"], relay_bot["got"]
     contexts = []
     try:
         _send_card(fe)
-        page, errors, device = _relay_origin_phone(browser, relay_bot, contexts)
+        page, errors, device = _relay_origin_phone(browser, relay_bot, contexts, approve=False)
+        tail = _owner_context(browser, fe, contexts).new_page()
+        tail.goto(relay_bot["public"] + "/")
+        tail.click("#pair-phone")
+        row = tail.locator(f"#phone-devices li[data-device='{device}']")
+        expect(row).to_contain_text("waits for approval", timeout=10000)
+        box = row.locator("input[type=checkbox]")
+        expect(row.locator("label")).to_have_text("Allow card buttons on this phone")
+        expect(box).not_to_be_checked()
+        row.locator("button", has_text="Approve").click()
         expect(page.locator(".chan .c-name").first).to_be_visible(timeout=20000)
-        (row,) = fe.relay.devices()
-        assert row["bundle_verified"] is True and row["cards_allowed"] is False
+        (d,) = fe.relay.devices()
+        assert d["pending"] is False and d["bundle_verified"] is True and d["cards_allowed"] is False
+        expect(row).to_contain_text("through the relay, verified copy of", timeout=10000)
         trusted = _worker_state(page, "trusted")
         assert trusted["hash"] == fe.bundle_hash() and trusted["pin"] is True
         assert page.evaluate("loadPairing().then((r) => r.signKey)") == fe.bundle.public
         assert page.evaluate("S.me.card_actions") is False
         page.locator(".thread-item:has-text('Send this draft?')").click()
         expect(page.locator(".card button.primary")).to_be_disabled()
-        expect(page.locator(".card .card-note")).to_contain_text("Approve this on the tailnet")
-        # The drawer offers no pairing off the tailnet.
+        expect(page.locator(".card .card-note")).to_contain_text("does not press card buttons")
+        # The drawer offers no pairing off the owner's own web chat.
         expect(page.locator("#pair-phone")).to_be_hidden()
 
         # The owner allows card buttons for this device.
-        assert fe.relay.approve(device, cards=True)
+        row.locator("input[type=checkbox]").check()
+        wait_for(lambda: fe.relay.devices()[0]["cards_allowed"], 10)
         page.reload()
         expect(page.locator(".chan .c-name").first).to_be_visible(timeout=20000)
         assert page.evaluate("S.me.card_actions") is True
@@ -1394,6 +1414,112 @@ def test_a_relay_origin_phone_refuses_a_copy_the_bot_did_not_sign(browser, relay
     finally:
         for c in contexts:
             c.close()
+
+
+def test_a_relay_copy_paired_against_another_bundle_stops_before_the_chat(browser, relay_bot):
+    """The QR's hash is not the bundle the bot signs (the relay and the bot
+    on different releases): once approved, the phone's check of the bot's
+    manifest (verifyBundle, bundle.js) refuses it, so the chat never opens
+    and the phone attests nothing."""
+    from playwright.sync_api import expect
+    fe = relay_bot["fe"]
+    contexts = []
+    try:
+        page, errors, device = _relay_origin_phone(browser, relay_bot, contexts, bundle="cd" * 32)
+        expect(page.locator("h1")).to_have_text("Tacitus stopped", timeout=20000)
+        expect(page.locator("body")).to_contain_text("manifest.sig.json")
+        expect(page.locator(".chan")).to_have_count(0)
+        assert fe.relay.devices()[0]["bundle_verified"] is False
+        assert "attested_bundle" not in fe.relay.store.device_by_id(device)
+        assert not errors, errors
+    finally:
+        for c in contexts:
+            c.close()
+
+
+def test_a_relay_copy_that_cannot_check_its_code_pairs_nothing(browser, stub_factory):
+    """A copy of the app on the relay's origin whose bundle.js has no
+    verifyBundle (one from before the signed bundle) stops on "Code
+    verification unavailable" before it makes a key: nothing is paired."""
+    from playwright.sync_api import expect
+    pytest.importorskip("cryptography")
+    import webui_stub_server as W
+    url, stub = stub_factory(sign=True)
+    stub.files_served["bundle.js"] = b"'use strict';\n"
+    here = url.rstrip("/").rsplit("/chat", 1)[0]
+    payload = _link_payload(r=here, i=W.STUB_INSTALL, k=W.STUB_BOT_PUBLIC, c=W.STUB_CLIENT_KEY,
+                            v=2, b=stub.bundle.hash, a=url)
+    ctx = browser.new_context()
+    try:
+        page = ctx.new_page()
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(url + "#tr2=" + payload)
+        expect(page.locator("h1")).to_have_text("Tacitus stopped", timeout=10000)
+        expect(page.locator("body")).to_contain_text("Code verification unavailable")
+        assert "tr2=" not in page.url
+        assert page.evaluate("loadPairing().then((r) => r === undefined)")
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_pair_a_phone_offers_the_relay_on_this_machines_own_address(app):
+    """On a loopback origin (no public_url: no tailnet) "Pair a phone" makes
+    no link a phone could not open. It offers "Pair through the relay",
+    which asks for a link to the relay's copy of the app with the bot's
+    bundle hash and says what the phone may do once approved."""
+    from playwright.sync_api import expect
+    pytest.importorskip("cryptography")
+    page, stub, errors = app(relay_pairing=True, sign=True)
+    page.wait_for_selector(".thread-item")
+    page.click("#pair-phone")
+    expect(page.locator("#phone-note")).to_contain_text("A phone cannot open this address. Pair through the relay")
+    button = page.locator("#phone-relay")
+    expect(button).to_be_visible()
+    expect(button).to_have_text("Pair through the relay")
+    assert stub.pairs == [] and not page.input_value("#phone-link")
+    button.click()
+    wait_for(lambda: page.input_value("#phone-link"), 5)
+    assert stub.pairs == [{"via": "relay"}]
+    link = page.input_value("#phone-link")
+    assert link.startswith("https://relay.example.net/#tr2=")
+    import base64
+    assert json.loads(base64.urlsafe_b64decode(link.split("#tr2=")[1] + "=="))["b"] == stub.bundle.hash
+    expect(page.locator("#phone-note")).to_contain_text(
+        "Once approved it can read and chat, and press card buttons only if you allow it below.")
+    expect(page.locator("#phone-note")).to_contain_text("Never send this link through chat or mail.")
+    expect(button).to_be_hidden()
+    assert page.evaluate("$('phone-qr').width") > 0
+    assert not errors, errors
+
+
+def test_approve_sends_the_card_button_choice(app):
+    """Beside a relay-origin phone that waits, "Allow card buttons on this
+    phone" is off; Approve sends `cards` false, or true once ticked. An
+    own-origin phone has no such box."""
+    from playwright.sync_api import expect
+    page, stub, errors = app(relay_pairing=True)
+    stub.devices[:] = [
+        {"id": "1" * 16, "name": "phone", "paired_at": 1793400000, "origin": "relay", "pending": True,
+         "code": "123456", "cards_allowed": False, "bundle_verified": False},
+        {"id": "2" * 16, "name": "tablet", "paired_at": 1793400000, "origin": "relay", "pending": True,
+         "code": "654321", "cards_allowed": False, "bundle_verified": False},
+        {"id": "3" * 16, "name": "laptop", "paired_at": 1793400000, "origin": "own", "pending": False}]
+    page.wait_for_selector(".thread-item")
+    page.click("#pair-phone")
+    phone, tablet = (page.locator(f"#phone-devices li[data-device='{n * 16}']") for n in "12")
+    expect(phone).to_contain_text("code 123 456, waits for approval")
+    expect(phone.locator("input[type=checkbox]")).not_to_be_checked()
+    expect(page.locator("#phone-devices li[data-device='3333333333333333'] input")).to_have_count(0)
+    phone.locator("button", has_text="Approve").click()
+    tablet.locator("input[type=checkbox]").check()
+    tablet.locator("button", has_text="Approve").click()
+    wait_for(lambda: len(stub.approvals) == 2, 5)
+    assert stub.approvals == [{"device": "1" * 16, "cards": False}, {"device": "2" * 16, "cards": True}]
+    expect(tablet).to_contain_text("through the relay, code not verified")
+    expect(tablet.locator("input[type=checkbox]")).to_be_checked()
+    assert not errors, errors
 
 
 def test_a_relayed_file_opens_only_as_a_raster_image(app):
@@ -1470,6 +1596,32 @@ def _link_payload(**over) -> str:
            "x": int(time.time()) + 600}
     obj.update(over)
     return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+
+def test_a_relay_copy_link_without_the_bundle_hash_is_refused(browser, stub_factory):
+    """A link to the relay's copy of the app (its relay is the page's own
+    origin) must carry the hash of the bot's code: a version 1 link, or a
+    version 2 one without `b`, pairs nothing; nor does a link whose `a`
+    names another origin."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    url, stub = stub_factory()
+    here = url.rstrip("/").rsplit("/chat", 1)[0]
+    mine = {"r": here, "i": W.STUB_INSTALL, "k": W.STUB_BOT_PUBLIC, "c": W.STUB_CLIENT_KEY}
+    for kind, payload, says in (("tr1", _link_payload(**mine), "no hash of the bot's code"),
+                                ("tr2", _link_payload(**mine, v=2, a=url), "no hash of the bot's code"),
+                                ("tr2", _link_payload(**mine, v=2, b="e" * 64, a="https://elsewhere.example.net/"),
+                                 "opens the app elsewhere"),
+                                ("tr1", _link_payload(**mine, v=2, b="e" * 64), "not a pairing link")):
+        ctx = browser.new_context()
+        try:
+            page = ctx.new_page()
+            page.goto(url + f"#{kind}=" + payload)
+            expect(page.locator("#toast")).to_contain_text(says)
+            assert f"{kind}=" not in page.url
+            assert page.evaluate("loadPairing().then((r) => r === undefined)")
+        finally:
+            ctx.close()
 
 
 def test_a_bad_pairing_link_is_refused_and_leaves_the_address_bar(browser, stub_factory):

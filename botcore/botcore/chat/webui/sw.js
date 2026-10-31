@@ -7,14 +7,12 @@
  * manifest are never answered from or written to the cache; the worker
  * leaves them to the browser.
  *
- * It serves only code the bot signed (docs/webchat.md, Code integrity).
- * The page hands it the bot's signed manifest once it has one (adopt);
- * from then on a file from the network is served and kept only when its
- * sha256 is the manifest's. Before the first manifest (a first load) it
- * serves as before and keeps each file, and the first manifest must match
- * every file kept. A file that matches no signed manifest stops the app:
- * the worker drops its copy and every page of the app shows a refusal with
- * no script in it, until "Check again". */
+ * It serves only code the bot signed (docs/webchat.md, Code integrity):
+ * once the page hands it the bot's signed manifest (adopt), a file from the
+ * network is served and kept only when its sha256 is the manifest's. Before
+ * that (a first load) it keeps each file, and the first manifest must match
+ * them all. A file that matches no signed manifest stops the app: the copy
+ * goes, and each page shows a refusal with no script until "Check again". */
 'use strict';
 
 importScripts('bundle.js');

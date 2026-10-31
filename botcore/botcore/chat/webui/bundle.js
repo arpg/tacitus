@@ -1,13 +1,10 @@
 /* Tacitus web chat: the check of the app's code (docs/webchat.md, Code
- * integrity). The page (app.js) and the service worker (sw.js) share it.
- *
- * The bot signs a manifest of the app's files when it starts: each file's
- * sha256, a time, and the bot's Ed25519 public key, signed over the
- * manifest's canonical JSON (keys sorted, no spaces, UTF-8). The bundle
- * hash is the sha256 of those bytes; a pairing QR code carries it.
- * relay_crypto.py writes the same bytes; tests/test_web_bundle.py and
- * tests/test_webui.py hold the two together.
- */
+ * integrity), shared by the page (app.js) and the service worker (sw.js).
+ * The bot signs a manifest of the app's files at start (each file's sha256,
+ * a time, its Ed25519 public key) over the manifest's canonical JSON: keys
+ * sorted, no spaces, UTF-8. The bundle hash, the sha256 of those bytes, is
+ * what a pairing QR code carries. relay_crypto.py writes the same bytes;
+ * tests/test_web_bundle.py and tests/test_webui.py hold the two together. */
 'use strict';
 
 (() => {

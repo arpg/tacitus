@@ -1458,28 +1458,33 @@ do depends on where its code comes from, recorded at pairing:
 
 | Device | Its code comes from | What it may do |
 |---|---|---|
-| Own origin (the default and the only kind the tailnet UI pairs) | the bot's tailnet origin, cached by the service worker | everything, card actions included |
-| Relay origin | the relay's copy of the app, which a compromised relay can change (read what the phone shows, type as the owner) | nothing unless the owner-private `chat.json` sets `relay_origin_access`: `"read"` (GET only), `"chat"` (everything but the card actions) or `"all"`; the default is `"off"`, and the pairing also takes `webchat-relay.py pair --relay-origin`. Let in, it reaches card actions only when the owner allows them for that device (`approve --cards`); its check of its own code is recorded and grants nothing (the app's code, below) |
+| Own origin (the default on the tailnet) | the bot's tailnet origin, cached by the service worker | everything, card actions included |
+| Relay origin, paired with the bundle hash ("Pair through the relay", or `webchat-relay.py pair --relay-origin`) | the relay's copy of the app, which checks itself against the bot's signed manifest (the QR carries its hash); a relay that serves changed code on purpose can skip the check and claim it passed | once approved, read and chat (everything but the card actions), attested or not, with no `chat.json` opt-in; card actions only when the owner allows them for that device ("Allow card buttons on this phone", or `approve --cards`). Its check of its own code is recorded (`bundle_verified`, the release) and grants nothing (the app's code, below) |
+| Relay origin without a hash (paired before the signed bundle) | the relay's copy, unchecked, which a compromised relay can change (read what the phone shows, type as the owner) | nothing unless the owner-private `chat.json` sets `relay_origin_access`: `"read"` (GET only), `"chat"` (everything but the card actions) or `"all"`; the default is `"off"`. Let in, card actions also when the owner allows them for that device |
 | Waiting for approval | either | nothing: every request is a 403 and no event stream opens |
 
 A pairing link is a bearer credential for ten minutes: whoever spends it
 first registers a device. So every new device waits until the owner
-approves it on the tailnet, where the owner compares a six-digit code
-from the handshake's transcript hash (the phone shows it; "Pair a phone"
-and `webchat-relay.py show` list it), and the bot posts a notice of each
-new device in the owner's DM. On the bot's own origin the app takes only
-the pairing secret from a link and the relay, install and keys from
-`/api/relay/status` on the tailnet, so a crafted link cannot replace a
-pairing. Never send a pairing link through chat or mail. Removing a
-device ends its sessions and its open event streams at once and drops
-the push subscriptions made through it or naming it.
+approves it in the web chat (on the tailnet or the bot's machine), where
+the owner compares a six-digit code from the handshake's transcript hash
+(the phone shows it; "Pair a phone" and `webchat-relay.py show` list
+it), and the bot posts a notice of each new device in the owner's DM. On
+the bot's own origin the app takes only the pairing secret from a link
+and the relay, install and keys from `/api/relay/status` on the tailnet,
+so a crafted link cannot replace a pairing. A relay that serves the app
+runs the bot's release: a copy of another release fails its check
+against the bundle hash and stops. Never send a pairing link through
+chat or mail. Removing a device ends its sessions and its open event
+streams at once and drops the push subscriptions made through it or
+naming it.
 
 The relay client marks each request `X-Tacitus-Relay-Cards: allow` or
 `deny`, and the web front end itself refuses a card action, a push
 subscription and a revoke on `deny` (403). The relay client never
 forwards `/api/pair...`, `/api/relay/...` (except a phone's
-`/api/relay/attest`, below) or a plain request for the event stream, nor any header of the phone's but `content-type`, `accept`
-and `last-event-id` (printable ASCII). It must sign in with the pairing
+`/api/relay/attest`, in exactly that spelling, below) or a plain request
+for the event stream, nor any header of the phone's but `content-type`,
+`accept` and `last-event-id` (printable ASCII). It must sign in with the pairing
 cookie (the login header from the bot's own process is not tailscaled's)
 and post with this server's loopback origin. It follows no redirect from
 the relay or the loopback server, takes at most 64 frames from an
@@ -1513,11 +1518,14 @@ browser installs any new service worker the relay sends. The attestation
 is a claim that the phone's code makes.
 
 So pairing through the relay trusts the relay's copy of the app at
-pairing time and at each update of the service worker. The relay client
-sends `X-Tacitus-Relay-Cards: allow` for a relay-origin device only when
-the owner allowed it card buttons for that device (`cards_allowed`, set
-only by `POST /api/relay/approve` with `"cards": true` on the tailnet or
-`webchat-relay.py approve --cards`), or chat.json says `"all"`; and
+pairing time and at each update of the service worker. Such a device,
+once approved, reads and chats whether or not it attested. The relay
+client sends `X-Tacitus-Relay-Cards: allow` for it only when the owner
+allowed it card buttons for that device (`cards_allowed`, set only by
+`POST /api/relay/approve` with `"cards": true` in the owner's web chat,
+the "Allow card buttons on this phone" box there, or `webchat-relay.py
+approve --cards`). A relay-origin device paired without the bundle hash
+(before the signed bundle) also gets it when chat.json says `"all"`, and
 `relay_origin_access: "off"` keeps every such device out. A device paired
 through the own origin (the tailnet) has no such trust: the relay never
 delivers its code.

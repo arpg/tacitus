@@ -6,8 +6,8 @@ with no I/O:
 
 - `BotIdentity`: the bot's X25519 key and relay token, and what derives
   from them (the install id, the client key, the public key).
-- `PairingPayload`: what the tailnet web chat shows as a QR code, as a
-  plain string (a link whose fragment carries the payload).
+- `PairingPayload`: what "Pair a phone" shows as a QR code, as a plain
+  string (a link whose fragment carries the payload).
 - `client_hello`, `bot_accept`, `client_finish`: the handshake. It follows
   the Noise IK pattern (the phone knows the bot's static key from the QR)
   without being wire-compatible with Noise: four X25519 results (es, ss,
@@ -89,6 +89,8 @@ ERR_CODES = frozenset({"session", "auth", "replay", "bad", "busy", "offline",
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 SID_RE = re.compile(r"^[0-9a-f]{32}$")
 PAIRING_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+# A bundle hash: sha256 hex of the bot's signed app manifest.
+BUNDLE_RE = re.compile(r"^[0-9a-f]{64}$")
 _B64_RE = re.compile(r"^[A-Za-z0-9_-]*$")
 _ZERO_NONCE = bytes(12)
 _C2B = b"c2b\x00"
@@ -268,9 +270,12 @@ class PairingPayload:
     """What a phone needs to pair: where the relay is, which install, the
     bot's public key, the client key, and a one-time pairing secret.
 
-    `to_string` gives a link whose fragment carries the payload; a browser
-    never sends a fragment to the server, so opening the link does not hand
-    the pairing secret to the relay's logs."""
+    Version 2 (`#tr2=`) adds `bundle` (`b`: the hash of the bot's signed
+    app bundle, 64 hex) and `app` (`a`: the app URL the link opens), each
+    when set; a payload with neither is version 1 (`#tr1=`), which a phone
+    still takes. `to_string` gives a link whose fragment carries the
+    payload; a browser never sends a fragment to the server, so opening the
+    link does not hand the pairing secret to the relay's logs."""
     relay_url: str
     install_id: str
     bot_public: bytes
@@ -278,44 +283,71 @@ class PairingPayload:
     pairing_id: str
     psk: bytes = field(repr=False)
     expires: int
+    bundle: str = ""
+    app: str = ""
 
-    PREFIX = "tr1="
+    PREFIXES = {1: "tr1=", 2: "tr2="}
+
+    @property
+    def version(self) -> int:
+        return 2 if self.bundle or self.app else 1
 
     def encode(self) -> str:
-        obj = {"v": VERSION, "r": self.relay_url, "i": self.install_id,
+        obj = {"v": self.version, "r": self.relay_url, "i": self.install_id,
                "k": b64e(self.bot_public), "c": self.client_key,
                "p": self.pairing_id, "s": b64e(self.psk), "x": int(self.expires)}
+        if self.bundle:
+            obj["b"] = self.bundle
+        if self.app:
+            obj["a"] = self.app
         return b64e(json.dumps(obj, separators=(",", ":"), sort_keys=True).encode())
 
     def to_string(self, app_url: Optional[str] = None) -> str:
-        base = (app_url or self.relay_url).split("#", 1)[0]
+        base = (app_url or self.app or self.relay_url).split("#", 1)[0]
         last = urlsplit(base).path.rsplit("/", 1)[-1]
         if not base.endswith("/") and "." not in last:  # a folder, not a file
             base += "/"
-        return f"{base}#{self.PREFIX}{self.encode()}"
+        return f"{base}#{self.PREFIXES[self.version]}{self.encode()}"
 
     @classmethod
     def from_string(cls, text: str) -> "PairingPayload":
         frag = text.split("#", 1)[1] if "#" in text else text
-        if frag.startswith(cls.PREFIX):
-            frag = frag[len(cls.PREFIX):]
+        named = next((v for v, pre in cls.PREFIXES.items() if frag.startswith(pre)), None)
+        if named:
+            frag = frag[len(cls.PREFIXES[named]):]
         try:
             obj = json.loads(b64d(frag.strip()))
         except (FrameError, ValueError) as exc:
             raise HandshakeError("not a pairing payload") from exc
-        if not isinstance(obj, dict) or obj.get("v") != VERSION:
+        if not isinstance(obj, dict) or obj.get("v") not in cls.PREFIXES \
+                or named not in (None, obj["v"]):
             raise HandshakeError("unknown pairing payload version")
+        v2 = obj["v"] == 2
         try:
             out = cls(relay_url=str(obj["r"]), install_id=str(obj["i"]),
                       bot_public=b64d(obj["k"]), client_key=str(obj["c"]),
                       pairing_id=str(obj["p"]), psk=b64d(obj["s"]),
-                      expires=int(obj["x"]))
+                      expires=int(obj["x"]), bundle=obj.get("b", "") if v2 else "",
+                      app=obj.get("a", "") if v2 else "")
         except (KeyError, TypeError, ValueError) as exc:
             raise HandshakeError("incomplete pairing payload") from exc
         if (len(out.bot_public) != 32 or len(out.psk) != 32
-                or not PAIRING_ID_RE.match(out.pairing_id)):
+                or not PAIRING_ID_RE.match(out.pairing_id)
+                or not isinstance(out.bundle, str) or not isinstance(out.app, str)
+                or (out.bundle and not BUNDLE_RE.match(out.bundle))
+                or (out.app and not _web_url(out.app))
+                or (v2 and not (out.bundle or out.app))):
             raise HandshakeError("malformed pairing payload")
         return out
+
+
+def _web_url(url: str) -> bool:
+    """True for an http(s) URL with a host."""
+    try:
+        parts = urlsplit(url)
+        return parts.scheme in ("http", "https") and bool(parts.hostname)
+    except ValueError:
+        return False
 
 
 def new_pairing(identity: BotIdentity, relay_url: str, *, ttl: int = PAIRING_TTL,
