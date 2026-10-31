@@ -188,6 +188,8 @@ const INLINE = {
   code: /(?<tick>`+)(?<code>[^\n]+?)\k<tick>(?!`)/,
   mdlink: /\[(?<label>[^\]\n]+)\]\((?<href>[^()\s]+)\)/,
   angle: /<(?<aurl>(?:https?|mailto):[^|>\s]+)(?:\|(?<alabel>[^>\n]*))?>/,
+  // A Zulip mention or stream link, @**Name|id** or #**stream**, shows its name.
+  mention: /(?<sigil>[@#])_?\*\*(?<mention>[^*|\n]+?)(?:\|\d+)?\*\*/,
   bold: /\*\*(?=\S)(?<bold>[^\n]*?\S)\*\*/,
   strike: /~~(?=\S)(?<strike>[^\n]*?\S)~~/,
   star: /(?<![\w*])\*(?=[^\s*])(?<star>[^*\n]*?[^\s*])\*(?![\w*])/,
@@ -199,7 +201,7 @@ const INLINE = {
 const join = (names) => names.map((n) => INLINE[n].source).join('|');
 // Markdown is the text the core writes for Zulip; card text is Slack
 // mrkdwn as the card builders write it (*bold*, _italic_, <url|label>).
-const MD_SRC = join(['inert', 'code', 'mdlink', 'angle', 'bold', 'strike', 'star', 'emoji', 'url']);
+const MD_SRC = join(['inert', 'code', 'mdlink', 'angle', 'mention', 'bold', 'strike', 'star', 'emoji', 'url']);
 const CARD_SRC = join(['inert', 'code', 'angle', 'bold', 'strike', 'star', 'under', 'tilde', 'emoji', 'url']);
 
 function link(url, label) {
@@ -232,7 +234,8 @@ function inline(text, card, out) {
       const label = (g.alabel || '').trim();
       if (card && label) out.append(label + ' (', link(g.aurl) || g.aurl, ')');
       else out.append(link(g.aurl, label) || m[0]);
-    } else if (g.bold !== undefined) out.append(wrap('strong', g.bold));
+    } else if (g.mention !== undefined) out.append(h('span', { class: 'mention' }, g.sigil + g.mention));
+    else if (g.bold !== undefined) out.append(wrap('strong', g.bold));
     else if (g.strike !== undefined) out.append(wrap('s', g.strike));
     else if (g.star !== undefined) out.append(wrap(card ? 'strong' : 'em', g.star));
     else if (g.under !== undefined) out.append(wrap('em', g.under));
@@ -360,6 +363,7 @@ function plainLine(text) {
     .replace(/^(?:[>#]+\s*)+/, '')
     .replace(/\[([^\]]*)\]\([^)\s]*\)/g, '$1')
     .replace(/<[^<>|\s]+\|([^<>]*)>/g, '$1')
+    .replace(/([@#])_?\*\*([^*|\n]+?)(?:\|\d+)?\*\*/g, '$1$2')
     .replace(/[*~`]|(?<!\w)_|_(?!\w)/g, ''));
 }
 
