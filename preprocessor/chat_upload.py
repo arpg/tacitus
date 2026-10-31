@@ -11,7 +11,8 @@ the resident and never supplies the credential; it supplies only the Slack
 channel settings in SETTING_KEYS, read as data. On Slack the credential is
 SLACK_BOT_TOKEN; on Zulip, ZULIP_API_KEY. The caller never sees it. With a
 credential the job goes through the configured chat frontend
-(`chat.load_frontend(for_cli=True)`).
+(`chat.load_frontend(for_cli=True)`); with the web chat as a shadow, an
+owner process's job is mirrored into it too (docs/webchat.md, CLI senders).
 
 If NO credential is reachable (the resident runs as the ea-bot user, which
 by design cannot read it), this falls back to bot-mediated delivery: the

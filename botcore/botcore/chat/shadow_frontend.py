@@ -17,14 +17,49 @@ Outbound. post, update, react, unreact, post_card, update_card,
 replace_card_with_status and upload call the primary, then copy the result
 into the shadow under the primary's refs. create_private_room, archive,
 unarchive, set_description and invite act on the primary, then copy the
-channel row. A shadow failure is logged and dropped: the core gets the
-primary's result whatever the shadow does. start() also copies the
-channel list: the main and scheduling channels, the owner's DM and every
-room in the primary's archived_map().
+channel row (with its description where one is known). A shadow failure
+is logged and dropped: the core gets the primary's result whatever the
+shadow does. start() also copies the channel list: the main and
+scheduling channels, the owner's DM and the rooms in the primary's
+archived_map() that `room_filter` keeps (every one when it is None; the
+bot keeps the rooms it made for the owner). A room the core posts to
+later is copied then.
+
+History. start() then copies the primary's recent history into the
+shadow on a daemon thread, `backfill_days` back (0, the default here,
+copies none; load_frontend passes the chat block's web.backfill_days):
+in each channel the shadow holds, every thread with a top-level message
+in the window (recent_messages), whole (thread_replies), under the
+primary's ids and times. The author is the owner for the primary's
+owner id and for a web message (WEB_PREFIX), else the bot; a card goes
+in as the plain text the primary shows. The shadow takes these rows
+quietly (mirror_post and mirror_file with quiet=True): no event per row,
+never unread, a row it holds left as it is, so a second start copies
+nothing twice. Each channel that took rows then gets one
+mirror_backfilled(channel), one event, so an open app reads it again.
+The copy stops at `backfill_cap` messages, and a read the primary fails
+ends that channel's copy. While it runs, live mirroring waits (up to
+`backfill_hold_s`, then it writes what waits and goes on), so a thread's
+history goes in before the replies the bot posts on waking.
 
 Inbound from the primary. The composite wraps the dispatch_message of the
 primary's registry, so an owner's message is copied into the shadow
-(author "owner") before the core handles it. Actions pass through.
+(author "owner") before the core handles it, and a channel_rename renames
+the row. It wraps dispatch_event too: a "thread_moved" event re-keys the
+thread's rows (mirror_move) when its new channel is one the shadow
+holds. Actions pass through.
+
+The primary's own writes. The composite sets `primary.on_outbound`
+(base.ChatFrontend); a frontend calls it after a write it makes outside
+the verbs above (Zulip's card codes, an edit past the edit window, a
+stream change), with a verb and keywords:
+
+    post(ref, text)                 update(ref, text)
+    card(ref, card)                 card_status(ref, text)
+    reaction(channel, msg_id, status, on)
+    owner_message(msg)              an owner's message the frontend handled
+                                    itself, never dispatched as a message
+    channel(channel[, name=, archived=, description=])
 
 Inbound from the shadow. The composite sets `shadow.inbound` to a
 callable; the shadow calls it with the owner's input instead of
@@ -57,21 +92,34 @@ id; its card ref is the primary's already, and the value of an action
 the card registry knows comes from the registry, not from the request.
 
 The shadow's mirror entry points, each idempotent on (channel, id) and
-called with positional arguments:
+called with positional arguments; a keyword in brackets is passed only
+to a shadow whose method takes it:
 
-    mirror_channel(id, name, kind, archived)   kind: main, sched, dm, room
-    mirror_post(ref, text, author)             author: "bot" or "owner"
+    mirror_channel(id, name, kind, archived[, description=])
+                                               kind: main, sched, dm, room
+    mirror_post(ref, text, author[, quiet=, markdown=])
+                                               author: "bot" or "owner"
     mirror_update(ref, text)
     mirror_card(ref, card)                     the ConfirmationCard itself
     mirror_card_status(ref, text)
     mirror_reaction(channel, msg_id, status, on)   status: a Status value
-    mirror_file(ref, file, author[, path=, text=])   file: a FileRef
+    mirror_file(ref, file, author[, path=, text=, quiet=, markdown=])
+                                               file: a FileRef
+    mirror_backfilled(channel)                 optional
+    mirror_move(old_channel, old_key, new_channel, new_key)   optional
+
+The history copy needs `quiet` on mirror_post and mirror_file; a shadow
+without it gets none. With quiet the shadow returns None for a row it
+did not take.
 
 The text is as the primary got it: the core's Slack mrkdwn on the bot's
 rows (the shadow converts it as its own post() would) and the owner's text
-as typed. When the shadow's mirror_file takes `path` and `text`, a file
-row gets the local bytes and its text in that one call; otherwise the
-text goes first through mirror_post on the same ref. A file row without
+as typed. History from a primary whose `history_markdown` is True (Zulip)
+goes with markdown=True: the bot's rows are Markdown already and the
+shadow keeps them as they are. When the shadow's mirror_file takes
+`path` and `text`, a file row gets the local bytes and its text in that
+one call; otherwise the text goes first through mirror_post on the same
+ref. A file row without
 local bytes gets the primary's FileRef with an empty id, so the shadow
 links to the primary's absolute url. A file the core uploads has no
 primary message id (upload returns a FileRef), so its row id is
@@ -110,6 +158,15 @@ log = logging.getLogger("chat.shadow")
 
 # Marks the owner's web message where the primary shows it as the bot's.
 WEB_PREFIX = "**You (web):** "
+
+# Messages the history copy takes at most, over every channel.
+BACKFILL_CAP = 5000
+# Top-level messages asked of the primary per channel.
+BACKFILL_ROOTS = 500
+# Seconds live mirroring waits for the history copy, and the writes it
+# keeps waiting at most, before it writes them and goes on.
+BACKFILL_HOLD_S = 60.0
+HOLD_MAX = 2000
 
 # The subtypes the core reads as a person's message.
 _PERSON_SUBTYPES = ("", "file_share", "thread_broadcast")
@@ -156,6 +213,7 @@ class ShadowFrontend(ChatFrontend):
 
     capabilities = _from_primary("capabilities")
     card_registry = _from_primary("card_registry")
+    history_markdown = _from_primary("history_markdown")
     limits = _from_primary("limits")
     main_channel = _from_primary("main_channel")
     main_channel_name = _from_primary("main_channel_name")
@@ -164,16 +222,33 @@ class ShadowFrontend(ChatFrontend):
     bot_user_id = _from_primary("bot_user_id")
     thread_namer = _from_primary("thread_namer")
 
-    def __init__(self, primary: ChatFrontend, shadow: ChatFrontend) -> None:
+    def __init__(self, primary: ChatFrontend, shadow: ChatFrontend, *,
+                 backfill_days: float = 0.0, backfill_cap: int = BACKFILL_CAP) -> None:
         # ChatFrontend.__init__ is not called: the registry is the primary's.
         self.primary = primary
         self.shadow = shadow
+        self.backfill_days = max(0.0, float(backfill_days or 0))
+        self.backfill_cap = int(backfill_cap)
+        self.backfill_hold_s = BACKFILL_HOLD_S
+        # Picks the rooms of archived_map that start() copies; None takes all.
+        self.room_filter: Callable[[str], bool] | None = None
+        # What the last history copy did (backfill's report), None before one.
+        self.backfill_report: dict | None = None
+        self._backfill_thread: threading.Thread | None = None
         self._lock = threading.Lock()
         # Channel id -> (name, kind, archived) of each row the shadow holds.
         self._channels: dict[str, tuple[str, str, bool]] = {}
+        # Live writes waiting for the history copy; None when none wait.
+        self._held: list[tuple[str, str, Callable[[], Any]]] | None = None
+        self._hold_until = 0.0
+        self._hold_lock = threading.Lock()
+        self._release_lock = threading.Lock()
         registry = primary.registry
         self._dispatch_message = registry.dispatch_message
         registry.dispatch_message = self._primary_message
+        self._dispatch_event = registry.dispatch_event
+        registry.dispatch_event = self._primary_event
+        primary.on_outbound = self._primary_outbound
         shadow.inbound = self._from_shadow
 
     def __getattr__(self, name: str) -> Any:
@@ -196,13 +271,14 @@ class ShadowFrontend(ChatFrontend):
 
     def start(self) -> None:
         """Start the primary (its failure raises), then the shadow, then
-        copy the channel list into the shadow."""
+        copy the channel list into the shadow and start the history copy."""
         self.primary.start()
         try:
             self.shadow.start()
         except Exception:
             log.exception("shadow: the shadow front end did not start")
         self.mirror_channels()
+        self.start_backfill()
 
     def run_forever(self) -> None:
         """Run the shadow's loop on a daemon thread and the primary's here."""
@@ -231,9 +307,9 @@ class ShadowFrontend(ChatFrontend):
     # channel rows
 
     def mirror_channels(self) -> int:
-        """Copy the main and scheduling channels, the owner's DM and every
-        room in the primary's archived_map into the shadow; the number of
-        rows the shadow took."""
+        """Copy the main and scheduling channels, the owner's DM and the
+        rooms in the primary's archived_map that room_filter keeps into the
+        shadow; the number of rows the shadow took."""
         p = self.primary
         rows: dict[str, tuple[str, bool | None]] = {}
         dm = ""
@@ -251,9 +327,22 @@ class ShadowFrontend(ChatFrontend):
             log.warning("shadow: the primary's room list failed", exc_info=True)
             rooms = {}
         for cid, archived in rooms.items():
-            rows.setdefault(cid, ("room", bool(archived)))
+            if cid not in rows and self._room_wanted(cid):
+                rows[cid] = ("room", bool(archived))
         return sum(self._mirror_channel(cid, kind=kind, archived=archived)
                    for cid, (kind, archived) in rows.items())
+
+    def _room_wanted(self, channel: str) -> bool:
+        """room_filter's answer for one room; a filter that fails keeps the
+        room out (the core's first post there copies it)."""
+        keep = self.room_filter
+        if keep is None:
+            return True
+        try:
+            return bool(keep(channel))
+        except Exception:
+            log.warning("shadow: the room filter failed on %s", channel, exc_info=True)
+            return False
 
     def _kind_of(self, channel: str) -> str:
         p = self.primary
@@ -264,10 +353,12 @@ class ShadowFrontend(ChatFrontend):
         return "dm" if self._is_dm(channel) else "room"
 
     def _mirror_channel(self, channel: str, *, name: str | None = None,
-                        kind: str | None = None, archived: bool | None = None) -> bool:
+                        kind: str | None = None, archived: bool | None = None,
+                        description: str | None = None) -> bool:
         """Write the channel's row into the shadow; True when it took it.
         A value not given comes from the row written before, else from the
-        primary's channel_info."""
+        primary's channel_info; a description not given and not read there
+        leaves the shadow's own."""
         with self._lock:
             known = self._channels.get(channel)
         if known is not None:
@@ -285,8 +376,13 @@ class ShadowFrontend(ChatFrontend):
             name = (info.name if info else "") or (
                 self.primary.main_channel_name if kind == "main" else "") or channel
         archived = bool(info.is_archived) if archived is None and info else bool(archived)
+        if description is None and info is not None:
+            description = getattr(info, "description", "") or None
+        extra: dict[str, Any] = {}
+        if description is not None and self._takes("mirror_channel", "description"):
+            extra["description"] = description
         try:
-            self.shadow.mirror_channel(channel, name, kind, archived)
+            self.shadow.mirror_channel(channel, name, kind, archived, **extra)
         except Exception:
             log.warning("shadow: channel %s not mirrored", channel, exc_info=True)
             return False
@@ -302,24 +398,70 @@ class ShadowFrontend(ChatFrontend):
 
     # mirroring helpers
 
-    def _mirror(self, what: str, channel: str, write: Callable[[], Any]) -> None:
-        """Run one shadow write; a failure is logged and dropped."""
+    def _mirror(self, what: str, channel: str, write: Callable[[], Any], *,
+                hold: bool = True) -> None:
+        """Run one shadow write, or keep it for later while the history copy
+        holds live writes (`hold` False writes at once); a failure is logged
+        and dropped."""
+        if hold and self._defer((what, channel, write)):
+            return
+        self._write(what, channel, write)
+
+    def _write(self, what: str, channel: str, write: Callable[[], Any]) -> None:
         try:
             self._ensure_channel(channel)
             write()
         except Exception:
             log.warning("shadow: %s in %s not mirrored", what, channel, exc_info=True)
 
-    def _file_options(self) -> set[str]:
-        """Which of the optional `path` and `text` the shadow's mirror_file
+    def _hold(self) -> None:
+        """Keep live writes until _release, for backfill_hold_s at most."""
+        with self._hold_lock:
+            if self._held is None:
+                self._held = []
+            self._hold_until = time.monotonic() + self.backfill_hold_s
+
+    def _defer(self, item: tuple[str, str, Callable[[], Any]]) -> bool:
+        """True when the write waits for the history copy. Past the hold's
+        time or size the waiting writes go out first, then this one."""
+        with self._hold_lock:
+            if self._held is None:
+                return False
+            if time.monotonic() < self._hold_until and len(self._held) < HOLD_MAX:
+                self._held.append(item)
+                return True
+        log.info("shadow: the history copy outlasts its hold; live mirroring goes on")
+        self._release()
+        return False
+
+    def _release(self) -> None:
+        """Write the waiting live writes in their order and stop holding."""
+        with self._release_lock:
+            while True:
+                with self._hold_lock:
+                    batch = self._held or []
+                    if not batch:
+                        self._held = None
+                        return
+                    self._held = []
+                for item in batch:
+                    self._write(*item)
+
+    def _takes(self, method: str, *names: str) -> set[str]:
+        """Which of the optional keywords `names` the shadow's `method`
         takes."""
         try:
-            params = inspect.signature(self.shadow.mirror_file).parameters
+            params = inspect.signature(getattr(self.shadow, method)).parameters
         except (AttributeError, TypeError, ValueError):
             return set()
         if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
-            return {"path", "text"}
-        return {"path", "text"} & set(params)
+            return set(names)
+        return set(names) & set(params)
+
+    def _file_options(self) -> set[str]:
+        """Which of the optional `path` and `text` the shadow's mirror_file
+        takes."""
+        return self._takes("mirror_file", "path", "text")
 
     def _mirror_rows(self, ref: MessageRef, text: str, files: list[FileRef],
                      author: str, paths: list[str] | None = None) -> None:
@@ -359,6 +501,164 @@ class ShadowFrontend(ChatFrontend):
             return bool(self.primary.is_dm(channel))
         except Exception:
             return False
+
+    # history
+
+    def start_backfill(self) -> threading.Thread | None:
+        """Start the history copy (backfill) on a daemon thread over the
+        channels the shadow holds, holding live writes until it ends; the
+        thread, or None when backfill_days is 0, the shadow takes no quiet
+        history, or a copy is running."""
+        if self.backfill_days <= 0:
+            return None
+        if self._takes("mirror_post", "quiet") != {"quiet"} or \
+                self._takes("mirror_file", "quiet") != {"quiet"}:
+            log.info("shadow: %s takes no quiet history; no backfill", self.shadow.name)
+            return None
+        running = self._backfill_thread
+        if running is not None and running.is_alive():
+            return None
+        with self._lock:
+            channels = list(self._channels)
+        self._hold()
+        t = threading.Thread(target=self._backfill_run, args=(channels,),
+                             name="chat-shadow-backfill", daemon=True)
+        self._backfill_thread = t
+        t.start()
+        return t
+
+    def _backfill_run(self, channels: list[str]) -> None:
+        try:
+            self.backfill(channels)
+        except Exception:
+            log.exception("shadow: the history copy failed")
+        finally:
+            self._release()
+
+    def backfill(self, channels: list[str] | None = None, *, days: float | None = None,
+                 cap: int | None = None) -> dict:
+        """Copy the primary's last `days` of history in each channel (by
+        default every channel the shadow holds) into the shadow, quietly;
+        see the module docstring. A message posted after the copy began is
+        live traffic and is left to the live mirror. Returns and keeps in
+        `backfill_report` {"copied": n, "channels": {channel: n},
+        "failed": [channel], "capped": bool}."""
+        days = self.backfill_days if days is None else max(0.0, float(days))
+        cap = self.backfill_cap if cap is None else int(cap)
+        if channels is None:
+            with self._lock:
+                channels = list(self._channels)
+        until = time.time()
+        since = until - days * 86400
+        markdown = bool(getattr(self.primary, "history_markdown", False))
+        opts = {
+            verb: {"quiet": True, **({"markdown": True} if markdown and
+                                     "markdown" in self._takes(verb, "markdown") else {})}
+            for verb in ("mirror_post", "mirror_file")}
+        files_take = self._file_options()
+        report: dict = {"copied": 0, "channels": {}, "failed": [], "capped": False}
+        for cid in channels:
+            if report["copied"] >= cap:
+                break
+            n, ok = self._backfill_channel(cid, since, until, cap - report["copied"],
+                                           opts, files_take)
+            report["channels"][cid] = n
+            report["copied"] += n
+            if not ok:
+                report["failed"].append(cid)
+            if n:
+                self._backfilled(cid)
+            log.info("shadow: history copy: %d message(s) in %s%s", n, cid,
+                     "" if ok else ", stopped on a read the primary failed")
+        report["capped"] = report["copied"] >= cap
+        log.info("shadow: history copy done: %d message(s) in %d channel(s), %d failed%s",
+                 report["copied"], len(report["channels"]), len(report["failed"]),
+                 f", stopped at the cap of {cap}" if report["capped"] else "")
+        self.backfill_report = report
+        return report
+
+    def _backfill_channel(self, channel: str, since: float, until: float, room: int,
+                          opts: dict, files_take: set[str]) -> tuple[int, bool]:
+        """(messages copied, True unless a read of the primary failed) for
+        one channel, at most `room` messages."""
+        try:
+            roots = self.primary.recent_messages(channel, since, BACKFILL_ROOTS)
+        except Exception:
+            log.warning("shadow: history copy of %s: the primary's history read failed",
+                        channel, exc_info=True)
+            return 0, False
+        copied = 0
+        threads: set[str] = set()
+        for root in roots:
+            key = root.thread_key or root.msg_id
+            if not key or key in threads:
+                continue
+            threads.add(key)
+            try:
+                msgs = self.primary.thread_replies(channel, key) or [root]
+            except Exception:
+                log.warning("shadow: history copy of %s: the primary's thread read failed",
+                            channel, exc_info=True)
+                return copied, False
+            for msg in msgs:
+                if copied >= room:
+                    return copied, True
+                copied += self._backfill_message(channel, key, msg, until, opts, files_take)
+        return copied, True
+
+    def _history_author(self, msg: InboundMessage) -> tuple[str, str]:
+        """(author, text) of a message from the primary's past: the owner's
+        own, the owner's web message (posted as the bot after WEB_PREFIX),
+        or the bot's."""
+        p = self.primary
+        text = msg.text or ""
+        if p.owner_id and str(msg.user_id) == str(p.owner_id) and not msg.is_self:
+            return "owner", text
+        if msg.is_self or (p.bot_user_id and str(msg.user_id) == str(p.bot_user_id)):
+            for prefix in (WEB_PREFIX, _to_mrkdwn(WEB_PREFIX)):
+                if text.startswith(prefix):
+                    return "owner", text[len(prefix):]
+        return "bot", text
+
+    def _backfill_message(self, channel: str, key: str, msg: InboundMessage, until: float,
+                          opts: dict, files_take: set[str]) -> int:
+        """Copy one message of the primary's past; the rows the shadow took."""
+        sub = msg.subtype or ""
+        if not msg.msg_id or (msg.channel and msg.channel != channel) \
+                or (msg.posted_at or 0) > until or sub == "channel_rename" \
+                or (sub.startswith("other:") and sub != "other:bot_message"):
+            return 0
+        author, text = self._history_author(msg)
+        ref = MessageRef(channel, msg.msg_id, msg.thread_key or key, msg.posted_at)
+        try:
+            if not msg.files:
+                return int(self.shadow.mirror_post(ref, text, author,
+                                                   **opts["mirror_post"]) is not None)
+            took = 0
+            for n, f in enumerate(msg.files):
+                row = ref if n == 0 else dataclasses.replace(ref, id=f"{ref.id}:{n}")
+                if "://" in (f.url or ""):
+                    # No bytes go with it: the shadow links to the primary's copy.
+                    f = dataclasses.replace(f, id="")
+                extra = dict(opts["mirror_file"])
+                if n == 0 and text and "text" in files_take:
+                    extra["text"] = text
+                took += self.shadow.mirror_file(row, f, author, **extra) is not None
+            return took
+        except Exception:
+            log.warning("shadow: history copy: message %s in %s not mirrored", msg.msg_id,
+                        channel, exc_info=True)
+            return 0
+
+    def _backfilled(self, channel: str) -> None:
+        """One event for a channel that took history, where the shadow has
+        the call."""
+        done = getattr(self.shadow, "mirror_backfilled", None)
+        if callable(done):
+            try:
+                done(channel)
+            except Exception:
+                log.warning("shadow: the history event for %s failed", channel, exc_info=True)
 
     # messages
 
@@ -464,7 +764,8 @@ class ShadowFrontend(ChatFrontend):
 
     def create_private_room(self, name: str, description: str = "") -> RoomRef:
         room = self.primary.create_private_room(name, description)
-        self._mirror_channel(room.id, name=room.name, kind="room", archived=False)
+        self._mirror_channel(room.id, name=room.name, kind="room", archived=False,
+                             description=description or None)
         return room
 
     def invite(self, channel: str, user_id: str) -> None:
@@ -473,7 +774,7 @@ class ShadowFrontend(ChatFrontend):
 
     def set_description(self, channel: str, text: str) -> None:
         self.primary.set_description(channel, text)
-        self._mirror_channel(channel)
+        self._mirror_channel(channel, description=text or "")
 
     def archive(self, channel: str) -> None:
         self.primary.archive(channel)
@@ -491,8 +792,10 @@ class ShadowFrontend(ChatFrontend):
                                   title=title, comment=comment)
         fid = f"file:{ref.id or ref.url or ref.name}"
         row = MessageRef(channel, fid, thread_ts or fid, time.time())
+        # The core may remove the file once upload returns: the shadow reads
+        # the bytes now, never after the history copy.
         self._mirror("upload", channel, lambda: self._mirror_rows(
-            row, comment, [ref], "bot", [str(path)]))
+            row, comment, [ref], "bot", [str(path)]), hold=False)
         return ref
 
     def download(self, ref: FileRef, dest_dir: str | Path) -> str | None:
@@ -524,14 +827,75 @@ class ShadowFrontend(ChatFrontend):
 
     def _primary_message(self, msg: InboundMessage) -> bool:
         """The primary registry's dispatch_message: copy an owner's message
-        into the shadow, then hand it to the core."""
-        if self._is_owner_input(msg):
-            ref = MessageRef(msg.channel, msg.msg_id, msg.thread_key or msg.msg_id,
-                             msg.posted_at)
-            files = list(msg.files or [])
-            self._mirror("owner message", msg.channel,
-                         lambda: self._mirror_rows(ref, msg.text or "", files, "owner"))
+        (or a rename of a channel the shadow holds) into the shadow, then
+        hand it to the core."""
+        if msg.subtype == "channel_rename":
+            if msg.new_name and self._serves(msg.channel):
+                self._mirror_channel(msg.channel, name=msg.new_name)
+        elif self._is_owner_input(msg):
+            self._mirror_owner(msg)
         return self._dispatch_message(msg)
+
+    def _mirror_owner(self, msg: InboundMessage) -> None:
+        ref = MessageRef(msg.channel, msg.msg_id, msg.thread_key or msg.msg_id, msg.posted_at)
+        files = list(msg.files or [])
+        self._mirror("owner message", msg.channel,
+                     lambda: self._mirror_rows(ref, msg.text or "", files, "owner"))
+
+    def _primary_event(self, name: str, payload: Any) -> bool:
+        """The primary registry's dispatch_event: a whole thread move re-keys
+        the thread's rows in the shadow, then the core gets the event."""
+        if name == "thread_moved" and isinstance(payload, dict):
+            self._mirror_move(payload)
+        return self._dispatch_event(name, payload)
+
+    def _mirror_move(self, payload: dict) -> None:
+        old, new = str(payload.get("old") or ""), str(payload.get("new") or "")
+        channel = str(payload.get("channel") or "")
+        old_channel = str(payload.get("old_channel") or "") or channel
+        move = getattr(self.shadow, "mirror_move", None)
+        if not (old and new and channel) or old == new or not callable(move):
+            return
+        if not self._serves(channel):
+            # A card filed out of the owner's view, for one: the shadow has
+            # no such place, and the rows stay where the owner saw them.
+            log.info("shadow: thread %s moved to %s, which the shadow does not hold; "
+                     "its rows stay", old, channel)
+            return
+        self._mirror("thread move", channel, lambda: move(old_channel, old, channel, new))
+
+    def _primary_outbound(self, verb: str, **args: Any) -> None:
+        """The primary's on_outbound: a write the primary made on its own
+        (the verbs are in the module docstring), copied into the shadow."""
+        sh = self.shadow
+        what = f"the primary's {verb}"
+        if verb in ("post", "update", "card_status"):
+            ref: MessageRef = args["ref"]
+            text = str(args.get("text") or "")
+            mirror = {"post": lambda: sh.mirror_post(ref, text, "bot"),
+                      "update": lambda: sh.mirror_update(ref, text),
+                      "card_status": lambda: sh.mirror_card_status(ref, text)}[verb]
+            self._mirror(what, ref.channel, mirror)
+        elif verb == "card":
+            ref, card = args["ref"], args["card"]
+            self._mirror(what, ref.channel, lambda: sh.mirror_card(ref, card))
+        elif verb == "reaction":
+            channel, msg_id = str(args["channel"]), str(args["msg_id"])
+            name, on = _status_name(args["status"]), bool(args.get("on", True))
+            self._mirror("the primary's reaction", channel,
+                         lambda: sh.mirror_reaction(channel, msg_id, name, on))
+        elif verb == "owner_message":
+            msg = args["msg"]
+            if isinstance(msg, InboundMessage) and self._is_owner_input(msg):
+                self._mirror_owner(msg)
+        elif verb == "channel":
+            channel = str(args.get("channel") or "")
+            if channel and self._serves(channel):
+                self._mirror_channel(channel, name=args.get("name"),
+                                     archived=args.get("archived"),
+                                     description=args.get("description"))
+        else:
+            log.debug("shadow: no mirror for the primary's %s", verb)
 
     # inbound from the shadow
 
@@ -608,9 +972,12 @@ class ShadowFrontend(ChatFrontend):
                 sent.append(up)
                 kept.append(own or up)
             # The bytes of a file the shadow already holds stay where they are.
+            # The shadow answers the browser with this row, and the bytes'
+            # path lasts only for this call: the write never waits.
             paths = [path if own is None else "" for path, _, own, _ in local]
             self._mirror("web message", ref.channel,
-                         lambda: self._mirror_rows(ref, text, kept, "owner", paths))
+                         lambda: self._mirror_rows(ref, text, kept, "owner", paths),
+                         hold=False)
         finally:
             for _, _, _, tmp in local:
                 if tmp:

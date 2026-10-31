@@ -75,6 +75,8 @@ class ChannelInfo:
     is_archived: bool = False
     is_dm: bool = False
     exists: bool = True
+    # The room's purpose or description; "" when the platform gives none.
+    description: str = ""
 
 
 @dataclass

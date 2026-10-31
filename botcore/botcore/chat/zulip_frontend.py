@@ -50,10 +50,24 @@ on BAD_EVENT_QUEUE_ID the frontend registers a new queue and dispatches
 a "queue_reset" event carrying the last message id, so the core can
 backfill the gap with `recent_messages(since_id=...)`.
 
+Shadow mode (ShadowFrontend) mirrors what the core does through the
+composite. The writes this frontend makes on its own go to the
+composite through `_outbound` (base.ChatFrontend.on_outbound): the
+owner's card code, which is never dispatched as a message, its done
+reaction and the reply to a word the card does not take; an edit refused
+for the edit window, whose new text goes out as a fresh message (the
+mirror updates the message in place); and a stream's description or
+archive change. A rename reaches the composite as its channel_rename
+message, and a whole thread move as the "thread_moved" event. Not
+mirrored, by design: the reaction chips on a card (they stand in for
+buttons, which the web chat draws itself) and a partial move that splits
+a topic, which reaches the core as nothing either.
+
 The translators (inbound_from_message, rename_from_stream_event,
-reaction_action, code_action, render_card) are pure functions over the
-API's dicts, tested with fixtures. The `zulip` and `requests` packages
-are imported inside methods, so importing this module needs neither.
+channel_changes_from_event, reaction_action, code_action, render_card)
+are pure functions over the API's dicts, tested with fixtures. The
+`zulip` and `requests` packages are imported inside methods, so
+importing this module needs neither.
 """
 from __future__ import annotations
 
@@ -293,6 +307,30 @@ def rename_from_stream_event(ev: dict) -> InboundMessage | None:
     return InboundMessage(channel=f"stream:{sid}", msg_id="", text="", user_id="",
                           posted_at=time.time(), subtype="channel_rename",
                           new_name=str(ev.get("value") or ""), raw=ev)
+
+
+def channel_changes_from_event(ev: dict) -> list[tuple[str, dict]]:
+    """A stream event's changes to rooms other than a rename, as
+    [(channel, {"description": text} or {"archived": bool})]. Archiving
+    reaches a client that does not declare archived channels as a delete
+    and unarchiving as a create; a newer server may send the is_archived
+    property instead."""
+    if ev.get("type") != "stream":
+        return []
+    op = ev.get("op")
+    if op == "update" and ev.get("stream_id") is not None:
+        channel = f"stream:{int(ev['stream_id'])}"
+        prop = ev.get("property")
+        if prop == "description":
+            return [(channel, {"description": str(ev.get("value") or "")})]
+        if prop == "is_archived":
+            return [(channel, {"archived": bool(ev.get("value"))})]
+        return []
+    if op in ("delete", "create"):
+        return [(f"stream:{int(s['stream_id'])}", {"archived": op == "delete"})
+                for s in ev.get("streams") or []
+                if isinstance(s, dict) and s.get("stream_id") is not None]
+    return []
 
 
 def thread_move_from_event(ev: dict) -> dict | None:
@@ -578,6 +616,8 @@ class ZulipFrontend(ChatFrontend):
     name = "zulip"
     capabilities = frozenset({"reactions", "codes", "files", "private_rooms",
                               "registers_cards"})
+    # Messages read back carry the Zulip Markdown they were posted in.
+    history_markdown = True
 
     PROMPT_STRINGS = {
         "platform": "Zulip",
@@ -968,6 +1008,8 @@ class ZulipFrontend(ChatFrontend):
                 self._stream_names[int(ev["stream_id"])] = ren.new_name
                 self.registry.dispatch_message(ren)
                 return
+            for channel, change in channel_changes_from_event(ev):
+                self._outbound("channel", channel=channel, **change)
         self.registry.dispatch_event(str(etype), ev)
 
     # moved threads
@@ -1057,12 +1099,19 @@ class ZulipFrontend(ChatFrontend):
         found = code_action(msg, self.card_registry, self.owner_id, str(self.self_id))
         if found is None:
             return False
+        # The code never reaches the core as a message, so the composite
+        # copies it from here, before the card's answer lands beside it.
+        self._outbound("owner_message", msg=msg)
         kind, val = found
         if kind == "action":
             self.registry.dispatch_action(val)
-            self.react(msg.channel, msg.msg_id, Status.DONE)
+            if self.react(msg.channel, msg.msg_id, Status.DONE):
+                self._outbound("reaction", channel=msg.channel, msg_id=msg.msg_id,
+                               status=Status.DONE, on=True)
             return True
-        self.post(msg.channel, unknown_word_reply(val), thread_ts=msg.thread_key)
+        text = unknown_word_reply(val)
+        ref = self.post(msg.channel, text, thread_ts=msg.thread_key)
+        self._outbound("post", ref=ref, text=text)
         return True
 
     # messages
@@ -1214,9 +1263,14 @@ class ZulipFrontend(ChatFrontend):
         return thread_key_for(stream_id_of(channel), "") if channel.startswith("stream:") else None
 
     def update(self, ref: MessageRef, text: str) -> bool:
-        return self._edit(ref, mrkdwn_to_zulip(text, self.mention))
+        return self._edit(ref, mrkdwn_to_zulip(text, self.mention),
+                          lambda: self._outbound("update", ref=ref, text=text))
 
-    def _edit(self, ref: MessageRef, content: str) -> bool:
+    def _edit(self, ref: MessageRef, content: str,
+              reposted: Callable[[], None] | None = None) -> bool:
+        """Edit a message. Past the server's edit window the content goes
+        out as a new message in the same topic, `reposted` runs, and the
+        answer is False."""
         res = self.client.update_message({"message_id": int(ref.id), "content": content})
         if _ok(res):
             return True
@@ -1226,6 +1280,8 @@ class ZulipFrontend(ChatFrontend):
             except ValueError:
                 ch, topic = self._msg_topics.get(int(ref.id)) or (ref.channel, None)
             self._send(ref.channel, content, topic)
+            if reposted is not None:
+                reposted()
             return False
         log.warning("zulip update_message %s failed: %s", ref.id, _err(res))
         return False
@@ -1428,7 +1484,7 @@ class ZulipFrontend(ChatFrontend):
             self.last_card_row = self.card_registry.add(
                 posted, card, code=code, reactions=(row or {}).get("reactions"),
                 chips=(row or {}).get("chips"))
-        return self._edit(ref, text)
+        return self._edit(ref, text, lambda: self._outbound("card", ref=ref, card=card))
 
     def _status_parts(self, card: ConfirmationCard) -> tuple[str, str]:
         """What a status line keeps of a card: the header, and the body cut
@@ -1450,7 +1506,8 @@ class ZulipFrontend(ChatFrontend):
         body = f"{header}{_CARD_RULE}{status}" if header else status
         if header and tail:
             body += f"{_CARD_RULE}{tail}"
-        edited = self._edit(ref, body)
+        edited = self._edit(ref, body,
+                            lambda: self._outbound("card_status", ref=ref, text=text))
         # An answered card keeps the owner's tap and loses the bot's chips,
         # so nothing on it still looks tappable.
         for name in chips:
@@ -1558,7 +1615,8 @@ class ZulipFrontend(ChatFrontend):
         return ChannelInfo(channel, str(info.get("name") or ""),
                            is_private=bool(info.get("invite_only")), is_member=member,
                            is_archived=bool(info.get("is_archived")),
-                           is_dm=self.is_dm(channel))
+                           is_dm=self.is_dm(channel),
+                           description=str(info.get("description") or ""))
 
     def channel_members(self, channel: str) -> set[str] | None:
         """The subscribers of a stream (GET /streams/{id}/members); for a

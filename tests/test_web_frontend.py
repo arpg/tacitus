@@ -6,6 +6,7 @@ import http.client
 import json
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -429,6 +430,95 @@ def test_mirror_file_keeps_the_bytes_when_given_a_path(tmp_path):
         f.stop()
 
 
+def test_quiet_history_rows_have_no_event_and_are_never_unread(tmp_path):
+    f = make(tmp_path)
+    f.mirror_channel("stream:7", "ea", "main")
+    key = "stream:7:topic:plans"
+    start = f.store.max_event_seq()
+    row = f.mirror_post(MessageRef("stream:7", "10", key, 1000.0), "*the plan*", quiet=True)
+    assert row["text"] == "**the plan**" and row["posted_at"] == row["updated_at"] == 1000.0
+    f.mirror_post(MessageRef("stream:7", "11", key, 1010.0), "fine", "owner", quiet=True)
+    f.mirror_post(MessageRef("stream:7", "12", key, 1020.0), "Done, *at nine*.",
+                  quiet=True, markdown=True)
+    assert f.store.message("stream:7", "12")["text"] == "Done, *at nine*."   # kept as written
+    f.mirror_file(MessageRef("stream:7", "13", key, 1030.0),
+                  FileRef("a.pdf", url="https://chat.example.test/u/a.pdf"), quiet=True,
+                  text="the file")
+    assert f.store.events_since(start) == []
+    assert f.store.channel("stream:7")["unread"] == 0
+    assert [m["id"] for m in f.store.thread("stream:7", key)] == ["10", "11", "12", "13"]
+    # a row it holds is left as it is
+    assert f.mirror_post(MessageRef("stream:7", "10", key, 1000.0), "changed", quiet=True) is None
+    assert f.mirror_file(MessageRef("stream:7", "13", key, 1030.0), FileRef("b.pdf"),
+                         quiet=True) is None
+    assert f.store.message("stream:7", "10")["text"] == "**the plan**"
+    # an older message never goes in after a newer one of its thread
+    assert f.mirror_post(MessageRef("stream:7", "9", key, 990.0), "older", quiet=True) is None
+    # a live post still counts, and a history row from the owner does not reset it
+    f.mirror_post(MessageRef("stream:7", "20", key, 2000.0), "live")
+    f.mirror_post(MessageRef("stream:7", "21", "stream:7:topic:other", 2100.0), "old ask",
+                  "owner", quiet=True)
+    assert f.store.channel("stream:7")["unread"] == 1
+
+
+def test_mirror_backfilled_sends_one_channel_event(tmp_path):
+    f = make(tmp_path)
+    f.mirror_channel("stream:7", "ea", "main", description="the EA stream")
+    f.mirror_post(MessageRef("stream:7", "10", "k", 1000.0), "old", quiet=True)
+    start = f.store.max_event_seq()
+    row = f.mirror_backfilled("stream:7")
+    assert row["last_at"] == 1000.0 and row["unread"] == 0
+    assert [t for _s, t, _p in f.store.events_since(start)] == ["channel"]
+    assert f.mirror_backfilled("stream:404") is None
+
+
+def test_mirror_channel_keeps_a_description_not_given(tmp_path):
+    f = make(tmp_path)
+    f.mirror_channel("stream:9", "ea-atlas", "room", description="the atlas project")
+    f.mirror_channel("stream:9", "ea-atlas", "room", True)
+    row = f.store.channel("stream:9")
+    assert row["description"] == "the atlas project" and row["archived"] is True
+    f.mirror_channel("stream:9", "ea-atlas", "room", True, description="")
+    assert f.store.channel("stream:9")["description"] == ""
+
+
+def test_mirror_move_rekeys_a_thread(tmp_path):
+    f = make(tmp_path)
+    old, new = "stream:7:topic:draft", "stream:7:topic:draft%20v2"
+    for i in range(2):
+        f.mirror_post(MessageRef("stream:7", f"3{i}", old, 1000.0 + i), f"m{i}")
+    start = f.store.max_event_seq()
+    assert f.mirror_move("stream:7", old, "stream:7", new) == 2
+    assert [m["id"] for m in f.store.thread("stream:7", new)] == ["30", "31"]
+    assert f.store.thread("stream:7", old) == []
+    assert [t for _s, t, _p in f.store.events_since(start)] == ["update", "update"]
+    # to another stream, where one of the messages is held already
+    f.mirror_post(MessageRef("stream:8", "31", "stream:8:topic:x", 1001.0), "m1")
+    assert f.mirror_move("stream:7", new, "stream:8", "stream:8:topic:x") == 1
+    assert [m["id"] for m in f.store.thread("stream:8", "stream:8:topic:x")] == ["30", "31"]
+    assert f.store.message("stream:7", "31") is None
+
+
+def test_a_store_from_before_history_rows_takes_the_column(tmp_path):
+    import sqlite3
+    path = tmp_path / "old" / "webchat.sqlite"
+    path.parent.mkdir()
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE messages(seq INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, id TEXT, "
+        "thread_key TEXT, author TEXT, kind TEXT, text TEXT, card TEXT, file TEXT, "
+        "reactions TEXT, posted_at REAL, updated_at REAL, UNIQUE(channel, id));"
+        "INSERT INTO messages(channel, id, thread_key, author, kind, text, reactions, posted_at, "
+        "updated_at) VALUES ('main', '1', 't', 'bot', 'message', 'kept', '[]', 1.0, 1.0);")
+    conn.commit()
+    conn.close()
+    store = wf.WebStore(path)
+    store.upsert_channel("main", "ea", "main")
+    assert store.message("main", "1")["text"] == "kept"
+    assert store.channel("main")["unread"] == 1
+    store.close()
+
+
 # HTTP
 
 
@@ -689,6 +779,142 @@ def test_stop_closes_open_streams(tmp_path):
     s.close()
 
 
+# several processes, one store (docs/webchat.md, CLI senders)
+
+
+def writer(f: WebFrontend) -> WebFrontend:
+    """A command-line sender's writer-only copy of f's store: its own
+    SQLite connection, as another process has."""
+    w = WebFrontend.from_config({}, store_path=f.store_path, writer_only=True)
+    w.start()
+    return w
+
+
+def test_a_writer_only_frontend_opens_the_store_and_serves_nothing(tmp_path):
+    w = WebFrontend.from_config({"port": 0}, store_path=tmp_path / "priv" / "webchat.sqlite",
+                                writer_only=True)
+    w.start()
+    w.start()
+    try:
+        assert w.writer_only and (tmp_path / "priv" / "webchat.sqlite").exists()
+        assert w._server is None and w._thread is None and w._tail is None and w.port == 0
+        assert not (tmp_path / "priv" / wf.PAIR_FILE).exists()
+        assert w.store.channels() == []           # the bot makes the channels
+        assert w.ping()
+    finally:
+        w.stop()
+    assert make(tmp_path).writer_only is False
+
+
+def test_the_tail_hands_on_only_what_another_process_wrote(tmp_path):
+    path = tmp_path / "priv" / "webchat.sqlite"
+    own, other = wf.WebStore(path), wf.WebStore(path)
+    sub = own.subscribe()
+
+    def drain() -> list:
+        out = []
+        while not sub.q.empty():
+            out.append(sub.q.get_nowait())
+        return out
+
+    def texts(items) -> list:
+        return [json.loads(p)["text"] for _s, t, p in items if t == "message"]
+    own.upsert_channel("main", "ea", "main")
+    assert [t for _s, t, _p in drain()] == ["channel"]
+    assert own.deliver_new() == 0 and drain() == []     # its own events go out once
+    row = other.add_message("main", mid=None, thread_key=None, author="bot",
+                            kind="message", text="from a cron lane")
+    assert drain() == []                                # until the tail reads the log
+    assert own.deliver_new() == 1
+    (got,) = drain()
+    assert got == other.events_since(got[0] - 1)[0]     # the same seq, type and JSON
+    assert json.loads(got[2])["id"] == row["id"]
+    assert own.deliver_new() == 0 and drain() == []
+    # another process's event logged before this one's goes out first, at once
+    other.add_message("main", mid=None, thread_key=None, author="bot", kind="message",
+                      text="first")
+    own.add_message("main", mid=None, thread_key=None, author="bot", kind="message",
+                    text="second")
+    got = drain()
+    assert texts(got) == ["first", "second"] and got == sorted(got)
+    assert own.deliver_new() == 0 and drain() == []
+    # with no stream open, new events are passed over: a stream replays the log
+    own.unsubscribe(sub)
+    other.add_message("main", mid=None, thread_key=None, author="bot", kind="message",
+                      text="unseen")
+    assert own.deliver_new() == 0
+    sub = own.subscribe()
+    other.add_message("main", mid=None, thread_key=None, author="bot", kind="message",
+                      text="seen")
+    assert own.deliver_new() == 1 and texts(drain()) == ["seen"]
+
+
+def test_a_writer_only_copy_reaches_the_served_stream(fe):
+    fe.mirror_channel("stream:7", "ea", "main")
+    s = Stream(fe)
+    try:
+        s.lines(lambda seen: "retry: 3000" in seen)
+        w = writer(fe)
+        t0 = time.monotonic()
+        w.mirror_post(MessageRef("stream:7", "501", "stream:7:topic:brief", 1000.0),
+                      "*morning*")
+        ev = s.events(1)[0]
+        assert time.monotonic() - t0 < 2.5            # one tail_s read away
+        row = json.loads(ev["data"])
+        assert ev["event"] == "message" and int(ev["id"]) == w.store.max_event_seq()
+        assert (row["id"], row["thread_key"], row["text"]) == \
+            ("501", "stream:7:topic:brief", "**morning**")
+    finally:
+        s.close()
+
+
+def test_a_stream_gets_each_event_once_in_seq_order(fe):
+    s = Stream(fe)
+    try:
+        s.lines(lambda seen: "retry: 3000" in seen)
+        w = writer(fe)
+        fe.post("main", "one")
+        w.mirror_post(MessageRef("main", "c1", "c1", 1000.0), "from the cli")
+        fe.post("main", "three")                      # catches up on the cli's first
+        evs = s.events(3)
+        assert [json.loads(e["data"])["text"] for e in evs] == ["one", "from the cli", "three"]
+        time.sleep(fe.tail_s + 0.5)                   # a tail read finds nothing new
+        fe.post("main", "four")
+        nxt = s.events(1)[0]
+        assert json.loads(nxt["data"])["text"] == "four"
+        ids = [int(e["id"]) for e in [*evs, nxt]]
+        assert ids == sorted(set(ids))
+    finally:
+        s.close()
+
+
+def test_stop_ends_the_tail_thread(tmp_path):
+    f = make(tmp_path)
+    f.start()
+    tail = f._tail
+    assert tail is not None and tail.is_alive()
+    f.stop()
+    assert f._tail is None and not tail.is_alive()
+
+
+def test_a_file_id_another_process_took_is_minted_again(tmp_path):
+    path = tmp_path / "priv" / "webchat.sqlite"
+    own, other = wf.WebStore(path), wf.WebStore(path)
+    real = own.next_number
+    calls = []
+
+    def stale(table, prefix):
+        calls.append(table)
+        # the first mint reads the table before the other process's row lands
+        return 1 if len(calls) == 1 else real(table, prefix)
+    assert other.add_file(None, "main", "a.txt", b"theirs", "text/plain")["id"] == "f1"
+    own.next_number = stale
+    row = own.add_file(None, "main", "b.txt", b"mine", "text/plain")
+    assert row["id"] == "f2" and len(calls) == 2
+    assert Path(own.file("f1")["path"]).read_bytes() == b"theirs"
+    assert Path(row["path"]).read_bytes() == b"mine"
+
+
 def test_shadow_mode_hands_web_input_to_the_composite(tmp_path):
     f = make(tmp_path)
     handed: list = []
@@ -784,5 +1010,6 @@ def test_get_chat_defaults_the_web_block(tmp_path):
     web = ea_config.get_chat(p)["web"]
     assert web["port"] == 9000 and web["bind"] == "127.0.0.1" and web["base_path"] == "/chat"
     assert set(web) == {"bind", "port", "base_path", "public_url", "tailscale_login",
-                        "pair_token_file", "store_path"}
+                        "pair_token_file", "store_path", "backfill_days"}
+    assert web["backfill_days"] == 7
     assert ea_config.get_chat(tmp_path / "missing.json")["web"]["port"] == 8470

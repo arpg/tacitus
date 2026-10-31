@@ -238,7 +238,9 @@ channel of its own:
   so the verb is idempotent and `cancel` can undo it. A lane without the
   owner's chat credential (the resident runs as ea-bot) appends the
   request to `state/pending-alerts.jsonl`; the owner's cron runs
-  `alert.py flush` every five minutes.
+  `alert.py flush` every five minutes. When the chat block runs the web
+  chat, `direct.web_notify` also queues the alert as a Web Push for the
+  same moment, which the bot's push worker sends.
 - `preprocessor/page_watch.py` watches a URL for a sentence to
   disappear (`--absent`) or appear (`--present`); the owner's cron runs
   `check` every 15 minutes, and a change sends the direct message, posts
@@ -612,14 +614,23 @@ check, cross, ...).
   one server-sent event stream with replay from the last seen sequence.
   The owner reaches it over the tailnet (`tailscale serve` proxies a
   path to the port and its identity header is the login) or by a pair
-  token. The contract is `docs/webchat.md`.
+  token. With the app closed, a new card, a bot message in the DM and a
+  loud alert arrive as Web Push notifications (`chat/web_push.py`:
+  VAPID and `aes128gcm` with the `cryptography` package, to the
+  browser vendors' push services only). The contract is
+  `docs/webchat.md`.
 - `ShadowFrontend` (`chat/shadow_frontend.py`) drives a primary (Zulip)
   and mirrors every post, update, card, status line, reaction and file
   into a shadow (the web front end) under the primary's ids, and takes
   the owner's input from either side: a web message is posted into the
   primary as the bot with a `**You (web):**` prefix, then dispatched to
   the core as the owner. A shadow failure is logged and never reaches
-  the core. `chat.shadow` in the chat block names it.
+  the core. `chat.shadow` in the chat block names it. At start it copies
+  the last `web.backfill_days` of the primary's history on a daemon
+  thread, as quiet rows (no event, never unread), and only the rooms the
+  bot made for the owner (`room_filter`). Writes the primary makes on
+  its own (Zulip's card codes, edit-window reposts, stream changes) reach
+  it through the primary's optional `on_outbound` hook.
 
 **The handler registry, and why the name `app` survives.** Each frontend
 carries a `HandlerRegistry` with `action`, `view` and `event`

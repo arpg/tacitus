@@ -96,6 +96,11 @@ def notify(watch: dict, why: str) -> dict:
     except Exception as e:
         out["direct_error"] = str(e)
     try:
+        from chat import direct  # type: ignore
+        out["web"] = direct.web_notify(line, tag=f"watch:{watch['id']}")
+    except Exception as e:
+        out["web_error"] = str(e)
+    try:
         import chat_notify  # type: ignore
         out["posted"] = chat_notify.post("personal", line, priority="urgent", _bypass_quiet=True)
     except Exception as e:

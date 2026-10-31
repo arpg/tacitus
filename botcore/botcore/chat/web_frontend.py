@@ -12,12 +12,29 @@ message or a channel appends an event in the same transaction and hands
 it to each open event stream, so a browser that reconnects with
 `Last-Event-ID` replays exactly what it missed.
 
+Several processes write one store (docs/webchat.md, CLI senders). The
+bot serves it. A command-line sender in an owner process (chat_notify,
+chat_upload, a cron lane's post) opens it writer-only: `start()` opens
+the store and serves nothing, and its mirrors write their rows and
+events into the same tables under the primary's ids. SQLite takes one
+writer at a time, so the event seqs commit in order. The serving store
+hands its own events to the streams at once; a tail thread reads the
+log every `tail_s` seconds (one `SELECT MAX(seq)` when nothing is new)
+and hands on the events another process appended, in seq order and as
+the same JSON. The store keeps the last seq it handed on, so no event
+reaches a stream twice. A process that is not the owner's never opens
+the owner-private store: its posts reach the primary only
+(chat.load_frontend).
+
 Identity, standalone: the owner is "owner", the bot is "bot"; messages
 are `w<seq>`, a thread is `t<seq of its first message>`, rooms are
 `r<n>`, files `f<n>`; the EA channel is `main` and the DM is `dm`. In
 shadow mode (docs/webchat.md, Shadow mode) the composite writes through
 the `mirror_*` methods with the primary's ids and the store mints none;
 the owner's web input goes to `self.inbound` instead of the registry.
+The history the composite copies in when it starts goes in quietly
+(`quiet=True`): a history row has no event of its own, never counts as
+unread, and never goes before a newer row of its thread.
 
 Outbound text is the LLM's Slack mrkdwn, converted the way the Zulip
 frontend converts it (chat.text.mrkdwn_to_zulip), so the web app renders
@@ -29,7 +46,10 @@ The HTTP layer is `http.server.ThreadingHTTPServer` on a daemon thread.
 Static files come from `webui/` beside this module without auth; every
 `/api/` route needs the owner (the Tailscale login header from a loopback
 peer, or the pairing cookie). A POST from another origin is refused.
-Standard library only.
+Standard library only, except Web Push (web_push.py), which needs the
+`cryptography` package and is off without it: a new card, a bot message
+in the DM and a loud alert (`notify`) reach the browsers that turned
+notifications on, even with the app closed.
 """
 from __future__ import annotations
 
@@ -58,6 +78,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import files as _files
+from . import web_push
 from .base import (
     AlreadyArchived,
     ChatError,
@@ -98,6 +119,9 @@ DEFAULT_BASE = "/chat"
 
 # Seconds between the comment lines that keep an idle event stream open.
 PING_S = 20.0
+# Seconds between the serving process's reads of the event log for the
+# events another process (a command-line sender) appended.
+TAIL_S = 1.0
 # Events kept for replay; a browser away longer reloads its view.
 EVENT_KEEP_S = 14 * 86400
 # Events a stream may fall behind by before it is closed; the browser
@@ -149,7 +173,7 @@ CREATE TABLE IF NOT EXISTS channels(
 CREATE TABLE IF NOT EXISTS messages(
     seq INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, id TEXT, thread_key TEXT,
     author TEXT, kind TEXT, text TEXT, card TEXT, file TEXT, reactions TEXT,
-    posted_at REAL, updated_at REAL, UNIQUE(channel, id));
+    posted_at REAL, updated_at REAL, history INT DEFAULT 0, UNIQUE(channel, id));
 CREATE INDEX IF NOT EXISTS messages_thread ON messages(channel, thread_key, seq);
 CREATE TABLE IF NOT EXISTS events(
     seq INTEGER PRIMARY KEY AUTOINCREMENT, at REAL, type TEXT, channel TEXT, id TEXT,
@@ -158,6 +182,11 @@ CREATE TABLE IF NOT EXISTS files(
     id TEXT PRIMARY KEY, channel TEXT, name TEXT, path TEXT, mimetype TEXT, size INT,
     at REAL);
 CREATE TABLE IF NOT EXISTS reads(channel TEXT PRIMARY KEY, seq INT);
+CREATE TABLE IF NOT EXISTS push_subscriptions(
+    endpoint TEXT PRIMARY KEY, keys TEXT, created_at REAL, last_ok REAL,
+    failures INT DEFAULT 0);
+CREATE TABLE IF NOT EXISTS push_queue(
+    tag TEXT PRIMARY KEY, due_at REAL, payload TEXT, urgency TEXT, created_at REAL);
 """
 
 
@@ -264,7 +293,9 @@ class WebStore:
     One connection, shared by every thread under one lock. A write to a
     message or a channel and its event go in one transaction; the event
     then goes to every subscriber's queue while the lock is held, so each
-    queue sees events in seq order."""
+    queue sees events in seq order. Other processes may write the same
+    file: `deliver_new` hands their events on, and `_delivered` (the last
+    seq handed on) keeps any event from going out twice."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -278,10 +309,17 @@ class WebStore:
             os.chmod(self.path, 0o600)
         with self._lock:
             self._conn.executescript(SCHEMA)
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(messages)")}
+            if "history" not in cols:
+                # A store from before the history copy: its rows are live ones.
+                self._conn.execute("ALTER TABLE messages ADD COLUMN history INT DEFAULT 0")
             self._conn.commit()
         self._subs: list[_Sub] = []
         self._pending: list[tuple[int, str, str]] = []
         self._emitted = 0
+        # The last event seq handed to the streams, or passed over while
+        # none was open: a stream that opens later replays from the log.
+        self._delivered = self.max_event_seq()
 
     def close(self) -> None:
         with self._lock:
@@ -310,10 +348,13 @@ class WebStore:
     def _channel_json(self, row: sqlite3.Row) -> dict:
         cid = row["id"]
         last = self._one("SELECT MAX(posted_at) AS t FROM messages WHERE channel=?", (cid,))
+        # A history row (copied from the primary's past) counts neither as
+        # unread nor as the owner's last message.
         unread = self._one(
-            "SELECT COUNT(*) AS n FROM messages WHERE channel=? AND author=? AND seq > MAX("
-            "COALESCE((SELECT seq FROM reads WHERE channel=?), 0),"
-            "COALESCE((SELECT MAX(seq) FROM messages WHERE channel=? AND author=?), 0))",
+            "SELECT COUNT(*) AS n FROM messages WHERE channel=? AND author=? AND history=0 "
+            "AND seq > MAX(COALESCE((SELECT seq FROM reads WHERE channel=?), 0),"
+            "COALESCE((SELECT MAX(seq) FROM messages WHERE channel=? AND author=? "
+            "AND history=0), 0))",
             (cid, BOT, cid, cid, OWNER))
         return {"id": cid, "name": row["name"] or "", "kind": row["kind"] or "room",
                 "archived": bool(row["archived"]), "description": row["description"] or "",
@@ -411,9 +452,13 @@ class WebStore:
         row = self._one("SELECT MAX(seq) AS s FROM events")
         return int(row["s"] or 0) if row else 0
 
-    def events_since(self, seq: int, limit: int = 500) -> list[tuple[int, str, str]]:
-        rows = self._all("SELECT seq, type, payload FROM events WHERE seq > ? ORDER BY seq "
-                         "LIMIT ?", (int(seq), int(limit)))
+    def events_since(self, seq: int, limit: int = 500,
+                     upto: int | None = None) -> list[tuple[int, str, str]]:
+        """(seq, type, payload) of the logged events after `seq`, through
+        `upto` when given, oldest first."""
+        rows = self._all("SELECT seq, type, payload FROM events WHERE seq > ? AND "
+                         "(? IS NULL OR seq <= ?) ORDER BY seq LIMIT ?",
+                         (int(seq), upto, upto, int(limit)))
         return [(int(r["seq"]), r["type"], r["payload"]) for r in rows]
 
     # writes
@@ -437,14 +482,55 @@ class WebStore:
             except BaseException:
                 self._pending = []
                 raise
-            for item in self._pending:
-                self._fan_out(item)
-            self._emitted += len(self._pending)
-            self._pending = []
+            items, self._pending = self._pending, []
+            self._deliver(items)
+            self._emitted += len(items)
             if self._emitted >= 1000:
                 self._emitted = 0
                 self.prune_events()
             return result
+
+    def _deliver(self, items: list[tuple[int, str, str]]) -> None:
+        """Hand this process's committed events to the streams at once.
+        When another process logged events after the last one handed on,
+        those go first, read back from the log, so each stream sees the
+        seqs in order. Caller holds the lock."""
+        if not items:
+            return
+        if self._subs and items[0][0] > self._delivered + 1:
+            self._catch_up(items[-1][0])
+        else:
+            for item in items:
+                self._fan_out(item)
+        self._delivered = max(self._delivered, items[-1][0])
+
+    def _catch_up(self, upto: int | None = None) -> int:
+        """Hand on the logged events after the last one handed on, through
+        `upto` (all of them when None), oldest first; how many. Caller
+        holds the lock."""
+        n = 0
+        while True:
+            batch = self.events_since(self._delivered, 500, upto)
+            for item in batch:
+                self._fan_out(item)
+                self._delivered = item[0]
+            n += len(batch)
+            if len(batch) < 500:
+                return n
+
+    def deliver_new(self) -> int:
+        """Hand the streams the events another process appended since the
+        last one handed on; how many. One `SELECT MAX(seq)` when there is
+        nothing new; with no stream open the new events are passed over,
+        since a stream that opens later replays from the log."""
+        with self._lock:
+            top = self.max_event_seq()
+            if top <= self._delivered:
+                return 0
+            if not self._subs:
+                self._delivered = top
+                return 0
+            return self._catch_up(top)
 
     def _fan_out(self, item: tuple[int, str, str]) -> None:
         for sub in list(self._subs):
@@ -519,22 +605,24 @@ class WebStore:
     def add_message(self, channel: str, *, mid: str | None, thread_key: str | None,
                     author: str, kind: str, text: str = "", card: dict | None = None,
                     file: dict | None = None, posted_at: float | None = None,
-                    event: str | None = None) -> dict:
+                    event: str | None = None, history: bool = False) -> dict:
         """Insert a message and its event. With no mid the store mints
         `w<seq>`, and with no thread_key the message opens `t<seq>`. Its
         updated_at starts at posted_at; every change raises it (the app
-        reads a row whose two times differ as an edit)."""
+        reads a row whose two times differ as an edit). A `history` row (a
+        message from the primary's past) gets no event and never counts as
+        unread."""
         now = time.time()
 
         def run() -> dict:
             cur = self._conn.execute(
                 "INSERT INTO messages(channel, id, thread_key, author, kind, text, card, file, "
-                "reactions, posted_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "reactions, posted_at, updated_at, history) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (channel, mid, thread_key, author, kind, text or "",
                  json.dumps(card) if card is not None else None,
                  json.dumps(file) if file is not None else None, "[]",
                  posted_at if posted_at is not None else now,
-                 posted_at if posted_at is not None else now))
+                 posted_at if posted_at is not None else now, int(bool(history))))
             seq = int(cur.lastrowid)
             if mid is None or thread_key is None:
                 self._conn.execute("UPDATE messages SET id=?, thread_key=? WHERE seq=?",
@@ -542,8 +630,54 @@ class WebStore:
                                     thread_key if thread_key is not None else f"t{seq}", seq))
             row = self._conn.execute("SELECT * FROM messages WHERE seq=?", (seq,)).fetchone()
             out = self._msg_json(row)
-            self._emit(event or ("message" if kind == "message" else kind), channel, row["id"], out)
+            if not history:
+                self._emit(event or ("message" if kind == "message" else kind), channel,
+                           row["id"], out)
             return out
+        return self._transaction(run)
+
+    def newest_in_thread(self, channel: str, thread_key: str) -> float | None:
+        """The posted_at of the thread's newest message; None for a thread
+        with none."""
+        row = self._one("SELECT MAX(posted_at) AS t FROM messages WHERE channel=? AND "
+                        "thread_key=?", (channel, thread_key))
+        return float(row["t"]) if row and row["t"] is not None else None
+
+    def touch_channel(self, cid: str) -> dict | None:
+        """Append a `channel` event carrying the channel's row as it is now
+        (its last_at and unread), so an open app reads it again; None when
+        there is no such channel."""
+        def run() -> dict | None:
+            row = self._conn.execute("SELECT * FROM channels WHERE id=?", (cid,)).fetchone()
+            if row is None:
+                return None
+            out = self._channel_json(row)
+            self._emit("channel", cid, cid, out)
+            return out
+        return self._transaction(run)
+
+    def move_thread(self, old_channel: str, old_key: str, new_channel: str,
+                    new_key: str) -> int:
+        """Re-key every message of a thread to its new channel and key, with
+        an `update` event each; a message the new channel holds already is
+        dropped from the old one. The number of messages moved."""
+        def run() -> int:
+            rows = self._conn.execute("SELECT * FROM messages WHERE channel=? AND thread_key=? "
+                                      "ORDER BY seq", (old_channel, old_key)).fetchall()
+            moved = 0
+            for row in rows:
+                if new_channel != old_channel and self._conn.execute(
+                        "SELECT 1 FROM messages WHERE channel=? AND id=?",
+                        (new_channel, row["id"])).fetchone():
+                    self._conn.execute("DELETE FROM messages WHERE seq=?", (row["seq"],))
+                    continue
+                self._conn.execute("UPDATE messages SET channel=?, thread_key=? WHERE seq=?",
+                                   (new_channel, new_key, row["seq"]))
+                out = self._msg_json(self._conn.execute("SELECT * FROM messages WHERE seq=?",
+                                                        (row["seq"],)).fetchone())
+                self._emit("update", new_channel, row["id"], out)
+                moved += 1
+            return moved
         return self._transaction(run)
 
     def change_message(self, channel: str, mid: str, event: str,
@@ -596,22 +730,32 @@ class WebStore:
     def add_file(self, fid: str | None, channel: str, name: str, data: bytes,
                  mimetype: str) -> dict:
         """Keep a file's bytes under the files dir and record them; the
-        row. With no fid the store mints the next `f<n>` under its lock, so
-        two uploads never share an id."""
+        row. With no fid the store mints the next `f<n>`; the row goes in
+        before the bytes take its name, and a minted id another process
+        took first is minted again, so two uploads never share an id."""
         self.files_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         tmp = self.files_dir / f"incoming-{secrets.token_hex(12)}"
         _write_private(tmp, data)
+        mint = fid is None
+        verb = "INSERT" if mint else "INSERT OR REPLACE"
         try:
             with self._lock:
-                if fid is None:
-                    fid = f"f{self.next_number('files', 'f')}"
-                disk = self.files_dir / hashlib.sha256(fid.encode("utf-8")).hexdigest()[:32]
+                while True:
+                    if mint:
+                        fid = f"f{self.next_number('files', 'f')}"
+                    disk = self.files_dir / hashlib.sha256(fid.encode("utf-8")).hexdigest()[:32]
+                    try:
+                        with self._conn:
+                            self._conn.execute(
+                                f"{verb} INTO files(id, channel, name, path, mimetype, size, "
+                                "at) VALUES (?,?,?,?,?,?,?)",
+                                (fid, channel, name, str(disk), mimetype, len(data), time.time()))
+                    except sqlite3.IntegrityError:
+                        if mint:
+                            continue
+                        raise
+                    break
                 os.replace(tmp, disk)
-                with self._conn:
-                    self._conn.execute(
-                        "INSERT OR REPLACE INTO files(id, channel, name, path, mimetype, size, "
-                        "at) VALUES (?,?,?,?,?,?,?)",
-                        (fid, channel, name, str(disk), mimetype, len(data), time.time()))
                 return self.file(fid) or {}
         finally:
             if tmp.exists():
@@ -624,6 +768,82 @@ class WebStore:
                     "INSERT INTO reads(channel, seq) VALUES (?, (SELECT COALESCE(MAX(seq), 0) "
                     "FROM messages WHERE channel=?)) ON CONFLICT(channel) DO UPDATE SET "
                     "seq=excluded.seq", (channel, channel))
+
+    # web push: the browsers' subscriptions and the pushes queued for later
+
+    def push_subscribe(self, endpoint: str, keys: dict,
+                       keep: int = web_push.MAX_SUBSCRIPTIONS) -> None:
+        """Keep a subscription (a renewed one starts with no failures); past
+        `keep`, the ones that have gone longest without a delivery go."""
+        now = time.time()
+        with self._lock:
+            with self._conn:
+                self._conn.execute(
+                    "INSERT INTO push_subscriptions(endpoint, keys, created_at, last_ok, failures) "
+                    "VALUES (?,?,?,NULL,0) ON CONFLICT(endpoint) DO UPDATE SET "
+                    "keys=excluded.keys, failures=0", (endpoint, json.dumps(keys), now))
+                self._conn.execute(
+                    "DELETE FROM push_subscriptions WHERE endpoint NOT IN (SELECT endpoint FROM "
+                    "push_subscriptions ORDER BY MAX(COALESCE(last_ok, 0), created_at) DESC "
+                    "LIMIT ?)", (int(keep),))
+
+    def push_unsubscribe(self, endpoint: str) -> bool:
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute("DELETE FROM push_subscriptions WHERE endpoint=?",
+                                         (endpoint,))
+            return cur.rowcount > 0
+
+    def push_subscriptions(self) -> list[dict]:
+        rows = self._all("SELECT * FROM push_subscriptions ORDER BY created_at")
+        return [{**dict(r), "keys": _loads(r["keys"]) or {}} for r in rows]
+
+    def push_count(self) -> int:
+        row = self._one("SELECT COUNT(*) AS n FROM push_subscriptions")
+        return int(row["n"]) if row else 0
+
+    def push_result(self, endpoint: str, ok: bool) -> None:
+        """Record a delivery (last_ok, failures back to 0) or a failure."""
+        with self._lock:
+            with self._conn:
+                if ok:
+                    self._conn.execute("UPDATE push_subscriptions SET last_ok=?, failures=0 "
+                                       "WHERE endpoint=?", (time.time(), endpoint))
+                else:
+                    self._conn.execute("UPDATE push_subscriptions SET failures=failures+1 "
+                                       "WHERE endpoint=?", (endpoint,))
+
+    def push_defer(self, tag: str, due_at: float, payload: str, urgency: str) -> None:
+        """Queue a push for `due_at`, replacing one queued under the same tag."""
+        with self._lock:
+            with self._conn:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO push_queue(tag, due_at, payload, urgency, created_at) "
+                    "VALUES (?,?,?,?,?)", (tag, float(due_at), payload, urgency, time.time()))
+
+    def push_cancel(self, tag: str) -> bool:
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute("DELETE FROM push_queue WHERE tag=?", (tag,))
+            return cur.rowcount > 0
+
+    def push_queued(self) -> list[dict]:
+        return [dict(r) for r in self._all("SELECT * FROM push_queue ORDER BY due_at")]
+
+    def push_claim_due(self, now: float) -> list[dict]:
+        """Take the queued pushes due by `now` off the queue, in one
+        transaction, so two processes never both send one."""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = [dict(r) for r in self._conn.execute(
+                    "SELECT * FROM push_queue WHERE due_at <= ? ORDER BY due_at", (now,))]
+                self._conn.execute("DELETE FROM push_queue WHERE due_at <= ?", (now,))
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+            return rows
 
 
 class _HttpError(Exception):
@@ -674,8 +894,11 @@ class WebFrontend(ChatFrontend):
     }
 
     def __init__(self, cfg: dict | None = None, *, store_path: str | Path,
-                 webui_dir: str | Path | None = None) -> None:
+                 webui_dir: str | Path | None = None, writer_only: bool = False) -> None:
         super().__init__()
+        # A command-line sender's copy: start() opens the store and serves
+        # nothing; the bot's tail thread hands its events to the streams.
+        self.writer_only = bool(writer_only)
         cfg = dict(cfg or {})
         self.cfg = cfg
         self.bind = str(cfg.get("bind") or DEFAULT_BIND)
@@ -688,6 +911,7 @@ class WebFrontend(ChatFrontend):
         self.pair_token_file = Path(cfg.get("pair_token_file")
                                     or self.store_path.parent / PAIR_FILE)
         self.webui_dir = Path(webui_dir) if webui_dir else WEBUI_DIR
+        self.push_subject = str(cfg.get("push_subject") or "").strip() or web_push.DEFAULT_SUBJECT
         self.owner_id = OWNER
         self.bot_user_id = BOT
         self.main_channel = MAIN_ID
@@ -697,30 +921,34 @@ class WebFrontend(ChatFrontend):
         # (docs/webchat.md); None dispatches it through self.registry.
         self.inbound: Inbound | None = None
         self.ping_s = PING_S
+        self.tail_s = TAIL_S
         # Seconds the server loop waits between shutdown checks, and the
         # pause after a wrong pairing token; tests shorten both.
         self.poll_s = 0.5
         self.pair_delay_s = 0.5
         self._store: WebStore | None = None
         self._store_lock = threading.Lock()
+        self._push: web_push.Pusher | None = None
         self._life_lock = threading.Lock()
         self._dispatch_lock = threading.Lock()
         self._rooms_lock = threading.Lock()
         self._stop = threading.Event()
         self._server: http.server.ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._tail: threading.Thread | None = None
 
     @classmethod
     def from_config(cls, cfg: dict | None, *, store_path: str | Path | None = None,
-                    webui_dir: str | Path | None = None) -> WebFrontend:
+                    webui_dir: str | Path | None = None,
+                    writer_only: bool = False) -> WebFrontend:
         """Build one from the chat block's `web` section. The store is
         `store_path`, else the block's `store_path`; ChatError with
-        neither."""
+        neither. `writer_only` is a command-line sender's copy."""
         cfg = dict(cfg or {})
         path = store_path or cfg.get("store_path")
         if not path:
             raise ChatError("web chat: no store path")
-        return cls(cfg, store_path=path, webui_dir=webui_dir)
+        return cls(cfg, store_path=path, webui_dir=webui_dir, writer_only=writer_only)
 
     @property
     def store(self) -> WebStore:
@@ -729,13 +957,27 @@ class WebFrontend(ChatFrontend):
                 self._store = WebStore(self.store_path)
             return self._store
 
+    @property
+    def push(self) -> web_push.Pusher:
+        """The Web Push sender; its VAPID key sits beside the store."""
+        store = self.store
+        with self._store_lock:
+            if self._push is None:
+                self._push = web_push.Pusher(store, self.store_path.parent / web_push.KEY_FILE,
+                                             subject=self.push_subject)
+            return self._push
+
     # lifecycle
 
     def start(self) -> None:
         """Open the store, make the standalone channels (unless a composite
-        drives this frontend), write the pairing token if there is none, and
-        serve HTTP on a daemon thread. Idempotent."""
+        drives this frontend), write the pairing token if there is none,
+        serve HTTP on a daemon thread and tail the event log on another.
+        Writer-only, open the store and nothing else. Idempotent."""
         with self._life_lock:
+            if self.writer_only:
+                _ = self.store
+                return
             if self._server is not None:
                 return
             store = self.store
@@ -753,7 +995,22 @@ class WebFrontend(ChatFrontend):
                                             kwargs={"poll_interval": self.poll_s},
                                             name="webchat-http", daemon=True)
             self._thread.start()
+            self._tail = threading.Thread(target=self._tail_events, name="webchat-tail",
+                                          daemon=True)
+            self._tail.start()
+            if web_push.AVAILABLE:
+                self.push.start()
             log.info("web chat serving on %s:%d%s/", self.bind, self.port, self.base_path)
+
+    def _tail_events(self) -> None:
+        """Every tail_s seconds, hand the open streams the events other
+        processes wrote to the store (WebStore.deliver_new)."""
+        while not self._stop.wait(self.tail_s):
+            try:
+                self.store.deliver_new()
+            except Exception as e:
+                # The next read tries again: a busy or failed read loses nothing.
+                log.warning("web chat: reading the event log failed: %s", e)
 
     def run_forever(self) -> None:
         """Block until stop(); the server runs on its own thread."""
@@ -761,15 +1018,21 @@ class WebFrontend(ChatFrontend):
             pass
 
     def stop(self) -> None:
-        """Stop serving and close every event stream."""
+        """Stop serving, stop tailing the event log and close every event
+        stream."""
         self._stop.set()
         with self._life_lock:
             srv, self._server = self._server, None
+            tail, self._tail = self._tail, None
         if self._store is not None:
             self._store.close_subscribers()
+        if self._push is not None:
+            self._push.stop()
         if srv is not None:
             srv.shutdown()
             srv.server_close()
+        if tail is not None and tail is not threading.current_thread():
+            tail.join(timeout=5)
 
     def ping(self) -> bool:
         if not self.store.ok():
@@ -864,6 +1127,64 @@ class WebFrontend(ChatFrontend):
                 "url": f"{self.base_path}/api/files/{urllib.parse.quote(fid, safe='')}",
                 "mimetype": mimetype, "size": int(size)}
 
+    # notifications (Web Push)
+
+    def notify(self, title: str, body: str = "", url: str = "", tag: str = "", *,
+               urgency: str = "normal", at: float | None = None, wait: bool = False) -> dict:
+        """Push a notification to every browser that turned them on: the
+        title, the first line of `body`, and `url` to open on a tap. `tag`
+        names the thread: one notification per tag on the device, and at
+        most one push per thread in 30 s (web_push.Pusher.notify). `at`
+        (a Unix time ahead) queues it for the worker; `wait` sends before
+        returning. Never raises: push is an extra, and a failure is logged."""
+        if not web_push.AVAILABLE:
+            return {"sent": 0, "push": "off"}
+        try:
+            return self.push.notify(title, body, url, tag, urgency=urgency, at=at, wait=wait)
+        except Exception:
+            log.exception("web chat: a push failed")
+            return {"sent": 0, "error": "push failed"}
+
+    def cancel_notify(self, tag: str) -> bool:
+        """Drop the push queued under `tag`; never raises."""
+        try:
+            return web_push.AVAILABLE and self.push.cancel(tag)
+        except Exception:
+            log.exception("web chat: a queued push could not be cancelled")
+            return False
+
+    def app_url(self) -> str:
+        """The web app's own address: public_url, else the base path."""
+        return self._site() + "/"
+
+    @staticmethod
+    def _push_tag(row: dict) -> str:
+        """A thread's notification tag: one notification per thread."""
+        return f"{row['channel']}/{row['thread_key']}"
+
+    def _push_message(self, row: dict | None) -> None:
+        """A new bot message in the DM channel is pushed."""
+        if not row or row.get("author") != BOT or row.get("kind") != "message":
+            return
+        ch = self.store.channel(row["channel"])
+        if not ch or ch["kind"] != "dm":
+            return
+        self.notify("Tacitus", row.get("text") or "",
+                    self._permalink(row["channel"], row["thread_key"], row["id"]),
+                    self._push_tag(row))
+
+    def _push_card(self, row: dict | None, card: ConfirmationCard) -> None:
+        """A new card is pushed at high urgency: its title, then its first
+        line (a line of the card, a field, else the body)."""
+        if not row:
+            return
+        first = [*(card.lines or []), *(f"{f.label}: {f.value}" for f in card.fields or []),
+                 card.body or ""]
+        body = next((ln for ln in first if web_push.plain_line(ln)), "")
+        self.notify(card.title or "Confirm", body,
+                    self._permalink(row["channel"], row["thread_key"], row["id"]),
+                    self._push_tag(row), urgency="high")
+
     # messages
 
     def post(self, channel: str, text: str, *, thread_ts: str | None = None,
@@ -872,6 +1193,7 @@ class WebFrontend(ChatFrontend):
         row = self.store.add_message(channel, mid=None,
                                      thread_key=self._thread_for(channel, thread_ts),
                                      author=BOT, kind="message", text=self._out(text))
+        self._push_message(row)
         return self._ref(row)
 
     def update(self, ref: MessageRef, text: str) -> bool:
@@ -904,6 +1226,7 @@ class WebFrontend(ChatFrontend):
                                      thread_key=self._thread_for(channel, thread_ts),
                                      author=BOT, kind="card", text=self._card_text(card),
                                      card=self._card_json(card))
+        self._push_card(row, card)
         return self._ref(row)
 
     def card_fits(self, card: ConfirmationCard) -> bool:
@@ -1090,17 +1413,53 @@ class WebFrontend(ChatFrontend):
 
     # shadow mode: the composite's writes, with the primary's ids
 
-    def mirror_channel(self, id: str, name: str, kind: str, archived: bool = False) -> dict:
-        """Write a channel row as the primary describes it."""
-        return self.store.upsert_channel(id, name, kind, archived)
+    def mirror_channel(self, id: str, name: str, kind: str, archived: bool = False, *,
+                       description: str | None = None) -> dict:
+        """Write a channel row as the primary describes it; a description
+        not given keeps the stored one."""
+        return self.store.upsert_channel(id, name, kind, archived, description)
+
+    def mirror_backfilled(self, channel: str) -> dict | None:
+        """The composite copied history into the channel quietly: one
+        `channel` event, so an open app reads the channel's threads again."""
+        return self.store.touch_channel(channel)
+
+    def mirror_move(self, old_channel: str, old_key: str, new_channel: str,
+                    new_key: str) -> int:
+        """A thread the primary moved (a renamed or moved Zulip topic): its
+        messages take the new channel and key. The number moved."""
+        self._ensure_channel(new_channel)
+        return self.store.move_thread(old_channel, old_key, new_channel, new_key)
+
+    def _history_row(self, ref: MessageRef, *, author: str, kind: str, text: str,
+                     file: dict | None = None) -> dict | None:
+        """Store a message from the primary's past as a history row (no
+        event, never unread). None when the row is stored already, or when
+        the thread holds a newer message: the rows of a thread stay in time
+        order, so a thread mirrored live before keeps its older history out."""
+        if self.store.message(ref.channel, ref.id) is not None:
+            return None
+        key = ref.thread_key or ref.id
+        newest = self.store.newest_in_thread(ref.channel, key)
+        if newest is not None and ref.posted_at is not None and newest > float(ref.posted_at):
+            return None
+        try:
+            return self.store.add_message(ref.channel, mid=ref.id, thread_key=key,
+                                          author=author, kind=kind, text=text, file=file,
+                                          posted_at=ref.posted_at, history=True)
+        except sqlite3.IntegrityError:
+            return None
 
     def _mirror_upsert(self, ref: MessageRef, event: str, *, author: str, kind: str,
                        text: str, card: dict | None = None, file: dict | None = None,
-                       set_kind: bool = True) -> dict:
+                       set_kind: bool = True, quiet: bool = False) -> dict | None:
         """Insert the message under the primary's ref, or bring the stored
         row in line and append `event` when anything changed. `kind` applies
-        to a stored row only with set_kind."""
+        to a stored row only with set_kind. `quiet` stores a history row
+        (_history_row) and leaves a stored row as it is."""
         self._ensure_channel(ref.channel)
+        if quiet:
+            return self._history_row(ref, author=author, kind=kind, text=text, file=file)
         row = self.store.message(ref.channel, ref.id)
         if row is None:
             try:
@@ -1125,13 +1484,21 @@ class WebFrontend(ChatFrontend):
             return row
         return self.store.change_message(ref.channel, ref.id, event, **fields) or row
 
-    def mirror_post(self, ref: MessageRef, text: str, author: str = BOT) -> dict:
+    def mirror_post(self, ref: MessageRef, text: str, author: str = BOT, *,
+                    quiet: bool = False, markdown: bool = False) -> dict | None:
         """Store a message the primary posted, under its ref. The bot's text
-        is converted as post() converts it; the owner's is kept as typed."""
+        is converted as post() converts it, unless `markdown` says it is
+        Markdown already (Zulip's history); the owner's is kept as typed.
+        `quiet` copies history: no event, never unread, a stored row left as
+        it is and None returned for it."""
         author = OWNER if author == OWNER else BOT
-        out = self._out(text) if author == BOT else (text or "")
-        return self._mirror_upsert(ref, "update", author=author, kind="message", text=out,
-                                   set_kind=False)
+        out = self._out(text) if author == BOT and not markdown else (text or "")
+        new = self.store.message(ref.channel, ref.id) is None
+        row = self._mirror_upsert(ref, "update", author=author, kind="message", text=out,
+                                  set_kind=False, quiet=quiet)
+        if new and row is not None and not quiet:
+            self._push_message(row)
+        return row
 
     def mirror_update(self, ref: MessageRef, text: str) -> dict:
         """Replace a stored message's text (a missing one is stored)."""
@@ -1142,8 +1509,13 @@ class WebFrontend(ChatFrontend):
                                    set_kind=False)
 
     def mirror_card(self, ref: MessageRef, card: ConfirmationCard) -> dict:
-        return self._mirror_upsert(ref, "card", author=BOT, kind="card",
-                                   text=self._card_text(card), card=self._card_json(card))
+        """Store a card the primary posted or changed; a new one is pushed."""
+        new = self.store.message(ref.channel, ref.id) is None
+        row = self._mirror_upsert(ref, "card", author=BOT, kind="card",
+                                  text=self._card_text(card), card=self._card_json(card))
+        if new:
+            self._push_card(row, card)
+        return row
 
     def mirror_card_status(self, ref: MessageRef, text: str) -> dict:
         return self._mirror_upsert(ref, "status", author=BOT, kind="status", text=text or "")
@@ -1154,12 +1526,16 @@ class WebFrontend(ChatFrontend):
         return self.store.message(channel, msg_id) is not None
 
     def mirror_file(self, ref: MessageRef, file: FileRef, author: str = BOT, *,
-                    path: str | Path | None = None, text: str = "") -> dict:
+                    path: str | Path | None = None, text: str = "", quiet: bool = False,
+                    markdown: bool = False) -> dict | None:
         """Store a file message the primary posted. With `path` the bytes are
         kept too, under the primary's file id, and the web app downloads
         them from this server; without it the file has no id here and its
-        link is the primary's absolute `file.url`."""
+        link is the primary's absolute `file.url`. `quiet` and `markdown`
+        are mirror_post's."""
         author = OWNER if author == OWNER else BOT
+        if quiet and self.store.message(ref.channel, ref.id) is not None:
+            return None
         fid = file.id or file.url or f"{ref.channel}:{ref.id}"
         name = safe_name(file.name)
         mimetype = self._mimetype(name, file.mimetype)
@@ -1172,8 +1548,9 @@ class WebFrontend(ChatFrontend):
             fj = self._file_json(fid, name, mimetype, int(kept["size"] or 0))
         else:
             fj = self._file_json("", name, mimetype, 0, file.url)
-        out = self._out(text) if author == BOT else (text or "")
-        return self._mirror_upsert(ref, "file", author=author, kind="file", text=out, file=fj)
+        out = self._out(text) if author == BOT and not markdown else (text or "")
+        return self._mirror_upsert(ref, "file", author=author, kind="file", text=out, file=fj,
+                                   quiet=quiet)
 
     # the owner's input from the web app
 
@@ -1416,7 +1793,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if segs == ["me"]:
                 self._json(200, {"owner": fe.owner_id, "bot": fe.bot_user_id,
                                  "public_url": fe.public_url or None,
-                                 "base_path": fe.base_path})
+                                 "base_path": fe.base_path, "push": web_push.AVAILABLE})
+                return None
+            if segs == ["push", "vapid"]:
+                self._json(200, {"key": self._pusher().vapid.public_key})
                 return None
             if segs == ["channels"]:
                 self._json(200, store.channels())
@@ -1457,6 +1837,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return after
             if n == 3 and segs[0] == "channels" and segs[2] == "files":
                 return self._upload(segs[1])
+            if segs == ["push", "subscribe"]:
+                self._push_subscribe(self._read_json())
+                self._json(200, {"ok": True})
+                return None
+            if segs == ["push", "unsubscribe"]:
+                endpoint = self._read_json().get("endpoint")
+                if not isinstance(endpoint, str) or not endpoint:
+                    raise _HttpError(400, "endpoint is required")
+                self._json(200, {"ok": True,
+                                 "removed": self._pusher().store.push_unsubscribe(endpoint)})
+                return None
             if n == 4 and segs[0] == "cards" and segs[3] == "actions":
                 body = self._read_json()
                 action_id = body.get("action_id")
@@ -1596,6 +1987,33 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         return body
 
     # routes with bodies of their own
+
+    def _pusher(self) -> web_push.Pusher:
+        if not web_push.AVAILABLE:
+            raise _HttpError(404, "web push is off: the cryptography package is missing")
+        return self.fe.push
+
+    def _push_subscribe(self, body: dict) -> None:
+        """Keep a browser's PushSubscription (its toJSON()). The endpoint must
+        be on a known push service and the keys well formed. A device paired
+        through the relay's origin below "all" may not subscribe: the relay
+        serves that page's code, and a subscription outlives the pairing."""
+        if (self.headers.get("X-Tacitus-Relay-Cards") or "").lower() == "deny":
+            raise _HttpError(403, "not from a device paired on the relay's origin")
+        pusher = self._pusher()
+        endpoint = body.get("endpoint")
+        keys = body.get("keys")
+        if not isinstance(endpoint, str) or not pusher.allow(endpoint):
+            raise _HttpError(400, "the endpoint is not a known push service")
+        if not isinstance(keys, dict):
+            raise _HttpError(400, "keys are required")
+        try:
+            web_push.check_public(web_push.unb64u(keys.get("p256dh")))
+            if len(web_push.unb64u(keys.get("auth"))) != 16:
+                raise ValueError("auth")
+        except ValueError:
+            raise _HttpError(400, "the keys are not a P-256 key and a 16-byte secret") from None
+        pusher.store.push_subscribe(endpoint, {"p256dh": keys["p256dh"], "auth": keys["auth"]})
 
     def _pair(self) -> None:
         body = self._read_json()

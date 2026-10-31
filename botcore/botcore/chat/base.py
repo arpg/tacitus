@@ -10,6 +10,7 @@ bolt App (`@app.action("approve_send")`), because the bot binds the name
 from __future__ import annotations
 
 import inspect
+import logging
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -29,6 +30,8 @@ from .types import (
 
 if TYPE_CHECKING:
     from .cards import CardRegistry, ConfirmationCard
+
+log = logging.getLogger("chat")
 
 
 class Limits(NamedTuple):
@@ -214,9 +217,30 @@ class ChatFrontend(ABC):
     # frontend whose threads carry names (Zulip topics) calls it, off its
     # event loop because it may take seconds, and others never do.
     thread_namer: Callable[[str, str], str | None] | None = None
+    # True when the text of the messages this frontend reads back
+    # (thread_replies, recent_messages) is already the Markdown the web chat
+    # renders (Zulip's); False when it is the Slack mrkdwn the core writes.
+    history_markdown: bool = False
+    # Shadow mode: the composite that mirrors this frontend (ShadowFrontend)
+    # sets a callable here, and the frontend calls it through _outbound
+    # after a write it makes on its own, outside the verbs the core calls
+    # through the composite. The verbs are listed in shadow_frontend. None
+    # leaves every frontend as it is.
+    on_outbound: Callable[..., Any] | None = None
 
     def __init__(self) -> None:
         self.registry = HandlerRegistry()
+
+    def _outbound(self, verb: str, **args: Any) -> None:
+        """Tell on_outbound about one of the frontend's own writes. A failure
+        there is logged and dropped: the platform write stands."""
+        hook = self.on_outbound
+        if hook is None:
+            return
+        try:
+            hook(verb, **args)
+        except Exception:
+            log.warning("chat: the outbound hook failed on %s", verb, exc_info=True)
 
     # lifecycle
 

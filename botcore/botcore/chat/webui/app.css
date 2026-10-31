@@ -189,6 +189,14 @@ button, select, textarea, input { font: inherit; color: inherit; }
   text-align: center;
 }
 
+#drawer-foot {
+  border-top: 1px solid var(--border);
+  padding: 10px 16px max(10px, env(safe-area-inset-bottom));
+  font-size: 14px;
+}
+.toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+.hint { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
 .archived summary { padding: 8px 18px; color: var(--muted); cursor: pointer; font-size: 14px; }
 .empty { color: var(--muted); padding: 16px; margin: 0; }
 .more { display: block; margin: 8px auto 16px; }

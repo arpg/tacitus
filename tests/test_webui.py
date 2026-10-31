@@ -107,6 +107,47 @@ def test_the_service_worker_never_caches_the_api():
     assert "POST" not in sw and "req.method !== 'GET'" in handler
 
 
+def test_the_drawer_has_the_notifications_toggle():
+    """A checkbox in the channel drawer turns Web Push on; the iOS hint sits
+    beside it. A headless browser cannot grant push, so these are file
+    checks."""
+    html = read("index.html")
+    nav = html[html.index('<nav id="channels"'):html.index("</nav>")]
+    toggle = re.search(r'<input type="checkbox" id="notify">', nav)
+    assert toggle and 'id="notify-hint"' in nav and "Add to Home Screen" in nav
+    assert re.search(r'<footer id="drawer-foot" hidden>', nav), "hidden until the server offers push"
+    js = read("app.js")
+    assert "S.me.push" in js and "navigator.standalone !== false" in js
+    assert "call('GET', '/push/vapid')" in js
+    assert re.search(r"pushManager\.subscribe\(\{ userVisibleOnly: true, applicationServerKey: keyBytes\(key\) \}\)", js)
+    assert "call('POST', '/push/subscribe', sub.toJSON())" in js
+    assert "call('POST', '/push/unsubscribe', { endpoint: sub.endpoint })" in js
+
+
+def _handler(sw: str, event: str) -> str:
+    """The source of one service worker listener, up to the next one."""
+    start = sw.index(f"addEventListener('{event}'")
+    nxt = sw.find("self.addEventListener(", start + 1)
+    return sw[start:nxt if nxt > 0 else len(sw)]
+
+
+def test_the_service_worker_shows_pushes_and_opens_only_this_app():
+    sw = read("sw.js")
+    push = _handler(sw, "push")
+    assert "event.waitUntil(self.registration.showNotification(" in push
+    for key in ("body:", "icon:", "tag:", "data: { url:"):
+        assert key in push, key
+    click = _handler(sw, "notificationclick")
+    assert "event.notification.close()" in click
+    assert "clients.matchAll" in click and "openWindow(url)" in click and ".focus()" in click
+    assert "appUrl(event.notification.data" in click
+    app_url = sw[sw.index("function appUrl"):sw.index("self.addEventListener('notificationclick'")]
+    assert "url.origin === scope.origin" in app_url and "startsWith(scope.pathname)" in app_url
+    # a push never reads or writes the cache, and the fetch handler is unchanged
+    assert "caches" not in push and "caches" not in click and "caches" not in app_url
+    assert sw.index("addEventListener('push'") < sw.index("addEventListener('fetch'")
+
+
 def test_the_app_never_parses_text_as_html():
     js = read("app.js")
     for word in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "DOMParser",

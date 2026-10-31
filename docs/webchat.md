@@ -42,17 +42,23 @@ The chat block (`~/.ea-private/chat.json` for owner processes, read by
     "base_path": "/chat",
     "public_url": "https://<host>.ts.net/chat",
     "tailscale_login": "<owner login as tailscale serve reports it>",
-    "pair_token_file": "<private_dir>/webchat-pair.token"
+    "pair_token_file": "<private_dir>/webchat-pair.token",
+    "backfill_days": 7
   }
 }
 ```
 
-`"frontend": "web"` with no `shadow` runs the web front end alone.
+`"frontend": "web"` with no `shadow` runs the web front end alone. An
+optional `push_subject` key (a `mailto:` or `https:` URL) is the contact
+the push services see (Notifications, below).
 `"shadow": "web"` with any primary wraps the primary in `ShadowFrontend`.
 `FRONTENDS` in `preprocessor/chat/__init__.py` gains `"web"`.
 `get_chat` defaults every `web` key (port 8470, base_path `/chat`, bind
-loopback). The store is `<private_dir>/webchat.sqlite` (owner process) or
-`<ea_dir>/state/webchat.sqlite` otherwise; a `store_path` key overrides.
+loopback, backfill_days 7). The store is `<private_dir>/webchat.sqlite`
+(owner process) or `<ea_dir>/state/webchat.sqlite` otherwise; a
+`store_path` key overrides.
+`backfill_days` is the history a shadow copies in when the bot starts
+(see Shadow mode); 0 copies none.
 
 ## Identity and auth
 
@@ -75,10 +81,11 @@ served without auth; every `/api/` route needs it.
   kind is `main`, `sched`, `dm` or `room`.
 - `messages(seq INTEGER PK AUTOINCREMENT, channel TEXT, id TEXT, thread_key TEXT,
   author TEXT, kind TEXT, text TEXT, card TEXT, file TEXT, reactions TEXT,
-  posted_at REAL, updated_at REAL, UNIQUE(channel, id))`.
+  posted_at REAL, updated_at REAL, history INT, UNIQUE(channel, id))`.
   `author` is `bot` or `owner`; `kind` is `message`, `card`, `status`
   (a card replaced by its final line) or `file`; `card`/`file`/`reactions`
-  are JSON text or NULL.
+  are JSON text or NULL. `history` is 1 on a row copied from the
+  primary's past (Shadow mode); such a row never counts as unread.
 - `events(seq INTEGER PK AUTOINCREMENT, at REAL, type TEXT, channel TEXT,
   id TEXT, payload TEXT)`: the SSE log; `type` is `message`, `update`,
   `reaction`, `card`, `status`, `file`, `channel`.
@@ -114,7 +121,7 @@ subset and escapes everything else; it never injects HTML from text.
 
 | Verb | Path | Body / result |
 |---|---|---|
-| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ...}` |
+| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool}` |
 | GET | `/api/channels` | `[{"id","name","kind","archived","last_at","unread"}]` |
 | GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count` and `last_at` |
 | GET | `/api/channels/{ch}/threads/{thread_key}` | the thread, oldest first, parent first |
@@ -124,6 +131,9 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/cards/{ch}/{id}/actions` | `{"action_id", "value"?, "selected"?}` → `{"ok": true}`; dispatches an `ActionEvent` (`source` `button` or `select`) |
 | GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row); a `: ping` comment every 20 s |
 | POST | `/api/pair` | `{"token"}` → sets the cookie |
+| GET | `/api/push/vapid` | `{"key": "<base64url P-256 point>"}`, the `applicationServerKey`; 404 when push is off |
+| POST | `/api/push/subscribe` | the browser's `PushSubscription.toJSON()` → `{"ok": true}` |
+| POST | `/api/push/unsubscribe` | `{"endpoint"}` → `{"ok": true, "removed": bool}` |
 
 Channel ids in URLs are URL-encoded (Zulip ids carry characters). A
 thread_key is likewise encoded.
@@ -150,7 +160,10 @@ Mirror entry points for shadow mode, all idempotent on `(channel, id)`:
 `mirror_channel(id, name, kind, archived)`, `mirror_post(ref, text, author)`,
 `mirror_update(ref, text)`, `mirror_card(ref, card)`, `mirror_card_status(ref, text)`,
 `mirror_reaction(channel, msg_id, status, on: bool)`, `mirror_file(ref, file: FileRef, author)`.
-Each writes the row and appends the event.
+Each writes the row and appends the event. Two more serve the history
+copy and moved threads: `mirror_backfilled(channel)` appends one
+`channel` event, and `mirror_move(old_channel, old_key, new_channel,
+new_key)` re-keys a thread's rows, with an `update` event each.
 
 Inbound dispatch from the HTTP layer goes through `self.registry`
 (`dispatch_message`, `dispatch_action`) with `user_id = self.owner_id`.
@@ -166,8 +179,24 @@ dispatching it itself (see below).
   `card_registry`, `registry`, `thread_namer`) come from the primary;
   `name` is `"<primary>+<shadow>"`.
 - `start()` starts both; on start it mirrors the channel list it knows
-  (main, sched, DM and the registered rooms from `archived_map()`).
+  (main, sched, DM and the rooms from `archived_map()` that
+  `room_filter` keeps; the bot keeps the rooms it made for the owner, so
+  no other private stream reaches the web), then starts the history copy.
   `run_forever()` runs the shadow's server thread and the primary's loop.
+- History copy (`backfill_days`, from `web.backfill_days`): on a daemon
+  thread, for each mirrored channel, `recent_messages` over the window,
+  then `thread_replies` per thread, each message mirrored quietly
+  (`mirror_post`/`mirror_file` with `quiet=True`) under the primary's id
+  and time, author `owner` for the primary's owner id (and for a
+  `**You (web):**` post) else `bot`; a card goes in as the text the
+  primary shows. A quiet row has no event and never counts as unread, a
+  stored row is left as it is (a second start adds nothing), and a row
+  older than its thread's newest is left out, so a thread stays in time
+  order. One `mirror_backfilled` event per channel that took rows; at
+  most 5,000 messages; a read the primary fails ends that channel's
+  copy. Live mirroring waits for the copy (up to 60 s), so the replies
+  the bot posts on waking land after the history of their thread; an
+  upload and the owner's web input never wait.
 - Outbound: `post`, `update`, `react`, `unreact`, `post_card`,
   `update_card`, `replace_card_with_status`, `upload` call the primary,
   then mirror the result into the shadow with the primary's refs. A
@@ -181,8 +210,17 @@ dispatching it itself (see below).
   to the primary.
 - Inbound from the primary: the composite wraps the primary's registry
   dispatch so an owner `InboundMessage` is mirrored into the shadow
-  (`author = "owner"`) before the core handles it; an `ActionEvent` is
-  passed through.
+  (`author = "owner"`) before the core handles it and a `channel_rename`
+  renames the row; a `thread_moved` event (a whole Zulip topic move)
+  re-keys the thread's rows when its new channel is mirrored; an
+  `ActionEvent` is passed through.
+- The primary's own writes: the composite sets `primary.on_outbound`
+  (an optional `ChatFrontend` attribute, None elsewhere). Zulip calls it
+  for the owner's card code (never dispatched as a message), its done
+  reaction and the reply to an unknown word; for an edit past the edit
+  window (the web row is updated in place); and for a stream's
+  description or archive change. The chips on a Zulip card are not
+  mirrored: the web card has its buttons.
 - Inbound from the shadow (the owner typed or clicked on the web): a
   message is first posted into the primary **as the bot** with the
   prefix `**You (web):** ` so it has a primary id and sits in the
@@ -196,7 +234,80 @@ dispatching it itself (see below).
   every post, update, card, status and reaction with the same ids.
 
 `load_frontend` returns the composite when the chat block names a
-`shadow`; `"frontend": "web"` returns a bare `WebFrontend`.
+`shadow`; `"frontend": "web"` returns a bare `WebFrontend`. A
+command-line sender in an owner process gets the composite too, with a
+writer-only web side (see CLI senders).
+
+## CLI senders
+
+Much of what the owner reads is posted from outside the bot process: the
+morning briefing, the cron lanes' reports, the room posts, the uploads.
+The store and the event streams live in the bot, so a sender writes the
+store and the bot pushes what it wrote.
+
+**Who runs what.** The bot (`ea-chat-bot.py`) runs as the owner from the
+owner's code tree (`/opt` on a host install, the `bot` service in
+Docker); it is an owner process (`owner_trust.is_owner_process`), and
+its store is `<private_dir>/webchat.sqlite`, mode 0600 in the 0700
+private dir. The cron lanes (`run-agent.sh`, `run-plugin.sh`) run as the
+owner too: Claude runs inside them as `ea-bot`, and the wrapper posts its
+output as the owner (`slack_notifier.post_to_slack`, then
+`chat_notify.post`). Owner plugins, scheduled sends, the alert flush and
+`chat/direct.py` are owner processes as well. The resident (`ea-bot`)
+holds no chat credential: `chat_upload.py` run as ea-bot stages its job
+(`slack_outbox`), and the bot sends it through the composite, which
+mirrors it.
+
+**The rule.** A command-line sender writes the store when it is an owner
+process, so the store it computes is the bot's file and the user is the
+bot's user. Any other process posts to the primary alone and logs one
+warning per process: the store is the owner's, and the copy it could
+open (`<ea_dir>/state/webchat.sqlite`) is one the bot never reads.
+
+**The senders.**
+
+- `chat.load_frontend(for_cli=True)` (chat_upload, chat_read, the room
+  posts of chat_notify, `chat/direct.py`) returns the composite with the
+  web side writer-only (`WebFrontend(..., writer_only=True)`): `start()`
+  opens the store and nothing else (no HTTP server, no event stream, no
+  pairing token, no channels made), and load_frontend calls it. The
+  mirrors run as in the bot, under the primary's ids. A store that does
+  not open is logged and the sender runs the primary alone.
+- `chat_notify.post` and `post_as_bot` on Zulip send with a bare Zulip
+  client, so they mirror each part themselves through
+  `chat.web_writer()`: channel `stream:<id>`, the Zulip message id, the
+  thread key `stream:<id>:topic:<topic>` (what the Zulip frontend's
+  `post` returns for the same post) and the core's mrkdwn, which the web
+  side converts as its `post` would. The channel row is written only
+  when the store lacks it, so the bot's row (name, archived) stands. A
+  mirror failure is printed and the post stands.
+- Not mirrored: a Slack webhook post (no message id comes back), and a
+  Zulip direct message or scheduled direct message from
+  `chat/direct.py` (they live outside the streams the web chat holds; the
+  Zulip server delivers a scheduled one later).
+
+**The bot's side.** The serving `WebFrontend` runs a tail thread that
+reads `SELECT MAX(seq) FROM events` every `tail_s` seconds (1) and hands
+the events after the last seq it delivered to the open streams, in seq
+order and with the payload as logged: the JSON the in-process path
+sends. The bot's own writes go out at once; when another process logged
+events before one of them, those go first, read back from the log. The
+store keeps the last seq it handed on, so no event goes out twice (a
+stream also skips any seq at or below its last). With no stream open the
+new events are passed over: a stream that opens later replays the log.
+
+**SQLite.** One file, the default rollback journal and a 10-second busy
+wait on each connection. Writers take turns, so the seqs commit in
+order; the journal takes the database file's mode. A file id the store
+mints (`f<n>`, standalone only) is inserted before the bytes take its
+name, and minted again when another process took it.
+
+**Permissions.** The bot and every sender that writes the store run as
+the owner, so the 0600 store, its journal and `webchat-files/` need no
+change. In Docker the bot and scheduler containers share the
+`ea-private` volume. Standalone (`"frontend": "web"`), a command-line
+sender gets the bare `WebFrontend`, writer-only, on the store its own
+process computes.
 
 ## The web app (B)
 
@@ -272,7 +383,9 @@ already replaced by its status line is a 400.
 pairing token file (mode 0600) when there is none. The cookie's `Path`
 is `base_path`. A POST whose `Origin` is not the request's host (or
 `public_url`'s, or a loopback proxy's `X-Forwarded-Host`) is a 401.
-Errors are 400, 401 and 404, and 500 for an unexpected failure.
+Errors are 400, 401 and 404, 403 for a push subscription from a device
+paired on the relay's origin (Notifications, below), and 500 for an
+unexpected failure.
 
 **Event stream.** The stream opens with `retry: 3000`. With neither
 `Last-Event-ID` nor `since` it sends only new events; with both,
@@ -331,5 +444,91 @@ the prompts use it as an adjective ("a real-time {platform} message").
   channel row, `mirror_reaction` True when the message is stored. A
   mirror into a channel not yet described makes a placeholder row (kind
   `room`, name the id) that `mirror_channel` corrects.
-- `stop()` stops the server and closes the open streams; `url` is the
-  loopback URL with the base path.
+- Keywords for the history copy: `mirror_post` and `mirror_file` take
+  `quiet=True` (a history row: no event, `history` 1, None returned for
+  a row stored already or older than its thread's newest) and
+  `markdown=True` (the bot's text is Markdown already, as Zulip's
+  history is, and is stored as given). `mirror_channel` takes
+  `description=`; None keeps the stored one. A store from before the
+  `history` column gains it on open, its rows all live ones.
+- `stop()` stops the server and the tail thread and closes the open
+  streams; `url` is the loopback URL with the base path.
+
+## Notifications (Web Push)
+
+`botcore/botcore/chat/web_push.py` sends a notification to every browser
+that turned on the drawer's **Notifications** toggle, also with the app
+closed. It needs the `cryptography` package (installed with msal); without
+it `/api/me` says `"push": false`, the app hides the toggle and nothing
+else changes. No other dependency.
+
+**What is pushed.** A new card (`post_card`, or `mirror_card` for a row
+not stored yet), at urgency `high`: the card's title, and its first line
+(a line of the card, else its first field as `Label: value`, else the
+body). A new bot message in a `dm` channel (`post`, or `mirror_post` for
+a new row by the bot), at urgency `normal`: "Tacitus" and the first line
+of the text. A loud alert: `chat.direct.web_notify` (alert.py, next to
+the direct message, and page_watch.py) at urgency `high`. Edits, card
+updates, status lines, reactions and the owner's own messages are never
+pushed. The text loses its emoji shortcodes and Markdown marks
+(`web_push.plain_line`); the title is at most 120 characters and the body
+240.
+
+**Payload.** JSON `{"title", "body", "url", "tag"}`, encrypted to the
+subscription (RFC 8291, `aes128gcm` of RFC 8188, one 4096-byte record).
+`url` is the message's web permalink; `tag` is `<channel>/<thread key>`,
+so the device keeps one notification per thread and a new one alerts
+again. TTL is one hour.
+
+**Rate.** At most one push per thread in 30 seconds, counted apart for
+`high` urgency, so a card is never held back by a message push in its
+thread (`Pusher.notify`).
+
+**VAPID.** The key pair (P-256) is made on first use in
+`<store dir>/webchat-vapid.json`, mode 0600; when two processes race, the
+first file stands. Each push carries `Authorization: vapid t=<ES256 JWT>,
+k=<public key>`; the JWT's `aud` is the endpoint's origin, `exp` twelve
+hours ahead, `sub` the web block's optional `push_subject` (a `mailto:`
+or `https:` URL), else the project's URL, so the tailnet host name does
+not go to the push services. A replaced key file breaks the browsers'
+subscriptions: the app drops one made with another key at start, and the
+owner turns the toggle on again.
+
+**Subscriptions.** The `push_subscriptions` table (`endpoint` primary
+key, `keys` JSON, `created_at`, `last_ok`, `failures`), at most 20 (the
+ones longest without a delivery go first). `subscribe` takes only an
+https endpoint on a known push service (`web_push.PUSH_HOSTS`: Google,
+Mozilla, Apple, Microsoft), with a P-256 key and a 16-byte auth secret;
+the bot follows no redirect, so a browser cannot steer it to another
+host. A request the relay marks `X-Tacitus-Relay-Cards: deny` (a device
+paired through the relay's origin below `"all"`) is refused with 403: the
+relay serves that page's code, and a subscription outlives the pairing.
+On sending, 404 and 410 drop the subscription, 429 holds that endpoint
+for its `Retry-After` (60 s by default), and any other failure raises
+`failures` and is logged with the host only, never the endpoint path.
+
+**Sending.** `WebFrontend.notify(title, body, url, tag, *, urgency, at,
+wait)` never raises. The push worker thread (`start()` starts it,
+`stop()` ends it) sends queued pushes. `at`, a Unix time ahead, puts the
+push in the `push_queue` table under its tag (a later one with the same
+tag replaces it; `cancel_notify(tag)` drops it); the worker looks every
+15 seconds, claims due rows in one transaction, and drops one more than
+the TTL late. `wait=True` sends before returning: alert.py's process
+builds the web front end (`chat.load_web_frontend`, not started) and
+sends or queues through it, and does nothing when the chat block runs no
+web front end or its store does not exist. A queued alert therefore goes
+out while the bot runs; the Zulip direct message, held by the Zulip
+server, does not need the bot.
+
+**The app.** The toggle sits at the foot of the channel drawer and shows
+once `/api/me` says `push`. Turning it on calls
+`pushManager.subscribe({userVisibleOnly: true, applicationServerKey})`
+straight from the tap (Safari asks for the permission only then) and
+posts the subscription; off unsubscribes on both sides. At start the app
+posts a subscription the browser already holds, so a reset store learns
+it again. iOS delivers Web Push only to the app added to the Home Screen:
+where `navigator.standalone` is `false` (iOS Safari) the drawer says so.
+`sw.js` shows each push (`showNotification` with the title, body, icon,
+tag and `data.url`) and on a tap focuses an open window of the app and
+navigates it to the url, else opens one; a url outside the app's scope
+opens the app's start page.

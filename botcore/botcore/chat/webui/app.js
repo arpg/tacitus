@@ -74,6 +74,7 @@ const S = {
   queue: [],
   route: 0,
   sending: false,
+  push: undefined,      // {reg, key, sub} once the toggle is ready
 };
 
 const $ = (id) => document.getElementById(id);
@@ -714,7 +715,13 @@ function apply(type, data) {
     const i = S.channels.findIndex((c) => c.id === data.id);
     if (i >= 0) S.channels[i] = { ...S.channels[i], ...data }; else S.channels.push(data);
     renderChannels();
-    if (data.id === S.channel) $('channel-name').textContent = channelName(chan(data.id));
+    // A channel event can follow rows stored with no event of their own (the
+    // history the bot copies in when it starts): the open channel reads its
+    // threads again. Another channel reads them when it is opened.
+    if (data.id === S.channel) {
+      $('channel-name').textContent = channelName(chan(data.id));
+      loadThreads(data.id);
+    }
     return;
   }
   if (data.channel && data.id) ingest(data, CREATED.has(type));
@@ -841,6 +848,63 @@ function upload(file) {
   }, text);
 }
 
+/* -- Notifications (Web Push) --------------------------------------- */
+
+// The server's public key (base64url) as the bytes subscribe() takes.
+function keyBytes(b64) {
+  const s = b64.replace(/-/g, '+').replace(/_/g, '/');
+  return Uint8Array.from(atob(s + '='.repeat((4 - s.length % 4) % 4)), (c) => c.charCodeAt(0));
+}
+
+const sameKey = (buf, key) => !buf || String(new Uint8Array(buf)) === String(keyBytes(key));
+
+// The drawer's toggle. A subscription this browser already holds is posted
+// again, so the server keeps it after a reset; one made with another key
+// (the server's key was replaced) is dropped. iOS takes notifications only
+// in the app added to the Home Screen (navigator.standalone is true there).
+async function initPush() {
+  const box = $('notify');
+  if (!S.me.push || !('serviceWorker' in navigator)) return;
+  $('drawer-foot').hidden = false;
+  $('notify-hint').hidden = navigator.standalone !== false;
+  box.disabled = true;
+  if (!('PushManager' in window) || !('Notification' in window)) return;
+  const reg = await navigator.serviceWorker.ready;
+  const { key } = await call('GET', '/push/vapid');
+  let sub = await reg.pushManager.getSubscription();
+  if (sub && !sameKey(sub.options.applicationServerKey, key)) { await sub.unsubscribe(); sub = null; }
+  if (sub && Notification.permission === 'granted') await call('POST', '/push/subscribe', sub.toJSON());
+  S.push = { reg, key, sub };
+  box.checked = Boolean(sub) && Notification.permission === 'granted';
+  box.disabled = false;
+  box.addEventListener('change', toggleNotify);
+}
+
+async function toggleNotify() {
+  const box = $('notify');
+  const on = box.checked;
+  box.disabled = true;
+  try {
+    let { reg, key, sub } = S.push;
+    if (on) {
+      // subscribe() asks for the permission; Safari asks only straight from a tap.
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
+      await call('POST', '/push/subscribe', sub.toJSON());
+    } else if (sub) {
+      await call('POST', '/push/unsubscribe', { endpoint: sub.endpoint });
+      await sub.unsubscribe();
+      sub = null;
+    }
+    S.push.sub = sub;
+  } catch (e) {
+    box.checked = !on;
+    toast(Notification.permission === 'denied'
+      ? 'Notifications are blocked for this site in the browser settings.' : `Notifications: ${e.message}`);
+  } finally {
+    box.disabled = false;
+  }
+}
+
 /* -- Pairing and start-up ------------------------------------------- */
 
 function showPair() {
@@ -894,6 +958,7 @@ async function boot() {
   S.queue.splice(0).forEach(([t, d]) => apply(t, d));
   renderChannels();
   route();
+  if (S.push === undefined) { S.push = null; initPush().catch(() => {}); }
 }
 
 function init() {

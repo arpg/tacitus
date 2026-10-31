@@ -6,6 +6,8 @@ import dataclasses
 import json
 import logging
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -45,6 +47,7 @@ class WebShadow(MemoryFrontend):
         self.inbound = None
         self.calls: list[tuple] = []
         self.channels: dict[str, dict] = {}
+        self.descriptions: dict[str, str] = {}
         self.rows: dict[tuple[str, str], dict] = {}
         self.down: set[str] = set()
         self.started = False
@@ -62,9 +65,14 @@ class WebShadow(MemoryFrontend):
     def _row(self, ref: MessageRef) -> dict:
         return self.rows.setdefault((ref.channel, ref.id), {"reactions": set()})
 
-    def mirror_channel(self, cid, name, kind, archived):
+    def mirror_channel(self, cid, name, kind, archived, *, description=None):
         self._call("mirror_channel", cid, name, kind, archived)
         self.channels[cid] = {"name": name, "kind": kind, "archived": archived}
+        if description is not None:
+            self.descriptions[cid] = description
+
+    def mirror_move(self, old_channel, old_key, new_channel, new_key):
+        self._call("mirror_move", old_channel, old_key, new_channel, new_key)
 
     def mirror_post(self, ref, text, author):
         self._call("mirror_post", ref, text, author)
@@ -492,8 +500,8 @@ def test_get_chat_defaults_the_shadow_to_none(tmp_path):
 def test_load_frontend_wraps_the_primary_when_a_shadow_is_named(tmp_path, monkeypatch):
     built = []
 
-    def build(cfg):
-        built.append(cfg)
+    def build(cfg, **kw):
+        built.append((cfg, kw))
         return WebShadow()
     monkeypatch.setattr(chat, "_build_web", build)
     ea_dir = _ea_dir(tmp_path, {"frontend": "memory", "shadow": "web",
@@ -501,12 +509,13 @@ def test_load_frontend_wraps_the_primary_when_a_shadow_is_named(tmp_path, monkey
     fe = chat.load_frontend(ea_dir=ea_dir, env={})
     assert isinstance(fe, ShadowFrontend) and fe.name == "memory+web"
     assert isinstance(fe.primary, MemoryFrontend) and fe.shadow.inbound == fe._from_shadow
-    web = built[-1]["web"]
-    assert web["port"] == 8471
+    web, kw = built[-1][0]["web"], built[-1][1]
+    assert web["port"] == 8471 and kw == {"writer_only": False}
     assert web["store_path"] == str(tmp_path / "state" / "webchat.sqlite")
     # the core's wording stays the primary's
     assert chat.prompt_strings_for_config(ea_dir)["platform"] == fe.prompt_strings()["platform"]
-    # a command-line sender gets the primary alone
+    # a command-line sender that is not the owner's gets the primary alone
+    # (tests/test_web_cli_senders.py has the owner's)
     assert type(chat.load_frontend(ea_dir=ea_dir, env={}, for_cli=True)) is MemoryFrontend
 
 
@@ -517,7 +526,7 @@ def test_an_unknown_shadow_is_refused(tmp_path):
 
 
 def test_a_shadow_that_does_not_build_leaves_the_primary_running(tmp_path, monkeypatch, caplog):
-    def broken(cfg):
+    def broken(cfg, **kw):
         raise OSError("the store is not writable")
     monkeypatch.setattr(chat, "_build_web", broken)
     ea_dir = _ea_dir(tmp_path, {"frontend": "memory", "shadow": "web"})
@@ -567,3 +576,372 @@ def test_a_zulip_primary_mirrors_the_owner_and_takes_web_input(tmp_path):
     assert fe.react(dm, ref.id, Status.EYES)
     assert client.named("add_reaction")[-1]["message_id"] == int(ref.id)
     assert shadow.rows[(dm, ref.id)]["reactions"] == {"eyes"}
+
+
+# ── the primary's own writes, renames and thread moves ──
+
+def test_the_primarys_own_writes_reach_the_shadow_through_its_hook(caplog):
+    fe, primary, shadow = _pair()
+    assert primary.on_outbound == fe._primary_outbound
+    ref = primary.post("C_MAIN", "*posted* on its own")
+    primary._outbound("post", ref=ref, text="*posted* on its own")
+    assert shadow.rows[("C_MAIN", ref.id)]["text"] == "*posted* on its own"
+    primary._outbound("update", ref=ref, text="edited")
+    assert shadow.rows[("C_MAIN", ref.id)]["text"] == "edited"
+    primary._outbound("reaction", channel="C_MAIN", msg_id=ref.id, status=Status.DONE, on=True)
+    assert shadow.rows[("C_MAIN", ref.id)]["reactions"] == {"white_check_mark"}
+
+    card = _card()
+    cref = primary.post_card("D_OWNER", card)
+    primary._outbound("card", ref=cref, card=card)
+    assert shadow.rows[("D_OWNER", cref.id)]["card"] is card
+    primary._outbound("card_status", ref=cref, text="Sent")
+    assert shadow.rows[("D_OWNER", cref.id)]["kind"] == "status"
+
+    code = InboundMessage(channel="D_OWNER", msg_id="m90", text="send ABC123",
+                          user_id="U_OWNER", posted_at=time.time(), thread_key=cref.thread_key)
+    primary._outbound("owner_message", msg=code)
+    row = shadow.rows[("D_OWNER", "m90")]
+    assert (row["author"], row["text"], row["thread_key"]) == ("owner", "send ABC123",
+                                                               cref.thread_key)
+    primary._outbound("owner_message", msg=dataclasses.replace(code, msg_id="m91",
+                                                              user_id="U_OTHER"))
+    assert ("D_OWNER", "m91") not in shadow.rows
+
+    room = primary.create_private_room("ea-elsewhere")
+    primary._outbound("channel", channel=room.id, archived=True)
+    assert room.id not in shadow.channels          # a room the shadow does not hold
+    primary._outbound("channel", channel="C_MAIN", description="the EA channel")
+    assert shadow.descriptions["C_MAIN"] == "the EA channel"
+    primary._outbound("typing", channel="C_MAIN")  # a verb the composite does not know
+
+    shadow.down = {"mirror_post"}
+    caplog.set_level(logging.WARNING, logger="chat.shadow")
+    primary._outbound("post", ref=ref, text="lost")
+    assert "not mirrored" in caplog.text
+
+
+def test_a_failing_outbound_hook_never_reaches_the_frontend(caplog):
+    primary = MemoryFrontend()
+    primary._outbound("post", text="no hook set")
+
+    def boom(verb, **args):
+        raise RuntimeError("the shadow is gone")
+    primary.on_outbound = boom
+    caplog.set_level(logging.WARNING, logger="chat")
+    primary._outbound("post", text="x")
+    assert "outbound hook failed on post" in caplog.text
+
+
+def test_a_rename_on_the_primary_renames_the_shadow_row():
+    fe, primary, shadow = _pair()
+    seen = []
+    fe.registry.event("message")(seen.append)
+    primary.inject_message(channel="C_MAIN", user_id="", subtype="channel_rename",
+                           new_name="ea-renamed")
+    assert shadow.channels["C_MAIN"]["name"] == "ea-renamed"
+    assert seen[-1].subtype == "channel_rename"
+    primary.inject_message(channel="C_ELSEWHERE", user_id="", subtype="channel_rename",
+                           new_name="not ours")
+    assert "C_ELSEWHERE" not in shadow.channels and len(seen) == 2
+
+
+def test_a_thread_move_rekeys_the_shadow_rows(tmp_path):
+    primary, web = MemoryFrontend(), _web(tmp_path)
+    fe = ShadowFrontend(primary, web)
+    fe.mirror_channels()
+    seen = []
+    fe.registry.event("thread_moved")(seen.append)
+    top = fe.post("C_MAIN", "a thread")
+    reply = fe.post("C_MAIN", "a reply", thread_ts=top.thread_key)
+    payload = {"type": "thread_moved", "old": top.thread_key, "new": "T_NEW",
+               "channel": "C_MAIN", "old_channel": "C_MAIN", "message_ids": [],
+               "whole": True, "user_id": "U_OWNER"}
+    before = web.store.max_event_seq()
+    assert primary.registry.dispatch_event("thread_moved", payload)
+    assert seen == [payload]
+    assert [m["id"] for m in web.store.thread("C_MAIN", "T_NEW")] == [top.id, reply.id]
+    assert web.store.thread("C_MAIN", top.thread_key) == []
+    assert [t for _, t, _ in web.store.events_since(before)] == ["update", "update"]
+    # a move to a channel the shadow does not hold (a card filed away) leaves the rows
+    primary.registry.dispatch_event("thread_moved", dict(payload, old="T_NEW", new="T_DONE",
+                                                         channel="C_DONE"))
+    assert len(web.store.thread("C_MAIN", "T_NEW")) == 2 and len(seen) == 2
+
+
+def test_the_room_filter_picks_the_rooms_start_copies(caplog):
+    primary, shadow = MemoryFrontend(), WebShadow()
+    keep = primary.create_private_room("ea-atlas")
+    other = primary.create_private_room("a-shared-stream")
+    fe = ShadowFrontend(primary, shadow)
+    fe.room_filter = lambda cid: cid == keep.id
+    fe.start()
+    assert keep.id in shadow.channels and other.id not in shadow.channels
+    assert shadow.channels["C_MAIN"]["kind"] == "main"     # the fixed channels always go
+    fe.post(other.id, "the core posts there")              # a room in use is copied then
+    assert shadow.channels[other.id]["name"] == "a-shared-stream"
+
+    def broken(cid):
+        raise OSError("the room record is unreadable")
+    primary2, shadow2 = MemoryFrontend(), WebShadow()
+    room = primary2.create_private_room("ea-atlas")
+    fe2 = ShadowFrontend(primary2, shadow2)
+    fe2.room_filter = broken
+    caplog.set_level(logging.WARNING, logger="chat.shadow")
+    fe2.start()
+    assert room.id not in shadow2.channels and "room filter failed" in caplog.text
+
+
+def test_descriptions_reach_the_shadow():
+    primary, shadow = MemoryFrontend(), WebShadow()
+    old = primary.create_private_room("ea-old", "the old purpose")
+    fe = ShadowFrontend(primary, shadow)
+    fe.start()
+    assert shadow.descriptions[old.id] == "the old purpose"     # read at start
+    room = fe.create_private_room("ea-atlas", "the atlas project")
+    assert shadow.descriptions[room.id] == "the atlas project"
+    fe.set_description(room.id, "a new purpose")
+    assert shadow.descriptions[room.id] == "a new purpose"
+    fe.archive(room.id)
+    assert shadow.channels[room.id]["archived"] is True
+    assert shadow.descriptions[room.id] == "a new purpose"
+
+
+# ── history: the copy a start makes ──
+
+DAY = 86400.0
+
+
+def _web(tmp_path):
+    from chat.web_frontend import WebFrontend
+    return WebFrontend({"port": 0}, store_path=tmp_path / "web" / "webchat.sqlite",
+                       webui_dir=tmp_path / "webui")
+
+
+def _said(primary, channel, mid, text, when, *, by="owner", thread=None, files=()):
+    """A message in the primary's history, by the owner or by the bot."""
+    bot = by == "bot"
+    msg = InboundMessage(channel=channel, msg_id=mid, text=text,
+                         user_id=primary.bot_user_id if bot else primary.owner_id,
+                         posted_at=when, thread_key=thread or mid, is_reply=thread is not None,
+                         is_self=bot, is_bot=bot, files=list(files))
+    primary.history.append(msg)
+    return msg
+
+
+def _history(primary, now):
+    """Two threads in the EA channel and one in the DM inside the window,
+    and one thread older than the window."""
+    _said(primary, "C_MAIN", "h1", "what is on *today*?", now - 2 * DAY)
+    _said(primary, "C_MAIN", "h2", "Three meetings, the *first* at nine.", now - 2 * DAY + 60,
+          by="bot", thread="h1")
+    _said(primary, "C_MAIN", "h3", "thanks", now - 2 * DAY + 120, thread="h1")
+    # a card, as the text the primary shows for it
+    _said(primary, "C_MAIN", "h4", ":lock: *Send this reply?*\nTo: someone", now - DAY, by="bot")
+    _said(primary, "D_OWNER", "h5", "quick ask", now - 3 * DAY)
+    _said(primary, "D_OWNER", "h6", "Done.", now - 3 * DAY + 30, by="bot", thread="h5")
+    _said(primary, "C_MAIN", "old1", "last month", now - 30 * DAY)
+
+
+def _rows(web):
+    return [(r["channel"], r["id"]) for r in web.store._all(
+        "SELECT channel, id FROM messages ORDER BY seq")]
+
+
+def _setup(tmp_path, **kw):
+    primary, web = MemoryFrontend(), _web(tmp_path)
+    fe = ShadowFrontend(primary, web, backfill_days=7, **kw)
+    now = time.time()
+    _history(primary, now)
+    fe.mirror_channels()
+    return fe, primary, web, now
+
+
+def test_the_history_copy_takes_recent_threads_quietly(tmp_path):
+    fe, primary, web, now = _setup(tmp_path)
+    before = web.store.max_event_seq()
+    report = fe.backfill()
+    assert report == {"copied": 6, "channels": {"C_MAIN": 4, "D_OWNER": 2}, "failed": [],
+                      "capped": False}
+    assert fe.backfill_report is report
+    thread = web.store.thread("C_MAIN", "h1")
+    assert [(m["id"], m["author"]) for m in thread] == [("h1", "owner"), ("h2", "bot"),
+                                                        ("h3", "owner")]
+    assert thread[0]["text"] == "what is on *today*?"                    # as typed
+    assert thread[1]["text"] == "Three meetings, the **first** at nine."  # as post() converts
+    assert thread[0]["posted_at"] == pytest.approx(now - 2 * DAY)
+    assert all(m["updated_at"] == m["posted_at"] for m in thread)        # never an edit
+    card = web.store.message("C_MAIN", "h4")
+    assert (card["kind"], card["card"], card["author"]) == ("message", None, "bot")
+    assert web.store.message("D_OWNER", "h6")["thread_key"] == "h5"
+    assert web.store.message("C_MAIN", "old1") is None                   # outside the window
+    # one channel event per channel that took rows, none per row
+    events = [(t, json.loads(p)["id"]) for _, t, p in web.store.events_since(before)]
+    assert events == [("channel", "C_MAIN"), ("channel", "D_OWNER")]
+    assert [c["unread"] for c in web.store.channels()] == [0, 0]
+    assert web.store.channel("C_MAIN")["last_at"] == pytest.approx(now - DAY)
+    fe.post("C_MAIN", "a new briefing")                                  # live traffic counts
+    assert web.store.channel("C_MAIN")["unread"] == 1
+
+
+def test_a_second_copy_adds_nothing_but_what_came_since(tmp_path):
+    fe, primary, web, now = _setup(tmp_path)
+    fe.backfill()
+    rows, seq = _rows(web), web.store.max_event_seq()
+    again = fe.backfill()
+    assert again["copied"] == 0 and again["channels"] == {"C_MAIN": 0, "D_OWNER": 0}
+    assert _rows(web) == rows and web.store.max_event_seq() == seq
+    _said(primary, "C_MAIN", "h7", "one more", now - 60, thread="h1")    # while the bot was away
+    assert fe.backfill()["copied"] == 1
+    assert [m["id"] for m in web.store.thread("C_MAIN", "h1")] == ["h1", "h2", "h3", "h7"]
+
+
+def test_the_copy_stops_at_its_cap(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="chat.shadow")
+    fe, primary, web, now = _setup(tmp_path, backfill_cap=3)
+    report = fe.backfill()
+    assert report == {"copied": 3, "channels": {"C_MAIN": 3}, "failed": [], "capped": True}
+    assert _rows(web) == [("C_MAIN", "h1"), ("C_MAIN", "h2"), ("C_MAIN", "h3")]
+    assert "stopped at the cap of 3" in caplog.text
+
+
+def test_a_read_the_primary_fails_ends_that_channels_copy(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="chat.shadow")
+    fe, primary, web, now = _setup(tmp_path)
+    recent, replies = primary.recent_messages, primary.thread_replies
+
+    def no_main(channel, since_s, limit=200, **kw):
+        if channel == "C_MAIN":
+            raise ChatError("the server is down")
+        return recent(channel, since_s, limit, **kw)
+    monkeypatch.setattr(primary, "recent_messages", no_main)
+    report = fe.backfill()
+    assert report["failed"] == ["C_MAIN"] and report["channels"] == {"C_MAIN": 0, "D_OWNER": 2}
+    assert "history read failed" in caplog.text
+
+    def no_card_thread(channel, ts, limit=200):
+        if ts == "h4":
+            raise ChatError("timeout")
+        return replies(channel, ts, limit)
+    monkeypatch.setattr(primary, "recent_messages", recent)
+    monkeypatch.setattr(primary, "thread_replies", no_card_thread)
+    report = fe.backfill()
+    assert report["failed"] == ["C_MAIN"] and report["channels"] == {"C_MAIN": 3, "D_OWNER": 0}
+    assert web.store.message("C_MAIN", "h4") is None
+    assert "stopped on a read the primary failed" in caplog.text
+
+
+def test_history_authors_and_files(tmp_path):
+    primary, web = MemoryFrontend(), _web(tmp_path)
+    fe = ShadowFrontend(primary, web, backfill_days=7)
+    now = time.time()
+    # the owner's web message, which the primary holds as the bot's
+    _said(primary, "C_MAIN", "w1", _to_mrkdwn(WEB_PREFIX + "typed on the web"), now - 100,
+          by="bot")
+    primary.history.append(InboundMessage(channel="C_MAIN", msg_id="x1", text="someone else",
+                                          user_id="U_OTHER", posted_at=now - 90,
+                                          thread_key="x1"))
+    scan = FileRef("scan.pdf", "memory://files/up1", "up1", "application/pdf")
+    _said(primary, "C_MAIN", "f1", "the scan", now - 80, files=[scan])
+    _said(primary, "C_MAIN", "j1", "joined", now - 70, by="bot").subtype = "other:channel_join"
+    fe.mirror_channels()
+    assert fe.backfill()["copied"] == 3
+    web_row = web.store.message("C_MAIN", "w1")
+    assert (web_row["author"], web_row["text"]) == ("owner", "typed on the web")
+    assert web.store.message("C_MAIN", "x1")["author"] == "bot"
+    row = web.store.message("C_MAIN", "f1")
+    assert (row["kind"], row["author"], row["text"]) == ("file", "owner", "the scan")
+    assert row["file"]["id"] == "" and row["file"]["url"] == "memory://files/up1"
+    assert web.store.message("C_MAIN", "j1") is None
+
+
+def test_history_from_a_markdown_primary_is_kept_as_written(tmp_path):
+    primary, web = MemoryFrontend(), _web(tmp_path)
+    primary.history_markdown = True          # as Zulip's history reads
+    fe = ShadowFrontend(primary, web, backfill_days=7)
+    now = time.time()
+    _said(primary, "C_MAIN", "z1", "Three **meetings**, the *first* at nine.", now - 100,
+          by="bot")
+    _said(primary, "C_MAIN", "z2", WEB_PREFIX + "and *tomorrow*?", now - 50, by="bot",
+          thread="z1")
+    fe.mirror_channels()
+    fe.backfill()
+    assert web.store.message("C_MAIN", "z1")["text"] == "Three **meetings**, the *first* at nine."
+    z2 = web.store.message("C_MAIN", "z2")
+    assert (z2["author"], z2["text"]) == ("owner", "and *tomorrow*?")
+
+
+def test_history_older_than_a_live_row_stays_out_of_its_thread(tmp_path):
+    fe, primary, web, now = _setup(tmp_path)
+    live = fe.post("C_MAIN", "a late reply", thread_ts="h1")      # mirrored before the copy
+    fe.backfill()
+    assert [m["id"] for m in web.store.thread("C_MAIN", "h1")] == [live.id]
+    assert web.store.message("C_MAIN", "h4") is not None
+
+
+def test_start_copies_on_a_thread_and_live_writes_wait_for_it(tmp_path, monkeypatch):
+    fe, primary, web, now = _setup(tmp_path)
+    gate = threading.Event()
+    replies = primary.thread_replies
+
+    def slow(channel, ts, limit=200):
+        gate.wait(5)
+        return replies(channel, ts, limit)
+    monkeypatch.setattr(primary, "thread_replies", slow)
+    try:
+        fe.start()
+        t = fe._backfill_thread
+        assert t is not None and t.daemon and t.is_alive()     # the start did not wait
+        live = fe.post("C_MAIN", "the bot wakes and answers", thread_ts="h1")
+        assert web.store.message("C_MAIN", live.id) is None     # waits for the copy
+        gate.set()
+        t.join(5)
+        assert not t.is_alive() and fe.backfill_report["copied"] == 6
+        assert [m["id"] for m in web.store.thread("C_MAIN", "h1")] == ["h1", "h2", "h3", live.id]
+        events = [(typ, json.loads(p).get("id")) for _, typ, p in web.store.events_since(0)]
+        assert ("message", live.id) in events
+        assert not {"h1", "h2", "h3", "h4", "h5", "h6"} & {i for _, i in events}
+        later = fe.post("C_MAIN", "after the copy")
+        assert web.store.message("C_MAIN", later.id) is not None
+    finally:
+        gate.set()
+        fe.stop()
+
+
+def test_live_writes_stop_waiting_when_the_hold_runs_out(tmp_path, monkeypatch):
+    fe, primary, web, now = _setup(tmp_path)
+    fe.backfill_hold_s = 0.0
+    gate = threading.Event()
+    replies = primary.thread_replies
+
+    def slow(channel, ts, limit=200):
+        gate.wait(5)
+        return replies(channel, ts, limit)
+    monkeypatch.setattr(primary, "thread_replies", slow)
+    try:
+        fe.start()
+        live = fe.post("C_MAIN", "now")
+        assert web.store.message("C_MAIN", live.id) is not None
+    finally:
+        gate.set()
+        fe._backfill_thread.join(5)
+        fe.stop()
+
+
+def test_no_copy_without_days_or_without_a_quiet_shadow(tmp_path):
+    fe, primary, shadow = _pair()                     # backfill_days 0: the default here
+    assert fe._backfill_thread is None and fe.backfill_report is None
+    primary, shadow = MemoryFrontend(), WebShadow()   # its mirror_post takes no `quiet`
+    fe = ShadowFrontend(primary, shadow, backfill_days=7)
+    fe.start()
+    assert fe._backfill_thread is None and fe.backfill_report is None
+
+
+def test_load_frontend_passes_the_days_of_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(chat, "_build_web", lambda cfg, **kw: WebShadow())
+    for block, days in (({}, 7), ({"backfill_days": 2}, 2.0), ({"backfill_days": 0}, 0.0),
+                        ({"backfill_days": "soon"}, 7)):
+        ea_dir = tmp_path / f"d{len(list(tmp_path.iterdir()))}"
+        fe = chat.load_frontend(ea_dir=_ea_dir(ea_dir, {"frontend": "memory", "shadow": "web",
+                                                        "web": block}), env={})
+        assert fe.backfill_days == days, block
