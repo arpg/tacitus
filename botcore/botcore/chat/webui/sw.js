@@ -21,6 +21,41 @@ self.addEventListener('activate', (event) => {
     .then(() => self.clients.claim()));
 });
 
+// A push from the bot (web_push.py): {title, body, url, tag}. One
+// notification per tag (a thread); a new one in the thread alerts again.
+self.addEventListener('push', (event) => {
+  let d = {};
+  try { d = event.data ? event.data.json() : {}; } catch { /* not JSON: the title alone */ }
+  event.waitUntil(self.registration.showNotification(String(d.title || 'Tacitus'), {
+    body: String(d.body || ''),
+    icon: new URL('icon-192.png', self.registration.scope).href,
+    tag: d.tag ? String(d.tag) : undefined,
+    renotify: Boolean(d.tag),
+    data: { url: String(d.url || '') },
+  }));
+});
+
+// A tap opens the app at the push's url, in a window already open if
+// there is one. Only a page of this app opens; anything else opens the app.
+function appUrl(raw) {
+  const scope = new URL(self.registration.scope);
+  try {
+    const url = new URL(raw || '', scope);
+    if (url.origin === scope.origin && url.pathname.startsWith(scope.pathname)) return url.href;
+  } catch { /* not a URL */ }
+  return scope.href;
+}
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = appUrl(event.notification.data && event.notification.data.url);
+  event.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) => {
+    const win = wins.find((w) => w.url.startsWith(self.registration.scope));
+    if (!win) return self.clients.openWindow(url);
+    return win.focus().then(() => win.navigate(url)).catch(() => {});
+  }));
+});
+
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);

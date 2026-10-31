@@ -48,7 +48,9 @@ The chat block (`~/.ea-private/chat.json` for owner processes, read by
 }
 ```
 
-`"frontend": "web"` with no `shadow` runs the web front end alone.
+`"frontend": "web"` with no `shadow` runs the web front end alone. An
+optional `push_subject` key (a `mailto:` or `https:` URL) is the contact
+the push services see (Notifications, below).
 `"shadow": "web"` with any primary wraps the primary in `ShadowFrontend`.
 `FRONTENDS` in `preprocessor/chat/__init__.py` gains `"web"`.
 `get_chat` defaults every `web` key (port 8470, base_path `/chat`, bind
@@ -119,7 +121,7 @@ subset and escapes everything else; it never injects HTML from text.
 
 | Verb | Path | Body / result |
 |---|---|---|
-| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ...}` |
+| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool}` |
 | GET | `/api/channels` | `[{"id","name","kind","archived","last_at","unread"}]` |
 | GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count` and `last_at` |
 | GET | `/api/channels/{ch}/threads/{thread_key}` | the thread, oldest first, parent first |
@@ -129,6 +131,9 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/cards/{ch}/{id}/actions` | `{"action_id", "value"?, "selected"?}` → `{"ok": true}`; dispatches an `ActionEvent` (`source` `button` or `select`) |
 | GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row); a `: ping` comment every 20 s |
 | POST | `/api/pair` | `{"token"}` → sets the cookie |
+| GET | `/api/push/vapid` | `{"key": "<base64url P-256 point>"}`, the `applicationServerKey`; 404 when push is off |
+| POST | `/api/push/subscribe` | the browser's `PushSubscription.toJSON()` → `{"ok": true}` |
+| POST | `/api/push/unsubscribe` | `{"endpoint"}` → `{"ok": true, "removed": bool}` |
 
 Channel ids in URLs are URL-encoded (Zulip ids carry characters). A
 thread_key is likewise encoded.
@@ -378,7 +383,9 @@ already replaced by its status line is a 400.
 pairing token file (mode 0600) when there is none. The cookie's `Path`
 is `base_path`. A POST whose `Origin` is not the request's host (or
 `public_url`'s, or a loopback proxy's `X-Forwarded-Host`) is a 401.
-Errors are 400, 401 and 404, and 500 for an unexpected failure.
+Errors are 400, 401 and 404, 403 for a push subscription from a device
+paired on the relay's origin (Notifications, below), and 500 for an
+unexpected failure.
 
 **Event stream.** The stream opens with `retry: 3000`. With neither
 `Last-Event-ID` nor `since` it sends only new events; with both,
@@ -446,3 +453,82 @@ the prompts use it as an adjective ("a real-time {platform} message").
   `history` column gains it on open, its rows all live ones.
 - `stop()` stops the server and the tail thread and closes the open
   streams; `url` is the loopback URL with the base path.
+
+## Notifications (Web Push)
+
+`botcore/botcore/chat/web_push.py` sends a notification to every browser
+that turned on the drawer's **Notifications** toggle, also with the app
+closed. It needs the `cryptography` package (installed with msal); without
+it `/api/me` says `"push": false`, the app hides the toggle and nothing
+else changes. No other dependency.
+
+**What is pushed.** A new card (`post_card`, or `mirror_card` for a row
+not stored yet), at urgency `high`: the card's title, and its first line
+(a line of the card, else its first field as `Label: value`, else the
+body). A new bot message in a `dm` channel (`post`, or `mirror_post` for
+a new row by the bot), at urgency `normal`: "Tacitus" and the first line
+of the text. A loud alert: `chat.direct.web_notify` (alert.py, next to
+the direct message, and page_watch.py) at urgency `high`. Edits, card
+updates, status lines, reactions and the owner's own messages are never
+pushed. The text loses its emoji shortcodes and Markdown marks
+(`web_push.plain_line`); the title is at most 120 characters and the body
+240.
+
+**Payload.** JSON `{"title", "body", "url", "tag"}`, encrypted to the
+subscription (RFC 8291, `aes128gcm` of RFC 8188, one 4096-byte record).
+`url` is the message's web permalink; `tag` is `<channel>/<thread key>`,
+so the device keeps one notification per thread and a new one alerts
+again. TTL is one hour.
+
+**Rate.** At most one push per thread in 30 seconds, counted apart for
+`high` urgency, so a card is never held back by a message push in its
+thread (`Pusher.notify`).
+
+**VAPID.** The key pair (P-256) is made on first use in
+`<store dir>/webchat-vapid.json`, mode 0600; when two processes race, the
+first file stands. Each push carries `Authorization: vapid t=<ES256 JWT>,
+k=<public key>`; the JWT's `aud` is the endpoint's origin, `exp` twelve
+hours ahead, `sub` the web block's optional `push_subject` (a `mailto:`
+or `https:` URL), else the project's URL, so the tailnet host name does
+not go to the push services. A replaced key file breaks the browsers'
+subscriptions: the app drops one made with another key at start, and the
+owner turns the toggle on again.
+
+**Subscriptions.** The `push_subscriptions` table (`endpoint` primary
+key, `keys` JSON, `created_at`, `last_ok`, `failures`), at most 20 (the
+ones longest without a delivery go first). `subscribe` takes only an
+https endpoint on a known push service (`web_push.PUSH_HOSTS`: Google,
+Mozilla, Apple, Microsoft), with a P-256 key and a 16-byte auth secret;
+the bot follows no redirect, so a browser cannot steer it to another
+host. A request the relay marks `X-Tacitus-Relay-Cards: deny` (a device
+paired through the relay's origin below `"all"`) is refused with 403: the
+relay serves that page's code, and a subscription outlives the pairing.
+On sending, 404 and 410 drop the subscription, 429 holds that endpoint
+for its `Retry-After` (60 s by default), and any other failure raises
+`failures` and is logged with the host only, never the endpoint path.
+
+**Sending.** `WebFrontend.notify(title, body, url, tag, *, urgency, at,
+wait)` never raises. The push worker thread (`start()` starts it,
+`stop()` ends it) sends queued pushes. `at`, a Unix time ahead, puts the
+push in the `push_queue` table under its tag (a later one with the same
+tag replaces it; `cancel_notify(tag)` drops it); the worker looks every
+15 seconds, claims due rows in one transaction, and drops one more than
+the TTL late. `wait=True` sends before returning: alert.py's process
+builds the web front end (`chat.load_web_frontend`, not started) and
+sends or queues through it, and does nothing when the chat block runs no
+web front end or its store does not exist. A queued alert therefore goes
+out while the bot runs; the Zulip direct message, held by the Zulip
+server, does not need the bot.
+
+**The app.** The toggle sits at the foot of the channel drawer and shows
+once `/api/me` says `push`. Turning it on calls
+`pushManager.subscribe({userVisibleOnly: true, applicationServerKey})`
+straight from the tap (Safari asks for the permission only then) and
+posts the subscription; off unsubscribes on both sides. At start the app
+posts a subscription the browser already holds, so a reset store learns
+it again. iOS delivers Web Push only to the app added to the Home Screen:
+where `navigator.standalone` is `false` (iOS Safari) the drawer says so.
+`sw.js` shows each push (`showNotification` with the title, body, icon,
+tag and `data.url`) and on a tap focuses an open window of the app and
+navigates it to the url, else opens one; a url outside the app's scope
+opens the app's start page.
