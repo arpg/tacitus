@@ -593,6 +593,28 @@ def test_api_needs_the_owner_and_static_files_do_not(tmp_path):
         f.stop()
 
 
+def test_the_shipped_app_installs_from_the_base_path(tmp_path):
+    """The shipped app's manifest and Home Screen icons answer beside
+    index.html under the base path, with the types a phone installs from;
+    the manifest's scope and start page are relative to it, so the base path."""
+    f = as_tailscaled(WebFrontend.from_config({"port": 0, "tailscale_login": LOGIN, "public_url": PUBLIC_URL},
+                                              store_path=tmp_path / "priv" / "webchat.sqlite",
+                                              trusted_config=True))
+    f.start()
+    try:
+        status, _h, body = call(f, "GET", "/")
+        assert status == 200 and b'href="manifest.webmanifest"' in body and b'href="icon-180.png"' in body
+        status, h, body = call(f, "GET", "/manifest.webmanifest")
+        assert status == 200 and h["Content-Type"] == "application/manifest+json"
+        man = json.loads(body)
+        assert man["scope"] == man["start_url"] == "./"
+        for name in ("icon-180.png", *(i["src"] for i in man["icons"] if i["type"] == "image/png")):
+            status, h, _b = call(f, "GET", "/" + name)
+            assert status == 200 and h["Content-Type"] == "image/png", name
+    finally:
+        f.stop()
+
+
 def test_pairing_sets_the_cookie(tmp_path):
     f = make(tmp_path, tailscale_login="", public_url="https://host.example.test/chat")
     f.start()

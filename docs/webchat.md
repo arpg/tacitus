@@ -407,6 +407,30 @@ Dark and light from `prefers-color-scheme`. Keep the whole app under
 ~2,500 lines with the relay transport and the QR encoder; readable by one
 maintainer.
 
+Installing on a phone. The manifest (`display: standalone`, `scope` and
+`start_url` `./`, so the base path with its slash, since the page links
+the manifest by relative path) names 192 and 512 icons and a maskable 512
+whose glyph keeps inside the 40% safe circle; `apple-touch-icon` is an
+opaque 180×180 PNG. The head carries the `apple-mobile-web-app-*` tags
+(status bar style `default`, so the clock stays readable in both themes),
+a `theme-color` per scheme matching the header, and a viewport with
+`viewport-fit=cover` and `interactive-widget=resizes-content`. Headers,
+the drawer, the lists and the composer pad by `env(safe-area-inset-*)`.
+There are no startup images: `app.css`, the first stylesheet, paints the
+background before anything else (inline style is outside the CSP), and
+the manifest's `background_color` is the dark theme's. Outside the
+installed app (`navigator.standalone` false on iOS, `display-mode:
+browser` elsewhere) a line at the drawer's foot says how to install: on
+iOS Share, then Add to Home Screen; in Chrome an Install button for its
+`beforeinstallprompt`. Hiding it lasts 30 days; the time it was hidden
+is the app's only use of `localStorage`. A link to a route of this app
+(`<base>/#/...`, absolute or relative) opens in it; any other keeps
+`target="_blank"`, so the installed app hands it to the browser. On iOS
+the keyboard shrinks only the visual viewport: the app sets its height
+from `visualViewport` (not while zoomed in) and keeps the thread at its
+newest message while the pane shrinks. The page does not overscroll, so
+no pull-to-refresh.
+
 ## Implementation notes (A)
 
 What `botcore/botcore/chat/web_frontend.py` does where the contract
@@ -622,8 +646,10 @@ straight from the tap (Safari asks for the permission only then) and
 posts the subscription; off unsubscribes on both sides. At start the app
 posts a subscription the browser already holds, so a reset store learns
 it again. iOS delivers Web Push only to the app added to the Home Screen:
-where `navigator.standalone` is `false` (iOS Safari) the drawer says so.
-`sw.js` shows each push (`showNotification` with the title, body, icon,
-tag and `data.url`) and on a tap focuses an open window of the app and
-navigates it to the url, else opens one; a url outside the app's scope
-opens the app's start page.
+where `navigator.standalone` is `false` (iOS Safari) the drawer's install
+line says so. `sw.js` shows each push (`showNotification` with the title,
+body, icon, tag and `data.url`) and on a tap focuses the app's window last
+in front and navigates it to the url, else opens one; a window that
+`navigate()` cannot move gets `{open: url}` as a message and routes to it
+when it is one of the app's routes. A url outside the app's scope opens the
+app's start page.

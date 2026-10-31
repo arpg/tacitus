@@ -17,6 +17,7 @@ import re
 import struct
 import sys
 import time
+import zlib
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -25,7 +26,7 @@ import pytest
 TESTS = Path(__file__).resolve().parent
 WEBUI = TESTS.parent / "botcore" / "botcore" / "chat" / "webui"
 FILES = ["index.html", "app.js", "qr.js", "app.css", "manifest.webmanifest", "sw.js",
-         "icon-192.png", "icon-512.png", "favicon.svg"]
+         "icon-180.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png", "favicon.svg"]
 TEXT_FILES = ["index.html", "app.js", "qr.js", "app.css", "manifest.webmanifest", "sw.js"]
 sys.path.insert(0, str(TESTS))
 
@@ -64,6 +65,9 @@ def test_the_page_loads_its_files_by_relative_path():
     assert links["stylesheet"] == "app.css"
     assert links["manifest"] == "manifest.webmanifest"
     assert links["icon"] == "favicon.svg"
+    assert links["apple-touch-icon"] == "icon-180.png"
+    # The stylesheet comes first, so the first paint already has the app's background.
+    assert [a.get("rel") for t, a in tags if t in ("link", "script")][0] == "stylesheet"
     # Under the base path (/chat/) only a relative reference reaches the file.
     for _t, a in tags:
         for key in ("src", "href"):
@@ -84,9 +88,41 @@ def _png_size(path: Path) -> tuple[int, int]:
     return struct.unpack(">II", head[16:24])
 
 
+def _png(path: Path) -> tuple[int, int, int, list[bytes], list[bytes]]:
+    """(width, height, colour type, chunk types, pixel rows) of an 8-bit,
+    non-interlaced PNG, decoded with the standard library."""
+    data = path.read_bytes()
+    pos, idat, chunks, ihdr = 8, b"", [], ()
+    while pos < len(data):
+        n, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        chunks.append(kind)
+        if kind == b"IHDR":
+            ihdr = struct.unpack(">IIBBBBB", data[pos + 8:pos + 21])
+        elif kind == b"IDAT":
+            idat += data[pos + 8:pos + 8 + n]
+        pos += 12 + n
+    w, h, depth, ctype, _comp, _filt, interlace = ihdr
+    assert depth == 8 and interlace == 0 and ctype in (2, 6)
+    bpp = 3 if ctype == 2 else 4
+    raw, stride, rows, prev = zlib.decompress(idat), w * bpp, [], bytearray(w * bpp)
+    for y in range(h):
+        kind, line = raw[y * (stride + 1)], bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            a, b = line[i - bpp] if i >= bpp else 0, prev[i]
+            c = prev[i - bpp] if i >= bpp else 0
+            if kind == 4:
+                pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+                a = a if pa <= pb and pa <= pc else b if pb <= pc else c
+            line[i] = (line[i] + (0, a, b, (a + b) // 2, a)[kind]) & 255
+        rows.append(bytes(line))
+        prev = line
+    return w, h, ctype, chunks, rows
+
+
 def test_the_manifest_names_its_icons():
     man = json.loads(read("manifest.webmanifest"))
     assert man["name"] and man["short_name"]
+    # Relative to the manifest, which the page links by relative path: the base path, with its slash.
     assert man["start_url"] == "./" and man["scope"] == "./"
     assert man["display"] == "standalone"
     sizes = set()
@@ -97,6 +133,63 @@ def test_the_manifest_names_its_icons():
             assert icon["sizes"] == f"{w}x{h}"
             sizes.add(w)
     assert {192, 512} <= sizes
+    masks = [i for i in man["icons"] if i["purpose"] == "maskable"]
+    assert [(i["src"], i["sizes"]) for i in masks] == [("icon-maskable-512.png", "512x512")]
+    # The splash's colour is the dark theme's background; the theme colour, its header.
+    css = read("app.css")
+    dark = css[css.index("@media (prefers-color-scheme: dark)"):]
+    assert f"--bg: {man['background_color']};" in dark and f"--panel: {man['theme_color']};" in dark
+
+
+def test_the_home_screen_icons_are_opaque_and_the_maskable_one_padded():
+    blue = (44, 100, 214)
+    w, h, ctype, chunks, rows = _png(WEBUI / "icon-180.png")
+    assert (w, h) == (180, 180) and ctype == 2 and b"tRNS" not in chunks  # iOS shows no alpha
+    assert tuple(rows[0][:3]) == blue and tuple(rows[-1][-3:]) == blue
+    w, h, ctype, chunks, rows = _png(WEBUI / "icon-maskable-512.png")
+    assert (w, h) == (512, 512) and ctype == 2 and b"tRNS" not in chunks
+    outside, glyph = [], 0
+    for y, row in enumerate(rows):
+        for x in range(w):
+            px = tuple(row[3 * x:3 * x + 3])
+            if px == (255, 255, 255):
+                glyph += 1
+            if (x + .5 - w / 2) ** 2 + (y + .5 - h / 2) ** 2 > (.4 * w) ** 2 and px != blue:
+                outside.append((x, y))
+    # The glyph sits inside the safe zone, the circle of radius 40% that every mask keeps.
+    assert glyph > 10000 and not outside, outside[:5]
+
+
+def test_the_head_makes_an_installable_app():
+    metas = {(a.get("name"), a.get("media")): a.get("content") for t, a in refs() if t == "meta" and a.get("name")}
+    viewport = {k.strip() for k in metas[("viewport", None)].split(",")}
+    assert {"viewport-fit=cover", "interactive-widget=resizes-content", "initial-scale=1"} <= viewport
+    assert not {k for k in viewport if k.startswith(("maximum-scale", "user-scalable"))}, "zoom stays on"
+    assert metas[("apple-mobile-web-app-capable", None)] == "yes"
+    assert metas[("mobile-web-app-capable", None)] == "yes"
+    assert metas[("apple-mobile-web-app-status-bar-style", None)] == "default"
+    assert metas[("apple-mobile-web-app-title", None)] == "Tacitus"
+    # The browser's bar matches the app's header (--panel) in each theme.
+    css = read("app.css")
+    light, dark = css[:css.index("@media (prefers-color-scheme: dark)")], css[css.index("@media (prefers-color-scheme: dark)"):]
+    assert f"--panel: {metas[('theme-color', '(prefers-color-scheme: light)')]};" in light
+    assert f"--panel: {metas[('theme-color', '(prefers-color-scheme: dark)')]};" in dark
+
+
+def test_the_layout_keeps_clear_of_the_notch_and_the_home_indicator():
+    css = read("app.css")
+
+    def rule(selector):  # every block of the selector, the media queries' too
+        return " ".join(re.findall(r"(?m)^\s*" + re.escape(selector) + r" \{([^}]*)\}", css))
+    assert "env(safe-area-inset-top)" in rule(".bar")  # every header: the drawer's, the lists', the thread's
+    assert "env(safe-area-inset-bottom)" in rule("#composer")
+    assert "env(safe-area-inset-bottom)" in rule("#drawer-foot")
+    assert "env(safe-area-inset-bottom)" in rule("#channel-list, #thread-list")
+    assert "env(safe-area-inset-left)" in rule("#channels") and "env(safe-area-inset-right)" in rule("body")
+    assert "height: var(--app-h, 100dvh)" in rule("body")
+    assert "background: var(--bg)" in rule("html") and "-webkit-tap-highlight-color: transparent" in rule("html")
+    assert "overscroll-behavior: none" in rule("html, body")  # no pull-to-refresh, no bounce of the page
+    assert "overscroll-behavior: contain" in rule(".scroll")  # the thread pane scrolls itself only
 
 
 def test_the_service_worker_never_caches_the_api():
@@ -115,16 +208,16 @@ def test_the_service_worker_never_caches_the_api():
 
 
 def test_the_drawer_has_the_notifications_toggle():
-    """A checkbox in the channel drawer turns Web Push on; the iOS hint sits
-    beside it. A headless browser cannot grant push, so these are file
-    checks."""
+    """A checkbox in the channel drawer turns Web Push on; on iOS the install
+    line beside it says how notifications come. A headless browser cannot
+    grant push, so these are file checks."""
     html = read("index.html")
     nav = html[html.index('<nav id="channels"'):html.index("</nav>")]
     toggle = re.search(r'<label class="toggle" id="notify-row" hidden><input type="checkbox" id="notify">', nav)
-    assert toggle and 'id="notify-hint"' in nav and "Add to Home Screen" in nav
-    assert re.search(r'<footer id="drawer-foot" hidden>', nav), "hidden until the server offers push"
+    assert toggle and '<div id="install" class="install" hidden>' in nav and "notify-hint" not in html
+    assert re.search(r'<footer id="drawer-foot" hidden>', nav), "hidden until it has something to show"
     js = read("app.js")
-    assert "S.me.push" in js and "navigator.standalone !== false" in js
+    assert "S.me.push" in js and "Tap Share, then Add to Home Screen, so notifications work." in js
     assert "$('notify-row').hidden = false" in js
     assert "call('GET', '/push/vapid')" in js
     assert re.search(r"pushManager\.subscribe\(\{ userVisibleOnly: true, applicationServerKey: keyBytes\(key\) \}\)", js)
@@ -149,6 +242,8 @@ def test_the_service_worker_shows_pushes_and_opens_only_this_app():
     assert "event.notification.close()" in click
     assert "clients.matchAll" in click and "openWindow(url)" in click and ".focus()" in click
     assert "appUrl(event.notification.data" in click
+    # a window navigate() cannot move routes itself from a message (app.js)
+    assert ".catch(() => win.postMessage({ open: url }))" in click
     app_url = sw[sw.index("function appUrl"):sw.index("self.addEventListener('notificationclick'")]
     assert "url.origin === scope.origin" in app_url and "startsWith(scope.pathname)" in app_url
     # a push never reads or writes the cache, and the fetch handler is unchanged
@@ -217,10 +312,12 @@ def app(browser, stub_factory):
     page errors and console errors (a CSP refusal among them)."""
     contexts = []
 
-    def open_app(viewport=None, **kw):
+    def open_app(viewport=None, init=None, **kw):
         url, stub = stub_factory(**kw)
         ctx = browser.new_context(viewport=viewport or {"width": 1280, "height": 800})
         contexts.append(ctx)
+        if init:
+            ctx.add_init_script(init)
         page = ctx.new_page()
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
@@ -479,6 +576,160 @@ def test_the_phone_layout_shows_one_pane(app):
     assert not errors, errors
 
 
+# -- installing on a phone -------------------------------------------------
+
+# navigator.standalone exists on iOS only: false in Safari, true in the app
+# opened from the Home Screen.
+IOS_SAFARI = "Object.defineProperty(Navigator.prototype, 'standalone', { get: () => false, configurable: true });"
+IOS_APP = "Object.defineProperty(Navigator.prototype, 'standalone', { get: () => true, configurable: true });"
+# Chrome's install offer, as a page sees it.
+FAKE_PROMPT = """() => {
+    window.__prompted = window.__prompted || 0;
+    const e = new Event('beforeinstallprompt', { cancelable: true });
+    e.prompt = () => { window.__prompted += 1; return Promise.resolve({ outcome: 'accepted' }); };
+    e.userChoice = Promise.resolve({ outcome: 'accepted', platform: 'web' });
+    dispatchEvent(e);
+    return e.defaultPrevented;
+}"""
+# iOS's keyboard shrinks the visual viewport and leaves the layout alone;
+# a stand-in visualViewport the test resizes.
+FAKE_VIEWPORT = """(() => {
+    const vv = new EventTarget();
+    Object.assign(vv, { width: 390, height: 844, scale: 1, offsetTop: 0, offsetLeft: 0, pageTop: 0, pageLeft: 0 });
+    Object.defineProperty(window, 'visualViewport', { get: () => vv, configurable: true });
+    window.__vv = vv;
+})();"""
+
+
+def test_ios_safari_shows_the_install_line_until_it_is_hidden(app):
+    from playwright.sync_api import expect
+    page, stub, errors = app(viewport={"width": 390, "height": 844}, init=IOS_SAFARI)
+    page.wait_for_selector(".thread-item")
+    page.click("#menu")
+    line = page.locator("#install")
+    expect(line).to_be_in_viewport()
+    expect(page.locator("#install-text")).to_have_text("Tap Share, then Add to Home Screen, so notifications work.")
+    expect(page.locator("#install-btn")).to_be_hidden()
+    page.click("#install-close")
+    expect(line).to_be_hidden()
+    expect(page.locator("#drawer-foot")).to_be_hidden()  # the stub offers no push and no relay
+    hidden_at = page.evaluate("Number(localStorage.getItem('tacitus-install-hidden'))")
+    assert abs(hidden_at / 1000 - time.time()) < 60
+    page.reload()
+    page.wait_for_selector(".thread-item")
+    expect(line).to_be_hidden()
+    # Thirty days on, it is back.
+    page.evaluate("localStorage.setItem('tacitus-install-hidden', String(Date.now() - 31 * 864e5))")
+    page.reload()
+    page.wait_for_selector(".thread-item")
+    expect(line).to_be_visible()
+    assert not errors, errors
+
+
+def test_the_installed_app_shows_no_install_line(app):
+    from playwright.sync_api import expect
+    page, stub, errors = app(init=IOS_APP)
+    page.wait_for_selector(".thread-item")
+    page.evaluate(FAKE_PROMPT)
+    expect(page.locator("#install")).to_be_hidden()
+    expect(page.locator("#drawer-foot")).to_be_hidden()
+    assert not errors, errors
+
+
+def test_chrome_offers_an_install_button(app):
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    line, button = page.locator("#install"), page.locator("#install-btn")
+    expect(line).to_be_hidden()  # not iOS, and no offer from the browser yet
+    assert page.evaluate(FAKE_PROMPT) is True  # the app's line replaces Chrome's own banner
+    expect(button).to_be_visible()
+    expect(page.locator("#install-text")).to_have_text("Install Tacitus as an app.")
+    button.click()
+    assert page.evaluate("window.__prompted") == 1
+    expect(line).to_be_hidden()
+    # A later offer shows the line again; hidden, it stays hidden.
+    page.evaluate(FAKE_PROMPT)
+    expect(button).to_be_visible()
+    page.click("#install-close")
+    expect(line).to_be_hidden()
+    page.evaluate(FAKE_PROMPT)
+    expect(line).to_be_hidden()
+    assert page.evaluate("window.__prompted") == 1
+    assert not errors, errors
+
+
+def test_permalinks_stay_in_the_app_and_other_links_open_outside(app):
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    base = page.url.split("#")[0]
+
+    def md(text):
+        return page.evaluate(
+            "(s) => { const d = document.createElement('div'); d.append(markdown(s)); return d.innerHTML; }", text)
+
+    assert md(f"[weekly]({base}#/stream%3A9) and [room](/chat/#/r1)") == (
+        f'<p><a href="{base}#/stream%3A9">weekly</a> and <a href="/chat/#/r1">room</a></p>')
+    # Another origin, and this origin's other paths (a stored file), open outside the app's window.
+    out = md(f"[file]({base}api/files/f1) [away](https://e.example/chat/#/x) {base}")
+    assert out.count('target="_blank" rel="noopener noreferrer"') == 3, out
+    page.evaluate("(s) => $('thread-list').prepend(markdown(s))", f"[weekly]({base}#/stream%3A9)")
+    page.click("#thread-list a:has-text('weekly')")
+    expect(page.locator(".chan.active .c-name")).to_have_text("ea")
+    assert len(page.context.pages) == 1
+    assert not errors, errors
+
+
+def test_a_tapped_notification_routes_the_open_window(app):
+    """sw.js posts the url to a window it cannot navigate; the page routes
+    to it when it is a route of this app and ignores anything else."""
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    base = page.url.split("#")[0]
+    post = "(u) => navigator.serviceWorker.dispatchEvent(new MessageEvent('message', { data: { open: u } }))"
+    for away in ("https://e.example/chat/#/stream%3A9", base + "api/files/f1#/stream%3A9", 42):
+        page.evaluate(post, away)
+    page.wait_for_timeout(100)
+    expect(page.locator(".chan.active .c-name")).to_have_text("Direct messages")
+    page.evaluate(post, base + "#/stream%3A9")
+    expect(page.locator(".chan.active .c-name")).to_have_text("ea")
+    assert page.url == base + "#/stream%3A9"
+    assert not errors, errors
+
+
+def test_the_composer_stays_above_the_keyboard(app):
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app(viewport={"width": 390, "height": 844}, init=FAKE_VIEWPORT)
+    open_thread(page, "Draft a reply")
+    tk = stub.messages[0]["thread_key"]
+    for i in range(25):
+        stub.emit_bot(W.DM, f"Line {i}", thread_key=tk)
+    expect(page.locator("#messages .msg:has-text('Line 24')")).to_be_in_viewport()
+    # The keyboard opens: the app takes the visual viewport's height, at the
+    # top, and the thread keeps its newest message in view.
+    page.evaluate("__vv.height = 470; __vv.dispatchEvent(new Event('resize'))")
+    expect(page.locator("body")).to_have_css("height", "470px")
+    box = page.locator("#composer").bounding_box()
+    assert box["y"] >= 0 and box["y"] + box["height"] <= 470
+    wait_for(lambda: page.evaluate("nearBottom()"))
+    # Zoomed in, the app keeps the layout's height.
+    page.evaluate("__vv.scale = 2; __vv.dispatchEvent(new Event('resize'))")
+    expect(page.locator("body")).to_have_css("height", "844px")
+    page.evaluate("__vv.scale = 1; __vv.dispatchEvent(new Event('resize'))")
+    expect(page.locator("body")).to_have_css("height", "470px")
+    # Read back up the thread, then send: the thread moves to the newest message.
+    page.evaluate("$('messages').scrollTop = 0")
+    wait_for(lambda: not page.evaluate("nearBottom()"))
+    page.fill("#text", "From the phone")
+    page.press("#text", "Enter")
+    expect(page.locator("#messages .msg.own:has-text('From the phone')")).to_be_in_viewport()
+    wait_for(lambda: page.evaluate("nearBottom()"))
+    assert not errors, errors
+
+
 def test_the_service_worker_caches_no_api_response(app):
     page, stub, errors = app()
     page.wait_for_selector(".thread-item")
@@ -507,7 +758,9 @@ VECTORS = TESTS / "fixtures" / "relay_vectors.json"
 
 def test_the_relay_keys_stay_in_webcrypto_and_indexeddb():
     js = read("app.js")
-    assert "localStorage" not in js and "sessionStorage" not in js
+    # Web Storage holds one thing: when this browser hid the install line.
+    assert "sessionStorage" not in js and js.count("localStorage") == 2
+    assert all(f"localStorage.{verb}(INSTALL_KEY" in js for verb in ("getItem", "setItem"))
     assert "indexedDB.open('tacitus-relay', 1)" in js
     # the device's private key is made non-extractable and never exported
     assert "generateKey({ name: 'X25519' }, false, ['deriveBits'])" in js

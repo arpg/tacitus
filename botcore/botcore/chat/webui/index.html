@@ -2,16 +2,20 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#15171b" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1d2026" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Tacitus">
 <meta name="referrer" content="no-referrer">
 <title>Tacitus</title>
+<link rel="stylesheet" href="app.css">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="icon-192.png">
-<link rel="stylesheet" href="app.css">
+<link rel="apple-touch-icon" href="icon-180.png" sizes="180x180">
 <script src="qr.js" defer></script>
 <script src="app.js" defer></script>
 </head>
@@ -26,7 +30,9 @@
   <footer id="drawer-foot" hidden>
     <label class="toggle" id="notify-row" hidden><input type="checkbox" id="notify"> Notifications</label>
     <ul id="push-subs" class="subs" aria-label="Browsers that get notifications"></ul>
-    <p id="notify-hint" class="hint" hidden>On iPhone and iPad, notifications reach only the installed app: tap Share, then Add to Home Screen, and open Tacitus from there.</p>
+    <div id="install" class="install" hidden><span id="install-text"></span>
+      <button type="button" id="install-btn" class="btn small primary" hidden>Install</button>
+      <button type="button" id="install-close" class="icon" aria-label="Hide for 30 days"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
     <button type="button" id="pair-phone" class="btn small" hidden>Pair a phone</button>
   </footer>
 </nav>
