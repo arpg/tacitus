@@ -1,0 +1,20 @@
+[Unit]
+Description=Tacitus web chat relay (frames only, never plaintext)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tacitus-relay
+Group=tacitus-relay
+ExecStart=/usr/bin/python3 /opt/tacitus-relay/relay_server.py --bind 127.0.0.1 --port 8471 --static /opt/tacitus-relay/webui --allow-file /etc/tacitus-relay/installs.txt
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/opt/tacitus-relay /etc/tacitus-relay
+
+[Install]
+WantedBy=multi-user.target

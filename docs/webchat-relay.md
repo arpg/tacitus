@@ -551,6 +551,13 @@ thousand online installs (one long-poll each, plus open phone streams);
 past that, the same protocol moves to an asyncio server with no change to
 bots or phones.
 
+`relay/install.sh` does steps 2, 3 and 6 on a host that has git and
+Python 3.9 or newer, as root and idempotently (`--install-id <id>` adds
+an install to the allow file; run it again after a release to update).
+`relay/snippets/nginx.conf` is the proxy block for step 1, under the path
+`/relay/` of an existing HTTPS vhost, so the relay URL is
+`https://<host>/relay`.
+
 Operator steps (the maintainer, for the hosted relay):
 
 1. A VM with a public DNS name, and Caddy (or nginx) for TLS in front of
