@@ -336,7 +336,12 @@ def test_the_token_host_origin_and_size_gates(start):
     assert c.call("POST", "/api/answers", raw=b"{}",
                   headers={"Content-Type": "text/plain"})[0] == 415
     big = json.dumps({"phase": "identity", "answers": {"bio-blurb": "x" * (70 << 10)}}).encode()
-    assert c.call("POST", "/api/answers", raw=big)[0] == 413
+    # The server refuses the body on its Content-Length before reading it;
+    # a client still sending may see the socket reset instead of the 413.
+    try:
+        assert c.call("POST", "/api/answers", raw=big)[0] == 413
+    except (ConnectionResetError, BrokenPipeError, http.client.RemoteDisconnected):
+        pass
     assert c.call("POST", "/api/answers", raw=b"[1]")[0] == 400
     assert c.call("GET", "/api/nothing")[0] == 404
     assert c.call("GET", "/../setup_web.py")[0] == 404
