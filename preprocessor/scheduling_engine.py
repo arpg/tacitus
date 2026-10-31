@@ -42,6 +42,7 @@ if __name__ == "__main__":
         forward_or_none("scheduling_engine", sys.argv[1:], transform=_id_handles.annotate_output)
 import graph_client as graph
 import google_calendar_client as gcal
+import availability
 import resident_io as _rio
 from sched_render import label_options
 
@@ -298,16 +299,30 @@ def _canned_schedule_detail(canned: dict, emails: list[str], start: datetime, en
 
 def _schedule_source() -> str:
     """What answered an attendee's free/busy, for the output."""
-    return "canned calendar" if _canned() is not None else "Graph getSchedule"
+    return "canned calendar" if _canned() is not None else availability.source_label()
+
+
+def _availability_mode() -> dict:
+    """{"provider", "mode"}: "invitee-picks" when the availability provider
+    reads no one else's calendar (availability.py, provider none). Every
+    internal attendee is then unchecked by design, the options come from
+    the user's calendars and what the thread states (offered times, a
+    booking link), and the reply offers them for the invitees to pick."""
+    if _canned() is not None:
+        return {"provider": "canned", "mode": "checked"}
+    return availability.mode()
 
 
 def _schedule_detail(emails: list[str], start: datetime, end: datetime,
                      interval_minutes: int = 15) -> dict:
-    """Attendee free/busy: the fixture in canned mode, else Graph getSchedule."""
+    """Attendee free/busy: the fixture in canned mode, else the
+    availability provider (availability.py; Graph getSchedule by default,
+    through graph_client's fetch)."""
     canned = _canned()
     if canned is not None:
         return _canned_schedule_detail(canned, emails, start, end, interval_minutes)
-    return graph.get_schedule_detail(emails, start, end, interval_minutes=interval_minutes)
+    return availability.schedule_detail(emails, start, end, interval_minutes,
+                                        fetch=graph.get_schedule_detail)
 
 
 def _fetch_all_events(days_ahead: int = 14) -> tuple[list, list]:
@@ -1398,6 +1413,7 @@ def cmd_check_attendees(args):
         # and the non-free runs as local times.
         "attendees": attendees,
         "all_attendees_free": all_attendees_free,
+        "availability": _availability_mode(),
         # The user's OWN events overlapping the window, ids included. One of
         # these is usually the meeting being asked about: pass its id to
         # --ignore-event to treat it as free, here or in the other verbs.
@@ -2580,7 +2596,14 @@ def cmd_propose_meeting(args):
             opt["notes"] = ". ".join(
                 p for p in (opt.get("notes", ""), f"WARNING: {fetch_warning}") if p)
     not_read = slot_info.get("unchecked_attendees") or {}
-    if not_read:
+    avail_mode = _availability_mode()
+    if not_read and avail_mode["mode"] == "invitee-picks":
+        # Provider none: no one's calendar was asked for, by design.
+        warnings.append(
+            "No attendee calendar was read (availability provider none): these options "
+            "fit the user's calendars and what the thread states. Offer them and let "
+            + ", ".join(sorted(not_read)) + " pick, or ask for a booking link.")
+    elif not_read:
         # Treated as unknown, not free: say so beside every option.
         warnings.append(
             "Could not read the calendar of " + ", ".join(sorted(not_read))
@@ -2610,6 +2633,9 @@ def cmd_propose_meeting(args):
         # classified "unknown" -- see skills/scheduling-rules.md.
         "all_day_events": slot_info.get("all_day_events", []),
         "attendees_checked": attendees_checked,
+        # Whose free/busy could be read at all: mode "invitee-picks" means
+        # none was (availability provider none), so the options are offers.
+        "availability": avail_mode,
         # The user's own events treated as free this solve (--ignore-event),
         # and any id that matched nothing.
         "ignored_events": slot_info.get("ignored_events", []),

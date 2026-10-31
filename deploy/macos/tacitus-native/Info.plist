@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>org.ea-system.tacitus-native</string>
+    <key>CFBundleName</key>
+    <string>tacitus-native</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Tacitus reads your calendars to find meeting times and adds the holds and events you approve.</string>
+    <key>NSContactsUsageDescription</key>
+    <string>Tacitus looks up the address of a person you name.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Tacitus reads your mail in Mail and saves drafts there. It sends a message only after you click Send.</string>
+</dict>
+</plist>

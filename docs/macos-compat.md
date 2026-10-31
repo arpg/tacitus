@@ -6,6 +6,11 @@ The EA system was built for Linux (Ubuntu/Debian). This document records the
 friction points discovered during the first macOS install and what was done about
 each one.
 
+A Mac can also skip the Graph and Google app registrations and use the
+accounts in System Settings > Internet Accounts, through EventKit and
+Mail.app: [macos-native-accounts.md](macos-native-accounts.md) (a design
+with a prototype; not yet run on a Mac).
+
 ---
 
 ## What the code now handles automatically

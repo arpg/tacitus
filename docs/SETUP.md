@@ -1367,6 +1367,7 @@ accounts (`docs/install-testing.md`).
 | `auth: msal_token_cache.json`, `auth: graph token source` | [Microsoft Graph app registration](#microsoft-graph-app-registration) |
 | `auth: google tokens`, `EA-Managed calendar`, `EA-Managed calendar (owner copy)` | [Google OAuth app](#google-oauth-app), [The EA-Managed calendar](#the-ea-managed-calendar) |
 | `auth: scheduled-send-hmac.key`, `owner trust: scheduled-send key` | [The deferred-send signing key](#the-deferred-send-signing-key) |
+| `native accounts*`, `auth: graph and google tokens` | [macos-native-accounts.md](macos-native-accounts.md) (a Mac on the native backend) |
 | `install overlay: rendered`, `install overlay: in the lanes' tree` | [The install overlay](#the-install-overlay) |
 | `systemd`, `service: <unit>`, `hardening: *` | [Services](#services), [Hardening](#hardening) |
 | `owner trust: *` | [Hardening](#hardening) (`owner_trust.py seed`) |

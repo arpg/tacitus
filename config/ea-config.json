@@ -55,6 +55,16 @@
     }
   },
   "routing_note": "Model routing (preprocessor/model_routing.py, docs/llm-lanes.md section 1.1): which model does each task. local is the owner's own endpoint in remote-llm.json, hosted is Claude, auto keeps the remote-LLM switches and the tiers block as they are. review (the still-open check, the nightly reconcile, the scheduling backstop) is hosted only: the stakes floor. mail and tagging take hosted only while the keep list is empty: the keep floor. Owner processes read only ~/.ea-private/routing.json, which the web chat's Settings screen and `model_routing.py set` write; this copy shapes what the EA shows, since this file is the EA user's to write.",
+  "mail": {
+    "backend": "graph"
+  },
+  "calendar": {
+    "backend": "graph"
+  },
+  "availability": {
+    "provider": "graph"
+  },
+  "backends_note": "Where mail, calendars and other people's free/busy come from (ea_config.get_backends; docs/macos-native-accounts.md). mail.backend: graph (Outlook through Microsoft Graph, with any Gmail accounts beside it), gmail, or macos (the accounts in the Mac's Internet Accounts, through Mail.app; no app registration). calendar.backend: graph (Outlook plus the Google accounts in scheduling-preferences.json), google, or macos (every calendar EventKit sees). availability.provider, a choice apart from both: graph (Graph getSchedule on a registration's token), owa (the same call on the outlook-web-auth plugin's token) or none (no colleague's calendar is read; the solver offers times and the invitees pick). The recommended Mac setting is macos, macos and owa. On a Mac the owner-private native-accounts.json, which also names the accounts, mailboxes and calendars the EA sees, outranks these values for owner processes.",
   "room_reply_check": true,
   "room_reply_check_note": "Project rooms only. After a turn, a reply that states an item's status with no ledger or mail read behind it, or that says something does not exist, goes back to its own session once with the sentences to verify; the second pass returns the reply to post. Each bounce is logged to ~/.ea/logs/reply-check.jsonl. false switches the pass off.",
   "chat": {
