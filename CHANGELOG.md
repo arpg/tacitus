@@ -6,6 +6,14 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The sign-in listener waits for its own redirect.** The loopback
+  listener of the Graph sign-in took the first request it got, from any
+  local process, and one idle connection held it past its timeout. It
+  now answers only a GET to the redirect's path with the flow's `state`
+  (anything else gets a 400, noted once), reads connections side by side
+  with five seconds each, and binds `::1` beside `127.0.0.1`. A bad port
+  in `GRAPH_REDIRECT_URI` is a clear error that falls back to the device
+  code.
 - **The keep floor covers the admissions rule and the digests.** The
   routing table's keep floor counted only listed domains and addresses;
   it now counts the admissions rule (on unless set false) too, and holds

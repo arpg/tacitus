@@ -55,7 +55,14 @@ The sign-in (`graph_client._published_seed`): MSAL's
 `initiate_auth_code_flow` makes the PKCE verifier and challenge
 (`msal/oauth2cli/oauth2.py`), the code prints the link and opens a
 browser, a listener on `localhost:8400` catches the redirect, and MSAL
-redeems the code with the verifier and no secret [M5]. When no browser
+redeems the code with the verifier and no secret [M5]. The listener binds
+both `127.0.0.1` and `::1`, so no other local process holds the family
+a browser may resolve `localhost` to; it answers any request other than
+the redirect with the flow's `state` with a 400 and keeps waiting, and
+gives each connection five seconds, so neither a stray request nor an
+idle connection ends or stalls the sign-in. A `GRAPH_REDIRECT_URI` whose
+port is not one ends the browser attempt with that error, and the
+device code follows. When no browser
 can reach the machine (Linux with no display, a Mac or WSL over SSH,
 `GRAPH_AUTH_METHOD=device_code`), it prints a device code instead [M5];
 a browser sign-in that sees no redirect within five minutes falls back
