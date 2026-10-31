@@ -854,8 +854,46 @@ def _graph_auth_sources() -> list[str]:
         return []
 
 
+def _backends(ea_dir: Path) -> dict:
+    """mail.backend, calendar.backend and availability.provider as an owner
+    process reads them (native_accounts.backends)."""
+    try:
+        import native_accounts
+        return native_accounts.backends(ea_dir / "config" / "ea-config.json")
+    except Exception:
+        return {"mail": "graph", "calendar": "graph", "availability": "graph"}
+
+
+def check_native_accounts(ea_dir: Path) -> None:
+    """The macOS native-accounts backend (docs/macos-native-accounts.md): one
+    PASS row when no backend is macos; else the helper agent, its three
+    permissions, the Mail accounts and calendars the scope names, and the
+    availability provider."""
+    try:
+        import native_accounts
+        rows = native_accounts.doctor_rows(
+            config_path=ea_dir / "config" / "ea-config.json",
+            scope_file=_private_dir() / native_accounts.SCOPE_FILE)
+    except Exception as e:
+        warn("native accounts (macOS)", f"check failed: {e}")
+        return
+    for r in rows:
+        rec(r["status"], r["name"], r["detail"], r["fix"])
+
+
 def check_auth(ea_dir: Path):
     auth = ea_dir / "auth"
+    b = _backends(ea_dir)
+    if b["mail"] == "macos" and b["calendar"] == "macos" and b["availability"] != "graph":
+        # Mail and calendars come through the Mac's own accounts, and other
+        # people's free/busy through the outlook-web-auth token or nowhere:
+        # no Graph or Google token is needed (check_native_accounts).
+        ok("auth: graph and google tokens",
+           f"not needed (mail and calendar on macos, availability {b['availability']})")
+        key = auth / "scheduled-send-hmac.key"
+        (ok if key.exists() else warn)("auth: scheduled-send-hmac.key", "" if key.exists() else "missing",
+                                       "docs/SETUP.md 'The deferred-send signing key'")
+        return
     p = auth / "msal_token_cache.json"
     sources = [] if p.exists() else _graph_auth_sources()
     if sources:
@@ -1686,6 +1724,7 @@ def main() -> int:
             check_private(ea_dir)
         env = check_env(ea_dir)
         check_auth(ea_dir)
+        check_native_accounts(ea_dir)
         check_outlook_web_path(env)
         check_owner_trust(ea_dir)
         check_resident_trust(ea_dir)

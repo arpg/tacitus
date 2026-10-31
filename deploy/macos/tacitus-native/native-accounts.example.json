@@ -1,0 +1,24 @@
+{
+  "_doc": "The owner-private scope of the macOS native-accounts backend: copy to ~/.ea-private/native-accounts.json (mode 600) and edit. The EA sees only the Mail accounts, mailboxes and calendars named here. `python3 preprocessor/native_accounts.py accounts` and `... calendars` list what the Mac has. docs/macos-native-accounts.md, 'The scope file'.",
+  "backend": {"mail": "macos", "calendar": "macos", "availability": "owa"},
+  "mail": {
+    "accounts": [
+      {"name": "Work", "kind": "exchange", "addresses": ["you@example.edu"]},
+      {"name": "Personal", "kind": "gmail", "addresses": ["you@example.com"],
+       "search": ["INBOX", "[Gmail]/Sent Mail"]}
+    ],
+    "search_days": 90,
+    "search_body": true
+  },
+  "calendar": {
+    "calendars": [
+      {"id": "00000000-0000-0000-0000-000000000001", "title": "Calendar", "blocking": true, "write": true},
+      {"id": "00000000-0000-0000-0000-000000000002", "title": "EA-Managed", "blocking": true, "write": true},
+      {"id": "00000000-0000-0000-0000-000000000003", "title": "Family", "blocking": false, "write": false}
+    ],
+    "default": "00000000-0000-0000-0000-000000000001",
+    "ea_managed": "00000000-0000-0000-0000-000000000002",
+    "shared": {}
+  },
+  "contacts": {"enabled": true}
+}

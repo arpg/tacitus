@@ -139,6 +139,20 @@ DEFAULTS = {
                   "briefing": "auto", "audit": "auto", "scheduling": "auto", "chat": "auto",
                   "review": "hosted"},
     },
+    # Where mail and calendars come from (docs/macos-native-accounts.md).
+    # mail.backend: "graph" (Outlook through Microsoft Graph, with any
+    # Gmail accounts beside it), "gmail" (Gmail only) or "macos" (the
+    # accounts in the Mac's Internet Accounts, through Mail.app).
+    # calendar.backend: "graph" (Outlook, plus the Google accounts in
+    # scheduling-preferences.json), "google" (Google only) or "macos"
+    # (every calendar EventKit sees). availability.provider: whose
+    # free/busy the solver reads, apart from the two backends: "graph",
+    # "owa" (the outlook-web-auth plugin's token) or "none" (the invitees
+    # pick; availability.py). On a Mac the owner-private
+    # native-accounts.json outranks these values for owner processes.
+    "mail": {"backend": "graph"},
+    "calendar": {"backend": "graph"},
+    "availability": {"provider": "graph"},
     # Chat platform the bot and the notifier talk to: "slack" (the
     # default), "zulip", "web" (the bot's own web chat) or "memory"
     # (tests). The zulip block names the server, the bot, the owner and
@@ -491,6 +505,24 @@ def mail_tagger_model(config_path: Path | None = None) -> str:
     val = load(config_path).get("mail_tagger")
     model = val.get("model") if isinstance(val, dict) else None
     return model if isinstance(model, str) and model.strip() else DEFAULTS["mail_tagger"]["model"]
+
+
+BACKEND_CHOICES = {"mail": ("backend", ("graph", "gmail", "macos")),
+                   "calendar": ("backend", ("graph", "google", "macos")),
+                   "availability": ("provider", ("graph", "owa", "none"))}
+
+
+def get_backends(config_path: Path | None = None) -> dict:
+    """{"mail", "calendar", "availability"}: mail.backend, calendar.backend
+    and availability.provider, each its default when absent or unknown.
+    native_accounts.backends() lays the owner-private choice over these."""
+    cfg = load(config_path)
+    out = {}
+    for block, (key, choices) in BACKEND_CHOICES.items():
+        val = cfg.get(block)
+        val = val.get(key) if isinstance(val, dict) else None
+        out[block] = val if val in choices else DEFAULTS[block][key]
+    return out
 
 
 UPDATE_CHANNELS = ("auto", "latest", "stable", "off")

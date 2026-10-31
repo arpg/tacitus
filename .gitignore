@@ -30,3 +30,6 @@ CLAUDE.local.md
 # to ~/.ea-private by default, and an in-repo copy is never tracked.
 tests/fixtures/closure_corpus.real.json
 *.real.json
+
+# The macOS helper's build output (deploy/macos/tacitus-native/build.sh)
+deploy/macos/tacitus-native/build/

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The launch agent build.sh installs. It runs in the owner's login
+     session (Aqua): EventKit, Contacts and Apple events to Mail need that
+     session, which a LaunchDaemon such as the mail mediator does not have
+     (Apple TN2083). The program is the helper itself, so the permission
+     grants name tacitus-native, not Python or a terminal. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.ea-system.tacitus-native</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>@DEST@/tacitus-native</string>
+        <string>serve</string>
+        <string>--queue</string>
+        <string>@QUEUE@</string>
+    </array>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>StandardErrorPath</key>
+    <string>@OWNER_HOME@/.ea-private/logs/tacitus-native.log</string>
+</dict>
+</plist>
