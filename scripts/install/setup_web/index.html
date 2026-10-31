@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>Tacitus setup</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="setup.css">
+<script src="setup.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <span class="brand">Tacitus setup</span>
+  <span id="step" class="step"></span>
+</header>
+<main>
+  <p id="status" class="status" role="status" aria-live="polite"></p>
+  <form id="phase" novalidate hidden>
+    <h1 id="title"></h1>
+    <div id="intro" class="intro"></div>
+    <div id="fields"></div>
+    <p id="phase-error" class="err" role="alert" hidden></p>
+  </form>
+  <section id="finish" hidden>
+    <h1>The checklist</h1>
+    <p class="intro">The doctor checks the whole install. Before the steps below are done, most red rows are expected: each names its fix.</p>
+    <p id="summary" class="summary"></p>
+    <ul id="rows" class="rows"></ul>
+    <button type="button" id="again" class="btn">Run the checklist again</button>
+    <h2>What is left, in a terminal</h2>
+    <ol id="steps" class="steps"></ol>
+  </section>
+  <section id="bye" hidden>
+    <h1>The setup page has stopped</h1>
+    <p>You can close this tab. To change an answer later, run the page again: <code>python3 scripts/install/setup_web.py</code>.</p>
+  </section>
+</main>
+<footer id="nav" class="nav">
+  <button type="button" id="prev" class="btn">Previous</button>
+  <button type="button" id="next" class="btn primary">Next</button>
+</footer>
+</body>
+</html>

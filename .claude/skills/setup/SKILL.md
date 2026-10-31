@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Guided install of the EA system, the front door for a new user. Asks the profile first, then the account questions one screen at a time, writes the config, runs the service-account and cron installers, ends with the doctor's checklist green, and asks the first three preference questions.
+description: Guided install of the EA system, the front door for a new user. Offers the browser setup page first, or asks here: the profile first, then the account questions one screen at a time, writes the config, runs the service-account and cron installers, ends with the doctor's checklist green, and asks the first three preference questions.
 ---
 
 You are installing the EA system for the person in front of you. Work
@@ -73,14 +73,24 @@ keyboard fails there (Python's `input()` ends in EOFError). So:
   terminal in this directory, keep it for the install, and run them
   there. Give the exact line, wait for the user to say it is done, run
   the read-only check named with it, and go on only when it passes.
+- **The browser page, offered first.** Ask whether they would rather
+  answer on a setup page in a browser (recommended) or here. For the
+  page, run `python3 scripts/install/setup_web.py` with
+  `run_in_background` (`--bind <tailscale ip -4>` for a phone or laptop
+  on their tailnet) and give the user the printed address with its `#t=`
+  token, to them only. It asks sections 1, 2, 2b, 3's app values, 4's
+  calendars and the push, writes the same files and signs in to nothing
+  (docs/setup-web.md). After they press Done, run section 0 and go on.
 
 ## 0. Resume
 
 Before the first question, read what an earlier run left behind and
 skip every question it answered. Each section writes a value this list checks:
 
-- `~/.ea/config/ea-config.json` has `"profile"` and `"acknowledged"`:
-  section 1 is done; with the second missing, its notice is still owed.
+- `~/.ea/config/ea-config.json` has `"profile"` and `"acknowledged"`,
+  and `list-digests.json` is beside it (`setup.sh` ran): section 1 is
+  done. With the second missing, its notice is still owed; with only the
+  third missing (the browser page records the two), only its `setup.sh` run.
 - `~/.ea/config/user-profile.json` has a real `name` and `email` (no
   placeholder): section 2 is done; its `institution` block has
   `domains` and `video.platform`: 2b is done.

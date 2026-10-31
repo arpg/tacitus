@@ -38,6 +38,13 @@ tiers run on the fork's next push or when it is marked ready, or by hand
 from a copy of its head commit on a branch here
 (`.github/workflows/full-ci-label.yml` has the steps).
 
+The setup page (`scripts/install/setup_web.py`, docs/setup-web.md) is
+in the wall too (`tests/test_setup_web.py`): every phase posted to it
+writes, byte for byte and with the same modes, what `user_init.py
+--answers tests/install/answers-email.json --phase <p>` writes; its
+gates, its checks and, where Playwright and Chromium are installed, the
+page itself in a phone-sized browser are tested there.
+
 The front door, `install.sh`, is in the wall too (`tests/test_install_sh.py`):
 `bash -n`, `--check` on the host and on a bare PATH (git and python3
 reported missing, exit 1), and the whole pre-launch path with
@@ -131,11 +138,16 @@ required prompt with no default and no key stops the run and names the
 key. A yes/no answer is a JSON boolean or a string starting with `y`; a
 list answer is a JSON list or a comma-separated string; a loop
 (`groups`, `deadlines`) takes one entry from a file, since its prompts
-share their keys. Keys the run never asked for are listed at the end of
-a full run. The keys, by phase:
+share their keys. An answer that fails its check (an address, a mail
+domain, a time, a whole number, a timezone name, a choice, one line of
+text) stops the run and names the key. Keys the run never asked for are
+listed at the end of a full run. The questions, their keys, defaults
+and checks are data in `scripts/install/setup_questions.py`, which the
+setup page reads too. The keys, by phase:
 
 | Phase | Keys |
 |---|---|
+| profile | `profile` (`email`, `review-only`, `assistant`), `acknowledged` (only while `ea-config.json` records no acceptance; it must be yes); not in a full run, which leaves the profile to `scripts/install/setup.sh` |
 | identity | `full-name`, `work-email`, `role-description`, `department`, `university`, `office`, `slack-channel-name`, `bio-blurb`, `calendar-accounts`, `institution-name`, `institution-domains`, `institution-related-domains`, `institution-safety-rail-domain`, `video-platform`, `video-link` |
 | scheduling | `timezone`, `cluster-meetings`, `default-duration-minutes`, `vip-end-time`, `google-calendars` |
 | inbox | `inbox-zero`, `archive-as-completion`, `stale-thread-days` |
