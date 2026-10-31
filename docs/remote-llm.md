@@ -188,6 +188,9 @@ shadow` (and moves `shadow_until` for the latter).
 - All requests from every process share one lock, so the crons and the
   agent never stack calls on the server. A circuit breaker pauses calls
   after three failures in a row.
+- `<private_dir>/routing.json` (owner-only) is the routing table over
+  these switches: per task `local`, `hosted` or `auto`, with the stakes
+  and keep floors in code (`docs/llm-lanes.md` 1.1).
 
 ## The shadow run
 

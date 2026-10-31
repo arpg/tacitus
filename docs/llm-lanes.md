@@ -129,6 +129,71 @@ restart: every lane reads the file on each run or call, so the change
 applies to the next preprocessor run, the next draft, the next mediated
 read and the next digest.
 
+### 1.1 The routing table: one value per task
+
+The switches name parts of the code; the owner thinks in tasks. The
+routing table gives each task one value, and each lane asks it at the
+point where it already reads its switch (`preprocessor/model_routing.py`).
+
+| Value | Meaning |
+|---|---|
+| `local` | The local model (the endpoint in `remote-llm.json`) does the task. With no endpoint set up the task reads `hosted`, as `@local` does in chat. |
+| `hosted` | Claude does the task, whatever the switch says. |
+| `auto` | The switch and the tiers block decide, as before the table. Every task but `review` defaults to it, so an install with no table runs as it did. |
+
+| Task | What it does | Decision point | `local` | `hosted` | Floor |
+|---|---|---|---|---|---|
+| `mail` | reads each new message into a record | `remote_llm.mode("mail")` | `off` and `shadow` read `enforce`; `ghost` and `sealed` stay | the gate is off | keep |
+| `tagging` | Outlook categories | `mail_tagger._remote_mode` | the remote model tags | Claude Haiku tags | keep |
+| `drafting` | email bodies in the user's voice | `email_writer.writer_on`, `draft_ab.mode` | the writer (`remote`) | the `email-author` subagent | |
+| `digests` | list and admissions digests | `remote_digests.main` | the remote lane | the Claude lane | |
+| `briefing` | the morning briefing and the afternoon update | `remote_briefing.active` | the remote lane | the Claude lane | |
+| `audit` | the Sunday audit | `remote_audit.active` | the remote lane | the Claude lane | |
+| `scheduling` | the scheduling channel and the proactive scheduler | `model_tiers.resolve` (lanes `sched-channel`, `proactive`); `remote_llm.mode("scheduling")` | the lane's tier is `local` (the tool gateway, every write checked by the backstop); `enforce` still needs its ghost-week GO | the agent is off and the lane's local picks run on `opus` | stakes rule per message |
+| `chat` | turns in topics, rooms and the DM | `model_tiers.resolve` (lanes `main`, `dm`, `room`) | the lane's tier is `local` | a pick that would run on `local` runs on `opus` | stakes rule per message |
+| `review` | the briefing's still-open check, the nightly reconcile, the backstop on local scheduling writes, the hand-offs | `remote_briefing.audit_judge` | refused | always | stakes: hosted only |
+
+**The floors.** No value lowers them. *Stakes:* `review` is hosted only:
+a file that says otherwise reads `hosted`, and a save is refused. In chat
+and scheduling turns the stakes rule (`model_tiers.STAKES_RE`) sits over
+a `local` value as over any lane default, and the user's own `@local` tag
+stays the one exception. *Keep:* `mail` and `tagging` read every message
+in an owner process, so while `keep_from_anthropic` names a domain or an
+address, `hosted` there reads `auto` and a save is refused; the gate and
+the mediator's kept checks then keep that mail from every other task.
+
+**Precedence in chat.** A message tag, a topic pin and a topic name are
+the owner's own picks for one topic, and outrank the table. The table's
+`local` or `hosted` outranks `tiers.lanes`. `hosted` moves only a pick
+that would run on `local` (a lane default, the A/B draw, a local
+session); a room keeps its specialist's model.
+
+**Where it lives.** `<private dir>/routing.json` (0600), the only copy an
+owner process reads; without it every task is at its default. The
+`routing` block in `ea-config.json` is the template's copy and shapes
+only what the resident shows: that file is ea-bot's to write, and the
+table moves mail between models. A `routing.json` that fails the owner
+checks reads as the defaults, and the doctor's row FAILs.
+
+**Changing it.** The web chat's Settings screen (the drawer's foot: a
+row per task with Local, Hosted and Auto, the floor's line under a
+locked row, the local model's state at the top, Save), or as the owner:
+
+```text
+$ python3 /opt/ea-system/preprocessor/model_routing.py set drafting hosted
+{"task": "drafting", "value": "hosted"}
+$ python3 /opt/ea-system/preprocessor/model_routing.py show
+```
+
+Each change is one line in `routing-changes.jsonl` in the remote-LLM
+store. There is no restart: each lane reads the table on its next run or
+turn. The chat command `routing` prints the table with the model each
+task runs on now and why; the doctor's `model routing` row names the
+tasks on each model and the local model's state from its breaker and its
+last call (no call of its own; `remote_llm.py ping` makes one).
+`remote_llm.py switches` shows each switch's `effective` value with the
+table applied.
+
 ## 2. The lanes
 
 ### 2.1 The mail gate (`mail = enforce`)
@@ -1727,7 +1792,8 @@ Each row is independent. Turning back needs no code change and no restart.
 
 | File | Role |
 |---|---|
-| `preprocessor/remote_llm.py` | The switches (`switches`, `set_switch`), the client, the request slots and breakers |
+| `preprocessor/remote_llm.py` | The switches (`switches`, `set_switch`, `switch_mode`, and `mode` with the routing table applied), the client, the request slots and breakers |
+| `preprocessor/model_routing.py` | The routing table: each task's value (`choice`, `local`, `mail_mode`, `scheduling_mode`, `lane_route`), the floors, the local model's state (`local_status`), the Settings screen's data and save (`payload`, `save`, `WebSettings`), the doctor's row, `show` and `set` |
 | `preprocessor/mail_privacy.py` | The remote model's read of each message (`tick`, `process`); the mediator's kept checks (`release_precheck`, `release_filter`); sealed reads (`seal_output`); the thread brief (`thread_brief`, `sync_briefs`) |
 | `preprocessor/ledger.py` | `set_metadata`, the owner-side write of a row's `thread_brief` |
 | `preprocessor/sched_agent.py` | The scheduling agent: shadow turns (`enqueue_shadow`) and live turns (`run_live`, `live_write`, `thread_history`); the Claude backstop on live writes (`backstop_review`, `withdraw_writes`) |

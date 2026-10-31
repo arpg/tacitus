@@ -19,7 +19,11 @@ request asked to resume. `--pair-token T` makes every API route answer
 pairs only through its own copy of the app (a bot with no public_url, on
 this machine): /api/me says `relay`, `pairs` records each pairing,
 `devices` are the paired phones "Pair a phone" lists, and `approvals`
-records each Approve (with its `cards` choice).
+records each Approve (with its `cards` choice). The Settings screen reads
+`routing` (three made-up rows: one free, one under the keep floor, one
+under the stakes floor) and `settings_posts` records each Save; a value a
+row does not allow answers 400, as the bot's floors do. Only with
+`settings=True` does /api/me name the page.
 
 With `sign=True` (or `--sign`) it signs the app's files as the bot does
 (web_bundle, which needs the cryptography package) and serves the signed
@@ -60,6 +64,23 @@ STUB_BOT_PUBLIC = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"  # 32 bytes of 1
 STUB_CLIENT_KEY = "c" * 43
 STUB_BUNDLE = "b" * 64  # a made-up hash of the bot's signed app bundle, when it signs none
 WEEKLY = "stream:9:topic:weekly%20plan"
+ROUTING = {
+    "local": {"configured": True, "model": "local-27b", "reachable": True, "detail": "Answered 2 min ago."},
+    "source": "routing.json", "values": ["local", "hosted", "auto"],
+    "rows": [
+        {"task": "drafting", "label": "Email bodies", "what": "Writes email bodies in your voice from the brief.",
+         "value": "auto", "allowed": ["local", "hosted", "auto"], "locked": False, "floor": "",
+         "effective": "local", "why": "the drafting switch is remote"},
+        {"task": "mail", "label": "Read new mail", "what": "Reads each new message into a record.",
+         "value": "auto", "allowed": ["local", "auto"], "locked": False,
+         "floor": "Keep floor: hosted is not available while the keep list has entries.",
+         "effective": "local", "why": "the mail switch is enforce"},
+        {"task": "review", "label": "Judgment checks", "what": "Checks if briefing items are still open.",
+         "value": "hosted", "allowed": ["hosted"], "locked": True,
+         "floor": "Stakes floor: these are judgment calls, so only the hosted model does them.",
+         "effective": "hosted", "why": "the stakes floor"},
+    ],
+}
 
 
 def _b64(data: str | bytes) -> str:
@@ -71,8 +92,11 @@ class Stub:
     """The in-memory store: channels, messages, files and the event log."""
 
     def __init__(self, tick: float = 0.0, pair_token: str | None = None, echo: bool = True,
-                 sign: bool = False, relay_pairing: bool = False):
+                 sign: bool = False, relay_pairing: bool = False, settings: bool = False):
         self.cond = threading.Condition()
+        self.settings = settings
+        self.routing = json.loads(json.dumps(ROUTING))
+        self.settings_posts: list[dict] = []
         # The signed bundle of WEBUI (web_bundle.Bundle) when `sign`; the
         # bytes served in place of a file, by name.
         self.bundle = None
@@ -329,7 +353,10 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["me"]:
             return self._json(200, {"owner": "owner", "bot": "bot", "public_url": None,
                                     "bundle": s.bundle.hash if s.bundle else "",
+                                    "settings": ["routing"] if s.settings else [],
                                     **({"relay": True} if s.relay_pairing else {})})
+        if parts == ["settings", "routing"] and s.settings:
+            return self._json(200, s.routing)
         if parts == ["relay", "status"]:
             return self._json(200, {"enabled": True, "install_id": STUB_INSTALL, "connected": False,
                                     "relay_url": "https://relay.example.net",
@@ -397,6 +424,18 @@ class Handler(BaseHTTPRequestHandler):
                 tk = fields.get("thread_key", (None, b""))[1].decode() or None
                 ref = {"id": fid, "name": fname, "url": "", "mimetype": mime, "size": len(data)}
                 return self._json(200, s.post(parts[1], text, tk, file=ref))
+        if parts == ["settings", "routing"] and s.settings:
+            body = json.loads(self._body() or b"{}")
+            s.settings_posts.append(body)
+            rows = {r["task"]: r for r in s.routing["rows"]}
+            for task, value in (body.get("tasks") or {}).items():
+                if value not in rows[task]["allowed"]:
+                    return self._json(400, {"error": f"{task} is {rows[task]['allowed'][0]} only (the stakes floor)"})
+            for task, value in body["tasks"].items():
+                rows[task]["value"] = value
+                if value != "auto":
+                    rows[task].update(effective=value, why=f"set to {value}")
+            return self._json(200, {**s.routing, "saved": True})
         if parts == ["relay", "approve"] and s.relay_pairing:
             body = json.loads(self._body() or b"{}")
             s.approvals.append(body)

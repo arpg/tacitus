@@ -386,7 +386,7 @@ th { background: var(--code-bg); }
 
 /* pairing a phone: the code is dark on light in either scheme */
 
-#phone {
+#phone, #settings {
   width: min(calc(100% - 32px), 420px);
   max-height: calc(100dvh - 32px);
   padding: 20px;
@@ -396,14 +396,26 @@ th { background: var(--code-bg); }
   color: var(--text);
   box-shadow: var(--shadow);
 }
-#phone::backdrop { background: rgba(0, 0, 0, .45); }
-#phone form { display: grid; gap: 10px; }
-#phone h2, #phone h3, #phone p { margin: 0; }
-#phone h3 { font-size: 14px; color: var(--muted); }
+#phone::backdrop, #settings::backdrop { background: rgba(0, 0, 0, .45); }
+#phone form, #settings form { display: grid; gap: 10px; }
+#phone h2, #phone h3, #phone p, #settings h2, #settings h3, #settings p { margin: 0; }
+#phone h3, #settings h3 { font-size: 14px; color: var(--muted); }
 #phone-qr { width: 100%; max-width: 320px; justify-self: center; image-rendering: pixelated; background: #fff; }
 #phone-link { padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: 12px var(--mono); }
 #phone-devices { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 #phone-devices li { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#open-settings { margin-top: 8px; }
+#settings-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+#settings-rows li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; }
+#settings-rows p { grid-column: 1 / -1; font-size: 13px; color: var(--muted); }
+#settings-rows .s-floor { color: var(--text); border-left: 3px solid var(--warn); padding-left: 8px; }
+.s-name { font-weight: 600; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg label { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; font-size: 13px; cursor: pointer; }
+.seg label:has(input:checked) { background: var(--accent-soft); }
+.seg label:has(input:disabled) { opacity: .55; cursor: default; }
+.seg input { margin: 0; accent-color: var(--accent); }
+.settings-actions { display: flex; gap: 8px; }
 
 /* narrow: the channels in a drawer */
 
@@ -440,7 +452,7 @@ th { background: var(--code-bg); }
 }
 
 @media (pointer: coarse) { /* every control a finger presses is at least 44px high */
-  .btn, .btn.small, .card-actions select, .toggle, .chan { min-height: 44px; }
+  .btn, .btn.small, .card-actions select, .toggle, .chan, .seg label { min-height: 44px; }
   .archived summary, .card-quoted summary { padding-block: 13px; }
 }
 

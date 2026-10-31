@@ -472,6 +472,21 @@ wrote something and stopped gets a code-written reply. Full design,
 measures and pass levels: `docs/remote-llm.md`; the state of play and
 worked examples: `docs/llm-lanes.md`.
 
+One owner-private table sits over the switches: the routing table
+(`model_routing.py`, `docs/llm-lanes.md` 1.1). It gives each task
+(`mail`, `tagging`, `drafting`, `digests`, `briefing`, `audit`,
+`scheduling`, `chat`, `review`) `local`, `hosted` or `auto` (the switch
+decides, every task's default but `review`), and each lane asks it where
+it reads its switch: `remote_llm.mode` for the mail and scheduling
+parts, `local_for` in the writer, the digests, the briefings, the audit
+and the tagger, and `model_tiers.resolve` for the chat and scheduling
+lanes, where a topic's own tag, pin or name still outranks it. Two
+floors sit under it: `review` is hosted only, and `mail` and `tagging`
+take `hosted` only while the keep list is empty. The table is
+`<private_dir>/routing.json`, written by the web chat's Settings screen
+(`/api/settings/routing`) and `model_routing.py set`; owner processes
+never read the `routing` block in `ea-config.json`.
+
 Neither cutover is set blind. `mail = ghost` and `scheduling = shadow`
 open a dated week (`ghost_week.py`) in which every lane's mail read is
 sealed on the side and recorded, every scheduling turn is shadowed, and
@@ -2341,6 +2356,7 @@ Files that participate in prompt construction and action execution:
 | `preprocessor/mail_mediator.py` | owner-side service: holds the tokens, re-validates every request server-side, executes SAFE verbs with no shell |
 | `preprocessor/model_arms.py` | The model A/B: one arm per chat topic (`claude`, or `remote` = the same Claude Code harness on the on-prem model through the tool gateway), drawn by share inside a window and sticky; turns, draft sends and cancels (edit ratio) and calendar buttons scored per lane and arm; `which model` / `use claude` pins; a remote scheduling turn passes the Claude backstop before any button; the arm runs bare (`REMOTE_ARM_ARGS`: three tools, no CLAUDE.md or memory discovery) and Claude's redo runs on the lane prompt |
 | `ea-chat-bot.py` (model arms) | A then B on the scheduling channel: every new topic draws the on-prem arm (`model_arms.arm_for`, share 1.0), the turn runs on the gateway with the compact prompt, and Claude reviews every scheduling turn it takes (`_backstop_remote_turn`: the writes, or the reply alone when it wrote nothing) before anything is posted; a withheld or failed turn is withdrawn and rerun on Claude under the same run id (`_rerun_on_claude`); the arm's clock is `REMOTE_ARM_TIMEOUT_S` |
+| `preprocessor/model_routing.py` | The routing table: `local`, `hosted` or `auto` per task, read in owner processes from `<private_dir>/routing.json` (`ea_config.get_routing`); each lane's decision point asks it (`remote_llm.mode`, `remote_llm.local_for`, `model_tiers.resolve`); the stakes floor (`review` hosted only) and the keep floor (`mail`, `tagging` never hosted while the keep list has entries); the web chat's Settings screen (`WebSettings`), the doctor's `model routing` row and the `routing` chat command |
 | `preprocessor/model_tiers.py` | Who the user is talking to: `local` (the on-prem arm), `opus` (the default), `fable` and `codex` (the Codex arm), picked by a message tag (`@fable`, `ask fable:`, stripped before the prompt), a topic pin (`use fable`, `escalate`, `hand back`; `tier` on the session row), the topic's name (`[fable] ...`) or the lane's default (`tiers.lanes`), in that order; a high-stakes message never runs on `local` unless tagged; a daily Fable budget; the footer label ("EA · local, checked by Claude"); `which model`; turns recorded per tier for the 17:30 report (`tier-turns.jsonl`) |
 | `preprocessor/codex_cli.py` | The one builder for a non-interactive Codex run (`codex exec`): the prompt on stdin, the sandbox (`read-only`, `workspace-write` with `--add-dir`), the JSONL events parsed to messages, commands, files and usage, a `prefix` that runs it as the resident, and threads (`thread_id` back from a run; `resume=` continues one with its sandbox restated as config overrides) |
 | `preprocessor/codex_turn.py` | One chat turn on Codex as the resident: the prompt the bot built for Claude (fresh or continuation) on a Codex thread kept per chat thread and mode in the owner-private registry, answering in the shape the bot reads from Claude. Live: the real EA_DIR, writes confined to state, docs and research, the bot's run id. Ghost (`live=False`): a scratch EA_DIR with the real path replaced in the prompt, the mediator's queue the one real writable path, the staged files read back; the ghost arm passes `persist=False`, so each replay is a new thread on a new scratch, removed after the turn |

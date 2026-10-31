@@ -41,6 +41,20 @@
     "channel": "auto"
   },
   "update_note": "Automatic updates (scripts/update.py, docs/updates.md). channel: auto (latest on the assistant profile, stable on email and review-only), latest (every signed release from main), stable (the release the maintainer marked stable) or off. An hourly owner job installs a newer signed release when the bot and the cron lanes are idle, and switches back when it does not come up healthy. ~/.ea-private/update.json ({\"channel\": \"off\"}) outranks this value, since this file is the EA user's to write. An install whose code tree the post-commit hook writes, and that has no update key, is left to the hook.",
+  "routing": {
+    "tasks": {
+      "mail": "auto",
+      "tagging": "auto",
+      "drafting": "auto",
+      "digests": "auto",
+      "briefing": "auto",
+      "audit": "auto",
+      "scheduling": "auto",
+      "chat": "auto",
+      "review": "hosted"
+    }
+  },
+  "routing_note": "Model routing (preprocessor/model_routing.py, docs/llm-lanes.md section 1.1): which model does each task. local is the owner's own endpoint in remote-llm.json, hosted is Claude, auto keeps the remote-LLM switches and the tiers block as they are. review (the still-open check, the nightly reconcile, the scheduling backstop) is hosted only: the stakes floor. mail and tagging take hosted only while the keep list is empty: the keep floor. Owner processes read only ~/.ea-private/routing.json, which the web chat's Settings screen and `model_routing.py set` write; this copy shapes what the EA shows, since this file is the EA user's to write.",
   "room_reply_check": true,
   "room_reply_check_note": "Project rooms only. After a turn, a reply that states an item's status with no ledger or mail read behind it, or that says something does not exist, goes back to its own session once with the sentences to verify; the second pass returns the reply to post. Each bounce is logged to ~/.ea/logs/reply-check.jsonl. false switches the pass off.",
   "chat": {

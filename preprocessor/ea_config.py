@@ -125,6 +125,20 @@ DEFAULTS = {
         "lanes": {},
         "fable_daily_turns": 0,
     },
+    # Model routing (preprocessor/model_routing.py): which model does each
+    # task. `local` is the owner's own endpoint (remote-llm.json), `hosted`
+    # is Claude, `auto` leaves the task where the remote layer's switches
+    # and the tiers block put it. Two floors in code sit under every value:
+    # `review` is hosted only (the stakes floor), and `mail` and `tagging`
+    # take `hosted` only while the keep list names no one (the keep floor).
+    # Owner processes read <private_dir>/routing.json, which the web chat's
+    # Settings screen writes; this file's copy only shapes what the
+    # resident shows (see get_routing).
+    "routing": {
+        "tasks": {"mail": "auto", "tagging": "auto", "drafting": "auto", "digests": "auto",
+                  "briefing": "auto", "audit": "auto", "scheduling": "auto", "chat": "auto",
+                  "review": "hosted"},
+    },
     # Chat platform the bot and the notifier talk to: "slack" (the
     # default), "zulip", "web" (the bot's own web chat) or "memory"
     # (tests). The zulip block names the server, the bot, the owner and
@@ -335,6 +349,79 @@ def tiers_from_block(val) -> dict:
 def get_tiers(config_path: Path | None = None) -> dict:
     """The tiers block with every key defaulted (see tiers_from_block)."""
     return tiers_from_block(load(config_path).get("tiers"))
+
+
+ROUTING_TASKS = tuple(DEFAULTS["routing"]["tasks"])
+ROUTING_VALUES = ("local", "hosted", "auto")
+# The stakes floor: a task that is a judgment call by nature takes only
+# this value, whatever a file says.
+ROUTING_FLOORS = {"review": "hosted"}
+
+
+def routing_problems(val) -> list[str]:
+    """Why a routing block cannot be taken as written: not an object, an
+    unknown task, a value that is not local, hosted or auto, or a value
+    under a floor. [] for a block that routing_from_block keeps whole."""
+    if val is None:
+        return []
+    if not isinstance(val, dict):
+        return ["the routing block is not a JSON object"]
+    tasks = val.get("tasks", {})
+    if not isinstance(tasks, dict):
+        return ["routing.tasks is not a JSON object"]
+    out = [f"routing takes its values under tasks, not {k!r}" for k in val
+           if k != "tasks" and not k.startswith("_")]
+    for task, value in tasks.items():
+        if task not in ROUTING_TASKS:
+            out.append(f"no task {task!r}; the tasks are {', '.join(ROUTING_TASKS)}")
+        elif value not in ROUTING_VALUES:
+            out.append(f"{task} takes local, hosted or auto, not {value!r}")
+        elif task in ROUTING_FLOORS and value not in (ROUTING_FLOORS[task], "auto"):
+            out.append(f"{task} is {ROUTING_FLOORS[task]} only (the stakes floor)")
+    return out
+
+
+def routing_from_block(val) -> dict:
+    """A routing block merged over DEFAULTS["routing"]: an unknown task or
+    value is dropped, and a floored task takes its floor, so no file can
+    route a judgment call to the local model."""
+    tasks = dict(DEFAULTS["routing"]["tasks"])
+    given = val.get("tasks") if isinstance(val, dict) else None
+    if isinstance(given, dict):
+        tasks.update({k: v for k, v in given.items() if k in tasks and v in ROUTING_VALUES})
+    tasks.update(ROUTING_FLOORS)
+    return {"tasks": tasks}
+
+
+def get_routing_source(config_path: Path | None = None) -> tuple[dict, str]:
+    """(the routing block with every task defaulted, where it came from).
+
+    The block moves mail between models, and ea-config.json is ea-bot's to
+    write. So with no explicit `config_path`, an owner process takes it
+    only from `<private_dir>/routing.json` ("routing.json"); with no such
+    file every task is at its default ("default"), which is the remote
+    layer's switches as they are. A file that fails the owner checks or is
+    not a JSON object reads as the defaults too ("refused: <why>"), so a
+    lane never stops on it; the doctor's routing row says so. Other
+    processes read ea-config.json ("ea-config.json"), where the block only
+    shapes what the resident shows."""
+    if config_path is None:
+        ot = _owner_trust()
+        try:
+            block = ot.owner_routing_block()
+        except ot.OwnerTrustError as e:
+            return routing_from_block(None), f"refused: {e}"
+        if block is not None:
+            return routing_from_block(block), "routing.json"
+        if ot.is_owner_process():
+            return routing_from_block(None), "default"
+    return routing_from_block(load(config_path).get("routing")), "ea-config.json"
+
+
+def get_routing(config_path: Path | None = None) -> dict:
+    """The routing block with every task defaulted and the floors applied
+    (see get_routing_source)."""
+    return get_routing_source(config_path)[0]
 
 
 def is_room_reply_check_enabled(config_path: Path | None = None) -> bool:

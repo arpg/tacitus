@@ -101,6 +101,7 @@ from pathlib import Path
 SECRETS_FILE = "secrets.env"
 LEGACY_SECRETS_FILE = ".env.secrets"
 CHAT_FILE = "chat.json"
+ROUTING_FILE = "routing.json"
 CALENDARS_FILE = "calendars.json"
 PROFILE_FILE = "profile.json"
 
@@ -633,6 +634,29 @@ def owner_chat_block() -> dict | None:
         raise OwnerTrustError(f"{p} is not valid JSON: {e}") from None
     if not isinstance(block, dict):
         raise OwnerTrustError(f"{p} must hold the chat block as a JSON object")
+    return block
+
+
+def owner_routing_block() -> dict | None:
+    """The routing block from `<private_dir>/routing.json` for an owner
+    process (model_routing.py writes it); None for any other process and
+    when the file is absent. Raises OwnerTrustError when the file fails
+    the checks or does not hold a JSON object."""
+    if not is_owner_process():
+        return None
+    p = private_dir() / ROUTING_FILE
+    try:
+        data = read_owner_file(p)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise OwnerTrustError(f"{p} is unreadable: {e}") from None
+    try:
+        block = json.loads(data)
+    except ValueError as e:
+        raise OwnerTrustError(f"{p} is not valid JSON: {e}") from None
+    if not isinstance(block, dict):
+        raise OwnerTrustError(f"{p} must hold the routing block as a JSON object")
     return block
 
 

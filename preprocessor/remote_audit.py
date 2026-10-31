@@ -61,7 +61,10 @@ _PENDING = ("open", "snoozed", "follow_up")
 
 
 def active(cfg: dict | None = None) -> bool:
-    return (cfg if cfg is not None else remote_llm.config()).get("audits") == "remote"
+    """The audits switch at `remote`, or the routing table's `audit` entry
+    (model_routing.py) where it names local or hosted."""
+    cfg = cfg if cfg is not None else remote_llm.config()
+    return remote_llm.local_for("audit", cfg.get("audits") == "remote", cfg)
 
 
 def _date(s) -> date | None:

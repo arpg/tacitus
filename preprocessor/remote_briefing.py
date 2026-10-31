@@ -91,7 +91,10 @@ _DECLINE = re.compile(r"\b(declin\w*|turn (it|this|them) down|not able to|unable
 
 
 def active(cfg: dict | None = None) -> bool:
-    return (cfg if cfg is not None else remote_llm.config()).get("briefings") == "remote"
+    """The briefings switch at `remote`, or the routing table's `briefing`
+    entry (model_routing.py) where it names local or hosted."""
+    cfg = cfg if cfg is not None else remote_llm.config()
+    return remote_llm.local_for("briefing", cfg.get("briefings") == "remote", cfg)
 
 
 def _now() -> datetime:
@@ -935,9 +938,11 @@ def audit_judge(cfg: dict | None = None) -> str:
     """Who gives the verdicts: "claude" unless remote-llm.json says
     `"briefing_audit": "remote"`. Whether an item is still open is a
     judgment, so it stays with Claude; kept mail never reaches the prompt
-    (open_claims_audit.without_kept)."""
+    (open_claims_audit.without_kept). The check is the routing table's
+    `review` task, which the stakes floor holds at hosted."""
     cfg = cfg if cfg is not None else remote_llm.config()
-    return "remote" if cfg.get("briefing_audit") == "remote" else "claude"
+    return "remote" if remote_llm.local_for("review", cfg.get("briefing_audit") == "remote", cfg) \
+        else "claude"
 
 
 def _claude_verdicts(prompt: str) -> str:

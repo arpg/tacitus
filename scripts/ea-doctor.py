@@ -1443,6 +1443,22 @@ def check_remote_llm():
                           f"add {remote_llm.SECRET_NAME} to the private secrets.env")
 
 
+def check_model_routing():
+    """The owner's routing table (preprocessor/model_routing.py): the model
+    each task runs on now, and the local model's state from its breaker
+    and last call (no call of its own). WARN when a task set to local has
+    no local model to run on or the local model does not answer; FAIL when
+    routing.json fails the owner checks, since every task then reads auto."""
+    sys.path.insert(0, str(REPO / "preprocessor"))
+    try:
+        import model_routing
+        status, detail, fix = model_routing.doctor_row()
+    except Exception as e:
+        warn("model routing", f"unreadable: {e}")
+        return
+    {"PASS": ok, "WARN": warn, "FAIL": fail}[status]("model routing", detail, fix)
+
+
 def check_push():
     """The optional phone push for installs with no chat platform
     (preprocessor/push_notify.py). Silent when no push.json exists; a
@@ -1679,6 +1695,7 @@ def main() -> int:
         check_hardening()
         check_decks(ea_dir)
         check_remote_llm()
+        check_model_routing()
         if not NEEDS_SLACK:
             check_push()
         check_cron()

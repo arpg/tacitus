@@ -259,7 +259,10 @@ WRITER_OFF = {"status": "fallback", "reason": "writer off"}
 
 
 def writer_on() -> bool:
-    return remote_llm.config().get("drafting") == "remote"
+    """The drafting switch at `remote`, or the routing table's `drafting`
+    entry (model_routing.py) where it names local or hosted."""
+    cfg = remote_llm.config()
+    return remote_llm.local_for("drafting", cfg.get("drafting") == "remote", cfg)
 
 
 def write(to: str, brief: str, out: str, *, conversation_id: str = "", draft_id: str = "",

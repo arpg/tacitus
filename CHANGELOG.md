@@ -6,6 +6,19 @@ repository that preceded it.
 
 ## Unreleased
 
+- **One routing table, task by task.** The owner says which model does
+  each task (`mail`, `tagging`, `drafting`, `digests`, `briefing`,
+  `audit`, `scheduling`, `chat`, `review`): `local`, `hosted` or `auto`,
+  where `auto` keeps the remote-LLM switches and is every task's default,
+  so nothing changes until the owner sets a value. Each lane asks the
+  table where it reads its switch. Two floors sit under it: `review` (the
+  still-open check, the nightly reconcile, the scheduling backstop) is
+  hosted only, and `mail` and `tagging` cannot be hosted while the keep
+  list has entries. The table is the owner-private `routing.json`, set
+  from a new Settings screen in the web chat (`/api/settings/routing`) or
+  `model_routing.py set`; `routing` in chat prints it, and the doctor's
+  `model routing` row names each task's model and the local model's
+  state.
 - **Releases say what they changed.** The CI `release` job creates a
   GitHub Release for each signed tag, its body the notes
   `scripts/release_notes.py` writes: the pull request titles merged since
