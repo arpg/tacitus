@@ -14,7 +14,7 @@ def test_the_install_script_parses_and_names_its_parts():
     text = script.read_text()
     assert "set -euo pipefail" in text and '[ "$(id -u)" = 0 ]' in text
     assert "https://github.com/arpg/tacitus.git" in text, "a public clone, no deploy key"
-    assert "/etc/tacitus-relay/installs.txt" in text and "--install-id" in text
+    assert "ETC=/etc/tacitus-relay" in text and "$ETC/installs.txt" in text and "--install-id" in text
     assert "relay/tacitus-relay.service" in text and "/healthz" in text
 
 
