@@ -6,6 +6,16 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The Docker web chat says what it exposes, and narrows it.** The
+  Caddy example strips `Tailscale-User-Login`, `X-Tacitus-Relay` and
+  `X-Tacitus-Relay-Cards` from every request, publishes on
+  `WEBCHAT_TLS_BIND`, and carries commented `remote_ip` and client
+  certificate blocks; `docs/docker.md` states that as shipped it puts the
+  sign-in page on the internet, and shows nginx's `limit_req` and
+  `limit_conn`. The web chat caps the connections one address other than
+  loopback may hold (8 of 64; `peer_connections` in the web block, 0
+  behind a proxy, which the Docker setup writes). The entrypoint's
+  private-volume step never follows a link (`find`, `chown -h`).
 - **The sign-in listener waits for its own redirect.** The loopback
   listener of the Graph sign-in took the first request it got, from any
   local process, and one idle connection held it past its timeout. It

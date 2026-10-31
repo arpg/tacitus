@@ -469,6 +469,61 @@ def test_the_server_caps_open_connections_and_times_out(tmp_path):
         f.stop()
 
 
+def test_one_peer_address_cannot_hold_every_slot(tmp_path):
+    """An address other than loopback holds at most MAX_PEER_CONNECTIONS
+    of the MAX_CONNECTIONS slots; one more from it is closed at once,
+    while loopback (the relay client, tailscale serve) and other addresses
+    are served, and a closed connection gives its slot back."""
+    assert wf.MAX_PEER_CONNECTIONS == 8 < wf.MAX_CONNECTIONS == 64
+    f = make(tmp_path)
+    f.start()
+    held = []
+    try:
+        srv = f._server
+        assert srv.max_per_peer == 8
+
+        def connect(peer):
+            ours, theirs = socket.socketpair()
+            srv.process_request(theirs, (peer, 40000))
+            held.append(ours)
+            return ours
+
+        for _ in range(8):
+            connect("203.0.113.5")
+        assert srv._peers == {"203.0.113.5": 8}
+        extra = connect("203.0.113.5")
+        extra.settimeout(2)
+        assert extra.recv(1) == b"", "the ninth is closed at once"
+        assert srv._peers == {"203.0.113.5": 8}
+        connect("198.51.100.7")
+        assert srv._peers["198.51.100.7"] == 1, "another address has its own"
+        status, _ = raw(f, f"GET {f.base_path}/ HTTP/1.1\nHost: 127.0.0.1:{f.port}\n")
+        assert status == 200, "loopback is not counted"
+        held[0].close()
+        end = time.time() + 5
+        while time.time() < end and srv._peers.get("203.0.113.5") != 7:
+            time.sleep(0.05)
+        assert srv._peers["203.0.113.5"] == 7, "a closed connection gives its slot back"
+    finally:
+        for c in held:
+            c.close()
+        f.stop()
+
+
+def test_the_per_peer_cap_is_a_setting():
+    assert wf._peer_cap(None) == wf.MAX_PEER_CONNECTIONS
+    assert wf._peer_cap(0) == 0 and wf._peer_cap("16") == 16 and wf._peer_cap(64) == 64
+    for junk in (-1, 65, "x", True, 2.5, "-3"):
+        assert wf._peer_cap(junk) == wf.MAX_PEER_CONNECTIONS, junk
+    fe = WebFrontend.from_config({"peer_connections": 0}, store_path=Path("/nonexistent/x.sqlite"))
+    assert fe.peer_connections == 0
+    srv = wf._Server(("127.0.0.1", 0), wf._Handler, max_per_peer=0)
+    try:
+        assert srv._peer(("203.0.113.5", 1)) is None, "0 lifts the cap"
+    finally:
+        srv.server_close()
+
+
 # S2: push subscriptions
 
 

@@ -510,8 +510,37 @@ docker compose restart bot
 **TLS in front.** A browser keeps the pairing cookie only over HTTPS,
 and installs the app and takes notifications only there. The chat needs
 an origin of its own (scheme, host and port): serve nothing else on its
-host name and port. Give the host name only the reach you need (the
-campus network, a VPN); the token is the lock on everything behind it.
+host name and port.
+
+**What the proxy exposes.** The Caddy example below, as shipped, serves
+the chat's pages and its sign-in page to anyone who can reach the host
+name: on a public DNS name, the whole internet. The pairing token is
+then the only lock on everything behind it, and anyone can try tokens
+(the bot answers one try at a time, with a pause after each wrong one)
+or hold connections open. Give the host name only the reach you need:
+
+- *Listen on one address.* `WEBCHAT_TLS_BIND` in `.env` is the address
+  Caddy's ports are published on (default `0.0.0.0`, every address):
+  name the campus or VPN interface's address.
+- *Allow only your networks.* Uncomment the `remote_ip` block in the
+  `Caddyfile` and list the networks. Caddy sees the client's address
+  only when Docker's port publishing keeps it: its iptables path does
+  for IPv4, the userland proxy does not. Check the access log before
+  you rely on it.
+- *Require a client certificate.* The commented `client_auth` block in
+  the `Caddyfile` admits only browsers that hold a certificate your own
+  CA signed; each phone and browser needs one installed.
+- *Limit each client's rate.* Caddy's stock image has no rate limiter
+  (it takes a custom build with a rate-limit module). nginx has one,
+  below.
+
+The Caddyfile removes `Tailscale-User-Login`, `X-Tacitus-Relay` and
+`X-Tacitus-Relay-Cards` from every request it passes on: only tailscaled
+and the bot's relay client set them, never a client on the internet.
+The bot caps the connections one address may hold (8 of its 64) on a
+host install; behind a proxy every request comes from the proxy's
+address, so the setup role writes `"peer_connections": 0` into the web
+block and the per-client limits belong in the proxy.
 
 - *Caddy on the compose network* (`deploy/docker/webchat-tls/`). Set
   `WEBCHAT_HOST` to the host name of `WEBCHAT_PUBLIC_URL`, then:
@@ -536,14 +565,24 @@ campus network, a VPN); the token is the lock on everything behind it.
   with your certificate, proxying to the published port:
 
   ```nginx
+  # in the http block: per-client limits, by the client's address
+  limit_req_zone  $binary_remote_addr zone=tacitus_req:10m rate=10r/s;
+  limit_conn_zone $binary_remote_addr zone=tacitus_conn:10m;
+
   location /chat/ {
       proxy_pass http://127.0.0.1:8470;   # WEBCHAT_PORT; no path here, so the path goes as sent
       proxy_set_header Host $http_host;   # the bot answers only for public_url's host and port
+      proxy_set_header Tailscale-User-Login "";   # only tailscaled sets these
+      proxy_set_header X-Tacitus-Relay "";        # only the bot's relay client sets these
+      proxy_set_header X-Tacitus-Relay-Cards "";
       proxy_http_version 1.1;
       proxy_set_header Connection "";
       proxy_buffering off;                # the event stream
       proxy_read_timeout 1h;
       client_max_body_size 50m;           # uploads
+      limit_req  zone=tacitus_req burst=40 nodelay;
+      limit_conn tacitus_conn 8;          # each open tab holds one event stream
+      # allow 192.0.2.0/24; deny all;     # only your networks
   }
   ```
 
