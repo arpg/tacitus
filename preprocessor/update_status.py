@@ -4,11 +4,13 @@
 scripts/update.py installs signed releases (docs/updates.md). This module is
 the read side it shares with the doctor (the `updates` row), the chat bot
 (the `version` command) and run-agent.sh (the one briefing line): the
-installed version, the effective channel, the status file, and the text
-each of them shows. Standard library only; it reads, and it writes nothing
-but the owner-private marker of what the last briefing said.
+installed version, the effective channel, the status file with the release
+notes the updater recorded, and the text each of them shows. Standard
+library only; it reads, and it writes nothing but the owner-private marker
+of what the last briefing said.
 
     python3 preprocessor/update_status.py version
+    python3 preprocessor/update_status.py notes [--json]  # the installed release's notes
     python3 preprocessor/update_status.py briefing-line   # one line, or nothing
     python3 preprocessor/update_status.py mark-briefed    # after the briefing posted
     python3 preprocessor/update_status.py doctor --json
@@ -179,6 +181,108 @@ def load_status(private: Path) -> dict:
     return read_owner_json(status_file(private)) or {}
 
 
+# ── release notes ────────────────────────────────────────────────────
+
+def _notes_entries(st: dict) -> list[dict]:
+    """The release notes the status keeps (scripts/update.py
+    record_notes), oldest first: the history, then the installed
+    release's."""
+    out = [h for h in (st.get("notes_history") or []) if isinstance(h, dict)]
+    if isinstance(st.get("notes"), dict):
+        out.append(st["notes"])
+    return [e for e in out if version_key(str(e.get("tag") or ""))]
+
+
+def installed_notes(live: Path, private: Path) -> dict:
+    """The installed release's notes as the updater recorded them:
+    {"tag", "previous", "notes_url", "count", "changes": [{"subject", "pr",
+    "sha"}], "owner_steps": [{"step", "pr", "sha"}], "source"}. {} when it
+    recorded none for that release."""
+    tag = installed(live).get("version") or ""
+    for e in reversed(_notes_entries(load_status(private))):
+        if tag and e.get("tag") == tag:
+            return e
+    return {}
+
+
+def _count(e: dict, listed: int) -> int:
+    try:
+        return max(int(e.get("count") or 0), listed)
+    except (TypeError, ValueError):
+        return listed
+
+
+def notes_since(st: dict, before: str, tag: str) -> tuple[int, list[dict], list[dict]]:
+    """(count, changes, owner steps) of the releases after `before` up to
+    `tag`, from the notes the status keeps. With no `before` version, the
+    notes of `tag` alone. A change two entries list counts once."""
+    hi, lo = version_key(tag), version_key(before)
+    if hi is None:
+        return 0, [], []
+    entries = []
+    for e in _notes_entries(st):
+        k = version_key(e["tag"])
+        if k <= hi and (k > lo if lo is not None else e["tag"] == tag):
+            entries.append(e)
+    entries.sort(key=lambda e: version_key(e["tag"]))
+    changes, steps, seen, seen_steps, unlisted, tags = [], [], set(), set(), 0, set()
+    for e in entries:
+        if e["tag"] in tags:
+            continue
+        tags.add(e["tag"])
+        listed = [c for c in e.get("changes") or [] if isinstance(c, dict) and c.get("subject")]
+        unlisted += _count(e, len(listed)) - len(listed)
+        for c in listed:
+            key = str(c.get("sha") or "")[:7] or str(c["subject"])
+            if key not in seen:
+                seen.add(key)
+                changes.append(c)
+        for s in e.get("owner_steps") or []:
+            text = str((s or {}).get("step") or "") if isinstance(s, dict) else str(s)
+            if text and text.lower() not in seen_steps:
+                seen_steps.add(text.lower())
+                steps.append(s if isinstance(s, dict) else {"step": text})
+    return len(changes) + unlisted, changes, steps
+
+
+def _short(text, limit: int) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def change_summary(changes: list[dict], count: int, shown: int = 2, limit: int = 80) -> str:
+    """"3 changes: <first>; <second>…": the count and the first `shown`
+    subjects, with an ellipsis when there are more."""
+    subjects = [_short(c.get("subject"), limit) for c in changes[:shown]]
+    word = "change" if count == 1 else "changes"
+    if not subjects:
+        return f"{count} {word}"
+    return f"{count} {word}: " + "; ".join(subjects) + ("…" if count > len(subjects) else "")
+
+
+def notes_lines(notes: dict, shown: int = 3) -> list[str]:
+    """The installed release's notes as the `version` answer shows them:
+    the count, the first `shown` subjects, the owner steps and the link."""
+    changes = [c for c in notes.get("changes") or [] if isinstance(c, dict)]
+    n = _count(notes, len(changes))
+    if not n and not notes.get("owner_steps"):
+        return []
+    head = (f"{n} {'change' if n == 1 else 'changes'} in {notes.get('tag')}"
+            + (f" since {notes['previous']}" if notes.get("previous") else ""))
+    out = [head + (":" if changes else ".")]
+    for c in changes[:shown]:
+        out.append(f"- {_short(c.get('subject'), 160)}" + (f" (#{c['pr']})" if c.get("pr") else ""))
+    if n > min(shown, len(changes)) and changes:
+        out.append(f"- and {n - min(shown, len(changes))} more")
+    for s in notes.get("owner_steps") or []:
+        text = s.get("step") if isinstance(s, dict) else s
+        if text:
+            out.append(f"Owner step: {_short(text, 300)}")
+    if notes.get("notes_url"):
+        out.append(f"Release notes: {notes['notes_url']}")
+    return out
+
+
 def _label(inst: dict) -> str:
     if inst.get("version"):
         return inst["version"] + (f" ({inst['commit']})" if inst.get("commit") else "")
@@ -227,7 +331,7 @@ def doctor_row(live: Path, private: Path, ea: Path,
     parts = [f"{_label(inst)} on {channel}"]
     latest = st.get("latest_on_channel")
     if latest:
-        parts.append(f"newest on the channel {latest}")
+        parts.append(f"newest on the channel {latest}" + _behind(st, inst, latest))
     last = st.get("last_apply") or {}
     if last.get("at"):
         parts.append(f"last apply {_when(last['at'])} ({last.get('result', '?')}"
@@ -257,11 +361,24 @@ def doctor_row(live: Path, private: Path, ea: Path,
     return ("PASS", detail, "")
 
 
+def _behind(st: dict, inst: dict, latest: str) -> str:
+    """" (N changes behind)" when the updater counted the changes between
+    the installed release and a newer `latest`, else ""."""
+    behind = st.get("behind") or {}
+    n = behind.get("changes")
+    lk, ik = version_key(latest), version_key(inst.get("version") or "")
+    if behind.get("tag") != latest or not isinstance(n, int) or n <= 0 or lk is None \
+            or (ik is not None and ik >= lk):
+        return ""
+    return f" ({n} {'change' if n == 1 else 'changes'} behind)"
+
+
 def version_text(live: Path, private: Path, ea: Path, running: Path | None = None) -> str:
     """The `version` chat command's answer: the installed tag and commit,
-    the channel, the newest release on it and any version held back. With
-    `running` (the tree this process started from), a process behind the
-    installed tree says so."""
+    the channel, the newest release on it, the first three changes of the
+    installed release with its owner steps and notes link, and any version
+    held back. With `running` (the tree this process started from), a
+    process behind the installed tree says so."""
     inst = installed(live)
     channel, source = effective_channel(live, private, ea)
     st = load_status(private)
@@ -280,6 +397,7 @@ def version_text(live: Path, private: Path, ea: Path, running: Path | None = Non
         if last.get("at"):
             line += f" Last update: {_when(last['at'])} ({last.get('result', '?')})."
         lines.append(line)
+    lines += notes_lines(installed_notes(live, private))
     held = (st.get("held_back") or {}).get("version")
     if held:
         lines.append(f"Update {held} is held back: {(st.get('held_back') or {}).get('reason', '?')}.")
@@ -292,18 +410,28 @@ def version_text(live: Path, private: Path, ea: Path, running: Path | None = Non
 
 def briefing_line(live: Path, private: Path) -> str:
     """One line for the morning briefing, or "": the installed version
-    changed since the last briefing that posted, or a version was held
-    back since then. Before the first marker there is nothing to compare,
-    so nothing is said."""
+    changed since the last briefing that posted, with the count and the
+    first two subjects of the changes since then and any owner step, or a
+    version was held back since then. Before the first marker there is
+    nothing to compare, so nothing is said."""
     briefed = read_owner_json(briefed_file(private))
     if briefed is None:
         return ""
     inst = installed(live).get("version") or ""
-    held = ((load_status(private).get("held_back") or {}).get("version")) or ""
+    st = load_status(private)
+    held = ((st.get("held_back") or {}).get("version")) or ""
     parts = []
     before = briefed.get("version") or ""
     if inst and inst != before:
-        parts.append(f"Updated to {inst}" + (f" (from {before})." if before else "."))
+        n, changes, steps = notes_since(st, before, inst)
+        if n:
+            parts.append(f"Updated to {inst} ({change_summary(changes, n)}).")
+        else:
+            parts.append(f"Updated to {inst}" + (f" (from {before})." if before else "."))
+        texts = [_short(s.get("step"), 120) for s in steps if s.get("step")]
+        if texts:
+            parts.append(("Owner step: " if len(texts) == 1 else "Owner steps: ")
+                         + "; ".join(texts[:2]) + ("…" if len(texts) > 2 else "") + ".")
     if held and held != (briefed.get("held") or ""):
         parts.append(f"Update {held} held back; running {inst or 'the installed release'}.")
     return (":gear: " + " ".join(parts)) if parts else ""
@@ -336,7 +464,7 @@ def _main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description="the updater's status, as the doctor, the bot "
                                              "and the briefing show it")
-    ap.add_argument("cmd", choices=("version", "briefing-line", "mark-briefed", "doctor"))
+    ap.add_argument("cmd", choices=("version", "notes", "briefing-line", "mark-briefed", "doctor"))
     ap.add_argument("--live", default=None, help=f"the code tree (default {DEFAULT_LIVE})")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
@@ -344,6 +472,13 @@ def _main() -> int:
     private, ea = private_dir(), ea_dir()
     if a.cmd == "version":
         print(version_text(live, private, ea))
+    elif a.cmd == "notes":
+        notes = installed_notes(live, private)
+        if a.json:
+            print(json.dumps(notes, indent=1))
+        else:
+            print("\n".join(notes_lines(notes, shown=len(notes.get("changes") or [])))
+                  or "No release notes recorded for the installed release.")
     elif a.cmd == "briefing-line":
         line = briefing_line(live, private)
         if line:

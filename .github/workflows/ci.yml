@@ -35,8 +35,10 @@
 #
 # `release` runs after `ci` on a push to main that passed: it signs the
 # next vX.Y.Z tag on that commit with the SSH key in the secret
-# RELEASE_SIGNING_KEY and moves channels/latest (docs/updates.md). Installs
-# install only tags that verify against the committed .release-key.pub.
+# RELEASE_SIGNING_KEY, moves channels/latest, and creates a GitHub Release
+# for the tag with the notes scripts/release_notes.py writes
+# (docs/updates.md). Installs install only tags that verify against the
+# committed .release-key.pub; the notes are what they tell their owner.
 name: CI
 
 on:
@@ -247,17 +249,24 @@ jobs:
     # Every green push to main is a release (docs/updates.md). The job
     # signs an annotated tag vX.Y.Z on the commit the tiers just passed:
     # the patch number one above the newest release in main's history, or
-    # the minor or major one when a commit message since then says #minor,
-    # #major or `release: minor|major`. A commit a newer release already
+    # the minor or major one when the released commit itself (the merge or
+    # squash commit) or its pull request's body has a standalone #minor or
+    # #major, or a footer line `release: minor` (or major); an older
+    # commit's message never raises it. A commit a newer release already
     # contains gets none. One release at a time (the concurrency group), so
     # two runs never compute the same number. Without the secret the job
     # warns and tags nothing. A tag pushed with the workflow's token starts
-    # no workflow, so the release does not run CI a second time.
+    # no workflow, so the release does not run CI a second time. Once the
+    # tag is pushed, a GitHub Release for it carries the release notes; a
+    # Release that cannot be made is a warning, since the signed tag is the
+    # release and the notes only describe it.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.result == 'success'
     needs: [ci]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # The version marker and the owner steps in pull request bodies.
+      pull-requests: read
     concurrency:
       group: release-main
       cancel-in-progress: false
@@ -268,13 +277,17 @@ jobs:
 
       - name: Next version
         id: next
+        env:
+          # The pull request's body may hold the marker.
+          GH_TOKEN: ${{ github.token }}
         run: |
           git fetch --force --tags origin
-          tag=$(python3 scripts/update.py next-version --head "$GITHUB_SHA" --main origin/main)
+          tag=$(python3 scripts/update.py next-version --head "$GITHUB_SHA" --main origin/main --github-repo "$GITHUB_REPOSITORY")
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "next release: ${tag:-none (a newer release contains $GITHUB_SHA)}"
 
       - name: Sign and push the tag
+        id: sign
         if: steps.next.outputs.tag != ''
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
@@ -306,4 +319,28 @@ jobs:
           git tag -f channels/latest "$GITHUB_SHA"
           git push origin "refs/tags/$TAG"
           git push --force origin refs/tags/channels/latest
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
           echo "released $TAG at ${GITHUB_SHA::7}"
+
+      - name: Create the GitHub Release with the notes
+        # The changes since the previous release (the pull request titles of
+        # the merge commits) and the owner steps (docs/updates.md, "Release
+        # notes"). Every failure here warns and leaves the job green.
+        if: steps.sign.outputs.pushed == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.next.outputs.tag }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          if ! python3 scripts/release_notes.py --tag "$TAG" --github-repo "$GITHUB_REPOSITORY" --pr-bodies > "$notes"; then
+            echo "::warning::scripts/release_notes.py failed for $TAG; the Release says only the tag"
+            printf 'Release %s.\n' "$TAG" > "$notes"
+          fi
+          cat "$notes"
+          if gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$notes"; then
+            echo "created the GitHub Release $TAG"
+          else
+            echo "::warning::gh release create $TAG failed; the signed tag stands without a Release (by hand: python3 scripts/release_notes.py --tag $TAG > notes.md && gh release create $TAG --verify-tag --notes-file notes.md)"
+          fi
