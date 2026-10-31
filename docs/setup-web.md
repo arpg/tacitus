@@ -61,9 +61,13 @@ scan) is marked `terminal_only` and is not on the page.
 One phase per screen, Previous and Next, in the order of a full terminal
 run: `profile` (the profile and the "Your responsibility" notice from
 README.md, word for word), `identity`, `scheduling`, `inbox`, `autonomy`,
-`groups`, `deadlines`, `style`, `auth` (the app registration values,
-never a sign-in), `reimbursement`, `vip`, `push`. Next posts the phase;
-an error shows under its field. The last screen runs the `state` phase,
+`groups`, `deadlines`, `style`, `chat` (the chat platform, the web chat
+first, with this machine's tailnet name and the owner's Tailscale login;
+only on `assistant`), `auth` (the app registration values, never a
+sign-in), `reimbursement`, `vip`, `push`. A phase that asks this install
+nothing is left out. Next posts the phase; an error shows under its
+field. The profile and the chat platform decide what the later screens
+ask, so the page reads the phases again after each. The last screen runs the `state` phase,
 then the doctor (`scripts/ea-doctor.py --json`), and shows its checklist
 as green, amber and red rows, with each fix, and the commands that are
 left. The page is phone first, follows the system's dark or light theme,
@@ -85,8 +89,10 @@ The page lists these at the end, with the commands:
 - the Graph and Google sign-ins (a browser redirect on this machine or a
   pasted address), and the writing-style scan, which reads sent mail;
 - the service account, ea-bot's Claude login, the install overlay, the
-  chat platform on `assistant`, the hardening and services, the cron
-  install, the doctor, the first briefing, the first-week questions.
+  chat platform's own step on `assistant` (the `tailscale serve` line for
+  the web chat, the Zulip bootstrap or the Slack app), the hardening and
+  services, the cron install, the doctor, the first briefing, the
+  first-week questions.
 
 Also terminal only: `--chat zulip` and its server values (the chat
 block), more than one group list or deadline domain per run, and

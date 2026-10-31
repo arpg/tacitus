@@ -43,10 +43,110 @@ ZULIP_ARGS = ("--chat", "zulip", "--zulip-site", "http://zulip.test:8080/",
               "--zulip-owner-id", "8")
 
 
-def test_slack_default_writes_no_chat_config(monkeypatch, tmp_path):
-    _run(monkeypatch, tmp_path)
+def test_slack_writes_no_chat_config(monkeypatch, tmp_path):
+    _run(monkeypatch, tmp_path, "--chat", "slack")
     assert (tmp_path / "config" / "user-profile.json").exists()
     assert not (tmp_path / "config" / "ea-config.json").exists()
+
+
+WEB_HOST, WEB_LOGIN = "host.tail0000.ts.net", "owner@example.test"
+WEB_URL = f"https://{WEB_HOST}:8444/chat"
+
+
+def _web_of(tmp_path) -> dict:
+    return ea_config.get_chat(tmp_path / "config" / "ea-config.json")
+
+
+def test_the_web_chat_is_the_default_choice_and_writes_its_block(monkeypatch, tmp_path, capsys):
+    """A fresh assistant run offers the web chat first: Enter takes it, and
+    the chat block gets the web block's port and base path; the phases
+    after it ask no Slack token."""
+    _run(monkeypatch, tmp_path)
+    data = json.loads((tmp_path / "config" / "ea-config.json").read_text())
+    assert "quiet_hours" in data, "the template's keys come along"
+    chat = _web_of(tmp_path)
+    assert (chat["frontend"], chat["shadow"]) == ("web", "")
+    assert (chat["web"]["port"], chat["web"]["base_path"]) == (8470, "/chat")
+    assert chat["web"]["public_url"] == "" and chat["web"]["tailscale_login"] == ""
+    out = capsys.readouterr().out
+    assert "Phase 7b: Chat Platform" in out and "--- Web chat ---" in out
+    assert "tailscale serve --bg --https=8444 --set-path /chat http://127.0.0.1:8470/chat" in out
+    assert "Slack Bot Token" not in out
+
+
+def test_chat_web_flags_write_the_address_and_the_login(monkeypatch, tmp_path, capsys):
+    _run(monkeypatch, tmp_path, "--chat", "web", "--web-host", WEB_HOST + ".",
+         "--web-login", WEB_LOGIN)
+    web = _web_of(tmp_path)["web"]
+    assert (web["public_url"], web["tailscale_login"], web["port"], web["base_path"]) == \
+        (WEB_URL, WEB_LOGIN, 8470, "/chat")
+    assert "Slack Bot Token" not in capsys.readouterr().out
+    for bad in (("--web-host", "https://host.example"), ("--web-login", "no-at-sign")):
+        with pytest.raises(SystemExit):
+            _run(monkeypatch, tmp_path / "bad", "--chat", "web", *bad)
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, tmp_path / "bad", "--chat", "zulip", "--web-host", WEB_HOST)
+    assert not (tmp_path / "bad").exists()
+
+
+def test_the_chat_phase_from_an_answers_file(monkeypatch, tmp_path, capsys):
+    """/setup writes answers-chat.json and runs the chat phase: the web
+    block is written into the chat block ea-config.json has, keeping its
+    other keys, and the auth phase then asks no Slack token. Choosing
+    Zulip or Slack later sets the frontend and keeps the rest."""
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "ea-config.json").write_text(json.dumps({"profile": "assistant", "quiet_hours": {},
+                                                    "chat": {"frontend": "slack",
+                                                             "zulip": {"stream": "ea"}}}))
+    answers = tmp_path / "answers-chat.json"
+    answers.write_text(json.dumps({"chat-platform": "web", "web-chat-host": WEB_HOST,
+                                   "web-chat-login": WEB_LOGIN}))
+    _run_answers(monkeypatch, tmp_path, answers, "--phase", "chat")
+    data = json.loads((cfg / "ea-config.json").read_text())
+    assert data["profile"] == "assistant" and "quiet_hours" in data
+    assert data["chat"]["zulip"] == {"stream": "ea"}
+    assert data["chat"]["web"] == {"port": 8470, "base_path": "/chat", "public_url": WEB_URL,
+                                   "tailscale_login": WEB_LOGIN}
+    auth = tmp_path / "answers-auth.json"
+    auth.write_text(json.dumps({"graph-auth-method": "skip", "google-calendar-now": False}))
+    _run_answers(monkeypatch, tmp_path, auth, "--phase", "auth")
+    assert "slack-bot-token" not in user_init.ANSWERS_USED
+    assert "--- Web chat ---" in capsys.readouterr().out
+    # the next run offers what is there
+    ctx = user_init.context()
+    assert (ctx["chat_choice"], ctx["web_host"], ctx["web_login"]) == ("web", WEB_HOST, WEB_LOGIN)
+    answers.write_text(json.dumps({"chat-platform": "zulip"}))
+    _run_answers(monkeypatch, tmp_path, answers, "--phase", "chat")
+    chat = json.loads((cfg / "ea-config.json").read_text())["chat"]
+    assert chat["frontend"] == "zulip" and chat["web"]["public_url"] == WEB_URL
+    # an email install is asked nothing and writes nothing
+    data = json.loads((cfg / "ea-config.json").read_text())
+    (cfg / "ea-config.json").write_text(json.dumps({**data, "profile": "email"}))
+    before = (cfg / "ea-config.json").read_bytes()
+    answers.write_text(json.dumps({"chat-platform": "slack"}))
+    _run_answers(monkeypatch, tmp_path, answers, "--phase", "chat")
+    assert (cfg / "ea-config.json").read_bytes() == before
+
+
+def test_a_bad_web_host_names_its_key(monkeypatch, tmp_path):
+    answers = tmp_path / "answers-chat.json"
+    answers.write_text(json.dumps({"chat-platform": "web", "web-chat-host": "host:8444"}))
+    with pytest.raises(SystemExit, match="web-chat-host"):
+        _run_answers(monkeypatch, tmp_path, answers, "--phase", "chat")
+
+
+def test_a_slack_install_is_offered_slack_again(monkeypatch, tmp_path):
+    """The template's chat block says Slack with no choice behind it; the
+    Slack ids in ~/.ea/.env are the choice, and the default follows them."""
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "ea-config.json").write_text(json.dumps({"chat": {"frontend": "slack"}}))
+    user_init.use_ea_dir(tmp_path)
+    assert user_init.context()["chat_choice"] is None
+    (tmp_path / ".env").write_text("EA_SLACK_CHANNEL_ID=C0EXAMPLE\n")
+    assert user_init.context()["chat_choice"] == "slack"
+    assert user_init.context("zulip")["chat_choice"] == "zulip"
 
 
 def test_zulip_writes_chat_block(monkeypatch, tmp_path, capsys):

@@ -155,7 +155,8 @@ setup page reads too. The keys, by phase:
 | groups | `groups-configure`, `group-name`, `group-addresses`, `group-add-another` |
 | deadlines | `deadlines-configure`, `deadline-domain`, `deadline-category`, `deadline-add-another` |
 | style | `style-default`, `style-internal`, `style-external-academic`, `style-student` |
-| auth | `graph-auth-method` (`1`-`4`, or `confidential`, `device_code`, `interactive`, `skip`), `graph-client-id`, `graph-tenant-id`, `graph-redirect-uri`, `graph-client-secret`, `graph-sign-in-now`, `google-calendar-now`, `slack-bot-token`, `slack-app-token`, `slack-channel-id`, `slack-channel-name-env`, `slack-owner-id` (the Slack keys only on the `assistant` profile; the secrets go to `~/.ea-private/secrets.env`) |
+| chat | `chat-platform` (`web`, `zulip`, `slack`, or `1`-`3`; only on the `assistant` profile; the web chat is the default), `web-chat-host` (this machine's tailnet name; `public_url` becomes `https://<host>:8444/chat`), `web-chat-login` (the owner's Tailscale login); the two web keys only with `web` |
+| auth | `graph-auth-method` (`1`-`4`, or `confidential`, `device_code`, `interactive`, `skip`), `graph-client-id`, `graph-tenant-id`, `graph-redirect-uri`, `graph-client-secret`, `graph-sign-in-now`, `google-calendar-now`, `slack-bot-token`, `slack-app-token`, `slack-channel-id`, `slack-channel-name-env`, `slack-owner-id` (the Slack keys only on the `assistant` profile with Slack as the chat; the secrets go to `~/.ea-private/secrets.env`) |
 | tone | `style-analysis-now` |
 | reimbursement | `reimbursement-configure`, `reimbursement-first-name`, `reimbursement-last-name`, `reimbursement-email`, `reimbursement-affiliation`, `reimbursement-form-url` |
 | vip | `vip-addresses` |

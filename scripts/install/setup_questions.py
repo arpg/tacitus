@@ -32,7 +32,7 @@ Each question is a dict:
                ["literal", value]
     example    a list hint, as a string or as sources
     required   an empty answer with no default is an error
-    check      email | emails | domains | timezone | url
+    check      email | emails | domains | timezone | url | host | login
     min        the least an `int` takes
     choices    [[value, page text, alias, ...], ...]
     must       a yes/no that must be yes
@@ -91,8 +91,14 @@ def _q(key: str, label: str, kind: str = "text", **kw) -> dict:
     return {"key": key, "label": label, "kind": kind, **kw}
 
 
-_CHAT_ASKED = [{"ctx": "profile", "not_in": ["email", "review-only"]},
-               {"ctx": "chat", "not_in": ["zulip"]}]
+_CHAT_PROFILE = {"ctx": "profile", "not_in": ["email", "review-only"]}
+_CHAT_ASKED = [_CHAT_PROFILE, {"ctx": "chat", "not_in": ["zulip", "web"]}]
+_WEB_CHOSEN = [_CHAT_PROFILE, {"key": "chat-platform", "is": "web"}]
+# The web chat's defaults (docs/webchat.md, Config) and the HTTPS port
+# docs/SETUP.md "Web chat" publishes it on with `tailscale serve`.
+WEB_PORT = 8470
+WEB_BASE_PATH = "/chat"
+WEB_SERVE_PORT = 8444
 _GRAPH_APP = {"key": "graph-auth-method", "not_in": ["skip"]}
 _GRAPH_SECRET = {"key": "graph-auth-method", "in": ["confidential"]}
 
@@ -339,6 +345,45 @@ PHASES: list[dict] = [
         ],
     },
     {
+        "id": "chat", "web": True,
+        "header": "Phase 7b: Chat Platform",
+        "title": "Chat",
+        "intro": [
+            "  The assistant profile talks to you in a chat. The web chat is the",
+            "  bot's own: an app on your phone over your tailnet, with no chat",
+            "  server and nothing stored outside this machine. Zulip is a chat",
+            "  server you run here; Slack keeps every message, draft and card on",
+            "  Slack's servers. docs/INSTALL.md 'Choosing a chat platform' compares",
+            "  them.\n",
+        ],
+        "questions": [
+            _q("chat-platform", "Chat platform (web, zulip or slack)", "choice",
+               web_label="Chat platform",
+               choices=[
+                   ["web", "web (recommended): the chat the bot serves itself, as an app on "
+                           "your phone over your tailnet; no chat server", "1"],
+                   ["zulip", "zulip: a Zulip server you run on this machine in Docker", "2"],
+                   ["slack", "slack: a Slack workspace; Slack keeps every message, draft "
+                             "and card", "3"],
+               ],
+               default=[["ctx", "chat_choice"], _lit("web")], when=_CHAT_PROFILE),
+            _q("web-chat-host", "This machine's tailnet name (empty: add it later)",
+               web_label="This machine's tailnet name (empty: add it later)",
+               note=["\n  The web chat's address is https://<tailnet name>:"
+                     f"{WEB_SERVE_PORT}{WEB_BASE_PATH}.",
+                     "  `tailscale status --json` shows the name as Self.DNSName.\n"],
+               check="host", example="host.tailnet.ts.net",
+               default=[["ctx", "web_host"]], when=_WEB_CHOSEN),
+            _q("web-chat-login", "Your Tailscale login (empty: pair by token)",
+               web_label="Your Tailscale login (empty: pair by token)",
+               note=["\n  A request from this login is you. `tailscale whois <this machine's",
+                     "  tailnet IP>` shows it. Left empty, you pair a browser once with the",
+                     "  token the bot writes to its private directory.\n"],
+               check="login", example="you@example.edu",
+               default=[["ctx", "web_login"]], when=_WEB_CHOSEN),
+        ],
+    },
+    {
         "id": "auth", "web": True,
         "header": "Phase 8: Authentication Setup",
         "title": "Outlook and chat",
@@ -491,6 +536,8 @@ _TIME = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
 _EMAIL = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$")
 _DOMAIN = re.compile(r"^@?[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$")
 _ZONE = re.compile(r"^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}$")
+_HOST = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+\.?$")
+_LOGIN = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+$")
 _LABEL_REF = re.compile(r"\{([a-z0-9-]+)\}")
 
 MESSAGES = {
@@ -507,6 +554,8 @@ MESSAGES = {
     "domains": "Mail domains separated by commas, such as example.edu; {bad} is not one.",
     "timezone": "A timezone name, such as Europe/Berlin.",
     "url": "A web address starting with https:// or http://.",
+    "host": "A host name, such as host.tailnet.ts.net, with no https:// and no port.",
+    "login": "A login as Tailscale shows it, such as you@example.edu.",
     "must": "The install goes on only after you accept the notice.",
 }
 
@@ -740,6 +789,10 @@ def problem(q: dict, value) -> str | None:
         return MESSAGES["timezone"]
     if check == "url" and not re.match(r"^https?://[^\s/]+", text):
         return MESSAGES["url"]
+    if check == "host" and not _HOST.match(text):
+        return MESSAGES["host"]
+    if check == "login" and not _LOGIN.match(text):
+        return MESSAGES["login"]
     return None
 
 
@@ -841,7 +894,8 @@ def describe(ctx: dict) -> list[dict]:
     """The page's phases: each web phase with the questions this install
     asks (a question that depends on the profile or the chat platform is
     in or out here), the help from the terminal's notes, and what an
-    empty answer takes."""
+    empty answer takes. A phase that asks this install nothing (the chat
+    platform on a profile with no chat) is left out."""
     out = []
     for ph in PHASES:
         if not ph.get("web"):
@@ -871,6 +925,8 @@ def describe(ctx: dict) -> list[dict]:
             if q.get("notice"):
                 row["notice"] = notice_text()
             qs.append(row)
+        if not qs:
+            continue
         intro = [line.replace("{private_dir}", str(ctx.get("private_dir") or "~/.ea-private"))
                  for line in ph.get("web_intro") or ph.get("intro") or []]
         if ph["id"] == "vip" and ctx.get("vips"):

@@ -90,11 +90,12 @@ missing. An install made by hand records it the same way:
 
 The defaults in the code are the full system's, not the recommended
 start: an `ea-config.json` with no `"profile"` (and `scripts/install/setup.sh` with no
-`--profile`) means `assistant`, an absent `chat` block means Slack, and
-`scripts/install/user_init.py --chat` defaults to the `chat` block's
-frontend, else `slack`. The `/setup` skill always
-records the profile you choose, and `scripts/zulip_bootstrap.py` prints a
-`chat` block with `"frontend": "zulip"`, so neither default applies to an
+`--profile`) means `assistant`, and an absent `chat` block means Slack.
+The `chat` phase of `scripts/install/user_init.py` (and `--chat web`,
+`zulip` or `slack`) offers the platform the install already chose, else
+the web chat. The `/setup` skill always records the profile and the chat
+platform you choose, and `scripts/zulip_bootstrap.py` prints a `chat`
+block with `"frontend": "zulip"`, so neither code default applies to an
 install it makes.
 
 ### Phone push

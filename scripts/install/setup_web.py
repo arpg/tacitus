@@ -177,9 +177,16 @@ def next_steps(ctx: dict, platform: str = sys.platform, env: dict | None = None)
                           "again after a change to user-profile.json.",
                   "commands": [f"sudo -u ea-bot {py} {home}/ea-system/preprocessor/install_overlay.py render",
                                f"python3 preprocessor/install_overlay.py install --tree {home}/ea-system"]})
-    if profile == "assistant":
+    if profile == "assistant" and ctx.get("chat") == "web":
         steps.append({"title": "The chat platform",
-                      "text": "docs/SETUP.md 'Zulip server' (recommended), or "
+                      "text": "Publishes the web chat on your tailnet, on an HTTPS port of its "
+                              "own (docs/SETUP.md 'Web chat'). The hardening step below asks "
+                              "you to type its settings back, then starts the bot; open the "
+                              "chat's address on your phone and add it to the Home Screen.",
+                      "commands": [user_init.WEB_SERVE_LINE]})
+    elif profile == "assistant":
+        steps.append({"title": "The chat platform",
+                      "text": "docs/SETUP.md 'Zulip server', or "
                               "docs/SETUP.md 'Slack'. For Zulip, this prints the chat block "
                               "and the key line.",
                       "commands": ["python3 scripts/zulip_bootstrap.py --site <site> "

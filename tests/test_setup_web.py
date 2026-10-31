@@ -162,11 +162,13 @@ def test_the_terminal_walks_the_same_questions(monkeypatch, tmp_path):
     user_init.main()
     used = set(user_init.ANSWERS_USED)
     raw = json.loads(ANSWERS_FILE.read_text())
-    ctx = {"profile": "assistant", "chat": "slack", "ex": {}, "files": {},
+    # a fresh tree: the chat phase takes its default, the web chat, and the
+    # auth phase that follows asks no Slack token
+    ctx = {"profile": "assistant", "chat": "web", "ex": {}, "files": {},
            "detected_timezone": "America/Denver"}
     want: set = set()
     for pid in ("identity", "scheduling", "inbox", "autonomy", "groups", "deadlines", "style",
-                "auth", "tone", "reimbursement", "vip", "push"):
+                "chat", "auth", "tone", "reimbursement", "vip", "push"):
         _values, errors = Q.resolve(pid, raw, ctx, "terminal", used=want)
         assert not errors, (pid, errors)
     assert used - {"answer-the-first-week-preference-questions-now"} == want
@@ -205,6 +207,52 @@ def test_posted_answers_write_what_the_terminal_writes(start, monkeypatch, tmp_p
     cfg = json.loads((web / "config" / "ea-config.json").read_text())
     assert cfg["profile"] == "email" and cfg["acknowledged"]["responsibility"]
     assert "mail_mediation" not in cfg and "quiet_hours" in cfg, "started from the template"
+
+
+def test_the_chat_screen_writes_what_the_terminal_writes(start, monkeypatch, tmp_path):
+    """On the assistant profile the page asks the chat platform, the web
+    chat first; the posted answers write the bytes the terminal's chat
+    phase writes, the screens after it ask no Slack token, and the last
+    screen gives the `tailscale serve` line. An email install has no chat
+    screen at all."""
+    chosen = {"chat-platform": "web", "web-chat-host": "host.tail0000.ts.net",
+              "web-chat-login": "owner@example.test"}
+    term, web = tmp_path / "term", tmp_path / "web"
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps({"profile": "assistant", "acknowledged": True, **chosen}))
+    monkeypatch.setattr("builtins.input", lambda p="": pytest.fail(f"input() called: {p!r}"))
+    monkeypatch.setenv("EA_PRIVATE_DIR", str(term / "private"))
+    for pid in ("profile", "chat"):
+        monkeypatch.setattr(sys, "argv", ["user_init.py", "--ea-dir", str(term),
+                                          "--answers", str(answers), "--phase", pid])
+        user_init.main()
+    c, srv, _ = start(web)
+    _s, doc, _ = c.call("GET", "/api/phases")
+    (screen,) = [p for p in doc["phases"] if p["id"] == "chat"]
+    choice = screen["questions"][0]
+    assert choice["key"] == "chat-platform" and choice["choices"][0]["value"] == "web"
+    assert c.post("profile", {"profile": "assistant", "acknowledged": True})[0] == 200
+    with srv.lock:
+        assert Q.current(srv.context())["chat-platform"] == "web", "the default is the web chat"
+    status, doc = c.post("chat", chosen)
+    assert status == 200, doc
+    name = "config/ea-config.json"
+    assert (web / name).read_bytes() == (term / name).read_bytes()
+    assert json.loads((web / name).read_text())["chat"]["web"]["public_url"] == \
+        "https://host.tail0000.ts.net:8444/chat"
+    _s, doc, _ = c.call("GET", "/api/phases")
+    keys = {q["key"] for p in doc["phases"] for q in p["questions"]}
+    assert "slack-bot-token" not in keys and "web-chat-host" in keys
+    commands = [cmd for step in doc["finish"] for cmd in step["commands"]]
+    assert user_init.WEB_SERVE_LINE in commands
+    assert not any("zulip_bootstrap.py" in cmd for cmd in commands)
+    # a bad host comes back under its key
+    status, doc = c.post("chat", {"chat-platform": "web", "web-chat-host": "https://x"})
+    assert status == 422 and list(doc["errors"]) == ["web-chat-host"]
+    # the email profile has no chat screen
+    assert c.post("profile", {"profile": "email"})[0] == 200
+    _s, doc, _ = c.call("GET", "/api/phases")
+    assert "chat" not in [p["id"] for p in doc["phases"]]
 
 
 def test_lists_post_as_text_as_the_page_sends_them(start, tmp_path):
