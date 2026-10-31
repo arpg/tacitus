@@ -346,6 +346,9 @@ and Slack.
 
 You need Tailscale on this machine and on your phone. If HTTPS is off
 for your tailnet, the first `tailscale serve` says how to turn it on.
+In Docker the steps differ: a TLS proxy you run takes the place of
+`tailscale serve`, Tailscale is optional, and the pairing token is the
+sign-in ([docs/docker.md](docker.md#web-chat), Web chat).
 
 1. **The settings.** `/setup` asks for this machine's tailnet name and
    your Tailscale login and writes the chat block into `ea-config.json`
@@ -1308,8 +1311,12 @@ the two-user split inside the image: no `ea-bot` account, systemd unit
 or crontab on the host. [docs/docker.md](docker.md) is the whole
 procedure (the settings file, the volumes, the sign-ins through the
 `owner` and `signin` services, the overlay, what the doctor shows along
-the way). `tests/install/docker-smoke.sh` runs the fresh-install path in
-a container.
+the way). On `assistant` the bot container serves the web chat, so the
+stack needs no Zulip: `WEBCHAT_PUBLIC_URL` in compose's `.env` names its
+address, a TLS proxy (the Caddy example in `deploy/docker/webchat-tls/`,
+or your own) serves it, and the pairing token on the `ea-private` volume
+is the sign-in (docs/docker.md, Web chat). `tests/install/docker-smoke.sh`
+runs the fresh-install path in a container.
 
 ## macOS notes
 

@@ -25,6 +25,10 @@ docs/_local/
 # install's own facts, rendered from config.
 CLAUDE.local.md
 
+# A container install's own compose additions (docs/docker.md, Web chat:
+# the TLS proxy example copied next to compose.yaml).
+compose.override.yaml
+
 # The closure corpus rebuilt from the owner's own history
 # (scripts/build_closure_corpus.py). Owner-private: the builder writes it
 # to ~/.ea-private by default, and an in-repo copy is never tracked.

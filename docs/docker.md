@@ -15,7 +15,8 @@ Stage 2 is at the end of this page and is not built.
 | `init` | root, then ea-bot | Checks the volumes, prepares ea-bot's space as ea-bot (config templates, copied-in files, the profile, mail mediation), fixes the owner's private volume, renders the install overlay, then exits. | every `up` |
 | `mediator` | owner | The mail mediator. It holds the Graph and Gmail tokens and runs the agent's safe mail operations. | `up` |
 | `scheduler` | owner | supercronic with the cron jobs of your install profile. | `up` |
-| `bot` | owner | The chat bot. | `--profile assistant` |
+| `bot` | owner | The chat bot, and the web chat on port 8470 of its container (published on the host's loopback). | `--profile assistant` |
+| `webchat-tls` | (its own) | Caddy, TLS in front of the web chat, from the example in `deploy/docker/webchat-tls/` ([Web chat](#web-chat)). | `--profile assistant`, once copied in |
 | `zulip` and its four helpers | (their own) | A self-hosted Zulip, HTTP on `127.0.0.1:8090`. | `--profile zulip` |
 | `setup` | root, then ea-bot and the owner in turn | The first configuration, once: the config questions as `ea-bot`, `~/.ea/.env` and the owner's secrets, the Claude login as `ea-bot`, the mail sign-in as the owner, the overlay, the doctor. | `run` only |
 | `agent` | ea-bot | A shell or a command as `ea-bot`, in its deployed tree. | `run` only |
@@ -69,7 +70,10 @@ doctor's checklist ([First run](#first-run-docker-compose-run---rm-setup)
 says what it does). Two of its steps need you in a browser: the Claude
 login for `ea-bot` and the Microsoft sign-in. Step 3 starts `init`, the
 mediator and the scheduler; `docker compose --profile assistant up -d`
-adds the chat bot.
+adds the chat bot. On `assistant` the chat is the web chat the bot
+serves itself, so the stack needs no chat server: set
+`WEBCHAT_PUBLIC_URL` in `.env` before step 2 and put TLS in front
+([Web chat](#web-chat)).
 
 To check the install again later:
 
@@ -119,10 +123,12 @@ In order:
    registration yet, answer `skip` and have IT fill `docs/it-request.md`;
    run `setup` again when they answer.
 
-3. **The chat values**, on the `assistant` profile only: Zulip (the
-   server URL, the bot's email, your user id, the bot's API key into
-   `secrets.env`; `scripts/zulip_bootstrap.py` prints them once the
-   server runs, see [Self-hosted Zulip](#self-hosted-zulip)) or Slack
+3. **The chat values**, on the `assistant` profile only: the web chat
+   (the default: its address, `WEBCHAT_PUBLIC_URL` unless you type
+   another, into the owner-private `chat.json`; [Web chat](#web-chat)),
+   Zulip (the server URL, the bot's email, your user id, the bot's API
+   key into `secrets.env`; `scripts/zulip_bootstrap.py` prints them once
+   the server runs, see [Self-hosted Zulip](#self-hosted-zulip)) or Slack
    (the channel id and name and your member id into `.env`, the two
    tokens into `secrets.env`; SETUP.md, Slack).
 
@@ -176,10 +182,10 @@ kept. Finish with `docker compose up -d`.
 
 **Without prompts.** `--answers FILE` takes every answer from a JSON
 file by key (`scripts/install/user_init.py --answers`; `docs/install-testing.md` lists
-the keys, and the role adds `chat-frontend`, `zulip-site`,
-`zulip-bot-email`, `zulip-owner-id`, `zulip-api-key`, `slack-owner-id`
-and `claude-login`), asks nothing and skips the two logins, which need a
-terminal. Mount the file where the argument names it:
+the keys, and the role adds `chat-frontend` (`web`, `zulip` or `slack`),
+`webchat-public-url`, `zulip-site`, `zulip-bot-email`, `zulip-owner-id`,
+`zulip-api-key`, `slack-owner-id` and `claude-login`), asks nothing and
+skips the two logins, which need a terminal. Mount the file where the argument names it:
 
 ```bash
 docker compose run --rm -v ./answers.json:/answers.json:ro setup --answers /answers.json
@@ -196,7 +202,7 @@ this way (`tests/install/docker-smoke.sh setup`, with
 | Volume | Mounted at | Holds |
 |---|---|---|
 | `ea-data` | `/home/ea-bot/.ea` | `~/.ea` of a host install: config, state, the ledger, the auth directory, plugins. |
-| `ea-private` | `/home/<OWNER_USER>/.ea-private` | The owner's secrets (`secrets.env`), the plugin lock, logs and the generated crontab. Mode 0700. |
+| `ea-private` | `/home/<OWNER_USER>/.ea-private` | The owner's secrets (`secrets.env`), the chat settings (`chat.json`), the web chat's store and pairing token, the plugin lock, logs and the generated crontab. Mode 0700. |
 | `ea-bot-claude` | `/home/ea-bot/.claude` | ea-bot's Claude Code login, config file and session transcripts. |
 
 `OWNER_USER` in `.env` (default `owner`) names the owner user in the
@@ -272,8 +278,9 @@ docker compose cp ./secrets.env mediator:/home/owner/.ea-private/secrets.env
 docker compose up -d
 ```
 
-`init` makes `secrets.env`, `bot.env` and `crontab.extra` the owner's,
-mode 0600.
+`init` makes `secrets.env`, `bot.env`, `crontab.extra`, `chat.json`,
+`webchat-pair.token` and `webchat-relay.json` the owner's, mode 0600, and
+the directory 0700.
 
 ## A step by hand
 
@@ -415,6 +422,169 @@ and no one else can write it; `init` sets that.
 Not in the container: the nightly evals (they read git history) and the
 browser token harvests of a host install.
 
+## Web chat
+
+On the `assistant` profile the bot serves its own chat, a web app you
+add to your phone's home screen (SETUP.md, Web chat; the contract is
+docs/webchat.md). In Docker it needs no Zulip and no Tailscale: a TLS
+proxy you run puts it on an HTTPS address, and you sign in once per
+browser with the pairing token.
+
+**Where it listens.** The bot binds port 8470 on every interface of its
+own container. A proxy on the compose network reaches it as `bot:8470`;
+compose also publishes it on this machine's loopback as
+`127.0.0.1:${WEBCHAT_PORT}` (default 8470) for a proxy on the host, and
+on no other address. Inside the container the relay client and the
+health check reach it on `127.0.0.1`. A request through the proxy or
+the published port comes from the compose network, never from the
+container's loopback, so it gets no loopback allowance: it must name the
+public host in `Host` and, on a POST, carry the public `Origin`. So
+`http://127.0.0.1:8470/chat/` in a browser on the host loads the page
+but cannot pair; open the chat at its public address.
+
+**The settings.** Set the address before the first run, in `.env`:
+
+```bash
+WEBCHAT_PUBLIC_URL=https://tacitus.example.edu/chat
+```
+
+The `setup` role offers it as the default answer and writes the
+owner-private `chat.json` on the `ea-private` volume:
+
+```json
+{
+  "frontend": "web",
+  "shadow": "",
+  "web": {
+    "bind": "0.0.0.0",
+    "port": 8470,
+    "base_path": "/chat",
+    "public_url": "https://tacitus.example.edu/chat",
+    "trust_tailscale_header": false
+  }
+}
+```
+
+The path of the address is the chat's base path (`/chat` when the
+address has none); the proxy passes it unchanged. The identity header is
+off: no tailscaled runs in the stack, so the pairing token is the
+sign-in. To change the address later, or to add the web chat to an
+install that runs on Zulip or Slack (`--shadow` keeps that front end and
+mirrors it, as SETUP.md, Beside Zulip describes), run the same seed as
+the owner and restart the bot:
+
+```bash
+docker compose run --rm owner python3 /opt/ea-system/deploy/docker/chat_seed.py web --public-url https://tacitus.example.edu/chat
+docker compose run --rm owner python3 /opt/ea-system/deploy/docker/chat_seed.py web --shadow
+docker compose run --rm owner python3 /opt/ea-system/deploy/docker/chat_seed.py show
+docker compose restart bot
+```
+
+Without `--public-url` the seed takes `WEBCHAT_PUBLIC_URL`, and with
+neither it keeps the address `chat.json` has.
+
+**The store and the token.** Both live on the `ea-private` volume, in
+the owner's 0700 directory: `webchat.sqlite` (the messages, mode 0600,
+uploads beside it) and `webchat-pair.token` (mode 0600), which the bot
+writes on its first start. The bot serves the web chat only when
+`chat.json`, the directory and these files are the owner's with these
+modes. On every `up`, `init` makes the directory 0700 and a `chat.json`,
+token or relay key copied in the owner's at 0600. Otherwise `docker
+compose logs bot` says `web chat: not serving:` and why, and the health
+check fails. To read the token:
+
+```bash
+docker compose run --rm owner sh -c 'cat "$HOME/.ea-private/webchat-pair.token"'
+```
+
+Open the public address, paste the token when the app asks, and add the
+app to the home screen. To sign every browser out, delete the token file
+and restart the bot: it writes a new one, and the notification
+subscriptions made under the old one are dropped.
+
+```bash
+docker compose run --rm owner sh -c 'rm "$HOME/.ea-private/webchat-pair.token"'
+docker compose restart bot
+```
+
+**TLS in front.** A browser keeps the pairing cookie only over HTTPS,
+and installs the app and takes notifications only there. The chat needs
+an origin of its own (scheme, host and port): serve nothing else on its
+host name and port. Give the host name only the reach you need (the
+campus network, a VPN); the token is the lock on everything behind it.
+
+- *Caddy on the compose network* (`deploy/docker/webchat-tls/`). Set
+  `WEBCHAT_HOST` to the host name of `WEBCHAT_PUBLIC_URL`, then:
+
+  ```bash
+  cp deploy/docker/webchat-tls/compose.caddy.yaml compose.override.yaml
+  docker compose --profile assistant up -d
+  ```
+
+  Compose reads `compose.override.yaml` with `compose.yaml`, so the
+  `webchat-tls` service starts with the bot. It publishes
+  `WEBCHAT_HTTPS_PORT` (443) and `WEBCHAT_HTTP_PORT` (80), keeps its
+  certificates in the `webchat-tls` volume, and passes every request to
+  `bot:8470` with its `Host`, path and body as sent, the event stream
+  unbuffered. For a public DNS name that reaches this machine on ports 80
+  and 443, Caddy gets a Let's Encrypt certificate and renews it. For a
+  certificate from your institution, mount its directory (the commented
+  line in the compose file) and uncomment the `tls` line in the
+  `Caddyfile`. A name under `.localhost` gets a certificate from Caddy's
+  own authority, which a browser warns about: for a test only.
+- *nginx on the host*, in the `server` block of the chat's host name
+  with your certificate, proxying to the published port:
+
+  ```nginx
+  location /chat/ {
+      proxy_pass http://127.0.0.1:8470;   # WEBCHAT_PORT; no path here, so the path goes as sent
+      proxy_set_header Host $http_host;   # the bot answers only for public_url's host and port
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      proxy_buffering off;                # the event stream
+      proxy_read_timeout 1h;
+      client_max_body_size 50m;           # uploads
+  }
+  ```
+
+- *`tailscale serve` on the host*, for an install on a tailnet:
+  `sudo tailscale serve --bg --https=8444 --set-path /chat
+  http://127.0.0.1:8470/chat`, with `WEBCHAT_PUBLIC_URL` the
+  `https://<host>.<tailnet>.ts.net:8444/chat` it gives. Sign-in is still
+  the pairing token: the bot never sees tailscaled's connection.
+
+**Health.** The bot container's health check (the entrypoint's `health`
+role, every minute, as the owner) asks the web chat for `/api/me` on the
+container's loopback with no credential and wants its 401. `docker
+compose ps` shows the bot `healthy`, and `docker inspect --format
+'{{json .State.Health}}'` on its container keeps the last answers. A
+chat block without the web chat passes. The doctor's `web chat:` rows
+check the settings, the sign-in and the store:
+
+```bash
+docker compose run --rm owner python3 /opt/ea-system/scripts/ea-doctor.py --profile assistant
+```
+
+**The relay.** A phone off the network the proxy serves reaches the
+chat through a relay that sees only ciphertext (docs/webchat-relay.md).
+The bot's relay client makes outbound HTTPS requests only and needs no
+port. As the owner, create the key file on the `ea-private` volume, add
+the `relay` block to `chat.json` with the install id it printed (only
+`url` and `install_id`; the key file keeps its default beside the
+store), and restart the bot:
+
+```bash
+docker compose run --rm owner sh -c 'python3 /opt/ea-system/scripts/webchat-relay.py init --key-file "$HOME/.ea-private/webchat-relay.json" --relay-url https://relay.example.net'
+docker compose run --rm owner python3 /opt/ea-system/deploy/docker/chat_seed.py relay --url https://relay.example.net --install-id <install id>
+docker compose restart bot
+```
+
+`docker compose logs bot` then says `relay: connected`. Pair a phone from
+"Pair a phone" in the web chat at its public address
+(docs/webchat-relay.md, Owner steps, from step 6; the commands there run
+through `docker compose run --rm owner`). `chat_seed.py relay --off`
+removes the block.
+
 ## Self-hosted Zulip
 
 Set the five `ZULIP__*` secrets in `.env` (`openssl rand -hex 32` makes
@@ -457,6 +627,9 @@ To move a Python package, edit `deploy/docker/requirements.top`, run
   and `up` again.
 - **No resident pane.** Chat runs one Claude session per topic, the
   default. The tmux resident is not started.
+- **The web chat behind your TLS proxy**, not `tailscale serve`: the
+  identity header is off and the pairing token is the sign-in
+  ([Web chat](#web-chat)).
 - **Debian packages** come from the trixie archive at build time. The base
   image, the Python packages, supercronic and Claude Code are pinned.
 

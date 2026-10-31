@@ -7,6 +7,9 @@ port, a base path, a public_url with the chat's own HTTPS port under it),
 the sign-in (the Tailscale login or a private pairing token) and the
 store (a directory that is the owner's alone, outside the resident's
 tree). Beside Zulip (shadow mode) it reports the Zulip checks and these.
+In a container (EA_CONTAINER=docker, set by compose.yaml) the chat sits
+behind a TLS proxy on a host name of its own: a public_url without a
+port passes, a loopback bind warns, and the fixes name docker compose.
 Every run is against scratch directories.
 """
 from __future__ import annotations
@@ -38,8 +41,11 @@ def _install(root: Path, block: dict | None, *, in_config: dict | None = None):
     return ea, priv
 
 
-def _rows(ea: Path, priv: Path, profile: str = "assistant") -> dict:
-    env = {**os.environ, "EA_DIR": str(ea), "EA_PRIVATE_DIR": str(priv)}
+def _rows(ea: Path, priv: Path, profile: str = "assistant", *, container: bool = False) -> dict:
+    env = {k: v for k, v in os.environ.items() if k != "EA_CONTAINER"}
+    env.update({"EA_DIR": str(ea), "EA_PRIVATE_DIR": str(priv)})
+    if container:
+        env["EA_CONTAINER"] = "docker"
     r = subprocess.run([sys.executable, str(DOCTOR), "--json", "--profile", profile],
                        capture_output=True, text=True, env=env, timeout=120)
     return {x["name"]: x for x in json.loads(r.stdout)["results"]}
@@ -147,3 +153,35 @@ def test_the_email_profile_checks_no_web_chat(tmp_path):
     rows = _rows(ea, priv, profile="email")
     assert not [n for n in rows if n.startswith("web chat")]
 
+
+def test_a_container_install_behind_a_tls_proxy(tmp_path):
+    """The block deploy/docker/chat_seed.py writes: every interface of the
+    container, the identity header off, a host name of its own on 443."""
+    web = {"bind": "0.0.0.0", "port": 8470, "base_path": "/chat",
+           "public_url": "https://chat.example.test/chat", "trust_tailscale_header": False}
+    ea, priv = _install(tmp_path, {"frontend": "web", "shadow": "", "web": web})
+    rows = _rows(ea, priv, container=True)
+    settings = rows["web chat: settings"]
+    assert settings["status"] == "PASS", settings
+    assert "0.0.0.0:8470/chat" in settings["detail"] and "nothing else" in settings["detail"]
+    sign_in = rows["web chat: sign-in"]
+    assert sign_in["status"] == "WARN" and "docker compose" in sign_in["fix"]
+    assert "tailscale" not in sign_in["fix"]
+    (priv / "webchat-pair.token").write_text("t" * 43 + "\n")
+    (priv / "webchat-pair.token").chmod(0o600)
+    assert _rows(ea, priv, container=True)["web chat: sign-in"]["status"] == "PASS"
+    # a host block in a container: loopback is the container's own
+    (priv / "chat.json").write_text(json.dumps({"frontend": "web", "web": {
+        "public_url": "https://chat.example.test/chat"}}))
+    got = _rows(ea, priv, container=True)["web chat: settings"]
+    assert got["status"] == "WARN" and "bind 127.0.0.1" in got["detail"]
+    assert "0.0.0.0" in got["fix"] and "docker compose restart bot" in got["fix"]
+    # the same block on a host still wants the chat's own port
+    got = _rows(ea, priv)["web chat: settings"]
+    assert got["status"] == "WARN" and "no port" in got["detail"]
+    # no chat.json, a web block only in ea-config.json: the container's seed is the fix
+    (priv / "chat.json").unlink()
+    (ea / "config" / "ea-config.json").write_text(json.dumps(
+        {"profile": "assistant", "chat": {"frontend": "web", "web": web}}))
+    got = _rows(ea, priv, container=True)["web chat: settings"]
+    assert got["status"] == "WARN" and "chat_seed.py web" in got["fix"]

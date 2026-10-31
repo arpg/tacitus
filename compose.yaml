@@ -4,7 +4,7 @@
 #
 #   docker compose run --rm setup                 the first configuration, once
 #   docker compose up -d                          email or review-only profile
-#   docker compose --profile assistant up -d      adds the chat bot
+#   docker compose --profile assistant up -d      adds the chat bot and its web chat
 #   docker compose --profile zulip up -d          adds a self-hosted Zulip
 #   docker compose run --rm agent claude          Claude as ea-bot (auth login)
 #   docker compose run --rm owner <command>       a command as the owner
@@ -28,6 +28,11 @@ x-ea: &ea
     TZ: ${TZ:-UTC}
     EA_PROFILE: ${EA_PROFILE:-email}
     EA_MAIL_MEDIATION: ${EA_MAIL_MEDIATION:-1}
+    # The address the owner opens the web chat at, behind a TLS proxy; the
+    # setup role writes it into the owner-private chat.json.
+    WEBCHAT_PUBLIC_URL: ${WEBCHAT_PUBLIC_URL:-}
+    # The doctor's container wording (docs/docker.md, Web chat).
+    EA_CONTAINER: docker
   volumes:
     # ea-bot space: state, config, the ledger, plugins (~/.ea on a host).
     - ea-data:/home/ea-bot/.ea
@@ -65,12 +70,28 @@ services:
     restart: unless-stopped
     depends_on: *after-init
 
-  # The chat bot. The assistant profile only.
+  # The chat bot. The assistant profile only. Its web chat listens on
+  # port 8470 of the container (chat.json binds every interface there;
+  # deploy/docker/chat_seed.py): a TLS proxy on this network reaches
+  # bot:8470, one on the host 127.0.0.1:${WEBCHAT_PORT}. Never publish it
+  # on another address: TLS goes in front (docs/docker.md, Web chat).
   bot:
     <<: *ea
     command: ["bot"]
     restart: unless-stopped
     profiles: ["assistant"]
+    expose:
+      - "8470"
+    ports:
+      - "127.0.0.1:${WEBCHAT_PORT:-8470}:8470"
+    # The web chat answers on the container's loopback (the entrypoint's
+    # health role); a chat block without the web chat passes.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/ea-entrypoint", "health"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
     depends_on:
       init:
         condition: service_completed_successfully

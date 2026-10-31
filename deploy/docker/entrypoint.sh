@@ -29,6 +29,8 @@
 #                    --answers takes every answer from a file, asks
 #                    nothing and skips the logins.
 #   bot              the chat bot (assistant profile)
+#   health           the bot container's health check: the web chat
+#                    answers on the container's loopback (compose.yaml)
 #   mediator         the mail mediator, the owner-side executor of the
 #                    agent's safe mail operations
 #   scheduler        supercronic with the profile's cron lines
@@ -61,7 +63,7 @@ check_volume() {
 }
 
 prepare_volumes() {
-    local f ok=1
+    local ok=1
     check_volume "$EA_DIR" ea-bot || ok=0
     check_volume "$EA_BOT_HOME/.claude" ea-bot || ok=0
     check_volume "$PRIV_DIR" "$OWNER_USER" || ok=0
@@ -74,10 +76,20 @@ prepare_volumes() {
         --code-dir "$CODE_DIR" --profile "${EA_PROFILE:-email}" \
         --mediation "${EA_MAIL_MEDIATION:-1}"
 
-    # The owner's private volume: ea-bot cannot enter it, so root fixes it
-    # by name. Files `docker compose cp` brings in arrive as root.
+    prepare_private_volume
+}
+
+# The owner's private volume: ea-bot cannot enter it, so root fixes it by
+# name. Files `docker compose cp` brings in arrive as root. The web chat
+# serves only from a 0700 directory of the owner's, with its settings
+# (chat.json), store and pairing token at 0600 (docs/webchat.md, Identity
+# and auth); the bot makes the store and the token itself.
+prepare_private_volume() {
+    local f
+    chmod 0700 "$PRIV_DIR"
     install -d -o "$OWNER_USER" -g "$OWNER_USER" -m 0700 "$PRIV_DIR/logs"
-    for f in "$PRIV_DIR/secrets.env" "$PRIV_DIR/bot.env" "$PRIV_DIR/crontab.extra"; do
+    for f in "$PRIV_DIR/secrets.env" "$PRIV_DIR/bot.env" "$PRIV_DIR/crontab.extra" \
+             "$PRIV_DIR/chat.json" "$PRIV_DIR/webchat-pair.token" "$PRIV_DIR/webchat-relay.json"; do
         if [ -f "$f" ] && [ ! -L "$f" ]; then
             chown "$OWNER_USER:$OWNER_USER" "$f"
             chmod 0600 "$f"
@@ -248,18 +260,18 @@ write_owner_secret() {
 }
 
 # A JSON object into the owner-private chat.json, mode 0600: the chat
-# settings the bot trusts (preprocessor/owner_trust.py CHAT_FILE).
+# settings the bot trusts (preprocessor/owner_trust.py CHAT_FILE), written
+# as the owner through the owner checks (deploy/docker/chat_seed.py).
 write_owner_chat() {
-    printf '%s' "$1" | run_as_owner python3 -c '
-import json, os, sys
-block = json.load(sys.stdin)
-path = sys.argv[1]
-fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-with os.fdopen(fd, "w") as f:
-    f.write(json.dumps(block, indent=2) + "\n")
-os.chmod(path, 0o600)
-print(f"[setup] chat settings -> {path}", file=sys.stderr)
-' "$PRIV_DIR/chat.json"
+    printf '%s' "$1" | run_as_owner python3 "$CODE_DIR/deploy/docker/chat_seed.py" write
+}
+
+# The web chat into the owner-private chat.json (docs/docker.md, Web chat):
+# the container's bind and port, the identity header off, public_url the
+# argument (empty keeps the one there). The owner runs the same command
+# later through the owner service.
+write_owner_web_chat() {
+    run_as_owner python3 "$CODE_DIR/deploy/docker/chat_seed.py" web --public-url "$1"
 }
 
 setup_answers_copy() {
@@ -333,12 +345,28 @@ setup_graph_env() {
 }
 
 setup_chat_env() {
-    local site bot_email owner_id pairs
+    local site bot_email owner_id pairs url
     [ "$SETUP_PROFILE" = assistant ] || return 0
-    say "Chat platform (assistant profile; docs/SETUP.md, Zulip server)"
-    echo "  Zulip is recommended: a server on this machine, where every message stays."
-    ask chat-frontend "Chat platform: zulip or slack" zulip
+    say "Chat platform (assistant profile; docs/docker.md, Web chat)"
+    echo "  The web chat is recommended: the bot serves it itself, with no chat server."
+    echo "  Zulip runs as a server in this stack (--profile zulip); Slack keeps every"
+    echo "  message on Slack's servers."
+    ask chat-frontend "Chat platform: web, zulip or slack" web
     case "${REPLY,,}" in
+        web)
+            echo "  The address you open the chat at, behind your TLS proxy: https://<host>/chat."
+            echo "  WEBCHAT_PUBLIC_URL in compose's .env is the default (docs/docker.md, Web chat)."
+            ask webchat-public-url "The web chat's address (Enter: the default, or later)" \
+                "${WEBCHAT_PUBLIC_URL:-}"
+            url="$REPLY"
+            if ! write_owner_web_chat "$url"; then
+                log "the web chat settings were not written: give an https:// address"
+                exit 2
+            fi
+            SETUP_CHAT_ARGS=(--chat web)
+            echo "  Once the stack runs, the bot writes the pairing token; read it with"
+            echo "    docker compose run --rm owner sh -c 'cat \"\$HOME/.ea-private/webchat-pair.token\"'"
+            ;;
         zulip)
             echo "  deploy/zulip/README.md and scripts/zulip_bootstrap.py give these values;"
             echo "  inside compose the bot reaches the zulip profile at http://zulip.localhost."
@@ -379,7 +407,7 @@ setup_chat_env() {
             [ -z "$REPLY" ] || write_owner_secret SLACK_APP_TOKEN "$REPLY"
             ;;
         *)
-            log "chat platform '$REPLY' is not zulip or slack"
+            log "chat platform '$REPLY' is not web, zulip or slack"
             exit 2 ;;
     esac
 }
@@ -605,6 +633,11 @@ case "$role" in
         cd "$CODE_DIR"
         as_owner "$0" __with_env python3 "$CODE_DIR/ea-chat-bot.py"
         ;;
+    health)
+        # compose.yaml's health check of the bot container, as the owner,
+        # who reads the chat block; it asks the web chat on loopback.
+        as_owner python3 "$CODE_DIR/deploy/docker/healthcheck.py"
+        ;;
     mediator)
         cd "$CODE_DIR"
         as_owner "$0" __with_env python3 "$CODE_DIR/preprocessor/mail_mediator.py"
@@ -635,7 +668,7 @@ case "$role" in
         with_env "$@"
         ;;
     "")
-        echo "usage: entrypoint.sh init|setup [--answers FILE]|bot|mediator|scheduler|agent [cmd]|owner [cmd]" >&2
+        echo "usage: entrypoint.sh init|setup [--answers FILE]|bot|health|mediator|scheduler|agent [cmd]|owner [cmd]" >&2
         exit 2
         ;;
     *)

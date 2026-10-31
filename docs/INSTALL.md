@@ -27,8 +27,8 @@ Start the IT request first. Everything else fits in one sitting.
 | An Outlook app registration | every profile | days, sometimes weeks | Send [docs/it-request.md](it-request.md) to your IT group. It lists the permissions, the data flow and the security model. If you can register apps yourself, see SETUP.md "Microsoft Graph app registration". |
 | A Google Cloud OAuth app | Google Calendar or Gmail | 15 minutes | SETUP.md "Google OAuth app". Google shows an "unverified app" screen at sign-in; continue through "Advanced". You are the only user. Publish the app, or Google ends the sign-in every 7 days. |
 | An `EA-Managed` Google calendar | `assistant` (optional elsewhere) | 2 minutes | A secondary calendar where your scheduling rules live as recurring events. Setup tells you when to create it. |
-| Tailscale on the machine and on your phone | `assistant` with the web chat | minutes | The bot serves the web chat on your tailnet. See [Choosing a chat platform](#choosing-a-chat-platform). |
-| Docker, or a Slack workspace | `assistant` on Zulip or Slack instead | minutes | Docker runs the Zulip chat server. |
+| Tailscale on the machine and on your phone | `assistant` with the web chat | minutes | The bot serves the web chat on your tailnet. See [Choosing a chat platform](#choosing-a-chat-platform). In Docker, a TLS proxy and a host name take its place ([docs/docker.md](docker.md#web-chat)). |
+| Docker, or a Slack workspace | `assistant` on Zulip or Slack instead | minutes | Docker runs the Zulip chat server. A Docker install on the web chat needs no Zulip. |
 | A model you host | optional | varies | Any OpenAI-compatible endpoint (vLLM, Ollama). It reads mail and writes drafts in place of Claude. See [docs/remote-llm.md](remote-llm.md). |
 
 Python 3.10 to 3.14 must be on the machine. On macOS use Homebrew's
@@ -243,9 +243,13 @@ What you can change later, by asking the EA or by editing the file:
 
 ## Other ways to install
 
-**Docker.** The EA and the Zulip server run as containers on one host.
-[docs/docker.md](docker.md) covers the first run, the volumes and
-the differences from a host install.
+**Docker.** The EA runs as containers on one host, with no account,
+unit or crontab on the host. On `assistant` the bot container serves the
+web chat behind a TLS proxy you run (a Caddy example ships beside
+`compose.yaml`), so no chat server is needed; Zulip is a compose profile
+for an install that wants it. [docs/docker.md](docker.md) covers the
+first run, the volumes, the web chat and the differences from a host
+install.
 
 **Without Claude Code.** The `scripts/install/user_init.py` wizard writes your
 preferences and config files interactively. It does not create the
