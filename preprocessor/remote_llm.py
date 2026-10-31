@@ -287,11 +287,34 @@ def ghost_window(part: str, cfg: dict | None = None) -> tuple[date | None, date 
 
 
 def mode(part: str, cfg: dict | None = None, today: date | None = None) -> str:
-    """`sealed`, `ghost`, `enforce`, `shadow` or `off` for one part. The
-    end date applies to shadow only; `sealed` and `ghost` are mail only,
-    `enforce` is mail or scheduling. `ghost` reads `enforce` once its
-    window has passed (the lanes behave as under enforce either way);
-    `sealed` and `enforce` have no end date."""
+    """The part's mode in force: switch_mode() after the owner's routing
+    table (model_routing.py), which can lift mail to `enforce` (`local`)
+    or turn a part off (`hosted`). Every lane that reads a part reads it
+    here."""
+    cfg = cfg if cfg is not None else config()
+    raw = switch_mode(part, cfg, today)
+    if part not in PARTS:
+        return raw
+    try:
+        try:
+            import model_routing
+        except ModuleNotFoundError:
+            from preprocessor import model_routing
+        if part == "mail":
+            return model_routing.mail_mode(raw, cfg)
+        return model_routing.scheduling_mode(raw, cfg)
+    except Exception as e:
+        # The switch alone is the behaviour from before the table.
+        print(f"remote_llm: routing table unread, the {part} switch stands: {e}", file=sys.stderr)
+        return raw
+
+
+def switch_mode(part: str, cfg: dict | None = None, today: date | None = None) -> str:
+    """`sealed`, `ghost`, `enforce`, `shadow` or `off` for one part, as its
+    switch alone says. The end date applies to shadow only; `sealed` and
+    `ghost` are mail only, `enforce` is mail or scheduling. `ghost` reads
+    `enforce` once its window has passed (the lanes behave as under
+    enforce either way); `sealed` and `enforce` have no end date."""
     cfg = cfg if cfg is not None else config()
     val = cfg.get(part, "off")
     if val == "sealed":
@@ -624,13 +647,46 @@ SWITCHES = {"mail": ("off", "shadow", "enforce", "ghost", "sealed"),
             "reconcile": ("off", "nightly")}
 
 
+# The switches the routing table can move (model_routing.py): the task
+# each one serves and the value it reads when the task is local.
+ROUTED = {"drafting": ("drafting", "remote"), "digests": ("digests", "remote"),
+          "briefings": ("briefing", "remote"), "audits": ("audit", "remote")}
+
+
+def routed(task: str, cfg: dict | None = None) -> str:
+    """model_routing.choice for a task: `local`, `hosted`, or `auto` (the
+    switch decides), and `auto` when the table cannot be read."""
+    try:
+        try:
+            import model_routing
+        except ModuleNotFoundError:
+            from preprocessor import model_routing
+        return model_routing.choice(task, cfg=cfg if cfg is not None else config())
+    except Exception as e:
+        print(f"remote_llm: routing table unread, the {task} switch stands: {e}", file=sys.stderr)
+        return "auto"
+
+
+def local_for(task: str, switch_local: bool, cfg: dict | None = None) -> bool:
+    """True when the local model does `task` now: the routing table's
+    `local` or `hosted`, else what the lane's own switch says
+    (`switch_local`). The check each lane makes at its decision point."""
+    c = routed(task, cfg)
+    return bool(switch_local) if c == "auto" else c == "local"
+
+
 def switches(cfg: dict | None = None, today: date | None = None) -> dict:
     """{switch: {"set": value in the file, "effective": value in force}}.
-    They differ when a shadow switch is past `shadow_until`."""
+    They differ when a shadow switch is past `shadow_until`, or when the
+    owner's routing table moves the task the switch serves."""
     cfg = cfg if cfg is not None else config()
     out = {}
     for key in SWITCHES:
         eff = mode(key, cfg, today) if key in PARTS else cfg.get(key, "off")
+        if key in ROUTED:
+            task, on = ROUTED[key]
+            c = routed(task, cfg)
+            eff = on if c == "local" else "off" if c == "hosted" else eff
         out[key] = {"set": cfg.get(key, "off"), "effective": eff}
     return out
 

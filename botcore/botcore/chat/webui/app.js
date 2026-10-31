@@ -1028,7 +1028,7 @@ function installHint(prompt) {
   footer();
 }
 
-const footer = () => { $('drawer-foot').hidden = $('notify-row').hidden && $('install').hidden && $('pair-phone').hidden; };
+const footer = () => { $('drawer-foot').hidden = $('notify-row').hidden && $('install').hidden && $('pair-phone').hidden && $('open-settings').hidden; };
 
 // iOS shrinks only the visual viewport for the keyboard: the app takes its
 // height (--app-h) at the top, so the composer stays above the keyboard.
@@ -1531,6 +1531,48 @@ async function phoneAct(verb, d) {
   listPhones();
 }
 
+/* -- Settings: which model does each task (docs/llm-lanes.md, 1.1) -- */
+
+// One row per task: local, hosted or auto (the remote-LLM switches decide), what the task
+// does, the model it runs on now and, where a floor holds a value, what the floor says.
+// The local model's state heads the screen. Only the owner's own web chat saves.
+const ROUTE_WORDS = { local: 'Local', hosted: 'Hosted', auto: 'Auto' };
+
+function renderSettings(data) {
+  const loc = data.local;
+  $('settings-local').textContent = loc.configured ? `Local model ${loc.model}: `
+    + `${loc.reachable === false ? 'not reachable' : loc.reachable ? 'reachable' : 'not checked yet'}. ${loc.detail}` : loc.detail;
+  $('settings-local').className = loc.reachable === false ? 'error' : '';
+  $('settings-rows').replaceChildren(...data.rows.map((r) => h('li', { 'data-task': r.task },
+    h('span', { class: 's-name' }, r.label),
+    h('span', { class: 'seg', role: 'radiogroup', 'aria-label': r.label }, data.values.map((v) => h('label', {},
+      h('input', { type: 'radio', name: `route-${r.task}`, value: v, checked: r.value === v,
+        disabled: !r.allowed.includes(v) }), ROUTE_WORDS[v] || v))),
+    h('p', {}, r.what),
+    h('p', { class: 's-now' }, `Now ${r.effective}: ${r.why}.`),
+    r.floor ? h('p', { class: 's-floor' }, r.floor) : null)));
+}
+
+async function openSettings() {
+  $('settings-note').textContent = '';
+  if (!$('settings').open) $('settings').showModal();
+  try { renderSettings(await call('GET', '/settings/routing')); } catch (e) { $('settings-note').textContent = `Could not read the settings: ${e.message}`; }
+}
+
+async function saveSettings() {
+  const tasks = {};
+  for (const el of $('settings-rows').querySelectorAll('input:checked:not(:disabled)')) tasks[el.name.slice(6)] = el.value;
+  $('settings-save').disabled = true;
+  try {
+    renderSettings(await call('POST', '/settings/routing', { tasks }));
+    $('settings-note').textContent = 'Saved. Each task uses its model from its next run.';
+  } catch (e) {
+    $('settings-note').textContent = `Not saved: ${e.message}`;
+  } finally {
+    $('settings-save').disabled = false;
+  }
+}
+
 /* -- Code integrity (docs/webchat.md, Code integrity) ---------------- */
 
 // The bot signs the app's files at start. The page checks the signed manifest
@@ -1671,6 +1713,7 @@ async function boot() {
   // Pairing a phone happens where the API answers: the tailnet or this machine.
   const phones = Boolean(S.me.relay) && !T.relay;
   $('pair-phone').hidden = !phones;
+  $('open-settings').hidden = T.relay || !(S.me.settings || []).includes('routing');
   footer();
   if (!T.relay) checkBundle().catch(() => {}); // the bot's own copy: checked meanwhile
 }
@@ -1714,6 +1757,8 @@ async function init() {
   document.addEventListener('touchstart', () => {}, { passive: true }); // iOS applies :active only then
   $('pair-phone').addEventListener('click', () => pairPhone());
   $('phone-relay').addEventListener('click', () => pairPhone('relay'));
+  $('open-settings').addEventListener('click', openSettings);
+  $('settings-save').addEventListener('click', saveSettings);
   $('relay-note').addEventListener('click', () => relayNote(''));
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.body.classList.remove('drawer'); });
   document.addEventListener('visibilitychange', () => {

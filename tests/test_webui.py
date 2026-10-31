@@ -330,9 +330,10 @@ def test_the_app_stays_small():
     lines = sum(len(read(n).splitlines()) for n in TEXT_FILES)
     # 1,600 for the chat, about 900 for qr.js and the relay transport (docs/webchat-relay.md),
     # 60 for the relay's device approval, the pairing checks and the file rule, 280 for the
-    # check of the app's code (bundle.js, the worker's and the page's part), and 10 for the
-    # card-button choice per relay-origin phone under "Pair a phone".
-    assert lines <= 2850, f"{lines} lines: the contract keeps the app near 2,850 with the relay"
+    # check of the app's code (bundle.js, the worker's and the page's part), 10 for the
+    # card-button choice per relay-origin phone under "Pair a phone", and 70 for the
+    # Settings screen (the routing table: a row per task, the floors, Save).
+    assert lines <= 2920, f"{lines} lines: the contract keeps the app near 2,920 with the relay"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -978,6 +979,25 @@ def test_the_pairing_dialog_is_in_the_drawer():
     assert "Never send this link through chat or mail." in js
 
 
+def test_the_settings_screen_is_in_the_drawer():
+    """A "Settings" entry at the drawer's foot opens a dialog with the
+    local model's state, a row per task and Save; the app reads and saves
+    the routing table at /settings/routing and shows the entry only when
+    /api/me names that page, never on a relayed copy."""
+    html = read("index.html")
+    nav = html[html.index('<nav id="channels"'):html.index("</nav>")]
+    assert '<button type="button" id="open-settings" class="btn small" hidden>Settings</button>' in nav
+    dlg = html[html.index('<dialog id="settings"'):html.index("</dialog>", html.index('<dialog id="settings"'))]
+    for part in ('<p id="settings-local">', '<ul id="settings-rows">', '<p id="settings-note" aria-live="polite">',
+                 '<button type="button" id="settings-save" class="btn primary">Save</button>'):
+        assert part in dlg, part
+    js = read("app.js")
+    assert "call('GET', '/settings/routing')" in js and "call('POST', '/settings/routing', { tasks })" in js
+    assert "$('open-settings').hidden = T.relay || !(S.me.settings || []).includes('routing')" in js
+    assert "disabled: !r.allowed.includes(v)" in js  # a floor locks a value
+    assert ".chan, .seg label { min-height: 44px; }" in read("app.css")  # a finger's 44px
+
+
 def test_the_relay_transport_takes_only_its_own_answers():
     """An answer opens only as the answer to its own request (or an event
     of its own stream); a POST is never sent twice on an err frame, which
@@ -1519,6 +1539,68 @@ def test_approve_sends_the_card_button_choice(app):
     assert stub.approvals == [{"device": "1" * 16, "cards": False}, {"device": "2" * 16, "cards": True}]
     expect(tablet).to_contain_text("through the relay, code not verified")
     expect(tablet.locator("input[type=checkbox]")).to_be_checked()
+    assert not errors, errors
+
+
+def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
+    """The screen draws a row per task from /settings/routing: the value
+    checked, a value a floor refuses disabled with the floor's line under
+    the row, the model it runs on now, and the local model's state at the
+    top. Save posts the enabled choices and redraws from the answer; a
+    refusal stays on screen."""
+    from playwright.sync_api import expect
+    page, stub, errors = app(settings=True)
+    page.wait_for_selector(".thread-item")
+    page.click("#open-settings")
+    rows = page.locator("#settings-rows li")
+    expect(rows).to_have_count(3)
+    expect(page.locator("#settings-local")).to_have_text("Local model local-27b: reachable. Answered 2 min ago.")
+    drafting, mail, review = (page.locator(f'#settings-rows li[data-task="{t}"]') for t in ("drafting", "mail", "review"))
+    expect(drafting.locator(".s-name")).to_have_text("Email bodies")
+    expect(drafting.locator("input[value=auto]")).to_be_checked()
+    expect(drafting.locator(".s-now")).to_have_text("Now local: the drafting switch is remote.")
+    expect(drafting.locator(".s-floor")).to_have_count(0)
+    expect(mail.locator("input[value=hosted]")).to_be_disabled()
+    expect(mail.locator("input[value=local]")).to_be_enabled()
+    expect(mail.locator(".s-floor")).to_have_text("Keep floor: hosted is not available while the keep list has entries.")
+    expect(review.locator("input[value=hosted]")).to_be_checked()
+    for v in ("local", "auto"):
+        expect(review.locator(f"input[value={v}]")).to_be_disabled()
+    expect(review.locator(".s-floor")).to_have_text("Stakes floor: these are judgment calls, so only the hosted model does them.")
+    drafting.locator("input[value=hosted]").check()
+    page.click("#settings-save")
+    expect(page.locator("#settings-note")).to_have_text("Saved. Each task uses its model from its next run.")
+    assert stub.settings_posts == [{"tasks": {"drafting": "hosted", "mail": "auto", "review": "hosted"}}]
+    expect(drafting.locator("input[value=hosted]")).to_be_checked()
+    expect(drafting.locator(".s-now")).to_have_text("Now hosted: set to hosted.")
+    # a value the bot refuses: the reason stays on screen and nothing changes
+    page.evaluate("document.querySelector('#settings-rows li[data-task=review] input[value=local]').disabled = false")
+    review.locator("input[value=local]").check()
+    page.click("#settings-save")
+    expect(page.locator("#settings-note")).to_have_text("Not saved: review is hosted only (the stakes floor)")
+    assert stub.routing["rows"][2]["value"] == "hosted"
+    page.click("#settings button[type=submit]")
+    expect(page.locator("#settings")).not_to_be_visible()
+    assert errors == ["Failed to load resource: the server responded with a status of 400 (Bad Request)"]
+
+
+def test_the_settings_screen_fits_a_phone_and_stays_hidden_without_the_page(app):
+    from playwright.sync_api import expect
+    page, _stub, errors = app(viewport={"width": 390, "height": 844}, settings=True,
+                              context={"has_touch": True, "is_mobile": True, "device_scale_factor": 3})
+    page.wait_for_selector(".thread-item")
+    page.click("#menu")
+    page.click("#open-settings")
+    expect(page.locator("#settings-rows li")).to_have_count(3)
+    small = page.evaluate("""() => [...document.querySelectorAll('#settings .seg label, #settings button')]
+        .map((el) => el.getBoundingClientRect().height).filter((h) => h < 44)""")
+    assert small == []
+    assert page.evaluate("$('settings').scrollWidth - $('settings').clientWidth") == 0
+    assert page.evaluate(SIDEWAYS) == [0, 0]
+    assert not errors, errors
+    page, _stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    expect(page.locator("#open-settings")).to_be_hidden()
     assert not errors, errors
 
 

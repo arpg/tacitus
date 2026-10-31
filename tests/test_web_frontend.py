@@ -1072,3 +1072,84 @@ def test_get_chat_defaults_the_web_block(tmp_path):
                         "backfill_days"}
     assert web["backfill_days"] == 7 and web["trust_tailscale_header"] is True
     assert ea_config.get_chat(tmp_path / "missing.json")["web"]["port"] == 8470
+
+
+# ── the Settings screen (/api/settings/<name>) ─────────────────────────
+
+@pytest.fixture
+def routing_page(tmp_path, monkeypatch):
+    """The EA's routing page (model_routing.WebSettings) in an owner
+    process with a scratch private dir and a made-up local model."""
+    import model_routing
+    import owner_trust
+    import remote_llm
+    priv = tmp_path / "routing-priv"
+    priv.mkdir(mode=0o700)
+    monkeypatch.setenv("EA_PRIVATE_DIR", str(priv))
+    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: True)
+    monkeypatch.setattr(remote_llm, "_owner", lambda: True)
+    monkeypatch.setattr(remote_llm, "_breaker", lambda *a: None)
+    monkeypatch.setattr(remote_llm, "api_key", lambda: "k")
+    monkeypatch.setattr(remote_llm, "config", lambda: {
+        **remote_llm._off(), "endpoint": "https://llm.example.test/v1", "model": "local-27b"})
+    return model_routing.WebSettings(), priv
+
+
+def test_the_settings_routes_answer_the_owner_and_save_the_routing_table(fe, routing_page):
+    page, priv = routing_page
+    path = "/api/settings/routing"
+    status, _h, body = owner(fe, "GET", "/api/me")
+    assert status == 200 and json.loads(body)["settings"] == []
+    assert owner(fe, "GET", path)[0] == 404  # no page until the host registers one
+    fe.settings_pages["routing"] = page
+    assert json.loads(owner(fe, "GET", "/api/me")[2])["settings"] == ["routing"]
+    status, _h, body = owner(fe, "GET", path)
+    data = json.loads(body)
+    assert status == 200 and data["local"]["model"] == "local-27b"
+    assert [r["task"] for r in data["rows"]][0] == "mail" and data["values"] == ["local", "hosted", "auto"]
+    status, _h, body = owner(fe, "POST", path, {"tasks": {"chat": "local", "drafting": "hosted"}})
+    out = json.loads(body)
+    assert status == 200 and out["saved"] is True
+    assert {r["task"]: r["value"] for r in out["rows"]}["chat"] == "local"
+    saved = json.loads((priv / "routing.json").read_text())["tasks"]
+    assert saved["chat"] == "local" and saved["drafting"] == "hosted"
+    assert (priv / "routing.json").stat().st_mode & 0o777 == 0o600
+    assert owner(fe, "GET", "/api/settings/other")[0] == 404
+
+
+def test_the_settings_routes_need_the_owner_and_the_app_s_own_origin(fe, routing_page):
+    page, priv = routing_page
+    fe.settings_pages["routing"] = page
+    path, body = "/api/settings/routing", {"tasks": {"chat": "local"}}
+    assert call(fe, "GET", path)[0] == 401
+    assert call(fe, "POST", path, body)[0] == 401
+    assert call(fe, "GET", path, headers={"Tailscale-User-Login": "x@example.test"})[0] == 401
+    for origin in ("https://evil.example.test", None, "null"):
+        assert owner(fe, "POST", path, body, {"Origin": origin})[0] == 403, origin
+    assert owner(fe, "POST", path, body, {"Host": "evil.example.test:8444"})[0] == 421
+    assert owner(fe, "GET", path, headers={"Sec-Fetch-Site": "cross-site"})[0] == 403
+    # through the relay a phone may read the screen, never change it
+    assert owner(fe, "GET", path, headers={"X-Tacitus-Relay": "1"})[0] == 200
+    status, _h, raw = owner(fe, "POST", path, body, {"X-Tacitus-Relay": "1"})
+    assert status == 403 and "own web chat" in json.loads(raw)["error"]
+    assert owner(fe, "POST", path, raw=b"[1]", headers={"Content-Type": "application/json"})[0] == 400
+    assert not (priv / "routing.json").exists()
+
+
+def test_a_floored_row_is_refused_and_nothing_is_written(fe, routing_page, monkeypatch):
+    page, priv = routing_page
+    fe.settings_pages["routing"] = page
+    status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"tasks": {"review": "local"}})
+    assert status == 400 and json.loads(raw)["error"] == "review is hosted only (the stakes floor)"
+    status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"tasks": {"chat": "fable"}})
+    assert status == 400 and "chat takes local, hosted or auto" in json.loads(raw)["error"]
+    assert owner(fe, "POST", "/api/settings/routing", {"other": 1})[0] == 400
+    assert not (priv / "routing.json").exists()
+    # the keep floor: hosted on mail is refused while the keep list has entries
+    import remote_llm
+    kept = {**remote_llm.config(), "keep_from_anthropic": {"domains": ["contractor.example.com"],
+                                                            "addresses": [], "admissions": True}}
+    monkeypatch.setattr(remote_llm, "config", lambda: kept)
+    status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"tasks": {"mail": "hosted"}})
+    assert status == 400 and "keep floor" in json.loads(raw)["error"]
+    assert not (priv / "routing.json").exists()

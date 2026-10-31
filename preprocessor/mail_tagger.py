@@ -434,10 +434,13 @@ def _claude_cmd() -> list[str]:
 
 def _remote_mode() -> bool:
     """With the mail switch at `enforce` no mail goes to Claude in bulk, so
-    the remote model tags (docs/remote-llm.md, "Enforce")."""
+    the remote model tags (docs/remote-llm.md, "Enforce"). The routing
+    table's `tagging` entry (model_routing.py) outranks that where it
+    names local or hosted."""
     try:
         import remote_llm
-        return remote_llm.enforcing("mail")
+        cfg = remote_llm.config()
+        return remote_llm.local_for("tagging", remote_llm.enforcing("mail", cfg), cfg)
     except Exception:
         return False
 

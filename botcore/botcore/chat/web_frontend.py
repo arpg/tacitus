@@ -80,6 +80,15 @@ with the signed bundle's hash in the link; a relayed request
 (`X-Tacitus-Relay-Cards`). A new device is announced in the DM channel;
 removing one drops its push subscriptions.
 
+Settings screens: the host registers a page in `settings_pages` (a name
+and an object with `get()` and `save(body)`; the EA's routing table is
+`routing`, model_routing.WebSettings). `/api/me` lists the names, and
+`/api/settings/<name>` answers the owner: GET is the page's data, POST
+hands the JSON body to `save`, whose ValueError is a 400 with its text.
+A POST must pass the same Host, Sec-Fetch-Site and Origin checks as
+every other, and a relayed one (`X-Tacitus-Relay`) is refused: settings
+change only in the owner's own web chat.
+
 At start the bot signs the app's files (web_bundle, docs/webchat.md, Code
 integrity): every file under `webui/` and its sha256, signed with an
 Ed25519 key that lives in the relay key file (a key for this process
@@ -1393,6 +1402,10 @@ class WebFrontend(ChatFrontend):
         self._tail: threading.Thread | None = None
         # The relay client (relay_client.RelayClient) while it runs.
         self.relay: Any = None
+        # Settings screens the host serves at /api/settings/<name>: each
+        # an object with get() -> dict and save(body) -> dict, whose
+        # ValueError refuses the body.
+        self.settings_pages: dict[str, Any] = {}
         self.html_csp = self._html_csp()
         # The app's signed bundle (web_bundle.Bundle) once start() signed it.
         self._bundle: web_bundle.Bundle | None = None
@@ -2741,7 +2754,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                  "base_path": fe.base_path, "push": web_push.AVAILABLE,
                                  "relay": fe.relay is not None,
                                  "card_actions": self._relay_cards_allowed(),
-                                 "bundle": fe.bundle_hash()})
+                                 "bundle": fe.bundle_hash(),
+                                 "settings": sorted(fe.settings_pages)})
                 return None
             if segs == ["push", "vapid"]:
                 self._json(200, {"key": self._pusher().vapid.public_key})
@@ -2783,6 +2797,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return None
         if segs and segs[0] == "relay":
             self._relay_api(method, segs[1:])
+            return None
+        if n == 2 and segs[0] == "settings":
+            self._settings(method, segs[1])
             return None
         if method == "POST":
             if n == 3 and segs[0] == "channels" and segs[2] == "messages":
@@ -2830,6 +2847,25 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 self._json(200, {"ok": True})
                 return after
         raise _HttpError(404, "not found")
+
+    def _settings(self, method: str, name: str) -> None:
+        """`/api/settings/<name>`: a settings page the host registered.
+        GET answers its data; POST saves the JSON body, which only the
+        owner's own web chat may do (never a relayed request)."""
+        page = self.fe.settings_pages.get(name)
+        if page is None:
+            raise _HttpError(404, "no such settings page")
+        if method == "GET":
+            self._json(200, page.get())
+            return
+        if self.headers.get("X-Tacitus-Relay") is not None:
+            raise _HttpError(403, "settings change only in the owner's own web chat")
+        body = self._read_json()
+        try:
+            out = page.save(body)
+        except ValueError as e:
+            raise _HttpError(400, str(e)[:500]) from None
+        self._json(200, out)
 
     # the relay's owner routes (docs/webchat-relay.md, For the web front end)
 

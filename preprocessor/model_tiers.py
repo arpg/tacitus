@@ -19,12 +19,15 @@ Four ways to pick one, strongest first:
      topic's session row as `tier`;
   3. the topic's name: `[fable] budget plan` (a Zulip topic rename
      is one click, and the bot follows renames);
-  4. the lane's default in ea-config `tiers.lanes` (main, dm,
-     sched-channel, room, proactive).
+  4. the lane's default: the owner's routing table (model_routing.py)
+     when the lane's task (`chat` for main, dm and room; `scheduling` for
+     sched-channel and proactive) is `local` or `hosted`, else ea-config
+     `tiers.lanes` (main, dm, sched-channel, room, proactive).
 
 With none of them the turn runs where today's knobs put it: an adopted
 session's own model, a room's specialist, the scheduler model, the
-A/B's drawn arm, or EA_MODEL. Two rules sit over every pick but the
+A/B's drawn arm, or EA_MODEL; a `hosted` table entry moves only a pick
+that would run on `local` there. Two rules sit over every pick but the
 per-message tag: a high-stakes message (the autonomy rails as a routing
 rule: money, contracts, deans, declines, personnel) never runs on
 `local`, and Fable has a daily turn budget (`tiers.fable_daily_turns`,
@@ -183,21 +186,35 @@ def model_alias(name: str, *, default_model: str, cfg: dict | None = None) -> st
 
 # ── the pick ──────────────────────────────────────────────────────────
 
+def _lane_route(lane: str, routing: dict | None) -> str:
+    """The routing table's value for the lane's task; `auto` when it
+    cannot be read, which leaves the pick as it was before the table."""
+    try:
+        import model_routing
+        return model_routing.lane_route(lane, routing)
+    except Exception:
+        return "auto"
+
+
 def resolve(*, lane: str, user_msg: str = "", tag: str = "", thread_ts: str = "",
             session_meta: dict | None = None, arm: str = "", cfg: dict | None = None,
-            fable_turns_today: int | None = None, remote_cfg: dict | None = None) -> dict:
+            fable_turns_today: int | None = None, remote_cfg: dict | None = None,
+            routing: dict | None = None) -> dict:
     """The tier this turn runs on and why.
 
     {"tier", "source", "explicit", "note"}: `explicit` is True when one of
     the four ways named the tier (the bot then sets the model itself);
     False when the tier only describes where today's knobs put the turn
     (`session` for an adopted or room session's own model, `draw` for an
-    A/B arm, `default`). `note` is 'stakes', 'budget' or 'no-local' when a
-    rule moved the pick to `opus`, else ''. 'no-local': the install has no
-    remote endpoint (`remote_cfg`, default remote_llm.config()), so a local
-    pick runs on Claude."""
+    A/B arm, `default`; `routing` for the owner's routing table, block
+    `routing`, default ea_config.get_routing()). `note` is 'stakes',
+    'budget' or 'no-local' when a rule moved the pick to `opus`, else ''.
+    'no-local': the install has no remote endpoint (`remote_cfg`, default
+    remote_llm.config()), so a local pick runs on Claude."""
     meta = session_meta or {}
     s = settings(cfg)
+    route = _lane_route(lane, routing)
+    lane_tier = s["lanes"].get(lane) if s["lanes"].get(lane) in TIERS else ""
     tier, source = "", ""
     if tag in TIERS:
         tier, source = tag, "tag"
@@ -205,8 +222,10 @@ def resolve(*, lane: str, user_msg: str = "", tag: str = "", thread_ts: str = ""
         tier, source = meta["tier"], "pinned"
     elif topic_tier(thread_ts):
         tier, source = topic_tier(thread_ts), "topic name"
-    elif s["lanes"].get(lane) in TIERS:
-        tier, source = s["lanes"][lane], f"{lane} default"
+    elif route == "local":
+        tier, source = "local", "routing"
+    elif lane_tier and not (route == "hosted" and lane_tier == "local"):
+        tier, source = lane_tier, f"{lane} default"
     explicit = bool(tier)
     if not tier:
         if meta.get("model"):
@@ -214,7 +233,11 @@ def resolve(*, lane: str, user_msg: str = "", tag: str = "", thread_ts: str = ""
         elif arm == "remote":
             tier, source = "local", "draw"
         else:
-            tier, source = "opus", "default"
+            # `hosted` passed over a local lane default: the bot's own model.
+            tier, source = "opus", ("routing" if route == "hosted" and lane_tier == "local"
+                                    else "default")
+    if route == "hosted" and tier == "local" and source not in ("tag", "pinned", "topic name"):
+        tier, source, explicit = "opus", "routing", True
     note = ""
     if tier == "local" and not (remote_cfg if remote_cfg is not None else _rl.config()).get("endpoint"):
         tier, note, explicit = "opus", "no-local", True
@@ -247,7 +270,7 @@ def describe(tier: str, source: str) -> str:
     """One line for `which model`."""
     why = {"tag": "for this message", "pinned": "pinned by you", "topic name": "from the topic name",
            "session": "the session's own model", "draw": "drawn by the model A/B",
-           "default": "the default"}.get(source, source)
+           "routing": "the routing table in Settings", "default": "the default"}.get(source, source)
     return f"This topic runs on {NAMES.get(tier, tier)} ({why})."
 
 

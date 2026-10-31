@@ -88,6 +88,13 @@ except _owner_trust.OwnerTrustError as _untrusted:
 _CARDS = FRONTEND.card_registry or _chat.CardRegistry(_chat.private_dir() / "chat-cards.json")
 if FRONTEND.card_registry is None:
     FRONTEND.card_registry = _CARDS
+# The web chat's Settings screen: the routing table (model_routing.py),
+# which the bot writes to the owner-private routing.json. A web front end
+# alone or as the shadow of another serves it.
+for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
+    if isinstance(getattr(_web, "settings_pages", None), dict):
+        from preprocessor import model_routing as _model_routing
+        _web.settings_pages["routing"] = _model_routing.WebSettings()
 
 
 def _private_state(name: str) -> Path:
@@ -9611,6 +9618,7 @@ def _sweep_late_resident_drafts() -> int:
 
 _CONVERSATIONS_RE = re.compile(r"^\s*(?:list\s+)?conversations\s*$", re.I)
 _VERSION_RE = re.compile(r"^\s*/?version\s*[?.!]?\s*$", re.I)
+_ROUTING_RE = re.compile(r"^\s*/?(?:model\s+)?routing\s*[?.!]?\s*$", re.I)
 _NAME_THREAD_RE = re.compile(
     r"^\s*(?:name|call)\s+this\s+(?:conversation|thread)\s+(.+?)\s*$", re.I | re.S)
 _ROOM_VERB = r"(?:open|create|make|start|spin\s+up)\s+(?:up\s+)?(?:me\s+)?(?:a\s+)?(?:new\s+)?(?:private\s+)?(?:project\s+)?(?:channel|room)"
@@ -9645,13 +9653,14 @@ def _channel_label(channel_id: str) -> str:
 
 def _colleague_command(channel: str, thread_ts: str, msg_ts: str,
                        user_msg: str) -> dict | None:
-    """The three commands that make threads and channels navigable, and
-    the installed version:
+    """The three commands that make threads and channels navigable, the
+    installed version and the routing table:
 
       conversations                      the index of recent threads
       name this conversation <title>     title the current thread
       open a channel for <project>       spawn a private project channel
       version (or /version)              the installed release and its channel
+      routing (or /routing)              which model does each task, and why
 
     Returns None when the message is not one of them; otherwise
     {"ok": bool, "text": reply}. No Claude call on this path."""
@@ -9665,6 +9674,12 @@ def _colleague_command(channel: str, thread_ts: str, msg_ts: str,
         from preprocessor import update_status as _us
         return {"ok": True, "text": _us.version_text(
             _us.live_dir(), _us.private_dir(), EA_DIR, running=SCRIPT_DIR)}
+
+    if _ROUTING_RE.match(text):
+        # The owner's routing table (model_routing.py): each task's value,
+        # the model it runs on now and the local model's state.
+        from preprocessor import model_routing as _mr
+        return {"ok": True, "text": "\n".join(_mr.lines())}
 
     if _CONVERSATIONS_RE.match(text):
         rows = _sessions_mod.recent(limit=12)

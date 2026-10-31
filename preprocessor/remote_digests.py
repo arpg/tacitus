@@ -1060,7 +1060,8 @@ def main(argv=None, *, execv=None) -> int:
                             "post, archive and write nothing")
     a = ap.parse_args(argv)
     cfg = remote_llm.config()
-    if cfg.get("digests") != "remote" and not a.dry_run:
+    # The digests switch, or the routing table's `digests` entry.
+    if not remote_llm.local_for("digests", cfg.get("digests") == "remote", cfg) and not a.dry_run:
         return exec_lane(a.cmd, execv)
     if not _owner_trust.is_owner_process():
         print("remote_digests runs in the owner's processes only", file=sys.stderr)

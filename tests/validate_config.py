@@ -119,6 +119,18 @@ if CI_MODE:
         green(f"ea-config.json: update.channel is {channel!r}")
     elif data is not None:
         red(f"ea-config.json: update.channel {channel!r} is not auto, latest, stable or off")
+    # The routing block (preprocessor/model_routing.py): every task named,
+    # each local, hosted or auto, and no value under a floor.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "preprocessor"))
+    import ea_config
+    routing = (data or {}).get("routing")
+    named = set(((routing or {}).get("tasks") or {}) if isinstance(routing, dict) else ())
+    problems = ea_config.routing_problems(routing)
+    missing = [t for t in ea_config.ROUTING_TASKS if t not in named]
+    if data is not None and not problems and not missing:
+        green("ea-config.json: routing names every task with a value the floors allow")
+    elif data is not None:
+        red(f"ea-config.json: routing: {'; '.join(problems + [f'{t} is not named' for t in missing])}")
 
 def _chat_frontend() -> str:
     try:

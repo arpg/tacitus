@@ -166,7 +166,7 @@ subset and escapes everything else; it never injects HTML from text.
 
 | Verb | Path | Body / result |
 |---|---|---|
-| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool, "relay": bool, "card_actions": bool, "bundle": "<hash>"}`; `bundle` is the bundle hash the bot signs now, "" when it signs none (Code integrity) |
+| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool, "relay": bool, "card_actions": bool, "bundle": "<hash>", "settings": ["routing"]}`; `bundle` is the bundle hash the bot signs now, "" when it signs none (Code integrity); `settings` names the settings pages the host registered |
 | GET | `/manifest.sig.json` | the signed manifest of the app's files, without auth (Code integrity); 404 when the bot signs none |
 | GET | `/api/bundle` | the same document, for the owner: the route the relay reaches |
 | GET | `/api/channels` | `[{"id","name","kind","archived","last_at","unread"}]` |
@@ -188,6 +188,8 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/relay/approve` | `{"device", "cards"?}` → `{"ok": true}`: let a waiting phone in, and set whether a relay-origin phone may press card buttons (`cards`, default false; approving again changes it); 400 for a `cards` that is not true or false, 404 for an unknown device |
 | POST | `/api/relay/revoke` | `{"device"}` → `{"ok": true}`: its sessions and streams end, its push subscriptions go; 404 for an unknown device |
 | GET | `/api/relay/status` | `{"enabled": bool, ...}`: the relay client's state (`connected`, `install_id`, `bot_public`, `client_key`, `sign_public`, `devices`, `pending`, ...) and how a phone can pair (`pair_own`, `pair_relay`, and `bundle`, the bundle hash or null) |
+| GET | `/api/settings/{name}` | the page's data; for `routing` (the EA's routing table, `docs/llm-lanes.md` 1.1): `{"local": {"configured", "model", "reachable", "detail"}, "source", "values", "rows": [{"task", "label", "what", "value", "allowed", "locked", "floor", "effective", "why"}]}`; 404 for a page the host did not register |
+| POST | `/api/settings/{name}` | for `routing`, `{"tasks": {"<task>": "local" \| "hosted" \| "auto"}}` → the page's data with `"saved": true`; the bot writes the owner-private `routing.json`, never `ea-config.json`. 400 with the reason for an unknown task or value or a value under a floor; 403 for a relayed request (settings change only in the owner's own web chat) |
 | POST | `/api/relay/attest` | `{"bundle": "<hash>"}`, from a phone through the relay only → `{"ok": true, "bundle_verified": true, "release"}`, or 409 `{"error", "bundle_verified": false}` for another hash; it records the check and grants nothing (Code integrity) |
 
 The five owner routes under `/api/relay/`, and `/api/pair`, answer only
@@ -448,9 +450,19 @@ the bot's machine, where it offers "Pair through the relay"), the code
 check on the relay's copy and the QR encoder (`qr.js`) are in
 `docs/webchat-relay.md` (For the web app).
 
+Settings. A "Settings" entry at the drawer's foot, shown when `/api/me`
+names the `routing` page and never on a relayed copy, opens a dialog in
+the shape of "Pair a phone": the local model's name and state at the
+top, then one row per task with Local, Hosted and Auto, a line on what
+the task does, a line on the model it runs on now and why, and the
+floor's line under a row a floor holds (the values it refuses are
+disabled). Save posts the enabled choices and redraws from the answer,
+with "Saved." or the bot's reason under the rows.
+
 Dark and light from `prefers-color-scheme`. Keep the whole app under
-~2,850 lines with the relay transport, the QR encoder, the code check
-and the per-phone card-button choice; readable by one maintainer.
+~2,920 lines with the relay transport, the QR encoder, the code check,
+the per-phone card-button choice and the Settings screen; readable by
+one maintainer.
 
 Installing on a phone. The manifest (`display: standalone`, `scope` and
 `start_url` `./`, so the base path with its slash, since the page links

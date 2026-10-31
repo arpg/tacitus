@@ -69,10 +69,15 @@ def _now_iso() -> str:
 
 def mode(cfg: dict | None = None, today: date | None = None) -> str:
     """`remote` when the remote model is the writer, `ab` while the
-    experiment is on and the run's end date is ahead, else `off`."""
+    experiment is on and the run's end date is ahead, else `off`. The
+    routing table's `drafting` entry (model_routing.py) outranks the
+    switch: `local` is `remote`, `hosted` is `off`."""
     cfg = cfg if cfg is not None else remote_llm.config()
     if not cfg.get("endpoint"):
         return "off"
+    routed = remote_llm.routed("drafting", cfg)
+    if routed != "auto":
+        return "remote" if routed == "local" else "off"
     if cfg.get("drafting") == "remote":
         return "remote"
     if cfg.get("drafting") != "ab":
