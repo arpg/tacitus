@@ -1239,6 +1239,102 @@ def test_recent_messages_groups_by_topic(tmp_path):
     assert c.named("get_messages")[-1]["num_before"] == 200
 
 
+T0 = 1790000000
+CHANNEL_READ = {"anchor": "newest", "num_before": 200, "num_after": 0,
+                "apply_markdown": False, "narrow": [{"operator": "channel", "operand": EA}]}
+
+
+def _channel_page(ids, found_oldest):
+    """A get_messages answer: EA stream messages `ids`, message i posted at
+    T0 + i in topic t<i // 100>."""
+    msgs = [{"id": i, "type": "stream", "stream_id": EA, "subject": f"t{i // 100}",
+             "sender_id": OWNER, "content": "m", "timestamp": T0 + i} for i in sorted(ids)]
+    return {**OK, "messages": msgs, "found_oldest": found_oldest}
+
+
+def _script(c, answers):
+    """The client answers get_messages from `answers` in turn (a list) or
+    from `answers(req)`, and records each request."""
+    def get_messages(req):
+        c._rec("get_messages", req)
+        return answers(req) if callable(answers) else answers.pop(0)
+    c.get_messages = get_messages
+
+
+def _endless(req):
+    """A channel with more history than any read takes: a full page before
+    every anchor, never the oldest."""
+    top = 100000 if req["anchor"] == "newest" else int(req["anchor"])
+    return _channel_page(range(top - 199, top + 1), False)
+
+
+def test_recent_messages_pages_back_to_the_oldest_topic(tmp_path):
+    fe, c = make(tmp_path)
+    _script(c, [_channel_page(range(401, 601), False),
+                _channel_page(range(201, 401), False),
+                _channel_page(range(101, 201), True)])
+    out = fe.recent_messages(f"stream:{EA}", 0, 2000)
+    reqs = c.named("get_messages")
+    assert reqs[0] == CHANNEL_READ
+    assert reqs[1:] == [{**CHANNEL_READ, "anchor": 400}, {**CHANNEL_READ, "anchor": 200}]
+    assert c.named("sleep") == [zf.HISTORY_PAGE_PACE_S] * 2
+    assert [m.msg_id for m in out] == ["101", "200", "300", "400", "500", "600"]
+    assert [m.reply_count for m in out] == [98, 99, 99, 99, 99, 0]
+
+
+def test_recent_messages_stop_paging_once_the_window_is_covered(tmp_path):
+    fe, c = make(tmp_path)
+    _script(c, [_channel_page(range(401, 601), False),
+                _channel_page(range(201, 401), False)])
+    out = fe.recent_messages(f"stream:{EA}", T0 + 300, 2000)     # 300 is outside
+    assert len(c.named("get_messages")) == 2
+    assert c.named("sleep") == [zf.HISTORY_PAGE_PACE_S]
+    assert [m.msg_id for m in out] == ["301", "400", "500", "600"]
+    # a since_id the first page already reaches covers the window too
+    c.calls.clear()
+    _script(c, [_channel_page(range(401, 601), False)])
+    out = fe.recent_messages(f"stream:{EA}", 0, 2000, since_id="450")
+    assert len(c.named("get_messages")) == 1 and c.named("sleep") == []
+    assert [m.msg_id for m in out] == ["451", "500", "600"]
+
+
+def test_recent_messages_stop_at_the_limit_and_at_the_page_cap(tmp_path):
+    fe, c = make(tmp_path)
+    _script(c, _endless)
+    fe.recent_messages(f"stream:{EA}", 0, 500)                    # 600 in hand after 3 pages
+    assert [r["anchor"] for r in c.named("get_messages")] == ["newest", 99800, 99600]
+    c.calls.clear()
+    out = fe.recent_messages(f"stream:{EA}", 0, 100000)
+    assert len(c.named("get_messages")) == zf.HISTORY_PAGES_MAX
+    assert c.named("sleep") == [zf.HISTORY_PAGE_PACE_S] * (zf.HISTORY_PAGES_MAX - 1)
+    assert sum(1 + m.reply_count for m in out) == zf.HISTORY_PAGE * zf.HISTORY_PAGES_MAX
+    # a server that answers the same page again ends the read
+    c.calls.clear()
+    _script(c, lambda req: _channel_page(range(401, 601), False))
+    fe.recent_messages(f"stream:{EA}", 0, 2000)
+    assert len(c.named("get_messages")) == 2
+
+
+def test_a_caller_within_one_page_reads_one_page(tmp_path):
+    from chat.shadow_frontend import BACKFILL_ROOTS
+    fe, c = make(tmp_path)
+    ch = f"stream:{EA}"
+    _script(c, _endless)
+    fe.recent_messages(ch, 0, 40)                                 # the restart catch-up
+    fe.recent_messages(ch, 0, 40, since_id="300")                 # the queue-reset catch-up
+    fe.recent_messages(ch, 0, limit=200)                          # the briefing's chat read
+    _script(c, [_channel_page(range(571, 601), False)])          # a short page, not the oldest
+    fe.recent_messages(ch, 0, 40)
+    assert c.named("get_messages") == [CHANNEL_READ] * 4
+    _script(c, _endless)
+    fe.thread_replies(ch, zf.thread_key_for(EA, "t999"))          # the owner's thread read
+    assert c.named("get_messages")[-1] == {
+        **CHANNEL_READ, "narrow": [{"operator": "channel", "operand": EA},
+                                   {"operator": "topic", "operand": "t999"}]}
+    assert len(c.named("get_messages")) == 5 and c.named("sleep") == []
+    assert BACKFILL_ROOTS > zf.HISTORY_PAGE                       # the history copy pages
+
+
 # rooms
 
 
