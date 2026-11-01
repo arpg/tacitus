@@ -306,10 +306,11 @@ def gate(msgs: list[dict], label: str, **kw) -> Gate:
 
 # ── the remote digest ────────────────────────────────────────────────
 # The mail the gate leaves out, posted from the remote model's records by
-# code alone, to a stream the briefing's chat reader does not read.
+# code alone, to a place the briefing's chat reader does not read
+# (chat_notify.post_digest).
 
 DIGEST_STATE = "digest-state.json"
-DIGEST_STREAM = "mail-digest"
+DIGEST_KEY = "mail-digest"
 DIGEST_CAP = 60
 DIGEST_FIRST = timedelta(hours=24)
 DOMAIN_ORDER = ("research", "teaching", "service", "professional", "personal")
@@ -423,13 +424,18 @@ def render_digest(rows: list[tuple[str, dict]], since: datetime,
 
 
 def _post_digest(text: str, now: datetime) -> bool:
+    """On Zulip the `mail-digest` stream, a topic a day; on the web chat a
+    new thread in the digest channel; on Slack the `mail-digest` webhook.
+    With none of them (Slack without that webhook, or no chat) it posts
+    nothing and says so: the EA channel is never the fallback."""
     import chat_notify
-    zcfg = (chat_notify._chat_cfg() or {}).get("zulip") or {}
-    if chat_notify.frontend_name() != "zulip" or not zcfg:
-        print("mail_gate digest: needs the Zulip frontend", file=sys.stderr)
-        return False
     topic = f"Mail digest {now.astimezone():%a %b %-d}"
-    return chat_notify._zulip_post_parts(zcfg, {"stream": DIGEST_STREAM, "topic": topic}, [text])
+    got = chat_notify.post_digest(DIGEST_KEY, text, topic=topic)
+    if got is None:
+        print(f"mail_gate digest: no digest channel on the {chat_notify.frontend_name()} "
+              "chat (on Slack, map a `mail-digest` webhook); nothing posted", file=sys.stderr)
+        return False
+    return bool(got)
 
 
 def digest(*, dry_run: bool = False, now: datetime | None = None, post=None) -> dict:

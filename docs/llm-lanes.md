@@ -333,9 +333,13 @@ text went:
 ### 2.2 The remote digest
 
 `mail_gate.py digest` posts the mail the gate left out to the private Zulip
-stream `mail-digest`. Only the user and the bot are members. Code writes
-the post from the remote model's records. The briefing's chat reader reads
-only the `#ea` stream, so the digest never reaches a Claude lane. Kept mail
+stream `mail-digest`. Only the user and the bot are members. On the web
+chat alone it posts to the digest channel, "Mail digests" (kind
+`digest`), made with the first digest; on Slack to a `mail-digest`
+webhook, and with none it posts nothing. Code writes the post from the
+remote model's records. The briefing's chat reader reads only the `#ea`
+channel and never a channel of kind `digest`, so the digest never reaches
+a Claude lane. Kept mail
 comes first and is flagged when it needs a reply, then FYI mail by domain.
 FYI mail that arrived earlier with a date in the next seven days is
 listed again under "Coming up" until its day, so a dated FYI item keeps
@@ -758,7 +762,8 @@ Then do the work under CLAUDE.md; email bodies come from email_writer.py. Read n
 
 `remote_briefing.py run --dry-run --preview` runs the whole morning on
 live data, makes no draft, queues nothing, closes nothing, prints counts
-only, and posts the preview to `mail-digest` (topic "Briefing preview").
+only, and posts the preview to `mail-digest` (topic "Briefing preview"),
+or on the web chat to the digest channel, in a thread of its own.
 
 ### 2.10 Sealed mail (`mail = sealed`)
 

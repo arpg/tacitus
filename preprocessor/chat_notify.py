@@ -25,9 +25,14 @@ ea-config.json):
     (chat.load_frontend(for_cli=True)); the bot's tail thread pushes
     them to the open streams. The channel is the one
     `chat.web.notify[<channel_key>].channel` names, else the EA channel.
-    Only an owner process writes the store, which is the owner's; any
-    other process posts nothing and says so.
+    A digest key (DIGEST_KEYS) always goes to the digest channel, which
+    is made when it is missing. Only an owner process writes the store,
+    which is the owner's; any other process posts nothing and says so.
   * memory: parts are recorded in MEMORY_POSTS (tests).
+
+post_digest() posts a mail digest where no Claude lane reads it: the
+`mail-digest` stream on Zulip, the digest channel on the web chat, the
+`mail-digest` webhook on Slack (Mail digests, below).
 
 post_as_bot() is the direct post with bot credentials that owner-side
 jobs (scheduled_sends, owner plugins) use for alerts into the EA
@@ -396,7 +401,15 @@ def room_mention(channel_id: str) -> str:
 # (docs/webchat.md, CLI senders). The `web.notify` map takes the Zulip
 # map's channel keys, each naming a web channel id
 # ({"ea-assistant": {"channel": "main"}}); a key it does not name goes to
-# the EA channel.
+# the EA channel. A digest key goes to the digest channel whatever the
+# map says: the briefing's chat reader reads the EA channel, and a
+# channel of kind `digest` never.
+
+WEB_DIGEST_ID = "digests"
+WEB_DIGEST_NAME = "Mail digests"
+WEB_DIGEST_KIND = "digest"
+WEB_DIGEST_ABOUT = "Mail digests written by the remote model. Claude does not read this channel."
+
 
 def _web_cfg() -> dict:
     web = _chat_cfg().get("web")
@@ -424,25 +437,37 @@ def _web_sender():
 
 
 def _web_channel(fe, cid: str) -> bool:
-    """True when the store holds channel `cid`. The EA channel and the DM
-    are made here when the bot has not made them yet, as the bot would."""
+    """True when the store holds channel `cid`. The EA channel, the DM and
+    the digest channel are made here when the bot has not made them yet."""
     if fe.store.channel(cid) is not None:
         return True
     dm = fe.dm_channel(fe.owner_id)
     own = {fe.main_channel: (getattr(fe, "main_channel_name", "") or fe.main_channel, "main"),
-           dm: (dm, "dm")}
+           dm: (dm, "dm"),
+           WEB_DIGEST_ID: (WEB_DIGEST_NAME, WEB_DIGEST_KIND, False, WEB_DIGEST_ABOUT)}
     if cid not in own:
         return False
     fe.store.upsert_channel(cid, *own[cid])
     return True
 
 
-def _send_web(channel_key: str, parts: list[str]) -> bool:
+def _web_route(fe, channel_key: str, direct: bool = False) -> str:
+    """The web channel a key posts to: the one `web.notify` names, else
+    the DM for a direct message and the EA channel for the rest. A digest
+    key never comes here (_send_digest names its channel)."""
+    return (_web_target(channel_key)
+            or (fe.dm_channel(fe.owner_id) if direct else fe.main_channel))
+
+
+def _send_web(channel_key: str, parts: list[str], *, channel: str = "",
+              direct: bool = False) -> bool:
+    """Post the parts in one new thread: in `channel` when given, else
+    where _web_route sends the key."""
     try:
         fe = _web_sender()
         if fe is None:
             return False
-        cid = _web_target(channel_key) or fe.main_channel
+        cid = channel or _web_route(fe, channel_key, direct)
         if not _web_channel(fe, cid):
             print(f"WARNING: web chat channel {cid!r} (for '{channel_key}') does not exist; "
                   "nothing posted")
@@ -474,6 +499,60 @@ def _send_room(channel_key: str, parts: list[str]) -> bool:
         return False
 
 
+# ── Mail digests ──────────────────────────────────────────────────────
+# A digest carries what the remote model read for the owner alone: the
+# mail the gate leaves out of the Claude lanes (mail_gate digest), the
+# list and admissions digests (remote_digests) and the briefing preview
+# (remote_briefing --preview). It goes where no Claude lane reads: the
+# `mail-digest` stream on Zulip, the digest channel on the web chat, the
+# `mail-digest` webhook on Slack. A digest key never waits in the
+# quiet-hours queue, which sits in the resident's space.
+
+DIGEST_STREAM = "mail-digest"
+DIGEST_KEYS = ("mail-digest", "list-digest", "admissions-digest", "briefing-preview")
+
+
+def _send_digest(key: str, parts: list[str], topic: str = "") -> Optional[bool]:
+    """The parts of one digest in one thread at the digest place; None
+    when the frontend has none (post_digest)."""
+    name = frontend_name()
+    if name == "zulip":
+        zcfg = _chat_cfg().get("zulip") or {}
+        if not zcfg:
+            return None
+        target = {"stream": DIGEST_STREAM, **({"topic": topic} if topic else {})}
+        return _zulip_post_parts(zcfg, target, parts)
+    if name == "web":
+        return _send_web(key, parts, channel=WEB_DIGEST_ID)
+    if name == "slack":
+        if not _load_webhooks().get(DIGEST_STREAM):
+            return None
+        return _send_slack(DIGEST_STREAM, parts, None)
+    if name == "memory":
+        MEMORY_POSTS.extend((key, part, None) for part in parts)
+        return True
+    return None
+
+
+def post_digest(key: str, text: str, *, topic: str = "") -> Optional[bool]:
+    """Post one digest. `key` names it (DIGEST_KEYS; the web chat records
+    it as the thread's notifier key) and `topic` is its Zulip topic (a new
+    one named from the text when empty). Zulip: the `mail-digest` stream.
+    Web chat: a new thread in the digest channel, made when it is missing.
+    Slack: the `mail-digest` webhook. True when it posted, False when the
+    post failed, None when the frontend has no such place (Slack without
+    that webhook, or no chat): the caller decides, and nothing goes to a
+    channel a Claude lane reads. post() routes a digest key here too."""
+    return _send_digest(key, [text], topic)
+
+
+def web_direct(text: str) -> bool:
+    """A direct message on the web chat alone (chat.direct.send_direct):
+    a new thread in the DM, or in the channel `web.notify` names for
+    `personal`."""
+    return _send_web("personal", [text], direct=True)
+
+
 # ── Public API ────────────────────────────────────────────────────────
 
 def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
@@ -488,13 +567,14 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
     (see quiet_hours.py / travel mode), a deferrable post is HELD in a queue
     and delivered as one digest after quiet hours end, rather than buzzing
     the phone at night. `_bypass_quiet=True` skips the gate (used by the
-    quiet-hours flush itself, and any caller that must post immediately).
+    quiet-hours flush itself, and any caller that must post immediately);
+    a mail digest key (DIGEST_KEYS) always skips it.
 
     Returns True if every part posted successfully OR if the post was
     deferred (so cron jobs / plugin-state commits treat a deferral as a
     successful handoff). Returns False on a real send failure.
     """
-    if not _bypass_quiet:
+    if not _bypass_quiet and channel_key not in DIGEST_KEYS:
         try:
             import quiet_hours
             if quiet_hours.should_defer(priority):
@@ -513,6 +593,12 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
         parts = [text]
 
     name = frontend_name()
+    if channel_key in DIGEST_KEYS:
+        sent = _send_digest(channel_key, parts)
+        if sent is None:
+            print(f"WARNING: no digest channel on the {name} chat for '{channel_key}' "
+                  "(on Slack, a `mail-digest` webhook); nothing posted")
+        return sent is True
     if channel_key.startswith(ROOM_KEY_PREFIX) and name != "memory":
         return _send_room(channel_key, parts)
     if name == "slack":

@@ -15,6 +15,10 @@ when its id is in the web chat's owner-private list
 (`owner_posted`), which an owner process reads through the composite;
 the text's "You (web)" mark proves nothing and is only dropped.
 
+A channel whose kind the web chat's store records as one of UNREAD_KINDS
+is never read: the digest channel holds what the remote model read for
+the owner alone (chat_notify.post_digest), and no Claude lane may see it.
+
 CLI:
     chat_read.py [--hours 24]                     briefing summary as JSON
     chat_read.py --thread <key> --channel <id>    one thread as JSON
@@ -25,6 +29,10 @@ import argparse
 import json
 import sys
 from datetime import datetime, timedelta, timezone
+
+
+# Web chat channel kinds the reader never reads.
+UNREAD_KINDS = frozenset({"digest"})
 
 
 def _chat_pkg():
@@ -45,6 +53,31 @@ def _frontend():
     except Exception as e:
         print(f"  Chat reader: frontend unavailable ({e}), skipping", file=sys.stderr)
     return None
+
+
+def _channel_kind(fe, channel: str) -> str:
+    """The kind the web chat's store records for `channel` (the front end's
+    own store, or the composite's web side); "" when no store has it."""
+    for web in (fe, getattr(fe, "shadow", None)):
+        get = getattr(getattr(web, "store", None), "channel", None) if web is not None else None
+        if not callable(get):
+            continue
+        try:
+            row = get(channel)
+        except Exception:
+            continue
+        if row:
+            return str(row.get("kind") or "")
+    return ""
+
+
+def _unread(fe, channel: str) -> bool:
+    """True for a channel the reader must not read (UNREAD_KINDS), with a
+    note on stderr."""
+    if _channel_kind(fe, channel) in UNREAD_KINDS:
+        print(f"  Chat reader: {channel} is a digest channel; not read", file=sys.stderr)
+        return True
+    return False
 
 
 def _is_bot(msg, bot_user_id: str) -> bool:
@@ -135,6 +168,8 @@ def fetch_recent_messages(hours_back: int = 24) -> list[dict]:
     if not channel:
         print("  Chat reader: no token or channel ID, skipping", file=sys.stderr)
         return []
+    if _unread(fe, channel):
+        return []
     bot_user_id = fe.bot_user_id or ""
     owned = _owner_check(fe)
 
@@ -217,7 +252,7 @@ def summarize_for_briefing(messages: list[dict]) -> dict:
 def fetch_thread(channel: str, thread_key: str, limit: int = 200) -> list[dict]:
     """One thread as [{ts, sender, text, time}], oldest first."""
     fe = _frontend()
-    if fe is None:
+    if fe is None or _unread(fe, channel):
         return []
     bot_user_id = fe.bot_user_id or ""
     owned = _owner_check(fe)

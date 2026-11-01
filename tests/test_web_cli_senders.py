@@ -262,6 +262,20 @@ def test_an_owner_notify_post_is_mirrored_under_the_zulip_ids(notify_env, monkey
         ["channel", "message", "message", "channel", "message"]
 
 
+def test_a_digest_beside_zulip_mirrors_into_the_mail_digest_room(notify_env, monkeypatch):
+    _owner(monkeypatch)
+    monkeypatch.setattr(FakeZulip, "streams", FakeZulip.streams + ["mail-digest"])
+    priv = _private_chat(notify_env, monkeypatch, ZULIP_BLOCK)
+    assert chat_notify.post_digest("mail-digest", "kept mail", topic="Mail digest Fri Oct 9")
+    store = WebStore(priv / "webchat.sqlite")
+    room = store.channel("stream:13")
+    assert (room["name"], room["kind"]) == ("mail-digest", "room")
+    (row,) = store.thread("stream:13", thread_key_for(13, "Mail digest Fri Oct 9"))
+    assert (row["id"], row["text"]) == ("901", "kept mail")
+    assert store.channel(chat_notify.WEB_DIGEST_ID) is None
+    assert store.channel("stream:10") is None              # nothing in the EA stream
+
+
 def test_the_bots_channel_row_wins_over_the_notifiers(notify_env, monkeypatch):
     _owner(monkeypatch)
     priv = _private_chat(notify_env, monkeypatch, ZULIP_BLOCK)

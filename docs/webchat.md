@@ -60,7 +60,9 @@ start() refuses (Identity and auth):
 `"frontend": "web"` with no `shadow` runs the web front end alone. An
 optional `notify` map takes the notifier's channel keys and names a web
 channel for each (`{"personal": {"channel": "dm"}}`); a key it does not
-name posts to the EA channel (CLI senders). An
+name posts to the EA channel (CLI senders). The mail digests' keys
+(`mail-digest`, `list-digest`, `admissions-digest`, `briefing-preview`)
+always post to the digest channel, whatever the map says. An
 optional `push_subject` key (a `mailto:` or `https:` URL) is the contact
 the push services see (Notifications, below). An optional `relay` block
 turns on the relay (`docs/webchat-relay.md`, Config); it counts only from
@@ -124,7 +126,7 @@ under a ShadowFrontend the composite switches the shadow off
 ## Store (SQLite)
 
 - `channels(id TEXT PK, name TEXT, kind TEXT, archived INT, description TEXT)`;
-  kind is `main`, `sched`, `dm` or `room`.
+  kind is `main`, `sched`, `dm`, `room` or `digest`.
 - `messages(seq INTEGER PK AUTOINCREMENT, channel TEXT, id TEXT, thread_key TEXT,
   author TEXT, kind TEXT, text TEXT, card TEXT, file TEXT, reactions TEXT,
   posted_at REAL, updated_at REAL, history INT, UNIQUE(channel, id))`.
@@ -407,9 +409,14 @@ open (`<ea_dir>/state/webchat.sqlite`) is one the bot never reads.
 - Standalone (`"frontend": "web"`), `chat_notify.post` and `post_as_bot`
   post each part into the store as the bot through the writer-only web
   front end, all parts of a post in one new thread, in the channel the
-  `notify` entry names, else the EA channel (`main`); the EA channel and
-  the DM are made when the bot has not made them yet, and another
-  channel must exist. A process that is not the owner's posts nothing
+  `notify` entry names, else the EA channel (`main`); the EA channel, the
+  DM and the digest channel are made when the bot has not made them yet,
+  and another channel must exist. A mail digest (`chat_notify.post_digest`,
+  or `post` with a digest key) goes to the digest channel alone. A direct
+  message (`chat/direct.py` `send_direct`) goes to the DM unless the
+  `notify` map names a channel for `personal`; the notifier's own
+  `personal` key keeps the EA channel as its default. A process that is
+  not the owner's posts nothing
   and says so. `chat_upload.py` in such a process stages its job in the
   outbox instead; the bot's drain finds the channel that holds a web
   thread key through the store (`WebFrontend.thread_channel`) and posts
@@ -591,6 +598,17 @@ the owner's last message in the channel or the channel's read mark;
 newest message. `thread_channel(key)` names the one channel that holds a
 thread key or message id (None for none or several), for a caller that
 has the key alone (the bot delivering a staged job).
+
+**The digest channel.** Standalone, the mail digests have a channel of
+their own: id `digests`, name "Mail digests", kind `digest`. The
+notifier makes it with the first digest (the mail the gate kept from
+Claude, the list and admissions digests, a briefing preview), each post
+in a thread of its own (`chat_notify.post_digest`). The briefing's chat
+reader (`chat_read.py`) never reads a channel of kind `digest`, so what
+the remote model read for the owner alone never reaches a Claude lane.
+The bot answers no message there: it is not the EA channel, the DM or
+a registered room. In shadow mode the Zulip `mail-digest` stream is
+mirrored as a room, as every other stream.
 
 **Thread list.** Threads come newest first by their first message. Each
 item is that message with `reply_count` and `last_at` (the thread's

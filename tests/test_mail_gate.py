@@ -154,6 +154,27 @@ def test_digest_posts_fyi_and_kept_only(store):
     assert "skipped" in mg.digest(now=NOW)
 
 
+def test_digest_with_no_digest_channel_posts_nothing_and_keeps_its_window(store, monkeypatch,
+                                                                          capsys):
+    import chat_notify
+    _rec("f1", "c1")
+    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "slack")
+    monkeypatch.setattr(chat_notify, "_load_webhooks",
+                        lambda: {"ea-assistant": "https://hooks.example/A"})
+    assert mg.digest(now=NOW) == {"error": "post failed", "rows": 1}
+    assert "no digest channel" in capsys.readouterr().err
+    assert rl.read(mg.DIGEST_STATE) in (None, [])
+    # on Zulip the post goes to the mail-digest stream, a topic a day
+    sent = []
+    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "zulip")
+    monkeypatch.setattr(chat_notify, "_chat_cfg", lambda: {"zulip": {"site": "s"}})
+    monkeypatch.setattr(chat_notify, "_zulip_post_parts",
+                        lambda zcfg, target, parts: sent.append(target) or True)
+    assert mg.digest(now=NOW) == {"posted": True, "rows": 1}
+    assert sent == [{"stream": "mail-digest", "topic": f"Mail digest {NOW.astimezone():%a %b %-d}"}]
+    assert rl.read(mg.DIGEST_STATE)[-1]["rows"] == 1
+
+
 def test_cron_lanes_do_not_read_kept_threads(store):
     _rec("k1", "c-kept", kept="listed domain mil")
     _rec("n1", "c-ok")
