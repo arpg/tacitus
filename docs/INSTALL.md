@@ -189,8 +189,10 @@ The web chat can also run beside Zulip (shadow mode): each post appears
 in both, and you answer in either. Moving between Zulip and Slack is one
 config key and a restart ([docs/zulip-switch.md](zulip-switch.md)).
 
-The web chat is new: the maintainer's install runs it beside Zulip. On
-its own it carries the same traffic: the briefings, the digests and the
+New chat features land in the web chat. Zulip and Slack keep working as
+they are and get fixes, not new features; Zulip stays in the tree for a
+later setup with more than one person in the room. On its own the web
+chat carries the same traffic: the briefings, the digests and the
 plugins' posts land in the `ea` channel, and the doctor checks its
 settings. It has no scheduling channel: you ask for a meeting in the
 `ea` channel, as on Zulip with no scheduling stream.

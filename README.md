@@ -62,12 +62,14 @@ every confirmation card. Each project gets a room of its own.
 | "open a channel for the field-trial proposal" | Creates the project room and posts the project's context |
 | "never show me DOE PAMS notices" | Records the rule in your words; every later briefing obeys it |
 
-If you already run Zulip, the EA can live there instead, or the web chat
-can run beside it: each post appears in both, and you answer in either.
-Slack also works if you accept that Slack stores the conversation. Off
-the tailnet, a phone reaches the web chat through a relay that sees only
-ciphertext ([docs/webchat-relay.md](docs/webchat-relay.md)). The web
-chat is new: the maintainer's install runs it beside Zulip, and
+Off the tailnet, a phone reaches the web chat through a relay that sees
+only ciphertext ([docs/webchat-relay.md](docs/webchat-relay.md)). If you
+already run Zulip, the EA can live there instead, or the web chat can
+run beside it: each post appears in both, and you answer in either.
+Slack also works if you accept that Slack stores the conversation. New
+chat features land in the web chat; Zulip and Slack keep working as they
+are, and Zulip stays in the tree for a later setup with more than one
+person in the room.
 [docs/INSTALL.md](docs/INSTALL.md#choosing-a-chat-platform) compares the
 three.
 
@@ -198,7 +200,7 @@ tagged and without attendees.
 | The review card | Stable | One card per draft with Send, Edit, Handled, Sent myself and Cancel. The text you approve is the text that goes out. Outlook and Gmail share the flow. |
 | Scheduling | Stable | An OR-tools solver over Outlook and your Google calendars. Your rules live as recurring events on a calendar you edit in your calendar app. Detects reschedule requests within minutes. Fills When2Meet, Doodle and similar polls after you see the conflicts. |
 | Rooms and memory | Stable | One session per conversation and one specialist per project room. A project store holds people, filed mail and a decision journal. Rules you state in chat are stored in your words and applied wherever they fit. |
-| Web chat | Beta | The bot's own chat, installed on your phone as an app, with notifications and a relay for off the tailnet. Runs alone or beside Zulip. See [docs/webchat.md](docs/webchat.md). |
+| Web chat | Stable | The bot's own chat, installed on your phone as an app, with notifications and a relay for off the tailnet. Runs alone or beside Zulip. The chat that new features land in first. See [docs/webchat.md](docs/webchat.md). |
 | Plugins | Stable | Personal and institution features live in plugins with declared capabilities, outside the core. See [docs/plugins.md](docs/plugins.md). |
 | Local model for mail | Beta | Reads and summarizes mail, writes drafts, and posts digests on a model you host. See [docs/remote-llm.md](docs/remote-llm.md). |
 | Letters of recommendation | Beta | Finds the matching letter in your files, uploads it to the portal, then reports. It matches by student name, so check that the letter fits the program. |

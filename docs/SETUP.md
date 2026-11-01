@@ -488,8 +488,9 @@ they post to Zulip and are mirrored.
 
 The `assistant` profile talks to you through a chat platform, and
 `chat.frontend` in `ea-config.json` names it (`"web"`, `"zulip"` or
-`"slack"`; an install with no `chat` block runs Slack). Use Zulip if you
-already run it, or if you want the scheduling stream: it runs on the
+`"slack"`; an install with no `chat` block runs Slack). The web chat
+above is where new features land; Zulip keeps working as it is. Use it
+if you already run it, or if you want the scheduling stream: it runs on the
 EA's machine in Docker and is reached over your tailnet, so every
 message, file and confirmation card stays on that machine, and the
 [web chat](#web-chat) can run beside it. The comparison is the
