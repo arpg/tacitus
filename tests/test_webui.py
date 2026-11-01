@@ -334,7 +334,7 @@ def test_the_app_stays_small():
     # card-button choice per relay-origin phone under "Pair a phone", and 70 for the
     # Settings screen (the routing table: a row per task, the floors, Save).
     # 2,940: 2,920 plus the phone dialog's one-tap setup and its plain notes.
-    assert lines <= 2940, f"{lines} lines: the contract keeps the app near 2,940 with the relay and the phone setup"
+    assert lines <= 2990, f"{lines} lines: the contract keeps the app near 2,990 with the relay, the phone setup and the connection check"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -1744,3 +1744,17 @@ def test_a_bad_pairing_link_is_refused_and_leaves_the_address_bar(browser, stub_
             expect(page.locator(".thread-item").first).to_be_visible()  # the chat still starts
         finally:
             ctx.close()
+
+
+def test_an_unpaired_browser_off_the_network_is_told_how_to_set_up(app):
+    """With no pairing in this browser's storage and the bot's own address
+    unreachable (Tailscale off), the app says where it is reachable and
+    what to do, instead of a bare "could not reach"."""
+    import re
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    page.route(re.compile(r".*/chat/api/.*"), lambda route: route.abort("connectionfailed"))
+    page.reload(wait_until="load")
+    expect(page.locator("#toast")).to_contain_text("reachable only on your own network", timeout=15000)
+    expect(page.locator("#toast")).to_contain_text('"Set up this phone"')
