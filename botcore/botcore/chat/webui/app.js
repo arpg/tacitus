@@ -122,18 +122,45 @@ const DIRECT = {
   events(since, sink) {
     const es = new EventSource(apiUrl('/events') + (since ? `?since=${since}` : ''));
     EVENT_TYPES.forEach((t) => es.addEventListener(t, (ev) => sink.event(t, ev.lastEventId, ev.data)));
-    es.addEventListener('open', () => sink.open());
+    let gone = null; // the host has not answered since this timer was set
+    es.addEventListener('open', () => { clearTimeout(gone); gone = null; sink.open(); });
     // A dropped connection reconnects by itself with Last-Event-ID; a
-    // refused one (an HTTP error) is closed, so the app reconnects.
-    es.addEventListener('error', () => sink.down(es.readyState === EventSource.CLOSED));
-    return { close: () => es.close() };
+    // refused one (an HTTP error) is closed, so the app reconnects. A host
+    // that stays silent (the phone left the owner's network) is given up
+    // after a while when this browser holds a pairing: the reconnect then
+    // picks the relay.
+    es.addEventListener('error', () => {
+      sink.down(es.readyState === EventSource.CLOSED);
+      if (es.readyState === EventSource.CLOSED || gone) return;
+      gone = setTimeout(async () => {
+        gone = null;
+        if (es.readyState === EventSource.OPEN || !(await loadPairing())) return;
+        es.close();
+        sink.down(true);
+      }, HOST_GONE_MS);
+    });
+    return { close: () => { clearTimeout(gone); es.close(); } };
   },
 };
 let T = DIRECT;
 let RELAY = null; // the relay transport of this browser's pairing, once made
+const HOST_GONE_MS = 8000;
 
+// One call on the transport in use. A direct call that fails on the
+// network (the phone left the owner's network while the app was open)
+// picks the transport again; when that is the relay now, the call goes
+// again through it and the event stream moves over.
 async function call(method, path, body) {
-  const res = await T.api(method, path, body);
+  let res;
+  try {
+    res = await T.api(method, path, body);
+  } catch (e) {
+    if (T.relay || !(e instanceof TypeError) || body instanceof FormData) throw e;
+    await pickTransport();
+    if (!T.relay) throw e;
+    if (S.es) connect();
+    res = await T.api(method, path, body);
+  }
   let data = null;
   try { data = await res.json(); } catch { /* an empty or non-JSON body */ }
   if (res.status === 401 && !T.relay) { showPair(); throw new Error('This browser is not paired.'); }
