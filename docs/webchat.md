@@ -261,6 +261,31 @@ In shadow mode `ShadowFrontend` sets `web.inbound = <callable>` so the
 web front end hands the owner's web input to the composite instead of
 dispatching it itself (see below).
 
+## Rooms
+
+On the web chat alone a project room (`#ea-<project>`) or a session room
+(`#tmp-<id8>`) is a channel of kind `room` with the id `r<n>`. The bot
+makes one through `create_private_room` when the owner says `open a
+channel for <project>` (or `for session <uuid>`), when the picker's Open
+button or a staged `pending-channel.json` names a project, and when a
+turn creates a project; the row's `channel` event puts the room in an
+open app at once. The bot then names it in the owner room record
+(`owner_rooms`), registers it under `r<n>` in
+`~/.ea/config/ea-channels.json` (`ea_channels.CHANNEL_ID_RE` takes
+Slack's `C…`/`G…`, Zulip's `stream:<id>` and the web chat's `r<n>`), and
+posts the room's opening context as a thread of its own. A room the
+bot made whose registration failed (the owner record names it, the
+registry does not) is registered when the owner asks for it again,
+since the app has no way to rename or delete it. From then on
+the owner's messages there reach the bot with the room's scope, the
+room's specialist session starts on its first thread, the briefing posts
+the room's slice there (`chat_notify` key `room:r<n>`), and the hygiene
+pass archives the room of a dormant or closed project and reopens it
+when the project is active again. An archived room takes no new
+message from the app. In shadow mode a room is the
+primary's (`stream:<id>` on Zulip) and the store keeps a copy under that
+id.
+
 ## Shadow mode (C)
 
 `ShadowFrontend(primary, shadow)`:

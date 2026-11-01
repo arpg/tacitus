@@ -319,7 +319,7 @@ def test_colleague_rooms_are_wired_owner_only_and_marked():
                    "FRONTEND.invite(cid, OWNER_SLACK_USER_ID)",
                    "_ea_channels.register(cid, pid, slack_name, kind=\"project\"",
                    "_ea_channels.register(cid, name=name, kind=\"session\"",
-                   "except _chat.NotPermitted:", "_CHANNEL_SCOPE_CACHE.pop(cid, None)"):
+                   "except _chat.NotPermitted as e:", "_CHANNEL_SCOPE_CACHE.pop(cid, None)"):
         assert needle in BOT_SRC, needle
     # every room binds a new thread to the room's session before lookup:
     # a #tmp- room to the mirrored conversation, a #ea- room to its own

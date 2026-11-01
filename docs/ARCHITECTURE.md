@@ -771,8 +771,8 @@ code typed in general chat is consumed before any move. Every key passes
 `THREAD_KEY_RE` (no whitespace, no `]`), so it survives inside the
 bridge's `[slack-dispatch thread=... id=...]` and `[deliver:...]`
 markers, whose literals are unchanged. `ea_channels` accepts
-`stream:<id>` beside Slack ids, and room slugs take their length from
-`FRONTEND.limits.room_name_chars`.
+`stream:<id>` and the web chat's room ids `r<n>` beside Slack ids, and
+room slugs take their length from `FRONTEND.limits.room_name_chars`.
 
 **Notifier, reader and upload CLIs.** Three modules carry chat traffic
 outside the bot process, each routed by the same `chat` config:
