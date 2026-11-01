@@ -39,6 +39,7 @@ REPO = Path(__file__).resolve().parent.parent
 TOOLS = {
     "graph_actions": REPO / "preprocessor" / "graph_actions.py",
     "gmail_client": REPO / "preprocessor" / "gmail_client.py",
+    "mail_actions": REPO / "preprocessor" / "mail_actions.py",
     "google_calendar_client": REPO / "preprocessor" / "google_calendar_client.py",
     "scheduling_engine": REPO / "preprocessor" / "scheduling_engine.py",
     "deck_serve": REPO / "preprocessor" / "deck_serve.py",

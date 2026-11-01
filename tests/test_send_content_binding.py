@@ -79,6 +79,7 @@ import graph_client as gc  # noqa: E402
 import mail_links as ML  # noqa: E402
 import graph_actions as ga  # noqa: E402
 import gmail_client as gm  # noqa: E402
+import mail_actions as ma  # noqa: E402
 import mail_mediation as MM  # noqa: E402
 import scheduled_sends as S  # noqa: E402
 
@@ -761,6 +762,10 @@ NOT_DRAFT_CHANGING = {
         "list-drafts": "read",
         "create-draft": "makes a new draft id, which gets its own card",
     },
+    "mail_actions": {
+        "search": "read", "get-message": "read", "get-draft": "read",
+        "mark-read": "the read flag only",
+    },
 }
 
 # The other SAFE tools never reach a draft; their module source must not
@@ -775,7 +780,7 @@ NON_MAIL_TOOLS = {
 NON_MAIL_DRAFT_MARKERS = ("update-draft", "update_draft(", "attach-file", "attach_file(",
                           "remove-attachment", "drafts().update(", "graph_patch(")
 
-MAIL_MODULES = {"graph_actions": ga, "gmail_client": gm}
+MAIL_MODULES = {"graph_actions": ga, "gmail_client": gm, "mail_actions": ma}
 
 
 def _parser(module) -> argparse.ArgumentParser:
@@ -791,6 +796,7 @@ def _subparsers(parser) -> dict:
 PARSERS = {
     "graph_actions": lambda: _parser(ga),
     "gmail_client": lambda: _parser(gm),
+    "mail_actions": lambda: _parser(ma),
 }
 
 
@@ -829,7 +835,7 @@ def _verb_code(tool: str, verb: str) -> str:
     module = MAIL_MODULES[tool]
     funcs = _module_functions(module)
     gfuncs = _module_functions(gc)
-    if tool == "graph_actions":
+    if tool != "gmail_client":
         handler = _subparsers(PARSERS[tool]())[verb].get_default("func")
         seed = funcs[handler.__name__]
     else:
@@ -1175,12 +1181,13 @@ def test_an_owner_side_draft_edit_waits_for_a_send_and_changes_nothing():
 
 
 def test_the_mail_clis_take_the_owner_lock_before_they_dispatch():
-    """graph_actions and gmail_client take it right after the child-parse
+    """graph_actions, gmail_client and mail_actions take it right after the child-parse
     check and before the verb runs; remote_briefing's draft is a
     graph_actions.py create-reply run, so it holds the lock too."""
     for path, dispatch in ((ROOT / "preprocessor" / "graph_actions.py", "args.func(args)"),
                            (ROOT / "preprocessor" / "gmail_client.py",
-                            'if args.setup or args.command == "setup":')):
+                            'if args.setup or args.command == "setup":'),
+                           (ROOT / "preprocessor" / "mail_actions.py", "return args.func(args)")):
         src = path.read_text()
         check = src.index("_mediated = _mm_child.check_child_parse(parser, args)")
         lock = src.index("_mm_child.hold_owner_draft_lock(", check)
