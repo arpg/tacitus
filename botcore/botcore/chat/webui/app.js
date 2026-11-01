@@ -602,8 +602,9 @@ function unreadFor(ch) {
 
 function renderChannels() {
   const box = $('channel-list');
-  const rows = [...S.channels].sort((a, b) => (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9)
-    || channelName(a).localeCompare(channelName(b)));
+  // A channel with unread messages rises to the top; the rest keep their kind order, then their names.
+  const rows = [...S.channels].sort((a, b) => (unreadFor(b.id) ? 1 : 0) - (unreadFor(a.id) ? 1 : 0)
+    || (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9) || channelName(a).localeCompare(channelName(b)));
   let total = 0;
   const item = (c) => {
     const n = unreadFor(c.id);
@@ -1059,13 +1060,21 @@ function installHint(prompt) {
 const footer = () => { $('drawer-foot').hidden = $('notify-row').hidden && $('install').hidden && $('pair-phone').hidden && $('open-settings').hidden; };
 
 // iOS shrinks only the visual viewport for the keyboard: the app takes its
-// height (--app-h) at the top, so the composer stays above the keyboard.
+// height (--app-h) at the top, so the composer stays above the keyboard. The
+// pin is set only while the keyboard is up; otherwise the stylesheet's own
+// height rules, so a screen that changes size (a foldable opening, a window
+// resized) is never held at the old height.
+let lastSize = '';
 function fitViewport() {
   const vv = window.visualViewport;
   const root = document.documentElement.style;
-  if (Math.abs(vv.scale - 1) > 0.01) { root.removeProperty('--app-h'); return; } // zoomed in
-  root.setProperty('--app-h', `${vv.height}px`);
-  if (window.scrollY || vv.offsetTop) window.scrollTo(0, 0);
+  const keyboard = vv && Math.abs(vv.scale - 1) <= 0.01 && vv.height < window.innerHeight - 40;
+  if (keyboard) root.setProperty('--app-h', `${vv.height}px`);
+  else root.removeProperty('--app-h');
+  if (window.scrollY || (vv && vv.offsetTop)) window.scrollTo(0, 0);
+  const size = `${window.innerWidth}x${window.innerHeight}`;
+  if (lastSize && size !== lastSize && !keyboard) diagNote({ what: 'resize', from: lastSize, to: size, vv: vv ? `${Math.round(vv.width)}x${Math.round(vv.height)}` : '' });
+  lastSize = size;
 }
 
 /* -- The relay: crypto (relay_crypto.py is the reference) ------------ */
@@ -1897,6 +1906,9 @@ async function init() {
   });
   installHint();
   if (window.visualViewport) ['resize', 'scroll'].forEach((t) => visualViewport.addEventListener(t, fitViewport));
+  ['resize', 'orientationchange', 'pageshow', 'focus'].forEach((t) => window.addEventListener(t, fitViewport));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) fitViewport(); });
+  fitViewport();
   // The thread holds its newest message in view while its pane shrinks (the keyboard opening).
   let stuck = true;
   $('messages').addEventListener('scroll', () => { stuck = nearBottom(); }, { passive: true });
