@@ -111,6 +111,7 @@ class Stub:
         self.pairs: list[dict] = []
         self.devices: list[dict] = []
         self.approvals: list[dict] = []
+        self.diags: list[dict] = []  # what the app reported under /diag
         self.echo = echo
         self.closed = False
         self.seq = 0
@@ -436,6 +437,9 @@ class Handler(BaseHTTPRequestHandler):
                 if value != "auto":
                     rows[task].update(effective=value, why=f"set to {value}")
             return self._json(200, {**s.routing, "saved": True})
+        if parts == ["diag"]:
+            s.diags.append(json.loads(self._body() or b"{}"))
+            return self._json(200, {"ok": True})
         if parts == ["relay", "approve"] and s.relay_pairing:
             body = json.loads(self._body() or b"{}")
             s.approvals.append(body)

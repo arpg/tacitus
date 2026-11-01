@@ -2936,6 +2936,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return after
             if n == 3 and segs[0] == "channels" and segs[2] == "files":
                 return self._upload(segs[1])
+            if segs == ["diag"]:
+                # What a browser saw while it could not connect (app.js diagNote):
+                # logged, so a phone's failure off the owner's network can be
+                # read in the bot's log. Bounded, owner-only, never stored.
+                entries = self._read_json().get("entries")
+                if not isinstance(entries, list):
+                    raise _HttpError(400, "entries is required")
+                for entry in entries[:20]:
+                    log.info("web chat diag: %s", json.dumps(entry, sort_keys=True)[:2000])
+                self._json(200, {"ok": True, "logged": min(len(entries), 20)})
+                return None
             if segs == ["push", "subscribe"]:
                 self._push_subscribe(self._read_json())
                 self._json(200, {"ok": True})

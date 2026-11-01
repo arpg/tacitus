@@ -184,6 +184,7 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/pair` | `{"token"}` → sets the cookie |
 | GET | `/api/push/vapid` | `{"key": "<base64url P-256 point>"}`, the `applicationServerKey`; 404 when push is off |
 | POST | `/api/push/subscribe` | the browser's `PushSubscription.toJSON()` → `{"ok": true}` |
+| POST | `/api/diag` | `{"entries": [...]}`: what the app saw while it could not connect (storage state, display mode, the error); logged as `web chat diag:` lines, at most 20 per call, never stored → `{"ok": true, "logged": n}` |
 | POST | `/api/push/unsubscribe` | `{"endpoint"}` → `{"ok": true, "removed": bool}` |
 | GET | `/api/push/subscriptions` | `[{"id", "host", "created_at", "last_seen", "last_ok", "failures"}]`; `id` is a hash of the endpoint, which is never shown |
 | POST | `/api/push/revoke` | `{"id"}` → `{"ok": true, "removed": bool}` |
