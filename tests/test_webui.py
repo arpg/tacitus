@@ -334,7 +334,7 @@ def test_the_app_stays_small():
     # card-button choice per relay-origin phone under "Pair a phone", and 70 for the
     # Settings screen (the routing table: a row per task, the floors, Save).
     # 2,940: 2,920 plus the phone dialog's one-tap setup and its plain notes.
-    assert lines <= 2990, f"{lines} lines: the contract keeps the app near 2,990 with the relay, the phone setup and the connection check"
+    assert lines <= 3020, f"{lines} lines: the contract keeps the app near 3,020 with the relay, the phone setup and the connection check"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -1204,6 +1204,7 @@ def _pair_and_approve(browser, relay_bot, contexts):
     tail.goto(relay_bot["public"] + "/")
     tail.click("#pair-phone")
     expect(tail.locator("#phone-devices")).to_contain_text("No phone is set up yet.")
+    expect(tail.locator("#phone-self")).to_contain_text("This browser is not set up yet.")
     wait_for(lambda: tail.input_value("#phone-link"), 10)
     link = tail.input_value("#phone-link")
     assert link.startswith(relay_bot["public"] + "/#tr2=")
@@ -1249,6 +1250,12 @@ def _pair_and_approve(browser, relay_bot, contexts):
     row.locator("button", has_text="Approve").click()
     expect(tail.locator("#phone-devices")).not_to_contain_text("waits for approval", timeout=10000)
     assert [d["pending"] for d in fe.relay.devices()] == [False]
+    # The paired browser's own dialog says it is set up, under its code; the
+    # device is named by what it is (a browser, not a home-screen app).
+    page.click("#pair-phone")
+    expect(page.locator("#phone-self")).to_contain_text(f"This browser is set up (code {shown}).")
+    assert fe.relay.devices()[0]["name"].endswith(" browser")
+    page.keyboard.press("Escape")
     # Off the tailnet now: the bot's own API is out of reach.
     ctx.route(re.compile(r".*/chat/api/.*"), lambda route: route.abort())
     page.reload()
