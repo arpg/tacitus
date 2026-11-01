@@ -335,8 +335,8 @@ def test_the_app_stays_small():
     # Settings screen (the routing table: a row per task, the floors, Save).
     # 2,940: 2,920 plus the phone dialog's one-tap setup and its plain notes.
     # 3,170: 3,120 plus the look (a radius and shadow scale, bubbles, blurred headers, the send state)
-    # and the dual-screen split at the hinge.
-    assert lines <= 3170, f"{lines} lines: the contract keeps the app near 3,170 with the relay, the phone setup and the connection check"
+    # and the dual-screen split at the hinge. 3,190: the height pin that lets go when a screen changes size.
+    assert lines <= 3190, f"{lines} lines: the contract keeps the app near 3,190 with the relay, the phone setup and the connection check"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -503,6 +503,22 @@ def test_a_select_posts_the_option_chosen(app):
     assert not errors, errors
 
 
+def test_a_screen_that_changes_size_is_not_held_at_the_old_height(app):
+    """A foldable opening, or a window resized: the height pin the keyboard
+    sets is dropped, and the panes follow the new viewport."""
+    from playwright.sync_api import expect
+    page, stub, errors = app(viewport={"width": 390, "height": 844})
+    open_thread(page, "Draft a reply")
+    assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == ""
+    page.evaluate("document.documentElement.style.setProperty('--app-h', '300px')")  # as a closed screen's keyboard left it
+    page.set_viewport_size({"width": 1000, "height": 700})
+    expect(page.locator("#threads")).to_be_visible()
+    page.wait_for_function("document.documentElement.style.getPropertyValue('--app-h') === ''")
+    assert page.evaluate("Math.round(document.body.getBoundingClientRect().height)") == 700
+    expect(page.locator("#composer")).to_be_in_viewport()
+    assert not errors, errors
+
+
 def test_an_event_appends_a_message_and_marks_unread(app):
     from playwright.sync_api import expect
     import webui_stub_server as W
@@ -519,6 +535,8 @@ def test_an_event_appends_a_message_and_marks_unread(app):
     stub.emit_bot(W.MAIN, "Elsewhere", thread_key=W.WEEKLY)
     expect(main).to_have_text("3")
     expect(page).to_have_title("(3) Tacitus")
+    # The channel with unread messages sits first; the DM, read and open, drops below it.
+    expect(page.locator("#channel-list .chan .c-name").first).to_have_text("ea")
 
     stub.emit_bot(W.DM, "A brand new thread")
     item = page.locator(".thread-item:has-text('A brand new thread')")
