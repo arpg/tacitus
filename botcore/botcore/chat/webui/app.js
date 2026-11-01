@@ -1137,9 +1137,18 @@ function nonce(dir, n) {
   return out;
 }
 
-async function newKeys() {
-  const pair = await crypto.subtle.generateKey({ name: 'X25519' }, false, ['deriveBits']);
-  return { priv: pair.privateKey, pub: bytesOf(await crypto.subtle.exportKey('raw', pair.publicKey)) };
+// An X25519 pair. An ephemeral one lives in this page alone. The device's
+// own (`keep`) must outlive the page: its private half is kept as PKCS#8
+// bytes in IndexedDB, since WebKit does not give an X25519 CryptoKey back
+// from there, and the key the page computes with is a non-extractable
+// import of those bytes (importPriv).
+const importPriv = (bytes) => crypto.subtle.importKey('pkcs8', bytes, { name: 'X25519' }, false, ['deriveBits']);
+async function newKeys(keep = false) {
+  const pair = await crypto.subtle.generateKey({ name: 'X25519' }, keep, ['deriveBits']);
+  const pub = bytesOf(await crypto.subtle.exportKey('raw', pair.publicKey));
+  if (!keep) return { priv: pair.privateKey, pub };
+  const privBytes = bytesOf(await crypto.subtle.exportKey('pkcs8', pair.privateKey));
+  return { priv: await importPriv(privBytes), privBytes, pub };
 }
 
 // The phone's hello (docs/webchat-relay.md, Handshake and sessions): its
@@ -1246,9 +1255,19 @@ function idb(mode, fn) {
 // A storage that cannot be read is remembered (S.pairingError): a phone
 // whose setup is there but unreadable gets other words than one never set up.
 const loadPairing = () => idb('readonly', (st) => st.get('pairing'))
-  .then((rec) => { S.pairingError = ''; return rec; })
+  .then(async (rec) => {
+    S.pairingError = '';
+    if (rec && !rec.priv && rec.privBytes) rec.priv = await importPriv(rec.privBytes); // the kept bytes, usable
+    return rec;
+  })
   .catch((e) => { S.pairingError = (e && e.message) || String(e); return undefined; });
-const savePairing = (rec) => idb('readwrite', (st) => st.put(rec, 'pairing'));
+// A record with its key's bytes is kept without the CryptoKey; one from
+// before (the CryptoKey alone, kept by browsers that give it back) stays as it is.
+function savePairing(rec) {
+  const kept = { ...rec };
+  if (kept.privBytes) delete kept.priv;
+  return idb('readwrite', (st) => st.put(kept, 'pairing'));
+}
 
 // On a phone the home-screen app and the browser keep separate storage, so
 // each is its own device; the name says which one was set up.
@@ -1490,9 +1509,9 @@ async function pairFromLink(kind, text, self = false) {
       throw new Error('this is not a pairing link');
     }
     if (old && !confirm('This browser is paired already. Replace that pairing?')) return;
-    const keys = await newKeys();
+    const keys = await newKeys(true);
     const rec = { v: 1, relay: String(at.r).replace(/\/+$/, ''), install: at.i, clientKey: at.c,
-      botPublic: b64d(at.k), priv: keys.priv, pub: keys.pub, device: '', bundle: p.b || '' };
+      botPublic: b64d(at.k), priv: keys.priv, privBytes: keys.privBytes, pub: keys.pub, device: '', bundle: p.b || '' };
     // Kept before the hello: a phone whose welcome is lost says a plain
     // hello next time, with the key the bot registered.
     await savePairing(rec);
@@ -1753,6 +1772,7 @@ async function unreachableNote(e) {
   if (T.relay) {
     const host = new URL(T.rec.relay).host;
     if (e instanceof RelayError) return `Could not reach Tacitus: ${e.message}`;
+    if (!(e instanceof TypeError)) return ''; // the bot answered (a phone awaiting approval): the call said it
     // The call itself failed on the network. A plain GET on the relay tells
     // whether this phone reaches the relay at all, or only the call broke.
     if (S.cspBlocked) return `This copy of the app may not call ${S.cspBlocked}. Open the app on the tailnet once to refresh it.`;
@@ -1785,8 +1805,8 @@ async function boot() {
   } catch (e) {
     if ($('pair').hidden) {
       const why = await unreachableNote(e);
-      toast(why);
-      if (T.relay) relayNote(why); // the toast fades; the note stays while boot retries
+      if (why) toast(why);
+      if (why && T.relay) relayNote(why); // the toast fades; the note stays while boot retries
       diagNote({ what: 'boot', why, relay: Boolean(T.relay), pairing: Boolean(await loadPairing()),
         pairingError: S.pairingError || '', idb: await idbProbe(), err: e.message });
     }

@@ -201,7 +201,8 @@ the storage of the own-origin app (same-origin policy).
    the relay's copy of the app, where no bot answers: the app refuses it
    without `b`, and stops with "Code verification unavailable" when this
    copy has no `verifyBundle`, before it makes a key. It makes its own
-   X25519 key pair (WebCrypto, private key non-extractable), keeps it,
+   X25519 key pair (WebCrypto; the private half kept as PKCS#8 bytes,
+   used as a non-extractable import of them), keeps it,
    with `b` on the relay's copy, in IndexedDB before it sends the pairing
    hello through the relay (so a lost welcome leaves a key the bot
    knows), and asks before it replaces an earlier pairing; a pairing that
@@ -777,9 +778,13 @@ adds nothing.
   `relay_crypto.py`, are the reference; the app reproduces
   `tests/fixtures/relay_vectors.json` byte for byte in headless Chromium
   (and in WebKit where Playwright has it).
-  The device key pair is generated non-extractable and kept, with the
-  relay, the install, the client key and the bot's public key, in
-  IndexedDB (`tacitus-relay`); Web Storage holds none of it.
+  The device key pair is kept, with the relay, the install, the client
+  key and the bot's public key, in IndexedDB (`tacitus-relay`); Web
+  Storage holds none of it. The private half is kept as PKCS#8 bytes
+  and imported non-extractable for use: WebKit (the iPhone's home-screen
+  app) does not give an X25519 CryptoKey back from IndexedDB, so a key
+  kept as a CryptoKey was lost at the next launch. Ephemeral keys are
+  made non-extractable and never exported.
 - On a link with `#tr2=` (or `#tr1=`), remove the fragment, then pair
   (Pairing, above), and show the pairing code until the phone's requests
   work. On the relay's copy, refuse a link without `b`, and stop on a
