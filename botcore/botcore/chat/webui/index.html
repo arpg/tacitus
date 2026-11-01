@@ -27,6 +27,8 @@
     <span class="brand">Tacitus</span>
     <span id="live" class="live wait" title="Connecting"></span>
   </header>
+  <a id="needs-link" class="chan needs" href="#/needs" hidden><span class="c-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 21V4h12l-2 4 2 4H5"/></svg></span>
+    <span class="c-name">Needs you</span><span id="needs-count" class="badge needs" hidden></span></a>
   <div id="channel-list" class="scroll"></div>
   <footer id="drawer-foot" hidden>
     <p id="update-note" role="status" hidden></p>
@@ -57,6 +59,7 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
     </button>
     <h2 id="thread-title"></h2>
+    <button type="button" id="thread-state" class="btn small" hidden>Mark done</button>
   </header>
   <div id="messages" class="scroll" aria-live="polite"></div>
   <form id="composer" autocomplete="off">

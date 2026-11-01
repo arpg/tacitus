@@ -480,10 +480,27 @@ floor's line under a row a floor holds (the values it refuses are
 disabled). Save posts the enabled choices and redraws from the answer,
 with "Saved." or the bot's reason under the rows.
 
+The state of a conversation. Each thread card carries a sticker beside
+its time for the thread's `state` (from the thread rows, `GET
+/api/needs` and the `thread_state` event): "Needs you" filled in the
+accent, "Waiting" in amber, "Working" muted with a pulse (none under
+reduced motion), "Done" muted with a check, nothing for `none`; the
+reason is the card's `title` and the sticker's `aria-label`. A "Needs
+you" entry heads the channel list, above the channels, with the count of
+`needs_you` threads; it opens `#/needs`, the `/api/needs` list with each
+card's channel before its replies, read again on each new connection and
+after a state changes. A thread opened from it keeps that list beside it,
+and Back returns to it. Chips at the top of a channel's list (All, Needs
+you, Waiting, Done) filter it; the choice is kept per browser. In the
+thread header "Mark done" (or "Needs me" on a done thread) posts the
+owner's state to `/api/threads/{ch}/{thread_key}/state`, as does a long
+press (600 ms, held still) on a card on a touch screen; the sticker
+changes at once and follows the bot's answer and its event.
+
 Dark and light from `prefers-color-scheme`. Keep the whole app under
-~3,240 lines with the relay transport, the QR encoder, the code check,
-the update through the relay, the per-phone card-button choice and the
-Settings screen; readable by one maintainer.
+~3,430 lines with the relay transport, the QR encoder, the code check,
+the update through the relay, the per-phone card-button choice, the
+Settings screen and the thread states; readable by one maintainer.
 
 Installing on a phone. The manifest (`display: standalone`, `scope` and
 `start_url` `./`, so the base path with its slash, since the page links
@@ -500,8 +517,9 @@ the manifest's `background_color` is the dark theme's. Outside the
 installed app (`navigator.standalone` false on iOS, `display-mode:
 browser` elsewhere) a line at the drawer's foot says how to install: on
 iOS Share, then Add to Home Screen; in Chrome an Install button for its
-`beforeinstallprompt`. Hiding it lasts 30 days; the time it was hidden
-is the app's only use of `localStorage`. A link to a route of this app
+`beforeinstallprompt`. Hiding it lasts 30 days; `localStorage` keeps the
+time it was hidden, the thread filter and the connection notes for
+`/api/diag`, and nothing else. A link to a route of this app
 (`<base>/#/...`, absolute or relative) opens in it; any other keeps
 `target="_blank"`, so the installed app hands it to the browser. On iOS
 the keyboard shrinks only the visual viewport: the app sets its height

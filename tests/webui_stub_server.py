@@ -25,6 +25,12 @@ under the stakes floor) and `settings_posts` records each Save; a value a
 row does not allow answers 400, as the bot's floors do. Only with
 `settings=True` does /api/me name the page.
 
+Each thread can have a state (`states`, seeded with made-up ones in three
+channels): the thread rows carry it, GET /api/needs lists the threads
+that need the owner or wait, and POST /api/threads/<ch>/<key>/state sets
+the owner's own (recorded in `state_posts`). `set_state` changes one as
+the bot's rules would; each change is a `thread_state` event.
+
 With `sign=True` (or `--sign`) it signs the app's files as the bot does
 (web_bundle, which needs the cryptography package) and serves the signed
 manifest at /chat/manifest.sig.json, and a relay pairing carries its
@@ -121,6 +127,9 @@ class Stub:
         self.files: dict[str, tuple[str, str, bytes]] = {}
         self.clicks: list[dict] = []
         self.posts: list[dict] = []
+        # (channel, thread key) -> {"state", "by", "reason", "at"}
+        self.states: dict[tuple[str, str], dict] = {}
+        self.state_posts: list[dict] = []
         # Each stream request: its Last-Event-ID header and its ?since=.
         self.streams: list[dict] = []
         self.refuse_streams = 0
@@ -192,9 +201,36 @@ class Stub:
             if m["channel"] == channel and m["thread_key"] not in seen:
                 seen.add(m["thread_key"])
                 if before is None or m["seq"] < before:
-                    out.append(self.view(m))
+                    out.append(self.row(m))
         out.sort(key=lambda p: p["seq"], reverse=True)
         return out[:limit]
+
+    def row(self, m: dict) -> dict:
+        """A thread row as the threads route gives it: the parent, its
+        replies and its state."""
+        st = self.states.get((m["channel"], m["thread_key"])) or {}
+        return {**self.view(m), "state": st.get("state", "none"), "state_by": st.get("by", ""),
+                "state_reason": st.get("reason", ""), "state_at": st.get("at", 0)}
+
+    def set_state(self, channel: str, thread_key: str, state: str, by: str = "rule",
+                  reason: str = "") -> dict:
+        """Set a thread's state and send the `thread_state` event."""
+        with self.cond:
+            st = {"state": state, "by": by, "reason": reason, "at": time.time()}
+            self.states[(channel, thread_key)] = st
+            self.eseq += 1
+            self.events.append((self.eseq, "thread_state",
+                                {"channel": channel, "thread_key": thread_key, **st}))
+            self.cond.notify_all()
+            return st
+
+    def needs(self) -> list[dict]:
+        """Every thread that needs the owner or waits, needs you first,
+        then newest first, each with its channel's name."""
+        out = [{**p, "channel_name": self.channels[c]["name"]} for c in self.channels
+               for p in self.parents(c, 10 ** 6, None) if p["state"] in ("needs_you", "waiting")]
+        out.sort(key=lambda p: (p["state"] != "needs_you", -p.get("last_at", p["posted_at"])))
+        return out[:200]
 
     def drop_streams(self, refuse: int = 0) -> None:
         """Close every open event stream; the next `refuse` stream
@@ -264,9 +300,17 @@ class Stub:
         self.add(MAIN, ":calendar: Weekly plan\n\n# Monday\nTwo meetings.", thread_key=WEEKLY, at=t0 + 100)
         self.add(MAIN, "Tuesday is open.", thread_key=WEEKLY, at=t0 + 200)
         self.add(MAIN, "Wednesday has a review.", thread_key=WEEKLY, at=t0 + 300)
-        self.add(SCHED, ":hourglass_flowing_sand: Finding a time for the review.", at=t0 + 400)
-        self.add(ROOM, "Project notes live here.", at=t0 + 500)
+        sched = self.add(SCHED, ":hourglass_flowing_sand: Finding a time for the review.", at=t0 + 400)
+        room = self.add(ROOM, "Project notes live here.", at=t0 + 500)
         self.add(OLD, "This room is archived.", at=t0 - 86400)
+        for m, state, reason in (
+                (ask, "needs_you", "The card still has its Send button."),
+                (odd, "done", "The card was acted on and nothing asks anything since."),
+                (fig, "working", "You wrote last and the bot has not answered yet."),
+                (sched, "waiting", "The other side has not picked a time yet."),
+                (room, "needs_you", "The bot asked which project this is for.")):
+            self.states[(m["channel"], m["thread_key"])] = {"state": state, "by": "rule", "reason": reason,
+                                                            "at": m["posted_at"]}
 
     # inbound from the app
 
@@ -382,6 +426,8 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[0] == "files" and parts[1] in s.files:
             name, mime, data = s.files[parts[1]]
             return self._send(200, data, mime, {"Content-Disposition": f'attachment; filename="{name}"'})
+        if parts == ["needs"]:
+            return self._json(200, {"threads": s.needs()})
         if parts == ["events"]:
             return self._events(q)
         return self._json(404, {"error": "not found"})
@@ -459,6 +505,16 @@ class Handler(BaseHTTPRequestHandler):
                 "x": int(time.time()) + 600, "b": s.bundle_hash(), "a": "https://relay.example.net/"}))
             return self._json(200, {"link": link, "qr": link, "expires": int(time.time()) + 600,
                                     "origin": "relay", "bundle": s.bundle_hash(), "access": "chat"})
+        if len(parts) == 4 and parts[0] == "threads" and parts[3] == "state":
+            body = json.loads(self._body() or b"{}")
+            s.state_posts.append({"channel": parts[1], "thread_key": parts[2], **body})
+            rows = s.thread(parts[1], parts[2])
+            if not rows:
+                return self._json(404, {"error": "no such thread"})
+            if body.get("state") not in ("done", "needs_you", "waiting"):
+                return self._json(400, {"error": "state must be done, needs_you or waiting"})
+            s.set_state(parts[1], parts[2], body["state"], "owner", "You set this.")
+            return self._json(200, s.row(rows[0]))
         if len(parts) == 4 and parts[0] == "cards" and parts[3] == "actions":
             body = json.loads(self._body() or b"{}")
             if s.click(parts[1], parts[2], body):

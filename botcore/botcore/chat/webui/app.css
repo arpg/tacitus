@@ -21,6 +21,8 @@
   --badge: #d92d3a;
   --ok: #1f9d55;
   --warn: #b07a0c;
+  --warn-text: #865600; /* amber text: the Waiting sticker */
+  --warn-soft: #fcefd4;
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, .05);
   --shadow: 0 1px 3px rgba(16, 24, 40, .06), 0 6px 20px rgba(16, 24, 40, .07);
   --shadow-lg: 0 2px 8px rgba(16, 24, 40, .08), 0 24px 56px rgba(16, 24, 40, .2);
@@ -55,6 +57,8 @@
     --badge: #d13f45;
     --ok: #4cc382;
     --warn: #e0a83a;
+    --warn-text: #e0a83a;
+    --warn-soft: #3a3122;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3);
     --shadow: 0 1px 3px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .3);
     --shadow-lg: 0 2px 8px rgba(0, 0, 0, .4), 0 24px 56px rgba(0, 0, 0, .55);
@@ -211,20 +215,42 @@ button, select, textarea, input { font: inherit; color: inherit; }
 .c-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Each thread is its own card, so one is told from the next at a glance:
-   the title with its time on the right, the replies below; a bold title,
-   an accent time and a count while it has unread replies, an accent ring
-   while open. */
-.thread-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 4px 12px;
+   the title with its sticker and time on the right, the replies below (in
+   the Needs you list after the channel); a bold title, an accent time and
+   a count while it has unread replies, an accent ring while open. The rows
+   fill in order: an empty sticker column leaves the time where it was.
+   A long press is the app's own, so the phone neither selects nor opens a menu. */
+.thread-item { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: baseline; gap: 4px 6px;
   margin: 0 12px 8px; padding: 12px 14px; color: inherit; text-decoration: none;
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-l); box-shadow: var(--shadow-sm);
+  -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
   transition: border-color .15s, box-shadow .15s, background-color .15s, transform .12s var(--ease); }
 .thread-item.active { background: var(--accent-soft); border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-.t-title { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+.t-title { grid-column: 1; margin-right: 6px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   font-weight: 500; line-height: 1.3; }
-.t-time { grid-column: 2; grid-row: 1; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.t-time { grid-column: 3; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .thread-item.unread .t-time { color: var(--accent); font-weight: 600; }
-.t-meta { grid-column: 1; color: var(--muted); font-size: 13px; }
-.thread-item .badge { grid-column: 2; grid-row: 2; justify-self: end; }
+.t-chan { font-weight: 600; }
+.t-meta { grid-column: 1 / 3; color: var(--muted); font-size: 13px; }
+.thread-item .badge { grid-column: 3; justify-self: end; }
+
+/* A thread's state: Needs you filled in the accent, Waiting in amber,
+   Working with a pulse, Done quiet with a check. */
+.sticker { grid-column: 2; padding: 0 8px; border-radius: 999px; background: var(--hover); color: var(--muted);
+  font-size: 12px; font-weight: 600; line-height: 20px; white-space: nowrap; }
+.st-needs_you { background: var(--accent); color: var(--accent-text); font-weight: 700; }
+.st-waiting { background: var(--warn-soft); color: var(--warn-text); }
+.st-working::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%;
+  background: currentColor; vertical-align: 1px; animation: pulse 1.4s ease-in-out infinite; }
+.st-done::before { content: "\2713"; margin-right: 4px; }
+
+.filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 12px 10px; }
+.filter { min-height: 30px; padding: 3px 11px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel);
+  font-size: 13px; font-weight: 500; cursor: pointer; transition: background-color .15s, border-color .15s; }
+.filter.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+#needs-link { margin-top: 8px; }
+#needs-link svg { width: 18px; height: 18px; vertical-align: -3px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+.badge.needs { background: var(--accent); color: var(--accent-text); }
 
 .badge { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--badge); color: #fff;
   font-size: 12px; font-weight: 700; line-height: 20px; text-align: center; }
@@ -534,7 +560,7 @@ a.file-link .file-name { color: var(--accent); }
 }
 
 @media (hover: hover) { /* a touch screen keeps no hover colour after a tap */
-  .btn:not(.primary):hover, .icon:hover, .chan:not(.active):hover { background: var(--hover); }
+  .btn:not(.primary):hover, .icon:hover, .chan:not(.active):hover, .filter:not(.on):hover { background: var(--hover); }
   .thread-item:not(.active):hover { border-color: var(--border-strong); box-shadow: var(--shadow); }
   a.file-link:hover { border-color: var(--border-strong); }
   .btn.primary:hover, #send:hover { filter: brightness(1.08); }
@@ -547,7 +573,7 @@ a.file-link .file-name { color: var(--accent); }
 }
 
 @media (pointer: coarse) { /* every control a finger presses is at least 44px high */
-  .btn, .btn.small, .card-actions select, .toggle, .chan, .seg label { min-height: 44px; }
+  .btn, .btn.small, .card-actions select, .toggle, .filter, .chan, .seg label { min-height: 44px; }
   .archived summary, .card-quoted summary { padding-block: 13px; }
 }
 
