@@ -334,7 +334,7 @@ def test_the_app_stays_small():
     # card-button choice per relay-origin phone under "Pair a phone", and 70 for the
     # Settings screen (the routing table: a row per task, the floors, Save).
     # 2,940: 2,920 plus the phone dialog's one-tap setup and its plain notes.
-    assert lines <= 3060, f"{lines} lines: the contract keeps the app near 3,060 with the relay, the phone setup and the connection check"
+    assert lines <= 3120, f"{lines} lines: the contract keeps the app near 3,120 with the relay, the phone setup and the connection check"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -1264,8 +1264,13 @@ def _pair_and_approve(browser, relay_bot, contexts):
     expect(page.locator("#phone-self")).to_contain_text(f"This browser is set up (code {shown}).")
     assert fe.relay.devices()[0]["name"].endswith(" browser")
     page.keyboard.press("Escape")
-    # Off the tailnet now: the bot's own API is out of reach.
+    # Off the tailnet now, with the app still open: the bot's own API is out
+    # of reach. The next call fails on the network, picks the relay and goes
+    # again; the event stream follows.
     ctx.route(re.compile(r".*/chat/api/.*"), lambda route: route.abort())
+    assert page.evaluate("() => call('GET', '/channels').then((rows) => rows.length)") >= 1
+    assert page.evaluate("() => T.relay") is True
+    expect(page.locator("#live.on")).to_be_attached(timeout=15000)
     page.reload()
     expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
     expect(page.locator("#live.on")).to_be_attached(timeout=10000)

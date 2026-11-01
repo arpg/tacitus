@@ -177,9 +177,16 @@ button, select, textarea, input { font: inherit; color: inherit; }
 .c-icon { width: 18px; color: var(--muted); text-align: center; flex: none; }
 .c-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.thread-item { display: grid; grid-template-columns: 1fr auto; padding: 10px 12px; }
-.t-title { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.t-meta { grid-column: 1; color: var(--muted); font-size: 13px; }
+/* Each thread is its own card, so one is told from the next at a glance:
+   a panel on the list's background, an accent edge while it has unread
+   replies, an accent border while open. */
+.thread-item { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 10px 12px; margin: 6px 8px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
+.thread-item.unread { border-left: 3px solid var(--accent); padding-left: 10px; }
+.thread-item.active { border-color: var(--accent); }
+.t-title { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  font-weight: 500; line-height: 1.3; }
+.t-meta { grid-column: 1; color: var(--muted); font-size: 12px; }
 .thread-item .badge { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
 
 .badge { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--badge); color: #fff;
