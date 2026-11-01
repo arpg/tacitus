@@ -6,6 +6,38 @@ repository that preceded it.
 
 ## Unreleased
 
+## v0.2.0 (2026-11-01)
+
+- **Tacitus has its own chat.** A `WebFrontend` serves a web app from the
+  bot (`docs/webchat.md`): channels, threads and the DM, cards with their
+  buttons, uploads, mentions, history copied from Zulip, and Web Push. It
+  runs in shadow mode beside Zulip (`chat.shadow`) or as the only
+  frontend; a web-only install has scheduled posts, alerts, the doctor,
+  setup and the seed. Setup runs in the browser from a loopback or tailnet
+  page with one set of question definitions and the doctor at the end.
+- **A phone that leaves the owner's network keeps working.** The app
+  installs to the home screen; its files are signed by the bot (an Ed25519
+  manifest the service worker checks, re-signed when they change on
+  disk). Off the tailnet it talks through a relay on a public host
+  (`relay/`, `docs/webchat-relay.md`): end-to-end keys made on the phone,
+  pairing from one button in the app or from a link, device approval from
+  the owner's DM, and the switch to the relay without a restart when the
+  network drops. The phone keeps its key as PKCS#8 bytes, since WebKit
+  returns no X25519 `CryptoKey` from IndexedDB. The notes the app shows
+  when Tacitus is unreachable say what to do in plain words, and the app
+  posts what it saw to the bot's log (`/api/diag`).
+- **The look.** Threads in a channel are separate cards; messages sit in
+  bubbles, yours on the right; blurred headers, a rounded composer, a
+  radius and shadow scale, a raised dark theme, thin scrollbars on a
+  desktop. A dual-screen Android device gets one pane per screen with the
+  split at the hinge (`horizontal-viewport-segments`), and a two-pane
+  fallback at 1000 to 1200 px.
+- **A macOS native-accounts backend**, prototyped behind an availability
+  seam: EventKit for the calendar and Mail.app through JXA, in place of
+  app registrations, with the mediator in front.
+- **Registration-free sign-in.** A published Entra app and a Google desktop
+  client are wired behind empty ids; the terminal Google sign-in calls the
+  client's own setup function.
 - **The Docker web chat says what it exposes, and narrows it.** The
   Caddy example strips `Tailscale-User-Login`, `X-Tacitus-Relay` and
   `X-Tacitus-Relay-Cards` from every request, publishes on
