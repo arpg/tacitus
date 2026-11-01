@@ -175,7 +175,7 @@ subset and escapes everything else; it never injects HTML from text.
 | GET | `/api/bundle` | the same document, for the owner: the route the relay reaches |
 | GET | `/api/app/{file}` | a file that the signed manifest names, its bytes as on disk, as an attachment with the sandbox policy and the type of its name; 404 for any other name. A phone off the tailnet takes a new release here, through the relay (Code integrity) |
 | GET | `/api/channels` | `[{"id","name","kind","archived","last_at","unread"}]` |
-| GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count`, `last_at` and the thread's state: `state`, `state_by`, `state_reason`, `state_at` (State) |
+| GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count`, `last_at` and the thread's state: `state`, `state_by`, `state_reason`, `state_at`, `stale` (State) |
 | GET | `/api/needs` | `{"threads": [...]}`: the threads whose state is `needs_you` or `waiting` in channels that are not archived, each a threads row with `channel_name`; `needs_you` first, then newest first; at most 200; one query, and it moves no read mark (State). `needs` is never a channel id |
 | POST | `/api/threads/{ch}/{thread_key}/state` | `{"state": "done" \| "needs_you" \| "waiting"}` → the thread's row as the threads route gives it, with `channel_name`: the owner's override (`state_by` `owner`), until a new message lands in the thread; 400 for another state, 404 for an unknown thread. A chat action: a relayed device that may chat may take it (State) |
 | GET | `/api/channels/{ch}/threads/{thread_key}` | the thread, oldest first, parent first |
@@ -183,7 +183,7 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/channels/{ch}/files` | multipart `file`, optional `text`, `thread_key` → the stored `file` message; dispatches an `InboundMessage` with `files=[FileRef]` |
 | GET | `/api/files/{id}` | the bytes, `Content-Disposition: attachment` |
 | POST | `/api/cards/{ch}/{id}/actions` | `{"action_id", "value"?, "selected"?}` → `{"ok": true}`; dispatches an `ActionEvent` (`source` `button` or `select`) |
-| GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row, `thread_state` events `{"channel", "thread_key", "state", "by", "reason", "at"}`); a `: ping` comment every 20 s |
+| GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row, `thread_state` events `{"channel", "thread_key", "state", "by", "reason", "at", "stale"}`); a `: ping` comment every 20 s |
 | POST | `/api/pair` | `{"token"}` → sets the cookie |
 | GET | `/api/push/vapid` | `{"key": "<base64url P-256 point>"}`, the `applicationServerKey`; 404 when push is off |
 | POST | `/api/push/subscribe` | the browser's `PushSubscription.toJSON()` → `{"ok": true}` |
@@ -228,10 +228,15 @@ Each thread has one state, `needs_you`, `working`, `waiting`, `done` or
 view. Rules set it at once on every change to a thread; the local model
 (the routing table's `thread_state` task) judges what the rules leave
 open, on a tick every 5 minutes; the owner overrides it from the app.
-It lives in this store alone (the `thread_state` and `thread_origin`
-tables, and `thread_state` events on the stream): in shadow mode nothing
-reaches Zulip. The rules, the model step, the tables and the routes are
-in [webchat-state.md](webchat-state.md).
+A conversation reads the cards it asked for in the DM (the `card_link`
+table, from each card's own link and the bot's "is in your DM" pointer),
+a state past 7 days is marked stale, and a `needs_you` state past a day
+gets one "Still need this?" line from the bot (the `nudges` table), which
+no rule and no model reads. It lives in this store alone (those tables,
+`thread_state` and `thread_origin`, and `thread_state` events on the
+stream): in shadow mode nothing reaches Zulip, the nudge included. The
+rules, the model step, the tables and the routes are in
+[webchat-state.md](webchat-state.md).
 
 ## The front end's verbs (A)
 
@@ -510,12 +515,16 @@ its time for the thread's `state` (from the thread rows, `GET
 /api/needs` and the `thread_state` event): "Needs you" filled in the
 accent, "Waiting" in amber, "Working" muted with a pulse (none under
 reduced motion), "Done" muted with a check, nothing for `none`; the
-reason is the card's `title` and the sticker's `aria-label`. A "Needs
-you" entry heads the channel list, above the channels, with the count of
-`needs_you` threads; it opens `#/needs`, the `/api/needs` list with each
-card's channel before its replies, read again on each new connection and
-after a state changes. A thread opened from it keeps that list beside it,
-and Back returns to it. Chips at the top of a channel's list (All, Needs
+reason is the card's `title` and the sticker's `aria-label`; a stale
+state's sticker is muted and says how long it has waited ("Needs you · 9
+days"). A "Needs you" entry heads the channel list, above the channels,
+with the count of `needs_you` threads that are not stale; it opens
+`#/needs`, the `/api/needs` list with each card's channel before its
+replies, read again on each new connection and after a state changes.
+With stale rows it has two parts: "This week", then "Older", shut at
+first with its count on the button that opens it and "Mark all done"
+beside it, which asks once in plain words and posts `done` for each. A
+thread opened from it keeps that list beside it, and Back returns to it. Chips at the top of a channel's list (All, Needs
 you, Waiting, Done) filter it; the choice is kept per browser. In the
 thread header "Mark done" (or "Needs me" on a done thread) posts the
 owner's state to `/api/threads/{ch}/{thread_key}/state`, as does a long
@@ -547,10 +556,10 @@ that need a tap land there, a room that it is for one project, and the
 scheduling channel that Tacitus finds meeting times there.
 
 Dark and light from `prefers-color-scheme`. Keep the whole app under
-~3,630 lines with the relay transport, the QR encoder, the code check,
+~3,680 lines with the relay transport, the QR encoder, the code check,
 the update through the relay, the per-phone card-button choice, the
-Settings screen, the thread states and the teaching; readable by one
-maintainer.
+Settings screen, the thread states with their stale shelf and the
+teaching; readable by one maintainer.
 
 Installing on a phone. The manifest (`display: standalone`, `scope` and
 `start_url` `./`, so the base path with its slash, since the page links

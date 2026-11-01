@@ -421,7 +421,7 @@ def test_a_change_runs_the_rules_at_once_and_appends_the_event(store):
     assert events == [("thread_state", {"channel": "main", "thread_key": row["thread_key"],
                                         "state": "working", "by": "rule",
                                         "reason": "You wrote last and Tacitus has not answered yet.",
-                                        "at": st["at"]})]
+                                        "at": st["at"], "stale": False})]
     # a card outcome is a change too
     card = store.add_message("dm", mid=None, thread_key=None, author="bot", kind="card",
                              text="Confirm send", card=live_card())
@@ -801,6 +801,360 @@ def test_no_primary_means_no_read(store, tmp_path):
     read = FakeCards()
     f.card_lookup = read
     assert states.cards is read
+
+
+# ── a conversation's cards in Direct messages (rule 2b) ───────────────
+
+def dm_card(card_id="w9", *, kind="card", text="", at=None, updated=None, history=False,
+            card=None, channel="dm"):
+    """A card the conversation links to, in its own thread in the DM."""
+    row = {**m(9, kind=kind, text=text, at=at, updated=updated),
+           "channel": channel, "id": card_id, "thread_key": f"t-{card_id}",
+           "card": live_card() if card is None else card}
+    if history:
+        row["history"] = True
+    return row
+
+
+ASK = [m(1, "owner", "Draft a reply to Avery.", reactions=["white_check_mark"], at=NOW - 3 * 3600),
+       m(2, text=":lock: The Send button for this draft is in your DM: "
+                 "[open it](https://h.example.test/chat/#/dm/t-w9/w9)", at=NOW - 3 * 3600 + 60),
+       m(3, text="Draft created. It says both trips are covered.", at=NOW - 3 * 3600 + 61)]
+
+LINK_CASES = [
+    # (name, linked cards, more messages after ASK, expected (state, reason) or None)
+    ("a live card in the DM waits for the owner", [dm_card()], [],
+     ("needs_you", "Its card in Direct messages waits for you.")),
+    ("a card sent from the DM settles the conversation",
+     [dm_card(kind="status", text=":white_check_mark: Sent.", updated=NOW - 600)], [],
+     ("done", "Its card was handled: Sent.")),
+    ("several cards, all handled: the latest outcome is named",
+     [dm_card("w8", kind="status", text=":pencil2: Revised. The new Send card for this draft is "
+                                         "below.", updated=NOW - 900),
+      dm_card(kind="status", text=":incoming_envelope: Sent from Outlook.", updated=NOW - 600)],
+     [], ("done", "Its cards were handled: Sent from Outlook.")),
+    ("one handled and one live is live",
+     [dm_card("w8", kind="status", text=":white_check_mark: Sent.", updated=NOW - 900),
+      dm_card()], [], ("needs_you", "Its card in Direct messages waits for you.")),
+    ("an owner message after the last outcome is the later rules'",
+     [dm_card(kind="status", text=":white_check_mark: Sent.", updated=NOW - 600)],
+     [m(4, "owner", "Thanks. And the other one?", reactions=["white_check_mark"], at=NOW - 300),
+      m(5, text="Which one do you mean?", at=NOW - 290)], None),
+    ("a bot line after the outcome does not reopen it",
+     [dm_card(kind="status", text=":white_check_mark: Sent.", updated=NOW - 600)],
+     [m(4, text=":white_check_mark: Sent to Avery.", at=NOW - 300)],
+     ("done", "Its card was handled: Sent.")),
+    ("a press under way is working",
+     [dm_card(kind="status", text=":hourglass_flowing_sand: Sending...", updated=NOW - 60)], [],
+     ("working", "Tacitus is acting on the button you pressed.")),
+    ("a press stuck for long decides nothing",
+     [dm_card(kind="status", text=":hourglass_flowing_sand: Sending...", updated=NOW - 3600)], [],
+     None),
+    ("a failed press decides nothing",
+     [dm_card(kind="status", text=":x: Could not send: the draft is gone.", updated=NOW - 600)],
+     [], None),
+    ("a card past the registry's age decides nothing", [dm_card(at=NOW - 8 * DAY)], [], None),
+    ("a link to a card the store does not hold keeps it open",
+     [dm_card(kind="status", text=":white_check_mark: Sent.", updated=NOW - 600),
+      {"kind": "missing", "id": "5522", "card": None}], [], None),
+    ("a linked message that is no card decides nothing",
+     [{**m(9, text="Just a note."), "channel": "dm", "id": "w9"}], [], None),
+    ("a card copied from Zulip, settled there",
+     [{**zcard(":check: **Sent**", at=NOW - 2 * 3600 - 30), "id": "5522"}], [],
+     ("done", "Its card was handled: Sent")),
+    ("a card copied from Zulip, still with its legend",
+     [{**zcard(at=NOW - 2 * 3600), "id": "5522"}], [],
+     ("needs_you", "Its card in Direct messages waits for you.")),
+]
+
+
+@pytest.mark.parametrize("name,linked,more,want", LINK_CASES, ids=[c[0] for c in LINK_CASES])
+def test_a_conversation_reads_its_cards_in_direct_messages(name, linked, more, want):
+    got = decide(ASK + more, linked=linked)
+    assert got == (None if want is None else (want[0], "rule", want[1]))
+
+
+def test_the_link_rule_sits_after_the_live_card_rule_and_before_the_owner_s_last_word():
+    sent = [dm_card(kind="status", text=":white_check_mark: Sent.", updated=NOW - 600)]
+    # a live card in the conversation itself names that card
+    here = ASK + [m(4, kind="card", card=live_card(":lock: *Confirm invite*"))]
+    assert decide(here, linked=sent)[2] == 'The card "Confirm invite" still has its buttons.'
+    # the owner's override still holds
+    prev = {"state": "done", "by": "owner", "reason": "You marked this done.", "judged_seq": 3}
+    assert decide(ASK, linked=[dm_card()], prev=prev)[:2] == ("done", "owner")
+    # a live card beats the owner's unanswered message (its button is the next step)
+    asked = ASK + [m(4, "owner", "Make it shorter.", at=NOW - 30 * MIN)]
+    assert decide(asked, linked=[dm_card()])[0] == "needs_you"
+    assert decide(asked)[2] == ts.NOT_ANSWERED
+    # with no link the conversation is the model's, as before
+    assert decide(ASK) is None and decide(ASK, linked=[]) is None
+
+
+def test_pointers_name_their_card_on_each_platform():
+    web = (":lock: The Create button for this event is in your DM: "
+           "[open it](https://h.example.test/chat/#/dm/t5/w5)")
+    zulip = (":locked: The Publish button for this change is in your DM: [open it]"
+             "(https://chat.example.org/#narrow/channel/6-ea-dm/topic/lock.20W7KL/near/5664)")
+    slack = (":lock: The Send button for this draft is in your DM: "
+             "[open it](https://x.slack.com/archives/D0123ABC/p1700000000123456)")
+    assert ts.pointer_targets(web) == [("dm", "w5")]
+    assert ts.pointer_targets(zulip) == [("", "5664")]
+    assert ts.pointer_targets(slack) == [("D0123ABC", "1700000000.123456")]
+    assert ts.pointer_targets(web + "\n" + zulip) == [("dm", "w5"), ("", "5664")]
+    for text in (":lock: The Send button for this draft is in your DM.",  # no link
+                 "I made a reply draft. The Send button is in your DM.",
+                 ":sunny: **Morning briefing**: 3 drafts are waiting as a card in your DM: one.",
+                 "See [the card](https://h.example.test/chat/#/dm/t5/w5)."):
+        assert ts.pointer_targets(text) == [], text
+    assert ts.card_origin({"ea_channel": "main", "thread_ts": "t4"}) == ("main", "t4")
+    assert ts.card_origin({"ea_channel": "main", "thread_ts": ""}) is None
+    assert ts.card_origin(None) is None
+
+
+def _send_card(origin_channel="main", origin_key="", title=":lock: *Confirm send*"):
+    return {**live_card(title), "ea_channel": origin_channel, "thread_ts": origin_key}
+
+
+def test_a_card_posted_for_a_conversation_moves_its_state(store):
+    e = engine(store)
+    e.changed()
+    ask = store.add_message("main", mid=None, thread_key=None, author="owner", kind="message",
+                            text="Draft a reply to Avery.", posted_at=time.time() - 120)
+    store.toggle_reaction("main", ask["id"], "white_check_mark", True)
+    card = store.add_message("dm", mid=None, thread_key=None, author="bot", kind="card",
+                             text="Confirm send", card=_send_card("main", ask["thread_key"]))
+    store.add_message("main", mid=None, thread_key=ask["thread_key"], author="bot",
+                      kind="message", text="Draft created.")
+    e.changed()
+    st = store.thread_state("main", ask["thread_key"])
+    assert (st["state"], st["reason"]) == ("needs_you", ts.CARD_WAITS)
+    assert store.thread_state("dm", card["thread_key"])["state"] == "needs_you"
+    # the press in the DM moves the conversation it came from too
+    start = store.max_event_seq()
+    store.change_message("dm", card["id"], "status", kind="status",
+                         text=":white_check_mark: Sent.")
+    assert e.changed() == 2
+    st = store.thread_state("main", ask["thread_key"])
+    assert (st["state"], st["by"], st["reason"]) == ("done", "rule", "Its card was handled: Sent.")
+    assert sorted(json.loads(p)["thread_key"] for _s, t, p in store.events_since(start)
+                  if t == "thread_state") == sorted([ask["thread_key"], card["thread_key"]])
+    # a card asked for in its own thread is no link
+    store.add_message("dm", mid=None, thread_key=card["thread_key"], author="bot", kind="card",
+                      text="Again", card=_send_card("dm", card["thread_key"]))
+    assert store.linked_cards("dm", card["thread_key"]) == []
+
+
+def test_links_made_before_the_table_are_found_once_at_start(store):
+    """Rows stored before card_link: a web pointer, a Zulip pointer to a card
+    copied as text, and a card whose JSON names its conversation."""
+    store.upsert_channel("stream:6", "ea-dm", "dm")
+    store.upsert_channel("stream:4", "ea", "main")
+    old = time.time() - 30 * DAY
+    zask = store.add_message("stream:4", mid="100", thread_key="stream:4:topic:Avery", author="owner",
+                             kind="message", text="Draft a reply.", posted_at=old, history=True)
+    zcard_row = store.add_message("stream:6", mid="101", thread_key=ZKEY, author="bot",
+                                  kind="message", text=ZHEAD + ZRULE + ":check: **Sent**",
+                                  posted_at=old + 60, history=True)
+    store.add_message("stream:4", mid="102", thread_key=zask["thread_key"], author="bot",
+                      kind="message", history=True, posted_at=old + 61,
+                      text=":locked: The Send button for this draft is in your DM: [open it]"
+                           "(https://chat.example.org/#narrow/channel/6-ea-dm/topic/x/near/101)")
+    wask = store.add_message("main", mid=None, thread_key=None, author="owner", kind="message",
+                             text="Make the invite.", posted_at=old)
+    wcard = store.add_message("dm", mid=None, thread_key=None, author="bot", kind="status",
+                              text=":white_check_mark: Created.", card=live_card(),
+                              posted_at=old + 60)
+    store.add_message("main", mid=None, thread_key=wask["thread_key"], author="bot",
+                      kind="message", posted_at=old + 61,
+                      text=f":lock: The Create button for this event is in your DM: [open it]"
+                           f"(https://h.example.test/chat/#/dm/{wcard['thread_key']}/{wcard['id']})")
+    jask = chat_thread(store, at=old)
+    store.add_message("dm", mid=None, thread_key=None, author="bot", kind="status",
+                      text=":white_check_mark: Sent.", card=_send_card("main", jask),
+                      posted_at=old + 300)
+    for key in (zask["thread_key"], wask["thread_key"], jask):
+        ch = "stream:4" if key.startswith("stream:") else "main"
+        store.set_thread_state(ch, key, "needs_you", "model", "Old.",
+                               judged_seq=store.newest_seq(ch, key))
+    # as a store from before the table holds them: no links, and no mark
+    store._conn.execute("DELETE FROM card_link")
+    store._conn.execute("DELETE FROM meta WHERE key='card_link_backfill'")
+    store._conn.commit()
+    e = engine(store, FakeModel())
+    assert e.link_cards() == 3
+    assert [r["id"] for r in store.linked_cards("stream:4", zask["thread_key"])] == ["101"]
+    assert [r["id"] for r in store.linked_cards("main", wask["thread_key"])] == [wcard["id"]]
+    for ch, key, what in (("stream:4", zask["thread_key"], "Sent"),
+                          ("main", wask["thread_key"], "Created."), ("main", jask, "Sent.")):
+        st = store.thread_state(ch, key)
+        assert (st["state"], st["reason"]) == ("done", f"Its card was handled: {what}"), key
+    # once per store; and a card that moves channel stays linked
+    assert store.backfill_card_links() == 0
+    store.upsert_channel("stream:49", "ea-dm-done", "room")
+    store.move_thread("stream:6", ZKEY, "stream:49", ZKEY)
+    assert [r["channel"] for r in store.linked_cards("stream:4", zask["thread_key"])] == ["stream:49"]
+    store.move_thread("stream:4", zask["thread_key"], "stream:4", "stream:4:topic:Avery2")
+    assert [r["id"] for r in store.linked_cards("stream:4", "stream:4:topic:Avery2")] == ["101"]
+
+
+# ── the stale shelf ───────────────────────────────────────────────────
+
+def test_a_state_a_week_old_goes_on_the_stale_shelf_once(store):
+    keys = [chat_thread(store, f"post {i}") for i in range(4)]
+    for key, state in zip(keys, ("needs_you", "waiting", "done", "needs_you")):
+        store.set_thread_state("main", key, state, "model", "x", judged_seq=store.newest_seq("main", key))
+    clock = [time.time()]
+    e = engine(store, clock=lambda: clock[0])
+    assert e.shelve() == 0
+    store._conn.execute("UPDATE thread_state SET at=? WHERE thread_key IN (?,?,?)",
+                        (clock[0] - ts.STALE_S - 60, *keys[:3]))
+    store._conn.commit()
+    start = store.max_event_seq()
+    assert e.tick()["stale"] == 2                   # needs_you and waiting; done is never stale
+    events = [json.loads(p) for _s, t, p in store.events_since(start) if t == "thread_state"]
+    assert sorted(ev["thread_key"] for ev in events) == sorted(keys[:2])
+    assert all(ev["stale"] is True for ev in events)
+    assert e.tick()["stale"] == 0                   # once
+    assert [k for k in keys if store.thread_state("main", k)["stale"]] == keys[:2]
+    rows = {r["thread_key"]: r for r in store.threads("main")}
+    assert [rows[k]["stale"] for k in keys] == [True, True, False, False]
+    assert {r["thread_key"]: r["stale"] for r in store.needs()} == \
+        {keys[0]: True, keys[1]: True, keys[3]: False}
+    # a new state starts fresh
+    store.set_thread_state("main", keys[0], "waiting", "model", "y",
+                           judged_seq=store.newest_seq("main", keys[0]))
+    assert store.thread_state("main", keys[0])["stale"] == 0
+    assert store.thread_row("main", keys[0])["stale"] is False
+
+
+# ── the nudge ─────────────────────────────────────────────────────────
+
+class Nudges:
+    """The front end's nudge over the scratch store, every call kept."""
+
+    def __init__(self, store):
+        self.store = store
+        self.calls: list[tuple[str, str, str]] = []
+
+    def __call__(self, channel, key, text):
+        self.calls.append((channel, key, text))
+        return self.store.post_nudge(channel, key, text)
+
+
+def _needs(store, key, hours, channel="main"):
+    store.set_thread_state(channel, key, "needs_you", "model", "A question waits.",
+                           judged_seq=store.newest_seq(channel, key))
+    store._conn.execute("UPDATE thread_state SET at=? WHERE channel=? AND thread_key=?",
+                        (time.time() - hours * 3600, channel, key))
+    store._conn.commit()
+
+
+def test_a_day_old_question_gets_one_nudge_that_changes_nothing(store):
+    key = chat_thread(store, at=time.time() - 30 * 3600)
+    _needs(store, key, 25)
+    model = FakeModel()
+    nudge = Nudges(store)
+    e = engine(store, model, nudge=nudge)
+    e.changed()
+    before = store.thread_state("main", key)
+    start = store.max_event_seq()
+    out = e.tick()
+    assert out["nudges"] == 1 and nudge.calls == [("main", key, ts.NUDGE_TEXT)]
+    row = store.thread("main", key)[-1]
+    assert (row["author"], row["kind"], row["text"]) == ("bot", "message", ts.NUDGE_TEXT)
+    assert store.nudge_ids("main", key) == {row["id"]}
+    assert [t for _s, t, _p in store.events_since(start)] == ["message"]
+    # the rules and the model never read it: no state moves, no question to the model
+    e.changed()
+    assert e.tick()["model_calls"] == 0 and model.prompts == []
+    after = store.thread_state("main", key)
+    assert {k: after[k] for k in ("state", "by", "reason", "at", "judged_seq")} == \
+        {k: before[k] for k in ("state", "by", "reason", "at", "judged_seq")}
+    assert ts.NUDGE_TEXT not in ts.judge_prompt(engine(store).contexts([("main", key)])[0]["messages"])
+    # once per conversation
+    assert e.tick()["nudges"] == 0 and len(nudge.calls) == 1
+    assert store.post_nudge("main", key, ts.NUDGE_TEXT) is None
+    # an owner reply after it is the rules' and the model's as ever
+    store.add_message("main", mid=None, thread_key=key, author="owner", kind="message",
+                      text="Yes, still.")
+    e.changed()
+    assert store.thread_state("main", key)["state"] == "working"
+
+
+def test_the_nudge_skips_what_it_must(store):
+    t0 = time.time() - 40 * 3600
+    cases = {}
+    cases["young"] = chat_thread(store, "young", at=t0)
+    _needs(store, cases["young"], 20)
+    cases["stale"] = chat_thread(store, "stale", at=t0 - 10 * DAY)
+    _needs(store, cases["stale"], 8 * 24)
+    cases["owner wrote since"] = chat_thread(store, "owner wrote since", at=t0)
+    _needs(store, cases["owner wrote since"], 30)
+    store.add_message("main", mid=None, thread_key=cases["owner wrote since"], author="owner",
+                      kind="message", text="Any news?", posted_at=time.time() - 2 * 3600)
+    store.add_message("main", mid=None, thread_key=cases["owner wrote since"], author="bot",
+                      kind="message", text="Not yet.", posted_at=time.time() - 2 * 3600 + 30)
+    cases["briefing"] = chat_thread(store, "**Morning briefing**: two items.", at=t0)
+    _needs(store, cases["briefing"], 30)
+    cases["notifier"] = chat_thread(store, "Seat open in a course.", at=t0)
+    store.note_origin("main", cases["notifier"], "seat-watcher")
+    _needs(store, cases["notifier"], 30)
+    cases["waiting"] = chat_thread(store, "waiting", at=t0)
+    store.set_thread_state("main", cases["waiting"], "waiting", "model", "x",
+                           judged_seq=store.newest_seq("main", cases["waiting"]))
+    store._conn.execute("UPDATE thread_state SET at=? WHERE thread_key=?",
+                        (time.time() - 30 * 3600, cases["waiting"]))
+    card = store.add_message("dm", mid=None, thread_key=None, author="bot", kind="status",
+                             text=":x: Could not send.", card=live_card(), posted_at=t0)
+    cases["a card's own"] = card["thread_key"]
+    _needs(store, card["thread_key"], 30, "dm")
+    cases["live linked card"] = chat_thread(store, "live linked card", at=t0)
+    store.add_message("dm", mid=None, thread_key=None, author="bot", kind="card", text="c",
+                      card=_send_card("main", cases["live linked card"]), posted_at=time.time() - 3600)
+    _needs(store, cases["live linked card"], 30)
+    cases["due"] = chat_thread(store, "due", at=t0)
+    _needs(store, cases["due"], 30)
+    store._conn.commit()
+    nudge = Nudges(store)
+    e = engine(store, nudge=nudge)
+    assert e.nudges() == 1 and [c[1] for c in nudge.calls] == [cases["due"]]
+    # quiet hours hold every nudge; a check that fails counts as quiet
+    cases["due later"] = chat_thread(store, "due later", at=t0)
+    _needs(store, cases["due later"], 30)
+    for quiet in (lambda: True, lambda: 1 / 0):
+        e = engine(store, nudge=nudge, quiet=quiet)
+        assert e.nudges() == 0
+    assert engine(store, nudge=nudge, quiet=lambda: False).nudges() == 1
+    assert engine(store).nudges() == 0             # no nudge to post through
+
+
+def test_the_nudges_are_capped_a_tick_the_longest_waiting_first(store):
+    keys = [chat_thread(store, f"post {i}", at=time.time() - 3 * DAY) for i in range(13)]
+    for i, key in enumerate(keys):
+        _needs(store, key, 30 + i)
+    nudge = Nudges(store)
+    e = engine(store, nudge=nudge)
+    assert e.nudges() == ts.NUDGE_CAP == 10
+    assert [c[1] for c in nudge.calls] == keys[::-1][:10]
+    assert e.nudges() == 3 and e.nudges() == 0
+    # a conversation in an archived room gets none
+    key = chat_thread(store, "archived", at=time.time() - 3 * DAY)
+    _needs(store, key, 30)
+    store.set_channel("main", archived=True)
+    assert e.nudges() == 0
+
+
+def test_the_ea_reads_quiet_hours_for_the_nudge(monkeypatch):
+    import quiet_hours
+    monkeypatch.setattr(quiet_hours, "should_defer", lambda priority="normal", now=None: True)
+    assert wts.quiet_now() is True
+    monkeypatch.setattr(quiet_hours, "should_defer", lambda priority="normal", now=None: False)
+    assert wts.quiet_now() is False
+    monkeypatch.setattr(quiet_hours, "should_defer", lambda *a, **k: 1 / 0)
+    assert wts.quiet_now() is True
+    f = WebFrontend.from_config({}, store_path="/nonexistent/webchat.sqlite")
+    assert wts.enable(f) and f.thread_states.quiet is wts.quiet_now
+    assert f.thread_states.nudge == f._post_nudge
 
 
 # ── the EA's side: the ledger read and the model route ────────────────

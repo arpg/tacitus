@@ -42,6 +42,21 @@ thread: the colleague has not replied yet").
    `needs_you` ("A phone waits for your approval.") while a device with
    that code waits for approval, `done` once it is approved or removed.
    With no relay running the rule waits, and rule 7 applies.
+2b. The conversation's cards in Direct messages. A card the owner asked
+   for in another conversation is posted in the DM, and the bot leaves a
+   one-line pointer where it was asked ("The Send button for this draft
+   is in your DM: [open it](...)"; Create, Reschedule, Delete, Schedule,
+   Publish and a plugin's button alike). The store links the two (Store,
+   `card_link`). One linked card still live (rule 2's test): `needs_you`,
+   "Its card in Direct messages waits for you." A press under way within
+   20 minutes: `working`. Every linked card acted on (rule 4's status
+   line, or a mirrored card's) and no owner message in the conversation
+   after the last of them: `done`, "Its card was handled: <its status
+   line in plain words>" ("Its cards were handled: ..." for several). A
+   failed or expired card, a press stuck past 20 minutes, or a link to a
+   card the store does not hold (one never copied from Zulip) decides
+   nothing, and the later rules run. A bot line after the outcome does
+   not reopen it; an owner message does.
 3. The owner wrote last, and the bot has posted nothing since but
    progress lines (`:hourglass...`) or a failed-turn notice (`:x:`,
    `:warning:`):
@@ -101,7 +116,38 @@ A changed text goes into the row (`mirror_update`, one `update` event; an
 unchanged text writes nothing), so the app shows the status line too.
 With no Zulip (the web chat alone) the stored text is all there is. The
 one-line pointer to a card ("The Send button for this draft is in your
-DM") has no rule and is not a card.
+DM") is not a card: rule 2b reads the card it links to.
+
+## The stale shelf
+
+A `needs_you` or `waiting` state older than 7 days, by the state's `at`,
+is stale. Each tick marks the states that crossed the line (`stale` 1 on
+the row, one `thread_state` event each, with `"stale": true`); a new
+state, `by` or reason starts fresh (`at` moves, `stale` goes back to 0).
+The threads rows, the needs rows, the POST's answer and every
+`thread_state` event carry `stale`. The app shows a stale state on the
+Older shelf of Needs you with a muted sticker (The app).
+
+## The nudge
+
+When a `needs_you` state is between 24 hours and 7 days old and the owner
+has written nothing in the conversation since it was set, the bot posts
+one line there: "Still need this? Reply here, or tap Mark done." Once per
+conversation (the `nudges` table). Never on a conversation that opens
+with an automated post (rule 7's test: a notifier key, or the title
+patterns) or with a card, and never while a card in it or linked to it
+is live (its button is the nudge). At most 10 a tick, the longest
+waiting first, in channels that are not archived; none while the owner's
+quiet hours hold (the EA's `quiet_hours.should_defer("normal")`; a check
+that fails counts as quiet).
+
+The nudge is a bot message in the web store alone (`post_nudge`: the
+message and its `nudges` row in one transaction): it shows in the thread
+and counts as unread like any bot message, sends no push, and in shadow
+mode the Zulip topic is left alone. The rules and the model never read
+it: the engine drops the ids in `nudges` from the thread it judges, so
+`judged_seq` stays where it was, no rule moves and the model is not
+asked again. Through the relay it is one more message.
 
 ## The model
 
@@ -146,7 +192,8 @@ New tables in `webchat.sqlite`, made when the store opens:
 
 ```
 thread_state(channel TEXT, thread_key TEXT, state TEXT, by TEXT, reason TEXT,
-             at REAL, judged_seq INTEGER, PRIMARY KEY (channel, thread_key))
+             at REAL, judged_seq INTEGER, stale INT DEFAULT 0,
+             PRIMARY KEY (channel, thread_key))
 thread_origin(channel TEXT, thread_key TEXT, origin TEXT, at REAL,
               PRIMARY KEY (channel, thread_key))
 ```
@@ -156,10 +203,34 @@ owner's override, the newest when the owner set it). `at` changes when
 the state, `by` or the reason changes; a write that changes only
 `judged_seq` is silent. A rule's or the model's write never goes back:
 it is dropped when the row was judged on a newer message, or when the
-owner set it on the same message or a newer one. `thread_origin` holds
-the notifier key (`chat_notify`'s channel key, `notifier` for its other
-posts) of an automated post that opened the thread; rule 7 reads it. A
-moved thread (a renamed Zulip topic) takes both rows with it.
+owner set it on the same message or a newer one. `stale` is the stale
+shelf's mark (a store from before gets the column at 0). `thread_origin`
+holds the notifier key (`chat_notify`'s channel key, `notifier` for its
+other posts) of an automated post that opened the thread; rule 7 reads
+it. A moved thread (a renamed Zulip topic) takes both rows with it.
+
+```
+card_link(channel TEXT, thread_key TEXT, card_channel TEXT, card_id TEXT, at REAL,
+          PRIMARY KEY (channel, thread_key, card_channel, card_id))
+nudges(channel TEXT, thread_key TEXT, msg_id TEXT, at REAL, PRIMARY KEY (channel, thread_key))
+```
+
+`card_link` links a conversation to a card in another thread. A card
+row's own JSON names the conversation it reports back to (`ea_channel`
+and `thread_ts`, as the card registry keeps them): the store links it
+when the card is stored or changed, through post_card and mirror_card
+alike. A bot message that holds a pointer links the conversation it sits
+in to the card its link names: the web chat's hash route
+(`#/<channel>/<thread>/<message>`), Zulip's narrow (`.../near/<id>`,
+`card_channel` "": a Zulip id is unique on the server) or Slack's
+permalink. A card in the conversation's own thread is no link. The rows
+the store held before the table are linked once, when the states start
+(the meta key `card_link_backfill`), and the rules then run on every
+linked conversation in a channel that is not archived, whatever its age
+(at most 500). A change to a card (`card`, `status` or `update` event)
+runs the rules on the conversations linked to it. A moved conversation
+takes its links and its nudge with it; a card filed in another channel
+stays linked.
 
 Each override is also a labelled example: one JSON line in
 `thread-state-labels.jsonl` beside the store (the owner-private dir,
@@ -169,10 +240,10 @@ be scored later.
 
 ## API (under `base_path`, owner-only like the rest)
 
-- `GET /api/channels/<id>/threads` (the existing threads route) rows gain `state`, `state_by`, `state_reason`, `state_at`; a thread with no state row has `"state": "none"`, `state_by` and `state_at` null and `state_reason` "".
+- `GET /api/channels/<id>/threads` (the existing threads route) rows gain `state`, `state_by`, `state_reason`, `state_at` and `stale`; a thread with no state row has `"state": "none"`, `state_by` and `state_at` null, `state_reason` "" and `stale` false.
 - `GET /api/needs` -> `{"threads": [...]}`: every thread whose state is `needs_you` or `waiting`, in channels that are not archived, each row as the threads route gives it plus `channel` and `channel_name`, `needs_you` first, then newest first (by `last_at`). Cap 200. One query; it moves no read mark (the app calls it on every stream connect and after each `thread_state` event). `needs` is a reserved channel id: the store refuses a channel with it.
 - `POST /api/threads/<channel>/<thread_key>/state` (both parts URL-encoded) body `{"state": "done" | "needs_you" | "waiting"}` -> the thread's row as the threads route gives it, with `channel_name`; `state_by` becomes `owner`. Only those three are settable (400 for anything else, 404 for an unknown channel or thread; a message id names its thread). Through the relay this is a chat action, allowed for an approved device at "chat" (it changes no mail and sends nothing); a device kept off the card buttons may still take it.
-- SSE event `thread_state`: `{"channel", "thread_key", "state", "by", "reason", "at"}` on every change.
+- SSE event `thread_state`: `{"channel", "thread_key", "state", "by", "reason", "at", "stale"}` on every change, and when the tick puts a state on the stale shelf.
 
 A threads row:
 
@@ -181,7 +252,8 @@ A threads row:
  "kind": "card", "text": ":lock: **Confirm send**", "card": {"...": "..."}, "file": null,
  "reactions": [], "posted_at": 1793570000.0, "updated_at": 1793570000.0,
  "reply_count": 0, "last_at": 1793570000.0, "state": "needs_you", "state_by": "rule",
- "state_reason": "The card \"Confirm send\" still has its buttons.", "state_at": 1793570001.2}
+ "state_reason": "The card \"Confirm send\" still has its buttons.", "state_at": 1793570001.2,
+ "stale": false}
 ```
 
 A needs row is the same with `"channel_name": "dm"`.
@@ -189,7 +261,8 @@ A needs row is the same with `"channel_name": "dm"`.
 ## The app
 
 - **Sticker** on each thread card: top-right beside the time. `needs_you` in the accent colour with weight, `waiting` in the warn colour, `working` muted with a small pulse (none under reduced motion), `done` muted with a check. `none` shows nothing. The reason is the card's `title` attribute and is read by screen readers.
-- **Needs you** at the top of the channel list, above the DM, with a count badge of `needs_you` threads; tapping it shows the `/api/needs` list, each card carrying its channel's name under the title; opening a card goes to that thread in its channel (the hash route).
+- **Needs you** at the top of the channel list, above the DM, with a count badge of the `needs_you` threads that are not stale; tapping it shows the `/api/needs` list, each card carrying its channel's name under the title; opening a card goes to that thread in its channel (the hash route). With stale rows the list has two parts: "This week" (the fresh rows) and "Older", shut at first, its count on the button that opens it ("Older (12)") and "Mark all done" beside it, which asks once ("Mark all 12 older items done? They leave Needs you. Nothing is sent or deleted.") and then posts `done` to the state route for each, one at a time.
+- **A stale sticker** is muted (no accent, no amber) and says how long the state has waited: "Needs you · 9 days", "Waiting · 16 days", in every list.
 - **Filter chips** at the top of a channel's thread list: All, Needs you, Waiting, Done. The choice is per browser (localStorage), default All.
 - **Override**: in the thread header a small button "Mark done" (or "Needs me" when the state is done); long-press on a card does the same on a phone. It calls the state route; the sticker updates from the SSE event.
 - The app keeps every id and class the tests pin; new strings are plain words; the line cap in `test_the_app_stays_small` rises with a reason line.
@@ -205,6 +278,19 @@ step.
 
 The contract as first agreed is the first commit of this page. The
 bot side changed it here:
+
+- **The conversation learns its card's outcome** (the closure analysis:
+  63% of cards come from an owner conversation, whose state never saw the
+  card in the DM). Rule 2b, the `card_link` table and its backfill are
+  new; a change to a card runs the rules on its conversations.
+- **The stale shelf** (a state open past a day is usually abandoned: 78%
+  of the owner conversations open at 24 hours never settle, and 13 of 16
+  live cards were 9 to 32 days old): `stale` on the rows and the events,
+  marked by the tick past 7 days; the app's "This week" and "Older" with
+  "Mark all done", the muted sticker with its age, and a count of the
+  fresh ones only.
+- **The nudge** after 24 hours (the `nudges` table): one line, once, never
+  read by the rules or the model.
 
 - **From the closure analysis** (the owner's past Zulip conversations,
   cards and ledger rows): rule 5 (the bot's check => done) is dropped;

@@ -243,6 +243,17 @@ button, select, textarea, input { font: inherit; color: inherit; }
 .st-working::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%;
   background: currentColor; vertical-align: 1px; animation: pulse 1.4s ease-in-out infinite; }
 .st-done::before { content: "\2713"; margin-right: 4px; }
+.sticker.stale { background: var(--hover); color: var(--muted); font-weight: 600; }
+
+/* Needs you in two parts: this week, then Older, shut until opened. */
+.needs-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px;
+  margin: 4px 16px 6px; color: var(--muted); font-size: 13px; font-weight: 600; }
+.older { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 6px; }
+.older-toggle { min-height: 44px; margin-left: -8px; padding: 0 8px; border: 0; border-radius: var(--r-m); background: none;
+  color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer; }
+.older-toggle::before { content: "\25B8"; display: inline-block; margin-right: 6px; transition: transform .15s; }
+.older-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
+#older-done { min-height: 44px; margin-right: -12px; color: var(--accent); font-size: 13px; font-weight: 600; }
 
 .filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 12px 10px; }
 .filter { min-height: 30px; padding: 3px 11px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel);

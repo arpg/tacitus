@@ -1200,8 +1200,9 @@ def test_threads_carry_their_state(fe):
     b = fe.post("main", "b")
     _state(fe, "main", b.thread_key, "needs_you", reason="The card still has its buttons.")
     rows = {r["thread_key"]: r for r in json.loads(owner(fe, "GET", "/api/channels/main/threads")[2])}
-    assert {k: rows[a.thread_key][k] for k in ("state", "state_by", "state_reason", "state_at")} == \
-        {"state": "none", "state_by": None, "state_reason": "", "state_at": None}
+    assert {k: rows[a.thread_key][k] for k in ("state", "state_by", "state_reason", "state_at",
+                                               "stale")} == \
+        {"state": "none", "state_by": None, "state_reason": "", "state_at": None, "stale": False}
     row = rows[b.thread_key]
     assert (row["state"], row["state_by"], row["state_reason"]) == \
         ("needs_you", "rule", "The card still has its buttons.")
@@ -1259,7 +1260,7 @@ def test_the_owner_sets_a_thread_s_state_and_the_stream_says_so(fe):
         assert json.loads(ev["data"]) == {"channel": "main", "thread_key": a.thread_key,
                                           "state": "done", "by": "owner",
                                           "reason": "You marked this done.",
-                                          "at": row["state_at"]}
+                                          "at": row["state_at"], "stale": False}
     finally:
         s.close()
     stored = fe.store.thread_state("main", a.thread_key)
@@ -1284,6 +1285,79 @@ def test_the_owner_sets_a_thread_s_state_and_the_stream_says_so(fe):
     assert call(fe, "POST", path, {"state": "done"})[0] == 401
     assert owner(fe, "POST", path, {"state": "done"}, {"Origin": "https://evil.example.test"})[0] == 403
     assert owner(fe, "GET", path)[0] == 404
+
+
+def test_needs_and_threads_carry_stale_and_the_stream_says_so(fe):
+    old = fe.post("main", "old question")
+    new = fe.post("main", "new question")
+    for ref in (old, new):
+        _state(fe, "main", ref.thread_key, "needs_you", reason="A question waits.")
+    fe.store._conn.execute("UPDATE thread_state SET at=? WHERE thread_key=?",
+                           (time.time() - 8 * 86400, old.thread_key))
+    fe.store._conn.commit()
+    s = Stream(fe)
+    try:
+        s.lines(lambda seen: "retry: 3000" in seen)
+        assert fe.store.mark_stale(time.time() - 7 * 86400) == 1
+        ev = s.events(1)[0]
+        assert ev["event"] == "thread_state"
+        data = json.loads(ev["data"])
+        assert (data["thread_key"], data["state"], data["stale"]) == (old.thread_key, "needs_you", True)
+    finally:
+        s.close()
+    needs = {r["thread_key"]: r for r in json.loads(owner(fe, "GET", "/api/needs")[2])["threads"]}
+    assert (needs[old.thread_key]["stale"], needs[new.thread_key]["stale"]) == (True, False)
+    rows = {r["thread_key"]: r for r in json.loads(owner(fe, "GET", "/api/channels/main/threads")[2])}
+    assert (rows[old.thread_key]["stale"], rows[new.thread_key]["stale"]) == (True, False)
+    # the owner's Mark done takes it off the shelf: the answer and the list say so
+    row = json.loads(owner(fe, "POST", f"/api/threads/main/{old.thread_key}/state",
+                           {"state": "done"})[2])
+    assert (row["state"], row["stale"]) == ("done", False)
+    assert [r["thread_key"] for r in json.loads(owner(fe, "GET", "/api/needs")[2])["threads"]] == \
+        [new.thread_key]
+
+
+def test_a_card_and_its_pointer_link_the_conversation_it_came_from(fe):
+    ask = fe.post("main", "Draft a reply to the visiting speaker.")
+    c = fe.post_card("dm", card(thread_ts=ask.thread_key, ea_channel="main"))
+    # the pointer as the bot writes it, with this front end's own permalink
+    fe.post("main", f":lock: The Send button for this draft is in your DM: "
+                    f"<{fe.permalink('dm', c.id)}|open it>", thread_ts=ask.thread_key, unfurl=False)
+    linked = fe.store.linked_cards("main", ask.thread_key)
+    assert [(r["channel"], r["id"], r["kind"]) for r in linked] == [("dm", c.id, "card")]
+    assert fe.store._one("SELECT COUNT(*) AS n FROM card_link")["n"] == 1   # one link, two sources
+    assert fe.store.card_origins([("dm", c.id)]) == [("main", ask.thread_key)]
+    fe.replace_card_with_status(c, ":white_check_mark: Sent.")
+    assert fe.store.linked_cards("main", ask.thread_key)[0]["kind"] == "status"
+    # a card asked for from the DM's own thread is no link
+    dm_ask = fe.post("dm", "And one from here.")
+    fe.post_card("dm", card(thread_ts=dm_ask.thread_key, ea_channel="dm"), thread_ts=dm_ask.thread_key)
+    assert fe.store.linked_cards("dm", dm_ask.thread_key) == []
+
+
+def test_the_nudge_posts_as_the_bot_in_the_web_store_alone(tmp_path):
+    from chat.memory_frontend import MemoryFrontend
+    from chat.shadow_frontend import ShadowFrontend
+    primary = MemoryFrontend()
+    web = WebFrontend({"port": 0}, store_path=tmp_path / "web" / "webchat.sqlite",
+                      webui_dir=tmp_path / "webui", trusted_config=True)
+    shadow = ShadowFrontend(primary, web)
+    shadow.mirror_channels()
+    states = web.enable_thread_state()
+    top = shadow.post("C_MAIN", "Which room for the review?")
+    posts = len(primary.posts)
+    web.store.mark_read("C_MAIN")
+    row = states.nudge("C_MAIN", top.thread_key, "Still need this? Reply here, or tap *Mark done*.")
+    assert row["author"] == "bot" and row["thread_key"] == top.thread_key
+    assert row["text"] == "Still need this? Reply here, or tap **Mark done**."   # as post() writes it
+    assert len(primary.posts) == posts                     # the primary's thread is left alone
+    assert web.store.channel("C_MAIN")["unread"] == 1      # a bot message, unread like any other
+    assert web.store.nudge_ids("C_MAIN", top.thread_key) == {row["id"]}
+    assert states.nudge("C_MAIN", top.thread_key, "again") is None
+    assert web.store.post_nudge("C_MAIN", "no-such-thread", "x") is None
+    # a moved thread takes its nudge along
+    web.store.move_thread("C_MAIN", top.thread_key, "C_MAIN", "T_NEW")
+    assert web.store.nudge_ids("C_MAIN", "T_NEW") == {row["id"]}
 
 
 def test_needs_is_a_reserved_channel_id(fe):

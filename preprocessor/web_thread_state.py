@@ -21,8 +21,14 @@ web chat's store. This module gives it the two things only the EA has:
       returns None and logs why once an hour: the hosted step is not built,
       so the rules alone set the state there.
 
-enable(frontend) hands both to a web front end (ea-chat-bot.py calls it
-for the web chat, alone or as a shadow).
+  quiet_now()
+      True while the owner's quiet hours hold (quiet_hours.should_defer for
+      a normal post: the window in the active timezone, at home only when
+      the config says so). The engine posts no "Still need this?" nudge
+      then. A check that fails counts as quiet.
+
+enable(frontend) hands the three to a web front end (ea-chat-bot.py calls
+it for the web chat, alone or as a shadow).
 """
 from __future__ import annotations
 
@@ -130,11 +136,25 @@ def model_answer(prompt: str) -> str | None:
     return str(res.get("content") or "")
 
 
+def quiet_now() -> bool:
+    """True while the owner's quiet hours hold; True when they cannot be
+    read, so no nudge goes out at night by mistake."""
+    try:
+        try:
+            import quiet_hours
+        except ModuleNotFoundError:  # imported as preprocessor.<mod>
+            from preprocessor import quiet_hours
+        return bool(quiet_hours.should_defer("normal"))
+    except Exception as e:
+        _say_once("quiet", f"web chat: quiet hours could not be read, so no nudge goes out: {e}")
+        return True
+
+
 def enable(frontend) -> bool:
     """Turn the conversation states on for a web front end; False for a
     front end that has none."""
     on = getattr(frontend, "enable_thread_state", None)
     if not callable(on):
         return False
-    on(ledger=ledger_rows, model=model_answer)
+    on(ledger=ledger_rows, model=model_answer, quiet=quiet_now)
     return True
