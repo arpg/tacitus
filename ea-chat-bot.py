@@ -10346,14 +10346,58 @@ def _open_rooms_for_new_projects(channel: str, thread_ts: str | None,
     return opened
 
 
+# ── Usage tips: the owner's word in a tip's own thread ───────────────
+# A weekly usage tip (preprocessor/usage_tips.py, docs/ea/usage-tips.md)
+# opens a thread of its own. `more`, `not now` and `never` (or `stop`) in
+# that thread are answered here, with no model call: the thread is a tip's
+# when its first message is the bot's tip, and the word answers the last
+# tip the bot posted in it. Any other message there is a normal turn.
+
+def _handle_usage_tip_reply(channel: str, thread_ts: str, msg_ts: str,
+                            user_msg: str) -> bool:
+    """True when the message was a tip word in a tip's thread (and is now
+    answered); False to continue into the normal dispatch."""
+    try:
+        from preprocessor import usage_tips as _tips
+    except Exception as e:
+        log.warning(f"usage tips unavailable: {e}")
+        return False
+    word = _tips.reply_word(user_msg)
+    if not word or not thread_ts or thread_ts == msg_ts:
+        return False
+    try:
+        msgs = FRONTEND.thread_replies(channel, thread_ts, 50)
+    except Exception as e:
+        log.warning(f"usage tip: reading the thread failed: {e}")
+        return False
+    tip_id = _tips.tip_in_thread([(m.text or "", bool(m.is_self or m.is_bot)) for m in msgs])
+    if not tip_id:
+        return False
+    try:
+        res = _tips.handle_reply(tip_id, word, quote=user_msg)
+        FRONTEND.post(channel=channel, thread_ts=thread_ts, text=res["text"])
+        _swap_reaction(channel, msg_ts, "eyes", "white_check_mark")
+        log.info(f"usage tip {tip_id}: {word}" + (f", next {res['next']}" if res.get("next") else ""))
+    except Exception as e:
+        log.error(f"usage tip reply failed: {e}")
+        _swap_reaction(channel, msg_ts, "eyes", "x")
+    finally:
+        with _active_lock:
+            _active_threads.discard(msg_ts)
+    return True
+
+
 def _handle_bot_command(channel: str, thread_ts: str, msg_ts: str,
                         user_msg: str) -> bool:
     """Answer the messages the bot handles itself, with no Claude call:
     `adopt session`, `conversations`, `name this conversation`, `open a
-    channel`, `version`. True when the message was one of them (and is now
-    answered); False to continue into the normal dispatch. Lives outside
+    channel`, `version`, and a usage tip's `more`, `not now` and `never`.
+    True when the message was one of them (and is now answered); False to
+    continue into the normal dispatch. Lives outside
     handle_message_async so that function stays within the window the
     style-guard wiring test inspects."""
+    if _handle_usage_tip_reply(channel, thread_ts, msg_ts, user_msg):
+        return True
     # "adopt session <uuid> [as <model>]": continue a conversation held in
     # the ea-bot shell (scripts/ea-bot-shell.sh) in THIS thread. The shell
     # session lives in the same project directory as the ones the bot

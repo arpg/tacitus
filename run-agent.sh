@@ -115,6 +115,16 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# The weekly usage tip (preprocessor/usage_tips.py, docs/ea/usage-tips.md)
+# rides the briefing's hourly weekday tick, before the 4 AM gate below:
+# usage_tips.py posts only on a weekday morning after that day's briefing
+# posted, once a week at most, and is silent on every other tick. A failure
+# never stops the briefing.
+if [[ "$AGENT" == "morning-briefing" && "$NOW" != true && "$HAS_SLACK" == 1 ]]; then
+    EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/usage_tips.py" post \
+        >> "$LOG_DIR/usage-tips.log" 2>&1 || true
+fi
+
 # Local-time gate for the morning briefing: it should run at 4 AM in the
 # user's CURRENT timezone (the home timezone from scheduling-preferences,
 # or the travel timezone when set), not at a fixed server hour. The cron

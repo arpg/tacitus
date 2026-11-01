@@ -882,7 +882,9 @@ What `scripts/install/setup.sh` writes, by profile (`preprocessor/ea_config.py` 
 # ---- every profile ----
 # Morning briefing: hourly on weekdays; run-agent.sh runs it once, at 4 AM in
 # the user's CURRENT timezone (home or travel, quiet_hours.due_local), then
-# quiet hours hold delivery until the local morning.
+# quiet hours hold delivery until the local morning. The same hourly tick
+# posts the weekly usage tip on a chat profile (one new thing to try, after
+# the first week's onboarding questions; docs/ea/usage-tips.md).
 0 * * * 1-5        /opt/ea-system/run-agent.sh morning-briefing >> ~/.ea-private/logs/morning.log 2>&1
 0 15 * * 1-5       /opt/ea-system/run-agent.sh afternoon-catchup >> ~/.ea-private/logs/afternoon.log 2>&1
 0 20 * * 0         /opt/ea-system/run-agent.sh weekly-audit --model opus >> ~/.ea-private/logs/weekly.log 2>&1
