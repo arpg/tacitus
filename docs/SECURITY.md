@@ -1505,7 +1505,11 @@ sha256 is in the manifest, and stops the app (it deletes its copies and
 shows a refusal page with no script) when a file matches no signed
 manifest. The bot logs a warning when a file under `webui/` no longer
 matches what it signed, so a change to the static folder shows on both
-sides.
+sides. A phone paired on the tailnet takes a new release off the tailnet
+from the bot, through the relay (`/api/app/<file>`): the files travel in
+sealed frames, the page and the worker check each against the manifest,
+and the worker takes the manifest only under the key of the one it
+trusts. The relay can hold such an update back; it cannot change one.
 
 A relay-origin phone checks the relay's copy against the manifest it
 fetches from the bot through the sealed channel (against the bundle hash

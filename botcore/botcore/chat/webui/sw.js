@@ -12,7 +12,9 @@
  * network is served and kept only when its sha256 is the manifest's. Before
  * that (a first load) it keeps each file, and the first manifest must match
  * them all. A file that matches no signed manifest stops the app: the copy
- * goes, and each page shows a refusal with no script until "Check again". */
+ * goes, and each page shows a refusal with no script until "Check again".
+ * Off the tailnet the page brings a new release from the bot through the
+ * relay, and the worker keeps it only when each file matches the manifest. */
 'use strict';
 
 importScripts('bundle.js');
@@ -157,16 +159,30 @@ function refusal(req, path) {
     'Content-Security-Policy': "default-src 'none'; base-uri 'none'; form-action 'none'" } });
 }
 
+// A file the page brought ({type, bytes}, from the bot): it keeps the
+// headers the bot sent with the kept copy, the page's security policy among them.
+const KEEP_HEADERS = ['content-security-policy', 'x-content-type-options', 'referrer-policy', 'cross-origin-resource-policy'];
+function brought(file, had) {
+  const headers = new Headers({ 'content-type': String(file.type || 'application/octet-stream') });
+  if (had) KEEP_HEADERS.forEach((k) => had.headers.has(k) && headers.set(k, had.headers.get(k)));
+  return new Response(file.bytes, { headers });
+}
+
 // The page hands over the bot's signed manifest (it fetched it from the
 // bot and checked it); `pin` keeps its key, so the relay's copy of the app
 // takes a later one only under it. The first manifest must match every file
 // kept so far. A kept copy it does not name is replaced by the network's,
 // which must match; after a suspect file every file is fetched again.
-async function adopt(doc, pin) {
+// Off the tailnet (`relay`) it fetches nothing: for a manifest under the key
+// it trusts, it answers the files whose copy the manifest does not name
+// (`want`), and the page brings them from the bot through the relay
+// (`files`). It keeps them only when all are there and each hashes to the manifest.
+async function adopt(doc, pin, relay, files) {
   const old = await getState('trusted');
-  const v = await verifyBundle(doc, null, old && old.pin ? old.key : null);
+  if (relay && !old) return { want: [] }; // no manifest checked on the tailnet to build on
+  const v = await verifyBundle(doc, null, old && (old.pin || relay) ? old.key : null);
   const suspect = await getState('suspect');
-  if (old && old.hash === v.hash && !suspect) return { ok: true };
+  if (old && old.hash === v.hash && !suspect && !relay) return { ok: true };
   const scope = new URL(self.registration.scope);
   const cache = await caches.open(CACHE);
   if (!old) {
@@ -176,17 +192,23 @@ async function adopt(doc, pin) {
     }
   }
   let updated = false;
-  for (const [path, want] of Object.entries(v.files)) {
+  const put = [];
+  const want = [];
+  for (const [path, hash] of Object.entries(v.files)) {
     const url = new URL(path === 'index.html' ? './' : path, scope).href;
     const had = await cache.match(url);
-    const good = Boolean(had) && await hashOf(had) === want;
-    if (good && !suspect) continue;
-    const res = await fetch(url, { cache: 'no-store' }).catch(() => null);
+    const good = Boolean(had) && await hashOf(had) === hash;
+    if (good && (relay || !suspect)) continue;
+    if (relay && !(files && files[path])) { want.push(path); continue; }
+    if (relay && !had && path.endsWith('.html')) return { error: `no security policy to keep for ${path}` };
+    const res = relay ? brought(files[path], had) : await fetch(url, { cache: 'no-store' }).catch(() => null);
     if (!res || !res.ok) continue; // out of reach: the copy stays
-    if (await hashOf(res) !== want) return refuse(path);
-    await cache.put(url, res);
+    if (await hashOf(res) !== hash) return relay ? { error: `${path} does not match the manifest` } : refuse(path);
+    put.push([url, res]);
     updated ||= Boolean(had) && !good;
   }
+  if (want.length) return { want };
+  for (const [url, res] of put) await cache.put(url, res);
   await setState('trusted', { hash: v.hash, key: v.key, files: v.files, pin: Boolean(pin || (old && old.pin)) });
   await setState('suspect', null);
   return { ok: true, updated };
@@ -195,6 +217,8 @@ async function adopt(doc, pin) {
 self.addEventListener('message', (event) => {
   const msg = event.data || {};
   const reply = (out) => event.ports[0] && event.ports[0].postMessage(out);
-  if (msg.bundle) event.waitUntil(adopt(msg.bundle, msg.pin).then(reply, (e) => reply({ error: String(e.message || e) })));
+  const fail = (e) => reply({ error: String(e.message || e) });
+  if (msg.bundle) event.waitUntil(adopt(msg.bundle, msg.pin).then(reply, fail));
+  else if (msg.fromRelay) event.waitUntil(adopt(msg.fromRelay, false, true, msg.files).then(reply, fail));
   else if (msg.refuse) event.waitUntil(refuse(String(msg.refuse)).then(reply));
 });

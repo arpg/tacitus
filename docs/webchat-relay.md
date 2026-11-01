@@ -77,8 +77,14 @@ Off the tailnet, the cached app starts from the service worker (a fetch
 that has not answered in four seconds gives way to the cached copy) and
 calls the relay cross-origin. The relay answers CORS on `/c` and `/sse` with no
 credentials, since the client key header and the sealed frames are the
-only authentication. The relay never delivers code to this device. A
-compromised relay sees ciphertext and nothing else.
+only authentication. The relay never serves code to this device. A new
+release reaches it off the tailnet from the bot: the page fetches the
+signed manifest (`/api/bundle`) and each changed file (`/api/app/<file>`)
+in sealed frames, as it fetches messages, and the page and its service
+worker check each file against the bot's signature before the worker
+keeps it (docs/webchat.md, Code integrity). A compromised relay sees
+ciphertext and nothing else: it can hold an update back, but not change
+one.
 
 **Relay origin ("Pair through the relay").** For a phone that never
 joins the tailnet, and for an install with no Tailscale at all, a relay
@@ -820,6 +826,14 @@ adds nothing.
   ("Tacitus stopped") and opens no stream. The card buttons stay greyed
   out until the owner allows them for the device. The bot's own copy
   checks on its own origin, after start-up, and does not attest.
+- The bot's own copy, when it runs over the relay, takes a new release
+  through it after start-up: the manifest through `/api/bundle`, then
+  `GET /api/app/<file>` for each file its service worker lacks, each
+  checked against the manifest by the page and again by the worker. Then
+  it shows "Tacitus updated. Close the app and open it again." It
+  attests nothing, and a mismatch keeps nothing and goes to `/api/diag`
+  (docs/webchat.md, Code integrity). The relay's copy does not do this:
+  its code comes from the relay.
 
 ## The paid tier and what stays AGPL
 

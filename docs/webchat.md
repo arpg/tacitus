@@ -173,6 +173,7 @@ subset and escapes everything else; it never injects HTML from text.
 | GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool, "relay": bool, "card_actions": bool, "bundle": "<hash>", "settings": ["routing"]}`; `bundle` is the bundle hash the bot signs now, "" when it signs none (Code integrity); `settings` names the settings pages the host registered |
 | GET | `/manifest.sig.json` | the signed manifest of the app's files, without auth (Code integrity); 404 when the bot signs none |
 | GET | `/api/bundle` | the same document, for the owner: the route the relay reaches |
+| GET | `/api/app/{file}` | a file that the signed manifest names, its bytes as on disk, as an attachment with the sandbox policy and the type of its name; 404 for any other name. A phone off the tailnet takes a new release here, through the relay (Code integrity) |
 | GET | `/api/channels` | `[{"id","name","kind","archived","last_at","unread"}]` |
 | GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count` and `last_at` |
 | GET | `/api/channels/{ch}/threads/{thread_key}` | the thread, oldest first, parent first |
@@ -466,9 +467,9 @@ disabled). Save posts the enabled choices and redraws from the answer,
 with "Saved." or the bot's reason under the rows.
 
 Dark and light from `prefers-color-scheme`. Keep the whole app under
-~2,920 lines with the relay transport, the QR encoder, the code check,
-the per-phone card-button choice and the Settings screen; readable by
-one maintainer.
+~3,240 lines with the relay transport, the QR encoder, the code check,
+the update through the relay, the per-phone card-button choice and the
+Settings screen; readable by one maintainer.
 
 Installing on a phone. The manifest (`display: standalone`, `scope` and
 `start_url` `./`, so the base path with its slash, since the page links
@@ -799,7 +800,35 @@ of the files (`tacitus-webchat-v3`).
   replaces each kept copy that a new manifest does not name with the
   network's copy, which must match. After a suspect file it fetches each
   file again: a file of a new release matches, and a changed file stops
-  the app. A copy that it cannot fetch (off the tailnet) stays.
+  the app. A copy that it cannot fetch stays. Off the tailnet the worker
+  fetches nothing, and the page brings a new release through the relay
+  (next item).
+- Off the tailnet, the bot's own copy of the app takes a new release from
+  the bot through the relay (`updateOverRelay` in `app.js`). The relay
+  carries the files only as sealed frames, as it carries the chat. At
+  each start over the relay:
+  1. The page fetches the manifest (`GET /api/bundle`) and checks its
+     signature (`verifyBundle`).
+  2. The worker checks the manifest under the key of the manifest that
+     it trusts (a manifest it checked on the tailnet; without one it does
+     nothing). It answers the files whose kept copy the manifest does not
+     name, a file it never kept among them.
+  3. The page fetches each such file from the bot (`GET
+     /api/app/<file>`) and compares its sha256 with the manifest.
+  4. The page gives the files to the worker (`postMessage`). The worker
+     checks the manifest and each sha256 again, keeps each file with the
+     type the bot sent and the other headers of its kept copy (the page's
+     security policy among them), and then trusts the new manifest.
+
+  The worker keeps all the files or none. A file that does not match, a
+  manifest under another key, or a file that did not come keeps nothing,
+  and the page notes the error for the bot (`POST /api/diag`). After an
+  update the page shows "Tacitus updated. Close the app and open it
+  again." as a toast and at the foot of the drawer; an update on the
+  tailnet shows the same line. The new copy runs from the next start: the
+  page does not reload by itself. The browser fetches `sw.js` only from
+  the bot's origin, so a new worker comes at the next start on the
+  tailnet.
 - When the app stops, the worker deletes its copies and records the name
   of the file. It sends each page of the app to a refusal page that it
   writes itself, with no script and `default-src 'none'`. The page gives
@@ -811,7 +840,9 @@ of the files (`tacitus-webchat-v3`).
 
 **The page** (`app.js`, `checkBundle`). On the bot's own origin it checks
 after start-up: it fetches `manifest.sig.json`, checks the signature
-(`verifyBundle`) and gives the manifest to the worker. The copy of the
+(`verifyBundle`) and gives the manifest to the worker. Off the tailnet,
+the bot's own copy takes a new release through the relay after start-up
+(above), and does not attest. The copy of the
 app that the relay serves (on the relay's origin) checks before the chat
 runs. It refuses a pairing link without the bundle hash (`b`), and stops
 with "Code verification unavailable" before it makes a key when it has no
@@ -886,5 +917,8 @@ or the own origin.
 Plainly: pairing through the relay trusts the relay's copy of the app at
 pairing time and at each update of the service worker. The owner chooses
 for each such device whether it may press card buttons. Pairing on the
-tailnet (the own origin) has no such trust: the relay never delivers code
-to that phone.
+tailnet (the own origin) has no such trust: the relay never serves code
+to that phone. A new release that reaches it off the tailnet comes from
+the bot, in frames the relay cannot open or change, and the phone checks
+each file against the bot's signature. The relay can hold an update
+back; it cannot change one.

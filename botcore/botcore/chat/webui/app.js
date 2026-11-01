@@ -1057,7 +1057,7 @@ function installHint(prompt) {
   footer();
 }
 
-const footer = () => { $('drawer-foot').hidden = $('notify-row').hidden && $('install').hidden && $('pair-phone').hidden && $('open-settings').hidden; };
+const footer = () => { $('drawer-foot').hidden = $('notify-row').hidden && $('install').hidden && $('pair-phone').hidden && $('open-settings').hidden && $('update-note').hidden; };
 
 // iOS shrinks only the visual viewport for the keyboard: the app takes its
 // height (--app-h) at the top, so the composer stays above the keyboard. The
@@ -1726,9 +1726,43 @@ async function checkBundle() {
   const out = (await toWorker({ bundle: doc, pin: Boolean(rec) })) || (await checkFiles(v.files));
   if (out.refused) return refuseApp(out.refused, true);
   if (out.error) throw new Error(out.error);
-  if (out.updated) toast('A new version of the app is ready. Close the app and open it again.');
+  if (out.updated) appUpdated();
   if (rec) await call('POST', '/relay/attest', { bundle: v.hash });
   return v;
+}
+
+// Off the tailnet the worker cannot fetch a new release from this origin, so
+// the bot's own copy brings it through the relay: the signed manifest, then
+// each file the worker's copy lacks (/api/app/<file>), which must hash to the
+// manifest before the worker sees it. The worker checks the manifest under the
+// key it trusts and each file again, and keeps all of them or none.
+async function updateOverRelay() {
+  const t = T;
+  if (!S.me.bundle) return;
+  const doc = await call('GET', '/bundle');
+  const v = await verifyBundle(doc);
+  let out = (await toWorker({ fromRelay: doc })) || {};
+  const files = {};
+  for (const path of out.want || []) {
+    const res = await t.api('GET', `/app/${path}`);
+    if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+    const bytes = await res.arrayBuffer();
+    if ((await sha256Hex(new Uint8Array(bytes))) !== v.files[path]) throw new Error(`${path} does not match the manifest`);
+    files[path] = { type: res.headers.get('content-type') || '', bytes };
+  }
+  if (Object.keys(files).length) out = (await toWorker({ fromRelay: doc, files })) || {};
+  if (out.error || (out.want && out.want.length)) throw new Error(out.error || `missing ${out.want.join(', ')}`);
+  if (out.updated) appUpdated();
+}
+
+// A new release is kept, and runs from the next start: the page does not
+// reload in the middle of a conversation.
+function appUpdated() {
+  const text = 'Tacitus updated. Close the app and open it again.';
+  toast(text);
+  $('update-note').textContent = text;
+  $('update-note').hidden = false;
+  footer();
 }
 
 // The service worker's answer, or null without one (none yet, or blocked).
@@ -1872,6 +1906,9 @@ async function boot() {
   $('open-settings').hidden = T.relay || !(S.me.settings || []).includes('routing');
   footer();
   if (!T.relay) checkBundle().catch(() => {}); // the bot's own copy: checked meanwhile
+  else if (!relayCopy()) { // the bot's own copy off the tailnet: a new release comes through the relay
+    updateOverRelay().catch((e) => { diagNote({ what: 'update', err: e.message }); flushDiag().catch(() => {}); });
+  }
 }
 
 async function init() {
