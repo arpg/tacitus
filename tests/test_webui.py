@@ -947,9 +947,15 @@ def test_the_relay_keys_stay_in_webcrypto_and_indexeddb():
     assert all(f"localStorage.{verb}(INSTALL_KEY" in js for verb in ("getItem", "setItem"))
     assert all(f"localStorage.{verb}(DIAG_KEY" in js for verb in ("getItem", "setItem", "removeItem"))
     assert "indexedDB.open('tacitus-relay', 1)" in js
-    # the device's private key is made non-extractable and never exported
-    assert "generateKey({ name: 'X25519' }, false, ['deriveBits'])" in js
-    assert "exportKey('raw', pair.publicKey)" in js and "exportKey('pkcs8'" not in js
+    # The device's private key is kept as PKCS#8 bytes in IndexedDB (WebKit
+    # gives no X25519 CryptoKey back from there) and used as a non-extractable
+    # import of them; an ephemeral key is never exported. Nothing is exported
+    # anywhere else, and nothing leaves IndexedDB.
+    assert "generateKey({ name: 'X25519' }, keep, ['deriveBits'])" in js
+    assert js.count("exportKey('pkcs8'") == 1 and "if (!keep) return { priv: pair.privateKey, pub };" in js
+    assert "importKey('pkcs8', bytes, { name: 'X25519' }, false, ['deriveBits'])" in js
+    # the bytes stay out of every frame: the hello and the transport never see them
+    assert "privBytes" not in js[js.index("async function relayHello"):js.index("function idb")]
     # the pairing secret leaves the address bar before anything else runs
     body = js[js.index("async function pairFromLink"):]
     assert body.split("\n")[1].strip() == "history.replaceState(null, '', location.pathname + location.search);"
