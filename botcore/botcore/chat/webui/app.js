@@ -1243,13 +1243,31 @@ function idb(mode, fn) {
     };
   });
 }
-const loadPairing = () => idb('readonly', (st) => st.get('pairing')).catch(() => undefined);
+// A storage that cannot be read is remembered (S.pairingError): a phone
+// whose setup is there but unreadable gets other words than one never set up.
+const loadPairing = () => idb('readonly', (st) => st.get('pairing'))
+  .then((rec) => { S.pairingError = ''; return rec; })
+  .catch((e) => { S.pairingError = (e && e.message) || String(e); return undefined; });
 const savePairing = (rec) => idb('readwrite', (st) => st.put(rec, 'pairing'));
 
+// On a phone the home-screen app and the browser keep separate storage, so
+// each is its own device; the name says which one was set up.
+const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const phoneHere = () => matchMedia('(pointer: coarse)').matches;
 function deviceName() {
   const ua = navigator.userAgent;
   const kind = ['iPhone', 'iPad', 'Android', 'Mac', 'Windows', 'Linux'].find((k) => ua.includes(k));
-  return `${kind || 'Browser'} web app`;
+  return `${kind || 'Device'} ${standalone() ? 'home-screen app' : 'browser'}`;
+}
+
+// One line on this browser's own setup, for the phone dialog.
+async function selfState() {
+  const rec = await loadPairing();
+  const what = phoneHere() ? 'phone' : 'browser';
+  if (S.pairingError) return `This ${what} cannot read its saved setup (${S.pairingError}). Close the app fully and open it again.`;
+  if (rec) return `This ${what} is set up${rec.code ? ` (code ${spaced(rec.code)})` : ''}.`;
+  return `This ${what} is not set up yet.` + (phoneHere() && !standalone()
+    ? ' The home-screen app keeps its own setup: set it up there if that is where you use Tacitus.' : '');
 }
 
 // What a relay error says. An err frame is not authenticated (the relay
@@ -1486,6 +1504,7 @@ async function pairPhone(via) {
   $('phone-scan').hidden = true;
   $('phone-note').textContent = 'One moment...';
   if (!dlg.open) dlg.showModal();
+  selfState().then((text) => { $('phone-self').textContent = text; });
   const st = await call('GET', '/relay/status').catch(() => ({}));
   const here = isSecureContext && Boolean(S.me.public_url) && new URL(S.me.public_url, location.href).origin === location.origin;
   const relayWay = Boolean(st.pair_relay && st.relay_app);
@@ -1502,7 +1521,7 @@ async function pairPhone(via) {
       const frag = /#(tr[12])=([A-Za-z0-9_-]+)$/.exec(out.link);
       if (out.origin !== 'relay' && frag) {
         $('phone-here').hidden = false;
-        $('phone-here').textContent = matchMedia('(pointer: coarse)').matches ? 'Set up this phone' : 'Set up this browser';
+        $('phone-here').textContent = phoneHere() ? 'Set up this phone' : 'Set up this browser';
         $('phone-here').onclick = () => { dlg.close(); pairFromLink(frag[1], frag[2], true); };
         $('phone-scan').hidden = false;
       }
@@ -1715,8 +1734,10 @@ async function unreachableNote(e) {
       : `This phone cannot reach the relay at ${host}. Check that it is online (Wi-Fi or cellular), then try again.`;
   }
   if (!(await loadPairing())) {
+    if (S.pairingError) return `This phone cannot read its saved setup (${S.pairingError}). Close the app fully and open it again.`;
     return 'Tacitus is reachable only on your own network from here. To use it anywhere, open this same app on that network '
-      + 'and tap "Set up this phone" under "Use Tacitus on your phone".';
+      + 'and tap "Set up this phone" under "Use Tacitus on your phone".'
+      + (phoneHere() && !standalone() ? ' The home-screen app and the browser each need their own setup.' : '');
   }
   return `Could not reach Tacitus: ${e.message}`;
 }
