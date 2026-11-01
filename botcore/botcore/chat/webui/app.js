@@ -14,7 +14,7 @@
 
 const BASE = location.pathname.replace(/\/index\.html$/, '').replace(/\/+$/, '');
 const enc = encodeURIComponent;
-const EVENT_TYPES = ['message', 'update', 'reaction', 'card', 'status', 'file', 'channel'];
+const EVENT_TYPES = ['message', 'update', 'reaction', 'card', 'status', 'file', 'channel', 'thread_state'];
 const CREATED = new Set(['message', 'card', 'file']); // the event types that post a message
 const KIND_ORDER = { dm: 0, main: 1, sched: 2, room: 3 };
 const NEW_THREAD = '+'; // never a thread key: every key opens with a letter or digit
@@ -79,6 +79,10 @@ const S = {
   route: 0,
   sending: false,
   push: undefined,      // {reg, key, sub} once the toggle is ready
+  states: new Map(),    // channel + thread key -> {state, by, reason, at}
+  needs: [],            // the Needs you list: thread rows of every channel
+  needsView: false,     // the list pane shows the Needs you list
+  filter: 'all',        // the thread filter chosen in this browser
 };
 
 const $ = (id) => document.getElementById(id);
@@ -610,7 +614,7 @@ function renderChannels() {
     const n = unreadFor(c.id);
     if (!c.archived) total += n;
     return h('a', {
-      class: 'chan' + (c.id === S.channel ? ' active' : '') + (n ? ' unread' : ''),
+      class: 'chan' + (c.id === S.channel && !S.needsView ? ' active' : '') + (n ? ' unread' : ''),
       href: hashFor(c.id), title: c.description || null,
     }, h('span', { class: 'c-icon', 'aria-hidden': 'true' }, c.kind === 'dm' ? '@' : '#'),
     h('span', { class: 'c-name' }, channelName(c)),
@@ -626,31 +630,167 @@ function renderChannels() {
   document.title = total ? `(${total}) Tacitus` : 'Tacitus';
   const others = total - unreadFor(S.channel);
   $('menu').dataset.unread = others > 0 ? String(others) : '';
+  // The Needs you entry above the channels, with the count of threads that need the owner.
+  const need = needsRows().filter((r) => stateOf(r.channel, threadOf(r)) === 'needs_you').length;
+  $('needs-link').hidden = false;
+  $('needs-link').classList.toggle('active', S.needsView);
+  $('needs-count').hidden = !need;
+  $('needs-count').textContent = String(need);
+  $('needs-count').setAttribute('aria-label', `${need} ${need === 1 ? 'thread needs' : 'threads need'} you`);
+}
+
+// One thread's card: its title, its sticker and time, its channel (in the
+// Needs you list) and replies, and its unread count.
+function threadCard(p, ch, withChannel) {
+  const tk = threadOf(p);
+  const n = S.threadUnread.get(tkey(ch, tk)) || 0;
+  const st = S.states.get(tkey(ch, tk)) || {};
+  const word = STICKERS[st.state];
+  const replies = p.reply_count || 0;
+  return h('a', {
+    class: 'thread-item' + (ch === S.channel && tk === S.thread ? ' active' : '') + (n ? ' unread' : ''),
+    href: hashFor(ch, tk), title: word ? st.reason || word : null, 'data-channel': ch, 'data-thread': tk,
+  }, h('span', { class: 't-title' }, threadTitle(p)),
+  word ? h('span', { class: `sticker st-${st.state}`, role: 'img', 'aria-label': st.reason ? `${word}: ${st.reason}` : word }, word) : null,
+  h('time', { class: 't-time' }, when(p.last_at || p.posted_at, true)),
+  h('span', { class: 't-meta' }, withChannel ? [h('span', { class: 't-chan' }, channelName(chan(ch)) || p.channel_name || ch), ' · '] : null,
+    `${replies} ${replies === 1 ? 'reply' : 'replies'}`),
+  n ? h('span', { class: 'badge', 'aria-label': `${n} unread` }, String(n)) : null);
 }
 
 function renderThreads() {
   const box = $('thread-list');
+  if (S.needsView) {
+    const rows = needsRows();
+    box.replaceChildren(...rows.map((r) => threadCard(r, r.channel, true)));
+    if (!rows.length) box.append(h('p', { class: 'empty' }, 'Nothing needs you now.'));
+    return;
+  }
   const th = S.threads.get(S.channel);
   if (!th || (th.loading && !th.list.length)) {
     box.replaceChildren(h('p', { class: 'empty' }, 'Loading...'));
     return;
   }
   const sorted = [...th.list].sort((a, b) => (b.last_at || b.posted_at || 0) - (a.last_at || a.posted_at || 0));
-  box.replaceChildren(...sorted.map((p) => {
-    const tk = threadOf(p);
-    const n = S.threadUnread.get(tkey(S.channel, tk)) || 0;
-    const replies = p.reply_count || 0;
-    return h('a', { class: 'thread-item' + (tk === S.thread ? ' active' : '') + (n ? ' unread' : ''), href: hashFor(S.channel, tk) },
-      h('span', { class: 't-title' }, threadTitle(p)),
-      h('time', { class: 't-time' }, when(p.last_at || p.posted_at, true)),
-      h('span', { class: 't-meta' }, `${replies} ${replies === 1 ? 'reply' : 'replies'}`),
-      n ? h('span', { class: 'badge', 'aria-label': `${n} unread` }, String(n)) : null);
-  }));
+  const shown = S.filter === 'all' ? sorted : sorted.filter((p) => stateOf(S.channel, threadOf(p)) === S.filter);
+  const chips = h('div', { class: 'filters', role: 'group', 'aria-label': 'Show threads' }, FILTERS.map(([v, label]) =>
+    h('button', { type: 'button', class: 'filter' + (v === S.filter ? ' on' : ''), 'aria-pressed': String(v === S.filter),
+      'data-filter': v, onclick: () => setFilter(v) }, label)));
+  box.replaceChildren(chips, ...shown.map((p) => threadCard(p, S.channel)));
   if (!th.list.length) box.append(h('p', { class: 'empty' }, 'No threads yet. Start one with New thread.'));
+  else if (!shown.length) box.append(h('p', { class: 'empty' }, FILTERS.find(([v]) => v === S.filter)[2]));
   if (th.more) {
     box.append(h('button', { type: 'button', class: 'btn plain more', onclick: () => loadThreads(S.channel, true) },
       'Load older threads'));
   }
+}
+
+function setFilter(v) {
+  S.filter = v;
+  try { localStorage.setItem(FILTER_KEY, v); } catch { /* kept for this visit */ }
+  renderThreads();
+  $('thread-list').querySelector('.filter.on').focus();
+}
+
+/* -- The state of a thread: stickers, Needs you, the override -------- */
+
+// The sticker's words per state (`none` has no sticker); the filters, with
+// what an empty list says under each.
+const STICKERS = { needs_you: 'Needs you', working: 'Working', waiting: 'Waiting', done: 'Done' };
+const FILTERS = [['all', 'All', ''], ['needs_you', 'Needs you', 'No thread here needs you.'],
+  ['waiting', 'Waiting', 'No thread here is waiting.'], ['done', 'Done', 'No thread here is done.']];
+const FILTER_KEY = 'tacitus-thread-filter';
+const NEEDS = 'needs'; // the Needs you route (#/needs): no channel id is this word
+try { S.filter = localStorage.getItem(FILTER_KEY) || 'all'; } catch { /* no storage: All */ }
+if (!FILTERS.some(([v]) => v === S.filter)) S.filter = 'all';
+
+// A thread row carries state_by, state_reason, state_at; an event carries by, reason, at.
+const rowState = (r) => ({ state: r.state, by: r.state_by ?? r.by, reason: r.state_reason ?? r.reason, at: r.state_at ?? r.at ?? 0 });
+const stateOf = (ch, tk) => (S.states.get(tkey(ch, tk)) || {}).state || 'none';
+
+// A row read from the bot keeps its state unless the one held is newer
+// (an event the read did not see yet).
+function noteState(ch, r) {
+  if (!r || !r.state) return;
+  const key = tkey(ch, threadOf(r));
+  const s = rowState(r);
+  const old = S.states.get(key);
+  if (!old || (s.at || 0) >= (old.at || 0)) S.states.set(key, s);
+}
+
+// The Needs you list as the bot gave it, less the threads whose state has
+// moved on since: needs you first, then the newest.
+function needsRows() {
+  const rank = (r) => ({ needs_you: 0, waiting: 1 })[stateOf(r.channel, threadOf(r))];
+  return S.needs.filter((r) => rank(r) !== undefined)
+    .sort((a, b) => rank(a) - rank(b) || (b.last_at || b.posted_at || 0) - (a.last_at || a.posted_at || 0));
+}
+
+// The list from the bot: on connect, on opening it, and after a state changes.
+async function loadNeeds() {
+  clearTimeout(S.needsTimer);
+  try {
+    const out = await call('GET', '/needs');
+    S.needs = (out && out.threads) || [];
+    S.needs.forEach((r) => noteState(r.channel, r));
+  } catch { return; } // the entry keeps what it had
+  if (S.ready) { renderChannels(); renderThreads(); }
+}
+
+function stateShown() {
+  renderChannels();
+  renderThreads();
+  const btn = $('thread-state');
+  btn.hidden = !S.thread || S.thread === NEW_THREAD;
+  btn.textContent = stateOf(S.channel, S.thread) === 'done' ? 'Needs me' : 'Mark done';
+}
+
+// A `thread_state` event: the sticker, the filter and Needs you follow, and
+// the list is read again, since a thread may have joined it.
+function onState(d) {
+  S.states.set(tkey(d.channel, d.thread_key), rowState(d));
+  const p = (S.threads.get(d.channel) || { list: [] }).list.find((x) => threadOf(x) === d.thread_key);
+  if (p && !S.needs.some((r) => r.channel === d.channel && threadOf(r) === d.thread_key)) S.needs.push({ ...p, channel: d.channel });
+  clearTimeout(S.needsTimer);
+  S.needsTimer = setTimeout(loadNeeds, 400);
+  stateShown();
+}
+
+// The owner's own state for a thread: done, or back to needing them. The
+// sticker changes at once; the bot's answer and its event confirm it.
+async function setState(ch, tk) {
+  const key = tkey(ch, tk);
+  const old = S.states.get(key);
+  const state = old && old.state === 'done' ? 'needs_you' : 'done';
+  S.states.set(key, { state, by: 'owner', at: old ? old.at : 0,
+    reason: state === 'done' ? 'You marked it done.' : 'You marked it as needing you.' });
+  stateShown();
+  try {
+    const row = await call('POST', `/threads/${enc(ch)}/${enc(tk)}/state`, { state });
+    if (row && row.state) S.states.set(key, rowState(row));
+  } catch (e) {
+    if (old) S.states.set(key, old); else S.states.delete(key);
+    toast(`Not changed: ${e.message}`);
+  }
+  stateShown();
+}
+
+// A long press (600 ms, held still) on a card on a touch screen does what
+// the header's button does. The tap that ends it opens nothing, and the
+// phone's own long-press menu stays shut.
+function longPress(list) {
+  let timer = 0, fired = 0, at = [0, 0];
+  const stop = () => { clearTimeout(timer); timer = 0; };
+  list.addEventListener('pointerdown', (e) => {
+    const card = e.pointerType === 'touch' && e.target.closest('.thread-item');
+    if (!card) return;
+    at = [e.clientX, e.clientY];
+    timer = setTimeout(() => { timer = 0; fired = Date.now(); setState(card.dataset.channel, card.dataset.thread); }, 600);
+  });
+  list.addEventListener('pointermove', (e) => { if (timer && Math.hypot(e.clientX - at[0], e.clientY - at[1]) > 10) stop(); });
+  ['pointerup', 'pointercancel'].forEach((t) => list.addEventListener(t, stop));
+  list.addEventListener('click', (e) => { if (Date.now() - fired < 800) e.preventDefault(); }, true);
+  list.addEventListener('contextmenu', (e) => { if (timer || Date.now() - fired < 800) e.preventDefault(); });
 }
 
 function remember(m) { S.known.add(tkey(m.channel, m.id)); }
@@ -669,6 +809,7 @@ async function loadThreads(ch, older) {
     const list = older ? th.list : th.list.filter((p) => !rows.some((r) => threadOf(r) === threadOf(p)));
     for (const r of rows) {
       remember(r);
+      noteState(ch, r);
       const i = list.findIndex((p) => threadOf(p) === threadOf(r));
       if (i >= 0) list[i] = r; else list.push(r);
     }
@@ -751,25 +892,30 @@ function defaultChannel() {
 async function route() {
   if (!S.ready) return;
   const { ch, tk } = parseHash();
-  if (!chan(ch)) {
+  const needs = ch === NEEDS;
+  if (!needs && !chan(ch)) {
     const def = defaultChannel();
     if (def) location.replace(hashFor(def.id));
     else $('thread-list').replaceChildren(h('p', { class: 'empty' }, 'No channels yet.'));
     return;
   }
   const token = ++S.route;
-  const changed = ch !== S.channel;
-  S.channel = ch;
-  S.thread = tk;
-  S.baseline.delete(ch);
-  if (tk) S.threadUnread.delete(tkey(ch, tk));
+  // A thread opened from the Needs you list keeps the list beside it, and Back returns to it.
+  S.needsView = needs || (Boolean(tk) && S.needsView);
+  const changed = !needs && ch !== S.channel;
+  if (!needs) S.channel = ch;
+  else if (!chan(S.channel)) S.channel = (defaultChannel() || {}).id || '';
+  S.thread = needs ? '' : tk;
+  if (!needs) S.baseline.delete(ch);
+  if (S.thread) S.threadUnread.delete(tkey(ch, tk));
   document.body.classList.remove('drawer');
-  document.body.dataset.view = tk ? 'thread' : 'threads';
-  $('channel-name').textContent = channelName(chan(ch));
-  renderChannels();
-  renderThreads();
-  if (changed || !S.threads.has(ch)) loadThreads(ch);
-  await openThread(ch, tk, token);
+  document.body.dataset.view = S.thread ? 'thread' : 'threads';
+  $('channel-name').textContent = S.needsView ? 'Needs you' : channelName(chan(ch));
+  $('new-thread').hidden = S.needsView;
+  stateShown();
+  if (needs) loadNeeds();
+  else if (changed || !S.threads.has(ch)) loadThreads(ch);
+  await openThread(S.channel, S.thread, token);
 }
 
 /* -- Live events ---------------------------------------------------- */
@@ -789,7 +935,7 @@ function connect() {
   let opened;
   const handle = { ready: new Promise((resolve) => { opened = resolve; }) };
   const es = T.events(S.lastSeq, {
-    open: () => { S.retry = 0; setLive('on'); opened(); },
+    open: () => { S.retry = 0; setLive('on'); opened(); loadNeeds(); },
     event: onEvent,
     down: (closed) => {
       setLive('off');
@@ -824,6 +970,10 @@ function onEvent(type, id, raw) {
 }
 
 function apply(type, data) {
+  if (type === 'thread_state') {
+    if (data.channel && data.thread_key) onState(data);
+    return;
+  }
   if (type === 'channel') {
     const i = S.channels.findIndex((c) => c.id === data.id);
     if (i >= 0) S.channels[i] = { ...S.channels[i], ...data }; else S.channels.push(data);
@@ -832,7 +982,7 @@ function apply(type, data) {
     // history the bot copies in when it starts): the open channel reads its
     // threads again. Another channel reads them when it is opened.
     if (data.id === S.channel) {
-      $('channel-name').textContent = channelName(chan(data.id));
+      if (!S.needsView) $('channel-name').textContent = channelName(chan(data.id));
       loadThreads(data.id);
     }
     return;
@@ -889,7 +1039,7 @@ function ingest(m, created = true) {
     if (msgs && msgs[0] === merged) $('thread-title').textContent = threadTitle(merged);
   }
   renderChannels();
-  if (m.channel === S.channel) renderThreads();
+  if (m.channel === S.channel || S.needsView) renderThreads();
 }
 
 // A message in a thread the list does not hold: read the thread so its
@@ -1916,10 +2066,12 @@ async function init() {
   $('menu').addEventListener('click', () => document.body.classList.toggle('drawer'));
   $('scrim').addEventListener('click', () => document.body.classList.remove('drawer'));
   // A tap on the open channel changes no hash, so the drawer closes here.
-  $('channel-list').addEventListener('click', (e) => {
+  $('channels').addEventListener('click', (e) => {
     if (e.target.closest('a.chan')) document.body.classList.remove('drawer');
   });
-  $('back').addEventListener('click', () => { location.hash = hashFor(S.channel); });
+  $('back').addEventListener('click', () => { location.hash = S.needsView ? hashFor(NEEDS) : hashFor(S.channel); });
+  $('thread-state').addEventListener('click', () => setState(S.channel, S.thread));
+  longPress($('thread-list'));
   $('new-thread').addEventListener('click', () => { location.hash = hashFor(S.channel, NEW_THREAD); $('text').focus(); });
   $('composer').addEventListener('submit', (e) => { e.preventDefault(); send(); });
   $('text').addEventListener('keydown', (e) => {
