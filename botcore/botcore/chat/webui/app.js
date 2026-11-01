@@ -641,7 +641,8 @@ function renderThreads() {
     const replies = p.reply_count || 0;
     return h('a', { class: 'thread-item' + (tk === S.thread ? ' active' : '') + (n ? ' unread' : ''), href: hashFor(S.channel, tk) },
       h('span', { class: 't-title' }, threadTitle(p)),
-      h('span', { class: 't-meta' }, `${replies} ${replies === 1 ? 'reply' : 'replies'} · ${when(p.last_at || p.posted_at, true)}`),
+      h('time', { class: 't-time' }, when(p.last_at || p.posted_at, true)),
+      h('span', { class: 't-meta' }, `${replies} ${replies === 1 ? 'reply' : 'replies'}`),
       n ? h('span', { class: 'badge', 'aria-label': `${n} unread` }, String(n)) : null);
   }));
   if (!th.list.length) box.append(h('p', { class: 'empty' }, 'No threads yet. Start one with New thread.'));
