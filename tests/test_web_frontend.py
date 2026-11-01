@@ -1186,3 +1186,135 @@ def test_a_floored_row_is_refused_and_nothing_is_written(fe, routing_page, monke
     status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"tasks": {"mail": "hosted"}})
     assert status == 400 and "keep floor" in json.loads(raw)["error"]
     assert not (priv / "routing.json").exists()
+
+
+# ── the state of a conversation (docs/webchat-state.md) ─────────────────
+
+def _state(f, ch, key, state, by="rule", reason="r"):
+    return f.store.set_thread_state(ch, key, state, by, reason,
+                                    judged_seq=f.store.newest_seq(ch, key))
+
+
+def test_threads_carry_their_state(fe):
+    a = fe.post("main", "a")
+    b = fe.post("main", "b")
+    _state(fe, "main", b.thread_key, "needs_you", reason="The card still has its buttons.")
+    rows = {r["thread_key"]: r for r in json.loads(owner(fe, "GET", "/api/channels/main/threads")[2])}
+    assert {k: rows[a.thread_key][k] for k in ("state", "state_by", "state_reason", "state_at")} == \
+        {"state": "none", "state_by": None, "state_reason": "", "state_at": None}
+    row = rows[b.thread_key]
+    assert (row["state"], row["state_by"], row["state_reason"]) == \
+        ("needs_you", "rule", "The card still has its buttons.")
+    assert row["state_at"] == fe.store.thread_state("main", b.thread_key)["at"]
+
+
+def test_needs_lists_what_waits_on_the_owner_needs_you_first(fe, monkeypatch):
+    fe.create_private_room("ea-old")
+    room = next(c["id"] for c in fe.store.channels() if c["name"] == "ea-old")
+    t = {}
+    for name, ch in (("w1", "main"), ("n1", "main"), ("d1", "dm"), ("w2", "dm"), ("n2", "dm"),
+                     ("x1", room), ("done", "main"), ("none", "main")):
+        t[name] = fe.post(ch, name).thread_key
+    for name, state in (("w1", "waiting"), ("n1", "needs_you"), ("w2", "waiting"),
+                        ("n2", "needs_you"), ("x1", "needs_you"), ("done", "done"),
+                        ("none", "none")):
+        ch = "main" if name in ("w1", "n1", "done", "none") else room if name == "x1" else "dm"
+        _state(fe, ch, t[name], state)
+    fe.archive(room)
+    # a reply makes w1 the newest thread
+    fe.post("main", "later", thread_ts=t["w1"])
+    status, _h, body = owner(fe, "GET", "/api/needs")
+    got = json.loads(body)["threads"]
+    assert status == 200 and [r["text"] for r in got] == ["n2", "n1", "w1", "w2"]
+    first = got[0]
+    assert first["channel"] == "dm" and first["channel_name"] == "dm" and first["state"] == "needs_you"
+    assert {"seq", "id", "thread_key", "reply_count", "last_at", "state_by", "state_reason",
+            "state_at"} <= set(first)
+    assert got[2]["reply_count"] == 1 and got[2]["channel_name"] == "ea"
+    monkeypatch.setattr(wf, "NEEDS_CAP", 3)
+    assert len(json.loads(owner(fe, "GET", "/api/needs")[2])["threads"]) == 3
+    assert call(fe, "GET", "/api/needs")[0] == 401
+
+
+def test_the_owner_sets_a_thread_s_state_and_the_stream_says_so(fe):
+    a = fe.post("main", "a")
+    fe.post("main", "a2", thread_ts=a.thread_key)
+    path = f"/api/threads/main/{a.thread_key}/state"
+    s = Stream(fe)
+    try:
+        s.lines(lambda seen: "retry: 3000" in seen)
+        status, _h, body = owner(fe, "POST", path, {"state": "done"})
+        row = json.loads(body)
+        # the answer is the thread's row, as the threads route gives it
+        assert status == 200 and (row["id"], row["thread_key"], row["reply_count"]) == \
+            (a.id, a.thread_key, 1)
+        assert (row["state"], row["state_by"], row["state_reason"]) == \
+            ("done", "owner", "You marked this done.")
+        assert row["channel"] == "main" and row["channel_name"] == "ea"
+        listed = {r["thread_key"]: r for r in
+                  json.loads(owner(fe, "GET", "/api/channels/main/threads")[2])}[a.thread_key]
+        assert {k: listed[k] for k in listed} == {k: row[k] for k in listed}
+        ev = s.events(1)[0]
+        assert ev["event"] == "thread_state" and int(ev["id"]) > 0
+        assert json.loads(ev["data"]) == {"channel": "main", "thread_key": a.thread_key,
+                                          "state": "done", "by": "owner",
+                                          "reason": "You marked this done.",
+                                          "at": row["state_at"]}
+    finally:
+        s.close()
+    stored = fe.store.thread_state("main", a.thread_key)
+    assert stored["by"] == "owner" and stored["judged_seq"] == fe.store.newest_seq("main", a.thread_key)
+    # each override is a labelled example beside the store: no text
+    labels = fe.store_path.parent / wf.LABELS_FILE
+    (line,) = [json.loads(x) for x in labels.read_text().splitlines()]
+    assert line == {"at": row["state_at"], "channel": "main", "thread_key": a.thread_key, "state": "done",
+                    "previous_state": "none", "previous_by": None, "message_count": 2}
+    assert labels.stat().st_mode & 0o777 == 0o600
+    # a message id names its thread too
+    assert json.loads(owner(fe, "POST", f"/api/threads/main/{a.id}/state",
+                            {"state": "needs_you"})[2])["state"] == "needs_you"
+    second = json.loads(labels.read_text().splitlines()[1])
+    assert (second["state"], second["previous_state"], second["previous_by"]) == \
+        ("needs_you", "done", "owner")
+    for bad in ({"state": "working"}, {"state": "none"}, {"state": "later"}, {"state": 1}, {}):
+        status, _h, raw = owner(fe, "POST", path, bad)
+        assert status == 400 and "done, needs_you or waiting" in json.loads(raw)["error"], bad
+    assert owner(fe, "POST", "/api/threads/main/t999/state", {"state": "done"})[0] == 404
+    assert owner(fe, "POST", f"/api/threads/nope/{a.thread_key}/state", {"state": "done"})[0] == 404
+    assert call(fe, "POST", path, {"state": "done"})[0] == 401
+    assert owner(fe, "POST", path, {"state": "done"}, {"Origin": "https://evil.example.test"})[0] == 403
+    assert owner(fe, "GET", path)[0] == 404
+
+
+def test_needs_is_a_reserved_channel_id(fe):
+    for cid in ("needs", "Needs"):
+        with pytest.raises(ValueError, match="reserved"):
+            fe.mirror_channel(cid, "x", "room")
+    assert fe.store.channel("needs") is None
+    # the Needs you view reads without moving a read mark
+    fe.post("main", "unread")
+    owner(fe, "GET", "/api/needs")
+    assert {c["id"]: c for c in fe.store.channels()}["main"]["unread"] == 1
+
+
+def test_a_relayed_device_that_may_chat_may_set_a_state(fe):
+    """The override sends nothing and changes no mail: a chat action, not a
+    card button, so a relay-origin device kept off the cards may take it."""
+    a = fe.post("main", "a")
+    relay = {"X-Tacitus-Relay": "0123456789abcdef", "X-Tacitus-Relay-Cards": "deny"}
+    status, _h, body = owner(fe, "POST", f"/api/threads/main/{a.thread_key}/state",
+                             {"state": "waiting"}, relay)
+    assert status == 200 and json.loads(body)["state"] == "waiting"
+    c = fe.post_card("dm", card())
+    assert owner(fe, "POST", f"/api/cards/dm/{c.id}/actions", {"action_id": "approve_send"},
+                 relay)[0] == 403
+    # the relay client forwards it from a device at "chat", as a message
+    from botcore.chat import relay_client
+    path = f"/api/threads/main/{a.thread_key}/state"
+    assert relay_client.path_allowed(path)
+    assert relay_client.access_allows("chat", "POST", path)
+    assert not relay_client.access_allows("read", "POST", path)
+    assert relay_client.path_allowed("/api/needs")
+    assert relay_client.access_allows("read", "GET", "/api/needs")
+    status, _h, body = owner(fe, "GET", "/api/needs", headers=relay)
+    assert status == 200 and [r["state"] for r in json.loads(body)["threads"]] == ["waiting"]

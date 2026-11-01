@@ -51,10 +51,11 @@
       "audit": "auto",
       "scheduling": "auto",
       "chat": "auto",
+      "thread_state": "local",
       "review": "hosted"
     }
   },
-  "routing_note": "Model routing (preprocessor/model_routing.py, docs/llm-lanes.md section 1.1): which model does each task. local is the owner's own endpoint in remote-llm.json, hosted is Claude, auto keeps the remote-LLM switches and the tiers block as they are. review (the still-open check, the nightly reconcile, the scheduling backstop) is hosted only: the stakes floor. mail and tagging take hosted only while the keep list is empty: the keep floor. Owner processes read only ~/.ea-private/routing.json, which the web chat's Settings screen and `model_routing.py set` write; this copy shapes what the EA shows, since this file is the EA user's to write.",
+  "routing_note": "Model routing (preprocessor/model_routing.py, docs/llm-lanes.md section 1.1): which model does each task. local is the owner's own endpoint in remote-llm.json, hosted is Claude, auto keeps the remote-LLM switches and the tiers block as they are. review (the still-open check, the nightly reconcile, the scheduling backstop) is hosted only: the stakes floor. mail and tagging take hosted only while the keep list is empty: the keep floor. thread_state (the web chat's conversation states) is local by default; with no local model, or set to hosted, the rules alone set the state. Owner processes read only ~/.ea-private/routing.json, which the web chat's Settings screen and `model_routing.py set` write; this copy shapes what the EA shows, since this file is the EA user's to write.",
   "mail": {
     "backend": "graph"
   },

@@ -255,6 +255,9 @@ def test_an_owner_notify_post_is_mirrored_under_the_zulip_ids(notify_env, monkey
         [("901", "**Morning** briefing"), ("902", "second part")]
     (lab,) = store.thread("stream:12", thread_key_for(12, "pinned"))
     assert (lab["id"], lab["author"]) == ("901", "bot")
+    # each thread is known as a notifier post, under its channel key
+    assert store.thread_origin("stream:10", key) == "ea-assistant"
+    assert store.thread_origin("stream:12", thread_key_for(12, "pinned")) == "lab"
     assert [t for _s, t, _p in store.events_since(0)] == \
         ["channel", "message", "message", "channel", "message"]
 

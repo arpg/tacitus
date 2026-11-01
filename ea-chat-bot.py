@@ -90,11 +90,15 @@ if FRONTEND.card_registry is None:
     FRONTEND.card_registry = _CARDS
 # The web chat's Settings screen: the routing table (model_routing.py),
 # which the bot writes to the owner-private routing.json. A web front end
-# alone or as the shadow of another serves it.
+# alone or as the shadow of another serves it, and judges the state of
+# each conversation (docs/webchat-state.md: the rules, the linked ledger
+# rows and the routed model) in its own store alone.
 for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
     if isinstance(getattr(_web, "settings_pages", None), dict):
         from preprocessor import model_routing as _model_routing
+        from preprocessor import web_thread_state as _web_thread_state
         _web.settings_pages["routing"] = _model_routing.WebSettings()
+        _web_thread_state.enable(_web)
 
 
 def _private_state(name: str) -> Path:

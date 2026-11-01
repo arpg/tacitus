@@ -92,6 +92,19 @@ A POST must pass the same Host, Sec-Fetch-Site and Origin checks as
 every other, and a relayed one (`X-Tacitus-Relay`) is refused: settings
 change only in the owner's own web chat.
 
+The state of a conversation (docs/webchat-state.md, thread_state.py):
+the `thread_state` table holds one state per thread (needs_you, working,
+waiting, done or none), set by a rule, the model or the owner, with an
+event `thread_state` on each change. The threads route carries it,
+`/api/needs` lists the threads that wait on the owner, and
+`/api/threads/<channel>/<thread_key>/state` is the owner's override, a
+chat action that a relayed device which may chat may take too. A host
+that calls enable_thread_state() before start() gets the rules at once on
+every change and the tick, on a thread of their own. `thread_origin`
+records the notifier key of an automated post (chat_notify), which the
+rules read. The states live in this store alone: nothing reaches the
+primary in shadow mode.
+
 At start the bot signs the app's files (web_bundle, docs/webchat.md, Code
 integrity): every file under `webui/` and its sha256, signed with an
 Ed25519 key that lives in the relay key file (a key for this process
@@ -149,6 +162,7 @@ from .base import (
     NotArchived,
     RoomNameTaken,
 )
+from . import thread_state as _ts
 from .cards import ConfirmationCard
 from .text import mrkdwn_to_zulip
 from .types import (
@@ -178,6 +192,9 @@ PAIR_FILE = "webchat-pair.token"
 OWNER_IDS_FILE = "webchat-owner-ids.json"
 OWNER_IDS_MAX = 5000
 RELAY_KEY_FILE = "webchat-relay.json"
+# The owner's overrides of a thread's state, one JSON line each, beside the
+# store: labelled examples for scoring the model step (docs/webchat-state.md).
+LABELS_FILE = "thread-state-labels.jsonl"
 COOKIE = "ea_web"
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
 
@@ -223,9 +240,15 @@ HANDLER_TIMEOUT_S = 30
 # Seconds between the serving process's checks of the app's files against
 # the manifest it signed (a changed file is logged once).
 BUNDLE_CHECK_S = 15.0
+# Threads the Needs you view lists at most.
+NEEDS_CAP = 200
 
 KINDS = ("main", "sched", "dm", "room")
-EVENT_TYPES = ("message", "update", "reaction", "card", "status", "file", "channel")
+# Channel ids the app's routes take for their own (`#/needs`, the Needs you
+# view): no channel may have one.
+RESERVED_CHANNEL_IDS = frozenset({"needs"})
+EVENT_TYPES = ("message", "update", "reaction", "card", "status", "file", "channel",
+               "thread_state")
 LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
 # Host names a loopback client (the relay client, a test) puts in Host and
 # Origin, with this server's port.
@@ -296,6 +319,11 @@ CREATE TABLE IF NOT EXISTS scheduled_posts(
     id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, text TEXT, due_at REAL,
     created_at REAL);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS thread_state(
+    channel TEXT, thread_key TEXT, state TEXT, by TEXT, reason TEXT, at REAL,
+    judged_seq INTEGER, PRIMARY KEY (channel, thread_key));
+CREATE TABLE IF NOT EXISTS thread_origin(
+    channel TEXT, thread_key TEXT, origin TEXT, at REAL, PRIMARY KEY (channel, thread_key));
 """
 
 
@@ -729,30 +757,175 @@ class WebStore:
                 return rows[0]["channel"] if len(rows) == 1 else None
         return None
 
-    def thread(self, channel: str, key: str, limit: int = 1000) -> list[dict]:
+    def thread(self, channel: str, key: str, limit: int = 1000, *,
+               history: bool = False) -> list[dict]:
         """The thread's messages, oldest first: its first message, then the
-        replies."""
+        replies. With `history` each also says whether it is a history row
+        (copied from the primary's past, without its reactions)."""
         rows = self._all("SELECT * FROM messages WHERE channel=? AND thread_key=? "
                          "ORDER BY seq LIMIT ?", (channel, key, int(limit)))
-        return [self._msg_json(r) if i == 0 else self._msg_json(r, 0)
-                for i, r in enumerate(rows)]
+        out = [self._msg_json(r) if i == 0 else self._msg_json(r, 0)
+               for i, r in enumerate(rows)]
+        if history:
+            for j, r in zip(out, rows):
+                j["history"] = bool(r["history"])
+        return out
 
     def threads(self, channel: str, limit: int = 50, before: int | None = None) -> list[dict]:
-        """Each thread's first message, newest first, with reply_count and
-        last_at (its newest post); `before` is a first message's seq, and a
-        page holds the threads that opened before it."""
+        """Each thread's first message, newest first, with reply_count,
+        last_at (its newest post) and its state (`state`, `state_by`,
+        `state_reason`, `state_at`; "none" and nulls for a thread with no
+        state row); `before` is a first message's seq, and a page holds the
+        threads that opened before it."""
         rows = self._all(
-            "SELECT m.*, t.n AS n, t.last_at AS last_at FROM messages m "
+            "SELECT m.*, t.n AS n, t.last_at AS last_at, s.state AS st_state, s.by AS st_by, "
+            "s.reason AS st_reason, s.at AS st_at FROM messages m "
             "JOIN (SELECT MIN(seq) AS first, COUNT(*) AS n, MAX(posted_at) AS last_at "
             "FROM messages WHERE channel=? GROUP BY thread_key) t "
-            "ON m.seq = t.first WHERE (? IS NULL OR m.seq < ?) "
+            "ON m.seq = t.first LEFT JOIN thread_state s "
+            "ON s.channel = m.channel AND s.thread_key = m.thread_key "
+            "WHERE (? IS NULL OR m.seq < ?) "
             "ORDER BY m.seq DESC LIMIT ?", (channel, before, before, int(limit)))
         out = []
         for r in rows:
             j = self._msg_json(r, int(r["n"]) - 1)
             j["last_at"] = r["last_at"]
+            j.update(self._state_fields(r))
             out.append(j)
         return out
+
+    @staticmethod
+    def _state_fields(r: sqlite3.Row) -> dict:
+        state = r["st_state"] if r["st_state"] in _ts.STATES else None
+        if state is None:
+            return {"state": "none", "state_by": None, "state_reason": "", "state_at": None}
+        return {"state": state, "state_by": r["st_by"], "state_reason": r["st_reason"] or "",
+                "state_at": r["st_at"]}
+
+    # the state of a conversation (docs/webchat-state.md)
+
+    def thread_state(self, channel: str, thread_key: str) -> dict | None:
+        """The thread's state row ({"channel", "thread_key", "state", "by",
+        "reason", "at", "judged_seq"}), or None."""
+        row = self._one("SELECT * FROM thread_state WHERE channel=? AND thread_key=?",
+                        (channel, thread_key))
+        return dict(row) if row else None
+
+    @staticmethod
+    def _state_event(row: dict) -> dict:
+        return {k: row[k] for k in ("channel", "thread_key", "state", "by", "reason", "at")}
+
+    def set_thread_state(self, channel: str, thread_key: str, state: str, by: str,
+                         reason: str, *, judged_seq: int) -> dict:
+        """Write the thread's state; the row as the `thread_state` event
+        carries it. A change of the state, `by` or the reason sets `at` and
+        appends the event; a write that changes only judged_seq is silent.
+        A rule's or the model's write never goes back: it is dropped when
+        the row was judged on a newer message, or when the owner set it on
+        the same message or a newer one."""
+        if state not in _ts.STATES or by not in _ts.BY:
+            raise ValueError(f"not a thread state: {state!r} by {by!r}")
+        judged_seq = int(judged_seq)
+
+        def run() -> dict:
+            row = self._conn.execute("SELECT * FROM thread_state WHERE channel=? AND thread_key=?",
+                                     (channel, thread_key)).fetchone()
+            old = dict(row) if row else None
+            if old is not None and by != "owner":
+                seen = int(old["judged_seq"] or 0)
+                if seen > judged_seq or (old["by"] == "owner" and seen >= judged_seq):
+                    return self._state_event(old)
+            if old is not None and (old["state"], old["by"], old["reason"]) == (state, by, reason):
+                if int(old["judged_seq"] or 0) != judged_seq:
+                    self._conn.execute("UPDATE thread_state SET judged_seq=? WHERE channel=? AND "
+                                       "thread_key=?", (judged_seq, channel, thread_key))
+                return self._state_event(old)
+            new = {"channel": channel, "thread_key": thread_key, "state": state, "by": by,
+                   "reason": reason or "", "at": time.time()}
+            self._conn.execute(
+                "INSERT INTO thread_state(channel, thread_key, state, by, reason, at, judged_seq) "
+                "VALUES (?,?,?,?,?,?,?) ON CONFLICT(channel, thread_key) DO UPDATE SET "
+                "state=excluded.state, by=excluded.by, reason=excluded.reason, at=excluded.at, "
+                "judged_seq=excluded.judged_seq",
+                (channel, thread_key, state, by, new["reason"], new["at"], judged_seq))
+            self._emit("thread_state", channel, thread_key, new)
+            return new
+        return self._transaction(run)
+
+    def newest_seq(self, channel: str, thread_key: str) -> int | None:
+        """The seq of the thread's newest message; None for a thread with none."""
+        row = self._one("SELECT MAX(seq) AS s FROM messages WHERE channel=? AND thread_key=?",
+                        (channel, thread_key))
+        return int(row["s"]) if row and row["s"] is not None else None
+
+    def note_origin(self, channel: str, thread_key: str, origin: str) -> None:
+        """Record the notifier key of the automated post that opened a
+        thread (chat_notify); the first one recorded stays."""
+        if not (channel and thread_key and origin):
+            return
+        with self._lock:
+            with self._conn:
+                self._conn.execute("INSERT OR IGNORE INTO thread_origin(channel, thread_key, "
+                                   "origin, at) VALUES (?,?,?,?)",
+                                   (channel, thread_key, str(origin)[:80], time.time()))
+
+    def thread_origin(self, channel: str, thread_key: str) -> str:
+        row = self._one("SELECT origin FROM thread_origin WHERE channel=? AND thread_key=?",
+                        (channel, thread_key))
+        return str(row["origin"] or "") if row else ""
+
+    def active_threads(self, since: float, limit: int) -> list[dict]:
+        """The threads of channels that are not archived with a message
+        posted after `since`, newest first: {"channel", "thread_key",
+        "newest" (seq), "last_at"}."""
+        rows = self._all(
+            "SELECT m.channel AS channel, m.thread_key AS thread_key, MAX(m.seq) AS newest, "
+            "MAX(m.posted_at) AS last_at FROM messages m JOIN channels c ON c.id = m.channel "
+            "AND c.archived = 0 WHERE m.posted_at > ? GROUP BY m.channel, m.thread_key "
+            "ORDER BY last_at DESC LIMIT ?", (float(since), int(limit)))
+        return [dict(r) for r in rows]
+
+    # A thread row with its state, for the rows the state table names: the
+    # first message, reply_count, last_at, the state fields and the
+    # channel's name, in one statement.
+    _STATE_ROWS = (
+        "SELECT m.*, x.n AS n, x.last_at AS last_at, x.st_state, x.st_by, x.st_reason, "
+        "x.st_at, x.channel_name FROM (SELECT s.channel, s.thread_key, s.state AS st_state, "
+        "s.by AS st_by, s.reason AS st_reason, s.at AS st_at, c.name AS channel_name, "
+        "(SELECT MIN(seq) FROM messages WHERE channel=s.channel AND thread_key=s.thread_key) "
+        "AS first, (SELECT COUNT(*) FROM messages WHERE channel=s.channel AND "
+        "thread_key=s.thread_key) AS n, (SELECT MAX(posted_at) FROM messages WHERE "
+        "channel=s.channel AND thread_key=s.thread_key) AS last_at FROM thread_state s "
+        "JOIN channels c ON c.id = s.channel AND {where}) x JOIN messages m ON m.seq = x.first ")
+
+    def _state_rows(self, rows: list[sqlite3.Row]) -> list[dict]:
+        out = []
+        for r in rows:
+            j = self._msg_json(r, int(r["n"]) - 1)
+            j["last_at"] = r["last_at"]
+            j.update(self._state_fields(r))
+            j["channel_name"] = r["channel_name"] or r["channel"]
+            out.append(j)
+        return out
+
+    def needs(self, limit: int = 200) -> list[dict]:
+        """Every thread whose state is needs_you or waiting, in channels that
+        are not archived: the thread row as threads() gives it, with
+        `channel_name`; needs_you first, then newest first. One statement;
+        it moves no read mark."""
+        rows = self._all(self._STATE_ROWS.format(
+            where="c.archived = 0 WHERE s.state IN ('needs_you', 'waiting')") +
+            "ORDER BY CASE x.st_state WHEN 'needs_you' THEN 0 ELSE 1 END, x.last_at DESC "
+            "LIMIT ?", (int(limit),))
+        return self._state_rows(rows)
+
+    def thread_row(self, channel: str, thread_key: str) -> dict | None:
+        """One thread's row as threads() gives it, with `channel_name`; None
+        when the thread has no state row or no messages."""
+        rows = self._all(self._STATE_ROWS.format(
+            where="1 WHERE s.channel = ? AND s.thread_key = ?"), (channel, thread_key))
+        got = self._state_rows(rows)
+        return got[0] if got else None
 
     def parents(self, channel: str, since_s: float, after_seq: int, limit: int) -> list[dict]:
         """Thread-opening messages posted after since_s with seq > after_seq,
@@ -903,7 +1076,10 @@ class WebStore:
 
     def upsert_channel(self, cid: str, name: str, kind: str, archived: bool = False,
                        description: str | None = None) -> dict:
-        """Write a channel row; a `channel` event when it changed."""
+        """Write a channel row; a `channel` event when it changed. A
+        reserved id (RESERVED_CHANNEL_IDS) is refused with ValueError."""
+        if str(cid).strip().lower() in RESERVED_CHANNEL_IDS:
+            raise ValueError(f"{cid!r} is a reserved channel id")
         kind = kind if kind in KINDS else "room"
 
         def run() -> dict:
@@ -1010,6 +1186,13 @@ class WebStore:
                                                         (row["seq"],)).fetchone())
                 self._emit("update", new_channel, row["id"], out)
                 moved += 1
+            if (old_channel, old_key) != (new_channel, new_key):
+                # The thread's state and origin go with it; the rules judge
+                # it again on the `update` events.
+                for table in ("thread_state", "thread_origin"):
+                    self._conn.execute(f"UPDATE OR REPLACE {table} SET channel=?, thread_key=? "
+                                       "WHERE channel=? AND thread_key=?",
+                                       (new_channel, new_key, old_channel, old_key))
             return moved
         return self._transaction(run)
 
@@ -1428,6 +1611,10 @@ class WebFrontend(ChatFrontend):
         self._bundle_warned: set = set()
         self._own_sign_key: bytes | None = None
         self.bundle_check_s = BUNDLE_CHECK_S
+        # The state of each conversation (thread_state.ThreadStates), once the
+        # host enables it; start() runs it beside the server.
+        self.thread_states: _ts.ThreadStates | None = None
+        self._labels_lock = threading.Lock()
 
     @classmethod
     def from_config(cls, cfg: dict | None, *, store_path: str | Path | None = None,
@@ -1444,6 +1631,61 @@ class WebFrontend(ChatFrontend):
             raise ChatError("web chat: no store path")
         return cls(cfg, store_path=path, webui_dir=webui_dir, writer_only=writer_only,
                    trusted_config=trusted_config, untrusted_roots=untrusted_roots)
+
+    def enable_thread_state(self, *, ledger: _ts.Ledger | None = None,
+                            model: _ts.Model | None = None, **kw: Any) -> _ts.ThreadStates:
+        """Judge the state of each conversation (docs/webchat-state.md) from
+        start() on: the rules at once on every change, and the tick. The
+        host gives the linked ledger rows and the model call; without them
+        the rules alone set the state. Call it before start()."""
+        self.thread_states = _ts.ThreadStates(lambda: self.store, ledger=ledger, model=model,
+                                              devices=self._relay_devices, **kw)
+        return self.thread_states
+
+    def _relay_devices(self) -> list[dict] | None:
+        """The relay's device rows for the new-device rule; None when no
+        relay runs (the rule then waits)."""
+        relay = self.relay
+        return relay.devices() if relay is not None else None
+
+    def web_set_state(self, channel: str, thread_key: str, state: str) -> dict:
+        """The owner's override: `state` (done, needs_you or waiting) on the
+        thread, by the owner, until a new message lands in it. The answer
+        is the thread's row as the threads route gives it, with
+        `channel_name`."""
+        if state not in _ts.SETTABLE:
+            raise _HttpError(400, "state is done, needs_you or waiting")
+        if self.store.channel(channel) is None:
+            raise _HttpError(404, "no such channel")
+        key = self.store.thread_of(channel, thread_key)
+        newest = self.store.newest_seq(channel, key) if key else None
+        if not key or newest is None:
+            raise _HttpError(404, "no such thread")
+        before = self.store.thread_state(channel, key) or {}
+        row = self.store.set_thread_state(channel, key, state, "owner",
+                                          _ts.OWNER_REASONS[state], judged_seq=newest)
+        self._label(row, before)
+        return self.store.thread_row(channel, key) or row
+
+    def _label(self, row: dict, before: dict) -> None:
+        """One line per override in the labels file beside the store (the
+        owner-private dir), so the model step can be scored later: when,
+        the thread, the owner's state, the state and `by` it replaced and
+        the thread's length. Never any text. A failed write is logged and
+        the override stands."""
+        n = self.store._one("SELECT COUNT(*) AS n FROM messages WHERE channel=? AND thread_key=?",
+                            (row["channel"], row["thread_key"]))
+        line = {"at": row["at"], "channel": row["channel"], "thread_key": row["thread_key"],
+                "state": row["state"], "previous_state": before.get("state") or "none",
+                "previous_by": before.get("by"), "message_count": int(n["n"]) if n else 0}
+        path = self.store_path.parent / LABELS_FILE
+        try:
+            with self._labels_lock:
+                fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(line, sort_keys=True) + "\n")
+        except OSError as e:
+            log.warning("web chat: the override was not recorded in %s: %s", LABELS_FILE, e)
 
     @property
     def store(self) -> WebStore:
@@ -1519,6 +1761,8 @@ class WebFrontend(ChatFrontend):
             log.info("web chat serving on %s:%d%s/", self.bind, self.port, self.base_path)
             self._start_relay()
             self.refresh_bundle()
+            if self.thread_states is not None:
+                self.thread_states.start()
 
     # the relay (docs/webchat-relay.md)
 
@@ -1809,6 +2053,8 @@ class WebFrontend(ChatFrontend):
             relay, self.relay = self.relay, None
         if relay is not None:
             relay.stop()
+        if self.thread_states is not None:
+            self.thread_states.stop()
         if self._store is not None:
             self._store.close_subscribers()
         if self._push is not None:
@@ -2921,6 +3167,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if segs == ["events"]:
                 self._events(query)
                 return None
+            if segs == ["needs"]:
+                self._json(200, {"threads": store.needs(NEEDS_CAP)})
+                return None
         if segs and segs[0] == "relay":
             self._relay_api(method, segs[1:])
             return None
@@ -2940,6 +3189,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return after
             if n == 3 and segs[0] == "channels" and segs[2] == "files":
                 return self._upload(segs[1])
+            if n == 4 and segs[0] == "threads" and segs[3] == "state":
+                # The owner's override is a chat action, like a message: a
+                # device the relay lets chat may set it (it sends nothing).
+                state = self._read_json().get("state")
+                if not isinstance(state, str):
+                    raise _HttpError(400, "state is done, needs_you or waiting")
+                self._json(200, fe.web_set_state(segs[1], segs[2], state))
+                return None
             if segs == ["diag"]:
                 # What a browser saw while it could not connect (app.js diagNote):
                 # logged, so a phone's failure off the owner's network can be

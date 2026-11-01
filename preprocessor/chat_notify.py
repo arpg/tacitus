@@ -214,7 +214,10 @@ def _zulip_new_topic(client, stream: str, text: str) -> str:
     return text_mod.unique_topic(text_mod.topic_from_text(text), taken)
 
 
-def _zulip_post_parts(zcfg: dict, target: dict, parts: list[str]) -> bool:
+def _zulip_post_parts(zcfg: dict, target: dict, parts: list[str],
+                      origin: str = "notifier") -> bool:
+    """Post the parts in one topic. `origin` (the channel key) is what the
+    web chat's copy records as the post's notifier (_note_origin)."""
     text_mod = _chat_pkg().text
     try:
         client = _zulip_client(zcfg)
@@ -241,7 +244,7 @@ def _zulip_post_parts(zcfg: dict, target: dict, parts: list[str]) -> bool:
             continue
         if resp.get("id") is not None:
             sent.append((int(resp["id"]), part))
-    _mirror_zulip(zcfg, client, stream, topic, sent)
+    _mirror_zulip(zcfg, client, stream, topic, sent, origin)
     return all_ok
 
 
@@ -270,6 +273,22 @@ def _web_writer():
     return _WEB[0]
 
 
+def _note_origin(fe, channel: str, thread_key: str, channel_key: str) -> None:
+    """Record in the web chat's store that this notifier post opened the
+    thread, under its channel key: the thread-state rules take such a
+    thread as an automated post (docs/webchat-state.md, rule 7). `fe` is
+    the web front end, or a composite whose shadow is one. Best effort: a
+    failure leaves the post as it is."""
+    for web in (fe, getattr(fe, "shadow", None)):
+        note = getattr(getattr(web, "store", None), "note_origin", None) if web is not None else None
+        if callable(note):
+            try:
+                note(channel, thread_key, channel_key)
+            except Exception as e:
+                print(f"Web chat origin note failed: {e}")
+            return
+
+
 def _zulip_kind(zcfg: dict, stream: str) -> str:
     """The web chat's kind for a stream: the EA, scheduling or DM stream
     the zulip block names, else a room."""
@@ -283,7 +302,7 @@ def _zulip_kind(zcfg: dict, stream: str) -> str:
 
 
 def _mirror_zulip(zcfg: dict, client, stream: str, topic: str,
-                  sent: list[tuple[int, str]]) -> None:
+                  sent: list[tuple[int, str]], channel_key: str = "notifier") -> None:
     """Copy the parts Zulip took, (message id, mrkdwn text) in one topic,
     into the web chat. The channel row is written only when the store
     lacks it: the bot's own row (name, archived) wins. A failure is
@@ -303,6 +322,8 @@ def _mirror_zulip(zcfg: dict, client, stream: str, topic: str,
         key = importlib.import_module(f"{chat.__name__}.zulip_frontend").thread_key_for(sid, topic)
         if web.store.channel(channel) is None:
             web.mirror_channel(channel, stream, _zulip_kind(zcfg, stream))
+        if channel_key:
+            _note_origin(web, channel, key, channel_key)
         for mid, part in sent:
             web.mirror_post(chat.MessageRef(channel, str(mid), key, time.time()), part, "bot")
     except Exception as e:
@@ -317,7 +338,7 @@ def _send_zulip(channel_key: str, parts: list[str], blocks: Optional[list]) -> b
         print("  Configure chat.zulip.notify in ea-config.json")
         print(f"  Message was: {(parts[0] if parts else '')[:100]}...")
         return False
-    return _zulip_post_parts(zcfg, target, parts)
+    return _zulip_post_parts(zcfg, target, parts, channel_key)
 
 
 # ── Project rooms ─────────────────────────────────────────────────────
@@ -427,6 +448,7 @@ def _send_web(channel_key: str, parts: list[str]) -> bool:
                   "nothing posted")
             return False
         first = fe.post(cid, parts[0])
+        _note_origin(fe, cid, getattr(first, "thread_key", ""), channel_key)
         for part in parts[1:]:
             fe.post(cid, part, thread_ts=first.thread_key)
         return True
@@ -443,6 +465,7 @@ def _send_room(channel_key: str, parts: list[str]) -> bool:
     try:
         fe = _room_frontend()
         first = fe.post(cid, parts[0])
+        _note_origin(fe, cid, getattr(first, "thread_key", ""), channel_key)
         for part in parts[1:]:
             fe.post(cid, part, thread_ts=first.thread_key)
         return True
