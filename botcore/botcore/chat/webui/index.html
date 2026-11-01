@@ -39,6 +39,8 @@
       <button type="button" id="install-close" class="icon" aria-label="Hide for 30 days"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
     <button type="button" id="pair-phone" class="btn small" hidden>Pair a phone</button>
     <button type="button" id="open-settings" class="btn small" hidden>Settings</button>
+    <button type="button" id="tour-again" class="btn small" hidden>How Tacitus works</button>
+    <button type="button" id="new-room" class="btn small plain" hidden>New room</button>
   </footer>
 </nav>
 
@@ -105,6 +107,48 @@
     <p id="settings-note" aria-live="polite"></p>
     <div class="settings-actions"><button type="button" id="settings-save" class="btn primary">Save</button>
       <button type="submit" class="btn">Close</button></div>
+  </form>
+</dialog>
+
+<dialog id="welcome" aria-label="Welcome to Tacitus" tabindex="-1">
+  <form method="dialog">
+    <p class="w-hello">Welcome to Tacitus</p>
+    <div id="welcome-cards" aria-live="polite">
+      <section class="on">
+        <h2>Ask in plain words</h2>
+        <p>Type what you want done, the way you would text an assistant. Tap one to try it.</p>
+        <button type="button" class="example">Reply to <b>Sam</b> and say Tuesday works.</button>
+        <button type="button" class="example">What is on tomorrow?</button>
+        <button type="button" class="example">Find me an hour with <b>Dana</b> next week.</button>
+      </section>
+      <section>
+        <h2>Nothing goes out without you</h2>
+        <p>When Tacitus drafts a reply or a meeting, a card lands in <strong class="w-dm">Direct messages</strong> with a Send or Create button. Nothing is sent until you tap it.</p>
+        <div class="w-sample w-card" aria-hidden="true"><span>Send this reply?</span><span class="w-btn">Send</span></div>
+      </section>
+      <section>
+        <h2>Needs you</h2>
+        <p>The <strong>Needs you</strong> list at the top gathers everything waiting on you. Tap <strong>Mark done</strong> when it is handled.</p>
+        <div class="w-sample" aria-hidden="true"><span>Budget question</span><span class="sticker st-needs_you">Needs you</span></div>
+      </section>
+    </div>
+    <div class="w-foot">
+      <span id="welcome-dots" class="dots" role="img" aria-label="Card 1 of 3"><i class="on"></i><i></i><i></i></span>
+      <button type="submit" id="welcome-skip" class="btn plain">Skip</button>
+      <button type="button" id="welcome-next" class="btn primary">Next</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="room" aria-labelledby="room-title">
+  <form id="room-form" novalidate>
+    <h2 id="room-title">New room</h2>
+    <label for="room-name">What is the project called?</label>
+    <input id="room-name" autocomplete="off" enterkeyhint="go" aria-describedby="room-hint room-error">
+    <p id="room-error" class="error" aria-live="polite"></p>
+    <p id="room-hint">A room keeps one ongoing project together: its people, mail and decisions. Most people never need one on day one.</p>
+    <div class="dialog-actions"><button type="button" id="room-cancel" class="btn">Cancel</button>
+      <button type="submit" id="room-open" class="btn primary">Open room</button></div>
   </form>
 </dialog>
 

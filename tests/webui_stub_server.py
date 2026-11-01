@@ -10,7 +10,9 @@ reactions. The event stream replays from Last-Event-ID or ?since= and then
 pushes each new event; with neither it sends only what happens next.
 
 A post gets an echo (an eyes reaction, a bot reply, a check); a card
-click is recorded in `clicks` and the card turns into a status line.
+click is recorded in `clicks` and the card turns into a status line. A
+post that asks for a room ("open a room for X") gets a new room, named
+from X, announced with a `channel` event, as the bot's reply says.
 `emit_bot` (or POST /_stub/emit) posts a bot message from outside, and
 `--tick N` posts one every N seconds. `drop_streams` closes the open
 streams (and can refuse the next ones); `streams` records how each stream
@@ -44,6 +46,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import threading
 import time
 from email.parser import BytesParser
@@ -70,6 +73,7 @@ STUB_BOT_PUBLIC = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"  # 32 bytes of 1
 STUB_CLIENT_KEY = "c" * 43
 STUB_BUNDLE = "b" * 64  # a made-up hash of the bot's signed app bundle, when it signs none
 WEEKLY = "stream:9:topic:weekly%20plan"
+ROOM_ASK = re.compile(r"^\s*open a (?:channel|room) for (?P<name>.+?)\s*$", re.I)
 ROUTING = {
     "local": {"configured": True, "model": "local-27b", "reachable": True, "detail": "Answered 2 min ago."},
     "source": "routing.json", "values": ["local", "hosted", "auto"],
@@ -232,6 +236,18 @@ class Stub:
         out.sort(key=lambda p: (p["state"] != "needs_you", -p.get("last_at", p["posted_at"])))
         return out[:200]
 
+    def add_room(self, project: str) -> dict:
+        """A new room for `project`, sent as a `channel` event."""
+        with self.cond:
+            slug = re.sub(r"[^a-z0-9]+", "-", project.lower()).strip("-")
+            row = {"id": f"r{len(self.channels) + 1}", "name": f"ea-{slug}", "kind": "room",
+                   "archived": False, "unread": 0}
+            self.channels[row["id"]] = row
+            self.eseq += 1
+            self.events.append((self.eseq, "channel", dict(row)))
+            self.cond.notify_all()
+            return row
+
     def drop_streams(self, refuse: int = 0) -> None:
         """Close every open event stream; the next `refuse` stream
         requests get a 503, as a server restarting would answer."""
@@ -321,8 +337,11 @@ class Stub:
         if self.echo:
             def later():
                 self.change(m, "reaction", reactions=["eyes"])
-                self.add(channel, f"Stub reply to: {text[:40] or 'a file'}",
-                         thread_key=m["thread_key"], event="message")
+                ask = ROOM_ASK.match(text)
+                reply = f"Stub reply to: {text[:40] or 'a file'}"
+                if ask:
+                    reply = f":file_folder: Opened #{self.add_room(ask['name'])['name']} for *{ask['name']}*."
+                self.add(channel, reply, thread_key=m["thread_key"], event="message")
                 self.change(m, "reaction", reactions=["white_check_mark"])
             threading.Timer(0.3, later).start()
         return self.view(m)

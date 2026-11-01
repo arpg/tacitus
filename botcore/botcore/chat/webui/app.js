@@ -83,6 +83,8 @@ const S = {
   needs: [],            // the Needs you list: thread rows of every channel
   needsView: false,     // the list pane shows the Needs you list
   filter: 'all',        // the thread filter chosen in this browser
+  card: 0,              // the welcome's card on show
+  welcomed: false,      // the welcome had its chance on this page
 };
 
 const $ = (id) => document.getElementById(id);
@@ -637,6 +639,7 @@ function renderChannels() {
   $('needs-count').hidden = !need;
   $('needs-count').textContent = String(need);
   $('needs-count').setAttribute('aria-label', `${need} ${need === 1 ? 'thread needs' : 'threads need'} you`);
+  $('new-room').hidden = !mainChannel();
 }
 
 // One thread's card: its title, its sticker and time, its channel (in the
@@ -676,8 +679,8 @@ function renderThreads() {
   const chips = h('div', { class: 'filters', role: 'group', 'aria-label': 'Show threads' }, FILTERS.map(([v, label]) =>
     h('button', { type: 'button', class: 'filter' + (v === S.filter ? ' on' : ''), 'aria-pressed': String(v === S.filter),
       'data-filter': v, onclick: () => setFilter(v) }, label)));
-  box.replaceChildren(chips, ...shown.map((p) => threadCard(p, S.channel)));
-  if (!th.list.length) box.append(h('p', { class: 'empty' }, 'No threads yet. Start one with New thread.'));
+  box.replaceChildren(...(th.list.length ? [chips] : []), ...shown.map((p) => threadCard(p, S.channel)));
+  if (!th.list.length) box.append(emptyNote((chan(S.channel) || {}).kind));
   else if (!shown.length) box.append(h('p', { class: 'empty' }, FILTERS.find(([v]) => v === S.filter)[2]));
   if (th.more) {
     box.append(h('button', { type: 'button', class: 'btn plain more', onclick: () => loadThreads(S.channel, true) },
@@ -843,11 +846,11 @@ async function openThread(ch, tk, token) {
   const box = $('messages');
   S.nodes = new Map();
   const isNew = !tk || tk === NEW_THREAD;
-  $('text').placeholder = isNew ? `Start a thread in ${channelName(chan(ch))}` : 'Reply';
+  $('text').placeholder = isNew ? `Start a conversation in ${channelName(chan(ch))}` : 'Reply';
   if (isNew) {
-    $('thread-title').textContent = 'New thread';
-    box.replaceChildren(h('p', { class: 'empty' }, tk ? 'Write the first message of the new thread below.'
-      : 'Pick a thread, or write a message to start a new one.'));
+    $('thread-title').textContent = 'New conversation';
+    box.replaceChildren(h('p', { class: 'empty' }, tk ? 'Write your message below. It starts a new conversation.'
+      : 'Pick a conversation, or write a message to start a new one.'));
     return;
   }
   const key = tkey(ch, tk);
@@ -1207,7 +1210,7 @@ function installHint(prompt) {
   footer();
 }
 
-const footer = () => { $('drawer-foot').hidden = $('notify-row').hidden && $('install').hidden && $('pair-phone').hidden && $('open-settings').hidden && $('update-note').hidden; };
+const footer = () => { $('drawer-foot').hidden = ['notify-row', 'install', 'pair-phone', 'open-settings', 'update-note', 'tour-again'].every((id) => $(id).hidden); };
 
 // iOS shrinks only the visual viewport for the keyboard: the app takes its
 // height (--app-h) at the top, so the composer stays above the keyboard. The
@@ -1841,6 +1844,127 @@ async function saveSettings() {
   }
 }
 
+/* -- Teaching: the welcome, the examples, New room, empty lists ------ */
+
+// The welcome: three cards, shown once per browser after the channels
+// load, again from "How Tacitus works". Next, a swipe or an arrow key
+// moves; Skip, Done or Escape closes it, and closing it is what counts.
+const WELCOME_KEY = 'tacitus-welcome-seen';
+const mainChannel = () => S.channels.find((c) => c.kind === 'main' && !c.archived);
+
+function welcome(at) {
+  const cards = [...$('welcome-cards').children];
+  S.card = Math.max(0, Math.min(cards.length - 1, at));
+  cards.forEach((c, i) => c.classList.toggle('on', i === S.card));
+  [...$('welcome-dots').children].forEach((d, i) => d.classList.toggle('on', i === S.card));
+  $('welcome-dots').setAttribute('aria-label', `Card ${S.card + 1} of ${cards.length}`);
+  $('welcome-next').textContent = S.card === cards.length - 1 ? 'Done' : 'Next';
+  $('welcome-skip').hidden = S.card === cards.length - 1;
+  const dm = S.channels.find((c) => c.kind === 'dm' && !c.archived);
+  for (const el of $('welcome').querySelectorAll('.w-dm')) el.textContent = channelName(dm) || 'Direct messages';
+  if ($('welcome').open) return;
+  document.body.classList.remove('drawer');
+  $('welcome').showModal();
+  $('welcome').focus(); // the dialog itself, not its first example: Enter taps nothing by surprise
+}
+
+function welcomeOnce() {
+  let seen = '';
+  try { seen = localStorage.getItem(WELCOME_KEY); } catch { /* no storage: shown each visit */ }
+  if (!seen && !S.welcomed) welcome(0);
+  S.welcomed = true;
+}
+
+// An example opens a new conversation in the EA channel with its words in
+// the composer; a name in bold is selected, so typing replaces it. The view
+// changes at once, so the focus opens a phone's keyboard within the tap.
+function prefill(btn) {
+  const main = mainChannel();
+  if (!main) return;
+  if ($('welcome').open) $('welcome').close();
+  const text = btn.textContent;
+  const slot = (btn.querySelector('b') || {}).textContent || '';
+  const at = slot ? text.indexOf(slot) : text.length;
+  location.hash = hashFor(main.id, NEW_THREAD);
+  document.body.dataset.view = 'thread';
+  document.body.classList.remove('drawer');
+  $('text').value = text;
+  grow();
+  $('text').focus();
+  $('text').setSelectionRange(at, at + slot.length);
+}
+
+const example = () => h('button', { type: 'button', class: 'example', onclick: (e) => prefill(e.currentTarget) },
+  'Find me an hour with ', h('b', {}, 'Dana'), ' next week.');
+
+// What an empty list says: what the place is for, and in the EA channel an example to tap.
+function emptyNote(kind) {
+  if (kind === 'main') return h('div', { class: 'empty' }, h('p', {}, 'Ask for something. For example:'), example());
+  return h('p', { class: 'empty' }, {
+    dm: 'Cards that need your tap land here.',
+    room: 'This room is for one project. Ask about it here and Tacitus keeps track of it.',
+    sched: 'Tacitus finds meeting times here.',
+  }[kind] || 'Nothing here yet.');
+}
+
+// New room: the owner's own words to the bot, in a new conversation in the
+// EA channel, which then opens; the bot answers there and the room arrives
+// as a channel event.
+function roomError(text) {
+  $('room-error').textContent = text;
+  $('room-name').setAttribute('aria-invalid', String(Boolean(text)));
+}
+
+async function openRoom(e) {
+  e.preventDefault();
+  const name = $('room-name').value.trim().replace(/\s+/g, ' ');
+  const main = mainChannel();
+  if (!name || !main) {
+    roomError(main ? 'Type the name of the project.' : 'Tacitus has no place to ask for a room yet.');
+    $('room-name').focus();
+    return;
+  }
+  $('room-open').disabled = true;
+  try {
+    const m = await call('POST', `/channels/${enc(main.id)}/messages`, { text: `open a room for ${name}` });
+    $('room').close();
+    if (m && m.id) ingest(m);
+    location.hash = hashFor(main.id, m && m.thread_key);
+  } catch (err) {
+    roomError(`Not sent: ${err.message}`);
+  } finally {
+    $('room-open').disabled = false;
+  }
+}
+
+function teaching() {
+  $('welcome-next').addEventListener('click', () => (S.card === $('welcome-cards').children.length - 1 ? $('welcome').close() : welcome(S.card + 1)));
+  $('welcome').addEventListener('close', () => { try { localStorage.setItem(WELCOME_KEY, '1'); } catch { /* shown again next visit */ } });
+  $('welcome').addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') welcome(S.card + (e.key === 'ArrowRight' ? 1 : -1));
+  });
+  // A swipe across the cards: where the finger went down, and when it last
+  // swiped, since the tap that ends a swipe over an example is no tap on it.
+  let from = null, swiped = 0;
+  $('welcome-cards').addEventListener('pointerdown', (e) => { from = [e.clientX, e.clientY]; });
+  $('welcome-cards').addEventListener('pointerup', (e) => {
+    const dx = from ? e.clientX - from[0] : 0;
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(e.clientY - from[1])) { swiped = Date.now(); welcome(S.card + (dx < 0 ? 1 : -1)); }
+    from = null;
+  });
+  $('welcome-cards').addEventListener('click', (e) => { if (Date.now() - swiped < 500) e.stopPropagation(); }, true);
+  for (const b of $('welcome').querySelectorAll('.example')) b.addEventListener('click', () => prefill(b));
+  $('tour-again').addEventListener('click', () => welcome(0));
+  $('new-room').addEventListener('click', () => {
+    $('room-name').value = '';
+    roomError('');
+    $('room').showModal();
+  });
+  $('room-form').addEventListener('submit', openRoom);
+  $('room-cancel').addEventListener('click', () => $('room').close());
+  $('room-name').addEventListener('input', () => roomError(''));
+}
+
 /* -- Code integrity (docs/webchat.md, Code integrity) ---------------- */
 
 // The bot signs the app's files at start. The page checks the signed manifest
@@ -2054,7 +2178,9 @@ async function boot() {
   const phones = Boolean(S.me.relay) && !T.relay;
   $('pair-phone').hidden = !phones;
   $('open-settings').hidden = T.relay || !(S.me.settings || []).includes('routing');
+  $('tour-again').hidden = false;
   footer();
+  welcomeOnce();
   if (!T.relay) checkBundle().catch(() => {}); // the bot's own copy: checked meanwhile
   else if (!relayCopy()) { // the bot's own copy off the tailnet: a new release comes through the relay
     updateOverRelay().catch((e) => { diagNote({ what: 'update', err: e.message }); flushDiag().catch(() => {}); });
@@ -2107,8 +2233,10 @@ async function init() {
   $('phone-relay').addEventListener('click', () => pairPhone('relay'));
   $('open-settings').addEventListener('click', openSettings);
   $('settings-save').addEventListener('click', saveSettings);
+  teaching();
   $('relay-note').addEventListener('click', () => relayNote(''));
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.body.classList.remove('drawer'); });
+  // Escape closes the drawer, unless it closes a dialog over it.
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !document.querySelector('dialog[open]')) document.body.classList.remove('drawer'); });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && !S.halted && S.thread && S.threadUnread.delete(tkey(S.channel, S.thread))) {
       renderChannels();
