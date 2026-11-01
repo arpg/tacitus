@@ -136,6 +136,8 @@ SAFE = {
         # draft the Gmail MCP created, since the MCP journals nothing.
         "list-drafts",
     },
+    # The unified mail CLI (issue #76): reads on either provider.
+    "mail_actions": {"search", "get-message", "get-draft", "mark-read"},
     # list-ea-managed is a READ of the EA's own rule calendar; it returns the
     # event ids a later move or delete has to name. It grants no write:
     # create-event stays GATED apart from the attendee-less auto-hold
@@ -212,6 +214,8 @@ DRAFT_EDIT_VERBS = {
         "update-draft": "--draft-id", "attach-file": "--draft-id",
         "remove-attachment": "--draft-id", "delete-draft": "--draft-id",
     },
+    # No draft-changing verb yet: the unified writes come in #76 step 2.
+    "mail_actions": {},
 }
 
 
@@ -554,7 +558,8 @@ _OWNER_CLI_LOCK = None
 
 
 def hold_owner_draft_lock(tool: str, verb: str, argv: list[str], *, mediated: bool) -> None:
-    """Call right after check_child_parse() in graph_actions and gmail_client.
+    """Call right after check_child_parse() in graph_actions, gmail_client and
+    mail_actions.
     An owner-side run of a draft-changing verb that the mediator did not
     start (the bot, the remote briefing, a cron) takes the same draft lock
     the mediator takes for the resident (draft_lock_scope), and holds it
