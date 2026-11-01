@@ -169,6 +169,7 @@ WRITERS = [
     W("mail_tagger", lambda m, p: m.save_state(m._empty_state(), p), attr="STATE_FILE"),
     W("preferences", lambda m, p: m.write_digest_cursor({"a": 1}, p), name="state/preferences-digest-seen.json"),
     W("onboarding", lambda m, p: m._update_state(lambda s: s, ea_dir=p.parents[1]), name="state/onboarding.json"),
+    W("usage_tips", lambda m, p: m._update_state(lambda s: s, ea_dir=p.parents[1]), name="state/usage-tips.json"),
     W("outbound_review", lambda m, p: m.write_cursor("2026-09-29T00:00:00", p), name="state/outbound-review-seen.json"),
     W("resident_context", lambda m, p: m._write_state({"threads": {}}), attr="STATE_FILE"),
     W("resident_bridge", lambda m, p: m._save_router_state({"posted": []}), attr="ROUTER_STATE_FILE"),

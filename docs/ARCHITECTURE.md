@@ -2294,6 +2294,23 @@ sitting (`onboarding.py ask --count N`, `scripts/install/user_init.py --phase
 preferences`). The chat bot's and `run-agent.sh`'s tool lists allow
 `onboarding.py`.
 
+After the first week, `preprocessor/usage_tips.py` suggests one thing the
+owner has not used yet, once a week, in plain words with one line to
+try (docs/ea/usage-tips.md). Its catalogue is code: each tip carries a
+detector that reads, read-only, what the bot keeps (the web chat's store,
+the draft journal, the ledger, the preferences store, the uploads, the
+room registry, the routing table), so a feature in use is never
+suggested. The morning briefing's hourly weekday tick runs
+`usage_tips.py post` before run-agent.sh's 4 AM gate; it posts through
+`chat_notify` to the EA channel, its own thread, with a web push at
+normal urgency (`chat.direct.web_notify`), on a weekday morning after
+that day's briefing, 7 days after the last tip. The chat bot answers
+*more*, *not now* and *never* in a tip's thread with no model call
+(`_handle_usage_tip_reply`, first in `_handle_bot_command`); *never*
+adds the rule `usage-tips-stop` (kind instruction, scope briefing) to
+the preferences store, which outranks the code. State is
+`~/.ea/state/usage-tips.json`.
+
 ## Drift Detection
 
 A pre-commit hook (`.githooks/pre-commit`) warns when files depicted in
