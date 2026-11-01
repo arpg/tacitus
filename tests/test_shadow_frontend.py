@@ -669,6 +669,37 @@ def test_a_thread_move_rekeys_the_shadow_rows(tmp_path):
     assert len(web.store.thread("C_MAIN", "T_NEW")) == 2 and len(seen) == 2
 
 
+class CardReader(MemoryFrontend):
+    """A primary that reads a posted card back, as Zulip's card_now does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cards: dict[str, dict | None] = {}
+        self.reads: list[tuple[str, str, str]] = []
+
+    def card_now(self, channel, thread_key, msg_id):
+        self.reads.append((channel, thread_key, msg_id))
+        return self.cards.get(msg_id)
+
+
+def test_a_card_lookup_comes_only_from_a_primary_that_reads_cards_back(tmp_path):
+    _fe, _primary, shadow = _pair()
+    assert shadow.card_lookup is None                 # no card_now: nothing to read
+    primary, shadow = CardReader(), WebShadow()
+    fe = ShadowFrontend(primary, shadow)
+    fe.start()
+    assert shadow.card_lookup == fe._primary_card
+    primary.cards["9"] = {"text": "Card\n\n----\n*Sent*", "filed": False, "edited_at": None}
+    assert fe._primary_card("C_MAIN", "t9", "9") == primary.cards["9"]
+    verb, ref, text = shadow.calls[-1]                # a shadow that takes no markdown
+    assert (verb, ref.id, ref.thread_key, text) == ("mirror_update", "9", "t9",
+                                                    "Card\n\n----\n*Sent*")
+    calls = len(shadow.calls)
+    assert fe._primary_card("C_MAIN", "t8", "8") is None and len(shadow.calls) == calls
+    fe.shadow_off = "refused"
+    assert fe._primary_card("C_MAIN", "t9", "9") is None and len(primary.reads) == 2
+
+
 def test_the_room_filter_picks_the_rooms_start_copies(caplog):
     primary, shadow = MemoryFrontend(), WebShadow()
     keep = primary.create_private_room("ea-atlas")

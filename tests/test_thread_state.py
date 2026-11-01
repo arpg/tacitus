@@ -585,6 +585,224 @@ def test_a_moved_thread_keeps_its_state(store):
     assert store.thread_state("main", key) is None
 
 
+# ── shadow mode: cards copied as text from Zulip's past ───────────────
+
+ZHEAD = ":locked: **Confirm send**\n**To:** `x@example.test`"
+ZRULE = "\n\n----\n"
+CHIPS = ("Tap a reaction below: :+1: Send · :-1: Cancel\n"
+         "Or reply `<word> ABCD` in this topic: send, cancel.")
+ZBODY = "**Body:**\n> A draft body the model never sees."
+
+
+def zcard(middle=CHIPS, *, seq=1, at=None, head=ZHEAD, channel="stream:6", primary=None):
+    """A card as the history copy stores it: Zulip's raw text, no card JSON."""
+    row = {**m(seq, text=head + ZRULE + middle + ZRULE + ZBODY, at=at), "channel": channel,
+           "history": True}
+    if primary is not None:
+        row["primary"] = primary
+    return row
+
+
+MIRROR_CASES = [
+    # (name, messages, expected (state, reason) or None for the model)
+    ("the chips legend still has its buttons", [zcard()],
+     ("needs_you", 'The card "Confirm send" still has its buttons.')),
+    ("the typed legend still has its buttons",
+     [zcard("Reply `<word> ABCD` in this topic: keep.")],
+     ("needs_you", 'The card "Confirm send" still has its buttons.')),
+    ("the bare code still has its buttons", [zcard("Code **ABCD**, in this topic.")],
+     ("needs_you", 'The card "Confirm send" still has its buttons.')),
+    ("the owner's mention before the lock",
+     [zcard(head="@**Avery Owner|9** :locked: **Confirm send**")],
+     ("needs_you", 'The card "Confirm send" still has its buttons.')),
+    ("the Slack spelling of the lock", [zcard(head=":lock: *Confirm send*")],
+     ("needs_you", 'The card "Confirm send" still has its buttons.')),
+    ("a legend past the registry's age acts no more", [zcard(at=NOW - 8 * DAY)], None),
+    ("sent with the button", [zcard(":check: **Sent**")],
+     ("done", "The card was answered: Sent")),
+    ("sent from Outlook", [zcard(":mail_received: Sent from Outlook.")],
+     ("done", "The card was answered: Sent from Outlook.")),
+    ("handled", [zcard(":check: Handled. Draft deleted, thread archived.")],
+     ("done", "The card was answered: Handled. Draft deleted, thread archived.")),
+    ("cancelled", [zcard(":prohibited: Send cancelled. Draft kept in Outlook.")],
+     ("done", "The card was answered: Send cancelled. Draft kept in Outlook.")),
+    ("revised", [zcard(":pencil: Revised. The new Send card for this draft is below.")],
+     ("done", "The card was answered: Revised. The new Send card for this draft is below.")),
+    ("deleted in Outlook", [zcard(":wastebasket: Deleted in Outlook; not sent.")],
+     ("done", "The card was answered: Deleted in Outlook; not sent.")),
+    ("a status of two lines reads its first",
+     [zcard(":check: Sent.\n:check: Closed: `response-a1`")],
+     ("done", "The card was answered: Sent.")),
+    ("a failed press is not settled",
+     [zcard(":cross_mark: Could not authorize this card: expired")], None),
+    ("a warning is not settled", [zcard(":warning: This send confirmation is stale")], None),
+    ("a refusal is not settled", [zcard(":no_entry: The draft is gone.")], None),
+    ("a press under way that Zulip edited a moment ago",
+     [zcard(":time_ticking: Sending...",
+            primary={"text": ZHEAD + ZRULE + ":time_ticking: Sending...", "filed": False,
+                     "edited_at": NOW - MIN})],
+     ("working", "Tacitus is acting on the button you pressed.")),
+    ("a press under way with no time but the copy's", [zcard(":time_ticking: Sending...")],
+     None),
+    ("Zulip's text wins over the stored copy",
+     [zcard(primary={"text": ZHEAD + ZRULE + ":mail_received: Sent from Outlook.",
+                     "filed": False, "edited_at": NOW - 600})],
+     ("done", "The card was answered: Sent from Outlook.")),
+    ("Zulip says the card is still live",
+     [zcard(primary={"text": ZHEAD + ZRULE + CHIPS, "filed": False, "edited_at": None})],
+     ("needs_you", 'The card "Confirm send" still has its buttons.')),
+    ("filed in the done stream with its status",
+     [zcard(primary={"text": ZHEAD + ZRULE + ":check: Handled.", "filed": True,
+                     "edited_at": NOW - 600})],
+     ("done", "The card was answered: Handled.")),
+    ("filed in the done stream with no status that acted",
+     [zcard(primary={"text": ZHEAD + ZRULE + CHIPS, "filed": True, "edited_at": None})],
+     ("done", "The card was answered: Settled outside chat.")),
+    ("settled, then the owner asks something", [
+        zcard(":check: **Sent**"),
+        {**m(2, "owner", "And the other one?", at=NOW - 30 * MIN), "history": True}], None),
+    ("an owner message after the card counts the same when Zulip answered", [
+        zcard(primary={"text": ZHEAD + ZRULE + ":check: **Sent**", "filed": False,
+                       "edited_at": NOW - MIN}),
+        {**m(2, "owner", "send ABCD", at=NOW - 30 * MIN), "history": True}], None),
+    ("settled, then the bot's note", [
+        zcard(":check: **Sent**"),
+        {**m(2, text=":check: Calendar event created.", at=NOW - 30 * MIN), "history": True}],
+     ("done", "The card was answered: Sent")),
+]
+
+
+@pytest.mark.parametrize("name,msgs,want", MIRROR_CASES, ids=[c[0] for c in MIRROR_CASES])
+def test_a_mirrored_card_reads_its_outcome(name, msgs, want):
+    got = decide(msgs)
+    assert (None if got is None else (got[0], got[2])) == want
+    if got is not None:
+        assert got[1] == "rule"
+
+
+def test_only_a_card_copied_from_zulip_is_read_as_one():
+    pointer = {**m(1, text=":locked: The Send button for this draft is in your DM: "
+                         "[open it](https://chat.example.org/#narrow)"),
+               "channel": "stream:6", "history": True}
+    for row in (pointer,
+                {**zcard(), "history": False},             # a live row
+                zcard(channel="C_SLACK"),                  # not a Zulip stream
+                {**zcard(), "card": live_card()},          # it has its card JSON
+                {**m(1, text="**Morning briefing**" + ZRULE + "one"), "channel": "stream:6",
+                 "history": True}):
+        assert not ts.mirrored_card(row)
+        assert ts.card_view(row) is row
+    assert ts.mirrored_card(zcard())
+    assert ts.card_pending(zcard()["text"]) and ts.card_pending(
+        zcard(":time_ticking: Sending...")["text"])
+    assert not ts.card_pending(zcard(":check: **Sent**")["text"])
+    assert not ts.card_pending(zcard(":cross_mark: Could not send")["text"])
+
+
+def test_the_prompt_reads_a_mirrored_card_as_a_card():
+    p = ts.judge_prompt([zcard(":cross_mark: Could not send"),
+                         {**m(2, "owner", "Why?"), "history": True}], now=NOW)
+    assert 'card "Confirm send": Could not send' in p
+    assert "model never sees" not in p and "x@example.test" not in p
+    p = ts.judge_prompt([zcard(at=NOW - 8 * DAY)], now=NOW)
+    assert 'card "Confirm send": no live buttons' in p
+
+
+ZKEY = "stream:6:topic:lock%20ABCD%20x"
+
+
+class FakeCards:
+    """The primary's card read: an answer per message id, every call kept."""
+
+    def __init__(self, answers=None):
+        self.answers = answers or {}
+        self.calls: list[tuple[str, str, str]] = []
+
+    def __call__(self, channel, thread_key, msg_id):
+        self.calls.append((channel, thread_key, msg_id))
+        got = self.answers.get(msg_id)
+        if isinstance(got, Exception):
+            raise got
+        return got
+
+
+def mirrored(store, n, middle=CHIPS, at=None):
+    """`n` cards copied as text into the DM stream, one thread each,
+    newest last; their thread keys."""
+    store.upsert_channel("stream:6", "ea-dm", "dm")
+    at = time.time() - 3 * 3600 if at is None else at
+    keys = []
+    for i in range(n):
+        key = f"{ZKEY}{i}"
+        store.add_message("stream:6", mid=str(700 + i), thread_key=key, author="bot",
+                          kind="message", text=ZHEAD + ZRULE + middle + ZRULE + ZBODY,
+                          posted_at=at + i, history=True)
+        keys.append(key)
+    return keys
+
+
+def test_a_mirrored_card_is_read_from_the_primary_and_never_asked_of_the_model(store):
+    live, settled = mirrored(store, 2)
+    store.add_message("stream:6", mid="799", thread_key=f"{ZKEY}s", author="bot",
+                      kind="message", text=ZHEAD + ZRULE + ":check: **Sent**",
+                      posted_at=time.time() - 3 * 3600, history=True)
+    cards = FakeCards({"700": {"text": ZHEAD + ZRULE + CHIPS, "filed": False, "edited_at": None},
+                       "701": {"text": ZHEAD + ZRULE + ":mail_received: Sent from Outlook.",
+                               "filed": True, "edited_at": time.time() - 600}})
+    model = FakeModel()
+    out = engine(store, model, cards=cards).tick()
+    assert model.prompts == [] and out["model_calls"] == 0
+    assert sorted(c[2] for c in cards.calls) == ["700", "701"]       # a settled copy is final
+    assert ("stream:6", live, "700") in cards.calls
+    assert store.thread_state("stream:6", live)["state"] == "needs_you"
+    assert (store.thread_state("stream:6", settled)["state"],
+            store.thread_state("stream:6", settled)["reason"]) == (
+        "done", "The card was answered: Sent from Outlook.")
+    assert store.thread_state("stream:6", f"{ZKEY}s")["state"] == "done"
+
+
+def test_the_primary_s_card_reads_are_capped_and_kept_for_a_tick(store):
+    keys = mirrored(store, 35)
+    cards = FakeCards()                            # no answer: the stored text stands
+    clock = [time.time()]
+    e = engine(store, FakeModel(), cards=cards, clock=lambda: clock[0])
+    assert e.tick()["card_reads"] == ts.CARD_CAP == 30
+    assert len(cards.calls) == 30
+    # past the cap a card keeps its stored legend: needs you, by rule
+    assert {store.thread_state("stream:6", k)["by"] for k in keys} == {"rule"}
+    assert e.tick()["card_reads"] == 5             # the rest; the 30 answers are kept
+    assert len({c[2] for c in cards.calls}) == 35
+    assert e.tick()["card_reads"] == 0
+    clock[0] += ts.TICK_S                          # one tick interval later they are read again
+    assert e.tick()["card_reads"] == 30
+    # a change between ticks draws on the tick's allowance, spent here
+    e.changed()
+    store.add_message("stream:6", mid=None, thread_key=keys[0], author="bot", kind="message",
+                      text="Still waiting.", posted_at=time.time())
+    before = len(cards.calls)
+    assert e.changed() == 1 and len(cards.calls) == before
+
+
+def test_no_primary_means_no_read(store, tmp_path):
+    keys = mirrored(store, 3)
+    e = engine(store, FakeModel())
+    assert e.cards is None
+    assert e.tick()["card_reads"] == 0
+    assert {store.thread_state("stream:6", k)["state"] for k in keys} == {"needs_you"}
+    # a failing read is logged once and the stored text stands
+    e = engine(store, FakeModel(), cards=FakeCards({"700": RuntimeError("down")}))
+    e.tick()
+    assert store.thread_state("stream:6", keys[0])["state"] == "needs_you"
+    # the web chat alone has no read; one set later reaches the running states
+    f = WebFrontend({"port": 0}, store_path=tmp_path / "w" / "webchat.sqlite",
+                    webui_dir=tmp_path / "webui")
+    states = f.enable_thread_state()
+    assert f.card_lookup is None and states.cards is None
+    read = FakeCards()
+    f.card_lookup = read
+    assert states.cards is read
+
+
 # ── the EA's side: the ledger read and the model route ────────────────
 
 def _ledger_db(path: Path) -> Path:

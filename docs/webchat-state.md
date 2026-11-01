@@ -76,6 +76,33 @@ thread: the colleague has not replied yet").
 7. The thread's first message is from the bot and is a briefing, digest, alert, new-device notice or other automated post (the notifier key is known when the post was made; otherwise the known title patterns), and the owner never wrote in it: `none`.
 8. Otherwise: ask the model.
 
+**Shadow mode: mirrored cards read their outcome from Zulip.** A card
+the history copy took from Zulip is a plain text row (no card JSON,
+`history` 1, in a `stream:<n>` channel, its text opening with the lock
+title and holding the card's `----` rule). Rules 2, 3c and 4 read that
+text the way the Zulip frontend writes it
+(`zulip_frontend.card_text_state`). The action legend after the rule
+(`Tap a reaction below:`, `` Reply `<word> ...` ``, `Code **...**`) makes
+it a live card: `needs_you`, `The card "Confirm send" still has its
+buttons.` A status line in the legend's place makes it a card acted on:
+`done`, with that line in plain words ("The card was answered: Sent from
+Outlook."), unless a message after the card asks something (rule 4; any
+message posted after the card counts, since the time of the edit is not
+always known). A busy line (`:time_ticking:`) is `working` within 20
+minutes of Zulip's last edit. A failed line (`:cross_mark:`, `:warning:`,
+`:no_entry:`) is not settled. A card that Zulip filed in the
+`<dm_stream>-done` stream was settled outside chat. While the stored text
+still shows the legend or a busy line, the tick asks Zulip for the card
+as it is now (`card_now`: a read by message id, else the first message
+of the topic by stream and topic name; and the stream it sits in now).
+It makes 30 reads per tick at most and keeps each answer for one tick
+interval; a card past the cap keeps its stored text until the next tick.
+A changed text goes into the row (`mirror_update`, one `update` event; an
+unchanged text writes nothing), so the app shows the status line too.
+With no Zulip (the web chat alone) the stored text is all there is. The
+one-line pointer to a card ("The Send button for this draft is in your
+DM") has no rule and is not a card.
+
 ## The model
 
 Task `thread_state` in the routing table (docs/model-routing.md), `local`
@@ -210,3 +237,11 @@ bot side changed it here:
 - **The store** writes never go back (a stale model answer or a rule
   never replaces a newer judgment or the owner's override), and a moved
   thread takes its state.
+- **Mirrored cards** (shadow mode): a card copied as text from Zulip's
+  past is read by rules 2, 3c and 4 from its Zulip text, and re-read from
+  Zulip while it can still change (30 reads a tick, each answer kept one
+  tick), so the model is not asked about a card that is live or settled
+  there. A failed or expired one goes on to the later rules and the
+  model, which sees it as a card. Its row takes Zulip's current text.
+  The status-line rules also know Zulip's emoji names (`:time_ticking:`
+  busy, `:cross_mark:` failed).
