@@ -772,11 +772,14 @@ package the bot signs nothing: `bundle` is "", both routes answer 404,
 and the app on the own origin skips the check.
 
 **The bot's own check.** The bot compares each static file that it
-serves with the manifest, and all the files every 60 seconds. It logs a
-warning once for each file that no longer matches (changed, added or
-gone): a phone refuses that file until the bot signs again. A deploy
-restarts the bot, which signs the new files; `refresh_bundle()` signs
-without a restart.
+serves with the manifest, and all the files every 15 seconds. The
+deployed tree is what the bot vouches for, so a file that changed on
+disk (a deploy that did not restart the bot) makes it sign the files
+again at once, on the check or on the first request for the changed
+file, and the manifest a phone fetches next names the files it was
+served. A served file that matches neither the manifest nor the disk
+is logged once and stays unsigned: a phone refuses it.
+`refresh_bundle()` signs on demand.
 
 **The service worker** (`sw.js`, with `bundle.js`). It keeps the trusted
 manifest in Cache Storage (`tacitus-webchat-v3-bundle`) beside its copies
