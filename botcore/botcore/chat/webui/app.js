@@ -1260,6 +1260,29 @@ function deviceName() {
   return `${kind || 'Device'} ${standalone() ? 'home-screen app' : 'browser'}`;
 }
 
+// What this browser saw when it could not connect, kept for the bot
+// (POST /diag on the next connection, logged there): a phone that fails
+// off the owner's network can be read about without a cable.
+const DIAG_KEY = 'tacitus-diag';
+function diagNote(entry) {
+  try {
+    const kept = JSON.parse(localStorage.getItem(DIAG_KEY) || '[]');
+    kept.push({ at: new Date().toISOString(), standalone: standalone(), ua: navigator.userAgent, ...entry });
+    localStorage.setItem(DIAG_KEY, JSON.stringify(kept.slice(-20)));
+  } catch { /* no storage: the note is lost */ }
+}
+async function flushDiag() {
+  let kept = [];
+  try { kept = JSON.parse(localStorage.getItem(DIAG_KEY) || '[]'); } catch { return; }
+  if (!kept.length) return;
+  await call('POST', '/diag', { entries: kept });
+  try { localStorage.removeItem(DIAG_KEY); } catch { /* sent anyway */ }
+}
+// Whether this browser's IndexedDB keeps a plain value: 'ok', or the error.
+const idbProbe = () => idb('readwrite', (st) => st.put(Date.now(), 'probe'))
+  .then(() => idb('readonly', (st) => st.get('probe'))).then((v) => (v ? 'ok' : 'empty'))
+  .catch((e) => `error: ${(e && e.message) || e}`);
+
 // One line on this browser's own setup, for the phone dialog.
 async function selfState() {
   const rec = await loadPairing();
@@ -1478,6 +1501,11 @@ async function pairFromLink(kind, text, self = false) {
     await relay.hello({ id: p.p, psk: b64d(p.s) });
     Object.assign(rec, { device: relay.session.device, code: relay.code });
     await savePairing(rec);
+    const back = await loadPairing();
+    if (!back || back.device !== rec.device) { // the setup must survive this page
+      diagNote({ what: 'pairing-readback', got: back ? 'other' : 'none', pairingError: S.pairingError || '', idb: await idbProbe() });
+      toast('This phone saved its setup but cannot read it back, so it may not work off your network.');
+    }
     RELAY = relay;
     if (self) { // the owner set up the phone in hand: signed in here, so no code to compare
       await call('POST', '/relay/approve', { device: rec.device, cards: false });
@@ -1751,6 +1779,7 @@ async function boot() {
   try {
     await pickTransport();
     S.me = await call('GET', '/me');
+    flushDiag().catch(() => {}); // what this browser saw while it could not connect
     // A copy of the app from the relay runs the chat only once its code checks.
     if (relayCopy() && !(await checkBundle())) return;
   } catch (e) {
@@ -1758,6 +1787,8 @@ async function boot() {
       const why = await unreachableNote(e);
       toast(why);
       if (T.relay) relayNote(why); // the toast fades; the note stays while boot retries
+      diagNote({ what: 'boot', why, relay: Boolean(T.relay), pairing: Boolean(await loadPairing()),
+        pairingError: S.pairingError || '', idb: await idbProbe(), err: e.message });
     }
     if (T.relay) setTimeout(boot, Math.min(30000, 1000 * 2 ** S.retry++));
     return;

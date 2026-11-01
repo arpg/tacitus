@@ -365,3 +365,22 @@ def test_the_attest_route_records_the_check_and_grants_nothing(tmp_path):
             assert _call(f, "POST", "/api/relay/attest", body, headers)[0] == want, (body, want)
     finally:
         f.stop()
+
+
+def test_a_browser_s_connection_notes_are_logged_for_the_owner(tmp_path, caplog):
+    """What the app saw while it could not connect (POST /diag) goes to the
+    log, bounded to twenty entries of two thousand characters, for the
+    owner alone; the body must carry a list."""
+    f = _web(tmp_path)
+    f.start()
+    try:
+        entries = [{"what": "boot", "why": "no pairing", "idb": "ok", "standalone": True}] + [{"n": i} for i in range(25)]
+        with caplog.at_level(logging.INFO, logger="chat.web"):
+            status, _, body = _call(f, "POST", "/api/diag", {"entries": entries}, _owner(f))
+        assert status == 200 and json.loads(body) == {"ok": True, "logged": 20}
+        lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("web chat diag: ")]
+        assert len(lines) == 20 and '"what": "boot"' in lines[0] and '"idb": "ok"' in lines[0]
+        assert _call(f, "POST", "/api/diag", {"entries": "boot"}, _owner(f))[0] == 400
+        assert _call(f, "POST", "/api/diag", {"entries": entries})[0] == 401
+    finally:
+        f.stop()

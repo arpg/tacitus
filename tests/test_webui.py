@@ -334,7 +334,7 @@ def test_the_app_stays_small():
     # card-button choice per relay-origin phone under "Pair a phone", and 70 for the
     # Settings screen (the routing table: a row per task, the floors, Save).
     # 2,940: 2,920 plus the phone dialog's one-tap setup and its plain notes.
-    assert lines <= 3020, f"{lines} lines: the contract keeps the app near 3,020 with the relay, the phone setup and the connection check"
+    assert lines <= 3060, f"{lines} lines: the contract keeps the app near 3,060 with the relay, the phone setup and the connection check"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -941,9 +941,11 @@ VECTORS = TESTS / "fixtures" / "relay_vectors.json"
 
 def test_the_relay_keys_stay_in_webcrypto_and_indexeddb():
     js = read("app.js")
-    # Web Storage holds one thing: when this browser hid the install line.
-    assert "sessionStorage" not in js and js.count("localStorage") == 2
+    # Web Storage holds two things, neither a key: when this browser hid the
+    # install line, and the connection notes it reports to the bot.
+    assert "sessionStorage" not in js and js.count("localStorage") == 6
     assert all(f"localStorage.{verb}(INSTALL_KEY" in js for verb in ("getItem", "setItem"))
+    assert all(f"localStorage.{verb}(DIAG_KEY" in js for verb in ("getItem", "setItem", "removeItem"))
     assert "indexedDB.open('tacitus-relay', 1)" in js
     # the device's private key is made non-extractable and never exported
     assert "generateKey({ name: 'X25519' }, false, ['deriveBits'])" in js
