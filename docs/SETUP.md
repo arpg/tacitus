@@ -456,11 +456,18 @@ sign-in ([docs/docker.md](docker.md#web-chat), Web chat).
 The store is `<private dir>/webchat.sqlite`; files you upload from the
 app sit beside it. Standalone, the chat has the `ea` channel, your DM
 and the project rooms, and no scheduling channel: ask for a meeting in
-`ea`. The scheduled reports (the briefings, the digests, the plugins'
-posts) land in `ea`, each in a thread of its own; a `notify` map in the
-`web` block sends a notifier key elsewhere, such as
+`ea`. The scheduled reports (the briefings, the plugins' posts) land
+in `ea`, each in a thread of its own; a `notify` map in the `web` block
+sends a notifier key elsewhere, such as
 `"notify": {"personal": {"channel": "dm"}}`. A file the EA attaches in a
 thread goes through the bot, which posts it in that thread.
+
+The mail digests (the mail kept from Claude, the list and admissions
+digests, a briefing preview) land in a channel of their own, "Mail
+digests", which appears with the first one. Claude never reads it, and
+the `notify` map cannot move a digest out of it. The direct message of
+an alert (`alert.py`, a page watch) lands in your DM; a `personal`
+entry in the map moves it.
 
 ### Beside Zulip (shadow mode)
 

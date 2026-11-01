@@ -198,3 +198,19 @@ def test_cli_hours_and_thread(monkeypatch):
     thread = json.loads(out.getvalue())
     assert [m["ts"] for m in thread] == [inbound[0].msg_id, inbound[2].msg_id]
     assert thread[0]["sender"] == "bot" and thread[1]["sender"] == "user"
+
+
+def test_a_digest_channel_is_not_read_by_its_kind_in_the_web_side_store(monkeypatch, capsys):
+    """The composite's web side records the channel kinds; a channel of a
+    kind in UNREAD_KINDS is never read, its id whatever it is."""
+    _, inbound = _history()
+    fe = _memory(monkeypatch, inbound)
+    kinds = {CHANNEL: "main"}
+    fe.shadow = types.SimpleNamespace(store=types.SimpleNamespace(
+        channel=lambda cid: {"kind": kinds[cid]} if cid in kinds else None))
+    assert len(chat_read.fetch_recent_messages(hours_back=24)) == 6
+    kinds[CHANNEL] = "digest"
+    assert chat_read.fetch_recent_messages(hours_back=24) == []
+    assert chat_read.fetch_thread(CHANNEL, inbound[0].msg_id) == []
+    assert "digest channel; not read" in capsys.readouterr().err
+    assert "digest" in chat_read.UNREAD_KINDS

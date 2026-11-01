@@ -160,7 +160,7 @@ def test_filter_list_posts_the_skill_shape_then_archives(priv):
     assert rc == 0
     assert events == ["post", "archive"]
     channel, text = post.calls[0]
-    assert channel == "ea-assistant"
+    assert channel == "list-digest"
     assert text.splitlines()[0] == ":newspaper: *robo-list digest* (Tue 01 Sep): 1 of 5 items is relevant."
     assert "*Foggy Roads dataset* (A. Author, Example University)" in text
     assert "• 10K frames of driving in fog, with LiDAR." in text
@@ -418,7 +418,7 @@ def test_admissions_post_has_the_skill_shape(priv):
     rc, post = _run_admissions(model)
     assert rc == 0
     channel, text = post.calls[0]
-    assert channel == "ea-assistant"
+    assert channel == "admissions-digest"
     assert text.splitlines() == [
         ":mortar_board: *Admissions inquiries: week of Mon 28 Sep*",
         "4 emails from 3 senders went to the admissions-inquiries folder.",
@@ -485,11 +485,28 @@ def test_unreadable_mail_posts_nothing(priv, capsys):
 
 def test_on_zulip_the_post_goes_to_the_mail_digest_stream(monkeypatch):
     import chat_notify
-    import mail_gate
     sent = []
     monkeypatch.setattr(chat_notify, "frontend_name", lambda: "zulip")
     monkeypatch.setattr(chat_notify, "_chat_cfg", lambda: {"zulip": {"site": "s"}})
     monkeypatch.setattr(chat_notify, "_zulip_post_parts",
                         lambda zcfg, target, parts: sent.append((target, parts)) or True)
-    assert rd._post(rd.CHANNEL, "digest text")
-    assert sent == [({"stream": mail_gate.DIGEST_STREAM, "topic": rd.DIGEST_TOPIC}, ["digest text"])]
+    assert rd._post("list-digest", "digest text")
+    assert sent == [({"stream": chat_notify.DIGEST_STREAM, "topic": rd.DIGEST_TOPIC},
+                     ["digest text"])]
+
+
+def test_on_slack_the_post_takes_the_digest_webhook_else_the_ea_channel(monkeypatch):
+    import chat_notify
+    import slack_notifier
+    hooks, slack, ea = {}, [], []
+    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "slack")
+    monkeypatch.setattr(chat_notify, "_load_webhooks", lambda: hooks)
+    monkeypatch.setattr(chat_notify, "_send_slack",
+                        lambda key, parts, blocks: slack.append((key, parts)) or True)
+    monkeypatch.setattr(slack_notifier, "post_to_slack",
+                        lambda key, text: ea.append((key, text)) or True)
+    assert rd._post("admissions-digest", "week text")
+    assert ea == [(rd.CHANNEL, "week text")] and slack == []
+    hooks["mail-digest"] = "https://hooks.example/D"
+    assert rd._post("admissions-digest", "week text")
+    assert slack == [("mail-digest", ["week text"])] and len(ea) == 1

@@ -30,12 +30,14 @@ profile and the rules the entry carries (preferences.py scopes
     those pages.
 Code writes the post in the skill's shape. Links are chosen by index and
 copied from the item, never typed by the model; the tally counts every
-item, job posts dropped in code included. On Zulip the post goes to the
-private `mail-digest` stream, which the Claude lanes' chat reader does
-not read (mail_gate.DIGEST_STREAM); on Slack to `ea-assistant`. Only then
-does list_digest.archive() move the mail to Archive (`posted`, or `silent`
-with no post when nothing was worth posting). An endpoint failure or a
-failed post archives nothing: the mail stays for the next run.
+item, job posts dropped in code included. The post goes where the Claude
+lanes' chat reader does not read (chat_notify.post_digest): the private
+`mail-digest` stream on Zulip, the digest channel on the web chat, the
+`mail-digest` webhook on Slack, or on Slack without that webhook
+`ea-assistant`, as before. Only then does list_digest.archive() move the
+mail to Archive (`posted`, or `silent` with no post when nothing was
+worth posting). An endpoint failure or a failed post archives nothing:
+the mail stays for the next run.
 
 admissions-digest. `admissions_filter.collect()` reads the last week of
 the admissions-inquiries folder. The model judges each sender under the
@@ -86,6 +88,7 @@ REPORT_DIR = EA_DIR / "state" / "reports"
 
 AGENTS = ("list-digest", "admissions-digest")
 RUNS = "digests.jsonl"
+# The post's channel on Slack when no `mail-digest` webhook is mapped.
 CHANNEL = "ea-assistant"
 
 MAX_FETCH = 20
@@ -806,17 +809,21 @@ def _has_chat() -> bool:
 DIGEST_TOPIC = "List and admissions digests"
 
 
-def _post(channel: str, text: str) -> bool:
-    """On Zulip, the mail-digest stream: the briefing's chat reader reads
-    only the EA stream, so the post's text never reaches a Claude lane."""
+def _post(key: str, text: str) -> bool:
+    """The digest place (chat_notify.post_digest), under the lane's key:
+    the mail-digest stream on Zulip, the digest channel on the web chat,
+    the `mail-digest` webhook on Slack. The briefing's chat reader reads
+    none of them, so the post's text never reaches a Claude lane. On Slack
+    without that webhook, the `ea-assistant` channel."""
     import chat_notify
-    if chat_notify.frontend_name() == "zulip":
-        import mail_gate
-        zcfg = chat_notify._chat_cfg()["zulip"]
-        return bool(chat_notify._zulip_post_parts(
-            zcfg, {"stream": mail_gate.DIGEST_STREAM, "topic": DIGEST_TOPIC}, [text]))
-    import slack_notifier
-    return bool(slack_notifier.post_to_slack(channel, text))
+    got = chat_notify.post_digest(key, text, topic=DIGEST_TOPIC)
+    if got is None and chat_notify.frontend_name() == "slack":
+        import slack_notifier
+        return bool(slack_notifier.post_to_slack(CHANNEL, text))
+    if got is None:
+        print(f"remote_digests {key}: no digest channel on the {chat_notify.frontend_name()} "
+              "chat; nothing posted", file=sys.stderr)
+    return bool(got)
 
 
 def _write_report(agent: str, text: str) -> bool:
@@ -828,13 +835,14 @@ def _write_report(agent: str, text: str) -> bool:
 
 
 def deliver(agent: str, text: str, *, post=None, has_chat=None, write_report=None) -> bool:
-    """Post to the EA channel, or, for a profile without chat, write the
-    report file that is then the delivery. True when delivered."""
+    """Post to the digest place under the agent's key, or, for a profile
+    without chat, write the report file that is then the delivery. True
+    when delivered."""
     chat_on = _has_chat() if has_chat is None else has_chat
     try:
         if not chat_on:
             return bool((write_report or _write_report)(agent, text))
-        return bool((post or _post)(CHANNEL, text))
+        return bool((post or _post)(agent, text))
     except Exception as e:
         print(f"remote_digests {agent}: delivery failed: {str(e)[:200]}", file=sys.stderr)
         return False
@@ -976,9 +984,10 @@ def run_list_digest(*, dry_run: bool = False, cfg: dict | None = None, collect=N
     _report(counts)
     if summary.get("failed"):
         try:
-            (post or _post)(CHANNEL, ":warning: list-digest: a digest was judged but could not be "
-                                     "archived; it is still in the inbox. Details: the "
-                                     "remote_digests run record and the cron log.")
+            (post or _post)("list-digest",
+                            ":warning: list-digest: a digest was judged but could not be "
+                            "archived; it is still in the inbox. Details: the "
+                            "remote_digests run record and the cron log.")
         except Exception:
             pass
         return 1

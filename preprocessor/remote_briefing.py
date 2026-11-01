@@ -45,8 +45,9 @@ answer, code renders the ranked queue alone and the post says so.
 
 --dry-run does the reads and the remote call, then makes no draft, queues
 nothing, closes nothing and prints counts only; the post is in the run
-record. --preview (with --dry-run) also posts it to the private
-mail-digest stream for the user.
+record. --preview (with --dry-run) also posts it for the user where the
+mail digests go: the private mail-digest stream on Zulip, the digest
+channel on the web chat (chat_notify.post_digest).
 
 Store: <private_dir>/remote-llm/briefings.jsonl, one record per run, and
 escalated.jsonl, the threads handed to Claude (one hand-off per thread a
@@ -1021,14 +1022,19 @@ def _load(path: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+PREVIEW_KEY = "briefing-preview"
+PREVIEW_TOPIC = "Briefing preview"
+
+
 def _preview(text: str) -> bool:
+    """Post a dry run's briefing where the digests go
+    (chat_notify.post_digest): on Zulip the mail-digest stream, topic
+    "Briefing preview"; on the web chat a thread of its own in the digest
+    channel; on Slack the `mail-digest` webhook. The briefing's chat
+    reader reads none of them, so a preview never reads as a briefing that
+    went out. False when there is no such place or the post failed."""
     import chat_notify
-    import mail_gate
-    zcfg = (chat_notify._chat_cfg() or {}).get("zulip") or {}
-    if chat_notify.frontend_name() != "zulip" or not zcfg:
-        return False
-    return chat_notify._zulip_post_parts(
-        zcfg, {"stream": mail_gate.DIGEST_STREAM, "topic": "Briefing preview"}, [text])
+    return bool(chat_notify.post_digest(PREVIEW_KEY, text, topic=PREVIEW_TOPIC))
 
 
 def room_slices(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dict],
@@ -1171,7 +1177,8 @@ def main(argv=None) -> int:
     r.add_argument("--run-id", required=True)
     r.add_argument("--stale", action="store_true", help="the preprocessor failed this run")
     r.add_argument("--dry-run", action="store_true", help="no drafts, queue or closures; counts only")
-    r.add_argument("--preview", action="store_true", help="with --dry-run, post to mail-digest")
+    r.add_argument("--preview", action="store_true",
+                   help="with --dry-run, post where the mail digests go")
     a = ap.parse_args(argv)
     if not active():
         return EXIT_OFF

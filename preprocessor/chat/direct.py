@@ -12,7 +12,9 @@ falls back to an urgent post in the personal channel with a mention, and
 `schedule_direct` raises.
 
 On the web chat alone (`"frontend": "web"`) the store is the chat:
-`schedule_direct` queues the post in the store (`scheduled_posts`), and
+`send_direct` posts in the owner's DM channel, or in the channel
+`web.notify` names for `personal`; `schedule_direct` queues the post in
+the store (`scheduled_posts`), and
 the bot posts it in the owner's DM channel when it is due
 (`WebFrontend.post_due`, on its tail thread). `cancel_scheduled` drops a
 queued one and `list_scheduled` lists them, as on Zulip. The bot must be
@@ -81,7 +83,7 @@ def owner_mention(fe) -> str:
 
 def send_direct(text: str, fe=None) -> dict:
     """Send `text` to the owner now. Returns {"id": message id} on Zulip,
-    or {"posted": True} on the fallback path."""
+    or {"posted": True} on the web chat and on the fallback path."""
     fe = fe or frontend()
     if is_zulip(fe):
         req = {"type": "private", "to": [int(fe.owner_id)], "content": text}
@@ -90,6 +92,10 @@ def send_direct(text: str, fe=None) -> dict:
             raise RuntimeError(f"direct message failed: {res.get('msg')}")
         return {"id": int(res["id"])}
     import chat_notify  # type: ignore
+    if is_web(fe):
+        if not chat_notify.web_direct(text):
+            raise RuntimeError("direct message to the web chat's DM failed")
+        return {"posted": True}
     ok = chat_notify.post("personal", text, priority="urgent", _bypass_quiet=True)
     if not ok:
         raise RuntimeError("fallback post to the personal channel failed")

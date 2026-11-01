@@ -767,3 +767,20 @@ def test_the_footer_split_is_off_unless_the_install_turns_it_on(tmp_path):
     post = rb.render_morning(b, c, {"get_done_today": [], "flexes": [], "needs_you": []},
                              now=NOW, drafts=[], escalated=[])
     assert "Open obligations: " in post and "Waiting on others" not in post
+
+
+def test_the_preview_goes_where_the_mail_digests_go(monkeypatch):
+    import chat_notify
+    sent = []
+    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "zulip")
+    monkeypatch.setattr(chat_notify, "_chat_cfg", lambda: {"zulip": {"site": "s"}})
+    monkeypatch.setattr(chat_notify, "_zulip_post_parts",
+                        lambda zcfg, target, parts: sent.append((target, parts)) or True)
+    assert rb._preview("Morning briefing") is True
+    assert sent == [({"stream": "mail-digest", "topic": "Briefing preview"}, ["Morning briefing"])]
+    # Slack with no `mail-digest` webhook has no such place: nothing goes to ea-assistant
+    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "slack")
+    monkeypatch.setattr(chat_notify, "_load_webhooks",
+                        lambda: {"ea-assistant": "https://hooks.example/A"})
+    monkeypatch.setattr(chat_notify, "_send_slack", lambda *a: pytest.fail("posted on Slack"))
+    assert rb._preview("Morning briefing") is False

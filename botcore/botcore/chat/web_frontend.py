@@ -245,7 +245,9 @@ BUNDLE_CHECK_S = 15.0
 # Threads the Needs you view lists at most.
 NEEDS_CAP = 200
 
-KINDS = ("main", "sched", "dm", "room")
+# `digest` is a channel of automated digests for the owner alone: a host
+# keeps a channel of that kind out of what its model reads.
+KINDS = ("main", "sched", "dm", "room", "digest")
 # Channel ids the app's routes take for their own (`#/needs`, the Needs you
 # view): no channel may have one.
 RESERVED_CHANNEL_IDS = frozenset({"needs"})

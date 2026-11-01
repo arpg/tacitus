@@ -427,11 +427,16 @@ these lanes read goes to Anthropic.
   needs JavaScript reads as empty. With chat on, the post is not copied
   to `~/.ea/state/reports/`. The admissions header uses a colon where the
   skill's template has an em-dash.
-- **Where it goes.** On Zulip the post goes to the private
-  `mail-digest` stream, beside the enforce-mode digest. The Claude lanes'
-  chat reader reads only the EA stream, so the post's text does not
-  reach Claude. The `*-digest-latest.json` files the Claude lanes left in
-  `~/.ea/state/` are removed when the switch goes on.
+- **Where it goes.** Where the enforce-mode digest goes
+  (`chat_notify.post_digest`): on Zulip the private `mail-digest` stream;
+  on the web chat the digest channel, "Mail digests" (kind `digest`,
+  made with the first digest); on Slack the `mail-digest` webhook when
+  one is mapped, else `ea-assistant` as before. The Claude lanes' chat
+  reader reads only the EA channel and never a channel of kind `digest`,
+  so the post's text does not reach Claude. A digest never waits in the
+  quiet-hours queue, which sits in the resident's space. The
+  `*-digest-latest.json` files the Claude lanes left in `~/.ea/state/`
+  are removed when the switch goes on.
 
 Switch: `"digests": "remote"` in `remote-llm.json` (default `off`, no end
 date). The crontab runs the module for both lanes:
@@ -467,10 +472,14 @@ thread when a lane acts on it or the user asks in a room or thread.
   (`remote_unread`), so an endpoint outage loses nothing.
 - **The remote digest.** `mail_gate.py digest` (cron, three times a
   weekday and once a day at weekends) posts the left-out mail to the
-  Zulip stream `mail-digest`: kept mail first (flagged when it needs a
-  reply), then FYI mail by domain. Code renders it from the remote
-  model's records; no Claude model sees it, and the briefing's chat
-  reader does not read that stream. Mail the list digest covers is not
+  Zulip stream `mail-digest`, to the web chat's digest channel ("Mail
+  digests", kind `digest`), or on Slack to the `mail-digest` webhook:
+  kept mail first (flagged when it needs a reply), then FYI mail by
+  domain. Code renders it from the remote model's records; no Claude
+  model sees it, and the briefing's chat reader reads none of those
+  places. With none of them (Slack without that webhook, or no chat) it
+  posts nothing, says so and keeps its window for the next run; the EA
+  channel is never the fall-back. Mail the list digest covers is not
   repeated.
 - **Cron lanes' reads.** A `cron-` run reads no kept thread through the
   mediator: a read of one kept message or thread is refused before it

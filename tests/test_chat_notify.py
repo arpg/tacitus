@@ -518,3 +518,36 @@ def test_a_web_post_from_a_process_that_is_not_the_owners_posts_nothing(web_env,
     assert chat_notify.post_as_bot("C1", "x") is False
     assert "store is the owner's" in capsys.readouterr().out
     assert not list(web_env.private.parent.rglob("webchat.sqlite"))
+
+
+# ── mail digests ──────────────────────────────────────────────────────
+
+def test_a_digest_on_slack_needs_its_own_webhook_and_skips_quiet_hours(env, monkeypatch):
+    env.qh.should_defer = lambda priority: True
+    env.qh.defer = lambda *a: pytest.fail("a digest was held in the resident's queue")
+    rec = _PostRecorder()
+    monkeypatch.setattr(requests, "post", rec)
+    # no `mail-digest` webhook: no place for it, and nothing goes to ea-assistant
+    assert chat_notify.post_digest("mail-digest", "kept mail", topic="t") is None
+    assert rec.calls == []
+    env.hooks.write_text(json.dumps({"ea-assistant": "https://hooks.example/A",
+                                     "mail-digest": "https://hooks.example/D"}))
+    assert chat_notify.post_digest("list-digest", "list items", topic="t") is True
+    assert [a[0] for a, _k in rec.calls] == ["https://hooks.example/D"]
+    assert chat_notify.post("admissions-digest", "a week") is True
+    assert len(rec.calls) == 2
+
+
+def test_a_digest_on_zulip_goes_to_the_mail_digest_stream_in_its_topic(zulip_env):
+    assert chat_notify.post_digest("mail-digest", "kept mail", topic="Mail digest Fri Oct 9")
+    (client,) = _FakeZulipClient.instances
+    assert client.sent == [{"type": "stream", "to": chat_notify.DIGEST_STREAM,
+                            "topic": "Mail digest Fri Oct 9", "content": "kept mail"}]
+
+
+def test_a_digest_on_memory_is_recorded_and_elsewhere_has_no_place(env):
+    _set_chat(env, {"frontend": "memory"})
+    assert chat_notify.post_digest("briefing-preview", "preview", topic="t") is True
+    assert chat_notify.MEMORY_POSTS == [("briefing-preview", "preview", None)]
+    _set_chat(env, {"frontend": "carrier-pigeon"})
+    assert chat_notify.post_digest("mail-digest", "x", topic="t") is None
