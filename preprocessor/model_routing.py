@@ -9,7 +9,14 @@ thinks of it and gives it one of three values:
           as `@local` does in chat;
   hosted  Claude;
   auto    the remote layer's switches and the tiers block decide, as they
-          did before the table. Every task but `review` defaults to auto.
+          did before the table. Every task but `review` and `thread_state`
+          defaults to auto.
+
+`thread_state` (the web chat's conversation states, docs/webchat-state.md)
+has no switch of its own and defaults to local: `local` and `auto` run it
+on the local model when one is set up; with none, or with `hosted`, the
+rules alone set the state (web_thread_state.py; the hosted step is not
+built).
 
 Each lane asks at its own decision point: `local()` for the switches a
 lane reads from remote-llm.json, `mail_mode()` and `scheduling_mode()`
@@ -78,6 +85,9 @@ TASKS = {
     "chat": ("Chat",
              "Answers you in topics, rooms and the DM. A message about money, a contract, "
              "a dean or a decline goes to the hosted model."),
+    "thread_state": ("Conversation states",
+                     "Reads a web chat thread the rules cannot settle and says if it needs you, "
+                     "waits or is done. Without a local model the rules alone decide."),
     "review": ("Judgment checks",
                "Checks if briefing items are still open, reconciles the ledger each night "
                "and reviews local scheduling writes."),
@@ -273,6 +283,9 @@ def _switch_state(task: str, cfg: dict, tiers: dict, done: dict) -> tuple[str, s
         key = {"briefing": "briefings", "audit": "audits"}.get(task, task)
         val = cfg.get(key) or "off"
         return ("mixed" if val == "ab" else onoff(val == "remote")), f"the {key} switch is {val}"
+    if task == "thread_state":
+        return (("local", "it runs on the local model") if local_ready(cfg) else
+                ("hosted", "no local model is set up; the rules alone set the state"))
     lanes = tiers.get("lanes") or {}
     if task == "scheduling":
         m = remote_llm.switch_mode("scheduling", cfg)
@@ -310,6 +323,10 @@ def rows(*, cfg: dict | None = None, routing: dict | None = None,
             eff, why = FLOORS[task], "the stakes floor"
         elif c == "local":
             eff, why = "local", "set to local"
+        elif c == "hosted" and task == "thread_state":
+            eff, why = "hosted", ("set to local, but no local model is set up; the rules alone "
+                                  "set the state" if v == "local" else
+                                  "set to hosted, which is not built; the rules alone set the state")
         elif c == "hosted":
             eff, why = "hosted", ("set to local, but no local model is set up" if v == "local"
                                   else "set to hosted")
@@ -421,7 +438,10 @@ def doctor_row(*, cfg: dict | None = None) -> tuple[str, str, str]:
     if source.startswith("refused"):
         return "FAIL", detail, ("routing.json must be the owner's, mode 0600, one JSON object; "
                                 "remove it to read every task as auto")
-    unready = [r["task"] for r in data["rows"] if r["value"] == "local" and r["effective"] != "local"]
+    # thread_state is local by default and runs on the rules alone without
+    # a local model, so it is no reason to warn.
+    unready = [r["task"] for r in data["rows"] if r["value"] == "local"
+               and r["effective"] != "local" and r["task"] != "thread_state"]
     if unready:
         return "WARN", detail, (f"{', '.join(unready)} set to local with no local model; "
                                 "`remote_llm.py init` sets one up")

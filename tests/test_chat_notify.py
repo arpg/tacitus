@@ -497,6 +497,8 @@ def test_a_web_notify_entry_names_the_channel_and_the_keys_follow_it(web_env, ca
     store = web_env.wf.WebStore(web_env.store)
     (row,) = store.threads("dm")
     assert row["text"] == "a note for you" and store.channel("dm")["kind"] == "dm"
+    # the thread is known as a notifier post (the thread-state rules read it)
+    assert store.thread_origin("dm", row["thread_key"]) == "personal"
     # a room the bot never made posts nothing
     assert chat_notify.post("health", "x", _bypass_quiet=True) is False
     assert "'r9'" in capsys.readouterr().out and store.channel("r9") is None

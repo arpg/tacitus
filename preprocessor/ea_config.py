@@ -133,11 +133,13 @@ DEFAULTS = {
     # take `hosted` only while the keep list names no one (the keep floor).
     # Owner processes read <private_dir>/routing.json, which the web chat's
     # Settings screen writes; this file's copy only shapes what the
-    # resident shows (see get_routing).
+    # resident shows (see get_routing). `thread_state` (the web chat's
+    # conversation states, docs/webchat-state.md) is local by default: with
+    # no local model the rules alone set the state.
     "routing": {
         "tasks": {"mail": "auto", "tagging": "auto", "drafting": "auto", "digests": "auto",
                   "briefing": "auto", "audit": "auto", "scheduling": "auto", "chat": "auto",
-                  "review": "hosted"},
+                  "thread_state": "local", "review": "hosted"},
     },
     # Where mail and calendars come from (docs/macos-native-accounts.md).
     # mail.backend: "graph" (Outlook through Microsoft Graph, with any

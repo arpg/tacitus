@@ -20,7 +20,8 @@ import model_routing as mr  # noqa: E402
 import owner_trust  # noqa: E402
 import remote_llm as rl  # noqa: E402
 
-TASKS = ("mail", "tagging", "drafting", "digests", "briefing", "audit", "scheduling", "chat", "review")
+TASKS = ("mail", "tagging", "drafting", "digests", "briefing", "audit", "scheduling", "chat",
+         "thread_state", "review")
 
 
 EMPTY_KEEP = {"domains": [], "addresses": [], "admissions": False}
@@ -72,7 +73,8 @@ def owner(tmp_path, monkeypatch):
 def test_every_task_defaults_to_auto_but_review_and_the_template_agrees():
     tasks = ea_config.DEFAULTS["routing"]["tasks"]
     assert tuple(tasks) == TASKS == ea_config.ROUTING_TASKS == tuple(mr.TASKS)
-    assert {t: v for t, v in tasks.items() if v != "auto"} == {"review": "hosted"}
+    assert {t: v for t, v in tasks.items() if v != "auto"} == {"review": "hosted",
+                                                                "thread_state": "local"}
     template = json.loads((REPO / "config" / "ea-config.json").read_text())
     assert template["routing"] == ea_config.DEFAULTS["routing"]
     assert ea_config.routing_problems(template["routing"]) == []
@@ -438,7 +440,8 @@ def test_the_doctor_row_names_each_task_s_model_and_the_local_model(owner, monke
     monkeypatch.setattr(rl, "config", lambda: cfg)
     status, detail, _fix = mr.doctor_row()
     assert status == "PASS"
-    assert detail.startswith("local: mail, tagging, drafting; hosted: digests, briefing, audit, ")
+    assert detail.startswith("local: mail, tagging, drafting, thread_state; "
+                             "hosted: digests, briefing, audit, ")
     assert "local model local-27b: No call yet." in detail and detail.endswith("(default)")
     mr.save({"chat": "local"}, cfg=cfg)
     _calls(priv, {"ts": datetime.now().astimezone().isoformat(), "purpose": "mail", "ok": False,

@@ -175,13 +175,15 @@ subset and escapes everything else; it never injects HTML from text.
 | GET | `/api/bundle` | the same document, for the owner: the route the relay reaches |
 | GET | `/api/app/{file}` | a file that the signed manifest names, its bytes as on disk, as an attachment with the sandbox policy and the type of its name; 404 for any other name. A phone off the tailnet takes a new release here, through the relay (Code integrity) |
 | GET | `/api/channels` | `[{"id","name","kind","archived","last_at","unread"}]` |
-| GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count` and `last_at` |
+| GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count`, `last_at` and the thread's state: `state`, `state_by`, `state_reason`, `state_at` (State) |
+| GET | `/api/needs` | `{"threads": [...]}`: the threads whose state is `needs_you` or `waiting` in channels that are not archived, each a threads row with `channel_name`; `needs_you` first, then newest first; at most 200; one query, and it moves no read mark (State). `needs` is never a channel id |
+| POST | `/api/threads/{ch}/{thread_key}/state` | `{"state": "done" \| "needs_you" \| "waiting"}` → the thread's row as the threads route gives it, with `channel_name`: the owner's override (`state_by` `owner`), until a new message lands in the thread; 400 for another state, 404 for an unknown thread. A chat action: a relayed device that may chat may take it (State) |
 | GET | `/api/channels/{ch}/threads/{thread_key}` | the thread, oldest first, parent first |
 | POST | `/api/channels/{ch}/messages` | `{"text", "thread_key"?}` → the stored owner message; dispatches an `InboundMessage` |
 | POST | `/api/channels/{ch}/files` | multipart `file`, optional `text`, `thread_key` → the stored `file` message; dispatches an `InboundMessage` with `files=[FileRef]` |
 | GET | `/api/files/{id}` | the bytes, `Content-Disposition: attachment` |
 | POST | `/api/cards/{ch}/{id}/actions` | `{"action_id", "value"?, "selected"?}` → `{"ok": true}`; dispatches an `ActionEvent` (`source` `button` or `select`) |
-| GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row); a `: ping` comment every 20 s |
+| GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row, `thread_state` events `{"channel", "thread_key", "state", "by", "reason", "at"}`); a `: ping` comment every 20 s |
 | POST | `/api/pair` | `{"token"}` → sets the cookie |
 | GET | `/api/push/vapid` | `{"key": "<base64url P-256 point>"}`, the `applicationServerKey`; 404 when push is off |
 | POST | `/api/push/subscribe` | the browser's `PushSubscription.toJSON()` → `{"ok": true}` |
@@ -218,6 +220,18 @@ is `http.server.ThreadingHTTPServer` on a daemon thread started by
 and a 30-second socket timeout per connection; `run_forever()` blocks on
 a stop event; SSE handlers block on a per-connection `queue.Queue` fed
 by the store's event fan-out.
+
+## State
+
+Each thread has one state, `needs_you`, `working`, `waiting`, `done` or
+`none`, which the app shows as a sticker and gathers in the Needs you
+view. Rules set it at once on every change to a thread; the local model
+(the routing table's `thread_state` task) judges what the rules leave
+open, on a tick every 5 minutes; the owner overrides it from the app.
+It lives in this store alone (the `thread_state` and `thread_origin`
+tables, and `thread_state` events on the stream): in shadow mode nothing
+reaches Zulip. The rules, the model step, the tables and the routes are
+in [webchat-state.md](webchat-state.md).
 
 ## The front end's verbs (A)
 

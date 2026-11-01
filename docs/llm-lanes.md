@@ -141,7 +141,7 @@ backend, is in [model-routing.md](model-routing.md).
 |---|---|
 | `local` | The local model (the endpoint in `remote-llm.json`) does the task. With no endpoint set up the task reads `hosted`, as `@local` does in chat. |
 | `hosted` | Claude does the task, whatever the switch says. |
-| `auto` | The switch and the tiers block decide, as before the table. Every task but `review` defaults to it, so an install with no table runs as it did. |
+| `auto` | The switch and the tiers block decide, as before the table. Every task but `review` and `thread_state` defaults to it, so an install with no table runs as it did. |
 
 | Task | What it does | Decision point | `local` | `hosted` | Floor |
 |---|---|---|---|---|---|
@@ -153,6 +153,7 @@ backend, is in [model-routing.md](model-routing.md).
 | `audit` | the Sunday audit | `remote_audit.active` | the remote lane | the Claude lane | |
 | `scheduling` | the scheduling channel and the proactive scheduler | `model_tiers.resolve` (lanes `sched-channel`, `proactive`); `remote_llm.mode("scheduling")` | the lane's tier is `local` (the tool gateway, every write checked by the backstop); `enforce` still needs its ghost-week GO | the agent is off and the lane's local picks run on `opus` | stakes rule per message |
 | `chat` | turns in topics, rooms and the DM | `model_tiers.resolve` (lanes `main`, `dm`, `room`) | the lane's tier is `local` | a pick that would run on `local` runs on `opus` | stakes rule per message |
+| `thread_state` | the state of a web chat thread the rules leave open (default `local`; `auto` runs like it) | `web_thread_state.route` | the local model judges it | not built: the rules alone | |
 | `review` | the briefing's still-open check, the nightly reconcile, the backstop on local scheduling writes, the hand-offs | `remote_briefing.audit_judge` | refused | always | stakes: hosted only |
 
 **The floors.** No value lowers them. *Stakes:* `review` is hosted only:

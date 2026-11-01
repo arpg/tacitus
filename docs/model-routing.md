@@ -26,8 +26,8 @@
   they did before the table.
 - **task**: one kind of model work with its own inputs, for example
   "write an email body" or "read a new message into a record". The code
-  has nine: `mail`, `tagging`, `drafting`, `digests`, `briefing`,
-  `audit`, `scheduling`, `chat` and `review`.
+  has ten: `mail`, `tagging`, `drafting`, `digests`, `briefing`,
+  `audit`, `scheduling`, `chat`, `thread_state` and `review`.
 
 ## The tasks
 
@@ -45,6 +45,7 @@ model sees" is what reaches the endpoint when the task runs there.
 | `audit` | the Sunday audit; flagged items go to Claude | `audits` | ledger, briefing JSON |
 | `scheduling` | the scheduling channel and the proactive scheduler; every local write passes the Claude backstop | `scheduling`; `tiers.lanes` sched-channel and proactive | the thread, solver output |
 | `chat` | turns in topics, rooms and the DM | `tiers.lanes` main, dm and room; `@local`, `use local` | the topic's transcript |
+| `thread_state` | the state of a web chat thread the rules leave open (docs/webchat-state.md) | none: `auto` runs like `local` | the thread's messages (card titles and outcomes, never a card's body), the channel, the linked ledger rows' type, status, deadline and last action |
 | `review` | the briefing's still-open check, the nightly ledger reconcile, the scheduling backstop, the hand-offs from the briefings and the audit | none: hosted only | nothing |
 
 Letters have no task: the `email-author` subagent writes them, whatever
@@ -66,6 +67,7 @@ one key, `tasks`:
     "audit": "hosted",
     "scheduling": "local",
     "chat": "auto",
+    "thread_state": "local",
     "review": "hosted"
   }
 }
@@ -73,7 +75,10 @@ one key, `tasks`:
 
 - **Values** are `local`, `hosted` or `auto`. A task the file does not
   name takes its default: `auto` for every task but `review`, which is
-  `hosted`. So an install with no file runs as it did before the table.
+  `hosted`, and `thread_state`, which is `local`. So an install with no
+  file runs as it did before the table. `thread_state` is new work with
+  no switch: with no local model it runs on the rules alone, and the
+  doctor does not warn about its default.
 - **`local` with no endpoint** (`remote-llm.json` names no endpoint and
   model) reads `hosted`, as `@local` does in chat ("no local model set
   up" in the footer).
@@ -110,6 +115,7 @@ no restart. A table that cannot be read leaves each switch as it is.
 | `audit` | `remote_audit.active` | the remote lane | the Claude lane |
 | `scheduling` | `model_tiers.resolve` (lanes sched-channel, proactive); `remote_llm.mode("scheduling")` | the lane's tier is `local`; `scheduling enforce` still needs its ghost-week GO | the agent is off, and the lane's local picks run on `opus` |
 | `chat` | `model_tiers.resolve` (lanes main, dm, room) | the lane's tier is `local` | a pick that would run on `local` runs on `opus` |
+| `thread_state` | `web_thread_state.route` | the local model judges a thread the rules leave open | not built: the rules alone set the state, with a log line once an hour |
 | `review` | `remote_briefing.audit_judge` | refused | always |
 
 `remote_llm.py switches` shows each switch's `effective` value with the
