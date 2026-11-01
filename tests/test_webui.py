@@ -334,7 +334,9 @@ def test_the_app_stays_small():
     # card-button choice per relay-origin phone under "Pair a phone", and 70 for the
     # Settings screen (the routing table: a row per task, the floors, Save).
     # 2,940: 2,920 plus the phone dialog's one-tap setup and its plain notes.
-    assert lines <= 3120, f"{lines} lines: the contract keeps the app near 3,120 with the relay, the phone setup and the connection check"
+    # 3,170: 3,120 plus the look (a radius and shadow scale, bubbles, blurred headers, the send state)
+    # and the dual-screen split at the hinge.
+    assert lines <= 3170, f"{lines} lines: the contract keeps the app near 3,170 with the relay, the phone setup and the connection check"
 
 
 # -- in a browser, against the stub ---------------------------------------
