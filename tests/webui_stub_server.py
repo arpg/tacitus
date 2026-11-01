@@ -361,7 +361,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"enabled": True, "install_id": STUB_INSTALL, "connected": False,
                                     "relay_url": "https://relay.example.net",
                                     "bot_public": STUB_BOT_PUBLIC, "client_key": STUB_CLIENT_KEY,
-                                    "pair_own": False, "pair_relay": s.relay_pairing,
+                                    "pair_own": False, "pair_relay": s.relay_pairing, "relay_app": s.relay_pairing,
                                     "bundle": s.bundle_hash() if s.relay_pairing else None})
         if parts == ["relay", "devices"] and s.relay_pairing:
             return self._json(200, s.devices)
