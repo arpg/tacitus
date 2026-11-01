@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Tacitus</title>
-<meta name="description" content="Tacitus is a self-hosted executive assistant. Real chat exchanges, names changed.">
+<meta name="description" content="Tacitus is a self-hosted executive assistant with its own chat on your phone. Real chat exchanges, names changed.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..600&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
@@ -167,11 +167,24 @@ section.feature .wrap { display: grid; grid-template-columns: minmax(0, 0.8fr) m
 .gate { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 12px; align-items: start; color: var(--fg-2); font-size: 15.5px; }
 .gate .ic { font-family: var(--mono); color: var(--accent); }
 
-/* install + footer */
-.install { padding-block: 72px; }
-.install .wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 48px; align-items: center; }
-.install h2 { font-size: clamp(30px, 3.6vw, 44px); }
-.install p { margin-top: 16px; color: var(--fg-2); }
+/* install: the first section after the hero */
+.install { padding-block: 64px 72px; border-bottom: 1px solid var(--line); background: var(--bg-2); }
+.install .wrap { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr); gap: 56px; align-items: start; }
+.install h2 { font-size: clamp(30px, 3.8vw, 46px); line-height: 1.08; margin-top: 10px; }
+.install h2 em { font-style: italic; color: var(--accent); }
+.install .lede { margin-top: 18px; color: var(--fg-2); font-size: 17.5px; max-width: 36em; }
+.steps { margin: 26px 0 0; padding: 0; list-style: none; counter-reset: step; display: grid; gap: 14px; }
+.steps li { position: relative; padding-left: 44px; color: var(--fg-2); font-size: 15.5px; line-height: 1.5; }
+.steps li::before { counter-increment: step; content: counter(step); position: absolute; left: 0; top: 1px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-family: var(--mono); font-size: 12.5px; color: var(--accent); border: 1px solid color-mix(in oklab, var(--accent) 55%, var(--line)); background: var(--bg); }
+.steps b { color: var(--fg); font-weight: 600; }
+.steps i { font-style: normal; font-family: var(--mono); font-size: 13.5px; background: var(--bg-3); padding: 1px 6px; border-radius: 4px; }
+.install .alt { margin-top: 22px; color: var(--muted); font-size: 14.5px; max-width: 36em; }
+.how { display: grid; gap: 22px; justify-items: center; }
+.shot { margin: 0; display: grid; gap: 10px; justify-items: center; }
+.shot img { display: block; width: 100%; max-width: 300px; height: auto; border-radius: 34px; border: 6px solid var(--bg-3); box-shadow: 0 24px 60px rgba(0, 0, 0, .35), 0 2px 8px rgba(0, 0, 0, .2); background: var(--bg-3); }
+.shot figcaption { font-family: var(--mono); font-size: 12.5px; color: var(--muted); text-align: center; }
+.how pre.sh { width: 100%; }
+.install .docs { color: var(--fg-2); font-size: 14.5px; line-height: 1.6; }
 pre.sh { margin: 0; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; font-family: var(--mono); font-size: 13.5px; line-height: 1.6; overflow-x: auto; color: var(--fg); }
 pre.sh .c { color: var(--muted); }
 .req { margin-top: 18px; display: grid; gap: 6px; font-size: 15px; color: var(--fg-2); }
@@ -181,6 +194,8 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 28px; justify-content: 
 /* responsive */
 @media (max-width: 960px) {
   .hero .wrap, section.feature .wrap, .trust .wrap, .install .wrap { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+  .how { grid-template-columns: minmax(0, 1fr); }
+  .shot img { max-width: 260px; }
   .rail { position: static; }
   .day .wrap { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .day .slot { border-right: 0; border-bottom: 1px solid var(--line); padding-left: 0 !important; }
@@ -201,6 +216,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 28px; justify-content: 
   <div class="wrap">
     <a class="brand" href="#top">TACITUS</a>
     <nav aria-label="Sections">
+      <a href="#install">Install</a>
       <a href="#scheduling">Scheduling</a>
       <a href="#inbox">Inbox</a>
       <a href="#documents">Documents</a>
@@ -208,7 +224,6 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 28px; justify-content: 
       <a href="#projects">Projects</a>
       <a href="#rules">Rules</a>
       <a href="#trust">Trust</a>
-      <a href="#install">Install</a>
     </nav>
   </div>
 </header>
@@ -223,8 +238,8 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 28px; justify-content: 
       <p class="lede">Tacitus takes the friction out of the places a human executive assistant would be great: the inbox, the calendar, the forms, the follow-ups, the files. It reads your mail and calendars, drafts in your voice, finds meeting times on your real calendars, and tracks what you owe to whom. You talk to it in a private chat.</p>
       <p class="principle">A human EA cannot make decisions on behalf of the executive. Neither can Tacitus. That is the design principle: nothing is sent, booked or deleted until you press the button.</p>
       <div class="cta">
-        <a class="primary" href="https://github.com/arpg/tacitus">Read the code on GitHub</a>
-        <a class="ghost" href="#scheduling">See it work &darr;</a>
+        <a class="primary" href="#install">Install it &darr;</a>
+        <a class="ghost" href="https://github.com/arpg/tacitus">Read the code on GitHub</a>
       </div>
       <p class="fact">Every exchange on this page is from one professor's live install, March to October 2026.<br>Names and places are changed. The words are not.</p>
     </div>
@@ -247,6 +262,42 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 28px; justify-content: 
           <p>Which of the 3 possible slots do you want me to add? You can also say "overbook all" or "keep all."</p>
         </div></div>
       </div>
+    </div>
+  </div>
+</section>
+
+<section class="install" id="install">
+  <div class="wrap">
+    <div>
+      <p class="eyebrow">Install</p>
+      <h2>An hour on a box you own. <em>Then it lives on your phone.</em></h2>
+      <p class="lede">Tacitus serves its own chat. There is no chat server to run and no account with anyone. You open it on your phone and add it to the Home Screen; from then on it works wherever you are: at home over your private network, anywhere else through a relay that carries only sealed frames and can read none of them.</p>
+      <ol class="steps">
+        <li><b>Run the installer</b> on an always-on Linux or macOS machine. It checks what is missing, installs Claude Code and opens setup.</li>
+        <li><b>Answer setup from your phone or laptop.</b> One screen per topic, in plain words, until the health check is green. It stops only for a password, a browser sign-in or your phone.</li>
+        <li><b>Open the chat and add it to your Home Screen.</b> It runs as an app. New cards, messages and alerts arrive as notifications while it is closed.</li>
+        <li><b>Leave the house.</b> Tap <i>Set up this phone</i> once. Keys are made on the phone; you approve it by matching a six-digit code; the app checks every file it runs against your bot's signature.</li>
+      </ol>
+      <div class="req">
+        <span>&middot; A Claude Pro or Max subscription, or a ChatGPT subscription that enables Codex</span>
+        <span>&middot; A Microsoft 365 account and an app registration from your IT group (the longest wait)</span>
+        <span>&middot; Optionally, Google accounts for calendars and Gmail drafts</span>
+        <span>&middot; Optionally, a GPU and an open model for the mail</span>
+      </div>
+      <p class="alt">Already run Zulip or Slack? Tacitus works there too, and the web chat can run beside Zulip. New chat features land in the web chat; Zulip stays in the tree for a later setup with more than one person in the room.</p>
+    </div>
+    <div class="how">
+      <figure class="shot">
+        <img src="webchat-phone.png" alt="The web chat on a phone: a draft reply on a card with its Send, Edit and Cancel buttons" width="300" height="649" loading="lazy">
+        <figcaption>A draft reply on its card. Nothing goes out until you press Send.</figcaption>
+      </figure>
+<pre class="sh"><span class="c"># on the machine that will run it</span>
+git clone https://github.com/arpg/tacitus.git ea-system
+cd ea-system &amp;&amp; ./install.sh
+<span class="c"># ./install.sh --check only lists what is missing.
+# Updates arrive on their own: a signed release,
+# applied hourly when nothing is running.</span></pre>
+      <p class="docs"><a href="https://github.com/arpg/tacitus/blob/main/docs/INSTALL.md">The install guide</a> walks through it, with <a href="https://github.com/arpg/tacitus/blob/main/docs/INSTALL.md#your-steps">the twelve steps that are yours</a>. <a href="https://github.com/arpg/tacitus/blob/main/docs/webchat-relay.md">How the relay works</a>, and what a dishonest one could and could not do.</p>
     </div>
   </div>
 </section>
@@ -559,30 +610,6 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 28px; justify-content: 
 </section>
 
 <!-- ================= INSTALL ================= -->
-<section class="install" id="install">
-  <div class="wrap">
-    <div>
-      <p class="eyebrow">Install</p>
-      <h2>An always-on Linux or macOS box, and about an hour.</h2>
-      <p>Start with the <b>email</b> profile: triage, the ledger, drafts in your voice, meeting times in the morning report. Move to <b>assistant</b> when you want the chat rooms and the buttons.</p>
-      <div class="req">
-        <span>&middot; A Claude Pro or Max subscription, or a ChatGPT subscription that enables Codex</span>
-        <span>&middot; A Microsoft 365 account and an app registration from your IT group (the longest wait)</span>
-        <span>&middot; Optionally, Google accounts for calendars and Gmail drafts</span>
-        <span>&middot; Optionally, a GPU and an open model for the mail</span>
-      </div>
-    </div>
-    <div>
-<pre class="sh"><span class="c"># on the machine that will run it</span>
-git clone https://github.com/arpg/tacitus.git ea-system
-cd ea-system &amp;&amp; ./install.sh
-<span class="c"># checks prerequisites, installs Claude Code,
-# then opens /setup: one question at a time,
-# until the health check passes.</span></pre>
-    </div>
-  </div>
-</section>
-
 </main>
 
 <footer>
