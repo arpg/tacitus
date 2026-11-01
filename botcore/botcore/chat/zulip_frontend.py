@@ -61,7 +61,10 @@ archive change. A rename reaches the composite as its channel_rename
 message, and a whole thread move as the "thread_moved" event. Not
 mirrored, by design: the reaction chips on a card (they stand in for
 buttons, which the web chat draws itself) and a partial move that splits
-a topic, which reaches the core as nothing either.
+a topic, which reaches the core as nothing either. A card the shadow holds
+only as text (copied from the past) is read back with card_now, which
+reads and never writes: its current text, and whether it was filed in
+the done stream. card_text_state tells its legend from a status line.
 
 The translators (inbound_from_message, rename_from_stream_event,
 channel_changes_from_event, reaction_action, code_action, render_card)
@@ -573,6 +576,26 @@ def split_card_text(content: str) -> tuple[str, str]:
     keeps. The legend, or an earlier status, between them is dropped."""
     parts = (content or "").split(_CARD_RULE, 2)
     return parts[0], (parts[2] if len(parts) > 2 else "")
+
+
+# The opening words of each legend render_card_actions writes, as a posted
+# card shows them: chips, the typed fallback after chips or alone, and the
+# bare code.
+LEGEND_LEADS = ("Tap a reaction below: ", "Or reply `<word> ", "Reply `<word> ", "Code **")
+
+
+def card_text_state(content: str) -> tuple[str, str]:
+    """What a posted card's text says of the card now: ("live", "") while
+    the action legend follows its header, ("status", <the status text>)
+    once replace_card_with_status put a status line in the legend's place,
+    and ("", "") for text with no card rule."""
+    parts = (content or "").split(_CARD_RULE, 2)
+    if len(parts) < 2:
+        return "", ""
+    middle = parts[1].strip()
+    if middle.startswith(LEGEND_LEADS):
+        return "live", ""
+    return ("status", middle) if middle else ("", "")
 
 
 def card_topic(card: ConfirmationCard, code: str, limit: int = 60) -> str:
@@ -1590,6 +1613,59 @@ class ZulipFrontend(ChatFrontend):
             return None
         self._stream_names[sid] = name
         return sid
+
+    def card_now(self, channel: str, thread_key: str, msg_id: str) -> dict | None:
+        """A posted card as Zulip holds it now, read-only, for the shadow's
+        copy of it (ShadowFrontend): {"text": its raw content, "filed": True
+        when it sits in the done stream (file_card), "edited_at": the time
+        of its last edit, or None}. The card is read by its message id; a
+        copy with no Zulip id names the first message of its topic, looked
+        for where the topic moved, then under the same name in the done
+        stream. None when Zulip holds no such message or does not answer."""
+        if str(msg_id).isdigit():
+            m = next((x for x in self._read_messages(int(msg_id), [])
+                      if str(x.get("id")) == str(msg_id)), None)
+        else:
+            try:
+                ch, key = self._follow(channel, thread_key)
+                ch, topic = parse_thread_key(key or "")
+                sids = [stream_id_of(ch)]
+            except (ValueError, ChatError):
+                return None
+            done = self._lookup_stream_id(self.done_stream_name)
+            if done is not None and done not in sids:
+                sids.append(done)
+            m = None
+            for sid in sids:
+                narrow = [{"operator": "channel", "operand": sid},
+                          {"operator": "topic", "operand": topic or ""}]
+                m = next(iter(self._read_messages("oldest", narrow, after=1)), None)
+                if m is not None:
+                    break
+        if m is None or m.get("type") != "stream":
+            return None
+        where = m.get("display_recipient")
+        if not isinstance(where, str) or not where:
+            where = self._stream_name(int(m.get("stream_id") or 0))
+        edited = m.get("last_edit_timestamp")
+        return {"text": str(m.get("content") or ""), "filed": where == self.done_stream_name,
+                "edited_at": float(edited) if edited else None}
+
+    def _read_messages(self, anchor: int | str, narrow: list[dict], *,
+                       after: int = 0) -> list[dict]:
+        """The raw messages at `anchor` (and `after` more) in the narrow;
+        [] on a refusal or a failure. A rate limit is waited out as for a
+        reaction."""
+        req = {"anchor": anchor, "num_before": 0, "num_after": int(after),
+               "apply_markdown": False, "narrow": narrow}
+        try:
+            res = self._rate_limited(lambda: self.client.get_messages(req))
+        except Exception as e:
+            log.warning("zulip get_messages failed: %s", e)
+            return []
+        if not _ok(res):
+            return []
+        return [x for x in res.get("messages") or [] if isinstance(x, dict)]
 
     def message_posted_at(self, ref: MessageRef) -> float | None:
         try:

@@ -103,7 +103,9 @@ that calls enable_thread_state() before start() gets the rules at once on
 every change and the tick, on a thread of their own. `thread_origin`
 records the notifier key of an automated post (chat_notify), which the
 rules read. The states live in this store alone: nothing reaches the
-primary in shadow mode.
+primary in shadow mode. There a card copied as text from the primary's
+past is read back from the primary (`card_lookup`, which the composite
+sets) so the rules see it settle, and its row takes the current text.
 
 At start the bot signs the app's files (web_bundle, docs/webchat.md, Code
 integrity): every file under `webui/` and its sha256, signed with an
@@ -1611,6 +1613,9 @@ class WebFrontend(ChatFrontend):
         self._bundle_warned: set = set()
         self._own_sign_key: bytes | None = None
         self.bundle_check_s = BUNDLE_CHECK_S
+        # The read back of a card copied from the primary's past (shadow
+        # mode: the composite sets it); None on the web chat alone.
+        self._card_lookup: _ts.CardRead | None = None
         # The state of each conversation (thread_state.ThreadStates), once the
         # host enables it; start() runs it beside the server.
         self.thread_states: _ts.ThreadStates | None = None
@@ -1639,8 +1644,23 @@ class WebFrontend(ChatFrontend):
         host gives the linked ledger rows and the model call; without them
         the rules alone set the state. Call it before start()."""
         self.thread_states = _ts.ThreadStates(lambda: self.store, ledger=ledger, model=model,
-                                              devices=self._relay_devices, **kw)
+                                              devices=self._relay_devices,
+                                              cards=self._card_lookup, **kw)
         return self.thread_states
+
+    @property
+    def card_lookup(self) -> _ts.CardRead | None:
+        """The primary's read of a card the store holds as text from its
+        past (ShadowFrontend sets it), which the thread states use; None on
+        the web chat alone, and the states then read the stored text."""
+        return self._card_lookup
+
+    @card_lookup.setter
+    def card_lookup(self, read: _ts.CardRead | None) -> None:
+        self._card_lookup = read
+        states = getattr(self, "thread_states", None)
+        if states is not None:
+            states.cards = read
 
     def _relay_devices(self) -> list[dict] | None:
         """The relay's device rows for the new-device rule; None when no
@@ -2689,11 +2709,13 @@ class WebFrontend(ChatFrontend):
             self._push_message(row)
         return row
 
-    def mirror_update(self, ref: MessageRef, text: str) -> dict:
-        """Replace a stored message's text (a missing one is stored)."""
+    def mirror_update(self, ref: MessageRef, text: str, *, markdown: bool = False) -> dict:
+        """Replace a stored message's text (a missing one is stored); an
+        unchanged text writes nothing. `markdown` is mirror_post's: the
+        bot's text is Markdown already (Zulip's) and is kept as it is."""
         row = self.store.message(ref.channel, ref.id)
         author = row["author"] if row else BOT
-        out = self._out(text) if author == BOT else (text or "")
+        out = self._out(text) if author == BOT and not markdown else (text or "")
         return self._mirror_upsert(ref, "update", author=author, kind="message", text=out,
                                    set_kind=False)
 

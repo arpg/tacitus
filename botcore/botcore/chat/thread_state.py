@@ -33,6 +33,16 @@ A change the rules cannot settle brings the next tick forward to
 answer and the owner's override each write the store's `thread_state`
 row, which appends a `thread_state` event when the state, `by` or the
 reason changed.
+
+Shadow mode. A card copied as text from Zulip's past (mirrored_card) has
+no card JSON, so card_view() reads its text the way Zulip writes it
+(zulip_frontend.card_text_state): the legend makes it a live card, a
+status line a card acted on, and both decide() and judge_prompt() read
+that view. While its stored text can still change (card_pending) the
+engine asks the primary for the card as it stands now (`cards`, the
+web front end's card_lookup): at most `card_cap` reads a tick, each
+answer kept for one tick interval. With no primary to ask (the web chat
+alone) the stored text is all there is.
 """
 from __future__ import annotations
 
@@ -47,6 +57,7 @@ from datetime import datetime
 from typing import Any
 
 from .cards import DEFAULT_MAX_AGE_S
+from .zulip_frontend import card_text_state
 
 log = logging.getLogger("chat.web.state")
 
@@ -65,6 +76,8 @@ SOON_S = 60.0
 POLL_S = 1.0
 MODEL_CAP = 20
 RULE_CAP = 500
+# Reads of a mirrored card on the primary that one tick makes at most.
+CARD_CAP = 30
 # Threads whose linked ledger rows one read fetches.
 BATCH = 50
 MIN_CONFIDENCE = 0.6
@@ -159,17 +172,80 @@ def _live(m: dict, now: float) -> bool:
 
 def outcome(text: str | None) -> str:
     """What a card's status line says: `busy` (the bot is acting on the
-    press), `failed` (it could not) or `acted`."""
+    press), `failed` (it could not) or `acted`. The emoji names are the
+    core's, or Zulip's for a status line copied from Zulip."""
     t = str(text or "").lstrip()
-    if t.startswith(":hourglass"):
+    if t.startswith((":hourglass", ":time_ticking:")):
         return "busy"
-    if t.startswith((":x:", ":warning:", ":no_entry:")):
+    if t.startswith((":x:", ":cross_mark:", ":warning:", ":no_entry:")):
         return "failed"
     return "acted"
 
 
 def _card_title(m: dict) -> str:
     return plain(_card(m).get("title") or m.get("text"), 80)
+
+
+# A card copied from Zulip's past opens with its lock title, after the
+# owner's mention when the card carried one.
+_MIRRORED_CARD_RE = re.compile(r"^\s*(?:@\*\*[^*\n]+\*\*\s*)?:lock(?:ed)?:")
+_MENTION_RE = re.compile(r"^\s*@\*\*[^*\n]+\*\*\s*")
+# The status of a card filed in Zulip's done stream with no status line
+# that says it acted.
+SETTLED_OUTSIDE = "Settled outside chat."
+
+
+def mirrored_card(m: dict) -> bool:
+    """True for a card copied as text from Zulip's past into a mirrored
+    stream channel (`stream:<n>`): a history row with no card JSON whose
+    text opens with the lock title and holds the card's rule. The one-line
+    pointer to a card ("The Send button ... is in your DM") has no rule
+    and is no card."""
+    text = str(m.get("text") or "")
+    return (bool(m.get("history")) and m.get("kind") == "message" and not m.get("card")
+            and str(m.get("channel") or "").startswith("stream:")
+            and bool(_MIRRORED_CARD_RE.match(text)) and card_text_state(text)[0] != "")
+
+
+def card_pending(text: str | None) -> bool:
+    """True while a mirrored card's text can still change on Zulip: its
+    legend shows or a press is under way. A status line that acted or
+    failed is final."""
+    state, status = card_text_state(str(text or ""))
+    return state == "live" or (state == "status" and outcome(status) == "busy")
+
+
+def card_view(m: dict) -> dict:
+    """A mirrored card as the card rules (2, 3c, 4) and the prompt read a
+    card; any other message as it is. The text read is Zulip's answer (the
+    `primary` the engine attaches: {"text", "filed", "edited_at"}), else
+    the stored copy. While the legend shows, it is a `card` row with a live
+    action (rule 2 still weighs its age). Once a status line holds the
+    legend's place, it is a `status` row with that line. A card filed in
+    the done stream with no status that acted was settled outside chat.
+
+    The status counts from the card's own time, so every message after
+    the card is later for rule 4, whether or not Zulip answered this
+    time; a press under way counts from Zulip's last edit when known, for
+    rule 3c's window."""
+    if not mirrored_card(m):
+        return m
+    got = m.get("primary") if isinstance(m.get("primary"), dict) else {}
+    text = str(got.get("text") or m.get("text") or "")
+    state, status = card_text_state(text)
+    if got.get("filed") and not (state == "status" and outcome(status) == "acted"):
+        state, status = "status", SETTLED_OUTSIDE
+    title = next((ln for ln in _MENTION_RE.sub("", text, count=1).splitlines() if ln.strip()),
+                 "")
+    if state == "live":
+        return {**m, "kind": "card", "card": {"title": title, "actions": [{"id": "primary"}]}}
+    if state == "status":
+        at = m.get("posted_at")
+        if outcome(status) == "busy":
+            at = got.get("edited_at") or m.get("updated_at") or at
+        return {**m, "kind": "status", "text": status, "card": {"title": title},
+                "updated_at": float(at or 0)}
+    return m
 
 
 def _walk(obj: Any, keys: dict[str, list], depth: int = 0) -> None:
@@ -267,10 +343,12 @@ def decide(messages: list[dict], *, channel: dict | None = None,
     `prev` the stored row ({"state", "by", "reason", "judged_seq"}) or
     None; `origin` the notifier key that opened the thread, "" when none
     was recorded; `devices` the relay's device rows, None when no relay
-    runs."""
+    runs. A card copied as text from Zulip's past is read as card_view
+    gives it."""
     if not messages:
         return None
     now = time.time() if now is None else float(now)
+    messages = [card_view(m) for m in messages]
     newest = max(int(m.get("seq") or 0) for m in messages)
     first = messages[0]
 
@@ -418,10 +496,11 @@ def judge_prompt(messages: list[dict], *, channel: dict | None = None,
     card's title and outcome, never its body or fields), the channel's kind
     and name, the linked ledger rows' type, status, deadline and last
     action, and today's date. The first message stays; past the caps the
-    oldest of the rest go."""
+    oldest of the rest go. A card copied as text from Zulip's past shows
+    as card_view reads it."""
     now = time.time() if now is None else float(now)
     ch = channel or {}
-    lines = [_line(m, now) for m in messages]
+    lines = [_line(card_view(m), now) for m in messages]
     head, rest = lines[:1], lines[1:][-(PROMPT_MESSAGES - 1):]
     while rest and sum(len(x) + 1 for x in head + rest) > PROMPT_CHARS:
         rest = rest[1:]
@@ -494,6 +573,7 @@ def model_verdict(answer: dict | None, prev: dict | None) -> tuple[str, str, str
 
 Ledger = Callable[[list, list], list]
 Model = Callable[[str], "str | None"]
+CardRead = Callable[[str, str, str], "dict | None"]
 
 
 class ThreadStates:
@@ -505,23 +585,30 @@ class ThreadStates:
     "conversation_id"}), for up to BATCH threads at once. `model(prompt)`
     returns the model's text, or None when no model can answer now (the
     tick then stops asking). `devices()` returns the relay's device rows
-    (None with no relay), read only for a new-device notice. Each may be
-    None: the rules alone set the state."""
+    (None with no relay), read only for a new-device notice.
+    `cards(channel, thread_key, msg_id)` returns a mirrored card as the
+    primary holds it now ({"text", "filed", "edited_at"}, or None), and
+    may write its current text into the store; card_cap reads a tick at
+    most, each answer kept for tick_s. Each may be None: the rules alone
+    set the state, and a mirrored card is read from its stored text."""
 
     def __init__(self, store: Callable[[], Any], *, ledger: Ledger | None = None,
                  model: Model | None = None, devices: Callable[[], Any] | None = None,
+                 cards: CardRead | None = None,
                  tick_s: float = TICK_S, soon_s: float = SOON_S,
                  poll_s: float = POLL_S, model_cap: int = MODEL_CAP, rule_cap: int = RULE_CAP,
-                 clock: Callable[[], float] = time.time) -> None:
+                 card_cap: int = CARD_CAP, clock: Callable[[], float] = time.time) -> None:
         self._store = store
         self.ledger = ledger
         self.model = model
         self.devices = devices
+        self.cards = cards
         self.tick_s = float(tick_s)
         self.soon_s = float(soon_s)
         self.poll_s = float(poll_s)
         self.model_cap = int(model_cap)
         self.rule_cap = int(rule_cap)
+        self.card_cap = int(card_cap)
         self.clock = clock
         self._seen: int | None = None
         self._due = False
@@ -529,6 +616,10 @@ class ThreadStates:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._warned: set = set()
+        # (channel, message id) -> (when read, the primary's answer or None).
+        self._card_cache: dict[tuple[str, str], tuple[float, dict | None]] = {}
+        # Reads of the primary since the tick began.
+        self._card_reads = 0
 
     # running
 
@@ -578,6 +669,44 @@ class ThreadStates:
             self._warn("ledger", "web chat: the ledger could not be read for thread states: %s", e)
             return []
 
+    def _read_card(self, m: dict) -> dict | None:
+        """The primary's answer for one mirrored card, kept for tick_s
+        seconds. Past card_cap reads in this tick it waits for the next
+        tick, and its stored text stands. None with no answer."""
+        key = (str(m.get("channel") or ""), str(m.get("id") or ""))
+        now = self.clock()
+        hit = self._card_cache.get(key)
+        if hit is not None and now - hit[0] < self.tick_s:
+            return hit[1]
+        read = self.cards
+        if read is None or self._card_reads >= self.card_cap:
+            return None
+        self._card_reads += 1
+        try:
+            got = read(key[0], str(m.get("thread_key") or ""), key[1])
+        except Exception as e:
+            self._warn("cards", "web chat: a card could not be read from the primary for "
+                                "thread states: %s", e)
+            got = None
+        got = got if isinstance(got, dict) else None
+        self._card_cache[key] = (now, got)
+        return got
+
+    def _with_cards(self, msgs: list[dict]) -> list[dict]:
+        """The thread with the primary's answer (`primary`) on each mirrored
+        card whose stored text can still change; as it is with no primary
+        to ask."""
+        if self.cards is None:
+            return msgs
+        out = []
+        for m in msgs:
+            if mirrored_card(m) and card_pending(m.get("text")):
+                got = self._read_card(m)
+                if got is not None:
+                    m = {**m, "primary": got}
+            out.append(m)
+        return out
+
     def contexts(self, keys: list[tuple[str, str]]) -> list[dict]:
         """What the rules read for each thread (its messages, channel row,
         linked ledger rows, previous row and origin), with one ledger read
@@ -586,7 +715,7 @@ class ThreadStates:
         chans: dict[str, Any] = {}
         out: list[dict] = []
         for channel, key in keys:
-            msgs = store.thread(channel, key, history=True)
+            msgs = self._with_cards(store.thread(channel, key, history=True))
             if not msgs:
                 continue
             if channel not in chans:
@@ -695,9 +824,14 @@ class ThreadStates:
         (newest first, at most rule_cap), then the model over the ones they
         leave open whose newest message is past their row's judged_seq, or
         whose row a rule set and no rule holds now: newest first, at most
-        model_cap calls, and none after a call no model could answer."""
+        model_cap calls, and none after a call no model could answer. The
+        primary's card reads start again at none, and an answer older than
+        tick_s is dropped."""
         store = self._store()
-        since = self.clock() - ACTIVE_DAYS * 86400
+        now = self.clock()
+        self._card_reads = 0
+        self._card_cache = {k: v for k, v in self._card_cache.items() if now - v[0] < self.tick_s}
+        since = now - ACTIVE_DAYS * 86400
         rows = store.active_threads(since, self.rule_cap)
         keys = [(r["channel"], r["thread_key"]) for r in rows]
         open_: list[tuple[str, str]] = []
@@ -729,4 +863,4 @@ class ThreadStates:
             log.info("web chat: no model answered for thread states; the rules alone set them "
                      "until the next tick")
         return {"threads": len(rows), "rules": decided, "open": len(open_), "model_calls": calls,
-                "stopped": stopped}
+                "stopped": stopped, "card_reads": self._card_reads}

@@ -82,6 +82,14 @@ dispatching that input itself, in either of two shapes:
     inbound("action", event=<ActionEvent>)
         both return True when a handler ran
 
+A card copied from the primary's past is plain text in the shadow, so
+the shadow cannot see it settle. The composite sets `shadow.card_lookup`
+to a callable (channel, thread_key, msg_id) -> the primary's card_now
+answer ({"text", "filed", "edited_at"}, or None) when the primary has that
+read (Zulip), else to None. It also writes the card's current text into
+the shadow row through mirror_update, which writes nothing for an
+unchanged text.
+
 A message is posted into the primary as the bot, after WEB_PREFIX and in
 the Slack mrkdwn that post() takes, so it has a primary id, sits in the
 primary thread and shows as the owner typed it. The shadow row is then
@@ -278,6 +286,10 @@ class ShadowFrontend(ChatFrontend):
         primary.on_outbound = self._primary_outbound
         shadow.inbound = self._from_shadow
         shadow.notice = self._notice_owner
+        # The read back of a card the shadow holds as text; None for a
+        # primary with no such read (anything but Zulip).
+        shadow.card_lookup = (self._primary_card if callable(getattr(primary, "card_now", None))
+                              else None)
 
     def __getattr__(self, name: str) -> Any:
         # Runs only for a name the composite lacks: a platform's own
@@ -784,6 +796,29 @@ class ShadowFrontend(ChatFrontend):
 
     def file_card(self, ref: MessageRef) -> bool:
         return self.primary.file_card(ref)
+
+    def _primary_card(self, channel: str, thread_key: str, msg_id: str) -> dict | None:
+        """The shadow's `card_lookup`: a card the shadow holds as text from
+        the primary's past, as the primary holds it now (its card_now, a
+        read). Its current text goes into the shadow row through
+        mirror_update, as Markdown when the primary's history is Markdown;
+        an unchanged text writes nothing. None while the shadow is off or
+        when the primary has no answer."""
+        if self.shadow_off:
+            return None
+        got = self.primary.card_now(channel, thread_key, msg_id)
+        if not isinstance(got, dict):
+            return None
+        text = got.get("text")
+        if isinstance(text, str) and text.strip():
+            ref = MessageRef(channel, msg_id, thread_key, None)
+            extra: dict[str, Any] = {}
+            if getattr(self.primary, "history_markdown", False) and \
+                    self._takes("mirror_update", "markdown"):
+                extra["markdown"] = True
+            self._mirror("card text", channel,
+                         lambda: self.shadow.mirror_update(ref, text, **extra), hold=False)
+        return got
 
     # conversations and rooms: reads go to the primary
 

@@ -1791,3 +1791,120 @@ def test_a_rate_limited_history_read_is_tried_again(tmp_path):
     with pytest.raises(ChatError):
         fe._history([{"operator": "channel", "operand": 4}], 200)
     assert len(c.named("sleep")) == 2 + zf.HISTORY_RATE_RETRIES
+
+
+# shadow mode: a card the shadow holds as text is read back from Zulip
+
+
+def test_card_text_state_tells_the_legend_from_a_status_line(tmp_path, monkeypatch):
+    """Every legend render_card writes reads as live, the status line that
+    replace_card_with_status puts in its place reads as that line, and a
+    pointer to a card or plain text is no card."""
+    from chat.cards import CardSelect
+    pick = ConfirmationCard(kind="pick", title=":lock: *Pick a time*",
+                            select=CardSelect("pick", "Pick one", [("Mon 10:00", "a")]))
+    for card in (_card(), _chip_card(), pick):
+        assert zf.card_text_state(zf.render_card(card, "ABCD")) == ("live", "")
+    monkeypatch.setattr(zf, "action_reactions", lambda card: [])     # the typed form alone
+    typed = zf.render_card(_card(), "ABCD")
+    assert "\n\n----\nReply `<word> ABCD`" in typed
+    assert zf.card_text_state(typed) == ("live", "")
+    monkeypatch.undo()
+    fe, c = make(tmp_path)
+    for status, line in ((":white_check_mark: *Sent*", ":check: **Sent**"),
+                         (":incoming_envelope: Sent from Outlook.",
+                          ":mail_received: Sent from Outlook."),
+                         (":hourglass_flowing_sand: Sending...", ":time_ticking: Sending..."),
+                         (":x: Could not send", ":cross_mark: Could not send")):
+        ref = fe.post_card(f"stream:{DM}", _card())
+        fe.replace_card_with_status(ref, status)
+        assert zf.card_text_state(c.named("update_message")[-1]["content"]) == ("status", line)
+    assert zf.card_text_state(":locked: The Send button for this draft is in your DM: "
+                              "[open it](https://chat.example.org/#narrow)") == ("", "")
+    assert zf.card_text_state("") == ("", "")
+
+
+def _zulip_card(mid, content, *, stream=DM, name="ea-dm", edited=None):
+    m = {"id": mid, "type": "stream", "stream_id": stream, "display_recipient": name,
+         "subject": "lock ABCD uma", "content": content, "timestamp": 1_800_000_000}
+    if edited:
+        m["last_edit_timestamp"] = edited
+    return m
+
+
+def test_card_now_reads_a_card_by_id_and_writes_nothing(tmp_path):
+    fe, c = make(tmp_path)
+    live = zf.render_card(_card(), "ABCD")
+    settled = live.split(zf._CARD_RULE)[0] + zf._CARD_RULE + ":mail_received: Sent from Outlook."
+    c.messages_by_anchor[601] = _zulip_card(601, live)
+    c.messages_by_anchor[602] = _zulip_card(602, settled, edited=1_800_000_500)
+    c.messages_by_anchor[603] = _zulip_card(603, settled, stream=60, name="ea-dm-done")
+    key = zf.thread_key_for(DM, "lock ABCD uma")
+    before = len(c.calls)
+    assert fe.card_now(f"stream:{DM}", key, "601") == {"text": live, "filed": False,
+                                                        "edited_at": None}
+    assert fe.card_now(f"stream:{DM}", key, "602") == {"text": settled, "filed": False,
+                                                        "edited_at": 1_800_000_500.0}
+    assert fe.card_now(f"stream:{DM}", key, "603")["filed"] is True
+    assert fe.card_now(f"stream:{DM}", key, "699") is None              # no such message
+    c.get_messages = lambda req: {"result": "error", "msg": "down"}
+    assert fe.card_now(f"stream:{DM}", key, "601") is None              # no answer
+    assert {n for n, _ in c.calls[before:]} <= {"get_messages"}
+
+
+def test_card_now_finds_a_card_with_no_id_by_its_topic(tmp_path):
+    fe, c = make(tmp_path)
+    c.add_subscriptions([{"name": "ea-dm-done"}], invite_only=True)
+    done = c.stream_ids["ea-dm-done"]
+    held = {DM: [], done: []}
+
+    def get_messages(req):
+        c._rec("get_messages", req)
+        narrow = {n["operator"]: n["operand"] for n in req["narrow"]}
+        hits = [m for m in held.get(narrow.get("channel"), [])
+                if m["subject"] == narrow.get("topic")]
+        return {**OK, "messages": hits[:1]}
+    c.get_messages = get_messages
+    key = zf.thread_key_for(DM, "lock ABCD uma")
+    text = zf.render_card(_card(), "ABCD")
+    held[DM] = [_zulip_card(604, text)]
+    assert fe.card_now(f"stream:{DM}", key, "file:up1")["filed"] is False
+    held[DM], held[done] = [], [_zulip_card(604, text, stream=done, name="ea-dm-done")]
+    assert fe.card_now(f"stream:{DM}", key, "file:up1")["filed"] is True
+    held[done] = []
+    assert fe.card_now(f"stream:{DM}", key, "file:up1") is None
+    assert fe.card_now("dm:9", "dm:9", "file:up1") is None             # no topic to read
+
+
+def test_a_card_copied_as_text_reads_its_outcome_from_zulip(tmp_path):
+    """The composite reads a card the web chat holds as text back from
+    Zulip, writes its current text into the row once, and the thread
+    states read the outcome: no model is asked."""
+    from chat import thread_state as ts
+    comp, fe, c, web = _shadowed(tmp_path)
+    assert web.card_lookup == comp._primary_card
+    dm = f"stream:{DM}"
+    key = zf.thread_key_for(DM, "lock ABCD uma")
+    live = zf.render_card(_card(), "ABCD")
+    web.store.add_message(dm, mid="610", thread_key=key, author="bot", kind="message",
+                          text=live, posted_at=1_800_000_000.0, history=True)
+    settled = live.split(zf._CARD_RULE)[0] + zf._CARD_RULE + ":check: Handled."
+    c.messages_by_anchor[610] = _zulip_card(610, settled, stream=60, name="ea-dm-done",
+                                            edited=1_800_000_300)
+    start = web.store.max_event_seq()
+    prompts = []
+    states = web.enable_thread_state(model=prompts.append, clock=lambda: 1_800_000_600.0)
+    states.tick()
+    row = web.store.message(dm, "610")
+    assert row["text"] == settled and row["kind"] == "message"          # as Zulip writes it
+    st = web.store.thread_state(dm, key)
+    assert (st["state"], st["by"], st["reason"]) == ("done", "rule",
+                                                    "The card was answered: Handled.")
+    assert prompts == []
+    events = [t for _s, t, _p in web.store.events_since(start)]
+    assert events.count("update") == 1
+    # an unchanged text writes nothing
+    after = web.store.max_event_seq()
+    assert comp._primary_card(dm, key, "610")["text"] == settled
+    assert web.store.max_event_seq() == after
+    assert ts.card_pending(row["text"]) is False
