@@ -262,7 +262,7 @@ button, select, textarea, input { font: inherit; color: inherit; }
 }
 .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 #update-note { margin: 0 0 8px; font-weight: 600; }
-#pair-phone, #open-settings { margin: 8px 4px 0 0; }
+#pair-phone, #open-settings, #tour-again, #new-room { margin: 8px 4px 0 0; }
 .toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
 .install { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--muted); font-size: 13px; }
 .install > span { flex: 1; }
@@ -270,6 +270,7 @@ button, select, textarea, input { font: inherit; color: inherit; }
 .subs li { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
 .archived summary { padding: 8px 18px; color: var(--muted); cursor: pointer; font-size: 13px; font-weight: 500; }
 .empty { color: var(--muted); padding: 16px; margin: 0; }
+.empty p { margin: 0 0 12px; }
 .scroll > .empty { max-width: 30em; margin: 0 auto; padding: 48px 24px; text-align: center; }
 .more { display: block; margin: 8px auto 16px; }
 
@@ -453,9 +454,9 @@ a.file-link .file-name { color: var(--accent); }
   box-shadow: var(--shadow);
 }
 #pair h2, #pair p { margin: 0; }
-#pair h2, #phone h2, #settings h2 { font-size: 20px; font-weight: 650; line-height: 1.25; letter-spacing: -.01em; }
+#pair h2, #phone h2, #settings h2, #room h2, #welcome h2 { font-size: 20px; font-weight: 650; line-height: 1.25; letter-spacing: -.01em; }
 .refusal { grid-column: 1 / -1; padding: 24px; max-width: 40em; }
-#pair input { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--bg); font-size: 16px; }
+#pair input, #room-name { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--bg); font-size: 16px; }
 .error { color: var(--danger); min-height: 1em; }
 #relay-note {
   position: fixed;
@@ -473,7 +474,7 @@ a.file-link .file-name { color: var(--accent); }
 
 /* pairing a phone: the code is dark on light in either scheme */
 
-#phone, #settings {
+#phone, #settings, #room, #welcome {
   width: min(calc(100% - 32px), 420px);
   max-height: calc(100dvh - 32px);
   padding: 24px;
@@ -483,11 +484,11 @@ a.file-link .file-name { color: var(--accent); }
   color: var(--text);
   box-shadow: var(--shadow-lg);
 }
-#phone[open], #settings[open] { animation: fade .18s var(--ease); } /* no transform: a dialog keeps its measured size */
+#phone[open], #settings[open], #room[open], #welcome[open] { animation: fade .18s var(--ease); } /* no transform: a dialog keeps its measured size */
 @keyframes fade { from { opacity: 0; } }
-#phone::backdrop, #settings::backdrop { background: var(--scrim); }
-#phone form, #settings form { display: grid; gap: 12px; }
-#phone h2, #phone h3, #phone p, #settings h2, #settings h3, #settings p { margin: 0; }
+#phone::backdrop, #settings::backdrop, #room::backdrop, #welcome::backdrop { background: var(--scrim); }
+#phone form, #settings form, #room form, #welcome form { display: grid; gap: 12px; }
+#phone h2, #phone h3, #phone p, #settings h2, #settings h3, #settings p, #room h2, #room p, #welcome h2, #welcome p { margin: 0; }
 #phone h3, #settings h3 { margin-top: 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
 #phone-qr { width: 100%; max-width: 280px; justify-self: center; padding: 12px; border: 1px solid var(--border); border-radius: var(--r-m);
   image-rendering: pixelated; background: #fff; }
@@ -506,6 +507,37 @@ a.file-link .file-name { color: var(--accent); }
 .seg label:has(input:disabled) { opacity: .55; cursor: default; }
 .seg input { margin: 0; accent-color: var(--accent); }
 .settings-actions { display: flex; gap: 8px; }
+
+/* New room: the name, a plain hint, Cancel and Open room on the right */
+
+#room label { font-weight: 600; }
+#room-name[aria-invalid="true"] { border-color: var(--danger); }
+#room-hint { color: var(--muted); font-size: 14px; }
+#room-error:empty { display: none; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* The welcome: the cards share one cell, so the box keeps the tallest
+   card's height and the buttons stay put; an example is written as the
+   owner's own bubble, its name to replace in bold. */
+
+#welcome:focus { outline: none; } /* it takes the focus itself on open, so no button wears a ring */
+.w-hello { color: var(--muted); font-size: 13px; font-weight: 600; }
+#welcome-cards { display: grid; touch-action: pan-y; }
+#welcome-cards > section { grid-area: 1 / 1; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+#welcome-cards > section:not(.on) { visibility: hidden; }
+#welcome-cards > section.on { animation: fade .2s var(--ease); }
+.example { max-width: 100%; padding: 9px 14px; border: 0; border-radius: var(--r-l); background: var(--own); color: var(--text); text-align: left;
+  line-height: 1.35; cursor: pointer; transition: filter .15s; }
+.example b { font-weight: 650; }
+.empty .example { display: inline-block; text-align: center; }
+.w-sample { display: flex; align-items: center; justify-content: space-between; gap: 8px; align-self: stretch; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: var(--r-l); background: var(--bg); font-weight: 500; }
+.w-card { box-shadow: inset 3px 0 0 var(--accent); }
+.w-btn { padding: 4px 14px; border-radius: var(--r-m); background: var(--accent); color: var(--accent-text); font-size: 14px; font-weight: 600; }
+.w-foot { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.dots { display: flex; gap: 6px; flex: 1; }
+.dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); transition: background-color .2s; }
+.dots i.on { background: var(--accent); }
 
 /* narrow: the channels in a drawer */
 
@@ -564,6 +596,7 @@ a.file-link .file-name { color: var(--accent); }
   .thread-item:not(.active):hover { border-color: var(--border-strong); box-shadow: var(--shadow); }
   a.file-link:hover { border-color: var(--border-strong); }
   .btn.primary:hover, #send:hover { filter: brightness(1.08); }
+  .example:hover { filter: brightness(.96); }
   .btn.plain:hover, #attach:hover { color: var(--text); }
   .text a:hover, .card a:hover { text-decoration-thickness: 2px; }
 }
@@ -573,7 +606,7 @@ a.file-link .file-name { color: var(--accent); }
 }
 
 @media (pointer: coarse) { /* every control a finger presses is at least 44px high */
-  .btn, .btn.small, .card-actions select, .toggle, .filter, .chan, .seg label { min-height: 44px; }
+  .btn, .btn.small, .example, .card-actions select, .toggle, .filter, .chan, .seg label { min-height: 44px; }
   .archived summary, .card-quoted summary { padding-block: 13px; }
 }
 

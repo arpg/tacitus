@@ -19,7 +19,10 @@ its check, while only the owner lets it press card buttons, and a phone
 off the tailnet takes a new release from the bot through the relay. Each
 thread card carries its state's sticker, Needs you gathers the threads
 that wait on the owner, the chips filter a channel, and the owner's
-override posts and follows the bot's `thread_state` events.
+override posts and follows the bot's `thread_state` events. The app
+teaches itself: a welcome shown once per browser (and again from the
+drawer) whose examples fill the composer, a New room dialog that asks the
+bot in the EA channel, and empty lists that say what each place is for.
 """
 import json
 import re
@@ -350,10 +353,30 @@ def test_the_app_stays_small():
     # and the dual-screen split at the hinge. 3,190: the height pin that lets go when a screen changes size.
     # 3,240: 3,190 plus a new release through the relay (the page fetches it, the worker checks and keeps it).
     # 3,430: 3,240 plus the thread states (stickers, Needs you, the filter chips, the override and long press).
-    assert lines <= 3430, f"{lines} lines: the contract keeps the app near 3,430 with the relay, the phone setup and the thread states"
+    # 3,630: 3,430 plus the teaching (the welcome's three cards, the examples, New room, the empty lists).
+    assert lines <= 3630, f"{lines} lines: the contract keeps the app near 3,630 with the relay, the phone setup, the thread states and the teaching"
 
 
 # -- in a browser, against the stub ---------------------------------------
+
+# Every context starts as a browser that has closed the welcome once, so it
+# covers nothing; `new_context(welcome=True)` leaves it to show.
+WELCOMED = "try { localStorage.setItem('tacitus-welcome-seen', '1'); } catch (e) {}"
+
+
+class _Browser:
+    def __init__(self, b):
+        self._b = b
+
+    def new_context(self, welcome=False, **kw):
+        ctx = self._b.new_context(**kw)
+        if not welcome:
+            ctx.add_init_script(WELCOMED)
+        return ctx
+
+    def __getattr__(self, name):
+        return getattr(self._b, name)
+
 
 @pytest.fixture(scope="module")
 def browser():
@@ -367,7 +390,7 @@ def browser():
     except Exception as e:  # noqa: BLE001 - no browser installed
         pw.stop()
         pytest.skip(f"no chromium for playwright: {e}")
-    yield b
+    yield _Browser(b)
     b.close()
     pw.stop()
 
@@ -392,9 +415,9 @@ def app(browser, stub_factory):
     page errors and console errors (a CSP refusal among them)."""
     contexts = []
 
-    def open_app(viewport=None, init=None, context=None, **kw):
+    def open_app(viewport=None, init=None, context=None, welcome=False, **kw):
         url, stub = stub_factory(**kw)
-        ctx = browser.new_context(viewport=viewport or {"width": 1280, "height": 800}, **(context or {}))
+        ctx = browser.new_context(welcome=welcome, viewport=viewport or {"width": 1280, "height": 800}, **(context or {}))
         contexts.append(ctx)
         if init:
             ctx.add_init_script(init)
@@ -907,6 +930,214 @@ def test_needs_you_on_a_phone_is_one_pane_with_back(app):
     assert not errors, errors
 
 
+# -- teaching: the welcome, the examples, New room, empty lists ------------
+
+PHONE = {"viewport": {"width": 390, "height": 844},
+         "context": {"has_touch": True, "is_mobile": True, "device_scale_factor": 3}}
+SIZES = pytest.mark.parametrize("size", ["phone", "desktop"])
+# Words a first-day owner does not use: the app says room, conversation, card.
+JARGON = re.compile(r"\b(channel|thread|session|context|specialist)s?\b", re.I)
+# The drawer foot's entries on show.
+FOOT = "[...$('drawer-foot').children].filter((el) => !el.hidden).map((el) => el.id)"
+
+
+def _drawer(page, size):
+    if size == "phone":
+        page.click("#menu")
+
+
+def _visible_text(html: str) -> str:
+    return re.sub(r"<[^>]+>", "", html)
+
+
+def test_the_teaching_copy_is_plain():
+    """What the welcome, New room and the empty lists say passes the gym
+    coach on a phone: no jargon, and no welcome card is about rooms."""
+    html = read("index.html")
+
+    def part(start):
+        at = html.index(start)
+        return html[at:html.index("</dialog>", at)]
+    welcome, room = part('<dialog id="welcome"'), part('<dialog id="room"')
+    js = read("app.js")
+    teach = js[js.index("/* -- Teaching"):js.index("/* -- Code integrity")]
+    said = [t for t in re.findall(r"'([^'\n]*)'", teach) if " " in t]
+    for text in [_visible_text(welcome), _visible_text(room), *said]:
+        assert not JARGON.search(text), text
+    assert "room" not in _visible_text(welcome).lower()
+    assert "Type what you want done, the way you would text an assistant." in welcome
+    assert ("A room keeps one ongoing project together: its people, mail and decisions. "
+            "Most people never need one on day one.") in room
+    assert "`open a room for ${name}`" in teach  # the bot's own words for it (ea-chat-bot.py, _ROOM_VERB)
+
+
+@SIZES
+def test_the_welcome_shows_once_and_again_from_the_drawer(app, size):
+    from playwright.sync_api import expect
+    page, stub, errors = app(welcome=True, **(PHONE if size == "phone" else {}))
+    dlg, card = page.locator("#welcome"), page.locator("#welcome-cards > section.on")
+    expect(dlg).to_be_visible()
+    expect(card.locator("h2")).to_have_text("Ask in plain words")
+    expect(card.locator(".example")).to_have_text(["Reply to Sam and say Tuesday works.", "What is on tomorrow?",
+                                                   "Find me an hour with Dana next week."])
+    expect(page.locator("#welcome-dots")).to_have_attribute("aria-label", "Card 1 of 3")
+    expect(dlg).to_be_focused()  # the dialog itself: no button wears a focus ring on open
+    if size == "phone":
+        assert page.evaluate(SMALL_TARGETS) == []
+        assert page.evaluate(SIDEWAYS) == [0, 0]
+        # A swipe to the left moves on, one to the right comes back.
+        box = page.locator("#welcome-cards").bounding_box()
+        y = box["y"] + box["height"] / 2
+        for x0, x1, title in ((box["x"] + box["width"] - 20, box["x"] + 20, "Nothing goes out without you"),
+                              (box["x"] + 20, box["x"] + box["width"] - 20, "Ask in plain words")):
+            page.mouse.move(x0, y)
+            page.mouse.down()
+            page.mouse.move(x1, y, steps=5)
+            page.mouse.up()
+            expect(card.locator("h2")).to_have_text(title)
+            expect(dlg).to_be_visible()  # the swipe began on an example, and did not tap it
+    page.click("#welcome-next")
+    expect(card.locator("h2")).to_have_text("Nothing goes out without you")
+    expect(card).to_contain_text("a card lands in Direct messages with a Send or Create button. "
+                                 "Nothing is sent until you tap it.")
+    expect(page.locator("#welcome-dots")).to_have_attribute("aria-label", "Card 2 of 3")
+    page.keyboard.press("ArrowRight")
+    expect(card.locator("h2")).to_have_text("Needs you")
+    expect(card).to_contain_text("The Needs you list at the top gathers everything waiting on you. "
+                                 "Tap Mark done when it is handled.")
+    expect(page.locator("#welcome-next")).to_have_text("Done")
+    expect(page.locator("#welcome-skip")).to_be_hidden()
+    page.click("#welcome-next")
+    expect(dlg).to_be_hidden()
+    wait_for(lambda: page.evaluate("localStorage.getItem('tacitus-welcome-seen')") == "1")  # on the close event
+    # Closed once, it stays closed in this browser.
+    page.reload()
+    page.wait_for_selector(".thread-item")
+    expect(page.locator("#tour-again")).to_be_attached()
+    page.wait_for_timeout(300)
+    expect(dlg).to_be_hidden()
+    # "How Tacitus works" opens it again at the first card; Escape closes it.
+    _drawer(page, size)
+    page.click("#tour-again")
+    expect(dlg).to_be_visible()
+    expect(card.locator("h2")).to_have_text("Ask in plain words")
+    expect(page.locator("body")).not_to_have_class(re.compile("drawer"))
+    page.keyboard.press("Escape")
+    expect(dlg).to_be_hidden()
+    assert not errors, errors
+
+
+@SIZES
+def test_an_example_fills_the_composer_in_the_ea_channel(app, size):
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app(welcome=True, **(PHONE if size == "phone" else {}))
+    page.locator("#welcome .example", has_text="Reply to Sam").click()
+    expect(page.locator("#welcome")).to_be_hidden()
+    expect(page).to_have_url(re.compile(re.escape("#/stream%3A9/%2B") + "$"))
+    expect(page.locator("#thread-title")).to_have_text("New conversation")
+    expect(page.locator("#messages .empty")).to_have_text("Write your message below. It starts a new conversation.")
+    expect(page.locator("#text")).to_be_focused()
+    expect(page.locator("#composer")).to_be_in_viewport()
+    assert page.input_value("#text") == "Reply to Sam and say Tuesday works."
+    # The name is selected: typing replaces it.
+    page.keyboard.type("Alex")
+    assert page.input_value("#text") == "Reply to Alex and say Tuesday works."
+    assert not stub.posts
+    page.press("#text", "Enter")
+    wait_for(lambda: stub.posts)
+    assert stub.posts == [{"channel": W.MAIN, "text": "Reply to Alex and say Tuesday works.",
+                           "thread_key": None, "file": None}]
+    wait_for(lambda: page.evaluate("localStorage.getItem('tacitus-welcome-seen')") == "1")
+    assert not errors, errors
+
+
+@SIZES
+def test_new_room_asks_the_bot_in_the_ea_channel_and_opens_the_conversation(app, size):
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app(**(PHONE if size == "phone" else {}))
+    page.wait_for_selector(".thread-item")
+    _drawer(page, size)
+    btn = page.locator("#new-room")
+    expect(btn).to_have_text("New room")
+    expect(btn).to_have_class(re.compile(r"\bplain\b"))  # muted, last in the drawer's foot
+    assert page.evaluate("$('drawer-foot').lastElementChild.id") == "new-room"
+    btn.click()
+    dlg, name = page.locator("#room"), page.locator("#room-name")
+    expect(dlg).to_be_visible()
+    expect(name).to_be_focused()
+    expect(page.locator("label[for=room-name]")).to_have_text("What is the project called?")
+    expect(page.locator("#room-hint")).to_have_text("A room keeps one ongoing project together: its people, mail "
+                                                    "and decisions. Most people never need one on day one.")
+    if size == "phone":
+        assert page.evaluate(SMALL_TARGETS) == []
+    # An empty name is refused where it is typed.
+    page.click("#room-open")
+    expect(page.locator("#room-error")).to_have_text("Type the name of the project.")
+    expect(name).to_have_attribute("aria-invalid", "true")
+    name.fill(" ")
+    expect(page.locator("#room-error")).to_be_hidden()
+    page.keyboard.press("Enter")
+    expect(page.locator("#room-error")).to_be_visible()
+    assert not stub.posts
+    # Cancel and Escape close it and leave the drawer as it was.
+    page.click("#room-cancel")
+    expect(dlg).to_be_hidden()
+    btn.click()
+    expect(page.locator("#room-error")).to_be_hidden()
+    assert name.input_value() == ""
+    page.keyboard.press("Escape")
+    expect(dlg).to_be_hidden()
+    expect(btn).to_be_visible()
+    btn.click()
+    name.fill("  Spring   tour ")
+    page.click("#room-open")
+    wait_for(lambda: stub.posts)
+    assert stub.posts == [{"channel": W.MAIN, "text": "open a room for Spring tour", "thread_key": None, "file": None}]
+    key = next(m for m in stub.messages if m["text"] == "open a room for Spring tour")["thread_key"]
+    expect(page).to_have_url(re.compile(re.escape("#/stream%3A9/" + key) + "$"))
+    expect(dlg).to_be_hidden()
+    expect(page.locator("#messages .msg.own")).to_contain_text("open a room for Spring tour")
+    # The bot answers there, and the room arrives in the drawer.
+    expect(page.locator("#messages .msg.bot")).to_contain_text("Opened #ea-spring-tour")
+    expect(page.locator("#channel-list .c-name", has_text="ea-spring-tour")).to_have_count(1)
+    if size == "phone":
+        assert page.evaluate(SIDEWAYS) == [0, 0]
+    assert not errors, errors
+
+
+@SIZES
+def test_an_empty_list_says_what_the_place_is_for(app, size):
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app(**(PHONE if size == "phone" else {}))
+    page.wait_for_selector(".thread-item")
+    stub.messages[:] = [m for m in stub.messages if m["channel"] not in (W.DM, W.MAIN, W.SCHED, W.ROOM)]
+    page.reload()
+    empty = page.locator("#thread-list .empty")
+    expect(empty).to_have_text("Cards that need your tap land here.")  # the DM opens first
+    expect(page.locator("#thread-list .filters")).to_have_count(0)  # nothing to filter
+    for where, says in (("r1", "This room is for one project. Ask about it here and Tacitus keeps track of it."),
+                        ("stream%3A11", "Tacitus finds meeting times here.")):
+        page.evaluate(f"location.hash = '#/{where}'")
+        expect(empty).to_have_text(says)
+    page.evaluate("location.hash = '#/stream%3A9'")
+    expect(empty.locator("p")).to_have_text("Ask for something. For example:")
+    example = empty.locator(".example")
+    expect(example).to_have_text("Find me an hour with Dana next week.")
+    for text in empty.all_inner_texts():
+        assert not JARGON.search(text), text
+    if size == "phone":
+        assert page.evaluate(SMALL_TARGETS) == []
+    example.click()
+    expect(page).to_have_url(re.compile(re.escape("#/stream%3A9/%2B") + "$"))
+    expect(page.locator("#text")).to_be_focused()
+    assert page.input_value("#text") == "Find me an hour with Dana next week."
+    assert page.evaluate("[$('text').selectionStart, $('text').selectionEnd]") == [21, 25]
+    assert not errors, errors
+
+
 # -- installing on a phone -------------------------------------------------
 
 # navigator.standalone exists on iOS only: false in Safari, true in the app
@@ -943,7 +1174,8 @@ def test_ios_safari_shows_the_install_line_until_it_is_hidden(app):
     expect(page.locator("#install-btn")).to_be_hidden()
     page.click("#install-close")
     expect(line).to_be_hidden()
-    expect(page.locator("#drawer-foot")).to_be_hidden()  # the stub offers no push and no relay
+    # The stub offers no push and no relay: the foot keeps the welcome's entry and New room.
+    assert page.evaluate(FOOT) == ["push-subs", "tour-again", "new-room"]
     hidden_at = page.evaluate("Number(localStorage.getItem('tacitus-install-hidden'))")
     assert abs(hidden_at / 1000 - time.time()) < 60
     page.reload()
@@ -966,7 +1198,7 @@ def test_the_installed_app_shows_no_install_line(app):
     page.wait_for_selector(".thread-item")
     page.evaluate(FAKE_PROMPT)
     expect(page.locator("#install")).to_be_hidden()
-    expect(page.locator("#drawer-foot")).to_be_hidden()
+    assert page.evaluate(FOOT) == ["push-subs", "tour-again", "new-room"]
     assert not errors, errors
 
 
@@ -1169,10 +1401,13 @@ VECTORS = TESTS / "fixtures" / "relay_vectors.json"
 
 def test_the_relay_keys_stay_in_webcrypto_and_indexeddb():
     js = read("app.js")
-    # Web Storage holds three things, none a key: when this browser hid the
-    # install line, the connection notes it reports to the bot, and the
-    # thread filter chosen (a read at start and a write per choice).
-    assert "sessionStorage" not in js and js.count("localStorage") == 8
+    # Web Storage holds four things, none a key: when this browser hid the
+    # install line, the connection notes it reports to the bot, the
+    # thread filter chosen (a read at start and a write per choice), and
+    # that the welcome was closed once (a read after the channels load, a
+    # write when it closes).
+    assert "sessionStorage" not in js and js.count("localStorage") == 10
+    assert all(f"localStorage.{verb}(WELCOME_KEY" in js for verb in ("getItem", "setItem"))
     assert all(f"localStorage.{verb}(INSTALL_KEY" in js for verb in ("getItem", "setItem"))
     assert all(f"localStorage.{verb}(FILTER_KEY" in js for verb in ("getItem", "setItem"))
     assert all(f"localStorage.{verb}(DIAG_KEY" in js for verb in ("getItem", "setItem", "removeItem"))
@@ -1535,9 +1770,9 @@ def test_a_phone_pairs_on_the_tailnet_and_chats_through_the_relay(browser, relay
         assert [d["origin"] for d in devices] == ["own"]
         stored = page.evaluate("""async () => { const r = await loadPairing();
             return { type: r.priv.type, extractable: r.priv.extractable, device: r.device,
-                     local: localStorage.length }; }""")
+                     local: Object.keys(localStorage) }; }""")
         assert stored == {"type": "private", "extractable": False, "device": devices[0]["id"],
-                          "local": 0}
+                          "local": ["tacitus-welcome-seen"]}  # the test's own mark, nothing of the pairing
         expect(page.locator("#relay-note")).to_be_hidden()  # approved: the note went
 
         fe.post("dm", "Hello through the relay")

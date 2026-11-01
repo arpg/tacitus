@@ -522,10 +522,35 @@ owner's state to `/api/threads/{ch}/{thread_key}/state`, as does a long
 press (600 ms, held still) on a card on a touch screen; the sticker
 changes at once and follows the bot's answer and its event.
 
+The app teaches itself, for a first-day owner on a phone who reads no
+docs. Its words (the welcome, New room, the empty lists and a new
+conversation's pane) say room, conversation and card, never channel,
+thread, session or context. A welcome of three cards opens once per
+browser after the channels load, and "How Tacitus works" at the
+drawer's foot opens it again: "Ask in plain words" (type what you want
+done, the way you would text an assistant, with three examples to tap),
+"Nothing goes out without you" (a draft or a meeting arrives as a card in
+Direct messages, and nothing is sent until the owner taps Send or
+Create) and "Needs you" (the list at the top gathers what waits on the
+owner; Mark done when it is handled). Next, a swipe or an arrow key
+moves; Skip, Done or Escape closes it, and closing it is what is kept.
+No card is about rooms: a room is a later step. An example opens a new
+conversation in the EA channel with its words in the composer and its
+name selected, so typing replaces it; it sends nothing. "New room", last
+and muted at the drawer's foot, asks what the project is called, says in
+one line what a room is for, refuses an empty name where it is typed,
+and posts `open a room for <name>` as the owner in a new conversation in
+the EA channel, which then opens: the bot answers there, and the room
+arrives as a `channel` event. An empty list says what the place is for:
+the EA channel offers an example to tap, Direct messages says the cards
+that need a tap land there, a room that it is for one project, and the
+scheduling channel that Tacitus finds meeting times there.
+
 Dark and light from `prefers-color-scheme`. Keep the whole app under
-~3,430 lines with the relay transport, the QR encoder, the code check,
+~3,630 lines with the relay transport, the QR encoder, the code check,
 the update through the relay, the per-phone card-button choice, the
-Settings screen and the thread states; readable by one maintainer.
+Settings screen, the thread states and the teaching; readable by one
+maintainer.
 
 Installing on a phone. The manifest (`display: standalone`, `scope` and
 `start_url` `./`, so the base path with its slash, since the page links
@@ -543,8 +568,8 @@ installed app (`navigator.standalone` false on iOS, `display-mode:
 browser` elsewhere) a line at the drawer's foot says how to install: on
 iOS Share, then Add to Home Screen; in Chrome an Install button for its
 `beforeinstallprompt`. Hiding it lasts 30 days; `localStorage` keeps the
-time it was hidden, the thread filter and the connection notes for
-`/api/diag`, and nothing else. A link to a route of this app
+time it was hidden, the thread filter, that the welcome was closed and
+the connection notes for `/api/diag`, and nothing else. A link to a route of this app
 (`<base>/#/...`, absolute or relative) opens in it; any other keeps
 `target="_blank"`, so the installed app hands it to the browser. On iOS
 the keyboard shrinks only the visual viewport: the app sets its height
