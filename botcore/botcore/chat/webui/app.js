@@ -1697,6 +1697,34 @@ async function pair(e) {
   }
 }
 
+// What to say when the bot does not answer, in words a phone's owner can
+// act on. Without a pairing in this
+// browser's storage the app only knows its own address, which is reachable
+// on the owner's network alone; on iOS the home-screen app and Safari keep
+// separate storage, so a phone set up in one is not set up in the other.
+async function unreachableNote(e) {
+  if (T.relay) {
+    const host = new URL(T.rec.relay).host;
+    if (e instanceof RelayError) return `Could not reach Tacitus: ${e.message}`;
+    // The call itself failed on the network. A plain GET on the relay tells
+    // whether this phone reaches the relay at all, or only the call broke.
+    if (S.cspBlocked) return `This copy of the app may not call ${S.cspBlocked}. Open the app on the tailnet once to refresh it.`;
+    const up = await fetch(`${T.rec.relay}/`, { mode: 'no-cors', cache: 'no-store', credentials: 'omit' }).then(() => true, () => false);
+    return up
+      ? `The relay at ${host} answers, but the call to Tacitus failed (${e.message}). Trying again.`
+      : `This phone cannot reach the relay at ${host}. Check that it is online (Wi-Fi or cellular), then try again.`;
+  }
+  if (!(await loadPairing())) {
+    return 'Tacitus is reachable only on your own network from here. To use it anywhere, open this same app on that network '
+      + 'and tap "Set up this phone" under "Use Tacitus on your phone".';
+  }
+  return `Could not reach Tacitus: ${e.message}`;
+}
+
+// A call the page's own security policy refused: the note names it, since
+// the browser reports such a call only as a failed load.
+document.addEventListener('securitypolicyviolation', (e) => { S.cspBlocked = e.blockedURI || e.violatedDirective; });
+
 async function boot() {
   if (S.halted) return;
   try {
@@ -1705,7 +1733,11 @@ async function boot() {
     // A copy of the app from the relay runs the chat only once its code checks.
     if (relayCopy() && !(await checkBundle())) return;
   } catch (e) {
-    if ($('pair').hidden) toast(`Could not reach the bot: ${e.message}`);
+    if ($('pair').hidden) {
+      const why = await unreachableNote(e);
+      toast(why);
+      if (T.relay) relayNote(why); // the toast fades; the note stays while boot retries
+    }
     if (T.relay) setTimeout(boot, Math.min(30000, 1000 * 2 ** S.retry++));
     return;
   }
