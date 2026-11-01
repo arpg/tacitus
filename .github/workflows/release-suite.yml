@@ -32,7 +32,7 @@ jobs:
       COMPOSE_PROJECT_NAME: ea-release
       TAG: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@v7
 
       - name: Settings for compose
         run: |
