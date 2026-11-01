@@ -97,8 +97,9 @@ integrity): every file under `webui/` and its sha256, signed with an
 Ed25519 key that lives in the relay key file (a key for this process
 alone when no relay runs). It serves the signed manifest at
 `<base>/manifest.sig.json` without auth and at `/api/bundle` (the route the
-relay reaches); the app's service worker serves a file only when it
-matches. A phone whose copy of the app checks posts the bundle hash to
+relay reaches), and each file it names at `/api/app/<file>`, where a phone
+off the tailnet takes a new release; the app's service worker serves a
+file only when it matches. A phone whose copy of the app checks posts the bundle hash to
 `/api/relay/attest` through the relay, which records the check on the
 device and grants nothing: an approved relay-origin device reads and
 chats either way, and only the owner's approval with `cards` lets it
@@ -2886,6 +2887,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 # The signed manifest, for an app that reaches the bot through the relay.
                 self._manifest()
                 return None
+            if n >= 2 and segs[0] == "app":
+                self._app_file("/".join(segs[1:]))
+                return None
             if segs == ["push", "subscriptions"]:
                 pusher = self._pusher()
                 pusher.prune()
@@ -3405,6 +3409,30 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                         self._key(text_of("thread_key").strip() or None))
         self._json(200, row)
         return after
+
+    def _app_file(self, rel: str) -> None:
+        """One file of the app that the signed manifest names, its bytes as
+        on disk: a phone off the tailnet takes a new release from the bot
+        this way, through the relay, and checks each file against the
+        manifest (docs/webchat.md, Code integrity). 404 for any other name.
+        The answer is an attachment that runs nothing if opened here."""
+        bundle = self.fe.bundle
+        root = self.fe.webui_dir
+        if bundle is None or rel not in bundle.files:
+            raise _HttpError(404, "not found")
+        target = root / rel
+        try:
+            if not (target.resolve().is_relative_to(root.resolve()) and target.is_file()):
+                raise _HttpError(404, "not found")
+            data = target.read_bytes()
+        except OSError:
+            raise _HttpError(404, "not found") from None
+        self.fe.note_served(rel, data)  # a file changed since the bot signed it is signed again
+        ctype = (STATIC_TYPES.get(target.suffix.lower())
+                 or mimetypes.guess_type(target.name)[0] or "application/octet-stream")
+        self._send(200, data, ctype, (("Cache-Control", "no-store"),
+                                      ("Content-Disposition", "attachment"),
+                                      ("Content-Security-Policy", FILE_CSP)))
 
     def _file(self, fid: str) -> None:
         row = self.fe.store.file(fid)

@@ -14,8 +14,9 @@ Python vectors (tests/fixtures/relay_vectors.json), the QR encoder draws
 codes a decoder reads, and a phone pairs and chats through a real relay
 with the real web front end. The app checks its code against the bot's
 signed manifest (bundle.js): the service worker serves the signed files
-and refuses a changed one, and a copy of the app from the relay attests
-its check, while only the owner lets it press card buttons.
+and refuses a changed one, a copy of the app from the relay attests
+its check, while only the owner lets it press card buttons, and a phone
+off the tailnet takes a new release from the bot through the relay.
 """
 import json
 import re
@@ -336,7 +337,8 @@ def test_the_app_stays_small():
     # 2,940: 2,920 plus the phone dialog's one-tap setup and its plain notes.
     # 3,170: 3,120 plus the look (a radius and shadow scale, bubbles, blurred headers, the send state)
     # and the dual-screen split at the hinge. 3,190: the height pin that lets go when a screen changes size.
-    assert lines <= 3190, f"{lines} lines: the contract keeps the app near 3,190 with the relay, the phone setup and the connection check"
+    # 3,240: 3,190 plus a new release through the relay (the page fetches it, the worker checks and keeps it).
+    assert lines <= 3240, f"{lines} lines: the contract keeps the app near 3,240 with the relay, the phone setup and the connection check"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -1174,7 +1176,18 @@ def relay_bot_changed(tmp_path):
     yield from _relay_bot(tmp_path, copy)
 
 
-def _relay_bot(tmp_path, static):
+@pytest.fixture
+def relay_bot_deploys(tmp_path):
+    """As relay_bot, with a bot that serves and signs a copy of the app
+    (`webui`) that a test changes, and signs again only when told."""
+    copy = tmp_path / "bot-webui"
+    copy.mkdir()
+    for f in WEBUI.iterdir():
+        (copy / f.name).write_bytes(f.read_bytes())
+    yield from _relay_bot(tmp_path, WEBUI, copy)
+
+
+def _relay_bot(tmp_path, static, webui=WEBUI):
     pytest.importorskip("cryptography")
     sys.path.insert(0, str(ROOT / "relay"))
     sys.path.insert(0, str(ROOT / "botcore"))
@@ -1189,15 +1202,17 @@ def _relay_bot(tmp_path, static):
     public = f"http://127.0.0.1:{port}/chat"
     fe = WebFrontend({"port": port, "public_url": public,
                       "relay": {"url": rbase, "wait": 1}},
-                     store_path=tmp_path / "priv" / "webchat.sqlite", webui_dir=WEBUI,
+                     store_path=tmp_path / "priv" / "webchat.sqlite", webui_dir=webui,
                      trusted_config=True)
     fe.poll_s = fe.pair_delay_s = 0.05
+    if webui != WEBUI:
+        fe.bundle_check_s = 3600
     got = []
     fe.registry.event("message")(got.append)
     fe.registry.action("approve_send")(got.append)
     fe.start()
     wait_for(lambda: fe.relay is not None and fe.relay.connected, 10)
-    yield {"fe": fe, "relay": relay, "rbase": rbase, "public": public, "got": got}
+    yield {"fe": fe, "relay": relay, "rbase": rbase, "public": public, "got": got, "webui": webui}
     fe.stop()
     rsrv.shutdown()
     rsrv.server_close()
@@ -1211,21 +1226,22 @@ def _send_card(fe):
     return fe.post_card("dm", card)
 
 
-def _owner_context(browser, fe, contexts):
+def _owner_context(browser, fe, contexts, workers=False):
     """A browser context signed in to the web chat as the owner (on the
     tailnet the identity header does this; here the pairing cookie)."""
-    ctx = browser.new_context(service_workers="block")
+    ctx = browser.new_context(service_workers="allow" if workers else "block")
     contexts.append(ctx)
     ctx.add_cookies([{"name": "ea_web", "value": fe.pair_token(), "domain": "127.0.0.1",
                       "path": "/chat", "httpOnly": True, "sameSite": "Strict"}])
     return ctx
 
 
-def _pair_and_approve(browser, relay_bot, contexts):
+def _pair_and_approve(browser, relay_bot, contexts, workers=False):
     """The owner opens "Pair a phone" on the tailnet; the phone, on the
     tailnet too and signed in, opens the link and shows its code; the owner
     approves the phone whose code matches; then the phone leaves the
-    tailnet. (owner page, phone page, phone errors, URLs the phone asked)."""
+    tailnet. The phone runs the service worker when `workers`. (owner page,
+    phone page, phone errors, URLs the phone asked)."""
     from playwright.sync_api import expect
     fe = relay_bot["fe"]
     tail = _owner_context(browser, fe, contexts).new_page()
@@ -1260,7 +1276,7 @@ def _pair_and_approve(browser, relay_bot, contexts):
     }""", link)
     assert wrong == 0
 
-    ctx = _owner_context(browser, fe, contexts)
+    ctx = _owner_context(browser, fe, contexts, workers)
     page = ctx.new_page()
     errors, asked = [], []
     page.on("pageerror", lambda e: errors.append(str(e)))
@@ -1383,6 +1399,80 @@ def test_a_forged_error_never_sends_a_message_twice(browser, relay_bot):
         time.sleep(1.5)
         assert [getattr(m, "text", "") for m in got].count("Sent once through the relay") == 1
         assert forge["posts"] == 1
+        assert not errors, errors
+    finally:
+        for c in contexts:
+            c.close()
+
+
+def _kept(page, name):
+    """The service worker's copy of one file of the app, as text; None without one."""
+    return page.evaluate("""async (name) => {
+        const hit = await (await caches.open('tacitus-webchat-v3')).match(name === 'index.html' ? './' : name);
+        return hit ? hit.text() : null;
+    }""", name)
+
+
+def test_a_phone_off_the_tailnet_takes_a_new_release_through_the_relay(browser, relay_bot_deploys, caplog):
+    """A phone paired on the tailnet runs the copy its service worker
+    checked there. Off the tailnet, the bot deploys a new app.css and signs
+    again. At its next start the phone fetches the signed manifest and the
+    changed file from the bot through the relay and checks the file; its
+    worker checks it again and keeps it. The phone says to close the app and
+    open it again, and does not reload. A file that does not hash to the
+    manifest is kept by neither, and the phone reports it to the bot."""
+    import logging
+    from playwright.sync_api import expect
+    bot = relay_bot_deploys
+    fe, webui = bot["fe"], bot["webui"]
+    line = "Tacitus updated. Close the app and open it again."
+    contexts = []
+    try:
+        _tail, page, errors, _asked = _pair_and_approve(browser, bot, contexts, workers=True)
+        first = fe.bundle_hash()
+        wait_for(lambda: (_worker_state(page, "trusted") or {}).get("hash") == first, 15)
+        old = (webui / "app.css").read_bytes()
+        assert _kept(page, "app.css") == old.decode()
+        # Off the tailnet: nothing on the bot's own origin answers the page or its worker.
+        page.context.route(re.compile(re.escape(bot["public"]) + "/.*"), lambda route: route.abort())
+        new = old + b"\n/* the next release */\n"
+        (webui / "app.css").write_bytes(new)
+        assert fe.refresh_bundle() != first
+
+        # The bot serves app.css with bytes its manifest does not name.
+        fe.note_served = lambda rel, data: True
+        (webui / "app.css").write_bytes(old + b"\n/* not signed */\n")
+        with caplog.at_level(logging.INFO, logger="chat.web"):
+            page.reload()
+            expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+            wait_for(lambda: any('"what": "update"' in r.getMessage() and "app.css does not match the manifest"
+                                 in r.getMessage() for r in caplog.records), 20)
+        assert _kept(page, "app.css") == old.decode()
+        assert _worker_state(page, "trusted")["hash"] == first
+        expect(page.locator("#update-note")).to_be_hidden()
+        # The worker hashes what the page hands it again, and keeps nothing that differs.
+        out = page.evaluate("""async () => toWorker({ fromRelay: await call('GET', '/bundle'),
+            files: { 'app.css': { type: 'text/css', bytes: new TextEncoder().encode('body {}').buffer } } })""")
+        assert out == {"error": "app.css does not match the manifest"}
+        assert _kept(page, "app.css") == old.decode()
+        assert _worker_state(page, "trusted")["hash"] == first
+
+        # The bot serves the file it signed: the phone keeps it and says so.
+        del fe.note_served
+        (webui / "app.css").write_bytes(new)
+        page.reload()
+        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+        page.evaluate("window.__open = true")
+        expect(page.locator("#toast")).to_have_text(line, timeout=20000)
+        expect(page.locator("#update-note")).to_have_text(line)
+        assert page.evaluate("window.__open") is True  # no reload in the middle of a conversation
+        assert _kept(page, "app.css") == new.decode()
+        assert _worker_state(page, "trusted")["hash"] == fe.bundle_hash()
+        # The next start runs the new release from the worker's copy.
+        page.reload()
+        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+        assert page.evaluate("fetch('app.css').then((r) => r.text())") == new.decode()
+        expect(page.locator("#update-note")).to_be_hidden()
         assert not errors, errors
     finally:
         for c in contexts:

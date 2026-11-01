@@ -235,6 +235,7 @@ button, select, textarea, input { font: inherit; color: inherit; }
   font-size: 14px;
 }
 .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+#update-note { margin: 0 0 8px; font-weight: 600; }
 #pair-phone, #open-settings { margin: 8px 4px 0 0; }
 .toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
 .install { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--muted); font-size: 13px; }

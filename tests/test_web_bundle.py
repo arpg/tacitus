@@ -2,7 +2,7 @@
 
 The manifest's canonical form and bundle hash, the Ed25519 signature and
 what it refuses, the files a signing covers, the routes that serve the
-signed manifest, the signing key in the relay key file, a phone's
+signed manifest and the files it names, the signing key in the relay key file, a phone's
 attestation recorded on its device (which grants nothing; the owner's
 `cards` flag does), and a file changed on disk found and signed again at
 refresh. The app's side (bundle.js, the service worker)
@@ -206,6 +206,50 @@ def test_the_bot_serves_its_signed_manifest(tmp_path):
         assert g.bundle.public != first and g.bundle_hash()
     finally:
         g.stop()
+
+
+def test_the_bot_serves_each_signed_file_for_a_phone_off_the_tailnet(tmp_path):
+    """`/api/app/<file>` answers a file the signed manifest names with its
+    bytes as on disk, so they hash to the manifest (a binary icon too), for
+    the owner only, as an attachment that runs nothing here. A name the
+    manifest does not hold, a path out of the folder in any spelling, and a
+    signed name that now leads out of it are 404. The relay forwards it."""
+    f = _web(tmp_path)
+    root = tmp_path / "webui"
+    (root / "icon.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(range(256)))
+    (root / ".swap").write_text("editor")
+    (tmp_path / "secret.txt").write_text("outside")
+    f.start()
+    try:
+        files = f.bundle.files
+        assert set(files) == {"index.html", "app.js", "icon.png"}
+        for name, want in files.items():
+            status, h, body = _call(f, "GET", f"/api/app/{name}", headers=_owner(f))
+            assert status == 200 and body == (root / name).read_bytes(), name
+            assert hashlib.sha256(body).hexdigest() == want
+            assert h["Content-Security-Policy"] == "sandbox; default-src 'none'"
+            assert h["Content-Disposition"] == "attachment" and h["Cache-Control"] == "no-store"
+        types = {n: _call(f, "GET", f"/api/app/{n}", headers=_owner(f))[1]["Content-Type"] for n in files}
+        assert types["icon.png"] == "image/png" and types["app.js"].startswith("text/javascript")
+        assert types["index.html"].startswith("text/html")
+        assert _call(f, "GET", "/api/app/app.js")[0] == 401
+        for path in ("/api/app/.swap", "/api/app/missing.js", "/api/app/manifest.sig.json",
+                     "/api/app/../secret.txt", "/api/app/..%2Fsecret.txt", "/api/app/%2e%2e/secret.txt",
+                     "/api/app/", "/api/app", "/api/app/app.js/"):
+            assert _call(f, "GET", path, headers=_owner(f))[0] == 404, path
+        assert rcl.path_allowed("/api/app/icon.png")
+        # A file changed on disk is served as it is now, and signed again first.
+        (root / "app.js").write_text("console.log('deployed')")
+        body = _call(f, "GET", "/api/app/app.js", headers=_owner(f))[2]
+        assert body == b"console.log('deployed')"
+        assert f.bundle.files["app.js"] == hashlib.sha256(body).hexdigest()
+        # A signed name that leads out of the folder now serves nothing.
+        (root / "app.js").unlink()
+        (root / "app.js").symlink_to(tmp_path / "secret.txt")
+        assert "app.js" in f.bundle.files
+        assert _call(f, "GET", "/api/app/app.js", headers=_owner(f))[0] == 404
+    finally:
+        f.stop()
 
 
 def test_a_changed_file_on_disk_is_signed_again_at_the_check(tmp_path, caplog):
