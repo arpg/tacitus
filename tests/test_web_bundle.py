@@ -208,9 +208,10 @@ def test_the_bot_serves_its_signed_manifest(tmp_path):
         g.stop()
 
 
-def test_a_changed_file_is_found_and_signed_again_at_refresh(tmp_path, caplog):
-    """A file changed on disk after the bot signed is logged once (by the
-    check and when it is served); refresh_bundle signs the files again."""
+def test_a_changed_file_on_disk_is_signed_again_at_the_check(tmp_path, caplog):
+    """A file changed on disk after the bot signed (a deploy that did not
+    restart it) is named by the check, which signs the files again at
+    once; the manifest served next names the new files."""
     f = _web(tmp_path)
     f.start()
     try:
@@ -220,21 +221,42 @@ def test_a_changed_file_is_found_and_signed_again_at_refresh(tmp_path, caplog):
         (tmp_path / "webui" / "new.css").write_text("body{}")
         with caplog.at_level(logging.WARNING, logger="chat.web"):
             assert f.check_bundle() == ["app.js", "new.css"]
-            assert f.check_bundle() == ["app.js", "new.css"]
-            assert _call(f, "GET", "/app.js")[0] == 200
-        lines = [r.getMessage() for r in caplog.records if "no longer match" in r.getMessage()]
-        assert len(lines) == 2 and "app.js, new.css" in lines[0] and "app.js" in lines[1], lines
-        # The served manifest is still the one signed at start.
-        assert rc.bundle_hash(json.loads(_call(f, "GET", "/manifest.sig.json")[2])["manifest"]) == before
-        caplog.clear()
-        with caplog.at_level(logging.WARNING, logger="chat.web"):
-            after = f.refresh_bundle()
-        assert after != before and f.bundle_hash() == after and f.check_bundle() == []
+        assert f.check_bundle() == []
+        after = f.bundle_hash()
+        assert after != before
         assert any("signed the app again" in r.getMessage() and "app.js, new.css" in r.getMessage()
                    for r in caplog.records)
+        assert not any("no longer match" in r.getMessage() for r in caplog.records)
         m = json.loads(_call(f, "GET", "/manifest.sig.json")[2])["manifest"]
+        assert rc.bundle_hash(m) == after
         assert m["files"]["app.js"] == hashlib.sha256(b"console.log('changed')").hexdigest()
         assert "new.css" in m["files"]
+    finally:
+        f.stop()
+
+
+def test_serving_a_changed_file_signs_the_files_again_first(tmp_path, caplog):
+    """The first request for a file that changed on disk signs the files
+    again, so the phone that got it finds a manifest naming it; a served
+    file that differs from the disk too is logged once and stays unsigned."""
+    f = _web(tmp_path)
+    f.start()
+    try:
+        before = f.bundle_hash()
+        (tmp_path / "webui" / "app.js").write_text("console.log('deployed')")
+        with caplog.at_level(logging.WARNING, logger="chat.web"):
+            status, _, body = _call(f, "GET", "/app.js")
+        assert status == 200 and body == b"console.log('deployed')"
+        assert f.bundle_hash() != before and f.check_bundle() == []
+        m = json.loads(_call(f, "GET", "/manifest.sig.json")[2])["manifest"]
+        assert m["files"]["app.js"] == hashlib.sha256(body).hexdigest()
+        assert not any("no longer match" in r.getMessage() for r in caplog.records)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="chat.web"):
+            assert f.note_served("app.js", b"something else") is False
+            assert f.note_served("app.js", b"something else") is False
+        lines = [r.getMessage() for r in caplog.records if "no longer match" in r.getMessage()]
+        assert len(lines) == 1 and "served" in lines[0], lines
     finally:
         f.stop()
 

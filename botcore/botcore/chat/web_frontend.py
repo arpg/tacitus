@@ -221,7 +221,7 @@ MAX_PEER_CONNECTIONS = 8
 HANDLER_TIMEOUT_S = 30
 # Seconds between the serving process's checks of the app's files against
 # the manifest it signed (a changed file is logged once).
-BUNDLE_CHECK_S = 60.0
+BUNDLE_CHECK_S = 15.0
 
 KINDS = ("main", "sched", "dm", "room")
 EVENT_TYPES = ("message", "update", "reaction", "card", "status", "file", "channel")
@@ -1760,27 +1760,36 @@ class WebFrontend(ChatFrontend):
             if key in self._bundle_warned:
                 return
             self._bundle_warned.add(key)
-        log.warning("web chat: %s no longer match%s the app the bot signed at start (%s); a "
+        log.warning("web chat: %s no longer match%s the app the bot signed (%s); a "
                     "phone refuses them until the bot signs again (refresh_bundle or a restart)",
                     ", ".join(paths), "es" if len(paths) == 1 else "", why)
 
     def check_bundle(self) -> list[str]:
         """The files under webui/ that no longer match the signed bundle
-        (changed, added or gone); each change is logged once."""
+        (changed, added or gone). The deployed tree is what the bot vouches
+        for, so a change on disk (a deploy that did not restart the bot)
+        is signed again at once, and the manifest the phones fetch next
+        names the files they are served."""
         bundle = self._bundle
         if bundle is None:
             return []
         changed = bundle.changes()
         if changed:
-            self._warn_unsigned(changed, "on disk")
+            self.refresh_bundle()
         return changed
 
     def note_served(self, rel: str, data: bytes) -> bool:
-        """Whether `data`, served as `rel`, is the file the bot signed; a
-        file that is not is logged once."""
+        """Whether `data`, served as `rel`, is the file the bot signed. A
+        served file the signing does not name is the first sign of a
+        deploy, so the files are signed again before the phone that got
+        it asks for the manifest; a file that differs from the disk as well
+        (served from somewhere else) is logged once and stays unsigned."""
         bundle = self._bundle
         if bundle is None or bundle.matches(rel, data):
             return True
+        if bundle.changes():
+            self.refresh_bundle()
+            return self._bundle is not None and self._bundle.matches(rel, data)
         self._warn_unsigned([rel], "served " + web_bundle.sha256_hex(data)[:16])
         return False
 
@@ -3512,5 +3521,5 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if ctype.startswith("text/html"):
             headers.append(("Content-Security-Policy", self.fe.html_csp))
         data = target.read_bytes()
-        self.fe.note_served(rel, data)  # a file changed since the bot signed it is logged
+        self.fe.note_served(rel, data)  # a file changed since the bot signed it is signed again
         self._send(200, data, ctype, tuple(headers))
