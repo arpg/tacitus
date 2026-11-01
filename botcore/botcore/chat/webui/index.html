@@ -77,13 +77,15 @@
 
 <dialog id="phone" aria-labelledby="phone-title">
   <form method="dialog">
-    <h2 id="phone-title">Pair a phone</h2>
-    <p>A paired phone reaches Tacitus through the relay, which sees only sealed data.</p>
+    <h2 id="phone-title">Use Tacitus on your phone</h2>
+    <p>A phone you set up here works anywhere, not only on your own network. Your messages stay sealed on the way.</p>
+    <button type="button" id="phone-here" class="btn primary" hidden>Set up this phone</button>
+    <p id="phone-scan" hidden>On another phone: open its camera and point it at this code.</p>
     <canvas id="phone-qr" width="0" height="0" role="img" aria-label="Pairing code"></canvas>
     <p id="phone-note" aria-live="polite"></p>
-    <button type="button" id="phone-relay" class="btn" hidden>Pair through the relay</button>
-    <input id="phone-link" readonly aria-label="Pairing link">
-    <h3>Paired phones</h3>
+    <button type="button" id="phone-relay" class="btn" hidden>Phone without Tailscale</button>
+    <input id="phone-link" readonly aria-label="Pairing link" hidden>
+    <h3>Phones</h3>
     <ul id="phone-devices"></ul>
     <button type="submit" class="btn">Close</button>
   </form>

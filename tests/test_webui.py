@@ -333,7 +333,8 @@ def test_the_app_stays_small():
     # check of the app's code (bundle.js, the worker's and the page's part), 10 for the
     # card-button choice per relay-origin phone under "Pair a phone", and 70 for the
     # Settings screen (the routing table: a row per task, the floors, Save).
-    assert lines <= 2920, f"{lines} lines: the contract keeps the app near 2,920 with the relay"
+    # 2,940: 2,920 plus the phone dialog's one-tap setup and its plain notes.
+    assert lines <= 2940, f"{lines} lines: the contract keeps the app near 2,940 with the relay and the phone setup"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -970,7 +971,8 @@ def test_the_pairing_dialog_is_in_the_drawer():
     nav = html[html.index('<nav id="channels"'):html.index("</nav>")]
     assert '<button type="button" id="pair-phone" class="btn small" hidden>Pair a phone</button>' in nav
     assert '<dialog id="phone"' in html and '<canvas id="phone-qr"' in html
-    assert '<button type="button" id="phone-relay" class="btn" hidden>Pair through the relay</button>' in html
+    assert '<button type="button" id="phone-relay" class="btn" hidden>Phone without Tailscale</button>' in html
+    assert '<button type="button" id="phone-here" class="btn primary" hidden>Set up this phone</button>' in html
     js = read("app.js")
     assert "call('POST', '/relay/pair', via === 'relay' ? { via } : {})" in js and "QR.draw($('phone-qr'), out.qr, 4)" in js
     assert "Boolean(S.me.relay) && !T.relay" in js  # where the API answers: the tailnet or this machine
@@ -1201,10 +1203,20 @@ def _pair_and_approve(browser, relay_bot, contexts):
     tail = _owner_context(browser, fe, contexts).new_page()
     tail.goto(relay_bot["public"] + "/")
     tail.click("#pair-phone")
-    expect(tail.locator("#phone-devices")).to_contain_text("No phone is paired yet.")
+    expect(tail.locator("#phone-devices")).to_contain_text("No phone is set up yet.")
     wait_for(lambda: tail.input_value("#phone-link"), 10)
     link = tail.input_value("#phone-link")
     assert link.startswith(relay_bot["public"] + "/#tr2=")
+    # The phone the owner holds has no second screen to scan from: "Pair this
+    # phone" pairs this very browser from the same link, with no navigation.
+    expect(tail.locator("#phone-here")).to_be_visible()
+    tail.evaluate("() => { window.__paired = []; pairFromLink = (k, t, s) => { window.__paired.push([k, t, s]); }; }")
+    tail.click("#phone-here")
+    assert tail.evaluate("window.__paired") == [["tr2", link.split("#tr2=")[1], True]]
+    assert not tail.evaluate("document.getElementById('phone').open")
+    tail.click("#pair-phone")
+    wait_for(lambda: tail.input_value("#phone-link"), 10)
+    link = tail.input_value("#phone-link")
     expect(tail.locator("#phone-note")).to_contain_text("Never send this link through chat or mail.")
     # The canvas holds the code of exactly that link, module for module.
     wrong = tail.evaluate("""(link) => {
@@ -1390,7 +1402,7 @@ def test_a_relay_origin_phone_checks_its_app_and_presses_cards_when_the_owner_al
         expect(page.locator(".chan .c-name").first).to_be_visible(timeout=20000)
         (d,) = fe.relay.devices()
         assert d["pending"] is False and d["bundle_verified"] is True and d["cards_allowed"] is False
-        expect(row).to_contain_text("through the relay, verified copy of", timeout=10000)
+        expect(row).to_contain_text("without Tailscale", timeout=10000)
         trusted = _worker_state(page, "trusted")
         assert trusted["hash"] == fe.bundle_hash() and trusted["pin"] is True
         assert page.evaluate("loadPairing().then((r) => r.signKey)") == fe.bundle.public
@@ -1494,10 +1506,10 @@ def test_pair_a_phone_offers_the_relay_on_this_machines_own_address(app):
     page, stub, errors = app(relay_pairing=True, sign=True)
     page.wait_for_selector(".thread-item")
     page.click("#pair-phone")
-    expect(page.locator("#phone-note")).to_contain_text("A phone cannot open this address. Pair through the relay")
+    expect(page.locator("#phone-note")).to_contain_text('This address does not open on a phone. Use "Phone without Tailscale" instead.')
     button = page.locator("#phone-relay")
     expect(button).to_be_visible()
-    expect(button).to_have_text("Pair through the relay")
+    expect(button).to_have_text("Phone without Tailscale")
     assert stub.pairs == [] and not page.input_value("#phone-link")
     button.click()
     wait_for(lambda: page.input_value("#phone-link"), 5)
@@ -1507,7 +1519,7 @@ def test_pair_a_phone_offers_the_relay_on_this_machines_own_address(app):
     import base64
     assert json.loads(base64.urlsafe_b64decode(link.split("#tr2=")[1] + "=="))["b"] == stub.bundle.hash
     expect(page.locator("#phone-note")).to_contain_text(
-        "Once approved it can read and chat, and press card buttons only if you allow it below.")
+        "once you tap Approve below it can read and reply, and press buttons only if you allow it.")
     expect(page.locator("#phone-note")).to_contain_text("Never send this link through chat or mail.")
     expect(button).to_be_hidden()
     assert page.evaluate("$('phone-qr').width") > 0
@@ -1537,7 +1549,7 @@ def test_approve_sends_the_card_button_choice(app):
     tablet.locator("button", has_text="Approve").click()
     wait_for(lambda: len(stub.approvals) == 2, 5)
     assert stub.approvals == [{"device": "1" * 16, "cards": False}, {"device": "2" * 16, "cards": True}]
-    expect(tablet).to_contain_text("through the relay, code not verified")
+    expect(tablet).to_contain_text("without Tailscale, code not checked")
     expect(tablet.locator("input[type=checkbox]")).to_be_checked()
     assert not errors, errors
 

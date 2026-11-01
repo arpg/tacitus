@@ -1297,6 +1297,9 @@ def web(tmp_path):
     relay = rs.Relay(rs.Limits(keepalive=0.3, client_timeout=10), log=lambda line: None)
     server = _serve(rs.RelayHTTPServer(("127.0.0.1", 0), relay))
     base = f"http://127.0.0.1:{server.server_address[1]}"
+    # This relay serves no app; the tests below stand for one that does.
+    from botcore.chat import web_frontend as wf
+    wf._relay_app_seen[base] = (time.time(), True)
     f = _web(tmp_path, {"url": base, "wait": 1})
     f.start()
     deadline = time.time() + 10
@@ -1304,6 +1307,7 @@ def web(tmp_path):
         time.sleep(0.05)
     assert f.relay is not None and f.relay.connected, f.relay and f.relay.last_error
     yield {"fe": f, "base": base, "dir": tmp_path}
+    wf._relay_app_seen.pop(base, None)
     f.stop()
     server.shutdown()
 
@@ -2358,3 +2362,19 @@ def test_a_key_file_that_does_not_read_keeps_the_identity(tmp_path, caplog):
     rcl.rotate(store.path, "keep")
     assert client.reload() is True and client.install_id != install
     assert client._bot_url.endswith(f"/r/{client.install_id}/bot")
+
+
+def test_a_relay_without_the_app_cannot_start_a_phone(web):
+    """A relay installed without the app answers "not found" at its root, so
+    the status says `relay_app: false` and a pairing through it is refused
+    with the way out; the probe's answer is cached for RELAY_APP_TTL."""
+    from botcore.chat import web_frontend as wf
+    fe, base = web["fe"], web["base"]
+    wf._relay_app_seen.pop(base, None)
+    st, _, body = _call(fe, "GET", "/api/relay/status", headers=_owner(fe))
+    assert st == 200 and body["relay_app"] is False and body["pair_relay"] is True
+    st, _, body = _call(fe, "POST", "/api/relay/pair", {"via": "relay"}, headers=_owner(fe))
+    assert st == 409 and "serves no copy of the app" in body["error"]
+    wf._relay_app_seen[base] = (time.time(), True)
+    st, _, _ = _call(fe, "POST", "/api/relay/pair", {"via": "relay"}, headers=_owner(fe))
+    assert st == 200

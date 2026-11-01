@@ -127,7 +127,9 @@ import stat
 import struct
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from collections.abc import Callable
 from dataclasses import asdict
 from datetime import datetime
@@ -2717,6 +2719,40 @@ class _Server6(_Server):
     address_family = socket.AF_INET6
 
 
+
+# The relay's copy of the app, probed once per RELAY_APP_TTL seconds: a relay
+# installed without `--with-app` answers "not found" at its root, and a
+# phone sent there would see that error instead of the app.
+RELAY_APP_TTL = 600.0
+_relay_app_seen: dict[str, tuple[float, bool]] = {}
+
+
+def relay_serves_app(relay_url: str, *, now: float | None = None) -> bool:
+    if not relay_url:
+        return False
+    now = time.time() if now is None else now
+    hit = _relay_app_seen.get(relay_url)
+    if hit and now - hit[0] < RELAY_APP_TTL:
+        return hit[1]
+    from .relay_client import relay_app_url
+    ok = False
+    try:
+        opener = urllib.request.build_opener(_NoRedirect)
+        req = urllib.request.Request(relay_app_url(relay_url) + "index.html", method="GET",
+                                     headers={"User-Agent": "tacitus-web-chat"})
+        with opener.open(req, timeout=3) as r:
+            ok = r.status == 200 and "text/html" in (r.headers.get("Content-Type") or "")
+    except Exception:
+        ok = False
+    _relay_app_seen[relay_url] = (now, ok)
+    return ok
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+        return None
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     server_version = "Tacitus"
     sys_version = ""
@@ -3015,10 +3051,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def _pair_ways(self, relay: Any) -> dict:
         """How "Pair a phone" can pair: `pair_own`, a link to the bot's own
         origin (public_url); `pair_relay`, a link to the relay's copy of
-        the app with the signed bundle's hash (`bundle`)."""
+        the app with the signed bundle's hash (`bundle`); `relay_app`, that
+        the relay serves a copy at all (a relay installed without the app
+        answers "not found" there, so the dialog hides that way)."""
         from .relay_client import bundle_hash_of
         bundle = bundle_hash_of(self.fe)
         return {"pair_own": relay.can_pair_own(), "pair_relay": bool(bundle),
+                "relay_app": relay_serves_app(getattr(relay, "relay_url", "")),
                 "bundle": bundle or None}
 
     def _relay_pair(self, relay: Any) -> None:
@@ -3038,6 +3077,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if via == "relay" and not bundle:
             raise _HttpError(409, "pairing through the relay needs the signed app bundle, "
                                   "which this build does not have")
+        if via == "relay" and not relay_serves_app(getattr(relay, "relay_url", "")):
+            raise _HttpError(409, "the relay serves no copy of the app, so a phone cannot "
+                                  "start there; set the phone up on the tailnet instead")
         try:
             if via == "relay":
                 link = relay.new_pairing(app_url=relay_app_url(relay.relay_url),
