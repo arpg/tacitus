@@ -898,25 +898,6 @@ def test_a_malformed_list_reply_is_a_failure():
             assert "malformed" in err.getvalue()
 
 
-if __name__ == "__main__":
-    if not resident_child_available():
-        print(f"skipped: {NEEDS_RESIDENT}")
-        raise SystemExit(0)
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    passed = failed = 0
-    for t in tests:
-        try:
-            t()
-            print(f"  ok {t.__name__}")
-            passed += 1
-        except Exception as e:
-            traceback.print_exc()
-            print(f"  FAIL {t.__name__}: {e}")
-            failed += 1
-    print(f"\n  {passed} passed, {failed} failed")
-    sys.exit(1 if failed else 0)
-
-
 def test_the_read_retry_after_a_rename_checks_the_new_file_too():
     """_direct_read opens the name once more when the first file has no
     link left (a writer's rename in between). Whatever a racing resident
@@ -965,3 +946,21 @@ def test_the_read_retry_after_a_rename_checks_the_new_file_too():
             r = subprocess.run([sys.executable, "-I", "-c", rio._CHILD, "read", "0o644", str(target)],
                                capture_output=True)
             assert r.returncode != 0 and b"SECRET" not in r.stdout, kind
+
+if __name__ == "__main__":
+    if not resident_child_available():
+        print(f"skipped: {NEEDS_RESIDENT}")
+        raise SystemExit(0)
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    passed = failed = 0
+    for t in tests:
+        try:
+            t()
+            print(f"  ok {t.__name__}")
+            passed += 1
+        except Exception as e:
+            traceback.print_exc()
+            print(f"  FAIL {t.__name__}: {e}")
+            failed += 1
+    print(f"\n  {passed} passed, {failed} failed")
+    sys.exit(1 if failed else 0)
