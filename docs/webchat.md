@@ -74,7 +74,11 @@ auth). The store is `<private_dir>/webchat.sqlite`
 (owner process) or `<ea_dir>/state/webchat.sqlite` otherwise; a
 `store_path` key overrides.
 `backfill_days` is the history a shadow copies in when the bot starts
-(see Shadow mode); 0 copies none.
+(see Shadow mode); 0 copies none. `peer_connections` (default 8, 0 to
+64) is the most open connections one address other than loopback may
+hold; 0 lifts that cap, for a proxy that limits each client itself
+(the Docker setup writes 0, since every request there comes from the
+proxy's address).
 
 ## Identity and auth
 
@@ -207,7 +211,8 @@ thread_key is likewise encoded.
 
 Errors: JSON `{"error": "..."}` with 400/401/403/404/421/429. The server
 is `http.server.ThreadingHTTPServer` on a daemon thread started by
-`start()`, at most 64 connections at once (one more is closed at once)
+`start()`, at most 64 connections at once and at most `peer_connections`
+(8) from one address other than loopback (one more is closed at once),
 and a 30-second socket timeout per connection; `run_forever()` blocks on
 a stop event; SSE handlers block on a per-connection `queue.Queue` fed
 by the store's event fan-out.

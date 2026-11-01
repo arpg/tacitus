@@ -1423,7 +1423,8 @@ Every answer carries `Cross-Origin-Resource-Policy: same-origin`, and
 the app's pages a CSP with `script-src 'self'`, `frame-ancestors 'none'`
 and `form-action 'none'`.
 
-**Bounds.** At most 64 open connections (one more is closed at once); a
+**Bounds.** At most 64 open connections, and 8 from one address other
+than loopback (`web.peer_connections`; one more is closed at once); a
 client stalled for 30 seconds is dropped; a chunked body takes chunk
 sizes of 1 to 8 hex digits only, and a chunk past the body limit is
 refused before it is read; an error answer reads at most 64 KiB of an

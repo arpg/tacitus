@@ -7,6 +7,13 @@
 # Origin. The chat needs an origin of its own (docs/SECURITY.md, Web
 # chat): serve nothing else on this host name and port.
 #
+# As it stands this serves the chat's pages and its sign-in (the pairing
+# token) to anyone who can reach this host name: on a public DNS name,
+# the whole internet. Narrow it with one of the blocks below, or with
+# WEBCHAT_TLS_BIND in .env (the address Caddy listens on), or put the
+# host behind a VPN. Caddy's stock image has no rate limiter; docs/docker.md
+# shows nginx's limit_req and limit_conn for that.
+#
 # The certificate: for a public DNS name that reaches this machine on
 # ports 80 and 443, Caddy gets one from Let's Encrypt and renews it. For
 # a certificate from your institution, mount its files into the container
@@ -15,11 +22,34 @@
 {$WEBCHAT_HOST} {
 	# tls /certs/fullchain.pem /certs/privkey.pem
 
+	# Only the networks you name reach the chat; everyone else gets a 403.
+	# Caddy sees the client's address only when Docker's port publishing
+	# keeps it (its iptables path does for IPv4; the userland proxy does
+	# not): check the access log before you rely on it.
+	# @outside not remote_ip 192.0.2.0/24 198.51.100.0/24
+	# respond @outside "Not from this network." 403
+
+	# Only devices with a client certificate your own CA signed (mount the
+	# CA's certificate in /certs). Every browser and phone that opens the
+	# chat then needs one installed.
+	# tls {
+	# 	client_auth {
+	# 		mode require_and_verify
+	# 		trust_pool file /certs/clients-ca.pem
+	# 	}
+	# }
+
 	# The bot serves the chat under its base path; the bare host opens it.
 	redir / /chat/
 
 	reverse_proxy bot:8470 {
 		# The event stream reaches the browser as the bot writes it.
 		flush_interval -1
+		# Headers that only the bot's own parts may set (tailscaled's
+		# identity, the relay client's device and card marks): a request
+		# from outside never carries them to the bot.
+		header_up -Tailscale-User-Login
+		header_up -X-Tacitus-Relay
+		header_up -X-Tacitus-Relay-Cards
 	}
 }

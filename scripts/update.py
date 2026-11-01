@@ -3,8 +3,10 @@
 
 The design is docs/updates.md. In short: every green push to main is a
 release tag vX.Y.Z signed in CI with an SSH key whose public half is
-.release-key.pub; this script, run hourly as the owner, installs the newest
-signed release on the install's channel into /opt/ea-system.releases/<tag>,
+.release-key.pub, pinned on each install in the owner-private update.json
+(never read from a release); this script, run hourly as the owner,
+installs the newest signed release on main and on the install's channel
+into /opt/ea-system.releases/<tag>,
 switches the link /opt/ea-system points through, restarts the services
 whose in-memory code changed once nothing is running, and switches back
 when they do not come up healthy.
@@ -17,7 +19,8 @@ when they do not come up healthy.
     update.py verify                     the health gate on what runs now
     update.py rollback                   switch back to the previous release
     update.py channel                    the effective channel (the root step reads it)
-    update.py layout --owner NAME [--seed DIR]          root, once: the release layout
+    update.py layout --owner NAME [--seed DIR]          root, once: the release layout,
+                                         and the release key pinned in update.json
     update.py next-version [--head SHA] [--main REF] [--github-repo OWNER/NAME]
                                          CI: the next tag, or nothing
     update.py allowed-signers --key FILE                CI and cut-tag.sh
@@ -36,6 +39,7 @@ import os
 import random
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -51,8 +55,19 @@ import update_status as us  # noqa: E402
 REPO_URL = "https://github.com/arpg/tacitus.git"
 PRINCIPAL = "tacitus-release"
 KEY_FILE = ".release-key.pub"
+# The one key type a release key may be; git must say it verified one.
+KEY_TYPE = "ssh-ed25519"
 STABLE_REF = "refs/tags/channels/stable"
-FETCH_REFSPECS = ("+refs/tags/v*:refs/tags/v*", "+refs/tags/channels/*:refs/tags/channels/*")
+# main of the configured repository, fetched beside the tags: a release is
+# a signed tag on a commit in its history (on_main).
+MAIN_REF = "refs/remotes/origin/main"
+FETCH_REFSPECS = ("+refs/tags/v*:refs/tags/v*", "+refs/tags/channels/*:refs/tags/channels/*",
+                  f"+refs/heads/main:{MAIN_REF}")
+# The trust root, pinned outside every release tree: `release_key` in the
+# owner-private update.json (the key lines, or the path of a file that
+# holds them), and the relay's copy in its state directory.
+PIN_KEY = "release_key"
+RELAY_PIN_FILE = "release-key.pub"
 # Every update restarts both services. Each resolves its own path when it
 # starts (Path(__file__).resolve()), so it keeps reading the release it
 # started from: skills and CLAUDE.md included, not only the code it holds
@@ -130,9 +145,9 @@ def release_tags(repo: Path, merged: str | None = None) -> list[str]:
 
 
 def fetch_tags(cache: Path, url: str) -> None:
-    """The release tags and the channel pointers into the owner's bare
-    cache. Forced, so a moved channels/ tag follows; pruned, so a deleted
-    release is not offered."""
+    """The release tags, the channel pointers and main (as MAIN_REF) into
+    the owner's bare cache. Forced, so a moved channels/ tag follows;
+    pruned, so a deleted release is not offered."""
     if not (cache / "HEAD").exists():
         cache.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         subprocess.run(["git", "init", "-q", "--bare", str(cache)], check=True,
@@ -143,9 +158,10 @@ def fetch_tags(cache: Path, url: str) -> None:
 
 # ── signatures ───────────────────────────────────────────────────────
 
-def allowed_signers(key_text: str) -> str:
-    """An allowed-signers file from .release-key.pub: each key line becomes
-    `tacitus-release namespaces="git" <type> <key>`."""
+def release_keys(key_text: str) -> list[tuple[str, str]]:
+    """The (type, base64) pairs of a .release-key.pub text: one key per line,
+    comments and blank lines skipped. Every key is ssh-ed25519; any other
+    line is refused."""
     out = []
     for raw in key_text.splitlines():
         line = raw.strip()
@@ -155,10 +171,27 @@ def allowed_signers(key_text: str) -> str:
         if len(parts) < 2 or not re.fullmatch(r"(ssh|ecdsa|sk)-[a-z0-9@.-]+", parts[0]) \
                 or not re.fullmatch(r"[A-Za-z0-9+/]{40,}={0,3}", parts[1]):
             raise VerifyError(f"{KEY_FILE}: not an SSH public key line: {line[:40]}")
-        out.append(f'{PRINCIPAL} namespaces="git" {parts[0]} {parts[1]}')
+        if parts[0] != KEY_TYPE:
+            raise VerifyError(f"{KEY_FILE}: a {parts[0]} key; a release key is {KEY_TYPE}")
+        out.append((parts[0], parts[1]))
     if not out:
         raise VerifyError(f"{KEY_FILE} holds no key")
-    return "\n".join(out) + "\n"
+    return out
+
+
+def allowed_signers(key_text: str) -> str:
+    """An allowed-signers file from .release-key.pub: each key line becomes
+    `tacitus-release namespaces="git" ssh-ed25519 <key>`."""
+    return "".join(f'{PRINCIPAL} namespaces="git" {kind} {b64}\n'
+                   for kind, b64 in release_keys(key_text))
+
+
+def write_signers_text(key_text: str, dest: Path) -> Path:
+    dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".tmp")
+    tmp.write_text(allowed_signers(key_text))
+    os.replace(tmp, dest)
+    return dest
 
 
 def write_signers(key_file: Path, dest: Path) -> Path:
@@ -166,17 +199,14 @@ def write_signers(key_file: Path, dest: Path) -> Path:
         text = key_file.read_text()
     except OSError:
         raise VerifyError(f"no {KEY_FILE} at {key_file}: nothing can be verified")
-    dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    tmp = dest.with_name(dest.name + ".tmp")
-    tmp.write_text(allowed_signers(text))
-    os.replace(tmp, dest)
-    return dest
+    return write_signers_text(text, dest)
 
 
 def verify_tag(repo: Path, tag: str, signers: Path) -> str:
     """The full commit `tag` names, once it proves to be a release signed
     by a key in `signers`: an annotated tag whose own name is `tag`, with
-    an SSH signature that git verifies for the release principal."""
+    an SSH signature that git verifies for the release principal with an
+    ED25519 key."""
     if not us.version_key(tag):
         raise VerifyError(f"{tag} is not a release tag name (vX.Y.Z)")
     ref = f"refs/tags/{tag}"
@@ -198,7 +228,55 @@ def verify_tag(repo: Path, tag: str, signers: Path) -> str:
     if r.returncode != 0 or f'Good "git" signature for {PRINCIPAL}' not in said:
         raise VerifyError(f"{tag}: signature not from the release key "
                           f"({said.strip().splitlines()[-1][:120] if said.strip() else 'no output'})")
+    if f'Good "git" signature for {PRINCIPAL} with ED25519 key' not in said:
+        raise VerifyError(f"{tag}: not signed with an ED25519 key")
     return git_out(repo, "rev-parse", f"{ref}^{{commit}}")
+
+
+class KeyChangeError(VerifyError):
+    """A signed release whose .release-key.pub names a key the pinned trust
+    root does not hold."""
+
+    def __init__(self, tag: str, msg: str):
+        super().__init__(msg)
+        self.tag = tag
+
+
+def on_main(repo: Path, commit: str, main: str = MAIN_REF) -> bool:
+    """True when `commit` is in the history of `main` (the configured
+    repository's main, fetched as MAIN_REF)."""
+    if git(repo, "rev-parse", "-q", "--verify", f"{main}^{{commit}}", check=False).returncode != 0:
+        return False
+    return git(repo, "merge-base", "--is-ancestor", commit, main, check=False).returncode == 0
+
+
+def tree_keys(repo: Path, commit: str) -> set[tuple[str, str]] | None:
+    """The keys in `commit`'s .release-key.pub; None when it has none or
+    the file is not a key list."""
+    r = git(repo, "show", f"{commit}:{KEY_FILE}", check=False)
+    if r.returncode != 0:
+        return None
+    try:
+        return set(release_keys(r.stdout))
+    except VerifyError:
+        return None
+
+
+def verify_release(repo: Path, tag: str, signers: Path, *, main: str | None = MAIN_REF,
+                   keys: set | None = None) -> str:
+    """verify_tag, and the tagged commit is in main's history (with `main`
+    set), and, with `keys` (the pinned trust root), the release's own
+    .release-key.pub names no key outside it. The commit, else
+    VerifyError (KeyChangeError for the last)."""
+    commit = verify_tag(repo, tag, signers)
+    if main and not on_main(repo, commit, main):
+        raise VerifyError(f"{tag} names {commit[:12]}, which is not in the history of main")
+    if keys is not None:
+        theirs = tree_keys(repo, commit)
+        if theirs is None or not theirs <= keys:
+            raise KeyChangeError(tag, f"{tag} changes {KEY_FILE}; it installs once the owner puts "
+                                      f"the new key in update.json (docs/updates.md, Supply chain)")
+    return commit
 
 
 def channel_candidates(repo: Path, channel: str) -> list[str]:
@@ -217,10 +295,12 @@ def channel_candidates(repo: Path, channel: str) -> list[str]:
 
 
 def pick(repo: Path, channel: str, signers: Path, installed: str = "",
-         held: str = "") -> tuple[str, str, list[str]] | None:
+         held: str = "", *, main: str | None = MAIN_REF, keys: set | None = None,
+         refused: list | None = None) -> tuple[str, str, list[str]] | None:
     """(tag, commit, notes) for the newest signed release on the channel
     that is newer than `installed` and is not `held`, else None. A tag that
-    fails verification is skipped with a note, never installed."""
+    fails verify_release is skipped with a note (and its error appended to
+    `refused`), never installed."""
     notes: list[str] = []
     floor = us.version_key(installed)
     for tag in channel_candidates(repo, channel):
@@ -230,20 +310,137 @@ def pick(repo: Path, channel: str, signers: Path, installed: str = "",
             notes.append(f"{tag} is held back")
             continue
         try:
-            return tag, verify_tag(repo, tag, signers), notes
+            return tag, verify_release(repo, tag, signers, main=main, keys=keys), notes
         except VerifyError as e:
             notes.append(str(e))
+            if refused is not None:
+                refused.append(e)
     return None
 
 
-def newest_signed(repo: Path, channel: str, signers: Path) -> str:
+def newest_signed(repo: Path, channel: str, signers: Path, *, main: str | None = MAIN_REF,
+                  keys: set | None = None) -> str:
     for tag in channel_candidates(repo, channel):
         try:
-            verify_tag(repo, tag, signers)
+            verify_release(repo, tag, signers, main=main, keys=keys)
             return tag
         except VerifyError:
             continue
     return ""
+
+
+# ── the trust root ───────────────────────────────────────────────────
+
+def _read_key_file(path: Path, uid: int) -> str:
+    """The key file a pin names: a regular file reached with no link at its
+    last name, owned by `uid` or root and writable by no one else."""
+    try:
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+    except OSError as e:
+        raise VerifyError(f"update.json names {path} as the release key: {e.strerror}")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid not in (uid, 0) or st.st_mode & 0o022 \
+                or st.st_size > 65536:
+            raise VerifyError(f"update.json names {path} as the release key, which is not a file "
+                              "of this user or root that no one else can write")
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            return fh.read().decode("utf-8", "replace")
+    finally:
+        os.close(fd)
+
+
+def _pin_doc(private: Path, uid: int) -> dict:
+    """update.json as the owner `uid` keeps it: {} when there is none, the
+    object when it passes the owner checks; VerifyError when one is there
+    and refused, since the pin in it cannot be read."""
+    path = private / "update.json"
+    if not (path.exists() or path.is_symlink()):
+        return {}
+    doc = us.read_owner_json(path, uid=uid)
+    if doc is None:
+        raise VerifyError(f"{path} is refused (not a JSON object of the owner that no one else "
+                          "can write): the release key it pins cannot be read")
+    return doc
+
+
+def pinned_key(private: Path, uid: int | None = None) -> str | None:
+    """The trust root update.json pins under `release_key`: key lines (a
+    string or a list of strings) or the absolute path of a file that holds
+    them. None when it pins none; VerifyError when the pin is unusable."""
+    uid = os.geteuid() if uid is None else uid
+    val = (_pin_doc(private, uid) or {}).get(PIN_KEY)
+    if val in (None, "", []):
+        return None
+    if isinstance(val, list) and all(isinstance(v, str) for v in val):
+        text = "\n".join(val)
+    elif isinstance(val, str) and val.strip().startswith("/"):
+        text = _read_key_file(Path(val.strip()), uid)
+    elif isinstance(val, str):
+        text = val
+    else:
+        raise VerifyError(f"update.json: {PIN_KEY} is neither key lines nor a file path")
+    release_keys(text)
+    return text
+
+
+def pin_key(private: Path, key_text: str, *, uid: int | None = None, gid: int | None = None) -> bool:
+    """Write the keys of `key_text` into update.json as `release_key` when
+    it pins none, keeping the file's other settings; True when written.
+    Never replaces a pin. `uid`/`gid` (root's layout step) own the file and
+    a private directory made for it."""
+    uid = os.geteuid() if uid is None else uid
+    doc = _pin_doc(private, uid)
+    if doc.get(PIN_KEY) not in (None, "", []):
+        return False
+    keys = release_keys(key_text)
+    doc = dict(doc, **{PIN_KEY: [f"{kind} {b64}" for kind, b64 in keys]})
+    root = os.geteuid() == 0
+    if not private.is_dir():
+        private.mkdir(mode=0o700, parents=True)
+        if root:
+            dfd = os.open(str(private), os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                os.fchown(dfd, uid, -1 if gid is None else gid)
+            finally:
+                os.close(dfd)
+    fd, tmp = tempfile.mkstemp(dir=str(private), prefix=".update.json.")
+    try:
+        # Mode and owner on the descriptor, so no name in the owner's
+        # directory is followed while root holds it.
+        os.fchmod(fd, 0o600)
+        if root:
+            os.fchown(fd, uid, -1 if gid is None else gid)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(doc, fh, indent=1, sort_keys=True)
+            fh.write("\n")
+        os.replace(tmp, private / "update.json")
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return True
+
+
+def trust_root(paths: "Paths") -> str:
+    """The key text releases verify against: the pin in update.json. An
+    install that pins none yet (one made before the pin) pins the
+    installed release's .release-key.pub now, once; after that no release
+    changes it."""
+    text = pinned_key(paths.private)
+    if text is not None:
+        return text
+    key_file = paths.live / KEY_FILE
+    try:
+        text = key_file.read_text()
+    except OSError:
+        raise VerifyError(f"no {KEY_FILE} at {key_file} and no {PIN_KEY} in update.json: "
+                          "nothing can be verified")
+    if pin_key(paths.private, text):
+        say(f"pinned the release key of {key_file} in {paths.private / 'update.json'} (first use)")
+    return text
 
 
 # ── versions for CI ──────────────────────────────────────────────────
@@ -442,36 +639,44 @@ def _has_commit(repo: Path, ref: str) -> bool:
 
 def release_notes(paths: Paths, tag: str, since: str = "", *, fetch=None) -> dict | None:
     """The notes of `tag` as the status file keeps them: {"tag", "previous",
-    "notes_url", "count", "changes", "owner_steps", "source"}. The body of
-    the GitHub Release (the notes CI wrote) when the API answers and that
-    release starts at `since`, the version installed before; else the
-    cache's history since `since` (no API, or an install that skipped a
-    release). None when neither can be read; an update never fails on it."""
+    "notes_url", "count", "changes", "owner_steps", "source"}. The changes
+    come from the body of the GitHub Release (the notes CI wrote) when the
+    API answers and that release starts at `since`, the version installed
+    before; else from the cache's history since `since` (no API, or an
+    install that skipped a release). The owner steps come only from the
+    history: the commit messages between `since` and the verified tag, and
+    the tag's own message. The Release body is shown, never trusted. None
+    when neither can be read; an update never fails on it."""
     rn = _notes_module()
     if rn is None:
         return None
     slug = rn.github_slug(paths.repo_url)
-    url, notes = "", None
+    url, shown = "", None
     if slug:
         try:
             got = (fetch or rn.fetch_release)(slug, tag)
             url = got.get("html_url") or ""
             parsed = rn.parse_markdown(got.get("body") or "")
             if parsed["changes"] and (not since or parsed["previous"] == since):
-                notes = dict(parsed, source="api")
+                shown = parsed
         except Exception as e:
             # A 404 is an answer: the tag has no GitHub Release, so no link.
             if getattr(e, "code", None) != 404:
                 url = rn.release_url(slug, tag)
             say(f"release notes for {tag}: no GitHub Release read ({str(e)[:120]}); "
                 "reading the history instead")
-    if notes is None:
-        try:
-            prev = since if _has_commit(paths.cache, since) else None
-            notes = dict(rn.collect(paths.cache, tag, prev, warn=say), source="git")
-        except Exception as e:
-            say(f"release notes for {tag}: {e}")
-            return None
+    try:
+        prev = since if _has_commit(paths.cache, since) else None
+        history = rn.collect(paths.cache, tag, prev, warn=say)
+    except Exception as e:
+        say(f"release notes for {tag}: {e}")
+        history = None
+    if shown is not None:
+        notes = dict(shown, owner_steps=(history or {}).get("owner_steps") or [], source="api")
+    elif history is not None:
+        notes = dict(history, source="git")
+    else:
+        return None
     changes = [c for c in notes.get("changes") or [] if isinstance(c, dict)]
     return {"tag": tag, "previous": notes.get("previous") or "", "notes_url": url,
             "count": len(changes), "changes": changes[:NOTES_CHANGES_MAX],
@@ -985,22 +1190,46 @@ def _clear_pending(paths: Paths) -> None:
         pass
 
 
+def _record_key_change(st: dict, refused: list) -> None:
+    """st["key_change"] names the newest release refused for a key the pin
+    does not hold (the doctor warns on it); gone once none is."""
+    changed = [e for e in refused if isinstance(e, KeyChangeError)]
+    if changed:
+        st["key_change"] = {"version": changed[0].tag, "at": now_iso(), "detail": str(changed[0])}
+        say(str(changed[0]))
+    else:
+        st.pop("key_change", None)
+
+
 def resolve_target(paths: Paths, st: dict, *, channel: str, tag: str | None) -> tuple[str, str] | None:
     """Fetch, then the release to install: `tag` when named, else the
-    channel's pick. Records the check in `st`."""
-    write_signers(paths.live / KEY_FILE, paths.signers)
+    channel's pick. Each is a signed tag on main whose key list the pinned
+    trust root covers. Records the check in `st`."""
+    pinned = trust_root(paths)
+    keys = set(release_keys(pinned))
+    write_signers_text(pinned, paths.signers)
     fetch_tags(paths.cache, paths.repo_url)
     st["checked_at"] = now_iso()
-    st["latest_on_channel"] = newest_signed(paths.cache, channel, paths.signers) if channel in us.CHANNELS else ""
+    st["latest_on_channel"] = newest_signed(paths.cache, channel, paths.signers, keys=keys) \
+        if channel in us.CHANNELS else ""
     _set_behind(paths, st)
+    refused: list = []
     if tag:
-        return tag, verify_tag(paths.cache, tag, paths.signers)
+        try:
+            commit = verify_release(paths.cache, tag, paths.signers, keys=keys)
+        except KeyChangeError as e:
+            _record_key_change(st, [e])
+            raise
+        return tag, commit
     held = (st.get("held_back") or {}).get("version", "")
-    got = pick(paths.cache, channel, paths.signers, installed=st.get("installed", ""), held=held)
+    got = pick(paths.cache, channel, paths.signers, installed=st.get("installed", ""), held=held,
+               keys=keys, refused=refused)
+    _record_key_change(st, refused)
     if got is None:
         return None
     for note in got[2]:
-        say(note)
+        if note != (st.get("key_change") or {}).get("detail"):
+            say(note)
     return got[0], got[1]
 
 
@@ -1207,14 +1436,37 @@ def _label_for(tree: Path) -> str:
     return "migrated-" + datetime.now().strftime("%Y%m%d%H%M%S")
 
 
-def layout(live: Path, owner: str, seed: Path | None = None, releases: Path | None = None) -> str:
+def _pin_from_release(release: Path, private: Path, uid: int, gid: int) -> str:
+    """Pin the trust root from the first installed release's
+    .release-key.pub when update.json pins none yet; a note for the
+    layout's message."""
+    try:
+        text = (release / KEY_FILE).read_text()
+    except OSError:
+        return f"; no {KEY_FILE} in {release.name}, so no release key is pinned yet"
+    try:
+        if pin_key(private, text, uid=uid, gid=gid):
+            return f"; release key pinned in {private / 'update.json'}"
+    except (VerifyError, OSError) as e:
+        return f"; release key not pinned: {e}"
+    return ""
+
+
+def layout(live: Path, owner: str, seed: Path | None = None, releases: Path | None = None,
+           private: Path | None = None) -> str:
     """Root, once: /opt/ea-system becomes a root-owned link to
     <releases>/current, the owner's link to a release directory. A plain
     tree moves in as the first release; with no tree, `seed` (an export)
-    does. Idempotent: on the layout it only sets the owner and modes."""
+    does. The release key of the first release is pinned in the owner's
+    update.json (`private`, default EA_PRIVATE_DIR, else .ea-private in the
+    owner's home) unless that already pins one. Idempotent: on the layout
+    it only sets the owner and modes, and pins a key when none is."""
     import pwd
     releases = releases or us.releases_dir(live)
     pw = pwd.getpwnam(owner)
+    if private is None:
+        env_priv = os.environ.get("EA_PRIVATE_DIR")
+        private = Path(env_priv) if env_priv else Path(pw.pw_dir) / ".ea-private"
     gid = _ea_gid()
     gid = gid if gid >= 0 else pw.pw_gid
     am_root = os.geteuid() == 0
@@ -1231,7 +1483,8 @@ def layout(live: Path, owner: str, seed: Path | None = None, releases: Path | No
         cur = link_target(releases, "current")
         if not cur or not (releases / cur).is_dir():
             raise UpdateError(f"{releases}/current names no release")
-        return f"{live} is already the release layout (current: {cur})"
+        return (f"{live} is already the release layout (current: {cur})"
+                + _pin_from_release(releases / cur, private, pw.pw_uid, pw.pw_gid))
     if live.exists() and not live.is_dir():
         raise UpdateError(f"{live} is neither a directory nor the layout's link")
     src = live if live.is_dir() else seed
@@ -1257,7 +1510,8 @@ def layout(live: Path, owner: str, seed: Path | None = None, releases: Path | No
         pass
     os.symlink(link, tmp)
     os.replace(tmp, live)
-    return f"{live} -> {link} -> {dest.name}"
+    return f"{live} -> {link} -> {dest.name}" + _pin_from_release(dest, private, pw.pw_uid,
+                                                                    pw.pw_gid)
 
 
 # ── the relay host ───────────────────────────────────────────────────
@@ -1283,11 +1537,34 @@ def relay_healthy(url: str = RELAY_HEALTH, tries: int = 15) -> bool:
     return False
 
 
+def relay_trust_root(src: Path, state: Path) -> str:
+    """The relay's pinned release key: state/release-key.pub, outside the
+    clone a release replaces. The first run copies the clone's
+    .release-key.pub there; after that no release changes it, and a new
+    key is the operator's to copy in."""
+    pin = state / RELAY_PIN_FILE
+    if pin.exists() or pin.is_symlink():
+        return _read_key_file(pin, os.geteuid())
+    try:
+        text = (src / KEY_FILE).read_text()
+    except OSError:
+        raise VerifyError(f"no {KEY_FILE} at {src / KEY_FILE} and no {pin}: nothing can be verified")
+    release_keys(text)
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = pin.with_name(pin.name + ".tmp")
+    tmp.write_text(text)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, pin)
+    say(f"pinned the release key of {src / KEY_FILE} in {pin} (first use)")
+    return text
+
+
 def relay(base: Path = RELAY_BASE, state: Path = RELAY_STATE, *, dry_run: bool = False,
           channel: str | None = None, repo_url: str = REPO_URL, healthy=relay_healthy,
           runner=subprocess.run) -> int:
-    """The relay host's updater: the newest signed release on the channel,
-    installed by that release's own relay/install.sh --tag."""
+    """The relay host's updater: the newest signed release on the channel
+    and on main, whose key list the pinned trust root covers, installed by
+    that release's own relay/install.sh --tag."""
     src = base / "src"
     channel = channel or relay_channel()
     if channel == "off":
@@ -1302,14 +1579,18 @@ def relay(base: Path = RELAY_BASE, state: Path = RELAY_STATE, *, dry_run: bool =
         st = json.loads(status_path.read_text())
     except (OSError, ValueError):
         st = {}
-    write_signers(src / KEY_FILE, signers)
+    pinned = relay_trust_root(src, state)
+    write_signers_text(pinned, signers)
     fetch_tags(cache, repo_url)
     head = git_out(src, "rev-parse", "HEAD")
     at = [t for t in git_out(cache, "tag", "--points-at", head, "--list", "v*").splitlines()
           if us.version_key(t)]
     installed = max(at, key=us.version_key) if at else ""
     held = (st.get("held_back") or {}).get("version", "")
-    got = pick(cache, channel, signers, installed=installed, held=held)
+    refused: list = []
+    got = pick(cache, channel, signers, installed=installed, held=held,
+               keys=set(release_keys(pinned)), refused=refused)
+    _record_key_change(st, refused)
     st.update(channel=channel, installed=installed, installed_commit=head[:7], checked_at=now_iso())
     if got is None or got[1] == head:
         say(f"relay up to date at {installed or head[:7]} on {channel}")
@@ -1455,7 +1736,8 @@ def main(argv: list[str] | None = None) -> int:
         paths = Paths(a.live, a.releases, a.private, a.ea_dir,
                       lanes=(a.lanes if a.lanes else None))
         if a.cmd == "layout":
-            say(layout(paths.live, a.owner, Path(a.seed) if a.seed else None, paths.releases))
+            say(layout(paths.live, a.owner, Path(a.seed) if a.seed else None, paths.releases,
+                       Path(a.private) if a.private else None))
             return 0
         channel, source = us.effective_channel(paths.live, paths.private, paths.ea)
         kind = us.tree_kind(paths.live)
@@ -1480,6 +1762,10 @@ def main(argv: list[str] | None = None) -> int:
                 st.pop("last_error", None)
                 save_status(paths, st)
             st["update_due"] = target[0] if target else ""
+            if not st.get("latest_on_channel"):
+                print(f"[update] warning: no release on {channel} is a tag signed by the pinned "
+                      "key on a commit in main's history; nothing can install "
+                      "(docs/updates.md, Supply chain)", file=sys.stderr, flush=True)
             if a.json:
                 _print_status(st, True)
             else:

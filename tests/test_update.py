@@ -23,6 +23,9 @@ sys.path.insert(0, str(REPO / "preprocessor"))
 import update  # noqa: E402
 import update_status as us  # noqa: E402
 
+# A test that reads the origin repository itself names its own main; the
+# updater's cache holds the fetched main as update.MAIN_REF.
+MAIN = "refs/heads/main"
 GIT_ID = ["-c", "user.name=Release Test", "-c", "user.email=release@example.invalid",
           "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "init.defaultBranch=main"]
 
@@ -210,8 +213,7 @@ def test_auto_and_explicit_channels_and_the_private_file_outranks_config(env):
     env["live"].mkdir()
     set_config(env["ea"], profile="review-only", update={"channel": "auto"})
     assert us.effective_channel(env["live"], env["priv"], env["ea"]) == ("stable", "ea-config.json")
-    set_config(env["ea"], profile="review-only", update={"channel": "latest"})
-    assert us.effective_channel(env["live"], env["priv"], env["ea"]) == ("latest", "ea-config.json")
+    assert us.misplaced_channel(env["priv"], env["ea"]) == ""
     set_config(env["ea"], profile="assistant", update={"channel": "nonsense"})
     assert us.effective_channel(env["live"], env["priv"], env["ea"]) == ("off", "hook")
     pin = env["priv"] / "update.json"
@@ -219,9 +221,42 @@ def test_auto_and_explicit_channels_and_the_private_file_outranks_config(env):
     os.chmod(pin, 0o600)
     set_config(env["ea"], profile="assistant", update={"channel": "latest"})
     assert us.effective_channel(env["live"], env["priv"], env["ea"]) == ("off", "update.json")
+    assert us.misplaced_channel(env["priv"], env["ea"]) == "", "update.json decides; nothing to move"
     # a private file others can write is not the owner's word
     os.chmod(pin, 0o666)
     assert us.effective_channel(env["live"], env["priv"], env["ea"]) == ("latest", "ea-config.json")
+
+
+def test_only_the_private_file_turns_updates_off_or_pins_a_channel(env, capsys):
+    """ea-config.json is the EA user's to write: a channel there reads as
+    auto, so the resident can neither stop updates nor pick a channel,
+    and the doctor says to move the setting. The root step reads the same
+    rule (it asks `update.py channel`)."""
+    env["live"].mkdir()
+    (env["live"] / ".deployed-commit").write_text("abc1234\n")
+    for said, profile, want in (("off", "assistant", "latest"), ("latest", "review-only", "stable"),
+                                ("stable", "assistant", "latest")):
+        set_config(env["ea"], profile=profile, update={"channel": said})
+        assert us.effective_channel(env["live"], env["priv"], env["ea"]) == (want, "ea-config.json")
+        assert us.misplaced_channel(env["priv"], env["ea"]) == said
+        status, detail, fix = us.doctor_row(env["live"], env["priv"], env["ea"])
+        assert status == "WARN" and f"update.channel {said}" in detail and "counts as auto" in detail
+        assert fix.startswith("channel set in ea-bot space; move it to update.json") \
+            and f'"channel": "{said}"' in fix
+    args = ["--live", str(env["live"]), "--private", str(env["priv"]), "--ea-dir", str(env["ea"])]
+    set_config(env["ea"], profile="assistant", update={"channel": "off"})
+    capsys.readouterr()
+    assert update.main(args + ["channel"]) == 0
+    assert capsys.readouterr().out.strip() == "latest"
+    pin = env["priv"] / "update.json"
+    pin.write_text(json.dumps({"channel": "off"}))
+    os.chmod(pin, 0o600)
+    assert update.main(args + ["channel"]) == 0
+    assert capsys.readouterr().out.strip() == "off"
+    status, detail, _ = us.doctor_row(env["live"], env["priv"], env["ea"])
+    assert status == "PASS" and "update.channel is off (update.json)" in detail
+    harden = (REPO / "deploy" / "harden-permissions.sh").read_text()
+    assert 'update.py" --live "$LIVE" channel' in harden, "the root step asks the same rule"
 
 
 def test_in_a_container_the_image_is_the_release(env, monkeypatch, capsys):
@@ -257,6 +292,24 @@ def test_allowed_signers_from_the_key_file():
         update.allowed_signers("# no key here\n")
     with pytest.raises(update.VerifyError):
         update.allowed_signers("not a key; rm -rf /\n")
+    with pytest.raises(update.VerifyError, match="a release key is ssh-ed25519"):
+        update.allowed_signers("ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIExample0nly00000 x\n")
+
+
+@needs_ssh
+def test_a_signature_by_a_key_of_another_type_is_refused(tmp_path):
+    """verify_tag pins the key type: an allowed-signers file that names an
+    ECDSA key (made by hand, since allowed_signers refuses one) still does
+    not pass a tag that key signed."""
+    key = tmp_path / "ecdsa"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ecdsa", "-N", "", "-C", "e", "-f", str(key)], check=True)
+    origin = make_origin(tmp_path, keypair(tmp_path, "release"))
+    sign_tag(origin, "v0.1.1", key)
+    kind, b64 = Path(str(key) + ".pub").read_text().split()[:2]
+    signers = tmp_path / "allowed"
+    signers.write_text(f'tacitus-release namespaces="git" {kind} {b64}\n')
+    with pytest.raises(update.VerifyError, match="ED25519"):
+        update.verify_tag(origin, "v0.1.1", signers)
 
 
 @needs_ssh
@@ -305,12 +358,12 @@ def test_pick_takes_the_newest_signed_release_and_never_goes_back(tmp_path):
     sign_tag(origin, "v0.1.3", other)          # a stranger's tag is skipped
     commit(origin, "c.txt", "c")
     sign_tag(origin, "v0.1.10", None)          # an unsigned tag is skipped
-    got = update.pick(origin, "latest", signers, installed="v0.1.1")
+    got = update.pick(origin, "latest", signers, installed="v0.1.1", main=MAIN)
     assert got[0] == "v0.1.2" and len(got[2]) == 2
-    assert update.pick(origin, "latest", signers, installed="v0.1.2") is None
-    assert update.pick(origin, "latest", signers, installed="v0.2.0") is None
-    assert update.pick(origin, "latest", signers, installed="v0.1.1", held="v0.1.2") is None
-    assert update.newest_signed(origin, "latest", signers) == "v0.1.2"
+    assert update.pick(origin, "latest", signers, installed="v0.1.2", main=MAIN) is None
+    assert update.pick(origin, "latest", signers, installed="v0.2.0", main=MAIN) is None
+    assert update.pick(origin, "latest", signers, installed="v0.1.1", held="v0.1.2", main=MAIN) is None
+    assert update.newest_signed(origin, "latest", signers, main=MAIN) == "v0.1.2"
     # semver order, not string order
     assert update.release_tags(origin)[:2] == ["v0.1.10", "v0.1.3"]
 
@@ -323,12 +376,12 @@ def test_stable_follows_its_pointer_among_signed_releases(tmp_path):
     sign_tag(origin, "v0.1.1", key)
     commit(origin, "a.txt", "a")
     sign_tag(origin, "v0.1.2", key)
-    assert update.pick(origin, "stable", signers) is None
+    assert update.pick(origin, "stable", signers, main=MAIN) is None
     git(origin, "tag", "-a", "-m", "stable: v0.1.1", "channels/stable", "v0.1.1^{commit}")
-    assert update.pick(origin, "stable", signers)[0] == "v0.1.1"
-    assert update.pick(origin, "stable", signers, installed="v0.1.2") is None
+    assert update.pick(origin, "stable", signers, main=MAIN)[0] == "v0.1.1"
+    assert update.pick(origin, "stable", signers, installed="v0.1.2", main=MAIN) is None
     git(origin, "tag", "-f", "-a", "-m", "stable: v0.1.2", "channels/stable", "v0.1.2^{commit}")
-    assert update.pick(origin, "stable", signers, installed="v0.1.1")[0] == "v0.1.2"
+    assert update.pick(origin, "stable", signers, installed="v0.1.1", main=MAIN)[0] == "v0.1.2"
 
 
 @needs_ssh
@@ -665,7 +718,7 @@ def install(env, tmp_path):
     (seed / ".version").write_text("v0.1.1\n")
     (seed / ".deployed-commit").write_text(first[:7] + "\n")
     update.layout(env["live"], _me(), seed=seed)
-    set_config(env["ea"], profile="assistant", update={"channel": "latest"})
+    set_config(env["ea"], profile="assistant", update={"channel": "auto"})
     paths = update.Paths(live=env["live"], private=env["priv"], ea=env["ea"], lanes=lanes,
                          repo_url=str(origin))
     return dict(env, origin=origin, key=key, lanes=lanes, paths=paths, first=first)
@@ -788,11 +841,139 @@ def test_rollback_by_hand_switches_to_previous_and_holds_the_release(install):
 
 def test_with_no_trust_root_nothing_installs_and_the_error_is_recorded(install):
     (install["live"] / ".release-key.pub").unlink()
+    (install["priv"] / "update.json").unlink()
     paths, host = install["paths"], FakeHost()
     with pytest.raises(update.VerifyError, match="nothing can be verified"):
         update.apply(paths, host, channel="latest", gate_kw=fast_gate(), idle_probe=lambda: [])
     assert us.installed(paths.live)["version"] == "v0.1.1" and host.restarts == []
     assert "release-key" in us.load_status(paths.private)["last_error"]["error"]
+
+
+def _pin(install) -> list:
+    return json.loads((install["priv"] / "update.json").read_text())["release_key"]
+
+
+def _pub(key: Path) -> str:
+    kind, b64 = Path(str(key) + ".pub").read_text().split()[:2]
+    return f"{kind} {b64}"
+
+
+def test_layout_pins_the_first_release_key_outside_every_release(install):
+    """The trust root is the owner's update.json, written once from the
+    first installed release; the running release's .release-key.pub is
+    never read again, so a release cannot replace it."""
+    assert _pin(install) == [_pub(install["key"])]
+    assert os.stat(install["priv"] / "update.json").st_mode & 0o777 == 0o600
+    # a running release whose key file names an intruder's key
+    intruder = keypair(install["tmp"], "intruder")
+    shutil.copy(str(intruder) + ".pub", install["live"] / ".release-key.pub")
+    commit(install["origin"], "preprocessor/thing.py", "X = 666\n", "not ours")
+    sign_tag(install["origin"], "v0.2.0", intruder)
+    paths, host = install["paths"], FakeHost()
+    assert update.apply(paths, host, channel="latest", gate_kw=fast_gate(), idle_probe=lambda: []) == 0
+    assert us.installed(paths.live)["version"] == "v0.1.2"
+    assert _pin(install) == [_pub(install["key"])], "apply never rewrites the pin"
+    # the root step again keeps the pin it finds
+    assert "pinned" not in update.layout(paths.live, _me())
+
+
+def test_an_install_without_a_pin_pins_the_installed_key_once(install, capsys):
+    (install["priv"] / "update.json").write_text(json.dumps({"channel": "latest"}))
+    os.chmod(install["priv"] / "update.json", 0o600)
+    paths, host = install["paths"], FakeHost()
+    assert update.apply(paths, host, channel="latest", gate_kw=fast_gate(), idle_probe=lambda: []) == 0
+    doc = json.loads((install["priv"] / "update.json").read_text())
+    assert doc == {"channel": "latest", "release_key": [_pub(install["key"])]}
+    assert "(first use)" in capsys.readouterr().out
+    # a pin the owner made by path, and a refused update.json
+    keyfile = install["priv"] / "release.pub"
+    shutil.copy(str(install["key"]) + ".pub", keyfile)
+    os.chmod(keyfile, 0o644)
+    (install["priv"] / "update.json").write_text(json.dumps({"release_key": str(keyfile)}))
+    assert update.pinned_key(install["priv"]).split()[:2] == _pub(install["key"]).split()
+    os.chmod(keyfile, 0o666)
+    with pytest.raises(update.VerifyError, match="no one else can write"):
+        update.pinned_key(install["priv"])
+    os.chmod(install["priv"] / "update.json", 0o666)
+    with pytest.raises(update.VerifyError, match="refused"):
+        update.pin_key(install["priv"], Path(str(install["key"]) + ".pub").read_text())
+
+
+def test_a_release_that_changes_the_key_waits_for_the_owner(install):
+    """A rotation signed by the pinned key still installs only once the
+    owner puts the new key in update.json; until then it is logged, the
+    doctor warns, and the install stays on the newest release the pin
+    covers."""
+    new = keypair(install["tmp"], "next")
+    origin, paths, host = install["origin"], install["paths"], FakeHost()
+    commit(origin, ".release-key.pub", Path(str(new) + ".pub").read_text(), "Rotate the release key")
+    sign_tag(origin, "v0.1.3", install["key"])
+    assert update.apply(paths, host, channel="latest", gate_kw=fast_gate(), idle_probe=lambda: []) == 0
+    st = us.load_status(paths.private)
+    assert st["installed"] == "v0.1.2" and st["key_change"]["version"] == "v0.1.3"
+    assert st["latest_on_channel"] == "v0.1.2"
+    st["checked_at"] = update.now_iso()
+    update.save_status(paths, st)
+    status, detail, fix = us.doctor_row(paths.live, paths.private, paths.ea)
+    assert status == "WARN" and "v0.1.3" in detail and "update.json" in fix
+    with pytest.raises(update.KeyChangeError):
+        update.apply(paths, host, channel="latest", tag="v0.1.3", gate_kw=fast_gate(),
+                     idle_probe=lambda: [])
+    # the owner adds the new key: the rotation installs, and the pin stays the owner's
+    doc = json.loads((install["priv"] / "update.json").read_text())
+    doc["release_key"].append(_pub(new))
+    (install["priv"] / "update.json").write_text(json.dumps(doc))
+    assert update.apply(paths, host, channel="latest", gate_kw=fast_gate(), idle_probe=lambda: []) == 0
+    st = us.load_status(paths.private)
+    assert st["installed"] == "v0.1.3" and "key_change" not in st
+    assert _pin(install) == [_pub(install["key"]), _pub(new)]
+
+
+@needs_ssh
+def test_a_signed_tag_off_main_is_refused_and_one_on_main_is_taken(tmp_path, capsys):
+    """The tag must name a commit in the history of the repository's main,
+    fetched beside the tags: a signed tag on an orphan commit (a branch a
+    stolen key signed) is never installed."""
+    key = keypair(tmp_path, "release")
+    origin = make_origin(tmp_path, key)
+    sign_tag(origin, "v1.0.0", key)
+    git(origin, "checkout", "-q", "--orphan", "elsewhere")
+    commit(origin, "x.txt", "x", "not on main")
+    sign_tag(origin, "v9.9.9", key)
+    git(origin, "checkout", "-q", "main")
+    cache = tmp_path / "cache.git"
+    update.fetch_tags(cache, str(origin))
+    assert git(cache, "rev-parse", update.MAIN_REF) == git(origin, "rev-parse", "main")
+    signers = update.write_signers(origin / ".release-key.pub", tmp_path / "allowed")
+    with pytest.raises(update.VerifyError, match="not in the history of main"):
+        update.verify_release(cache, "v9.9.9", signers)
+    assert update.verify_release(cache, "v1.0.0", signers) == git(origin, "rev-parse", "v1.0.0^{commit}")
+    refused = []
+    got = update.pick(cache, "latest", signers, refused=refused)
+    assert got[0] == "v1.0.0" and "not in the history of main" in str(refused[0])
+    assert update.newest_signed(cache, "latest", signers) == "v1.0.0"
+    # a cache with no main fetched accepts nothing
+    bare = tmp_path / "bare.git"
+    git(tmp_path, "init", "-q", "--bare", str(bare))
+    git(bare, "fetch", "-q", str(origin), "+refs/tags/v*:refs/tags/v*")
+    assert update.pick(bare, "latest", signers) is None
+
+
+@needs_ssh
+def test_check_warns_when_no_signed_release_is_reachable(install, capsys):
+    paths = install["paths"]
+    git(install["origin"], "tag", "-d", "v0.1.2")
+    args = ["--live", str(paths.live), "--private", str(paths.private), "--ea-dir", str(paths.ea),
+            "--lanes", str(install["lanes"])]
+    capsys.readouterr()
+    # the CLI reads the repository from update.json
+    doc = json.loads((install["priv"] / "update.json").read_text())
+    doc["repo"] = str(install["origin"])
+    (install["priv"] / "update.json").write_text(json.dumps(doc))
+    git(install["origin"], "tag", "-d", "v0.1.1")
+    assert update.main(args + ["check"]) == 0
+    err = capsys.readouterr().err
+    assert "no release on latest" in err and "Supply chain" in err
 
 
 # ── release notes ───────────────────────────────────────────────────
@@ -862,7 +1043,7 @@ def test_the_notes_come_from_the_github_release_when_the_api_answers(install):
     assert asked == [("arpg/tacitus", "v0.1.2")]
     assert notes["source"] == "api" and notes["notes_url"] == page and notes["previous"] == "v0.1.1"
     assert notes["changes"] == [{"subject": "The thing counts to two", "pr": 4, "sha": "abcdef1"}]
-    assert notes["owner_steps"][0]["step"] == "restart the bot"
+    assert notes["owner_steps"] == [], "the Release body is shown, never trusted for owner steps"
     # an install that skipped a release reads the whole span from the history, and keeps the link
     first = git(install["origin"], "rev-parse", "v0.1.1^{commit}")
     notes = update.release_notes(gh, "v0.1.2", first, fetch=answer)
@@ -992,7 +1173,7 @@ def test_the_doctor_row(env):
     assert us.doctor_row(env["live"], env["priv"], env["ea"], now=now)[0] == "WARN"
     _status(env, checked_at=iso(600), last_error={"at": iso(600), "error": "no .release-key.pub at x"})
     status, detail, fix = us.doctor_row(env["live"], env["priv"], env["ea"], now=now)
-    assert status == "WARN" and "release-key" in detail and "One-time setup" in fix
+    assert status == "WARN" and "release-key" in detail and "Supply chain" in fix and "update.json" in fix
 
 
 def test_the_doctor_calls_the_updates_row(env, monkeypatch):
@@ -1194,6 +1375,19 @@ def test_the_relay_updater_installs_a_signed_release_with_its_install_sh(tmp_pat
     assert rc == 0 and calls == ["v0.1.2"]
     st = json.loads((tmp_path / "state" / "status.json").read_text())
     assert st["installed"] == "v0.1.2"
+    # the relay's trust root is pinned in its state directory, outside the clone
+    pin = tmp_path / "state" / "release-key.pub"
+    assert pin.read_text() == Path(str(key) + ".pub").read_text()
+    intruder = keypair(tmp_path, "intruder")
+    shutil.copy(str(intruder) + ".pub", base / "src" / ".release-key.pub")
+    commit(origin, "relay/z.txt", "z", "not ours")
+    sign_tag(origin, "v0.1.9", intruder)
+    calls.clear()
+    assert update.relay(base, tmp_path / "state", channel="latest", repo_url=str(origin),
+                        healthy=lambda: True, runner=runner) == 0
+    assert calls == [] and pin.read_text() == Path(str(key) + ".pub").read_text()
+    git(origin, "tag", "-d", "v0.1.9")
+    git(base / "src", "checkout", "-q", ".release-key.pub")
     calls.clear()
     commit(origin, "relay/y.txt", "y", "bad")
     sign_tag(origin, "v0.1.3", key)
@@ -1220,6 +1414,7 @@ def test_the_release_job_signs_after_a_green_main_only():
     assert "needs.ci.result == 'success'" in cond
     assert job["permissions"] == {"contents": "write", "pull-requests": "read"}
     assert job["concurrency"]["cancel-in-progress"] is False
+    assert job["environment"] == "release", "the secret lives in a protected environment"
     steps = "\n".join(str(s.get("run", "")) for s in job["steps"])
     assert "scripts/update.py next-version" in steps
     nxt = next(s for s in job["steps"] if s.get("name") == "Next version")
@@ -1233,7 +1428,42 @@ def test_the_release_job_signs_after_a_green_main_only():
     for name, j in doc["jobs"].items():
         for s in j.get("steps", []):
             if "uses" in s:
-                assert re.search(r"@v\d+\.\d+\.\d+$", s["uses"]), (name, s["uses"])
+                if name == "release":
+                    assert re.search(r"@[0-9a-f]{40}$", s["uses"]), (name, s["uses"])
+                else:
+                    assert re.search(r"@v\d+\.\d+\.\d+$", s["uses"]), (name, s["uses"])
+
+
+def test_the_signing_key_reaches_one_shell_step_and_no_python():
+    """The secret is in the environment of one step, which runs shell,
+    ssh-keygen and git; the Python steps (the version, the signers, the
+    verify, the notes) run without it, and the job and the workflow set
+    no env that carries it. Every action of the job is pinned by commit,
+    with its version in a comment."""
+    wf = REPO / ".github" / "workflows" / "ci.yml"
+    if not wf.exists():
+        print("  (no workflow files in this tree; the Docker image leaves .github out)")
+        return
+    yaml = pytest.importorskip("yaml")
+    text = wf.read_text()
+    doc = yaml.safe_load(text)
+    job = doc["jobs"]["release"]
+    assert "RELEASE_SIGNING_KEY" not in json.dumps(doc.get("env") or {})
+    assert "RELEASE_SIGNING_KEY" not in json.dumps(job.get("env") or {})
+    holders = [s for s in job["steps"] if "secrets.RELEASE_SIGNING_KEY" in json.dumps(s.get("env") or {})]
+    assert [s["name"] for s in holders] == ["Sign the tag"]
+    sign = holders[0]
+    assert "python" not in sign["run"] and "uses" not in sign
+    assert sign["run"].index("trap 'rm -f \"$key\"' EXIT") < sign["run"].index('> "$key"')
+    assert "GITHUB_ENV" not in sign["run"] and "GITHUB_PATH" not in sign["run"]
+    assert text.count("secrets.RELEASE_SIGNING_KEY") == 1
+    for s in job["steps"]:
+        if "python" in str(s.get("run", "")):
+            assert s is not sign
+    uses = [ln for ln in text[text.index("\n  release:\n"):].splitlines() if "uses:" in ln]
+    assert uses
+    for ln in uses:
+        assert re.search(r"uses: \S+@[0-9a-f]{40} # v\d+\.\d+\.\d+$", ln), ln
 
 
 def test_the_release_job_creates_a_github_release_with_the_notes_and_never_fails_on_it():
@@ -1243,18 +1473,22 @@ def test_the_release_job_creates_a_github_release_with_the_notes_and_never_fails
         return
     yaml = pytest.importorskip("yaml")
     steps = yaml.safe_load(wf.read_text())["jobs"]["release"]["steps"]
-    sign = next(s for s in steps if s.get("name") == "Sign and push the tag")
-    i = steps.index(sign)
+    sign = next(s for s in steps if s.get("name") == "Sign the tag")
+    push = next(s for s in steps if s.get("name") == "Verify and push the tag")
+    i = steps.index(push)
     notes = steps[i + 1]
-    assert sign["id"] == "sign"
-    run = sign["run"]
+    assert sign["id"] == "sign" and push["id"] == "push"
+    assert sign["run"].index("exit 0") < sign["run"].index("signed=true"), "no secret: no tag"
+    assert push["if"] == "steps.sign.outputs.signed == 'true'", "no tag: no push, no Release"
+    run = push["run"]
+    assert run.index("scripts/update.py verify-tag") < run.index('git push origin "refs/tags/$TAG"')
     assert run.index('git push origin "refs/tags/$TAG"') < run.index('echo "pushed=true" >> "$GITHUB_OUTPUT"')
-    assert run.index("exit 0") < run.index("pushed=true"), "no secret: no tag, no Release"
-    assert notes["if"] == "steps.sign.outputs.pushed == 'true'"
+    assert notes["if"] == "steps.push.outputs.pushed == 'true'"
     assert notes["continue-on-error"] is True
     assert notes["env"]["GH_TOKEN"] == "${{ github.token }}"
     body = notes["run"]
-    assert "python3 scripts/release_notes.py --tag \"$TAG\"" in body and "--pr-bodies" in body
+    assert "python3 scripts/release_notes.py --tag \"$TAG\"" in body
+    assert "--pr-bodies" not in body, "owner steps come from the signed history only"
     assert "gh release create \"$TAG\" --verify-tag" in body and "--notes-file \"$notes\"" in body
     assert body.count("::warning::") == 2 and "exit 1" not in body
     for line in body.splitlines():

@@ -84,7 +84,10 @@ Settings screens: the host registers a page in `settings_pages` (a name
 and an object with `get()` and `save(body)`; the EA's routing table is
 `routing`, model_routing.WebSettings). `/api/me` lists the names, and
 `/api/settings/<name>` answers the owner: GET is the page's data, POST
-hands the JSON body to `save`, whose ValueError is a 400 with its text.
+hands the JSON body to `save`, whose ValueError is a 400 with its text. A
+`save` that takes `who` also gets the credential that signed the request
+in (`cookie` or `header`) and the device a relayed request names, for its
+change log.
 A POST must pass the same Host, Sec-Fetch-Site and Origin checks as
 every other, and a relayed one (`X-Tacitus-Relay`) is refused: settings
 change only in the owner's own web chat.
@@ -109,6 +112,7 @@ import hashlib
 import hmac
 import http.cookies
 import http.server
+import inspect
 import json
 import logging
 import mimetypes
@@ -205,6 +209,12 @@ MIN_PAIR_TOKEN = 16
 PAIR_WAIT_S = 10.0
 # Open connections the server takes at once; more are closed at once.
 MAX_CONNECTIONS = 64
+# Open connections one peer address other than loopback may hold at once,
+# under MAX_CONNECTIONS; more from it are closed at once, so one client
+# cannot take every slot. The web block's `peer_connections` changes it;
+# 0 lifts it, for a proxy (every request then comes from the proxy's
+# address) that limits each client itself.
+MAX_PEER_CONNECTIONS = 8
 # Socket reads and writes; a stalled client is dropped.
 HANDLER_TIMEOUT_S = 30
 # Seconds between the serving process's checks of the app's files against
@@ -1370,6 +1380,7 @@ class WebFrontend(ChatFrontend):
                                     or self.store_path.parent / PAIR_FILE)
         self.webui_dir = Path(webui_dir) if webui_dir else WEBUI_DIR
         self.push_subject = str(cfg.get("push_subject") or "").strip() or web_push.DEFAULT_SUBJECT
+        self.peer_connections = _peer_cap(cfg.get("peer_connections"))
         self.owner_id = OWNER
         self.bot_user_id = BOT
         self.main_channel = MAIN_ID
@@ -1487,7 +1498,7 @@ class WebFrontend(ChatFrontend):
             if self.inbound is None:
                 self._ensure_own_channels()
             cls = _Server6 if ":" in self.bind else _Server
-            srv = cls((self.bind, self.port), _Handler)
+            srv = cls((self.bind, self.port), _Handler, max_per_peer=self.peer_connections)
             srv.frontend = self
             self.port = int(srv.server_address[1])
             self._stop.clear()
@@ -2612,26 +2623,85 @@ class WebFrontend(ChatFrontend):
         return lambda: self._dispatch(ev)
 
 
+def _peer_cap(value: Any) -> int:
+    """The web block's `peer_connections`: a whole number from 0 (no cap
+    per peer) to MAX_CONNECTIONS; MAX_PEER_CONNECTIONS when unset or not
+    one."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        n = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        n = int(value)
+    else:
+        return MAX_PEER_CONNECTIONS
+    return n if 0 <= n <= MAX_CONNECTIONS else MAX_PEER_CONNECTIONS
+
+
 class _Server(http.server.ThreadingHTTPServer):
-    """One thread per connection, at most MAX_CONNECTIONS at once: one more
-    is closed at once, so a flood of connections cannot use up the
-    process's threads."""
+    """One thread per connection, at most MAX_CONNECTIONS at once, and at
+    most `max_per_peer` from one address other than loopback: one more is
+    closed at once, so a flood of connections cannot use up the process's
+    threads, and one client cannot hold every slot."""
     daemon_threads = True
     allow_reuse_address = True
     frontend: WebFrontend
 
     def __init__(self, addr: tuple, handler: type,
-                 max_connections: int = MAX_CONNECTIONS) -> None:
+                 max_connections: int = MAX_CONNECTIONS,
+                 max_per_peer: int = MAX_PEER_CONNECTIONS) -> None:
         super().__init__(addr, handler)
         self._slots = threading.BoundedSemaphore(max_connections)
+        self.max_per_peer = max_per_peer
+        self._peers: dict[str, int] = {}
+        self._peers_lock = threading.Lock()
+        self._peer_warned = 0.0
+
+    def _peer(self, client_address: Any) -> str | None:
+        """The address a per-peer count is kept for; None for loopback (the
+        relay client, tailscale serve, a proxy on this machine) or with no
+        cap."""
+        host = str(client_address[0]) if client_address else ""
+        if not self.max_per_peer or host in LOOPBACK:
+            return None
+        return host
+
+    def _take_peer(self, peer: str | None) -> bool:
+        if peer is None:
+            return True
+        with self._peers_lock:
+            n = self._peers.get(peer, 0)
+            if n >= self.max_per_peer:
+                now = time.monotonic()
+                if now - self._peer_warned >= 60:
+                    self._peer_warned = now
+                    log.warning("web chat: %s holds %d connections, the most one address may; "
+                                "closing more from it", peer, n)
+                return False
+            self._peers[peer] = n + 1
+        return True
+
+    def _drop_peer(self, peer: str | None) -> None:
+        if peer is None:
+            return
+        with self._peers_lock:
+            n = self._peers.get(peer, 0) - 1
+            if n > 0:
+                self._peers[peer] = n
+            else:
+                self._peers.pop(peer, None)
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self._slots.acquire(blocking=False):
             self.shutdown_request(request)
             return
+        peer = self._peer(client_address)
+        if not self._take_peer(peer):
+            self._slots.release()
+            self.shutdown_request(request)
+            return
         try:
             super().process_request(request, client_address)
         except Exception:
+            self._drop_peer(peer)
             self._slots.release()
             raise
 
@@ -2639,6 +2709,7 @@ class _Server(http.server.ThreadingHTTPServer):
         try:
             super().process_request_thread(request, client_address)
         finally:
+            self._drop_peer(self._peer(client_address))
             self._slots.release()
 
 
@@ -2867,8 +2938,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if self.headers.get("X-Tacitus-Relay") is not None:
             raise _HttpError(403, "settings change only in the owner's own web chat")
         body = self._read_json()
+        # Who made the change, for a page that logs it: the credential that
+        # signed this request in, and the device a relayed request names.
+        who = {"credential": getattr(self, "_credential", "") or "unknown"}
+        device = (self.headers.get("X-Tacitus-Relay") or "").strip()
+        if device:
+            who["device"] = device
         try:
-            out = page.save(body)
+            if "who" in inspect.signature(page.save).parameters:
+                out = page.save(body, who=who)
+            else:
+                out = page.save(body)
         except ValueError as e:
             raise _HttpError(400, str(e)[:500]) from None
         self._json(200, out)
@@ -3016,6 +3096,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         client sent; any other local process could forge it), or the
         pairing cookie."""
         fe = self.fe
+        self._credential = ""
         if fe.tailscale_login and fe.trust_tailscale_header \
                 and self.client_address[0] in LOOPBACK:
             got = self.headers.get("Tailscale-User-Login") or ""
@@ -3026,11 +3107,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 except OSError:
                     local = None
                 if local is not None and fe.peer_is_tailscaled(self.client_address, local):
+                    self._credential = "header"
                     return True
         token = fe.pair_token()
         if token:
             cookie = self._cookie(COOKIE)
             if cookie and hmac.compare_digest(cookie.encode("utf-8"), token.encode("utf-8")):
+                self._credential = "cookie"
                 return True
         return False
 

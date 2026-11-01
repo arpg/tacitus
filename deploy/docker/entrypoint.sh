@@ -84,17 +84,21 @@ prepare_volumes() {
 # serves only from a 0700 directory of the owner's, with its settings
 # (chat.json), store and pairing token at 0600 (docs/webchat.md, Identity
 # and auth); the bot makes the store and the token itself.
+# The owner-private volume, as root: the directory 0700, logs/ in it, and
+# the settings and secrets files the owner's at 0600. The owner can change
+# any name in the volume, so nothing here follows a link: find (-P, the
+# default) never takes a link for -type d or -type f, the directory itself
+# included, chown -h never follows one, and chmod runs only on what find
+# matched.
 prepare_private_volume() {
-    local f
-    chmod 0700 "$PRIV_DIR"
-    install -d -o "$OWNER_USER" -g "$OWNER_USER" -m 0700 "$PRIV_DIR/logs"
-    for f in "$PRIV_DIR/secrets.env" "$PRIV_DIR/bot.env" "$PRIV_DIR/crontab.extra" \
-             "$PRIV_DIR/chat.json" "$PRIV_DIR/webchat-pair.token" "$PRIV_DIR/webchat-relay.json"; do
-        if [ -f "$f" ] && [ ! -L "$f" ]; then
-            chown "$OWNER_USER:$OWNER_USER" "$f"
-            chmod 0600 "$f"
-        fi
-    done
+    find "$PRIV_DIR" -maxdepth 0 -type d -exec chmod 0700 {} +
+    mkdir -m 0700 "$PRIV_DIR/logs" 2>/dev/null || true
+    find "$PRIV_DIR" -mindepth 1 -maxdepth 1 -type d -name logs \
+        -exec chown -h "$OWNER_USER:$OWNER_USER" {} + -exec chmod 0700 {} +
+    find "$PRIV_DIR" -mindepth 1 -maxdepth 1 -type f \( -name secrets.env -o -name bot.env \
+        -o -name crontab.extra -o -name chat.json -o -name webchat-pair.token \
+        -o -name webchat-relay.json \) \
+        -exec chown -h "$OWNER_USER:$OWNER_USER" {} + -exec chmod 0600 {} +
 }
 
 # The install overlay (preprocessor/install_overlay.py): the install's own

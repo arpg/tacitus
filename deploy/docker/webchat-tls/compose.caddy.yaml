@@ -7,6 +7,11 @@
 # starts Caddy with the bot. Caddy reaches the bot as bot:8470 on the
 # compose network and keeps its certificates in the webchat-tls volume.
 # Paths here are relative to compose.yaml's directory.
+#
+# It publishes the chat's sign-in page on every address of this machine
+# unless WEBCHAT_TLS_BIND names one (the campus or VPN interface's): on a
+# public DNS name that is the whole internet. docs/docker.md, Web chat,
+# says what to narrow and how.
 services:
   webchat-tls:
     # Caddy 2.10.2
@@ -14,8 +19,8 @@ services:
     profiles: ["assistant"]
     restart: unless-stopped
     ports:
-      - "${WEBCHAT_HTTPS_PORT:-443}:443"
-      - "${WEBCHAT_HTTP_PORT:-80}:80"
+      - "${WEBCHAT_TLS_BIND:-0.0.0.0}:${WEBCHAT_HTTPS_PORT:-443}:443"
+      - "${WEBCHAT_TLS_BIND:-0.0.0.0}:${WEBCHAT_HTTP_PORT:-80}:80"
     environment:
       WEBCHAT_HOST: "${WEBCHAT_HOST:?set WEBCHAT_HOST in .env to the host name of WEBCHAT_PUBLIC_URL}"
     volumes:

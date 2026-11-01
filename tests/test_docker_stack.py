@@ -803,13 +803,14 @@ def test_chat_seed_writes_the_web_block_with_the_header_off():
     assert block["frontend"] == "web" and block["shadow"] == ""
     assert block["web"] == {"bind": "0.0.0.0", "port": 8470, "base_path": "/chat",
                             "public_url": "https://chat.example.test/chat",
-                            "trust_tailscale_header": False}
+                            "trust_tailscale_header": False, "peer_connections": 0}
 
     import ea_config
     from chat.web_frontend import WebFrontend
     web = ea_config.chat_from_block(block)["web"]
     fe = WebFrontend.from_config(web, store_path=priv / "webchat.sqlite", trusted_config=True)
     assert fe.trust_tailscale_header is False, "no tailscaled in the stack: the token signs in"
+    assert fe.peer_connections == 0, "every proxied request comes from the proxy's address"
     assert (fe.bind, fe.port, fe.base_path) == ("0.0.0.0", 8470, "/chat")
     assert fe.loopback_url() == "http://127.0.0.1:8470/chat", "the relay client stays on loopback"
     assert fe.pair_token_file == priv / "webchat-pair.token"
@@ -893,17 +894,15 @@ def test_entrypoint_seeds_the_web_chat_as_the_owner():
 
 
 def test_entrypoint_keeps_the_private_volume_0700_with_the_chat_files_0600():
-    """Run the entrypoint's prepare_private_volume with chown and install
-    stubbed (the test is not root): the directory ends 0700 and the chat
-    settings, the pairing token and the relay key 0600, and a symlink is
-    left as it is."""
+    """Run the entrypoint's prepare_private_volume with chown stubbed (the
+    test is not root): the directory ends 0700 and the chat settings, the
+    pairing token and the relay key 0600, and a symlink is left as it is.
+    The owner can change any name in the volume, so no step follows a
+    link: chown is always -h, and find picks what chmod changes."""
     tmp = Path(tempfile.mkdtemp(prefix="docker-private-"))
     bindir = tmp / "bin"
     bindir.mkdir()
     (bindir / "chown").write_text('#!/bin/bash\necho "chown $*" >> "$CALLS"\n')
-    (bindir / "install").write_text(
-        '#!/bin/bash\nmode=0755\nwhile [ $# -gt 1 ]; do case "$1" in -m) mode="$2"; shift 2;; '
-        '-o|-g) shift 2;; *) shift;; esac; done\nmkdir -p "$1"; chmod "$mode" "$1"\n')
     for stub in bindir.iterdir():
         stub.chmod(0o755)
     priv = tmp / "private"
@@ -926,11 +925,38 @@ def test_entrypoint_keeps_the_private_volume_0700_with_the_chat_files_0600():
     r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert _mode(priv) == 0o700 and _mode(priv / "logs") == 0o700
+    chowns = calls.read_text().splitlines()
+    assert chowns and all(c.startswith("chown -h owner:owner ") for c in chowns), chowns
     for name in names:
         assert _mode(priv / name) == 0o600, name
-        assert f"chown owner:owner {priv / name}" in calls.read_text(), name
+        assert any(f" {priv / name}" in c for c in chowns), name
+    assert any(c.endswith(f" {priv / 'logs'}") or f" {priv / 'logs'} " in c for c in chowns)
     assert _mode(outside) == 0o644 and "bot.env" not in calls.read_text()
     assert 'prepare_private_volume' in _shell_fn(text, "prepare_volumes")
+    fn = _shell_fn(text, "prepare_private_volume")
+    code = "\n".join(ln.split("#", 1)[0] for ln in fn.splitlines())
+    assert "install " not in code and "chown -h" in code and code.count("find ") == 3
+
+    # a link at logs, at a settings name, or the volume's directory itself is never followed
+    calls.write_text("")
+    victim_dir = tmp / "victim-dir"
+    victim_dir.mkdir()
+    victim_dir.chmod(0o755)
+    shutil.rmtree(priv / "logs")
+    (priv / "logs").symlink_to(victim_dir)
+    (priv / "chat.json").unlink()
+    (priv / "chat.json").symlink_to(outside)
+    r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert _mode(victim_dir) == 0o755 and _mode(outside) == 0o644
+    assert "logs" not in calls.read_text() and "chat.json" not in calls.read_text()
+    calls.write_text("")
+    linked = tmp / "linked-private"
+    linked.symlink_to(victim_dir)
+    r = subprocess.run(["bash", "-c", script], env=dict(env, PRIV_DIR=str(linked)),
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert _mode(victim_dir) == 0o755 and calls.read_text() == ""
 
 
 def test_healthcheck_wants_the_apis_401_from_the_web_chat():
@@ -996,8 +1022,16 @@ def test_caddy_example_is_pinned_and_passes_the_request_as_sent():
     code = "\n".join(ln.split("#", 1)[0] for ln in caddy.splitlines())
     assert "{$WEBCHAT_HOST} {" in code
     assert "reverse_proxy bot:8470" in code and "flush_interval -1" in code
-    for bad in ("header_up", "strip_prefix", "handle_path", "rewrite"):
+    for bad in ("strip_prefix", "handle_path", "rewrite"):
         assert bad not in code, bad
+    # header_up only removes the headers that only the bot's own parts set
+    ups = [ln.split() for ln in code.splitlines() if "header_up" in ln]
+    assert sorted(u[1] for u in ups) == ["-Tailscale-User-Login", "-X-Tacitus-Relay",
+                                         "-X-Tacitus-Relay-Cards"], ups
+    assert all(len(u) == 2 for u in ups), "a removal, never a value"
+    # the narrowing blocks are there for the owner to turn on
+    assert "remote_ip" in caddy and "client_auth" in caddy and "whole internet" in caddy
+    assert all(port.startswith("${WEBCHAT_TLS_BIND:-0.0.0.0}:") for port in svc["ports"]), svc["ports"]
     assert "compose.override.yaml" in (ROOT / ".gitignore").read_text().splitlines()
     assert "compose.override.yaml" in (ROOT / ".dockerignore").read_text().splitlines()
 
@@ -1010,7 +1044,10 @@ def test_docs_say_how_to_pair_and_put_tls_in_front():
                  '"trust_tailscale_header": false', "webchat-pair.token",
                  "cp deploy/docker/webchat-tls/compose.caddy.yaml compose.override.yaml",
                  "proxy_set_header Host $http_host", "chat_seed.py web", "chat_seed.py relay",
-                 "webchat-relay.py init", "relay: connected", "healthy", "0700", "0600"):
+                 "webchat-relay.py init", "relay: connected", "healthy", "0700", "0600",
+                 "whole internet", "WEBCHAT_TLS_BIND", "remote_ip", "client_auth",
+                 "limit_req", "limit_conn", '"peer_connections": 0',
+                 'proxy_set_header X-Tacitus-Relay ""'):
         assert must in web, must
     example = (DOCKER / "env.example").read_text()
     assert "WEBCHAT_PUBLIC_URL=" in example and "WEBCHAT_PORT=8470" in example

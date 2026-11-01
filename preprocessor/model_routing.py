@@ -27,16 +27,19 @@ value:
           (model_tiers.STAKES_RE) sits over a `local` value as it sits
           over a lane default, and the briefing's rails stay in
           remote_briefing.
-  keep    `mail` and `tagging` read every new message in an owner
-          process, so `hosted` there would hand kept mail to Claude. While
-          the keep list (`keep_from_anthropic` in remote-llm.json) names a
-          domain or an address, `hosted` reads `auto` and saving it is
+  keep    `mail`, `tagging` and `digests` read new mail in an owner
+          process, so `hosted` there would hand kept mail to Claude.
+          While the keep list (`keep_from_anthropic` in remote-llm.json)
+          keeps anything (a domain, an address, or the admissions rule,
+          on unless set false), `hosted` reads `auto` and saving it is
           refused.
 
 The table is <private_dir>/routing.json (0600), read by
 ea_config.get_routing in owner processes and written by `save`: the web
 chat's Settings screen (WebSettings) and `set` below. Each change is one
-line in the remote-llm store's routing-changes.jsonl.
+line in the remote-llm store's routing-changes.jsonl: when, through what
+(`via`), what changed, and for a web save the credential that signed the
+request in (`cookie` or `header`) and, on a relayed request, the device.
 
 CLI (as the owner):
     model_routing.py show [--json]       each task: the value, the model it runs on now, why
@@ -56,7 +59,7 @@ import ea_config as _ea_config  # noqa: E402
 
 VALUES = _ea_config.ROUTING_VALUES
 FLOORS = _ea_config.ROUTING_FLOORS
-KEEP_FLOORED = ("mail", "tagging")
+KEEP_FLOORED = ("mail", "tagging", "digests")
 CHANGES = "routing-changes.jsonl"
 # (label, one line on what the task does), in the order the screen shows.
 TASKS = {
@@ -81,8 +84,9 @@ TASKS = {
 }
 assert tuple(TASKS) == _ea_config.ROUTING_TASKS
 STAKES_FLOOR = "Stakes floor: these are judgment calls, so only the hosted model does them."
-KEEP_FLOOR = ("Keep floor: hosted is not available while the keep list has entries, "
-              "because mail from that list must not reach the hosted model.")
+KEEP_FLOOR = ("Keep floor: hosted is not available while the keep list keeps anything "
+              "(a domain, an address or the admissions rule), because mail it keeps "
+              "must not reach the hosted model.")
 # The chat lanes (ea-chat-bot.py _turn_lane) and the task each belongs to.
 LANE_TASK = {"main": "chat", "dm": "chat", "room": "chat",
              "sched-channel": "scheduling", "proactive": "scheduling"}
@@ -120,9 +124,11 @@ def local_ready(cfg: dict) -> bool:
 
 
 def keep_listed(cfg: dict) -> bool:
-    """The keep list names at least one domain or address."""
+    """The keep list keeps something: it names a domain or an address, or
+    its admissions rule is on (remote_llm.config() reads a missing value
+    as on)."""
     ks = cfg.get("keep_from_anthropic") or {}
-    return bool(ks.get("domains") or ks.get("addresses"))
+    return bool(ks.get("domains") or ks.get("addresses") or ks.get("admissions"))
 
 
 def choice(task: str, *, cfg: dict | None = None, routing: dict | None = None) -> str:
@@ -343,11 +349,13 @@ def lines(data: dict | None = None) -> list[str]:
 
 # ── saving ────────────────────────────────────────────────────────────
 
-def save(tasks, *, cfg: dict | None = None, via: str = "cli") -> dict:
+def save(tasks, *, cfg: dict | None = None, via: str = "cli", who: dict | None = None) -> dict:
     """Merge `tasks` ({task: value}) over the table in force and write
     <private_dir>/routing.json (0600). Owner processes only. Raises
     RoutingRefused for an unknown task or value, a floored value, or
-    `hosted` on a keep-floored task while the keep list has entries."""
+    `hosted` on a keep-floored task while the keep list keeps anything.
+    `who` ({"credential", "device"}, from the web front end) goes into
+    the change log line."""
     if not isinstance(tasks, dict) or not tasks:
         raise RoutingRefused("tasks must be a JSON object that names at least one task")
     problems = _ea_config.routing_problems({"tasks": tasks})
@@ -371,8 +379,12 @@ def save(tasks, *, cfg: dict | None = None, via: str = "cli") -> dict:
         import remote_llm
         changed = {k: [current["tasks"][k], v] for k, v in block["tasks"].items()
                    if current["tasks"][k] != v}
-        remote_llm.append(CHANGES, {"ts": datetime.now().astimezone().isoformat(timespec="seconds"),
-                                    "via": via, "changed": changed})
+        line = {"ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "via": via, "changed": changed}
+        for key in ("credential", "device"):
+            if (who or {}).get(key):
+                line[key] = str(who[key])[:80]
+        remote_llm.append(CHANGES, line)
     except Exception:
         pass
     return block
@@ -385,8 +397,8 @@ class WebSettings:
     def get(self) -> dict:
         return payload()
 
-    def save(self, body: dict) -> dict:
-        save(body.get("tasks"), via="web")
+    def save(self, body: dict, who: dict | None = None) -> dict:
+        save(body.get("tasks"), via="web", who=who)
         return {**payload(), "saved": True}
 
 

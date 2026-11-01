@@ -145,7 +145,9 @@ hour ([docs/updates.md](docs/updates.md)). The patch number goes up by
 default; `#minor` or `#major` as a word of its own in the pull request's
 title or body raises that part.
 A step each install's owner must take by hand goes in a line `Owner-steps: <the step>`
-in the pull request body or a commit message; the release notes list it.
+in a commit message (the squash commit, or a commit on the branch a merge
+brings in); the release notes list it. A pull request body is not read
+for owner steps, since it can change after the merge.
 The full tiers (the wall on Linux and macOS, the Docker wall, the install
 smoke) run only when a maintainer adds the `full-ci` label, or with
 Actions > CI > Run workflow on a branch. Run the wall locally

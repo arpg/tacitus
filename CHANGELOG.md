@@ -6,6 +6,59 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The Docker web chat says what it exposes, and narrows it.** The
+  Caddy example strips `Tailscale-User-Login`, `X-Tacitus-Relay` and
+  `X-Tacitus-Relay-Cards` from every request, publishes on
+  `WEBCHAT_TLS_BIND`, and carries commented `remote_ip` and client
+  certificate blocks; `docs/docker.md` states that as shipped it puts the
+  sign-in page on the internet, and shows nginx's `limit_req` and
+  `limit_conn`. The web chat caps the connections one address other than
+  loopback may hold (8 of 64; `peer_connections` in the web block, 0
+  behind a proxy, which the Docker setup writes). The entrypoint's
+  private-volume step never follows a link (`find`, `chown -h`).
+- **The sign-in listener waits for its own redirect.** The loopback
+  listener of the Graph sign-in took the first request it got, from any
+  local process, and one idle connection held it past its timeout. It
+  now answers only a GET to the redirect's path with the flow's `state`
+  (anything else gets a 400, noted once), reads connections side by side
+  with five seconds each, and binds `::1` beside `127.0.0.1`. A bad port
+  in `GRAPH_REDIRECT_URI` is a clear error that falls back to the device
+  code.
+- **The keep floor covers the admissions rule and the digests.** The
+  routing table's keep floor counted only listed domains and addresses;
+  it now counts the admissions rule (on unless set false) too, and holds
+  `digests` off `hosted` like `mail` and `tagging`. The routing change
+  log records the credential of a web save (`cookie` or `header`) and the
+  device of a relayed one.
+- **Only update.json turns updates off.** `update.channel` in
+  ea-config.json, which the EA user can write, now reads as `auto`; the
+  doctor warns when it names `latest`, `stable` or `off`, and the owner
+  moves it to `~/.ea-private/update.json`. The root step reads the same
+  rule.
+- **The published app's trust statement is corrected.** An owner of the
+  Entra registration can add a redirect URI and a secret without a new
+  consent, so the docs no longer say the project cannot widen its own
+  access; they name the guards (a dedicated tenant, two owners with FIDO2
+  keys, audit alerts on credential and redirect changes, publisher
+  verification). The admin-consent link asks for the `email` profile's
+  scopes unless `--profile` names another, and `it-request.md`
+  recommends "Assignment required". For the published app an owner
+  process takes `GRAPH_SCOPES`, `GRAPH_REDIRECT_URI` and
+  `GRAPH_AUTH_METHOD` only from `~/.ea-private/secrets.env`, where setup
+  now writes the profile's scopes.
+- **Updates trust only signed releases on main, against a pinned key.**
+  An install pins the release key in the owner-private `update.json`
+  (`release_key`), written once by the root step from the first release,
+  and verifies every release against it, never against a file in a
+  release; a release that changes the key waits for the owner. The
+  updater fetches `main` and installs a tag only when its commit is in
+  `main`'s history, accepts only ED25519 signatures, and `check` warns
+  when no release qualifies. The relay pins its key in its state
+  directory. The CI `release` job runs in the `release` environment, pins
+  its action by commit, and passes the signing key to one shell step and
+  no Python step. Owner steps come only from commit messages and the
+  signed tag, never from a Release or pull request body
+  (docs/updates.md, Supply chain).
 - **One routing table, task by task.** The owner says which model does
   each task (`mail`, `tagging`, `drafting`, `digests`, `briefing`,
   `audit`, `scheduling`, `chat`, `review`): `local`, `hosted` or `auto`,

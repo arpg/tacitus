@@ -639,6 +639,38 @@ def _client_choice() -> tuple[str, str]:
 
 
 CLIENT_PATH, _CLIENT_ID = _client_choice()
+
+# The published app's sign-in settings in an owner process come only from
+# the owner-private secrets.env (docs/published-oauth-apps.md, Trust): the
+# environment may carry GRAPH_SCOPES, GRAPH_REDIRECT_URI and
+# GRAPH_AUTH_METHOD from the resident's ~/.ea/.env (run-agent.sh exports
+# them), and they decide what the sign-in asks for and where its code goes.
+# A registered app's flows, and a process that is not the owner's, keep the
+# environment's values.
+PUBLISHED_SETTING_KEYS = ("GRAPH_SCOPES", "GRAPH_REDIRECT_URI", "GRAPH_AUTH_METHOD")
+
+
+def _published_owner_settings() -> Optional[dict]:
+    """The three settings from the private secrets.env for the published
+    app in an owner process, else None (the environment stands)."""
+    if CLIENT_PATH != "published" or not _owner_trust.is_owner_process():
+        return None
+    return _owner_trust.private_settings()
+
+
+_PRIVATE_SETTINGS = _published_owner_settings()
+if _PRIVATE_SETTINGS is not None:
+    _ignored = [k for k in PUBLISHED_SETTING_KEYS
+                if os.environ.get(k, "").strip()
+                and os.environ.get(k, "").strip() != _PRIVATE_SETTINGS.get(k, "").strip()]
+    GRAPH_SCOPES = _PRIVATE_SETTINGS.get("GRAPH_SCOPES", "").replace(",", " ").split()
+    GRAPH_REDIRECT_URI = _loopback_redirect_uri(_PRIVATE_SETTINGS.get("GRAPH_REDIRECT_URI", ""))
+    GRAPH_AUTH_METHOD = _PRIVATE_SETTINGS.get("GRAPH_AUTH_METHOD", "").strip().lower()
+    if _ignored and (os.environ.get("EA_DEBUG") or sys.stderr.isatty()):
+        print(f"graph_client: the published app takes {', '.join(_ignored)} from the "
+              "owner-private secrets.env only; the environment's value is ignored",
+              file=sys.stderr)
+
 if CLIENT_PATH == "published":
     WELL_KNOWN_CLIENTS = [("published", _CLIENT_ID)]
     # The published app signs in work and school accounts of any tenant;
@@ -706,7 +738,8 @@ def _confidential_auth_code_flow(scopes=None) -> str:
     webbrowser.open(flow["auth_uri"])
 
     print(f"Waiting for the sign-in redirect on {host}:{port} ...", file=sys.stderr)
-    captured = _await_redirect(host, port)  # blocks until the redirect arrives
+    # blocks until the redirect with this flow's state arrives
+    captured = _await_redirect(host, port, state=flow.get("state"), path=parsed.path or "/")
 
     if "error" in captured:
         raise RuntimeError(
@@ -726,36 +759,166 @@ def _confidential_auth_code_flow(scopes=None) -> str:
     return result["access_token"]
 
 
-def _await_redirect(host: str, port: int, timeout: Optional[float] = None) -> dict:
-    """The query of the first request to a loopback server on host:port,
-    which is the sign-in redirect; {} when none arrives within `timeout`
-    seconds (None waits for ever)."""
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-    import urllib.parse as _up
+# The sign-in listener (_await_redirect): seconds one connection has to
+# send its request line, and the connections it holds open at once.
+_REDIRECT_CONN_TIMEOUT = 5.0
+_REDIRECT_MAX_CONNS = 32
+_REDIRECT_DONE = (b"<html><body><h2>Sign-in complete.</h2>"
+                  b"You can close this tab and return to the terminal.</body></html>")
 
-    captured: dict = {}
 
-    class _Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            captured.update(_up.parse_qsl(_up.urlparse(self.path).query))
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            self.wfile.write(
-                b"<html><body><h2>Sign-in complete.</h2>"
-                b"You can close this tab and return to the terminal.</body></html>"
-            )
-
-        def log_message(self, *_):
-            pass  # silence default request logging
-
-    server = HTTPServer((host, port), _Handler)
-    server.timeout = timeout
+def _loopback_listeners(host: str, port: int) -> list:
+    """Listening sockets for the sign-in redirect on `port`: 127.0.0.1 and
+    ::1 for a loopback name (a browser may resolve localhost to either, and
+    a family left unbound is a port another local process could take), or
+    `host` alone. A machine with no IPv6 loopback gets the IPv4 one."""
+    import errno as _errno
+    import socket
+    if host in ("localhost", "127.0.0.1", "::1", "[::1]"):
+        addrs = [(socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")]
+    else:
+        addrs = [(socket.AF_INET, host)]
+    socks: list = []
     try:
-        server.handle_request()
+        for fam, addr in addrs:
+            try:
+                sock = socket.socket(fam, socket.SOCK_STREAM)
+            except OSError:
+                if fam == socket.AF_INET6:
+                    continue
+                raise
+            try:
+                if fam == socket.AF_INET6:
+                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((addr, port))
+                sock.listen(16)
+                sock.setblocking(False)
+            except OSError as e:
+                sock.close()
+                if fam == socket.AF_INET6 and e.errno in (_errno.EADDRNOTAVAIL,
+                                                          _errno.EAFNOSUPPORT):
+                    continue
+                raise
+            socks.append(sock)
+    except BaseException:
+        for sock in socks:
+            sock.close()
+        raise
+    return socks
+
+
+def _answer_redirect(conn, data: bytes, state: Optional[str], path: str) -> Optional[dict]:
+    """The query of the request in `data` when it is the redirect the
+    sign-in waits for: a GET to `path` whose `state` is `state` (with no
+    `state` given, one that carries a code or an error). It answers the
+    browser either way and closes the connection; None for any other
+    request."""
+    import urllib.parse as _up
+    line = data.split(b"\n", 1)[0].decode("latin-1", "replace").strip()
+    parts = line.split()
+    got = None
+    if len(parts) >= 2 and parts[0] == "GET":
+        target = _up.urlsplit(parts[1])
+        query = dict(_up.parse_qsl(target.query))
+        if (target.path or "/") == path:
+            if state is not None:
+                if secrets.compare_digest(query.get("state", "").encode("utf-8"),
+                                          state.encode("utf-8")):
+                    got = query
+            elif "code" in query or "error" in query:
+                got = query
+    if got is not None:
+        reply = (b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n"
+                 b"Content-Length: " + str(len(_REDIRECT_DONE)).encode() + b"\r\n\r\n"
+                 + _REDIRECT_DONE)
+    else:
+        body = b"Not the redirect this sign-in waits for.\n"
+        reply = (b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\n"
+                 b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+    try:
+        conn.settimeout(2.0)
+        conn.sendall(reply)
+    except OSError:
+        pass
     finally:
-        server.server_close()
-    return captured
+        conn.close()
+    return got
+
+
+def _await_redirect(host: str, port: int, timeout: Optional[float] = None, *,
+                    state: Optional[str] = None, path: str = "/") -> dict:
+    """The query of the sign-in redirect on a loopback listener at `port`:
+    the first GET to `path` whose `state` equals the flow's `state`. Every
+    other request gets a 400 and is ignored (noted once on stderr), so a
+    local process cannot end the sign-in with a query of its own. It binds
+    127.0.0.1 and ::1 for a loopback `host` (_loopback_listeners); each
+    connection has _REDIRECT_CONN_TIMEOUT seconds to send its request
+    line, and connections are read side by side, so an idle one delays
+    neither the redirect nor the timeout. {} when no redirect arrives
+    within `timeout` seconds (None waits for ever)."""
+    import selectors
+    deadline = None if timeout is None else time.monotonic() + timeout
+    path = path or "/"
+    listeners = _loopback_listeners(host, port)
+    sel = selectors.DefaultSelector()
+    pending: dict = {}   # connection -> [bytes read, when it expires]
+    warned = False
+    try:
+        for sock in listeners:
+            sel.register(sock, selectors.EVENT_READ, "listen")
+        while True:
+            now = time.monotonic()
+            for conn in [c for c, (_b, exp) in pending.items() if exp <= now]:
+                sel.unregister(conn)
+                conn.close()
+                del pending[conn]
+            if deadline is not None and now >= deadline:
+                return {}
+            waits = [exp - now for _b, exp in pending.values()]
+            if deadline is not None:
+                waits.append(deadline - now)
+            for key, _ev in sel.select(max(0.0, min(waits)) if waits else None):
+                sock = key.fileobj
+                if key.data == "listen":
+                    try:
+                        conn, _peer = sock.accept()
+                    except OSError:
+                        continue
+                    if len(pending) >= _REDIRECT_MAX_CONNS:
+                        conn.close()
+                        continue
+                    conn.setblocking(False)
+                    pending[conn] = [b"", time.monotonic() + _REDIRECT_CONN_TIMEOUT]
+                    sel.register(conn, selectors.EVENT_READ, "conn")
+                    continue
+                entry = pending.get(sock)
+                if entry is None:
+                    continue
+                try:
+                    chunk = sock.recv(4096)
+                except (BlockingIOError, InterruptedError):
+                    continue
+                except OSError:
+                    chunk = b""
+                entry[0] += chunk
+                if chunk and b"\n" not in entry[0] and len(entry[0]) < 8192:
+                    continue
+                sel.unregister(sock)
+                del pending[sock]
+                got = _answer_redirect(sock, entry[0], state, path)
+                if got is not None:
+                    return got
+                if not warned:
+                    warned = True
+                    print("graph_client: the sign-in listener ignored a request that is not "
+                          "this sign-in's redirect; still waiting", file=sys.stderr)
+    finally:
+        for conn in pending:
+            conn.close()
+        for sock in listeners:
+            sock.close()
+        sel.close()
 
 
 def setup_confidential_and_align() -> dict:
@@ -996,12 +1159,23 @@ def _published_flow() -> str:
     return "device_code"
 
 
+class RedirectPortError(ValueError):
+    """GRAPH_REDIRECT_URI names no usable port for the published sign-in."""
+
+
 def _published_redirect_uri() -> str:
     """http://localhost:<port>, the redirect the published app registers
     (Entra ignores a localhost redirect's port): the port GRAPH_REDIRECT_URI
-    names, else 8400. Never its path, which the registration lacks."""
+    names, else 8400. Never its path, which the registration lacks.
+    RedirectPortError when the port is not one (0, or above 65535)."""
     import urllib.parse as _up
-    port = _up.urlparse(GRAPH_REDIRECT_URI).port
+    try:
+        port = _up.urlparse(GRAPH_REDIRECT_URI).port
+    except ValueError:
+        port = -1
+    if port is not None and not 0 < port < 65536:
+        raise RedirectPortError(f"GRAPH_REDIRECT_URI {GRAPH_REDIRECT_URI!r} names no port "
+                                "from 1 to 65535")
     return f"http://localhost:{port or _published.PUBLISHED_GRAPH_REDIRECT_PORT}"
 
 
@@ -1026,7 +1200,8 @@ def _loopback_sign_in(app, scopes: list, redirect_uri: str,
     parsed = _up.urlparse(redirect_uri)
     host, port = parsed.hostname or "localhost", parsed.port or 80
     print(f"Waiting for the sign-in redirect on {host}:{port} ...", file=sys.stderr)
-    captured = _await_redirect(host, port, timeout=wait)
+    captured = _await_redirect(host, port, timeout=wait, state=flow.get("state"),
+                               path=parsed.path or "/")
     if not captured:
         return {"error": "timeout",
                 "error_description": f"no redirect within {wait} seconds"}
@@ -1061,7 +1236,7 @@ def _published_seed(scopes=None) -> str:
         try:
             result = _loopback_sign_in(_app, scopes, _published_redirect_uri(),
                                        wait=_PUBLISHED_BROWSER_WAIT)
-        except OSError as e:  # the port is taken, or no loopback here
+        except (OSError, RedirectPortError) as e:  # the port is taken or no port; no loopback
             result = {"error": "loopback", "error_description": str(e)}
         if result.get("error") in ("timeout", "loopback"):
             print(f"  The browser sign-in did not finish "

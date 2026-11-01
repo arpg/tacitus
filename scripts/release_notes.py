@@ -7,14 +7,16 @@ order: a merge commit gives its pull request's title (the line after
 "Merge pull request #N from ..."), a squash commit its subject without the
 trailing "(#N)", and a direct commit its subject. Owner steps are the lines
 that start with `Owner-steps:` in any commit message of the range (the
-merge or squash commit, and the commits a merge brings in), and in the
-pull request bodies when the GitHub API is asked (--pr-bodies). The
-footer convention is in CONTRIBUTING.md.
+merge or squash commit, and the commits a merge brings in) and in the
+message of TAG when it is an annotated tag: text that is part of the
+signed history, never a pull request body or a Release body, which anyone
+with write access to GitHub can change after the fact. The footer
+convention is in CONTRIBUTING.md.
 
     release_notes.py v1.2.2..v1.2.3 [--json]
     release_notes.py --tag v1.2.3 [--previous v1.2.2 | --first] [--repo DIR] [--json]
     release_notes.py --tag HEAD                      # what the next release would say
-    release_notes.py --tag v1.2.3 --github-repo OWNER/NAME --pr-bodies   # CI
+    release_notes.py --tag v1.2.3 --github-repo OWNER/NAME   # CI
 
 With no previous tag named, the previous release is the newest vX.Y.Z tag
 in TAG's history below TAG; with none, TAG is the first release and every
@@ -46,7 +48,6 @@ FENCE_RE = re.compile(r"^\s*(```|~~~)")
 NO_STEP_RE = re.compile(r"^(?:none|n/?a|-+|no)\.?$", re.I)
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 SUBJECT_MAX = 300
-PR_BODIES_MAX = 100
 # One line of the Markdown this module writes: "- <text> ([#N](url), <sha>)",
 # "- <text> ([#N](url))" or "- <text> (<sha>)".
 LINE_RE = re.compile(r"^- (?P<text>.+?) \((?:\[#(?P<pr>\d+)\]\([^()\s]*\))?(?:, )?"
@@ -164,15 +165,24 @@ def _norm(step: str) -> str:
     return " ".join(step.lower().split()).rstrip(".")
 
 
+def tag_message(repo, tag: str) -> str:
+    """The message of the annotated tag `tag` (its signature left out), or
+    "" when `tag` names no annotated tag."""
+    ref = f"refs/tags/{tag}"
+    try:
+        if _git(repo, "cat-file", "-t", ref).strip() != "tag":
+            return ""
+        return _git(repo, "for-each-ref", "--format=%(contents:subject)%0a%0a%(contents:body)", ref)
+    except NotesError:
+        return ""
+
+
 def collect(repo, tag: str, previous: str | None = None, *, first: bool = False,
-            github_repo: str | None = None, pr_bodies: bool = False, fetch=None,
             warn=None) -> dict:
     """The notes for `tag`: {"tag", "previous", "changes", "owner_steps"}.
     `previous` None finds the previous release; `first` takes the whole
-    history. With `pr_bodies`, each pull request's body is read through the
-    GitHub API (`fetch(slug, number)` returns the body) for owner steps; a
-    body that does not come is a warning, never an error."""
-    warn = warn or (lambda msg: print(f"release_notes: {msg}", file=sys.stderr))
+    history. Owner steps come from the commit messages of the range and
+    the message of `tag` when it is an annotated tag."""
     _commit(repo, tag)
     if first:
         previous = ""
@@ -204,22 +214,7 @@ def collect(repo, tag: str, previous: str | None = None, *, first: bool = False,
             side = _git(repo, "log", "--reverse", "--format=%H%x00%B%x1e", f"{sha}^1..{sha}^2")
             for r in _records(side):
                 add_steps(r[1] if len(r) > 1 else "", change["pr"], sha)
-    if pr_bodies and github_repo:
-        fetch = fetch or fetch_pr_body
-        numbers = []
-        for c in changes:
-            if c["pr"] is not None and c["pr"] not in numbers:
-                numbers.append(c["pr"])
-        for n in numbers[:PR_BODIES_MAX]:
-            sha = next(c["sha"] for c in changes if c["pr"] == n)
-            try:
-                body = fetch(github_repo, n)
-            except Exception as e:
-                warn(f"the body of #{n} did not come ({e}); its owner steps, if any, are missing")
-                continue
-            add_steps(body or "", n, sha)
-        if len(numbers) > PR_BODIES_MAX:
-            warn(f"read the bodies of the first {PR_BODIES_MAX} of {len(numbers)} pull requests")
+    add_steps(tag_message(repo, tag), None, _commit(repo, tag))
     return {"tag": tag, "previous": previous or None, "changes": changes, "owner_steps": steps}
 
 
@@ -354,9 +349,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--github-repo", help="OWNER/NAME for the links (default: the origin "
                                           f"remote's, else {DEFAULT_GITHUB_REPO})")
-    ap.add_argument("--pr-bodies", action="store_true",
-                    help="also read owner steps from each pull request's body through the "
-                         "GitHub API (GH_TOKEN or GITHUB_TOKEN when set)")
     a = ap.parse_args(argv)
     tag, previous = a.tag, a.previous
     if a.range:
@@ -375,8 +367,7 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--first takes no previous release")
     slug = a.github_repo or _origin_slug(a.repo) or DEFAULT_GITHUB_REPO
     try:
-        notes = collect(a.repo, tag, previous, first=a.first, github_repo=slug,
-                        pr_bodies=a.pr_bodies)
+        notes = collect(a.repo, tag, previous, first=a.first)
     except NotesError as e:
         print(f"release_notes: {e}", file=sys.stderr)
         return 1

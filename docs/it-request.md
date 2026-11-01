@@ -119,12 +119,19 @@ and accepts):
 
 `<the link that python3 preprocessor/published_apps.py admin-consent-url --tenant <tenant id> prints>`
 
+The link asks for the sign-in permissions and the `email` profile's
+(`Mail.ReadWrite`, `Calendars.Read`, `MailboxSettings.Read`). For the
+assistant, whose Send and Create buttons need `Mail.Send` and
+`Calendars.ReadWrite`, the link is the one `--profile assistant` prints.
+
 An administrator can instead sign in to Tacitus once and tick "Consent
-on behalf of your organization". To limit who can use the app, set
-"Assignment required?" to Yes on the Tacitus enterprise application and assign
-the users. A Conditional Access policy that blocks the device-code flow
-leaves the browser sign-in working. Revoking the consent under
-Enterprise applications, Permissions, stops every install in the tenant.
+on behalf of your organization". Please also set "Assignment required?"
+to Yes on the Tacitus enterprise application and assign me (and anyone
+else who runs it): consent covers the whole tenant, and assignment
+limits sign-in through the app to the people who use it. A Conditional
+Access policy that blocks the device-code flow leaves the browser
+sign-in working. Revoking the consent under Enterprise applications,
+Permissions, stops every install in the tenant.
 
 ## After IT answers
 

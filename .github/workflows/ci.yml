@@ -31,14 +31,18 @@
 # change without a settings change.
 #
 # Tier 3, the release suite, needs a login and runs on the owner's machine
-# (docs/EVAL.md, "Release tests"). Every action is pinned to a version.
+# (docs/EVAL.md, "Release tests"). Every action is pinned to a version; the
+# release job's, by commit.
 #
 # `release` runs after `ci` on a push to main that passed: it signs the
 # next vX.Y.Z tag on that commit with the SSH key in the secret
 # RELEASE_SIGNING_KEY, moves channels/latest, and creates a GitHub Release
 # for the tag with the notes scripts/release_notes.py writes
-# (docs/updates.md). Installs install only tags that verify against the
-# committed .release-key.pub; the notes are what they tell their owner.
+# (docs/updates.md). Installs install only tags on main that verify
+# against the release key they pinned; the notes are what they tell their
+# owner. The secret lives in the `release` environment (main only, a
+# required reviewer), and only one shell step reads it (docs/updates.md,
+# Supply chain).
 name: CI
 
 on:
@@ -260,20 +264,29 @@ jobs:
     # tag is pushed, a GitHub Release for it carries the release notes; a
     # Release that cannot be made is a warning, since the signed tag is the
     # release and the notes only describe it.
+    #
+    # The signing key: the secret belongs to the `release` environment,
+    # which the owner sets to deploy from main only, behind a required
+    # reviewer (docs/updates.md, Supply chain; GitHub makes a missing
+    # environment on first use, with no protection). One step reads it,
+    # with shell, ssh-keygen and git only: no Python step, and no other
+    # step, runs with RELEASE_SIGNING_KEY in its environment, and the key
+    # file is gone when that step ends.
     # !cancelled() replaces the implicit success() check, which reads as
     # skipped when the always() summary job sits over skipped tiers.
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.result == 'success' }}
     needs: [ci]
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
-      # The version marker and the owner steps in pull request bodies.
+      # The version marker in the pull request's body.
       pull-requests: read
     concurrency:
       group: release-main
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -283,12 +296,20 @@ jobs:
           # The pull request's body may hold the marker.
           GH_TOKEN: ${{ github.token }}
         run: |
+          echo "::notice::the signing key comes from the release environment; its protection (main only, a required reviewer) is a repository setting this job cannot see (docs/updates.md, Supply chain)"
           git fetch --force --tags origin
           tag=$(python3 scripts/update.py next-version --head "$GITHUB_SHA" --main origin/main --github-repo "$GITHUB_REPOSITORY")
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "next release: ${tag:-none (a newer release contains $GITHUB_SHA)}"
 
-      - name: Sign and push the tag
+      - name: Allowed signers
+        if: steps.next.outputs.tag != ''
+        run: python3 scripts/update.py allowed-signers --key .release-key.pub > "$RUNNER_TEMP/allowed_signers"
+
+      - name: Sign the tag
+        # The only step with the secret: shell, ssh-keygen and git. It
+        # writes the key to a 0600 file, removes it on exit, and exports
+        # nothing but the step output `signed`.
         id: sign
         if: steps.next.outputs.tag != ''
         env:
@@ -297,13 +318,13 @@ jobs:
         run: |
           set -eu
           if [ -z "$RELEASE_SIGNING_KEY" ]; then
-            echo "::warning::RELEASE_SIGNING_KEY is not set: no release tag (docs/updates.md, One-time setup)"
+            echo "::warning::RELEASE_SIGNING_KEY is not set in the release environment: no release tag (docs/updates.md, One-time setup)"
             exit 0
           fi
           umask 077
           key="$RUNNER_TEMP/release-key"
-          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key"
           trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key"
           # The secret's public half must be the committed trust root, or
           # every install would refuse the tag.
           pub=$(ssh-keygen -y -f "$key" | awk '{print $2}')
@@ -311,12 +332,21 @@ jobs:
             echo "::error::the signing key in RELEASE_SIGNING_KEY is not in .release-key.pub"
             exit 1
           fi
-          python3 scripts/update.py allowed-signers --key .release-key.pub > "$RUNNER_TEMP/allowed_signers"
           git -c user.name="tacitus-release" \
               -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
               -c gpg.format=ssh -c user.signingkey="$key" \
               tag -s -m "$TAG" -m "Commit ${GITHUB_SHA::7}; CI run ${GITHUB_RUN_ID}" "$TAG" "$GITHUB_SHA"
+          rm -f "$key"
           git -c gpg.ssh.allowedSignersFile="$RUNNER_TEMP/allowed_signers" verify-tag "$TAG"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Verify and push the tag
+        id: push
+        if: steps.sign.outputs.signed == 'true'
+        env:
+          TAG: ${{ steps.next.outputs.tag }}
+        run: |
+          set -eu
           python3 scripts/update.py verify-tag --repo . --tag "$TAG" --key .release-key.pub
           git tag -f channels/latest "$GITHUB_SHA"
           git push origin "refs/tags/$TAG"
@@ -326,9 +356,10 @@ jobs:
 
       - name: Create the GitHub Release with the notes
         # The changes since the previous release (the pull request titles of
-        # the merge commits) and the owner steps (docs/updates.md, "Release
-        # notes"). Every failure here warns and leaves the job green.
-        if: steps.sign.outputs.pushed == 'true'
+        # the merge commits) and the owner steps from the commit messages
+        # (docs/updates.md, "Release notes"). Every failure here warns and
+        # leaves the job green.
+        if: steps.push.outputs.pushed == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -336,7 +367,7 @@ jobs:
           TAG: ${{ steps.next.outputs.tag }}
         run: |
           notes="$RUNNER_TEMP/release-notes.md"
-          if ! python3 scripts/release_notes.py --tag "$TAG" --github-repo "$GITHUB_REPOSITORY" --pr-bodies > "$notes"; then
+          if ! python3 scripts/release_notes.py --tag "$TAG" --github-repo "$GITHUB_REPOSITORY" > "$notes"; then
             echo "::warning::scripts/release_notes.py failed for $TAG; the Release says only the tag"
             printf 'Release %s.\n' "$TAG" > "$notes"
           fi

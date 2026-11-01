@@ -898,6 +898,55 @@ def test_a_malformed_list_reply_is_a_failure():
             assert "malformed" in err.getvalue()
 
 
+def test_the_read_retry_after_a_rename_checks_the_new_file_too():
+    """_direct_read opens the name once more when the first file has no
+    link left (a writer's rename in between). Whatever a racing resident
+    puts at the name for that second open (a hard link to a file it should
+    not read, a symlink, a fifo, a directory) is refused like the first.
+    The child program refuses a hard link and a symlink at the name too."""
+    real_fstat = os.fstat
+    with tempfile.TemporaryDirectory() as td:
+        secret = Path(td) / "secret"
+        secret.write_text("SECRET")
+        target = Path(td) / "state.json"
+
+        def racing(kind):
+            calls = {"n": 0}
+
+            def fake(fd):
+                st = real_fstat(fd)
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    target.unlink()
+                    {"hardlink": lambda: os.link(secret, target),
+                     "symlink": lambda: os.symlink(secret, target),
+                     "fifo": lambda: os.mkfifo(target),
+                     "dir": lambda: os.mkdir(target)}[kind]()
+                    return os.stat_result((st.st_mode, st.st_ino, st.st_dev, 0) + tuple(st)[4:])
+                return st
+            return fake
+
+        for kind in ("hardlink", "symlink", "fifo", "dir"):
+            if target.is_dir() and not target.is_symlink():
+                target.rmdir()
+            elif target.exists() or target.is_symlink():
+                target.unlink()
+            target.write_text("ok")
+            os.fstat = racing(kind)
+            try:
+                with pytest.raises(OSError):
+                    rio._direct_read(str(target))
+            finally:
+                os.fstat = real_fstat
+        target.rmdir()
+        for kind in ("hardlink", "symlink"):
+            if target.exists() or target.is_symlink():
+                target.unlink()
+            (os.link if kind == "hardlink" else os.symlink)(secret, target)
+            r = subprocess.run([sys.executable, "-I", "-c", rio._CHILD, "read", "0o644", str(target)],
+                               capture_output=True)
+            assert r.returncode != 0 and b"SECRET" not in r.stdout, kind
+
 if __name__ == "__main__":
     if not resident_child_available():
         print(f"skipped: {NEEDS_RESIDENT}")

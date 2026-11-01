@@ -247,14 +247,16 @@ this option does not appear.
    Tacitus app", is the paragraph to send them, with the link
    `python3 preprocessor/published_apps.py admin-consent-url` prints.
 2. `python3 scripts/install/user_init.py --phase auth`, choice 0
-   (`published`, the default). It clears `GRAPH_CLIENT_ID`, `GRAPH_AUTH_METHOD` and
-   `GRAPH_AUTHORITY` in `~/.ea/.env`, writes the least `GRAPH_SCOPES` your
-   profile needs, and signs in. By hand: leave `GRAPH_CLIENT_ID` unset and
-   run `python3 preprocessor/graph_client.py`.
+   (`published`, the default). It clears `GRAPH_CLIENT_ID`, `GRAPH_AUTH_METHOD`,
+   `GRAPH_AUTHORITY` and `GRAPH_SCOPES` in `~/.ea/.env`, writes the least
+   `GRAPH_SCOPES` your profile needs into `~/.ea-private/secrets.env`
+   (the only place the published sign-in reads it, with
+   `GRAPH_REDIRECT_URI` and `GRAPH_AUTH_METHOD`), and signs in. By hand:
+   leave `GRAPH_CLIENT_ID` unset and run `python3 preprocessor/graph_client.py`.
 3. The sign-in opens a browser on this machine and catches the redirect
    on `localhost:8400`. With no browser here (SSH, no display), it prints
    a code to enter in any browser. Where IT blocks that device-code flow,
-   set `GRAPH_AUTH_METHOD=interactive`, connect with
+   set `GRAPH_AUTH_METHOD=interactive` in `~/.ea-private/secrets.env`, connect with
    `ssh -L 8400:localhost:8400 <host>`, and open the printed link on your
    laptop.
 

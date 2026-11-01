@@ -25,8 +25,11 @@ or on the host through the port compose publishes on the host's
 loopback, reaches it, while the relay client and the health check still
 reach it on the container's own loopback. A proxied request comes from
 the compose network, never from loopback, so it never counts as a
-loopback client. No tailscaled runs in the stack, so the identity header
-is off and the pairing token is the sign-in. The store and the token
+loopback client; and every proxied request comes from the proxy's one
+address, so the bot's cap on connections per address is off
+(`peer_connections` 0, unless the block sets another): the proxy limits
+each client (docs/docker.md, Web chat). No tailscaled runs in the stack,
+so the identity header is off and the pairing token is the sign-in. The store and the token
 keep their defaults beside chat.json in the private directory, where the
 bot makes them mode 0600 in the 0700 directory. Every other key of an
 existing block stays as it is.
@@ -85,11 +88,13 @@ def check_public_url(url: str) -> tuple[str, str]:
 
 def web_block(current: dict | None, public_url: str = "") -> dict:
     """The `web` block for the container: `current` with the bind, port,
-    base path, public_url and the identity header set; every other key
-    (relay, notify, push_subject, backfill_days) kept. An empty public_url
-    keeps the one the block has, if any."""
+    base path, public_url and the identity header set, and the per-address
+    connection cap off unless the block names one; every other key (relay,
+    notify, push_subject, backfill_days) kept. An empty public_url keeps
+    the one the block has, if any."""
     web = json.loads(json.dumps(current)) if isinstance(current, dict) else {}
     web.update({"bind": WEB_BIND, "port": WEB_PORT, "trust_tailscale_header": False})
+    web.setdefault("peer_connections", 0)
     if public_url:
         url, base = check_public_url(public_url)
         web.update({"public_url": url, "base_path": base})

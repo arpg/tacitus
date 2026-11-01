@@ -55,15 +55,22 @@ The sign-in (`graph_client._published_seed`): MSAL's
 `initiate_auth_code_flow` makes the PKCE verifier and challenge
 (`msal/oauth2cli/oauth2.py`), the code prints the link and opens a
 browser, a listener on `localhost:8400` catches the redirect, and MSAL
-redeems the code with the verifier and no secret [M5]. When no browser
+redeems the code with the verifier and no secret [M5]. The listener binds
+both `127.0.0.1` and `::1`, so no other local process holds the family
+a browser may resolve `localhost` to; it answers any request other than
+the redirect with the flow's `state` with a 400 and keeps waiting, and
+gives each connection five seconds, so neither a stray request nor an
+idle connection ends or stalls the sign-in. A `GRAPH_REDIRECT_URI` whose
+port is not one ends the browser attempt with that error, and the
+device code follows. When no browser
 can reach the machine (Linux with no display, a Mac or WSL over SSH,
 `GRAPH_AUTH_METHOD=device_code`), it prints a device code instead [M5];
 a browser sign-in that sees no redirect within five minutes falls back
 to the device code too. An error from Entra (no consent, a blocked flow)
 ends the sign-in with the next step, since another flow meets the same
 policy. Over SSH with device code blocked, `GRAPH_AUTH_METHOD=interactive`
-and `ssh -L 8400:localhost:8400` let a laptop's browser finish the
-loopback sign-in. The refresh token then renews silently, as on Options A
+(in `~/.ea-private/secrets.env`, "Coexistence") and `ssh -L
+8400:localhost:8400` let a laptop's browser finish the loopback sign-in. The refresh token then renews silently, as on Options A
 and B.
 
 **Delegated permissions, the least per feature.** The code asks for the
@@ -108,21 +115,27 @@ reliable path is one administrator consent per tenant:
 
 1. The administrator opens the admin-consent link, which
    `python3 preprocessor/published_apps.py admin-consent-url` prints:
-   `https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=<id>&scope=<the registered scopes>&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&state=tacitus`.
+   `https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=<id>&scope=<one profile's scopes>&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&state=tacitus`.
    `organizations`, or the tenant's own id (`--tenant`), names the tenant
    [M9]. The prompt says "Accept for your organization" [M6]. Consent
    creates the app's service principal (an enterprise application) in
-   the tenant and a tenant-wide grant [M1]. `--profile review-only`
-   asks for one profile's scopes only, for a tenant that grants less.
+   the tenant and a tenant-wide grant [M1]. The link asks for the
+   sign-in scopes and the `email` profile's scopes (drafts, filing,
+   reading the calendar; no Send and no calendar writes) unless
+   `--profile` names another: `review-only` for less, `assistant` for
+   the Send and Create buttons, `all` for every scope the registration
+   lists. A tenant grants the least its users need.
 2. Or the administrator signs in to Tacitus once and ticks "Consent on
    behalf of your organization"; only a Privileged Role Administrator or
    above sees that box [M6].
-3. Optional controls, all in the tenant: "Assignment required?" on the
-   enterprise application limits sign-in to assigned users and groups
-   [M10]; a Conditional Access policy can block the device-code flow,
-   which Microsoft calls high risk and recommends blocking where
-   possible [M11] (the browser sign-in still works); the sign-in logs
-   show every sign-in by the app.
+3. Recommended: "Assignment required?" set to Yes on the enterprise
+   application, with the users who run the EA assigned [M10]. Consent
+   covers the whole tenant; assignment limits who can sign in, and so
+   who a phishing link through the app can reach (the trust statement
+   below). Also in the tenant: a Conditional Access policy can block the
+   device-code flow, which Microsoft calls high risk and recommends
+   blocking where possible [M11] (the browser sign-in still works); the
+   sign-in logs show every sign-in by the app.
 4. Revocation: Enterprise applications, the app, Permissions. After an
    administrator consents for the tenant, only an administrator can
    revoke, for the whole app [M1].
@@ -235,10 +248,31 @@ trusted in the Admin console in the meantime [G3].
   them on the resident's behalf (SECURITY.md, Layer 5). There is no
   keychain integration today; the macOS native backend keeps no token at
   all ([macos-native-accounts.md](macos-native-accounts.md)).
-- **What the project can change.** It can edit the registration; a new
-  permission needs a new consent from each tenant, so the project cannot
-  widen its own access. It can also disable the app, which stops every
-  install that uses it: Options A, B and C remain the way out.
+- **What an owner of the registration can do.** A new permission needs
+  a new consent from each tenant. But whoever owns the registration (the
+  project's accounts, or anyone who takes one of them over) can add a
+  redirect URI and a client secret without any tenant's consent, since
+  neither is a permission. With them, a phishing link that gets a user
+  of a consenting tenant to sign in sends that user's authorization code
+  to a server the owner chose, and the user sees no new prompt for the
+  scopes the tenant already granted. So the app is exactly as
+  trustworthy as the accounts that own it, and the project cannot prove
+  from here that it will not widen its reach this way. The owner can
+  also disable the app, which stops every install that uses it: Options
+  A, B and C remain the way out.
+- **What the project does about it.** The registration lives in a
+  dedicated tenant that holds nothing else; it has two owners, each with
+  phishing-resistant multifactor authentication (a FIDO2 key), and no
+  other account with rights over it; an alert on the tenant's audit log
+  reaches both owners when anyone adds or changes a credential
+  ("Certificates and secrets management") or a redirect URI ("Update
+  application"); and the publisher is verified, so a look-alike app
+  cannot borrow the badge (Maintainer steps).
+- **What a tenant does about it.** Assignment required, with the users
+  who run the EA assigned [M10], limits who the app can reach; consent
+  to one profile's scopes limits what it can ask for; the sign-in logs
+  and the enterprise application's audit history show new sign-ins and
+  changes; revoking the consent stops it for the tenant [M1].
 - **Nothing else moves.** The mediator, the buttons, the separate user
   and where data goes (it-request.md, "Where the data goes") are the
   same on every path.
@@ -262,12 +296,24 @@ trusted in the Admin console in the meantime [G3].
   the registration methods keep their numbers 1 to 4, and an install
   whose `~/.ea/.env` records its own registration keeps that method as
   the default. The published choice writes `GRAPH_SCOPES` for the
-  profile and clears `GRAPH_CLIENT_ID`, `GRAPH_AUTH_METHOD` and
-  `GRAPH_AUTHORITY`; a tenant in `GRAPH_AUTHORITY` stays when the user
-  sets one by hand.
+  profile into the owner-private `~/.ea-private/secrets.env` and clears
+  `GRAPH_CLIENT_ID`, `GRAPH_AUTH_METHOD`, `GRAPH_AUTHORITY` and
+  `GRAPH_SCOPES` in `~/.ea/.env`; a tenant in `GRAPH_AUTHORITY` stays
+  when the user sets one by hand.
+- **Where the published path reads its settings.** `~/.ea/.env` is the
+  resident's file, and `run-agent.sh` exports its `GRAPH_*` values into
+  the owner's processes. For the published app an owner process takes
+  `GRAPH_SCOPES`, `GRAPH_REDIRECT_URI` and `GRAPH_AUTH_METHOD` only from
+  `~/.ea-private/secrets.env` (`owner_trust.PRIVATE_SETTING_KEYS`), so
+  the resident cannot widen the scopes a sign-in asks for, move its
+  redirect to a port it listens on, or pick its flow. Unset there, the
+  published defaults apply: the assistant profile's scopes, port 8400,
+  the flow by browser. The flows of a registered app (Options A and B)
+  still read them from `~/.ea/.env`, as before.
 - **The macOS native backend.** Mail and calendars stay native; the
   published app serves only other people's free/busy
-  (`availability.provider` `graph`) with `GRAPH_SCOPES=Calendars.ReadBasic`,
+  (`availability.provider` `graph`) with `GRAPH_SCOPES=Calendars.ReadBasic`
+  in `~/.ea-private/secrets.env`,
   and the administrator can consent to that one permission with the
   link `published_apps.py admin-consent-url --profile availability`
   prints. This is the "long-term path" of
@@ -307,6 +353,14 @@ partner global account, with a DNS-verified custom domain:
    code; the badge on the prompt.
 7. Commit the Application (client) ID as `PUBLISHED_GRAPH_CLIENT_ID` in
    `preprocessor/published_apps.py`.
+8. Guard the registration (Trust statement): the tenant holds nothing
+   but this app; **Owners** lists exactly two accounts, each with a
+   FIDO2 key as its only sign-in method and no standing admin role
+   beyond the app; an alert rule on the audit log (a Log Analytics
+   workspace, or Microsoft Sentinel) mails both owners on
+   `Update application – Certificates and secrets management` and on
+   `Update application` events that change a redirect URI; the
+   publisher stays verified (step 5).
 
 Google, in a Cloud project the project owns:
 

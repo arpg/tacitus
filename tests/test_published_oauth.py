@@ -19,6 +19,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -167,7 +168,15 @@ def test_admin_consent_url(monkeypatch):
     assert q["redirect_uri"] == published_apps.PUBLISHED_GRAPH_CONSENT_REDIRECT
     scopes = q["scope"].split()
     assert scopes[:3] == ["openid", "profile", "offline_access"]
-    assert "https://graph.microsoft.com/Mail.Send" in scopes
+    # the default is one profile's scopes, the email profile's: no Send, no calendar writes
+    assert scopes[3:] == [f"https://graph.microsoft.com/{s}" for s in published_apps.graph_scopes("email")]
+    assert "https://graph.microsoft.com/Mail.Send" not in scopes
+
+    def scopes_of(*a, **k):
+        return dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(
+            published_apps.admin_consent_url(*a, **k)).query))["scope"].split()
+    assert "https://graph.microsoft.com/Mail.Send" in scopes_of("assistant")
+    assert len(scopes_of("all")) == len(published_apps.graph_registered_scopes())
     one = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(
         published_apps.admin_consent_url("availability", tenant="tenant-guid")).query))
     assert one["scope"].split() == ["openid", "profile", "offline_access",
@@ -334,15 +343,16 @@ def test_a_browser_sign_in_redeems_the_code_on_the_loopback_redirect(monkeypatch
     monkeypatch.setattr(gc, "_browser_available", lambda: True)
     seen = {}
 
-    def redirect(host, port, timeout=None):
-        seen.update(host=host, port=port, timeout=timeout)
+    def redirect(host, port, timeout=None, **kw):
+        seen.update(host=host, port=port, timeout=timeout, **kw)
         return {"code": "the-code", "state": "s"}
     monkeypatch.setattr(gc, "_await_redirect", redirect)
     assert gc._published_seed() == "browser-token"
     kinds = [c[0] for c in published_gc.calls]
     assert kinds == ["initiate_auth_code_flow", "acquire_token_by_auth_code_flow"]
     assert published_gc.calls[0][2] == "http://localhost:8400"
-    assert seen == {"host": "localhost", "port": 8400, "timeout": gc._PUBLISHED_BROWSER_WAIT}
+    assert seen == {"host": "localhost", "port": 8400, "timeout": gc._PUBLISHED_BROWSER_WAIT,
+                    "state": "s", "path": "/"}, "the listener waits for this flow's state"
 
 
 def test_no_browser_means_a_device_code(monkeypatch, published_gc):
@@ -355,7 +365,7 @@ def test_no_browser_means_a_device_code(monkeypatch, published_gc):
 
 def test_a_browser_that_never_redirects_falls_back_to_a_device_code(monkeypatch, published_gc):
     monkeypatch.setattr(gc, "_browser_available", lambda: True)
-    monkeypatch.setattr(gc, "_await_redirect", lambda host, port, timeout=None: {})
+    monkeypatch.setattr(gc, "_await_redirect", lambda host, port, timeout=None, **kw: {})
     assert gc._published_seed() == "device-token"
     assert [c[0] for c in published_gc.calls] == ["initiate_auth_code_flow",
                                                    "initiate_device_flow",
@@ -365,7 +375,7 @@ def test_a_browser_that_never_redirects_falls_back_to_a_device_code(monkeypatch,
 def test_a_taken_port_falls_back_to_a_device_code(monkeypatch, published_gc):
     monkeypatch.setattr(gc, "_browser_available", lambda: True)
 
-    def taken(host, port, timeout=None):
+    def taken(host, port, timeout=None, **kw):
         raise OSError("Address already in use")
     monkeypatch.setattr(gc, "_await_redirect", taken)
     assert gc._published_seed() == "device-token"
@@ -373,7 +383,7 @@ def test_a_taken_port_falls_back_to_a_device_code(monkeypatch, published_gc):
 
 def test_a_consent_error_is_final_and_names_the_it_request(monkeypatch, published_gc):
     monkeypatch.setattr(gc, "_browser_available", lambda: True)
-    monkeypatch.setattr(gc, "_await_redirect", lambda host, port, timeout=None: {
+    monkeypatch.setattr(gc, "_await_redirect", lambda host, port, timeout=None, **kw: {
         "error": "consent_required",
         "error_description": "AADSTS65001: The user or administrator has not consented"})
     with pytest.raises(RuntimeError) as e:
@@ -403,29 +413,120 @@ def test_authenticate_routes_a_first_sign_in_to_the_published_app(monkeypatch, p
     assert gc.authenticate() == "earlier-path"
 
 
-def test_the_loopback_listener_returns_the_redirect_query():
-    """_await_redirect, shared with the confidential flow: the first
-    request's query, or {} after the timeout."""
+def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
+        return s.getsockname()[1]
 
-    def visit():
-        for _ in range(100):
-            try:
-                urllib.request.urlopen(f"http://127.0.0.1:{port}/?code=c1&state=s1", timeout=2).read()
-                return
-            except OSError:
-                time.sleep(0.05)
-    t = threading.Thread(target=visit)
+
+def _listen(port, **kw):
+    """_await_redirect on a thread; ({"r": result} when it returns, thread)."""
+    out: dict = {}
+    t = threading.Thread(target=lambda: out.update(r=gc._await_redirect("localhost", port, **kw)),
+                         daemon=True)
     t.start()
-    got = gc._await_redirect("127.0.0.1", port, timeout=10)
-    t.join()
-    assert got == {"code": "c1", "state": "s1"}
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    assert gc._await_redirect("127.0.0.1", port, timeout=0.2) == {}
+    for _ in range(100):
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+            break
+        except OSError:
+            time.sleep(0.02)
+    return out, t
+
+
+def _get(port, target):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{target}", timeout=5) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def test_the_loopback_listener_returns_the_redirect_with_the_flows_state():
+    """_await_redirect, shared with the confidential flow: the query of the
+    GET to the redirect's path with the flow's state, or {} after the
+    timeout."""
+    port = _free_port()
+    out, t = _listen(port, timeout=10, state="s1", path="/")
+    assert _get(port, "/?code=c1&state=s1") == 200
+    t.join(5)
+    assert out["r"] == {"code": "c1", "state": "s1"}
+    assert gc._await_redirect("127.0.0.1", _free_port(), timeout=0.2, state="s1") == {}
+
+
+def test_a_hostile_request_never_decides_the_sign_in(capfd):
+    """Any local process can reach the listener first. A request on
+    another path, with another state or none answers 400 and is ignored,
+    noted once; the redirect with the flow's state still ends it, an
+    error from Entra included."""
+    port = _free_port()
+    out, t = _listen(port, timeout=10, state="the-state", path="/callback")
+    for hostile in ("/anything?error=access_denied&code=injected&state=guess",
+                    "/callback?code=injected&state=guess", "/callback?code=injected",
+                    "/callback?error=access_denied&state=the-stat"):
+        assert _get(port, hostile) == 400, hostile
+    assert "r" not in out and t.is_alive()
+    assert _get(port, "/callback?error=access_denied&error_description=x&state=the-state") == 200
+    t.join(5)
+    assert out["r"] == {"error": "access_denied", "error_description": "x", "state": "the-state"}
+    assert capfd.readouterr().err.count("ignored a request") == 1
+
+
+def test_an_idle_connection_delays_neither_the_timeout_nor_the_redirect():
+    port = _free_port()
+    out, t = _listen(port, timeout=1.0, state="s")
+    idle = socket.create_connection(("127.0.0.1", port))
+    started = time.monotonic()
+    t.join(4)
+    assert not t.is_alive() and out["r"] == {}, "the timeout holds with a connection open"
+    assert time.monotonic() - started < 2.5
+    idle.close()
+    port = _free_port()
+    out, t = _listen(port, timeout=20, state="s")
+    idles = [socket.create_connection(("127.0.0.1", port)) for _ in range(3)]
+    started = time.monotonic()
+    assert _get(port, "/?code=c&state=s") == 200
+    t.join(5)
+    assert out["r"]["code"] == "c" and time.monotonic() - started < 2, "served beside the idle ones"
+    for c in idles:
+        c.close()
+
+
+def test_the_listener_holds_the_ipv6_loopback_too():
+    """localhost may resolve to ::1: a family left unbound is a port
+    another local process could take and answer the browser on."""
+    try:
+        probe = socket.socket(socket.AF_INET6)
+        probe.bind(("::1", 0))
+        probe.close()
+    except OSError:
+        print("  (no IPv6 loopback on this machine)")
+        return
+    port = _free_port()
+    out, t = _listen(port, timeout=5, state="s")
+    other = socket.socket(socket.AF_INET6)
+    try:
+        with pytest.raises(OSError):
+            other.bind(("::1", port))
+    finally:
+        other.close()
+    with socket.create_connection(("::1", port), timeout=2) as c:
+        c.sendall(b"GET /?code=v6&state=s HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        assert c.recv(64).startswith(b"HTTP/1.1 200")
+    t.join(5)
+    assert out["r"]["code"] == "v6"
+
+
+def test_a_redirect_port_that_is_none_falls_back_to_a_device_code(monkeypatch, published_gc, capsys):
+    monkeypatch.setattr(gc, "_browser_available", lambda: True)
+    for bad in ("http://localhost:99999/callback", "http://localhost:0/callback"):
+        monkeypatch.setattr(gc, "GRAPH_REDIRECT_URI", bad)
+        with pytest.raises(gc.RedirectPortError, match="1 to 65535"):
+            gc._published_redirect_uri()
+    published_gc.calls.clear()
+    assert gc._published_seed() == "device-token"
+    assert [c[0] for c in published_gc.calls] == ["initiate_device_flow", "acquire_token_by_device_flow"]
+    assert "names no port" in capsys.readouterr().err
 
 
 # -- the Google clients ----------------------------------------------------
@@ -518,17 +619,68 @@ def test_an_existing_registration_keeps_its_method_as_the_default(monkeypatch, t
 
 
 def test_the_published_answer_writes_the_profiles_scopes(monkeypatch, tmp_path):
+    """The scopes go in the owner-private secrets.env, which an owner
+    process reads for the published app; ~/.ea/.env has them cleared."""
     import user_init
     ea = tmp_path / "ea"
     (ea / ".env").parent.mkdir(parents=True)
-    (ea / ".env").write_text("GRAPH_CLIENT_ID=old\nGRAPH_AUTH_METHOD=confidential\nEA_MODEL=x\n")
+    (ea / ".env").write_text("GRAPH_CLIENT_ID=old\nGRAPH_AUTH_METHOD=confidential\nEA_MODEL=x\n"
+                             "GRAPH_SCOPES=Mail.Send\n")
+    priv = tmp_path / "priv"
+    monkeypatch.setenv("EA_PRIVATE_DIR", str(priv))
     monkeypatch.setattr(user_init, "EA_DIR", ea)
     monkeypatch.setattr(user_init, "AUTH_DIR", ea / "auth")
     user_init.write_auth({"graph-auth-method": "published"}, {"profile": "email"})
     env = dict(line.split("=", 1) for line in (ea / ".env").read_text().splitlines())
     assert env["GRAPH_CLIENT_ID"] == "" and env["GRAPH_AUTH_METHOD"] == ""
     assert env["GRAPH_AUTHORITY"] == "" and env["EA_MODEL"] == "x"
-    assert env["GRAPH_SCOPES"] == "Mail.ReadWrite Calendars.Read MailboxSettings.Read"
+    assert env["GRAPH_SCOPES"] == ""
+    secret = dict(line.split("=", 1) for line in (priv / "secrets.env").read_text().splitlines())
+    assert secret["GRAPH_SCOPES"] == "Mail.ReadWrite Calendars.Read MailboxSettings.Read"
+    assert os.stat(priv / "secrets.env").st_mode & 0o777 == 0o600
+
+
+def test_an_owner_takes_the_published_settings_from_the_private_file_only(monkeypatch, tmp_path):
+    """The environment of an owner process may carry ~/.ea/.env's values
+    (run-agent.sh exports them), and the resident writes that file: for
+    the published app, GRAPH_SCOPES, GRAPH_REDIRECT_URI and
+    GRAPH_AUTH_METHOD come from the owner-private secrets.env alone. A
+    registered app's flows keep the environment's values."""
+    import owner_trust
+    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: True)
+    private = {"GRAPH_SCOPES": "Calendars.ReadBasic"}
+    monkeypatch.setattr(owner_trust, "private_settings", lambda *a, **k: dict(private))
+    planted = {"GRAPH_SCOPES": "Mail.Send", "GRAPH_REDIRECT_URI": "http://localhost:9999/x",
+               "GRAPH_AUTH_METHOD": "interactive"}
+    m = _reload_gc(monkeypatch, tmp_path, published=APP_ID, env=planted)
+    assert m.CLIENT_PATH == "published"
+    assert m._effective_scopes() == ["https://graph.microsoft.com/Calendars.ReadBasic"]
+    assert m.GRAPH_REDIRECT_URI == "http://localhost:8400/callback" and m.GRAPH_AUTH_METHOD == ""
+    assert m._published_redirect_uri() == "http://localhost:8400"
+    private.clear()
+    m = _reload_gc(monkeypatch, tmp_path, published=APP_ID, env=planted)
+    assert m._effective_scopes() == [f"https://graph.microsoft.com/{s}"
+                                     for s in published_apps.PUBLISHED_GRAPH_SCOPES]
+    private.update(GRAPH_AUTH_METHOD="device_code", GRAPH_REDIRECT_URI="http://localhost:9123")
+    m = _reload_gc(monkeypatch, tmp_path, published=APP_ID, env=planted)
+    assert m.GRAPH_AUTH_METHOD == "device_code" and m._published_redirect_uri() == "http://localhost:9123"
+    # the user's own registration: the environment stands
+    m = _reload_gc(monkeypatch, tmp_path, published=APP_ID, env=dict(planted, GRAPH_CLIENT_ID=OWN_ID))
+    assert m.CLIENT_PATH == "custom" and m.GRAPH_AUTH_METHOD == "interactive"
+    assert m.GRAPH_SCOPES == ["Mail.Send"]
+
+
+def test_private_settings_reads_only_its_keys(monkeypatch, tmp_path):
+    import owner_trust
+    priv = tmp_path / "priv"
+    priv.mkdir(mode=0o700)
+    (priv / "secrets.env").write_text("GRAPH_SCOPES=Mail.Read\nGRAPH_CLIENT_SECRET=s\nEA_DIR=/x\n")
+    os.chmod(priv / "secrets.env", 0o600)
+    monkeypatch.setattr(owner_trust, "private_dir", lambda: priv)
+    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: False)
+    assert owner_trust.private_settings() == {}
+    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: True)
+    assert owner_trust.private_settings() == {"GRAPH_SCOPES": "Mail.Read"}
 
 
 def test_the_setup_page_names_the_published_sign_in_only_with_an_id(monkeypatch):
