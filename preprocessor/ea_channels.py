@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Project channels: which private Slack channels the EA answers in, and
-which project or session each one is about.
+"""Project channels: which private rooms the EA answers in (Slack
+channels, Zulip streams or web chat rooms), and which project or session
+each one is about.
 
 The bot answers in the channels listed here (ea-chat-bot._channel_scope
 reads this file). This module owns the file, so a channel can be
 registered by the bot the moment it creates one ("open a channel for
-<project>" in Slack) or by hand.
+<project>" in chat) or by hand. The key is the room id the chat frontend
+gives (CHANNEL_ID_RE).
 
-Two kinds of channel, told apart by NAME so they read the same in Slack,
+Two kinds of channel, told apart by NAME so they read the same in chat,
 on the web board and in App Home:
 
   #ea-<project>   kind "project": scoped to one project; every thread in
@@ -22,7 +24,7 @@ on the web board and in App Home:
 
 Registry: ~/.ea/config/ea-channels.json
   {channel_id: {"kind": "project"|"session", "project": project_id,
-                "session_id": uuid, "name": slack_name, "url": deep link,
+                "session_id": uuid, "name": room_name, "url": deep link,
                 "model": str, "effort": str, "created": iso,
                 "created_by": "slack|manual"}}
 
@@ -56,8 +58,11 @@ NAME_PREFIX = "ea-"
 SESSION_PREFIX = "tmp-"
 MAX_NAME = 80  # Slack's limit; a frontend with a shorter one passes max_len
 KINDS = ("project", "session")
-# A Slack channel id, or a Zulip stream as stream:<id>.
-CHANNEL_ID_RE = re.compile(r"^(?:[CG][A-Z0-9]{6,}|stream:\d+)$")
+# A room id as the chat frontend that made it writes it: a Slack channel id
+# (C… or G…), a Zulip stream as stream:<id>, or a web chat room as r<n>
+# (WebFrontend.create_private_room numbers its rooms from 1). The web chat's
+# own fixed channels (main, dm) and its reserved ids (needs) are never rooms.
+CHANNEL_ID_RE = re.compile(r"^(?:[CG][A-Z0-9]{6,}|stream:\d+|r[1-9]\d*)$")
 SESSION_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 

@@ -9816,18 +9816,17 @@ def _open_session_channel(session_id: str, model: str = "") -> dict:
     try:
         room = FRONTEND.create_private_room(
             name, f"mirrors Claude session {sid} (one driver at a time)"[:250])
-        cid = room.id
-    except _chat.NotPermitted:
-        return {"ok": False,
-                "text": (":x: The Slack app cannot create channels yet. Add the "
-                         "`groups:write` bot scope (OAuth & Permissions), "
-                         "reinstall the app, and say this again.")}
+    except _chat.NotPermitted as e:
+        return {"ok": False, "text": _room_not_permitted_text(e)}
     except _chat.RoomNameTaken:
-        return {"ok": False, "text": f":x: `#{name}` already exists (archived channels keep their names). Unarchive it if it is the room I made for this session; I serve only rooms I create for you."}
+        room = _unregistered_own_room(name, "session")
+        if room is None:
+            return {"ok": False, "text": f":x: `#{name}` already exists (archived channels keep their names). Unarchive it if it is the room I made for this session; I serve only rooms I create for you."}
     except Exception as e:
         err = str(e)
         log.error(f"conversations_create failed: {e}")
         return {"ok": False, "text": f":x: The chat server refused to create the room: {err[:160]}"}
+    cid = room.id
     _record_owner_room(cid, name, "session")
     try:
         if OWNER_SLACK_USER_ID:
@@ -9894,6 +9893,49 @@ def _resolve_project_candidates(query: str) -> tuple[str, str, list]:
     return "", "", []
 
 
+def _room_not_permitted_text(err: Exception) -> str:
+    """The reply when the chat server refuses to create a room
+    (chat.NotPermitted): on Slack the missing scope, elsewhere the
+    server's own answer."""
+    if FRONTEND.name.split("+", 1)[0] == "slack":
+        return (":x: The Slack app cannot create channels yet. Add the "
+                "`groups:write` bot scope (OAuth & Permissions), "
+                "reinstall the app, and say this again.")
+    return (f":x: The chat server does not let me create rooms: {str(err)[:160]}. "
+            f"Give the bot's account the right to create private rooms, and say this again.")
+
+
+def _unregistered_own_room(name: str, kind: str):
+    """The room named `name` that the bot created for the owner earlier
+    (the owner room record names it, `how` "created", of this kind) but
+    that the registry does not hold: its registration failed after the
+    room was made. Its RoomRef, so the caller registers it as a room just
+    made; None when no such room exists, when the registry binds it
+    already, or when it is archived or renamed on the platform."""
+    from preprocessor import ea_channels as _ea_channels
+    try:
+        rooms = _owner_rooms.load() or {}
+    except Exception as e:
+        log.warning(f"owner room record unreadable ({e}); #{name} is not taken back")
+        return None
+    for cid, row in rooms.items():
+        if row.get("name") != name or row.get("kind", "project") != kind \
+                or row.get("how") != "created" or _core_channel(cid) \
+                or _ea_channels.scope_of(cid) is not None:
+            continue
+        try:
+            info = FRONTEND.channel_info(cid)
+        except Exception as e:
+            log.warning(f"room {cid} lookup failed: {e}")
+            continue
+        if not info.exists or info.is_archived or info.name != name:
+            continue
+        log.info(f"room {cid} (#{name}) was created earlier and never registered; "
+                 f"registering it now")
+        return _chat.RoomRef(cid, name, FRONTEND.room_url(cid))
+    return None
+
+
 def _untrusted_room_text(cid: str) -> str:
     """The reply when the registry names a room the bot does not serve."""
     return (f":x: The room registry names `{cid}` here, but it is not a room I created "
@@ -9956,9 +9998,10 @@ def _project_opening_post(project_id: str) -> str:
 
 def _open_project_channel(channel: str, thread_ts: str, name: str,
                           project_query: str) -> dict:
-    """Create a private channel for a project, invite the owner, register
-    it, and post the project's opening context. Needs the `groups:write`
-    scope on the Slack app; says so when it is missing."""
+    """Create a private room for a project (a Slack channel, a Zulip
+    stream or a web chat room, through the chat frontend), invite the
+    owner, register it, and post the project's opening context. A server
+    that refuses the room gets _room_not_permitted_text."""
     from preprocessor import ea_channels as _ea_channels
     query = (project_query or name).strip().strip("\"'")
     pid, pname, candidates = _resolve_project_candidates(query)
@@ -10022,21 +10065,20 @@ def _open_project_channel(channel: str, thread_ts: str, name: str,
     try:
         room = FRONTEND.create_private_room(
             slack_name, f"EA project channel: {pname} ({pid})"[:250])
-        cid = room.id
-    except _chat.NotPermitted:
-        return {"ok": False,
-                "text": (":x: The Slack app cannot create channels yet. Add the "
-                         "`groups:write` bot scope (OAuth & Permissions), "
-                         "reinstall the app, and say this again.")}
+    except _chat.NotPermitted as e:
+        return {"ok": False, "text": _room_not_permitted_text(e)}
     except _chat.RoomNameTaken:
-        return {"ok": False,
-                "text": (f":x: A channel named `{slack_name}` already exists. "
-                         f"I serve only rooms I create for you: rename or delete that "
-                         f"one, or say `open a channel named <other-name> for {pid}`.")}
+        room = _unregistered_own_room(slack_name, "project")
+        if room is None:
+            return {"ok": False,
+                    "text": (f":x: A channel named `{slack_name}` already exists. "
+                             f"I serve only rooms I create for you: rename or delete that "
+                             f"one, or say `open a channel named <other-name> for {pid}`.")}
     except Exception as e:
         err = str(e)
         log.error(f"conversations_create failed: {e}")
         return {"ok": False, "text": f":x: The chat server refused to create the room: {err[:160]}"}
+    cid = room.id
     _record_owner_room(cid, slack_name, "project")
     try:
         if OWNER_SLACK_USER_ID:
