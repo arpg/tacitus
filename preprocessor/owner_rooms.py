@@ -97,6 +97,27 @@ def update(channel_id: str, **fields) -> bool:
         return True
 
 
+def move(moves: dict) -> list[str]:
+    """Re-key each room the record names under an old id in `moves` to its
+    new id, the row kept as it is: the move from shadow mode to the web
+    chat alone (scripts/webchat-cutover.py). A new id the record names
+    already keeps its own row. The old ids moved; none when there is no
+    record."""
+    with _LOCK:
+        rooms = load()
+        if rooms is None:
+            return []
+        moved = []
+        for old, new in moves.items():
+            old, new = str(old), str(new)
+            if old in rooms and new not in rooms and old != new:
+                rooms[new] = rooms.pop(old)
+                moved.append(old)
+        if moved:
+            _save(rooms)
+        return moved
+
+
 def start(adopt: dict) -> list[str] | None:
     """Create the record once: `adopt` maps each room to take over to its
     row ({"name", "kind"}). Returns the adopted ids, or None when the record

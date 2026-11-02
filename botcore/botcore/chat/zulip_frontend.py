@@ -84,7 +84,7 @@ import threading
 import time
 import urllib.parse
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -177,6 +177,9 @@ HISTORY_RATE_WAIT_MAX = 30.0
 HISTORY_PAGE = 200
 HISTORY_PAGES_MAX = 10
 HISTORY_PAGE_PACE_S = 0.4
+# A whole channel's history (channel_history, the move to the web chat
+# alone) is read forward from the oldest message, this many at a time.
+EXPORT_PAGE = 1000
 
 # Unicode code points of the reactions that confirm or cancel a card,
 # mapped to a name REACTION_ROLES knows, so a reaction resolves whatever
@@ -1848,6 +1851,41 @@ class ZulipFrontend(ChatFrontend):
                 roots[key] = msg
         out = sorted(roots.values(), key=lambda r: (r.posted_at, int(r.msg_id)))
         return out[:limit]
+
+    def channel_history(self, channel: str, *, page: int = EXPORT_PAGE) -> Iterator[InboundMessage]:
+        """Every message of a stream or DM channel, oldest first, read
+        forward from the oldest `page` messages at a time, with no window
+        and no cap (ShadowFrontend.export_history, for the move to the web
+        chat alone). `is_reply` is False on the first message of each
+        topic. A read the server refuses raises ChatError, so a copy never
+        ends short without saying so."""
+        narrow = self._narrow_for_channel(channel)
+        anchor: int | str = "oldest"
+        seen: set[str] = set()
+        while True:
+            req = {"anchor": anchor, "num_before": 0, "num_after": int(page),
+                   "apply_markdown": False, "narrow": narrow}
+            res = self._rate_limited(lambda: self.client.get_messages(req),
+                                     retries=HISTORY_RATE_RETRIES, wait_max=HISTORY_RATE_WAIT_MAX)
+            if not _ok(res):
+                raise ChatError(f"zulip get_messages failed: {_err(res)}")
+            last = anchor if isinstance(anchor, int) else -1
+            # The anchor message comes back with the page after it.
+            msgs = sorted((m for m in res.get("messages") or []
+                           if isinstance(m, dict) and int(m.get("id", 0)) > last),
+                          key=lambda m: int(m.get("id", 0)))
+            for m in msgs:
+                msg = self._to_inbound(m, is_reply=False)
+                if msg is None:
+                    continue
+                key = msg.thread_key or msg.channel
+                msg.is_reply = key in seen
+                seen.add(key)
+                yield msg
+            if res.get("found_newest") or not msgs:
+                return
+            anchor = int(msgs[-1].get("id", 0))
+            self._sleep(HISTORY_PAGE_PACE_S)
 
     def create_private_room(self, name: str, description: str = "") -> RoomRef:
         if _ok(self.client.get_stream_id(name)):

@@ -161,7 +161,18 @@ under a ShadowFrontend the composite switches the shadow off
 
 Standalone ids: messages `w<seq>`, threads `t<seq of the parent>`,
 rooms `r<n>`, files `f<n>`. In shadow mode every id is the primary's
-(see Shadow mode); the web store never mints one.
+(see Shadow mode); the web store never mints one. After the move to the
+web chat alone the store keeps the primary's thread keys and message ids
+under the web chat's channel ids, and the `meta` row `channel_redirects`
+maps each old channel id to its new one (The move to the web chat
+alone).
+
+The store and the files beside it (the uploads, `thread-state-labels.jsonl`,
+`webchat-owner-ids.json`, `webchat-vapid.json`, the relay key file and the
+pairing token) are the web chat's whole state. `scripts/webchat-backup.sh`
+snapshots them each night into `<private dir>/backups/webchat/<date>/`
+(docs/SETUP.md, Web chat, Backups); the store goes through SQLite's backup
+API, never a copy of the live file.
 
 ## Message JSON (one shape everywhere: REST and SSE)
 
@@ -230,7 +241,10 @@ as one that may not confirm a card (`docs/webchat-relay.md`, Where the
 app's code comes from).
 
 Channel ids in URLs are URL-encoded (Zulip ids carry characters). A
-thread_key is likewise encoded.
+thread_key is likewise encoded. After the move to the web chat alone, a
+route that names a channel (`/api/channels/{ch}/...`, `/api/cards/{ch}/...`,
+`/api/threads/{ch}/...`) takes a mirrored channel's old id as its new one,
+so a link from before the move still opens its conversation.
 
 Errors: JSON `{"error": "..."}` with 400/401/403/404/421/429. The server
 is `http.server.ThreadingHTTPServer` on a daemon thread started by
@@ -383,6 +397,59 @@ id.
 `shadow`; `"frontend": "web"` returns a bare `WebFrontend`. A
 command-line sender in an owner process gets the composite too, with a
 writer-only web side (see CLI senders).
+
+## The move to the web chat alone
+
+`scripts/webchat-cutover.py` takes an install from shadow mode to the web
+chat alone (the owner's steps are in docs/zulip-switch.md, Leave Zulip for
+the web chat). `plan` prints each change and writes nothing; `apply` runs
+with the bot stopped:
+
+- A snapshot first (`webchat-backup.sh --label cutover`), with the room and
+  session registries beside it. The work happens on a copy of the store,
+  which replaces it only once every step passed.
+- The export: `ShadowFrontend.export_history` reads every message the
+  primary holds in each mirrored channel, with no window and no cap (Zulip
+  through `ZulipFrontend.channel_history`, forward from the oldest message,
+  a thousand at a time; another primary through `recent_messages` and
+  `thread_replies`), the author and text as the history copy decides them.
+  A message the store holds already stays as it is; the others go in as
+  history rows. A card is the text the primary shows, with its status line
+  once answered.
+- The files: each file Zulip holds that a row names (its `file`, or a
+  `/user_uploads/` link in its text) is downloaded and kept under its Zulip
+  path as its id, the row's `file` and the links in its text point at
+  `<base_path>/api/files/<id>`. A file that does not download keeps its
+  link and is named in the summary.
+- The fold: the channel of kind `main` becomes `main`, `dm` and the done
+  stream (`<dm stream>-done`) become `dm`, `sched` becomes `sched`, the
+  `mail-digest` stream becomes `digests` (kind `digest`), and every other
+  mirrored channel becomes a room `r<n>` with its name, archived as it was.
+  Every table's `channel` and `card_channel`, and each push tag
+  (`<channel>/<thread key>`), take the new id; a message both folded
+  channels hold stays once. Thread keys and message ids do not change, so
+  the session registry, the card registry and the app's thread links keep
+  working.
+- The order: the messages are numbered again by `posted_at`, so history
+  copied in now sits before the rows mirrored live in the same thread;
+  the read marks, a queued push's message and a thread's `judged_seq`
+  follow their message. The event log is emptied (its payloads carry the
+  old ids) and each new channel gets one `channel` event.
+- The redirect map: `meta` `channel_redirects` (old id to new id).
+  `WebStore.canonical` reads it; the API routes above and the front end's
+  verbs (`post`, `post_card`, `upload`, `react`, `update`,
+  `replace_card_with_status`, `thread_replies`, `room_url`, `archive` and
+  the rest) take an old id as its new one, so a reference the core kept
+  from before the move (a card's `ea_channel`, a session row) still lands.
+- Then `chat.json` (`"frontend": "web"`, no `shadow`; the `zulip` block
+  stays; a notifier key whose stream became a web channel other than
+  `main` gets a `notify` entry), the store, the room registry
+  (`ea_channels.move_channels`, each room's `url` its web link), the
+  owner's room record (`owner_rooms.move`), the session rows
+  (`slack_sessions.move_channels`) and the card registry
+  (`CardRegistry.move_channels`), and the Zulip teardown steps.
+
+A switch back is the snapshot (`webchat-backup.sh --restore <name>`).
 
 ## CLI senders
 

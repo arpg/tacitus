@@ -333,6 +333,40 @@ class CardRegistry:
                 self._save()
         return changed
 
+    def move_channels(self, moves: dict[str, str]) -> int:
+        """Re-key every row posted in a channel of `moves` to that channel's
+        new id, and point every value that names such a channel (the row's
+        `channel` and `ea_channel`, an action value's) at the new id: the
+        move from shadow mode to the web chat alone
+        (scripts/webchat-cutover.py). Thread keys and message ids stay. The
+        number of rows changed."""
+        def follow(value: object) -> tuple[object, bool]:
+            if isinstance(value, str):
+                return (moves[value], True) if value in moves else (value, False)
+            hit = False
+            if isinstance(value, dict):
+                for k, v in value.items():
+                    value[k], h = follow(v)
+                    hit = hit or h
+            elif isinstance(value, list):
+                for i, v in enumerate(value):
+                    value[i], h = follow(v)
+                    hit = hit or h
+            return value, hit
+
+        changed = 0
+        with self._lock:
+            rows: dict[str, dict] = {}
+            for key, row in self._rows.items():
+                if follow(row)[1]:
+                    key = _ref_key(str(row.get("channel") or ""), str(row.get("msg_id") or ""))
+                    changed += 1
+                rows[key] = row
+            if changed:
+                self._rows = rows
+                self._save()
+        return changed
+
     def new_code(self) -> str:
         """A fresh 4-character code, unique among live rows."""
         with self._lock:

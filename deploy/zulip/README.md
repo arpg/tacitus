@@ -204,7 +204,9 @@ The compose project is named `ea-zulip`, so the volumes are
 `ea-zulip_zulip`, `ea-zulip_postgresql-14`, `ea-zulip_rabbitmq` and
 `ea-zulip_redis`, and the Zulip container is `ea-zulip-zulip-1`.
 `restart: unless-stopped` brings the stack back after a reboot unless
-it was stopped by hand.
+it was stopped by hand. To take the server down for good (the serve on
+8443, the ACL rule, the volumes, the backup cron, the env file and the
+bot's key), follow docs/zulip-switch.md, "Uninstall Zulip".
 
 ## From dev server to the real server
 

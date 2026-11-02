@@ -187,7 +187,10 @@ The platform decides who holds that text.
 The EA behaves the same on all three. Use Zulip if you already run it.
 The web chat can also run beside Zulip (shadow mode): each post appears
 in both, and you answer in either. Moving between Zulip and Slack is one
-config key and a restart ([docs/zulip-switch.md](zulip-switch.md)).
+config key and a restart ([docs/zulip-switch.md](zulip-switch.md)); from
+shadow mode to the web chat alone, `scripts/webchat-cutover.py` brings
+the whole Zulip history over ([Leave Zulip for the web
+chat](zulip-switch.md#leave-zulip-for-the-web-chat)).
 
 New chat features land in the web chat. Zulip and Slack keep working as
 they are and get fixes, not new features; Zulip stays in the tree for a
@@ -349,7 +352,8 @@ sudo dscl . -delete /Users/ea-bot && sudo dscl . -delete /Groups/ea && sudo rm -
 
 These stay until you delete them: `~/.ea` (the ledger, the config, and
 the tokens in `auth/`), `~/.ea-private` (your secrets, the push and chat
-settings, the web chat's history, the owner logs), the checkout, your own Claude Code
+settings, the web chat's history and its nightly snapshots in
+`backups/webchat/`, the owner logs), the checkout, your own Claude Code
 (`~/.local/bin/claude`), and the Python packages with the
 `~/.local/share/ea-system` shim. Also revoke the EA's access where you
 granted it: the Microsoft app's consent (or ask IT to remove the
@@ -357,6 +361,32 @@ registration), the Google OAuth client, the claude.ai connectors, and on
 `assistant` the Slack app or the Zulip bot. A Docker install is
 `docker compose down -v` (the `-v` deletes the volumes and every token
 in them).
+
+Before you delete `~/.ea-private`, keep a copy of the web chat if you
+want its history: `scripts/webchat-backup.sh --label final` writes one
+snapshot to `~/.ea-private/backups/webchat/<date>-final/` (the store, its
+uploads, the relay key, the pairing token); copy that folder somewhere
+private.
+
+### Zulip
+
+An install that ran Zulip also has the server to take down: once with a
+whole uninstall, or on its own after a move to the web chat alone
+([docs/zulip-switch.md](zulip-switch.md#uninstall-zulip) has each step
+and why). From your checkout:
+
+```bash
+deploy/zulip/backup.sh                      # a last backup of the realm, if you want its history
+sudo tailscale serve --https=8443 off       # stop publishing the server on your tailnet
+deploy/zulip/compose.sh down -v             # the containers, their network and the volumes (every message)
+docker image ls | grep -i zulip             # then docker image rm each image it lists
+crontab -e                                  # delete the deploy/zulip/backup.sh line (and from crontab.master)
+rm ~/.ea-private/zulip.env                  # the server's database, queue and cache passwords
+```
+
+Then delete the `ZULIP_API_KEY` line from `~/.ea-private/secrets.env`,
+and in the Tailscale admin console (Access controls) delete the rule and
+the tests for `tag:ea-host:8443`.
 
 ## If something fails
 

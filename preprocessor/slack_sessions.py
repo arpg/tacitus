@@ -442,6 +442,25 @@ def set_session_effort(session_id: str, effort: str) -> int:
     return count[0]
 
 
+def move_channels(moves: dict) -> int:
+    """Point each row whose meta names a channel in `moves` at that
+    channel's new id (the move from shadow mode to the web chat alone,
+    scripts/webchat-cutover.py). The rows stay under their thread keys,
+    which the move keeps. Returns how many rows changed."""
+    count = [0]
+
+    def fn(rows: dict) -> bool:
+        for entry in rows.values():
+            meta = entry.get("meta")
+            if isinstance(meta, dict) and meta.get("channel") in moves:
+                meta["channel"] = moves[meta["channel"]]
+                count[0] += 1
+        return count[0] > 0
+
+    _mutate(fn)
+    return count[0]
+
+
 def describe(thread_ts: str) -> dict | None:
     """The registry row for a thread, or None."""
     return _load().get(thread_ts)

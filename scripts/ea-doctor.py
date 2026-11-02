@@ -1196,12 +1196,15 @@ def _web_private_problem(path: Path, kind: str) -> str | None:
 
 def check_web(wcfg: dict) -> None:
     """The web chat's block as the bot serves it (docs/webchat.md, Config
-    and Identity and auth), in three rows: the settings (from the
-    owner-private chat.json, a port, a base path, and a public_url with the
-    chat's own HTTPS port under that path), the sign-in (the Tailscale
-    login, or a private pairing token) and the store (a directory that is
-    yours alone, outside the resident's tree). Each row passes or warns
-    with its fix. Nothing is written and no secret is read."""
+    and Identity and auth): the settings (from the owner-private chat.json,
+    a port, a base path, and a public_url with the chat's own HTTPS port
+    under that path), the sign-in (the Tailscale login, or a private
+    pairing token) and the store (a directory that is yours alone, outside
+    the resident's tree, and what it holds); then the nightly snapshot,
+    the push subscriptions and the relay. Each row passes or warns with its
+    fix. Nothing is written; the store is read through a read-only
+    connection, and the relay row asks the running bot with the pairing
+    token, read through the owner checks and never shown."""
     try:
         ot = _owner_trust()
     except Exception as e:
@@ -1307,17 +1310,29 @@ def check_web(wcfg: dict) -> None:
              f"set web.tailscale_login in {chat_json} to your login (`tailscale whois` shows "
              f"it), or start the bot once: it writes the pairing token there; {restart}")
 
-    # the store
-    inside = ot.inside_roots(store, roots)
+    # the store, and what it holds
+    facts = _check_web_store(store, store_dir, ot.inside_roots(store, roots), chat_json, restart)
+    if facts is not None:
+        check_web_backup(store)
+        check_web_push(facts)
+    check_web_relay(wcfg, store_dir, token)
+
+
+def _check_web_store(store: Path, store_dir: Path, inside: Path | None, chat_json: Path,
+                     restart: str) -> dict | None:
+    """The `web chat: store` row: a private store outside the resident's
+    tree, and, once it exists, its size, its message count and the age of
+    its newest message, read with a read-only connection. The store's facts
+    (_web_store_facts) when it was read, else None."""
     if inside is not None:
         warn("web chat: store", f"{store} is inside {inside}, which the resident controls",
              f"leave web.store_path empty (the owner-private directory) in {chat_json}; "
              f"{restart}")
-        return
+        return None
     if not os.path.lexists(store_dir):
         warn("web chat: store", f"{store_dir} does not exist",
              f"mkdir -m 700 {store_dir}, or leave web.store_path empty in {chat_json}")
-        return
+        return None
     why = _web_private_problem(store_dir, "dir")
     if why is None and os.path.lexists(store):
         why = _web_private_problem(store, "file")
@@ -1325,9 +1340,225 @@ def check_web(wcfg: dict) -> None:
         warn("web chat: store", f"{why}; the bot does not serve the web chat from it",
              f"chmod 700 {store_dir}; chmod 600 {store} (both must be yours; never chown "
              f"another user's file, move it aside)")
+        return None
+    if not os.path.lexists(store):
+        ok("web chat: store", f"{store} (made on the bot start, in a directory only you can "
+                              f"open)")
+        return None
+    try:
+        facts = _web_store_facts(store)
+    except Exception as e:
+        warn("web chat: store", f"{store} did not open read-only: {e}",
+             "the bot's log says more (grep 'web chat' ~/.ea-private/logs/slack-bot.log); "
+             "scripts/webchat-backup.sh --list shows the snapshots to put back")
+        return None
+    last = (f"the last {_age(facts['now'] - facts['last_at'])} ago" if facts["last_at"]
+            else "none yet")
+    ok("web chat: store", f"{store} ({_size(facts['size'])}, {facts['messages']} messages, "
+                          f"{last}; mode 0600, in a directory only you can open)")
+    return facts
+
+
+# The web chat's nightly snapshot (scripts/webchat-backup.sh): older than
+# this many days, the backup row warns.
+WEB_BACKUP_STALE_DAYS = 2
+WEB_BACKUP_CRON = ("30 3 * * *  /opt/ea-system/scripts/webchat-backup.sh >> "
+                   "~/.ea-private/logs/webchat-backup.log 2>&1")
+# The relay client not connected for longer than this warns; a reconnect
+# within it is the long poll's ordinary churn.
+WEB_RELAY_DOWN_S = 600
+# A browser whose pushes failed this many times in a row (a delivery sets
+# the count back to 0) warns.
+WEB_PUSH_FAILING = 3
+
+
+def _age(seconds: float) -> str:
+    s = max(0, int(seconds))
+    if s < 120:
+        return f"{s} s"
+    if s < 7200:
+        return f"{s // 60} min"
+    if s < 2 * 86400:
+        return f"{s // 3600} h"
+    return f"{s // 86400} days"
+
+
+def _size(n: float) -> str:
+    if n < 1024:
+        return f"{int(n)} bytes"
+    for unit in ("KB", "MB", "GB"):
+        n /= 1024
+        if n < 1024 or unit == "GB":
+            break
+    return f"{n:.1f} {unit}"
+
+
+def _web_store_facts(store: Path) -> dict:
+    """What the store holds, through a read-only connection (it never takes
+    a write lock): its size, the message count, the newest message's time
+    and the push subscriptions."""
+    import sqlite3
+    import time as _time
+    import urllib.parse
+    conn = sqlite3.connect(f"file:{urllib.parse.quote(str(store))}?mode=ro", uri=True, timeout=5)
+    try:
+        messages, last_at = conn.execute("SELECT COUNT(*), MAX(posted_at) FROM messages").fetchone()
+        try:
+            subs = conn.execute(
+                "SELECT COUNT(*), MAX(last_ok), COALESCE(SUM(failures), 0), "
+                "COALESCE(SUM(failures >= ?), 0) FROM push_subscriptions",
+                (WEB_PUSH_FAILING,)).fetchone()
+        except sqlite3.OperationalError:
+            subs = (0, None, 0, 0)
+    finally:
+        conn.close()
+    return {"now": _time.time(), "size": os.stat(store).st_size, "messages": int(messages),
+            "last_at": float(last_at) if last_at is not None else None,
+            "subscriptions": int(subs[0]), "push_last_ok": subs[1],
+            "push_failures": int(subs[2]), "push_failing": int(subs[3])}
+
+
+def check_web_backup(store: Path, now: float | None = None) -> None:
+    """The `web chat: backup` row: the newest snapshot under
+    <private dir>/backups/webchat (scripts/webchat-backup.sh), a directory
+    only the owner can open, taken within WEB_BACKUP_STALE_DAYS."""
+    import time as _time
+    root = _private_dir() / "backups" / "webchat"
+    fix = (f"add the nightly line to your crontab (docs/SETUP.md 'Cron schedule'): "
+           f"{WEB_BACKUP_CRON}; /opt/ea-system/scripts/webchat-backup.sh takes one now")
+    try:
+        snaps = [d for d in root.iterdir() if (d / "MANIFEST.tsv").is_file()]
+    except OSError:
+        snaps = []
+    if not snaps:
+        warn("web chat: backup", f"no snapshot of {store} in {root} yet", fix)
+        return
+    why = _web_private_problem(root, "dir")
+    if why:
+        warn("web chat: backup", why, f"chmod 700 {root}")
+        return
+    newest = max(snaps, key=lambda d: (d / "MANIFEST.tsv").stat().st_mtime)
+    age = (now if now is not None else _time.time()) - (newest / "MANIFEST.tsv").stat().st_mtime
+    if age > WEB_BACKUP_STALE_DAYS * 86400:
+        warn("web chat: backup", f"the newest snapshot, {newest.name}, is {_age(age)} old "
+                                 f"(more than {WEB_BACKUP_STALE_DAYS} days)", fix)
     else:
-        ok("web chat: store", f"{store} ({'present' if os.path.lexists(store) else 'made on the bot start'}, "
-           f"in a directory only you can open)")
+        ok("web chat: backup", f"{newest.name}, {_age(age)} ago, in {root} "
+                               f"({len(snaps)} snapshot(s))")
+
+
+def check_web_push(facts: dict) -> None:
+    """The `web chat: push` row: the browsers that get notifications, when
+    one was last delivered, and the failures since each one's last
+    delivery; a browser that failed WEB_PUSH_FAILING times in a row warns."""
+    n = facts["subscriptions"]
+    if not n:
+        ok("web chat: push", "no browser has notifications on (the Notifications switch in "
+                             "the app's menu)")
+        return
+    last = facts["push_last_ok"]
+    detail = (f"{n} browser(s); the last push delivered "
+              f"{_age(facts['now'] - float(last)) + ' ago' if last else 'never'}; "
+              f"{facts['push_failures']} failure(s) since each one's last delivery")
+    if facts["push_failing"]:
+        warn("web chat: push", f"{detail}; {facts['push_failing']} browser(s) failed "
+                               f"{WEB_PUSH_FAILING} or more in a row",
+             "revoke that browser in the app's menu (Notifications), then turn Notifications "
+             "on again in it; the bot's log names the push service (grep 'web push' "
+             "~/.ea-private/logs/slack-bot.log)")
+    else:
+        ok("web chat: push", detail)
+
+
+def _relay_status(wcfg: dict, token_path: Path, timeout: float = 5.0) -> tuple[dict | None, str]:
+    """(the bot's `GET /api/relay/status`, "") or (None, why not). It signs
+    in with the pairing token, read through the owner checks, on the bot's
+    loopback port; the request changes nothing."""
+    import urllib.error
+    import urllib.request
+    ot = _owner_trust()
+    try:
+        token = ot.read_owner_file(token_path).decode("utf-8").strip()
+    except FileNotFoundError:
+        return None, f"no pairing token at {token_path} to sign in with"
+    except Exception as e:
+        return None, f"the pairing token is not readable: {e}"
+    host = str(wcfg.get("bind") or "127.0.0.1")
+    host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+    port = int(wcfg.get("port") or 8470)
+    base = "/" + str(wcfg.get("base_path") if wcfg.get("base_path") is not None
+                     else "/chat").strip().strip("/")
+    hostport = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+    # In a container the bot is the compose service `bot`; the Host header
+    # still names its loopback port, the one name it answers for there.
+    target = f"bot:{port}" if _in_container() else hostport
+    req = urllib.request.Request(f"http://{target}{base.rstrip('/')}/api/relay/status",
+                                 headers={"Cookie": f"ea_web={token}", "Host": hostport})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            doc = json.loads(r.read(1 << 20))
+    except urllib.error.HTTPError as e:
+        return None, f"the bot answered HTTP {e.code} on {target}"
+    except (OSError, ValueError) as e:
+        return None, f"the bot does not answer on {target} ({e})"
+    return (doc, "") if isinstance(doc, dict) else (None, "the bot's answer is not a JSON object")
+
+
+def check_web_relay(wcfg: dict, store_dir: Path, token_path: Path,
+                    now: float | None = None) -> None:
+    """The `web chat: relay` row (docs/webchat-relay.md): whether a relay is
+    configured, its key file (the owner's alone), and the bot's view of it:
+    connected, the last exchange with the relay, the paired devices and
+    the ones waiting for approval. It warns when the client has not been
+    connected for WEB_RELAY_DOWN_S, and while a device waits."""
+    import time as _time
+    relay = wcfg.get("relay")
+    if not isinstance(relay, dict) or relay.get("enabled") is False:
+        ok("web chat: relay", "not configured: a phone off your network cannot reach the chat "
+                              "(docs/webchat-relay.md)")
+        return
+    key = Path(str(relay.get("key_file") or "") or store_dir / "webchat-relay.json")
+    if os.path.lexists(key):
+        why = _web_private_problem(key, "file")
+        if why:
+            warn("web chat: relay", f"{why}; the bot leaves the relay off",
+                 f"chmod 600 {key} (it must be yours, a regular file)")
+            return
+    elif relay.get("install_id"):
+        warn("web chat: relay", f"no key file at {key}, and install_id is pinned: the bot "
+                                f"leaves the relay off",
+             "put the key file back (scripts/webchat-backup.sh --list shows the snapshots), or "
+             "drop install_id from the relay block to make a new one")
+        return
+    status, err = _relay_status(wcfg, token_path)
+    if status is None:
+        warn("web chat: relay", f"{relay.get('url') or 'no url'}; key file {key}; the bot's "
+                                f"state is not read: {err}",
+             "start the bot (sudo systemctl start ea-chat-bot), then run the doctor again")
+        return
+    if not status.get("enabled"):
+        warn("web chat: relay", f"{relay.get('url') or 'no url'}: the bot runs no relay client",
+             "its log says why: grep relay ~/.ea-private/logs/slack-bot.log")
+        return
+    now = now if now is not None else _time.time()
+    last_ok = float(status.get("last_ok") or 0)
+    since = _age(now - last_ok) + " ago" if last_ok else "never"
+    devices, pending = int(status.get("devices") or 0), int(status.get("pending") or 0)
+    detail = (f"{status.get('relay_url') or relay.get('url')}: "
+              f"{'connected' if status.get('connected') else 'not connected'}, the last exchange "
+              f"{since}; {devices} device(s), {pending} waiting for approval; key file mode 0600")
+    if not status.get("connected") and (not last_ok or now - last_ok > WEB_RELAY_DOWN_S):
+        warn("web chat: relay", detail + (f"; {status.get('last_error')}"
+                                          if status.get("last_error") else ""),
+             "check the relay's url and that it answers (curl -sI <url>); the bot's log says "
+             "why (grep relay ~/.ea-private/logs/slack-bot.log)")
+    elif pending:
+        warn("web chat: relay", detail,
+             "compare the pairing code with the one on the phone, then approve or remove it "
+             "in Pair a phone (or scripts/webchat-relay.py show and approve)")
+    else:
+        ok("web chat: relay", detail)
 
 
 def _launchd_jobs() -> tuple:

@@ -255,6 +255,33 @@ def rename(channel_id: str, name: str, path: Path | None = None) -> bool:
     return done["ok"]
 
 
+def move_channels(moves: dict, urls: dict | None = None,
+                  path: Path | None = None) -> list[str]:
+    """Re-key each row registered under an old id in `moves` to its new id,
+    with its project, session and settings, and its `url` from `urls` (new
+    id -> deep link) when given: the move from shadow mode to the web chat
+    alone (scripts/webchat-cutover.py). A new id that is registered already
+    keeps its own row and the old one stays. The old ids moved."""
+    for new in moves.values():
+        if not CHANNEL_ID_RE.match(str(new)):
+            raise ValueError(f"not a chat channel id: {new!r}")
+    moved: list[str] = []
+
+    def _apply(rows: dict) -> None:
+        moved.clear()
+        for old, new in moves.items():
+            if old not in rows or new in rows or old == new:
+                continue
+            row = rows.pop(old)
+            if urls and urls.get(new):
+                row["url"] = urls[new]
+            rows[new] = row
+            moved.append(old)
+
+    _mutate(_apply, path)
+    return moved
+
+
 def unregister(channel_id: str, path: Path | None = None) -> bool:
     found = {"ok": False}
 
