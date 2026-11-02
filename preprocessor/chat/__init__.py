@@ -262,8 +262,33 @@ def _build_web(cfg: dict, *, writer_only: bool = False, trusted: bool = False) -
     """The web chat front end for the chat block `cfg`, built from its
     `web` section; `writer_only` for a command-line sender, `trusted` when
     the block came from the owner-private chat.json."""
-    return _web_class().from_config(cfg.get("web") or {}, writer_only=writer_only,
-                                    trusted_config=trusted, untrusted_roots=untrusted_roots())
+    return _with_quiet(_web_class().from_config(
+        cfg.get("web") or {}, writer_only=writer_only, trusted_config=trusted,
+        untrusted_roots=untrusted_roots()))
+
+
+def quiet_until() -> float | None:
+    """When the owner's quiet hours end (a Unix time), None outside them
+    (quiet_hours.quiet_end). The web chat queues a briefing's or a reply's
+    push until then (docs/webchat.md, Notifications). None when the hours
+    cannot be read: the push then goes at once, as a chat post does when
+    the quiet-hours gate fails."""
+    try:
+        try:
+            import quiet_hours
+        except ImportError:
+            from preprocessor import quiet_hours
+        end = quiet_hours.quiet_end()
+    except Exception as e:
+        logging.getLogger("chat").warning("web chat: quiet hours unread (%s); a push goes now", e)
+        return None
+    return end.timestamp() if end is not None else None
+
+
+def _with_quiet(fe: ChatFrontend) -> ChatFrontend:
+    """The web front end with the owner's quiet hours as its `quiet_until`."""
+    fe.quiet_until = quiet_until
+    return fe
 
 
 def untrusted_roots() -> tuple[Path, ...]:
@@ -299,9 +324,9 @@ def _load_primary(cfg: dict, *, for_cli: bool, ea_dir: str | Path | None,
     if name == "web":
         mod = _platform_module("web")
         web = cfg.get("web") or {}
-        return mod.WebFrontend.from_config(web, store_path=_web_store_path(web, ea_dir),
-                                           writer_only=for_cli, trusted_config=trusted,
-                                           untrusted_roots=untrusted_roots())
+        return _with_quiet(mod.WebFrontend.from_config(
+            web, store_path=_web_store_path(web, ea_dir), writer_only=for_cli,
+            trusted_config=trusted, untrusted_roots=untrusted_roots()))
     raise ChatError(f"unknown chat frontend {name!r}; expected one of {', '.join(FRONTENDS)}")
 
 

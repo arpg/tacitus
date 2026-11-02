@@ -75,8 +75,9 @@ KEY_FILE = "webchat-vapid.json"
 DEFAULT_SUBJECT = "https://github.com/arpg/tacitus"
 # Seconds a push service holds a push for a device that is offline.
 TTL_S = 3600
-# At most one push per thread (per urgency) in this many seconds.
-MIN_GAP_S = 30.0
+# At most one push per thread (per urgency) in this many seconds: a thread's
+# later pushes in the window would only replace its notification.
+MIN_GAP_S = 120.0
 JWT_LIFE_S = 12 * 3600
 TIMEOUT_S = 10.0
 # Seconds between the worker's looks at the push queue.

@@ -66,7 +66,21 @@ name posts to the EA channel (CLI senders). The mail digests' keys
 (`mail-digest`, `list-digest`, `admissions-digest`, `briefing-preview`)
 always post to the digest channel, whatever the map says. An
 optional `push_subject` key (a `mailto:` or `https:` URL) is the contact
-the push services see (Notifications, below). An optional `relay` block
+the push services see (Notifications, below). An optional `notify_push`
+block says which bot posts notify the owner's devices (Notifications,
+below):
+
+```json
+"notify_push": {"briefings": true, "replies": true, "rooms": true, "quiet": "queue"}
+```
+
+`briefings` (default true) pushes the morning briefing and the afternoon
+update; `replies` (default true) pushes the bot's answer in a
+conversation you wrote in, in the EA and scheduling channels; `rooms`
+(default true) does the same in the project rooms; `quiet` is `"queue"`
+(the default: those three wait for the end of your quiet hours) or
+`"send"` (they go at once). A key left out keeps its default. Cards, the
+DM and alerts push whatever the block says. An optional `relay` block
 turns on the relay (`docs/webchat-relay.md`, Config); it counts only from
 the owner-private `chat.json`.
 `"shadow": "web"` with any primary wraps the primary in `ShadowFrontend`.
@@ -787,15 +801,28 @@ closed. It needs the `cryptography` package (installed with msal); without
 it `/api/me` says `"push": false`, the app hides the toggle and nothing
 else changes. No other dependency.
 
-**What is pushed.** A new card (`post_card`, or `mirror_card` for a row
-not stored yet), at urgency `high`: "Tacitus" and the card's title. Never
-a field, a line or the body: they hold addresses and mail text, and a
-notification shows on a locked screen. A new bot message in a `dm` channel (`post`, or `mirror_post` for
-a new row by the bot), at urgency `normal`: "Tacitus" and the first line
-of the text. A loud alert: `chat.direct.web_notify` (alert.py, next to
-the direct message, and page_watch.py) at urgency `high`. Edits, card
-updates, status lines, reactions and the owner's own messages are never
-pushed. The text loses its emoji shortcodes and Markdown marks
+**What is pushed.** One module decides for every new bot message
+(`botcore/botcore/chat/web_push_policy.py`, called from `post` and from
+`mirror_post` for a new row by the bot); a card and an alert push on
+their own:
+
+| What | Push | Urgency | Quiet hours | Switch |
+|---|---|---|---|---|
+| A new card (`post_card`, `mirror_card` for a new row) | "Tacitus" and the card's title | high | at once | none |
+| A bot message in a `dm` channel | "Tacitus" and the first line | high for a direct message (`send_direct`, origin `personal`), else normal | at once | none |
+| The opening of a morning briefing or an afternoon update in the EA channel: a thread a notifier opened (`thread_origin`), the owner never wrote in, whose first three lines carry the title | "Your morning briefing is ready" or "Afternoon update", no body | normal | waits | `briefings` |
+| The bot's answer in a conversation the owner wrote in, outside the DM and rooms (the EA and scheduling channels): the owner's newest message there is newer than the bot's previous answer (a message, a file or a card) | "Tacitus replied" and the first line | normal | waits | `replies` |
+| The same in a project room | "Tacitus replied in" and the room's name, then the first line | normal | waits | `rooms` |
+| A loud alert: `chat.direct.web_notify` (alert.py, next to the direct message; page_watch.py; the weekly usage tip at normal) | "Tacitus" and the first line | high | at once (a scheduled alert waits for its moment) | none |
+
+Never pushed: a digest (a channel of kind `digest`), a notice in a thread
+the owner never wrote in (outside the DM), the "Still need this?" nudge,
+a progress line (`:hourglass_flowing_sand:` or `:hourglass:` first, the
+bot's "Still working..." heartbeat), a pointer to a card in the DM (the
+card pushes), a file, an edit, a card update, a status line, a reaction,
+the owner's own message. A card's push never shows a field, a line or the
+body: they hold addresses and mail text, and a notification shows on a
+locked screen. The text loses its emoji shortcodes and Markdown marks
 (`web_push.plain_line`); the title is at most 120 characters and the body
 240.
 
@@ -806,9 +833,31 @@ padded after the delimiter to a multiple of 256 bytes.
 so the device keeps one notification per thread and a new one alerts
 again. TTL is one hour.
 
-**Rate.** At most one push per thread in 30 seconds, counted apart for
+**Rate.** At most one push per thread in two minutes, counted apart for
 `high` urgency, so a card is never held back by a message push in its
-thread (`Pusher.notify`).
+thread (`Pusher.notify`); the thread's tag makes a later push replace the
+notification on the device.
+
+**One text, one push.** A direct message on the web chat alone is a post
+in the DM, which pushes, and alert.py and page_watch.py push the same
+text through `chat.direct.web_notify`. A bot message's push and
+`web_notify` pass `dedupe`: `WebFrontend.notify` drops a push that goes
+now when another `dedupe` push of the same text went in the last ten
+seconds, from this process or another (`web_push_policy.fingerprint`: the
+line the notification shows, letters and digits only, in the store's
+`push_sent` table). The first one stands, so the alert arrives once, at
+high urgency. A card and a plain `notify` never take part.
+
+**Quiet hours.** With `notify_push.quiet` `"queue"`, a briefing's or an
+answer's push waits in `push_queue` until the owner's quiet hours end:
+the host sets `quiet_until` (`chat.quiet_until`, from
+`quiet_hours.quiet_end`, the same window that holds the notifier's posts;
+`only_when_traveling` applies). The queued row names its message
+(`channel`, `seq`), and the worker drops it at its moment when the owner
+has read that message since (the channel's read mark, or a later message
+of the owner's in the channel, as `unread` counts), so a conversation
+read at night does not buzz in the morning. A hook that fails sends the
+push at once, as a chat post does when the quiet-hours gate fails.
 
 **VAPID.** The key pair (P-256) is made on first use in
 `<store dir>/webchat-vapid.json`, mode 0600; when two processes race, the
@@ -842,7 +891,7 @@ for its `Retry-After` (60 s by default), and any other failure raises
 `failures` and is logged with the host only, never the endpoint path.
 
 **Sending.** `WebFrontend.notify(title, body, url, tag, *, urgency, at,
-wait)` never raises. The push worker thread (`start()` starts it,
+wait, dedupe)` never raises. The push worker thread (`start()` starts it,
 `stop()` ends it) sends queued pushes. `at`, a Unix time ahead, puts the
 push in the `push_queue` table under its tag (a later one with the same
 tag replaces it; `cancel_notify(tag)` drops it); the worker looks every
@@ -854,7 +903,9 @@ web front end or its store does not exist. A queued alert therefore goes
 out while the bot runs; the Zulip direct message, held by the Zulip
 server, does not need the bot. On the web chat alone the alert's post
 waits in the store as well (`scheduled_posts`, CLI senders), so both go
-out from the bot.
+out from the bot. A writer-only copy (a command-line sender, which exits
+next) sends a message's or a card's push before `post` returns, so it is
+out before the process ends.
 
 **The app.** The toggle sits at the foot of the channel drawer and shows
 once `/api/me` says `push`. Under it, the list of subscribed browsers

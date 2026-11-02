@@ -439,10 +439,15 @@ sign-in ([docs/docker.md](docker.md#web-chat), Web chat).
    `pair_token_file` key moves it; mode 0600, at least 16 characters)
    and you enter it once in the app. Replacing the token signs every
    paired browser out and drops their notification subscriptions.
-5. For notifications with the app closed (a new card, a message from the
-   bot in your DM, an alert), open the channel drawer and turn on
-   **Notifications**. On an iPhone or iPad this works only in the app
-   added to the Home Screen. The bot then sends encrypted pushes over
+5. For notifications with the app closed, open the channel drawer and
+   turn on **Notifications**. On an iPhone or iPad this works only in the
+   app added to the Home Screen. A card, a message from the bot in your
+   DM, an alert, the morning briefing, the afternoon update and the bot's
+   answer in a conversation you wrote in each notify you once; digests,
+   notices and progress lines do not, and the briefing and the answers
+   wait for the end of your quiet hours (the `notify_push` block in
+   [docs/webchat.md](webchat.md#config) turns them off or sends them at
+   once). The bot then sends encrypted pushes over
    https to your browser's push service (Google, Apple, Mozilla or
    Microsoft); it needs the `cryptography` package, which the install
    already has. The drawer lists the browsers that get notifications,

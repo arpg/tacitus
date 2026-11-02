@@ -59,9 +59,10 @@ client without the identity header may use the loopback origin). The
 app is one per origin: a page from another port of the same host (a
 deck) is another origin and is refused. Standard library only, except
 Web Push (web_push.py), which needs the `cryptography` package and is
-off without it: a new card, a bot message in the DM and a loud alert
-(`notify`) reach the browsers that turned notifications on, even with
-the app closed.
+off without it: a new card, a bot message in the DM, a morning briefing
+or an afternoon update, the bot's answer in a conversation the owner
+wrote in (web_push_policy) and a loud alert (`notify`) reach the browsers
+that turned notifications on, even with the app closed.
 
 The bot serves only a chat block it can trust (`trusted_config`, set by
 chat.load_frontend when the block came from the owner-private chat.json)
@@ -158,7 +159,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import files as _files
-from . import relay_crypto, web_bundle, web_push
+from . import relay_crypto, web_bundle, web_push, web_push_policy
 from .base import (
     AlreadyArchived,
     ChatError,
@@ -325,7 +326,9 @@ CREATE TABLE IF NOT EXISTS push_subscriptions(
     endpoint TEXT PRIMARY KEY, keys TEXT, created_at REAL, last_ok REAL,
     failures INT DEFAULT 0, last_seen REAL, device TEXT);
 CREATE TABLE IF NOT EXISTS push_queue(
-    tag TEXT PRIMARY KEY, due_at REAL, payload TEXT, urgency TEXT, created_at REAL);
+    tag TEXT PRIMARY KEY, due_at REAL, payload TEXT, urgency TEXT, created_at REAL,
+    channel TEXT, seq INTEGER);
+CREATE TABLE IF NOT EXISTS push_sent(key TEXT PRIMARY KEY, at REAL);
 CREATE TABLE IF NOT EXISTS scheduled_posts(
     id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, text TEXT, due_at REAL,
     created_at REAL);
@@ -690,6 +693,11 @@ class WebStore:
             if "device" not in cols:
                 # A store from before: no subscription names a relay device.
                 self._conn.execute("ALTER TABLE push_subscriptions ADD COLUMN device TEXT")
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(push_queue)")}
+            if "seq" not in cols:
+                # A store from before: no queued push names a message.
+                self._conn.execute("ALTER TABLE push_queue ADD COLUMN channel TEXT")
+                self._conn.execute("ALTER TABLE push_queue ADD COLUMN seq INTEGER")
             cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(thread_state)")}
             if "stale" not in cols:
                 # A store from before the stale shelf: the next tick marks them.
@@ -1650,13 +1658,18 @@ class WebStore:
                     self._conn.execute("UPDATE push_subscriptions SET failures=failures+1 "
                                        "WHERE endpoint=?", (endpoint,))
 
-    def push_defer(self, tag: str, due_at: float, payload: str, urgency: str) -> None:
-        """Queue a push for `due_at`, replacing one queued under the same tag."""
+    def push_defer(self, tag: str, due_at: float, payload: str, urgency: str, *,
+                   channel: str | None = None, seq: int | None = None) -> None:
+        """Queue a push for `due_at`, replacing one queued under the same tag.
+        With `channel` and `seq` it is the push of that message, which
+        push_claim_due drops once the owner has read it."""
         with self._lock:
             with self._conn:
                 self._conn.execute(
-                    "INSERT OR REPLACE INTO push_queue(tag, due_at, payload, urgency, created_at) "
-                    "VALUES (?,?,?,?,?)", (tag, float(due_at), payload, urgency, time.time()))
+                    "INSERT OR REPLACE INTO push_queue(tag, due_at, payload, urgency, created_at, "
+                    "channel, seq) VALUES (?,?,?,?,?,?,?)",
+                    (tag, float(due_at), payload, urgency, time.time(), channel,
+                     int(seq) if seq is not None else None))
 
     def push_cancel(self, tag: str) -> bool:
         with self._lock:
@@ -1669,18 +1682,59 @@ class WebStore:
 
     def push_claim_due(self, now: float) -> list[dict]:
         """Take the queued pushes due by `now` off the queue, in one
-        transaction, so two processes never both send one."""
+        transaction, so two processes never both send one. The push of a
+        message the owner has read since (the channel's read mark, or a
+        later message of the owner's in the channel, as `unread` counts) is
+        dropped, not returned."""
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 rows = [dict(r) for r in self._conn.execute(
-                    "SELECT * FROM push_queue WHERE due_at <= ? ORDER BY due_at", (now,))]
+                    "SELECT q.*, (q.seq IS NOT NULL AND (q.seq <= COALESCE((SELECT seq FROM "
+                    "reads WHERE channel=q.channel), 0) OR q.seq <= COALESCE((SELECT MAX(seq) "
+                    "FROM messages WHERE channel=q.channel AND author=? AND history=0), 0))) "
+                    "AS seen FROM push_queue q WHERE q.due_at <= ? ORDER BY q.due_at",
+                    (OWNER, now))]
                 self._conn.execute("DELETE FROM push_queue WHERE due_at <= ?", (now,))
                 self._conn.commit()
             except BaseException:
                 self._conn.rollback()
                 raise
-            return rows
+        out = [r for r in rows if not r.pop("seen")]
+        if len(out) < len(rows):
+            log.info("web push: %d queued push(es) for messages read since dropped",
+                     len(rows) - len(out))
+        return out
+
+    def push_sent_within(self, key: str, since: float) -> bool:
+        """True when a push was recorded under `key` (push_note) after
+        `since`."""
+        row = self._one("SELECT at FROM push_sent WHERE key=?", (key,))
+        return bool(row and row["at"] is not None and float(row["at"]) > since)
+
+    def push_note(self, key: str, at: float, keep_s: float = 3600.0) -> None:
+        """Record a push under `key` at `at`; records older than keep_s go."""
+        with self._lock:
+            with self._conn:
+                self._conn.execute("INSERT OR REPLACE INTO push_sent(key, at) VALUES (?,?)",
+                                   (key, float(at)))
+                self._conn.execute("DELETE FROM push_sent WHERE at < ?", (float(at) - keep_s,))
+
+    def owner_turn(self, channel: str, thread_key: str,
+                   before_seq: int) -> tuple[int | None, list[dict]]:
+        """(the seq of the owner's newest message in the thread before
+        `before_seq`, or None when the owner never wrote there; the bot's
+        rows after it and before `before_seq`, oldest first, at most 50,
+        each {"id", "kind", "text"})."""
+        row = self._one("SELECT MAX(seq) AS s FROM messages WHERE channel=? AND thread_key=? "
+                        "AND author=? AND seq < ?", (channel, thread_key, OWNER, int(before_seq)))
+        if not row or row["s"] is None:
+            return None, []
+        owner_seq = int(row["s"])
+        rows = self._all("SELECT id, kind, text FROM messages WHERE channel=? AND thread_key=? "
+                         "AND author=? AND seq > ? AND seq < ? ORDER BY seq LIMIT 50",
+                         (channel, thread_key, BOT, owner_seq, int(before_seq)))
+        return owner_seq, [dict(r) for r in rows]
 
     # scheduled posts (chat.direct.schedule_direct on the web chat alone)
 
@@ -1807,6 +1861,11 @@ class WebFrontend(ChatFrontend):
                                     or self.store_path.parent / PAIR_FILE)
         self.webui_dir = Path(webui_dir) if webui_dir else WEBUI_DIR
         self.push_subject = str(cfg.get("push_subject") or "").strip() or web_push.DEFAULT_SUBJECT
+        # Which bot posts push (web_push_policy): the web block's `notify_push`.
+        self.push_settings = web_push_policy.Settings.from_config(cfg.get("notify_push"))
+        # When the owner's quiet hours end (a Unix time), None outside them;
+        # the host sets it (chat.load_frontend). Without it nothing waits.
+        self.quiet_until: Callable[[], float | None] | None = None
         self.peer_connections = _peer_cap(cfg.get("peer_connections"))
         self.owner_id = OWNER
         self.bot_user_id = BOT
@@ -2571,17 +2630,33 @@ class WebFrontend(ChatFrontend):
     # notifications (Web Push)
 
     def notify(self, title: str, body: str = "", url: str = "", tag: str = "", *,
-               urgency: str = "normal", at: float | None = None, wait: bool = False) -> dict:
+               urgency: str = "normal", at: float | None = None, wait: bool = False,
+               dedupe: bool = False) -> dict:
         """Push a notification to every browser that turned them on: the
         title, the first line of `body`, and `url` to open on a tap. `tag`
         names the thread: one notification per tag on the device, and at
-        most one push per thread in 30 s (web_push.Pusher.notify). `at`
-        (a Unix time ahead) queues it for the worker; `wait` sends before
-        returning. Never raises: push is an extra, and a failure is logged."""
+        most one push per thread in two minutes (web_push.Pusher.notify).
+        `at` (a Unix time ahead) queues it for the worker; `wait` sends
+        before returning. With `dedupe` (a bot message's push, and an
+        alert's through chat.direct.web_notify) a push that goes now is
+        dropped when another `dedupe` push with the same text went in the
+        last DEDUPE_S seconds, from any process (web_push_policy.fingerprint):
+        an alert's own push after its direct message in the DM. Never
+        raises: push is an extra, and a failure is logged."""
         if not web_push.AVAILABLE:
             return {"sent": 0, "push": "off"}
         try:
-            return self.push.notify(title, body, url, tag, urgency=urgency, at=at, wait=wait)
+            now = time.time()
+            key = ""
+            if dedupe and (at is None or at <= now + 1):
+                fp = web_push_policy.fingerprint(title, body)
+                key = f"text:{fp}" if fp else ""
+            if key and self.store.push_sent_within(key, now - web_push_policy.DEDUPE_S):
+                return {"sent": 0, "skipped": "duplicate"}
+            out = self.push.notify(title, body, url, tag, urgency=urgency, at=at, wait=wait)
+            if key and (out.get("queued") or out.get("sent")):
+                self.store.push_note(key, now)
+            return out
         except Exception:
             log.exception("web chat: a push failed")
             return {"sent": 0, "error": "push failed"}
@@ -2644,35 +2719,71 @@ class WebFrontend(ChatFrontend):
         """A thread's notification tag: one notification per thread."""
         return f"{row['channel']}/{row['thread_key']}"
 
+    def _quiet_end(self) -> float | None:
+        """When the owner's quiet hours end (the host's `quiet_until`); None
+        outside them, without the hook, or when it fails: the push then goes
+        at once, as a chat post does when the quiet-hours gate fails."""
+        if self.quiet_until is None:
+            return None
+        try:
+            end = self.quiet_until()
+            end = float(end) if end is not None else None
+        except Exception:
+            log.exception("web chat: the quiet hours could not be read; the push goes now")
+            return None
+        return end if end is not None and end > time.time() + 1 else None
+
     def _push_message(self, row: dict | None) -> None:
-        """A new bot message in the DM channel is pushed."""
-        if not row or row.get("author") != BOT or row.get("kind") != "message":
+        """A new bot message pushes as web_push_policy says. A briefing's or
+        a reply's push waits in the queue for the end of the owner's quiet
+        hours (`notify_push.quiet` "queue"), as the push of that message,
+        which is dropped if the owner reads it first. A writer-only copy
+        (a command-line sender, which exits next) sends before returning."""
+        if not row or row.get("author") != BOT or not web_push.AVAILABLE:
             return
-        ch = self.store.channel(row["channel"])
-        if not ch or ch["kind"] != "dm":
+        try:
+            push = web_push_policy.message_push(self.store, row, self.push_settings)
+            if push is None:
+                return
+            url = self._permalink(row["channel"], row["thread_key"], row["id"])
+            tag = self._push_tag(row)
+            at = (self._quiet_end() if push.may_wait and self.push_settings.quiet == "queue"
+                  else None)
+            if at is not None:
+                payload = self.push.payload(push.title, push.body, url, tag).decode("utf-8")
+                self.store.push_defer(tag, at, payload, push.urgency, channel=row["channel"],
+                                      seq=row.get("seq"))
+                return
+        except Exception:
+            log.exception("web chat: the push policy failed for a message")
             return
-        self.notify("Tacitus", row.get("text") or "",
-                    self._permalink(row["channel"], row["thread_key"], row["id"]),
-                    self._push_tag(row))
+        self.notify(push.title, push.body, url, tag, urgency=push.urgency,
+                    wait=self.writer_only, dedupe=True)
 
     def _push_card(self, row: dict | None, card: ConfirmationCard) -> None:
-        """A new card is pushed at high urgency: "Tacitus", then the card's
-        title. Never a field, a line or the body: they hold addresses and
-        mail text, and a notification shows on a locked screen."""
+        """A new card is pushed at once, at high urgency: "Tacitus", then the
+        card's title. Never a field, a line or the body: they hold addresses
+        and mail text, and a notification shows on a locked screen. Two
+        cards with one title are two pushes: no text check."""
         if not row:
             return
         self.notify("Tacitus", card.title or "A card to confirm",
                     self._permalink(row["channel"], row["thread_key"], row["id"]),
-                    self._push_tag(row), urgency="high")
+                    self._push_tag(row), urgency="high", wait=self.writer_only)
 
     # messages
 
     def post(self, channel: str, text: str, *, thread_ts: str | None = None,
-             unfurl: bool = True) -> MessageRef:
+             unfurl: bool = True, origin: str = "") -> MessageRef:
+        """Post as the bot. `origin`, a notifier's channel key (chat_notify),
+        is recorded for the thread the post opens before the push policy
+        reads it (store.note_origin)."""
         self._channel_or_raise(channel)
         row = self.store.add_message(channel, mid=None,
                                      thread_key=self._thread_for(channel, thread_ts),
                                      author=BOT, kind="message", text=self._out(text))
+        if origin:
+            self.store.note_origin(channel, row["thread_key"], origin)
         self._push_message(row)
         return self._ref(row)
 
