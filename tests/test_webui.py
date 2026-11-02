@@ -430,7 +430,9 @@ def test_the_app_stays_small():
     #     the website's copy taking the bot's release, and the page's own security policy).
     # 4,680: 4,660 plus the review's hardening of it (a mailbox per relay from one PBKDF2 block, the
     #     worker's copies kept and found by their exact address, the first hosted adoption's cleanup).
-    assert lines <= 4680, f"{lines} lines: the contract keeps the app near 4,680 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions and a computer through the relay"
+    # 4,750: 4,680 plus a release offered while the app is open (the note above the composer with its
+    #     Update, the look on the stream's `release`, on the reconnect and on the return to the screen).
+    assert lines <= 4750, f"{lines} lines: the contract keeps the app near 4,750 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay and the release note"
 
 
 # -- in a browser, against the stub ---------------------------------------
