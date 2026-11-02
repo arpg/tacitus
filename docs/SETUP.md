@@ -74,7 +74,7 @@ web chat needs no chat server; Zulip adds one to run.
 |---|---|
 | `email` | Outlook triage, the ledger, drafts in your voice, meeting times proposed as text in the report (no holds and no events: the bot that places a staged hold is part of the chat platform), briefings as files in `~/.ea/state/reports/<agent>-latest.md` sent by phone push when one is configured. You work with the EA in the Claude Code shell (`scripts/ea-bot-shell.sh`) and send every draft from Outlook yourself. |
 | `review-only` | `email` without drafting: the EA reads, tracks and briefs, and writes nothing to the mailbox. A deny list in every launcher enforces it. |
-| `assistant` (default) | everything, plus the chat platform (the web chat the bot serves, recommended; Zulip, self-hosted; or Slack): the EA channel, the direct message, project and session rooms, the scheduling channel on Zulip and Slack, the Send and Create buttons, the resident session, plugins. |
+| `assistant` (default) | everything, plus the chat platform (the web chat the bot serves, recommended; Zulip, self-hosted; or Slack): the EA channel, the direct message, project and session rooms, the scheduling channel, the Send and Create buttons, the resident session, plugins. |
 
 Without a chat platform there are no confirmation cards, and the send
 verbs need a card's token, so an `email` or `review-only` install cannot
@@ -454,10 +454,13 @@ sign-in ([docs/docker.md](docker.md#web-chat), Web chat).
    ([docs/webchat-relay.md](webchat-relay.md), "Owner steps").
 
 The store is `<private dir>/webchat.sqlite`; files you upload from the
-app sit beside it. Standalone, the chat has the `ea` channel, your DM
-and the project rooms, and no scheduling channel: ask for a meeting in
-`ea`. The scheduled reports (the briefings, the plugins' posts) land
-in `ea`, each in a thread of its own; a `notify` map in the `web` block
+app sit beside it. Standalone, the chat has the `ea` channel, your DM,
+Scheduling and the project rooms. When a scheduling request arrives by
+mail, the EA opens a conversation for it in Scheduling and proposes
+times there; you can also ask for a meeting in `ea`. `"sched": false`
+in the `web` block turns Scheduling off; requests then wait in `ea`.
+The scheduled reports (the briefings, the plugins' posts) land in
+`ea`, each in a thread of its own; a `notify` map in the `web` block
 sends a notifier key elsewhere, such as
 `"notify": {"personal": {"channel": "dm"}}`. A file the EA attaches in a
 thread goes through the bot, which posts it in that thread.
@@ -497,10 +500,9 @@ The `assistant` profile talks to you through a chat platform, and
 `chat.frontend` in `ea-config.json` names it (`"web"`, `"zulip"` or
 `"slack"`; an install with no `chat` block runs Slack). The web chat
 above is where new features land; Zulip keeps working as it is. Use it
-if you already run it, or if you want the scheduling stream: it runs on the
-EA's machine in Docker and is reached over your tailnet, so every
-message, file and confirmation card stays on that machine, and the
-[web chat](#web-chat) can run beside it. The comparison is the
+if you already run it: it runs on the EA's machine in Docker and is
+reached over your tailnet, so every message, file and confirmation card
+stays on that machine, and the [web chat](#web-chat) can run beside it. The comparison is the
 "Choosing a chat platform" table in
 [INSTALL.md](INSTALL.md#choosing-a-chat-platform); the switch between
 Zulip and Slack is one config key and a restart

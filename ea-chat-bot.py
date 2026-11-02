@@ -155,8 +155,9 @@ CHANNEL_NAME = FRONTEND.main_channel_name
 CHANNEL_ID = FRONTEND.main_channel
 # The main channel as a prompt names it.
 EA_CHANNEL_LABEL = f"#{CHANNEL_NAME}" if CHANNEL_NAME else "the EA channel"
-# Optional dedicated scheduling channel (#ai-scheduling-assistant). When set,
-# the bot also listens here and treats messages as scheduling-assistant work.
+# Optional dedicated scheduling channel: the Slack channel id, the Zulip
+# scheduling stream, or the web chat's Scheduling channel. When set, the bot
+# also listens here and treats messages as scheduling-assistant work.
 # Inert (single-channel behavior) when unset.
 SCHED_CHANNEL_ID = FRONTEND.sched_channel
 MODEL = os.environ.get("EA_MODEL", "claude-opus-5-5[1m]")
@@ -13464,8 +13465,9 @@ def _scheduling_proactive_tick():
                        f"Working out options…")))
             seed_ts = seed.id
             # The conversation's key: the seed's own id on Slack, the topic
-            # it opened on Zulip, which is the key the owner's replies in
-            # that topic carry, so they resume this run's session.
+            # it opened on Zulip, the thread it opened on the web chat: the
+            # key the owner's replies there carry, so they resume this run's
+            # session.
             seed_thread = seed.thread_key or seed.id
         except Exception as e:
             log.warning(f"proactive scheduling seed post failed: {e}")

@@ -312,7 +312,7 @@ def test_rooms(tmp_path):
         f.archive("r1")
         with pytest.raises(AlreadyArchived):
             f.archive("r1")
-        assert f.archived_map() == {"main": False, "r1": True, "r2": False}
+        assert f.archived_map() == {"main": False, "sched": False, "r1": True, "r2": False}
         f.unarchive("r1")
         with pytest.raises(NotArchived):
             f.unarchive("r1")
@@ -375,7 +375,7 @@ def test_prompt_strings_and_attributes(tmp_path):
     assert f.capabilities == {"buttons", "select", "files", "private_rooms", "reactions"}
     assert tuple(f.limits) == (20000, 20000, 200, 0)
     assert (f.owner_id, f.bot_user_id, f.main_channel, f.sched_channel) == \
-        ("owner", "bot", "main", "")
+        ("owner", "bot", "main", "sched")
     src = (ROOT / "botcore/botcore/chat/web_frontend.py").read_text()
     assert "\u2014" not in src and "\u2013" not in src
 
@@ -1069,8 +1069,9 @@ def test_get_chat_defaults_the_web_block(tmp_path):
     assert web["port"] == 9000 and web["bind"] == "127.0.0.1" and web["base_path"] == "/chat"
     assert set(web) == {"bind", "port", "base_path", "public_url", "tailscale_login",
                         "trust_tailscale_header", "pair_token_file", "store_path",
-                        "backfill_days"}
+                        "backfill_days", "sched"}
     assert web["backfill_days"] == 7 and web["trust_tailscale_header"] is True
+    assert web["sched"] is True
     assert ea_config.get_chat(tmp_path / "missing.json")["web"]["port"] == 8470
 
 

@@ -186,6 +186,9 @@ DEFAULTS = {
         # backfill_days: the days of the primary's history a shadow web chat
         # copies in when the bot starts; 0 copies none. trust_tailscale_header
         # false turns the Tailscale sign-in off (the pairing cookie only).
+        # sched false drops the Scheduling channel the web chat makes when it
+        # runs alone (web_sched_on); scheduling requests then wait in the EA
+        # channel as on Zulip with no scheduling stream.
         "web": {
             "bind": "127.0.0.1",
             "port": 8470,
@@ -196,6 +199,7 @@ DEFAULTS = {
             "pair_token_file": "",
             "store_path": "",
             "backfill_days": 7,
+            "sched": True,
         },
     },
 }
@@ -308,6 +312,19 @@ def chat_from_block(val) -> dict:
     cfg["zulip"] = zulip
     cfg["web"] = web
     return cfg
+
+
+def web_sched_on(chat: dict | None) -> bool:
+    """True when the chat block runs the web chat alone with its
+    Scheduling channel: `"frontend": "web"` and the web block's `sched`
+    not turned off (false, or "false", "0", "no" or "off"), the rule
+    botcore's web_frontend.sched_enabled applies."""
+    chat = chat if isinstance(chat, dict) else {}
+    if chat.get("frontend") != "web":
+        return False
+    web = chat.get("web") if isinstance(chat.get("web"), dict) else {}
+    val = web.get("sched", True)
+    return val is not False and str(val).strip().lower() not in ("false", "0", "no", "off")
 
 
 def get_models(config_path: Path | None = None) -> dict:

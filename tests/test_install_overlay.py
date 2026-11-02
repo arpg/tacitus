@@ -141,8 +141,9 @@ def test_an_email_install_renders_one_line_saying_there_is_no_chat(ea):
 
 def test_a_web_chat_install_names_the_web_chat_and_where_the_send_button_is(ea):
     """The web case uses the web front end's own wording (its prompt
-    strings): the platform, and the Send button on the card in the DM
-    thread. Not Slack, not Zulip, no scheduling channel."""
+    strings): the platform, the Send button on the card in the DM thread
+    and the Scheduling channel, unless the web block turns it off. Not
+    Slack, not Zulip."""
     from chat.web_frontend import WebFrontend
     cfg = ea / "config" / "ea-config.json"
     cfg.write_text(json.dumps({"profile": "assistant", "chat": {"frontend": "web"}}))
@@ -151,10 +152,18 @@ def test_a_web_chat_install_names_the_web_chat_and_where_the_send_button_is(ea):
     assert f"Platform: the {WebFrontend.PROMPT_STRINGS['platform']}" in chat
     assert WebFrontend.PROMPT_STRINGS["confirm_location"] in chat
     assert "`ea` (the EA channel)" in chat and "`dm` (the DM)" in chat
-    assert "no scheduling channel" in chat and "Install profile: `assistant`" in chat
+    assert "`Scheduling` (the scheduling channel" in chat
+    assert "no scheduling channel" not in chat and "Install profile: `assistant`" in chat
     for other in ("Slack", "Zulip", "stream", "reaction"):
         assert other not in chat, other
     assert chr(0x2014) not in text and chr(0x2013) not in text
+    # with Scheduling turned off, meeting requests come in the EA channel
+    cfg.write_text(json.dumps({"profile": "assistant",
+                               "chat": {"frontend": "web", "web": {"sched": False}}}))
+    chat = io_.render_text()
+    chat = chat[chat.index("## Chat"):chat.index("## Accounts")]
+    assert "no scheduling channel: meeting requests come in `ea`" in chat
+    assert "`Scheduling`" not in chat
     # beside Zulip, the Zulip line stands and the mirror is named
     cfg.write_text(json.dumps({"profile": "assistant", "chat": {
         "frontend": "zulip", "shadow": "web", "zulip": {"stream": "ea", "dm_stream": "ea-dm"}}}))

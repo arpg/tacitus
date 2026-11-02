@@ -193,9 +193,9 @@ New chat features land in the web chat. Zulip and Slack keep working as
 they are and get fixes, not new features; Zulip stays in the tree for a
 later setup with more than one person in the room. On its own the web
 chat carries the same traffic: the briefings, the digests and the
-plugins' posts land in the `ea` channel, and the doctor checks its
-settings. It has no scheduling channel: you ask for a meeting in the
-`ea` channel, as on Zulip with no scheduling stream.
+plugins' posts land in the `ea` channel, scheduling requests from mail
+open as conversations in its Scheduling channel, and the doctor checks
+its settings.
 
 ## 4. Check the install
 
