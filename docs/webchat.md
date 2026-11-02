@@ -62,7 +62,9 @@ the Scheduling channel; `"sched": false` in the web block leaves it out
 (Implementation notes, Channels and ids). An
 optional `notify` map takes the notifier's channel keys and names a web
 channel for each (`{"personal": {"channel": "dm"}}`); a key it does not
-name posts to the EA channel (CLI senders). The mail digests' keys
+name posts to the EA channel, and `scheduling` (the proactive
+scheduler's and the calendar checks' notices) to the Scheduling channel
+while the store holds it (CLI senders). The mail digests' keys
 (`mail-digest`, `list-digest`, `admissions-digest`, `briefing-preview`)
 always post to the digest channel, whatever the map says. An
 optional `push_subject` key (a `mailto:` or `https:` URL) is the contact
@@ -80,7 +82,10 @@ conversation you wrote in, in the EA and scheduling channels; `rooms`
 (default true) does the same in the project rooms; `quiet` is `"queue"`
 (the default: those three wait for the end of your quiet hours) or
 `"send"` (they go at once). A key left out keeps its default. Cards, the
-DM and alerts push whatever the block says. An optional `relay` block
+DM and alerts push whatever the block says. The app's Settings dialog
+(Notifications) changes the block: the bot writes it into the
+owner-private `chat.json` and pushes by it at once (`/api/settings/notify`,
+HTTP API). An optional `relay` block
 turns on the relay (`docs/webchat-relay.md`, Config); it counts only from
 the owner-private `chat.json`.
 `"shadow": "web"` with any primary wraps the primary in `ShadowFrontend`.
@@ -199,7 +204,7 @@ subset and escapes everything else; it never injects HTML from text.
 
 | Verb | Path | Body / result |
 |---|---|---|
-| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool, "relay": bool, "card_actions": bool, "bundle": "<hash>", "settings": ["routing"]}`; `bundle` is the bundle hash the bot signs now, "" when it signs none (Code integrity); `settings` names the settings pages the host registered |
+| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool, "relay": bool, "card_actions": bool, "bundle": "<hash>", "settings": ["notify", "routing"]}`; `bundle` is the bundle hash the bot signs now, "" when it signs none (Code integrity); `settings` names the settings pages the host registered |
 | GET | `/manifest.sig.json` | the signed manifest of the app's files, without auth (Code integrity); 404 when the bot signs none |
 | GET | `/api/bundle` | the same document, for the owner: the route the relay reaches |
 | GET | `/api/app/{file}` | a file that the signed manifest names, its bytes as on disk (`headers.json` as the bot writes it), as an attachment with the sandbox policy and the type of its name; 404 for any other name. A phone off the tailnet, or on the relay's origin, takes a new release here, through the relay (Code integrity) |
@@ -226,8 +231,8 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/relay/approve` | `{"device", "cards"?}` → `{"ok": true}`: let a waiting phone in, and set whether a relay-origin phone may press card buttons (`cards`, default false; approving again changes it); 400 for a `cards` that is not true or false, 404 for an unknown device |
 | POST | `/api/relay/revoke` | `{"device"}` → `{"ok": true}`: its sessions and streams end, its push subscriptions go; 404 for an unknown device |
 | GET | `/api/relay/status` | `{"enabled": bool, ...}`: the relay client's state (`connected`, `install_id`, `bot_public`, `client_key`, `sign_public`, `devices`, `pending`, ...) and how a phone can pair (`pair_own`, `pair_relay`, and `bundle`, the bundle hash or null) |
-| GET | `/api/settings/{name}` | the page's data; for `routing` (the EA's routing table, `docs/llm-lanes.md` 1.1): `{"local": {"configured", "model", "reachable", "detail"}, "source", "values", "rows": [{"task", "label", "what", "value", "allowed", "locked", "floor", "effective", "why"}]}`; 404 for a page the host did not register |
-| POST | `/api/settings/{name}` | for `routing`, `{"tasks": {"<task>": "local" \| "hosted" \| "auto"}}` → the page's data with `"saved": true`; the bot writes the owner-private `routing.json`, never `ea-config.json`. 400 with the reason for an unknown task or value or a value under a floor; 403 for a relayed request (settings change only in the owner's own web chat) |
+| GET | `/api/settings/{name}` | the page's data; for `routing` (the EA's routing table, `docs/llm-lanes.md` 1.1): `{"local": {"configured", "model", "reachable", "detail"}, "source", "values", "rows": [{"task", "label", "what", "value", "allowed", "locked", "floor", "effective", "why"}]}`; for `notify` (Notifications): `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}`, the settings in force; 404 for a page the host did not register |
+| POST | `/api/settings/{name}` | for `routing`, `{"tasks": {"<task>": "local" \| "hosted" \| "auto"}}` → the page's data with `"saved": true`; the bot writes the owner-private `routing.json`, never `ea-config.json`. 400 with the reason for an unknown task or value or a value under a floor. For `notify`, the keys to change, any of `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}` → the page's data with `"saved": true`; the bot merges them over the web block's `notify_push` in the owner-private `chat.json` (every other key kept, mode 0600; `preprocessor/web_notify_settings.py`) and pushes by them at once. 400 with the reason for an unknown key, a switch that is not true or false, another `quiet`, an empty body, or a process that is not the owner's. Either page: 403 for a relayed request (settings change only in the owner's own web chat) |
 | POST | `/api/relay/attest` | `{"bundle": "<hash>"}`, from a phone through the relay only → `{"ok": true, "bundle_verified": true, "release"}`, or 409 `{"error", "bundle_verified": false}` for another hash; it records the check and grants nothing (Code integrity) |
 
 The five owner routes under `/api/relay/`, and `/api/pair`, answer only
@@ -498,7 +503,10 @@ open (`<ea_dir>/state/webchat.sqlite`) is one the bot never reads.
 - Standalone (`"frontend": "web"`), `chat_notify.post` and `post_as_bot`
   post each part into the store as the bot through the writer-only web
   front end, all parts of a post in one new thread, in the channel the
-  `notify` entry names, else the EA channel (`main`); the EA channel, the
+  `notify` entry names, else the EA channel (`main`), or for the
+  `scheduling` key the Scheduling channel (`sched`) while the store holds
+  it and it is not archived (`scheduling_channel_key` names that key
+  while the web block's `sched` is on); the EA channel, the
   DM and the digest channel are made when the bot has not made them yet,
   and another channel must exist. A mail digest (`chat_notify.post_digest`,
   or `post` with a digest key) goes to the digest channel alone. A direct
@@ -613,16 +621,27 @@ the bot's machine, where it offers "Phone not on your network"), the
 code check on the relay's copy and the QR encoder (`qr.js`) are in
 `docs/webchat-relay.md` (For the web app).
 
-Settings. A "Settings" entry at the drawer's foot, shown when `/api/me`
-names the `routing` page and never on a relayed copy, opens a dialog in
-the shape of "Pair a phone": the local model's name and state at the
-top, a line that says what the values mean (Local is the owner's own
-model, Hosted is Claude, Auto lets Tacitus choose), then one row per
-task with Local, Hosted and Auto, a line on what the task does, a line
-on the model it runs on now and why, and the floor's line under a row a
-floor holds (the values it refuses are disabled). Save posts the enabled
-choices and redraws from the answer, with "Saved." or the bot's reason
-under the rows.
+Settings. A "Settings" entry at the drawer's foot, shown when it has a
+section to show and never on a relayed copy, opens a dialog in the shape
+of "Pair a phone" with two sections. Notifications, shown when `/api/me`
+names the `notify` page and says `push`, comes first: a line that says
+what it is for (what reaches the phone with the app closed; cards, direct
+messages and alerts always do), then three switches, each with its line
+(Briefings: the morning briefing and the afternoon update; Replies: an
+answer to something the owner asked; Rooms: an answer in a project
+room), and "During quiet hours" with Hold until morning (`queue`) or Send
+anyway (`send`). Each change posts its one key to `/settings/notify` at
+once and redraws from the answer, with "Saved." or the bot's reason
+under the section; after a refusal the section shows what is saved. The
+routing table, shown when `/api/me` names the `routing` page: the local
+model's name and state at the top, a line that says what the values mean
+(Local is the owner's own model, Hosted is Claude, Auto lets Tacitus
+choose), then one row per task with Local, Hosted and Auto, a line on
+what the task does, a line on the model it runs on now and why, and the
+floor's line under a row a floor holds (the values it refuses are
+disabled). Save, for this section alone, posts the enabled choices and
+redraws from the answer, with "Saved." or the bot's reason under the
+rows.
 
 The state of a conversation. Each thread card carries a sticker beside
 its time for the thread's `state` (from the thread rows, `GET
@@ -668,7 +687,9 @@ arrives as a `channel` event. An empty list says what the place is for:
 the EA channel offers an example to tap, Direct messages says the cards
 that need a tap land there, a room that it is for one project, the
 scheduling channel that Tacitus finds meeting times there, and Mail
-digests that Tacitus posts the owner's mail digests there.
+digests that Tacitus posts the owner's mail digests there and does not
+read replies. The digest channel shows no New conversation and its
+threads no composer; that line stands in the composer's place.
 
 Dark and light from `prefers-color-scheme`. Keep the whole app under
 ~3,680 lines with the relay transport, the QR encoder, the code check,
@@ -737,8 +758,9 @@ in a thread of its own (`chat_notify.post_digest`). The briefing's chat
 reader (`chat_read.py`) never reads a channel of kind `digest`, so what
 the remote model read for the owner alone never reaches a Claude lane.
 The bot answers no message there: it is not the EA channel, the DM or
-a registered room. In shadow mode the Zulip `mail-digest` stream is
-mirrored as a room, as every other stream.
+a registered room, and the app shows no composer in it (The web app). In
+shadow mode the Zulip `mail-digest` stream is mirrored as a room, as
+every other stream.
 
 **Thread list.** Threads come newest first by their first message. Each
 item is that message with `reply_count` and `last_at` (the thread's
@@ -879,11 +901,13 @@ their own:
 | A new card (`post_card`, `mirror_card` for a new row) | "Tacitus" and the card's title | high | at once | none |
 | A bot message in a `dm` channel | "Tacitus" and the first line | high for a direct message (`send_direct`, origin `personal`), else normal | at once | none |
 | The opening of a morning briefing or an afternoon update in the EA channel: a thread a notifier opened (`thread_origin`), the owner never wrote in, whose first three lines carry the title | "Your morning briefing is ready" or "Afternoon update", no body | normal | waits | `briefings` |
-| The bot's answer in a conversation the owner wrote in, outside the DM and rooms (the EA and scheduling channels): the owner's newest message there is newer than the bot's previous answer (a message, a file or a card) | "Tacitus replied" and the first line | normal | waits | `replies` |
+| The bot's answer in a conversation the owner wrote in, outside the DM and rooms (the EA and scheduling channels): the owner's newest message there is newer than the bot's previous answer (a message, a file or a card), and no card that conversation asked for in another one (the DM; the `card_link` table) was posted in the two minutes before (`CARD_QUIETS_S`: the card's push covers both) | "Tacitus replied" and the first line | normal | waits | `replies` |
 | The same in a project room | "Tacitus replied in" and the room's name, then the first line | normal | waits | `rooms` |
 | A loud alert: `chat.direct.web_notify` (alert.py, next to the direct message; page_watch.py; the weekly usage tip at normal) | "Tacitus" and the first line | high | at once (a scheduled alert waits for its moment) | none |
 
-Never pushed: a digest (a channel of kind `digest`), a notice in a thread
+The switches are the owner's, in the app's Settings (Notifications) or
+the `notify_push` block (Config). Never pushed: a digest (a channel of
+kind `digest`), a notice in a thread
 the owner never wrote in (outside the DM), the "Still need this?" nudge,
 a progress line (`:hourglass_flowing_sand:` or `:hourglass:` first, the
 bot's "Still working..." heartbeat), a pointer to a card in the DM (the
@@ -933,7 +957,18 @@ last wrote there. The app drops the record itself when it shows the
 thread: on opening it, on coming back into view, and five seconds after a
 push for the thread in view (the worker posts `{shown: tag}` to the
 app's pages), it closes the thread's notifications in this browser and
-posts `/api/push/seen`. Each clear also has a budget (`push_clears`): at
+posts `/api/push/seen`.
+
+An alert's push names no conversation: its tag is `alert:<ledger id>`
+(alert.py) or `watch:<id>` (page_watch.py) and its url the app's start
+page. When it goes or is queued, the `push_alert` table keeps the text it
+shows (`web_push_policy.fingerprint`) under its tag. The owner's message
+in a thread then also clears each alert whose push reached a browser
+since and whose text a bot message of that thread carries (the DM post
+of the same alert: on the web chat alone a scheduled alert's post goes
+up in the DM with no push of its own while the alert's push goes under
+its tag), after the thread's own clear and by the same rules; an alert
+still queued stays queued. Each clear also has a budget (`push_clears`): at
 most one per subscription in ten minutes (`CLEAR_GAP_S`) and twenty in a
 day (`CLEAR_DAY_CAP`). A clear past it is skipped, its notification
 stands until the thread's next push replaces it by tag, and a
