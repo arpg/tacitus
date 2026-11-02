@@ -454,7 +454,7 @@ CATALOGUE: list[Tip] = [
         needs="the web chat"),
     Tip("away-from-home",
         "You can use me on your phone away from your home or office network.",
-        "Open the menu and tap Pair a phone.",
+        "Open the menu and tap Add a device.",
         "Then I work on mobile data and on any Wi-Fi, not only at your desk.",
         uses=lambda u: u.relay_devices() > 0,
         ready=lambda u: u.relay_on,

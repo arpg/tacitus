@@ -113,5 +113,80 @@
    "n": 2,
    "c": "oLDhA-i3P9zzHbqa6CBcSiEbRTB4NrF014qJx8THJOopBKsgojCGIhLanf7Fw7z4zBP7NkQtviTsc5GBeZ_wxAyFeWzKQFN54F6FO4hfTbhEpglG4oW2byy-CF1_IpGLjFngttapZkb2vSgQE9R92_4bmwDeXl3ZQqIBl12DrAtxn94h6WixZxaJAOCj6KGQwCaphkKtDcqikHOS6R4kKHJlEdjlidU3G_fm24ym9ev71P2MdLa3O6s3ScZi-G6XiaLfeAMezpzOf1Euo9qjlmQah_lFozTNcKxTZSQvtOBCybHlwdCd2pKXzCy3E526pGqxFkMP-4JmO-UT262pFk4VV5YsERgRerq5xKEJSpo"
   }
+ },
+ "handoff": {
+  "about": "k = PBKDF2-HMAC-SHA256(code, salt, iterations, 32 bytes); mailbox = hex of the first 16 bytes of HMAC-SHA256(k, salt || ' mailbox' || 0x00 || the relay URL without a trailing slash); key = HMAC-SHA256(k, salt || ' key'); the blob is base64url of nonce || AES-256-GCM(key, nonce, payload, aad = salt || mailbox). This vector runs 1000 iterations; the bot and the app run 600000 (production).",
+  "code": "7K3QX-9ZRMA",
+  "normalized": "7K3QX9ZRMA",
+  "salt": "tacitus-handoff/1",
+  "iterations": 1000,
+  "relay": "https://relay.example.org",
+  "secret": "ca6e63aa81325cbb790e8d87e1e179b06d5e9a063cc145e7e730fa9336f9ca9b",
+  "mailbox": "e3f92f0c4c0d1e06f4d7e6508fbfdf2b",
+  "key": "7c91a9089cb35f0ed28ccb7cf32c99d030fc6e3bfc16788f1e387ba5ced13c54",
+  "other_relay": {
+   "relay": "https://relay.example.net/relay/",
+   "mailbox": "99726682e0cc1ca0e797c4005a931acd"
+  },
+  "nonce": "1cbce0347c68ff6986531dec",
+  "aad": "dGFjaXR1cy1oYW5kb2ZmLzFlM2Y5MmYwYzRjMGQxZTA2ZjRkN2U2NTA4ZmJmZGYyYg",
+  "payload": "{\"a\":\"https://app.example.org/\",\"b\":\"45347ddf99fb2dbef2a3243c8668394d2de2426e16b19accc3bcb4383915540c\",\"c\":\"VU5HnZTy-0eH9G54ErIqLHUdv7rZ-3BpaOIqr7BYdD0\",\"i\":\"rn3ufrbnfzcwziuaorspfpn6tg\",\"k\":\"QsqGXnp6UFoHRn0HaGIb4dm1-tRnhM1MhxrKQX-80yg\",\"p\":\"39fc6abd0fe47b5deee47a7d7441d6eb\",\"r\":\"https://relay.example.org\",\"s\":\"9IFtSrvyqeMLe1A0HPVDOoNbLTaL06jLFZimrrPUSc0\",\"v\":2,\"x\":1793421933}",
+  "blob": "HLzgNHxo_2mGUx3sBQTNwyxoKzKkbG-AegQoQi06ZtWYfqSh4Bz30x4cw-aSmjdZT-Z1BVPkhNlk5e1Li5oVk8ej94gTCPJWS17Z4wO5JuPq-nbVop3Nrzbmcv04FiEUqIeCNMIEj60JUdXS2FRWKL6B8fqk4jU3cwuJzGGKmV2KpRje5o7uY0pxUWZuBDftIiXuopr93HhNjrqG2g2tW4H-qel8pT0zWKCZCe1H9N9dpu3gATOhOdSwOKe1_opsBnEnFBY7xzHtsne0oQCqMKQfYtf3poCedWZLwcKIbuHV17SST3EBu7PSHwVpaYhyFV1m_RY99iMZvrZKbAT7PIyN1VaCRAmPxFOkcPG-CeWtDjDcBHIK4CdPO5ywAIPoN9-busEopKLTZON66tlbAMduGKlQdaNRsamd8S-SNUVRERwirG7UySgVgSIU-urgRiyrZAN1QNdsTSocH_ipZHw9CjwWGJnC01XMy6qzahV2yqasThCOCCIwCSG51kuSXtvAFDxwn4DvB7I_0Dq_nJauq9HGqQ",
+  "production": {
+   "iterations": 600000,
+   "secret": "67d0dc9c533d71329e259e176eb369811f303c3ce50d3e690496cff4d30bb01d",
+   "mailbox": "b1205fedc2b48a0c91bdf6520d115bdb",
+   "key": "1d13feda8f8da46beaadb0dff60799a99a4ae443e200001394918abb979e4411"
+  },
+  "normalize": [
+   [
+    "7k3qx-9zrma",
+    "7K3QX9ZRMA"
+   ],
+   [
+    " 7K3QX 9ZRMA ",
+    "7K3QX9ZRMA"
+   ],
+   [
+    "7K3QX--9ZRMA",
+    "7K3QX9ZRMA"
+   ],
+   [
+    "OIL01-23456",
+    "0110123456"
+   ],
+   [
+    "oil01 23456",
+    "0110123456"
+   ],
+   [
+    "7K3QX-9ZRM",
+    null
+   ],
+   [
+    "7K3QX-9ZRMA0",
+    null
+   ],
+   [
+    "7K3QX-9ZRMU",
+    null
+   ],
+   [
+    "7K3QX_9ZRMA",
+    null
+   ],
+   [
+    "7K3QX\t9ZRMA",
+    null
+   ],
+   [
+    "7K3QX\u20139ZRMA",
+    null
+   ],
+   [
+    "",
+    null
+   ]
+  ]
  }
 }

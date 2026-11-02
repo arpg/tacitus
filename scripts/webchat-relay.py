@@ -4,6 +4,7 @@
     webchat-relay.py init    --key-file ~/.ea-private/webchat-relay.json --relay-url https://<relay>
     webchat-relay.py show    --key-file ~/.ea-private/webchat-relay.json
     webchat-relay.py pair    --key-file ~/.ea-private/webchat-relay.json (--public-url <url> | --relay-origin) [--print-link]
+    webchat-relay.py handoff --key-file ~/.ea-private/webchat-relay.json [--hosted-app <url>]
     webchat-relay.py approve --key-file ~/.ea-private/webchat-relay.json --device <id> [--cards]
     webchat-relay.py revoke  --key-file ~/.ea-private/webchat-relay.json --device <id>
     webchat-relay.py rotate  --key-file ~/.ea-private/webchat-relay.json --devices keep|drop
@@ -13,7 +14,7 @@ block for the chat config. `pair` prints a one-time pairing as a QR code
 on the terminal (`--print-link`: the link as text, `#tr2=`; it expires in
 ten minutes). With `--public-url` (the web block's) the link opens the app
 on the bot's own origin. `--relay-origin` opens the relay's copy of the
-app instead, as "Pair through the relay" in the web chat does: the link
+app instead, as "Phone not on your network" in the web chat does: the link
 carries the hash of the bot's signed app bundle, and the phone checks its
 code against it before its chat runs. Whoever runs the relay serves that
 phone's code, so once approved it reads and chats, and presses card
@@ -24,6 +25,14 @@ and a waiting device's pairing code, which must match the code on the
 phone; `approve` lets it in. Never send a pairing link through chat or
 mail. Run it as the owner: the key file lives in the owner-private
 directory.
+
+`handoff` sets up a computer that never joins the tailnet: it prints a
+one-time code and the address to open on the computer (the hosted copy
+of the app, `--hosted-app`, default https://tacitus-ai.github.io/). The
+bot seals the pairing under the code and leaves it at the relay for ten
+minutes. The computer shows a six-digit code once it pairs; `show` and
+`approve --device <id>` let it in when the codes match. Never send the
+code through chat or mail.
 
 `rotate` gives the key file a new relay token, and with it a new install
 id and client key: the client key in every pairing link shown so far

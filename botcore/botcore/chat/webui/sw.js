@@ -7,8 +7,9 @@
  * brought through the relay runs here from the next start. Else (a first
  * load, a refusal, a browser that refuses it) it runs the copy that came
  * with this file. The API (every path with /api/ in it), the relay's routes,
- * the signed manifest and the website's list of relays (relays.json, data
- * the app reads before it is set up) are left to the browser, never cached. */
+ * the signed manifest, the website's list of relays (relays.json, data the
+ * app reads before it is set up) and its release.txt are left to the
+ * browser, never cached. */
 'use strict';
 
 importScripts('bundle.js');
@@ -56,6 +57,6 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.includes('/api/')) return;
   if (RELAY_ROUTE.test(url.pathname) || url.pathname.endsWith('/healthz')) return;
   if (!url.pathname.startsWith(scope.pathname) || url.pathname.endsWith('/manifest.sig.json')) return;
-  if (url.pathname.endsWith('/relays.json')) return;
+  if (url.pathname.endsWith('/relays.json') || url.pathname.endsWith('/release.txt')) return;
   event.respondWith(worker.then((w) => w.serve(req)));
 });

@@ -16,6 +16,8 @@ Routes:
   POST /r/{install}/c     one phone frame (hello, req, ping); waits for the answer
   POST /r/{install}/sse   the phone's `open` frame; answers a one-time ticket
   GET  /r/{install}/sse   ?t=<ticket>: the phone's event stream
+  POST /r/{install}/handoff  the bot leaves a sealed handoff blob in a mailbox
+  GET  /h/{mailbox}       a computer takes that blob, once
   GET  /healthz           liveness; the counts only to a monitor on this host
   GET  /...               the static web app from --static (its own hostname only)
 
@@ -26,6 +28,11 @@ bot's token derives, in the X-Relay-Key header; the relay checks it before
 it reads a body, and answers a wrong key as it answers an install that is
 offline. The event stream's URL carries only a ticket that works once
 and for 30 seconds, so a proxy's access log holds no key and no frame.
+A handoff blob is the pairing a computer takes to join, sealed under a
+key the bot and the computer derive from a short code with a slow KDF;
+its mailbox name comes from the same KDF, so the relay holds neither the
+code nor a cheap way to test one. A mailbox is read once, lives at most
+ten minutes, and no log line names it.
 With --allow-file, only the listed install ids are served (the hosted
 tier's activation list). Without one, a source address may open a few
 new installs a minute, and a full table makes room by dropping the
@@ -48,6 +55,7 @@ import binascii
 import hashlib
 import hmac
 import http
+import ipaddress
 import json
 import mimetypes
 import queue
@@ -63,7 +71,9 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, unquote, urlsplit
 
-ROUTE_RE = re.compile(r"^/r/([a-z2-7]{26})/(bot|c|sse)$")
+ROUTE_RE = re.compile(r"^/r/([a-z2-7]{26})/(bot|c|sse|handoff)$")
+HANDOFF_RE = re.compile(r"^/h/([0-9a-f]{32})$")
+MAILBOX_RE = re.compile(r"^[0-9a-f]{32}$")
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 B64_RE = re.compile(r"^[A-Za-z0-9_-]*$")
 CLIENT_KINDS = frozenset({"hello", "req", "ping"})
@@ -80,6 +90,11 @@ CORS = {"Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, X-Relay-Key",
         "Access-Control-Max-Age": "600"}
+# A computer's lookup of its handoff mailbox: any origin (the hosted copy of
+# the app), no credentials, no custom header.
+HANDOFF_CORS = {"Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+                "Access-Control-Max-Age": "600"}
 STATIC_HEADERS = {
     "Content-Security-Policy": ("default-src 'self'; script-src 'self'; connect-src 'self'; "
                                 "img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
@@ -154,6 +169,26 @@ class Limits:
     new_route_rate: float = 0.1       # new installs per second per source address
     new_route_burst: int = 20
     max_sources: int = 10000          # source addresses tracked for that rate
+    max_handoffs: int = 8             # handoff blobs held per install
+    max_handoff_bytes: int = 4096     # one blob (base64url), bytes
+    max_handoff_ttl: int = 600        # seconds a blob is held at most
+    max_handoffs_total: int = 4096    # blobs held in all (16 MiB at most)
+    max_handoffs_per_source: int = 32  # blobs held per source address (an IPv6 /48)
+    lookup_rate: float = 20 / 60      # mailbox lookups per second per source address
+    lookup_burst: int = 20
+
+
+def source_group(source: str) -> str:
+    """The unit a source address is metered by: an IPv4 address, or the /48
+    of an IPv6 one (a tunnel broker hands out a whole /48 for free, so a
+    /64 is no unit of cost)."""
+    try:
+        ip = ipaddress.ip_address(source)
+    except ValueError:
+        return source
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        return str(ip.ipv4_mapped)
+    return str(ipaddress.ip_network(f"{ip}/48", strict=False)) if ip.version == 6 else str(ip)
 
 
 def clean_frame(obj: Any, kinds: frozenset) -> Optional[dict]:
@@ -245,6 +280,12 @@ class Relay:
         self.total_bytes = 0
         # Per source address: [tokens, refilled at], for opening new routes.
         self._sources: dict[str, list[float]] = {}
+        # Handoff blobs by mailbox: (install, blob, expiry, source group).
+        # Apart from the routes: a blob outlives a bot that stops polling,
+        # up to its ttl.
+        self.handoffs: "OrderedDict[str, tuple[str, str, float, str]]" = OrderedDict()
+        # Per source address: [tokens, refilled at], for mailbox lookups.
+        self._lookups: dict[str, list[float]] = {}
 
     # activation
 
@@ -366,23 +407,30 @@ class Relay:
 
     # the three endpoints
 
+    def _bucket(self, table: dict, source: str, now: float, rate: float, burst: int) -> bool:
+        """Spend one token of `source`'s bucket in `table`; False when it is
+        empty. Past max_sources addresses the full buckets go first, then
+        all. Called with the lock held."""
+        if len(table) > self.limits.max_sources:
+            full = burst / max(rate, 1e-9)
+            for key in [k for k, (_, t) in table.items() if now - t > full]:
+                del table[key]
+            if len(table) > self.limits.max_sources:
+                table.clear()
+        tokens, at = table.get(source, (float(burst), now))
+        tokens = min(float(burst), tokens + (now - at) * rate)
+        if tokens < 1.0:
+            table[source] = [tokens, now]
+            return False
+        table[source] = [tokens - 1.0, now]
+        return True
+
     def _source_ok(self, source: str, now: float) -> bool:
         """Whether `source` may open another route now (a token bucket per
-        address); called with the lock held."""
+        address, an IPv6 /48 counting as one); called with the lock held."""
         lim = self.limits
-        if len(self._sources) > lim.max_sources:
-            full = lim.new_route_burst / max(lim.new_route_rate, 1e-9)
-            for key in [k for k, (_, t) in self._sources.items() if now - t > full]:
-                del self._sources[key]
-            if len(self._sources) > lim.max_sources:
-                self._sources.clear()
-        tokens, at = self._sources.get(source, (float(lim.new_route_burst), now))
-        tokens = min(float(lim.new_route_burst), tokens + (now - at) * lim.new_route_rate)
-        if tokens < 1.0:
-            self._sources[source] = [tokens, now]
-            return False
-        self._sources[source] = [tokens - 1.0, now]
-        return True
+        return self._bucket(self._sources, source_group(source), now, lim.new_route_rate,
+                            lim.new_route_burst)
 
     def _make_room(self) -> bool:
         """With the table full, drop the idle route (no poll open) that saw
@@ -577,10 +625,102 @@ class Relay:
                 del route.streams[st.id]
                 self._enqueue(route, {"id": st.id, "k": "close"})
 
-    def reap(self) -> int:
-        """Drop the routes whose bot stopped polling; how many went."""
+    # handoffs: a computer's pairing, sealed, held for one read
+
+    def _purge_handoffs(self, now: float) -> None:
+        """Drop the blobs past their time; called with the lock held."""
+        for m in [m for m, (_, _, exp, _) in self.handoffs.items() if exp <= now]:
+            del self.handoffs[m]
+
+    def _polling(self, install: str, now: float) -> bool:
+        """Whether `install` has a route open (its bot polls), changing
+        nothing; called with the lock held."""
+        route = self.routes.get(install)
+        return route is not None and (route.polls > 0
+                                      or now - route.last_poll <= self.limits.offline_after)
+
+    def _room_for_handoff(self, now: float) -> bool:
+        """A full table, for a deposit from a polling bot: drop the oldest
+        blob of an install with no route open (no bot polls for it, so no
+        bot is waiting on it); called with the lock held. False when every
+        blob belongs to a polling bot (the table stays full)."""
+        for m, (install, _, _, _) in self.handoffs.items():
+            if not self._polling(install, now):
+                del self.handoffs[m]
+                return True
+        return False
+
+    def deposit_handoff(self, install: str, auth: Any, body: Any,
+                        source: str = "") -> tuple[int, dict]:
+        """The bot leaves a sealed blob in a mailbox: `{"m": <32 hex>, "c":
+        <base64url, at most max_handoff_bytes>, "ttl": <1..max_handoff_ttl>}`.
+        At most max_handoffs per install; a deposit to a mailbox the install
+        already holds replaces it, and one another install holds is
+        refused. An install with no route open (no bot polling) spends the
+        new-route meter of its address, so tokens minted for the purpose do
+        not fill the table cheaply. Each source address (an IPv6 /48) holds
+        at most max_handoffs_per_source. A full table makes room for a bot
+        that polls by dropping the oldest blob of an install that does not,
+        and never for an install that does not poll (503): blobs left by
+        tokens minted for the purpose give way to a real bot's, and never
+        push one out."""
+        status, err, _ = self.check_bot(install, auth)
+        if status != 200:
+            return status, err
+        lim = self.limits
+        if not isinstance(body, dict) or set(body) != {"m", "c", "ttl"}:
+            return 400, {"error": "bad handoff"}
+        m, c, ttl = body["m"], body["c"], body["ttl"]
+        if not isinstance(m, str) or not MAILBOX_RE.match(m) or not isinstance(c, str) \
+                or not c or not B64_RE.match(c) or not isinstance(ttl, int) \
+                or isinstance(ttl, bool) or not 1 <= ttl <= lim.max_handoff_ttl:
+            return 400, {"error": "bad handoff"}
+        if len(c) > lim.max_handoff_bytes:
+            return 413, {"error": "handoff too large"}
         with self.lock:
             now = self.clock()
+            self._purge_handoffs(now)
+            held = self.handoffs.get(m)
+            group = source_group(source)
+            if held is not None and held[0] != install:
+                return 409, {"error": "mailbox in use"}
+            if held is None:
+                if sum(1 for i, _, _, _ in self.handoffs.values() if i == install) >= lim.max_handoffs:
+                    return 429, {"error": "too many handoffs"}
+                if sum(1 for _, _, _, g in self.handoffs.values()
+                       if g == group) >= lim.max_handoffs_per_source:
+                    return 429, {"error": "too many handoffs from this address"}
+                if self._online(install, now) is None and not self._source_ok(source, now):
+                    return 429, {"error": "too many new installs from this address"}
+                if len(self.handoffs) >= lim.max_handoffs_total and not (
+                        self._polling(install, now) and self._room_for_handoff(now)):
+                    return 503, {"error": "relay full"}
+            self.handoffs[m] = (install, c, now + ttl, group)
+        return 200, {"ok": True}
+
+    def take_handoff(self, mailbox: Any, source: str = "") -> tuple[int, dict]:
+        """A computer's one read of a mailbox: (200, {"c": blob}) and the
+        blob is gone, or 404 for one unknown or past its time. Each address
+        has `lookup_burst` lookups, refilled at `lookup_rate`, found or not;
+        past that 429."""
+        lim = self.limits
+        with self.lock:
+            now = self.clock()
+            if not self._bucket(self._lookups, source, now, lim.lookup_rate, lim.lookup_burst):
+                return 429, {"error": "too many lookups"}
+            self._purge_handoffs(now)
+            held = self.handoffs.pop(mailbox, None) \
+                if isinstance(mailbox, str) and MAILBOX_RE.match(mailbox) else None
+        if held is None:
+            return 404, {"error": "not found"}
+        return 200, {"c": held[1]}
+
+    def reap(self) -> int:
+        """Drop the routes whose bot stopped polling, and the handoff blobs
+        past their time; how many routes went."""
+        with self.lock:
+            now = self.clock()
+            self._purge_handoffs(now)
             gone = [i for i, r in self.routes.items()
                     if r.polls == 0 and now - r.last_poll > self.limits.offline_after]
             for install in gone:
@@ -593,13 +733,15 @@ class Relay:
             return {"total_bytes": self.total_bytes, "routes": {
                 i: {"last_poll": r.last_poll, "polls": r.polls,
                     "inbox": [f for f, _ in r.inbox], "waiting": sorted(r.waiting),
-                    "streams": list(r.streams)} for i, r in self.routes.items()}}
+                    "streams": list(r.streams)} for i, r in self.routes.items()},
+                "handoffs": {m: {"install": i, "c": c, "expires": exp}
+                             for m, (i, c, exp, _) in self.handoffs.items()}}
 
     def counts(self) -> dict:
         with self.lock:
             return {"installs": len(self.routes),
                     "streams": sum(len(r.streams) for r in self.routes.values()),
-                    "queued_bytes": self.total_bytes}
+                    "queued_bytes": self.total_bytes, "handoffs": len(self.handoffs)}
 
 
 # ── HTTP ──────────────────────────────────────────────────────────────
@@ -624,14 +766,17 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.server.relay.log(f"{stamp} {self.command} {kind} {install or '-'} {status} "
                               f"in={n_in} out={n_out} {ms}ms")
 
-    def _send_json(self, status: int, obj: Any, cors: bool = False) -> int:
+    def _send_json(self, status: int, obj: Any, cors: Any = False) -> int:
+        """A JSON answer; `cors` True adds the phone routes' CORS headers,
+        a dict adds those headers instead."""
         body = json.dumps(obj, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        for k, v in (CORS.items() if cors else ()):
+        headers = cors if isinstance(cors, dict) else CORS if cors else {}
+        for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
@@ -690,12 +835,14 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.close_connection = True
 
     def do_OPTIONS(self) -> None:
-        m = ROUTE_RE.match(urlsplit(self.path).path)
-        if not m or m.group(2) == "bot":
+        path = urlsplit(self.path).path
+        m = ROUTE_RE.match(path)
+        handoff = HANDOFF_RE.match(path) is not None
+        if not handoff and (not m or m.group(2) in ("bot", "handoff")):
             self._send_json(404, {"error": "not found"})
             return
         self.send_response(204)
-        for k, v in CORS.items():
+        for k, v in (HANDOFF_CORS if handoff else CORS).items():
             self.send_header(k, v)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -709,7 +856,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             return
         install, kind = m.group(1), m.group(2)
         relay = self.server.relay
-        cors = kind != "bot"
+        cors = kind not in ("bot", "handoff")
         key = self.headers.get("X-Relay-Key", "")
         # A phone's key and a bot's token are checked from the headers
         # before the body is read: a stranger never makes the relay read or
@@ -723,7 +870,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             n_out = self._send_json(status, err, cors)
             self._log(kind, install, status, 0, n_out, t0)
             return
-        limit = relay.limits.max_small_frame + 1024 if kind == "sse" else None
+        limit = relay.limits.max_small_frame + 1024 if kind == "sse" else \
+            relay.limits.max_handoff_bytes + 1024 if kind == "handoff" else None
         body, n_in = self._read_json(cors, limit)
         if n_in < 0:
             self._log(kind, install, 400, 0, 0, t0)
@@ -731,6 +879,9 @@ class RelayHandler(BaseHTTPRequestHandler):
         if kind == "bot":
             status, out = relay.bot_exchange(install, self.headers.get("Authorization", ""),
                                              body, self._source())
+        elif kind == "handoff":
+            status, out = relay.deposit_handoff(install, self.headers.get("Authorization", ""),
+                                                body, self._source())
         elif kind == "sse":
             status, out = relay.stream_ticket(install, key, body)
         else:
@@ -747,6 +898,14 @@ class RelayHandler(BaseHTTPRequestHandler):
             local = str(self.client_address[0]) in LOOPBACK and \
                 self.headers.get("X-Forwarded-For") is None
             self._send_json(200, {"ok": True, **(self.server.relay.counts() if local else {})})
+            return
+        h = HANDOFF_RE.match(url.path)
+        if h:
+            # The log line names no mailbox: the route and the status only.
+            t0 = time.monotonic()
+            status, out = self.server.relay.take_handoff(h.group(1), self._source())
+            n_out = self._send_json(status, out, cors=HANDOFF_CORS)
+            self._log("h", "", status, 0, n_out, t0)
             return
         m = ROUTE_RE.match(url.path)
         if m:

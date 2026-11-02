@@ -1587,7 +1587,7 @@ def check_web_relay(wcfg: dict, store_dir: Path, token_path: Path,
     elif pending:
         warn("web chat: relay", detail,
              "compare the pairing code with the one on the phone, then approve or remove it "
-             "in Pair a phone (or scripts/webchat-relay.py show and approve)")
+             "under Add a device (or scripts/webchat-relay.py show and approve)")
     else:
         ok("web chat: relay", detail)
 

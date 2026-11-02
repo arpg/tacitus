@@ -519,6 +519,15 @@ sign-in ([docs/docker.md](docker.md#web-chat), Web chat).
    a phone" in the web chat, on the tailnet or on this machine
    (`http://127.0.0.1:8470/chat/`, no Tailscale needed)
    ([docs/webchat-relay.md](webchat-relay.md), "Owner steps").
+7. **Use Tacitus on your other devices.** With Tailscale on the device,
+   open the `public_url` there, signed in to your tailnet. Without it,
+   in the app on a device already signed in: **Add a device**, then
+   **A computer**. Open the address it shows on the computer (the hosted
+   app, `https://tacitus-ai.github.io/`) and type the code. Then approve
+   the computer's six-digit code on the first device. This needs the
+   relay (step 6). `"hosted_app"` in the `relay` block names another
+   hosted copy, and `""` turns the handoff off
+   ([docs/webchat-relay.md](webchat-relay.md), "The hosted app").
 
 The store is `<private dir>/webchat.sqlite`; files you upload from the
 app sit beside it. Standalone, the chat has the `ea` channel, your DM,

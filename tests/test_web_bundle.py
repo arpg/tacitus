@@ -461,6 +461,54 @@ def test_the_attest_route_records_the_check_and_grants_nothing(tmp_path):
         f.stop()
 
 
+def test_a_hosted_copy_attests_like_a_relay_copy(tmp_path):
+    """A computer set up on the hosted copy of the app (origin "hosted")
+    checks its code against the bundle hash its handoff carried and
+    attests it as a relay copy does: the record grants nothing, it reads
+    and chats once approved, and presses card buttons only when the owner
+    allows them. A hosted pairing without the hash lets nothing in."""
+    hosted = rcl.DEFAULT_HOSTED_APP
+    f = _web(tmp_path, relay={"url": "http://127.0.0.1:9", "wait": 1})
+    f.start()
+    try:
+        assert f.relay is not None and f.relay.hosted_app == hosted
+        st = json.loads(_call(f, "GET", "/api/relay/status", headers=_owner(f))[2])
+        assert (st["hosted_app"], st["handoff"]) == (hosted, True)
+        store = f.relay.store
+        link = f.relay.new_pairing(app_url=hosted, bundle=f.bundle_hash())
+        pairing = rc.PairingPayload.from_string(link)
+        assert (pairing.app, pairing.bundle) == (hosted, f.bundle_hash())
+        device = store.register(pairing.pairing_id, bytes(range(32)), "laptop")["id"]
+        rec = store.device_by_id(device)
+        assert rec["origin"] == "hosted" and f.relay.level(rec) == "chat"
+        assert _call(f, "POST", "/api/relay/approve", {"device": device}, _owner(f))[0] == 200
+        relayed = {**_owner(f), "X-Tacitus-Relay": device, "X-Tacitus-Relay-Cards": "deny"}
+        status, _h, body = _call(f, "POST", "/api/relay/attest", {"bundle": f.bundle_hash()}, relayed)
+        assert status == 200 and json.loads(body)["bundle_verified"] is True
+        rec = store.device_by_id(device)
+        assert rec["bundle_verified"] is True and f.relay.level(rec) == "chat"
+        row = json.loads(_call(f, "GET", "/api/relay/devices", headers=_owner(f))[2])[0]
+        assert (row["origin"], row["bundle_verified"], row["cards_allowed"]) == ("hosted", True, False)
+        me = json.loads(_call(f, "GET", "/api/me", headers=relayed)[2])
+        assert (me["card_actions"], me["owner_routes"], me["handoff"]) == (False, "none", False)
+        assert _call(f, "POST", "/api/relay/approve", {"device": device, "cards": True},
+                     _owner(f))[0] == 200
+        assert f.relay.level(store.device_by_id(device)) == "all"
+        # The owner's routes stay closed to it, whatever its card buttons.
+        mark = {**relayed, "X-Tacitus-Relay-Device": device}
+        assert _call(f, "GET", "/api/relay/devices", headers=mark)[0] == 403
+        assert _call(f, "POST", "/api/relay/handoff", {}, mark)[0] == 403
+        # A hosted pairing without the hash: the bot refuses to make one,
+        # and a device that holds one anyway is off.
+        with pytest.raises(rcl.RelayError):
+            f.relay.new_pairing(app_url=hosted)
+        bare = store.add_pairing(relay_url=f.relay.relay_url, origin="hosted", app_url=hosted)
+        other = store.register(bare.pairing_id, bytes(range(1, 33)), "other")
+        assert f.relay.level(other) == "off" and f.relay.level({**other, "cards_allowed": True}) == "off"
+    finally:
+        f.stop()
+
+
 def test_a_browser_s_connection_notes_are_logged_for_the_owner(tmp_path, caplog):
     """What the app saw while it could not connect (POST /diag) goes to the
     log, bounded to twenty entries of two thousand characters, for the

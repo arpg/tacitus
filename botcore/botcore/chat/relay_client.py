@@ -11,11 +11,19 @@ The relay sees install ids, frame sizes and timing. The keys stay here
 and on the phone. The phone never chooses where a request goes: only
 `/api/` paths on the loopback server, never the pairing routes, with the
 owner's credential added here and every header but a short list dropped.
+The one exception is RELAYED_OWNER_ROUTES: an approved phone paired on
+the bot's own origin may start a handoff to a computer, list the devices,
+approve a computer it handed off and remove another device, and the
+request carries its device id as this client read it from the session.
+
+A handoff code (`make_handoff`) sets up a computer that never joins the
+tailnet: a pairing on the hosted copy of the app, sealed under a key from
+the code and left at the relay in a mailbox named from the code.
 
 `KeyStore` is the key file (owner-private, mode 0600): the bot's X25519
 key, the relay token, the Ed25519 key that signs the web app, the paired
 devices and the open pairings. A new device waits for the owner's
-approval under "Pair a phone". The CLI at the
+approval under "Add a device". The CLI at the
 bottom (`scripts/webchat-relay.py` runs it) creates the file, shows the
 install id, opens a pairing, and approves and revokes a device.
 
@@ -69,6 +77,11 @@ MAX_SESSIONS = 32
 MAX_DEVICE_SESSIONS = 4
 SESSION_IDLE = 12 * 3600
 MAX_PAIRINGS = 8
+# A device other than the owner's own web chat (a phone through the relay)
+# holds at most this many handoff codes open, and makes at most this many
+# a day: a stolen phone cannot fill the open pairings or mint codes freely.
+HANDOFF_OPEN_PER_DEVICE = 2
+HANDOFF_DAY_PER_DEVICE = 10
 NAME_MAX = 40
 REFUSED_LOG_EVERY = 60.0        # at most one "hello refused" line a minute
 STOP_WAIT = 2.0                 # stop() waits this long for the workers that run
@@ -80,10 +93,28 @@ FORWARD_HEADERS = ("content-type", "accept", "last-event-id")
 RETURN_HEADERS = ("content-type", "content-disposition")
 # The local routes the relay never reaches: pairing the web chat and
 # managing relay devices happen in the owner's own web chat (the tailnet,
-# or the bot's machine itself), never through the relay. The event stream is
-# reached by an `open` frame, never by a plain request.
+# or the bot's machine itself), outside RELAYED_OWNER_ROUTES below. The
+# event stream is reached by an `open` frame, never by a plain request.
 DENIED_PREFIXES = ("/api/pair/", "/api/relay/")
 EVENTS_PATH = "/api/events"
+# The owner routes a phone reaches through the relay, each in exactly this
+# spelling, and only from an approved device paired on the bot's own origin
+# (whose code the relay never served): start a handoff to a computer, list
+# the devices, and approve or remove a computer this same device handed
+# off (the web front end checks the last two). The client
+# marks each such request with X-Tacitus-Relay-Device, the session's device;
+# a relay-origin or hosted device reaches none of them.
+RELAYED_OWNER_ROUTES = frozenset({("POST", "/api/relay/handoff"), ("GET", "/api/relay/devices"),
+                                  ("POST", "/api/relay/approve"), ("POST", "/api/relay/revoke")})
+OWNER_DEVICE_HEADER = "X-Tacitus-Relay-Device"
+# Where a computer opens the app to take a handoff: the hosted copy, built
+# from a signed release tag. "" in the relay block turns the handoff off.
+DEFAULT_HOSTED_APP = "https://tacitus-ai.github.io/"
+# The hosted copy's list of the relays it knows (`<hosted_app>relays.json`),
+# read once per this many seconds. A relay on it needs no `?relay=` in the
+# address the owner types.
+HOSTED_RELAYS_TTL = 600.0
+HOSTED_RELAYS_MAX = 64 * 1024
 # The one relay route a phone reaches through the relay, spelled exactly
 # so: after it checks the app's code against the bot's signed manifest it
 # posts the bundle hash here, and the web front end records it on the
@@ -118,6 +149,11 @@ _PATH_RE = re.compile(r"^/api/[A-Za-z0-9._~%!$&'()*+,;=:@/-]*(\?[A-Za-z0-9._~%!$
 
 class RelayError(Exception):
     """A key file or config problem; the relay does not start."""
+
+
+class HandoffLimit(RelayError):
+    """A device asked for more handoff codes than it may hold or make;
+    the text is plain words for the person who asked."""
 
 
 # ── the key file ──────────────────────────────────────────────────────
@@ -246,12 +282,18 @@ class KeyStore:
 
     def add_pairing(self, ttl: int = rc.PAIRING_TTL, now: Optional[float] = None,
                     relay_url: str = "", origin: str = "relay", bundle: str = "",
-                    app_url: str = "") -> rc.PairingPayload:
+                    app_url: str = "", handoff: bool = False, by: str = "") -> rc.PairingPayload:
         """A new one-time pairing, stored here (the expired ones dropped).
         `origin` is where its link opens the app: "own" (the bot's own
-        origin) or "relay"; the device that spends it keeps that mark, and
-        the `bundle` hash it was paired against. `bundle` and `app_url`
-        also go in the link (`b` and `a`, payload version 2)."""
+        origin), "hosted" (the hosted copy) or "relay"; the device that
+        spends it keeps that mark, and the `bundle` hash it was paired
+        against. `bundle` and `app_url` also go in the link (`b` and `a`,
+        payload version 2). A pairing behind a handoff code (`handoff`)
+        records `by`, the device that asked for the code or "owner", and
+        so does the device that spends it. A device (not "owner") holds at
+        most HANDOFF_OPEN_PER_DEVICE codes open and makes at most
+        HANDOFF_DAY_PER_DEVICE a day (`handoff_log` in the file): past
+        either, HandoffLimit."""
         if bundle and not rc.BUNDLE_RE.match(bundle):
             raise RelayError("a bundle hash is 64 hex characters")
         now = time.time() if now is None else now
@@ -261,10 +303,23 @@ class KeyStore:
 
         def add(data: dict) -> None:
             live = [p for p in data["pairings"] if p.get("expires", 0) > now]
+            asker = by or "owner"
+            if handoff and asker != "owner":
+                if sum(1 for p in live if p.get("handoff") is True
+                       and p.get("by") == asker) >= HANDOFF_OPEN_PER_DEVICE:
+                    raise HandoffLimit("This phone has two codes open already. Use one, or "
+                                       "wait ten minutes until they end.")
+                logs = {k: [t for t in v if isinstance(t, (int, float)) and now - t < 86400]
+                        for k, v in (data.get("handoff_log") or {}).items() if isinstance(v, list)}
+                if len(logs.get(asker, [])) >= HANDOFF_DAY_PER_DEVICE:
+                    raise HandoffLimit("This phone made ten codes today. Add the computer from "
+                                       "Tacitus on your own network, or try again tomorrow.")
+                logs.setdefault(asker, []).append(int(now))
+                data["handoff_log"] = {k: v for k, v in logs.items() if v}
             live.append({"id": payload.pairing_id, "psk": rc.b64e(payload.psk),
-                         "expires": payload.expires,
-                         "origin": "own" if origin == "own" else "relay",
-                         **({"bundle": bundle} if bundle else {})})
+                         "expires": payload.expires, "origin": _kind(origin),
+                         **({"bundle": bundle} if bundle else {}),
+                         **({"handoff": True, "by": by or "owner"} if handoff else {})})
             data["pairings"] = live[-MAX_PAIRINGS:]
         self._update(add)
         return payload
@@ -279,9 +334,18 @@ class KeyStore:
         return rc.b64d(p["psk"]) if p else None
 
     def pairing_origin(self, pairing_id: str) -> str:
-        """"own" or "relay" for an open pairing; "" when it is gone."""
+        """"own", "hosted" or "relay" for an open pairing; "" when it is gone."""
         p = self._pairing(pairing_id)
-        return ("own" if p.get("origin") == "own" else "relay") if p else ""
+        return _kind(p.get("origin")) if p else ""
+
+    def drop_pairing(self, pairing_id: str) -> bool:
+        """Remove an open pairing before it is spent (a handoff the relay
+        did not take). False when there was none."""
+        def drop(data: dict) -> bool:
+            before = len(data["pairings"])
+            data["pairings"] = [p for p in data["pairings"] if p.get("id") != pairing_id]
+            return len(data["pairings"]) != before
+        return self._update(drop)
 
     def pairing_device(self, pairing_id: str) -> dict:
         """What the device that spends an open pairing will be: its
@@ -289,7 +353,7 @@ class KeyStore:
         p = self._pairing(pairing_id)
         if not p:
             return {}
-        return {"origin": "own" if p.get("origin") == "own" else "relay",
+        return {"origin": _kind(p.get("origin")),
                 **({"bundle": p["bundle"]} if p.get("bundle") else {})}
 
     def register(self, pairing_id: str, public: bytes, name: str = "",
@@ -308,9 +372,12 @@ class KeyStore:
                     if p.get("id") == pairing_id and p.get("expires", 0) > now]
             if not live:
                 raise RelayError("pairing is used, expired or unknown")
-            record["origin"] = "own" if live[0].get("origin") == "own" else "relay"
+            record["origin"] = _kind(live[0].get("origin"))
             if live[0].get("bundle"):
                 record["bundle"] = live[0]["bundle"]
+            if live[0].get("handoff") is True:
+                record["handoff"], record["by"] = True, str(live[0].get("by") or "owner")
+                record["pairing"] = pairing_id
             data["pairings"] = [p for p in data["pairings"] if p.get("id") != pairing_id]
             data["devices"] = [d for d in data["devices"] if d.get("id") != record["id"]]
             data["devices"].append(record)
@@ -443,18 +510,49 @@ def _origin(url: Optional[str]) -> Optional[tuple[str, str, int]]:
 
 
 def origin_of(app_url: Optional[str], public_url: Optional[str],
-              relay_url: Optional[str] = None) -> str:
+              relay_url: Optional[str] = None, hosted_app: Optional[str] = None) -> str:
     """"own" when a pairing link opens the app on the bot's own origin: the
     web block's `public_url`, compared normalized (scheme, host without a
-    trailing dot, explicit port). Anything else is "relay": no public_url,
-    another origin, or the relay's own origin under any spelling. Its code
-    may come from a server that is not the bot."""
-    app, own = _origin(app_url), _origin(public_url)
-    if app is None or app != own:
+    trailing dot, explicit port). "hosted" when it opens the hosted copy of
+    the app (`hosted_app`'s origin). Anything else is "relay": no
+    public_url, another origin, or the relay's own origin under any
+    spelling. The code of a hosted or relay device may come from a server
+    that is not the bot."""
+    app = _origin(app_url)
+    if app is None or (relay_url and _origin(relay_url) == app):
         return "relay"
-    if relay_url and _origin(relay_url) == app:
-        return "relay"
-    return "own"
+    if app == _origin(public_url):
+        return "own"
+    if hosted_app and app == _origin(hosted_app):
+        return "hosted"
+    return "relay"
+
+
+def _kind(origin: Any) -> str:
+    """A stored origin mark: "own" and "hosted" as written, anything else
+    "relay" (the least trusted)."""
+    return origin if origin in ("own", "hosted") else "relay"
+
+
+def check_hosted_app(url: Any) -> str:
+    """The hosted app's address normalized (`https://host[:port]/`), or ""
+    for "" (the handoff off). RelayError for anything but https with a
+    plain host and the path `/`: no user info, query or fragment."""
+    if url in ("", None):
+        return ""
+    text = str(url)
+    if "\\" in text or "?" in text or "#" in text or "@" in text \
+            or any(not 0x21 <= ord(ch) <= 0x7e for ch in text):
+        raise RelayError(f"hosted_app is an https origin with the path /: {text!r}")
+    try:
+        parts = urllib.parse.urlsplit(text)
+        port = parts.port
+    except ValueError as exc:
+        raise RelayError(f"hosted_app is an https origin with the path /: {text!r}") from exc
+    host = (parts.hostname or "").rstrip(".").lower()
+    if parts.scheme != "https" or not host or parts.path != "/":
+        raise RelayError(f"hosted_app is an https origin with the path /: {text!r}")
+    return f"https://{host}{f':{port}' if port and port != 443 else ''}/"
 
 
 def relay_app_url(relay_url: str) -> str:
@@ -522,12 +620,18 @@ def path_allowed(path: Any) -> bool:
 def device_row(d: Mapping[str, Any]) -> dict:
     """A device as the owner's list shows it: id, name, paired_at, origin,
     `pending` (and the pairing `code` while pending); for a relay-origin
-    device also `cards_allowed`, `bundle_verified` (its last check of its
-    app) and the `release` it checked against."""
+    or hosted device also `cards_allowed`, `bundle_verified` (its last
+    check of its app) and the `release` it checked against; for one set up
+    with a handoff code, `handoff`, `by` (the device that asked for the
+    code, or "owner") and `pairing` (the code's pairing id, which the
+    handoff's answer names, so the asker knows which computer took it)."""
     row = {k: d.get(k) for k in ("id", "name", "paired_at", "origin")}
     row["pending"] = bool(d.get("pending"))
     if row["pending"]:
         row["code"] = str(d.get("code") or "")
+    if d.get("handoff") is True:
+        row["handoff"], row["by"] = True, str(d.get("by") or "owner")
+        row["pairing"] = str(d.get("pairing") or "")
     if d.get("origin") != "own":
         row["cards_allowed"] = d.get("cards_allowed") is True
         row["bundle_verified"] = d.get("bundle_verified") is True
@@ -539,6 +643,110 @@ def device_row(d: Mapping[str, Any]) -> dict:
 def _plain_route(path: str) -> str:
     """The path without its query, decoded, lowercased, with no trailing slash."""
     return urllib.parse.unquote(path.split("?", 1)[0]).lower().rstrip("/")
+
+
+def relayed_owner_route(method: Any, path: Any) -> bool:
+    """True for one of RELAYED_OWNER_ROUTES, in its exact spelling (no
+    query, no other case or encoding)."""
+    return isinstance(method, str) and isinstance(path, str) \
+        and (method, path) in RELAYED_OWNER_ROUTES
+
+
+# ── the handoff (a computer set up with a code) ───────────────────────
+
+class HandoffUnavailable(RelayError):
+    """The relay did not take a handoff's blob (offline, full, refused)."""
+
+
+def deposit_handoff(opener: Any, relay_url: str, identity: rc.BotIdentity, mailbox: str,
+                    blob: str, ttl: int) -> None:
+    """Leave a sealed handoff blob at the relay (`POST /r/<install>/handoff`,
+    the bot's token as for its poll). HandoffUnavailable when the relay
+    does not answer 200; its words are never read."""
+    body = _json_bytes({"m": mailbox, "c": blob, "ttl": max(1, min(int(ttl), rc.PAIRING_TTL))})
+    req = urllib.request.Request(f"{relay_url}/r/{identity.install_id}/handoff", data=body,
+                                 method="POST", headers={
+                                     "Authorization": "Bearer " + rc.b64e(identity.token),
+                                     "Content-Type": "application/json"})
+    try:
+        with opener.open(req, timeout=10) as resp:
+            if resp.status != 200:
+                raise HandoffUnavailable(f"the relay answered {resp.status}")
+    except urllib.error.HTTPError as exc:
+        with contextlib.suppress(Exception):
+            exc.close()
+        raise HandoffUnavailable(f"the relay answered {exc.code}") from None
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise HandoffUnavailable(_printable(f"{type(exc).__name__}: {exc}")) from None
+
+
+def make_handoff(store: KeyStore, opener: Any, relay_url: str, hosted_app: str, bundle: str,
+                 by: str = "owner", now: Optional[float] = None) -> dict:
+    """A handoff code for a computer: an ordinary one-time pairing that
+    opens the hosted copy of the app (`origin` "hosted", the `bundle` hash,
+    `handoff` and `by`), its payload sealed under the code's key and left
+    at the relay in the code's mailbox for the pairing's time. Returns
+    {"code": "ABCDE-FGHJK", "expires", "pairing"}. The pairing goes again
+    when the relay does not take the blob (HandoffUnavailable)."""
+    if not hosted_app:
+        raise RelayError("the handoff is off: the relay block sets hosted_app to \"\"")
+    if not bundle or not rc.BUNDLE_RE.match(bundle):
+        raise RelayError("a handoff needs the signed app bundle's hash")
+    now = time.time() if now is None else now
+    payload = store.add_pairing(relay_url=relay_url, origin="hosted", bundle=bundle,
+                                app_url=hosted_app, handoff=True, by=by, now=now)
+    code = rc.new_handoff_code()
+    try:
+        mailbox, key = rc.handoff_keys(code, relay_url)
+        blob = rc.seal_handoff(mailbox, key, payload.to_json())
+        deposit_handoff(opener, relay_url, store.identity(), mailbox, blob,
+                        int(payload.expires - now))
+    except BaseException:
+        store.drop_pairing(payload.pairing_id)
+        raise
+    return {"code": rc.format_handoff_code(code), "expires": payload.expires,
+            "pairing": payload.pairing_id}
+
+
+_hosted_relays_seen: dict[str, tuple[float, frozenset]] = {}
+_hosted_relays_mu = threading.Lock()
+
+
+def hosted_relays(hosted_app: str, *, now: Optional[float] = None) -> frozenset:
+    """The relay URLs the hosted copy lists in `<hosted_app>relays.json` (a
+    JSON list of URLs), each without a trailing slash; read at most once
+    per HOSTED_RELAYS_TTL seconds, empty when it does not read."""
+    if not hosted_app:
+        return frozenset()
+    now = time.time() if now is None else now
+    with _hosted_relays_mu:
+        hit = _hosted_relays_seen.get(hosted_app)
+        if hit and now - hit[0] < HOSTED_RELAYS_TTL:
+            return hit[1]
+    got: frozenset = frozenset()
+    try:
+        opener = urllib.request.build_opener(_NoRedirect)
+        req = urllib.request.Request(hosted_app + "relays.json",
+                                     headers={"User-Agent": "tacitus-web-chat",
+                                              "Accept": "application/json"})
+        with opener.open(req, timeout=3) as resp:
+            raw = resp.read(HOSTED_RELAYS_MAX + 1)
+        data = json.loads(raw) if len(raw) <= HOSTED_RELAYS_MAX else None
+        if isinstance(data, list):
+            got = frozenset(u.rstrip("/") for u in data if isinstance(u, str) and u)
+    except Exception:
+        got = frozenset()
+    with _hosted_relays_mu:
+        _hosted_relays_seen[hosted_app] = (now, got)
+    return got
+
+
+def handoff_address(hosted_app: str, relay_url: str) -> str:
+    """The address the owner opens on the computer: the hosted app, with
+    `?relay=<the relay URL>` unless the hosted copy lists this relay."""
+    if relay_url.rstrip("/") in hosted_relays(hosted_app):
+        return hosted_app
+    return hosted_app + "?relay=" + urllib.parse.quote(relay_url, safe="")
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -622,7 +830,7 @@ def _read_capped(resp: Any, limit: int, deadline: float) -> Optional[bytes]:
     return bytes(out)
 
 
-PENDING = "this phone waits for the owner's approval under Pair a phone"
+PENDING = "this device waits for the owner's approval under Add a device"
 
 
 class RelayClient:
@@ -633,6 +841,7 @@ class RelayClient:
                  wait: float = DEFAULT_WAIT, workers: int = 8,
                  app_url: Optional[str] = None, public_url: Optional[str] = None,
                  relay_origin_access: str = DEFAULT_RELAY_ORIGIN_ACCESS,
+                 hosted_app: str = "",
                  notify: Optional[Callable[[str], Any]] = None,
                  logger: Optional[logging.Logger] = None) -> None:
         rc._need()
@@ -654,6 +863,18 @@ class RelayClient:
         self.relay_origin_access = relay_origin_access
         self.wait = max(MIN_WAIT, min(float(wait), 55.0))
         self.log = logger or log
+        # The hosted copy of the app a handoff code opens ("" when off). It
+        # may share no origin with the bot or the relay: a device there would
+        # read as own-origin, or share the relay copy's storage. A value
+        # that is wrong turns the handoff off and leaves the rest running.
+        try:
+            self.hosted_app = check_hosted_app(hosted_app)
+            if self.hosted_app and _origin(self.hosted_app) in (_origin(public_url),
+                                                                _origin(self.relay_url)):
+                raise RelayError("hosted_app shares an origin with public_url or the relay")
+        except RelayError as exc:
+            self.log.error("relay: the handoff to a computer is off: %s", exc)
+            self.hosted_app = ""
         # Posts the owner a notice in the DM channel (a new device).
         self.notify = notify
         if callable(owner_headers):
@@ -737,14 +958,18 @@ class RelayClient:
 
     def level(self, device: Mapping[str, Any]) -> str:
         """What a device may do: "all" for one paired on the bot's own
-        origin. For one paired on the relay's origin: BUNDLE_ACCESS
-        ("chat") when it was paired against the bot's signed bundle
-        (`bundle`), attested or not, else `relay_origin_access` ("off" keeps
-        it out); "all" when the owner allowed it card buttons
+        origin. For one paired on the relay's origin or the hosted copy:
+        BUNDLE_ACCESS ("chat") when it was paired against the bot's signed
+        bundle (`bundle`), attested or not; else, on the relay's origin,
+        `relay_origin_access`, and on the hosted copy "off" ("off" keeps it
+        out); "all" when the owner allowed it card buttons
         (`cards_allowed`)."""
         if device.get("origin") == "own":
             return "all"
-        base = BUNDLE_ACCESS if device.get("bundle") else self.relay_origin_access
+        if device.get("bundle"):
+            base = BUNDLE_ACCESS
+        else:
+            base = "off" if device.get("origin") == "hosted" else self.relay_origin_access
         if base == "off":
             return "off"
         return "all" if device.get("cards_allowed") is True else base
@@ -755,22 +980,37 @@ class RelayClient:
         nothing. False for an unknown device."""
         return self.store.attest(device_id, bundle, release)
 
+    def origin_for(self, app_url: Optional[str]) -> str:
+        """"own", "hosted" or "relay" for a pairing that opens `app_url`."""
+        return origin_of(app_url, self.public_url, self.relay_url, self.hosted_app)
+
     def can_pair_own(self) -> bool:
         """True when a pairing link would open the app on the bot's own origin."""
-        return origin_of(self.app_url, self.public_url, self.relay_url) == "own"
+        return self.origin_for(self.app_url) == "own"
 
     def new_pairing(self, app_url: Optional[str] = None, ttl: int = rc.PAIRING_TTL,
                     relay_origin: bool = False, bundle: str = "") -> str:
         """A one-time pairing link (the QR code's text) for a new phone,
         payload version 2: `a` the app URL it opens, `b` the `bundle` hash
-        when given. A link that opens the app anywhere but the bot's own
+        when given. A link that opens the hosted copy of the app
+        (`hosted_app` exactly) makes a hosted device and needs the bundle
+        hash. A link that opens the app anywhere else but the bot's own
         origin makes a relay-origin device and takes `relay_origin`. With a
         bundle hash it must open the relay's own copy of the app
         (`relay_app_url`), and the device, once approved, reads and chats
         (BUNDLE_ACCESS); without one, chat.json's `relay_origin_access`
         must not be "off". RelayError otherwise."""
         url = app_url or self.app_url or relay_app_url(self.relay_url)
-        origin = origin_of(url, self.public_url, self.relay_url)
+        origin = self.origin_for(url)
+        if origin == "hosted":
+            if not bundle:
+                raise RelayError("a pairing on the hosted copy of the app needs the signed "
+                                 "app bundle's hash")
+            if url != self.hosted_app:
+                raise RelayError("a pairing on the hosted copy opens hosted_app itself")
+            payload = self.store.add_pairing(ttl=ttl, relay_url=self.relay_url, origin=origin,
+                                             bundle=bundle, app_url=url)
+            return payload.to_string(url)
         if origin != "own" and not relay_origin:
             raise RelayError("the link would not open the app on the bot's own origin: set "
                              "public_url in the web block")
@@ -783,6 +1023,20 @@ class RelayClient:
         payload = self.store.add_pairing(ttl=ttl, relay_url=self.relay_url, origin=origin,
                                          bundle=bundle, app_url=url)
         return payload.to_string(url)
+
+    def new_handoff(self, bundle: str, by: str = "owner") -> dict:
+        """A handoff code for a computer (`make_handoff`): a pairing on the
+        hosted copy of the app against `bundle`, sealed and left at this
+        relay. `by` is the device that asked, or "owner". Returns {"code",
+        "expires", "pairing"}; RelayError when the handoff is off or the
+        bot has no bundle hash, HandoffUnavailable when the relay did not
+        take the blob."""
+        return make_handoff(self.store, self._relay_opener, self.relay_url, self.hosted_app,
+                            bundle, by=by)
+
+    def handoff_address(self) -> str:
+        """The address the owner opens on the computer (`handoff_address`)."""
+        return handoff_address(self.hosted_app, self.relay_url)
 
     def devices(self) -> list[dict]:
         """`device_row` of each paired device."""
@@ -960,8 +1214,8 @@ class RelayClient:
         try:
             self.notify(f"A new device asks to reach Tacitus through the relay: "
                         f"\"{dev.get('name')}\", pairing code {code[:3]} {code[3:]}. "
-                        "Approve it under Pair a phone in the web chat only when the phone "
-                        "shows the same code. If you did not pair a phone now, remove it there.")
+                        "Approve it under Add a device in the web chat only when the device "
+                        "shows the same code. If you did not add a device now, remove it there.")
         except Exception:
             self.log.exception("relay: the notice of a new device failed")
 
@@ -1063,7 +1317,18 @@ class RelayClient:
             return
         if kind == "req":
             level = self.level(device)
-            if not access_allows(level, str(req.get("m")), str(req.get("p"))):
+            method, path = req.get("m"), req.get("p")
+            if relayed_owner_route(method, path):
+                # The owner routes a phone reaches: only from an approved
+                # device paired on the bot's own origin (pending ones never
+                # get here), marked with the session's device id.
+                if device.get("origin") != "own" or level != "all":
+                    out = _response(403, "only a phone set up on your own network manages "
+                                         "devices from here")
+                else:
+                    out = self._local_call(req, body, session.device, level,
+                                           owner_device=session.device)
+            elif not access_allows(level, str(method), str(path)):
                 out = _response(403, "not allowed from a device paired on the relay's origin")
             else:
                 out = self._local_call(req, body, session.device, level)
@@ -1072,13 +1337,16 @@ class RelayClient:
             self._open_stream(session, fid, req)
 
     def _headers(self, device: str, extra: Mapping[str, Any] | None = None,
-                 level: str = "read", method: str = "GET") -> dict[str, str]:
+                 level: str = "read", method: str = "GET",
+                 owner_device: str = "") -> dict[str, str]:
         """The phone's allowed headers (printable ASCII only), the owner's
         credential, the local origin on a change (POST, PATCH, DELETE), and
-        the relay marks: the
-        device id, and whether this request may confirm a card
-        (`X-Tacitus-Relay-Cards`). A local server that resolves typed card
-        codes skips that on "deny"."""
+        the relay marks: the device id, whether this request may confirm a
+        card (`X-Tacitus-Relay-Cards`), and on one of RELAYED_OWNER_ROUTES
+        the device that may use it (`X-Tacitus-Relay-Device`). Every mark
+        comes from the session here; a phone's own copy of any of them is
+        dropped with every other header outside FORWARD_HEADERS. A local
+        server that resolves typed card codes skips that on "deny"."""
         headers: dict[str, str] = {}
         for name, value in (extra or {}).items():
             key = str(name).lower()
@@ -1090,17 +1358,25 @@ class RelayClient:
             headers["Origin"] = self.local_origin
         headers["X-Tacitus-Relay"] = device
         headers["X-Tacitus-Relay-Cards"] = "allow" if level == "all" else "deny"
+        if owner_device:
+            headers[OWNER_DEVICE_HEADER] = owner_device
         return headers
 
     def _local_call(self, req: dict, raw: bytes, device: str,
-                    level: str = "read") -> tuple[dict, bytes]:
+                    level: str = "read", owner_device: str = "") -> tuple[dict, bytes]:
         """Replay one request on the loopback server: (status and headers,
         body) of its answer. It never opens the event stream (an `open`
-        frame does), and gives up at LOCAL_DEADLINE."""
+        frame does), and gives up at LOCAL_DEADLINE. `owner_device` is set
+        only for one of RELAYED_OWNER_ROUTES from a device allowed it, and
+        marks the request so."""
         method, path = req.get("m"), req.get("p")
         if method not in METHODS:
             return _response(405, "method not allowed")
-        if not path_allowed(path):
+        owner_route = bool(owner_device) and owner_device == device \
+            and relayed_owner_route(method, path)
+        if not owner_route:
+            owner_device = ""
+        if not owner_route and not path_allowed(path):
             return _response(403, "path not allowed through the relay")
         if _plain_route(path) == EVENTS_PATH:
             return _response(403, "the event stream opens with an open frame")
@@ -1109,7 +1385,8 @@ class RelayClient:
             return _response(413, "body too large")
         hdrs = req.get("h") if isinstance(req.get("h"), dict) else {}
         request = urllib.request.Request(self.local + path, data=body, method=method,
-                                         headers=self._headers(device, hdrs, level, method))
+                                         headers=self._headers(device, hdrs, level, method,
+                                                               owner_device))
         deadline = time.monotonic() + LOCAL_DEADLINE
         try:
             resp = self._local_opener.open(request, timeout=LOCAL_TIMEOUT)
@@ -1224,7 +1501,8 @@ def start_relay(frontend_cfg: Mapping[str, Any], local_base_url: str, *,
     `frontend_cfg` is the chat block's `web` dict; its `relay` block holds
     `url`, `key_file` and optionally `install_id`, `app_url` (default: the
     web block's `public_url`), `relay_origin_access` (default "off"),
-    `wait` and `enabled`. `local_base_url` is the running web front end's
+    `hosted_app` (default DEFAULT_HOSTED_APP, "" turns the handoff to a
+    computer off), `wait` and `enabled`. `local_base_url` is the running web front end's
     loopback base, scheme to base path (`http://127.0.0.1:8470/chat`).
     `notify(text)` posts the owner a notice (a new device). Returns the
     started client (call `stop()` at shutdown), or None when no relay is
@@ -1260,6 +1538,7 @@ def start_relay(frontend_cfg: Mapping[str, Any], local_base_url: str, *,
                              public_url=frontend_cfg.get("public_url") or None,
                              relay_origin_access=str(relay.get("relay_origin_access",
                                                                DEFAULT_RELAY_ORIGIN_ACCESS)),
+                             hosted_app=relay.get("hosted_app", DEFAULT_HOSTED_APP),
                              notify=notify, logger=lg)
     except (RelayError, ValueError, OSError) as exc:
         lg.error("relay: off, %s", exc)
@@ -1362,11 +1641,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                        ("show", "print the install id and the paired devices"),
                        ("pair", "open a one-time pairing and print it as a QR code"),
                        ("approve", "let a paired device in, once its code matches the phone's"),
-                       ("revoke", "remove a paired device")):
+                       ("revoke", "remove a paired device"),
+                       ("handoff", "make a one-time code that sets up a computer at the hosted "
+                                   "copy of the app")):
         p = sub.add_parser(name, help=text)
         p.add_argument("--key-file", required=True)
-        if name in ("init", "pair"):
+        if name in ("init", "pair", "handoff"):
             p.add_argument("--relay-url", default="")
+        if name == "handoff":
+            p.add_argument("--hosted-app", default=DEFAULT_HOSTED_APP,
+                           help="the relay block's hosted_app: where the computer opens the app")
         if name == "pair":
             p.add_argument("--public-url", default="",
                            help="the web block's public_url: the link opens the app there")
@@ -1446,9 +1730,33 @@ def main(argv: Optional[list[str]] = None) -> int:
                 from . import relay_qr
                 print(relay_qr.terminal(link))
             print("Scan it with the phone; it works once, for ten minutes. Then approve the "
-                  "phone here (show, then approve --device <id>) or under Pair a phone in the "
+                  "phone here (show, then approve --device <id>) or under Add a device in the "
                   "web chat, when its code matches. Never send this link through chat or mail.",
                   file=sys.stderr)
+            return 0
+        if args.cmd == "handoff":
+            url = _check_relay_url(args.relay_url or store.relay_url())
+            hosted = check_hosted_app(args.hosted_app)
+            if not hosted:
+                print("error: the handoff needs the hosted app's address (--hosted-app).",
+                      file=sys.stderr)
+                return 1
+            bundle = _cli_bundle_hash(path, url)
+            if not bundle:
+                print("error: this build signs no app bundle, so a computer could not check "
+                      "the hosted copy against this bot.", file=sys.stderr)
+                return 1
+            host = (urllib.parse.urlsplit(url).hostname or "").lower()
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect) \
+                if host in LOOPBACK else urllib.request.build_opener(_NoRedirect)
+            out = make_handoff(store, opener, url, hosted, bundle, by="owner")
+            print(f"Code: {out['code']}")
+            print(f"Open: {handoff_address(hosted, url)}")
+            print("Expires: " + time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(out["expires"])))
+            print("On the computer, open that address and type the code. It works once, for ten "
+                  "minutes. Never send it through chat or mail. The computer then shows a "
+                  "six-digit code: approve it here (show, then approve --device <id>) or under "
+                  "Add a device in the web chat, when the codes match.", file=sys.stderr)
             return 0
         if args.cmd in ("approve", "revoke"):
             ok = store.approve(args.device, cards=args.cards) if args.cmd == "approve" \

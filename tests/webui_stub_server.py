@@ -21,7 +21,7 @@ request asked to resume. `--pair-token T` makes every API route answer
 401 until the browser pairs with T. `relay_pairing=True` runs a relay that
 pairs only through its own copy of the app (a bot with no public_url, on
 this machine): /api/me says `relay`, `pairs` records each pairing,
-`devices` are the paired phones "Pair a phone" lists, and `approvals`
+`devices` are the paired devices "Add a device" lists, and `approvals`
 records each Approve (with its `cards` choice). The Settings screen reads
 `routing` (three made-up rows: one free, one under the keep floor, one
 under the stakes floor) and `settings_posts` records each Save; a value a
@@ -37,7 +37,8 @@ subscription, as a bot with the cryptography package does.
 /api/relay/status says `handoff` and names the website's copy of the app,
 and POST /api/relay/handoff answers a made-up code and the address to open,
 recorded in `handoffs`. `owner_routes` is what /api/me says of the owner's
-routes ("all", "handoff" or "none"); left out, /api/me does not say.
+routes ("all", "handoff" or "none"), beside `handoff`, as the bot says
+both; left out, /api/me says neither.
 
 A room's menu renames a room (PATCH /api/channels/<id> with a name),
 archives it and brings it back (POST .../archive, .../unarchive), each
@@ -101,6 +102,7 @@ STUB_BOT_PUBLIC = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"  # 32 bytes of 1
 STUB_CLIENT_KEY = "c" * 43
 STUB_BUNDLE = "b" * 64  # a made-up hash of the bot's signed app bundle, when it signs none
 STUB_HOSTED = "https://app.example.org/"  # the website's copy of the app a handoff names
+STUB_HANDOFF_PAIRING = "7" * 32  # the pairing id behind the made-up handoff code
 WEEKLY = "stream:9:topic:weekly%20plan"
 ROOM_ASK = re.compile(r"^\s*open a (?:channel|room) for (?P<name>.+?)\s*$", re.I)
 NOTIFY = {"briefings": True, "replies": True, "rooms": True, "quiet": "queue"}
@@ -543,7 +545,7 @@ class Handler(BaseHTTPRequestHandler):
                                     "bundle": s.bundle.hash if s.bundle else "",
                                     "settings": s.settings, "push": s.push,
                                     **({"relay": True} if s.relay_pairing else {}),
-                                    **({"owner_routes": s.owner_routes} if s.owner_routes else {})})
+                                    **({"owner_routes": s.owner_routes, "handoff": s.handoff} if s.owner_routes else {})})
         if parts == ["settings", "routing"] and "routing" in s.settings:
             return self._json(200, s.routing)
         if parts == ["settings", "notify"] and "notify" in s.settings:
@@ -667,6 +669,7 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["relay", "handoff"] and s.handoff:
             s.handoffs.append(json.loads(self._body() or b"{}"))
             return self._json(200, {"code": "ABCDE-FGHJK", "expires": int(time.time()) + 600, "access": "chat",
+                                    "pairing": STUB_HANDOFF_PAIRING,
                                     "open": STUB_HOSTED + "?relay=https%3A%2F%2Frelay.example.net"})
         if parts == ["relay", "pair"] and s.relay_pairing:
             body = json.loads(self._body() or b"{}")

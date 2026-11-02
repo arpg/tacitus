@@ -113,8 +113,11 @@
   const setState = (name, value) => caches.open(STATE).then((c) => (value == null ? c.delete(stateKey(name))
     : c.put(stateKey(name), new Response(JSON.stringify(value)))));
   const hashOf = async (res) => sha256Hex(new Uint8Array(await res.clone().arrayBuffer()));
-  const kept = (req) => caches.open(CACHE).then((c) => c.match(req, { ignoreSearch: true }));
-  const keep = (req, res) => caches.open(CACHE).then((c) => c.put(req, res.clone())).catch(() => {});
+  // Copies are kept and found by their exact URL: one with a query string is never kept, so no
+  // address the page was opened at (`?relay=`) holds a copy that outlives an adoption.
+  const kept = (req) => caches.open(CACHE).then((c) => c.match(req));
+  const keep = (req, res) => (new URL(req.url || req).search ? Promise.resolve()
+    : caches.open(CACHE).then((c) => c.put(req, res.clone())).catch(() => {}));
 
   function install() {
     // A worker that follows one with a trusted manifest keeps its checked copies.
@@ -215,9 +218,9 @@
   }
 
   // The network's answer, or the kept copy when the network fails or is slow
-  // ({res, copy: true}); a page with no copy of its own gets the start page.
+  // ({res, copy: true}); a page of the app gets the kept start page.
   function fetchOrCopy(req) {
-    const copy = () => kept(req).then((hit) => hit || (req.mode === 'navigate' ? kept(urlOf('index.html')) : undefined));
+    const copy = () => kept(req.mode === 'navigate' ? urlOf('index.html') : req);
     const net = fetch(req);
     return new Promise((resolve) => {
       const slow = setTimeout(() => copy().then((hit) => hit && resolve({ res: hit, copy: true })), SLOW_MS);
@@ -243,14 +246,17 @@
     const trusted = await getState('trusted');
     if (!trusted) return keep(req, res).then(() => res); // the first manifest checks it (adopt)
     const path = bundlePath(url, scope, trusted.files);
+    // A file the manifest does not name (the website's release.txt, a stray link) is no
+    // code of the app: it is not served, and it stops nothing.
+    if (!Object.hasOwn(trusted.files, path)) return new Response('Not found', { status: 404 });
     if (trusted.files[path] === await hashOf(res)) {
       const named = trusted.headers && trusted.headers[path];
       const out = named ? keepAs(await res.arrayBuffer(), res.headers.get('content-type'), named) : res;
-      return keep(req, out).then(() => out);
+      return keep(urlOf(path), out).then(() => out);
     }
     // Not the signed file. The checked copy serves until the page brings the
     // bot's manifest, which tells a new release from a changed file (adopt).
-    const old = await kept(req);
+    const old = await kept(urlOf(path));
     if (old) return setState('suspect', true).then(() => old);
     await refuse(path);
     return refusal(req, path);
@@ -312,8 +318,11 @@
   // brings them (`files`). Files are kept all or none, with the release's
   // headers, before the manifest is trusted: the copy moves only to the bot's.
   // `replace`: the website's copy of the app (a computer set up with a code),
-  // which may be another release than the bot's: at the first manifest each
-  // kept file that differs is replaced by the bot's, and none stops the app.
+  // which may be another release than the bot's: at the first manifest every
+  // kept entry that is not a file the manifest names, at its exact URL, goes,
+  // each kept file that differs is replaced by the bot's, and none stops the
+  // app. That first adoption reports `updated` once it writes headers, so the
+  // page reloads under the bot's policy rather than the website's.
   async function adopt(doc, pin, sealed, files, replace) {
     const old = await getState('trusted');
     if (sealed && !old && !pin) return { want: [] }; // the bot's own copy checks first on the tailnet
@@ -321,6 +330,10 @@
     const suspect = await getState('suspect');
     if (old && old.hash === v.hash && !suspect && !sealed) return { ok: true };
     const cache = await caches.open(CACHE);
+    if (!old && replace) {
+      const named = new Set(Object.keys(v.files).map(urlOf));
+      for (const req of await cache.keys()) if (!named.has(req.url)) await cache.delete(req);
+    }
     if (!old && !replace) {
       for (const req of await cache.keys()) {
         const path = bundlePath(new URL(req.url), scopeUrl(), v.files);
@@ -350,13 +363,14 @@
       const named = block && block[path];
       if (sealed && !named && !had && path.endsWith('.html')) return { error: `no security policy to keep for ${path}` };
       if (sealed || named) put.set(path, [had, keepAs(await res.arrayBuffer(), res.headers.get('content-type'), named, had)]);
+      updated ||= Boolean(replace && !old && named);
     }
     // A release that changes only the headers: each kept copy takes them.
     for (const [path, named] of Object.entries(block || {})) {
       const had = !put.has(path) && good.get(path);
       if (!had || KEEP_HEADERS.every((k) => (named[k] || null) === had.headers.get(k))) continue;
       put.set(path, [had, keepAs(await had.arrayBuffer(), had.headers.get('content-type'), named)]);
-      updated ||= Boolean(old);
+      updated ||= Boolean(old || replace);
     }
     for (const [path, [, res]] of put) await cache.put(urlOf(path), res);
     await setState('trusted', { hash: v.hash, key: v.key, files: v.files, headers: block, pin: Boolean(pin || (old && old.pin)) });
