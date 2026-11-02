@@ -3716,8 +3716,8 @@ def _execute_send(channel: str, thread_ts: str, confirm_msg_ts: str | None,
             token = token_data["token"]
 
             send_result = sp.run(
-                ["python3", str(SCRIPT_DIR / "preprocessor" / "graph_actions.py"),
-                 "send-gmail-draft", "--email", gmail_email,
+                ["python3", str(SCRIPT_DIR / "preprocessor" / "mail_actions.py"),
+                 "send-draft", "--provider", "gmail", "--account", gmail_email,
                  "--draft-id", draft_id, f"--confirm-token={token}"],
                 capture_output=True, text=True, timeout=30, cwd=str(SCRIPT_DIR),
             )
@@ -3767,8 +3767,9 @@ def _execute_send(channel: str, thread_ts: str, confirm_msg_ts: str | None,
 
             # Send with token
             send_result = sp.run(
-                ["python3", str(SCRIPT_DIR / "preprocessor" / "graph_actions.py"),
-                 "send-draft", "--message-id", draft_id, f"--confirm-token={token}"],
+                ["python3", str(SCRIPT_DIR / "preprocessor" / "mail_actions.py"),
+                 "send-draft", "--provider", "outlook", "--draft-id", draft_id,
+                 f"--confirm-token={token}"],
                 capture_output=True, text=True, timeout=30, cwd=str(SCRIPT_DIR),
             )
         if not send_result.stdout.strip():

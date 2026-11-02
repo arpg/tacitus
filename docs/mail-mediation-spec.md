@@ -82,6 +82,7 @@ ea-bot has no route to any of these.
 - `graph_actions`: `send-draft`, `send-gmail-draft`, `schedule-send`, `request-confirm`
 - `graph_actions`: `create-event`, `update-event`, `delete-event`
 - `gmail_client.py`: `send-draft`   ← Gmail has its own send path, separate from graph_actions
+- `mail_actions.py`: `send-draft`   ← the bot's send on both providers; runs the two above in process
 - `google_calendar_client.py`: `create-event`, `update-event`, `delete-event` (owner-side they
   write the account's own calendar only with a button token; a request carrying
   `--confirm-token` is never part of the carve-out below)
