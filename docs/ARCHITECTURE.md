@@ -2516,7 +2516,10 @@ thread closes its row alone. `graph_client` records every mail move the EA
 makes (`ea_moves.py`, owner-private), and `ledger_sync` never reads an EA
 move as the user's archive. A close archives the thread only when nothing
 on it is open. `closure_scrubber.py check` also runs hourly between the
-briefings (cron), so evidence closes a row before the user has to.
+briefings (cron), so evidence closes a row before the user has to. Its
+Graph reads are bounded (`read_graph`): the fields the signals use, capped
+pages, a calendar window sized to the open scheduling rows, a 240-second
+limit and one retry ladder per run.
 
 The harness scores precision on closes and recall on closed-or-proposed;
 `auto_recall` (closed with no click) is the floor to raise.

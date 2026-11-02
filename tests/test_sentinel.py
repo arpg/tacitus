@@ -903,6 +903,40 @@ def test_breaker_detail_names_the_service_and_error_kind_only():
         retry_policy.open_breakers = orig
 
 
+def test_breaker_detail_says_what_each_graph_lane_does():
+    """The interactive Graph breaker never fails a call fast, so its line
+    says the owner's actions still try once; the background one fails fast."""
+    import retry_policy
+    orig = retry_policy.open_breakers
+
+    def detail(*services):
+        retry_policy.open_breakers = lambda: [
+            {"service": s, "failures": 3, "last_error": "HTTP 504 after 6 attempts"}
+            for s in services]
+        ok, text = sentinel.check_circuit_breakers()
+        assert not ok
+        return text
+
+    try:
+        assert detail("graph") == (
+            "circuit breaker OPEN: graph (HTTP 504 after 6 attempts) — "
+            "the owner's own mail actions still try once each")
+        bg = detail("graph-background")
+        assert bg.endswith("— background mail jobs are failing fast"), bg
+        both = detail("graph-background", "graph")
+        assert both.endswith("— background mail jobs wait while the owner's own "
+                             "mail actions still try once each"), both
+        assert "external service" not in both
+        mixed = detail("graph", "remote-llm")
+        assert mixed.endswith(
+            "— mail: the owner's own mail actions still try once each. "
+            "remote-llm: external service down; calls are failing fast"), mixed
+        assert detail("remote-llm").endswith(
+            "— external service down; calls are failing fast")
+    finally:
+        retry_policy.open_breakers = orig
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0
