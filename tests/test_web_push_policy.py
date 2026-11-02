@@ -9,7 +9,9 @@ lines never push. The owner's reply, in the web app or mirrored from the
 primary, drops the thread's queued push, sends one clear to each browser
 a push under the thread reached, and under an alert whose text the
 thread carries (within its budget, and never to Apple's push service),
-and runs the thread-state rules at once."""
+and runs the thread-state rules at once. A page that shows the thread
+(push on there or not), a card settled here or on the primary, and the
+owner's Mark done clear the thread the same way."""
 from __future__ import annotations
 
 import json
@@ -587,7 +589,9 @@ def skipped(caplog) -> list[dict]:
 def test_a_clear_goes_only_where_a_push_went_and_the_page_has_not_shown_the_thread(pushing):
     """Per subscription: the clear goes to the browsers the thread's push
     reached, not to one subscribed after it, one whose send failed, or one
-    whose page showed the thread since (POST /api/push/seen)."""
+    whose page showed the thread since (POST /api/push/seen; here with
+    `elsewhere` false, a page the owner may not be at, which clears no
+    other browser)."""
     f = pushing
     subscribe(f, MOZ, WNS)
     real = f.push.send_one
@@ -600,14 +604,61 @@ def test_a_clear_goes_only_where_a_push_went_and_the_page_has_not_shown_the_thre
     subscribe(f, late)                                   # after the push: owed nothing
     f.start()
     tag = f"main/{key}"
-    assert owner(f, "POST", "/api/push/seen", {"endpoint": MOZ, "tag": tag})[0] == 200
-    status, _h, body = owner(f, "POST", "/api/push/seen", {"endpoint": MOZ, "tag": tag})
+    seen = {"endpoint": MOZ, "tag": tag, "elsewhere": False}
+    status, _h, body = owner(f, "POST", "/api/push/seen", seen)
+    assert status == 200 and json.loads(body) == {"ok": True, "owed": True}
+    status, _h, body = owner(f, "POST", "/api/push/seen", seen)
     assert status == 200 and json.loads(body) == {"ok": True, "owed": False}
     assert owner(f, "POST", "/api/push/seen", {"endpoint": MOZ})[0] == 400
+    time.sleep(0.2)
+    assert clears_to(f) == []
     owner_says(f, "main", "Move the first one.", key)
     assert until(lambda: len(clears_to(f)) == 1)
     time.sleep(0.2)
     assert clears_to(f) == [(FCM, {"type": "clear", "tag": tag, "title": "Tacitus replied"})]
+
+
+@needs_push
+def test_a_thread_a_page_shows_is_cleared_on_every_other_browser(pushing):
+    """Seen elsewhere: a page that shows the thread (POST /api/push/seen)
+    closed the thread's notifications in its own browser, which gets no
+    clear, and every other browser the thread's push reached gets one at
+    once, as on the owner's reply. A page with push off names no endpoint:
+    each browser owed one gets it. The push queued for the thread goes
+    too, and a thread that notified nothing gets no clear."""
+    f = pushing
+    f.push.clear_gap_s = 0                               # the budget has its own test
+    subscribe(f, MOZ)
+    key = owner_says(f, "main", "What is on tomorrow?")
+    f.post("main", "Two meetings.", thread_ts=key)
+    assert until(lambda: sorted(f.to) == sorted([FCM, MOZ]))
+    f.start()
+    tag = f"main/{key}"
+    status, _h, body = owner(f, "POST", "/api/push/seen", {"endpoint": MOZ, "tag": tag})
+    assert status == 200 and json.loads(body) == {"ok": True, "owed": True}
+    assert until(lambda: len(clears_to(f)) == 1)
+    assert clears_to(f) == [(FCM, {"type": "clear", "tag": tag, "title": "Tacitus replied"})]
+    owner_says(f, "main", "Move the first one.", key)    # cleared already: owed to no one
+    # a computer with push off: the tag alone, and every browser the push reached
+    other = owner_says(f, "r1", "Status of the draft?")
+    f.post("r1", "With the coauthors.", thread_ts=other)
+    assert until(lambda: len(f.sent) == 5)               # a push to each, the clear, a push to each
+    status, _h, body = owner(f, "POST", "/api/push/seen", {"tag": f"r1/{other}"})
+    assert status == 200 and json.loads(body) == {"ok": True, "owed": False}
+    assert until(lambda: len(clears_to(f)) == 3)
+    assert sorted(to for to, p in clears_to(f)[1:]) == sorted([FCM, MOZ])
+    assert {p["tag"] for _to, p in clears_to(f)[1:]} == {f"r1/{other}"}
+    # quiet hours: the queued push goes, and nothing showed, so no clear
+    f.quiet_until = lambda: time.time() + 3600
+    night = owner_says(f, "main", "Anything for Friday?")
+    f.post("main", "Nothing booked.", thread_ts=night)
+    assert [q["tag"] for q in f.store.push_queued()] == [f"main/{night}"]
+    assert owner(f, "POST", "/api/push/seen", {"tag": f"main/{night}"})[0] == 200
+    assert f.store.push_queued() == []
+    for bad in ({"tag": tag, "endpoint": 7}, {"tag": tag, "elsewhere": "no"}, {"tag": ""}):
+        assert owner(f, "POST", "/api/push/seen", bad)[0] == 400
+    time.sleep(0.2)
+    assert len(clears_to(f)) == 3
 
 
 @needs_push
@@ -693,6 +744,47 @@ def test_an_owner_reply_clears_the_alert_its_conversation_carries(pushing, caplo
 
 
 @needs_push
+def test_a_settled_card_clears_its_notifications_once(pushing):
+    """A card that becomes a status line (the owner pressed Send, or the
+    bot retired it) clears the notification its push left, under the
+    card's thread's tag. A later change of the status clears nothing, so a
+    message the bot posts in the thread meanwhile keeps its notification."""
+    f = pushing
+    f.push.clear_gap_s = 0                               # the budget has its own test
+    ref = f.post_card("dm", card())
+    assert until(lambda: len(f.sent) == 1)
+    tag = f"dm/{ref.thread_key}"
+    assert f.sent[0][0]["tag"] == tag
+    assert f.replace_card_with_status(ref, ":hourglass_flowing_sand: Sending...")
+    assert until(lambda: clears(f) == [{"type": "clear", "tag": tag, "title": "Tacitus"}])
+    f.post("dm", "The send failed: the draft is gone.", thread_ts=ref.thread_key)
+    assert until(lambda: len(shown(f)) == 2)
+    assert f.replace_card_with_status(ref, ":x: Not sent.")
+    assert not f.replace_card_with_status(MessageRef("dm", "no-such-card", "no-such-card"), "Sent.")
+    time.sleep(0.2)
+    assert len(clears(f)) == 1
+
+
+@needs_push
+def test_marking_a_thread_done_clears_its_notifications(pushing):
+    """The owner's Mark done (POST /api/threads/<channel>/<key>/state), on
+    any device, clears the thread's notifications everywhere; Waiting and
+    Needs me do not."""
+    f = pushing
+    key = owner_says(f, "main", "What is on tomorrow?")
+    f.post("main", "Two meetings.", thread_ts=key)
+    assert until(lambda: len(f.sent) == 1)
+    f.start()
+    for state in ("waiting", "needs_you"):
+        assert owner(f, "POST", f"/api/threads/main/{key}/state", {"state": state})[0] == 200
+    time.sleep(0.2)
+    assert clears(f) == []
+    assert owner(f, "POST", f"/api/threads/main/{key}/state", {"state": "done"})[0] == 200
+    assert until(lambda: clears(f) == [{"type": "clear", "tag": f"main/{key}",
+                                        "title": "Tacitus replied"}])
+
+
+@needs_push
 def test_a_mirrored_owner_reply_clears_like_one_from_the_app(tmp_path):
     """Shadow mode: the owner answers on the primary, the composite mirrors
     the message, and the phone's notification for the thread goes."""
@@ -709,6 +801,32 @@ def test_a_mirrored_owner_reply_clears_like_one_from_the_app(tmp_path):
                       "owner")
         assert until(lambda: clears(f) == [{"type": "clear", "tag": f"stream:7/{key}",
                                             "title": "Tacitus"}])
+    finally:
+        f.stop()
+
+
+@needs_push
+def test_a_card_settled_on_the_primary_clears_like_one_settled_here(tmp_path):
+    """Shadow mode: the owner presses Send on the primary (or here, which
+    the composite carries there), the composite mirrors the status line,
+    and the phone's notification for the card goes. The same status again,
+    or a status for a card this store never held, clears nothing."""
+    f = pushing_fe(tmp_path)
+    f.inbound = lambda ev: None
+    try:
+        f.mirror_channel("stream:7", "ea-dm", "dm")
+        key = "stream:7:topic:lock"
+        ref = MessageRef("stream:7", "1001", key, time.time())
+        f.mirror_card(ref, card())
+        assert until(lambda: len(f.sent) == 1)
+        f.mirror_card_status(ref, ":white_check_mark: Sent.")
+        assert until(lambda: clears(f) == [{"type": "clear", "tag": f"stream:7/{key}",
+                                            "title": "Tacitus"}])
+        f.mirror_card_status(ref, ":white_check_mark: Sent.")
+        f.mirror_card_status(MessageRef("stream:7", "1003", "stream:7:topic:other", time.time()),
+                             ":white_check_mark: Sent.")
+        time.sleep(0.2)
+        assert len(clears(f)) == 1
     finally:
         f.stop()
 

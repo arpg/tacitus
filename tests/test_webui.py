@@ -430,7 +430,9 @@ def test_the_app_stays_small():
     #     the website's copy taking the bot's release, and the page's own security policy).
     # 4,680: 4,660 plus the review's hardening of it (a mailbox per relay from one PBKDF2 block, the
     #     worker's copies kept and found by their exact address, the first hosted adoption's cleanup).
-    assert lines <= 4680, f"{lines} lines: the contract keeps the app near 4,680 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions and a computer through the relay"
+    # 4,690: 4,680 plus the thread in view cleared on the owner's other browsers, push on here or not
+    #     (the tag alone with push off, a message on the stream as the cue, the focus for a cue).
+    assert lines <= 4690, f"{lines} lines: the contract keeps the app near 4,690 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay and its notifications cleared where they are done"
 
 
 # -- in a browser, against the stub ---------------------------------------
