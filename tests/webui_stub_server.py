@@ -35,8 +35,9 @@ subscription, as a bot with the cryptography package does;
 `subscriptions` is the list of browsers that get notifications
 /api/push/subscriptions answers (none by default); `seen`
 records each POST /api/push/seen (the thread a page shows), `subscribed`
-each subscription the app posts, and `sweeps` each POST
-/api/push/unclosed, which answers the tags in `unclosed` once.
+each subscription the app posts, `sweeps` each POST
+/api/push/unclosed, which answers the tags in `unclosed` once, and
+`revokes` each Remove (POST /api/push/revoke), which drops that row.
 
 `handoff=True` (with relay_pairing) lets "Add a device" offer A computer:
 /api/relay/status says `handoff` and names the website's copy of the app,
@@ -175,6 +176,7 @@ class Stub:
         self.subscribed: list[dict] = []  # each POST /api/push/subscribe body
         self.sweeps: list[dict] = []  # each POST /api/push/unclosed body
         self.unclosed: list[str] = []  # the tags the next sweep answers
+        self.revokes: list[dict] = []  # each POST /api/push/revoke body
         self.echo = echo
         self.closed = False
         self.seq = 0
@@ -678,6 +680,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "owed": False})
         if parts == ["push", "subscribe"] and s.push:
             s.subscribed.append(json.loads(self._body() or b"{}"))
+            return self._json(200, {"ok": True})
+        if parts == ["push", "revoke"] and s.push:
+            body = json.loads(self._body() or b"{}")
+            s.revokes.append(body)
+            s.subscriptions = [r for r in s.subscriptions if r.get("id") != body.get("id")]
             return self._json(200, {"ok": True})
         if parts == ["push", "unclosed"] and s.push:
             body = json.loads(self._body() or b"{}")

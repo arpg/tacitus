@@ -178,7 +178,7 @@ only what the resident shows: that file is ea-bot's to write, and the
 table moves mail between models. A `routing.json` that fails the owner
 checks reads as the defaults, and the doctor's row FAILs.
 
-**Changing it.** The web chat's Settings screen (the drawer's foot: a
+**Changing it.** The web chat's Models page (Settings at the drawer's foot, then Models: a
 row per task with Local, Hosted and Auto, the floor's line under a
 locked row, the local model's state at the top, Save), or as the owner:
 

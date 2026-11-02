@@ -37,7 +37,7 @@ sys.path.insert(0, str(TESTS))
 sys.path.insert(0, str(TESTS.parent / "botcore"))
 
 from test_webui import (  # noqa: E402,F401  (the fixtures and helpers)
-    WEBUI, _kept, _owner_context, _pair_and_approve, _worker_state, app, browser, relay_bot,
+    WEBUI, _kept, _owner_context, _pair_and_approve, _worker_state, app, browser, open_devices, relay_bot,
     stub_factory, wait_for,
 )
 
@@ -125,8 +125,10 @@ def test_a_computer_shows_the_code_and_the_owner_approves_it(app):
     from playwright.sync_api import expect
     page, stub, errors = app(relay_pairing=True, handoff=True)
     page.wait_for_selector(".thread-item")
-    expect(page.locator("#pair-phone")).to_have_text("Add a device")
+    page.click("#open-settings")
+    expect(page.locator("#pair-phone .s-label")).to_have_text("Devices")
     page.click("#pair-phone")
+    expect(page.locator("#settings")).to_be_hidden()
     expect(page.locator("#add-ways")).to_be_visible()
     expect(page.locator("#way-here")).to_be_hidden()  # not on the bot's own address
     expect(page.locator("#way-phone")).to_have_attribute("aria-pressed", "true")
@@ -164,11 +166,11 @@ def test_a_computer_shows_the_code_and_the_owner_approves_it(app):
 def test_a_phone_through_the_relay_offers_only_a_computer(app):
     """Where the bot lets this device start a handoff and nothing else
     (`owner_routes` "handoff"), "Add a device" opens on A computer alone and
-    makes no phone pairing; with "none" the drawer offers nothing."""
+    makes no phone pairing; with "none" Settings offers no Devices."""
     from playwright.sync_api import expect
     page, stub, errors = app(relay_pairing=True, handoff=True, owner_routes="handoff")
     page.wait_for_selector(".thread-item")
-    page.click("#pair-phone")
+    open_devices(page)
     expect(page.locator("#handoff-code")).to_have_text("ABCDE-FGHJK")
     expect(page.locator("#add-ways")).to_be_hidden()
     expect(page.locator("#add-computer")).to_be_visible()
@@ -176,6 +178,8 @@ def test_a_phone_through_the_relay_offers_only_a_computer(app):
     assert not errors, errors
     page, stub, errors = app(relay_pairing=True, handoff=True, owner_routes="none")
     page.wait_for_selector(".thread-item")
+    page.click("#open-settings")
+    expect(page.locator("#tour-again")).to_be_visible()
     expect(page.locator("#pair-phone")).to_be_hidden()
 
 
@@ -426,7 +430,7 @@ def test_a_computer_sets_up_with_a_code_and_runs_the_bots_release(browser, relay
     try:
         tail = _owner_context(browser, fe, contexts).new_page()
         tail.goto(relay_bot["public"] + "/")
-        tail.click("#pair-phone")
+        open_devices(tail)
         expect(tail.locator("#way-computer")).to_be_visible()
         tail.click("#way-computer")
         expect(tail.locator("#handoff-code")).to_have_text(re.compile(r"^[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}$"))
@@ -491,7 +495,7 @@ def test_a_phone_through_the_relay_adds_a_computer(browser, relay_bot, tmp_path)
         (own,) = fe.relay.devices()
         assert phone.evaluate("() => T.relay") is True
         assert phone.evaluate("() => [S.me.owner_routes, S.me.handoff]") == ["handoff", True]
-        phone.click("#pair-phone")
+        open_devices(phone)
         expect(phone.locator("#add-ways")).to_be_hidden()
         expect(phone.locator("#add-computer")).to_be_visible()
         expect(phone.locator("#handoff-code")).to_have_text(re.compile(r"^\w{5}-\w{5}$"), timeout=10000)

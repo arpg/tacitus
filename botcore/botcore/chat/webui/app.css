@@ -289,7 +289,11 @@ body.resizing, body.resizing * { cursor: col-resize; -webkit-user-select: none; 
 }
 .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 #update-note { margin: 0 0 8px; font-weight: 600; }
-#pair-phone, #open-settings, #tour-again, #new-room { margin: 8px 4px 0 0; }
+#new-room { margin: 8px 4px 0 0; }
+/* Settings: a row as the channels are, its hint on the right ("Notifications off") */
+#drawer-foot .chan { width: calc(100% + 16px); margin: 4px -8px 0; border: 0; background: none; font-size: 15px; text-align: left; cursor: pointer; }
+#open-settings svg { width: 18px; height: 18px; vertical-align: -3px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.c-hint { flex: none; color: var(--muted); font-size: 12px; }
 .toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
 .install { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 8px; color: var(--muted); font-size: 13px; }
 /* Each row's words wrap, and its buttons go under them where the drawer is too narrow for both. */
@@ -297,8 +301,8 @@ body.resizing, body.resizing * { cursor: col-resize; -webkit-user-select: none; 
 .install > span { flex-basis: 6em; } /* beside two buttons */
 .install > button, .subs li > button { flex: none; }
 #drawer-foot > .btn { max-width: 100%; }
-.subs { list-style: none; margin: 6px 0 0; padding: 0; color: var(--muted); font-size: 13px; }
-.subs li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px; }
+.subs { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.subs li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; }
 .archived summary { padding: 8px 18px; color: var(--muted); cursor: pointer; font-size: 13px; font-weight: 500; }
 .empty { color: var(--muted); padding: 16px; margin: 0; }
 .empty p { margin: 0 0 12px; }
@@ -702,7 +706,8 @@ a.file-link .file-name { color: var(--accent); }
    quiet-hours choice, each saved on change. The digest channel: no
    composer and no New conversation, and a line that says why. */
 
-#settings section { display: grid; gap: 12px; }
+#settings section, #notify-kinds { display: grid; gap: 12px; }
+#notify-row { font-weight: 600; }
 #notify-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
 #notify-rows li { display: grid; gap: 4px; justify-items: start; } /* the quiet-hours name above its choice */
 #notify-rows .toggle { font-weight: 600; }
@@ -713,6 +718,31 @@ body.digest #composer, body.digest #new-thread { display: none; }
   background: var(--panel); color: var(--muted); font-size: 14px; }
 @media (max-width: 599px) {
   #notify-rows .seg { justify-self: stretch; } /* the two choices fill the row */
+}
+
+/* Settings: Back, the page's name and Close stay at the top while a page
+   scrolls; the menu is a row per page with what it holds under its name;
+   on a phone the dialog is a sheet docked to the bottom. */
+
+.set-head { position: sticky; top: -24px; z-index: 1; /* a sticky box keeps clear of the dialog's padding: -24px is its edge */ display: flex; align-items: center; gap: 4px;
+  margin: -24px -24px 0; padding: 10px 10px 4px 24px; background: var(--panel); }
+#settings:not([data-page="menu"]) .set-head { padding-left: 10px; }
+.set-head h2 { flex: 1; min-width: 0; }
+#settings-back { color: var(--accent); }
+.s-menu { display: grid; gap: 6px; }
+.s-item { position: relative; display: grid; gap: 2px; width: 100%; min-height: 56px; padding: 10px 40px 10px 14px; border: 0;
+  border-radius: var(--r-m); background: var(--bg); text-align: left; cursor: pointer; transition: background-color .15s; }
+.s-item::after { content: ""; position: absolute; top: 50%; right: 18px; width: 8px; height: 8px; margin-top: -5px;
+  border: solid var(--muted); border-width: 2px 2px 0 0; transform: rotate(45deg); }
+.s-label { font-size: 16px; font-weight: 600; }
+.s-detail { font-size: 13px; color: var(--muted); }
+.s-item:active { background: var(--hover); }
+@media (hover: hover) { .s-item:hover { background: var(--hover); } }
+#settings-conn { margin-top: 6px; }
+#settings-conn:empty, #notify-why:empty { display: none; }
+@media (max-width: 599px) {
+  #settings { width: 100%; max-width: none; margin: auto 0 0; border-width: 1px 0 0; border-radius: var(--r-xl) var(--r-xl) 0 0;
+    max-height: calc(100dvh - 16px - env(safe-area-inset-top)); padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
 }
 /* A room's menu: the dots beside a room in the drawer (shown on hover or
    focus with a mouse; a finger long-presses the room instead), and its

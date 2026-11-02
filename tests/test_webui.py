@@ -301,18 +301,21 @@ def test_the_worker_checks_files_against_the_signed_manifest():
     assert "TacitusWorker: { v: 1, start" in bundle and "const API = 1;" in code
 
 
-def test_the_drawer_has_the_notifications_toggle():
-    """A checkbox in the channel drawer turns Web Push on; on iOS the install
-    line beside it says how notifications come. A headless browser cannot
-    grant push, so these are file checks."""
+def test_the_notifications_switch_is_under_settings():
+    """The drawer's foot has one Settings entry; the switch that turns Web
+    Push on for this browser is on its Notifications page, shown where the
+    bot can push. On iOS the install line in the foot says how notifications
+    come. A headless browser cannot grant push, so these are file checks."""
     html = read("index.html")
     nav = html[html.index('<nav id="channels"'):html.index("</nav>")]
-    toggle = re.search(r'<label class="toggle" id="notify-row" hidden><input type="checkbox" id="notify">', nav)
-    assert toggle and '<div id="install" class="install" hidden>' in nav and "notify-hint" not in html
     assert re.search(r'<footer id="drawer-foot" hidden>', nav), "hidden until it has something to show"
+    assert '<button type="button" id="open-settings" class="chan" aria-haspopup="dialog" hidden>' in nav
+    assert '<div id="install" class="install" hidden>' in nav and 'id="notify"' not in nav and "notify-hint" not in html
+    dlg = html[html.index('<dialog id="settings"'):html.index("</dialog>", html.index('<dialog id="settings"'))]
+    assert '<label class="toggle" id="notify-row"><input type="checkbox" role="switch" id="notify" disabled>' in dlg
     js = read("app.js")
     assert "S.me.push" in js and "Tap Share, then Add to Home Screen, so notifications work." in js
-    assert "$('notify-row').hidden = false" in js
+    assert "$('go-notify').hidden = !S.me.push" in js
     assert "call('GET', '/push/vapid')" in js
     assert re.search(r"pushManager\.subscribe\(\{ userVisibleOnly: true, applicationServerKey: keyBytes\(key\) \}\)", js)
     assert "call('POST', '/push/subscribe', await subBody(sub))" in js
@@ -440,7 +443,10 @@ def test_the_app_stays_small():
     #     (the tag alone with push off, a message on the stream as the cue, the focus for a cue), and
     #     the notifications no clear reached (the iPhone's): the worker closes the tags a push carries
     #     once its own shows, and the page sweeps them when it starts or comes back into view.
-    assert lines <= 4880, f"{lines} lines: the contract keeps the app near 4,880 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width and its notifications cleared where they are done"
+    # 4,990: 4,880 plus the Settings menu (one entry at the foot with its hint, a row per page with
+    #     what it holds, Back and Close, a page at a time, where notifications go by maker, the
+    #     connection in words, and the sheet docked on a phone).
+    assert lines <= 4990, f"{lines} lines: the contract keeps the app near 4,990 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done and the Settings menu"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -992,22 +998,22 @@ def test_the_menu_s_edge_moves_with_the_keys_and_keeps_the_split(app):
 SUBS = [{"id": "s1", "host": "push.example.com", "created_at": 1767225600, "last_seen": None, "last_ok": None, "failures": 0},
         {"id": "s2", "host": "notifications.a-long-made-up-push-service.example.org", "created_at": 1767312000,
          "last_seen": None, "last_ok": None, "failures": 0}]
-# The foot's controls on show, and the subscriptions' rows' parts, that reach outside the menu.
+# The foot's controls on show that reach outside the menu.
 OUTSIDE = """() => { const nav = $('channels').getBoundingClientRect();
-  return [...document.querySelectorAll('#drawer-foot > *, #drawer-foot button, #push-subs li > *')]
+  return [...document.querySelectorAll('#drawer-foot > *, #drawer-foot button')]
     .filter((el) => el.offsetWidth).map((el) => [el.id || el.textContent.trim(), el.getBoundingClientRect()])
     .filter(([, r]) => r.left < nav.left - 0.5 || r.right > nav.right + 0.5).map(([n]) => n); }"""
 
 
 def test_the_menu_s_foot_stays_inside_the_menu_at_every_width(app):
-    """Each browser that gets notifications has its Remove button inside the
-    menu, and so has every other control at its foot: in the drawer of a
-    narrow window, in the column split at the centre and at its narrowest."""
+    """Each control at the menu's foot (the install line with its buttons,
+    Settings with its hint, New room) stays inside the menu: in the drawer
+    of a narrow window, in the column split at the centre and at its
+    narrowest."""
     from playwright.sync_api import expect
     page, stub, errors = app(viewport={"width": 700, "height": 800}, push=True, settings=True, subscriptions=SUBS)
     page.wait_for_selector(".thread-item")
     page.evaluate(FAKE_PROMPT)  # the install line, with its button
-    expect(page.locator("#push-subs li button")).to_have_text(["Remove", "Remove"])
     page.click("#menu")
     expect(page.locator("#channels")).to_be_in_viewport()
     expect(page.locator("#install-btn")).to_be_visible()
@@ -1673,6 +1679,12 @@ from plain_words import JARGON  # noqa: E402
 FOOT = "[...$('drawer-foot').children].filter((el) => !el.hidden).map((el) => el.id)"
 
 
+def open_devices(page):
+    """Settings, then Devices: the "Add a device" dialog, the menu closed."""
+    page.click("#open-settings")
+    page.click("#pair-phone")
+
+
 def _drawer(page, size):
     if size == "phone":
         page.click("#menu")
@@ -1849,10 +1861,12 @@ def test_the_welcome_shows_once_and_again_from_the_drawer(app, size):
     expect(page.locator("#tour-again")).to_be_attached()
     page.wait_for_timeout(300)
     expect(dlg).to_be_hidden()
-    # "How Tacitus works" opens it again at the first card; Escape closes it.
+    # Settings, then "How Tacitus works" opens it again at the first card, the menu closed; Escape closes it.
     _drawer(page, size)
+    page.click("#open-settings")
     page.click("#tour-again")
     expect(dlg).to_be_visible()
+    expect(page.locator("#settings")).to_be_hidden()
     expect(card.locator("h2")).to_have_text("Ask in plain words")
     expect(page.locator("body")).not_to_have_class(re.compile("drawer"))
     page.keyboard.press("Escape")
@@ -2008,8 +2022,8 @@ def test_ios_safari_shows_the_install_line_until_it_is_hidden(app):
     expect(page.locator("#install-btn")).to_be_hidden()
     page.click("#install-close")
     expect(line).to_be_hidden()
-    # The stub offers no push and no relay: the foot keeps the welcome's entry and New room.
-    assert page.evaluate(FOOT) == ["push-subs", "tour-again", "new-room"]
+    # The stub offers no push and no relay: the foot keeps Settings and New room.
+    assert page.evaluate(FOOT) == ["open-settings", "new-room"]
     hidden_at = page.evaluate("Number(localStorage.getItem('tacitus-install-hidden'))")
     assert abs(hidden_at / 1000 - time.time()) < 60
     page.reload()
@@ -2032,7 +2046,7 @@ def test_the_installed_app_shows_no_install_line(app):
     page.wait_for_selector(".thread-item")
     page.evaluate(FAKE_PROMPT)
     expect(page.locator("#install")).to_be_hidden()
-    assert page.evaluate(FOOT) == ["push-subs", "tour-again", "new-room"]
+    assert page.evaluate(FOOT) == ["open-settings", "new-room"]
     assert not errors, errors
 
 
@@ -2280,10 +2294,10 @@ def test_the_relay_key_never_rides_in_a_url():
     assert transport.count("credentials: 'omit'") == 2
 
 
-def test_the_pairing_dialog_is_in_the_drawer():
+def test_the_pairing_dialog_opens_from_settings():
     html = read("index.html")
-    nav = html[html.index('<nav id="channels"'):html.index("</nav>")]
-    assert '<button type="button" id="pair-phone" class="btn small" hidden>Add a device</button>' in nav
+    dlg = html[html.index('<dialog id="settings"'):html.index("</dialog>", html.index('<dialog id="settings"'))]
+    assert '<button type="button" id="pair-phone" class="s-item" hidden><span class="s-label">Devices</span>' in dlg
     assert '<dialog id="phone"' in html and '<canvas id="phone-qr"' in html
     assert '<h2 id="phone-title">Add a device</h2>' in html
     for way, label in (("here", "This phone"), ("phone", "Another phone"), ("computer", "A computer")):
@@ -2304,34 +2318,46 @@ def test_the_pairing_dialog_is_in_the_drawer():
     assert "Never send this link through chat or mail." in js and "Never send this code through chat or mail." in js
 
 
-def test_the_settings_screen_is_in_the_drawer():
-    """A "Settings" entry at the drawer's foot opens a dialog with
-    Notifications (three switches and the quiet-hours choice, read and
-    saved at /settings/notify) and the routing table (the local model's
-    state, a row per task and Save, at /settings/routing); the app shows
-    each section when /api/me names its page (Notifications only where
-    push works), the entry when it shows any, and never on a relayed copy."""
+def test_the_settings_menu_is_in_the_drawer():
+    """The one "Settings" entry at the drawer's foot opens a menu: Notifications
+    (this browser's switch, the three switches and the quiet-hours choice, read
+    and saved at /settings/notify, and where notifications go), Devices ("Add
+    a device"), Models (the local model's state, a row per task and Save, at
+    /settings/routing) and How Tacitus works, each a row with what it holds
+    under its name. Notifications and Models open as pages in the dialog, with
+    Back and Close at its top; the bot's switches and Models show when /api/me
+    names their page, and never on a relayed copy, where the bot saves none."""
     html = read("index.html")
     nav = html[html.index('<nav id="channels"'):html.index("</nav>")]
-    assert '<button type="button" id="open-settings" class="btn small" hidden>Settings</button>' in nav
+    assert '<span class="c-name">Settings</span><span id="settings-hint" class="c-hint" hidden>Notifications off</span>' in nav
     dlg = html[html.index('<dialog id="settings"'):html.index("</dialog>", html.index('<dialog id="settings"'))]
+    for part in ('<button type="button" id="settings-back" class="icon" aria-label="Back to Settings" hidden>',
+                 '<button type="submit" id="settings-close" class="icon" aria-label="Close">',
+                 '<button type="button" id="go-notify" class="s-item" hidden><span class="s-label">Notifications</span>',
+                 '<button type="button" id="go-routing" class="s-item" hidden><span class="s-label">Models</span>',
+                 '<button type="button" id="tour-again" class="s-item"><span class="s-label">How Tacitus works</span>',
+                 '<p id="settings-conn" class="s-key"></p>'):
+        assert part in dlg, part
+    assert dlg.index('id="go-notify"') < dlg.index('id="pair-phone"') < dlg.index('id="go-routing"') < dlg.index('id="tour-again"')
     for part in ('<p id="settings-local">', '<ul id="settings-rows">', '<p id="settings-note" aria-live="polite">',
                  '<button type="button" id="settings-save" class="btn primary">Save</button>'):
-        assert part in dlg, part
-    for part in ('<section id="notify-settings" aria-labelledby="notify-title" hidden>',
+        assert part in dlg[dlg.index('id="routing-settings"'):], part
+    for part in ('<section id="notify-settings" aria-labelledby="settings-title" hidden>',
                  '<input type="checkbox" role="switch" name="briefings"> Briefings',
                  '<input type="checkbox" role="switch" name="replies"> Replies',
                  '<input type="checkbox" role="switch" name="rooms"> Rooms',
                  '<input type="radio" name="quiet" value="queue"> Hold until morning',
                  '<input type="radio" name="quiet" value="send"> Send anyway',
-                 '<section id="routing-settings" aria-labelledby="routing-title" hidden>'):
+                 '<ul id="push-subs" class="subs" aria-labelledby="subs-title"></ul>',
+                 '<section id="routing-settings" aria-labelledby="settings-title" hidden>'):
         assert part in dlg, part
     assert dlg.index('id="notify-settings"') < dlg.index('id="routing-settings"')
     js = read("app.js")
     assert "call('GET', '/settings/routing')" in js and "call('POST', '/settings/routing', { tasks })" in js
     assert "call('GET', '/settings/notify')" in js and "call('POST', '/settings/notify', {" in js
     assert "notify: pages.includes('notify') && Boolean(S.me.push), routing: pages.includes('routing')" in js
-    assert "$('open-settings').hidden = T.relay || !Object.values(settingsShown()).some(Boolean)" in js
+    assert "$('notify-kinds').hidden = T.relay || !shown.notify;" in js
+    assert "$('go-routing').hidden = T.relay || !shown.routing;" in js
     assert "disabled: !r.allowed.includes(v)" in js  # a floor locks a value
     assert ".chan, .seg label { min-height: 44px; }" in read("app.css")  # a finger's 44px
 
@@ -2553,7 +2579,7 @@ def _pair_and_approve(browser, relay_bot, contexts, workers=False):
     fe = relay_bot["fe"]
     tail = _owner_context(browser, fe, contexts).new_page()
     tail.goto(relay_bot["public"] + "/")
-    tail.click("#pair-phone")
+    open_devices(tail)
     expect(tail.locator("#phone-devices")).to_contain_text("No device is set up yet.")
     expect(tail.locator("#phone-self")).to_contain_text("This browser is not set up yet.")
     expect(tail.locator("#way-phone")).to_have_attribute("aria-pressed", "true")
@@ -2571,7 +2597,7 @@ def _pair_and_approve(browser, relay_bot, contexts, workers=False):
     tail.click("#phone-here")
     assert tail.evaluate("window.__paired") == [["tr2", link.split("#tr2=")[1], True]]
     assert not tail.evaluate("document.getElementById('phone').open")
-    tail.click("#pair-phone")
+    open_devices(tail)
     wait_for(lambda: tail.input_value("#phone-link"), 10)
     link = tail.input_value("#phone-link")
     expect(tail.locator("#phone-note")).to_contain_text("Never send this link through chat or mail.")
@@ -2608,7 +2634,7 @@ def _pair_and_approve(browser, relay_bot, contexts, workers=False):
     assert [d["pending"] for d in fe.relay.devices()] == [False]
     # The paired browser's own dialog says it is set up, under its code; the
     # device is named by what it is (a browser, not a home-screen app).
-    page.click("#pair-phone")
+    open_devices(page)
     expect(page.locator("#phone-self")).to_contain_text(f"This browser is set up (code {shown}).")
     assert fe.relay.devices()[0]["name"].endswith(" browser")
     page.keyboard.press("Escape")
@@ -2946,7 +2972,7 @@ def test_a_relay_origin_phone_checks_its_app_and_presses_cards_when_the_owner_al
         page, errors, device = _relay_origin_phone(browser, relay_bot, contexts, approve=False)
         tail = _owner_context(browser, fe, contexts).new_page()
         tail.goto(relay_bot["public"] + "/")
-        tail.click("#pair-phone")
+        open_devices(tail)
         row = tail.locator(f"#phone-devices li[data-device='{device}']")
         expect(row).to_contain_text("waits for approval", timeout=10000)
         box = row.locator("input[type=checkbox]")
@@ -2965,8 +2991,13 @@ def test_a_relay_origin_phone_checks_its_app_and_presses_cards_when_the_owner_al
         page.locator(".thread-item:has-text('Send this draft?')").click()
         expect(page.locator(".card button.primary")).to_be_disabled()
         expect(page.locator(".card .card-note")).to_contain_text("does not press card buttons")
-        # The drawer offers no pairing off the owner's own web chat.
+        # Settings offers no pairing off the owner's own web chat, and no Models; Notifications stay.
+        page.click("#open-settings")
+        expect(page.locator("#go-notify")).to_be_visible()
         expect(page.locator("#pair-phone")).to_be_hidden()
+        expect(page.locator("#go-routing")).to_be_hidden()
+        expect(page.locator("#settings-conn")).to_have_text(re.compile(r"^Connected away from home, through \S+\.$"))
+        page.click("#settings-close")
 
         # The owner allows card buttons for this device.
         row.locator("input[type=checkbox]").check()
@@ -3128,7 +3159,7 @@ def test_pair_a_phone_offers_the_relay_on_this_machines_own_address(app):
     pytest.importorskip("cryptography")
     page, stub, errors = app(relay_pairing=True, sign=True)
     page.wait_for_selector(".thread-item")
-    page.click("#pair-phone")
+    open_devices(page)
     expect(page.locator("#phone-note")).to_contain_text('This address does not open on a phone. Use "Phone not on your network" instead.')
     button = page.locator("#phone-relay")
     expect(button).to_be_visible()
@@ -3162,7 +3193,7 @@ def test_approve_sends_the_card_button_choice(app):
          "code": "654321", "cards_allowed": False, "bundle_verified": False},
         {"id": "3" * 16, "name": "laptop", "paired_at": 1793400000, "origin": "own", "pending": False}]
     page.wait_for_selector(".thread-item")
-    page.click("#pair-phone")
+    open_devices(page)
     phone, tablet = (page.locator(f"#phone-devices li[data-device='{n * 16}']") for n in "12")
     expect(phone).to_contain_text("code 123 456, waits for approval")
     expect(phone.locator("input[type=checkbox]")).not_to_be_checked()
@@ -3192,7 +3223,7 @@ def test_each_phone_is_stacked_at_phone_width(app):
         page.wait_for_selector(".thread-item")
         if width < 900:
             page.click("#menu")
-        page.click("#pair-phone")
+        open_devices(page)
         expect(page.locator("#phone-devices li[data-device]")).to_contain_text("waits for approval")
         (nl, nt, nw, _), (bl, bt, bw, _), approve, remove = page.evaluate(boxes)
         if stacked:
@@ -3214,6 +3245,8 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     page, stub, errors = app(settings=True)
     page.wait_for_selector(".thread-item")
     page.click("#open-settings")
+    page.click("#go-routing")
+    expect(page.locator("#settings-title")).to_have_text("Models")
     rows = page.locator("#settings-rows li")
     expect(rows).to_have_count(3)
     expect(page.locator("#settings-local")).to_have_text("Local model local-27b: reachable. Answered 2 min ago.")
@@ -3249,40 +3282,124 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     assert errors == ["Failed to load resource: the server responded with a status of 400 (Bad Request)"]
 
 
-def test_the_settings_screen_fits_a_phone_and_stays_hidden_without_the_page(app):
+# The visible controls of the Settings dialog under 44px high, and whether it runs off the screen's side.
+SETTINGS_SMALL = """() => [...document.querySelectorAll('#settings .seg label, #settings button, #settings .toggle')]
+    .filter((el) => el.getClientRects().length).map((el) => el.getBoundingClientRect().height).filter((h) => h < 44)"""
+SHOWN_ITEMS = "#settings-menu .s-item:visible .s-label"
+
+
+def test_the_settings_menu_fits_a_phone_and_shows_only_what_the_bot_serves(app):
+    """On a phone Settings is a sheet docked to the bottom: a row per page
+    (Notifications and Models where the bot serves them, and the tour), how
+    this browser reaches Tacitus under them, each control a finger's 44px. A
+    row opens its page in place with Back focused; Back and Escape come back
+    to the menu on the row they left, and Escape there closes it. With no
+    page served the menu holds the tour alone."""
     from playwright.sync_api import expect
-    page, _stub, errors = app(viewport={"width": 390, "height": 844}, settings=True, push=True,
+    page, _stub, errors = app(viewport={"width": 390, "height": 844}, settings=True, push=True, subscriptions=SUBS,
                               context={"has_touch": True, "is_mobile": True, "device_scale_factor": 3})
     page.wait_for_selector(".thread-item")
     page.click("#menu")
     page.click("#open-settings")
-    expect(page.locator("#settings-rows li")).to_have_count(3)
-    expect(page.locator("#notify-settings")).to_be_visible()
-    small = page.evaluate("""() => [...document.querySelectorAll('#settings .seg label, #settings button, #settings .toggle')]
-        .map((el) => el.getBoundingClientRect().height).filter((h) => h < 44)""")
-    assert small == []
-    assert page.evaluate("$('settings').scrollWidth - $('settings').clientWidth") == 0
-    assert page.evaluate(SIDEWAYS) == [0, 0]
+    dlg = page.locator("#settings")
+    expect(page.locator(SHOWN_ITEMS)).to_have_text(["Notifications", "Models", "How Tacitus works"])
+    expect(page.locator("#settings-title")).to_have_text("Settings")
+    expect(page.locator("#settings-back")).to_be_hidden()
+    expect(page.locator("#settings-conn")).to_have_text("Connected on your own network.")
+    assert page.evaluate("Math.round($('settings').getBoundingClientRect().bottom) === innerHeight")  # docked
+    assert page.evaluate(SETTINGS_SMALL) == []
+    for row, title, shown in (("go-notify", "Notifications", "#notify-kinds"), ("go-routing", "Models", "#settings-rows li")):
+        page.click(f"#{row}")
+        expect(page.locator("#settings-title")).to_have_text(title)
+        expect(page.locator("#settings-back")).to_be_focused()
+        expect(page.locator(shown).first).to_be_visible()
+        expect(page.locator("#settings-menu")).to_be_hidden()
+        assert page.evaluate(SETTINGS_SMALL) == [], title
+        assert page.evaluate("$('settings').scrollWidth - $('settings').clientWidth") == 0
+        assert page.evaluate(SIDEWAYS) == [0, 0]
+        if row == "go-notify":
+            page.click("#settings-back")
+        else:
+            page.keyboard.press("Escape")
+        expect(page.locator("#settings-title")).to_have_text("Settings")
+        expect(page.locator(f"#{row}")).to_be_focused()
+        expect(dlg).to_be_visible()
+    page.keyboard.press("Escape")
+    expect(dlg).to_be_hidden()
     assert not errors, errors
     page, _stub, errors = app()
     page.wait_for_selector(".thread-item")
-    expect(page.locator("#open-settings")).to_be_hidden()
+    page.click("#open-settings")
+    expect(page.locator(SHOWN_ITEMS)).to_have_text(["How Tacitus works"])
+    assert not errors, errors
+
+
+def test_notifications_say_where_they_go_and_whether_they_are_on_here(app):
+    """The Notifications page names each browser that gets them by its push
+    service's maker, this one as "This browser" with no Remove (its switch
+    is above), the others with Remove. The menu's row and the hint beside
+    Settings in the drawer say whether they are on here; blocked in the
+    browser, the page says where to change it and the switch stays off."""
+    import hashlib
+    from playwright.sync_api import expect
+    endpoint = "https://push.example.com/send/made-up"
+    mine = hashlib.sha256(endpoint.encode()).hexdigest()[:16]
+    subs = [dict(SUBS[0], id=mine), dict(SUBS[0], id="s2", host="web.push.apple.com"),
+            dict(SUBS[0], id="s3", host="fcm.googleapis.com"), dict(SUBS[0], id="s4", host="updates.push.services.mozilla.com"),
+            dict(SUBS[0], id="s5", host="wns2-par02p.notify.windows.com")]
+    allowed = "Object.defineProperty(Notification, 'permission', { get: () => 'granted' });"  # headless Chromium says denied
+    page, stub, errors = app(push=True, settings=True, subscriptions=subs, init=allowed)
+    page.wait_for_selector(".thread-item")
+    hint = page.locator("#settings-hint")
+    expect(hint).to_have_text("Notifications off")  # this browser could get them, and does not
+    page.click("#open-settings")
+    expect(page.locator("#notify-detail")).to_have_text("Off for this browser")
+    page.click("#go-notify")
+    expect(page.locator("#notify-here")).to_have_text("Notifications on this browser")
+    expect(page.locator("#notify")).to_be_enabled()
+    expect(page.locator("#notify-why")).to_be_hidden()
+    expect(page.locator("#subs-title")).to_have_text("Where notifications go")
+    rows = page.locator("#push-subs li")
+    expect(rows.locator("span")).to_have_text([re.compile(f"^{re.escape(n)}, since \\S") for n in (
+        "A browser", "An iPhone, iPad or Mac", "Chrome or Android", "Firefox", "Microsoft Edge")])
+    expect(rows.locator("button")).to_have_count(5)
+    # Subscribed here: its own row says so and has no Remove, and the hint goes.
+    page.evaluate(f"S.push.sub = {{ endpoint: '{endpoint}' }}; notifyState(); listSubs();")
+    expect(rows.first.locator("span")).to_have_text(re.compile(r"^This browser, since \S"))
+    expect(rows.first.locator("button")).to_have_count(0)
+    expect(hint).to_be_hidden()
+    rows.nth(1).locator("button").click()
+    expect(rows).to_have_count(4)
+    assert stub.revokes == [{"id": "s2"}]
+    page.click("#settings-back")
+    expect(page.locator("#notify-detail")).to_have_text("On for this browser")
+    for text in page.locator("#settings").all_inner_texts():
+        assert not JARGON.search(text), text
+    assert not errors, errors
+    # Blocked: the reason, on the row and the page; the switch cannot turn them on.
+    page, stub, errors = app(push=True, init="Object.defineProperty(Notification, 'permission', { get: () => 'denied' });")
+    page.wait_for_selector(".thread-item")
+    page.click("#open-settings")
+    expect(page.locator("#notify-detail")).to_have_text("Blocked in the browser settings")
+    page.click("#go-notify")
+    expect(page.locator("#notify-why")).to_have_text("Notifications are blocked for this site in the browser settings.")
+    expect(page.locator("#notify-kinds")).to_be_hidden()  # the bot serves no notify page here
     assert not errors, errors
 
 
 def test_notifications_in_settings_save_each_change_at_once(app):
-    """With push on, Settings opens on Notifications: the switches and the
+    """With push on, Settings' Notifications page shows the switches and the
     quiet-hours choice as /settings/notify says. Each change posts its one
     key and the section redraws from the answer; a refusal stays on screen
-    and the section shows what is saved. Without push, or with no notify
-    page, the section stays hidden, and with no page at all so does the
-    entry."""
+    and the section shows what is saved. With no notify page the switches
+    stay hidden; without push the menu has no Notifications."""
     from playwright.sync_api import expect
     page, stub, errors = app(settings=True, push=True)
     page.wait_for_selector(".thread-item")
     page.click("#open-settings")
+    page.click("#go-notify")
     expect(page.locator("#notify-settings")).to_be_visible()
-    expect(page.locator("#routing-settings")).to_be_visible()
+    expect(page.locator("#notify-kinds")).to_be_visible()
     rows = page.locator("#notify-rows")
     switches = [rows.locator(f"input[name={n}]") for n in ("briefings", "replies", "rooms")]
     hold, send = rows.locator("input[name=quiet]").nth(0), rows.locator("input[name=quiet]").nth(1)
@@ -3307,26 +3424,27 @@ def test_notifications_in_settings_save_each_change_at_once(app):
         assert not JARGON.search(text), text
     page.click("#settings button[type=submit]")
     page.click("#open-settings")                          # opened again: what the bot holds
+    page.click("#go-notify")
     expect(switches[2]).not_to_be_checked()
     expect(send).to_be_checked()
     assert errors == ["Failed to load resource: the server responded with a status of 400 (Bad Request)"]
-    # only the notify page: no routing section and no Save
+    # only the notify page: no Models
     page, _stub, errors = app(settings=["notify"], push=True)
     page.wait_for_selector(".thread-item")
     page.click("#open-settings")
-    expect(page.locator("#notify-settings")).to_be_visible()
-    expect(page.locator("#routing-settings")).to_be_hidden()
-    expect(page.locator("#settings-save")).to_be_hidden()
+    expect(page.locator(SHOWN_ITEMS)).to_have_text(["Notifications", "How Tacitus works"])
+    page.click("#go-notify")
+    expect(page.locator("#notify-kinds")).to_be_visible()
     assert not errors, errors
-    # push off: no Notifications section, and with nothing else to show no Settings entry
+    # push off: no Notifications, the Models page still there
     page, _stub, errors = app(settings=True)
     page.wait_for_selector(".thread-item")
     page.click("#open-settings")
-    expect(page.locator("#notify-settings")).to_be_hidden()
-    expect(page.locator("#routing-settings")).to_be_visible()
+    expect(page.locator(SHOWN_ITEMS)).to_have_text(["Models", "How Tacitus works"])
     page, _stub, errors = app(settings=["notify"])
     page.wait_for_selector(".thread-item")
-    expect(page.locator("#open-settings")).to_be_hidden()
+    page.click("#open-settings")
+    expect(page.locator(SHOWN_ITEMS)).to_have_text(["How Tacitus works"])
     assert not errors, errors
 
 

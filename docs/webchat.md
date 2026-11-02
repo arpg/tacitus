@@ -701,8 +701,8 @@ the conversation keeps 480px, and in a window 1000 to 1200px wide, split
 at its centre (a dual screen at its hinge), the thread list keeps 300px
 beside the list's own width and 260px beside one the owner set. Below
 1000px the list is the drawer and has no handle. At the drawer's foot
-each row (a browser that gets notifications, the install line) wraps its
-words and keeps its buttons inside the list at every width.
+the install line wraps its words and keeps its buttons inside the list
+at every width.
 
 Words. Every string the person sees or a screen reader reads passes the
 gym coach on a phone: the app says conversation, room, card, code, app,
@@ -759,26 +759,52 @@ Every call goes through one transport interface (`api(method, path,
 body)`, `events(since, sink)`). A browser paired with the relay uses it
 when the base path does not answer (off the tailnet, or on the relay's
 copy of the app); the relay transport, the pairing link (`#tr2=`, and
-`#tr1=` from before), the "Add a device" entry in the drawer ("This
+`#tr1=` from before), "Add a device" (Settings, then Devices: "This
 phone", "Another phone", which on the bot's machine offers "Phone not on
 your network", and "A computer"), the "Set up this computer" screen of
 the hosted copy, the code check on the relay's copy and the QR encoder
 (`qr.js`) are in `docs/webchat-relay.md` (Pairing, and For the web app).
 
-Settings. A "Settings" entry at the drawer's foot, shown when it has a
-section to show and never on a relayed copy, opens a dialog in the shape
-of "Add a device" with two sections. Notifications, shown when `/api/me`
-names the `notify` page and says `push`, comes first: a line that says
-what it is for (what reaches the phone with the app closed; cards, direct
-messages and alerts always do), then three switches, each with its line
-(Briefings: the morning briefing and the afternoon update; Replies: an
-answer to something the owner asked; Rooms: an answer in a project
-room), and "During quiet hours" with Hold until morning (`queue`) or Send
-anyway (`send`). Each change posts its one key to `/settings/notify` at
-once and redraws from the answer, with "Saved." or the bot's reason
-under the section; after a refusal the section shows what is saved. The
-routing table, shown when `/api/me` names the `routing` page: the local
-model's name and state at the top, a line that says what the values mean
+Settings. The drawer's foot holds one "Settings" entry, shown once the
+app has started, with "Notifications off" beside it where this browser
+could get notifications and does not. It opens a menu, a sheet docked to
+the bottom on a phone, with a row per place, each with what it holds
+under its name, in this order: Notifications, where `/api/me` says
+`push`; Devices, where adding a device works from here (the rule the
+"Add a device" dialog follows, docs/webchat-relay.md); Models, where
+`/api/me` names the `routing` page and the copy is not relayed; and How
+Tacitus works, the welcome. Under the rows a line says how this browser
+reaches Tacitus now: on your own network, away from home through the
+relay's host, connecting, or not connected. Notifications and Models open
+in the dialog as pages, with Back at the top left and Close at the top
+right of every page; Back, or Escape on a page, returns to the menu with
+the focus on the row it left, and Escape on the menu closes it. Devices
+and How Tacitus works are dialogs of their own, so the menu closes first.
+
+Notifications: the switch for this browser ("Notifications on this
+phone", or "this browser" with a mouse; Notifications (Web Push), The
+app); a line instead where it cannot be on (outside
+the Home Screen app on an iPhone or iPad, a browser with no push, or
+blocked in the browser's settings), which the menu's row says in short.
+Then, where `/api/me` names the `notify` page and the copy is not
+relayed (the bot saves settings only from the owner's own copy), a line
+that says what the switches are for (what reaches the phone with the app
+closed; cards, direct messages and alerts always do), three switches,
+each with its line (Briefings: the morning briefing and the afternoon
+update; Replies: an answer to something the owner asked; Rooms: an
+answer in a project room), and "During quiet hours" with Hold until
+morning (`queue`) or Send anyway (`send`). Each change posts its one key
+to `/settings/notify` at once and redraws from the answer, with "Saved."
+or the bot's reason under the section; after a refusal the section shows
+what is saved. Last, "Where notifications go": each subscription from
+`/api/push/subscriptions`, named by its push service's maker (Apple's
+"An iPhone, iPad or Mac", Google's "Chrome or Android", Mozilla's
+"Firefox", Microsoft's "Microsoft Edge", else "A browser") and the day
+it was made, with Remove (`/api/push/revoke`); this browser's own row
+(its endpoint's id, the sha256 the bot lists) says "This phone" or "This
+browser" and has no Remove, since its switch is above.
+
+Models: the local model's name and state at the top, a line that says what the values mean
 (Local is the owner's own model, Hosted is Claude, Auto lets Tacitus
 choose), then one row per task with Local, Hosted and Auto, a line on
 what the task does, a line on the model it runs on now and why, and the
@@ -812,8 +838,8 @@ changes at once and follows the bot's answer and its event.
 The app teaches itself, for a first-day owner on a phone who reads no
 docs. Its words (the welcome, New room, the empty lists and a new
 conversation's pane) follow Words, above. A welcome of three cards opens
-once per browser after the channels load, and "How Tacitus works" at the
-drawer's foot opens it again: "Ask in plain words" (type what you want
+once per browser after the channels load, and "How Tacitus works" in
+Settings opens it again: "Ask in plain words" (type what you want
 done, the way you would text an assistant, with three examples to tap),
 "Nothing goes out without you" (a draft or a meeting arrives as a card
 in Direct messages, and nothing is sent until the owner taps Send or
@@ -1055,9 +1081,9 @@ the prompts use it as an adjective ("a real-time {platform} message").
 ## Notifications (Web Push)
 
 `botcore/botcore/chat/web_push.py` sends a notification to every browser
-that turned on the drawer's **Notifications** toggle, also with the app
-closed. It needs the `cryptography` package (installed with msal); without
-it `/api/me` says `"push": false`, the app hides the toggle and nothing
+that turned on the **Notifications** switch in the app's Settings, also with
+the app closed. It needs the `cryptography` package (installed with msal); without
+it `/api/me` says `"push": false`, Settings has no Notifications and nothing
 else changes. No other dependency.
 
 **What is pushed.** One module decides for every new bot message
@@ -1292,17 +1318,18 @@ out from the bot. A writer-only copy (a command-line sender, which exits
 next) sends a message's or a card's push before `post` returns, so it is
 out before the process ends.
 
-**The app.** The toggle sits at the foot of the channel drawer and shows
-once `/api/me` says `push`. Under it, the list of subscribed browsers
-(host and date) has a Revoke button each; this browser's own is the
-toggle. Turning it on calls
+**The app.** The switch is on the Notifications page of Settings, shown
+once `/api/me` says `push`. Under it, "Where notifications go" lists the
+subscribed browsers (by the push service's maker, and the date) with a
+Remove button each; this browser's own row has none, since it has the
+switch. Turning it on calls
 `pushManager.subscribe({userVisibleOnly: true, applicationServerKey})`
 straight from the tap (Safari asks for the permission only then) and
 posts the subscription; off unsubscribes on both sides. At start the app
 posts a subscription the browser already holds, so a reset store learns
 it again. iOS delivers Web Push only to the app added to the Home Screen:
 where `navigator.standalone` is `false` (iOS Safari) the drawer's install
-line says so. The worker (`bundle.js`) shows each push (`showNotification` with the title,
+line and the Notifications page say so. The worker (`bundle.js`) shows each push (`showNotification` with the title,
 body, icon, tag and `data.url`) and on a tap focuses the app's window last
 in front and navigates it to the url, else opens one; a window that
 `navigate()` cannot move gets `{open: url}` as a message and routes to it
