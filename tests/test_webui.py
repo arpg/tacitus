@@ -384,14 +384,11 @@ def test_the_app_stays_small():
     # 3,770: 3,700 plus the clear no browser counts as silent (the worker's choice per push service, and the
     # page's own clear of the thread in view).
     # 3,780: 3,770 plus the Phones list stacked at phone width (name, the box, the buttons).
-<<<<<<< HEAD
     # 3,870: 3,780 plus each release from the bot on the relay's origin too, the worker's loader (sw.js runs the
     # bundle.js it kept and checked) and the release's own security headers on each kept copy.
-=======
-    # 3,870: 3,780 plus Notifications in Settings (three switches and the quiet-hours choice, each
+    # 3,960: 3,870 plus Notifications in Settings (three switches and the quiet-hours choice, each
     # saved on change) and the digest channel's line in place of the composer.
->>>>>>> 4708f84 (Settings changes the push switches, and the digest room has no composer)
-    assert lines <= 3870, f"{lines} lines: the contract keeps the app near 3,870 with the relay, the phone setup, the thread states and the teaching"
+    assert lines <= 3960, f"{lines} lines: the contract keeps the app near 3,960 with the relay, the phone setup, the thread states and the teaching"
 
 
 # -- in a browser, against the stub ---------------------------------------
