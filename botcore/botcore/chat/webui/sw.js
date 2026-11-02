@@ -48,11 +48,11 @@ self.addEventListener('activate', (event) => {
     .then(() => self.clients.claim()));
 });
 
-// A push from the bot (web_push.py): {title, body, url, tag}. One
-// notification per tag (a thread); a new one in the thread alerts again.
+// A push from the bot (web_push.py): {title, body, url, tag}, one notification per tag (a thread), a new
+// one alerting again; {type: 'clear', tag} (the owner wrote there) closes that tag's notifications, shows none.
 self.addEventListener('push', (event) => {
-  let d = {};
-  try { d = event.data ? event.data.json() : {}; } catch { /* not JSON: the title alone */ }
+  let d = {}; try { d = event.data ? event.data.json() : {}; } catch { /* not JSON: the title alone */ }
+  if (d.type === 'clear') return event.waitUntil(d.tag ? self.registration.getNotifications({ tag: String(d.tag) }).then((ns) => ns.forEach((n) => n.close())) : Promise.resolve());
   event.waitUntil(self.registration.showNotification(String(d.title || 'Tacitus'), {
     body: String(d.body || ''),
     icon: new URL('icon-192.png', self.registration.scope).href,

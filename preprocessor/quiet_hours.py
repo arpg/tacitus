@@ -280,6 +280,22 @@ def should_defer(priority: str = "normal", now: datetime | None = None) -> bool:
     return True
 
 
+def quiet_end(now: datetime | None = None) -> datetime | None:
+    """The moment the quiet window that holds a normal post now ends (the
+    next `end` in the active timezone), or None when should_defer("normal")
+    does not hold. The web chat queues a reply's or a briefing's push until
+    then (docs/webchat.md, Notifications)."""
+    if not should_defer("normal", now):
+        return None
+    tz = ZoneInfo(active_timezone())
+    now_local = now.astimezone(tz) if now is not None else datetime.now(tz)
+    end = _parse_hhmm(ea_config.get_quiet_hours().get("end", "07:30"), "07:30")
+    day = now_local.date()
+    if now_local.time() >= end:
+        day = date.fromordinal(day.toordinal() + 1)
+    return datetime.combine(day, end, tzinfo=tz)
+
+
 def _load_queue() -> list:
     data = _read_json(QUEUE_FILE)
     return [i for i in data if isinstance(i, dict)] if isinstance(data, list) else []

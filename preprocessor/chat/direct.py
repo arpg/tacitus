@@ -34,7 +34,9 @@ streams the web chat holds.
 notifications in the web chat (docs/webchat.md, Notifications), now or,
 for a scheduled alert, at its moment: the bot's push worker sends a push
 queued in the web chat's store. Without a web front end in the chat
-block it does nothing.
+block it does nothing. On the web chat alone `send_direct`'s post in the
+DM pushes as well; the web chat drops the second push of one text within
+ten seconds (web_push_policy), so the owner gets one, at high urgency.
 """
 from __future__ import annotations
 
@@ -166,9 +168,11 @@ def web_notify(text: str, *, tag: str = "", when: datetime | None = None,
     """Push `text` (its first line) to the web chat's subscribed browsers at
     `urgency` (high for an alert; a weekly usage tip passes normal): now, or
     at `when` (aware) through the store's queue under `tag`, replacing a
-    push queued there before. {"web": "off"} when the chat block runs no web
-    front end or its store does not exist yet; never raises, so the chat
-    post stands whatever push does."""
+    push queued there before. A push now is dropped when the web chat pushed
+    the same text in the last ten seconds: the direct message `send_direct`
+    posted in the DM just before (web_push_policy). {"web": "off"} when the
+    chat block runs no web front end or its store does not exist yet; never
+    raises, so the chat post stands whatever push does."""
     try:
         fe = load_web_frontend(ea_dir=ea_dir)
         if fe is None:
@@ -176,7 +180,8 @@ def web_notify(text: str, *, tag: str = "", when: datetime | None = None,
         if not Path(fe.store_path).exists():
             return {"web": "off", "why": "no web chat store yet"}
         at = when.timestamp() if when is not None else None
-        return fe.notify("Tacitus", text, fe.app_url(), tag, urgency=urgency, at=at, wait=True)
+        return fe.notify("Tacitus", text, fe.app_url(), tag, urgency=urgency, at=at, wait=True,
+                         dedupe=True)
     except Exception as e:
         return {"web": "error", "why": f"{type(e).__name__}: {e}"}
 

@@ -472,8 +472,9 @@ def _send_web(channel_key: str, parts: list[str], *, channel: str = "",
             print(f"WARNING: web chat channel {cid!r} (for '{channel_key}') does not exist; "
                   "nothing posted")
             return False
-        first = fe.post(cid, parts[0])
-        _note_origin(fe, cid, getattr(first, "thread_key", ""), channel_key)
+        # The key goes with the post, so the push policy reads the thread's
+        # origin when it decides (a briefing pushes; another notice does not).
+        first = fe.post(cid, parts[0], origin=channel_key)
         for part in parts[1:]:
             fe.post(cid, part, thread_ts=first.thread_key)
         return True

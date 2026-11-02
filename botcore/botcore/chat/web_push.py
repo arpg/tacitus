@@ -32,7 +32,9 @@ so its length tells the push service little about the text.
 Sending runs on one worker thread (`Pusher.start`). A push for a later
 time (an alert) waits in the store's `push_queue` table, keyed by its
 tag, until the worker that runs in the bot process sends it; a process
-outside the bot (alert.py) writes it there.
+outside the bot (alert.py) writes it there. A clear (`Pusher.clear`,
+{"type": "clear", "tag"}) shows nothing: the service worker closes the
+notifications under the tag, after the owner wrote in that thread.
 
 The crypto comes from the `cryptography` package (installed with msal).
 Without it `AVAILABLE` is False and push is off; the chat works.
@@ -75,8 +77,9 @@ KEY_FILE = "webchat-vapid.json"
 DEFAULT_SUBJECT = "https://github.com/arpg/tacitus"
 # Seconds a push service holds a push for a device that is offline.
 TTL_S = 3600
-# At most one push per thread (per urgency) in this many seconds.
-MIN_GAP_S = 30.0
+# At most one push per thread (per urgency) in this many seconds: a thread's
+# later pushes in the window would only replace its notification.
+MIN_GAP_S = 120.0
 JWT_LIFE_S = 12 * 3600
 TIMEOUT_S = 10.0
 # Seconds between the worker's looks at the push queue.
@@ -472,6 +475,23 @@ class Pusher:
     def cancel(self, tag: str) -> bool:
         """Drop the push queued under `tag`; True when there was one."""
         return bool(tag) and self.store.push_cancel(tag)
+
+    def clear(self, tag: str, *, wait: bool = False) -> dict:
+        """Send every subscription a clear for `tag`: {"type": "clear",
+        "tag"}, no title, which the service worker takes as "close the
+        notifications under this tag" and shows nothing. Not rate limited."""
+        _need()
+        if not tag:
+            return {"sent": 0}
+        if not self.store.push_count():
+            return {"sent": 0, "subscriptions": 0}
+        data = json.dumps({"type": "clear", "tag": str(tag)[:200]},
+                          separators=(",", ":")).encode("utf-8")
+        if wait:
+            return self.send_all(data, "normal")
+        self.start()
+        self._jobs.put((data, "normal"))
+        return {"queued": True}
 
     # the subscriptions
 

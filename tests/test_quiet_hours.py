@@ -342,6 +342,29 @@ def test_flush_empty_queue_is_noop():
         assert qh.flush_if_clear(force=True) == 0
 
 
+def test_quiet_end_is_the_next_end_of_the_window():
+    """The web chat holds a reply's push until the window ends: the same
+    morning after midnight, the next morning before it, None outside it."""
+    with tempfile.TemporaryDirectory() as td:
+        _setup(Path(td), quiet=_QH, travel=_TRAVEL_VIENNA)
+        vienna = ZoneInfo("Europe/Vienna")
+        # 21:00 UTC = 23:00 in Vienna (UTC+2 in June): the next morning
+        assert qh.quiet_end(datetime(2026, 6, 3, 21, 0, tzinfo=UTC)) == \
+            datetime(2026, 6, 4, 7, 30, tzinfo=vienna)
+        # 01:00 UTC = 03:00 in Vienna: the same morning
+        assert qh.quiet_end(datetime(2026, 6, 4, 1, 0, tzinfo=UTC)) == \
+            datetime(2026, 6, 4, 7, 30, tzinfo=vienna)
+        # midday: nothing waits
+        assert qh.quiet_end(datetime(2026, 6, 4, 10, 0, tzinfo=UTC)) is None
+
+
+def test_quiet_end_is_none_at_home_by_default():
+    with tempfile.TemporaryDirectory() as td:
+        _setup(Path(td), quiet=_QH, travel={"enabled": False}, home_tz="America/Denver")
+        # 05:00 UTC = 23:00 MDT, at home: quiet hours hold only while travelling
+        assert qh.quiet_end(datetime(2026, 6, 3, 5, 0, tzinfo=UTC)) is None
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0
