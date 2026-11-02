@@ -450,7 +450,7 @@ a.file-link .file-name { color: var(--accent); }
   animation: rise .18s var(--ease);
 }
 @keyframes rise { from { opacity: 0; transform: translate(-50%, 8px); } }
-#pair {
+.gate {
   position: fixed;
   inset: 0;
   display: grid;
@@ -459,7 +459,7 @@ a.file-link .file-name { color: var(--accent); }
   background: var(--bg);
   z-index: 50;
 }
-#pair form {
+.gate form {
   width: min(100%, 380px);
   display: grid;
   gap: 12px;
@@ -469,10 +469,10 @@ a.file-link .file-name { color: var(--accent); }
   background: var(--panel);
   box-shadow: var(--shadow);
 }
-#pair h2, #pair p { margin: 0; }
-#pair h2, #phone h2, #settings h2, #room h2, #welcome h2 { font-size: 20px; font-weight: 650; line-height: 1.25; letter-spacing: -.01em; }
+.gate h2, .gate p { margin: 0; }
+.gate h2, #phone h2, #settings h2, #room h2, #welcome h2 { font-size: 20px; font-weight: 650; line-height: 1.25; letter-spacing: -.01em; }
 .refusal { grid-column: 1 / -1; padding: 24px; max-width: 40em; }
-#pair input, #room-name { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--bg); font-size: 16px; }
+.gate input, #room-name { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--bg); font-size: 16px; }
 .error { color: var(--danger); min-height: 1em; }
 #relay-note {
   position: fixed;
@@ -509,6 +509,15 @@ a.file-link .file-name { color: var(--accent); }
 #phone-qr { width: 100%; max-width: 280px; justify-self: center; padding: 12px; border: 1px solid var(--border); border-radius: var(--r-m);
   image-rendering: pixelated; background: #fff; }
 #phone-link { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--bg); color: var(--text); font: 12px var(--mono); }
+/* Add a device: the three ways, and a computer's code large enough to read across a desk */
+.seg.ways { display: flex; }
+.ways button { flex: 1; padding: 6px 10px; border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+.ways button[aria-pressed="true"] { background: var(--panel); box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--border); font-weight: 600; }
+#phone .way { display: grid; gap: 12px; }
+.handoff-open { font: 15px var(--mono); overflow-wrap: anywhere; user-select: all; }
+.handoff-code { font: 600 32px var(--mono); letter-spacing: .08em; text-align: center; user-select: all; }
+#handoff-wait { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--warn); border-radius: var(--r-m); }
+#setup-code { font-family: var(--mono); letter-spacing: .06em; text-transform: uppercase; }
 #phone-devices { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 #phone-devices li { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 #phone-devices .empty { padding: 0; }
@@ -629,6 +638,7 @@ a.file-link .file-name { color: var(--accent); }
 
 @media (pointer: coarse) { /* every control a finger presses is at least 44px high */
   .btn, .btn.small, .example, .card-actions select, .toggle, .filter, .chan, .seg label { min-height: 44px; }
+  .ways button { min-height: 44px; }
   .archived summary, .card-quoted summary { padding-block: 13px; }
 }
 

@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' https: http://127.0.0.1:* http://localhost:*; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
@@ -39,7 +40,7 @@
     <div id="install" class="install" hidden><span id="install-text"></span>
       <button type="button" id="install-btn" class="btn small primary" hidden>Install</button>
       <button type="button" id="install-close" class="icon" aria-label="Hide for 30 days"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
-    <button type="button" id="pair-phone" class="btn small" hidden>Pair a phone</button>
+    <button type="button" id="pair-phone" class="btn small" hidden>Add a device</button>
     <button type="button" id="open-settings" class="btn small" hidden>Settings</button>
     <button type="button" id="tour-again" class="btn small" hidden>How Tacitus works</button>
     <button type="button" id="new-room" class="btn small plain" hidden>New room</button>
@@ -93,16 +94,30 @@
 
 <dialog id="phone" aria-labelledby="phone-title">
   <form method="dialog">
-    <h2 id="phone-title">Use Tacitus on your phone</h2>
+    <h2 id="phone-title">Add a device</h2>
     <p id="phone-self" aria-live="polite"></p>
-    <p>A phone you set up here works anywhere, not only on your own network. Your messages stay sealed on the way.</p>
-    <button type="button" id="phone-here" class="btn primary" hidden>Set up this phone</button>
-    <p id="phone-scan" hidden>On another phone: open its camera and point it at this code.</p>
-    <canvas id="phone-qr" width="0" height="0" role="img" aria-label="QR code to set up a phone"></canvas>
-    <p id="phone-note" aria-live="polite"></p>
-    <button type="button" id="phone-relay" class="btn" hidden>Phone not on your network</button>
-    <input id="phone-link" readonly aria-label="Setup link" hidden>
-    <h3>Phones</h3>
+    <p>A device you set up here works anywhere, not only on your own network. Your messages stay sealed on the way.</p>
+    <div id="add-ways" class="seg ways" role="group" aria-label="What to add" hidden>
+      <button type="button" id="way-here" aria-pressed="false">This phone</button>
+      <button type="button" id="way-phone" aria-pressed="false">Another phone</button>
+      <button type="button" id="way-computer" aria-pressed="false">A computer</button></div>
+    <section id="add-here" class="way" hidden>
+      <button type="button" id="phone-here" class="btn primary" hidden>Set up this phone</button></section>
+    <section id="add-phone" class="way" hidden>
+      <p id="phone-scan" hidden>On another phone: open its camera and point it at this code.</p>
+      <canvas id="phone-qr" width="0" height="0" role="img" aria-label="QR code to set up a phone"></canvas>
+      <p id="phone-note" aria-live="polite"></p>
+      <button type="button" id="phone-relay" class="btn" hidden>Phone not on your network</button>
+      <input id="phone-link" readonly aria-label="Setup link" hidden></section>
+    <section id="add-computer" class="way" hidden>
+      <p>On the computer, open this address in a browser and type the code.</p>
+      <p id="handoff-open" class="handoff-open"></p>
+      <p id="handoff-code" class="handoff-code" aria-live="polite"></p>
+      <p id="handoff-note" aria-live="polite"></p>
+      <div id="handoff-wait" hidden><p id="handoff-ask"></p>
+        <label class="toggle"><input type="checkbox" id="handoff-cards"> Allow Send and Create buttons on this computer</label>
+        <button type="button" id="handoff-approve" class="btn primary">Approve</button></div></section>
+    <h3>Devices</h3>
     <ul id="phone-devices"></ul>
     <button type="submit" class="btn">Close</button>
   </form>
@@ -183,7 +198,17 @@
   </form>
 </dialog>
 
-<div id="pair" hidden>
+<div id="setup" class="gate" hidden>
+  <form id="setup-form" novalidate>
+    <h2>Set up this computer</h2>
+    <p>On a phone or computer where Tacitus works, open the menu, tap "Add a device", then "A computer". Type the code it shows.</p>
+    <input id="setup-code" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="go"
+      maxlength="24" placeholder="ABCDE-FGHJK" aria-label="Code" aria-describedby="setup-error">
+    <button type="submit" id="setup-go" class="btn primary">Continue</button>
+    <p id="setup-error" class="error" aria-live="polite"></p>
+  </form>
+</div>
+<div id="pair" class="gate" hidden>
   <form id="pair-form">
     <h2>Sign in</h2>
     <p>Paste the sign-in code. It is in the file <code>webchat-pair.token</code> in Tacitus's private folder.</p>
