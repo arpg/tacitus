@@ -18,7 +18,7 @@ against them.
 | `card` | a card's status line in the web store: Sent, Created, Closed, Cancelled, Sent from Outlook, Revised, Kept open, a failure; a card copied from Zulip's past is read the way `thread_state.card_view` reads it | `done` when settled, `open` when it failed | no (the bot records it) |
 | `ledger` | rows that reached `completed`, with the provenance `closure_metrics.py` gives and the closing signal `closure.py` recorded; reopens, rejected and confirmed close proposals (`ledger_events`); `item_feedback.py` dispositions | `done`, `open` or `waiting` | the owner's reopens, rejections, confirmations, dispositions and own-word closes |
 | `owner-said` | `missed-closures.log`: a closure the owner had to state, with the log's autopsy (the signals present, fired and not evaluated) | `done` | yes: the detector missed it |
-| `model` | the thread-state model's answers: its state and confidence at the time (the engine's observer), or its state alone from the store's event log for the days before the observer ran | the model's state | no: scored against later gold |
+| `model` | the thread-state model's answers: its state, confidence and which model answered (`model_via`: `local` or `hosted`) at the time (the engine's observer), or its state alone from the store's event log for the days before the observer ran | the model's state | no: scored against later gold |
 
 ### The record
 
@@ -74,8 +74,12 @@ message by the closure analysis's patterns.
   and appends what the store does not hold yet. A tap the observer did
   not see is rebuilt from the store as the thread stood at the tap
   (`reconstructed`); its linked rows are read as they are now.
-  `--report` then writes the evaluation. `collect --days N` reads only
-  the last N days; `stats` counts the store by source and label.
+  `--report` then writes the evaluation and appends its numbers as one
+  JSON line to `<private dir>/evals/closure-eval-history.jsonl` (0600):
+  the counts, the precision, recall and F1 of each detector and each
+  model, and the two models' agreement; no refs and no text.
+  `collect --days N` reads only the last N days; `stats` counts the
+  store by source and label.
 
 ### A tap writes back to the ledger
 
@@ -102,13 +106,26 @@ what the tap did (`close`, `reject`, `reopen`, `none`, `automated`,
 ### Reading the evaluation
 
 ```
-python3 /opt/ea-system/preprocessor/closure_eval.py report [--days 30] [--md|--json] [--no-write]
+python3 /opt/ea-system/preprocessor/closure_eval.py report [--days 30 | --since 2026-10-15] [--md|--json] [--no-write]
+python3 /opt/ea-system/preprocessor/closure_eval.py trend [--last 14] [--json]
 ```
 
 The report goes to `<private dir>/evals/closure-eval-latest.md` and
-`.json`. The daily health report (`mail_privacy.py report --post`)
-carries its one line: labels in the window, gold labels, owner taps,
-and the F1 of the rules, the model and the ledger pipeline.
+`.json`. The window is the last 30 days; `--days N` sets another, `0`
+takes all time, and `--since` starts it at an ISO date (UTC). The daily
+health report (`mail_privacy.py report --post`) carries its one line:
+labels in the window, gold labels, owner taps, the F1 of the rules, the
+model and the ledger pipeline, then the F1 of each model and how often
+the two agree:
+
+```
+Closure labels: 40 (last 30 days), 22 gold (19 owner taps). F1: rules 0.50 (n=19), model 0.62 (n=19), ledger 0.71 (n=9). Model local F1 0.40 (n=12), hosted F1 0.71 (n=7), agree 0.80 (n=5).
+```
+
+`unknown` joins the model part while answers recorded before the record
+named the model still score a tap in the window. `trend` prints the last
+N nightly runs from the history, one row each: F1 (n) of the rules, the
+model, each model and the ledger, and the agreement (pairs).
 
 - **Thread-state rules** against the owner's taps, by interaction type
   and by rule id. A tap the rules left to the model counts as "not
@@ -116,7 +133,26 @@ and the F1 of the rules, the model and the ledger pipeline.
 - **Thread-state model** against the same taps: its latest judgment on
   the thread before the tap, else the state it had set. Calibration
   buckets the confidence of its answers (below 0.6 included) against
-  how often they were right.
+  how often they were right. The answer counts are those in the window.
+- **By model**: the local and the hosted model apart, by the record's
+  `model_via`; a record from before the field is `unknown`. Each model
+  is scored on the taps it judged (its own latest judgment on the thread
+  before the tap), so the two can judge different threads:
+
+  | column | what it counts |
+  |---|---|
+  | taps judged | taps with a judgment of this model before them |
+  | precision, recall, F1 | that judgment against the tap, positive class closed |
+  | judgments, unsure, unparsed | this model's answers in the window, by kind |
+
+  Then the calibration of each model, and the agreement: each local
+  judgment paired with the nearest hosted judgment on the same thread at
+  most a day apart, each answer in one pair at most; the share of pairs
+  with the same state, and with the same closed or open.
+  **Disagreements** lists the pairs whose states differ, newest first (20
+  at most): the thread ref, the local state, the hosted state, and the
+  gold (the first owner tap on the thread after both answers), refs and
+  states only.
 - **Ledger pipeline**: caught (a rule or model close, or a confirmed
   proposal), missed (the owner's word), wrong (a close the owner
   reopened, a proposal the owner rejected), by ledger type and by

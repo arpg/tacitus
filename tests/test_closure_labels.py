@@ -260,6 +260,20 @@ def test_a_model_judgment_from_the_event_log(tree):
 
 # ── dedupe and the live hook ──────────────────────────────────────────
 
+def test_the_nightly_report_appends_one_history_line_a_run(tree, capsys):
+    import closure_eval as ce
+    hist = tree.labels.parent / ce.HISTORY_FILE
+    for n in (1, 2):
+        assert cl.main(["collect", "--report"]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["summary"].startswith("Closure labels: ") and "Model local F1" in out["summary"]
+        assert len(hist.read_text().splitlines()) == n
+    assert stat.S_IMODE(hist.stat().st_mode) == 0o600
+    assert SECRET not in hist.read_text() and "Avery" not in hist.read_text()
+    (entry,) = ce.load_history(hist)[-1:]
+    assert entry["owner_taps"] == 2 and set(entry["by_via"]) == set(ce.VIAS)
+
+
 def test_collect_again_adds_nothing(tree):
     first = cl.collect()
     size = tree.labels.stat().st_size

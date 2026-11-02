@@ -244,8 +244,8 @@ gathers. What Claude reads is the thread text a chat turn in that topic
 shows it when the chat runs hosted; with the `chat` task set to local,
 set `thread_state` to local too to keep chat text off the hosted model.
 Each answer the observer hears carries `via` (local or hosted), and its
-closure label keeps it as `model_via`, so the two models can be scored
-apart (`closure_eval.py` does not split them yet).
+closure label keeps it as `model_via`, and `closure_eval.py` scores the
+two models apart (docs/ea/closure-signals.md, "By model").
 
 When the model runs: a tick every 5 minutes. The tick first runs the
 rules over every thread with a message in the last 14 days (newest

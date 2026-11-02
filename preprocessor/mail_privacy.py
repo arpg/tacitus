@@ -2169,7 +2169,8 @@ def report(post: bool = False) -> dict:
         text += f"\nTiers: report failed ({str(e)[:120]})."
     try:
         # The closure detectors against the owner's labels (closure_eval.py):
-        # labels collected, gold, and the rules', model's and ledger's F1.
+        # labels collected, gold, the rules', model's and ledger's F1, and
+        # the local and the hosted model's F1 and agreement.
         import closure_eval
         closure_lines = closure_eval.summary_lines()
         if closure_lines:
