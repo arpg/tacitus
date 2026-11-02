@@ -206,6 +206,7 @@ def test_every_staged_file_belongs_to_exactly_one_sweeper():
              + list(ns["SCHEDULE_ACTION_FILES"])
              + list(ns["CHANNEL_ACTION_FILES"])
              + list(ns["PUBLISH_ACTION_FILES"])
+             + list(ns["GOOGLE_SIGNIN_ACTION_FILES"])
              + list(ns["PLUGIN_ACTION_FILES"]))
     assert sorted(swept) == sorted(ns["STAGED_ACTION_FILES"]), (
         f"sweeper sets {swept} do not partition "

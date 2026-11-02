@@ -339,14 +339,22 @@ cannot change, share or delete a file.
    `scripts/install/user_init.py`, the setup page's Google Drive screen
    and `/setup` section 4 write it. Why: setup signs each listed account
    in, and the doctor's `auth: google drive` row checks each one.
-3. **Sign each account in**, in a terminal, and test:
+3. **Sign each account in.** Why: the token is what lets the EA open a
+   private file. From the chat, with no terminal: say `connect Google
+   Drive you@gmail.com`. The bot posts a link (the EA posts the same one
+   when a read finds no account, through `pending-google-signin.json`);
+   open it on any device, sign in, allow the read-only access, and paste
+   the address the browser lands on (a page that does not load) back into
+   the chat. The bot, an owner process, trades the code in it for the
+   token (`preprocessor/google_signin.py`); the code reaches no model and
+   works only once. With no chat, in a terminal:
 
    ```bash
    python3 preprocessor/drive_client.py setup --email you@example.edu   # one browser sign-in; paste the address it lands on
    python3 preprocessor/drive_client.py test                            # each account's name, as Drive reports it
    ```
 
-   Why: the token is what lets the EA open a private file. It lands in
+   The token lands in
    `~/.ea/auth/google_token_<account>_drive.json`, owner-only like the
    other tokens, and the mail mediator uses it on the EA's behalf; ea-bot
    never reads it.

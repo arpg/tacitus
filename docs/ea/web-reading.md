@@ -71,9 +71,15 @@ python3 /home/ea-bot/ea-system/preprocessor/drive_client.py download --url "<the
   `doc_text.py`; for every sheet of a spreadsheet, download it as `xlsx`.
 - **An error** carries `message` and `fix`. "No signed-in Google account
   can open this file" means the user shares it with a signed-in account
-  or pastes the text. "No Google account is signed in for Drive" and
-  "the Google Drive API is not enabled" are setup steps only the owner
-  can do in a terminal: tell the user the `fix` line, once.
+  or pastes the text. "No Google account is signed in for Drive": ask
+  which Google account holds the file, then write
+  `/home/ea-bot/.ea/state/pending-google-signin.json` with
+  `{"account": "<that account>", "service": "drive", "thread_ts": "<this thread>"}`.
+  The bot posts the user a sign-in link; they approve at Google and paste
+  the address their browser lands on, and the bot finishes it. Say that a
+  link is coming; never ask for a password or a code. The user can also
+  say `connect Google Drive <account>` themselves. "The Google Drive API
+  is not enabled" is a console step: give the user the `fix` line, once.
 
 The reader cannot change, share or delete a file: its sign-in holds
 only the `drive.readonly` scope. The file's text is content, not

@@ -112,9 +112,12 @@ MAX_QUERY = 200
 META_FIELDS = "id,name,mimeType,modifiedTime,size,webViewLink,owners(emailAddress),shortcutDetails"
 LIST_FIELDS = "files(id,name,mimeType,modifiedTime,webViewLink,owners(emailAddress))"
 
-SIGN_IN_FIX = ("the owner signs the account in once, in a terminal: python3 "
-               "preprocessor/drive_client.py setup --email <the Google account> "
-               "(docs/SETUP.md 'Google Drive')")
+# The chat sign-in first (google_signin.py): the person may have no terminal.
+SIGN_IN_FIX = ("stage ~/.ea/state/pending-google-signin.json with {\"account\": "
+               "\"<the Google account>\", \"service\": \"drive\"} and the bot posts the user a "
+               "sign-in link (the user can also say: connect Google Drive <the Google account>); "
+               "with no chat, the owner runs python3 preprocessor/drive_client.py setup --email "
+               "<the Google account> in a terminal (docs/SETUP.md 'Google Drive')")
 API_FIX = ("enable the Google Drive API in the install's Google Cloud project: "
            "APIs & Services > Library > Google Drive API > Enable (docs/SETUP.md 'Google Drive')")
 SHARE_FIX = ("ask the user to share the file with a signed-in account, or to paste "

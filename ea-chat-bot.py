@@ -5440,8 +5440,26 @@ _BOT_COMMAND_RE = re.compile(
     re.I | re.S)
 
 
+def _google_signin_mod():
+    """preprocessor/google_signin.py, or None when it cannot load (then the
+    connect command and a pasted sign-in address go to the EA as text)."""
+    try:
+        from preprocessor import google_signin
+        return google_signin
+    except Exception as e:
+        log.warning(f"google sign-in unavailable: {e}")
+        return None
+
+
+def _is_google_signin_text(text: str) -> bool:
+    """`connect Google Drive <account>`, or a pasted Google sign-in address:
+    both are the bot's own to answer, and the address never reaches a model."""
+    gs = _google_signin_mod()
+    return bool(gs and (gs.parse_command(text) is not None or gs.is_redirect(text)))
+
+
 def _is_bot_command(text: str) -> bool:
-    return bool(_BOT_COMMAND_RE.match(text or ""))
+    return bool(_BOT_COMMAND_RE.match(text or "")) or _is_google_signin_text(text)
 
 
 # How long one membership answer for a registered room stands.
@@ -7163,7 +7181,7 @@ def _pending_events_poller():
     was written, the confirmation goes into THAT conversation. Only a
     genuinely orphaned file lands at the channel root."""
     swept = (CALENDAR_ACTION_FILES + SCHEDULE_ACTION_FILES + CHANNEL_ACTION_FILES
-             + PUBLISH_ACTION_FILES)
+             + PUBLISH_ACTION_FILES + GOOGLE_SIGNIN_ACTION_FILES)
     while True:
         try:
             busy = _dispatches_active() > 0
@@ -8370,6 +8388,10 @@ STAGED_ACTION_FILES = (
     # A site publish or an Overleaf push of one commit (publish_gate.py):
     # {"site"|"overleaf": ..., "commit": "<sha>", "thread_ts": ...}.
     ("publish", "pending-publish.json"),
+    # A Google sign-in link for the user (google_signin.py):
+    # {"account": "<address>", "service": "drive", "thread_ts": ...}. The
+    # bot posts the link; nothing is signed in until the user approves.
+    ("google_signin", "pending-google-signin.json"),
 )
 
 
@@ -8407,6 +8429,8 @@ CHANNEL_ACTION_FILES = tuple(f for f in STAGED_ACTION_FILES
                              if f[0] == "open_channel")
 PUBLISH_ACTION_FILES = tuple(f for f in STAGED_ACTION_FILES
                              if f[0] == "publish")
+GOOGLE_SIGNIN_ACTION_FILES = tuple(f for f in STAGED_ACTION_FILES
+                                   if f[0] == "google_signin")
 PLUGIN_ACTION_FILES = tuple(f for f in STAGED_ACTION_FILES
                             if f[0].startswith("plugin_card:"))
 
@@ -8790,6 +8814,8 @@ def _post_staged_action(channel: str, thread_ts: str | None,
         _open_channel_action(channel, thread_ts, act)
     elif kind == "publish":
         _post_publish_card(channel, thread_ts, act)
+    elif kind == "google_signin":
+        _google_signin_action(channel, thread_ts, act)
 
 
 def _post_claimed_actions(channel: str, thread_ts: str | None,
@@ -10364,6 +10390,78 @@ def on_room_create_project(ev: "_chat.ActionEvent"):
         log.warning(f"room_create_project failed: {e}")
 
 
+def _post_google_signin_link(channel: str, thread_ts: str | None, account: str,
+                             service: str = "drive") -> bool:
+    """Post a Google sign-in link (google_signin.start) where it was asked
+    for. True when the link went out."""
+    gs = _google_signin_mod()
+    if gs is None:
+        FRONTEND.post(channel=channel, thread_ts=thread_ts or None,
+                      text=":x: The Google sign-in is not available on this install.")
+        return False
+    try:
+        started = gs.start(account, service, channel=channel, thread_ts=thread_ts or "")
+    except gs.SigninError as e:
+        FRONTEND.post(channel=channel, thread_ts=thread_ts or None, text=e.text)
+        return False
+    FRONTEND.post(channel=channel, thread_ts=thread_ts or None, text=gs.link_text(started))
+    log.info(f"google sign-in: link posted for {started['service']}")
+    return True
+
+
+def _google_signin_action(channel: str, thread_ts: str | None, act: dict) -> None:
+    """A staged sign-in request (pending-google-signin.json). The EA cannot
+    sign anyone in; it stages {"account", "service"} and the bot posts the
+    link. A request carries no token and grants nothing: the user still
+    approves at Google and pastes the address back."""
+    account = str(act.get("account") or act.get("email") or "").strip()
+    service = str(act.get("service") or "drive").strip().lower()
+    if not account:
+        FRONTEND.post(channel=channel, thread_ts=thread_ts or None,
+                      text=":x: A Google sign-in was asked for without an account; write "
+                           "pending-google-signin.json with {\"account\": \"<address>\"}.")
+        return
+    _post_google_signin_link(channel, thread_ts, account, service)
+
+
+def _handle_google_signin(channel: str, thread_ts: str, msg_ts: str, user_msg: str) -> bool:
+    """`connect Google Drive <account>` posts a sign-in link; a pasted
+    sign-in address finishes it (google_signin.finish), owner side, with no
+    model call, so the code in the address reaches no model. True when the
+    message was one of the two."""
+    gs = _google_signin_mod()
+    if gs is None:
+        return False
+    redirect = gs.is_redirect(user_msg)
+    account = None if redirect else gs.parse_command(user_msg)
+    if not redirect and account is None:
+        return False
+    try:
+        if redirect:
+            result = gs.finish(user_msg)
+            FRONTEND.post(channel=channel, thread_ts=thread_ts, text=result["text"])
+            log.info(f"google sign-in: finished, {result['status']}")
+            _swap_reaction(channel, msg_ts, "eyes",
+                           "x" if result["status"] == "error" else "white_check_mark")
+        elif not account:
+            FRONTEND.post(channel=channel, thread_ts=thread_ts,
+                          text="Which Google account? Say, for example: "
+                               "`connect Google Drive you@gmail.com`.")
+            _swap_reaction(channel, msg_ts, "eyes", "white_check_mark")
+        else:
+            ok = _post_google_signin_link(channel, thread_ts, account)
+            _swap_reaction(channel, msg_ts, "eyes", "white_check_mark" if ok else "x")
+    except Exception as e:
+        log.error(f"google sign-in failed: {e}")
+        FRONTEND.post(channel=channel, thread_ts=thread_ts,
+                      text=":x: The Google sign-in failed on this machine. Try again in a minute.")
+        _swap_reaction(channel, msg_ts, "eyes", "x")
+    finally:
+        with _active_lock:
+            _active_threads.discard(msg_ts)
+    return True
+
+
 def _open_channel_action(channel: str, thread_ts: str | None, act: dict) -> None:
     """A staged room request (pending-channel.json). The model cannot create
     Slack channels; it stages {"project": "<id or name>"} and the bot runs
@@ -10477,6 +10575,10 @@ def _handle_bot_command(channel: str, thread_ts: str, msg_ts: str,
     handle_message_async so that function stays within the window the
     style-guard wiring test inspects."""
     if _handle_usage_tip_reply(channel, thread_ts, msg_ts, user_msg):
+        return True
+    # A Google sign-in from the chat: the connect command and the pasted
+    # address the browser landed on (google_signin.py).
+    if _handle_google_signin(channel, thread_ts, msg_ts, user_msg):
         return True
     # "adopt session <uuid> [as <model>]": continue a conversation held in
     # the ea-bot shell (scripts/ea-bot-shell.sh) in THIS thread. The shell
@@ -12757,9 +12859,15 @@ def on_message(msg: "_chat.InboundMessage"):
     is_thread_reply = msg.is_reply
     thread_ts = msg.thread_key if is_thread_reply else (msg.thread_key or ts)
 
+    # A pasted Google sign-in address carries a one-time code: the log
+    # names it and keeps the code out (google_signin.find_redirect).
+    shown = ("[a Google sign-in address]"
+             if re.search(r"https?://(?:localhost|127\.0\.0\.1)\S*[?&](?:code|state)=",
+                          user_msg, re.I)
+             else user_msg[:80])
     log.info(
         f"Message from {user_id} ({'thread' if is_thread_reply else 'new'}): "
-        f"{user_msg[:80]}"
+        f"{shown}"
     )
 
     # Deduplicate using the actual message ts

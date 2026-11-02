@@ -509,7 +509,8 @@ PHASES: list[dict] = [
             "  to your Google account, so the EA cannot open it on its own. With a",
             "  sign-in it reads those files, read only: it cannot change, share or",
             "  delete one. The sign-in uses the Google client of the calendar step,",
-            "  with the Google Drive API turned on (docs/SETUP.md 'Google Drive').\n",
+            "  with the Google Drive API turned on (docs/SETUP.md 'Google Drive').",
+            "  Later, from the chat, `connect Google Drive <account>` adds one.\n",
         ],
         "questions": [
             _q("drive-accounts", "Google accounts whose Docs the EA may read, comma-separated "

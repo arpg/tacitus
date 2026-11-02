@@ -167,15 +167,22 @@ def next_steps(ctx: dict, platform: str = sys.platform, env: dict | None = None)
                                "python3 preprocessor/google_calendar_client.py --test"]})
     profile_file = (ctx.get("files") or {}).get(Q.PROFILE_FILE) or {}
     drive = [str(a) for a in profile_file.get("drive_accounts") or [] if isinstance(a, str)]
+    drive_step = None
     if drive:
-        steps.append({"title": "Google Drive sign-in",
+        chat_way = (f"Once the chat runs, say there: connect Google Drive {drive[0]}. The bot "
+                    "posts a link; sign in, then paste back the address your browser lands on. "
+                    "No terminal is needed. Or run these in one: "
+                    if profile == "assistant" else "Each sign-in asks you to paste the address "
+                                                   "your browser lands on. ")
+        drive_step = {"title": "Google Drive sign-in",
                       "why": "A Google Docs link in your mail is private to your account, so the "
                              "EA cannot open it without this sign-in. The sign-in is read only.",
                       "text": "Turn on the Google Drive API in the same Google Cloud project "
-                              "first (docs/SETUP.md 'Google Drive'). Each sign-in asks you to "
-                              "paste the address your browser lands on.",
+                              "first (docs/SETUP.md 'Google Drive'). " + chat_way.rstrip(),
                       "commands": [f"python3 preprocessor/drive_client.py setup --email {a}"
-                                   for a in drive] + ["python3 preprocessor/drive_client.py test"]})
+                                   for a in drive] + ["python3 preprocessor/drive_client.py test"]}
+        if profile != "assistant":
+            steps.append(drive_step)
     if profile != "review-only":
         steps.append({"title": "Your writing style",
                       "why": "A draft that matches your greetings, sign-offs and tone needs "
@@ -244,6 +251,8 @@ def next_steps(ctx: dict, platform: str = sys.platform, env: dict | None = None)
                   "text": "Fix each FAIL with the fix printed beside it.",
                   "commands": [f"python3 scripts/ea-doctor.py --profile {profile}",
                                "./run-agent.sh morning-briefing --now"]})
+    if drive_step and profile == "assistant":
+        steps.append(drive_step)  # the chat sign-in needs the bot running
     steps.append({"title": "The first-week questions",
                   "why": "The EA learns your preferences from your own words, not from guesses.",
                   "text": "Answer each in your own words: python3 preprocessor/onboarding.py "

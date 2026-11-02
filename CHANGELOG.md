@@ -16,6 +16,14 @@ repository that preceded it.
   401 or a sign-in page at it. A private Docs link used to fail: the
   claude.ai Drive connector loads only under a browser login, and a
   setup-token login loads no connector at all.
+- **A Google account connects from the chat, with no terminal.** Say
+  `connect Google Drive <account>`, or let the EA ask for it when a read
+  finds no account (`pending-google-signin.json`): the bot posts a
+  sign-in link, the user approves at Google on any device and pastes
+  back the address the browser lands on, and the bot trades the code
+  owner side (`preprocessor/google_signin.py`, PKCE). The pasted address
+  never reaches a model, and the log keeps the code out. A Drive API
+  that is still off comes back as its one-tap enable link.
 - **Setup signs Drive in, and every step says why.** A `drive` phase
   (`drive_accounts` in `user-profile.json`), a Google Drive screen on the
   setup page, a Drive sign-in in `/setup` section 4 and in `setup.sh`,

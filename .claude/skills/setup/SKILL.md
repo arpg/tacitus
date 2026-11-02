@@ -270,8 +270,10 @@ solver has no rule store and no place to hold time. It is required on
 Then Google Drive (docs/SETUP.md "Google Drive"): ask which Google
 accounts hold the documents their mail links to ("Other"; empty is fine),
 write them as `drive-accounts` in `answers-drive.json` with
-`"google-drive-now": false`, and run the `drive` phase. Each sign-in is a
-step they type in the second terminal (a pasted address):
+`"google-drive-now": false`, and run the `drive` phase. On `assistant`
+the sign-in waits for the chat (section 8): the user says `connect
+Google Drive <account>` there and follows the link, with no terminal.
+Elsewhere it is a step they type in the second terminal:
 `python3 preprocessor/drive_client.py setup --email <account>`. Check:
 `python3 preprocessor/drive_client.py test`. Say that the scope is read
 only. An "access blocked" answer means the Workspace administrator must

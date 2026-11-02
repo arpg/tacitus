@@ -278,9 +278,10 @@ def test_a_disabled_drive_api_names_the_console_step(drive):
     assert e.value.fix == D.API_FIX
 
 
-def test_no_signed_in_account_names_the_owner_sign_in(drive):
+def test_no_signed_in_account_names_the_chat_sign_in_then_the_terminal(drive):
     with pytest.raises(D.DriveError) as e:
         D.read(DOC_ID)
+    assert "pending-google-signin.json" in e.value.fix and "connect Google Drive" in e.value.fix
     assert "drive_client.py setup --email" in e.value.fix
 
 

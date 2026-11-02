@@ -1009,8 +1009,9 @@ def check_drive(ea_dir: Path, auth: Path) -> None:
     missing = [a for a in listed if not _drive_token(auth, a).exists()]
     if missing:
         warn("auth: google drive", f"not signed in: {', '.join(missing)}",
-             "docs/SETUP.md 'Google Drive': python3 preprocessor/drive_client.py setup --email "
-             "<account> for each, in a terminal, then python3 preprocessor/drive_client.py test")
+             "docs/SETUP.md 'Google Drive': say 'connect Google Drive <account>' in the EA chat "
+             "for each, or run python3 preprocessor/drive_client.py setup --email <account> in a "
+             "terminal")
     else:
         ok("auth: google drive", f"{len(listed)} account(s) signed in, read only")
 
