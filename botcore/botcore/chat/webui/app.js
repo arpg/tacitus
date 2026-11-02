@@ -16,10 +16,10 @@ const BASE = location.pathname.replace(/\/index\.html$/, '').replace(/\/+$/, '')
 const enc = encodeURIComponent;
 const EVENT_TYPES = ['message', 'update', 'reaction', 'card', 'status', 'file', 'channel', 'thread_state'];
 const CREATED = new Set(['message', 'card', 'file']); // the event types that post a message
-const KIND_ORDER = { dm: 0, main: 1, sched: 2, room: 3 };
+const KIND_ORDER = { dm: 0, main: 1, sched: 2, digest: 3, room: 4 };
 const NEW_THREAD = '+'; // never a thread key: every key opens with a letter or digit
 const PAGE = 50;
-const QUOTED_LABEL = 'Rest of the body: text that matches an earlier message of the thread';
+const QUOTED_LABEL = 'Rest of the body: the earlier messages it quotes';
 const CANCEL_WORDS = ['cancel', 'keep', 'skip', 'dismiss', 'one by one'];
 const RECIPIENT_LABELS = new Set(['to', 'cc', 'bcc', 'reply-to', 'from', 'attendees', 'optional']);
 
@@ -170,7 +170,7 @@ async function call(method, path, body) {
   }
   let data = null;
   try { data = await res.json(); } catch { /* an empty or non-JSON body */ }
-  if (res.status === 401 && !T.relay) { showPair(); throw new Error('This browser is not paired.'); }
+  if (res.status === 401 && !T.relay) { showPair(); throw new Error('This browser is not signed in.'); }
   if (T.relay) relayNote(res.status === 403 && data && data.pending ? pendingNote(T.rec.code) : '');
   if (!res.ok) throw Object.assign(new Error((data && data.error) || `HTTP ${res.status}`), { status: res.status });
   return data;
@@ -511,7 +511,7 @@ async function act(msg, body, box) {
   note.textContent = 'Sending...';
   try {
     await call('POST', `/cards/${enc(msg.channel)}/${enc(msg.id)}/actions`, body);
-    note.textContent = 'Sent. The card updates when the bot answers.';
+    note.textContent = 'Sent. The card updates when Tacitus answers.';
   } catch (e) {
     note.textContent = e.status === 403 && T.relay ? NO_CARDS : `Not sent: ${e.message}`;
   } finally {
@@ -519,7 +519,7 @@ async function act(msg, body, box) {
   }
 }
 
-const NO_CARDS = 'Approve this in the web chat on your computer: this phone does not press card buttons unless you allow it there.';
+const NO_CARDS = 'Approve this in Tacitus on your computer: this phone does not press card buttons unless you allow it there.';
 
 function renderCard(msg) {
   const c = msg.card || {};
@@ -598,7 +598,8 @@ function renderMsg(m) {
 /* -- Channels and threads ------------------------------------------- */
 
 const chan = (id) => S.channels.find((c) => c.id === id);
-const channelName = (c) => (c ? c.name || (c.kind === 'dm' ? 'Direct messages' : c.id) : '');
+const KIND_NAMES = { main: 'Ask Tacitus', dm: 'Direct messages', sched: 'Scheduling', digest: 'Mail digests' }; // a room: its name, no "ea-"
+const channelName = (c) => (c ? KIND_NAMES[c.kind] || String(c.name || c.id).replace(/^ea-(?=.)/, '') : '');
 const hashFor = (ch, tk) => '#/' + enc(ch) + (tk ? '/' + enc(tk) : '');
 
 function unreadFor(ch) {
@@ -639,7 +640,7 @@ function renderChannels() {
   $('needs-link').classList.toggle('active', S.needsView);
   $('needs-count').hidden = !need;
   $('needs-count').textContent = String(need);
-  $('needs-count').setAttribute('aria-label', `${need} ${need === 1 ? 'thread needs' : 'threads need'} you`);
+  $('needs-count').setAttribute('aria-label', `${need} ${need === 1 ? 'conversation needs' : 'conversations need'} you`);
   $('new-room').hidden = !mainChannel();
 }
 
@@ -649,8 +650,8 @@ function threadCard(p, ch, withChannel) {
   const tk = threadOf(p);
   const n = S.threadUnread.get(tkey(ch, tk)) || 0;
   const st = S.states.get(tkey(ch, tk)) || {};
-  // An old one is muted and says how long it has waited: "Needs you · 9 days".
-  const word = STICKERS[st.state] && (st.stale ? `${STICKERS[st.state]} · ${ageDays(st.at)}` : STICKERS[st.state]);
+  // An old one is muted with its age as the bot counts it (from the owner's tap, else the last message): "Needs you · 9 days".
+  const word = STICKERS[st.state] && (st.stale ? `${STICKERS[st.state]} · ${ageDays(st.by === 'owner' ? st.at : p.last_at || p.posted_at)}` : STICKERS[st.state]);
   const replies = p.reply_count || 0;
   return h('a', {
     class: 'thread-item' + (ch === S.channel && tk === S.thread ? ' active' : '') + (n ? ' unread' : ''),
@@ -681,7 +682,7 @@ function renderThreads() {
   }
   const sorted = [...th.list].sort((a, b) => (b.last_at || b.posted_at || 0) - (a.last_at || a.posted_at || 0));
   const shown = S.filter === 'all' ? sorted : sorted.filter((p) => stateOf(S.channel, threadOf(p)) === S.filter);
-  const chips = h('div', { class: 'filters', role: 'group', 'aria-label': 'Show threads' }, FILTERS.map(([v, label]) =>
+  const chips = h('div', { class: 'filters', role: 'group', 'aria-label': 'Show conversations' }, FILTERS.map(([v, label]) =>
     h('button', { type: 'button', class: 'filter' + (v === S.filter ? ' on' : ''), 'aria-pressed': String(v === S.filter),
       'data-filter': v, onclick: () => setFilter(v) }, label)));
   box.replaceChildren(...(th.list.length ? [chips] : []), ...shown.map((p) => threadCard(p, S.channel)));
@@ -689,7 +690,7 @@ function renderThreads() {
   else if (!shown.length) box.append(h('p', { class: 'empty' }, FILTERS.find(([v]) => v === S.filter)[2]));
   if (th.more) {
     box.append(h('button', { type: 'button', class: 'btn plain more', onclick: () => loadThreads(S.channel, true) },
-      'Load older threads'));
+      'Show older conversations'));
   }
 }
 
@@ -705,8 +706,8 @@ function setFilter(v) {
 // The sticker's words per state (`none` has no sticker); the filters, with
 // what an empty list says under each.
 const STICKERS = { needs_you: 'Needs you', working: 'Working', waiting: 'Waiting', done: 'Done' };
-const FILTERS = [['all', 'All', ''], ['needs_you', 'Needs you', 'No thread here needs you.'],
-  ['waiting', 'Waiting', 'No thread here is waiting.'], ['done', 'Done', 'No thread here is done.']];
+const FILTERS = [['all', 'All', ''], ['needs_you', 'Needs you', 'Nothing here needs you.'],
+  ['waiting', 'Waiting', 'Nothing here is waiting.'], ['done', 'Done', 'Nothing here is done.']];
 const FILTER_KEY = 'tacitus-thread-filter';
 const NEEDS = 'needs'; // the Needs you route (#/needs): no channel id is this word
 try { S.filter = localStorage.getItem(FILTER_KEY) || 'all'; } catch { /* no storage: All */ }
@@ -861,7 +862,7 @@ async function loadThreads(ch, older) {
     }
     S.threads.set(ch, { list, more: rows.length >= PAGE });
   } catch (e) {
-    toast(`Could not load threads: ${e.message}`);
+    toast(`Could not load conversations: ${e.message}`);
     th.loading = false;
   }
   if (ch === S.channel) renderThreads();
@@ -876,7 +877,7 @@ function renderThread() {
     S.nodes.set(m.id, el);
     return el;
   }));
-  $('thread-title').textContent = threadTitle(list[0]) || 'Thread';
+  $('thread-title').textContent = threadTitle(list[0]) || 'Conversation';
 }
 
 const nearBottom = () => {
@@ -889,7 +890,7 @@ async function openThread(ch, tk, token) {
   const box = $('messages');
   S.nodes = new Map();
   const isNew = !tk || tk === NEW_THREAD;
-  $('text').placeholder = isNew ? `Start a conversation in ${channelName(chan(ch))}` : 'Reply';
+  $('text').placeholder = !isNew ? 'Reply' : (chan(ch) || {}).kind === 'main' ? 'Ask Tacitus' : `Message ${channelName(chan(ch))}`;
   if (isNew) {
     $('thread-title').textContent = 'New conversation';
     box.replaceChildren(h('p', { class: 'empty' }, tk ? 'Write your message below. It starts a new conversation.'
@@ -899,7 +900,7 @@ async function openThread(ch, tk, token) {
   const key = tkey(ch, tk);
   if (S.msgs.has(key)) { renderThread(); toBottom(); } else {
     S.msgs.set(key, []); // collects what the stream brings while the read runs
-    $('thread-title').textContent = 'Thread';
+    $('thread-title').textContent = 'Conversation';
     box.replaceChildren(h('p', { class: 'empty' }, 'Loading...'));
   }
   try {
@@ -918,7 +919,7 @@ async function openThread(ch, tk, token) {
     renderThread();
     toBottom();
   } catch (e) {
-    if (token === S.route) box.replaceChildren(h('p', { class: 'empty' }, `Could not load the thread: ${e.message}`));
+    if (token === S.route) box.replaceChildren(h('p', { class: 'empty' }, `Could not load the conversation: ${e.message}`));
   }
 }
 
@@ -942,7 +943,7 @@ async function route() {
   if (!needs && !chan(ch)) {
     const def = defaultChannel();
     if (def) location.replace(hashFor(def.id));
-    else $('thread-list').replaceChildren(h('p', { class: 'empty' }, 'No channels yet.'));
+    else $('thread-list').replaceChildren(h('p', { class: 'empty' }, 'Nothing here yet.'));
     return;
   }
   const token = ++S.route;
@@ -1148,7 +1149,7 @@ function send() {
 function upload(file) {
   const text = $('text').value;
   if (T.relay && file.size > RELAY_MAX_BODY) {
-    note('Through the relay a file can be at most 10 MB. Send larger ones on the tailnet.');
+    note('Away from home a file can be at most 10 MB. Send larger ones when you are on your own network.');
     return;
   }
   note(`Uploading ${file.name} (${size(file.size)})...`);
@@ -1203,7 +1204,7 @@ async function listSubs() {
   const subs = await call('GET', '/push/subscriptions').catch(() => []);
   $('push-subs').replaceChildren(...subs.map((s) => h('li', null, `${s.host}, ${when(s.created_at, true)} `,
     h('button', { type: 'button', class: 'btn small', onclick: () => call('POST', '/push/revoke', { id: s.id })
-      .then(listSubs, (e) => toast(`Notifications: ${e.message}`)) }, 'Revoke'))));
+      .then(listSubs, (e) => toast(`Notifications: ${e.message}`)) }, 'Remove'))));
 }
 
 async function toggleNotify() {
@@ -1417,10 +1418,10 @@ async function sessionKeys(p, eb) {
 
 // Only the holder of the bot's private key makes a welcome that opens here.
 async function relayFinish(p, frame) {
-  if (!frame || frame.k !== 'welcome' || frame.id !== p.id) throw new Error('not the welcome for this hello');
+  if (!frame || frame.k !== 'welcome' || frame.id !== p.id) throw new Error('the answer was not for this phone');
   const blob = b64d(frame.c);
   const keys = await sessionKeys(p, blob.subarray(0, 32));
-  if (frame.sid !== keys.sid) throw new Error('the welcome names another session');
+  if (frame.sid !== keys.sid) throw new Error('the answer did not check out');
   const s = { sid: keys.sid, send: await gcmKey(keys.c2b), recv: await gcmKey(keys.b2c), ctr: 0, top: -1, seen: new Set() };
   s.device = String(unpack(await openRaw(s, 'welcome', frame.id, frame.n, blob.subarray(32)))[0].device || '');
   return s;
@@ -1549,17 +1550,17 @@ async function selfState() {
 // can forge one), so it is only a hint: the app reports it and tries
 // again, and never drops its keys over one.
 const RELAY_SAYS = {
-  auth: 'The bot did not accept this phone. If it was removed, pair it again under "Pair a phone".',
-  offline: 'The bot cannot be reached through the relay now.',
-  timeout: 'The bot did not answer in time.',
-  busy: 'The relay is busy.',
-  unsure: 'the relay broke off, and the bot may have it anyway. Look in the thread before you send it again.',
+  auth: 'Tacitus did not accept this phone. If it was removed, set it up again under "Pair a phone".',
+  offline: 'Tacitus cannot be reached away from home right now.',
+  timeout: 'Tacitus did not answer in time.',
+  busy: 'The away-from-home connection is busy.',
+  unsure: 'the connection broke off, and Tacitus may have it anyway. Look in the conversation before you send it again.',
 };
-const pendingNote = (code) => `This phone waits for approval. On your computer, open Phones in Tacitus and tap Approve next to code ${spaced(code)}.`;
+const pendingNote = (code) => `This phone waits for approval. On your computer, open "Pair a phone" in Tacitus and tap Approve next to code ${spaced(code)}.`;
 
 class RelayError extends Error {
   constructor(code, text) {
-    super(RELAY_SAYS[code] || text || 'The relay did not answer.');
+    super(RELAY_SAYS[code] || text || 'The away-from-home connection did not answer.');
     this.code = code;
   }
 }
@@ -1717,7 +1718,7 @@ async function pairFromLink(kind, text, self = false) {
     const p = JSON.parse(TD.decode(b64d(text)));
     if (!p || p.v !== (kind === 'tr2' ? 2 : 1) || !/^[0-9a-f]{32}$/.test(p.p) || b64d(String(p.s)).length !== 32
       || (p.b !== undefined && !/^[0-9a-f]{64}$/.test(p.b))) {
-      throw new Error('this is not a pairing link');
+      throw new Error('this is not a setup link');
     }
     if (p.a !== undefined && new URL(p.a).origin !== location.origin) throw new Error('this link opens the app elsewhere');
     if (!(p.x * 1000 > Date.now())) throw new Error('the link has expired; open a new one under "Pair a phone"');
@@ -1729,19 +1730,19 @@ async function pairFromLink(kind, text, self = false) {
     if (new URL(p.r).origin !== location.origin) {
       const got = await directGet('/relay/status');
       const st = got && got.status === 200 ? await got.json().catch(() => null) : null;
-      if (!st || !st.install_id) throw new Error('open the link while this phone is on the tailnet');
-      if (st.install_id !== p.i || st.bot_public !== p.k) throw new Error('the link is for another install');
+      if (!st || !st.install_id) throw new Error('open the link while this phone is on your own network');
+      if (st.install_id !== p.i || st.bot_public !== p.k) throw new Error('the link is for a different Tacitus');
       at = { r: st.relay_url, i: st.install_id, k: st.bot_public, c: st.client_key };
-    } else if (!p.b) throw new Error('the link has no hash of the bot\'s code; open a new one under "Pair a phone"');
+    } else if (!p.b) throw new Error('the link has no fingerprint of the app; open a new one under "Pair a phone"');
     else if (typeof verifyBundle !== 'function') return halt(UNCHECKED); // before it makes a key
     const url = new URL(at.r);
     if (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOOPBACK_HOSTS.includes(url.hostname))) {
-      throw new Error('the relay must use https');
+      throw new Error('the link does not use a secure (https) connection');
     }
     if (!/^[a-z2-7]{26}$/.test(at.i) || b64d(String(at.k)).length !== 32 || !/^[A-Za-z0-9_-]{43}$/.test(at.c)) {
-      throw new Error('this is not a pairing link');
+      throw new Error('this is not a setup link');
     }
-    if (old && !confirm('This browser is paired already. Replace that pairing?')) return;
+    if (old && !confirm('This browser is set up already. Replace that setup?')) return;
     const keys = await newKeys(true);
     const rec = { v: 1, relay: String(at.r).replace(/\/+$/, ''), install: at.i, clientKey: at.c,
       botPublic: b64d(at.k), priv: keys.priv, privBytes: keys.privBytes, pub: keys.pub, device: '', bundle: p.b || '' };
@@ -1756,18 +1757,18 @@ async function pairFromLink(kind, text, self = false) {
     const back = await loadPairing();
     if (!back || back.device !== rec.device) { // the setup must survive this page
       diagNote({ what: 'pairing-readback', got: back ? 'other' : 'none', pairingError: S.pairingError || '', idb: await idbProbe() });
-      toast('This phone saved its setup but cannot read it back, so it may not work off your network.');
+      toast('This phone saved its setup but cannot read it back, so it may not work away from home.');
     }
     RELAY = relay;
     if (self) { // the owner set up the phone in hand: signed in here, so no code to compare
       await call('POST', '/relay/approve', { device: rec.device, cards: false });
-      relayNote('This phone is set up. It works anywhere now; buttons stay on when you are on the tailnet.');
+      relayNote('This phone is set up. It works anywhere now; card buttons work when you are on your own network.');
     } else {
       relayNote(pendingNote(rec.code));
     }
   } catch (e) {
     if (saved && old) await savePairing(old).catch(() => {}); // a failed pairing keeps the earlier one
-    toast(`Pairing failed: ${e.message}`);
+    toast(`Setup failed: ${e.message}`);
   }
 }
 
@@ -1790,9 +1791,9 @@ async function pairPhone(via) {
   const relayWay = Boolean(st.pair_relay && st.relay_app);
   $('phone-relay').hidden = via === 'relay' || !relayWay;
   if (via !== 'relay' && !(here && st.pair_own)) {
-    $('phone-note').textContent = relayWay ? 'This address does not open on a phone. Use "Phone without Tailscale" instead.'
-      : st.pair_own ? 'Open Tacitus at its tailnet address to set up a phone.'
-      : 'Setting up a phone needs the signed app, which this build does not have.';
+    $('phone-note').textContent = relayWay ? 'This address does not open on a phone. Use "Phone not on your network" instead.'
+      : st.pair_own ? 'Open Tacitus at its address on your own network to set up a phone.'
+      : 'Setting up a phone needs the signed app, which this copy of Tacitus does not have.';
   } else {
     try {
       const out = await call('POST', '/relay/pair', via === 'relay' ? { via } : {});
@@ -1806,8 +1807,8 @@ async function pairPhone(via) {
         $('phone-scan').hidden = false;
       }
       $('phone-note').textContent = out.origin === 'relay'
-        ? `Scan this with the phone's camera. It opens Tacitus without Tailscale; once you tap Approve below it can read and reply, and press buttons only if you allow it. The code works once, until ${when(out.expires)}. Never send this link through chat or mail.`
-        : `When the other phone shows a six-digit code, tap Approve below if it is the same code. The code works once, until ${when(out.expires)}. Never send this link through chat or mail.`;
+        ? `Scan this with the phone's camera. It opens Tacitus from anywhere; once you tap Approve below it can read and reply, and press buttons only if you allow it. The QR code works once, until ${when(out.expires)}. Never send this link through chat or mail.`
+        : `When the other phone shows a six-digit code, tap Approve below if it is the same code. The QR code works once, until ${when(out.expires)}. Never send this link through chat or mail.`;
     } catch (e) {
       $('phone-note').textContent = `Could not start: ${e.message}`;
     }
@@ -1823,7 +1824,7 @@ async function listPhones() {
     const rows = await call('GET', '/relay/devices');
     box.replaceChildren(...rows.map((d) => h('li', { 'data-device': d.id },
       h('span', {}, d.pending ? `${d.name}, code ${spaced(d.code)}, waits for approval` : `${d.name}, set up ${when(d.paired_at, true)}`
-        + (d.origin === 'own' ? '' : `, without Tailscale${d.bundle_verified ? '' : ', code not checked'}`)),
+        + (d.origin === 'own' ? '' : `, not on your network${d.bundle_verified ? '' : ', app not checked'}`)),
       d.origin === 'own' ? null : h('label', {}, h('input', { type: 'checkbox', checked: d.pending ? CARDS.has(d.id) : d.cards_allowed,
         onchange: (e) => cardsFor(d, e.target.checked) }), 'Allow card buttons on this phone'),
       d.pending ? h('button', { type: 'button', class: 'btn small primary', onclick: () => phoneAct('approve', d) }, 'Approve') : null,
@@ -1839,7 +1840,7 @@ const CARDS = new Set();
 const cardsFor = (d, on) => { CARDS[on ? 'add' : 'delete'](d.id); if (!d.pending) phoneAct('approve', d); };
 
 async function phoneAct(verb, d) {
-  if (verb === 'revoke' && !confirm(`Remove ${d.name}? It can no longer reach the bot through the relay.`)) return;
+  if (verb === 'revoke' && !confirm(`Remove ${d.name}? It can no longer reach Tacitus away from home.`)) return;
   const cards = verb === 'approve' ? CARDS.has(d.id) : undefined; // revoke takes the device alone
   try { await call('POST', `/relay/${verb}`, { device: d.id, cards }); } catch (e) { toast(e.message); }
   listPhones();
@@ -1903,8 +1904,6 @@ function welcome(at) {
   $('welcome-dots').setAttribute('aria-label', `Card ${S.card + 1} of ${cards.length}`);
   $('welcome-next').textContent = S.card === cards.length - 1 ? 'Done' : 'Next';
   $('welcome-skip').hidden = S.card === cards.length - 1;
-  const dm = S.channels.find((c) => c.kind === 'dm' && !c.archived);
-  for (const el of $('welcome').querySelectorAll('.w-dm')) el.textContent = channelName(dm) || 'Direct messages';
   if ($('welcome').open) return;
   document.body.classList.remove('drawer');
   $('welcome').showModal();
@@ -1946,7 +1945,7 @@ function emptyNote(kind) {
   return h('p', { class: 'empty' }, {
     dm: 'Cards that need your tap land here.',
     room: 'This room is for one project. Ask about it here and Tacitus keeps track of it.',
-    sched: 'Tacitus finds meeting times here.',
+    sched: 'Tacitus finds meeting times here.', digest: 'Tacitus posts your mail digests here.',
   }[kind] || 'Nothing here yet.');
 }
 
@@ -2017,12 +2016,12 @@ function teaching() {
 // `bundle` (the QR's hash) first and the key that signed it (`signKey`) after.
 // With neither, or no check that runs, it stops; checked, it attests.
 const relayCopy = () => Boolean(T.relay && new URL(T.rec.relay).origin === location.origin);
-const UNCHECKED = 'Code verification unavailable: this copy of the app from the relay cannot check its code against the bot\'s. '
-  + 'Pair this phone again once the relay serves the current release.';
+const UNCHECKED = 'This copy of the app cannot check its code against your Tacitus, so it does not run. '
+  + 'Set up this phone again once the away-from-home connection has the latest version.';
 
 async function checkBundle() {
   const rec = T.relay ? T.rec : null;
-  if (rec && !rec.bundle) return halt('This phone was paired without the hash of the bot\'s code. Pair it again.');
+  if (rec && !rec.bundle) return halt('This phone was set up without a fingerprint of the app. Set it up again.');
   let doc;
   if (rec) doc = await call('GET', '/bundle');
   else if (!S.me.bundle) return null; // a bot that signs nothing (no cryptography package)
@@ -2108,8 +2107,8 @@ async function checkFiles(files) {
 // drops its copy and moves each page to its refusal; this page stops here
 // too, in case it cannot.
 async function refuseApp(path, told) {
-  halt(`This copy of the app is not the code your bot signed: ${path} does not match it. The relay and the bot run `
-    + 'different releases, or the app was changed. Open the app on the tailnet, or tell the person who runs the relay.');
+  halt(`This copy of the app is not the one your Tacitus signed: ${path} does not match it. Tacitus and the away-from-home `
+    + 'connection run different versions, or the app was changed. Open the app on your own network, or tell whoever runs that connection.');
   if (!told) await toWorker({ refuse: path }).catch(() => {});
   return null;
 }
@@ -2142,7 +2141,7 @@ async function pair(e) {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
     });
-    if (!res.ok) throw new Error(res.status === 401 || res.status === 400 ? 'That token does not match.' : `HTTP ${res.status}`);
+    if (!res.ok) throw new Error(res.status === 401 || res.status === 400 ? 'That code does not match.' : `HTTP ${res.status}`);
     $('pair').hidden = true;
     $('pair-token').value = '';
     boot();
@@ -2163,16 +2162,16 @@ async function unreachableNote(e) {
     if (!(e instanceof TypeError)) return ''; // the bot answered (a phone awaiting approval): the call said it
     // The call itself failed on the network. A plain GET on the relay tells
     // whether this phone reaches the relay at all, or only the call broke.
-    if (S.cspBlocked) return `This copy of the app may not call ${S.cspBlocked}. Open the app on the tailnet once to refresh it.`;
+    if (S.cspBlocked) return `This copy of the app may not reach ${S.cspBlocked}. Open the app on your own network once to refresh it.`;
     const up = await fetch(`${T.rec.relay}/`, { mode: 'no-cors', cache: 'no-store', credentials: 'omit' }).then(() => true, () => false);
     return up
-      ? `The relay at ${host} answers, but the call to Tacitus failed (${e.message}). Trying again.`
-      : `This phone cannot reach the relay at ${host}. Check that it is online (Wi-Fi or cellular), then try again.`;
+      ? `The away-from-home connection (${host}) answers, but the call to Tacitus failed (${e.message}). Trying again.`
+      : `This phone cannot reach the away-from-home connection (${host}). Check that it is online (Wi-Fi or cellular), then try again.`;
   }
   if (!(await loadPairing())) {
     if (S.pairingError) return `This phone cannot read its saved setup (${S.pairingError}). Close the app fully and open it again.`;
     return 'Tacitus is reachable only on your own network from here. To use it anywhere, open this same app on that network '
-      + 'and tap "Set up this phone" under "Use Tacitus on your phone".'
+      + 'and tap "Pair a phone" in the menu, then "Set up this phone".'
       + (phoneHere() && !standalone() ? ' The home-screen app and the browser each need their own setup.' : '');
   }
   return `Could not reach Tacitus: ${e.message}`;
@@ -2209,7 +2208,7 @@ async function boot() {
     S.channels = rows || [];
     for (const c of S.channels) if (c.unread) S.baseline.set(c.id, Number(c.unread) || 0);
   } catch (e) {
-    toast(`Could not load channels: ${e.message}`);
+    toast(`Could not load the menu: ${e.message}`);
     return;
   }
   S.ready = true;

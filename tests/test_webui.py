@@ -23,6 +23,8 @@ override posts and follows the bot's `thread_state` events. The app
 teaches itself: a welcome shown once per browser (and again from the
 drawer) whose examples fill the composer, a New room dialog that asks the
 bot in the EA channel, and empty lists that say what each place is for.
+Every string the app shows passes a plain-words scan, and the drawer
+names each place in the app's own words.
 """
 import json
 import re
@@ -469,6 +471,31 @@ def test_a_thread_renders_and_markup_in_text_stays_text(app):
     assert not errors, errors
 
 
+def test_the_drawer_names_each_place_in_plain_words(app):
+    """The fixed places go by what they are for (Ask Tacitus, Direct
+    messages, Scheduling, Mail digests), a room by its name without the
+    bot's "ea-" prefix; each link keeps the channel's id, and the header and
+    a new conversation's box use the same names."""
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    links = page.locator("#channel-list > a.chan")
+    expect(links.locator(".c-name")).to_have_text(["Ask Tacitus", "Direct messages", "Scheduling", "Mail digests",
+                                                   "example-project"])  # the unread one first, then by kind
+    assert [links.nth(i).get_attribute("href") for i in range(5)] == [
+        "#/stream%3A9", "#/stream%3A7", "#/stream%3A11", "#/digests", "#/r1"]
+    expect(page.locator("#channel-list details .c-name")).to_have_text("old-project")
+    expect(page.locator("#new-thread")).to_have_text("New conversation")
+    expect(page.locator("#back")).to_have_attribute("aria-label", "Back to conversations")
+    expect(page.locator("#menu")).to_have_attribute("aria-label", "Menu")
+    for where, title, box in (("stream%3A9", "Ask Tacitus", "Ask Tacitus"),
+                              ("stream%3A11", "Scheduling", "Message Scheduling")):
+        page.evaluate(f"location.hash = '#/{where}/%2B'")
+        expect(page.locator("#channel-name")).to_have_text(title)
+        expect(page.locator("#text")).to_have_attribute("placeholder", box)
+    assert not errors, errors
+
+
 def test_the_renderers_build_elements_and_keep_text_as_text(app):
     page, stub, errors = app()
     page.wait_for_selector(".thread-item")
@@ -551,7 +578,8 @@ def test_a_screen_that_changes_size_is_not_held_at_the_old_height(app):
     page.evaluate("document.documentElement.style.setProperty('--app-h', '300px')")  # as a closed screen's keyboard left it
     page.set_viewport_size({"width": 1000, "height": 700})
     expect(page.locator("#threads")).to_be_visible()
-    page.wait_for_function("document.documentElement.style.getPropertyValue('--app-h') === ''")
+    # Polled from here: wait_for_function's own polling evaluates a string, which the page's CSP refuses.
+    wait_for(lambda: page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == "")
     assert page.evaluate("Math.round(document.body.getBoundingClientRect().height)") == 700
     expect(page.locator("#composer")).to_be_in_viewport()
     assert not errors, errors
@@ -574,7 +602,7 @@ def test_an_event_appends_a_message_and_marks_unread(app):
     expect(main).to_have_text("3")
     expect(page).to_have_title("(3) Tacitus")
     # The channel with unread messages sits first; the DM, read and open, drops below it.
-    expect(page.locator("#channel-list .chan .c-name").first).to_have_text("ea")
+    expect(page.locator("#channel-list .chan .c-name").first).to_have_text("Ask Tacitus")
 
     stub.emit_bot(W.DM, "A brand new thread")
     item = page.locator(".thread-item:has-text('A brand new thread')")
@@ -674,7 +702,7 @@ def test_a_401_shows_the_pairing_form(app):
     expect(page.locator("#pair")).to_be_visible()
     page.fill("#pair-token", "wrong")
     page.click("#pair-form button")
-    expect(page.locator("#pair-error")).to_have_text("That token does not match.")
+    expect(page.locator("#pair-error")).to_have_text("That code does not match.")
     page.fill("#pair-token", "made-up-token")
     page.click("#pair-form button")
     expect(page.locator("#pair")).to_be_hidden()
@@ -770,8 +798,8 @@ def test_needs_you_gathers_the_threads_of_every_channel(app):
     page, stub, errors = app()
     count = page.locator("#needs-link #needs-count")
     expect(count).to_have_text("2")  # needs you, in the DM and in the room; the waiting one is not counted
-    expect(count).to_have_attribute("aria-label", "2 threads need you")
-    expect(page.locator("#channel-list .chan .c-name").first).to_have_text("ea")  # the channels follow it
+    expect(count).to_have_attribute("aria-label", "2 conversations need you")
+    expect(page.locator("#channel-list .chan .c-name").first).to_have_text("Ask Tacitus")  # the channels follow it
     page.click("#needs-link")
     expect(page).to_have_url(re.compile("#/needs$"))
     expect(page.locator("#channel-name")).to_have_text("Needs you")
@@ -782,7 +810,7 @@ def test_needs_you_gathers_the_threads_of_every_channel(app):
     expect(items).to_have_count(3)
     # Needs you first, newest first, then waiting; each card names its channel.
     assert [c.split(" · ")[0] for c in items.locator(".t-meta").all_inner_texts()] == [
-        "ea-example-project", "Direct messages", "ea-scheduling"]
+        "example-project", "Direct messages", "Scheduling"]
     expect(items.nth(2).locator(".sticker")).to_have_text("Waiting")
     expect(page.locator("#thread-list .filters")).to_have_count(0)
     # A card opens its thread in its channel; the list stays beside it.
@@ -800,8 +828,8 @@ def test_needs_you_gathers_the_threads_of_every_channel(app):
     expect(_card(page, "Finding a time")).to_have_attribute("title", "The other side picked a time.")
     # A channel's list leaves it; on a new connection the list is read again.
     page.click('a.chan[href="#/stream%3A9"]')
-    expect(page.locator("#channel-name")).to_have_text("ea")
-    expect(page.locator(".chan.active .c-name")).to_have_text("ea")
+    expect(page.locator("#channel-name")).to_have_text("Ask Tacitus")
+    expect(page.locator(".chan.active .c-name")).to_have_text("Ask Tacitus")
     weekly = next(m for m in stub.messages if m["thread_key"] == W.WEEKLY)
     stub.states[(W.MAIN, W.WEEKLY)] = {"state": "needs_you", "by": "model", "reason": "A question waits.",
                                        "at": weekly["posted_at"]}
@@ -828,7 +856,7 @@ def test_the_filter_chips_narrow_a_channel_and_persist(app):
     expect(page.locator("#thread-list .thread-item")).to_have_text([re.compile("Markup check")])
     page.click(".filter[data-filter='waiting']")
     expect(page.locator("#thread-list .thread-item")).to_have_count(0)
-    expect(page.locator("#thread-list .empty")).to_have_text("No thread here is waiting.")
+    expect(page.locator("#thread-list .empty")).to_have_text("Nothing here is waiting.")
     page.click(".filter[data-filter='all']")
     expect(page.locator("#thread-list .thread-item")).to_have_count(total)
     assert not errors, errors
@@ -957,6 +985,7 @@ def test_a_state_the_bot_shelves_leaves_the_count_and_shows_its_age(app):
     page, stub, errors = app()
     count = page.locator("#needs-count")
     expect(count).to_have_text("2")
+    expect(page.locator("#live.on")).to_be_attached()  # the stream is open: the events below reach the page
     page.click("#needs-link")
     expect(page.locator("#older-toggle")).to_have_count(0)
     expect(page.locator("#thread-list h2.needs-head")).to_have_count(0)
@@ -967,11 +996,16 @@ def test_a_state_the_bot_shelves_leaves_the_count_and_shows_its_age(app):
     expect(page.locator("#older-toggle")).to_have_text("Older (1)")
     expect(page.locator("#thread-list h2.needs-head")).to_have_text("This week")
     expect(page.locator("#thread-list .thread-item")).to_have_count(2)  # the room's and the waiting one
-    # in its own channel the card keeps a muted sticker with its age
+    # in its own channel the card keeps a muted sticker with its age, which
+    # counts from the last message (the stub's, three days ago less a minute),
+    # not from the state's eight days, as the bot ages the shelf
     page.click(f'a.chan[href="#/{W.DM.replace(":", "%3A")}"]')
     sticker = _card(page, "Draft a reply").locator(".sticker")
-    expect(sticker).to_have_text("Needs you · 8 days")
+    expect(sticker).to_have_text("Needs you · 2 days")
     expect(sticker).to_have_class(re.compile(r"\bstale\b"))
+    # a state the owner set ages from the owner's tap
+    stub.set_state(W.DM, tk, "needs_you", "owner", "You set this.", at=time.time() - 10 * 86400 - 60, stale=True)
+    expect(sticker).to_have_text("Needs you · 10 days")
     # the owner's Needs me makes it fresh again
     stub.set_state(W.DM, tk, "needs_you", "owner", "You set this.")
     expect(sticker).to_have_text("Needs you")
@@ -1014,8 +1048,10 @@ def test_needs_you_on_a_phone_is_one_pane_with_back(app):
 PHONE = {"viewport": {"width": 390, "height": 844},
          "context": {"has_touch": True, "is_mobile": True, "device_scale_factor": 3}}
 SIZES = pytest.mark.parametrize("size", ["phone", "desktop"])
-# Words a first-day owner does not use: the app says room, conversation, card.
-JARGON = re.compile(r"\b(channel|thread|session|context|specialist)s?\b", re.I)
+# Words a first-day owner on a phone does not use. The app says conversation,
+# room, card, code, app, your own network and away from home instead.
+JARGON = re.compile(r"\b(channel|thread|session|context|specialist|ledger|lane|relay|tailnet|tailscale|bundle|manifest|token"
+                    r"|origin|sse|csp|payload|endpoint|frontend|pwa|standalone)s?\b", re.I)
 # The drawer foot's entries on show.
 FOOT = "[...$('drawer-foot').children].filter((el) => !el.hidden).map((el) => el.id)"
 
@@ -1048,6 +1084,104 @@ def test_the_teaching_copy_is_plain():
     assert ("A room keeps one ongoing project together: its people, mail and decisions. "
             "Most people never need one on day one.") in room
     assert "`open a room for ${name}`" in teach  # the bot's own words for it (ea-chat-bot.py, _ROOM_VERB)
+
+
+# A regex literal may follow these characters or words; after anything else a slash divides.
+_REGEX_AFTER = set("(,=:[!&|?{};+-*%<>~^")
+_REGEX_WORDS = re.compile(r"\b(return|typeof|case|of|in)\s*$")
+
+
+def _js_strings(src: str) -> list[str]:
+    """Every string literal of a script: comments and regex literals skipped,
+    a template's text with each ${...} as "${}" (its expressions read too)."""
+    found = []
+
+    def template(i):
+        text = ""
+        while src[i] != "`":
+            if src[i] == "\\":
+                text, i = text + src[i:i + 2], i + 2
+            elif src.startswith("${", i):
+                text, i = text + "${}", code(i + 2, True)
+            else:
+                text, i = text + src[i], i + 1
+        found.append(text)
+        return i + 1
+
+    def code(i, nested=False):
+        depth = 0
+        while i < len(src):
+            c, before = src[i], src[max(0, i - 40):i].rstrip()
+            if src.startswith("//", i):
+                i = (src.find("\n", i) + 1) or len(src)
+            elif src.startswith("/*", i):
+                i = src.index("*/", i) + 2
+            elif c in "'\"":
+                j = i + 1
+                while src[j] != c:
+                    j += 2 if src[j] == "\\" else 1
+                found.append(src[i + 1:j])
+                i = j + 1
+            elif c == "`":
+                i = template(i + 1)
+            elif c == "/" and (not before or before[-1] in _REGEX_AFTER or _REGEX_WORDS.search(before)):
+                j, in_class = i + 1, False
+                while src[j] != "/" or in_class:
+                    in_class = (in_class or src[j] == "[") and src[j] != "]"
+                    j += 2 if src[j] == "\\" else 1
+                i = j + 1
+            else:
+                if nested and c in "{}":
+                    if c == "}" and not depth:
+                        return i + 1
+                    depth += 1 if c == "{" else -1
+                i += 1
+        return i
+    code(0)
+    return found
+
+
+class _Shown(HTMLParser):
+    """The text of a page and the attributes a screen reader reads."""
+    def __init__(self):
+        super().__init__()
+        self.said: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        self.said += [v for k, v in attrs if k in ("aria-label", "title", "placeholder", "alt") and v]
+
+    def handle_data(self, data):
+        if data.strip():
+            self.said.append(" ".join(data.split()))
+
+
+# Literals the person never sees: a media query, a header, the relay
+# protocol's key label (relay_crypto.py), a connection note for the bot
+# (/api/diag; the worker's own answer, which a test pins), a file's name.
+NOT_SHOWN = {"(display-mode: standalone)", "X-Relay-Key", "${} session", "${} does not match the manifest",
+             "webchat-pair.token"}
+# One word with no space that starts in lower case: an id, a class, a key, a route, an event name.
+CODE_LIKE = re.compile(r"^[^\sA-Z]\S*$")
+
+
+def test_every_string_the_person_sees_is_plain():
+    """Each string literal of the app and its worker, each text and label of
+    the page and the manifest's words pass the gym coach on a phone: none of
+    the words JARGON names, save the literals that are code and NOT_SHOWN."""
+    said = []
+    for name in ("app.js", "sw.js"):
+        strings = _js_strings(read(name))
+        # The reader keeps its place: the file's first, middle and last words are found.
+        for sentinel in {"app.js": ("Hidden text", "Mark all done", "${}${}/#/"),
+                         "sw.js": ("bundle.js", "notificationclick", "message")}[name]:
+            assert sentinel in strings, (name, sentinel)
+        said += [s for s in strings if not CODE_LIKE.match(s) and s not in NOT_SHOWN]
+    page = _Shown()
+    page.feed(read("index.html"))
+    said += [s for s in page.said if s not in NOT_SHOWN]
+    man = json.loads(read("manifest.webmanifest"))
+    said += [man["name"], man["short_name"], man["description"]]
+    assert not [s for s in said if JARGON.search(s)]
 
 
 @SIZES
@@ -1180,7 +1314,7 @@ def test_new_room_asks_the_bot_in_the_ea_channel_and_opens_the_conversation(app,
     expect(page.locator("#messages .msg.own")).to_contain_text("open a room for Spring tour")
     # The bot answers there, and the room arrives in the drawer.
     expect(page.locator("#messages .msg.bot")).to_contain_text("Opened #ea-spring-tour")
-    expect(page.locator("#channel-list .c-name", has_text="ea-spring-tour")).to_have_count(1)
+    expect(page.locator("#channel-list .c-name", has_text=re.compile("^spring-tour$"))).to_have_count(1)
     if size == "phone":
         assert page.evaluate(SIDEWAYS) == [0, 0]
     assert not errors, errors
@@ -1198,7 +1332,8 @@ def test_an_empty_list_says_what_the_place_is_for(app, size):
     expect(empty).to_have_text("Cards that need your tap land here.")  # the DM opens first
     expect(page.locator("#thread-list .filters")).to_have_count(0)  # nothing to filter
     for where, says in (("r1", "This room is for one project. Ask about it here and Tacitus keeps track of it."),
-                        ("stream%3A11", "Tacitus finds meeting times here.")):
+                        ("stream%3A11", "Tacitus finds meeting times here."),
+                        ("digests", "Tacitus posts your mail digests here.")):
         page.evaluate(f"location.hash = '#/{where}'")
         expect(empty).to_have_text(says)
     page.evaluate("location.hash = '#/stream%3A9'")
@@ -1321,7 +1456,7 @@ def test_permalinks_stay_in_the_app_and_other_links_open_outside(app):
     assert out.count('target="_blank" rel="noopener noreferrer"') == 3, out
     page.evaluate("(s) => $('thread-list').prepend(markdown(s))", f"[weekly]({base}#/stream%3A9)")
     page.click("#thread-list a:has-text('weekly')")
-    expect(page.locator(".chan.active .c-name")).to_have_text("ea")
+    expect(page.locator(".chan.active .c-name")).to_have_text("Ask Tacitus")
     assert len(page.context.pages) == 1
     assert not errors, errors
 
@@ -1339,7 +1474,7 @@ def test_a_tapped_notification_routes_the_open_window(app):
     page.wait_for_timeout(100)
     expect(page.locator(".chan.active .c-name")).to_have_text("Direct messages")
     page.evaluate(post, base + "#/stream%3A9")
-    expect(page.locator(".chan.active .c-name")).to_have_text("ea")
+    expect(page.locator(".chan.active .c-name")).to_have_text("Ask Tacitus")
     assert page.url == base + "#/stream%3A9"
     assert not errors, errors
 
@@ -1523,7 +1658,7 @@ def test_the_pairing_dialog_is_in_the_drawer():
     nav = html[html.index('<nav id="channels"'):html.index("</nav>")]
     assert '<button type="button" id="pair-phone" class="btn small" hidden>Pair a phone</button>' in nav
     assert '<dialog id="phone"' in html and '<canvas id="phone-qr"' in html
-    assert '<button type="button" id="phone-relay" class="btn" hidden>Phone without Tailscale</button>' in html
+    assert '<button type="button" id="phone-relay" class="btn" hidden>Phone not on your network</button>' in html
     assert '<button type="button" id="phone-here" class="btn primary" hidden>Set up this phone</button>' in html
     js = read("app.js")
     assert "call('POST', '/relay/pair', via === 'relay' ? { via } : {})" in js and "QR.draw($('phone-qr'), out.qr, 4)" in js
@@ -2033,8 +2168,8 @@ def test_a_relay_origin_phone_checks_its_app_and_presses_cards_when_the_owner_al
     approves it under "Pair a phone" with card buttons left off (the
     default). It fetches the bot's signed manifest through the relay, its
     service worker finds every file of the copy in it, and the phone
-    attests the bundle: the owner's list says "verified copy", which grants
-    nothing. It chats, its card buttons stay greyed out, and they work once
+    attests the bundle: the owner's list drops "app not checked", which
+    grants nothing. It chats, its card buttons stay greyed out, and they work once
     the owner ticks "Allow card buttons on this phone" for it."""
     from playwright.sync_api import expect
     fe, got = relay_bot["fe"], relay_bot["got"]
@@ -2054,7 +2189,8 @@ def test_a_relay_origin_phone_checks_its_app_and_presses_cards_when_the_owner_al
         expect(page.locator(".chan .c-name").first).to_be_visible(timeout=20000)
         (d,) = fe.relay.devices()
         assert d["pending"] is False and d["bundle_verified"] is True and d["cards_allowed"] is False
-        expect(row).to_contain_text("without Tailscale", timeout=10000)
+        expect(row).to_contain_text("not on your network", timeout=10000)
+        expect(row).not_to_contain_text("app not checked")
         trusted = _worker_state(page, "trusted")
         assert trusted["hash"] == fe.bundle_hash() and trusted["pin"] is True
         assert page.evaluate("loadPairing().then((r) => r.signKey)") == fe.bundle.public
@@ -2123,8 +2259,8 @@ def test_a_relay_copy_paired_against_another_bundle_stops_before_the_chat(browse
 
 def test_a_relay_copy_that_cannot_check_its_code_pairs_nothing(browser, stub_factory):
     """A copy of the app on the relay's origin whose bundle.js has no
-    verifyBundle (one from before the signed bundle) stops on "Code
-    verification unavailable" before it makes a key: nothing is paired."""
+    verifyBundle (one from before the signed bundle) stops on "cannot check
+    its code" before it makes a key: nothing is paired."""
     from playwright.sync_api import expect
     pytest.importorskip("cryptography")
     import webui_stub_server as W
@@ -2140,7 +2276,7 @@ def test_a_relay_copy_that_cannot_check_its_code_pairs_nothing(browser, stub_fac
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.goto(url + "#tr2=" + payload)
         expect(page.locator("h1")).to_have_text("Tacitus stopped", timeout=10000)
-        expect(page.locator("body")).to_contain_text("Code verification unavailable")
+        expect(page.locator("body")).to_contain_text("This copy of the app cannot check its code against your Tacitus")
         assert "tr2=" not in page.url
         assert page.evaluate("loadPairing().then((r) => r === undefined)")
         assert not errors, errors
@@ -2158,10 +2294,10 @@ def test_pair_a_phone_offers_the_relay_on_this_machines_own_address(app):
     page, stub, errors = app(relay_pairing=True, sign=True)
     page.wait_for_selector(".thread-item")
     page.click("#pair-phone")
-    expect(page.locator("#phone-note")).to_contain_text('This address does not open on a phone. Use "Phone without Tailscale" instead.')
+    expect(page.locator("#phone-note")).to_contain_text('This address does not open on a phone. Use "Phone not on your network" instead.')
     button = page.locator("#phone-relay")
     expect(button).to_be_visible()
-    expect(button).to_have_text("Phone without Tailscale")
+    expect(button).to_have_text("Phone not on your network")
     assert stub.pairs == [] and not page.input_value("#phone-link")
     button.click()
     wait_for(lambda: page.input_value("#phone-link"), 5)
@@ -2201,7 +2337,7 @@ def test_approve_sends_the_card_button_choice(app):
     tablet.locator("button", has_text="Approve").click()
     wait_for(lambda: len(stub.approvals) == 2, 5)
     assert stub.approvals == [{"device": "1" * 16, "cards": False}, {"device": "2" * 16, "cards": True}]
-    expect(tablet).to_contain_text("without Tailscale, code not checked")
+    expect(tablet).to_contain_text("not on your network, app not checked")
     expect(tablet.locator("input[type=checkbox]")).to_be_checked()
     assert not errors, errors
 
@@ -2354,11 +2490,11 @@ def test_a_relay_copy_link_without_the_bundle_hash_is_refused(browser, stub_fact
     url, stub = stub_factory()
     here = url.rstrip("/").rsplit("/chat", 1)[0]
     mine = {"r": here, "i": W.STUB_INSTALL, "k": W.STUB_BOT_PUBLIC, "c": W.STUB_CLIENT_KEY}
-    for kind, payload, says in (("tr1", _link_payload(**mine), "no hash of the bot's code"),
-                                ("tr2", _link_payload(**mine, v=2, a=url), "no hash of the bot's code"),
+    for kind, payload, says in (("tr1", _link_payload(**mine), "no fingerprint of the app"),
+                                ("tr2", _link_payload(**mine, v=2, a=url), "no fingerprint of the app"),
                                 ("tr2", _link_payload(**mine, v=2, b="e" * 64, a="https://elsewhere.example.net/"),
                                  "opens the app elsewhere"),
-                                ("tr1", _link_payload(**mine, v=2, b="e" * 64), "not a pairing link")):
+                                ("tr1", _link_payload(**mine, v=2, b="e" * 64), "not a setup link")):
         ctx = browser.new_context()
         try:
             page = ctx.new_page()
@@ -2379,11 +2515,11 @@ def test_a_bad_pairing_link_is_refused_and_leaves_the_address_bar(browser, stub_
     import webui_stub_server as W
     url, stub = stub_factory()
     mine = {"i": W.STUB_INSTALL, "k": W.STUB_BOT_PUBLIC}
-    for payload, says, off in ((_link_payload(), "another install", False),
-                               (_link_payload(i=W.STUB_INSTALL), "another install", False),
+    for payload, says, off in ((_link_payload(), "a different Tacitus", False),
+                               (_link_payload(i=W.STUB_INSTALL), "a different Tacitus", False),
                                (_link_payload(**mine, x=int(time.time()) - 1), "expired", False),
-                               (_link_payload(**mine), "on the tailnet", True),
-                               ("bm90LWpzb24", "Pairing failed", False)):
+                               (_link_payload(**mine), "on your own network", True),
+                               ("bm90LWpzb24", "Setup failed", False)):
         ctx = browser.new_context()
         if off:
             ctx.route(re.compile(r".*/api/relay/status$"), lambda route: route.abort())

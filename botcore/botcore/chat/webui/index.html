@@ -21,7 +21,7 @@
 <script src="app.js" defer></script>
 </head>
 <body data-view="threads">
-<nav id="channels" aria-label="Channels">
+<nav id="channels" aria-label="Menu">
   <header class="bar">
     <img class="logo" src="favicon.svg" alt="" width="24" height="24">
     <span class="brand">Tacitus</span>
@@ -44,20 +44,20 @@
   </footer>
 </nav>
 
-<section id="threads" aria-label="Threads">
+<section id="threads" aria-label="Conversations">
   <header class="bar">
-    <button type="button" id="menu" class="icon menu-btn" aria-label="Channels" data-unread="">
+    <button type="button" id="menu" class="icon menu-btn" aria-label="Menu" data-unread="">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
     <h1 id="channel-name"></h1>
-    <button type="button" id="new-thread" class="btn small">New thread</button>
+    <button type="button" id="new-thread" class="btn small">New conversation</button>
   </header>
   <div id="thread-list" class="scroll"></div>
 </section>
 
-<main id="thread" aria-label="Thread">
+<main id="thread" aria-label="Conversation">
   <header class="bar">
-    <button type="button" id="back" class="icon back-btn" aria-label="Back to threads">
+    <button type="button" id="back" class="icon back-btn" aria-label="Back to conversations">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
     </button>
     <h2 id="thread-title"></h2>
@@ -88,10 +88,10 @@
     <p>A phone you set up here works anywhere, not only on your own network. Your messages stay sealed on the way.</p>
     <button type="button" id="phone-here" class="btn primary" hidden>Set up this phone</button>
     <p id="phone-scan" hidden>On another phone: open its camera and point it at this code.</p>
-    <canvas id="phone-qr" width="0" height="0" role="img" aria-label="Pairing code"></canvas>
+    <canvas id="phone-qr" width="0" height="0" role="img" aria-label="QR code to set up a phone"></canvas>
     <p id="phone-note" aria-live="polite"></p>
-    <button type="button" id="phone-relay" class="btn" hidden>Phone without Tailscale</button>
-    <input id="phone-link" readonly aria-label="Pairing link" hidden>
+    <button type="button" id="phone-relay" class="btn" hidden>Phone not on your network</button>
+    <input id="phone-link" readonly aria-label="Setup link" hidden>
     <h3>Phones</h3>
     <ul id="phone-devices"></ul>
     <button type="submit" class="btn">Close</button>
@@ -102,6 +102,7 @@
   <form method="dialog">
     <h2 id="settings-title">Settings</h2>
     <h3>Which model does each task</h3>
+    <p class="s-key">Local is your own model, Hosted is Claude, and Auto lets Tacitus choose.</p>
     <p id="settings-local"></p>
     <ul id="settings-rows"></ul>
     <p id="settings-note" aria-live="polite"></p>
@@ -154,10 +155,10 @@
 
 <div id="pair" hidden>
   <form id="pair-form">
-    <h2>Pair this browser</h2>
-    <p>Paste the pairing token. It is in the file <code>webchat-pair.token</code> in the bot's private directory.</p>
-    <input id="pair-token" type="password" autocomplete="off" spellcheck="false" aria-label="Pairing token">
-    <button type="submit" class="btn primary">Pair</button>
+    <h2>Sign in</h2>
+    <p>Paste the sign-in code. It is in the file <code>webchat-pair.token</code> in Tacitus's private folder.</p>
+    <input id="pair-token" type="password" autocomplete="off" spellcheck="false" aria-label="Sign-in code">
+    <button type="submit" class="btn primary">Sign in</button>
     <p id="pair-error" class="error" aria-live="polite"></p>
   </form>
 </div>

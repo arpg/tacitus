@@ -486,6 +486,26 @@ composer at the bottom. The DM channel opens by default. Unread badges
 from the event stream. A top-level message in a channel starts a thread;
 replying stays in it.
 
+Words. Every string the person sees or a screen reader reads passes the
+gym coach on a phone: the app says conversation, room, card, code, app,
+"your own network" (the tailnet) and "away from home" (the relay), and
+never channel, thread, session, context, specialist, ledger, lane,
+relay, tailnet, Tailscale, bundle, manifest, token, origin, SSE, CSP,
+payload, endpoint, frontend, PWA or standalone.
+`test_every_string_the_person_sees_is_plain` scans each string literal
+of `app.js` and `sw.js`, the page's text and labels and the manifest's
+words; a literal that is code (one lower-case word: an id, a class, a
+key, a route, an event name) or on its short `NOT_SHOWN` list is
+skipped. Text the bot sends (messages, cards, its error answers, the
+Settings rows) is the bot's. The drawer names the fixed channels by
+kind, not by the bot's names: "Direct messages" (`dm`), "Ask Tacitus"
+(`main`), "Scheduling" (`sched`) and "Mail digests" (`digest`), in that
+order after any with unread messages, then the rooms, each by its name
+without the `ea-` prefix. The links keep the channel id; the header, a
+Needs you card's channel and a new conversation's box ("Ask Tacitus" in
+the main channel, "Message <name>" elsewhere) use the same names. The
+drawer is "Menu" to a screen reader.
+
 Rendering: the markdown subset above, escaped first; reaction chips
 inline after the message; cards as a bordered block with title, fields
 (label: value), the body in a scrollable monospace block, the quoted
@@ -496,26 +516,29 @@ name and size, images inline.
 
 Live updates: `EventSource(base + "/api/events")`, replay from the last
 seen seq, reconnect handled by the browser. Composer: Enter sends,
-Shift+Enter newline; a paperclip button posts to `/api/files`. Pairing:
-on 401 show a token field that posts to `/api/pair`.
+Shift+Enter newline; a paperclip button posts to `/api/files`. Sign-in:
+on 401 show a field for the sign-in code (the pairing token) that posts
+to `/api/pair`.
 
 Every call goes through one transport interface (`api(method, path,
 body)`, `events(since, sink)`). A browser paired with the relay uses it
 when the base path does not answer (off the tailnet, or on the relay's
 copy of the app); the relay transport, the pairing link (`#tr2=`, and
 `#tr1=` from before), the "Pair a phone" entry in the drawer (also on
-the bot's machine, where it offers "Pair through the relay"), the code
-check on the relay's copy and the QR encoder (`qr.js`) are in
+the bot's machine, where it offers "Phone not on your network"), the
+code check on the relay's copy and the QR encoder (`qr.js`) are in
 `docs/webchat-relay.md` (For the web app).
 
 Settings. A "Settings" entry at the drawer's foot, shown when `/api/me`
 names the `routing` page and never on a relayed copy, opens a dialog in
 the shape of "Pair a phone": the local model's name and state at the
-top, then one row per task with Local, Hosted and Auto, a line on what
-the task does, a line on the model it runs on now and why, and the
-floor's line under a row a floor holds (the values it refuses are
-disabled). Save posts the enabled choices and redraws from the answer,
-with "Saved." or the bot's reason under the rows.
+top, a line that says what the values mean (Local is the owner's own
+model, Hosted is Claude, Auto lets Tacitus choose), then one row per
+task with Local, Hosted and Auto, a line on what the task does, a line
+on the model it runs on now and why, and the floor's line under a row a
+floor holds (the values it refuses are disabled). Save posts the enabled
+choices and redraws from the answer, with "Saved." or the bot's reason
+under the rows.
 
 The state of a conversation. Each thread card carries a sticker beside
 its time for the thread's `state` (from the thread rows, `GET
@@ -524,7 +547,8 @@ accent, "Waiting" in amber, "Working" muted with a pulse (none under
 reduced motion), "Done" muted with a check, nothing for `none`; the
 reason is the card's `title` and the sticker's `aria-label`; a stale
 state's sticker is muted and says how long it has waited ("Needs you · 9
-days"). A "Needs you" entry heads the channel list, above the channels,
+days"), counted as the bot ages the shelf: from the row's `state_at` when
+`state_by` is `owner`, else from its `last_at` (or `posted_at`). A "Needs you" entry heads the channel list, above the channels,
 with the count of `needs_you` threads that are not stale; it opens
 `#/needs`, the `/api/needs` list with each card's channel before its
 replies, read again on each new connection and after a state changes.
@@ -540,13 +564,12 @@ changes at once and follows the bot's answer and its event.
 
 The app teaches itself, for a first-day owner on a phone who reads no
 docs. Its words (the welcome, New room, the empty lists and a new
-conversation's pane) say room, conversation and card, never channel,
-thread, session or context. A welcome of three cards opens once per
-browser after the channels load, and "How Tacitus works" at the
+conversation's pane) follow Words, above. A welcome of three cards opens
+once per browser after the channels load, and "How Tacitus works" at the
 drawer's foot opens it again: "Ask in plain words" (type what you want
 done, the way you would text an assistant, with three examples to tap),
-"Nothing goes out without you" (a draft or a meeting arrives as a card in
-Direct messages, and nothing is sent until the owner taps Send or
+"Nothing goes out without you" (a draft or a meeting arrives as a card
+in Direct messages, and nothing is sent until the owner taps Send or
 Create) and "Needs you" (the list at the top gathers what waits on the
 owner; Mark done when it is handled). Next, a swipe or an arrow key
 moves; Skip, Done or Escape closes it, and closing it is what is kept.
@@ -559,8 +582,9 @@ and posts `open a room for <name>` as the owner in a new conversation in
 the EA channel, which then opens: the bot answers there, and the room
 arrives as a `channel` event. An empty list says what the place is for:
 the EA channel offers an example to tap, Direct messages says the cards
-that need a tap land there, a room that it is for one project, and the
-scheduling channel that Tacitus finds meeting times there.
+that need a tap land there, a room that it is for one project, the
+scheduling channel that Tacitus finds meeting times there, and Mail
+digests that Tacitus posts the owner's mail digests there.
 
 Dark and light from `prefers-color-scheme`. Keep the whole app under
 ~3,680 lines with the relay transport, the QR encoder, the code check,
