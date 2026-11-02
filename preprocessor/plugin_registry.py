@@ -253,8 +253,15 @@ def plugin_files_on_disk(root, state_dirs=PM.DEFAULT_STATE_DIRS) -> list[str]:
 def expand_tool_grants(templates, root, files, state_dirs=PM.DEFAULT_STATE_DIRS) -> list[str]:
     """One `Bash(python3 <root>/<file>[ *])` rule per file in `files` that a
     template's path glob names. A file under a state dir, or with a glob
-    character in its path, gets no rule; a malformed template gets none."""
+    character in its path, gets no rule; a malformed template gets none.
+
+    A root reached through a symlink gets the rule under its real path
+    too. The bot runs as the owner, whose ~/.ea links to the resident's,
+    so `root` reads /home/<owner>/.ea/plugins/<name>; the resident's
+    skills and CLAUDE.md name /home/<resident>/.ea/plugins/<name>, and a
+    rule matches the command line literally."""
     root = str(root).rstrip("/")
+    roots = list(dict.fromkeys([root, os.path.realpath(root)]))
     out: list = []
     for t in templates:
         m = _GRANT_TEMPLATE_RE.match(str(t))
@@ -268,9 +275,10 @@ def expand_tool_grants(templates, root, files, state_dirs=PM.DEFAULT_STATE_DIRS)
                 continue
             if _in_state(rel, state_dirs) or not _glob_match(parts, pats):
                 continue
-            rule = f"Bash(python3 {root}/{rel}{args})"
-            if rule not in out:
-                out.append(rule)
+            for r in roots:
+                rule = f"Bash(python3 {r}/{rel}{args})"
+                if rule not in out:
+                    out.append(rule)
     return out
 
 

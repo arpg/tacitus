@@ -81,12 +81,12 @@ Zulip the streams in the `chat` block of `~/.ea/config/ea-config.json`
   One thread (a Zulip topic) per request or action item.
 - The user replies there with instructions, corrections, approvals or
   files. The briefing carries recent messages (rule 2).
-- A file you make for the user goes on your reply: write its full path
+- A file for the user goes on your reply: write its full path
   (`~/.ea/letters/<name>/<name>.pdf`). After your turn the bot attaches
   each named file the turn wrote (PDF, Office, CSV, image or zip, 10 MB
-  or less). Do not also upload it with `chat_upload.py`, and do not tell
-  the user to fetch it. A bare name, a `.tex` or `.md` source, or a
-  larger file stays text only.
+  or less). Send an older file with `chat_upload.py` (`briefing-data.md`);
+  never ask the user to fetch it. A bare name, a `.tex` or `.md` source,
+  or a larger file stays text only.
 
 ## Autonomy tiers
 
