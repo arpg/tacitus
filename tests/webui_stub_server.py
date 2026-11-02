@@ -26,7 +26,12 @@ records each Approve (with its `cards` choice). The Settings screen reads
 `routing` (three made-up rows: one free, one under the keep floor, one
 under the stakes floor) and `settings_posts` records each Save; a value a
 row does not allow answers 400, as the bot's floors do. Only with
-`settings=True` does /api/me name the page.
+`settings=True` does /api/me name the pages: `routing` and `notify` (a
+list names some of them). The Notifications section reads `notify` (the
+three switches and the quiet-hours choice) and `notify_posts` records each
+change; a key or a value the bot would refuse answers 400 with its words.
+`push=True` makes /api/me say that push works, with a made-up key and no
+subscription, as a bot with the cryptography package does.
 
 Each thread can have a state (`states`, seeded with made-up ones in three
 channels): the thread rows carry it, GET /api/needs lists the threads
@@ -77,6 +82,9 @@ STUB_CLIENT_KEY = "c" * 43
 STUB_BUNDLE = "b" * 64  # a made-up hash of the bot's signed app bundle, when it signs none
 WEEKLY = "stream:9:topic:weekly%20plan"
 ROOM_ASK = re.compile(r"^\s*open a (?:channel|room) for (?P<name>.+?)\s*$", re.I)
+NOTIFY = {"briefings": True, "replies": True, "rooms": True, "quiet": "queue"}
+NOTIFY_NAMES = {"briefings": "Briefings", "replies": "Replies", "rooms": "Rooms"}
+STUB_VAPID = base64.urlsafe_b64encode(b"\x04" + bytes(range(64))).rstrip(b"=").decode()
 ROUTING = {
     "local": {"configured": True, "model": "local-27b", "reachable": True, "detail": "Answered 2 min ago."},
     "source": "routing.json", "values": ["local", "hosted", "auto"],
@@ -106,11 +114,15 @@ class Stub:
     """The in-memory store: channels, messages, files and the event log."""
 
     def __init__(self, tick: float = 0.0, pair_token: str | None = None, echo: bool = True,
-                 sign: bool = False, relay_pairing: bool = False, settings: bool = False):
+                 sign: bool = False, relay_pairing: bool = False, settings: bool | list = False,
+                 push: bool = False):
         self.cond = threading.Condition()
-        self.settings = settings
+        self.settings = (["notify", "routing"] if settings is True else list(settings or []))
+        self.push = push
         self.routing = json.loads(json.dumps(ROUTING))
         self.settings_posts: list[dict] = []
+        self.notify = dict(NOTIFY)
+        self.notify_posts: list[dict] = []
         # The signed bundle of WEBUI (web_bundle.Bundle) when `sign`; the
         # bytes served in place of a file, by name.
         self.bundle = None
@@ -443,10 +455,16 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["me"]:
             return self._json(200, {"owner": "owner", "bot": "bot", "public_url": None,
                                     "bundle": s.bundle.hash if s.bundle else "",
-                                    "settings": ["routing"] if s.settings else [],
+                                    "settings": s.settings, "push": s.push,
                                     **({"relay": True} if s.relay_pairing else {})})
-        if parts == ["settings", "routing"] and s.settings:
+        if parts == ["settings", "routing"] and "routing" in s.settings:
             return self._json(200, s.routing)
+        if parts == ["settings", "notify"] and "notify" in s.settings:
+            return self._json(200, s.notify)
+        if parts == ["push", "vapid"] and s.push:
+            return self._json(200, {"key": STUB_VAPID})
+        if parts == ["push", "subscriptions"] and s.push:
+            return self._json(200, [])
         if parts == ["relay", "status"]:
             return self._json(200, {"enabled": True, "install_id": STUB_INSTALL, "connected": False,
                                     "relay_url": "https://relay.example.net",
@@ -516,7 +534,19 @@ class Handler(BaseHTTPRequestHandler):
                 tk = fields.get("thread_key", (None, b""))[1].decode() or None
                 ref = {"id": fid, "name": fname, "url": "", "mimetype": mime, "size": len(data)}
                 return self._json(200, s.post(parts[1], text, tk, file=ref))
-        if parts == ["settings", "routing"] and s.settings:
+        if parts == ["settings", "notify"] and "notify" in s.settings:
+            body = json.loads(self._body() or b"{}")
+            s.notify_posts.append(body)
+            for key, value in body.items():
+                if key in NOTIFY_NAMES and not isinstance(value, bool):
+                    return self._json(400, {"error": f'"{NOTIFY_NAMES[key]}" takes on or off.'})
+                if key == "quiet" and value not in ("queue", "send"):
+                    return self._json(400, {"error": 'Quiet hours take "Hold until morning" or "Send anyway".'})
+                if key not in NOTIFY:
+                    return self._json(400, {"error": f"Tacitus has no notification setting named {key!r}."})
+            s.notify.update(body)
+            return self._json(200, {**s.notify, "saved": True})
+        if parts == ["settings", "routing"] and "routing" in s.settings:
             body = json.loads(self._body() or b"{}")
             s.settings_posts.append(body)
             rows = {r["task"]: r for r in s.routing["rows"]}

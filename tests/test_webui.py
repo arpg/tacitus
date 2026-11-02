@@ -384,8 +384,13 @@ def test_the_app_stays_small():
     # 3,770: 3,700 plus the clear no browser counts as silent (the worker's choice per push service, and the
     # page's own clear of the thread in view).
     # 3,780: 3,770 plus the Phones list stacked at phone width (name, the box, the buttons).
+<<<<<<< HEAD
     # 3,870: 3,780 plus each release from the bot on the relay's origin too, the worker's loader (sw.js runs the
     # bundle.js it kept and checked) and the release's own security headers on each kept copy.
+=======
+    # 3,870: 3,780 plus Notifications in Settings (three switches and the quiet-hours choice, each
+    # saved on change) and the digest channel's line in place of the composer.
+>>>>>>> 4708f84 (Settings changes the push switches, and the digest room has no composer)
     assert lines <= 3870, f"{lines} lines: the contract keeps the app near 3,870 with the relay, the phone setup, the thread states and the teaching"
 
 
@@ -1391,7 +1396,7 @@ def test_an_empty_list_says_what_the_place_is_for(app, size):
     expect(page.locator("#thread-list .filters")).to_have_count(0)  # nothing to filter
     for where, says in (("r1", "This room is for one project. Ask about it here and Tacitus keeps track of it."),
                         ("stream%3A11", "Tacitus finds meeting times here."),
-                        ("digests", "Tacitus posts your mail digests here.")):
+                        ("digests", "Tacitus posts your mail digests here; it does not read replies.")):
         page.evaluate(f"location.hash = '#/{where}'")
         expect(empty).to_have_text(says)
     page.evaluate("location.hash = '#/stream%3A9'")
@@ -1728,10 +1733,12 @@ def test_the_pairing_dialog_is_in_the_drawer():
 
 
 def test_the_settings_screen_is_in_the_drawer():
-    """A "Settings" entry at the drawer's foot opens a dialog with the
-    local model's state, a row per task and Save; the app reads and saves
-    the routing table at /settings/routing and shows the entry only when
-    /api/me names that page, never on a relayed copy."""
+    """A "Settings" entry at the drawer's foot opens a dialog with
+    Notifications (three switches and the quiet-hours choice, read and
+    saved at /settings/notify) and the routing table (the local model's
+    state, a row per task and Save, at /settings/routing); the app shows
+    each section when /api/me names its page (Notifications only where
+    push works), the entry when it shows any, and never on a relayed copy."""
     html = read("index.html")
     nav = html[html.index('<nav id="channels"'):html.index("</nav>")]
     assert '<button type="button" id="open-settings" class="btn small" hidden>Settings</button>' in nav
@@ -1739,9 +1746,20 @@ def test_the_settings_screen_is_in_the_drawer():
     for part in ('<p id="settings-local">', '<ul id="settings-rows">', '<p id="settings-note" aria-live="polite">',
                  '<button type="button" id="settings-save" class="btn primary">Save</button>'):
         assert part in dlg, part
+    for part in ('<section id="notify-settings" aria-labelledby="notify-title" hidden>',
+                 '<input type="checkbox" role="switch" name="briefings"> Briefings',
+                 '<input type="checkbox" role="switch" name="replies"> Replies',
+                 '<input type="checkbox" role="switch" name="rooms"> Rooms',
+                 '<input type="radio" name="quiet" value="queue"> Hold until morning',
+                 '<input type="radio" name="quiet" value="send"> Send anyway',
+                 '<section id="routing-settings" aria-labelledby="routing-title" hidden>'):
+        assert part in dlg, part
+    assert dlg.index('id="notify-settings"') < dlg.index('id="routing-settings"')
     js = read("app.js")
     assert "call('GET', '/settings/routing')" in js and "call('POST', '/settings/routing', { tasks })" in js
-    assert "$('open-settings').hidden = T.relay || !(S.me.settings || []).includes('routing')" in js
+    assert "call('GET', '/settings/notify')" in js and "call('POST', '/settings/notify', {" in js
+    assert "notify: pages.includes('notify') && Boolean(S.me.push), routing: pages.includes('routing')" in js
+    assert "$('open-settings').hidden = T.relay || !Object.values(settingsShown()).some(Boolean)" in js
     assert "disabled: !r.allowed.includes(v)" in js  # a floor locks a value
     assert ".chan, .seg label { min-height: 44px; }" in read("app.css")  # a finger's 44px
 
@@ -2605,13 +2623,14 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
 
 def test_the_settings_screen_fits_a_phone_and_stays_hidden_without_the_page(app):
     from playwright.sync_api import expect
-    page, _stub, errors = app(viewport={"width": 390, "height": 844}, settings=True,
+    page, _stub, errors = app(viewport={"width": 390, "height": 844}, settings=True, push=True,
                               context={"has_touch": True, "is_mobile": True, "device_scale_factor": 3})
     page.wait_for_selector(".thread-item")
     page.click("#menu")
     page.click("#open-settings")
     expect(page.locator("#settings-rows li")).to_have_count(3)
-    small = page.evaluate("""() => [...document.querySelectorAll('#settings .seg label, #settings button')]
+    expect(page.locator("#notify-settings")).to_be_visible()
+    small = page.evaluate("""() => [...document.querySelectorAll('#settings .seg label, #settings button, #settings .toggle')]
         .map((el) => el.getBoundingClientRect().height).filter((h) => h < 44)""")
     assert small == []
     assert page.evaluate("$('settings').scrollWidth - $('settings').clientWidth") == 0
@@ -2620,6 +2639,92 @@ def test_the_settings_screen_fits_a_phone_and_stays_hidden_without_the_page(app)
     page, _stub, errors = app()
     page.wait_for_selector(".thread-item")
     expect(page.locator("#open-settings")).to_be_hidden()
+    assert not errors, errors
+
+
+def test_notifications_in_settings_save_each_change_at_once(app):
+    """With push on, Settings opens on Notifications: the switches and the
+    quiet-hours choice as /settings/notify says. Each change posts its one
+    key and the section redraws from the answer; a refusal stays on screen
+    and the section shows what is saved. Without push, or with no notify
+    page, the section stays hidden, and with no page at all so does the
+    entry."""
+    from playwright.sync_api import expect
+    page, stub, errors = app(settings=True, push=True)
+    page.wait_for_selector(".thread-item")
+    page.click("#open-settings")
+    expect(page.locator("#notify-settings")).to_be_visible()
+    expect(page.locator("#routing-settings")).to_be_visible()
+    rows = page.locator("#notify-rows")
+    switches = [rows.locator(f"input[name={n}]") for n in ("briefings", "replies", "rooms")]
+    hold, send = rows.locator("input[name=quiet]").nth(0), rows.locator("input[name=quiet]").nth(1)
+    for box in switches:
+        expect(box).to_be_checked()
+    expect(hold).to_have_value("queue")
+    expect(hold).to_be_checked()
+    switches[2].uncheck()
+    expect(page.locator("#notify-note")).to_have_text("Saved.")
+    send.check()
+    wait_for(lambda: len(stub.notify_posts) == 2)
+    assert stub.notify_posts == [{"rooms": False}, {"quiet": "send"}]
+    assert stub.notify == {"briefings": True, "replies": True, "rooms": False, "quiet": "send"}
+    assert stub.settings_posts == []                     # the routing table is not saved with it
+    # a refusal: the bot's words stay, and the choice goes back to what is saved
+    page.evaluate("document.querySelector('#notify-rows input[value=queue]').value = 'later'")
+    hold.check()
+    expect(page.locator("#notify-note")).to_have_text(
+        'Not saved: Quiet hours take "Hold until morning" or "Send anyway".')
+    expect(send).to_be_checked()
+    for text in page.locator("#notify-settings").all_inner_texts():
+        assert not JARGON.search(text), text
+    page.click("#settings button[type=submit]")
+    page.click("#open-settings")                          # opened again: what the bot holds
+    expect(switches[2]).not_to_be_checked()
+    expect(send).to_be_checked()
+    assert errors == ["Failed to load resource: the server responded with a status of 400 (Bad Request)"]
+    # only the notify page: no routing section and no Save
+    page, _stub, errors = app(settings=["notify"], push=True)
+    page.wait_for_selector(".thread-item")
+    page.click("#open-settings")
+    expect(page.locator("#notify-settings")).to_be_visible()
+    expect(page.locator("#routing-settings")).to_be_hidden()
+    expect(page.locator("#settings-save")).to_be_hidden()
+    assert not errors, errors
+    # push off: no Notifications section, and with nothing else to show no Settings entry
+    page, _stub, errors = app(settings=True)
+    page.wait_for_selector(".thread-item")
+    page.click("#open-settings")
+    expect(page.locator("#notify-settings")).to_be_hidden()
+    expect(page.locator("#routing-settings")).to_be_visible()
+    page, _stub, errors = app(settings=["notify"])
+    page.wait_for_selector(".thread-item")
+    expect(page.locator("#open-settings")).to_be_hidden()
+    assert not errors, errors
+
+
+@SIZES
+def test_the_digest_channel_shows_no_composer_and_says_why(app, size):
+    """The bot posts digests and reads no reply there: the channel shows no
+    New conversation, its threads no composer, and a line in its place says
+    why; the other channels keep theirs."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app(**(PHONE if size == "phone" else {}))
+    page.wait_for_selector(".thread-item")
+    stub.add(W.DIGEST, "Kept mail: two messages from the lab.")
+    page.evaluate(f"location.hash = '#/{W.DIGEST}'")
+    expect(page.locator("#new-thread")).to_be_hidden()
+    open_thread(page, "Kept mail")
+    expect(page.locator("#composer")).to_be_hidden()
+    note = page.locator("#composer-off")
+    expect(note).to_be_visible()
+    expect(note).to_have_text("Tacitus posts your mail digests here; it does not read replies.")
+    assert not JARGON.search(note.inner_text())
+    page.evaluate("location.hash = '#/stream%3A9'")
+    expect(page.locator("#new-thread")).to_be_visible()
+    open_thread(page, "Weekly plan")
+    expect(page.locator("#composer")).to_be_visible()
+    expect(note).to_be_hidden()
     assert not errors, errors
 
 

@@ -1236,6 +1236,93 @@ def test_a_floored_row_is_refused_and_nothing_is_written(fe, routing_page, monke
     assert not [t for t in said if JARGON.search(t)]
 
 
+@pytest.fixture
+def notify_page(tmp_path, monkeypatch):
+    """The Notifications page (web_notify_settings.NotifySettings) in an
+    owner process whose private dir holds a chat.json with a made-up web
+    block that turns room pushes off."""
+    import owner_trust
+    import web_notify_settings
+    priv = tmp_path / "notify-priv"
+    priv.mkdir(mode=0o700)
+    monkeypatch.setenv("EA_PRIVATE_DIR", str(priv))
+    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: True)
+    block = {"frontend": "web", "web": {"port": 8470, "tailscale_login": LOGIN,
+                                        "notify_push": {"rooms": False, "extra": "kept"}}}
+    (priv / "chat.json").write_text(json.dumps(block))
+    (priv / "chat.json").chmod(0o600)
+    return web_notify_settings, priv
+
+
+def test_the_notify_page_reads_and_writes_the_notify_push_block(fe, notify_page, caplog):
+    """GET is the settings in force; POST merges the keys it names over the
+    web block's notify_push in chat.json (every other key kept, mode 0600),
+    and the running front end pushes by the new ones at once."""
+    mod, priv = notify_page
+    fe.push_settings = wf.web_push_policy.Settings.from_config({"rooms": False})
+    fe.settings_pages["notify"] = mod.NotifySettings(fe)
+    assert json.loads(owner(fe, "GET", "/api/me")[2])["settings"] == ["notify"]
+    status, _h, body = owner(fe, "GET", "/api/settings/notify")
+    assert status == 200 and json.loads(body) == {"briefings": True, "replies": True,
+                                                  "rooms": False, "quiet": "queue"}
+    caplog.set_level("INFO", logger="chat.web")
+    status, _h, body = owner(fe, "POST", "/api/settings/notify", {"replies": False, "quiet": "send"})
+    assert status == 200 and json.loads(body) == {"briefings": True, "replies": False, "rooms": False,
+                                                  "quiet": "send", "saved": True}
+    assert fe.push_settings == wf.web_push_policy.Settings(replies=False, rooms=False, quiet="send")
+    saved = json.loads((priv / "chat.json").read_text())
+    assert saved["frontend"] == "web" and saved["web"]["port"] == 8470
+    assert saved["web"]["notify_push"] == {"rooms": False, "extra": "kept", "replies": False,
+                                           "quiet": "send"}
+    assert (priv / "chat.json").stat().st_mode & 0o777 == 0o600
+    assert any("notification settings saved (header)" in r.getMessage() for r in caplog.records)
+    status, _h, body = owner(fe, "POST", "/api/settings/notify", {"rooms": True})
+    assert json.loads(body)["rooms"] is True and fe.push_settings.rooms is True
+    # a front end built from the file (a command-line sender's next run) reads the same
+    web = json.loads((priv / "chat.json").read_text())["web"]
+    assert WebFrontend.from_config(web, store_path=priv / "w.sqlite").push_settings == fe.push_settings
+
+
+def test_the_notify_page_refuses_in_plain_words_and_never_from_the_relay(fe, notify_page, monkeypatch):
+    mod, priv = notify_page
+    fe.settings_pages["notify"] = mod.NotifySettings(fe)
+    before = (priv / "chat.json").read_text()
+    path = "/api/settings/notify"
+    said = []
+    for body, words in (({"rooms": "off"}, '"Rooms" takes on or off.'),
+                        ({"quiet": "later"}, 'Quiet hours take "Hold until morning" or "Send anyway".'),
+                        ({"sound": True}, "Tacitus has no notification setting named 'sound'."),
+                        ({}, "Choose at least one notification setting to change.")):
+        status, _h, raw = owner(fe, "POST", path, body)
+        assert (status, json.loads(raw)["error"]) == (400, words), body
+        said.append(words)
+    # through the relay a phone may read the switches, never change them
+    assert owner(fe, "GET", path, headers={"X-Tacitus-Relay": "1"})[0] == 200
+    status, _h, raw = owner(fe, "POST", path, {"rooms": True}, {"X-Tacitus-Relay": "1"})
+    assert status == 403 and "own web chat" in json.loads(raw)["error"]
+    assert call(fe, "POST", path, {"rooms": True})[0] == 401
+    assert owner(fe, "POST", path, {"rooms": True}, {"Origin": "https://evil.example.test"})[0] == 403
+    assert (priv / "chat.json").read_text() == before
+    # a process that is not the owner's, or a file it cannot read, saves nothing
+    import owner_trust
+    with monkeypatch.context() as m:
+        m.setattr(owner_trust, "is_owner_process", lambda: False)
+        status, _h, raw = owner(fe, "POST", path, {"rooms": True})
+    assert status == 400 and json.loads(raw)["error"].startswith("Tacitus could not save")
+    said.append(json.loads(raw)["error"])
+    (priv / "chat.json").write_text("{not json")
+    status, _h, raw = owner(fe, "POST", path, {"rooms": True})
+    assert (status, json.loads(raw)["error"]) == (400, "Tacitus could not read its settings file.")
+    said.append(json.loads(raw)["error"])
+    assert fe.push_settings == wf.web_push_policy.Settings()
+    assert not [t for t in said if JARGON.search(t)]
+
+
+def test_the_bot_registers_the_notify_page_beside_the_routing_table():
+    bot = (ROOT / "ea-chat-bot.py").read_text()
+    assert '_web.settings_pages["notify"] = _web_notify_settings.NotifySettings(_web)' in bot
+
+
 # ── the state of a conversation (docs/webchat-state.md) ─────────────────
 
 def _state(f, ch, key, state, by="rule", reason="r"):
