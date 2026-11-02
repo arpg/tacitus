@@ -200,6 +200,29 @@ def test_cron_lanes_do_not_read_kept_threads(store):
     assert mp.release_precheck("graph_actions", "get-conversation", argv, "cron-x") == ""
 
 
+def test_cron_lanes_do_not_read_kept_threads_through_the_unified_cli(store):
+    import mail_client
+    _rec("k1", "c-kept", kept="listed domain mil")
+    _rec("n1", "c-ok")
+    for verb in ("get-message", "get-draft"):
+        flag = "--message-id" if verb == "get-message" else "--draft-id"
+        argv = [verb, "--provider", "outlook", flag, "k1"]
+        assert mp.release_precheck("mail_actions", verb, argv, "cron-x") != ""
+        assert mp.release_precheck("mail_actions", verb, argv, "run-abc") == ""
+    rows = [mail_client._normalize_outlook_search_result(_msg(m, c)) for m, c in
+            (("k1", "c-kept"), ("n1", "c-ok"))]
+    out, refusal = mp.release_filter("mail_actions", "search",
+                                     ["search", "--provider", "outlook", "--query", "x"],
+                                     "cron-x", json.dumps(rows))
+    got = json.loads(out)
+    assert refusal == "" and [r.get("id") for r in got[:-1]] == ["n1"] and "_note" in got[-1]
+    one = mail_client._normalize_outlook_get_message(dict(_msg("k1", "c-kept"), body={}))
+    out, refusal = mp.release_filter("mail_actions", "get-draft",
+                                     ["get-draft", "--provider", "outlook", "--draft-id", "k1"],
+                                     "cron-x", json.dumps(one))
+    assert out == "" and refusal
+
+
 def test_dated_fyi_mail_stays_in_the_digest_until_its_day(store):
     _rec("new", "c1")
     _rec("talk", "c2", deadline="2026-10-11", received=NOW - timedelta(days=3))

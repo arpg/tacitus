@@ -353,6 +353,44 @@ def test_sealed_get_message_returns_the_record_not_the_text(priv):
     assert got["id"] == msg["id"] and got["conversation_id"] == "conv1"
 
 
+def test_every_unified_read_is_checked_as_its_graph_actions_twin():
+    import mail_mediation as MM
+    reads = {v for v, why in __import__("test_send_content_binding").NOT_DRAFT_CHANGING[
+        "mail_actions"].items() if why == "read"} - {"preflight-check"}
+    for verb in reads:
+        tool, twin = mp.as_graph_read("mail_actions", verb, [verb, "--provider", "outlook"])
+        assert tool == "graph_actions" and twin in mp.RELEASE_VERBS, verb
+        assert twin in MM.SAFE["graph_actions"], verb
+    # Gmail reads are not filtered on either CLI (gmail_client's are not)
+    assert mp.as_graph_read("mail_actions", "search", ["search", "--provider", "gmail"]) == \
+        ("mail_actions", "search")
+
+
+def test_sealed_unified_outlook_reads_return_the_record(priv):
+    import mail_client
+    _sealed(priv)
+    msg = dict(_msg(1), body={"contentType": "text", "content": "SECRET BODY TEXT"},
+               bodyPreview="SECRET PREVIEW")
+    _store(msg)
+    one = mail_client._normalize_outlook_get_message(msg)
+    out, refusal = mp.release_filter("mail_actions", "get-message",
+                                     ["get-message", "--provider", "outlook", "--message-id",
+                                      msg["id"]], "room-run-1", json.dumps(one))
+    assert refusal == "" and "SECRET" not in out
+    got = json.loads(out)
+    assert got["sealed"] is True and got["body"].startswith("Pat asks for a meeting.")
+    rows = [mail_client._normalize_outlook_search_result(msg)]
+    out, refusal = mp.release_filter("mail_actions", "search",
+                                     ["search", "--provider", "outlook", "--query", "x"],
+                                     "room-run-2", json.dumps(rows))
+    assert refusal == "" and "SECRET" not in out
+    assert json.loads(out)[0]["preview"].startswith("Pat asks")
+    # the same output as a Gmail read passes as gmail_client's does
+    out, _ = mp.release_filter("mail_actions", "search", ["search", "--provider", "gmail"],
+                               "room-run-3", json.dumps(rows))
+    assert "SECRET" in out
+
+
 def test_sealed_get_conversation_extracts_unread_and_own_mail_inline(priv):
     _sealed(priv)
     inbound, own = _msg(1, cid="convA"), _msg(2, frm="owner@example.edu", cid="convA")

@@ -81,6 +81,7 @@ def _normalize_outlook_search_result(m: dict) -> dict:
     return {
         "id": m.get("id", ""),
         "thread_id": m.get("conversationId", ""),
+        "conversation_id": m.get("conversationId", ""),  # the name mail_privacy reads
         "subject": m.get("subject", "(no subject)"),
         "from": from_addr.get("address", ""),
         "from_name": from_addr.get("name", ""),
@@ -186,6 +187,7 @@ def _normalize_outlook_get_message(m: dict) -> dict:
     return {
         "id": m.get("id", ""),
         "thread_id": m.get("conversationId", ""),
+        "conversation_id": m.get("conversationId", ""),  # the name mail_privacy reads
         "subject": m.get("subject", "(no subject)"),
         "from": from_addr.get("address", ""),
         "from_name": from_addr.get("name", ""),
