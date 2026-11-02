@@ -71,8 +71,10 @@ thread: the colleague has not replied yet").
    handled: <its status line in plain words>" ("Its cards were handled:
    ..." for several). A failed or expired card, a press stuck past 20
    minutes, or a link to a card the store does not hold (one never
-   copied from Zulip) decides nothing, and the later rules run. A bot
-   line after the outcome does not reopen it; an owner message does.
+   copied from Zulip) that Zulip does not give either (shadow mode,
+   below) decides nothing, and the later rules run; the model then reads
+   each linked card as one line (The model). A bot line after the
+   outcome does not reopen it; an owner message does.
 3. The owner wrote last, and the bot has posted nothing since but
    progress lines (`:hourglass...`) or a failed-turn notice (`:x:`,
    `:warning:`):
@@ -152,6 +154,26 @@ With no Zulip (the web chat alone) the stored text is all there is. The
 one-line pointer to a card ("The Send button for this draft is in your
 DM") is not a card: rule 2b reads the card it links to.
 
+**Shadow mode: a linked card the copy never took.** The history copy
+took many pointers without their cards, so the store holds a link
+(`card_link`, a Zulip id from the pointer's `.../near/<id>`) and no
+message (`linked_cards` gives a row of kind `missing` with the link's
+card channel and id). The tick asks Zulip for that card by its id
+(`card_now`, as for a mirrored card, with no thread key: the composite
+reads it and writes nothing into the store) and reads its text the way
+it reads a mirrored card (`thread_state.fetched_card`): the legend is a
+live card, a status line a card acted on, a filed card one settled
+outside chat. Its age counts from Zulip's posting time (`card_now`'s
+`posted_at`) and its outcome from Zulip's last edit, the edit that wrote
+the status line, so rule 2b's "no owner message after the last of them"
+counts from the press, as for a card the store holds. The reads share the
+30 a tick and the one-tick cache of the mirrored cards; a final answer (a
+status line that acted or failed, a card filed in the done stream, or a
+message that is no card) is kept while the engine runs (1000 at most),
+and one that can still change is read again each tick, the last answer
+standing past the cap or when Zulip does not answer. A link Zulip does
+not give stays `missing`.
+
 ## The stale shelf
 
 A `needs_you` or `waiting` state is stale when its conversation has been
@@ -174,15 +196,16 @@ with a muted sticker (The app). That sticker still counts its days from
 ## The nudge
 
 When a `needs_you` conversation's owner last wrote in it 24 hours ago or
-more (or last tapped its state, when that is newer; a conversation the
-owner never wrote in nor tapped gets no nudge), and it is not on the
-stale shelf (active within 7 days: an older one shelves instead), the bot
-posts one line there: "Still need this? Reply here, or tap Mark done."
-The state's own `at` does not count. Once per conversation (the
-`nudges` table). Never on a conversation that opens with an automated
-post (rule 7's test: a notifier key, or the title patterns) or with a
-card, and never while a card in it or linked to it is live (its button
-is the nudge). At most 10 a tick, the longest
+more (a conversation the owner never wrote in gets no nudge), and it is
+not on the stale shelf (active within 7 days: an older one shelves
+instead), the bot posts one line there: "Still need this? Reply here, or
+tap Mark done." The state's own `at` does not count. Once per
+conversation (the `nudges` table). Never on a state the owner set
+(Needs me: the owner just said so), never on a conversation that opens
+with an automated post (rule 7's test: a notifier key, or the title
+patterns) or with a card, and never while a card in it or linked to it
+is live (its button is the nudge; a linked card the copy never took
+counts as Zulip gives it). At most 10 a tick, the longest
 waiting first, in channels that are not archived; none while the owner's
 quiet hours hold (the EA's `quiet_hours.should_defer("normal")`; a check
 that fails counts as quiet).
@@ -216,8 +239,14 @@ settles every thread Tacitus started that the owner never wrote in.
 
 Input: the thread's messages (author, time,
 text, card titles and outcomes; never a card's body, fields or quoted
-mail), the channel's kind and name, the linked ledger rows' type,
-status, deadline and last action, today's date. The prompt is
+mail), one line for each card the conversation links to in Direct
+messages, placed by the time it last changed, in the shape of a card in
+the thread (`[bot, <time>] card "Confirm send" in Direct messages: Sent.`;
+`: failed` for a failed press, without its words; `: expired` past the
+card registry's 7 days; `: waiting for a button` while live; a link to
+no card the store or Zulip holds gives no line), the channel's kind and
+name, the linked ledger rows' type, status, deadline and last action,
+today's date. The prompt is
 `thread_state.PROMPT`. Output, JSON only: `{"state": one of the five,
 "reason": "<one sentence in plain words>", "confidence": 0..1}`, parsed
 strictly (one object, a code fence allowed, nothing else; exactly those
@@ -480,3 +509,17 @@ bot side changed it here:
   model, which sees it as a card. Its row takes Zulip's current text.
   The status-line rules also know Zulip's emoji names (`:time_ticking:`
   busy, `:cross_mark:` failed).
+- **Linked cards reach the model** (a failed or expired card in the DM
+  left rule 2b undecided, and the model's prompt did not say the card
+  existed): each linked card is one line in the prompt's messages, local
+  and hosted alike, and both prompts say what a card in Direct messages
+  is.
+- **No nudge after Needs me** (the nudge asked "Still need this?" a day
+  after the owner tapped Needs me): a state the owner set is never
+  nudged, and the nudge's clock is the owner's last message alone.
+- **A linked card the copy never took is read from Zulip** (in shadow
+  mode, conversations linked to a card stayed open because the copy held
+  the pointer and not the card: 20 of 86 links had no card in the
+  store): the tick reads it by the pointer's Zulip id, within the
+  mirrored cards' cap, and rule 2b settles on it; `card_now` also gives
+  the card's posting time.

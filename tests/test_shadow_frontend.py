@@ -696,8 +696,11 @@ def test_a_card_lookup_comes_only_from_a_primary_that_reads_cards_back(tmp_path)
                                                     "Card\n\n----\n*Sent*")
     calls = len(shadow.calls)
     assert fe._primary_card("C_MAIN", "t8", "8") is None and len(shadow.calls) == calls
+    # a card the shadow never took (a pointer's card: no thread key) is read, never written
+    assert fe._primary_card("", "", "9") == primary.cards["9"] and len(shadow.calls) == calls
+    assert primary.reads[-1] == ("", "", "9")
     fe.shadow_off = "refused"
-    assert fe._primary_card("C_MAIN", "t9", "9") is None and len(primary.reads) == 2
+    assert fe._primary_card("C_MAIN", "t9", "9") is None and len(primary.reads) == 3
 
 
 def test_the_room_filter_picks_the_rooms_start_copies(caplog):

@@ -1618,7 +1618,8 @@ class ZulipFrontend(ChatFrontend):
         """A posted card as Zulip holds it now, read-only, for the shadow's
         copy of it (ShadowFrontend): {"text": its raw content, "filed": True
         when it sits in the done stream (file_card), "edited_at": the time
-        of its last edit, or None}. The card is read by its message id; a
+        of its last edit, or None, "posted_at": the time it was posted, or
+        None}. The card is read by its message id; a
         copy with no Zulip id names the first message of its topic, looked
         for where the topic moved, then under the same name in the done
         stream. None when Zulip holds no such message or does not answer."""
@@ -1648,8 +1649,10 @@ class ZulipFrontend(ChatFrontend):
         if not isinstance(where, str) or not where:
             where = self._stream_name(int(m.get("stream_id") or 0))
         edited = m.get("last_edit_timestamp")
+        posted = m.get("timestamp")
         return {"text": str(m.get("content") or ""), "filed": where == self.done_stream_name,
-                "edited_at": float(edited) if edited else None}
+                "edited_at": float(edited) if edited else None,
+                "posted_at": float(posted) if posted else None}
 
     def _read_messages(self, anchor: int | str, narrow: list[dict], *,
                        after: int = 0) -> list[dict]:
