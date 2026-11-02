@@ -1592,7 +1592,9 @@ def test_the_owner_archives_a_room_and_brings_it_back(fe):
     assert [(t, e["archived"]) for t, e in _new_events(fe, since)] == [("channel", True)]
     # the bot's room hygiene reads the flag; the room takes no new message
     assert fe.archived_map()["r1"] is True
-    assert owner(fe, "POST", "/api/channels/r1/messages", {"text": "hi"})[0] == 400
+    status, _h, body = owner(fe, "POST", "/api/channels/r1/messages", {"text": "hi"})
+    assert status == 400 and json.loads(body)["error"] == (
+        "This room is archived. Bring it back from its menu to write here.")
     # archiving it again answers the row as it is, with no event
     since = fe.store.max_event_seq()
     status, _h, body = owner(fe, "POST", "/api/channels/r1/archive")

@@ -3419,7 +3419,8 @@ class WebFrontend(ChatFrontend):
         if ch is None:
             raise _HttpError(404, "no such channel")
         if ch["archived"]:
-            raise _HttpError(400, "the channel is archived")
+            raise _HttpError(400, "This room is archived. Bring it back from its menu to write here."
+                             if ch["kind"] == "room" else "This place is archived.")
         key = None
         if thread_key:
             key = self.store.thread_of(channel, thread_key)
