@@ -22,7 +22,9 @@ This is part D of the Tacitus web chat: A is the web front end
 | `relay/install.sh`, `relay/snippets/` | The operator's install: a pinned commit, a confined unit, the nginx blocks |
 | `tests/test_relay.py` | Crypto, relay rules, the web front end's routes, a loopback run of the whole path, each attack the security review found, rotation, and the handoff to a computer with each refusal of the relayed owner routes |
 | `tests/test_web_bundle.py` | The signed manifest, its routes, the signing key in the key file, and the attestation |
-| `tests/test_relay_install.py` | The install script's checks, the unit it writes, the nginx rules |
+| `tests/test_relay_install.py` | The install script's checks, the units it writes (the relay and its updater), the nginx rules |
+| `hosted/` | What the hosted app's site repository holds: `deploy.yml` (its workflow), `build.py` (verify a signed release, build the site), `README.md`, `relays.json.example` (The hosted app) |
+| `tests/test_hosted_site.py` | The site build: each verification refusal, the built tree, `release.txt`, the workflow's pins and permissions |
 | `tests/fixtures/relay_vectors.json` | The protocol with fixed keys, made by `relay_crypto`; the app reproduces it in a browser (`tests/test_webui.py`) |
 
 ## What it is for
@@ -67,7 +69,9 @@ do. End-to-end encryption in a web page protects only against parties
 that do not deliver the page's code. A relay that serves the app can
 serve a changed app, and a changed app reads everything the phone shows.
 No cryptography inside the page changes that. So the phone gets its code
-in one of two ways, and the bot records which at pairing.
+in one of two ways, and the bot records which at pairing. A computer
+added with "A computer" gets it in a third way, from the hosted app (The
+hosted app, below).
 
 **Own origin (the default on the tailnet).**
 The owner pairs while the phone is on the tailnet. The pairing link
@@ -197,6 +201,55 @@ origin, or sealed under a handoff code to a page on the hosted origin,
 so only a page on that origin reads it, and the device's private key
 then lives in that origin's storage. A relay-origin or hosted page
 cannot read the storage of the own-origin app (same-origin policy).
+
+### The hosted app
+
+A computer that never joins the tailnet (a work laptop, a library
+machine) runs the app from a site of its own: `https://tacitus-ai.github.io/`
+by default (`hosted_app` in the `relay` block, Config). The owner starts
+it from a device already signed in ("Add a device", then "A computer"),
+types the code it shows on the computer, and approves the six-digit
+code. The bot records the device as `origin: "hosted"` with the bundle
+hash; the payload's `a` is the hosted app's URL.
+
+**Where its code comes from.** The site is the GitHub Pages site of the
+public repository `tacitus-ai/tacitus-ai.github.io`, built from this
+repository's `hosted/` folder (Running the hosted app). Its workflow
+(`hosted/deploy.yml`) runs every hour: it fetches the release tags and
+`main` of `arpg/tacitus`, verifies the newest `vX.Y.Z` tag the way an
+install's updater does (docs/updates.md, "The trust root": an annotated
+tag with its own name inside, an SSH signature by a key in the Pages
+repository's pinned `release-key.pub` with an ED25519 key, the commit in
+`main`'s history, and no new key in the release's own key list), and
+publishes that release's `webui/` unchanged with the Pages repository's
+`relays.json` and a `release.txt` (tag, commit, and the hash of the
+app's file list). It needs no secret: it reads a public repository and
+deploys with the job's own Pages token.
+
+**What it is trusted for.** The hosted copy is a bootstrap, like the
+relay's: it checks itself against the bot's signed manifest at pairing,
+then takes the bot's releases through the sealed channel, so the site
+may serve another release than the bot runs. The site is trusted at two
+moments, as the relay's copy is: when the computer is set up (the page
+that reads the code and opens the sealed setup is the site's), and at
+each fetch of `sw.js`, the worker's loader, which the browser takes only
+from the page's origin. Whoever can push to the Pages repository, or
+change its settings, chooses that code: it could read what the computer
+shows and chat as the owner, and press card buttons when the owner
+allowed them on that computer. So:
+
+- Only the owner keeps write access to the Pages repository: no team,
+  no bot account, no deploy key, no token with write access.
+- A branch ruleset on its `main` blocks force pushes and deletions.
+- No other repository of the `tacitus-ai` organization publishes Pages:
+  GitHub serves each at `tacitus-ai.github.io/<name>/`, the same origin,
+  where its pages could use a paired computer's key (the hosting rule
+  under Running the relay).
+
+A device that opens the chat on its bot's own address (the tailnet, or
+the bot's machine) never depends on this site. A hosted device gets what
+a relay-origin device gets: once approved, it reads and chats; card
+buttons only when the owner allows them for it.
 
 ## Pairing
 
@@ -720,6 +773,39 @@ It **can**:
   of its reach, as long as nothing else is served on the relay's origin
   with it (the hosting rule under Running the relay).
 
+## What the hosted app's host can and cannot do
+
+The host is whoever can publish on the hosted app's origin: the owner of
+the Pages repository, anyone else with write access to it, or GitHub.
+
+It **cannot**:
+
+- read a frame: the computer and the bot seal them end to end, and the
+  relay carries them;
+- pair a device while no one sets up a computer through it: the setup
+  waits at the relay sealed under a key from the ten-symbol code, the
+  code reaches the site only as typed into its page, and every new
+  device waits for the owner's approval by its six-digit code;
+- change a release that a checked computer takes from the bot: those
+  files come sealed and are checked against the bot's signature;
+- reach a phone or computer whose code comes from the bot's own origin
+  or from a relay: storage is per origin;
+- press card buttons on a computer the owner did not allow them.
+
+It **can**:
+
+- serve changed code when a computer is set up, or a new `sw.js` at any
+  later visit, which the browser installs: that code can skip the check,
+  read everything that computer shows, chat as the owner, and press card
+  buttons on a computer the owner allowed them;
+- at setup, pass the typed code to a device of its own, and show that
+  device's six-digit code on the computer, so the owner approves it;
+- stop serving, or serve an old release (a computer that is set up
+  keeps running the bot's releases through the sealed channel).
+
+Plainly: a computer added through the hosted app is as safe as the
+access list of the Pages repository. Keep it to the owner alone.
+
 ## Config
 
 The `relay` block sits inside the `web` block of the chat config
@@ -1049,10 +1135,18 @@ Python 3.9 or newer, as root and idempotently. It installs a commit you
 name (`--commit <40 hex>`; the clone is checked against it), never the
 tip of a branch: the repository takes outside pull requests. `--tag
 vX.Y.Z` is taken only when `git verify-tag` passes against the release
-key (an SSH public key) in `/etc/tacitus-relay/release-key.pub`; releases
-are not signed yet, so use `--commit` until they are. It writes the unit
+key in `/etc/tacitus-relay/release-key.pub`, or else the key the updater
+pinned in `/var/lib/tacitus-relay/release-key.pub`. It writes the units
 itself, never from the clone. `--install-id <id>` adds an install to the
-allow file. `relay/snippets/nginx.conf` is the proxy block for step 1,
+allow file. By default it also writes `tacitus-relay-update.service` and
+`tacitus-relay-update.timer` (the text of the files in `relay/`) and
+enables the timer: every hour, at a random minute, the relay installs
+the newest signed release on its channel with that release's own
+`install.sh --tag` (docs/updates.md, "The relay host").
+`--no-update-timer` leaves the updater out and removes an installed one.
+An update keeps what the relay serves: with neither `--with-app` nor
+`--without-app` the script keeps the `--static` choice of the unit it
+replaces. `relay/snippets/nginx.conf` is the proxy block for step 1,
 under the path `/relay/` of an existing HTTPS vhost, so the relay URL is
 `https://<host>/relay`; `relay/snippets/nginx-http.conf` holds the rate
 zones and the key check it names, for nginx's `http` block.
@@ -1087,11 +1181,48 @@ Operator steps (the maintainer, for the hosted relay):
    call filter, and is capped at 768 MiB, 2,200 tasks and 4,096 open
    files (`systemd-analyze security` scores it 0.9).
 4. A monitor on `http://127.0.0.1:8471/healthz` on the host.
-5. At each release, run the script again with the release's commit.
+5. At each release the timer installs it. With `--no-update-timer`, run
+   the script again with the release's commit.
 6. For each subscription, add its install id to the allow file
    (`--install-id`, or one per line in `/etc/tacitus-relay/installs.txt`);
    remove it when the subscription ends. The relay reloads the file on
    change.
+
+## Running the hosted app
+
+The hosted app (The hosted app, above) is the Pages site of the public
+repository `tacitus-ai/tacitus-ai.github.io`. Everything that repository
+holds comes from `hosted/` here; `hosted/README.md` becomes its README
+and says the same in plain words. It runs nothing on a host of ours: a
+GitHub Actions workflow builds it every hour from the newest signed
+release.
+
+Operator steps (the maintainer, once):
+
+1. Create the public repository `tacitus-ai/tacitus-ai.github.io` with
+   `hosted/deploy.yml` as `.github/workflows/deploy.yml`, and
+   `hosted/build.py` and `hosted/README.md` at its top.
+2. Copy this repository's `.release-key.pub` there as `release-key.pub`.
+   It is the site's trust root, as `release_key` is an install's: a
+   release key change reaches the site only when the maintainer adds the
+   new line there (docs/updates.md, "The trust root").
+3. Write `relays.json`, a JSON list of the relay URLs a computer asks for
+   its setup, in order, each `https://<host>/relay` with no slash at the
+   end (`hosted/relays.json.example`). A bot whose relay is not listed
+   adds `?relay=<its relay>` to the address it shows.
+4. Settings > Pages > Source: GitHub Actions.
+5. A branch ruleset on `main`: block force pushes, restrict deletions.
+6. Keep write access to the owner's account alone (The hosted app, "What
+   it is trusted for"): no other member, team, bot account, deploy key
+   or token with write access, and no other repository of the
+   organization with Pages.
+7. Actions > deploy > Run workflow. `https://tacitus-ai.github.io/release.txt`
+   then names the release it serves; each later run publishes a newer
+   signed release within the hour and does nothing otherwise.
+
+A copy hosted elsewhere works the same way: its address goes in
+`hosted_app` of the bot's `relay` block (the `SITE_URL` variable of its
+repository tells the workflow where to read `release.txt`).
 
 ## Owner steps
 
@@ -1200,8 +1331,6 @@ command as the owner. Tailscale is optional: these steps need none.
   takes the new relay URL, install id and client key in place. A device
   that `rotate --devices keep` kept then needs no new pairing. Until then
   `keep` spares only the bot's key and the device records.
-- Signed release tags (the auto-update work), so the operator installs
-  with `--tag`.
 - A check of the app's code outside the page (a browser extension, in
   the Code Verify pattern), so a relay that serves changed code on
   purpose cannot pass the check.
