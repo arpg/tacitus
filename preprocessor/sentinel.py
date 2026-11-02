@@ -755,8 +755,31 @@ def check_circuit_breakers() -> tuple[bool, str]:
     # with every probe and re-alert on each one.
     names = ", ".join(
         f"{b['service']} ({_error_kind(b.get('last_error'))})" for b in open_now)
-    return (False, f"circuit breaker OPEN: {names} — external service "
-                   f"down; calls are failing fast")
+    graph_keys = set(getattr(retry_policy, "GRAPH_BREAKERS", {}).values())
+    graph = frozenset(b["service"] for b in open_now if b["service"] in graph_keys)
+    others = [b["service"] for b in open_now if b["service"] not in graph_keys]
+    notes = []
+    if graph:
+        notes.append(_GRAPH_OPEN_TEXT.get(graph, _OTHER_OPEN_TEXT))
+    if others:
+        notes.append(_OTHER_OPEN_TEXT)
+    if len(notes) > 1:
+        notes = [f"mail: {notes[0]}", f"{', '.join(others)}: {notes[1]}"]
+    return (False, f"circuit breaker OPEN: {names} — " + ". ".join(notes))
+
+
+# What an open breaker means for its callers. The two Graph lanes differ
+# (retry_policy.GRAPH_BREAKERS): an open interactive breaker gives each of
+# the owner's mail actions one attempt, and an open background breaker
+# fails the cron jobs fast. Each lane counts only its own failures.
+_OTHER_OPEN_TEXT = "external service down; calls are failing fast"
+_GRAPH_OPEN_TEXT = {
+    frozenset({"graph"}): "the owner's own mail actions still try once each",
+    frozenset({"graph-background"}): "background mail jobs are failing fast",
+    frozenset({"graph", "graph-background"}):
+        "background mail jobs wait while the owner's own mail actions "
+        "still try once each",
+}
 
 
 def _error_kind(error) -> str:
