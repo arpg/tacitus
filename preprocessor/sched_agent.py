@@ -430,8 +430,10 @@ def _resident_cmd(script: str, argv: list[str], run_id: str, *, live: bool = Fal
         f"PYTHONPATH={os.environ.get('PYTHONPATH', '')}",
         run_env,
     ]
+    # EA_GRAPH_LANE: a tick that runs the pipeline (mail_privacy) keeps its
+    # tool calls in the background Graph lane through the mediator.
     for var in ("GRAPH_CLIENT_ID", "GRAPH_AUTHORITY", "GRAPH_AUTH_METHOD",
-                "GRAPH_REDIRECT_URI", "GRAPH_SCOPES"):
+                "GRAPH_REDIRECT_URI", "GRAPH_SCOPES", "EA_GRAPH_LANE"):
         if os.environ.get(var):
             env.append(f"{var}={os.environ[var]}")
     return (["sudo", "-n", "-u", EA_BOT_USER, "env"] + env

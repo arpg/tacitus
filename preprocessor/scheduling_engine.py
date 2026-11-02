@@ -40,6 +40,9 @@ if __name__ == "__main__":
     if not os.environ.get("EA_CANNED_CALENDAR"):
         from mail_mediation import forward_or_none
         forward_or_none("scheduling_engine", sys.argv[1:], transform=_id_handles.annotate_output)
+    # A solver call runs for the owner unless its caller set the lane.
+    import retry_policy as _retry_policy
+    _retry_policy.set_graph_lane(_retry_policy.INTERACTIVE, only_if_unset=True)
 import graph_client as graph
 import google_calendar_client as gcal
 import availability

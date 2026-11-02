@@ -30,6 +30,7 @@ sys.path.insert(0, str(HERE.parent / "preprocessor"))
 
 import ledger as ledger_mod  # noqa: E402
 import ledger_sync  # noqa: E402
+import retry_policy  # noqa: E402
 
 INBOX_ID = "FOLDER-INBOX"
 ARCHIVE_ID = "FOLDER-ARCHIVE"
@@ -49,6 +50,7 @@ def _isolate(tmp_path, monkeypatch):
                         tmp_path / "ea" / "config" / "autonomy-tiers.json")
     monkeypatch.setattr(ledger_sync, "EA_DIR", tmp_path / "ea")
     monkeypatch.setattr(ledger_sync, "_load_env", lambda: None)
+    monkeypatch.setattr(retry_policy, "TICK_BACKOFF_FILE", tmp_path / "tick-backoff.json")
 
 
 class FakeGraph:
@@ -239,6 +241,50 @@ def test_check_closes_a_genuine_archive(monkeypatch, capsys):
     out = _run_check(capsys)
     assert out["closed"] == 1, out
     assert _row("response-archived")[0] == "completed"
+
+
+class ThrottledGraph(FakeGraph):
+    """Graph answering 429 to the inbox folder read ("raise"), or answering
+    every read while counting a 429 one of them met ("swallow")."""
+
+    def __init__(self, mode="raise", **kw):
+        super().__init__(**kw)
+        self.mode = mode
+        self.count = 0
+
+    def graph_get(self, endpoint, params=None):
+        if self.mode == "raise" and endpoint == "/me/mailFolders/inbox":
+            self.calls.append(endpoint)
+            raise _http_error(429)
+        if self.mode == "swallow" and endpoint.startswith("/me/messages/"):
+            self.count += 1
+        return super().graph_get(endpoint, params)
+
+    def throttled_calls(self):
+        return self.count
+
+
+def test_a_throttled_check_skips_the_next_three(monkeypatch, capsys):
+    _add_row("response-a", msg_id="M-A", conv_id="CONV-A")
+    g = ThrottledGraph(messages={"M-A": INBOX_ID})
+    _use(monkeypatch, g)
+    out = _run_check(capsys)
+    assert "Could not get inbox folder" in out["error"] and "next 3 checks" in out["backoff"]
+    for left in (2, 1, 0):
+        out = _run_check(capsys)
+        assert out["skipped"] is True and f"({left} more to skip)" in out["reason"], out
+    assert g.calls == ["/me/mailFolders/inbox"]     # the skipped checks asked Graph nothing
+    g.mode = "ok"
+    out = _run_check(capsys)
+    assert out["checked"] == 1 and "backoff" not in out, out
+
+
+def test_a_429_a_row_read_swallowed_starts_the_backoff(monkeypatch, capsys):
+    _add_row("response-a", msg_id="M-A", conv_id="CONV-A")
+    _use(monkeypatch, ThrottledGraph("swallow", messages={"M-A": INBOX_ID}))
+    out = _run_check(capsys)
+    assert out["checked"] == 1 and "HTTP 429" in out["backoff"], out
+    assert retry_policy.TickBackoff(ledger_sync.BACKOFF_JOB).pending() == 3
 
 
 def test_check_does_not_close_a_woken_snooze(monkeypatch, capsys):

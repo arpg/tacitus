@@ -177,6 +177,9 @@ WRITERS = [
     W("retry_policy", lambda m, p: m._save_all({}), attr="STATE_FILE"),
     # atomic_io after a read of the target with the resident's access
     W("retry_policy", lambda m, p: m.CircuitBreaker("tripwire").record_failure("x"), attr="STATE_FILE"),
+    W("retry_policy", lambda m, p: m.TickBackoff("tripwire").throttled("x"), attr="TICK_BACKOFF_FILE"),
+    W("retry_policy", lambda m, p: (m.TickBackoff("tripwire").throttled("x"),
+                                    m.TickBackoff("tripwire").take()), attr="TICK_BACKOFF_FILE"),
     W("slack_sessions", lambda m, p: m.adopt(ONE_TS, ONE_SESSION, require_file=False), attr="REGISTRY"),
     # plugins (docs/plugins.md): the click token, the verb alias hint, an
     # agent-zone release written into the resident's plugins dir

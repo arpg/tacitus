@@ -32,6 +32,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import fcntl
 import html as html_mod
 import json
@@ -58,6 +59,10 @@ if __name__ == "__main__":
     _plugin_verbs.forward_alias("graph_actions", sys.argv[1:])
     from mail_mediation import forward_or_none
     forward_or_none("graph_actions", sys.argv[1:], transform=_id_handles.annotate_output)
+    # The verb runs in this process: the owner's own action unless the
+    # caller (a cron, the mediator for a background lane) set the lane.
+    import retry_policy as _retry_policy
+    _retry_policy.set_graph_lane(_retry_policy.INTERACTIVE, only_if_unset=True)
 import graph_client as graph
 import draft_events as _draft_events  # structured journal for the bot
 try:
@@ -89,6 +94,25 @@ def _owner_state_dir() -> Path:
     if _owner_trust.is_owner_process():
         return _owner_trust.private_dir()
     return EA_DIR / "state"
+
+
+# Exit status of a verb that Microsoft throttled (EX_TEMPFAIL: try later).
+THROTTLED_EXIT = 75
+
+
+@contextlib.contextmanager
+def _plain_throttle_exit():
+    """A verb that ends on Microsoft throttling the mailbox (HTTP 429, or an
+    open Graph breaker) exits THROTTLED_EXIT with one plain line on stderr
+    and no traceback: the EA's turn reads that line and passes it on."""
+    try:
+        yield
+    except Exception as e:
+        line = graph.throttle_line(e)
+        if line is None:
+            raise
+        print(line, file=sys.stderr)
+        sys.exit(THROTTLED_EXIT)
 
 
 PENDING_CONFIRMS_FILE = _owner_state_dir() / "pending-confirmations.json"
@@ -2499,4 +2523,12 @@ if __name__ == "__main__":
     _mm_child.hold_owner_draft_lock("graph_actions", args.command, sys.argv[1:],
                                     mediated=_mediated)
     _resolve_body(args)
-    args.func(args)
+    # Retry and throttle notes go to a log file: stderr carries the one
+    # plain line a throttled verb ends with.
+    try:
+        from log_paths import owner_log as _owner_log
+        graph.notes_to_file(lambda: _owner_log("graph-client.log"))
+    except Exception:
+        pass
+    with _plain_throttle_exit():
+        args.func(args)

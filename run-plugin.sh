@@ -14,6 +14,10 @@
 #
 set -euo pipefail
 
+# A scheduled plugin's Graph calls are background work: they count toward
+# the graph-background breaker, never the owner's own (preprocessor/retry_policy.py).
+export EA_GRAPH_LANE=background
+
 # -------------------------------------------------------------------
 # Bootstrap (mirrors run-agent.sh)
 # -------------------------------------------------------------------
@@ -378,6 +382,7 @@ if ! sudo -u ea-bot env \
     EA_DIR="$EA_DIR" \
     EA_PLUGIN_NAME="$PLUGIN_NAME" \
     EA_PLUGIN_DIR="$EA_BOT_PLUGIN_DIR" \
+    EA_GRAPH_LANE=background \
     PYTHONPATH="$EA_BOT_SCRIPT_DIR/preprocessor:$EA_BOT_SCRIPT_DIR" \
     PATH="/usr/local/bin:/usr/bin:/bin" \
     "${PLUGIN_SECRETS_ENV[@]}" \
@@ -658,6 +663,7 @@ CLAUDE_OUTPUT=$(timeout "${TIMEOUT}" sudo -u ea-bot env \
     EA_DIR="$EA_DIR" \
     EA_PLUGIN_NAME="$PLUGIN_NAME" \
     EA_PLUGIN_DIR="$EA_BOT_PLUGIN_DIR" \
+    EA_GRAPH_LANE=background \
     PATH="$EA_BOT_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
     "${PLUGIN_SECRETS_ENV[@]}" \
     ${MCP_ENV[@]+"${MCP_ENV[@]}"} \

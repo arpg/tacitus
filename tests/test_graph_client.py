@@ -304,6 +304,137 @@ def test_graph_get_gives_up_after_max_retries():
 
 
 # --------------------------------------------------------------------------
+# Throttling: the 429 note, the person's wait budget, the plain words.
+# --------------------------------------------------------------------------
+
+import logging
+from contextlib import contextmanager
+
+import retry_policy as rp
+
+
+@contextmanager
+def _fresh_breakers():
+    """A breaker state of the test's own, so a run that spends its retries
+    opens no breaker another test reads."""
+    before = rp.STATE_FILE
+    with tempfile.TemporaryDirectory() as td:
+        rp.STATE_FILE = Path(td) / "circuit-breakers.json"
+        gc._breakers.clear()
+        try:
+            yield
+        finally:
+            rp.STATE_FILE = before
+            gc._breakers.clear()
+
+
+@contextmanager
+def _notes():
+    """The graph_client notes, as (level name, message) pairs."""
+    seen = []
+
+    class _Keep(logging.Handler):
+        def emit(self, record):
+            seen.append((record.levelname, record.getMessage()))
+    h = _Keep()
+    gc.log.addHandler(h)
+    try:
+        yield seen
+    finally:
+        gc.log.removeHandler(h)
+
+
+_THROTTLE_BODY = ('{"error":{"code":"ApplicationThrottled","message":"Application is '
+                  'over its MailboxConcurrency limit.","innerError":{"date":"x",'
+                  '"request-id":"' + "r" * 300 + '"}}}')
+
+
+def _throttled(ra="3"):
+    r = _FakeResp(429, headers={"Retry-After": ra})
+    r.text = _THROTTLE_BODY
+    return r
+
+
+def _lane_get(responses, lane):
+    state = {"i": 0, "waits": []}
+
+    def fake_requests_get(*a, **kw):
+        r = responses[state["i"]]
+        state["i"] += 1
+        return r
+    with patch("requests.get", side_effect=fake_requests_get), \
+         patch.object(gc, "_headers", return_value={}), \
+         patch.object(gc, "_api_base", return_value="https://graph"), \
+         patch("time.sleep", side_effect=state["waits"].append):
+        try:
+            return gc.graph_get("/me/messages", lane=lane), state
+        except Exception as e:
+            return e, state
+
+
+def test_a_429_is_noted_once_per_call_with_retry_after_and_the_body():
+    with _fresh_breakers(), _notes() as seen:
+        result, state = _lane_get([_throttled(), _throttled(), _FakeResp(200, json_data={"ok": 1})],
+                                  "background")
+    assert result == {"ok": 1} and state["waits"] == [3, 3]
+    warnings = [m for level, m in seen if level == "WARNING"]
+    assert len(warnings) == 1, seen
+    assert "Retry-After 3" in warnings[0] and "MailboxConcurrency" in warnings[0]
+    assert "/me/messages" in warnings[0] and "r" * 201 not in warnings[0]
+    body = warnings[0].split("body: ", 1)[1]
+    assert len(body) <= 200
+
+
+def test_an_interactive_call_stops_at_its_time_budget():
+    """The person waits, and the mediator ends its child at 120 s: an
+    interactive call stops once its next wait would pass the budget."""
+    assert gc._INTERACTIVE_BUDGET_S == 45
+    with _fresh_breakers():
+        before = gc.throttled_calls()
+        result, state = _lane_get([_throttled("30"), _throttled("30"), _FakeResp(200)],
+                                  "interactive")
+        assert isinstance(result, gc.GraphThrottled), result
+        assert state["i"] == 2 and state["waits"] == [30]
+        assert gc.throttled_calls() == before + 1
+        # Graph asking for more than the budget: no wait at all
+        result, state = _lane_get([_throttled("120"), _FakeResp(200)], "interactive")
+        assert isinstance(result, gc.GraphThrottled) and state["waits"] == []
+        assert result.retry_after == 120
+        # a background call keeps its full ladder
+        result, state = _lane_get([_throttled("30"), _throttled("30"), _FakeResp(200, json_data={})],
+                                  "background")
+        assert result == {} and state["waits"] == [30, 30]
+
+
+def test_graph_throttled_is_the_429_http_error_in_plain_words():
+    with _fresh_breakers():
+        result, _ = _lane_get([_throttled("2")] * 6, "background")
+    assert isinstance(result, requests.exceptions.HTTPError)
+    assert result.response.status_code == 429 and result.retry_after == 2
+    assert result.endpoint == "/me/messages"
+    assert str(result) == gc.THROTTLED_TEXT
+    assert "graph.microsoft.com" not in str(result)
+
+
+def test_the_throttle_line_names_a_reopen_time_when_one_is_known():
+    soon = time.time() + 600
+    line = gc.throttle_line(rp.CircuitOpen("x", service="graph-background", reopens_at=soon))
+    assert line.startswith("Microsoft is limiting mail access right now. Try again in a few minutes (after ")
+    assert line.endswith(").") and "\n" not in line
+    # a time under a minute away is not worth naming
+    assert gc.throttle_line(rp.CircuitOpen("x", service="graph", reopens_at=time.time() + 5)) \
+        == gc.THROTTLED_TEXT
+    plain_429 = requests.exceptions.HTTPError("429")
+    plain_429.response = _FakeResp(429)
+    assert gc.throttle_line(plain_429) == gc.THROTTLED_TEXT
+    assert gc.throttle_line(rp.CircuitOpen("x", service="remote")) is None
+    assert gc.throttle_line(ValueError("no")) is None
+    not_found = requests.exceptions.HTTPError("404")
+    not_found.response = _FakeResp(404)
+    assert gc.throttle_line(not_found) is None
+
+
+# --------------------------------------------------------------------------
 # update_draft — quoted thread survives a revision
 #
 # Outlook's sanitizer strips standalone HTML comments from stored bodies, so

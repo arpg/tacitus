@@ -133,6 +133,11 @@ The mediator runs **ea-bot-supplied args as the owner**, so it must be bulletpro
   draft-events journal unlabelled (B1-05). The value crosses the trust boundary from ea-bot, so
   the mediator caps it at 64 chars and requires `[A-Za-z0-9._-]` before putting it in the child's
   environment; anything else means the variable is dropped, not passed through.
+- **Graph lane:** the request carries `lane` (from `EA_GRAPH_LANE`; `run-agent.sh` and
+  `run-plugin.sh` set `background` for their lanes). The mediator sets the child's
+  `EA_GRAPH_LANE` to `background` only for that exact value and to `interactive` otherwise, so a
+  cron lane's throttled reads open the `graph-background` breaker and never the owner's `graph`
+  one (docs/RUNBOOK.md section 10). The field picks a breaker and nothing else.
 - IDs (message/draft/event/conversation) pass through (Graph-bounded).
 - Structured audit log of every mediated call; simple rate/size caps.
 

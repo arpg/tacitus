@@ -12,6 +12,12 @@
 #
 set -euo pipefail
 
+# A scheduled run's Graph calls are background work: they count toward the
+# graph-background breaker, never the owner's own (preprocessor/retry_policy.py).
+# The lanes below pass it through sudo to the resident's Claude run, whose
+# mediated calls carry it to the mediator.
+export EA_GRAPH_LANE=background
+
 EA_DIR="${EA_DIR:-$HOME/.ea}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Resolve the owner's own symlinks (~/.ea points into ea-bot's home), so the
@@ -776,6 +782,7 @@ CLAUDE_OUTPUT=$(printf '%s' "$PROMPT" | sudo -u ea-bot env \
     HOME="$EA_BOT_HOME" \
     EA_DIR="$EA_DIR" \
     EA_RUN_ID="cron-${AGENT}-${TIMESTAMP}" \
+    EA_GRAPH_LANE=background \
     PATH="$EA_BOT_SCRIPT_DIR/.venv/bin:$EA_BOT_HOME/.local/bin:$PATH" \
     ${GRAPH_CLIENT_ID:+GRAPH_CLIENT_ID="$GRAPH_CLIENT_ID"} \
     ${GRAPH_AUTHORITY:+GRAPH_AUTHORITY="$GRAPH_AUTHORITY"} \
@@ -924,6 +931,7 @@ You MUST write the briefing content as your text output. Start with :sunny: for 
         HOME="$EA_BOT_HOME" \
         EA_DIR="$EA_DIR" \
     EA_RUN_ID="cron-${AGENT}-${TIMESTAMP}" \
+    EA_GRAPH_LANE=background \
         PATH="$EA_BOT_SCRIPT_DIR/.venv/bin:$EA_BOT_HOME/.local/bin:$PATH" \
         ${GRAPH_CLIENT_ID:+GRAPH_CLIENT_ID="$GRAPH_CLIENT_ID"} \
         ${GRAPH_AUTHORITY:+GRAPH_AUTHORITY="$GRAPH_AUTHORITY"} \
@@ -998,6 +1006,7 @@ invoke_claude() {
         HOME="$EA_BOT_HOME" \
         EA_DIR="$EA_DIR" \
     EA_RUN_ID="cron-${AGENT}-${TIMESTAMP}" \
+    EA_GRAPH_LANE=background \
         PATH="$EA_BOT_SCRIPT_DIR/.venv/bin:$EA_BOT_HOME/.local/bin:$PATH" \
         ${GRAPH_CLIENT_ID:+GRAPH_CLIENT_ID="$GRAPH_CLIENT_ID"} \
         ${GRAPH_AUTHORITY:+GRAPH_AUTHORITY="$GRAPH_AUTHORITY"} \

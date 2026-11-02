@@ -50,6 +50,9 @@ follow_up_after, plugin-sourced) are not adjudicated at all: the system
 itself moved that mail out of the inbox, so its absence carries no
 information about the user.
 
+A check that meets HTTP 429 from Graph makes the next three checks skip
+(retry_policy.TickBackoff, state in ~/.ea/state/tick-backoff.json).
+
 Usage:
   python ledger_sync.py check   # cron calls this every 15 min
   python ledger_sync.py status  # show what would be closed
@@ -419,6 +422,41 @@ def _archive_predates_row(entry_id: str, message_id: str, conversation_id: str,
     return True
 
 
+# The check's throttle backoff (retry_policy.TickBackoff): a check that met
+# HTTP 429 makes the next TICK_SKIPS checks skip, so a mailbox Microsoft
+# throttles is not asked once per ledger row every 15 minutes.
+BACKOFF_JOB = "ledger_sync"
+
+
+def _backoff():
+    try:
+        import retry_policy
+    except ImportError:
+        from preprocessor import retry_policy
+    return retry_policy.TickBackoff(BACKOFF_JOB)
+
+
+def _throttled_calls() -> int:
+    """How many of this process's Graph reads ended on 429 so far."""
+    try:
+        return int(_graph().throttled_calls())
+    except Exception:
+        return 0
+
+
+def _note_throttle(backoff, before: int, exc: BaseException | None = None) -> bool:
+    """Start the backoff when this check met HTTP 429 (a read that spent its
+    retries, raised or swallowed): True when it did."""
+    try:
+        import retry_policy
+    except ImportError:
+        from preprocessor import retry_policy
+    if not (retry_policy.is_throttled(exc) or _throttled_calls() > before):
+        return False
+    backoff.throttled("HTTP 429")
+    return True
+
+
 def cmd_check(args):
     """Check inbox state for all active ledger items with message IDs."""
     _load_env()
@@ -426,6 +464,14 @@ def cmd_check(args):
     if not _inbox_as_completion_enabled():
         print(json.dumps({"skipped": True, "reason": "inbox_as_completion disabled"}))
         return
+
+    backoff = _backoff()
+    left = backoff.take()
+    if left:
+        print(json.dumps({"skipped": True,
+                          "reason": f"Graph throttled a recent check ({left - 1} more to skip)"}))
+        return
+    before = _throttled_calls()
 
     # Candidate set: see CANDIDATE_WHERE for every guard and why it exists.
     db = ledger_mod._get_db()
@@ -440,7 +486,10 @@ def cmd_check(args):
     try:
         inbox_id = _get_inbox_folder_id()
     except Exception as e:
-        print(json.dumps({"error": f"Could not get inbox folder: {e}"}))
+        out = {"error": f"Could not get inbox folder: {e}"}
+        if _note_throttle(backoff, before, e):
+            out["backoff"] = f"skipping the next {backoff.skips} checks"
+        print(json.dumps(out))
         return
 
     closed = []
@@ -535,6 +584,8 @@ def cmd_check(args):
         # accumulating rather than that nothing happened.
         out["unresolved"] = len(unresolved)
         out["unresolved_items"] = unresolved[:20]
+    if _note_throttle(backoff, before):
+        out["backoff"] = f"Graph answered HTTP 429; skipping the next {backoff.skips} checks"
     print(json.dumps(out))
 
 
@@ -576,6 +627,10 @@ def cmd_status(args):
 
 
 if __name__ == "__main__":
+    # A tick: its Graph calls run in the background lane unless its caller
+    # set one (retry_policy.graph_lane).
+    import retry_policy
+    retry_policy.set_graph_lane(retry_policy.BACKGROUND, only_if_unset=True)
     parser = argparse.ArgumentParser(description="Sync ledger with inbox state")
     sub = parser.add_subparsers(dest="command", required=True)
 

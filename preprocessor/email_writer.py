@@ -64,6 +64,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 if __name__ == "__main__":
     from mail_mediation import forward_or_none
     forward_or_none("email_writer", sys.argv[1:])
+    # The thread read runs for the owner unless its caller set the lane.
+    import retry_policy as _retry_policy
+    _retry_policy.set_graph_lane(_retry_policy.INTERACTIVE, only_if_unset=True)
 
 import draft_ab  # noqa: E402
 import outbound_log  # noqa: E402

@@ -16,6 +16,9 @@ Division of labour:
     tick with nothing new costs two Graph GETs and no model call. Last,
     it hands the tick's tagged mail to plugin_mail.route(), which copies
     each message a plugin's mail trigger matches to that plugin.
+    A tick that meets HTTP 429 from Graph makes the next three ticks skip
+    (retry_policy.TickBackoff, state in ~/.ea/state/tick-backoff.json), so
+    a mailbox Microsoft throttles is not asked again every two minutes.
   * `backfill --days N`: the same pass over older inbox mail that still
     has no `auto-tagged` category.
   * `status`: the state file in one screen.
@@ -685,6 +688,59 @@ def tick(*, dry_run: bool = False, graph=None, now: datetime | None = None,
     return summary
 
 
+# The tick's throttle backoff (retry_policy.TickBackoff): a tick that met
+# HTTP 429 makes the next TICK_SKIPS ticks skip.
+BACKOFF_JOB = "mail_tagger"
+
+
+def _throttled_calls(graph) -> int:
+    """How many of the process's Graph reads ended on 429 so far (0 for a
+    client that does not count them)."""
+    try:
+        return int(graph.throttled_calls())
+    except Exception:
+        return 0
+
+
+def guarded_tick(*, dry_run: bool = False, tag: bool = True, graph=None,
+                 backoff=None, **kw) -> tuple[dict | None, int]:
+    """tick() behind the throttle backoff: (summary, 0) for a tick that ran;
+    (None, 0) for one skipped because a recent tick met HTTP 429; (None, 1)
+    for one Microsoft throttled or that met an open Graph breaker. A tick
+    that met HTTP 429, raised or counted by graph_client, makes the next
+    TICK_SKIPS ticks skip, so a throttled mailbox is not asked again every
+    two minutes. Each outcome but a normal tick prints its one line here."""
+    import retry_policy
+    backoff = backoff or retry_policy.TickBackoff(BACKOFF_JOB)
+    if not dry_run:
+        left = backoff.take()
+        if left:
+            print(f"{_iso(_now())} mail_tagger: skipped; Graph throttled a recent tick "
+                  f"({left - 1} more to skip)")
+            return None, 0
+    graph = graph or _default_graph()
+    before = _throttled_calls(graph)
+    try:
+        summary = tick(dry_run=dry_run, tag=tag, graph=graph, **kw)
+    except Exception as e:
+        if retry_policy.is_throttled(e):
+            if not dry_run:
+                backoff.throttled("HTTP 429")
+            print(f"{_iso(_now())} mail_tagger: Graph answered HTTP 429; "
+                  f"skipping the next {backoff.skips} ticks")
+            return None, 1
+        opened = retry_policy.find_circuit_open(e)
+        if opened is not None:
+            print(f"{_iso(_now())} mail_tagger: {opened}")
+            return None, 1
+        raise
+    if _throttled_calls(graph) > before and not dry_run:
+        backoff.throttled("HTTP 429")
+        print(f"{_iso(_now())} mail_tagger: Graph answered HTTP 429 during the tick; "
+              f"skipping the next {backoff.skips} ticks")
+    return summary, 0
+
+
 def backfill(*, days: int = 30, dry_run: bool = False, graph=None,
              now: datetime | None = None, state_path: Path | None = None,
              log_path: Path | None = None) -> dict:
@@ -745,7 +801,9 @@ def main(argv=None) -> int:
         return 0
     if not enabled():
         if args.cmd == "tick" and _plugin_triggers():
-            s = tick(dry_run=args.dry_run, tag=False)
+            s, rc = guarded_tick(dry_run=args.dry_run, tag=False)
+            if s is None:
+                return rc
             r = s.get("route") or {}
             print(f"{_iso(_now())} mail_tagger: disabled; plugin mail "
                   f"delivered={r.get('delivered', 0)} kept={r.get('kept', 0)}")
@@ -753,7 +811,9 @@ def main(argv=None) -> int:
         print(f"{_iso(_now())} mail_tagger: disabled (ea-config.json mail_tagger.enabled)")
         return 0
     if args.cmd == "tick":
-        s = tick(dry_run=args.dry_run)
+        s, rc = guarded_tick(dry_run=args.dry_run)
+        if s is None:
+            return rc
     else:
         s = backfill(days=args.days, dry_run=args.dry_run)
     t = s.get("tag", s)
@@ -775,4 +835,8 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    # A tick: its Graph calls run in the background lane unless its caller
+    # set one (retry_policy.graph_lane).
+    import retry_policy
+    retry_policy.set_graph_lane(retry_policy.BACKGROUND, only_if_unset=True)
     sys.exit(main())
