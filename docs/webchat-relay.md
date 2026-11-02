@@ -960,7 +960,11 @@ command as the owner. Tailscale is optional: these steps need none.
    out when you have no tailnet.
 4. Restart the bot: `sudo systemctl restart ea-chat-bot`. The log says
    `relay: connected`, and `GET /api/relay/status` in the web chat says
-   `"connected": true`.
+   `"connected": true`. The doctor's `web chat: relay` row reads the same
+   route and says connected, the last exchange's age, the paired devices
+   and the ones waiting; it warns when the client has not been connected
+   for ten minutes, while a device waits for approval, and on a key file
+   another user could read.
 5. Open the web chat on the bot's machine itself:
    `http://127.0.0.1:8470/chat/` (the web block's `port` and
    `base_path`). Paste the pairing token from

@@ -8,7 +8,8 @@ machine too) or `"slack"` (what an install with no `chat` block runs).
 The web chat can also mirror Zulip (`"shadow": "web"`). The core, the
 ledger, the drafts and the resident are the same on all three. This
 page is the switch between Slack and Zulip, the rollback, what carries
-over, and the checks to run. How the layer works is in [ARCHITECTURE.md](ARCHITECTURE.md)
+over, and the checks to run; its last two sections move an install from
+Zulip to the web chat alone and take the Zulip server down. How the layer works is in [ARCHITECTURE.md](ARCHITECTURE.md)
 ("Chat front-end layer"); how the gate is anchored on each platform is in
 [SECURITY.md](SECURITY.md) (Layer 4).
 
@@ -308,3 +309,96 @@ the container's `/var/log/zulip/workers.log` as "Sent E2EE mobile push
 notifications for user <id>: ... via APNs" (or FCM) after each message
 that qualifies: a direct message, a mention, or a message in a stream
 with push notifications on.
+
+## Leave Zulip for the web chat
+
+From shadow mode (`"frontend": "zulip"`, `"shadow": "web"`, docs/SETUP.md
+"Beside Zulip (shadow mode)"), `scripts/webchat-cutover.py` moves the
+install to the web chat alone. Run it as yourself with the Python the
+bot runs (it has the `zulip` package; `systemctl show -p ExecStart
+ea-chat-bot` names it):
+
+1. Read the plan. It writes nothing:
+   ```bash
+   <bot python> /opt/ea-system/scripts/webchat-cutover.py plan --zulip
+   ```
+   It lists each mirrored channel and where it goes: the `ea` stream to
+   the web chat's `main`, `ea-dm` and its done stream to `dm`, the
+   scheduling stream to `sched`, `mail-digest` to `digests`, every other
+   stream to a room `r<n>` with its name. It counts the messages and
+   files Zulip holds, the rooms, session rows and cards that move, the
+   rooms of the registry that stay under a Zulip id (rooms the web chat
+   never mirrored), and the notifier keys that get a web channel.
+2. Stop the bot: `sudo systemctl stop ea-chat-bot`. The move refuses to
+   run while the bot is up (`--while-running` overrides it): the running
+   bot writes into the store it replaces, keeps the card registry in
+   memory and writes it back over the moved one, and serves Zulip until
+   it starts again.
+3. Move:
+   ```bash
+   <bot python> /opt/ea-system/scripts/webchat-cutover.py apply
+   ```
+   It takes a snapshot first (`~/.ea-private/backups/webchat/<date>-cutover/`,
+   with copies of the room and session registries), then works on a copy
+   of the store: every message Zulip holds comes in (all of it, not the
+   week the shadow copies), each card as the text Zulip shows with its
+   status line, each file Zulip holds downloaded beside the store with
+   the links pointed at it. The channels fold into the web chat's own,
+   and the messages are numbered again in time order. Thread keys and
+   message ids stay, so each conversation keeps its session and each
+   live card keeps working; the store keeps a map from every old channel
+   id to its new one, so a link or a reference made before the move still
+   lands. Then it rewrites `chat.json` to `"frontend": "web"` with no
+   `shadow` (the `zulip` block stays), puts the copy in place of the
+   store, and moves the room registry (each room's link now opens the web
+   chat), the owner's room record, the session rows and the card
+   registry. A step that fails before the store is replaced leaves
+   everything as it was.
+4. Start the bot (`sudo systemctl start ea-chat-bot`), open the web chat,
+   and run `python3 /opt/ea-system/scripts/ea-doctor.py`: the `web chat:`
+   rows pass and no Zulip row is left.
+
+To go back, put the snapshot back (`scripts/webchat-backup.sh --restore
+<date>-cutover` prints the steps); it holds the store, `chat.json`, the
+room record and the card registry as they were. The room and session
+registries sit in its `registries/` folder; with the bot stopped, write
+each back through the owner's helper, for example
+`/opt/ea-system/scripts/owner-io.sh write ~/.ea/config/ea-channels.json <
+<snapshot>/registries/ea-channels.json` (and `~/.ea/state/slack-sessions.json`).
+
+## Uninstall Zulip
+
+Once the web chat alone works, take the server down. These are your
+steps, from your checkout; `webchat-cutover.py teardown` prints them too.
+
+1. A last backup of the realm. Keep it as long as you want Zulip's own
+   copy of the history:
+   ```bash
+   deploy/zulip/backup.sh
+   ```
+2. Stop publishing the server on your tailnet:
+   ```bash
+   sudo tailscale serve --https=8443 off
+   ```
+3. In the Tailscale admin console (Access controls), delete the rule and
+   the two tests that name `tag:ea-host:8443`
+   ([Tailscale ACL](#tailscale-acl-the-zulip-port-for-your-own-devices-only)).
+   Keep the tag when other rules use it.
+4. Remove the containers, their network and the volumes, which hold the
+   realm and every message:
+   ```bash
+   deploy/zulip/compose.sh down -v
+   docker image ls | grep -i zulip   # then docker image rm each one listed
+   ```
+5. Remove the nightly backup line (`deploy/zulip/backup.sh`) with
+   `crontab -e`, and from `crontab.master` when you keep one.
+6. Delete the server's env file, which holds the database, queue and
+   cache passwords: `rm ~/.ea-private/zulip.env`.
+7. Delete the bot's API key: remove the `ZULIP_API_KEY` line from
+   `~/.ea-private/secrets.env`, then `sudo systemctl restart ea-chat-bot`.
+   On the web chat alone the bot does not read it.
+8. Optional: the bot's Zulip state, `rm ~/.ea-private/zulip-queue.json
+   ~/.ea-private/zulip-moves.json`. Keep `chat-cards.json`: the web chat
+   uses it. The `zulip` block in `chat.json` is kept for a switch back;
+   delete it when there will be none.
+9. Sign the Zulip apps out on your phone and laptop, and remove them.

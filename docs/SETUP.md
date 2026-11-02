@@ -414,7 +414,9 @@ sign-in ([docs/docker.md](docker.md#web-chat), Web chat).
    serves. The other keys take their defaults: `bind` 127.0.0.1, `port`
    8470, `base_path` `/chat` (docs/webchat.md, Config). Hardening keeps
    a `chat.json` that exists and starts the bot on it. The doctor's
-   `web chat:` rows check the settings, the sign-in and the store.
+   `web chat:` rows check the settings, the sign-in, the store (its size,
+   its messages, the newest one's age), the nightly backup, the push
+   subscriptions and the relay.
 2. **Publish it on your tailnet**, on an HTTPS port of its own:
 
    ```bash
@@ -477,6 +479,24 @@ the `notify` map cannot move a digest out of it. The direct message of
 an alert (`alert.py`, a page watch) lands in your DM; a `personal`
 entry in the map moves it.
 
+**Backups.** The web chat's history lives only in your owner-private
+directory, so back it up each night: `scripts/webchat-backup.sh` copies
+the store (through SQLite's backup API, so a store the bot is writing
+comes out whole), the uploads beside it, your state overrides
+(`thread-state-labels.jsonl`), the push key, the relay key file, the
+pairing token, `chat.json`, the room record, the card registry and the
+closure labels (`evals/`) into `~/.ea-private/backups/webchat/<date>/`,
+mode 0700. It keeps seven days; a snapshot taken with `--label <word>`
+(the move from Zulip takes `--label cutover`) stays until you delete it.
+The cron line is in [Cron schedule](#cron-schedule). `--list` lists the
+snapshots, and `--restore <name>` prints the steps that put one back (stop
+the bot, move the current files aside, copy the snapshot in, start the
+bot) and changes nothing itself. The doctor's `web chat: backup` row
+warns when the newest snapshot is more than two days old. The daily
+`/home` mirror, where you keep one, copies the snapshots too; they hold
+the relay key and the pairing token, so keep them as private as the
+directory they sit in.
+
 ### Beside Zulip (shadow mode)
 
 With Zulip already running, the web chat can mirror it: the bot posts to
@@ -498,6 +518,19 @@ of Zulip history into the web chat's store (`"backfill_days"` in the
 `web` block; 0 turns the copy off), so the app opens with your recent
 threads. The scheduled reports reach the web chat in this mode, since
 they post to Zulip and are mirrored.
+
+**Leaving Zulip.** When the web chat does all you need,
+`scripts/webchat-cutover.py` moves the install to the web chat alone:
+`plan` prints each change and writes nothing (`plan --zulip` also counts
+what Zulip holds); `apply`, with the bot stopped, takes a snapshot,
+brings the whole Zulip history and its files into the store, folds the
+mirrored streams into the web chat's own channels and rooms (thread keys
+kept, old links redirected), moves the room, session and card
+registries, and rewrites `chat.json` to `"frontend": "web"`. It then
+prints the steps that take the Zulip server down.
+[docs/zulip-switch.md](zulip-switch.md#leave-zulip-for-the-web-chat) has
+the whole sequence. Run it with the Python the bot runs, which has the
+`zulip` package.
 
 ## Zulip server
 
@@ -944,6 +977,10 @@ the ones you want with `crontab -e`:
 0 2 * * *          $(pwd)/tests/evals/run_full_if_changed.sh >> ~/.ea-private/logs/eval-full.log 2>&1
 # Monthly: re-measure the writing-style corpus (assistant; see below).
 40 4 1 * *         python3 /opt/ea-system/preprocessor/style_analysis.py run --dispatch >> ~/.ea-private/logs/style-analysis.log 2>&1
+# The web chat's own data (the store, its uploads, the relay key, the pairing
+# token, the closure labels): a snapshot each night in
+# ~/.ea-private/backups/webchat, seven days kept (Web chat, Backups).
+30 3 * * *         /opt/ea-system/scripts/webchat-backup.sh >> ~/.ea-private/logs/webchat-backup.log 2>&1
 # Nightly, after the 01:30 ledger reconcile: every Done marker (owner taps,
 # card outcomes, ledger closes and reopens, missed closures, model answers)
 # into the owner-private closure label store, then its evaluation
