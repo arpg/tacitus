@@ -68,7 +68,10 @@ browser a push under it reached (`_clear_thread`): the owner's own
 message in it, here or mirrored (`_owner_wrote`); a page of the app that
 shows it, push on there or not (`/api/push/seen`, `web_seen`); its card
 settled here or on the primary (`_card_settled`); and the owner marking
-it done (`web_set_state`).
+it done (`web_set_state`). A browser no clear reaches (Apple's push
+service takes none; one past its budget is skipped) keeps the tag as
+unclosed: its next push carries the tag to close, and the app's sweep
+closes it when the app opens (`/api/push/unclosed`).
 
 The bot serves only a chat block it can trust (`trusted_config`, set by
 chat.load_frontend when the block came from the owner-private chat.json)
@@ -419,6 +422,10 @@ CREATE TABLE IF NOT EXISTS push_sent(key TEXT PRIMARY KEY, at REAL);
 CREATE TABLE IF NOT EXISTS push_shown(
     endpoint TEXT, tag TEXT, title TEXT, at REAL, PRIMARY KEY(endpoint, tag));
 CREATE TABLE IF NOT EXISTS push_clears(endpoint TEXT, at REAL);
+CREATE TABLE IF NOT EXISTS push_unclosed(
+    endpoint TEXT, tag TEXT, at REAL, PRIMARY KEY(endpoint, tag));
+CREATE TRIGGER IF NOT EXISTS push_unclosed_gone AFTER DELETE ON push_subscriptions
+BEGIN DELETE FROM push_unclosed WHERE endpoint = OLD.endpoint; END;
 CREATE TABLE IF NOT EXISTS push_alert(tag TEXT PRIMARY KEY, fp TEXT, at REAL);
 CREATE TABLE IF NOT EXISTS scheduled_posts(
     id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, text TEXT, due_at REAL,
@@ -2072,13 +2079,70 @@ class WebStore:
 
     def push_seen(self, endpoint: str, tag: str) -> bool:
         """The app showed the thread under `tag` in the browser of
-        `endpoint`, and closed its notifications there: no clear is owed to
-        it. True when one was."""
+        `endpoint`, and closed its notifications there: no clear, and no
+        close (push_unclosed), is owed to it. True when a clear was."""
         with self._lock:
             with self._conn:
                 cur = self._conn.execute("DELETE FROM push_shown WHERE endpoint=? AND tag=?",
                                          (endpoint, tag))
+                self._conn.execute("DELETE FROM push_unclosed WHERE endpoint=? AND tag=?",
+                                   (endpoint, tag))
             return cur.rowcount > 0
+
+    def push_unclosed_add(self, endpoint: str, tag: str, at: float,
+                          keep_s: float = web_push.UNCLOSED_KEEP_S,
+                          cap: int = web_push.UNCLOSED_CAP) -> None:
+        """Keep `tag` unclosed for the subscription of `endpoint`: no clear
+        for it reached that browser (Apple's push service takes none; one
+        past its budget is skipped), so its notification may still show.
+        The next push to it carries the tag to close (web_push.Pusher
+        .send_all), and the app's sweep takes it (push_unclosed_take). At
+        most `cap` per subscription, the newest; records older than keep_s
+        go, and a subscription's go with it (the push_unclosed_gone
+        trigger). Nothing is kept for an endpoint that is no subscription."""
+        with self._lock:
+            with self._conn:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO push_unclosed(endpoint, tag, at) SELECT ?, ?, ? "
+                    "WHERE EXISTS (SELECT 1 FROM push_subscriptions WHERE endpoint=?)",
+                    (endpoint, tag, float(at), endpoint))
+                self._conn.execute("DELETE FROM push_unclosed WHERE at < ?",
+                                   (float(at) - keep_s,))
+                self._conn.execute(
+                    "DELETE FROM push_unclosed WHERE endpoint=? AND tag NOT IN (SELECT tag FROM "
+                    "push_unclosed WHERE endpoint=? ORDER BY at DESC LIMIT ?)",
+                    (endpoint, endpoint, int(cap)))
+
+    def push_unclosed(self, endpoint: str, limit: int,
+                      keep_s: float = web_push.UNCLOSED_KEEP_S) -> list[str]:
+        """The tags unclosed for the subscription of `endpoint`, newest
+        first, at most `limit`, none older than keep_s."""
+        rows = self._all("SELECT tag FROM push_unclosed WHERE endpoint=? AND at >= ? "
+                         "ORDER BY at DESC LIMIT ?",
+                         (endpoint, time.time() - keep_s, int(limit)))
+        return [r["tag"] for r in rows]
+
+    def push_unclosed_drop(self, endpoint: str, tags: list[str]) -> int:
+        """Drop the unclosed records of `tags` for `endpoint` (a push that
+        carried them, or a newer push under one of them, was accepted);
+        the number dropped."""
+        with self._lock:
+            with self._conn:
+                return sum(self._conn.execute(
+                    "DELETE FROM push_unclosed WHERE endpoint=? AND tag=?",
+                    (endpoint, tag)).rowcount for tag in set(tags))
+
+    def push_unclosed_take(self, endpoint: str,
+                           keep_s: float = web_push.UNCLOSED_KEEP_S) -> list[str]:
+        """Take every tag unclosed for `endpoint`, in one transaction,
+        newest first: the app's sweep closes them in that browser."""
+        with self._lock:
+            with self._conn:
+                rows = self._conn.execute(
+                    "SELECT tag FROM push_unclosed WHERE endpoint=? AND at >= ? ORDER BY at DESC",
+                    (endpoint, time.time() - keep_s)).fetchall()
+                self._conn.execute("DELETE FROM push_unclosed WHERE endpoint=?", (endpoint,))
+        return [r["tag"] for r in rows]
 
     def push_shown_take(self, tag: str) -> list[dict]:
         """Take the records under `tag`, in one transaction: the
@@ -4420,6 +4484,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     raise _HttpError(400, "endpoint is a string and elsewhere true or false")
                 self._pusher()
                 self._json(200, {"ok": True, "owed": fe.web_seen(tag[:200], endpoint, elsewhere)})
+                return None
+            if segs == ["push", "unclosed"]:
+                # The app's sweep as it opens: the tags whose notifications no
+                # clear reached in this browser (Apple's push service takes
+                # none), which the page closes; the bot drops what it answers.
+                endpoint = self._read_json().get("endpoint")
+                if not isinstance(endpoint, str) or not endpoint:
+                    raise _HttpError(400, "endpoint is required")
+                self._json(200, {"ok": True,
+                                 "tags": self._pusher().store.push_unclosed_take(endpoint)})
                 return None
             if segs == ["push", "unsubscribe"]:
                 endpoint = self._read_json().get("endpoint")

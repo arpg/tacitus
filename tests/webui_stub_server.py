@@ -34,7 +34,9 @@ change; a key or a value the bot would refuse answers 400 with its words.
 subscription, as a bot with the cryptography package does;
 `subscriptions` is the list of browsers that get notifications
 /api/push/subscriptions answers (none by default); `seen` records each
-POST /api/push/seen (the thread a page shows).
+POST /api/push/seen (the thread a page shows), `subscribed` each
+subscription the app posts, and `sweeps` each POST /api/push/unclosed,
+which answers the tags in `unclosed` once.
 
 `handoff=True` (with relay_pairing) lets "Add a device" offer A computer:
 /api/relay/status says `handoff` and names the website's copy of the app,
@@ -170,6 +172,9 @@ class Stub:
         self.approvals: list[dict] = []
         self.diags: list[dict] = []  # what the app reported under /diag
         self.seen: list[dict] = []  # each POST /api/push/seen body
+        self.subscribed: list[dict] = []  # each POST /api/push/subscribe body
+        self.sweeps: list[dict] = []  # each POST /api/push/unclosed body
+        self.unclosed: list[str] = []  # the tags the next sweep answers
         self.echo = echo
         self.closed = False
         self.seq = 0
@@ -671,6 +676,14 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body.get("tag"), str) or not body["tag"]:
                 return self._json(400, {"error": "tag is required"})
             return self._json(200, {"ok": True, "owed": False})
+        if parts == ["push", "subscribe"] and s.push:
+            s.subscribed.append(json.loads(self._body() or b"{}"))
+            return self._json(200, {"ok": True})
+        if parts == ["push", "unclosed"] and s.push:
+            body = json.loads(self._body() or b"{}")
+            s.sweeps.append(body)
+            tags, s.unclosed = s.unclosed, []           # the bot drops what it answers
+            return self._json(200, {"ok": True, "tags": tags})
         if parts == ["relay", "approve"] and s.relay_pairing:
             body = json.loads(self._body() or b"{}")
             s.approvals.append(body)

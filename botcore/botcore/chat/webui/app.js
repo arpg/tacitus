@@ -1502,15 +1502,25 @@ async function seenHere(tag, elsewhere = true) {
   if (sub || elsewhere) await call('POST', '/push/seen', { endpoint: sub ? sub.endpoint : undefined, tag, elsewhere });
 }
 const seenLater = (tag) => setTimeout(() => tagInView() === tag && seenHere(tag, document.hasFocus()).catch(() => {}), SEEN_MS);
+// Notifications no clear reached here (Apple's push service takes none; one past its budget is skipped): the
+// bot keeps their tags and the next push closes them; the page also asks for them when it starts or comes
+// back into view, closes them, and the bot drops what it answered.
+async function sweep() {
+  const { reg, sub } = S.push || {};
+  if (!sub || document.visibilityState !== 'visible') return;
+  const tags = new Set(((await call('POST', '/push/unclosed', { endpoint: sub.endpoint })) || {}).tags || []);
+  if (tags.size) (await reg.getNotifications()).forEach((n) => tags.has(n.tag) && n.close());
+}
 function watchSeen() {
   const seen = () => { seenHere(tagInView()).catch(() => {}); };
+  const back = () => { sweep().catch(() => {}); seen(); };
   window.addEventListener('hashchange', seen);
-  document.addEventListener('visibilitychange', seen);
+  document.addEventListener('visibilitychange', back);
   navigator.serviceWorker?.addEventListener('message', (e) => {
     const tag = String((e.data && e.data.shown) || '');
     if (tag) seenLater(tag);
   });
-  seen();
+  back();
 }
 
 // Every browser the bot pushes to, each with a Revoke button (this one's own is the toggle).

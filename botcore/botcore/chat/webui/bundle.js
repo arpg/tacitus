@@ -134,8 +134,10 @@
   }
 
   // A push from the bot (web_push.py): {title, body, url, tag}, one notification per tag (a thread), a new
-  // one alerting again, and the app's open pages hear {shown: tag}; {type: 'clear', tag, title} (the owner
-  // wrote there) closes that tag's notifications (clearThread).
+  // one alerting again, and the app's open pages hear {shown: tag}; {type: 'clear', tag, title} (the thread
+  // is done with elsewhere) closes that tag's notifications (clearThread). Either may carry `close`, the tags
+  // no clear reached here (Apple's push service takes none; one past its budget is skipped): closed once this
+  // push's own notification shows, never the tag it shows, so a push still shows one, as WebKit requires.
   function push(event) {
     let d = {}; try { d = event.data ? event.data.json() : {}; } catch { /* not JSON: the title alone */ }
     if (d.type === 'clear') return clearThread(d);
@@ -146,8 +148,13 @@
       tag,
       renotify: Boolean(tag),
       data: { url: String(d.url || '') },
-    }).then(() => tag && windows().then((ws) => ws.forEach((w) => w.postMessage({ shown: tag }))));
+    }).then(() => closeTags(closing(d.close, tag)))
+      .then(() => tag && windows().then((ws) => ws.forEach((w) => w.postMessage({ shown: tag }))));
   }
+
+  const closing = (tags, keep) => new Set((Array.isArray(tags) ? tags : []).filter(Boolean).map(String).filter((t) => t !== keep));
+  const closeTags = (tags) => (tags.size ? self.registration.getNotifications()
+    .then((ns) => ns.forEach((n) => tags.has(n.tag) && n.close())).catch(() => {}) : undefined);
 
   const windows = () => self.clients.matchAll({ type: 'window', includeUncontrolled: true }).catch(() => []);
 
@@ -180,9 +187,10 @@
   function clearThread(d) {
     const reg = self.registration;
     const tag = d.tag ? String(d.tag) : '';
+    const tags = closing([tag, ...(Array.isArray(d.close) ? d.close : [])]);
     const lookups = [reg.getNotifications().catch(() => []), reg.pushManager.getSubscription().catch(() => null), windows()];
     return Promise.all(lookups).then(([open, sub, wins]) => {
-      const mine = open.filter((n) => tag && n.tag === tag);
+      const mine = open.filter((n) => tags.has(n.tag));
       mine.forEach((n) => n.close());
       const plan = clearPlan({ service: pushService(sub && sub.endpoint), left: open.length - mine.length,
         inView: wins.some((w) => w.visibilityState === 'visible') });
