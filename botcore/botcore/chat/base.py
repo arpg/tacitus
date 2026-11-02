@@ -388,6 +388,13 @@ class ChatFrontend(ABC):
     def archived_map(self) -> dict[str, bool]:
         """Room id to archived flag for every private room the bot is in; {} on failure."""
 
+    def rename(self, channel: str, name: str) -> None:
+        """Rename a room; raises RoomNameTaken when another room has the
+        name. A frontend that cannot rename a room keeps this default, which
+        raises NotSupported in words the owner reads."""
+        where = self.name.title() if self.name else "this chat app"
+        raise NotSupported(f"Tacitus cannot rename a room in {where}. Rename it in {where} itself.")
+
     # files
 
     @abstractmethod

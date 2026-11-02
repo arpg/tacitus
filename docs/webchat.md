@@ -209,6 +209,8 @@ subset and escapes everything else; it never injects HTML from text.
 | GET | `/api/bundle` | the same document, for the owner: the route the relay reaches |
 | GET | `/api/app/{file}` | a file that the signed manifest names, its bytes as on disk (`headers.json` as the bot writes it), as an attachment with the sandbox policy and the type of its name; 404 for any other name. A phone off the tailnet, or on the relay's origin, takes a new release here, through the relay (Code integrity) |
 | GET | `/api/channels` | `[{"id","name","kind","archived","last_at","unread"}]` |
+| PATCH | `/api/channels/{ch}` | `{"name"}` → the room's row: the owner renames a room (Rooms). Its spaces are collapsed and a leading `#` dropped; 400 for an empty name, one over 60 characters or one with a control character, and for a fixed place (kind `main`, `dm`, `sched` or `digest`); 404 for an unknown room; 409 for a name another channel has; the same name answers the row as it is. A chat action: a relayed device that may chat may take it |
+| POST | `/api/channels/{ch}/archive`, `/api/channels/{ch}/unarchive` | `{}` → the room's row with `archived` set or cleared; a room in that state already is answered as it is. 400 for a fixed place, 404 for an unknown room. A chat action, as the rename |
 | GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count`, `last_at` and the thread's state: `state`, `state_by`, `state_reason`, `state_at`, `stale` (State) |
 | GET | `/api/needs` | `{"threads": [...]}`: the threads whose state is `needs_you` or `waiting` in channels that are not archived, each a threads row with `channel_name`; `needs_you` first, then newest first; at most 200; one query, and it moves no read mark (State). `needs` is never a channel id |
 | POST | `/api/threads/{ch}/{thread_key}/state` | `{"state": "done" \| "needs_you" \| "waiting"}` → the thread's row as the threads route gives it, with `channel_name`: the owner's override (`state_by` `owner`), until a new message lands in the thread; 400 for another state, 404 for an unknown thread. A chat action: a relayed device that may chat may take it (State) |
@@ -251,7 +253,8 @@ route that names a channel (`/api/channels/{ch}/...`, `/api/cards/{ch}/...`,
 `/api/threads/{ch}/...`) takes a mirrored channel's old id as its new one,
 so a link from before the move still opens its conversation.
 
-Errors: JSON `{"error": "..."}` with 400/401/403/404/421/429. The server
+Errors: JSON `{"error": "..."}` with 400/401/403/404/409/421/429, and
+502 when the primary refuses a room change in shadow mode (Rooms). The server
 is `http.server.ThreadingHTTPServer` on a daemon thread started by
 `start()`, at most 64 connections at once and at most `peer_connections`
 (8) from one address other than loopback (one more is closed at once),
@@ -318,8 +321,7 @@ open app at once. The bot then names it in the owner room record
 Slack's `C…`/`G…`, Zulip's `stream:<id>` and the web chat's `r<n>`), and
 posts the room's opening context as a thread of its own. A room the
 bot made whose registration failed (the owner record names it, the
-registry does not) is registered when the owner asks for it again,
-since the app has no way to rename or delete it. From then on
+registry does not) is registered when the owner asks for it again. From then on
 the owner's messages there reach the bot with the room's scope, the
 room's specialist session starts on its first thread, the briefing posts
 the room's slice there (`chat_notify` key `room:r<n>`), and the hygiene
@@ -328,6 +330,34 @@ when the project is active again. An archived room takes no new
 message from the app. In shadow mode a room is the
 primary's (`stream:<id>` on Zulip) and the store keeps a copy under that
 id.
+
+The owner renames, archives and brings back a room from the app's room
+menu (The web app). `PATCH /api/channels/{ch}` renames it and
+`POST /api/channels/{ch}/archive` or `/unarchive` sets the store's
+archived flag; each changes only a room (kind `room`), writes the row
+with its `channel` event, and answers the row. Standalone, a rename then
+reaches the core as a `channel_rename` message from the owner, as a Slack
+rename does, so the registry's `name` and the owner room record's follow
+(`ea-chat-bot.py`, `on_message`) and the bot keeps serving the room under
+its id. The hygiene pass reads the flag through `archived_map()`: a room
+archived from the app is the owner's (`archived_by: user`) and stays
+archived while its project is active; one brought back is noted as
+reopened, and one brought back while its project is dormant or closed
+stays open until the project's status changes (`kept_open` in the owner
+room record).
+
+In shadow mode the room lives on the primary, so the web front end hands
+the change to the composite (`inbound("rename", channel=, name=)`,
+`inbound("archive", channel=, archived=)`), which makes it on the primary
+(`rename`, `archive`, `unarchive`), writes the row and, for a rename,
+hands the core the `channel_rename` from the primary's owner (Zulip's own
+rename event names no one). `ChatFrontend.rename` raises `NotSupported`
+by default, in words the app shows ("Tacitus cannot rename a room in
+Slack. Rename it in Slack itself."), and the route answers 400 with them;
+the web front end and Zulip (`PATCH /streams/{id}` with `new_name`)
+implement it. A name the primary holds is a 409, and any other refusal a
+502 that leaves the room as it was. Archiving needs no new verb: every
+frontend archives.
 
 ## Shadow mode (C)
 
@@ -361,7 +391,7 @@ id.
   `update_card`, `replace_card_with_status`, `upload` call the primary,
   then mirror the result into the shadow with the primary's refs. A
   shadow failure is logged and swallowed; the primary's result is
-  returned. `create_private_room`, `archive`, `unarchive`,
+  returned. `create_private_room`, `archive`, `unarchive`, `rename`,
   `set_description`, `invite` act on the primary and mirror the channel row.
 - Reads (`thread_replies`, `recent_messages`, `channel_info`,
   `channel_members`, `archived_map`, `message_posted_at`, `download`,
@@ -393,7 +423,8 @@ id.
   this list, never by the prefix, which anything that posts as the bot
   could write. A click
   is dispatched as an `ActionEvent` whose `card` ref is already the
-  primary's. A file goes through `primary.upload` the same way.
+  primary's. A file goes through `primary.upload` the same way. A room's
+  rename or archive from the app goes to the primary (Rooms).
 - Tests use two `MemoryFrontend`s (or a `MemoryFrontend` primary and a
   real `WebFrontend` on an ephemeral port) and assert both sides hold
   every post, update, card, status and reaction with the same ids.
@@ -597,6 +628,22 @@ without the `ea-` prefix. The links keep the channel id; the header, a
 Needs you card's channel and a new conversation's box ("Ask Tacitus" in
 the main channel, "Message <name>" elsewhere) use the same names. The
 drawer is "Menu" to a screen reader.
+
+A room's menu: each room in the drawer (and under Archived) has a small
+dots button, shown on hover or focus with a mouse ("Room options:
+<name>" to a screen reader); with a finger a long press on the room
+(600 ms, held still) opens the menu, and the tap that ends the press
+opens nothing. The fixed places (Ask Tacitus, Direct messages,
+Scheduling, Mail digests, Needs you) have no menu. The menu is a dialog,
+a sheet docked to the bottom at phone width, titled with the room's
+name: "Rename room" and "Archive room", or "Bring back" alone for an
+archived room, and Cancel. Rename room puts the name in a field with
+Cancel and Save; Save sends it with the bot's `ea-` mark kept when the
+old name had it, and a refusal ("Another room has that name.") stays
+under the field. Archive room asks once: "Archive <name>? Its
+conversations stay; the room moves under Archived." with Cancel and
+Archive. The answer's row redraws the drawer at once; the `channel` event
+does in every other open app.
 
 Rendering: the markdown subset above, escaped first; reaction chips
 inline after the message; cards as a bordered block with title, fields

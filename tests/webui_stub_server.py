@@ -33,6 +33,12 @@ change; a key or a value the bot would refuse answers 400 with its words.
 `push=True` makes /api/me say that push works, with a made-up key and no
 subscription, as a bot with the cryptography package does.
 
+A room's menu renames a room (PATCH /api/channels/<id> with a name),
+archives it and brings it back (POST .../archive, .../unarchive), each
+answered with the room's row and sent as a `channel` event, as the bot
+does; `room_changes` records each. A fixed place answers 400, a name
+another room has 409.
+
 Each thread can have a state (`states`, seeded with made-up ones in three
 channels): the thread rows carry it, GET /api/needs lists the threads
 that need the owner or wait, and POST /api/threads/<ch>/<key>/state sets
@@ -150,6 +156,7 @@ class Stub:
         # (channel, thread key) -> {"state", "by", "reason", "at"}
         self.states: dict[tuple[str, str], dict] = {}
         self.state_posts: list[dict] = []
+        self.room_changes: list[dict] = []
         # Each stream request: its Last-Event-ID header and its ?since=.
         self.streams: list[dict] = []
         self.refuse_streams = 0
@@ -285,6 +292,27 @@ class Stub:
             self.events.append((self.eseq, "channel", dict(row)))
             self.cond.notify_all()
             return row
+
+    def change_room(self, cid: str, **fields) -> tuple[int, dict]:
+        """Rename, archive or bring back a room as the bot does: (status,
+        the row or the error), and a `channel` event for a change."""
+        with self.cond:
+            row = self.channels.get(cid)
+            if row is None:
+                return 404, {"error": "no such room"}
+            if row["kind"] != "room":
+                return 400, {"error": "Only a room can be renamed or archived."}
+            name = fields.get("name")
+            if name is not None and any(c is not row and c["name"].lower() == name.lower()
+                                        for c in self.channels.values()):
+                return 409, {"error": "Another room has that name."}
+            self.room_changes.append({"id": cid, **fields})
+            if any(row.get(k) != v for k, v in fields.items()):
+                row.update(fields)
+                self.eseq += 1
+                self.events.append((self.eseq, "channel", dict(row)))
+                self.cond.notify_all()
+            return 200, dict(row)
 
     def drop_streams(self, refuse: int = 0) -> None:
         """Close every open event stream; the next `refuse` stream
@@ -516,6 +544,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(401, {"error": "not the owner"})
         if not self._owner():
             return self._json(401, {"error": "not the owner"})
+        if len(parts) == 3 and parts[0] == "channels" and parts[2] in ("archive", "unarchive"):
+            return self._json(*s.change_room(parts[1], archived=parts[2] == "archive"))
         if len(parts) == 3 and parts[0] == "channels" and parts[1] in s.channels:
             if parts[2] == "messages":
                 data = json.loads(self._body() or b"{}")
@@ -596,6 +626,18 @@ class Handler(BaseHTTPRequestHandler):
             if s.click(parts[1], parts[2], body):
                 return self._json(200, {"ok": True})
             return self._json(404, {"error": "no such card"})
+        return self._json(404, {"error": "not found"})
+
+    def do_PATCH(self) -> None:
+        path = urlsplit(self.path).path
+        if not self._owner():
+            return self._json(401, {"error": "not the owner"})
+        parts = [unquote(p) for p in path[len(BASE) + 5:].split("/")] if path.startswith(BASE + "/api/") else []
+        if len(parts) == 2 and parts[0] == "channels":
+            name = " ".join(str(json.loads(self._body() or b"{}").get("name") or "").split())
+            if not name:
+                return self._json(400, {"error": "Type a name for the room."})
+            return self._json(*self.stub.change_room(parts[1], name=name))
         return self._json(404, {"error": "not found"})
 
     def _static(self, name: str) -> None:

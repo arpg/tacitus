@@ -68,10 +68,13 @@ release layout alone. Design: docs/updates.md.
 The room hygiene pass reads Slack's archived flag for every private
 channel each cycle and records who archived a room in the channel
 registry: "bot" when it did because the project went dormant or closed,
-"user" when the owner did it in Slack. A room the owner archived stays
-archived and its project journal says so; only a room the bot archived
-reopens when the project is active again. `open a channel for <project>`
-reopens an archived room, reposts the pack and journals the reopening.
+"user" when the owner did it in Slack (or in Zulip, or from the web
+app's room menu). A room the owner archived stays archived and its
+project journal says so; only a room the bot archived reopens when the
+project is active again. A room the owner brings back while its project
+is dormant or closed stays open until the project's status changes.
+`open a channel for <project>` reopens an archived room, reposts the
+pack and journals the reopening.
 The board and App Home badges carry the archived state.
 
 A project created during a Slack turn gets its room without a second

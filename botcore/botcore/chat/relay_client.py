@@ -635,7 +635,7 @@ class RelayClient:
         rc._need()
         self.relay_url = _check_relay_url(relay_url)
         self.local = _check_local_url(local_base_url)
-        # A replayed POST carries the loopback origin the local server takes
+        # A replayed POST or PATCH carries the loopback origin the local server takes
         # from a client without the identity header; Host is the URL's.
         parts = urllib.parse.urlsplit(self.local)
         self.local_origin = f"{parts.scheme}://{parts.netloc}"
@@ -1071,7 +1071,7 @@ class RelayClient:
     def _headers(self, device: str, extra: Mapping[str, Any] | None = None,
                  level: str = "read", method: str = "GET") -> dict[str, str]:
         """The phone's allowed headers (printable ASCII only), the owner's
-        credential, the local origin on a POST, and the relay marks: the
+        credential, the local origin on a POST or a PATCH, and the relay marks: the
         device id, and whether this request may confirm a card
         (`X-Tacitus-Relay-Cards`). A local server that resolves typed card
         codes skips that on "deny"."""
@@ -1082,7 +1082,7 @@ class RelayClient:
                     and len(value) <= 256 and re.fullmatch(r"[\x20-\x7e]*", value):
                 headers[key] = value
         headers.update(self._owner_headers())
-        if method == "POST":
+        if method != "GET":
             headers["Origin"] = self.local_origin
         headers["X-Tacitus-Relay"] = device
         headers["X-Tacitus-Relay-Cards"] = "allow" if level == "all" else "deny"
@@ -1094,13 +1094,13 @@ class RelayClient:
         body) of its answer. It never opens the event stream (an `open`
         frame does), and gives up at LOCAL_DEADLINE."""
         method, path = req.get("m"), req.get("p")
-        if method not in ("GET", "POST"):
+        if method not in ("GET", "POST", "PATCH"):
             return _response(405, "method not allowed")
         if not path_allowed(path):
             return _response(403, "path not allowed through the relay")
         if _plain_route(path) == EVENTS_PATH:
             return _response(403, "the event stream opens with an open frame")
-        body = raw if method == "POST" else None
+        body = raw if method != "GET" else None
         if body is not None and len(body) > MAX_BODY:
             return _response(413, "body too large")
         hdrs = req.get("h") if isinstance(req.get("h"), dict) else {}

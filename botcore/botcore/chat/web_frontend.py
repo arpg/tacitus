@@ -54,7 +54,7 @@ route needs the owner (the Tailscale login header on a connection from
 tailscaled itself, or the pairing cookie). Before that, an `/api/`
 request must name this server in `Host` (public_url's host and port, or
 the loopback port), must not come from another site (`Sec-Fetch-Site`),
-and a POST must carry the exact `Origin` of public_url (a loopback
+and a POST or a PATCH must carry the exact `Origin` of public_url (a loopback
 client without the identity header may use the loopback origin). The
 app is one per origin: a page from another port of the same host (a
 deck) is another origin and is refused. Standard library only, except
@@ -86,6 +86,16 @@ with the signed bundle's hash in the link; a relayed request
 `/api/me` tells the app whether its requests may confirm a card
 (`X-Tacitus-Relay-Cards`). A new device is announced in the DM channel;
 removing one drops its push subscriptions.
+
+Rooms: the owner renames a room (`PATCH /api/channels/<id>`), archives
+it and brings it back (`POST /api/channels/<id>/archive`, `/unarchive`)
+from the app; the fixed places (the EA channel, the DM, Scheduling, the
+digests) refuse. Standalone the store row changes, with its `channel`
+event, and a rename reaches the core as a `channel_rename` message, as a
+Slack or Zulip rename does, so the room registry keeps the name. In
+shadow mode the composite makes the change on the primary
+(`inbound("rename" | "archive", channel=..., ...)`) and writes the row
+here; a primary that cannot rename refuses in words the app shows.
 
 Settings screens: the host registers a page in `settings_pages` (a name
 and an object with `get()` and `save(body)`; the EA's routing table is
@@ -161,6 +171,7 @@ import stat
 import struct
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -171,7 +182,7 @@ from datetime import datetime
 from email.message import Message
 from email.utils import collapse_rfc2231_value
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from . import files as _files
 from . import relay_crypto, web_bundle, web_push, web_push_policy
@@ -181,6 +192,7 @@ from .base import (
     ChatFrontend,
     Limits,
     NotArchived,
+    NotSupported,
     RoomNameTaken,
 )
 from . import thread_state as _ts
@@ -283,6 +295,9 @@ KINDS = ("main", "sched", "dm", "room", "digest")
 # Channel ids the app's routes take for their own (`#/needs`, the Needs you
 # view): no channel may have one.
 RESERVED_CHANNEL_IDS = frozenset({"needs"})
+# The longest room name the owner may give a room from the app: Zulip's
+# limit, the shortest of the platforms a room may live on.
+ROOM_NAME_MAX = 60
 EVENT_TYPES = ("message", "update", "reaction", "card", "status", "file", "channel",
                "thread_state")
 LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
@@ -1941,7 +1956,9 @@ class _HttpError(Exception):
         self.message = message
 
 
-Inbound = Callable[[Any], Optional[MessageRef]]
+# The composite's hook: called with the owner's InboundMessage or
+# ActionEvent, or with "rename" or "archive" and the room's keywords.
+Inbound = Callable[..., Any]
 
 
 class WebFrontend(ChatFrontend):
@@ -3164,6 +3181,14 @@ class WebFrontend(ChatFrontend):
             raise NotArchived(channel)
         self.store.set_channel(channel, archived=False)
 
+    def rename(self, channel: str, name: str) -> None:
+        self._channel_or_raise(channel)
+        with self._rooms_lock:
+            if any(c["id"] != channel and (c["name"] or "").lower() == (name or "").lower()
+                   for c in self.store.channels()):
+                raise RoomNameTaken(name)
+            self.store.set_channel(channel, name=name)
+
     def archived_map(self) -> dict[str, bool]:
         try:
             return {c["id"]: bool(c["archived"]) for c in self.store.channels()
@@ -3394,7 +3419,8 @@ class WebFrontend(ChatFrontend):
         if ch is None:
             raise _HttpError(404, "no such channel")
         if ch["archived"]:
-            raise _HttpError(400, "the channel is archived")
+            raise _HttpError(400, "This room is archived. Bring it back from its menu to write here."
+                             if ch["kind"] == "room" else "This place is archived.")
         key = None
         if thread_key:
             key = self.store.thread_of(channel, thread_key)
@@ -3508,6 +3534,87 @@ class WebFrontend(ChatFrontend):
             self._hand_in(ev)
             return None
         return lambda: self._dispatch(ev)
+
+    # the owner renames, archives and brings back a room from the web app
+
+    def _room_of(self, channel: str) -> dict:
+        """The room a rename or an archive names: 404 for none, 400 for one
+        of the fixed places (the EA channel, the DM, Scheduling, digests)."""
+        ch = self.store.channel(channel)
+        if ch is None:
+            raise _HttpError(404, "no such room")
+        if ch["kind"] != "room":
+            raise _HttpError(400, "Only a room can be renamed or archived.")
+        return ch
+
+    @staticmethod
+    def _room_name(name: Any) -> str:
+        """The name as the owner typed it, its spaces collapsed and a leading
+        '#' dropped; 400 for an empty, long or unprintable one."""
+        if not isinstance(name, str):
+            raise _HttpError(400, "Type a name for the room.")
+        name = " ".join(name.split()).lstrip("#").strip()
+        if not name:
+            raise _HttpError(400, "Type a name for the room.")
+        if len(name) > ROOM_NAME_MAX:
+            raise _HttpError(400, f"A room name is at most {ROOM_NAME_MAX} characters.")
+        if any(unicodedata.category(c)[0] == "C" for c in name):
+            raise _HttpError(400, "A room name has only letters, digits, spaces and punctuation.")
+        return name
+
+    def _room_admin(self, kind: str, channel: str, **payload: Any) -> None:
+        """Shadow mode: hand a rename or an archive to the composite, which
+        makes it on the primary and writes the row here. Its refusals, as
+        the app shows them."""
+        try:
+            with self._dispatch_lock:
+                self.inbound(kind, channel=channel, **payload)
+        except RoomNameTaken:
+            raise _HttpError(409, "Another room has that name.") from None
+        except NotSupported as e:
+            raise _HttpError(400, str(e)[:300] or "This chat app cannot do that.") from None
+        except ChatError as e:
+            log.warning("web chat: the %s of %s failed: %s", kind, channel, e)
+            raise _HttpError(502, "Your chat server did not take the change. "
+                                  "The room is as it was.") from None
+
+    def web_rename(self, channel: str, name: Any) -> tuple[dict, Callable[[], None] | None]:
+        """Rename a room the owner names: (its row, a call to run once the
+        answer is sent). The call hands the core a `channel_rename`, as Slack
+        and Zulip do, so the room registry and the owner's record follow.
+        In shadow mode the composite renames it on the primary and tells the
+        core itself."""
+        ch = self._room_of(channel)
+        name = self._room_name(name)
+        if name == ch["name"]:
+            return ch, None
+        if self.inbound is not None:
+            self._room_admin("rename", channel, name=name)
+            return self.store.channel(channel) or ch, None
+        try:
+            self.rename(channel, name)
+        except RoomNameTaken:
+            raise _HttpError(409, "Another room has that name.") from None
+        msg = InboundMessage(channel=channel, msg_id="", text="", user_id=self.owner_id,
+                             posted_at=time.time(), subtype="channel_rename", new_name=name,
+                             raw={"source": "web"})
+        return self.store.channel(channel) or ch, lambda: self._dispatch(msg)
+
+    def web_archive(self, channel: str, archived: bool) -> dict:
+        """Archive a room, or bring it back: its row. A room in that state
+        already is answered as it is. The bot's room hygiene reads the flag
+        (archived_map) and takes a room archived here as the owner's."""
+        ch = self._room_of(channel)
+        if bool(ch["archived"]) == archived:
+            return ch
+        if self.inbound is not None:
+            self._room_admin("archive", channel, archived=archived)
+        else:
+            try:
+                (self.archive if archived else self.unarchive)(channel)
+            except (AlreadyArchived, NotArchived):
+                pass
+        return self.store.channel(channel) or ch
 
 
 def _peer_cap(value: Any) -> int:
@@ -3659,6 +3766,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self._route("POST")
 
+    def do_PATCH(self) -> None:
+        self._route("PATCH")
+
     # responses
 
     def _common_headers(self) -> None:
@@ -3728,7 +3838,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._drain_limit = MAX_PAIR_BYTES
         self._check_host()
         self._check_fetch_site()
-        if method == "POST":
+        if method in ("POST", "PATCH"):
             self._check_origin()
         if segs and segs[0] in ("pair", "relay") and self.headers.get("X-Tacitus-Relay") is not None \
                 and segs != ["relay", "attest"]:
@@ -3806,7 +3916,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if n == 2 and segs[0] == "settings":
             self._settings(method, segs[1])
             return None
+        if method == "PATCH" and n == 2 and segs[0] == "channels":
+            # The owner renames a room: a chat action, like a message.
+            row, after = fe.web_rename(segs[1], self._read_json().get("name"))
+            self._json(200, row)
+            return after
         if method == "POST":
+            if n == 3 and segs[0] == "channels" and segs[2] in ("archive", "unarchive"):
+                self._json(200, fe.web_archive(segs[1], segs[2] == "archive"))
+                return None
             if n == 3 and segs[0] == "channels" and segs[2] == "messages":
                 body = self._read_json()
                 text = body.get("text")
@@ -4105,14 +4223,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             raise _HttpError(403, "not from this app's own pages")
 
     def _check_origin(self) -> None:
-        """A POST carries the exact Origin of public_url (scheme, host and
-        port). A loopback client that sends no identity header (the relay
-        client, which sets it) may send this server's loopback origin.
+        """A POST or a PATCH carries the exact Origin of public_url (scheme,
+        host and port). A loopback client that sends no identity header (the
+        relay client, which sets it) may send this server's loopback origin.
         Anything else, a missing Origin too, is refused: the cookie is
         SameSite=Strict, and this is the second lock."""
         got = _origin_key(self.headers.get("Origin") or "")
         if got is None:
-            raise _HttpError(403, "a POST must carry this app's Origin")
+            raise _HttpError(403, "a change must carry this app's Origin")
         if got == self.fe.public_origin():
             return
         if self.client_address[0] in LOOPBACK and "Tailscale-User-Login" not in self.headers \

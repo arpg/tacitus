@@ -1422,6 +1422,25 @@ def test_unarchive(tmp_path):
         fe.unarchive("stream:21")
 
 
+def test_rename_keeps_the_stream_and_refuses_a_name_in_use(tmp_path):
+    fe, c = make(tmp_path)
+    fe.rename("stream:21", "ea-proj-2027")
+    assert c.named("update_stream")[-1] == {"stream_id": 21, "new_name": "ea-proj-2027"}
+    assert fe._stream_names[21] == "ea-proj-2027"
+    fe.rename("stream:21", "ea-proj")  # its own name again: not taken by another
+    with pytest.raises(RoomNameTaken):
+        fe.rename("stream:21", "general")
+    assert c.named("update_stream")[-1] == {"stream_id": 21, "new_name": "ea-proj"}
+    c.update_stream_result = {"result": "error", "code": "BAD_REQUEST",
+                              "msg": "Channel name 'x' is already taken."}
+    with pytest.raises(RoomNameTaken):
+        fe.rename("stream:21", "x")
+    c.update_stream_result = {"result": "error", "code": "BAD_REQUEST",
+                              "msg": "Insufficient permission"}
+    with pytest.raises(NotPermitted):
+        fe.rename("stream:21", "y")
+
+
 def test_archived_map_and_channel_info(tmp_path):
     fe, c = make(tmp_path)
     assert fe.archived_map() == {f"stream:{EA}": False, "stream:21": True}

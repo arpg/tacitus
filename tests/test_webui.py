@@ -24,7 +24,9 @@ that wait on the owner, the chips filter a channel, and the owner's
 override posts and follows the bot's `thread_state` events. The app
 teaches itself: a welcome shown once per browser (and again from the
 drawer) whose examples fill the composer, a New room dialog that asks the
-bot in the EA channel, and empty lists that say what each place is for.
+bot in the EA channel, and empty lists that say what each place is for. A
+room's menu (dots with a mouse, a long press with a finger) renames it in
+place, archives it after one question and brings an archived one back.
 Every string the app shows passes a plain-words scan, and the drawer
 names each place in the app's own words.
 """
@@ -388,7 +390,9 @@ def test_the_app_stays_small():
     # bundle.js it kept and checked) and the release's own security headers on each kept copy.
     # 3,960: 3,870 plus Notifications in Settings (three switches and the quiet-hours choice, each
     # saved on change) and the digest channel's line in place of the composer.
-    assert lines <= 3960, f"{lines} lines: the contract keeps the app near 3,960 with the relay, the phone setup, the thread states and the teaching"
+    # 4,070: 3,960 plus a room's menu (the dots and the long press in the drawer, the sheet with
+    # Rename room, Archive room and Bring back, and its phone layout).
+    assert lines <= 4070, f"{lines} lines: the contract keeps the app near 4,070 with the relay, the phone setup, the thread states and the teaching"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -510,7 +514,7 @@ def test_the_drawer_names_each_place_in_plain_words(app):
     from playwright.sync_api import expect
     page, stub, errors = app()
     page.wait_for_selector(".thread-item")
-    links = page.locator("#channel-list > a.chan")
+    links = page.locator("#channel-list > a.chan, #channel-list > .chan-row > a.chan")
     expect(links.locator(".c-name")).to_have_text(["Ask Tacitus", "Direct messages", "Scheduling", "Mail digests",
                                                    "example-project"])  # the unread one first, then by kind
     assert [links.nth(i).get_attribute("href") for i in range(5)] == [
@@ -818,6 +822,123 @@ def test_a_phone_gets_44px_targets_and_never_scrolls_sideways(app):
                   + "| one two three four | five six seven eight | nine ten eleven twelve |")
     page.click("#back")
     open_thread(page, "Wide:")
+    assert page.evaluate(SIDEWAYS) == [0, 0]
+    assert not errors, errors
+
+
+# -- a room's menu: rename, archive, bring back ----------------------------
+
+# A finger held still on an element for 700 ms, then lifted, and the tap's
+# click on what is under it: what a long press sends.
+PRESS = """(sel) => new Promise((done) => {
+    const r = document.querySelector(sel).getBoundingClientRect();
+    const [x, y] = [r.left + 20, r.top + r.height / 2];
+    const at = (type) => document.elementFromPoint(x, y).dispatchEvent(new (type === 'click' ? MouseEvent : PointerEvent)(
+        type, { pointerType: 'touch', bubbles: true, cancelable: true, clientX: x, clientY: y }));
+    at('pointerdown');
+    setTimeout(() => { at('pointerup'); at('click'); setTimeout(() => done(location.hash), 50); }, 700);
+})"""
+
+
+def test_a_rooms_dots_open_its_menu_and_rename_it_in_place(app):
+    """With a mouse, the dots beside a room open its menu; the fixed places
+    have none. Rename room puts the name in a field, Save sends it with the
+    bot's "ea-" mark kept, a name in use is refused in the sheet, and the
+    drawer follows the answer and the bot's channel events."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    assert page.locator("#channel-list > a.chan .room-more").count() == 0
+    expect(page.locator(".chan-row")).to_have_count(2)  # the room, and the archived one
+    row, menu = page.locator(f'.chan-row[data-room="{W.ROOM}"]'), page.locator("#room-menu")
+    dots = row.locator(".room-more")
+    expect(dots).to_have_attribute("aria-label", "Room options: example-project")
+    row.hover()
+    dots.click()
+    expect(menu.locator("h2")).to_have_text("example-project")
+    expect(menu.locator("button")).to_have_text(["Rename room", "Archive room", "Cancel"])
+    assert page.evaluate("location.hash") == "#/stream%3A7"  # the dots open no room
+    menu.get_by_role("button", name="Rename room").click()
+    field = menu.locator("#room-menu-name")
+    expect(field).to_have_value("example-project")
+    expect(field).to_be_focused()
+    expect(menu.locator("button")).to_have_text(["Cancel", "Save"])
+    menu.get_by_role("button", name="Cancel").click()
+    expect(menu).to_be_hidden()
+    row.hover()
+    dots.click()
+    menu.get_by_role("button", name="Rename room").click()
+    field.fill("old-project")  # the archived room's name, shown without its mark
+    field.press("Enter")
+    expect(menu.locator(".error")).to_have_text("Not changed: Another room has that name.")
+    expect(menu).to_be_visible()
+    field.fill("  Atlas   paper ")
+    menu.get_by_role("button", name="Save").click()
+    expect(menu).to_be_hidden()
+    assert stub.room_changes == [{"id": W.ROOM, "name": "ea-Atlas paper"}]
+    expect(row.locator(".c-name")).to_have_text("Atlas paper")
+    # a rename made elsewhere reaches the drawer as the bot's channel event
+    stub.change_room(W.ROOM, name="ea-atlas")
+    expect(row.locator(".c-name")).to_have_text("atlas")
+    assert errors == ["Failed to load resource: the server responded with a status of 409 (Conflict)"]
+
+
+def test_archive_asks_once_and_bring_back_returns_the_room(app):
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    menu = page.locator("#room-menu")
+    page.locator(f'.chan-row[data-room="{W.ROOM}"]').hover()
+    page.locator(f'.chan-row[data-room="{W.ROOM}"] .room-more').click()
+    menu.get_by_role("button", name="Archive room").click()
+    expect(menu.locator("p:not(.error)")).to_have_text(
+        "Archive example-project? Its conversations stay; the room moves under Archived.")
+    expect(menu.locator("button")).to_have_text(["Cancel", "Archive"])
+    menu.get_by_role("button", name="Archive", exact=True).click()
+    expect(menu).to_be_hidden()
+    assert stub.room_changes == [{"id": W.ROOM, "archived": True}]
+    archived = page.locator("#channel-list details.archived")
+    expect(archived.locator("summary")).to_have_text("Archived (2)")
+    expect(archived.locator(".c-name")).to_have_text(["example-project", "old-project"])
+    # an archived room's menu brings it back, and nothing else
+    archived.locator("summary").click()
+    old = archived.locator(f'.chan-row[data-room="{W.OLD}"]')
+    old.hover()
+    old.locator(".room-more").click()
+    expect(menu.locator("button")).to_have_text(["Bring back", "Cancel"])
+    menu.get_by_role("button", name="Bring back").click()
+    expect(menu).to_be_hidden()
+    assert stub.room_changes[-1] == {"id": W.OLD, "archived": False}
+    expect(page.locator("#channel-list > .chan-row .c-name")).to_have_text(["old-project"])
+    assert not errors, errors
+
+
+def test_a_long_press_on_a_room_opens_its_menu_as_a_sheet_on_a_phone(app):
+    """On a phone the dots are gone: a long press on a room opens its menu,
+    docked to the bottom with 44px buttons, and the tap that ends the press
+    opens nothing. A long press on a fixed place opens no menu."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app(**PHONE)
+    page.wait_for_selector(".thread-item")
+    page.click("#menu")
+    wait_for(lambda: page.evaluate("document.getElementById('channels').getBoundingClientRect().left >= 0"))
+    expect(page.locator(f'.chan-row[data-room="{W.ROOM}"] .room-more')).to_be_hidden()
+    before = page.evaluate("location.hash")
+    assert page.evaluate(PRESS, f'.chan-row[data-room="{W.ROOM}"] a.chan') == before
+    menu = page.locator("#room-menu")
+    expect(menu).to_be_visible()
+    box = menu.bounding_box()
+    assert (round(box["x"]), round(box["width"]), round(box["y"] + box["height"])) == (0, 390, 844)
+    assert page.evaluate(SMALL_TARGETS) == []
+    menu.get_by_role("button", name="Rename room").click()
+    assert page.evaluate(SMALL_TARGETS) == []
+    menu.get_by_role("button", name="Cancel").click()
+    expect(menu).to_be_hidden()
+    page.evaluate(PRESS, '#channel-list > a.chan[href="#/stream%3A9"]')
+    expect(menu).to_be_hidden()
     assert page.evaluate(SIDEWAYS) == [0, 0]
     assert not errors, errors
 

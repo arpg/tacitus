@@ -5892,7 +5892,10 @@ ROOM_HYGIENE_INTERVAL_S = 600
 def _room_hygiene_pass() -> list[str]:
     """Archive the room of a project that is dormant or closed; unarchive
     it when the project is active again. The registry row stays, so a
-    revived project gets the same room back. Returns what changed."""
+    revived project gets the same room back. A room the owner brings back
+    while its project is dormant or closed stays open until the project's
+    status changes (`kept_open` in the owner room record). Returns what
+    changed."""
     from preprocessor import ea_channels as _ea_channels
     from preprocessor import project_store as _ps
     changed: list[str] = []
@@ -5902,8 +5905,9 @@ def _room_hygiene_pass() -> list[str]:
     except Exception as e:
         log.warning(f"room hygiene: store unavailable: {e}")
         return changed
-    # Slack is the truth about what is archived; the owner archives rooms
-    # by hand too, and a room he archived stays archived.
+    # The chat (Slack, Zulip or the web chat's store) is the truth about
+    # what is archived; the owner archives rooms by hand too (the web app's
+    # room menu among the ways), and a room he archived stays archived.
     slack_archived = FRONTEND.archived_map()
     for cid, e in _ea_channels.load().items():
         if e.get("kind", "project") != "project" or not e.get("project"):
@@ -5927,10 +5931,17 @@ def _room_hygiene_pass() -> list[str]:
         elif in_slack is False and archived:
             _ea_channels.set_archived(cid, False)
             _CHANNEL_SCOPE_CACHE.pop(cid, None)
+            if st in ("dormant", "closed"):
+                # The owner brought it back: it stays while the project is st.
+                _owner_rooms.update(cid, archived_by_bot=False, kept_open=st)
             changed.append(f"noted #{e.get('name')} reopened in chat")
             archived, by = False, ""
         try:
-            if st in ("dormant", "closed") and not archived:
+            kept = "" if archived else (_owner_rooms.get(cid) or {}).get("kept_open") or ""
+            if kept and kept != st:
+                _owner_rooms.update(cid, kept_open="")
+                kept = ""
+            if st in ("dormant", "closed") and not archived and not kept:
                 FRONTEND.archive(cid)
                 _ea_channels.set_archived(cid, True, by="bot")
                 _owner_rooms.update(cid, archived_by_bot=True)
@@ -9872,7 +9883,7 @@ def _open_session_channel(session_id: str, model: str = "") -> dict:
                   f"at a time: if the shell is still open on it, it will not see "
                   f"what happens here until it is restarted with "
                   f"`bash scripts/ea-bot-shell.sh --resume {sid}`. Archive this "
-                  f"channel when the conversation is done."))
+                  f"room from the menu when you are done."))
     except Exception as e:
         log.warning(f"opening post in {cid} failed: {e}")
     return {"ok": True, "room": cid,
@@ -12634,9 +12645,10 @@ def on_message(msg: "_chat.InboundMessage"):
     user_id = msg.user_id
     text = msg.text
     if msg.subtype == "channel_rename" and _scope is not None:
-        # The user renamed a project or session room. Keep the
-        # registry's name, and so the board and App Home badges, in
-        # step. A rename is not a message: replying to it fails with
+        # The user renamed a project or session room (in Slack, or from
+        # the web app's room menu). Keep the registry's name, and so the
+        # board and App Home badges, in step, and the owner room record's.
+        # A rename is not a message: replying to it fails with
         # cannot_reply_to_message.
         try:
             from preprocessor import ea_channels as _ea_channels
@@ -12644,6 +12656,8 @@ def on_message(msg: "_chat.InboundMessage"):
             if new_name and _ea_channels.rename(channel, new_name):
                 _CHANNEL_SCOPE_CACHE.pop(channel, None)
                 log.info(f"room {channel} renamed to #{new_name}; registry updated")
+            if new_name:
+                _owner_rooms.update(channel, name=new_name)
         except Exception as e:
             log.warning(f"rename sync failed for {channel}: {e}")
         return

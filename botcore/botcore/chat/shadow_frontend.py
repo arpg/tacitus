@@ -21,8 +21,8 @@ reads (Zulip's `cfg`, Slack's `client`) comes from the primary.
 Outbound. post, update, react, unreact, post_card, update_card,
 replace_card_with_status and upload call the primary, then copy the result
 into the shadow under the primary's refs. create_private_room, archive,
-unarchive, set_description and invite act on the primary, then copy the
-channel row (with its description where one is known). A shadow failure
+unarchive, rename, set_description and invite act on the primary, then
+copy the channel row (with its description where one is known). A shadow failure
 is logged and dropped: the core gets the primary's result whatever the
 shadow does. start() also copies the channel list: the main and
 scheduling channels, the owner's DM and the rooms in the primary's
@@ -81,6 +81,12 @@ dispatching that input itself, in either of two shapes:
     inbound(<ActionEvent>)
     inbound("action", event=<ActionEvent>)
         both return True when a handler ran
+    inbound("rename", channel=..., name=...)
+    inbound("archive", channel=..., archived=True | False)
+        the owner renamed a room, archived it or brought it back: made on
+        the primary, then the row; a rename also reaches the core as a
+        channel_rename from the primary's owner. The primary's refusal
+        raises to the caller (NotSupported where it has no rename).
 
 A card copied from the primary's past is plain text in the shadow, so
 the shadow cannot see it settle. The composite sets `shadow.card_lookup`
@@ -156,7 +162,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .base import ChatError, ChatFrontend
+from .base import AlreadyArchived, ChatError, ChatFrontend, NotArchived
 from .types import (
     ActionEvent,
     ChannelInfo,
@@ -927,6 +933,10 @@ class ShadowFrontend(ChatFrontend):
         self.primary.unarchive(channel)
         self._mirror_channel(channel, archived=False)
 
+    def rename(self, channel: str, name: str) -> None:
+        self.primary.rename(channel, name)
+        self._mirror_channel(channel, name=name)
+
     # files
 
     def upload(self, channel: str, path: str | Path, *, thread_ts: str | None = None,
@@ -1065,6 +1075,10 @@ class ShadowFrontend(ChatFrontend):
                                      str(payload.get("text") or ""),
                                      payload.get("thread_key") or None,
                                      list(payload.get("files") or []))
+        if kind == "rename":
+            return self._web_rename(str(payload.get("channel") or ""), str(payload.get("name") or ""))
+        if kind == "archive":
+            return self._web_archive(str(payload.get("channel") or ""), bool(payload.get("archived")))
         if kind == "action":
             ev = payload.get("event")
             if not isinstance(ev, ActionEvent):
@@ -1141,6 +1155,35 @@ class ShadowFrontend(ChatFrontend):
         except Exception:
             log.exception("shadow: the core failed on a web message in %s", ref.channel)
         return ref
+
+    def _web_rename(self, channel: str, name: str) -> bool:
+        """The owner renamed a room on the web: rename it on the primary
+        (NotSupported where the primary has no rename), write the row, and
+        hand the core a channel_rename from the primary's owner, which a
+        platform's own rename event may not name."""
+        if not (channel and name):
+            raise ChatError("a web rename names no room or no name")
+        self.rename(channel, name)
+        msg = InboundMessage(channel=channel, msg_id="", text="", user_id=str(self.primary.owner_id),
+                             posted_at=time.time(), subtype="channel_rename", new_name=name,
+                             raw={"source": "web"})
+        try:
+            self._dispatch_message(msg)
+        except Exception:
+            log.exception("shadow: the core failed on a web rename of %s", channel)
+        return True
+
+    def _web_archive(self, channel: str, archived: bool) -> bool:
+        """The owner archived a room on the web, or brought it back: on the
+        primary, then the row. A room the primary holds in that state already
+        gets the row only."""
+        if not channel:
+            raise ChatError("a web archive names no room")
+        try:
+            (self.archive if archived else self.unarchive)(channel)
+        except (AlreadyArchived, NotArchived):
+            self._mirror_channel(channel, archived=archived)
+        return True
 
     def _web_action(self, ev: ActionEvent) -> bool:
         """Hand the owner's web click to the core as the primary's owner."""

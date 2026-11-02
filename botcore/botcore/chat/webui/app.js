@@ -617,12 +617,12 @@ function renderChannels() {
   const item = (c) => {
     const n = unreadFor(c.id);
     if (!c.archived) total += n;
-    return h('a', {
+    return roomRow(c, h('a', {
       class: 'chan' + (c.id === S.channel && !S.needsView ? ' active' : '') + (n ? ' unread' : ''),
       href: hashFor(c.id), title: c.description || null,
     }, h('span', { class: 'c-icon', 'aria-hidden': 'true' }, c.kind === 'dm' ? '@' : '#'),
     h('span', { class: 'c-name' }, channelName(c)),
-    n ? h('span', { class: 'badge', 'aria-label': `${n} unread` }, String(n)) : null);
+    n ? h('span', { class: 'badge', 'aria-label': `${n} unread` }, String(n)) : null));
   };
   const live = rows.filter((c) => !c.archived).map(item);
   const old = rows.filter((c) => c.archived);
@@ -1967,6 +1967,88 @@ async function saveNotify(e) {
   }
 }
 
+/* -- A room's menu: rename, archive, bring back -------------------- */
+
+// A room in the drawer has a menu: its dots button opens it with a mouse, a
+// long press (600 ms, held still) with a finger; the fixed places have none.
+// It renames the room in place, archives it after one plain question, or
+// brings an archived one back. The answer redraws the drawer at once, and
+// the bot's `channel` event does in every other open app.
+function roomRow(c, link) {
+  if (c.kind !== 'room') return link;
+  return h('div', { class: 'chan-row', 'data-room': c.id }, link,
+    h('button', { type: 'button', class: 'room-more', 'aria-label': `Room options: ${channelName(c)}`,
+      'aria-haspopup': 'dialog', onclick: () => roomMenu(c.id) }));
+}
+
+function roomMenu(id, mode = 'menu') {
+  const c = chan(id), dlg = $('room-menu');
+  if (!c || c.kind !== 'room') return;
+  const name = channelName(c);
+  const cancel = h('button', { type: 'button', class: 'btn', onclick: () => dlg.close() }, 'Cancel');
+  const item = (label, next, cls = '') => h('button', { type: 'button', class: `sheet-item ${cls}`, onclick: next }, label);
+  const error = h('p', { class: 'error', id: 'room-menu-error', 'aria-live': 'polite' });
+  const body = {
+    rename: () => [h('label', { for: 'room-menu-name' }, 'New name'),
+      h('input', { id: 'room-menu-name', value: name, maxlength: 60, autocomplete: 'off', enterkeyhint: 'done', 'aria-describedby': 'room-menu-error' }),
+      error, h('div', { class: 'dialog-actions' }, cancel, h('button', { type: 'submit', class: 'btn primary' }, 'Save'))],
+    archive: () => [h('p', {}, `Archive ${name}? Its conversations stay; the room moves under Archived.`),
+      error, h('div', { class: 'dialog-actions' }, cancel, h('button', { type: 'submit', class: 'btn primary danger' }, 'Archive'))],
+    menu: () => [...(c.archived ? [item('Bring back', () => roomDo(c, 'unarchive'))]
+      : [item('Rename room', () => roomMenu(id, 'rename')), item('Archive room', () => roomMenu(id, 'archive'), 'danger')]), error, cancel],
+  }[mode]();
+  dlg.replaceChildren(h('form', { class: 'sheet', novalidate: true, 'data-mode': mode,
+    onsubmit: (e) => { e.preventDefault(); roomDo(c, mode); } }, h('h2', { id: 'room-menu-title' }, name), body));
+  if (!dlg.open) { roomMenu.at = Date.now(); dlg.showModal(); }
+  const field = $('room-menu-name');
+  if (field) { field.focus(); field.select(); }
+}
+
+async function roomDo(c, verb) {
+  const dlg = $('room-menu');
+  let body;
+  if (verb === 'rename') {
+    const typed = $('room-menu-name').value.trim().replace(/\s+/g, ' ');
+    if (!typed) { $('room-menu-error').textContent = 'Type a name for the room.'; return; }
+    if (typed === channelName(c)) { dlg.close(); return; }
+    // The drawer shows a room without the bot's "ea-" mark; its new name keeps the mark.
+    body = { name: /^ea-./.test(c.name || '') && !typed.startsWith('ea-') ? `ea-${typed}` : typed };
+  }
+  const buttons = [...dlg.querySelectorAll('button')];
+  buttons.forEach((b) => { b.disabled = true; });
+  try {
+    const row = verb === 'rename' ? await call('PATCH', `/channels/${enc(c.id)}`, body)
+      : await call('POST', `/channels/${enc(c.id)}/${verb}`);
+    if (row && row.id) apply('channel', row);
+    dlg.close();
+  } catch (e) {
+    $('room-menu-error').textContent = `Not changed: ${e.message}`;
+  } finally {
+    buttons.forEach((b) => { b.disabled = false; });
+  }
+}
+
+// The menu's own dialog, a tap outside it to close it (not the end of the
+// press that opened it), and the long press on the drawer's rooms.
+function roomMenus() {
+  const dlg = h('dialog', { id: 'room-menu', 'aria-labelledby': 'room-menu-title' });
+  dlg.addEventListener('click', (e) => { if (e.target === dlg && Date.now() - roomMenu.at > 800) dlg.close(); });
+  document.body.append(dlg);
+  const list = $('channel-list');
+  let timer = 0, fired = 0, at = [0, 0];
+  const stop = () => { clearTimeout(timer); timer = 0; };
+  list.addEventListener('pointerdown', (e) => {
+    const row = e.pointerType === 'touch' && e.target.closest('.chan-row');
+    if (!row) return;
+    at = [e.clientX, e.clientY];
+    timer = setTimeout(() => { timer = 0; fired = Date.now(); roomMenu(row.dataset.room); }, 600);
+  });
+  list.addEventListener('pointermove', (e) => { if (timer && Math.hypot(e.clientX - at[0], e.clientY - at[1]) > 10) stop(); });
+  ['pointerup', 'pointercancel'].forEach((t) => list.addEventListener(t, stop));
+  list.addEventListener('click', (e) => { if (Date.now() - fired < 800) { e.preventDefault(); e.stopPropagation(); } }, true);
+  list.addEventListener('contextmenu', (e) => { if (e.target.closest('.chan-row') && (timer || Date.now() - fired < 800)) e.preventDefault(); });
+}
+
 /* -- Teaching: the welcome, the examples, New room, empty lists ------ */
 
 // The welcome: three cards, shown once per browser after the channels
@@ -2377,6 +2459,7 @@ async function init() {
   $('settings-save').addEventListener('click', saveSettings);
   $('notify-rows').addEventListener('change', saveNotify);
   teaching();
+  roomMenus();
   $('relay-note').addEventListener('click', () => relayNote(''));
   // Escape closes the drawer, unless it closes a dialog over it.
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !document.querySelector('dialog[open]')) document.body.classList.remove('drawer'); });
