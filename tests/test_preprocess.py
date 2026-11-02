@@ -471,9 +471,14 @@ def test_a_record_that_accepts_an_offered_time_is_a_scheduling_request_even_afte
     """The keyword pass skips a thread the user has written to, so an
     acceptance of a time the user offered never surfaced. With the mail
     gate on, the remote record's scheduling kind makes it a request: kind
-    "confirmation" with the accepted time; a message the user answered
-    afterwards is not one; a record of kind "none" adds nothing."""
+    "confirmation" with the accepted time, once the user's Sent mail shows
+    the offer; a message the user answered afterwards is not one; a record
+    of kind "none" adds nothing."""
     from preprocessor.preprocess import _sched_description
+    offer = ("Hi Morgan, Here are three 30-minute slots: - Mon Nov 2, 2:30-3:00 PM MT "
+             "- Tue Nov 3, 10:45-11:15 AM MT - Wed Nov 4, 2:45-3:15 PM MT By phone or Zoom. Kit")
+    sent_full = [{"conversationId": "conv-intro-1", "sentDateTime": "2026-10-21T22:32:00Z",
+                  "from": {"emailAddress": {"address": "kit.calloway@example.edu"}}, "body": {"content": offer}}]
     inbox = [{
         "id": "msg-accept-1", "conversationId": "conv-intro-1",
         "subject": "Re: Intro", "receivedDateTime": "2026-10-22T22:53:00Z",
@@ -507,7 +512,7 @@ def test_a_record_that_accepts_an_offered_time_is_a_scheduling_request_even_afte
         def record_fields(self, item):
             return records.get(item.get("message_id"))
     assert detect_scheduling_requests(inbox, sent) == [], "the keyword pass sees nothing here"
-    found = detect_scheduling_requests(inbox, sent, gate=Gate())
+    found = detect_scheduling_requests(inbox, sent, gate=Gate(), sent_full=sent_full)
     assert [r["message_id"] for r in found] == ["msg-accept-1"], "Outlook's Accepted: reply is not a request"
     r = found[0]
     assert r["kind"] == "confirmation" and r["offered_times"] == ["2026-11-04T14:45:00-07:00"]
@@ -519,6 +524,62 @@ def test_a_record_that_accepts_an_offered_time_is_a_scheduling_request_even_afte
     class Off:
         on = False
     assert detect_scheduling_requests(inbox, sent, gate=Off(), sent_full=[]) == []
+
+
+def test_a_records_confirmation_needs_a_time_the_user_offered():
+    """The model labels mail that only confirms something (a talk slot,
+    attendance) "confirmation" too, and a Time accepted thread then stages
+    an invite nobody asked for. A record's confirmation stays only when a
+    time it names is one the user offered in that thread; a record that
+    says nothing is owed adds nothing; without the Sent bodies no record
+    confirmation stands, and the other kinds do."""
+    def sent_msg(conv, at, text):
+        return {"conversationId": conv, "sentDateTime": at,
+                "from": {"emailAddress": {"address": "kit.calloway@example.edu"}}, "body": {"content": text}}
+
+    def inbound(mid, conv, at, preview):
+        return {"id": mid, "conversationId": conv, "subject": "Re: Plans", "receivedDateTime": at,
+                "bodyPreview": preview,
+                "from": {"emailAddress": {"address": "rowan.pike58@example.org", "name": "Rowan"}}}
+    sent_full = [
+        sent_msg("conv-pick", "2026-10-28T16:00:00Z",
+                 "Two options: Mon Nov 2, 2:30-3:00 PM MT or Wed Nov 4, 2:45-3:15 PM MT. Kit"),
+        sent_msg("conv-talk", "2026-10-26T18:58:00Z", "Thanks, all of that works. Keep 30 minutes at 1:00 on Monday. Kit"),
+        sent_msg("conv-miss", "2026-10-28T16:00:00Z", "Does Thu Nov 5, 9:00-9:30 AM MT work? Kit"),
+    ]
+    sent = [{"conversationId": m["conversationId"], "sentDateTime": m["sentDateTime"]} for m in sent_full]
+    inbox = [
+        inbound("msg-pick", "conv-pick", "2026-10-29T15:00:00Z", "The second one works for me."),
+        inbound("msg-talk", "conv-talk", "2026-11-02T16:16:00Z",
+                "I can confirm Monday 11/16 for my talk. Should I attend on the 17th as well?"),
+        inbound("msg-miss", "conv-miss", "2026-10-29T15:00:00Z", "See you then."),
+        inbound("msg-notice", "conv-notice", "2026-10-29T15:00:00Z", "The seminar moved to Friday."),
+        inbound("msg-ask", "conv-ask", "2026-10-29T15:00:00Z", "Could we find a time to talk?"),
+    ]
+    records = {
+        "msg-pick": {"state": "scheduling", "needs_reply": True, "scheduling": "confirmation",
+                     "offered_times": ["2026-11-04T14:45:00"]},
+        "msg-talk": {"state": "needs-reply", "needs_reply": True, "scheduling": "confirmation",
+                     "offered_times": [], "ask": "Say whether to attend Tuesday."},
+        "msg-miss": {"state": "scheduling", "needs_reply": True, "scheduling": "confirmation",
+                     "offered_times": ["2026-11-06T10:00:00"]},
+        "msg-notice": {"state": "fyi", "needs_reply": False, "scheduling": "reschedule", "offered_times": []},
+        "msg-ask": {"state": "scheduling", "needs_reply": True, "scheduling": "request", "offered_times": []},
+    }
+
+    class Gate:
+        on = True
+        def record_fields(self, item):
+            return records.get(item.get("message_id"))
+    found = {r["message_id"]: r for r in detect_scheduling_requests(inbox, sent, gate=Gate(), sent_full=sent_full)}
+    assert set(found) == {"msg-pick", "msg-ask"}, found.keys()
+    pick = found["msg-pick"]
+    assert pick["kind"] == "confirmation" and pick["offered_match"] is True
+    assert pick["offered_times"] == ["2026-11-04T14:45:00-07:00"], "the user's own offer, with its zone"
+    assert found["msg-ask"]["kind"] == "new"
+
+    unread = {r["message_id"] for r in detect_scheduling_requests(inbox, sent, gate=Gate(), sent_full=[])}
+    assert unread == {"msg-ask"}, "no Sent bodies: no offer to ground an acceptance on"
 
 
 def test_the_threads_own_times_make_an_acceptance_a_request_without_a_record():

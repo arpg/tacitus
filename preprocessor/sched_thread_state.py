@@ -11,6 +11,7 @@ clock in it. sched_agent.extract_times reads the times.
                                      "counter": [...], "inbound_at": iso}
   offers_from_sent(sent_full)    -> {conversation_id: {"at", "times", "text"}}
   classify_reply(text, offered)  -> ("accepted" | "counter" | "several" | "none", picks, others)
+  match_offered(times, offered)  -> the offered time one of `times` names, or None
 
 `messages` is get-conversation's shape (from.address, sent, text) or
 Graph's (from.emailAddress.address, sentDateTime/receivedDateTime, body
@@ -83,6 +84,23 @@ def _same_instant(a: str, b: str) -> bool:
         return datetime.fromisoformat(a).astimezone(timezone.utc) == datetime.fromisoformat(b).astimezone(timezone.utc)
     except ValueError:
         return False
+
+
+def match_offered(times: list, offered: list[dict], *, tz: ZoneInfo | None = None) -> dict | None:
+    """The offered time that one of `times` names, or None. `times` are
+    ISO strings as the remote record gives them; one with no offset is
+    the user's local time."""
+    zone = tz or _tz()
+    for t in times or []:
+        try:
+            dt = datetime.fromisoformat(str(t).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        dt = dt if dt.tzinfo else dt.replace(tzinfo=zone)
+        for o in offered or []:
+            if _same_instant(dt.isoformat(), o["start"]):
+                return o
+    return None
 
 
 def classify_reply(text: str, offered: list[dict], *, today=None, tz: ZoneInfo | None = None) -> tuple[str, list[dict], list[dict]]:
