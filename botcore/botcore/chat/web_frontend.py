@@ -647,11 +647,14 @@ def parse_multipart(content_type: str, body: bytes) -> dict[str, dict]:
 
 
 class _Sub:
-    """One event stream's queue; `dropped` once it fell too far behind."""
+    """One event stream's queue; `dropped` once it fell too far behind.
+    `start` is the log's last seq when it subscribed: every later event
+    reaches its queue."""
 
     def __init__(self) -> None:
         self.q: queue.Queue = queue.Queue(maxsize=STREAM_QUEUE)
         self.dropped = False
+        self.start = 0
 
 
 class WebStore:
@@ -848,6 +851,16 @@ class WebStore:
         out["stale"] = bool(row.get("stale"))
         return out
 
+    def _last_at(self, channel: str, thread_key: str) -> float | None:
+        """The thread's newest message time, without the bot's nudges (the
+        stale shelf's clock); None for a thread with no messages. Inside
+        the caller's lock."""
+        row = self._conn.execute(
+            "SELECT MAX(m.posted_at) AS t FROM messages m WHERE m.channel=? AND m.thread_key=? "
+            "AND NOT EXISTS (SELECT 1 FROM nudges n WHERE n.channel=m.channel AND "
+            "n.thread_key=m.thread_key AND n.msg_id=m.id)", (channel, thread_key)).fetchone()
+        return row["t"] if row else None
+
     def set_thread_state(self, channel: str, thread_key: str, state: str, by: str,
                          reason: str, *, judged_seq: int) -> dict:
         """Write the thread's state; the row as the `thread_state` event
@@ -855,7 +868,10 @@ class WebStore:
         appends the event; a write that changes only judged_seq is silent.
         A rule's or the model's write never goes back: it is dropped when
         the row was judged on a newer message, or when the owner set it on
-        the same message or a newer one."""
+        the same message or a newer one. `stale` follows the conversation
+        (thread_state.is_stale): a new state on a conversation quiet past a
+        week goes straight to the shelf, and a write that finds the mark
+        out of date sets it, with the event."""
         if state not in _ts.STATES or by not in _ts.BY:
             raise ValueError(f"not a thread state: {state!r} by {by!r}")
         judged_seq = int(judged_seq)
@@ -868,20 +884,30 @@ class WebStore:
                 seen = int(old["judged_seq"] or 0)
                 if seen > judged_seq or (old["by"] == "owner" and seen >= judged_seq):
                     return self._state_event(old)
+            now = time.time()
+            last = self._last_at(channel, thread_key)
             if old is not None and (old["state"], old["by"], old["reason"]) == (state, by, reason):
                 if int(old["judged_seq"] or 0) != judged_seq:
                     self._conn.execute("UPDATE thread_state SET judged_seq=? WHERE channel=? AND "
                                        "thread_key=?", (judged_seq, channel, thread_key))
+                stale = _ts.is_stale(state, by, old["at"], last, now - _ts.STALE_S)
+                if stale != bool(old["stale"]):
+                    self._conn.execute("UPDATE thread_state SET stale=? WHERE channel=? AND "
+                                       "thread_key=?", (int(stale), channel, thread_key))
+                    old = {**old, "stale": stale}
+                    self._emit("thread_state", channel, thread_key, self._state_event(old))
                 return self._state_event(old)
-            # A change starts the state's age again: it is fresh, not stale.
+            # The stale mark counts from the conversation, not the state: a
+            # new state on a conversation quiet past a week is stale at once.
+            stale = _ts.is_stale(state, by, now, last, now - _ts.STALE_S)
             new = {"channel": channel, "thread_key": thread_key, "state": state, "by": by,
-                   "reason": reason or "", "at": time.time(), "stale": False}
+                   "reason": reason or "", "at": now, "stale": stale}
             self._conn.execute(
                 "INSERT INTO thread_state(channel, thread_key, state, by, reason, at, judged_seq, "
-                "stale) VALUES (?,?,?,?,?,?,?,0) ON CONFLICT(channel, thread_key) DO UPDATE SET "
+                "stale) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(channel, thread_key) DO UPDATE SET "
                 "state=excluded.state, by=excluded.by, reason=excluded.reason, at=excluded.at, "
-                "judged_seq=excluded.judged_seq, stale=0",
-                (channel, thread_key, state, by, new["reason"], new["at"], judged_seq))
+                "judged_seq=excluded.judged_seq, stale=excluded.stale",
+                (channel, thread_key, state, by, new["reason"], new["at"], judged_seq, int(stale)))
             self._emit("thread_state", channel, thread_key, new)
             return new
         return self._transaction(run)
@@ -1054,18 +1080,31 @@ class WebStore:
         return [(r["channel"], r["thread_key"]) for r in rows]
 
     def mark_stale(self, before: float) -> int:
-        """Mark each needs_you or waiting state set at or before `before` as
-        stale, with a `thread_state` event each; how many."""
+        """Set each state's stale mark from its conversation
+        (thread_state.is_stale): a needs_you or waiting state whose
+        conversation has been quiet since `before` or earlier (its newest
+        message, the bot's nudges aside, or the owner's own tap when that is
+        newer) is stale, and any other is not. Each mark that changes gets a
+        `thread_state` event; how many changed."""
         def run() -> int:
             rows = self._conn.execute(
-                "SELECT * FROM thread_state WHERE state IN ('needs_you', 'waiting') AND "
-                "COALESCE(stale, 0) = 0 AND at <= ?", (float(before),)).fetchall()
+                "SELECT s.*, (SELECT MAX(m.posted_at) FROM messages m WHERE m.channel=s.channel "
+                "AND m.thread_key=s.thread_key AND NOT EXISTS (SELECT 1 FROM nudges n WHERE "
+                "n.channel=m.channel AND n.thread_key=m.thread_key AND n.msg_id=m.id)) AS last_at "
+                "FROM thread_state s WHERE s.state IN ('needs_you', 'waiting') OR "
+                "COALESCE(s.stale, 0) = 1").fetchall()
+            changed = 0
             for r in rows:
-                self._conn.execute("UPDATE thread_state SET stale=1 WHERE channel=? AND "
-                                   "thread_key=?", (r["channel"], r["thread_key"]))
+                stale = _ts.is_stale(r["state"], r["by"], r["at"], r["last_at"], before)
+                if stale == bool(r["stale"]):
+                    continue
+                self._conn.execute("UPDATE thread_state SET stale=? WHERE channel=? AND "
+                                   "thread_key=?", (int(stale), r["channel"], r["thread_key"]))
+                row = {k: r[k] for k in r.keys() if k != "last_at"}
                 self._emit("thread_state", r["channel"], r["thread_key"],
-                           self._state_event({**dict(r), "stale": True}))
-            return len(rows)
+                           self._state_event({**row, "stale": stale}))
+                changed += 1
+            return changed
         return self._transaction(run)
 
     def nudge_ids(self, channel: str, thread_key: str) -> set:
@@ -1073,17 +1112,26 @@ class WebStore:
         return {r["msg_id"] for r in self._all("SELECT msg_id FROM nudges WHERE channel=? AND "
                                               "thread_key=?", (channel, thread_key))}
 
-    def nudge_candidates(self, set_before: float, set_after: float,
+    def nudge_candidates(self, since_before: float, active_after: float,
                          limit: int) -> list[tuple[str, str]]:
-        """The needs_you threads, in channels not archived, whose state was
-        set after `set_after` and at or before `set_before` and that have no
-        nudge yet: the longest waiting first."""
+        """The needs_you threads, in channels not archived and with no nudge
+        yet, whose owner last wrote (or tapped the state) at or before
+        `since_before` (a thread the owner never wrote in nor tapped is
+        none) and that were active after `active_after` (the newest message,
+        or the owner's tap): the longest waiting first."""
+        tap = "CASE WHEN s.by = 'owner' THEN COALESCE(s.at, 0) ELSE 0 END"
         rows = self._all(
-            "SELECT s.channel AS channel, s.thread_key AS thread_key FROM thread_state s "
+            "SELECT channel, thread_key FROM (SELECT s.channel AS channel, "
+            "s.thread_key AS thread_key, MAX(COALESCE((SELECT MAX(m.posted_at) FROM messages m "
+            "WHERE m.channel = s.channel AND m.thread_key = s.thread_key AND m.author = ?), 0), "
+            f"{tap}) AS since, "
+            "MAX(COALESCE((SELECT MAX(m.posted_at) FROM messages m WHERE m.channel = s.channel "
+            f"AND m.thread_key = s.thread_key), 0), {tap}) AS active FROM thread_state s "
             "JOIN channels c ON c.id = s.channel AND c.archived = 0 WHERE s.state = 'needs_you' "
-            "AND s.at <= ? AND s.at > ? AND NOT EXISTS (SELECT 1 FROM nudges n WHERE "
-            "n.channel = s.channel AND n.thread_key = s.thread_key) ORDER BY s.at LIMIT ?",
-            (float(set_before), float(set_after), int(limit)))
+            "AND NOT EXISTS (SELECT 1 FROM nudges n WHERE n.channel = s.channel AND "
+            "n.thread_key = s.thread_key)) WHERE since > 0 AND since <= ? AND active > ? "
+            "ORDER BY since LIMIT ?",
+            (OWNER, float(since_before), float(active_after), int(limit)))
         return [(r["channel"], r["thread_key"]) for r in rows]
 
     def post_nudge(self, channel: str, thread_key: str, text: str) -> dict | None:
@@ -1224,9 +1272,13 @@ class WebStore:
                 self._subs.remove(sub)
 
     def subscribe(self) -> _Sub:
+        """A new stream's queue. Its `start` is read under the same lock as
+        the queue joins, so no event falls between the two: each one after
+        `start` is queued, and each one up to it is in the log."""
         sub = _Sub()
         with self._lock:
             self._subs.append(sub)
+            sub.start = self.max_event_seq()
         return sub
 
     def unsubscribe(self, sub: _Sub) -> None:
@@ -3975,7 +4027,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._common_headers()
             self.end_headers()
             self.wfile.write(b"retry: 3000\n\n")
-            last = since if since is not None else store.max_event_seq()
+            # Live events count from the subscription, not from now: a
+            # client that acts once it reads the first line must not have
+            # its event fall before a later watermark and be skipped.
+            last = since if since is not None else sub.start
             if since is not None:
                 while True:
                     batch = store.events_since(last)

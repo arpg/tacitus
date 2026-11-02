@@ -19,17 +19,29 @@ model's text, or None when no model can answer), so this module has no
 model client and no EA import. model_verdict() turns a parsed answer
 into a state: below MIN_CONFIDENCE, or with an answer that does not
 parse, the thread keeps its previous state and the reason says so.
+batch_prompt() and parse_batch() are the same step for the hosted
+model: one prompt with up to HOSTED_CAP threads, each under its ref,
+and one JSON array back, each item checked as parse_answer checks one.
 
 ThreadStates runs both over a WebStore on a daemon thread of the bot.
 It reads the store's event log every `poll_s` seconds and runs the rules
 on each thread a new message, a card outcome or a reaction changed, in
 this process or another (a command-line sender). Every `tick_s` seconds
 it runs the rules over every thread with a message in the last
-ACTIVE_DAYS days, then the model over the threads the rules leave open
-whose newest message is past the `judged_seq` of their row (or whose
-rule no longer holds), newest first, at most `model_cap` calls a tick.
-A change the rules cannot settle brings the next tick forward to
-`soon_s` seconds after the last one. The model's answer, a rule's
+ACTIVE_DAYS days and every thread in Needs you, then the model over the
+threads the rules leave open (only threads the owner has written in:
+rule 7 settles every other) whose newest message is past the
+`judged_seq` of their row (or whose rule no longer holds), newest
+first. The host's `route()` says which
+model: `local` asks the local model one thread a call, at most
+`model_cap` calls a tick; `hosted` makes one call a tick to the hosted
+model with up to `hosted_cap` threads (on a worker thread once the
+engine runs, so the rules never wait for it); `auto` asks the local
+model and hands the threads it could not answer to the hosted call when
+it does not answer; `off` asks no model. With the local model, a change
+the rules cannot settle brings the next tick forward to `soon_s`
+seconds after the last one; the hosted call keeps the tick's pace, so
+one call holds the threads a tick gathers. The model's answer, a rule's
 answer and the owner's override each write the store's `thread_state`
 row, which appends a `thread_state` event when the state, `by` or the
 reason changed.
@@ -54,23 +66,27 @@ one still live is `needs_you`, all settled with no owner message since is
 to; link_cards() links what the store held before the table and runs
 the rules on every linked conversation, once at start.
 
-The stale shelf and the nudge. Each tick marks a `needs_you` or
-`waiting` state older than STALE_S (by its `at`) as stale, with one
-`thread_state` event. A `needs_you` state between NUDGE_AFTER_S and
-STALE_S old, in a conversation the owner has not written in since, gets
-one line (NUDGE_TEXT) from the bot (`nudge`, the web front end's post
-into its own store): once per conversation, never on an automated post,
-a card's own conversation or one with a live card, at most `nudge_cap` a
-tick, and none while `quiet()` says the owner's quiet hours hold. The
-rules and the model never read a nudge (its id is in the store's
-`nudges` table), so it changes no state.
+The stale shelf and the nudge. A conversation's age counts from its
+newest message, or from the owner's own tap when that is newer
+(active_at; the bot's nudge does not count). Each tick sets the stale
+mark of every `needs_you` or `waiting` state from that age: stale past
+STALE_S, fresh again when a message lands, with one `thread_state`
+event each time the mark changes (is_stale). A `needs_you` conversation
+whose owner last wrote (or tapped) NUDGE_AFTER_S ago or more, and that
+is not stale, gets one line (NUDGE_TEXT) from the bot (`nudge`, the web
+front end's post into its own store): once per conversation, never on
+an automated post, a card's own conversation or one with a live card, at
+most `nudge_cap` a tick, and none while `quiet()` says the owner's quiet
+hours hold. The rules and the model never read a nudge (its id is in
+the store's `nudges` table), so it changes no state.
 
 Observer. A host may set `observer` on the engine: it hears each owner
 tap (`owner_tap`, from the web front end's override route, on a thread of
-its own) and each model answer, with the thread as the rules read it, so
-the host can keep them as labelled examples and act on a tap (the EA's
-web_thread_state: closure labels and the ledger write-back). A failing
-observer is logged and changes no state.
+its own) and each model answer (with `via`, local or hosted), with the
+thread as the rules read it, so the host can keep them as labelled
+examples and act on a tap (the EA's web_thread_state: closure labels and
+the ledger write-back). A failing observer is logged and changes no
+state.
 """
 from __future__ import annotations
 
@@ -104,6 +120,11 @@ TICK_S = 300.0
 SOON_S = 60.0
 POLL_S = 1.0
 MODEL_CAP = 20
+# The hosted step: threads one call judges at most, and the bytes its
+# prompt may hold (a command-line argument holds 128 KiB at most).
+HOSTED_CAP = 20
+HOSTED_PROMPT_BYTES = 100_000
+ROUTES = ("local", "hosted", "auto", "off")
 RULE_CAP = 500
 # Reads of a mirrored card on the primary that one tick makes at most.
 CARD_CAP = 30
@@ -138,6 +159,18 @@ AUTOMATED_TITLE_RE = re.compile(
     r"|ea (?:boundary|persistence|health)\b|release tests?\b|remote llm shadow run\b"
     r"|voice measurement\b|invite eval\b)"
     r"|\bdigest\b", re.I)
+# Rule 7's reason names the post in plain words: the first line's known
+# kind, else a notice (a notifier key was recorded) or a post.
+_POST_NAMES = (
+    (re.compile(r"^(morning|midday|afternoon|evening) (briefing|update)\b", re.I), ""),
+    (re.compile(r"^weekly audit\b", re.I), "The weekly audit"),
+    (re.compile(r"^a new device asks to reach\b", re.I), "A new-device notice"),
+    (re.compile(r"^reconcile:", re.I), "The nightly ledger reconcile"),
+    (re.compile(r"^(?:ea (?:boundary|persistence|health)|release tests?|remote llm shadow run"
+                r"|voice measurement|invite eval)\b", re.I), "A health check from Tacitus"),
+    (re.compile(r"\bdigest\b", re.I), "A digest"),
+)
+QUIET_TAIL = "it needs nothing from you until you write in it."
 _SHORTCODE_RE = re.compile(r":[a-z0-9_+-]+:")
 _MARKUP_RE = re.compile(r"[*_`~#>]+")
 # Ledger ids as the bot writes them (`response-AbC12_x=`, `task-...`): a
@@ -321,9 +354,11 @@ def link_keys(messages: list[dict]) -> tuple[list[str], list[str]]:
 
 # ── a conversation's cards in Direct messages, stale, the nudge ───────
 
-# A state older than this sits on the stale shelf ("Older" in Needs you).
+# A needs_you or waiting conversation quiet this long sits on the stale
+# shelf ("Older" in Needs you).
 STALE_S = 7 * 86400
-# A needs_you state this old gets the nudge, once.
+# A needs_you conversation whose owner last wrote this long ago gets the
+# nudge, once.
 NUDGE_AFTER_S = 24 * 3600
 NUDGE_CAP = 10
 NUDGE_TEXT = "Still need this? Reply here, or tap Mark done."
@@ -404,29 +439,65 @@ def linked_state(linked: list[dict], messages: list[dict],
     return "done", (f"Its {word} handled: {what}" if what else f"Its {word} handled.")
 
 
+def _tap_at(prev: dict | None) -> float:
+    """When the owner set the state: its `at` for an owner row, else 0."""
+    prev = prev or {}
+    return float(prev.get("at") or 0) if prev.get("by") == "owner" else 0.0
+
+
+def is_stale(state: str | None, by: str | None, at: Any, last_at: Any, before: float) -> bool:
+    """The stale shelf's test for one state row: a needs_you or waiting
+    state whose conversation has been quiet since `before` or earlier.
+    Quiet counts from `last_at` (the conversation's newest message; the
+    state's own `at` when it has none) or from the owner's tap (`at` when
+    `by` is owner), whichever is newer."""
+    if state not in ("needs_you", "waiting"):
+        return False
+    active = float(last_at) if last_at is not None else float(at or 0)
+    if by == "owner":
+        active = max(active, float(at or 0))
+    return active <= float(before)
+
+
+def active_at(messages: list[dict], prev: dict | None) -> float:
+    """When the conversation was last active: its newest message, or the
+    owner's tap when that is newer (the stale shelf's clock)."""
+    newest = max((float(m.get("posted_at") or 0) for m in messages or []), default=0.0)
+    return max(newest, _tap_at(prev))
+
+
+def nudge_since(messages: list[dict], prev: dict | None) -> float | None:
+    """When the nudge's 24 hours start: the owner's last message in the
+    conversation, or the owner's tap when that is newer. None when the
+    owner never wrote in it nor tapped its state: no nudge then."""
+    owner = [float(m.get("posted_at") or 0) for m in messages or [] if m.get("author") == "owner"]
+    start = max([*owner, _tap_at(prev)], default=0.0)
+    return start or None
+
+
 def nudge_due(ctx: dict, now: float) -> bool:
     """True when the conversation gets the "Still need this?" line now: its
-    state is needs_you and between NUDGE_AFTER_S and STALE_S old, the
-    owner has not written in it since, it opens neither with an automated
-    post nor with a card, and no card in it or linked to it is live (its
-    button is the nudge). Once per conversation is the store's to keep."""
+    state is needs_you, the owner last wrote in it (or tapped its state)
+    NUDGE_AFTER_S ago or more (never: no nudge), it is not on the stale shelf (active within
+    STALE_S: an older one shelves instead), it opens neither with an
+    automated post nor with a card, and no card in it or linked to it is
+    live (its button is the nudge). Once per conversation is the store's
+    to keep."""
     prev = ctx.get("prev") or {}
-    msgs = [card_view(m) for m in ctx.get("messages") or []]
+    raw = ctx.get("messages") or []
+    msgs = [card_view(m) for m in raw]
     if prev.get("state") != "needs_you" or not msgs:
         return False
-    since = float(prev.get("at") or now)
-    if not NUDGE_AFTER_S <= now - since < STALE_S:
+    since = nudge_since(raw, prev)
+    if since is None or now - since < NUDGE_AFTER_S or now - active_at(raw, prev) >= STALE_S:
         return False
     first = msgs[0]
     if first.get("kind") in ("card", "status") or (
             first.get("author") != "owner"
             and (ctx.get("origin") or AUTOMATED_TITLE_RE.search(plain(first.get("text"), 200)))):
         return False
-    if any(_live(m, now) for m in msgs) or any(
-            _live(card_view(c), now) for c in ctx.get("linked") or []):
-        return False
-    return not any(m.get("author") == "owner" and float(m.get("posted_at") or 0) > since
-                   for m in msgs)
+    return not (any(_live(m, now) for m in msgs) or any(
+        _live(card_view(c), now) for c in ctx.get("linked") or []))
 
 
 # ── the rules ─────────────────────────────────────────────────────────
@@ -463,6 +534,20 @@ def device_code(text: str | None) -> str:
     return m.group(1) + m.group(2) if m else ""
 
 
+def post_name(first: dict, origin: str = "") -> str:
+    """What a thread Tacitus started is, in plain words, for rule 7's
+    reason: a card, a briefing, a digest, a health check, a notice (a
+    notifier key was recorded), else a post."""
+    if first.get("kind") in ("card", "status"):
+        return "A card from Tacitus"
+    line = plain(first.get("text"), 200)
+    for rx, name in _POST_NAMES:
+        m = rx.search(line)
+        if m:
+            return name or f"The {m.group(1).lower()} {m.group(2).lower()}"
+    return "A notice from Tacitus" if origin else "A post from Tacitus"
+
+
 def plain_text(text: str | None) -> str:
     return _MARKUP_RE.sub("", _SHORTCODE_RE.sub("", str(text or "")))
 
@@ -479,7 +564,8 @@ def decide(messages: list[dict], *, channel: dict | None = None,
            devices: list[dict] | None = None, now: float | None = None,
            linked: list[dict] | None = None) -> tuple[str, str, str] | None:
     """(state, by, reason) when a rule is decisive, else None (the model
-    judges). `messages` is the thread oldest first (a message may carry
+    judges; only ever for a thread the owner has written in, since rule 7
+    settles every other). `messages` is the thread oldest first (a message may carry
     `history`: copied from the primary's past, without its reactions);
     `prev` the stored row ({"state", "by", "reason", "judged_seq"}) or
     None; `origin` the notifier key that opened the thread, "" when none
@@ -566,10 +652,12 @@ def decide(messages: list[dict], *, channel: dict | None = None,
     if got:
         return got[0], "rule", got[1]
 
-    # 7. An automated post the owner never wrote in.
+    # 7. A thread Tacitus started and the owner never wrote in, whatever it
+    # says: no state until the owner engages. The origin and the title name
+    # the post in the reason only. So the model only reads threads the
+    # owner has written in.
     if first.get("author") != "owner" and not any(m.get("author") == "owner" for m in messages):
-        if origin or AUTOMATED_TITLE_RE.search(plain(first.get("text"), 200)):
-            return "none", "rule", "An automated post: it needs nothing from you."
+        return "none", "rule", f"{post_name(first, origin)}: {QUIET_TAIL}"
 
     # 8. The model.
     return None
@@ -577,14 +665,17 @@ def decide(messages: list[dict], *, channel: dict | None = None,
 
 # ── the model step ────────────────────────────────────────────────────
 
-PROMPT = """You read one conversation from a chat between a person (the owner) and their assistant bot. Say what state the conversation is in now.
-
-The states:
+# What each state means, the same words for the local and the hosted step.
+STATES_TEXT = """The states:
 - needs_you: the owner must do the next thing (answer a question from the bot, pick an option, decide, approve).
 - working: the bot is busy with the owner's request and has not answered yet.
 - waiting: the conversation waits on someone else (a reply from another person) or on a date.
 - done: nothing is left to do in this conversation.
-- none: no action is implied (a briefing, a digest, a notice, small talk).
+- none: no action is implied (a briefing, a digest, a notice, small talk)."""
+
+PROMPT = """You read one conversation from a chat between a person (the owner) and their assistant bot. Say what state the conversation is in now.
+
+""" + STATES_TEXT + """
 
 Today is {today}. The channel is "{name}" (kind: {kind}).{ledger}
 
@@ -594,6 +685,20 @@ The messages, oldest first. Each line gives the author, the time and the text. A
 
 Answer with one JSON object and nothing else:
 {{"state": "needs_you" | "working" | "waiting" | "done" | "none", "reason": "<one short sentence in plain words, for the owner>", "confidence": <a number from 0 to 1>}}"""
+
+# The hosted step's prompt: the same words, for several conversations at
+# once, each under its ref.
+BATCH_PROMPT = """You read {count} conversations from a chat between a person (the owner) and their assistant bot. For each one, say what state it is in now. Judge each conversation by its own messages alone.
+
+""" + STATES_TEXT + """
+
+Today is {today}. Each conversation below opens with a line that gives its ref, then its channel and the items on the owner's task list it is linked to, if any. Its messages follow, oldest first. Each line gives the author, the time and the text. A card shows its title and what happened to it.
+
+{conversations}
+
+Answer with one JSON array and nothing else, with one object for each conversation:
+[{{"ref": "<the conversation's ref>", "state": "needs_you" | "working" | "waiting" | "done" | "none", "reason": "<one short sentence in plain words, for the owner>", "confidence": <a number from 0 to 1>}}]"""
+BATCH_HEAD = "=== conversation {ref} ==="
 
 PROMPT_MESSAGES = 30
 PROMPT_TEXT_CHARS = 500
@@ -637,6 +742,44 @@ def _line(m: dict, now: float) -> str:
     return f"{head} {text}"
 
 
+def _message_lines(messages: list[dict], now: float) -> str:
+    """The thread's lines for a prompt: the first message stays; past the
+    caps the oldest of the rest go, and a line says how many."""
+    lines = [_line(card_view(m), now) for m in messages]
+    head, rest = lines[:1], lines[1:][-(PROMPT_MESSAGES - 1):]
+    while rest and sum(len(x) + 1 for x in head + rest) > PROMPT_CHARS:
+        rest = rest[1:]
+    skipped = len(lines) - 1 - len(rest)
+    return "\n".join(head + ([f"({skipped} earlier messages left out)"] if skipped > 0 else [])
+                     + rest)
+
+
+def _ledger_text(ledger: list[dict] | None) -> str:
+    """The linked ledger rows for a prompt ("" with none): type, status,
+    deadline and last action."""
+    if not ledger:
+        return ""
+    items = []
+    for r in ledger[:5]:
+        item = f"type {r.get('type') or '?'}, status {r.get('status') or '?'}"
+        if r.get("deadline"):
+            item += f", deadline {str(r['deadline'])[:40]}"
+        if r.get("last_action"):
+            item += f", last action: {' '.join(str(r['last_action']).split())[:200]}"
+        items.append(item)
+    return "\nThe conversation is linked to items on the owner's task list:\n" + \
+        "\n".join(f"- {i}" for i in items)
+
+
+def _channel_words(channel: dict | None) -> tuple[str, str]:
+    ch = channel or {}
+    return str(ch.get("name") or ch.get("id") or "?"), str(ch.get("kind") or "?")
+
+
+def _today(now: float) -> str:
+    return datetime.fromtimestamp(now).strftime("%A %Y-%m-%d")
+
+
 def judge_prompt(messages: list[dict], *, channel: dict | None = None,
                  ledger: list[dict] | None = None, now: float | None = None) -> str:
     """The model's prompt: the thread's messages (author, time, text, and a
@@ -646,46 +789,41 @@ def judge_prompt(messages: list[dict], *, channel: dict | None = None,
     oldest of the rest go. A card copied as text from Zulip's past shows
     as card_view reads it."""
     now = time.time() if now is None else float(now)
-    ch = channel or {}
-    lines = [_line(card_view(m), now) for m in messages]
-    head, rest = lines[:1], lines[1:][-(PROMPT_MESSAGES - 1):]
-    while rest and sum(len(x) + 1 for x in head + rest) > PROMPT_CHARS:
-        rest = rest[1:]
-    skipped = len(lines) - 1 - len(rest)
-    body = head + ([f"({skipped} earlier messages left out)"] if skipped > 0 else []) + rest
-    led = ""
-    if ledger:
-        items = []
-        for r in ledger[:5]:
-            item = f"type {r.get('type') or '?'}, status {r.get('status') or '?'}"
-            if r.get("deadline"):
-                item += f", deadline {str(r['deadline'])[:40]}"
-            if r.get("last_action"):
-                item += f", last action: {' '.join(str(r['last_action']).split())[:200]}"
-            items.append(item)
-        led = "\nThe conversation is linked to items on the owner's task list:\n" + \
-              "\n".join(f"- {i}" for i in items)
-    today = datetime.fromtimestamp(now).strftime("%A %Y-%m-%d")
-    return PROMPT.format(today=today, name=ch.get("name") or ch.get("id") or "?",
-                         kind=ch.get("kind") or "?", ledger=led, messages="\n".join(body))
+    name, kind = _channel_words(channel)
+    return PROMPT.format(today=_today(now), name=name, kind=kind, ledger=_ledger_text(ledger),
+                         messages=_message_lines(messages, now))
 
 
-def parse_answer(text: Any) -> dict | None:
-    """{"state", "reason", "confidence"} from the model's text, or None.
-    Strict: one JSON object (a code fence around it is allowed, nothing
-    else), a state of the five, a reason that is a non-empty string and a
-    confidence that is a number from 0 to 1. The reason kept is its first
-    sentence in plain words."""
-    if not isinstance(text, str):
-        return None
+def batch_part(ref: str, messages: list[dict], *, channel: dict | None = None,
+               ledger: list[dict] | None = None, now: float | None = None) -> str:
+    """One conversation's part of the hosted prompt: its ref line, its
+    channel and linked rows, and its messages, as judge_prompt gives them.
+    A message line always opens with its author, so no message can start
+    a ref line of its own."""
+    now = time.time() if now is None else float(now)
+    name, kind = _channel_words(channel)
+    return (f"{BATCH_HEAD.format(ref=ref)}\nThe channel is \"{name}\" (kind: {kind})."
+            f"{_ledger_text(ledger)}\n\n{_message_lines(messages, now)}")
+
+
+def batch_prompt(parts: list[str], *, now: float | None = None) -> str:
+    """The hosted step's prompt over batch_part()'s parts."""
+    now = time.time() if now is None else float(now)
+    return BATCH_PROMPT.format(count=len(parts), today=_today(now),
+                               conversations="\n\n".join(parts))
+
+
+def _unfence(text: str) -> str:
     t = text.strip()
     m = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", t, re.S)
-    if m:
-        t = m.group(1)
-    try:
-        obj = json.loads(t)
-    except ValueError:
-        return None
+    return m.group(1) if m else t
+
+
+def _checked(obj: Any) -> dict | None:
+    """An answer object with exactly the keys state, reason and confidence,
+    checked: a state of the five, a reason that is a non-empty string and a
+    confidence that is a number from 0 to 1. The reason kept is its first
+    sentence in plain words. None when it fails."""
     if not isinstance(obj, dict) or set(obj) != {"state", "reason", "confidence"}:
         return None
     state, reason, conf = obj["state"], obj["reason"], obj["confidence"]
@@ -704,6 +842,54 @@ def parse_answer(text: Any) -> dict | None:
     return {"state": state, "reason": reason, "confidence": float(conf)}
 
 
+def parse_answer(text: Any) -> dict | None:
+    """{"state", "reason", "confidence"} from the model's text, or None.
+    Strict: one JSON object (a code fence around it is allowed, nothing
+    else), a state of the five, a reason that is a non-empty string and a
+    confidence that is a number from 0 to 1. The reason kept is its first
+    sentence in plain words."""
+    if not isinstance(text, str):
+        return None
+    try:
+        obj = json.loads(_unfence(text))
+    except ValueError:
+        return None
+    return _checked(obj)
+
+
+def parse_batch(text: Any, refs: list[str]) -> dict[str, dict | None]:
+    """The hosted answer for each ref asked: {ref: answer, or None for an
+    answer it could not use}. Strict: one JSON array (a code fence around
+    it is allowed, nothing else) of objects, each with exactly the keys
+    ref, state, reason and confidence, checked as parse_answer checks one.
+    A ref with one such object gets its answer; a ref whose object fails
+    the checks, or that the array answers more than once, gets None. A ref
+    the array leaves out is not in the result: it was not answered, and
+    the next tick asks again. An item for a ref not asked is dropped. A
+    text that is not such an array gives None for every ref."""
+    asked = [str(r) for r in refs]
+    if not isinstance(text, str):
+        return dict.fromkeys(asked)
+    try:
+        arr = json.loads(_unfence(text))
+    except ValueError:
+        return dict.fromkeys(asked)
+    if not isinstance(arr, list):
+        return dict.fromkeys(asked)
+    out: dict[str, dict | None] = {}
+    seen: set = set()
+    for item in arr:
+        ref = item.get("ref") if isinstance(item, dict) else None
+        if not isinstance(ref, str) or ref not in asked:
+            continue
+        if ref in seen:
+            out[ref] = None
+            continue
+        seen.add(ref)
+        out[ref] = _checked({k: v for k, v in item.items() if k != "ref"})
+    return out
+
+
 def model_verdict(answer: dict | None, prev: dict | None) -> tuple[str, str, str]:
     """(state, "model", reason) for a parsed answer. Below MIN_CONFIDENCE,
     or with no answer that parses, the previous state stays and the
@@ -720,11 +906,19 @@ def model_verdict(answer: dict | None, prev: dict | None) -> tuple[str, str, str
 
 Ledger = Callable[[list, list], list]
 Model = Callable[[str], "str | None"]
+# hosted(prompt): the hosted model's text for a batch_prompt(), or None
+# when it gave none (a failure: the states stay as they were).
+Hosted = Callable[[str], "str | None"]
+# route(): one of ROUTES, read at each tick.
+Route = Callable[[], str]
 CardRead = Callable[[str, str, str], "dict | None"]
 # observer(event, ctx, *, now, store, **info): event "owner" (info: row,
 # the state row the tap wrote, and before, the row it replaced) or "model"
-# (info: answer, the parsed answer or None, and row, the row written).
+# (info: answer, the parsed answer or None, row, the row written, and via,
+# "local" or "hosted").
 Observer = Callable[..., None]
+# Seconds between two log lines about the same failing hosted call.
+HOSTED_LOG_S = 3600.0
 
 
 class ThreadStates:
@@ -737,6 +931,10 @@ class ThreadStates:
     returns the model's text, or None when no model can answer now (the
     tick then stops asking). `devices()` returns the relay's device rows
     (None with no relay), read only for a new-device notice.
+    `hosted(prompt)` returns the hosted model's text for a batch of
+    threads (batch_prompt), or None when it gave none; `route()` says each
+    tick which model judges (ROUTES: local, hosted, auto or off). With no
+    route, `model` judges when set, else `hosted`.
     `cards(channel, thread_key, msg_id)` returns a mirrored card as the
     primary holds it now ({"text", "filed", "edited_at"}, or None), and
     may write its current text into the store; card_cap reads a tick at
@@ -749,7 +947,8 @@ class ThreadStates:
 
     def __init__(self, store: Callable[[], Any], *, ledger: Ledger | None = None,
                  model: Model | None = None, devices: Callable[[], Any] | None = None,
-                 cards: CardRead | None = None,
+                 cards: CardRead | None = None, hosted: Hosted | None = None,
+                 route: Route | None = None, hosted_cap: int = HOSTED_CAP,
                  tick_s: float = TICK_S, soon_s: float = SOON_S,
                  poll_s: float = POLL_S, model_cap: int = MODEL_CAP, rule_cap: int = RULE_CAP,
                  card_cap: int = CARD_CAP, clock: Callable[[], float] = time.time,
@@ -758,6 +957,14 @@ class ThreadStates:
         self._store = store
         self.ledger = ledger
         self.model = model
+        self.hosted = hosted
+        self.route = route
+        self.hosted_cap = int(hosted_cap)
+        # The route the last tick read (None before the first).
+        self._route_now: str | None = None
+        # The hosted call under way on its worker thread, once the engine runs.
+        self._hosted_worker: threading.Thread | None = None
+        self._hosted_logged: dict[str, float] = {}
         self.devices = devices
         self.cards = cards
         self.tick_s = float(tick_s)
@@ -823,6 +1030,36 @@ class ThreadStates:
         if key not in self._warned:
             self._warned.add(key)
             log.warning(msg, *args)
+
+    def _hourly(self, key: str, msg: str, *args: Any) -> None:
+        """Log `msg` at most once in HOSTED_LOG_S for `key`."""
+        now = time.monotonic()
+        if now - self._hosted_logged.get(key, -HOSTED_LOG_S - 1) >= HOSTED_LOG_S:
+            self._hosted_logged[key] = now
+            log.warning(msg, *args)
+
+    def _route(self) -> str:
+        """Which model judges now (ROUTES): the host's route(), else local
+        with a model, hosted with only a hosted call, off with neither. A
+        route that fails or names no route reads off."""
+        if self.route is None:
+            return "local" if self.model is not None else \
+                "hosted" if self.hosted is not None else "off"
+        try:
+            got = str(self.route())
+        except Exception as e:
+            self._hourly("route", "web chat: the thread-state route could not be read, so no "
+                                  "model judges this tick: %s", e)
+            return "off"
+        return got if got in ROUTES else "off"
+
+    def _soon(self) -> bool:
+        """True when a change the rules leave open brings the tick forward:
+        with the local model only, since the hosted call keeps the tick's
+        pace."""
+        if self._route_now is None:
+            self._route_now = self._route()
+        return self._route_now in ("local", "auto") and self.model is not None
 
     # one thread, or a batch
 
@@ -949,11 +1186,97 @@ class ThreadStates:
         if answer is None:
             log.info("web chat: the thread-state model's answer did not parse for %s/%s",
                      ctx["channel"], ctx["key"])
+        self._write_answer(ctx, answer, "local")
+        return "model"
+
+    def _write_answer(self, ctx: dict, answer: dict | None, via: str) -> dict:
+        """Write one model answer (a parsed answer, or None for one that did
+        not parse) as the thread's state, and tell the observer."""
         state, by, reason = model_verdict(answer, ctx["prev"])
         row = self._store().set_thread_state(ctx["channel"], ctx["key"], state, by, reason,
                                              judged_seq=ctx["newest"])
-        self._observe("model", ctx, answer=answer, row=row)
-        return "model"
+        self._observe("model", ctx, answer=answer, row=row, via=via)
+        return row
+
+    def judge_hosted(self, keys: list[tuple[str, str]]) -> dict:
+        """The hosted model on the threads the rules leave open (`keys`,
+        newest first): one call over up to hosted_cap of them, as many as
+        fit HOSTED_PROMPT_BYTES, each under its ref. Once the engine runs,
+        the call goes on a worker thread and the tick does not wait for it;
+        while one is under way no other starts. Returns {"calls" (0 or 1),
+        "asked", and, when the tick waited for the call, "judged" and
+        "unanswered"}."""
+        out = {"calls": 0, "asked": 0}
+        if self.hosted is None or not keys or self._stop.is_set():
+            return out
+        worker = self._hosted_worker
+        if worker is not None and worker.is_alive():
+            return out
+        # Changes that landed since the tick read the threads go first.
+        self.changed()
+        batch: list[dict] = []
+        for i in range(0, len(keys), BATCH):
+            for ctx in self.contexts(keys[i:i + BATCH]):
+                if self._apply(ctx) == "open":
+                    batch.append(ctx)
+            if len(batch) >= self.hosted_cap:
+                break
+        now = self.clock()
+        items: list[tuple[str, dict]] = []
+        parts: list[str] = []
+        size = len(batch_prompt([], now=now).encode())
+        for ctx in batch[:self.hosted_cap]:
+            ref = f"c{len(items) + 1}"
+            part = batch_part(ref, ctx["messages"], channel=ctx["channel_row"],
+                              ledger=ctx["ledger"], now=now)
+            need = len(part.encode()) + 2
+            if items and size + need > HOSTED_PROMPT_BYTES:
+                break
+            items.append((ref, ctx))
+            parts.append(part)
+            size += need
+        if not items:
+            return out
+        prompt = batch_prompt(parts, now=now)
+        out.update(calls=1, asked=len(items))
+        if self._thread is None:
+            out.update(self._hosted_call(prompt, items))
+            return out
+        self._hosted_worker = threading.Thread(target=self._hosted_call, args=(prompt, items),
+                                               name="webchat-state-hosted", daemon=True)
+        self._hosted_worker.start()
+        return out
+
+    def _hosted_call(self, prompt: str, items: list[tuple[str, dict]]) -> dict:
+        """Ask the hosted model and write its answers. No answer at all
+        writes nothing (each thread keeps its state; the next tick asks
+        again) and is logged once an hour. A thread the answer leaves out
+        is asked again too; one whose item does not parse keeps its state
+        with the model's "no answer it could use"."""
+        got = {"judged": 0, "unanswered": len(items)}
+        try:
+            text = self.hosted(prompt) if self.hosted is not None else None
+        except Exception as e:
+            self._hourly("hosted", "web chat: the hosted model did not judge the thread states; "
+                                   "they stay as they were: %s", e)
+            text = None
+        if text is None or self._stop.is_set():
+            return got
+        answers = parse_batch(text, [ref for ref, _ctx in items])
+        for ref, ctx in items:
+            if ref not in answers:
+                continue
+            try:
+                self._write_answer(ctx, answers[ref], "hosted")
+            except Exception as e:
+                log.warning("web chat: a hosted thread state was not written: %s", e)
+                continue
+            got["judged"] += 1
+            got["unanswered"] -= 1
+        if got["unanswered"]:
+            log.info("web chat: the hosted model left %d of %d threads unanswered; the next "
+                     "tick asks again", got["unanswered"], len(items))
+        return got
 
     # the two passes
 
@@ -989,25 +1312,39 @@ class ThreadStates:
         keys += [k for k in self._origins(store, refs) if k not in keys]
         for i in range(0, len(keys), BATCH):
             for ctx in self.contexts(keys[i:i + BATCH]):
-                if self._apply(ctx) == "open" and self.model is not None:
+                if self._apply(ctx) == "open" and self._soon():
                     self._due = True
         return len(keys)
 
     def tick(self) -> dict:
         """The rules over every thread active in the last ACTIVE_DAYS days
-        (newest first, at most rule_cap), then the model over the ones they
-        leave open whose newest message is past their row's judged_seq, or
-        whose row a rule set and no rule holds now: newest first, at most
-        model_cap calls, and none after a call no model could answer. The
-        primary's card reads start again at none, and an answer older than
-        tick_s is dropped."""
+        (newest first, at most rule_cap) and every thread in Needs you,
+        whatever its age (a state the rules would now settle, such as a
+        model's state on a thread the owner never wrote in, moves without a
+        new message), then the model over the ones they leave open (the
+        owner has written in each) whose newest message is past their row's
+        judged_seq, or whose row a rule set and no rule holds now, newest
+        first. The route
+        picks the model: local asks one thread a call, at most model_cap
+        calls and none after a call no model could answer; hosted makes one
+        call over up to hosted_cap threads (judge_hosted); auto asks the
+        local model and, when it does not answer, hands the threads left to
+        the hosted call. The primary's card reads start again at none, and
+        an answer older than tick_s is dropped."""
         store = self._store()
         now = self.clock()
+        route = self._route_now = self._route()
         self._card_reads = 0
         self._card_cache = {k: v for k, v in self._card_cache.items() if now - v[0] < self.tick_s}
         since = now - ACTIVE_DAYS * 86400
         rows = store.active_threads(since, self.rule_cap)
         keys = [(r["channel"], r["thread_key"]) for r in rows]
+        seen = set(keys)
+        for r in store.needs(self.rule_cap):
+            k = (r["channel"], r["thread_key"])
+            if k not in seen and len(keys) < self.rule_cap:
+                seen.add(k)
+                keys.append(k)
         open_: list[tuple[str, str]] = []
         decided = 0
         for i in range(0, len(keys), BATCH):
@@ -1021,23 +1358,31 @@ class ThreadStates:
                     open_.append((ctx["channel"], ctx["key"]))
         calls = 0
         stopped = False
-        for channel, key in open_:
-            if calls >= self.model_cap or self.model is None or self._stop.is_set():
-                break
-            # Changes that land while the model reads go first.
-            self.changed()
-            verdict, fresh = self.rules(channel, key)
-            if verdict != "open":
-                continue
-            calls += 1
-            if self.judge(fresh) == "unavailable":
-                stopped = True
-                break
-        if stopped:
+        # The threads the hosted call takes: every open one on the hosted
+        # route (or auto with no local model to ask), and on auto the ones
+        # left when the local model does not answer.
+        left = open_ if route == "hosted" or (route == "auto" and self.model is None) else []
+        if route in ("local", "auto") and self.model is not None:
+            for i, (channel, key) in enumerate(open_):
+                if calls >= self.model_cap or self._stop.is_set():
+                    break
+                # Changes that land while the model reads go first.
+                self.changed()
+                verdict, fresh = self.rules(channel, key)
+                if verdict != "open":
+                    continue
+                calls += 1
+                if self.judge(fresh) == "unavailable":
+                    stopped = True
+                    left = open_[i:] if route == "auto" else []
+                    break
+        if stopped and not left:
             log.info("web chat: no model answered for thread states; the rules alone set them "
                      "until the next tick")
-        return {"threads": len(rows), "rules": decided, "open": len(open_), "model_calls": calls,
-                "stopped": stopped, "card_reads": self._card_reads,
+        hosted = self.judge_hosted(left) if left else {"calls": 0, "asked": 0}
+        return {"threads": len(keys), "rules": decided, "open": len(open_), "model_calls": calls,
+                "stopped": stopped, "route": route, "hosted_calls": hosted["calls"],
+                "hosted_threads": hosted["asked"], "card_reads": self._card_reads,
                 "stale": self.shelve(now), "nudges": self.nudges(now)}
 
     # a conversation's cards in Direct messages, the stale shelf, the nudge
@@ -1071,8 +1416,10 @@ class ThreadStates:
         return len(keys)
 
     def shelve(self, now: float | None = None) -> int:
-        """Mark each needs_you or waiting state older than STALE_S as stale
-        (one thread_state event each); how many."""
+        """Set the stale mark of each state from its conversation's age
+        (is_stale: a needs_you or waiting conversation quiet past STALE_S),
+        one thread_state event for each mark that changes; how many
+        changed."""
         now = self.clock() if now is None else float(now)
         return self._store().mark_stale(now - STALE_S)
 
@@ -1095,6 +1442,8 @@ class ThreadStates:
         if self._quiet_now():
             return 0
         store = self._store()
+        # needs_you conversations whose owner last wrote (or tapped) at least
+        # NUDGE_AFTER_S ago and that were active within STALE_S.
         keys = store.nudge_candidates(now - NUDGE_AFTER_S, now - STALE_S, RULE_CAP)
         posted = 0
         for channel, key in keys:

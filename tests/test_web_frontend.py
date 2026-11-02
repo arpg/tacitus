@@ -945,6 +945,32 @@ def test_a_stream_gets_each_event_once_in_seq_order(fe):
         s.close()
 
 
+def test_an_event_right_after_the_stream_subscribes_is_not_skipped(fe, monkeypatch):
+    """The stream counts live events from its subscription. A watermark read
+    after the first line went out took an event that landed in between for
+    an old one and skipped it, so a client that acts as soon as it reads
+    the first line could wait forever for its event."""
+    store = fe.store
+    real = store.subscribe
+
+    def subscribe():
+        sub = real()
+        assert sub.start == store.max_event_seq()
+        fe.post("main", "landed as the stream opened")
+        return sub
+    monkeypatch.setattr(store, "subscribe", subscribe)
+    s = Stream(fe)
+    try:
+        seen: list[str] = []
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not any(x.startswith("data: ") for x in seen):
+            seen.append(s.resp.fp.readline().decode().rstrip("\n"))
+        data = [json.loads(x[6:]) for x in seen if x.startswith("data: ")]
+        assert data and data[0]["text"] == "landed as the stream opened"
+    finally:
+        s.close()
+
+
 def test_stop_ends_the_tail_thread(tmp_path):
     f = make(tmp_path)
     f.start()
@@ -1293,7 +1319,8 @@ def test_needs_and_threads_carry_stale_and_the_stream_says_so(fe):
     new = fe.post("main", "new question")
     for ref in (old, new):
         _state(fe, "main", ref.thread_key, "needs_you", reason="A question waits.")
-    fe.store._conn.execute("UPDATE thread_state SET at=? WHERE thread_key=?",
+    # the shelf counts from the conversation: its last message is 8 days old
+    fe.store._conn.execute("UPDATE messages SET posted_at=? WHERE thread_key=?",
                            (time.time() - 8 * 86400, old.thread_key))
     fe.store._conn.commit()
     s = Stream(fe)
