@@ -1953,13 +1953,17 @@ function renderNotify(data) {
 async function saveNotify(e) {
   const el = e.target;
   if (!el.name || (el.type === 'radio' && !el.checked)) return;
+  const inputs = [...$('notify-rows').querySelectorAll('input')];
+  inputs.forEach((i) => { i.disabled = true; }); // one save at a time: each answer is the whole section
   $('notify-note').textContent = '';
   try {
     renderNotify(await call('POST', '/settings/notify', { [el.name]: el.type === 'radio' ? el.value : el.checked }));
     $('notify-note').textContent = 'Saved.';
   } catch (err) {
     $('notify-note').textContent = `Not saved: ${err.message}`;
-    call('GET', '/settings/notify').then(renderNotify, () => {});
+    await call('GET', '/settings/notify').then(renderNotify, () => {});
+  } finally {
+    inputs.forEach((i) => { i.disabled = false; });
   }
 }
 
