@@ -357,7 +357,8 @@ def test_the_app_stays_small():
     # 3,430: 3,240 plus the thread states (stickers, Needs you, the filter chips, the override and long press).
     # 3,630: 3,430 plus the teaching (the welcome's three cards, the examples, New room, the empty lists).
     # 3,680: 3,630 plus the stale shelf (This week and Older in Needs you, Mark all done, the muted sticker).
-    assert lines <= 3680, f"{lines} lines: the contract keeps the app near 3,680 with the relay, the phone setup, the thread states and the teaching"
+    # 3,700: 3,680 plus the keyboard check that needs a focused field.
+    assert lines <= 3700, f"{lines} lines: the contract keeps the app near 3,700 with the relay, the phone setup, the thread states and the teaching"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -565,6 +566,32 @@ def test_a_select_posts_the_option_chosen(app):
     wait_for(lambda: stub.clicks)
     assert stub.clicks[0]["action_id"] == "pick_project"
     assert stub.clicks[0]["selected"] == "p2"
+    assert not errors, errors
+
+
+def test_only_a_focused_field_lets_a_short_viewport_pin_the_height(app):
+    """A visual viewport shorter than the window pins the app's height only
+    while a text field has the focus (the keyboard); a foldable open in
+    landscape that reports a short viewport keeps the stylesheet's height."""
+    page, stub, errors = app(viewport={"width": 390, "height": 844})
+    open_thread(page, "Draft a reply")
+    page.evaluate("""() => {
+      const fake = { scale: 1, height: 400, width: 390, offsetTop: 0, addEventListener() {}, removeEventListener() {} };
+      Object.defineProperty(window, 'visualViewport', { value: fake, configurable: true });
+    }""")
+    page.evaluate("document.activeElement && document.activeElement.blur()")
+    page.evaluate("window.dispatchEvent(new Event('resize'))")
+    assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == ""
+    # A garbage height (a foldable after a fold) pins nothing, focus or not.
+    page.focus("#text")
+    page.evaluate("window.visualViewport.height = -33554432; window.dispatchEvent(new Event('resize'))")
+    assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == ""
+    page.evaluate("window.visualViewport.height = 400")
+    page.evaluate("window.dispatchEvent(new Event('resize'))")
+    assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == "400px"
+    page.evaluate("document.getElementById('text').blur()")
+    page.wait_for_timeout(150)
+    assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == ""
     assert not errors, errors
 
 
@@ -1488,8 +1515,9 @@ def test_the_composer_stays_above_the_keyboard(app):
     for i in range(25):
         stub.emit_bot(W.DM, f"Line {i}", thread_key=tk)
     expect(page.locator("#messages .msg:has-text('Line 24')")).to_be_in_viewport()
-    # The keyboard opens: the app takes the visual viewport's height, at the
-    # top, and the thread keeps its newest message in view.
+    # The keyboard opens for the focused composer: the app takes the visual
+    # viewport's height, at the top, and the thread keeps its newest message in view.
+    page.focus("#text")
     page.evaluate("__vv.height = 470; __vv.dispatchEvent(new Event('resize'))")
     expect(page.locator("body")).to_have_css("height", "470px")
     box = page.locator("#composer").bounding_box()
