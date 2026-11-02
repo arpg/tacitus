@@ -39,7 +39,8 @@ names no conversation: its tag is `alert:<ledger id>` or `watch:<id>`
 (ALERT_TAGS) and its url the app's start page. The store keeps the text
 it showed (`push_alert`), and `alert_tags` names the alerts whose text a
 bot message of a conversation carries (the DM post of the same alert), so
-the owner's reply there clears the alert's notification as well.
+a clear of that conversation (the owner's reply there, among others)
+clears the alert's notification as well.
 """
 from __future__ import annotations
 
@@ -206,8 +207,8 @@ def is_alert_tag(tag: str | None) -> bool:
 
 
 def alert_tags(store: Any, channel: str, thread_key: str) -> list[str]:
-    """The tags of the alerts whose push reached a browser since the owner
-    last wrote under them, and whose text a bot message of this
+    """The tags of the alerts whose push reached a browser since they were
+    last cleared, and whose text a bot message of this
     conversation carries (the same `fingerprint`), oldest first."""
     shown = store.alerts_shown()
     if not shown:

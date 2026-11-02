@@ -436,7 +436,11 @@ def test_the_app_stays_small():
     #     Update, the look on the stream's `release`, on the reconnect and on the return to the screen).
     # 4,850: 4,750 plus the menu's width (the width its names need, the edge a drag or the keys move,
     #     kept per browser, the bounds that keep the panes beside it usable) and its foot that stays inside it.
-    assert lines <= 4850, f"{lines} lines: the contract keeps the app near 4,850 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note and the menu's width"
+    # 4,880: 4,850 plus the thread in view cleared on the owner's other browsers, push on here or not
+    #     (the tag alone with push off, a message on the stream as the cue, the focus for a cue), and
+    #     the notifications no clear reached (the iPhone's): the worker closes the tags a push carries
+    #     once its own shows, and the page sweeps them when it starts or comes back into view.
+    assert lines <= 4880, f"{lines} lines: the contract keeps the app near 4,880 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width and its notifications cleared where they are done"
 
 
 # -- in a browser, against the stub ---------------------------------------

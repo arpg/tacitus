@@ -34,14 +34,20 @@ time (an alert) waits in the store's `push_queue` table, keyed by its
 tag, until the worker that runs in the bot process sends it; a process
 outside the bot (alert.py) writes it there. A push delivered under a tag
 is recorded for its subscription (the store's `push_shown`), and when the
-owner writes in that thread each subscription still holding one gets a
-clear (`Pusher.clear`, {"type": "clear", "tag", "title"}): the service
+thread is done with somewhere (the owner writes in it, a page shows it, its
+card settles, the owner marks it done) each subscription still holding one
+gets a clear (`Pusher.clear`, {"type": "clear", "tag", "title"}): the service
 worker closes the notifications under the tag, and shows a quiet
 "Handled." in their place where the browser would otherwise count a push
 that showed nothing. A clear goes to one subscription at most once in
 CLEAR_GAP_S and CLEAR_DAY_CAP times a day, and never to Apple's push
-service (NO_CLEAR_HOSTS): there the next push under the tag replaces the
-notification.
+service (NO_CLEAR_HOSTS). A subscription that gets no clear for a tag
+(Apple's, one past its budget, one whose clear failed) keeps the tag as
+unclosed (the store's `push_unclosed`): every later push to it carries
+those tags in `close` (`Pusher.send_all`), and the worker closes them once
+it has shown that push's own notification; the app's sweep closes them
+too when it opens (POST /api/push/unclosed). A push accepted under a tag
+drops that tag's record, so a close never reaches the newer notification.
 
 The crypto comes from the `cryptography` package (installed with msal).
 Without it `AVAILABLE` is False and push is off; the chat works.
@@ -93,7 +99,9 @@ TIMEOUT_S = 10.0
 DUE_POLL_S = 15.0
 RECORD_SIZE = 4096
 # Payload bytes: the record (4096) holds the payload, its delimiter and
-# the tag, and the push services take a body of 4096 bytes.
+# the tag, and the push services take a body of 4096 bytes. A payload of
+# MAX_PAYLOAD pads to 3,072 bytes (PAD_BLOCK), a body of 3,174 with the
+# header and the tag; the tags to close a push carries stay within it.
 MAX_PAYLOAD = 3000
 MAX_SUBSCRIPTIONS = 20
 URGENCIES = ("very-low", "low", "normal", "high")
@@ -116,8 +124,16 @@ CLEAR_DAY_CAP = 20
 # Push services whose browser revokes a subscription for pushes that show
 # nothing, with no budget that recovers: WebKit (Safari, the iOS Home Screen
 # app) does so after three in the subscription's life, and a notification
-# closed in the push handler does not count as one shown. They get no clear.
+# closed in the push handler does not count as one shown. They get no clear:
+# their tags wait as unclosed for the next push, which shows its own
+# notification and then closes them, or for the app's sweep.
 NO_CLEAR_HOSTS = ("web.push.apple.com",)
+# The tags a clear never reached in one browser (push_unclosed): a push
+# carries at most CLOSE_CAP of them, newest first, within MAX_PAYLOAD; the
+# store keeps at most UNCLOSED_CAP per subscription, for UNCLOSED_KEEP_S.
+CLOSE_CAP = 16
+UNCLOSED_CAP = 32
+UNCLOSED_KEEP_S = 3 * 86400
 
 _SHORTCODE_RE = re.compile(r":[a-z0-9_+-]+:")
 _MD_LINK_RE = re.compile(r"\[([^\]\n]*)\]\([^)\s]*\)")
@@ -203,6 +219,17 @@ def shown_under(payload: bytes) -> tuple[str, str] | None:
     if not isinstance(data, dict) or data.get("type") == "clear" or not data.get("tag"):
         return None
     return str(data["tag"]), str(data.get("title") or "")
+
+
+def cleared_by(payload: bytes) -> str:
+    """The tag a clear closes; "" for any other payload."""
+    try:
+        data = json.loads(payload)
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(data, dict) or data.get("type") != "clear":
+        return ""
+    return str(data.get("tag") or "")
 
 
 def _hmac(key: bytes, data: bytes) -> bytes:
@@ -398,6 +425,7 @@ class Pusher:
         self.min_gap_s = MIN_GAP_S
         self.clear_gap_s = CLEAR_GAP_S
         self.clear_day_cap = CLEAR_DAY_CAP
+        self.close_cap = CLOSE_CAP
         self.due_poll_s = DUE_POLL_S
         self._opener = urllib.request.build_opener(_NoRedirect)
         self._jobs: queue.Queue = queue.Queue()
@@ -522,15 +550,16 @@ class Pusher:
               now: float | None = None) -> dict:
         """Send a clear for `tag` to each subscription in `owed` (the store's
         push_shown_take: {"endpoint", "title"}, a push under the tag went
-        there since the owner last wrote in the thread). The payload,
+        there since the thread was last cleared). The payload,
         {"type": "clear", "tag", "title"}, tells the service worker to close
         the notifications under the tag; `title` is the one the thread's
         notification showed, for the quiet "Handled." the worker shows where
         the browser would count a push that showed nothing. A subscription on
         Apple's service, or one past its budget (one clear in clear_gap_s,
-        clear_day_cap a day), gets none: its notification stands until the
-        next push under the tag replaces it. Each one skipped is a diag
-        line in the log. The counts: "queued" (or the send's) and "skipped"."""
+        clear_day_cap a day), gets none: the tag waits as unclosed for it
+        (_owe_close), and the next push to it, or the app's sweep, closes
+        the notification. Each one skipped is a diag line in the log. The
+        counts: "queued" (or the send's) and "skipped"."""
         _need()
         now = time.time() if now is None else now
         groups: dict[str, set[str]] = {}
@@ -545,6 +574,7 @@ class Pusher:
                 log.info("web chat diag: %s", json.dumps(
                     {"what": "push clear skipped", "why": why, "tag": str(tag)[:200],
                      "host": urllib.parse.urlsplit(endpoint).hostname or "?"}, sort_keys=True))
+                self._owe_close(endpoint, str(tag)[:200], now)
                 continue
             groups.setdefault(plain_line(row.get("title"), 120) or "Tacitus", set()).add(endpoint)
         out: dict = {"skipped": skipped}
@@ -585,28 +615,80 @@ class Pusher:
     def send_all(self, payload: bytes, urgency: str = "normal", *,
                  only: frozenset | None = None) -> dict:
         """Send `payload` to every subscription, or to those in `only` (a
-        set of endpoints). A push delivered under a tag is recorded for its
-        subscription (the store's push_shown), which the owner's next
-        message in the thread takes for its clear."""
+        set of endpoints), each with the tags its browser still owes a
+        close (_with_close). A push delivered under a tag is recorded for
+        its subscription (the store's push_shown), which the thread's next
+        clear takes. Once the push service accepts it, the unclosed records
+        it carried go, and so does the record of its own tag: the device
+        now shows that tag's newer notification, or closed it. A clear that
+        does not go (held back, failed) leaves its tag unclosed."""
         counts = {"sent": 0, "failed": 0, "dropped": 0, "held": 0}
         now = time.time()
         self.prune(now)
         shown = shown_under(payload)
+        own = shown[0] if shown else cleared_by(payload)
         for sub in self.store.push_subscriptions():
             endpoint = sub["endpoint"]
             if only is not None and endpoint not in only:
                 continue
             if self._retry_at.get(endpoint, 0.0) > now:
                 counts["held"] += 1
+                if not shown and own:
+                    self._owe_close(endpoint, own, now)
                 continue
-            result = self.send_one(sub, payload, urgency)
+            data, closes = self._with_close(payload, endpoint)
+            result = self.send_one(sub, data, urgency)
             counts[result] += 1
-            if result == "sent" and shown:
+            if result == "sent":
                 try:
-                    self.store.push_shown(endpoint, shown[0], shown[1], time.time())
+                    if shown:
+                        self.store.push_shown(endpoint, shown[0], shown[1], time.time())
+                    done = [*closes, own] if own else closes
+                    if done:
+                        self.store.push_unclosed_drop(endpoint, done)
                 except Exception:
                     log.exception("web push: a delivered push could not be recorded")
+            elif result == "failed" and not shown and own:
+                self._owe_close(endpoint, own, now)
         return counts
+
+    def _with_close(self, payload: bytes, endpoint: str) -> tuple[bytes, list[str]]:
+        """`payload` for one subscription, and the tags it carries: the tags
+        a clear never reached in its browser (the store's push_unclosed),
+        newest first, at most close_cap and within MAX_PAYLOAD, as `close`,
+        never the payload's own tag. The payload as it is, and no tags,
+        when none are owed, it is not this module's JSON, or the store
+        cannot be read."""
+        try:
+            data = json.loads(payload)
+        except (TypeError, ValueError):
+            return payload, []
+        if not isinstance(data, dict):
+            return payload, []
+        own = str(data.get("tag") or "")
+        try:
+            owed = [t for t in self.store.push_unclosed(endpoint, self.close_cap + 1) if t != own]
+        except Exception:
+            log.exception("web push: the tags to close could not be read")
+            return payload, []
+        carried: list[str] = []
+        out = payload
+        for tag in owed[:self.close_cap]:
+            trial = json.dumps({**data, "close": [*carried, tag]}, ensure_ascii=False,
+                               separators=(",", ":")).encode("utf-8")
+            if len(trial) > MAX_PAYLOAD:
+                break
+            carried.append(tag)
+            out = trial
+        return out, carried
+
+    def _owe_close(self, endpoint: str, tag: str, now: float) -> None:
+        """Keep `tag` unclosed for the browser of `endpoint`: no clear for
+        it reached there. Never raises."""
+        try:
+            self.store.push_unclosed_add(endpoint, tag, now)
+        except Exception:
+            log.exception("web push: a tag to close could not be recorded")
 
     def send_one(self, sub: dict, payload: bytes, urgency: str = "normal") -> str:
         """POST one push; "sent", "failed" or "dropped"."""

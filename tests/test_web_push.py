@@ -423,6 +423,36 @@ def test_the_payload_stays_small():
     assert len(big) <= wp.MAX_PAYLOAD and json.loads(big)["url"] == ""
 
 
+def test_the_tags_to_close_ride_within_the_cap_and_the_body_limit(fe, svc):
+    """A push carries the tags no clear reached in its browser
+    (push_unclosed): newest first, at most CLOSE_CAP, and only as many as
+    keep the payload within MAX_PAYLOAD, so the padded body stays inside
+    the push services' 4,096 bytes. The ones it carried go once the
+    service accepts the push; the rest wait for the next one. The store
+    keeps the newest UNCLOSED_CAP per subscription."""
+    key, auth = subscribe_fake(fe, svc)
+    endpoint = fe.store.push_subscriptions()[0]["endpoint"]
+    now = time.time()
+    for i in range(40):
+        fe.store.push_unclosed_add(endpoint, f"main/t{i:02d}", now - 40 + i)
+    assert len(fe.store.push_unclosed(endpoint, 100)) == wp.UNCLOSED_CAP
+    assert fe.notify("Tacitus", "Two meetings.", tag="dm/t1", wait=True)["sent"] == 1
+    got = json.loads(decrypt(svc.wait(1)[0]["body"], key, auth))
+    assert got["tag"] == "dm/t1"
+    assert got["close"] == [f"main/t{i:02d}" for i in range(39, 39 - wp.CLOSE_CAP, -1)]
+    assert len(fe.store.push_unclosed(endpoint, 100)) == wp.UNCLOSED_CAP - wp.CLOSE_CAP
+    fe.store.push_unclosed_take(endpoint)
+    for i in range(wp.CLOSE_CAP):                          # tags as long as a tag may be
+        fe.store.push_unclosed_add(endpoint, f"stream:7/{'x' * 189}{i:02d}", now + i)
+    assert fe.notify("Tacitus", "b" * 300, tag="dm/t2", wait=True)["sent"] == 1
+    body = svc.wait(2)[1]["body"]
+    plain = decrypt(body, key, auth)
+    carried = json.loads(plain)["close"]
+    assert len(body) <= 4096 and len(plain) <= wp.MAX_PAYLOAD
+    assert 0 < len(carried) < wp.CLOSE_CAP
+    assert len(fe.store.push_unclosed(endpoint, 100)) == wp.CLOSE_CAP - len(carried)
+
+
 # what the front end pushes
 
 
@@ -443,15 +473,17 @@ def test_a_card_and_a_dm_post_are_pushed_once_per_thread(fe, svc):
     fe.post("dm", "Reply two", thread_ts=c.thread_key)     # within 30 s: held back
     fe.post("main", "Not a DM")                            # not the DM: never pushed
     fe.update_card(c, card(title="Changed"))               # not new: never pushed
-    fe.replace_card_with_status(c, "Sent")
+    fe.replace_card_with_status(c, "Sent")                 # settled: a clear, never a push
     fe.post("dm", "Another thread")                        # another thread: pushed
-    svc.wait(3)
+    svc.wait(4)
     assert [p[5] for p in pushes] == [{"queued": True}, {"queued": True},
                                       {"sent": 0, "skipped": "rate limit"}, {"queued": True}]
     assert [p[4] for p in pushes] == ["high", "normal", "normal", "normal"]
     assert pushes[0][1] == ":lock: *Confirm send*"
+    clear = json.loads(decrypt(svc.requests[2]["body"], key, auth))
+    assert (clear["type"], clear["tag"]) == ("clear", f"dm/{c.thread_key}")
     time.sleep(0.2)
-    assert len(svc.requests) == 3
+    assert len(svc.requests) == 4
 
 
 def test_a_card_push_shows_the_title_and_never_a_field_line_or_body(fe, svc):
