@@ -66,6 +66,14 @@ one still live is `needs_you`, all settled with no owner message since is
 to; link_cards() links what the store held before the table and runs
 the rules on every linked conversation, once at start.
 
+The owner's change to a card. An owner message after every card the
+conversation holds or links to, with no answer from Tacitus yet,
+outranks a live card in the thread (rule 2) and in the DM (rule 2b):
+the owner is changing what the card holds ("make it shorter"), so the
+bot is `working`, and past the window the turn is stuck (rule 1a,
+reply_over_card). A new card, a revised card or a message from the bot
+answers it, and the card rules decide again.
+
 The stale shelf and the nudge. A conversation's age counts from its
 newest message, or from the owner's own tap when that is newer
 (active_at; the bot's nudge does not count). Each tick sets the stale
@@ -139,6 +147,8 @@ CARD_EVENTS = frozenset({"update", "card", "status"})
 BUSY = frozenset({"eyes", "hourglass_flowing_sand"})
 FAILED = frozenset({"x", "warning"})
 NOT_ANSWERED = "Tacitus did not answer this. Ask again."
+# The owner wrote after a live card and the bot is changing it (rule 1a).
+CHANGE_WORKING = "Tacitus is working on your change."
 # The relay's notice of a new device (relay_client._tell_owner) and the
 # pairing code it names.
 DEVICE_NOTICE_RE = re.compile(r"a new device asks to reach tacitus\b.*?pairing code (\d{3}) ?(\d{3})",
@@ -559,6 +569,63 @@ def _notice(m: dict) -> bool:
             and outcome(m.get("text")) in ("busy", "failed"))
 
 
+def unanswered(messages: list[dict], now: float) -> tuple[str, str, float] | None:
+    """Rule 3's test: the owner wrote last and Tacitus has posted nothing
+    since but progress lines or a failed-turn notice. (state, reason, when
+    the owner wrote): needs_you at once on a failed turn, working for
+    WORKING_WINDOW_S from the owner's message or the bot's last progress
+    line, needs_you (a stuck turn) after. None when Tacitus answered, when
+    the owner never wrote, and when the evidence is not decisive: a
+    finished turn (the check) with no words, or an owner message copied
+    from the primary's past (its reactions are not copied)."""
+    owner_at = max((i for i, m in enumerate(messages) if m.get("author") == "owner"), default=None)
+    if owner_at is None:
+        return None
+    mine, after = messages[owner_at], messages[owner_at + 1:]
+    if mine.get("history") or not all(_notice(m) for m in after):
+        return None
+    r = _reactions(mine)
+    wrote = float(mine.get("posted_at") or 0)
+    if r & FAILED or any(outcome(m.get("text")) == "failed" for m in after):
+        return "needs_you", NOT_ANSWERED, wrote
+    if "white_check_mark" in r:
+        return None
+    at = max(float(m.get("posted_at") or 0) for m in [mine, *after])
+    if now - at >= WORKING_WINDOW_S:
+        return "needs_you", NOT_ANSWERED, wrote
+    return "working", ("Tacitus is working on your last message." if r & BUSY or after
+                       else "You wrote last and Tacitus has not answered yet."), wrote
+
+
+def _changed_at(m: dict) -> float:
+    """When a card last changed: its posting, a revision in place or its
+    outcome."""
+    return max(float(m.get("posted_at") or 0), float(m.get("updated_at") or 0))
+
+
+def reply_over_card(messages: list[dict], linked: list[dict] | None,
+                    now: float) -> tuple[str, str] | None:
+    """Rule 1a, run where rule 2 or rule 2b finds a live card: the owner
+    wrote after every card the conversation holds or links to (its
+    posting, a revision in place, its outcome) and Tacitus has not
+    answered (rule 3's test). The owner is changing what the card holds,
+    so the bot is working on it: working with CHANGE_WORKING within
+    WORKING_WINDOW_S, needs_you with NOT_ANSWERED after it or on a failed
+    turn. None once Tacitus answers (a new card, a revised card or a
+    message): the card rules decide. `messages` are read as card_view
+    gives them."""
+    got = unanswered(messages, now)
+    if got is None:
+        return None
+    state, reason, wrote = got
+    cards = [*messages, *(card_view(x) for x in linked or [])]
+    last = max((_changed_at(c) for c in cards if c.get("kind") in ("card", "status")),
+               default=0.0)
+    if wrote <= last:
+        return None
+    return state, (CHANGE_WORKING if state == "working" else reason)
+
+
 def decide(messages: list[dict], *, channel: dict | None = None,
            ledger: list[dict] | None = None, prev: dict | None = None, origin: str = "",
            devices: list[dict] | None = None, now: float | None = None,
@@ -585,9 +652,13 @@ def decide(messages: list[dict], *, channel: dict | None = None,
             and newest <= int(prev.get("judged_seq") or 0):
         return prev["state"], "owner", str(prev.get("reason") or OWNER_REASONS.get(prev["state"], ""))
 
-    # 2. A card whose buttons still act.
+    # 2. A card whose buttons still act, unless the owner wrote after it
+    # and Tacitus has not answered yet (1a).
     live = [m for m in messages if _live(m, now)]
     if live:
+        got = reply_over_card(messages, linked, now)
+        if got:
+            return got[0], "rule", got[1]
         title = _card_title(live[-1])
         return ("needs_you", "rule",
                 f'The card "{title}" still has its buttons.' if title
@@ -601,8 +672,11 @@ def decide(messages: list[dict], *, channel: dict | None = None,
             return "needs_you", "rule", "A phone waits for your approval."
         return "done", "rule", "The phone was approved or removed."
 
-    # 2b. The conversation's cards in Direct messages.
+    # 2b. The conversation's cards in Direct messages; a live one yields to
+    # the owner's message after it as rule 2 does (1a).
     got = linked_state(linked or [], messages, now)
+    if got and got[1] == CARD_WAITS:
+        got = reply_over_card(messages, linked, now) or got
     if got:
         return got[0], "rule", got[1]
 
@@ -611,20 +685,9 @@ def decide(messages: list[dict], *, channel: dict | None = None,
     # then (or at once on a failed turn) it needs the owner. A finished
     # turn (the check) with no words, and a message copied from the
     # primary's past (its reactions are not copied), are the model's.
-    owner_at = max((i for i, m in enumerate(messages) if m.get("author") == "owner"), default=None)
-    if owner_at is not None:
-        mine, after = messages[owner_at], messages[owner_at + 1:]
-        r = _reactions(mine)
-        if all(_notice(m) for m in after) and not mine.get("history"):
-            if r & FAILED or any(outcome(m.get("text")) == "failed" for m in after):
-                return "needs_you", "rule", NOT_ANSWERED
-            if "white_check_mark" not in r:
-                at = max(float(m.get("posted_at") or 0) for m in [mine, *after])
-                if now - at >= WORKING_WINDOW_S:
-                    return "needs_you", "rule", NOT_ANSWERED
-                return "working", "rule", ("Tacitus is working on your last message."
-                                           if r & BUSY or after else
-                                           "You wrote last and Tacitus has not answered yet.")
+    got = unanswered(messages, now)
+    if got:
+        return got[0], "rule", got[1]
 
     # 3c. Tacitus is acting on a button the owner pressed.
     settled = [m for m in messages if m.get("kind") == "status"]
