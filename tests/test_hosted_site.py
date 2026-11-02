@@ -411,3 +411,15 @@ def test_the_readme_keeps_write_access_to_the_owner():
     assert "whoever can push to this repository decides what code this" in text
     assert "bot account" in text and "sw.js" in text
     assert "release-key.pub" in text and "relays.json" in text and "release.txt" in text
+
+
+def test_a_tag_name_is_ascii_digits_with_nothing_after():
+    """The review's finding: `^...$` with match took a trailing newline, and
+    \\d took digits of other scripts. Each pattern is used with fullmatch."""
+    assert build.version_key("v1.2.3") == (1, 2, 3)
+    for bad in ("v1.2.3\n", "v1.2.3 ", "v١.2.3", "v1.2.３", "v1.2", "1.2.3", "v1.2.3.4"):
+        assert build.version_key(bad) is None, repr(bad)
+    assert not build.COMMIT_RE.fullmatch("0" * 40 + "\n") and build.COMMIT_RE.fullmatch("0" * 40)
+    assert not build.PATH_RE.fullmatch("app.js\n") and build.PATH_RE.fullmatch("icons/icon-192.png")
+    text = (HOSTED / "build.py").read_text()
+    assert "_RE.match(" not in text and "\\d" not in text.split("TAG_RE", 1)[1].split("\n", 1)[0]

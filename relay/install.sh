@@ -4,7 +4,7 @@
 #
 # Usage: install.sh --commit SHA [--install-id ID]... [--with-app | --without-app]
 #                   [--no-update-timer] [--repo URL]
-#        install.sh --tag vX.Y.Z [...]
+#        install.sh --tag vX.Y.Z [--expect-commit SHA] [...]
 #   --commit SHA      the tacitus commit to install, all 40 hex characters; the
 #                     clone is checked against it. Never the tip of a branch: the
 #                     repository takes outside pull requests.
@@ -12,8 +12,12 @@
 #                     passes against the release key (SSH public keys, one per
 #                     line) in /etc/tacitus-relay/release-key.pub, or else in
 #                     /var/lib/tacitus-relay/release-key.pub, the key the updater
-#                     pinned. The updater runs a new release's own install.sh
-#                     with --tag.
+#                     pinned (ssh-ed25519 keys only). The tag must carry its own
+#                     name inside (an older signed tag moved to a new name does
+#                     not), and its commit must be in main's history.
+#   --expect-commit SHA with --tag: the commit the tag must name. The updater
+#                     runs a new release's own install.sh with --tag and the
+#                     commit it verified.
 #   --install-id ID   add this install id to the allow file (repeatable)
 #   --with-app        also serve the web app (--static), for phones paired with
 #                     "Phone not on your network". Only on a hostname of the relay's
@@ -49,6 +53,7 @@ PINNED_KEY=/var/lib/tacitus-relay/release-key.pub
 UPDATER=/etc/systemd/system/tacitus-relay-update
 COMMIT=""
 TAG=""
+EXPECT=""
 WITH_APP=""
 UPDATE_TIMER=1
 IDS=()
@@ -57,6 +62,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --commit) COMMIT="${2:-}"; shift 2 ;;
         --tag) TAG="${2:-}"; shift 2 ;;
+        --expect-commit) EXPECT="${2:-}"; shift 2 ;;
         --install-id) IDS+=("${2:-}"); shift 2 ;;
         --with-app) WITH_APP=1; shift ;;
         --without-app) WITH_APP=0; shift ;;
@@ -69,14 +75,16 @@ done
 # --- what to install: checked before anything changes ----------------------
 if [ -n "$COMMIT" ] && [ -n "$TAG" ]; then
     die "give --commit or --tag, not both"
+elif [ -n "$EXPECT" ] && { [ -z "$TAG" ] || ! [[ "$EXPECT" =~ ^[0-9a-f]{40}$ ]]; }; then
+    die "--expect-commit takes a full commit id (40 hex characters), with --tag"
 elif [ -n "$COMMIT" ]; then
     [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "--commit takes a full commit id (40 hex characters)"
 elif [ -n "$TAG" ]; then
     [[ "$TAG" =~ ^v[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.]+)?$ ]] || die "--tag takes a release tag such as v1.2.0"
     [ -f "$KEY" ] || KEY=$PINNED_KEY
     [ -f "$KEY" ] || die "--tag needs the release key in $ETC/release-key.pub (copy the repository's .release-key.pub there), or use --commit"
-    [[ "$(head -c 4096 "$KEY")" =~ ^(ssh-ed25519|ecdsa-sha2-nistp256|ssh-rsa)\ [A-Za-z0-9+/=]+ ]] \
-        || die "$KEY is not an SSH public key"
+    [[ "$(head -c 4096 "$KEY")" =~ ^ssh-ed25519\ [A-Za-z0-9+/=]+ ]] \
+        || die "$KEY is not an ssh-ed25519 public key"
 else
     die "give --commit SHA: the relay installs a commit you name, never the tip of a branch"
 fi
@@ -84,6 +92,32 @@ for id in "${IDS[@]:-}"; do
     [ -z "$id" ] || [[ "$id" =~ ^[a-z2-7]{26}$ ]] || die "not an install id (26 characters a-z, 2-7): $id"
 done
 [[ "$REPO" =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9._/-]+$ ]] || die "--repo takes an https URL"
+
+# >>> verify_tag (tests/test_relay_install.py runs this function alone)
+# The commit of tag $2 in the clone $1, printed, when the release key in $3
+# (its ssh-ed25519 lines) signed the tag, the tag object carries the name
+# $2 itself (an older signed tag moved to a new name carries its old one),
+# its commit is $4 when given, and that commit is in main's history
+# (refs/remotes/origin/main). Else a reason on stderr and status 1.
+verify_tag() {
+    local dir="$1" tag="$2" key="$3" expect="$4" head commit
+    grep -E '^ssh-ed25519 [A-Za-z0-9+/=]+' "$key" \
+        | sed 's/^/tacitus-release namespaces="git" /' > "$dir/.git/allowed_signers" || true
+    [ -s "$dir/.git/allowed_signers" ] || { echo "$key holds no ssh-ed25519 key" >&2; return 1; }
+    git -C "$dir" -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$dir/.git/allowed_signers" \
+        verify-tag "$tag" >/dev/null 2>&1 \
+        || { echo "tag $tag is not signed by the release key in $key" >&2; return 1; }
+    head="$(git -C "$dir" cat-file tag "refs/tags/$tag" | sed -n '1,/^$/p')"
+    [ "$(sed -n 's/^tag //p' <<<"$head")" = "$tag" ] && [ "$(sed -n 's/^type //p' <<<"$head")" = commit ] \
+        || { echo "tag $tag carries another name inside: an older release moved" >&2; return 1; }
+    commit="$(git -C "$dir" rev-parse "refs/tags/$tag^{commit}")"
+    [ -z "$expect" ] || [ "$commit" = "$expect" ] \
+        || { echo "tag $tag names $commit, not $expect" >&2; return 1; }
+    git -C "$dir" merge-base --is-ancestor "$commit" refs/remotes/origin/main 2>/dev/null \
+        || { echo "$commit is not in main's history" >&2; return 1; }
+    echo "$commit"
+}
+# <<< verify_tag
 
 [ "$(id -u)" = 0 ] || die "run as root"
 # With neither --with-app nor --without-app, keep what the unit serves now.
@@ -110,12 +144,11 @@ git -C $CLONE remote add origin "$REPO"
 if [ -n "$COMMIT" ]; then
     git -C $CLONE fetch -q --depth 1 origin "$COMMIT"
 else
-    git -C $CLONE fetch -q --depth 1 --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG"
-    grep -E '^(ssh-ed25519|ecdsa-sha2-nistp256|ssh-rsa) ' "$KEY" \
-        | sed 's/^/tacitus-release namespaces="git" /' > $CLONE/.git/allowed_signers
-    git -C $CLONE -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=$CLONE/.git/allowed_signers \
-        verify-tag "$TAG" || die "tag $TAG is not signed by the release key in $KEY"
-    COMMIT="$(git -C $CLONE rev-parse "refs/tags/$TAG^{commit}")"
+    UNSHALLOW=()
+    [ ! -f $CLONE/.git/shallow ] || UNSHALLOW=(--unshallow)
+    git -C $CLONE fetch -q ${UNSHALLOW[@]+"${UNSHALLOW[@]}"} --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG" \
+        "+refs/heads/main:refs/remotes/origin/main"
+    COMMIT="$(verify_tag $CLONE "$TAG" "$KEY" "$EXPECT")" || die "release $TAG refused"
 fi
 git -C $CLONE checkout -q --detach "$COMMIT"
 [ "$(git -C $CLONE rev-parse HEAD)" = "$COMMIT" ] || die "the clone is not at $COMMIT"

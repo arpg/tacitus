@@ -1559,9 +1559,12 @@ computer that cannot join the tailnet runs the app from
 `https://tacitus-ai.github.io/` (`hosted_app` in the `relay` block; `""`
 turns it off). The owner starts the setup from a device already signed
 in; the bot seals an ordinary one-time pairing under a key derived from
-a ten-symbol code (PBKDF2, 600,000 rounds, so the relay that holds the
-sealed setup cannot test codes cheaply) and leaves it at the relay for
-one read. The owner types the code on the computer and approves its
+a ten-symbol code (one PBKDF2 block of 600,000 rounds, the mailbox and
+the key taken from it by HMAC, the mailbox per relay, so the relay that
+holds the sealed setup cannot test codes cheaply and no other relay the
+computer asks learns its mailbox) and leaves it at the relay for one
+read. A phone through the relay holds at most two codes open and makes
+ten a day, and removes only a computer it added. The owner types the code on the computer and approves its
 six-digit code as for any device. The site's workflow (`hosted/deploy.yml`)
 publishes only a release tag that verifies against the release key
 pinned in the Pages repository, on a commit in `main`'s history, with
@@ -1571,7 +1574,11 @@ is: at setup, when its page reads the code, and at each fetch of
 alone, with no bot account, deploy key or write token; a ruleset blocks
 force pushes and deletions on its `main`; and no other repository of the
 organization publishes Pages, since GitHub would serve it on the same
-origin. A hosted device gets no more than a relay-origin one.
+origin. A hosted device gets no more than a relay-origin one, but that
+is a great deal: it chats as the owner, so whoever controls the host can
+approve in text what the chat approves in text and change the tiers the
+owner can change by chat; only the card buttons stay closed unless the
+owner allows them on that computer.
 
 **The shared-origin rule for the relay.** The rule above holds for the
 relay too: a browser gives a paired phone's key to every page of the

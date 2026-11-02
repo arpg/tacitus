@@ -2121,10 +2121,11 @@ async function pairFromLink(kind, text, self = false) {
 
 // The owner's device asks the bot for a handoff (POST /api/relay/handoff):
 // a short code, and the pairing sealed under a key the code gives, left
-// with the relay under a mailbox the code names (docs/webchat-relay.md).
-// The computer types the code at the website's copy of the app, takes the
-// sealed pairing once and pairs as from a link, with no secret in its
-// address. Both halves come from PBKDF2, so the relay cannot try codes fast.
+// with the relay under a mailbox the code and that relay name
+// (docs/webchat-relay.md). The computer types the code at the website's
+// copy of the app, takes the sealed pairing once and pairs as from a link,
+// with no secret in its address. Both come from one PBKDF2 block, so no
+// relay can try codes fast, and each relay sees a mailbox of its own.
 const CODE_ABC = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const HANDOFF = 'tacitus-handoff/1';
 const appHere = () => `${location.origin}${BASE}/`;
@@ -2137,11 +2138,15 @@ function handoffCode(text) {
   return /^[\x20-\x7e]*$/.test(String(text || '')) && s.length === 10 && [...s].every((c) => CODE_ABC.includes(c)) ? s : '';
 }
 
-async function handoffKeys(code, iterations = 600000) {
+async function handoffSecret(code, iterations = 600000) {
   const base = await crypto.subtle.importKey('raw', TE.encode(code), 'PBKDF2', false, ['deriveBits']);
-  const out = bytesOf(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: TE.encode(HANDOFF), iterations }, base, 384));
-  return { mailbox: hex(out.subarray(0, 16)), key: out.slice(16) };
+  return bytesOf(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: TE.encode(HANDOFF), iterations }, base, 256));
 }
+const hmac256 = async (key, text) => bytesOf(await crypto.subtle.sign('HMAC',
+  await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), TE.encode(text)));
+// The mailbox at one relay, and the key (the same at each), from the code's secret.
+const handoffKeys = async (secret, relay) => ({ key: await hmac256(secret, `${HANDOFF} key`),
+  mailbox: hex((await hmac256(secret, `${HANDOFF} mailbox\0${relay.replace(/\/+$/, '')}`)).subarray(0, 16)) });
 
 // The pairing in a sealed handoff (nonce, then the AES-GCM text); throws when it does not open.
 async function openHandoff(keys, blob) {
@@ -2178,13 +2183,13 @@ async function setUp(e) {
   say('Checking the code...', '');
   $('setup-go').disabled = true;
   try {
-    const keys = await handoffKeys(code);
+    const secret = await handoffSecret(code);
     let p = null;
-    for (const relay of S.relays) {
+    for (const relay of S.relays) { // a relay that answers nothing that opens does not end the search
+      const keys = await handoffKeys(secret, relay);
       const res = await fetch(`${relay}/h/${keys.mailbox}`, { credentials: 'omit', cache: 'no-store' }).catch(() => null);
-      if (!res || !res.ok) continue;
-      p = await res.json().then((got) => openHandoff(keys, got.c)).catch(() => null);
-      break;
+      p = res && res.ok ? await res.json().then((got) => openHandoff(keys, got.c)).catch(() => null) : null;
+      if (p) break;
     }
     if (!p || p.v !== 2) return say(WRONG_CODE);
     if (p.a !== appHere()) return say('That code is for Tacitus at another address. Make a new one and open the address it shows.');
@@ -2284,17 +2289,17 @@ async function handoff() {
   }
 }
 
-// The computer that waits: one set up from a code (hosted), unapproved; relayed, one this phone added.
+// The computer that waits: the one that took the code shown here (its `pairing`), not yet approved.
 function waiting(rows, mine) {
-  const d = S.waiting = rows.find((r) => r.pending && (r.origin === 'hosted' || r.handoff) && mine(r));
+  const d = S.waiting = handoff.out && rows.find((r) => r.pending && r.pairing === handoff.out.pairing && mine(r));
   $('handoff-wait').hidden = !d;
   if (!d) return;
   $('handoff-ask').textContent = `The computer shows a six-digit code. Tap Approve if it is ${spaced(d.code)}.`;
   $('handoff-cards').checked = CARDS.has(d.id);
 }
 
-// The devices the bot lists, with Remove (never this device) and Approve; relayed, Approve
-// and the card choice only for a computer this phone added (`by`): the bot refuses the rest.
+// The devices the bot lists, with Remove and Approve; relayed, Remove, Approve and the
+// card choice only for a computer this phone added (`by`): the bot refuses the rest.
 const WHERE = { own: '', hosted: ', opened with a code', relay: ', not on your network' };
 async function listPhones() {
   const box = $('phone-devices');
@@ -2310,7 +2315,7 @@ async function listPhones() {
         onchange: (e) => cardsFor(d, e.target.checked) }), d.origin === 'hosted' ? 'Allow Send and Create buttons on this computer'
         : 'Allow card buttons on this phone'),
       d.pending && mine(d) ? h('button', { type: 'button', class: 'btn small primary', onclick: () => phoneAct('approve', d) }, 'Approve') : null,
-      d.id === me || d.this_device ? null : h('button', { type: 'button', class: 'btn small plain', onclick: () => phoneAct('revoke', d) }, 'Remove'))));
+      !mine(d) || d.this_device ? null : h('button', { type: 'button', class: 'btn small plain', onclick: () => phoneAct('revoke', d) }, 'Remove'))));
     if (!rows.length) box.append(h('li', { class: 'empty' }, 'No device is set up yet.'));
   } catch (e) {
     box.replaceChildren(h('li', { class: 'error' }, e.message));

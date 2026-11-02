@@ -341,44 +341,54 @@ own-origin phone through the relay. That device never copies its own key.
    terminal). The bot makes an ordinary one-time pairing (ten minutes,
    one of the eight open) on the hosted copy: `origin` `"hosted"`, the
    bundle hash, `handoff: true` and `by`, the device that asked (its id,
-   or `"owner"` in the owner's own web chat).
+   or `"owner"` in the owner's own web chat). A phone through the relay
+   holds at most two such codes open and makes at most ten a day (429
+   past either, in plain words); the owner's own web chat has no limit.
 2. The code: ten symbols of Crockford base32
    (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`), 50 bits from the CSPRNG, shown
    as `ABCDE-FGHJK`. What a person types is read uppercase, with spaces
    and dashes dropped, `O` as `0` and `I` and `L` as `1`; any other
    character outside the alphabet, or a length other than ten, is not a
    code.
-3. The KDF: `PBKDF2-HMAC-SHA256(password = the ten normalized ASCII
-   symbols, salt = "tacitus-handoff/1", 600000 iterations, 48 bytes)`.
-   The mailbox is the hex of the first 16 bytes (32 lowercase hex), the
-   key the last 32. Both come from the slow KDF, so the relay, which sees
-   the mailbox, cannot test codes cheaply.
+3. The KDF: `k = PBKDF2-HMAC-SHA256(password = the ten normalized ASCII
+   symbols, salt = "tacitus-handoff/1", 600000 iterations, 32 bytes)`,
+   one block. The mailbox at a relay is the hex of the first 16 bytes of
+   `HMAC-SHA256(k, "tacitus-handoff/1 mailbox" || 0x00 || the relay URL
+   without a trailing slash)` (32 lowercase hex); the key is
+   `HMAC-SHA256(k, "tacitus-handoff/1 key")`. Both come from the one slow
+   block, so the relay, which sees its mailbox, pays the whole KDF for
+   each guess, and each relay sees a mailbox of its own.
 4. The blob: `AES-256-GCM(key, nonce = 12 random bytes, the version-2
    pairing payload's JSON (the `#tr2=` JSON, with `a` = `hosted_app` and
    `b` = the bundle hash), aad = "tacitus-handoff/1" || the mailbox in
    ASCII)`, on the wire as base64url of `nonce || ciphertext`, at most
-   4 KiB. The bot leaves it at the relay (`POST /r/<install>/handoff`)
-   for the pairing's time left, and answers the code and the address to
+   4 KiB. The bot leaves it at its relay (`POST /r/<install>/handoff`),
+   in the mailbox for that relay's URL, for the pairing's time left, and
+   answers the code, the pairing id (`pairing`) and the address to
    open: `hosted_app`, with `?relay=<the relay URL>` unless the hosted
    copy's `relays.json` lists this relay (read once per ten minutes).
    A relay that does not take it drops the pairing again (503).
 5. On the computer the owner opens that address, types the code, and the
-   app derives the mailbox and key, takes the blob once
-   (`GET <relay>/h/<mailbox>`), opens it, checks that `a` is its own
-   page's address, and pairs as from a link (no fragment ever holds the
+   app derives `k` once and, for each relay in turn (`?relay=`, else
+   `relays.json` in order), that relay's mailbox: it takes the blob once
+   (`GET <relay>/h/<mailbox>`) and goes on to the next relay when there
+   is none or it does not open. It checks that `a` is its own page's
+   address, and pairs as from a link (no fragment ever holds the
    secret). A wrong code finds no mailbox, or a blob that does not open.
-6. The computer waits with its six-digit code like any new device. The
-   owner approves it under "Add a device" on the tailnet, or on the phone
-   that started the handoff (the relayed owner routes, What the bot
-   forwards): that phone approves only a computer its own handoff set
-   up. A handoff started through the relay and an approval made through
+6. The computer waits with its six-digit code like any new device; its
+   device row carries the code's `pairing`, so the device that showed the
+   code offers Approve for that computer alone. The owner approves it
+   under "Add a device" on the tailnet, or on the phone that started the
+   handoff (the relayed owner routes, What the bot forwards): that phone
+   approves, and removes, only a computer its own handoff set up. A handoff started through the relay and an approval made through
    it each post a notice in the owner's DM naming the phone, and for an
    approval the computer's name and six-digit code. No notice, log line
    or record holds the handoff code.
 
 The shared vectors (`tests/fixtures/relay_vectors.json`, `handoff`) give a
-code, its mailbox and key, the nonce, the payload and the blob at 1000
-iterations, and the mailbox and key at 600000 (`production`), with the
+code, its relay, `k`, its mailbox and key, the nonce, the payload and the
+blob at 1000 iterations, the mailbox at a second relay (written with a
+trailing slash), the same at 600000 (`production`), and the
 normalization cases.
 
 ## Handshake and sessions
@@ -561,9 +571,11 @@ with `http.client` is a later optimisation.
   copy the phone sends is dropped with every header outside the short
   list below. The web front end takes such a request only when the mark
   equals `X-Tacitus-Relay` and the key file's record of that device is
-  own-origin and approved; it then approves only a device whose pairing
-  was a handoff that this same device started (`by`), and revokes any
-  device but the asking one. A waiting device gets its pending 403, and a
+  own-origin and approved; it then approves or revokes only a device
+  whose pairing was a handoff that this same device started (`by`).
+  Removing any other device, the phone itself among them, stays in the
+  owner's own web chat, so a stolen phone cannot lock the owner's other
+  devices out. A waiting device gets its pending 403, and a
   relay-origin or hosted device gets 403 on all four, whatever its card
   buttons. `/api/pair`, `/api/relay/pair` and `/api/relay/status` stay
   closed to every relayed request. `/api/me` says what applies
@@ -611,7 +623,8 @@ tickets not yet spent, a rate bucket and whether a phone has used it. A
 route goes 60 s after the bot's last poll. Per source address, a bucket
 that meters new routes and one that meters mailbox lookups (the address
 itself is never logged). Apart from the routes, the handoff blobs by
-mailbox, each with its install and its time, held until read once or
+mailbox, each with its install, its time and the source address (an IPv6
+/64) that left it, which caps the blobs per address; held until read once or
 past their time (at most ten minutes), and kept when a bot stops
 polling. Nothing goes to disk. There are no accounts. A restart drops every route: bots
 reconnect within seconds and phones say hello again. After a `rotate`
@@ -659,7 +672,7 @@ them.
 | A `hello`, `ping` or `open` frame | 4 KiB |
 | Stream tickets not yet spent | 8, each good for 30 s |
 | New installs per source address | 20, then one per 10 s |
-| Handoff blobs held | 8, each at most 4 KiB, for at most 600 s; 4096 in all (global) |
+| Handoff blobs held | 8, each at most 4 KiB, for at most 600 s; 32 per source address (an IPv6 /64); 4096 in all (global), and a full table drops the oldest blob of the source that holds the most (never a source's only one) |
 | Mailbox lookups per source address | 20, then one per 3 s (20 a minute) |
 | Online installs (global) | 1000; a full table drops the idle route (no poll open) that no phone used, else the one idle longest |
 | Queued bytes (global) | 512 MiB |
@@ -727,8 +740,9 @@ It **cannot**:
   web front end");
 - read earlier sessions after a later key leak (forward secrecy);
 - open a handoff blob, or learn its code: the mailbox it sees comes from
-  the same slow KDF as the key, so each guess at a 50-bit code costs it
-  600000 rounds of PBKDF2, and the blob lives ten minutes and goes at the
+  the same slow KDF block as the key, so each guess at a 50-bit code costs
+  it 600000 rounds of PBKDF2, a relay the computer asks before or after
+  the right one sees another mailbox, and the blob lives ten minutes and goes at the
   first read. A blob it forges does not open under the code's key, and
   a computer that pairs from a real one still waits for the owner's
   approval by its six-digit code;
@@ -953,10 +967,10 @@ those (`_relayed_owner_route`: the `X-Tacitus-Relay-Device` mark equals
 | Route | Answers |
 |---|---|
 | `POST /api/relay/pair` | `{}` or `{"via": "own" or "relay"}` → `{"link", "qr", "expires", "origin", "bundle", "access"}`: `link` from `self.relay.new_pairing()` (version 2, with `b` when the bot has a bundle hash), `qr` the QR code's text (the same string), `expires` in Unix seconds, `origin` the `via`, `access` what the device may do once approved (`"all"` own, `"chat"` relay, which presses card buttons only with the owner's `cards`); own: 409 when the link would not open the bot's own origin (no `public_url`); relay: the link opens `<relay url>/`, 409 when the bot has no bundle hash; 400 for another `via` |
-| `POST /api/relay/handoff` | `{}` → `{"code": "ABCDE-FGHJK", "expires", "open", "access": "chat"}`: `self.relay.new_handoff(bundle, by=...)` (`make_handoff`: the pairing, the code, the blob left at the relay for the pairing's time left), `open` `self.relay.handoff_address()`; 409 with a plain reason when no relay runs, `hosted_app` is `""` or the bot has no bundle hash, 503 when the relay did not take the blob (the pairing goes again). Relayed (an own-origin phone): `by` is its id, and the owner's DM hears of it, without the code |
-| `GET /api/relay/devices` | `self.relay.devices()` (`device_row`: id, name, paired_at, origin, pending, `code` while pending; for a relay-origin or hosted device `cards_allowed`, `bundle_verified` and, when verified, `release`; for a device set up by a handoff `handoff` and `by`). Relayed, the asking phone's row has `this_device: true` |
+| `POST /api/relay/handoff` | `{}` → `{"code": "ABCDE-FGHJK", "expires", "pairing", "open", "access": "chat"}`: `self.relay.new_handoff(bundle, by=...)` (`make_handoff`: the pairing, the code, the blob left at the relay for the pairing's time left), `pairing` its id (the computer's device row carries it), `open` `self.relay.handoff_address()`; 409 with a plain reason when no relay runs, `hosted_app` is `""` or the bot has no bundle hash, 429 past a phone's two open codes or ten a day, 503 when the relay did not take the blob (the pairing goes again). Relayed (an own-origin phone): `by` is its id, and the owner's DM hears of it, without the code |
+| `GET /api/relay/devices` | `self.relay.devices()` (`device_row`: id, name, paired_at, origin, pending, `code` while pending; for a relay-origin or hosted device `cards_allowed`, `bundle_verified` and, when verified, `release`; for a device set up by a handoff `handoff`, `by` and `pairing`). Relayed, the asking phone's row has `this_device: true` |
 | `POST /api/relay/approve` | `{"device": <16 hex>, "cards"?: bool}` → `{"ok": true}`: `self.relay.approve(id, cards=...)`, the device's next request works, and a relay-origin or hosted device may press card buttons only with `cards` true (approving again changes it); 400 for a malformed id or `cards`, 404 for an unknown one. Relayed: 403 unless the device's `handoff` was started `by` the asking phone; the owner's DM names the phone and the device with its six-digit code |
-| `POST /api/relay/revoke` | `{"device": <16 hex>}` → `{"ok": true}`: `self.relay.revoke(id)`; its sessions and its open event streams end at once (a stream with `err auth`), and its push subscriptions are dropped; 400 for a malformed id, 404 for an unknown one. Relayed: 403 for the asking phone itself |
+| `POST /api/relay/revoke` | `{"device": <16 hex>}` → `{"ok": true}`: `self.relay.revoke(id)`; its sessions and its open event streams end at once (a stream with `err auth`), and its push subscriptions are dropped; 400 for a malformed id, 404 for an unknown one. Relayed: 403 unless the device's `handoff` was started `by` the asking phone |
 | `GET /api/relay/status` | `{"enabled": bool, ...self.relay.status()}` (install_id, relay_url, bot_public, client_key, sign_public, connected, last_ok, last_error, sessions, streams, devices, pending), and how "Add a device" can pair: `pair_own` (a link to the bot's own origin), `pair_relay` and `bundle` (the bundle hash signed now, or null), `handoff` (the handoff route would work now) and `hosted_app`; `{"enabled": false, "handoff": false, "hosted_app": ""}` with no relay running |
 | `POST /api/relay/attest` | `{"bundle": <64 hex>}`, only with `X-Tacitus-Relay` (400 otherwise): `self.relay.attest(device, hash, release)`; 200 `{"ok": true, "bundle_verified": true, "release"}` for the bundle the bot signs now, 409 `{"error", "bundle_verified": false}` for another (the record then says false), 404 for an unknown device. It grants nothing |
 

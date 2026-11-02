@@ -376,7 +376,13 @@ The hook it needs from `relay/install.sh`:
 - With `--tag` it takes the release key from
   `/etc/tacitus-relay/release-key.pub`, else from the updater's pin in
   `/var/lib/tacitus-relay/`, and keeps whether the relay serves the app
-  (`--with-app`) as the unit it replaces had it.
+  (`--with-app`) as the unit it replaces had it. It takes the tag only
+  when an ssh-ed25519 key of that file signed it, the tag object carries
+  its own name (an older signed tag moved to a new name does not), and
+  its commit is in `main`'s history.
+- `--expect-commit <sha>`, which the updater passes before `--tag` when
+  the release's `install.sh` takes it: the commit the updater verified,
+  which the tag must name when the script fetches it.
 
 An `install.sh` that takes no `--tag` (an older release) makes
 `update.py relay` say so and install nothing.

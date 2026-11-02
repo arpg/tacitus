@@ -24,8 +24,8 @@ with no I/O:
 - `new_handoff_code`, `normalize_handoff_code`, `handoff_keys`,
   `seal_handoff`, `open_handoff`: the code a signed-in device shows to
   set up a computer, and the sealed pairing payload the relay holds for
-  it in a mailbox. The mailbox and the key both come from a slow KDF of
-  the code, so the relay cannot test codes cheaply.
+  it in a mailbox. The mailbox (one per relay) and the key both come from
+  one slow KDF of the code, so a relay cannot test codes cheaply.
 
 The crypto comes from the `cryptography` package (installed with msal).
 Without it `AVAILABLE` is False and every key operation raises
@@ -388,7 +388,11 @@ def new_pairing(identity: BotIdentity, relay_url: str, *, ttl: int = PAIRING_TTL
 # a mailbox whose name comes from the code too. The computer derives both,
 # fetches the blob once, opens it and pairs as from a link. PBKDF2 with
 # many rounds makes each guess at a code cost the relay what it costs the
-# computer, and 50 bits of code leave it nothing to gain by trying.
+# computer, and 50 bits of code leave it nothing to gain by trying. The
+# PBKDF2 output is one 32-byte block (`handoff_secret`); the mailbox and
+# the key come from it by HMAC, so a guess at the mailbox costs the whole
+# KDF. The mailbox names the relay, so each relay a computer asks sees a
+# mailbox of its own and learns nothing of the one another relay holds.
 
 HANDOFF_PROTOCOL = b"tacitus-handoff/1"
 HANDOFF_ITERATIONS = 600_000
@@ -430,17 +434,32 @@ def format_handoff_code(code: str) -> str:
     return f"{norm[:5]}-{norm[5:]}"
 
 
-def handoff_keys(code: str, iterations: int = HANDOFF_ITERATIONS) -> tuple[str, bytes]:
-    """(mailbox, key) of a code: PBKDF2-HMAC-SHA256 of the ten normalized
-    symbols, salt HANDOFF_PROTOCOL, 48 bytes. The mailbox is the first 16
-    as hex, the AES-256-GCM key the last 32. Only a test passes fewer
+def handoff_secret(code: str, iterations: int = HANDOFF_ITERATIONS) -> bytes:
+    """The code's secret: PBKDF2-HMAC-SHA256 of the ten normalized symbols,
+    salt HANDOFF_PROTOCOL, 32 bytes (one block). Only a test passes fewer
     iterations (the shared vectors use 1000 to stay fast)."""
     norm = normalize_handoff_code(code)
     if norm is None:
         raise HandoffError("not a code")
-    out = hashlib.pbkdf2_hmac("sha256", norm.encode("ascii"), HANDOFF_PROTOCOL,
-                              iterations, 48)
-    return out[:16].hex(), out[16:]
+    return hashlib.pbkdf2_hmac("sha256", norm.encode("ascii"), HANDOFF_PROTOCOL, iterations, 32)
+
+
+def handoff_mailbox(secret: bytes, relay_url: str) -> str:
+    """The mailbox at one relay: the first 16 bytes, as hex, of
+    HMAC-SHA256(secret, HANDOFF_PROTOCOL || " mailbox" || 0x00 || the relay
+    URL without a trailing slash)."""
+    label = HANDOFF_PROTOCOL + b" mailbox\x00" + str(relay_url).rstrip("/").encode("utf-8")
+    return hmac.new(secret, label, hashlib.sha256).digest()[:16].hex()
+
+
+def handoff_keys(code: str, relay_url: str,
+                 iterations: int = HANDOFF_ITERATIONS) -> tuple[str, bytes]:
+    """(mailbox, key) of a code at `relay_url`: the mailbox
+    (`handoff_mailbox`), and the AES-256-GCM key HMAC-SHA256(secret,
+    HANDOFF_PROTOCOL || " key"), the same at every relay."""
+    secret = handoff_secret(code, iterations)
+    return (handoff_mailbox(secret, relay_url),
+            hmac.new(secret, HANDOFF_PROTOCOL + b" key", hashlib.sha256).digest())
 
 
 def _handoff_aad(mailbox: str) -> bytes:

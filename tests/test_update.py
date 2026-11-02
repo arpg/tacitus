@@ -1398,6 +1398,35 @@ def test_the_relay_updater_installs_a_signed_release_with_its_install_sh(tmp_pat
     assert st["held_back"]["version"] == "v0.1.3"
 
 
+def test_the_relay_updater_names_the_commit_it_verified(tmp_path):
+    """An install.sh that takes --expect-commit gets the commit the updater
+    verified for the tag, so a tag moved after the check is refused."""
+    key = keypair(tmp_path, "release")
+    origin = make_origin(tmp_path, key)
+    (origin / "relay").mkdir()
+    (origin / "relay" / "install.sh").write_text("case $1 in --tag) ;; --expect-commit) ;; esac\n")
+    git(origin, "add", "-A")
+    git(origin, "commit", "-qm", "relay")
+    sign_tag(origin, "v0.1.1", key)
+    base = tmp_path / "relay"
+    base.mkdir()
+    git(tmp_path, "clone", "-q", str(origin), str(base / "src"))
+    commit(origin, "relay/x.txt", "x", "relay change")
+    sign_tag(origin, "v0.1.2", key)
+    want = git(origin, "rev-parse", "HEAD")
+    calls = []
+
+    def runner(cmd, cwd=None):
+        calls.append(cmd[2:])
+        git(base / "src", "fetch", "-q", str(origin), f"refs/tags/{cmd[-1]}")
+        git(base / "src", "checkout", "-q", "FETCH_HEAD")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    assert update.relay(base, tmp_path / "state", channel="latest", repo_url=str(origin),
+                        healthy=lambda: True, runner=runner) == 0
+    assert calls == [["--expect-commit", want, "--tag", "v0.1.2"]]
+
+
 # ── the release workflow ────────────────────────────────────────────
 
 def test_the_release_job_signs_after_a_green_main_only():

@@ -102,6 +102,7 @@ STUB_BOT_PUBLIC = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"  # 32 bytes of 1
 STUB_CLIENT_KEY = "c" * 43
 STUB_BUNDLE = "b" * 64  # a made-up hash of the bot's signed app bundle, when it signs none
 STUB_HOSTED = "https://app.example.org/"  # the website's copy of the app a handoff names
+STUB_HANDOFF_PAIRING = "7" * 32  # the pairing id behind the made-up handoff code
 WEEKLY = "stream:9:topic:weekly%20plan"
 ROOM_ASK = re.compile(r"^\s*open a (?:channel|room) for (?P<name>.+?)\s*$", re.I)
 NOTIFY = {"briefings": True, "replies": True, "rooms": True, "quiet": "queue"}
@@ -668,6 +669,7 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["relay", "handoff"] and s.handoff:
             s.handoffs.append(json.loads(self._body() or b"{}"))
             return self._json(200, {"code": "ABCDE-FGHJK", "expires": int(time.time()) + 600, "access": "chat",
+                                    "pairing": STUB_HANDOFF_PAIRING,
                                     "open": STUB_HOSTED + "?relay=https%3A%2F%2Frelay.example.net"})
         if parts == ["relay", "pair"] and s.relay_pairing:
             body = json.loads(self._body() or b"{}")

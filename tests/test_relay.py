@@ -1261,8 +1261,11 @@ def relay_vectors() -> dict:
     # vector's KDF runs 1000 rounds to stay fast; `production` gives the
     # same code at the 600000 the bot and the app use.
     code = "7K3QX9ZRMA"
-    mailbox, key = rc.handoff_keys(code, iterations=1000)
-    prod_mailbox, prod_key = rc.handoff_keys(code)
+    relay, other_relay = "https://relay.example.org", "https://relay.example.net/relay/"
+    secret = rc.handoff_secret(code, iterations=1000)
+    mailbox, key = rc.handoff_keys(code, relay, iterations=1000)
+    prod_mailbox, prod_key = rc.handoff_keys(code, relay)
+    prod_secret = rc.handoff_secret(code)
     handoff_payload = rc.PairingPayload(
         relay_url="https://relay.example.org", install_id=ident.install_id,
         bot_public=ident.public, client_key=ident.client_key,
@@ -1306,17 +1309,21 @@ def relay_vectors() -> dict:
                 "plaintext": rc.b64e(rc.pack(res_meta, res_body)), "frame": res},
         "sse": {"event": sse_event, "frame": sse},
         "handoff": {
-            "about": ("PBKDF2-HMAC-SHA256(code, salt, iterations, 48 bytes): mailbox = hex of "
-                      "the first 16, key = the last 32; the blob is base64url of nonce || "
-                      "AES-256-GCM(key, nonce, payload, aad = salt || mailbox). This vector "
-                      "runs 1000 iterations; the bot and the app run 600000 (production)."),
+            "about": ("k = PBKDF2-HMAC-SHA256(code, salt, iterations, 32 bytes); mailbox = hex "
+                      "of the first 16 bytes of HMAC-SHA256(k, salt || ' mailbox' || 0x00 || "
+                      "the relay URL without a trailing slash); key = HMAC-SHA256(k, salt || "
+                      "' key'); the blob is base64url of nonce || AES-256-GCM(key, nonce, "
+                      "payload, aad = salt || mailbox). This vector runs 1000 iterations; the "
+                      "bot and the app run 600000 (production)."),
             "code": rc.format_handoff_code(code), "normalized": code,
-            "salt": rc.HANDOFF_PROTOCOL.decode(), "iterations": 1000,
-            "mailbox": mailbox, "key": hexs(key), "nonce": hexs(nonce),
+            "salt": rc.HANDOFF_PROTOCOL.decode(), "iterations": 1000, "relay": relay,
+            "secret": hexs(secret), "mailbox": mailbox, "key": hexs(key),
+            "other_relay": {"relay": other_relay, "mailbox": rc.handoff_mailbox(secret, other_relay)},
+            "nonce": hexs(nonce),
             "aad": rc.b64e(rc.HANDOFF_PROTOCOL + mailbox.encode()),
             "payload": handoff_payload.to_json().decode(), "blob": blob,
-            "production": {"iterations": rc.HANDOFF_ITERATIONS, "mailbox": prod_mailbox,
-                           "key": hexs(prod_key)},
+            "production": {"iterations": rc.HANDOFF_ITERATIONS, "secret": hexs(prod_secret),
+                           "mailbox": prod_mailbox, "key": hexs(prod_key)},
             "normalize": normalize},
     }
 
@@ -1342,9 +1349,19 @@ def test_shared_vectors_match_relay_crypto():
     # The handoff, from the contract's own formula rather than relay_crypto's.
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     h = v["handoff"]
+    import hmac as hmac_mod
+
+    def contract(k: bytes, label: bytes) -> bytes:
+        return hmac_mod.new(k, b"tacitus-handoff/1" + label, hashlib.sha256).digest()
     for it, want in ((h["iterations"], h), (600000, h["production"])):
-        out = hashlib.pbkdf2_hmac("sha256", h["normalized"].encode(), b"tacitus-handoff/1", it, 48)
-        assert (out[:16].hex(), out[16:].hex()) == (want["mailbox"], want["key"])
+        k = hashlib.pbkdf2_hmac("sha256", h["normalized"].encode(), b"tacitus-handoff/1", it, 32)
+        assert k.hex() == want["secret"]
+        assert contract(k, b" mailbox\x00" + h["relay"].encode())[:16].hex() == want["mailbox"]
+        assert contract(k, b" key").hex() == want["key"]
+    k = bytes.fromhex(h["secret"])
+    other = h["other_relay"]
+    assert contract(k, b" mailbox\x00" + other["relay"].rstrip("/").encode())[:16].hex() == other["mailbox"]
+    assert other["mailbox"] != h["mailbox"]  # each relay sees a mailbox of its own
     raw = rc.b64d(h["blob"])
     assert raw[:12].hex() == h["nonce"]
     plain = AESGCM(bytes.fromhex(h["key"])).decrypt(
@@ -2496,6 +2513,7 @@ def test_a_relay_without_the_app_cannot_start_a_phone(web):
 # ── the handoff: a computer set up with a code ────────────────────────
 
 HOSTED = rcl.DEFAULT_HOSTED_APP
+R = "https://relay.example.org"
 
 
 def test_a_handoff_code_is_ten_symbols_and_reads_as_typed():
@@ -2510,15 +2528,27 @@ def test_a_handoff_code_is_ten_symbols_and_reads_as_typed():
     with pytest.raises(rc.HandoffError):
         rc.format_handoff_code("not a code")
     with pytest.raises(rc.HandoffError):
-        rc.handoff_keys("short")
-    # Both halves come from the slow KDF, and production runs 600000 rounds.
+        rc.handoff_keys("short", R)
+    # Both come from one slow KDF block, and production runs 600000 rounds.
     import inspect
     assert inspect.signature(rc.handoff_keys).parameters["iterations"].default == 600000
-    m1, k1 = rc.handoff_keys("7K3QX9ZRMA", iterations=1000)
-    m2, k2 = rc.handoff_keys("7k3qx-9zrma", iterations=1000)
+    assert inspect.signature(rc.handoff_secret).parameters["iterations"].default == 600000
+    assert len(rc.handoff_secret("7K3QX9ZRMA", iterations=1000)) == 32  # one block, not two
+    m1, k1 = rc.handoff_keys("7K3QX9ZRMA", R, iterations=1000)
+    m2, k2 = rc.handoff_keys("7k3qx-9zrma", R + "/", iterations=1000)
     assert (m1, k1) == (m2, k2) and len(k1) == 32 and rc.MAILBOX_RE.match(m1)
-    assert rc.handoff_keys("7K3QX9ZRMB", iterations=1000)[0] != m1
-    assert rc.handoff_keys("7K3QX9ZRMA", iterations=1001)[0] != m1
+    assert rc.handoff_keys("7K3QX9ZRMB", R, iterations=1000)[0] != m1
+    assert rc.handoff_keys("7K3QX9ZRMA", R, iterations=1001)[0] != m1
+
+
+def test_each_relay_sees_a_mailbox_of_its_own():
+    """The review's finding: every relay in relays.json saw the same
+    mailbox. Now the mailbox names the relay; the key is the same."""
+    m1, k1 = rc.handoff_keys("7K3QX9ZRMA", R, iterations=1000)
+    m2, k2 = rc.handoff_keys("7K3QX9ZRMA", "https://relay.example.net", iterations=1000)
+    assert m1 != m2 and k1 == k2
+    secret = rc.handoff_secret("7K3QX9ZRMA", iterations=1000)
+    assert rc.handoff_mailbox(secret, R) == m1 and m1 not in (secret.hex(), k1.hex())
 
 
 def _handoff_payload(**over) -> rc.PairingPayload:
@@ -2530,11 +2560,11 @@ def _handoff_payload(**over) -> rc.PairingPayload:
 
 def test_a_handoff_blob_opens_only_under_its_code_and_mailbox():
     payload = _handoff_payload()
-    mailbox, key = rc.handoff_keys("7K3QX9ZRMA", iterations=1000)
+    mailbox, key = rc.handoff_keys("7K3QX9ZRMA", R, iterations=1000)
     blob = rc.seal_handoff(mailbox, key, payload.to_json())
     assert len(blob) <= rc.HANDOFF_MAX and rc.open_handoff(mailbox, key, blob) == payload
     assert rc.seal_handoff(mailbox, key, payload.to_json()) != blob  # a fresh nonce each time
-    other_m, other_k = rc.handoff_keys("7K3QX9ZRMB", iterations=1000)
+    other_m, other_k = rc.handoff_keys("7K3QX9ZRMB", R, iterations=1000)
     raw = bytearray(rc.b64d(blob))
     raw[-1] ^= 1
     for m, k, b in ((other_m, other_k, blob),    # another code
@@ -2615,6 +2645,38 @@ def test_the_relay_refuses_a_bad_handoff_deposit(tmp_path):
     assert _deposit(gated, token, good)[0] == 403
     allow.write_text(install + "\n")
     assert _deposit(gated, token, good)[0] == 200
+
+
+def test_addresses_that_fill_the_handoff_table_cannot_keep_a_bot_out():
+    """The review's finding: tokens minted from a few hundred addresses
+    filled the global table, and a real bot's deposit got 503 for ten
+    minutes. Each source address (an IPv6 /64) now holds a share, and a
+    full table drops the oldest blob of the source that holds the most."""
+    lim = rs.Limits(max_handoffs_total=64, max_handoffs_per_source=16, new_route_burst=10 ** 6)
+    relay = rs.Relay(lim, log=lambda line: None)
+    body = lambda i: {"m": f"{i:032x}", "c": "eA", "ttl": 600}  # noqa: E731
+    n = 0
+    for host in range(1, 5):  # four /64s, each from a fresh address inside it
+        for _ in range(2):
+            token = os.urandom(32)
+            for _ in range(8):
+                status = _deposit(relay, token, body(n), source=f"2001:db8:0:{host}::{n + 1:x}")[0]
+                n += 1
+                assert status == 200
+        assert _deposit(relay, os.urandom(32), body(n), source=f"2001:db8:0:{host}::ffff")[0] == 429
+        n += 1
+    assert len(relay.handoffs) == 64
+    assert rs.source_group("2001:db8:0:1::1") == rs.source_group("2001:db8:0:1:ffff::9")
+    assert rs.source_group("::ffff:192.0.2.1") == "192.0.2.1"
+    # The real bot, from an address of its own: the table makes room.
+    oldest = next(iter(relay.handoffs))
+    assert _deposit(relay, os.urandom(32), body(10 ** 6), source="198.51.100.7") == (200, {"ok": True})
+    assert oldest not in relay.handoffs and len(relay.handoffs) == 64
+    # No room is made by dropping a source's only blob, or for a source as large as the largest.
+    small = rs.Relay(rs.Limits(max_handoffs_total=2), log=lambda line: None)
+    assert _deposit(small, os.urandom(32), body(1), source="192.0.2.1")[0] == 200
+    assert _deposit(small, os.urandom(32), body(2), source="192.0.2.2")[0] == 200
+    assert _deposit(small, os.urandom(32), body(3), source="192.0.2.3")[0] == 503
 
 
 def test_deposits_from_installs_no_bot_holds_spend_the_address_meter():
@@ -2813,7 +2875,7 @@ def _computer(web, code: str) -> "Phone":
     """The computer: derives the mailbox and key from the code (the real
     600000 rounds), takes the blob from the relay once, opens it and says
     the pairing hello. Returns the computer, waiting for approval."""
-    mailbox, key = rc.handoff_keys(code)
+    mailbox, key = rc.handoff_keys(code, web["base"])
     with NO_PROXY.open(f"{web['base']}/h/{mailbox}", timeout=5) as r:
         blob = json.loads(r.read())["c"]
     payload = rc.open_handoff(mailbox, key, blob)
@@ -2844,7 +2906,7 @@ def test_a_phone_hands_off_to_a_computer_through_the_relay(web):
     assert (me["owner_routes"], me["handoff"]) == ("handoff", True)
     status, out = _relay_post(phone, "/api/relay/handoff", {})
     assert status == 200, out
-    assert set(out) == {"code", "expires", "open", "access"} and out["access"] == "chat"
+    assert set(out) == {"code", "expires", "pairing", "open", "access"} and out["access"] == "chat"
     assert len(out["code"]) == 11 and out["code"][5] == "-"
     assert out["open"] == HOSTED + "?relay=" + urllib.parse.quote(web["base"], safe="")
     assert abs(out["expires"] - (time.time() + rc.PAIRING_TTL)) < 5
@@ -2852,7 +2914,7 @@ def test_a_phone_hands_off_to_a_computer_through_the_relay(web):
     assert (pairing["origin"], pairing["by"], pairing["bundle"]) == \
         ("hosted", phone.session.device, f.bundle_hash())
     # The relay holds one blob under the code's mailbox, and nothing that reads.
-    mailbox = rc.handoff_keys(out["code"])[0]
+    mailbox = rc.handoff_keys(out["code"], web["base"])[0]
     assert list(relay.handoffs) == [mailbox]
     held = json.dumps(relay.snapshot())
     assert out["code"] not in held and out["code"].replace("-", "") not in held
@@ -2870,8 +2932,8 @@ def test_a_phone_hands_off_to_a_computer_through_the_relay(web):
     assert mine[phone.session.device]["this_device"] is True
     assert mine[cid] == {"id": cid, "name": "loopback phone", "paired_at": mine[cid]["paired_at"],
                          "origin": "hosted", "pending": True, "code": computer.code,
-                         "handoff": True, "by": phone.session.device, "cards_allowed": False,
-                         "bundle_verified": False}
+                         "handoff": True, "by": phone.session.device, "pairing": out["pairing"],
+                         "cards_allowed": False, "bundle_verified": False}
     assert _relay_post(phone, "/api/relay/approve", {"device": cid}) == (200, {"ok": True})
     me = json.loads(computer.call("GET", "/api/me")[1]["body"])
     assert me["card_actions"] is False and (me["owner_routes"], me["handoff"]) == ("none", False)
@@ -2897,8 +2959,8 @@ def test_a_phone_hands_off_to_a_computer_through_the_relay(web):
 def test_the_relayed_owner_routes_refuse_each_other_case(web):
     """Each refusal of the relayed owner rule, through the relay: a hosted
     device and a relay-origin device reach none of the four routes; an
-    own-origin phone approves only a computer its own handoff set up,
-    and removes any device but itself."""
+    own-origin phone approves and removes only a computer its own handoff
+    set up: never itself, another phone, or another's computer."""
     f = web["fe"]
 
     def own_link():
@@ -2924,10 +2986,14 @@ def test_the_relayed_owner_routes_refuse_each_other_case(web):
     # The owner's own web chat approves any of them.
     assert _call(f, "POST", "/api/relay/approve", {"device": owners.session.device},
                  _owner(f))[0] == 200
-    # Removing: any device but itself.
-    status, out = _relay_post(phone, "/api/relay/revoke", {"device": phone.session.device})
-    assert status == 403 and not JARGON.search(out["error"]), out
+    # Removing: only a computer this phone added. Not itself, not the other
+    # phone, not a computer the owner or the other phone added.
+    for target in (phone, other, owners, others):
+        status, out = _relay_post(phone, "/api/relay/revoke", {"device": target.session.device})
+        assert status == 403 and not JARGON.search(out["error"]), out
+    assert _relay_post(phone, "/api/relay/revoke", {"device": "0" * 16})[0] == 404
     assert phone.call("GET", "/api/me")[1]["s"] == 200
+    assert other.session.device in {d["id"] for d in f.relay.devices()}
     # The hosted computer, once approved, and a relay-origin phone reach none.
     f.relay.relay_origin_access = "chat"
     relay_phone = _phone(web, f.relay.new_pairing(app_url=web["base"] + "/", relay_origin=True))
@@ -2942,9 +3008,42 @@ def test_the_relayed_owner_routes_refuse_each_other_case(web):
                          json.dumps({"device": other.session.device}).encode())
     assert out["s"] == 403
     assert other.session.device in {d["id"] for d in f.relay.devices()}
-    assert _relay_post(phone, "/api/relay/revoke", {"device": other.session.device}) == \
+    status, mine = _relay_post(phone, "/api/relay/handoff", {})
+    assert status == 200
+    added = _computer(web, mine["code"])
+    assert _relay_post(phone, "/api/relay/revoke", {"device": added.session.device}) == \
         (200, {"ok": True})
-    assert other.call("GET", "/api/me")[1]["k"] == "err"
+    assert added.call("GET", "/api/me")[1]["k"] == "err"
+
+
+def test_a_phone_through_the_relay_makes_few_handoff_codes(web):
+    """A stolen phone cannot mint codes freely: two open at a time, ten a
+    day, each refusal in plain words; the owner's own web chat has no
+    such limit."""
+    f = web["fe"]
+    phone = _phone(web, _call(f, "POST", "/api/relay/pair", {}, _owner(f))[2]["link"])
+    for _ in range(rcl.HANDOFF_OPEN_PER_DEVICE):
+        assert _relay_post(phone, "/api/relay/handoff", {})[0] == 200
+    status, out = _relay_post(phone, "/api/relay/handoff", {})
+    assert status == 429 and "two codes open" in out["error"] and not JARGON.search(out["error"])
+    assert _call(f, "POST", "/api/relay/handoff", {}, _owner(f))[0] == 200  # the owner's own chat
+    # Spent or ended codes free a place, up to ten a day.
+    for _ in range(rcl.HANDOFF_DAY_PER_DEVICE - rcl.HANDOFF_OPEN_PER_DEVICE):
+        for p in [p for p in f.relay.store.load()["pairings"] if p.get("by") == phone.session.device]:
+            f.relay.store.drop_pairing(p["id"])
+        web["relay"].handoffs.clear()  # the relay's own cap per install is not under test
+        assert _relay_post(phone, "/api/relay/handoff", {})[0] == 200
+    for p in [p for p in f.relay.store.load()["pairings"] if p.get("by") == phone.session.device]:
+        f.relay.store.drop_pairing(p["id"])
+    web["relay"].handoffs.clear()
+    status, out = _relay_post(phone, "/api/relay/handoff", {})
+    assert status == 429 and "ten codes today" in out["error"] and not JARGON.search(out["error"])
+    log = f.relay.store.load()["handoff_log"][phone.session.device]
+    assert len(log) == rcl.HANDOFF_DAY_PER_DEVICE
+    # A day later the count starts again.
+    f.relay.store._update(lambda d: d["handoff_log"].update(
+        {phone.session.device: [t - 86400 for t in log]}))
+    assert _relay_post(phone, "/api/relay/handoff", {})[0] == 200
 
 
 def test_the_web_chat_checks_the_relayed_owner_mark(web):
@@ -3065,7 +3164,7 @@ def test_the_cli_makes_a_handoff_code(tmp_path, capsys, monkeypatch, loop):
     assert rc.normalize_handoff_code(lines["Code"]) and lines["Code"][5] == "-"
     assert lines["Open"] == HOSTED + "?relay=" + urllib.parse.quote(base, safe="")
     assert "Never send it through chat or mail" in out.err
-    mailbox, k = rc.handoff_keys(lines["Code"])
+    mailbox, k = rc.handoff_keys(lines["Code"], base)
     status, got = loop["relay"].take_handoff(mailbox)
     assert status == 200
     payload = rc.open_handoff(mailbox, k, got["c"])

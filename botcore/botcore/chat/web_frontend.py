@@ -86,8 +86,8 @@ copy of the app with a handoff code (`POST /api/relay/handoff`). A
 relayed request (`X-Tacitus-Relay`) never reaches those routes or
 `/api/pair`, but for four from an approved phone paired on the bot's own
 origin, which the relay client marks (`X-Tacitus-Relay-Device`): start a
-handoff, list the devices, approve a computer that phone handed off, and
-remove any device but itself. `/api/me` tells the app whether its
+handoff, list the devices, and approve or remove a computer that phone
+handed off. `/api/me` tells the app whether its
 requests may confirm a card (`X-Tacitus-Relay-Cards`) and which device
 routes it reaches (`owner_routes`). A new device is announced in the DM
 channel, and so is a handoff or an approval made through the relay;
@@ -4490,8 +4490,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         request already, except a phone's attestation and the relayed owner
         routes, so the others answer only in the owner's own web chat (the
         tailnet, or this machine). A relayed owner request (`by`, its
-        device) lists, starts a handoff, approves only a computer that a
-        handoff it started set up, and removes any device but itself. A
+        device) lists, starts a handoff, and approves or removes only a
+        computer that a handoff it started set up. A
         pairing opens the app on the bot's own origin, or with `{"via":
         "relay"}` on the relay's copy, which checks its code against the
         hash of the signed app bundle the link carries."""
@@ -4544,9 +4544,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             device = self._read_json().get("device")
             if not isinstance(device, str) or not _DEVICE_RE.match(device):
                 raise _HttpError(400, "device is a 16-character device id")
-            if by and device == by:
-                raise _HttpError(403, "A phone cannot remove itself from here. Remove it in the "
-                                      "web chat on your computer.")
+            if by:
+                rec = relay.store.device_by_id(device)
+                if rec is None:
+                    raise _HttpError(404, "no such device")
+                if not (rec.get("handoff") is True and rec.get("by") == by):
+                    raise _HttpError(403, "From this phone you can remove only a computer it "
+                                          "added with a code. Remove other devices in Tacitus "
+                                          "on your own network.")
             if not relay.revoke(device):
                 raise _HttpError(404, "no such device")
             if web_push.AVAILABLE:
@@ -4559,10 +4564,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         """`POST /api/relay/handoff`, `{}`: a one-time code that sets up a
         computer at the hosted copy of the app (relay_client.make_handoff).
         `open` is the address to type there; `access` what the computer
-        may do once approved. 409 with a plain reason when the handoff
-        cannot work here, 503 when the relay did not take it. Through the
-        relay (`by`) the owner hears of it in the DM."""
-        from .relay_client import BUNDLE_ACCESS, HandoffUnavailable, RelayError, bundle_hash_of
+        may do once approved; `pairing` the id the computer's device row
+        carries once it takes the code. 409 with a plain reason when the
+        handoff cannot work here, 429 past a phone's limit of codes, 503
+        when the relay did not take it. Through the relay (`by`) the owner
+        hears of it in the DM."""
+        from .relay_client import (BUNDLE_ACCESS, HandoffLimit, HandoffUnavailable, RelayError,
+                                   bundle_hash_of)
         sized = self.headers.get("Content-Length") not in (None, "0") \
             or self.headers.get("Transfer-Encoding")
         if sized:
@@ -4572,6 +4580,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             raise _HttpError(409, why)
         try:
             out = relay.new_handoff(bundle_hash_of(self.fe), by=by or "owner")
+        except HandoffLimit as e:
+            raise _HttpError(429, str(e)) from None
         except HandoffUnavailable as e:
             log.warning("web chat: the relay did not take a handoff: %s", e)
             raise _HttpError(503, "Tacitus could not pass the code on just now. Try again in "
@@ -4585,7 +4595,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                   "a minute.") from None
         if by:
             self._relay_handoff_notice(by)
-        self._json(200, {"code": out["code"], "expires": out["expires"],
+        self._json(200, {"code": out["code"], "expires": out["expires"], "pairing": out["pairing"],
                          "open": relay.handoff_address(), "access": BUNDLE_ACCESS})
 
     def _relay_handoff_notice(self, by: str, new: dict | None = None,

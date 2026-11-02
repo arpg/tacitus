@@ -68,10 +68,10 @@ KEY_TYPE = "ssh-ed25519"
 MAIN_REF = "refs/remotes/origin/main"
 FETCH_REFSPECS = ("+refs/tags/v*:refs/tags/v*", f"+refs/heads/main:{MAIN_REF}")
 APP_DIR = "botcore/botcore/chat/webui"
-TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
-COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+TAG_RE = re.compile(r"v([0-9]+)\.([0-9]+)\.([0-9]+)")  # each used with fullmatch: no trailing newline
+COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 # A file of the app as a manifest names it (relay_crypto.MANIFEST_PATH_RE).
-PATH_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$")
+PATH_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*")
 MANIFEST_NAME = "manifest.sig.json"
 RELAYS_NAME = "relays.json"
 RELEASE_NAME = "release.txt"
@@ -92,7 +92,7 @@ def say(msg: str) -> None:
 
 
 def version_key(tag: str) -> tuple[int, int, int] | None:
-    m = TAG_RE.match(tag or "")
+    m = TAG_RE.fullmatch(tag or "")
     return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
 
 
@@ -258,7 +258,7 @@ def parse_release(text: str) -> dict:
         value = value.strip()
         if key == "tag" and version_key(value):
             out["tag"] = value
-        elif key == "commit" and COMMIT_RE.match(value):
+        elif key == "commit" and COMMIT_RE.fullmatch(value):
             out["commit"] = value
         elif key == "files" and re.fullmatch(r"[0-9a-f]{64}", value):
             out["files"] = value
@@ -356,7 +356,7 @@ def app_files(src: Path, commit: str) -> tuple[dict[str, bytes], list[str]]:
             continue
         if rel == MANIFEST_NAME:
             continue
-        if kind != "blob" or mode not in ("100644", "100755") or not PATH_RE.match(rel):
+        if kind != "blob" or mode not in ("100644", "100755") or not PATH_RE.fullmatch(rel):
             skipped.append(rel)
             continue
         files[rel] = git(src, "cat-file", "blob", obj, text=False).stdout
@@ -456,7 +456,7 @@ def main(argv: list[str] | None = None) -> int:
             say(why)
             _outputs(a.github_output, {"tag": tag, "commit": commit, "deploy": "yes" if go else "no"})
             return 0
-        if a.commit and not COMMIT_RE.match(a.commit):
+        if a.commit and not COMMIT_RE.fullmatch(a.commit):
             raise BuildError("--commit takes a full commit id")
         relays = read_relays(Path(a.relays) if a.relays else None)
         build(src, a.tag, pin, Path(a.out), relays, a.commit)

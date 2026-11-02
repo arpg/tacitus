@@ -55,6 +55,7 @@ import binascii
 import hashlib
 import hmac
 import http
+import ipaddress
 import json
 import mimetypes
 import queue
@@ -172,8 +173,21 @@ class Limits:
     max_handoff_bytes: int = 4096     # one blob (base64url), bytes
     max_handoff_ttl: int = 600        # seconds a blob is held at most
     max_handoffs_total: int = 4096    # blobs held in all (16 MiB at most)
+    max_handoffs_per_source: int = 32  # blobs held per source address (an IPv6 /64)
     lookup_rate: float = 20 / 60      # mailbox lookups per second per source address
     lookup_burst: int = 20
+
+
+def source_group(source: str) -> str:
+    """The unit a source address is metered by: an IPv4 address, or the /64
+    of an IPv6 one (one host is commonly given a whole /64)."""
+    try:
+        ip = ipaddress.ip_address(source)
+    except ValueError:
+        return source
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        return str(ip.ipv4_mapped)
+    return str(ipaddress.ip_network(f"{ip}/64", strict=False)) if ip.version == 6 else str(ip)
 
 
 def clean_frame(obj: Any, kinds: frozenset) -> Optional[dict]:
@@ -265,9 +279,10 @@ class Relay:
         self.total_bytes = 0
         # Per source address: [tokens, refilled at], for opening new routes.
         self._sources: dict[str, list[float]] = {}
-        # Handoff blobs by mailbox: (install, blob, expiry). Apart from the
-        # routes: a blob outlives a bot that stops polling, up to its ttl.
-        self.handoffs: "OrderedDict[str, tuple[str, str, float]]" = OrderedDict()
+        # Handoff blobs by mailbox: (install, blob, expiry, source group).
+        # Apart from the routes: a blob outlives a bot that stops polling,
+        # up to its ttl.
+        self.handoffs: "OrderedDict[str, tuple[str, str, float, str]]" = OrderedDict()
         # Per source address: [tokens, refilled at], for mailbox lookups.
         self._lookups: dict[str, list[float]] = {}
 
@@ -612,8 +627,22 @@ class Relay:
 
     def _purge_handoffs(self, now: float) -> None:
         """Drop the blobs past their time; called with the lock held."""
-        for m in [m for m, (_, _, exp) in self.handoffs.items() if exp <= now]:
+        for m in [m for m, (_, _, exp, _) in self.handoffs.items() if exp <= now]:
             del self.handoffs[m]
+
+    def _room_for_handoff(self, group: str) -> bool:
+        """A full table: drop the oldest blob of the source that holds the
+        most, when it holds more than one and more than `group` does;
+        called with the lock held. False otherwise (the table stays full):
+        a fresh address never pushes out a source's only blob."""
+        held: dict[str, int] = {}
+        for _, _, _, g in self.handoffs.values():
+            held[g] = held.get(g, 0) + 1
+        top = max(held, key=held.get, default=None)
+        if top is None or held[top] <= max(1, held.get(group, 0)):
+            return False
+        del self.handoffs[next(m for m, e in self.handoffs.items() if e[3] == top)]
+        return True
 
     def deposit_handoff(self, install: str, auth: Any, body: Any,
                         source: str = "") -> tuple[int, dict]:
@@ -623,7 +652,10 @@ class Relay:
         already holds replaces it, and one another install holds is
         refused. An install with no route open (no bot polling) spends the
         new-route meter of its address, so tokens minted for the purpose do
-        not fill the table cheaply."""
+        not fill the table cheaply. Each source address (an IPv6 /64) holds
+        at most max_handoffs_per_source, and a full table makes room by
+        dropping the oldest blob of the source that holds the most, so
+        addresses that fill it cannot keep a bot with few blobs out."""
         status, err, _ = self.check_bot(install, auth)
         if status != 200:
             return status, err
@@ -641,16 +673,20 @@ class Relay:
             now = self.clock()
             self._purge_handoffs(now)
             held = self.handoffs.get(m)
+            group = source_group(source)
             if held is not None and held[0] != install:
                 return 409, {"error": "mailbox in use"}
             if held is None:
-                if sum(1 for i, _, _ in self.handoffs.values() if i == install) >= lim.max_handoffs:
+                if sum(1 for i, _, _, _ in self.handoffs.values() if i == install) >= lim.max_handoffs:
                     return 429, {"error": "too many handoffs"}
-                if len(self.handoffs) >= lim.max_handoffs_total:
-                    return 503, {"error": "relay full"}
+                if sum(1 for _, _, _, g in self.handoffs.values()
+                       if g == group) >= lim.max_handoffs_per_source:
+                    return 429, {"error": "too many handoffs from this address"}
                 if self._online(install, now) is None and not self._source_ok(source, now):
                     return 429, {"error": "too many new installs from this address"}
-            self.handoffs[m] = (install, c, now + ttl)
+                if len(self.handoffs) >= lim.max_handoffs_total and not self._room_for_handoff(group):
+                    return 503, {"error": "relay full"}
+            self.handoffs[m] = (install, c, now + ttl, group)
         return 200, {"ok": True}
 
     def take_handoff(self, mailbox: Any, source: str = "") -> tuple[int, dict]:
@@ -690,7 +726,7 @@ class Relay:
                     "inbox": [f for f, _ in r.inbox], "waiting": sorted(r.waiting),
                     "streams": list(r.streams)} for i, r in self.routes.items()},
                 "handoffs": {m: {"install": i, "c": c, "expires": exp}
-                             for m, (i, c, exp) in self.handoffs.items()}}
+                             for m, (i, c, exp, _) in self.handoffs.items()}}
 
     def counts(self) -> dict:
         with self.lock:

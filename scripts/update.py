@@ -1603,7 +1603,7 @@ def relay(base: Path = RELAY_BASE, state: Path = RELAY_STATE, *, dry_run: bool =
     scratch = Path(tempfile.mkdtemp(prefix="relay-update-"))
     try:
         tree = export_tree(cache, commit, scratch / tag, tag)
-        r = runner(["bash", str(tree / "relay" / "install.sh"), "--tag", tag], cwd=str(tree))
+        r = runner(_relay_install(tree, tag, commit), cwd=str(tree))
         now_head = git(src, "rev-parse", "HEAD", check=False).stdout.strip()
         if r.returncode == 0 and now_head == commit and healthy():
             st.update(installed=tag, installed_commit=commit[:7])
@@ -1617,7 +1617,8 @@ def relay(base: Path = RELAY_BASE, state: Path = RELAY_STATE, *, dry_run: bool =
         if installed:
             old = export_tree(cache, git_out(cache, "rev-parse", f"refs/tags/{installed}^{{commit}}"),
                               scratch / installed, installed)
-            runner(["bash", str(old / "relay" / "install.sh"), "--tag", installed], cwd=str(old))
+            runner(_relay_install(old, installed, git_out(cache, "rev-parse", f"refs/tags/{installed}^{{commit}}")),
+                   cwd=str(old))
         st["held_back"] = {"version": tag, "at": now_iso(), "reason": why}
         st["last_apply"] = {"at": now_iso(), "from": installed, "to": tag, "result": "rolled-back",
                             "detail": why}
@@ -1625,6 +1626,15 @@ def relay(base: Path = RELAY_BASE, state: Path = RELAY_STATE, *, dry_run: bool =
         return 1
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _relay_install(tree: Path, tag: str, commit: str) -> list[str]:
+    """A release's own relay/install.sh --tag, with the commit this updater
+    verified (`--expect-commit`) when that install.sh takes it, so the
+    script refuses a tag that names another commit by the time it fetches."""
+    script = tree / "relay" / "install.sh"
+    expect = ["--expect-commit", commit] if "--expect-commit)" in _read(script) else []
+    return ["bash", str(script), *expect, "--tag", tag]
 
 
 def _read(path: Path) -> str:

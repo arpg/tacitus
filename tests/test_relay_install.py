@@ -198,3 +198,95 @@ def test_an_update_keeps_what_the_relay_serves_and_reports_its_health():
     assert "sed 's/^/tacitus-release namespaces=\"git\" /'" in text
     assert text.rstrip().endswith("[ $HEALTHY = 1 ] || exit 1")
     assert "Releases are not signed yet" not in text
+
+
+# ── the signed tag check (verify_tag, run alone) ─────────────────────
+
+def _git(cwd, *args):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    r = subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.test", *args],
+                       cwd=str(cwd), capture_output=True, text=True, env=env)
+    assert r.returncode == 0, (args, r.stderr)
+    return r.stdout.strip()
+
+
+def _verify_tag(clone, tag, key, expect=""):
+    """relay/install.sh's verify_tag function, cut out and run on its own."""
+    text = SCRIPT.read_text()
+    fn = text.split("# >>> verify_tag", 1)[1].split("# <<< verify_tag", 1)[0]
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    return subprocess.run(["bash", "-c", fn + '\nverify_tag "$@"', "verify_tag", str(clone), tag,
+                           str(key), expect], capture_output=True, text=True, env=env, timeout=30)
+
+
+def test_the_script_takes_only_a_tag_under_its_own_name_on_main(tmp_path):
+    """The review's finding: --tag took an older signed tag object moved to
+    a new name. The tag must carry its own name inside, name the commit the
+    updater verified when it says one, sit on main's history, and be signed
+    by an ssh-ed25519 key of the pin."""
+    if not shutil.which("ssh-keygen"):
+        return
+    key = tmp_path / "release"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "release", "-f", str(key)],
+                   check=True)
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    sign = ("-c", "gpg.format=ssh", "-c", f"user.signingkey={key}")
+    (origin / "f").write_text("1")
+    _git(origin, "add", "f")
+    _git(origin, "commit", "-qm", "one")
+    old = _git(origin, "rev-parse", "HEAD")
+    _git(origin, *sign, "tag", "-s", "-m", "v1.0.0", "v1.0.0")
+    (origin / "f").write_text("2")
+    _git(origin, "commit", "-qam", "two")
+    new = _git(origin, "rev-parse", "HEAD")
+    _git(origin, *sign, "tag", "-s", "-m", "v1.0.1", "v1.0.1")
+    # A signed tag on a commit that never reached main.
+    _git(origin, "checkout", "-q", "-b", "side")
+    (origin / "f").write_text("side")
+    _git(origin, "commit", "-qam", "side")
+    _git(origin, *sign, "tag", "-s", "-m", "v1.0.2", "v1.0.2")
+    _git(origin, "checkout", "-q", "main")
+    # The older signed tag object under a newer name.
+    _git(origin, "update-ref", "refs/tags/v1.0.3", _git(origin, "rev-parse", "refs/tags/v1.0.0"))
+    clone = tmp_path / "clone"
+    _git(tmp_path, "init", "-q", str(clone))
+    _git(clone, "fetch", "-q", "--no-tags", str(origin), "+refs/tags/*:refs/tags/*",
+         "+refs/heads/main:refs/remotes/origin/main")
+    pub = Path(str(key) + ".pub")
+
+    ok = _verify_tag(clone, "v1.0.1", pub)
+    assert ok.returncode == 0 and ok.stdout.strip() == new, ok.stderr
+    assert _verify_tag(clone, "v1.0.1", pub, new).returncode == 0
+    for tag, expect, says in (("v1.0.3", "", "carries another name"),
+                              ("v1.0.1", old, f"not {old}"),
+                              ("v1.0.2", "", "not in main's history")):
+        r = _verify_tag(clone, tag, pub, expect)
+        assert r.returncode != 0 and says in r.stderr, (tag, r.stderr)
+    # Only ssh-ed25519 lines of the pin count.
+    rsa = tmp_path / "rsa.pub"
+    rsa.write_text("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ test\n")
+    r = _verify_tag(clone, "v1.0.1", rsa)
+    assert r.returncode != 0 and "no ssh-ed25519 key" in r.stderr
+    other = tmp_path / "other"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(other)], check=True)
+    r = _verify_tag(clone, "v1.0.1", Path(str(other) + ".pub"))
+    assert r.returncode != 0 and "not signed by the release key" in r.stderr
+    # The flag is checked with the other arguments, before anything changes.
+    for args, says in ((("--commit", SHA, "--expect-commit", SHA), "with --tag"),
+                       (("--tag", "v1.0.1", "--expect-commit", "main"), "full commit id")):
+        r = _run(*args)
+        assert r.returncode != 0 and says in r.stderr, (args, r.stderr)
+    text = SCRIPT.read_text()
+    assert 'COMMIT="$(verify_tag $CLONE "$TAG" "$KEY" "$EXPECT")"' in text
+    assert "+refs/heads/main:refs/remotes/origin/main" in text
+
+
+def test_the_nginx_snippet_warns_against_a_verbose_error_log():
+    """limit_req logs its refusals with the request line at info: the
+    snippet keeps them there and says to leave error_log above it."""
+    text = (RELAY / "snippets" / "nginx.conf").read_text()
+    assert "limit_req_log_level info;" in text and "error_log above info" in text

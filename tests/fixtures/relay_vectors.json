@@ -115,21 +115,28 @@
   }
  },
  "handoff": {
-  "about": "PBKDF2-HMAC-SHA256(code, salt, iterations, 48 bytes): mailbox = hex of the first 16, key = the last 32; the blob is base64url of nonce || AES-256-GCM(key, nonce, payload, aad = salt || mailbox). This vector runs 1000 iterations; the bot and the app run 600000 (production).",
+  "about": "k = PBKDF2-HMAC-SHA256(code, salt, iterations, 32 bytes); mailbox = hex of the first 16 bytes of HMAC-SHA256(k, salt || ' mailbox' || 0x00 || the relay URL without a trailing slash); key = HMAC-SHA256(k, salt || ' key'); the blob is base64url of nonce || AES-256-GCM(key, nonce, payload, aad = salt || mailbox). This vector runs 1000 iterations; the bot and the app run 600000 (production).",
   "code": "7K3QX-9ZRMA",
   "normalized": "7K3QX9ZRMA",
   "salt": "tacitus-handoff/1",
   "iterations": 1000,
-  "mailbox": "ca6e63aa81325cbb790e8d87e1e179b0",
-  "key": "6d5e9a063cc145e7e730fa9336f9ca9b0b967c80fe2b3d95a4b105577078535b",
+  "relay": "https://relay.example.org",
+  "secret": "ca6e63aa81325cbb790e8d87e1e179b06d5e9a063cc145e7e730fa9336f9ca9b",
+  "mailbox": "e3f92f0c4c0d1e06f4d7e6508fbfdf2b",
+  "key": "7c91a9089cb35f0ed28ccb7cf32c99d030fc6e3bfc16788f1e387ba5ced13c54",
+  "other_relay": {
+   "relay": "https://relay.example.net/relay/",
+   "mailbox": "99726682e0cc1ca0e797c4005a931acd"
+  },
   "nonce": "1cbce0347c68ff6986531dec",
-  "aad": "dGFjaXR1cy1oYW5kb2ZmLzFjYTZlNjNhYTgxMzI1Y2JiNzkwZThkODdlMWUxNzliMA",
+  "aad": "dGFjaXR1cy1oYW5kb2ZmLzFlM2Y5MmYwYzRjMGQxZTA2ZjRkN2U2NTA4ZmJmZGYyYg",
   "payload": "{\"a\":\"https://app.example.org/\",\"b\":\"45347ddf99fb2dbef2a3243c8668394d2de2426e16b19accc3bcb4383915540c\",\"c\":\"VU5HnZTy-0eH9G54ErIqLHUdv7rZ-3BpaOIqr7BYdD0\",\"i\":\"rn3ufrbnfzcwziuaorspfpn6tg\",\"k\":\"QsqGXnp6UFoHRn0HaGIb4dm1-tRnhM1MhxrKQX-80yg\",\"p\":\"39fc6abd0fe47b5deee47a7d7441d6eb\",\"r\":\"https://relay.example.org\",\"s\":\"9IFtSrvyqeMLe1A0HPVDOoNbLTaL06jLFZimrrPUSc0\",\"v\":2,\"x\":1793421933}",
-  "blob": "HLzgNHxo_2mGUx3s1T80kfRm5-2OfvsTAjYrPL0TBd9x_B0XIgY8IwR27Cnk5EnfjCpyfCbC8wgjyyQL24GLRT2C0HBjkUeasgiMB9dSR9LKt38RO0SapmJnKcNcgbJO6rUuEsXkdFaABM9DjHLjH6kw-ResMqSqTXndRq-hY1McLN_nubSbqjsD2DIvbI8hxU8YWDcxMMAfbqb14CKpu6R3o_K5hQgetpFdKrsE4JueujoeLAARDym9Jyfk-SCj78aocX_bCde_ZPE_Au6ITypUNVV1mlCzTbIeAxobCv3ILYBPU14k6lyOV-dpkKexXjO7nuULCA3DcgsJWd3Ct1G0dxiZf2uCwBZacVc3fdbgfDZQj-cVfTgSYIY2ouSPIqkBZHdddv19szOr9WQS7zgdbUgimEDmRwsDGnfkm_HaetxbNqSMu0aR9qpzrI0VDNCYhHPnnrdx61Oc4AzqyiqSO3I5VQp0RzCgtMA4IZOzp_OalrwdDmabuG_ahZT_HyGXFJ5bElyK3HZRDbLwm4KHNWdIUA",
+  "blob": "HLzgNHxo_2mGUx3sBQTNwyxoKzKkbG-AegQoQi06ZtWYfqSh4Bz30x4cw-aSmjdZT-Z1BVPkhNlk5e1Li5oVk8ej94gTCPJWS17Z4wO5JuPq-nbVop3Nrzbmcv04FiEUqIeCNMIEj60JUdXS2FRWKL6B8fqk4jU3cwuJzGGKmV2KpRje5o7uY0pxUWZuBDftIiXuopr93HhNjrqG2g2tW4H-qel8pT0zWKCZCe1H9N9dpu3gATOhOdSwOKe1_opsBnEnFBY7xzHtsne0oQCqMKQfYtf3poCedWZLwcKIbuHV17SST3EBu7PSHwVpaYhyFV1m_RY99iMZvrZKbAT7PIyN1VaCRAmPxFOkcPG-CeWtDjDcBHIK4CdPO5ywAIPoN9-busEopKLTZON66tlbAMduGKlQdaNRsamd8S-SNUVRERwirG7UySgVgSIU-urgRiyrZAN1QNdsTSocH_ipZHw9CjwWGJnC01XMy6qzahV2yqasThCOCCIwCSG51kuSXtvAFDxwn4DvB7I_0Dq_nJauq9HGqQ",
   "production": {
    "iterations": 600000,
-   "mailbox": "67d0dc9c533d71329e259e176eb36981",
-   "key": "1f303c3ce50d3e690496cff4d30bb01d8102d86c0343ef3b4dbf8d2e510a5d75"
+   "secret": "67d0dc9c533d71329e259e176eb369811f303c3ce50d3e690496cff4d30bb01d",
+   "mailbox": "b1205fedc2b48a0c91bdf6520d115bdb",
+   "key": "1d13feda8f8da46beaadb0dff60799a99a4ae443e200001394918abb979e4411"
   },
   "normalize": [
    [

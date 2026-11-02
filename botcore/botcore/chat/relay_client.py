@@ -77,6 +77,11 @@ MAX_SESSIONS = 32
 MAX_DEVICE_SESSIONS = 4
 SESSION_IDLE = 12 * 3600
 MAX_PAIRINGS = 8
+# A device other than the owner's own web chat (a phone through the relay)
+# holds at most this many handoff codes open, and makes at most this many
+# a day: a stolen phone cannot fill the open pairings or mint codes freely.
+HANDOFF_OPEN_PER_DEVICE = 2
+HANDOFF_DAY_PER_DEVICE = 10
 NAME_MAX = 40
 REFUSED_LOG_EVERY = 60.0        # at most one "hello refused" line a minute
 STOP_WAIT = 2.0                 # stop() waits this long for the workers that run
@@ -95,8 +100,8 @@ EVENTS_PATH = "/api/events"
 # The owner routes a phone reaches through the relay, each in exactly this
 # spelling, and only from an approved device paired on the bot's own origin
 # (whose code the relay never served): start a handoff to a computer, list
-# the devices, approve a computer this same device handed off, and remove
-# any device but itself (the web front end checks the last two). The client
+# the devices, and approve or remove a computer this same device handed
+# off (the web front end checks the last two). The client
 # marks each such request with X-Tacitus-Relay-Device, the session's device;
 # a relay-origin or hosted device reaches none of them.
 RELAYED_OWNER_ROUTES = frozenset({("POST", "/api/relay/handoff"), ("GET", "/api/relay/devices"),
@@ -144,6 +149,11 @@ _PATH_RE = re.compile(r"^/api/[A-Za-z0-9._~%!$&'()*+,;=:@/-]*(\?[A-Za-z0-9._~%!$
 
 class RelayError(Exception):
     """A key file or config problem; the relay does not start."""
+
+
+class HandoffLimit(RelayError):
+    """A device asked for more handoff codes than it may hold or make;
+    the text is plain words for the person who asked."""
 
 
 # ── the key file ──────────────────────────────────────────────────────
@@ -280,7 +290,10 @@ class KeyStore:
         against. `bundle` and `app_url` also go in the link (`b` and `a`,
         payload version 2). A pairing behind a handoff code (`handoff`)
         records `by`, the device that asked for the code or "owner", and
-        so does the device that spends it."""
+        so does the device that spends it. A device (not "owner") holds at
+        most HANDOFF_OPEN_PER_DEVICE codes open and makes at most
+        HANDOFF_DAY_PER_DEVICE a day (`handoff_log` in the file): past
+        either, HandoffLimit."""
         if bundle and not rc.BUNDLE_RE.match(bundle):
             raise RelayError("a bundle hash is 64 hex characters")
         now = time.time() if now is None else now
@@ -290,6 +303,19 @@ class KeyStore:
 
         def add(data: dict) -> None:
             live = [p for p in data["pairings"] if p.get("expires", 0) > now]
+            asker = by or "owner"
+            if handoff and asker != "owner":
+                if sum(1 for p in live if p.get("handoff") is True
+                       and p.get("by") == asker) >= HANDOFF_OPEN_PER_DEVICE:
+                    raise HandoffLimit("This phone has two codes open already. Use one, or "
+                                       "wait ten minutes until they end.")
+                logs = {k: [t for t in v if isinstance(t, (int, float)) and now - t < 86400]
+                        for k, v in (data.get("handoff_log") or {}).items() if isinstance(v, list)}
+                if len(logs.get(asker, [])) >= HANDOFF_DAY_PER_DEVICE:
+                    raise HandoffLimit("This phone made ten codes today. Add the computer from "
+                                       "Tacitus on your own network, or try again tomorrow.")
+                logs.setdefault(asker, []).append(int(now))
+                data["handoff_log"] = {k: v for k, v in logs.items() if v}
             live.append({"id": payload.pairing_id, "psk": rc.b64e(payload.psk),
                          "expires": payload.expires, "origin": _kind(origin),
                          **({"bundle": bundle} if bundle else {}),
@@ -351,6 +377,7 @@ class KeyStore:
                 record["bundle"] = live[0]["bundle"]
             if live[0].get("handoff") is True:
                 record["handoff"], record["by"] = True, str(live[0].get("by") or "owner")
+                record["pairing"] = pairing_id
             data["pairings"] = [p for p in data["pairings"] if p.get("id") != pairing_id]
             data["devices"] = [d for d in data["devices"] if d.get("id") != record["id"]]
             data["devices"].append(record)
@@ -595,14 +622,16 @@ def device_row(d: Mapping[str, Any]) -> dict:
     `pending` (and the pairing `code` while pending); for a relay-origin
     or hosted device also `cards_allowed`, `bundle_verified` (its last
     check of its app) and the `release` it checked against; for one set up
-    with a handoff code, `handoff` and `by` (the device that asked for the
-    code, or "owner")."""
+    with a handoff code, `handoff`, `by` (the device that asked for the
+    code, or "owner") and `pairing` (the code's pairing id, which the
+    handoff's answer names, so the asker knows which computer took it)."""
     row = {k: d.get(k) for k in ("id", "name", "paired_at", "origin")}
     row["pending"] = bool(d.get("pending"))
     if row["pending"]:
         row["code"] = str(d.get("code") or "")
     if d.get("handoff") is True:
         row["handoff"], row["by"] = True, str(d.get("by") or "owner")
+        row["pairing"] = str(d.get("pairing") or "")
     if d.get("origin") != "own":
         row["cards_allowed"] = d.get("cards_allowed") is True
         row["bundle_verified"] = d.get("bundle_verified") is True
@@ -668,7 +697,7 @@ def make_handoff(store: KeyStore, opener: Any, relay_url: str, hosted_app: str, 
                                 app_url=hosted_app, handoff=True, by=by, now=now)
     code = rc.new_handoff_code()
     try:
-        mailbox, key = rc.handoff_keys(code)
+        mailbox, key = rc.handoff_keys(code, relay_url)
         blob = rc.seal_handoff(mailbox, key, payload.to_json())
         deposit_handoff(opener, relay_url, store.identity(), mailbox, blob,
                         int(payload.expires - now))
