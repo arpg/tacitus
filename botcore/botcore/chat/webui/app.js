@@ -1262,15 +1262,23 @@ const footer = () => { $('drawer-foot').hidden = ['notify-row', 'install', 'pair
 // height rules, so a screen that changes size (a foldable opening, a window
 // resized) is never held at the old height.
 let lastSize = '';
+let lastShort = '';
+// The keyboard is up only while a text field has the focus: a screen that
+// reports a short visual viewport for another reason (a foldable open in
+// landscape) must not pin the app to that height.
+const editing = () => { const el = document.activeElement; return Boolean(el) && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' || el.isContentEditable === true); };
 function fitViewport() {
   const vv = window.visualViewport;
   const root = document.documentElement.style;
-  const keyboard = vv && Math.abs(vv.scale - 1) <= 0.01 && vv.height < window.innerHeight - 40;
+  const shorter = Boolean(vv) && Math.abs(vv.scale - 1) <= 0.01 && vv.height < window.innerHeight - 40;
+  const keyboard = shorter && editing();
   if (keyboard) root.setProperty('--app-h', `${vv.height}px`);
   else root.removeProperty('--app-h');
   if (window.scrollY || (vv && vv.offsetTop)) window.scrollTo(0, 0);
   const size = `${window.innerWidth}x${window.innerHeight}`;
-  if (lastSize && size !== lastSize && !keyboard) diagNote({ what: 'resize', from: lastSize, to: size, vv: vv ? `${Math.round(vv.width)}x${Math.round(vv.height)}` : '' });
+  const vvSize = vv ? `${Math.round(vv.width)}x${Math.round(vv.height)}` : '';
+  if (lastSize && size !== lastSize && !keyboard) diagNote({ what: 'resize', from: lastSize, to: size, vv: vvSize });
+  if (shorter && !keyboard && lastShort !== `${size}/${vvSize}`) { lastShort = `${size}/${vvSize}`; diagNote({ what: 'short-viewport', size, vv: vvSize }); }
   lastSize = size;
 }
 
@@ -2264,6 +2272,7 @@ async function init() {
   installHint();
   if (window.visualViewport) ['resize', 'scroll'].forEach((t) => visualViewport.addEventListener(t, fitViewport));
   ['resize', 'orientationchange', 'pageshow', 'focus'].forEach((t) => window.addEventListener(t, fitViewport));
+  ['focusin', 'focusout'].forEach((t) => document.addEventListener(t, () => setTimeout(fitViewport, 50)));
   document.addEventListener('visibilitychange', () => { if (!document.hidden) fitViewport(); });
   fitViewport();
   // The thread holds its newest message in view while its pane shrinks (the keyboard opening).
