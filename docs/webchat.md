@@ -131,10 +131,10 @@ origin, so a deck on another port of the host is another origin):
   `[::1]` or `localhost` with the server's port; else 421.
 - `Sec-Fetch-Site` of `cross-site` or `same-site` is refused (403), a
   GET too.
-- A POST carries an `Origin` equal to `public_url`'s scheme, host and
-  port; a missing one is refused (403). A loopback client that sends no
-  identity header (the relay client) may send the server's loopback
-  origin, `http://127.0.0.1:<port>`.
+- A POST, PATCH or DELETE carries an `Origin` equal to `public_url`'s
+  scheme, host and port; a missing one is refused (403). A loopback client
+  that sends no identity header (the relay client) may send the server's
+  loopback origin, `http://127.0.0.1:<port>`.
 
 The bot serves only a trusted block (`trusted_config`), a store
 directory of mode 0700 and a store and token file of mode 0600 that it
@@ -150,11 +150,26 @@ under a ShadowFrontend the composite switches the shadow off
   kind is `main`, `sched`, `dm`, `room` or `digest`.
 - `messages(seq INTEGER PK AUTOINCREMENT, channel TEXT, id TEXT, thread_key TEXT,
   author TEXT, kind TEXT, text TEXT, card TEXT, file TEXT, reactions TEXT,
-  posted_at REAL, updated_at REAL, history INT, UNIQUE(channel, id))`.
+  posted_at REAL, updated_at REAL, history INT, edits TEXT, deleted_at REAL,
+  owner_reactions TEXT, UNIQUE(channel, id))`.
   `author` is `bot` or `owner`; `kind` is `message`, `card`, `status`
   (a card replaced by its final line) or `file`; `card`/`file`/`reactions`
   are JSON text or NULL. `history` is 1 on a row copied from the
-  primary's past (Shadow mode); such a row never counts as unread.
+  primary's past (Shadow mode); such a row never counts as unread. The
+  owner's own actions (below) use the last three: `edits` is the edit
+  history, a JSON list of `{"text", "at"}` (the text an edit replaced, and
+  when); `deleted_at` is set when the owner removed the message;
+  `owner_reactions` is a JSON list of the owner's reactions, apart from
+  `reactions`, the bot's status marks, which the thread states read. A
+  store from before gains the three columns on open.
+- `messages_fts`: the search index, an FTS5 table (`unicode61`, diacritics
+  removed) with one row per message, rowid = `seq`, holding its text. The
+  store writes it beside each insert and each change of a text, never
+  through a trigger, so a process whose SQLite lacks FTS5 still writes the
+  store; an index whose row count differs from `messages` (a store from
+  before it, or rows such a process wrote) is built again when a store
+  opens. Without FTS5 the table is not made and search reads `messages`
+  with LIKE.
 - `events(seq INTEGER PK AUTOINCREMENT, at REAL, type TEXT, channel TEXT,
   id TEXT, payload TEXT)`: the SSE log; `type` is `message`, `update`,
   `reaction`, `card`, `status`, `file`, `channel`.
@@ -184,9 +199,13 @@ API, never a copy of the live file.
 ```json
 {"seq": 12, "channel": "C1", "id": "w12", "thread_key": "t12",
  "author": "bot", "kind": "message", "text": "markdown...",
- "card": null, "file": null, "reactions": ["eyes"],
- "posted_at": 1761900000.0, "updated_at": 1761900000.0, "reply_count": 3}
+ "card": null, "file": null, "reactions": ["eyes"], "owner_reactions": ["+1"],
+ "deleted": false, "posted_at": 1761900000.0, "updated_at": 1761900000.0, "reply_count": 3}
 ```
+
+`owner_reactions` are the owner's own (`+1`, `white_check_mark`, `heart`,
+`eyes`, `joy`); `deleted` is true for a message the owner removed, whose
+text is then "" (The owner's own actions).
 
 `card` is the `ConfirmationCard` as JSON (`dataclasses.asdict`; see
 `botcore/botcore/chat/cards.py`: title, fields, body, quoted, actions,
@@ -216,6 +235,10 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/threads/{ch}/{thread_key}/state` | `{"state": "done" \| "needs_you" \| "waiting"}` → the thread's row as the threads route gives it, with `channel_name`: the owner's override (`state_by` `owner`), until a new message lands in the thread; 400 for another state, 404 for an unknown thread. A chat action: a relayed device that may chat may take it (State) |
 | GET | `/api/channels/{ch}/threads/{thread_key}` | the thread, oldest first, parent first |
 | POST | `/api/channels/{ch}/messages` | `{"text", "thread_key"?}` → the stored owner message; dispatches an `InboundMessage` |
+| GET | `/api/search?q=<text>&channel=<id>&limit=50` | `{"results": [{"channel", "channel_name", "thread_key", "thread_title", "id", "author", "kind", "posted_at", "snippet"}], "mode": "fts5" \| "like"}`: the messages that hold every word of `q`, newest first, a removed one left out; `channel` optional (404 for an unknown one), `limit` 1 to 200; `snippet` is at most 160 characters on one line around the first hit; `thread_title` is the conversation's first message's card title or first line. 400 for an empty `q` or one over 200 characters. A GET: a relayed device that reads may search (The owner's own actions) |
+| POST | `/api/messages/{ch}/{id}/react` | `{"emoji"}`, one of `+1`, `white_check_mark`, `heart`, `eyes`, `joy` (or its glyph) → the message JSON: the owner's reaction toggled, with a `reaction` event; 400 for another emoji, 404 for an unknown message, 409 for a removed one |
+| PATCH | `/api/messages/{ch}/{id}` | `{"text"}` → the message JSON with the new text, the old one kept in `edits`, `updated_at` raised and an `update` event; the owner's own text message only (403 for the bot's, 400 for a card or a file), in its first 15 minutes (409 after, with a plain error), 409 for a removed one |
+| DELETE | `/api/messages/{ch}/{id}` | → the message JSON, `deleted` true, text "" (`edits` and `owner_reactions` dropped), with an `update` event; the same rules as PATCH; a removed message answers as it is |
 | POST | `/api/channels/{ch}/files` | multipart `file`, optional `text`, `thread_key` → the stored `file` message; dispatches an `InboundMessage` with `files=[FileRef]` |
 | GET | `/api/files/{id}` | the bytes, `Content-Disposition: attachment` |
 | POST | `/api/cards/{ch}/{id}/actions` | `{"action_id", "value"?, "selected"?}` → `{"ok": true}`; dispatches an `ActionEvent` (`source` `button` or `select`) |
@@ -261,6 +284,53 @@ is `http.server.ThreadingHTTPServer` on a daemon thread started by
 and a 30-second socket timeout per connection; `run_forever()` blocks on
 a stop event; SSE handlers block on a per-connection `queue.Queue` fed
 by the store's event fan-out.
+
+## The owner's own actions
+
+Four things the owner had in Zulip: search, reactions, and editing or
+removing their own message. Each is a chat action, as a message is: a
+device the relay lets chat may take it, and a device that only reads may
+search (a GET). The relay client forwards PATCH and DELETE for that
+(`relay_client.METHODS`).
+
+**Search** (`WebStore.search`, `GET /api/search`). With FTS5
+(`fts5_available`, a probe on the store's connection when it opens, kept as
+`WebStore.search_mode`, which the route answers as `mode`) the query is
+split into words of letters and digits, each matched as the start of a
+word in any case, with or without accents, every word required
+(`"word"*` each, so nothing the owner types is the index's own syntax).
+Without it the query is split at spaces and each word must appear
+anywhere in the text (LIKE, in any ASCII case, `%` and `_` taken
+literally). Both read every channel, archived ones too, unless `channel`
+names one, and skip a removed message; the hits come newest first.
+
+**Reactions** (`WebStore.toggle_owner_reaction`). The owner has five:
+`+1`, `white_check_mark`, `heart`, `eyes` and `joy`. They live in
+`owner_reactions`, never in `reactions`: there the bot's status marks
+(`eyes` while it works, `white_check_mark` when done) drive the thread
+states, and an owner's check is not the bot's. A toggle leaves
+`updated_at` as it is, as a bot reaction does.
+
+**Edit and remove** (`WebStore.owner_edit`, `owner_remove`). Only the
+owner's own text message (`kind` `message`), and only in its first 15
+minutes (`EDIT_WINDOW_S`), counted from `posted_at`; after that the bot
+answers 409 with "You can change a message only in its first 15 minutes."
+(or "remove"). An edit keeps the replaced text in `edits`; a removal keeps
+the row, marked by `deleted_at`, with its text, its edit history and the
+owner's reactions dropped, so nothing of it stays to read. A later write
+from elsewhere (`change_message`, a mirror) puts no text, card or file
+back on a removed row. Neither dispatches anything: a turn the bot already
+started on the message runs on with the words it read (the owner's `stop`
+in the thread ends it), and the bot's later turns read the thread as it
+is now (`thread_replies`, the rules and the model step).
+
+**Shadow mode.** These stay in the web store. The composite takes the
+owner's messages, clicks and room changes (its `inbound` knows no edit,
+removal or reaction), `ChatFrontend` has no verb that removes a message,
+and a reaction on the
+primary would be the bot's, among its status marks. So Zulip keeps the
+message as it was sent, and the bot's turns there read Zulip's copy: an
+edit or a removal on the web changes what the web chat shows.
 
 ## State
 
@@ -646,7 +716,8 @@ Archive. The answer's row redraws the drawer at once; the `channel` event
 does in every other open app.
 
 Rendering: the markdown subset above, escaped first; reaction chips
-inline after the message; cards as a bordered block with title, fields
+after the message, one per emoji with its count, the bot's marks and the
+owner's own together, the owner's highlighted; cards as a bordered block with title, fields
 (label: value), the body in a scrollable monospace block, the quoted
 thread collapsed under a toggle, buttons for actions (the primary one
 emphasised, cancel plain) and a dropdown per select; a `status` card
@@ -738,11 +809,33 @@ digests that Tacitus posts the owner's mail digests there and does not
 read replies. The digest channel shows no New conversation and its
 threads no composer; that line stands in the composer's place.
 
+The owner's own actions. "Search" at the top of the drawer opens a
+field in the list's header ("Search your conversations"); the list then
+shows the hits, read 250 ms after typing stops (two letters at least, one
+on Enter), as one card per conversation with its name and place, then
+each hit with who and when and its snippet, the words marked. A hit opens
+its conversation with that message ringed, its words marked and scrolled
+to the middle; Back returns to the hits; the cross, Escape or a place
+picked in the drawer ends the search. On a message, "..." beside its time
+(with a mouse, on hover or focus) or a long press (500 ms, held still, on
+a touch screen) opens a strip: the five reactions, pressed when they are
+the owner's, then Edit and Delete on the owner's own text message in its
+first 15 minutes, and Copy. On a touch screen a message selects no text
+(a code block does), so Copy is the way to take its words. A tap on one
+of the owner's five in the chips under a message toggles it. Edit puts
+the words in the composer under an "Editing your message" line with
+Cancel, rings the message and holds the paperclip; Send saves them
+(`PATCH`), and what was typed before comes back; Cancel or Escape leaves
+the message as it is. Delete asks once ("Delete this message? This cannot
+be undone.") and the message then shows "You removed this message". A
+refusal from the bot shows under the composer.
+
 Dark and light from `prefers-color-scheme`. Keep the whole app under
-~3,680 lines with the relay transport, the QR encoder, the code check,
+~4,410 lines with the relay transport, the QR encoder, the code check,
 the update through the relay, the per-phone card-button choice, the
-Settings screen, the thread states with their stale shelf and the
-teaching; readable by one maintainer.
+Settings screen and its Notifications, the thread states with their stale
+shelf, the teaching, the rooms' menus and the owner's own actions;
+readable by one maintainer.
 
 Installing on a phone. The manifest (`display: standalone`, `scope` and
 `start_url` `./`, so the base path with its slash, since the page links
@@ -844,9 +937,10 @@ loopback and the peer's socket is tailscaled's (Identity and auth).
 then checks it. The cookie's `Path` is `base_path`. Pairing reads at
 most 1 KiB, and one attempt runs at a time (a wrong token waits
 `pair_delay_s` under the lock; a request that waits 10 s for the lock is
-a 429). Errors are 400, 401 and 404; 421 for a wrong `Host`; 403 for
-another site, a POST without this app's `Origin`, and a card action,
-push subscription or revoke from a device paired on the relay's origin
+a 429). Errors are 400, 401 and 404; 409 for an owner's edit or removal
+past its window; 421 for a wrong `Host`; 403 for another site, a POST,
+PATCH or DELETE without this app's `Origin`, a change to a message not
+the owner's, and a card action, push subscription or revoke from a device paired on the relay's origin
 below `"all"` (`X-Tacitus-Relay-Cards: deny`), and a relayed request
 (`X-Tacitus-Relay`) to `/api/pair` or `/api/relay/`; 429 for pairing; 503
 when the relay cannot open a pairing; and 500 for an unexpected failure.

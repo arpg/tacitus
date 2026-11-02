@@ -700,6 +700,14 @@ class FakeAPI(BaseHTTPRequestHandler):
         else:
             self._json(404, {"error": "no such route"})
 
+    def do_DELETE(self):
+        if not self._owner():
+            return
+        if self.path == "/chat/api/messages/C1/w2":
+            self._json(200, {"id": "w2", "text": "", "deleted": True})
+        else:
+            self._json(404, {"error": "no such route"})
+
 
 def _serve(server):
     t = threading.Thread(target=server.serve_forever, daemon=True)
@@ -848,9 +856,10 @@ def test_request_through_the_relay(loop):
 
 
 def test_a_room_rename_crosses_as_a_patch_and_other_methods_do_not(loop):
-    """The app renames a room with PATCH: the bot replays it with its body
-    and the loopback Origin, as a POST. A device that may chat may send it;
-    one that only reads may not. Another method never reaches the server."""
+    """The app renames a room with PATCH, and removes the owner's message
+    with DELETE: the bot replays each with its body and the loopback
+    Origin, as a POST. A device that may chat may send them; one that only
+    reads may not. Another method never reaches the server."""
     phone = loop["phone"]
     _, out = phone.call("PATCH", "/api/channels/r1", json.dumps({"name": "atlas 2027"}).encode())
     assert out["s"] == 200 and json.loads(out["body"])["name"] == "atlas 2027"
@@ -861,8 +870,13 @@ def test_a_room_rename_crosses_as_a_patch_and_other_methods_do_not(loop):
     assert hdrs["X-Tacitus-Relay"] == phone.session.device
     assert rcl.access_allows("chat", "PATCH", "/api/channels/r1")
     assert not rcl.access_allows("read", "PATCH", "/api/channels/r1")
+    _, out = phone.call("DELETE", "/api/messages/C1/w2", b"")
+    assert out["s"] == 200 and json.loads(out["body"])["deleted"] is True
+    method, path, hdrs = FakeAPI.seen[-1]
+    assert (method, path, hdrs["Origin"]) == ("DELETE", "/chat/api/messages/C1/w2", f"http://{local.netloc}")
+    assert rcl.access_allows("chat", "DELETE", path) and not rcl.access_allows("read", "DELETE", path)
     n = len(FakeAPI.seen)
-    for method in ("PUT", "DELETE"):
+    for method in ("PUT", "OPTIONS", "HEAD"):
         _, out = phone.call(method, "/api/channels/r1", b"{}")
         assert out["s"] == 405, method
     assert len(FakeAPI.seen) == n

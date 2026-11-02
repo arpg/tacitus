@@ -110,6 +110,9 @@ BUNDLE_ACCESS = "chat"
 RELAY_ORIGIN_WARNING = ("a relay-origin device runs the copy of the app the relay serves: whoever "
                         "runs the relay can read this phone's chat and type as you")
 _CARD_ACTION_PREFIX = "/api/cards/"
+# The methods a phone's request may use: PATCH and DELETE are the owner's
+# edit and removal of their own message, chat actions as a POST is.
+METHODS = ("GET", "POST", "PATCH", "DELETE")
 _PATH_RE = re.compile(r"^/api/[A-Za-z0-9._~%!$&'()*+,;=:@/-]*(\?[A-Za-z0-9._~%!$&'()*+,;=:@/?-]*)?$")
 
 
@@ -635,7 +638,7 @@ class RelayClient:
         rc._need()
         self.relay_url = _check_relay_url(relay_url)
         self.local = _check_local_url(local_base_url)
-        # A replayed POST or PATCH carries the loopback origin the local server takes
+        # A replayed change (POST, PATCH, DELETE) carries the loopback origin the local server takes
         # from a client without the identity header; Host is the URL's.
         parts = urllib.parse.urlsplit(self.local)
         self.local_origin = f"{parts.scheme}://{parts.netloc}"
@@ -1071,7 +1074,8 @@ class RelayClient:
     def _headers(self, device: str, extra: Mapping[str, Any] | None = None,
                  level: str = "read", method: str = "GET") -> dict[str, str]:
         """The phone's allowed headers (printable ASCII only), the owner's
-        credential, the local origin on a POST or a PATCH, and the relay marks: the
+        credential, the local origin on a change (POST, PATCH, DELETE), and
+        the relay marks: the
         device id, and whether this request may confirm a card
         (`X-Tacitus-Relay-Cards`). A local server that resolves typed card
         codes skips that on "deny"."""
@@ -1094,7 +1098,7 @@ class RelayClient:
         body) of its answer. It never opens the event stream (an `open`
         frame does), and gives up at LOCAL_DEADLINE."""
         method, path = req.get("m"), req.get("p")
-        if method not in ("GET", "POST", "PATCH"):
+        if method not in METHODS:
             return _response(405, "method not allowed")
         if not path_allowed(path):
             return _response(403, "path not allowed through the relay")

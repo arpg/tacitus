@@ -126,6 +126,16 @@ primary in shadow mode. There a card copied as text from the primary's
 past is read back from the primary (`card_lookup`, which the composite
 sets) so the rules see it settle, and its row takes the current text.
 
+The owner's own actions (docs/webchat.md): `/api/search` reads the
+FTS5 index `messages_fts` when this SQLite has FTS5, else the messages
+with LIKE (`WebStore.search_mode`); the store writes the index beside each
+change of a text, never by trigger. `/api/messages/<channel>/<id>/react`
+toggles one of the owner's five reactions, kept in `owner_reactions` apart
+from the bot's status marks; PATCH and DELETE on `/api/messages/<channel>/<id>`
+edit (the old text kept in `edits`) or remove (the row kept, emptied,
+`deleted_at` set) the owner's own text message in its first EDIT_WINDOW_S
+seconds. They change this store alone, also in shadow mode.
+
 At start the bot signs the app's files (web_bundle, docs/webchat.md, Code
 integrity): every file under `webui/` and its sha256, and `headers.json`,
 the security headers of the app's page (its policy among them), signed
@@ -288,6 +298,18 @@ NEEDS_CAP = 200
 PUSH_SENT_KEEP_S = 7 * 86400
 # Seconds push_clears keeps a clear sent, for the daily cap.
 PUSH_CLEARS_KEEP_S = 86400
+# The owner's own reactions: a fixed set by Slack name, kept apart from the
+# bot's status marks (`reactions`), which the thread states read.
+OWNER_REACTIONS = {"+1": "\U0001f44d", "white_check_mark": "✅", "heart": "❤️",
+                   "eyes": "\U0001f440", "joy": "\U0001f602"}
+# Seconds after posting in which the owner may edit or remove a message.
+EDIT_WINDOW_S = 15 * 60
+# Search: the most hits one search answers, a hit's snippet, the longest query.
+SEARCH_CAP = 200
+SNIPPET_CHARS = 160
+MAX_SEARCH_CHARS = 200
+# A search word as the index splits text: letters and digits.
+_TERM_RE = re.compile(r"[^\W_]+")
 
 # `digest` is a channel of automated digests for the owner alone: a host
 # keeps a channel of that kind out of what its model reads.
@@ -359,7 +381,8 @@ CREATE TABLE IF NOT EXISTS channels(
 CREATE TABLE IF NOT EXISTS messages(
     seq INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, id TEXT, thread_key TEXT,
     author TEXT, kind TEXT, text TEXT, card TEXT, file TEXT, reactions TEXT,
-    posted_at REAL, updated_at REAL, history INT DEFAULT 0, UNIQUE(channel, id));
+    posted_at REAL, updated_at REAL, history INT DEFAULT 0, edits TEXT, deleted_at REAL,
+    owner_reactions TEXT, UNIQUE(channel, id));
 CREATE INDEX IF NOT EXISTS messages_thread ON messages(channel, thread_key, seq);
 CREATE TABLE IF NOT EXISTS events(
     seq INTEGER PRIMARY KEY AUTOINCREMENT, at REAL, type TEXT, channel TEXT, id TEXT,
@@ -409,6 +432,48 @@ def _loads(text: str | None) -> Any:
         return json.loads(text)
     except ValueError:
         return None
+
+
+def fts5_available(conn: sqlite3.Connection) -> bool:
+    """Whether this connection's SQLite has the FTS5 full-text index: a
+    table made and dropped in its temp schema."""
+    try:
+        conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS temp.fts5_probe USING fts5(x)")
+        conn.execute("DROP TABLE temp.fts5_probe")
+    except sqlite3.Error:
+        return False
+    return True
+
+
+def snippet(text: str | None, terms: list[str], width: int = SNIPPET_CHARS) -> str:
+    """At most `width` characters of `text` on one line around the first
+    place a search word starts a word (else the first place it appears),
+    with an ellipsis where it is cut."""
+    flat = " ".join((text or "").split())
+    if len(flat) <= width:
+        return flat
+    at = -1
+    for t in terms:
+        m = re.search(r"(?<![^\W_])" + re.escape(t), flat, re.I) or re.search(re.escape(t), flat, re.I)
+        if m and (at < 0 or m.start() < at):
+            at = m.start()
+    start = max(0, min(max(at, 0) - width // 3, len(flat) - width))
+    out = flat[start:start + width]
+    if start > 0:
+        out = "…" + out[1:]
+    if start + width < len(flat):
+        out = out[:-1] + "…"
+    return out
+
+
+def _thread_title(text: str | None, card: str | None) -> str:
+    """A conversation's name for a search hit: its first message's card
+    title, else that message's first line; at most 120 characters."""
+    c = _loads(card)
+    title = str(c.get("title") or "").strip() if isinstance(c, dict) else ""
+    if not title:
+        title = next((ln.strip() for ln in (text or "").splitlines() if ln.strip()), "")
+    return title[:120]
 
 
 def sched_enabled(cfg: dict | None) -> bool:
@@ -736,6 +801,10 @@ class WebStore:
             if "history" not in cols:
                 # A store from before the history copy: its rows are live ones.
                 self._conn.execute("ALTER TABLE messages ADD COLUMN history INT DEFAULT 0")
+            for col, typ in (("edits", "TEXT"), ("deleted_at", "REAL"), ("owner_reactions", "TEXT")):
+                if col not in cols:
+                    # A store from before the owner's edits, removals and reactions.
+                    self._conn.execute(f"ALTER TABLE messages ADD COLUMN {col} {typ}")
             cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(push_subscriptions)")}
             if "last_seen" not in cols:
                 # A store from before: a subscription counts as posted when made.
@@ -753,6 +822,8 @@ class WebStore:
                 # A store from before the stale shelf: the next tick marks them.
                 self._conn.execute("ALTER TABLE thread_state ADD COLUMN stale INT DEFAULT 0")
             self._conn.commit()
+            # "fts5" or "like": how search() reads the messages in this process.
+            self.search_mode = self._open_search()
         self.redirects = self._read_redirects()
         self._subs: list[_Sub] = []
         self._pending: list[tuple[int, str, str]] = []
@@ -767,6 +838,80 @@ class WebStore:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    # search: the FTS5 index when this SQLite has it, else LIKE
+
+    def _open_search(self) -> str:
+        """The search mode: "fts5" when this SQLite has FTS5, else "like".
+        The `messages_fts` index holds one row per message (rowid = seq,
+        the message's text), written by this class beside each change of a
+        text (`_index`), never by a trigger, so a process whose SQLite lacks
+        FTS5 still writes the store. An index whose row count differs from
+        the messages' (a store from before it, or rows another process
+        wrote without it) is built again. Caller holds the lock."""
+        if not fts5_available(self._conn):
+            return "like"
+        try:
+            with self._conn:
+                self._conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING "
+                                   "fts5(text, tokenize='unicode61 remove_diacritics 2')")
+                n = self._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                if self._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] != n:
+                    self._conn.execute("DELETE FROM messages_fts")
+                    self._conn.execute("INSERT INTO messages_fts(rowid, text) "
+                                       "SELECT seq, COALESCE(text, '') FROM messages")
+            return "fts5"
+        except sqlite3.Error as e:
+            log.warning("web chat: no search index (%s); search reads each message", e)
+            return "like"
+
+    def _index(self, seq: int, text: str | None) -> None:
+        """Put a message's text in the search index (None takes it out),
+        inside the caller's transaction. A failed write turns the index off
+        in this process, and the message's own write goes on."""
+        if self.search_mode != "fts5":
+            return
+        try:
+            self._conn.execute("DELETE FROM messages_fts WHERE rowid=?", (seq,))
+            if text is not None:
+                self._conn.execute("INSERT INTO messages_fts(rowid, text) VALUES (?, ?)", (seq, text))
+        except sqlite3.Error as e:
+            log.warning("web chat: the search index failed (%s); search reads each message", e)
+            self.search_mode = "like"
+
+    def search(self, query: str, channel: str | None = None, limit: int = 50) -> list[dict]:
+        """The messages whose text holds every word of `query`, newest
+        first, at most `limit`, a removed one left out; each {"channel",
+        "channel_name", "thread_key", "thread_title", "id", "author", "kind",
+        "posted_at", "snippet"}. With the index a word is letters and digits
+        and matches the start of a word, in any case and with or without
+        accents; without it a word is what lies between spaces and matches
+        anywhere in the text, in any ASCII case."""
+        sql = ("SELECT m.channel, m.thread_key, m.id, m.author, m.kind, m.text, m.posted_at, "
+               "c.name AS channel_name, p.text AS p_text, p.card AS p_card FROM {src} "
+               "LEFT JOIN channels c ON c.id = m.channel LEFT JOIN messages p ON p.seq = "
+               "(SELECT MIN(seq) FROM messages WHERE channel = m.channel AND thread_key = m.thread_key) "
+               "WHERE m.deleted_at IS NULL AND (? IS NULL OR m.channel = ?) AND {match} "
+               "ORDER BY m.posted_at DESC, m.seq DESC LIMIT ?")
+        if self.search_mode == "fts5":
+            terms = _TERM_RE.findall(query)
+            words = " ".join('"' + t.replace('"', '""') + '"*' for t in terms)
+            sql = sql.format(src="messages_fts JOIN messages m ON m.seq = messages_fts.rowid",
+                             match="messages_fts MATCH ?")
+            args: tuple = (channel, channel, words, int(limit))
+        else:
+            terms = query.split()
+            esc = [t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") for t in terms]
+            sql = sql.format(src="messages m",
+                             match=" AND ".join(["m.text LIKE ? ESCAPE '\\'"] * len(terms)))
+            args = (channel, channel, *(f"%{t}%" for t in esc), int(limit))
+        if not terms:
+            return []
+        return [{"channel": r["channel"], "channel_name": r["channel_name"] or r["channel"],
+                 "thread_key": r["thread_key"], "thread_title": _thread_title(r["p_text"], r["p_card"]),
+                 "id": r["id"], "author": r["author"], "kind": r["kind"],
+                 "posted_at": r["posted_at"], "snippet": snippet(r["text"], terms)}
+                for r in self._all(sql, args)]
 
     # reads
 
@@ -842,6 +987,8 @@ class WebStore:
                 "thread_key": row["thread_key"], "author": row["author"], "kind": row["kind"],
                 "text": row["text"] or "", "card": _loads(row["card"]),
                 "file": _loads(row["file"]), "reactions": _loads(row["reactions"]) or [],
+                "owner_reactions": _loads(row["owner_reactions"]) or [],
+                "deleted": row["deleted_at"] is not None,
                 "posted_at": row["posted_at"], "updated_at": row["updated_at"],
                 "reply_count": max(0, reply_count)}
 
@@ -1461,6 +1608,7 @@ class WebStore:
                                 thread_key if thread_key is not None else f"t{seq}", seq))
         row = self._conn.execute("SELECT * FROM messages WHERE seq=?", (seq,)).fetchone()
         self._link(row)
+        self._index(seq, row["text"] or "")
         out = self._msg_json(row)
         if not history:
             self._emit(event or ("message" if kind == "message" else kind), channel,
@@ -1501,6 +1649,7 @@ class WebStore:
                         "SELECT 1 FROM messages WHERE channel=? AND id=?",
                         (new_channel, row["id"])).fetchone():
                     self._conn.execute("DELETE FROM messages WHERE seq=?", (row["seq"],))
+                    self._index(row["seq"], None)
                     continue
                 self._conn.execute("UPDATE messages SET channel=?, thread_key=? WHERE seq=?",
                                    (new_channel, new_key, row["seq"]))
@@ -1527,7 +1676,9 @@ class WebStore:
     def change_message(self, channel: str, mid: str, event: str,
                        **fields: Any) -> dict | None:
         """Change a message's fields (text, kind, card, file, reactions) and
-        append `event`; None when there is no such message."""
+        append `event`; None when there is no such message. A message the
+        owner removed keeps no text, card or file: a change to those is
+        dropped."""
         bad = set(fields) - {"text", "kind", "card", "file", "reactions"}
         if bad:
             raise ValueError(f"not a message field: {sorted(bad)}")
@@ -1537,8 +1688,12 @@ class WebStore:
                                      (channel, mid)).fetchone()
             if row is None:
                 return None
+            change = {k: v for k, v in fields.items()
+                      if row["deleted_at"] is None or k not in ("text", "card", "file")}
+            if not change:
+                return self._msg_json(row)
             sets, args = ["updated_at=?"], [time.time()]
-            for key, val in fields.items():
+            for key, val in change.items():
                 if key in ("card", "file", "reactions"):
                     val = json.dumps(val) if val is not None else None
                 sets.append(f"{key}=?")
@@ -1546,12 +1701,74 @@ class WebStore:
             self._conn.execute(f"UPDATE messages SET {', '.join(sets)} WHERE seq=?",
                                (*args, row["seq"]))
             new = self._conn.execute("SELECT * FROM messages WHERE seq=?", (row["seq"],)).fetchone()
-            if "card" in fields or "text" in fields:
+            if "card" in change or "text" in change:
                 self._link(new)
+            if "text" in change:
+                self._index(row["seq"], new["text"] or "")
             out = self._msg_json(new)
             self._emit(event, channel, mid, out)
             return out
         return self._transaction(run)
+
+    # the owner's own edits, removals and reactions (the web app's)
+
+    def _owner_write(self, channel: str, mid: str, event: str,
+                     change: Callable[[sqlite3.Row], dict | None]) -> dict | None:
+        """Read the message, ask `change` for its new columns (None: nothing
+        to write), write them and append `event`, in one transaction; the
+        message JSON, or None when there is no such message."""
+        def run() -> dict | None:
+            row = self._conn.execute("SELECT * FROM messages WHERE channel=? AND id=?",
+                                     (channel, mid)).fetchone()
+            if row is None:
+                return None
+            cols = change(row)
+            if not cols:
+                return self._msg_json(row)
+            self._conn.execute(f"UPDATE messages SET {', '.join(f'{k}=?' for k in cols)} "
+                               "WHERE seq=?", (*cols.values(), row["seq"]))
+            if "text" in cols:
+                self._index(row["seq"], cols["text"])
+            out = self._msg_json(self._conn.execute("SELECT * FROM messages WHERE seq=?",
+                                                    (row["seq"],)).fetchone())
+            self._emit(event, channel, mid, out)
+            return out
+        return self._transaction(run)
+
+    def owner_edit(self, channel: str, mid: str, text: str) -> dict | None:
+        """The owner's new text for a message: the text it replaces joins the
+        row's edit history (`edits`, a JSON list of {"text", "at"}) and
+        updated_at rises, with an `update` event. The same text writes
+        nothing."""
+        def change(row: sqlite3.Row) -> dict | None:
+            if (row["text"] or "") == text:
+                return None
+            now = time.time()
+            edits = [*(_loads(row["edits"]) or []), {"text": row["text"] or "", "at": now}]
+            return {"text": text, "edits": json.dumps(edits), "updated_at": now}
+        return self._owner_write(channel, mid, "update", change)
+
+    def owner_remove(self, channel: str, mid: str) -> dict | None:
+        """The owner removed a message: the row stays, marked (`deleted_at`),
+        with no text, no edit history and none of the owner's reactions,
+        with an `update` event. A removed row is left as it is."""
+        def change(row: sqlite3.Row) -> dict | None:
+            if row["deleted_at"] is not None:
+                return None
+            now = time.time()
+            return {"text": "", "edits": None, "owner_reactions": None, "deleted_at": now,
+                    "updated_at": now}
+        return self._owner_write(channel, mid, "update", change)
+
+    def toggle_owner_reaction(self, channel: str, mid: str, name: str) -> dict | None:
+        """Add the owner's reaction `name` to a message, or take it away when
+        it is there, with a `reaction` event; updated_at stays (a reaction
+        is no edit). The bot's own marks (`reactions`) are not touched."""
+        def change(row: sqlite3.Row) -> dict:
+            have = _loads(row["owner_reactions"]) or []
+            return {"owner_reactions": json.dumps(
+                [r for r in have if r != name] if name in have else [*have, name])}
+        return self._owner_write(channel, mid, "reaction", change)
 
     def toggle_reaction(self, channel: str, mid: str, name: str, on: bool) -> dict | None:
         """Add or remove a reaction; the message JSON when it changed, None
@@ -2270,6 +2487,8 @@ class WebFrontend(ChatFrontend):
                 self.push.prune()
                 self.push.start()
             log.info("web chat serving on %s:%d%s/", self.bind, self.port, self.base_path)
+            log.info("web chat search reads %s", "the FTS5 index" if self.store.search_mode == "fts5"
+                     else "each message (no FTS5 in this SQLite)")
             self._start_relay()
             self.refresh_bundle()
             if self.thread_states is not None:
@@ -3616,6 +3835,55 @@ class WebFrontend(ChatFrontend):
                 pass
         return self.store.channel(channel) or ch
 
+    # the owner's edits, removals and reactions. They change this store
+    # alone: in shadow mode the primary keeps the message as it was sent
+    # (the composite takes messages, clicks and room changes, not these;
+    # ChatFrontend has no verb to remove a message, and a reaction there
+    # would be the bot's, among the status marks). A turn that started on
+    # a message goes on; the bot's later turns read the thread as it is now.
+
+    def _own_text(self, channel: str, msg_id: str, verb: str) -> dict:
+        """The owner's own text message, open to `verb` (change or remove)
+        in its first EDIT_WINDOW_S seconds."""
+        row = self.store.message(channel, msg_id)
+        if row is None:
+            raise _HttpError(404, "no such message")
+        if row["author"] != OWNER:
+            raise _HttpError(403, f"You can {verb} only your own messages.")
+        if row["kind"] != "message":
+            raise _HttpError(400, f"You can {verb} only a text message.")
+        if not row["deleted"] and time.time() - float(row["posted_at"] or 0) > EDIT_WINDOW_S:
+            raise _HttpError(409, f"You can {verb} a message only in its first "
+                                  f"{EDIT_WINDOW_S // 60} minutes.")
+        return row
+
+    def web_edit(self, channel: str, msg_id: str, text: str) -> dict:
+        """The owner's new text for their own message (store.owner_edit)."""
+        row = self._own_text(channel, msg_id, "change")
+        if row["deleted"]:
+            raise _HttpError(409, "This message was removed.")
+        return self.store.owner_edit(channel, msg_id, text) or row
+
+    def web_remove(self, channel: str, msg_id: str) -> dict:
+        """The owner removes their own message (store.owner_remove); a
+        removed one answers as it is."""
+        row = self._own_text(channel, msg_id, "remove")
+        return row if row["deleted"] else self.store.owner_remove(channel, msg_id) or row
+
+    def web_react(self, channel: str, msg_id: str, emoji: str) -> dict:
+        """Toggle one of the owner's reactions (OWNER_REACTIONS, by name or
+        by glyph) on any message that is not removed."""
+        name = next((n for n, g in OWNER_REACTIONS.items() if emoji in (n, g, g.rstrip("️"))),
+                    None)
+        if name is None:
+            raise _HttpError(400, "emoji is one of " + ", ".join(OWNER_REACTIONS))
+        row = self.store.message(channel, msg_id)
+        if row is None:
+            raise _HttpError(404, "no such message")
+        if row["deleted"]:
+            raise _HttpError(409, "This message was removed.")
+        return self.store.toggle_owner_reaction(channel, msg_id, name) or row
+
 
 def _peer_cap(value: Any) -> int:
     """The web block's `peer_connections`: a whole number from 0 (no cap
@@ -3769,6 +4037,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_PATCH(self) -> None:
         self._route("PATCH")
 
+    def do_DELETE(self) -> None:
+        self._route("DELETE")
+
     # responses
 
     def _common_headers(self) -> None:
@@ -3838,7 +4109,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._drain_limit = MAX_PAIR_BYTES
         self._check_host()
         self._check_fetch_site()
-        if method in ("POST", "PATCH"):
+        if method != "GET":
             self._check_origin()
         if segs and segs[0] in ("pair", "relay") and self.headers.get("X-Tacitus-Relay") is not None \
                 and segs != ["relay", "attest"]:
@@ -3852,7 +4123,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             raise _HttpError(401, "not the owner")
         fe, store = self.fe, self.fe.store
         n = len(segs)
-        if n >= 2 and segs[0] in ("channels", "cards", "threads"):
+        if n >= 2 and segs[0] in ("channels", "cards", "threads", "messages"):
             # A link from before the move to the web chat alone names its
             # channel by the old id.
             segs[1] = store.canonical(segs[1])
@@ -3910,6 +4181,30 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if segs == ["needs"]:
                 self._json(200, {"threads": store.needs(NEEDS_CAP)})
                 return None
+            if segs == ["search"]:
+                q = (query.get("q") or [""])[0].strip()
+                if not q:
+                    raise _HttpError(400, "q is required")
+                if len(q) > MAX_SEARCH_CHARS:
+                    raise _HttpError(400, "the search is too long")
+                ch = store.canonical((query.get("channel") or [""])[0]) or None
+                if ch:
+                    self._need_channel(ch)
+                limit = self._int(query, "limit", 50, 1, SEARCH_CAP)
+                self._json(200, {"results": store.search(q, ch, limit), "mode": store.search_mode})
+                return None
+        if n == 3 and segs[0] == "messages" and method in ("PATCH", "DELETE"):
+            # The owner's own message: a chat action, as a message is.
+            if method == "DELETE":
+                self._json(200, fe.web_remove(segs[1], segs[2]))
+                return None
+            text = self._read_json().get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise _HttpError(400, "text is required")
+            if len(text) > MAX_TEXT_CHARS:
+                raise _HttpError(400, "text is too long")
+            self._json(200, fe.web_edit(segs[1], segs[2], text))
+            return None
         if segs and segs[0] == "relay":
             self._relay_api(method, segs[1:])
             return None
@@ -3937,6 +4232,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return after
             if n == 3 and segs[0] == "channels" and segs[2] == "files":
                 return self._upload(segs[1])
+            if n == 4 and segs[0] == "messages" and segs[3] == "react":
+                emoji = self._read_json().get("emoji")
+                if not isinstance(emoji, str):
+                    raise _HttpError(400, "emoji is required")
+                self._json(200, fe.web_react(segs[1], segs[2], emoji))
+                return None
             if n == 4 and segs[0] == "threads" and segs[3] == "state":
                 # The owner's override is a chat action, like a message: a
                 # device the relay lets chat may set it (it sends nothing).
@@ -4223,9 +4524,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             raise _HttpError(403, "not from this app's own pages")
 
     def _check_origin(self) -> None:
-        """A POST or a PATCH carries the exact Origin of public_url (scheme,
-        host and port). A loopback client that sends no identity header (the
-        relay client, which sets it) may send this server's loopback origin.
+        """A request that changes something (POST, PATCH, DELETE) carries
+        the exact Origin of public_url (scheme, host and
+        port). A loopback client that sends no identity header (the relay
+        client, which sets it) may send this server's loopback origin.
         Anything else, a missing Origin too, is refused: the cookie is
         SameSite=Strict, and this is the second lock."""
         got = _origin_key(self.headers.get("Origin") or "")

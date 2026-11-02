@@ -407,6 +407,7 @@ function plainLine(text) {
 
 function threadTitle(m) {
   if (!m) return '';
+  if (m.deleted) return 'You removed this message';
   let t = '';
   if (m.card && m.card.title) t = plainLine(String(m.card.title).replace(/^\s*:(?:lock|locked):\s*/, ''));
   if (!t) t = plainLine(m.text);
@@ -576,22 +577,21 @@ function renderCard(msg) {
 
 function renderMsg(m) {
   const own = m.author === 'owner';
-  const el = h('article', { class: `msg ${own ? 'own' : 'bot'} kind-${m.kind || 'message'}` });
-  const edited = m.kind === 'message' && m.updated_at && m.posted_at && m.updated_at - m.posted_at > 1;
+  const el = h('article', { class: `msg ${own ? 'own' : 'bot'} kind-${m.kind || 'message'}${m.deleted ? ' removed' : ''}`, 'data-id': m.id });
+  const edited = m.kind === 'message' && !m.deleted && m.updated_at && m.posted_at && m.updated_at - m.posted_at > 1;
   el.append(h('header', { class: 'meta' },
     h('span', { class: 'who' }, own ? 'You' : 'Tacitus'),
     h('time', { datetime: new Date((m.posted_at || 0) * 1000).toISOString() }, when(m.posted_at)),
-    edited ? h('span', { class: 'edited' }, 'edited') : null));
-  if (m.kind === 'card' && m.card) el.append(renderCard(m));
+    edited ? h('span', { class: 'edited' }, 'edited') : null, msgAct(m)));
+  if (m.deleted) el.append(h('div', { class: 'text' }, 'You removed this message'));
+  else if (m.kind === 'card' && m.card) el.append(renderCard(m));
   else if (m.kind === 'status') el.append(cardText(m.text, 'card status'));
   else {
     if (m.text) el.append(h('div', { class: 'text' }, markdown(m.text)));
     if (m.file) el.append(renderFile(m.file));
   }
-  if ((m.reactions || []).length) {
-    el.append(h('div', { class: 'reactions' }, m.reactions.map((r) =>
-      h('span', { class: 'chip', title: `:${r}:` }, emojiNode(r) || `:${r}:`))));
-  }
+  const chips = m.deleted ? null : reactionRow(m);
+  if (chips) el.append(chips);
   return el;
 }
 
@@ -666,6 +666,7 @@ function threadCard(p, ch, withChannel) {
 
 function renderThreads() {
   const box = $('thread-list');
+  if (S.search) return renderSearch();
   if (S.needsView) {
     const rows = needsRows();
     const fresh = rows.filter((r) => !staleOf(r)), old = rows.filter(staleOf);
@@ -898,7 +899,7 @@ async function openThread(ch, tk, token) {
     return;
   }
   const key = tkey(ch, tk);
-  if (S.msgs.has(key)) { renderThread(); toBottom(); } else {
+  if (S.msgs.has(key)) { renderThread(); place(); } else {
     S.msgs.set(key, []); // collects what the stream brings while the read runs
     $('thread-title').textContent = 'Conversation';
     box.replaceChildren(h('p', { class: 'empty' }, 'Loading...'));
@@ -917,7 +918,7 @@ async function openThread(ch, tk, token) {
     S.msgs.set(key, merged);
     if (token !== S.route) return;
     renderThread();
-    toBottom();
+    place();
   } catch (e) {
     if (token === S.route) box.replaceChildren(h('p', { class: 'empty' }, `Could not load the conversation: ${e.message}`));
   }
@@ -1142,6 +1143,7 @@ async function submit(build, text) {
 }
 
 function send() {
+  if (S.editing) return saveEdit();
   const text = $('text').value;
   if (!text.trim()) return;
   submit((ch, tk) => call('POST', `/channels/${enc(ch)}/messages`, tk ? { text, thread_key: tk } : { text }), text);
@@ -1161,6 +1163,266 @@ function upload(file) {
     if (tk) fd.append('thread_key', tk);
     return call('POST', `/channels/${enc(ch)}/files`, fd);
   }, text);
+}
+
+/* -- Owner actions: search, reactions, edit and delete -------------- */
+
+// The owner's own reactions (the bot keeps them apart from its status
+// marks) with the words a screen reader says, and how long the owner's
+// message stays open to an edit or a removal (the bot's EDIT_WINDOW_S).
+const MINE = [['+1', '👍', 'Thumbs up'], ['white_check_mark', '✅', 'Check mark'], ['heart', '❤️', 'Heart'],
+  ['eyes', '👀', 'Eyes'], ['joy', '😂', 'Laughing']];
+const EDIT_MS = 15 * 60 * 1000;
+Object.assign(S, { search: null, hit: null, editing: null, strip: null });
+const mineOf = (r) => MINE.find(([k]) => k === r);
+const msgById = (id) => (S.msgs.get(tkey(S.channel, S.thread)) || []).find((x) => x.id === id);
+// Search words as the bot's index splits them: letters and digits.
+const wordsOf = (q) => String(q || '').match(/[\p{L}\p{N}]+/gu) || [];
+
+// Under a message, one chip per emoji, the bot's marks and the owner's
+// together, with the count; the owner's are highlighted, and a tap on one of
+// the owner's five takes it away or adds it.
+function reactionRow(m) {
+  const bot = m.reactions || [], mine = new Set(m.owner_reactions || []);
+  const names = [...new Set([...bot, ...mine])];
+  if (!names.length) return null;
+  return h('div', { class: 'reactions' }, names.map((r) => {
+    const n = Number(bot.includes(r)) + Number(mine.has(r));
+    const pill = h('span', { class: 'pill' }, emojiNode(r) || (mineOf(r) || [])[1] || `:${r}:`, h('span', { class: 'n' }, String(n)));
+    return mineOf(r) ? h('button', { type: 'button', class: 'chip' + (mine.has(r) ? ' mine' : ''), title: `:${r}:`,
+      'aria-pressed': String(mine.has(r)), 'aria-label': `${mineOf(r)[2]}, ${n}`, onclick: () => react(m, r) }, pill)
+      : h('span', { class: 'chip', title: `:${r}:` }, pill);
+  }));
+}
+
+// The pointer and keyboard way to the strip; a touch screen long-presses.
+const msgAct = (m) => (m.deleted || m.kind === 'status' ? null
+  : h('button', { type: 'button', class: 'msg-act', 'aria-label': 'Message options', 'aria-haspopup': 'true' }, '⋯'));
+
+async function react(m, name) {
+  closeStrip();
+  try { ingest(await call('POST', `/messages/${enc(m.channel)}/${enc(m.id)}/react`, { emoji: name }), false); } catch (e) { toast(`Not changed: ${e.message}`); }
+}
+
+// The strip over a message: the five reactions, then Edit and Delete on the
+// owner's own words in their first 15 minutes, and Copy, since a long press
+// on a phone selects no text.
+function openStrip(el, keyboard) {
+  const m = el && msgById(el.dataset.id);
+  closeStrip();
+  if (!m || m.deleted) return;
+  const mine = new Set(m.owner_reactions || []);
+  const own = m.author === 'owner' && m.kind === 'message' && Date.now() - m.posted_at * 1000 < EDIT_MS;
+  const text = m.kind === 'message' || m.kind === 'file' ? (el.querySelector('.text') || {}).innerText || '' : '';
+  const acts = [own && h('button', { type: 'button', class: 'btn small', onclick: () => startEdit(m) }, 'Edit'),
+    own && h('button', { type: 'button', class: 'btn small danger', onclick: () => removeMsg(m) }, 'Delete'),
+    text && h('button', { type: 'button', class: 'btn small', onclick: () => copyText(text) }, 'Copy')].filter(Boolean);
+  const strip = h('div', { id: 'msg-strip', role: 'toolbar', 'aria-label': 'Message options' },
+    h('div', { class: 'strip-row' }, MINE.map(([k, glyph, word]) => h('button', { type: 'button', class: 'strip-emoji',
+      'aria-label': word, 'aria-pressed': String(mine.has(k)), onclick: () => react(m, k) }, glyph))),
+    acts.length ? h('div', { class: 'strip-row' }, acts) : null);
+  document.body.append(strip);
+  // Above the message when there is room under the header, else below it, inside the window.
+  const r = el.getBoundingClientRect(), s = strip.getBoundingClientRect();
+  const floor = $('thread').querySelector('.bar').getBoundingClientRect().bottom + 8;
+  const top = r.top - s.height - 8 >= floor ? r.top - s.height - 8 : Math.min(r.bottom + 8, innerHeight - s.height - 8);
+  strip.style.top = `${Math.max(8, top)}px`;
+  strip.style.left = `${Math.max(8, Math.min(m.author === 'owner' ? r.right - s.width : r.left, innerWidth - s.width - 8))}px`;
+  S.strip = { el: strip, from: keyboard ? document.activeElement : null };
+  if (keyboard) strip.querySelector('button').focus();
+}
+
+function closeStrip() {
+  const s = S.strip;
+  S.strip = null;
+  if (!s) return;
+  s.el.remove();
+  if (s.from && s.from.isConnected) s.from.focus();
+}
+
+async function copyText(text) {
+  closeStrip();
+  try { await navigator.clipboard.writeText(text); toast('Copied.'); } catch { toast('This browser did not let the app copy.'); }
+}
+
+// Edit: the words go to the composer under an "Editing" line with Cancel;
+// Send saves them, and what was typed before comes back.
+function startEdit(m) {
+  closeStrip();
+  if (!S.editing) S.editing = { kept: $('text').value };
+  Object.assign(S.editing, { ch: m.channel, tk: threadOf(m), id: m.id });
+  $('text').value = m.text;
+  document.querySelectorAll('.msg.editing').forEach((x) => x.classList.remove('editing'));
+  (S.nodes.get(m.id) || h('i')).classList.add('editing');
+  $('editing').hidden = false;
+  $('attach').disabled = true;
+  grow();
+  $('text').focus();
+}
+
+function endEdit() {
+  if (!S.editing) return;
+  $('text').value = S.editing.kept;
+  (S.nodes.get(S.editing.id) || h('i')).classList.remove('editing');
+  S.editing = null;
+  $('editing').hidden = true;
+  $('attach').disabled = false;
+  note('');
+  grow();
+}
+
+async function saveEdit() {
+  const { ch, id } = S.editing;
+  const text = $('text').value;
+  if (S.sending) return;
+  if (!text.trim()) { note('Type the new words, or tap Cancel.'); return; }
+  if (text === (msgById(id) || {}).text) { endEdit(); return; }
+  S.sending = true;
+  try { ingest(await call('PATCH', `/messages/${enc(ch)}/${enc(id)}`, { text }), false); endEdit(); } catch (e) { note(`Not changed: ${e.message}`); }
+  S.sending = false;
+}
+
+async function removeMsg(m) {
+  closeStrip();
+  if (!confirm('Delete this message? This cannot be undone.')) return;
+  if (S.editing && S.editing.id === m.id) endEdit();
+  try { ingest(await call('DELETE', `/messages/${enc(m.channel)}/${enc(m.id)}`), false); } catch (e) { toast(`Not deleted: ${e.message}`); }
+}
+
+// Search: the field at the top of the menu opens it in the list's header,
+// and the list shows the hits grouped by conversation, newest first. A hit
+// opens its conversation at that message, marked; Back returns to the hits;
+// the cross or Escape ends the search.
+function openSearch() {
+  S.search ||= { q: '', rows: null, busy: false, error: '', seq: 0 };
+  document.body.classList.remove('drawer');
+  document.body.classList.add('searching');
+  $('search').hidden = false;
+  $('search-q').focus();
+  renderThreads();
+}
+
+function closeSearch() {
+  if (!S.search) return;
+  S.search = null;
+  clearTimeout(S.searchTimer);
+  document.body.classList.remove('searching');
+  $('search').hidden = true;
+  $('search-q').value = '';
+  renderThreads();
+}
+
+async function runSearch(min = 2) {
+  const s = S.search;
+  if (!s) return;
+  s.q = $('search-q').value.trim();
+  const seq = ++s.seq;
+  if (s.q.length < min) { Object.assign(s, { rows: null, busy: false, error: '' }); renderThreads(); return; }
+  s.busy = true;
+  renderThreads();
+  let rows = [], error = '';
+  try { rows = (await call('GET', `/search?q=${enc(s.q)}&limit=50`)).results || []; } catch (e) { error = e.message; }
+  if (S.search !== s || seq !== s.seq) return; // a newer search is on its way
+  Object.assign(s, { rows, error, busy: false });
+  renderThreads();
+}
+
+function renderSearch() {
+  const s = S.search, box = $('thread-list');
+  const say = (text) => box.replaceChildren(h('p', { class: 'empty' }, text));
+  if (s.error) return say(`Could not search: ${s.error}`);
+  if (!s.rows) return say(s.busy ? 'Searching...' : 'Type a word or two to find it in any conversation.');
+  if (!s.rows.length) return say(s.busy ? 'Searching...' : `Nothing found for "${s.q}".`);
+  const words = wordsOf(s.q), groups = new Map();
+  for (const r of s.rows) {
+    const k = tkey(r.channel, r.thread_key);
+    groups.set(k, [...(groups.get(k) || []), r]);
+  }
+  const go = (x) => () => {
+    S.hit = { ch: x.channel, tk: x.thread_key, id: x.id, words };
+    if (location.hash === hashFor(x.channel, x.thread_key)) showHit();
+  };
+  box.replaceChildren(...[...groups.values()].map((hits) => h('section', { class: 's-group' },
+    h('a', { class: 's-head', href: hashFor(hits[0].channel, hits[0].thread_key), onclick: go(hits[0]) },
+      h('span', { class: 's-title' }, threadTitle({ text: hits[0].thread_title })),
+      h('span', { class: 's-chan' }, channelName(chan(hits[0].channel)) || hits[0].channel_name)),
+    hits.map((x) => h('a', { class: 's-hit', href: hashFor(x.channel, x.thread_key), onclick: go(x) },
+      h('span', { class: 's-meta' }, `${x.author === 'owner' ? 'You' : 'Tacitus'} · ${when(x.posted_at)}`),
+      marked(plainLine(x.snippet), words, h('span', { class: 's-text' })))))));
+}
+
+// `text` into `box`, each place a search word starts a word in a <mark>.
+function marked(text, words, box) {
+  let last = 0;
+  for (const m of words.length ? text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])(?:${words.join('|')})`, 'giu')) : []) {
+    box.append(text.slice(last, m.index), h('mark', {}, m[0]));
+    last = m.index + m[0].length;
+  }
+  box.append(text.slice(last));
+  return box;
+}
+
+// The hit in the open conversation: ringed, its words marked, in the middle of the pane.
+function showHit() {
+  const hit = S.hit;
+  const el = hit && hit.ch === S.channel && hit.tk === S.thread && S.nodes.get(hit.id);
+  if (!el) return false;
+  el.classList.add('hit');
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])(?:${hit.words.join('|') || '(?!)'})`, 'iu');
+  for (const part of el.querySelectorAll('.text, .card')) {
+    const walk = document.createTreeWalker(part, NodeFilter.SHOW_TEXT), found = [];
+    while (walk.nextNode()) if (re.test(walk.currentNode.data) && !walk.currentNode.parentElement.closest('mark')) found.push(walk.currentNode);
+    found.forEach((t) => t.replaceWith(marked(t.data, hit.words, document.createDocumentFragment())));
+  }
+  el.scrollIntoView({ block: 'center' });
+  return true;
+}
+const place = () => { if (!showHit()) toBottom(); };
+
+// A long press (500 ms, held still) on a message on a touch screen opens the
+// strip; the tap that ends it opens nothing, and a link, a button or a code
+// block keeps the phone's own press.
+function ownerActions() {
+  const box = $('messages');
+  let timer = 0, fired = 0, at = [0, 0];
+  const stop = () => { clearTimeout(timer); timer = 0; };
+  box.addEventListener('pointerdown', (e) => {
+    const el = e.pointerType === 'touch' && !e.target.closest('a, button, select, summary, input, pre') && e.target.closest('.msg[data-id]');
+    if (!el) return;
+    at = [e.clientX, e.clientY];
+    timer = setTimeout(() => { timer = 0; fired = Date.now(); openStrip(el); }, 500);
+  });
+  box.addEventListener('pointermove', (e) => { if (timer && Math.hypot(e.clientX - at[0], e.clientY - at[1]) > 10) stop(); });
+  ['pointerup', 'pointercancel'].forEach((t) => box.addEventListener(t, stop));
+  box.addEventListener('click', (e) => { if (Date.now() - fired < 800) { e.preventDefault(); e.stopPropagation(); } }, true);
+  box.addEventListener('contextmenu', (e) => { if (timer || Date.now() - fired < 800) e.preventDefault(); });
+  box.addEventListener('click', (e) => { const b = e.target.closest('.msg-act'); if (b) openStrip(b.closest('.msg'), true); });
+  box.addEventListener('scroll', () => { if (Date.now() - fired > 800) closeStrip(); }, { passive: true });
+  document.addEventListener('pointerdown', (e) => { if (S.strip && !S.strip.el.contains(e.target)) closeStrip(); }, true);
+  $('search-open').addEventListener('click', openSearch);
+  $('search-close').addEventListener('click', () => { closeSearch(); $('search-open').focus(); });
+  $('search-q').addEventListener('input', () => { clearTimeout(S.searchTimer); S.searchTimer = setTimeout(runSearch, 250); });
+  $('search').addEventListener('submit', (e) => { // Enter searches one letter too; on a phone the keyboard goes, the hits show
+    e.preventDefault();
+    clearTimeout(S.searchTimer);
+    runSearch(1);
+    if (matchMedia('(pointer: coarse)').matches) $('search-q').blur();
+  });
+  $('edit-cancel').addEventListener('click', () => { endEdit(); $('text').focus(); });
+  // A place picked in the menu ends the search; leaving a conversation ends its edit and its mark.
+  $('channels').addEventListener('click', (e) => { if (e.target.closest('a.chan')) closeSearch(); });
+  window.addEventListener('hashchange', () => {
+    const { ch, tk } = parseHash();
+    closeStrip();
+    if (S.hit && (S.hit.ch !== ch || S.hit.tk !== tk)) S.hit = null;
+    if (S.editing && (S.editing.ch !== ch || S.editing.tk !== tk)) endEdit();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || document.querySelector('dialog[open]')) return;
+    if (S.strip) closeStrip();
+    else if (S.editing && document.activeElement === $('text')) endEdit();
+    else if (S.search) { closeSearch(); $('search-open').focus(); }
+  });
 }
 
 /* -- Notifications (Web Push) --------------------------------------- */
@@ -2460,6 +2722,7 @@ async function init() {
   $('notify-rows').addEventListener('change', saveNotify);
   teaching();
   roomMenus();
+  ownerActions();
   $('relay-note').addEventListener('click', () => relayNote(''));
   // Escape closes the drawer, unless it closes a dialog over it.
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !document.querySelector('dialog[open]')) document.body.classList.remove('drawer'); });

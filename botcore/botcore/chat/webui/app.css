@@ -339,7 +339,7 @@ th { background: var(--code-bg); font-weight: 600; }
 .emoji { font-style: normal; }
 
 .reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
-.chip { display: inline-flex; align-items: center; height: 26px; padding: 0 8px; border-radius: 13px;
+.pill { display: inline-flex; align-items: center; height: 26px; padding: 0 8px; border-radius: 13px;
   border: 1px solid var(--border); background: var(--panel); font-size: 14px; }
 
 /* cards: an accent edge marks what waits on a button */
@@ -650,6 +650,7 @@ body.digest #composer, body.digest #new-thread { display: none; }
   background: var(--panel); color: var(--muted); font-size: 14px; }
 @media (max-width: 599px) {
   #notify-rows .seg { justify-self: stretch; } /* the two choices fill the row */
+}
 /* A room's menu: the dots beside a room in the drawer (shown on hover or
    focus with a mouse; a finger long-presses the room instead), and its
    sheet, docked to the bottom on a phone. */
@@ -682,4 +683,70 @@ body.digest #composer, body.digest #new-thread { display: none; }
   #room-menu { width: 100%; max-width: none; margin: auto 0 0; border-width: 1px 0 0; border-radius: var(--r-xl) var(--r-xl) 0 0; }
   #room-menu .sheet { padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
   #room-menu .dialog-actions > .btn { flex: 1; min-height: 44px; }
+}
+
+/* -- Owner actions: search, reactions, edit and delete (app.js) -- */
+
+/* Search: a field at the top of the menu opens it in the list's header, the field, then the cross. */
+#search-open { display: flex; align-items: center; gap: 8px; min-height: 40px; margin: 10px 8px 0; padding: 0 12px;
+  border: 1px solid var(--border); border-radius: 20px; background: var(--bg); color: var(--muted); text-align: left; cursor: pointer; }
+#search-open svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+#search { display: flex; flex: 1; align-items: center; gap: 4px; min-width: 0; }
+#search-q { flex: 1; min-width: 0; height: 40px; padding: 8px 14px; border: 1px solid var(--border); border-radius: 20px;
+  background: var(--bg); font-size: 16px; } /* 16px keeps iOS from zooming on focus */
+#search-q::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; } /* the cross beside it clears */
+#search-q:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+body.searching #channel-name, body.searching #new-thread { display: none; }
+/* The hits, one card per conversation: its name and place, then each hit with who and when. */
+.s-group { margin: 0 12px 10px; overflow: hidden; background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--r-l); box-shadow: var(--shadow-sm); }
+.s-head, .s-hit { display: block; color: inherit; text-decoration: none; }
+.s-head { display: flex; align-items: baseline; gap: 8px; padding: 12px 14px 8px; }
+.s-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.s-chan { flex: none; color: var(--muted); font-size: 12px; font-weight: 600; }
+.s-hit { min-height: 44px; padding: 8px 14px 10px; border-top: 1px solid var(--border); }
+.s-meta { display: block; color: var(--muted); font-size: 12px; }
+.s-text { display: block; font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
+mark { padding: 0 1px; border-radius: 3px; background: var(--warn-soft); color: inherit; box-shadow: inset 0 -2px 0 var(--warn); }
+.msg.hit, .msg.editing { box-shadow: 0 0 0 2px var(--accent); }
+.msg.hit { animation: hit 2.4s var(--ease); }
+@keyframes hit { from { background-color: var(--accent-soft); } }
+
+/* Reactions: a pill each, the owner's in the accent; a tap toggles one of the owner's five. */
+.reactions .chip { display: inline-flex; align-items: center; padding: 0; border: 0; background: none; color: inherit; }
+button.chip { cursor: pointer; }
+.chip .n { margin-left: 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.chip.mine .pill { border-color: var(--accent); background: var(--accent-soft); }
+.chip.mine .n { color: var(--accent); }
+
+/* A message's options: "..." beside its time with a mouse; the strip floats over the thread. */
+.msg-act { margin: -4px -6px -4px auto; padding: 0 8px; border: 0; border-radius: var(--r-s); background: none; color: var(--muted);
+  font-size: 16px; line-height: 24px; cursor: pointer; opacity: 0; transition: opacity .15s; }
+.msg:hover .msg-act, .msg:focus-within .msg-act { opacity: 1; }
+#msg-strip { position: fixed; z-index: 35; display: grid; gap: 6px; max-width: calc(100vw - 16px); padding: 6px;
+  border: 1px solid var(--border); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--shadow-lg);
+  animation: fade .12s var(--ease); }
+.strip-row { display: flex; gap: 4px; }
+.strip-row .btn { flex: 1; }
+.strip-emoji { width: 44px; height: 44px; border: 0; border-radius: 50%; background: none; font-size: 22px; line-height: 1; cursor: pointer; }
+.strip-emoji[aria-pressed="true"] { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.msg.removed .text { color: var(--muted); font-style: italic; }
+
+/* Editing: a line over the field that says so, with Cancel. */
+#editing { flex-basis: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px 0 12px;
+  color: var(--accent); font-size: 13px; font-weight: 600; }
+#attach:disabled { opacity: .35; cursor: default; }
+
+@media (hover: hover) {
+  .strip-emoji:hover, .msg-act:hover { background: var(--hover); }
+  .s-head:hover, .s-hit:hover { background: var(--hover); }
+}
+@media (pointer: coarse) {
+  /* A finger long-presses a message for the strip (Copy is there), so the phone selects no text but code. */
+  .msg-act { display: none; }
+  #search-open { min-height: 44px; }
+  .msg { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  .msg pre, .card-body { -webkit-user-select: text; user-select: text; }
+  /* A 44px target around each 26px pill, without the row growing. */
+  .reactions button.chip { min-height: 44px; margin-block: -9px; }
 }

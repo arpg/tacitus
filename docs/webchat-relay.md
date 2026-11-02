@@ -344,7 +344,7 @@ the data, zeros up to a multiple of 256 bytes).
 |---|---|---|---|
 | `hello` | phone | handshake | above |
 | `welcome` | bot | yes | `{"device", "t"}` |
-| `req` | phone | yes | `{"m": "GET", "POST" or "PATCH", "p": "/api/...", "h": {headers}}` and the request body |
+| `req` | phone | yes | `{"m": "GET", "POST", "PATCH" or "DELETE", "p": "/api/...", "h": {headers}}` and the request body |
 | `res` | bot | yes | `{"s": status, "h": {"content-type", "content-disposition"}}` and the response body; a ping's answer is `{"pong": t}` |
 | `open` | phone | yes | `{"since": seq}` (optional): open the event stream |
 | `sse` | bot | yes | one event, `{"id", "event", "data"}`; the first carries the local stream's `{"retry", "data": ""}` |

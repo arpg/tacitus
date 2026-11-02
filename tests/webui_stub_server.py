@@ -39,6 +39,14 @@ answered with the room's row and sent as a `channel` event, as the bot
 does; `room_changes` records each. A fixed place answers 400, a name
 another room has 409.
 
+The owner's own actions: GET /api/search finds the messages that hold
+every word of `q` (any case, anywhere in the text), newest first, with
+the bot's row shape; POST /api/messages/<ch>/<id>/react toggles one of the
+owner's five reactions (`owner_reactions`, apart from the bot's marks);
+PATCH and DELETE /api/messages/<ch>/<id> edit and remove the owner's own
+text message in its first 15 minutes, as the bot does. Each is recorded in
+`owner_actions` and sent as a `reaction` or `update` event.
+
 Each thread can have a state (`states`, seeded with made-up ones in three
 channels): the thread rows carry it, GET /api/needs lists the threads
 that need the owner or wait, and POST /api/threads/<ch>/<key>/state sets
@@ -153,6 +161,7 @@ class Stub:
         self.files: dict[str, tuple[str, str, bytes]] = {}
         self.clicks: list[dict] = []
         self.posts: list[dict] = []
+        self.owner_actions: list[dict] = []  # each search, reaction, edit and removal
         # (channel, thread key) -> {"state", "by", "reason", "at"}
         self.states: dict[tuple[str, str], dict] = {}
         self.state_posts: list[dict] = []
@@ -189,7 +198,7 @@ class Stub:
             m = {"seq": self.seq, "channel": channel, "id": f"w{self.seq}",
                  "thread_key": thread_key or f"t{self.seq}", "author": author, "kind": kind,
                  "text": text, "card": card, "file": file, "reactions": list(reactions or []),
-                 "posted_at": now, "updated_at": now}
+                 "owner_reactions": [], "deleted": False, "posted_at": now, "updated_at": now}
             self.messages.append(m)
             if event:
                 self._event(event, m)
@@ -202,7 +211,7 @@ class Stub:
 
     def change(self, m: dict, typ: str, **fields) -> None:
         with self.cond:
-            m.update(fields, updated_at=time.time())
+            m.update({"updated_at": time.time(), **fields})
             self._event(typ, m)
 
     def emit_bot(self, channel: str = DM, text: str = "A new message from the stub.",
@@ -412,6 +421,45 @@ class Stub:
             threading.Timer(0.3, later).start()
         return self.view(m)
 
+    def search(self, q: str, limit: int = 50) -> list[dict]:
+        """Every message that holds each word of `q`, newest first."""
+        words = q.lower().split()
+        self.owner_actions.append({"verb": "search", "q": q})
+        out = []
+        for m in sorted(self.messages, key=lambda m: -m["posted_at"]):
+            text = m["text"] or ""
+            if m["deleted"] or not words or not all(w in text.lower() for w in words):
+                continue
+            first = self.thread(m["channel"], m["thread_key"])[0]
+            at = max(0, text.lower().find(words[0]) - 50)
+            out.append({"channel": m["channel"], "channel_name": self.channels[m["channel"]]["name"],
+                        "thread_key": m["thread_key"], "id": m["id"], "author": m["author"],
+                        "kind": m["kind"], "posted_at": m["posted_at"],
+                        "thread_title": ((first.get("card") or {}).get("title") or first["text"]).split("\n")[0][:120],
+                        "snippet": " ".join(text[at:at + 160].split())})
+        return out[:limit]
+
+    def own(self, verb: str, channel: str, msg_id: str, body: dict) -> tuple[int, dict]:
+        """A reaction, an edit or a removal, checked as the bot checks it."""
+        m = self.find(channel, msg_id)
+        self.owner_actions.append({"verb": verb, "channel": channel, "id": msg_id, **body})
+        if m is None:
+            return 404, {"error": "no such message"}
+        if verb == "react":
+            have = m["owner_reactions"]
+            self.change(m, "reaction", owner_reactions=[r for r in have if r != body.get("emoji")]
+                        if body.get("emoji") in have else [*have, body.get("emoji")], updated_at=m["updated_at"])
+            return 200, self.view(m)
+        if m["author"] != "owner" or m["kind"] != "message":
+            return 403, {"error": "You can change only your own messages."}
+        if time.time() - m["posted_at"] > 15 * 60:
+            return 409, {"error": "You can change a message only in its first 15 minutes."}
+        if verb == "edit":
+            self.change(m, "update", text=body["text"])
+        else:
+            self.change(m, "update", text="", deleted=True, owner_reactions=[])
+        return 200, self.view(m)
+
     def click(self, channel: str, msg_id: str, body: dict) -> bool:
         m = self.find(channel, msg_id)
         if not m or m["kind"] != "card":
@@ -519,6 +567,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, data, mime, {"Content-Disposition": f'attachment; filename="{name}"'})
         if parts == ["needs"]:
             return self._json(200, {"threads": s.needs()})
+        if parts == ["search"]:
+            text = q.get("q", [""])[0].strip()
+            if not text:
+                return self._json(400, {"error": "q is required"})
+            return self._json(200, {"results": s.search(text, int(q.get("limit", ["50"])[0])), "mode": "like"})
         if parts == ["events"]:
             return self._events(q)
         return self._json(404, {"error": "not found"})
@@ -621,6 +674,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "state must be done, needs_you or waiting"})
             s.set_state(parts[1], parts[2], body["state"], "owner", "You set this.")
             return self._json(200, s.row(rows[0]))
+        if len(parts) == 4 and parts[0] == "messages" and parts[3] == "react":
+            return self._json(*s.own("react", parts[1], parts[2], json.loads(self._body() or b"{}")))
         if len(parts) == 4 and parts[0] == "cards" and parts[3] == "actions":
             body = json.loads(self._body() or b"{}")
             if s.click(parts[1], parts[2], body):
@@ -638,7 +693,17 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 return self._json(400, {"error": "Type a name for the room."})
             return self._json(*self.stub.change_room(parts[1], name=name))
+        if len(parts) == 3 and parts[0] == "messages":
+            return self._json(*self.stub.own("edit", parts[1], parts[2], json.loads(self._body() or b"{}")))
         return self._json(404, {"error": "not found"})
+
+    def do_DELETE(self) -> None:
+        parts = [unquote(p) for p in urlsplit(self.path).path[len(BASE) + 5:].split("/")]
+        if not self._owner():
+            return self._json(401, {"error": "not the owner"})
+        if len(parts) != 3 or parts[0] != "messages":
+            return self._json(404, {"error": "not found"})
+        return self._json(*self.stub.own("remove", parts[1], parts[2], {}))
 
     def _static(self, name: str) -> None:
         path = (WEBUI / name).resolve()
