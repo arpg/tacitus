@@ -432,7 +432,9 @@ def test_the_app_stays_small():
     #     worker's copies kept and found by their exact address, the first hosted adoption's cleanup).
     # 4,690: 4,680 plus the thread in view cleared on the owner's other browsers, push on here or not
     #     (the tag alone with push off, a message on the stream as the cue, the focus for a cue).
-    assert lines <= 4690, f"{lines} lines: the contract keeps the app near 4,690 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay and its notifications cleared where they are done"
+    # 4,710: 4,690 plus the notifications no clear reached (the iPhone's): the worker closes the tags a push
+    #     carries once its own shows, and the page sweeps them when it starts or comes back into view.
+    assert lines <= 4710, f"{lines} lines: the contract keeps the app near 4,710 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay and its notifications cleared where they are done"
 
 
 # -- in a browser, against the stub ---------------------------------------

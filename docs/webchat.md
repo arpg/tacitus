@@ -249,6 +249,7 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/diag` | `{"entries": [...]}`: what the app saw while it could not connect (storage state, display mode, the error); logged as `web chat diag:` lines, at most 20 per call, never stored → `{"ok": true, "logged": n}` |
 | POST | `/api/push/unsubscribe` | `{"endpoint"}` → `{"ok": true, "removed": bool}` |
 | POST | `/api/push/seen` | `{"tag", "endpoint"?, "elsewhere"?}`: the app shows that thread in this browser and closed its notifications there. With `endpoint` (this browser's subscription; a browser with notifications off sends none) the bot owes the browser no clear for it; unless `elsewhere` is `false`, the bot also clears the thread on every other browser and drops the push queued for it (Notifications) → `{"ok": true, "owed": bool}` (`owed`: this browser was owed one) |
+| POST | `/api/push/unclosed` | `{"endpoint"}`: the app's sweep as it starts or comes back into view; the tags whose notifications no clear reached in this browser (Apple's push service takes none), newest first, which the page closes; the bot drops what it answers → `{"ok": true, "tags": [...]}` |
 | GET | `/api/push/subscriptions` | `[{"id", "host", "created_at", "last_seen", "last_ok", "failures"}]`; `id` is a hash of the endpoint, which is never shown |
 | POST | `/api/push/revoke` | `{"id"}` → `{"ok": true, "removed": bool}` |
 | POST | `/api/relay/pair` | `{}` or `{"via": "relay"}` → `{"link", "qr", "expires", "origin", "bundle", "access"}`: a one-time pairing link for a phone (the relay), on the bot's own origin (409 without `public_url`) or on the relay's copy of the app with the signed bundle's hash (409 without one); `access` is what the phone may do once approved (`"all"` own, `"chat"` relay) |
@@ -1069,7 +1070,9 @@ locked screen. The text loses its emoji shortcodes and Markdown marks
 (`web_push.plain_line`); the title is at most 120 characters and the body
 240.
 
-**Payload.** JSON `{"title", "body", "url", "tag"}`, encrypted to the
+**Payload.** JSON `{"title", "body", "url", "tag"}`, with `close` (the
+tags no clear reached in that browser, What the iPhone gets) when it has
+any, encrypted to the
 subscription (RFC 8291, `aes128gcm` of RFC 8188, one 4096-byte record),
 padded after the delimiter to a multiple of 256 bytes.
 `url` is the message's web permalink (for `web_notify`, the `url` it is
@@ -1150,12 +1153,13 @@ queued stays queued. A page that shows the thread closes only the
 thread's own notifications, so its browser gets the alert's clear as
 well. Each clear also has a budget (`push_clears`): at
 most one per subscription in ten minutes (`CLEAR_GAP_S`) and twenty in a
-day (`CLEAR_DAY_CAP`). A clear past it is skipped, its notification
-stands until the thread's next push replaces it by tag, and a
+day (`CLEAR_DAY_CAP`). A clear past it is skipped, and a
 `web chat diag:` line in the log names the push service and the reason
-(`gap`, `cap` or `safari`). So of several threads done with on the
-computer within ten minutes, the phone gets the first one's clear; the
-others stand until their next push. The two-minute window holds: an
+(`gap`, `cap` or `safari`). A browser that gets no clear for a tag
+(skipped, on Apple's push service, or a clear that failed or was held
+back) keeps the tag as unclosed (the `push_unclosed` table): the next push
+or clear to that browser carries it in `close`, and the app's sweep closes
+it when the app opens (both below). The two-minute window holds: an
 answer right after the reply does not buzz again. The app drops the
 thread's unread count when the owner's message arrives on the stream,
 also with the thread closed, and the channel's count from the server as
@@ -1182,8 +1186,35 @@ otherwise it shows a silent notification under the thread's tag, titled
 as the thread's notification was, with the body "Handled.", which closes
 itself eight seconds later, after the moment each browser counts. Apple's
 push service (`web.push.apple.com`, `web_push.NO_CLEAR_HOSTS`) gets no
-clear at all: there the next push for the thread replaces the
-notification by tag, and opening the thread in the app clears it.
+clear at all: three clears would cost the subscription.
+
+**What the iPhone gets.** The Home Screen app's subscription is on
+Apple's push service, so a notification there stays until one of these
+closes it; nothing closes it in between:
+
+- The next push to the phone, in any thread. It carries the tags no
+  clear reached there (`close`), and the worker closes them once it has
+  shown the push's own notification, so the push still shows one, as
+  WebKit requires. It never closes the tag it shows.
+- The app opening, or coming back to the screen. The page asks the bot
+  for the tags (`POST /api/push/unclosed` with its endpoint) and closes
+  their notifications (`getNotifications`).
+- A newer push under the same tag, which replaces that notification.
+- Opening that thread in the app.
+
+The `push_unclosed` table keeps a subscription's tags, at most 32, newest
+first (`web_push.UNCLOSED_CAP`), each for three days
+(`UNCLOSED_KEEP_S`); they go with the subscription. A push carries at most
+16 of them (`CLOSE_CAP`), newest first, and only as many as keep its
+payload within 3,000 bytes (`MAX_PAYLOAD`, which pads to 3,072, a body
+of 3,174 inside the push services' 4,096). The tags a push carried go
+once the push service accepts it, the sweep's go once the bot answers,
+and a tag's record goes when a newer push under that tag is accepted or
+a page shows that thread, so a close never reaches a newer notification.
+The same holds for a browser past its clear budget: its skipped tags ride
+on its next push or clear. A push that the push service holds for a
+phone that is off and then drops (the one-hour TTL) takes its tags with
+it; the sweep then has nothing to close.
 
 **Quiet hours.** With `notify_push.quiet` `"queue"`, a briefing's or an
 answer's push waits in `push_queue` until the owner's quiet hours end:

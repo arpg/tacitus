@@ -11,7 +11,10 @@ a push under the thread reached, and under an alert whose text the
 thread carries (within its budget, and never to Apple's push service),
 and runs the thread-state rules at once. A page that shows the thread
 (push on there or not), a card settled here or on the primary, and the
-owner's Mark done clear the thread the same way."""
+owner's Mark done clear the thread the same way. A browser no clear
+reaches (Apple's push service, one past its budget) keeps the tag as
+unclosed: its next push or clear carries it, and the app's sweep takes
+it."""
 from __future__ import annotations
 
 import json
@@ -687,8 +690,9 @@ def test_a_browser_gets_one_clear_in_ten_minutes_and_twenty_a_day(pushing, caplo
 @needs_push
 def test_safari_gets_no_clear_and_its_notification_waits_for_the_next_push(pushing, caplog):
     """WebKit revokes a subscription after three pushes that show nothing:
-    Apple's push service gets no clear, and the thread's next push replaces
-    the notification under its tag."""
+    Apple's push service gets no clear. The tag waits as unclosed for the
+    phone: the next push to it, in any thread, shows its own notification
+    and carries the tag to close, and goes once the service accepts it."""
     f = pushing
     caplog.set_level(logging.INFO, logger="chat.web.push")
     subscribe(f, APPLE)
@@ -703,8 +707,105 @@ def test_safari_gets_no_clear_and_its_notification_waits_for_the_next_push(pushi
     assert skipped(caplog) == [{"what": "push clear skipped", "why": "safari",
                                 "tag": f"main/{key}", "host": "web.push.apple.com"}]
     assert f.store.push_shown_take(f"main/{key}") == []            # taken: owed to no one
-    pushes = [(to, p) for to, (p, _u) in zip(f.to, f.sent) if to == APPLE]
-    assert [p["tag"] for _to, p in pushes] == [f"main/{key}"]     # the tag the next push replaces
+    assert f.store.push_unclosed(APPLE, 10) == [f"main/{key}"]     # but owed a close
+    assert f.store.push_unclosed(FCM, 10) == []
+    other = owner_says(f, "r1", "Status of the draft?")
+    f.post("r1", "With the coauthors.", thread_ts=other)
+    assert until(lambda: len(f.sent) == 5)               # a push to each, the clear, a push to each
+    to_apple = [p for to, (p, _u) in zip(f.to, f.sent) if to == APPLE]
+    assert [p["tag"] for p in to_apple] == [f"main/{key}", f"r1/{other}"]
+    assert to_apple[1]["close"] == [f"main/{key}"]
+    assert "close" not in f.sent[-2][0]                  # the computer's: it got its clear
+    assert f.store.push_unclosed(APPLE, 10) == []        # accepted: the record goes
+
+
+@needs_push
+def test_a_clear_past_its_budget_waits_for_the_next_push_or_clear(pushing, caplog):
+    """A browser past its clear budget gets no clear either: the tag waits
+    as unclosed, and the next push or clear to that browser carries it."""
+    f = pushing
+    caplog.set_level(logging.INFO, logger="chat.web.push")
+    first = owner_says(f, "main", "What is on tomorrow?")
+    f.post("main", "Two meetings.", thread_ts=first)
+    second = owner_says(f, "main", "Anything for Friday?")
+    f.post("main", "Nothing booked.", thread_ts=second)
+    assert until(lambda: len(f.sent) == 2)
+    owner_says(f, "main", "Move the first one.", first)
+    assert until(lambda: len(clears(f)) == 1)            # sent: a clear still queued would carry it
+    owner_says(f, "main", "Book the lab.", second)      # within ten minutes of the first clear
+    assert until(lambda: skipped(caplog) and skipped(caplog)[-1]["why"] == "gap")
+    assert f.store.push_unclosed(FCM, 10) == [f"main/{second}"]
+    third = owner_says(f, "r1", "Status of the draft?")
+    f.post("r1", "With the coauthors.", thread_ts=third)
+    assert until(lambda: len(f.sent) == 4)
+    assert f.sent[-1][0]["tag"] == f"r1/{third}" and f.sent[-1][0]["close"] == [f"main/{second}"]
+    assert f.store.push_unclosed(FCM, 10) == []
+    # a clear carries them as well
+    f.push.clear_gap_s = 0
+    f.store.push_unclosed_add(FCM, "dm/t-left", time.time())
+    owner_says(f, "r1", "Thanks.", third)
+    assert until(lambda: len(clears(f)) == 2)
+    assert clears(f)[1] == {"type": "clear", "tag": f"r1/{third}",
+                            "title": "Tacitus replied in ea-atlas", "close": ["dm/t-left"]}
+    assert f.store.push_unclosed(FCM, 10) == []
+
+
+@needs_push
+def test_a_newer_push_under_the_tag_drops_its_record_and_a_failed_send_keeps_them(pushing):
+    """A push under a tag the browser owed a close replaces that
+    notification: it never carries its own tag, and its acceptance drops
+    the record, so no later close reaches the newer notification. A push
+    that fails carries nothing away, and a clear that fails leaves its tag
+    unclosed."""
+    f = pushing
+    subscribe(f, APPLE)
+    key = owner_says(f, "main", "What is on tomorrow?")
+    now = time.time()
+    f.store.push_unclosed_add(APPLE, f"main/{key}", now - 60)
+    f.store.push_unclosed_add(APPLE, "dm/t-other", now - 30)
+    f.post("main", "Two meetings.", thread_ts=key)
+    assert until(lambda: APPLE in f.to)
+    (payload,) = [p for to, (p, _u) in zip(f.to, f.sent) if to == APPLE]
+    assert payload["tag"] == f"main/{key}" and payload["close"] == ["dm/t-other"]
+    assert f.store.push_unclosed(APPLE, 10) == []
+    f.store.push_unclosed_add(APPLE, "dm/t-other", time.time())
+    f.push.send_one = lambda sub, payload, urgency="normal": "failed"
+    assert f.push.send_all(f.push.payload("Tacitus", "Moved.", "", "r1/t9"))["failed"] == 2
+    assert f.store.push_unclosed(APPLE, 10) == ["dm/t-other"]
+    clear = json.dumps({"type": "clear", "tag": "main/t8", "title": "Tacitus"}).encode()
+    assert f.push.send_all(clear, only=frozenset({FCM}))["failed"] == 1
+    assert f.store.push_unclosed(FCM, 10) == ["main/t8"]
+
+
+@needs_push
+def test_the_apps_sweep_takes_the_tags_and_a_gone_subscription_takes_its_own(pushing):
+    """POST /api/push/unclosed: the app, as it opens, takes the tags owed a
+    close in its browser, newest first, and closes them; the bot drops
+    what it answered. A page that shows a thread owes its tag no close. A
+    subscription that goes takes its records, and none is kept for an
+    endpoint that is no subscription."""
+    f = pushing
+    subscribe(f, APPLE)
+    f.start()
+    now = time.time()
+    f.store.push_unclosed_add(APPLE, "main/t1", now - 10)
+    f.store.push_unclosed_add(APPLE, "dm/t2", now)
+    f.store.push_unclosed_add(FCM, "main/t3", now)
+    stranger = "https://fcm.googleapis.com/fcm/send/made-up-unknown"
+    f.store.push_unclosed_add(stranger, "main/t4", now)
+    status, _h, body = owner(f, "POST", "/api/push/unclosed", {"endpoint": APPLE})
+    assert status == 200 and json.loads(body) == {"ok": True, "tags": ["dm/t2", "main/t1"]}
+    assert json.loads(owner(f, "POST", "/api/push/unclosed", {"endpoint": APPLE})[2])["tags"] == []
+    assert owner(f, "POST", "/api/push/unclosed", {})[0] == 400
+    assert f.store.push_unclosed(stranger, 10) == []
+    owner(f, "POST", "/api/push/seen", {"endpoint": FCM, "tag": "main/t3", "elsewhere": False})
+    assert f.store.push_unclosed(FCM, 10) == []
+    f.store.push_unclosed_add(APPLE, "main/t5", now)
+    assert f.store.push_unsubscribe(APPLE)
+    subscribe(f, APPLE)                                  # the same browser again: nothing kept
+    assert f.store.push_unclosed(APPLE, 10) == []
+    f.store.push_unclosed_add(APPLE, "main/t6", now - wp.UNCLOSED_KEEP_S - 1)
+    assert f.store.push_unclosed(APPLE, 10) == []        # too old to close
 
 
 @needs_push
