@@ -311,14 +311,17 @@
   // fetches nothing; it answers the files it lacks (`want`) and the page
   // brings them (`files`). Files are kept all or none, with the release's
   // headers, before the manifest is trusted: the copy moves only to the bot's.
-  async function adopt(doc, pin, sealed, files) {
+  // `replace`: the website's copy of the app (a computer set up with a code),
+  // which may be another release than the bot's: at the first manifest each
+  // kept file that differs is replaced by the bot's, and none stops the app.
+  async function adopt(doc, pin, sealed, files, replace) {
     const old = await getState('trusted');
     if (sealed && !old && !pin) return { want: [] }; // the bot's own copy checks first on the tailnet
     const v = await verifyBundle(doc, null, old && (old.pin || sealed) ? old.key : null);
     const suspect = await getState('suspect');
     if (old && old.hash === v.hash && !suspect && !sealed) return { ok: true };
     const cache = await caches.open(CACHE);
-    if (!old) {
+    if (!old && !replace) {
       for (const req of await cache.keys()) {
         const path = bundlePath(new URL(req.url), scopeUrl(), v.files);
         if (v.files[path] !== await hashOf(await cache.match(req))) return refuse(path);
@@ -366,7 +369,7 @@
     const reply = (out) => event.ports[0] && event.ports[0].postMessage(out);
     const fail = (e) => reply({ error: String(e.message || e) });
     if (msg.bundle) return adopt(msg.bundle, msg.pin).then(reply, fail);
-    if (msg.fromRelay) return adopt(msg.fromRelay, msg.pin, true, msg.files).then(reply, fail);
+    if (msg.fromRelay) return adopt(msg.fromRelay, msg.pin, true, msg.files, msg.replace).then(reply, fail);
     if (msg.refuse) return refuse(String(msg.refuse)).then(reply);
     return undefined;
   }

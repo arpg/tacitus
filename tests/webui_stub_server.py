@@ -33,6 +33,12 @@ change; a key or a value the bot would refuse answers 400 with its words.
 `push=True` makes /api/me say that push works, with a made-up key and no
 subscription, as a bot with the cryptography package does.
 
+`handoff=True` (with relay_pairing) lets "Add a device" offer A computer:
+/api/relay/status says `handoff` and names the website's copy of the app,
+and POST /api/relay/handoff answers a made-up code and the address to open,
+recorded in `handoffs`. `owner_routes` is what /api/me says of the owner's
+routes ("all", "handoff" or "none"); left out, /api/me does not say.
+
 A room's menu renames a room (PATCH /api/channels/<id> with a name),
 archives it and brings it back (POST .../archive, .../unarchive), each
 answered with the room's row and sent as a `channel` event, as the bot
@@ -94,6 +100,7 @@ STUB_INSTALL = "a" * 26
 STUB_BOT_PUBLIC = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"  # 32 bytes of 1, base64url
 STUB_CLIENT_KEY = "c" * 43
 STUB_BUNDLE = "b" * 64  # a made-up hash of the bot's signed app bundle, when it signs none
+STUB_HOSTED = "https://app.example.org/"  # the website's copy of the app a handoff names
 WEEKLY = "stream:9:topic:weekly%20plan"
 ROOM_ASK = re.compile(r"^\s*open a (?:channel|room) for (?P<name>.+?)\s*$", re.I)
 NOTIFY = {"briefings": True, "replies": True, "rooms": True, "quiet": "queue"}
@@ -129,8 +136,11 @@ class Stub:
 
     def __init__(self, tick: float = 0.0, pair_token: str | None = None, echo: bool = True,
                  sign: bool = False, relay_pairing: bool = False, settings: bool | list = False,
-                 push: bool = False):
+                 push: bool = False, handoff: bool = False, owner_routes: str | None = None):
         self.cond = threading.Condition()
+        self.handoff = handoff
+        self.owner_routes = owner_routes
+        self.handoffs: list[dict] = []
         self.settings = (["notify", "routing"] if settings is True else list(settings or []))
         self.push = push
         self.routing = json.loads(json.dumps(ROUTING))
@@ -532,7 +542,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"owner": "owner", "bot": "bot", "public_url": None,
                                     "bundle": s.bundle.hash if s.bundle else "",
                                     "settings": s.settings, "push": s.push,
-                                    **({"relay": True} if s.relay_pairing else {})})
+                                    **({"relay": True} if s.relay_pairing else {}),
+                                    **({"owner_routes": s.owner_routes} if s.owner_routes else {})})
         if parts == ["settings", "routing"] and "routing" in s.settings:
             return self._json(200, s.routing)
         if parts == ["settings", "notify"] and "notify" in s.settings:
@@ -546,7 +557,8 @@ class Handler(BaseHTTPRequestHandler):
                                     "relay_url": "https://relay.example.net",
                                     "bot_public": STUB_BOT_PUBLIC, "client_key": STUB_CLIENT_KEY,
                                     "pair_own": False, "pair_relay": s.relay_pairing, "relay_app": s.relay_pairing,
-                                    "bundle": s.bundle_hash() if s.relay_pairing else None})
+                                    "bundle": s.bundle_hash() if s.relay_pairing else None,
+                                    "handoff": s.handoff, "hosted_app": STUB_HOSTED if s.handoff else ""})
         if parts == ["relay", "devices"] and s.relay_pairing:
             return self._json(200, s.devices)
         if parts == ["channels"]:
@@ -652,6 +664,10 @@ class Handler(BaseHTTPRequestHandler):
                 if d["id"] == body.get("device"):
                     d.update(pending=False, cards_allowed=body.get("cards") is True)
             return self._json(200, {"ok": True})
+        if parts == ["relay", "handoff"] and s.handoff:
+            s.handoffs.append(json.loads(self._body() or b"{}"))
+            return self._json(200, {"code": "ABCDE-FGHJK", "expires": int(time.time()) + 600, "access": "chat",
+                                    "open": STUB_HOSTED + "?relay=https%3A%2F%2Frelay.example.net"})
         if parts == ["relay", "pair"] and s.relay_pairing:
             body = json.loads(self._body() or b"{}")
             s.pairs.append(body)
