@@ -746,6 +746,7 @@ NOT_DRAFT_CHANGING = {
         "download-attachment": "read; writes a local file",
         "scan-attachments": "read", "get-gmail-draft": "read", "preflight-check": "read",
         "create-draft": "makes a new draft id, which gets its own card",
+        "create-forward": "makes a new draft id, which gets its own card",
         "archive-message": "moves received mail; content unchanged",
         "archive-conversation": "moves received mail; content unchanged",
         "snooze-message": "moves received mail; content unchanged",
@@ -761,11 +762,15 @@ NOT_DRAFT_CHANGING = {
         "list-attachments": "read", "download-attachment": "read; writes a local file",
         "list-drafts": "read",
         "create-draft": "makes a new draft id, which gets its own card",
+        "create-forward": "makes a new draft id, which gets its own card",
+        "preflight-check": "read",
     },
     "mail_actions": {
         "search": "read", "get-message": "read", "get-draft": "read",
         "mark-read": "the read flag only", "mark-unread": "the read flag only",
         "create-draft": "makes a new draft id, which gets its own card",
+        "create-forward": "makes a new draft id, which gets its own card",
+        "preflight-check": "read",
     },
 }
 

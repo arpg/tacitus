@@ -415,6 +415,21 @@ def cmd_create_draft(args):
     print(json.dumps({"status": "draft_created", "id": result.get("id", "")}, indent=2))
 
 
+def cmd_create_forward(args):
+    to_addrs = [a.strip() for a in args.to.split(",") if a.strip()]
+    cc_addrs = [a.strip() for a in args.cc.split(",") if a.strip()] if args.cc else None
+    result = graph.create_forward(message_id=args.message_id, to=to_addrs,
+                                  comment=args.body, cc=cc_addrs,
+                                  content_type=args.content_type)
+    _draft_events.record("created", result.get("id", ""), verb="create-forward",
+                         ledger_ids=getattr(args, "ledger_id", None))
+    _draft_capture.capture(
+        result.get("id", ""), args.body, verb="create-forward",
+        conversation_id=result.get("conversationId", ""),
+        subject=result.get("subject", ""), to=to_addrs)
+    print(json.dumps({"status": "forward_draft_created", "id": result.get("id", "")}, indent=2))
+
+
 def _user_addresses() -> set:
     """Mailbox owner's own email address(es), lowercased, for detecting whether
     the user already replied in a thread."""
@@ -2137,7 +2152,7 @@ def _resolve_body(args):
 
     # Guard: reject empty body for draft/reply commands (prevents empty emails)
     cmd = getattr(args, "func", None)
-    if cmd in (cmd_create_draft, cmd_create_reply, cmd_update_draft):
+    if cmd in (cmd_create_draft, cmd_create_reply, cmd_update_draft, cmd_create_forward):
         body = getattr(args, "body", "") or ""
         if not body.strip() or body.strip() == "x":
             print(json.dumps({"error": "Empty body — write the body to reply-body.txt "
@@ -2220,6 +2235,18 @@ def build_parser() -> argparse.ArgumentParser:
                         "these rows; with none named, a send closes only a "
                         "reply row on its thread.")
     p.set_defaults(func=cmd_create_reply)
+
+    # create-forward (the whole thread, with a comment above it)
+    p = sub.add_parser("create-forward", allow_abbrev=False)
+    p.add_argument("--message-id", required=True, help="Message to forward")
+    p.add_argument("--to", required=True, help="Comma-separated recipients")
+    p.add_argument("--cc", default=None, help="Comma-separated CC recipients")
+    p.add_argument("--body", required=True, help="Comment above the forwarded thread")
+    p.add_argument("--body-file", default=None, help="Read body from file (overrides --body)")
+    p.add_argument("--content-type", default="Text", choices=["Text", "HTML"])
+    p.add_argument("--ledger-id", action="append", default=[],
+                   help="A ledger row this draft delivers (repeat for more)")
+    p.set_defaults(func=cmd_create_forward)
 
     # update-draft (update body of existing draft, no new draft created)
     p = sub.add_parser("update-draft", allow_abbrev=False)

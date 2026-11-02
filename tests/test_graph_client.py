@@ -966,14 +966,14 @@ def test_preflight_teams_link_check_follows_the_configured_platform():
     is wrong."""
     body = "Join here: https://teams.microsoft.com/l/meetup-join/abc\n\nKit\n"
     with patch.object(gc, "get_message_full", return_value=_fake_draft(body)), \
-         patch.object(gc, "_video_platform", lambda: "Zoom"):
+         patch.object(gc._mail_links, "_video_platform", lambda: "Zoom"):
         errs = gc.preflight_check("fake-id")["errors"]
     assert any("Teams link" in e and "uses Zoom" in e for e in errs)
     with patch.object(gc, "get_message_full", return_value=_fake_draft(body)), \
-         patch.object(gc, "_video_platform", lambda: ""):
+         patch.object(gc._mail_links, "_video_platform", lambda: ""):
         assert not any("Teams" in e for e in gc.preflight_check("fake-id")["errors"])
     with patch.object(gc, "get_message_full", return_value=_fake_draft(body)), \
-         patch.object(gc, "_video_platform", lambda: "Microsoft Teams"):
+         patch.object(gc._mail_links, "_video_platform", lambda: "Microsoft Teams"):
         assert not any("Teams" in e for e in gc.preflight_check("fake-id")["errors"])
 
 
@@ -1184,6 +1184,29 @@ def test_an_offset_time_is_sent_as_the_users_local_time():
         assert body["end"] == {"dateTime": "2026-10-20T08:00:00", "timeZone": "America/Denver"}
     naive = _dt.datetime(2026, 10, 20, 9, 0)
     assert gc.to_user_local(naive) is naive
+
+
+def test_create_forward_puts_the_comment_above_the_thread_and_sets_recipients():
+    seen = {}
+    quoted = '<html><body><hr><div id="divRplyFwdMsg">From: a</div><p>old</p></body></html>'
+
+    def fake_post(path, body):
+        seen["post"] = path
+        return {"id": "AAMkFWD=", "body": {"contentType": "html", "content": quoted}}
+
+    def fake_patch(path, body):
+        seen["patch"], seen["body"] = path, body
+        return {"id": "AAMkFWD="}
+
+    with patch.object(gc, "graph_post", fake_post), patch.object(gc, "graph_patch", fake_patch):
+        out = gc.create_forward("AAMkORIG=", ["x@example.edu"], "See below.",
+                                cc=["y@example.edu"])
+    assert out["id"] == "AAMkFWD=" and seen["post"].endswith("/AAMkORIG=/createForward")
+    assert seen["patch"].endswith("/AAMkFWD=")
+    html = seen["body"]["body"]["content"]
+    assert html.index("See below.") < html.index("divRplyFwdMsg")
+    assert seen["body"]["toRecipients"] == [{"emailAddress": {"address": "x@example.edu"}}]
+    assert seen["body"]["ccRecipients"] == [{"emailAddress": {"address": "y@example.edu"}}]
 
 
 if __name__ == "__main__":

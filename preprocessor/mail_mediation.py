@@ -96,7 +96,7 @@ SAFE = {
         "get-attachments", "download-attachment", "scan-attachments",
         "get-gmail-draft",
         "create-draft", "create-reply", "update-draft", "delete-draft",
-        "preflight-check", "attach-file",
+        "preflight-check", "attach-file", "create-forward",
         # Removes one attachment from a DRAFT; graph_actions refuses any
         # message that is not a draft, so mail received or sent keeps its
         # files.
@@ -118,8 +118,8 @@ SAFE = {
     },
     "gmail_client": {
         "search", "get-message", "get-thread", "get-draft",
-        "create-draft", "update-draft", "delete-draft",
-        "mark-read", "mark-unread",
+        "create-draft", "update-draft", "delete-draft", "create-forward",
+        "preflight-check", "mark-read", "mark-unread",
         # Adds files to an existing draft (the Gmail API has no attachment
         # endpoint, so the draft is rebuilt in place). --file is a
         # FILE_FLAGS input: staged through the owner-private directory and
@@ -140,7 +140,8 @@ SAFE = {
     # The unified mail CLI (issue #76): reads and draft writes on either
     # provider. Each write runs the provider verb's own code (DELEGATE).
     "mail_actions": {"search", "get-message", "get-draft", "mark-read", "mark-unread",
-                     "create-draft", "create-reply", "update-draft", "delete-draft"},
+                     "create-draft", "create-reply", "update-draft", "delete-draft",
+                     "create-forward", "preflight-check"},
     # list-ea-managed is a READ of the EA's own rule calendar; it returns the
     # event ids a later move or delete has to name. It grants no write:
     # create-event stays GATED apart from the attendee-less auto-hold
