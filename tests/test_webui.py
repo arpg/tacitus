@@ -439,10 +439,10 @@ def test_the_app_stays_small():
     #     Update, the look on the stream's `release`, on the reconnect and on the return to the screen).
     # 4,850: 4,750 plus the menu's width (the width its names need, the edge a drag or the keys move,
     #     kept per browser, the bounds that keep the panes beside it usable) and its foot that stays inside it.
-    # 4,880: 4,850 plus the thread in view cleared on the owner's other browsers, push on here or not
-    #     (the tag alone with push off, a message on the stream as the cue, the focus for a cue), and
-    #     the notifications no clear reached (the iPhone's): the worker closes the tags a push carries
-    #     once its own shows, and the page sweeps them when it starts or comes back into view.
+    # 4,860: 4,850 plus the thread in view cleared on the owner's other browsers, push on here or not
+    #     (the tag alone with push off, a message on the stream as the cue, the focus for a cue).
+    # 4,880: 4,860 plus the notifications no clear reached (the iPhone's): the worker closes the tags a push
+    #     carries once its own shows, and the page sweeps them when it starts or comes back into view.
     # 4,990: 4,880 plus the Settings menu (one entry at the foot with its hint, a row per page with
     #     what it holds, Back and Close, a page at a time, where notifications go by maker, the
     #     connection in words, and the sheet docked on a phone).
