@@ -344,7 +344,7 @@ the data, zeros up to a multiple of 256 bytes).
 |---|---|---|---|
 | `hello` | phone | handshake | above |
 | `welcome` | bot | yes | `{"device", "t"}` |
-| `req` | phone | yes | `{"m": "GET" or "POST", "p": "/api/...", "h": {headers}}` and the request body |
+| `req` | phone | yes | `{"m": "GET", "POST" or "PATCH", "p": "/api/...", "h": {headers}}` and the request body |
 | `res` | bot | yes | `{"s": status, "h": {"content-type", "content-disposition"}}` and the response body; a ping's answer is `{"pong": t}` |
 | `open` | phone | yes | `{"since": seq}` (optional): open the event stream |
 | `sse` | bot | yes | one event, `{"id", "event", "data"}`; the first carries the local stream's `{"retry", "data": ""}` |
@@ -414,8 +414,8 @@ with `http.client` is a later optimisation.
 
 ## What the bot forwards
 
-- Only `/api/...` paths under the web front end's base path, `GET` or
-  `POST`, with no `.` or `..` segment (raw or percent-encoded). Never
+- Only `/api/...` paths under the web front end's base path, `GET`,
+  `POST` or `PATCH` (a room's new name), with no `.` or `..` segment (raw or percent-encoded). Never
   `/api/pair...` or `/api/relay/...`, compared decoded and lowercased (the
   local server decodes each segment before it routes, so
   `/api/%72elay/pair` is refused too): pairing the web chat and managing
@@ -435,7 +435,7 @@ with `http.client` is a later optimisation.
   and refuses it from any other loopback client, so the relay client
   never sends it; without a readable token file every relayed request is
   a 401); `Host`, the loopback base URL's host and port, which A requires
-  of an `/api` request (else 421); on a POST, `Origin`, the loopback base
+  of an `/api` request (else 421); on a POST or a PATCH, `Origin`, the loopback base
   URL's origin (`http://127.0.0.1:<port>`), which A takes from a loopback
   client without the identity header; `X-Tacitus-Relay: <device id>`, so
   A can tell a relayed request; and `X-Tacitus-Relay-Cards: allow` or
@@ -810,7 +810,7 @@ adds nothing.
   request's frame id) and an event only of its own stream (kind `sse`,
   the `open` frame's id).
 - On `err` `session`, `replay` or `bad`, say hello again and retry a GET
-  once. A POST is not sent again: an `err` frame is not sealed, and the
+  once. A POST or a PATCH is not sent again: an `err` frame is not sealed, and the
   relay can forge one after the bot ran the request. The app says
   instead that the bot may have it, and to look before sending again. On
   `auth`, show "the bot did not accept this phone" and keep trying; never

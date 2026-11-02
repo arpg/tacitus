@@ -691,6 +691,15 @@ class FakeAPI(BaseHTTPRequestHandler):
         else:
             self._json(404, {"error": "no such route"})
 
+    def do_PATCH(self):
+        if not self._owner():
+            return
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        if self.path == "/chat/api/channels/r1":
+            self._json(200, {"id": "r1", "name": body.get("name"), "kind": "room"})
+        else:
+            self._json(404, {"error": "no such route"})
+
 
 def _serve(server):
     t = threading.Thread(target=server.serve_forever, daemon=True)
@@ -836,6 +845,27 @@ def test_request_through_the_relay(loop):
     assert rcl.owner_headers_for({"tailscale_login": LOGIN,
                                   "pair_token_file": str(loop["dir"] / "pair.token")}) == {
         "Cookie": f"ea_web={PAIR_TOKEN}"}
+
+
+def test_a_room_rename_crosses_as_a_patch_and_other_methods_do_not(loop):
+    """The app renames a room with PATCH: the bot replays it with its body
+    and the loopback Origin, as a POST. A device that may chat may send it;
+    one that only reads may not. Another method never reaches the server."""
+    phone = loop["phone"]
+    _, out = phone.call("PATCH", "/api/channels/r1", json.dumps({"name": "atlas 2027"}).encode())
+    assert out["s"] == 200 and json.loads(out["body"])["name"] == "atlas 2027"
+    method, path, hdrs = FakeAPI.seen[-1]
+    local = urllib.parse.urlsplit(loop["client"].local)
+    assert (method, path) == ("PATCH", "/chat/api/channels/r1")
+    assert hdrs["Origin"] == f"http://{local.netloc}"
+    assert hdrs["X-Tacitus-Relay"] == phone.session.device
+    assert rcl.access_allows("chat", "PATCH", "/api/channels/r1")
+    assert not rcl.access_allows("read", "PATCH", "/api/channels/r1")
+    n = len(FakeAPI.seen)
+    for method in ("PUT", "DELETE"):
+        _, out = phone.call(method, "/api/channels/r1", b"{}")
+        assert out["s"] == 405, method
+    assert len(FakeAPI.seen) == n
 
 
 def test_large_bodies_cross_once_encoded(loop):

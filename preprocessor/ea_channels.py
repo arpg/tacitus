@@ -20,7 +20,8 @@ on the web board and in App Home:
                   ea-bot shell conversation, or a Slack thread promoted
                   to a room). Every message in the channel, top level or
                   threaded, resumes that one session. Temporary by name:
-                  archive it when the conversation is over.
+                  the owner archives it from the room's menu when the
+                  conversation is over.
 
 Registry: ~/.ea/config/ea-channels.json
   {channel_id: {"kind": "project"|"session", "project": project_id,
@@ -241,8 +242,9 @@ def set_archived(channel_id: str, archived: bool, path: Path | None = None,
 
 
 def rename(channel_id: str, name: str, path: Path | None = None) -> bool:
-    """The user renamed a registered room in Slack: keep the badge in
-    step. False when the channel is not registered."""
+    """The user renamed a registered room (in Slack, or from the web app's
+    room menu): keep the badge in step. False when the channel is not
+    registered."""
     name = (name or "").strip().lstrip("#")
     done = {"ok": False}
 

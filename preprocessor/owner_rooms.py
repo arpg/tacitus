@@ -85,8 +85,10 @@ def record(channel_id: str, *, name: str = "", kind: str = "project",
 
 
 def update(channel_id: str, **fields) -> bool:
-    """Set fields on the room's row (archived_by_bot, for one). False when
-    the record does not name the room."""
+    """Set fields on the room's row: `archived_by_bot` (the hygiene pass
+    archived it), `kept_open` (the project status under which the owner
+    brought it back), `name` (the owner renamed it). False when the record
+    does not name the room."""
     with _LOCK:
         rooms = load() or {}
         row = rooms.get(str(channel_id))

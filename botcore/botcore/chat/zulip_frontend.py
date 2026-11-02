@@ -1920,6 +1920,22 @@ class ZulipFrontend(ChatFrontend):
         if not _ok(res):
             raise self._room_error(res)
 
+    def rename(self, channel: str, name: str) -> None:
+        """Rename the stream (PATCH /streams/{id} with new_name). Its id
+        stays, so every record keyed by it still names it; the server's
+        rename event follows."""
+        sid = stream_id_of(channel)
+        got = self.client.get_stream_id(name)
+        if _ok(got) and int(got.get("stream_id") or 0) != sid:
+            raise RoomNameTaken(name)
+        res = self.client.update_stream({"stream_id": sid, "new_name": name})
+        if not _ok(res):
+            msg = str(res.get("msg", "")).lower()
+            if "already" in msg and ("taken" in msg or "in use" in msg or "exists" in msg):
+                raise RoomNameTaken(name)
+            raise self._room_error(res)
+        self._stream_names[sid] = name
+
     @staticmethod
     def _room_error(res: dict) -> ChatError:
         msg = str(res.get("msg", "")).lower()

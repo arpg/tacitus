@@ -80,11 +80,11 @@ def fe(tmp_path):
 
 
 def call(f: WebFrontend, method: str, path: str, body=None, headers=None, raw=None):
-    """A loopback request; a POST carries this server's loopback Origin
-    unless `headers` names one (None leaves it out)."""
+    """A loopback request; a POST or a PATCH carries this server's loopback
+    Origin unless `headers` names one (None leaves it out)."""
     data = json.dumps(body).encode() if body is not None else raw
     h = {"Content-Type": "application/json"} if body is not None else {}
-    if method == "POST":
+    if method in ("POST", "PATCH"):
         h["Origin"] = f"http://127.0.0.1:{f.port}"
     h.update(headers or {})
     h = {k: v for k, v in h.items() if v is not None}
@@ -98,9 +98,9 @@ def call(f: WebFrontend, method: str, path: str, body=None, headers=None, raw=No
 
 def owner(f, method, path, body=None, headers=None, raw=None):
     """A request as tailscale serve forwards the owner's: the login header,
-    the public Host and, on a POST, the public Origin."""
+    the public Host and, on a POST or a PATCH, the public Origin."""
     h = {**OWNER_H, "Host": PUBLIC_HOST}
-    if method == "POST":
+    if method in ("POST", "PATCH"):
         h["Origin"] = PUBLIC_ORIGIN
     return call(f, method, path, body, {**h, **(headers or {})}, raw)
 
@@ -1528,3 +1528,182 @@ def test_a_relayed_device_that_may_chat_may_set_a_state(fe):
     assert relay_client.access_allows("read", "GET", "/api/needs")
     status, _h, body = owner(fe, "GET", "/api/needs", headers=relay)
     assert status == 200 and [r["state"] for r in json.loads(body)["threads"]] == ["waiting"]
+
+
+# ── rooms: the owner renames, archives and brings back a room ─────────
+
+def _new_events(f: WebFrontend, since: int) -> list[tuple[str, dict]]:
+    return [(t, json.loads(p)) for _s, t, p in f.store.events_since(since)]
+
+
+def test_the_owner_renames_a_room_and_the_core_hears_it(fe):
+    got, ev = catcher(fe)
+    fe.create_private_room("ea-atlas", "the atlas project")
+    fe.create_private_room("ea-lumen")
+    path = "/api/channels/r1"
+    # the owner only, from the app's own origin
+    assert call(fe, "PATCH", path, {"name": "x"})[0] == 401
+    assert owner(fe, "PATCH", path, {"name": "x"}, {"Tailscale-User-Login": "x@example.test"})[0] == 401
+    for origin in ("https://evil.example.test", None):
+        assert owner(fe, "PATCH", path, {"name": "x"}, {"Origin": origin})[0] == 403, origin
+    assert fe.store.channel("r1")["name"] == "ea-atlas" and not got
+    since = fe.store.max_event_seq()
+    status, _h, body = owner(fe, "PATCH", path, {"name": "  #atlas   2027 "})
+    row = json.loads(body)
+    assert status == 200 and (row["id"], row["name"], row["kind"]) == ("r1", "atlas 2027", "room")
+    assert fe.store.channel("r1")["name"] == "atlas 2027"
+    assert fe.store.channel("r1")["description"] == "the atlas project"
+    assert [(t, e["name"]) for t, e in _new_events(fe, since)] == [("channel", "atlas 2027")]
+    # the core hears it as Slack's and Zulip's renames: a channel_rename from the owner
+    assert ev.wait(2)
+    msg = got[-1]
+    assert isinstance(msg, InboundMessage)
+    assert (msg.channel, msg.subtype, msg.new_name, msg.user_id) == ("r1", "channel_rename",
+                                                                     "atlas 2027", "owner")
+    # the same name again changes nothing and tells nobody
+    since = fe.store.max_event_seq()
+    assert owner(fe, "PATCH", path, {"name": "atlas 2027"})[0] == 200
+    assert _new_events(fe, since) == [] and len(got) == 1
+    # refusals, each in plain words
+    refused = []
+    for body, want in (({"name": "EA-LUMEN"}, 409), ({"name": ""}, 400), ({"name": " # "}, 400),
+                       ({"name": "x" * 61}, 400), ({"name": "a\u202eb"}, 400), ({"name": 7}, 400),
+                       ({}, 400)):
+        status, _h, out = owner(fe, "PATCH", path, body)
+        assert status == want, (body, status, out)
+        refused.append(json.loads(out)["error"])
+    assert owner(fe, "PATCH", path, {"name": "y" * 60})[0] == 200
+    for cid, want in (("main", 400), ("dm", 400), ("sched", 400), ("r9", 404)):
+        status, _h, out = owner(fe, "PATCH", f"/api/channels/{cid}", {"name": "mine"})
+        assert status == want, cid
+        refused.append(json.loads(out)["error"])
+    assert fe.store.channel("main")["name"] == "ea" and fe.store.channel("r2")["name"] == "ea-lumen"
+    assert not [e for e in refused if JARGON.search(e)], refused
+    assert "Another room has that name." in refused
+
+
+def test_the_owner_archives_a_room_and_brings_it_back(fe):
+    fe.create_private_room("ea-atlas")
+    assert call(fe, "POST", "/api/channels/r1/archive")[0] == 401
+    assert owner(fe, "POST", "/api/channels/r1/archive", headers={"Origin": None})[0] == 403
+    since = fe.store.max_event_seq()
+    status, _h, body = owner(fe, "POST", "/api/channels/r1/archive")
+    assert status == 200 and json.loads(body)["archived"] is True
+    assert [(t, e["archived"]) for t, e in _new_events(fe, since)] == [("channel", True)]
+    # the bot's room hygiene reads the flag; the room takes no new message
+    assert fe.archived_map()["r1"] is True
+    assert owner(fe, "POST", "/api/channels/r1/messages", {"text": "hi"})[0] == 400
+    # archiving it again answers the row as it is, with no event
+    since = fe.store.max_event_seq()
+    status, _h, body = owner(fe, "POST", "/api/channels/r1/archive")
+    assert status == 200 and json.loads(body)["archived"] is True
+    assert _new_events(fe, since) == []
+    status, _h, body = owner(fe, "POST", "/api/channels/r1/unarchive")
+    assert status == 200 and json.loads(body)["archived"] is False
+    assert fe.archived_map()["r1"] is False
+    assert [t for t, _e in _new_events(fe, since)] == ["channel"]
+    # the fixed places refuse
+    for cid, want in (("main", 400), ("dm", 400), ("sched", 400), ("r9", 404)):
+        assert owner(fe, "POST", f"/api/channels/{cid}/archive")[0] == want, cid
+    assert not fe.store.channel("main")["archived"] and not fe.store.channel("dm")["archived"]
+
+
+def test_a_relayed_device_that_may_chat_may_rename_and_archive(fe):
+    """Room admin changes no mail and sends nothing: a chat action, which a
+    device the relay lets chat may take, as a message."""
+    from botcore.chat import relay_client
+    fe.create_private_room("ea-atlas")
+    relay = {"X-Tacitus-Relay": "0123456789abcdef", "X-Tacitus-Relay-Cards": "deny"}
+    assert owner(fe, "PATCH", "/api/channels/r1", {"name": "atlas"}, relay)[0] == 200
+    assert owner(fe, "POST", "/api/channels/r1/archive", headers=relay)[0] == 200
+    assert fe.store.channel("r1")["name"] == "atlas" and fe.store.channel("r1")["archived"]
+    for method, path in (("PATCH", "/api/channels/r1"), ("POST", "/api/channels/r1/archive"),
+                         ("POST", "/api/channels/r1/unarchive")):
+        assert relay_client.path_allowed(path)
+        assert relay_client.access_allows("chat", method, path)
+        assert not relay_client.access_allows("read", method, path)
+
+
+def _shadow(tmp_path, primary):
+    """A composite over `primary` with this web front end as its shadow,
+    started, with one room the primary holds and the shadow copies."""
+    from chat.shadow_frontend import ShadowFrontend
+    web = make(tmp_path)
+    composite = ShadowFrontend(primary, web)
+    room = primary.create_private_room("ea-atlas")
+    composite.start()
+    return composite, web, room.id
+
+
+def test_shadow_mode_renames_and_archives_the_room_on_the_primary(tmp_path):
+    from chat.memory_frontend import MemoryFrontend
+
+    class Renames(MemoryFrontend):
+        name = "zulip"
+
+        def rename(self, channel, name):
+            if any(i.name == name for c, i in self.rooms.items() if c != channel):
+                raise RoomNameTaken(name)
+            self._room(channel).name = name
+            self.room_ops.append({"op": "rename", "channel": channel, "name": name})
+
+    primary = Renames()
+    seen = []
+    primary.registry.event("message")(seen.append)
+    composite, web, cid = _shadow(tmp_path, primary)
+    try:
+        enc = urllib.parse.quote(cid, safe="")
+        assert web.store.channel(cid)["kind"] == "room"
+        status, _h, body = owner(web, "PATCH", f"/api/channels/{enc}", {"name": "atlas 2027"})
+        assert status == 200 and json.loads(body)["name"] == "atlas 2027"
+        assert primary.rooms[cid].name == "atlas 2027"
+        assert web.store.channel(cid)["name"] == "atlas 2027"
+        # the core hears the rename from the primary's owner, under the primary's id
+        assert [(m.channel, m.subtype, m.new_name, m.user_id) for m in seen] == [
+            (cid, "channel_rename", "atlas 2027", primary.owner_id)]
+        primary.create_private_room("ea-lumen")
+        status, _h, body = owner(web, "PATCH", f"/api/channels/{enc}", {"name": "ea-lumen"})
+        assert status == 409 and web.store.channel(cid)["name"] == "atlas 2027"
+        status, _h, body = owner(web, "POST", f"/api/channels/{enc}/archive")
+        assert status == 200 and json.loads(body)["archived"] is True
+        assert primary.rooms[cid].is_archived and web.store.channel(cid)["archived"]
+        # archived on the primary by someone else first: the row follows, no error
+        status, _h, body = owner(web, "POST", f"/api/channels/{enc}/unarchive")
+        assert status == 200 and not primary.rooms[cid].is_archived
+        primary.archive(cid)
+        status, _h, body = owner(web, "POST", f"/api/channels/{enc}/archive")
+        assert status == 200 and json.loads(body)["archived"] is True
+        # a refusal of the primary's leaves the room as it was
+        primary.unarchive = lambda channel: (_ for _ in ()).throw(ChatError("server error"))
+        status, _h, body = owner(web, "POST", f"/api/channels/{enc}/unarchive")
+        assert status == 502 and web.store.channel(cid)["archived"]
+        assert not JARGON.search(json.loads(body)["error"])
+    finally:
+        web.stop()
+
+
+def test_shadow_mode_refuses_a_rename_the_primary_cannot_make(tmp_path):
+    from chat.memory_frontend import MemoryFrontend
+
+    class Slackish(MemoryFrontend):
+        name = "slack"
+
+    primary = Slackish()
+    seen = []
+    primary.registry.event("message")(seen.append)
+    composite, web, cid = _shadow(tmp_path, primary)
+    try:
+        enc = urllib.parse.quote(cid, safe="")
+        status, _h, body = owner(web, "PATCH", f"/api/channels/{enc}", {"name": "atlas"})
+        error = json.loads(body)["error"]
+        assert status == 400 and error == ("Tacitus cannot rename a room in Slack. "
+                                           "Rename it in Slack itself.")
+        assert not JARGON.search(error)
+        assert primary.rooms[cid].name == "ea-atlas" and web.store.channel(cid)["name"] == "ea-atlas"
+        assert seen == []
+        # archiving needs no rename: it goes through
+        assert owner(web, "POST", f"/api/channels/{enc}/archive")[0] == 200
+        assert primary.rooms[cid].is_archived
+    finally:
+        web.stop()
+

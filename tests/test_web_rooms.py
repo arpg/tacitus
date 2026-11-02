@@ -10,8 +10,11 @@ briefing posts its room slice there; the hygiene pass archives the room of
 a dormant project. A session room (#tmp-<id8>), a room opened for a
 project created in a turn, the staged pending-channel.json and the
 picker's Open button take the same path, and a room made before its
-registration failed is taken back. Shadow mode (a Zulip primary, the web
-chat as its mirror) keeps the primary's room ids.
+registration failed is taken back. A room the owner renames from the app
+keeps its project (the registry and the owner record follow); one the owner
+archives there stays archived, and one brought back stays open. Shadow mode
+(a Zulip primary, the web chat as its mirror) keeps the primary's room ids,
+and a rename from the app reaches the primary and the registry.
 
 The bot is hyphenated and heavy, so its functions are exec'd from its
 source into a namespace of stubs, as tests/test_owner_routing.py does."""
@@ -338,6 +341,59 @@ def test_the_hygiene_pass_archives_and_reopens_a_web_room(bot):
     assert not fe.store.channel("r1")["archived"]
 
 
+def test_a_room_the_owner_renames_in_the_app_keeps_its_project(bot):
+    """The app's Rename room: the store row, the registry's name and the
+    owner room record follow, and the room is served as before."""
+    ns, fe, *_ = bot
+    _command(ns, fe, "open a channel for atlas")
+    row, after = fe.web_rename("r1", "atlas 2027")
+    assert row["name"] == "atlas 2027" and after is not None
+    after()  # the HTTP route runs it once the answer is sent
+    assert _ea_channels.scope_of("r1")["name"] == "atlas 2027"
+    assert _owner_rooms.get("r1")["name"] == "atlas 2027"
+    assert ns["_channel_scope"]("r1")["project"] == "atlas"
+    _Thread.started.clear()
+    _say(fe, "r1", "what is still open here?")
+    assert len(_Thread.started) == 1
+    assert _Thread.started[0][3].startswith("[From the private #atlas 2027 channel, "
+                                            "scoped to project 'atlas'.")
+    assert fe.mention("r1") == "[#atlas 2027](https://host.example.test/chat/#/r1)"
+
+
+def test_a_room_archived_in_the_app_is_the_owners_and_brought_back_stays(bot):
+    """The app's Archive room sets the store's flag, which the hygiene pass
+    reads as the owner's archive: the room stays archived while its project
+    is active. Bring back reopens it; a room of a dormant project that the
+    owner brings back stays open until the project's status changes."""
+    ns, fe, store, *_ = bot
+    _command(ns, fe, "open a channel for atlas")
+    assert fe.web_archive("r1", True)["archived"]
+    assert ns["_room_hygiene_pass"]() == ["noted #ea-atlas archived by the owner (atlas is active)"]
+    assert _ea_channels.scope_of("r1")["archived_by"] == "user"
+    assert ns["_room_hygiene_pass"]() == [] and fe.store.channel("r1")["archived"]
+    assert not fe.web_archive("r1", False)["archived"]
+    assert ns["_room_hygiene_pass"]() == ["noted #ea-atlas reopened in chat"]
+    assert not _ea_channels.scope_of("r1")["archived"]
+    # the bot archives a dormant project's room; the owner brings it back
+    store.status["atlas"] = "dormant"
+    assert ns["_room_hygiene_pass"]() == ["archived #ea-atlas (atlas is dormant)"]
+    fe.web_archive("r1", False)
+    assert ns["_room_hygiene_pass"]() == ["noted #ea-atlas reopened in chat"]
+    assert _owner_rooms.get("r1")["kept_open"] == "dormant"
+    assert ns["_room_hygiene_pass"]() == [] and not fe.store.channel("r1")["archived"]
+    # its project closes: a new status, so the bot archives it again
+    store.status["atlas"] = "closed"
+    assert ns["_room_hygiene_pass"]() == ["archived #ea-atlas (atlas is closed)"]
+    # kept open while closed, then active and dormant again: archived again
+    fe.web_archive("r1", False)
+    ns["_room_hygiene_pass"]()
+    assert _owner_rooms.get("r1")["kept_open"] == "closed"
+    store.status["atlas"] = "active"
+    assert ns["_room_hygiene_pass"]() == [] and not _owner_rooms.get("r1")["kept_open"]
+    store.status["atlas"] = "dormant"
+    assert ns["_room_hygiene_pass"]() == ["archived #ea-atlas (atlas is dormant)"]
+
+
 def test_a_session_room_on_the_web_chat(bot):
     ns, fe, _, adopted, _ = bot
     _, res = _command(ns, fe, f"open a channel for session {SID}")
@@ -445,6 +501,47 @@ def test_shadow_mode_keeps_the_primarys_room_ids(bot, tmp_path):
     assert web.store.channel("stream:41")["name"] == "ea-atlas"
     assert web.store.channel("stream:41")["kind"] == "room"
     assert not [c for c in web.store.channels() if re.fullmatch(r"r\d+", c["id"])]
+    web.stop()
+
+
+def test_shadow_mode_renames_the_primarys_room_and_the_registry_follows(bot, tmp_path):
+    """Zulip primary, web mirror: Rename room in the app renames the stream
+    on the primary, and the core hears it from the owner, so the registry
+    and the owner record follow (Zulip's own rename event names no one)."""
+    from preprocessor.chat.memory_frontend import MemoryFrontend
+    from preprocessor.chat.shadow_frontend import ShadowFrontend
+    from preprocessor.chat.types import RoomRef
+    ns, _, *_ = bot
+
+    class ZulipLike(MemoryFrontend):
+        name = "zulip"
+
+        def create_private_room(self, name, description=""):
+            room = super().create_private_room(name, description)
+            cid = f"stream:{40 + len(self.created_rooms)}"
+            self.rooms[cid] = self.rooms.pop(room.id)
+            self.rooms[cid].id = cid
+            return RoomRef(cid, name, f"https://zulip.example.test/#narrow/channel/{cid[7:]}")
+
+        def rename(self, channel, name):
+            self._room(channel).name = name
+
+    primary = ZulipLike()
+    web = _web(tmp_path / "shadow")
+    composite = ShadowFrontend(primary, web)
+    ns.update({"FRONTEND": composite, "CHANNEL_ID": composite.main_channel,
+               "OWNER_SLACK_USER_ID": composite.owner_id, "BOT_USER_ID": composite.bot_user_id,
+               "_resolve_dm_channel": lambda: "D_OWNER"})
+    composite.registry.event("message")(ns["on_message"])
+    res = ns["_open_project_channel"]("C_MAIN", "", "", "atlas")
+    assert res["ok"], res
+    cid = res["room"]
+    row, after = web.web_rename(cid, "atlas 2027")
+    assert row["name"] == "atlas 2027" and after is None
+    assert primary.rooms[cid].name == "atlas 2027"
+    assert _ea_channels.scope_of(cid)["name"] == "atlas 2027"
+    assert _owner_rooms.get(cid)["name"] == "atlas 2027"
+    assert ns["_channel_scope"](cid)["project"] == "atlas"
     web.stop()
 
 
