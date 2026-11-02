@@ -80,11 +80,11 @@ def fe(tmp_path):
 
 
 def call(f: WebFrontend, method: str, path: str, body=None, headers=None, raw=None):
-    """A loopback request; a POST or a PATCH carries this server's loopback
-    Origin unless `headers` names one (None leaves it out)."""
+    """A loopback request; a change (POST, PATCH, DELETE) carries this
+    server's loopback Origin unless `headers` names one (None leaves it out)."""
     data = json.dumps(body).encode() if body is not None else raw
     h = {"Content-Type": "application/json"} if body is not None else {}
-    if method in ("POST", "PATCH"):
+    if method != "GET":
         h["Origin"] = f"http://127.0.0.1:{f.port}"
     h.update(headers or {})
     h = {k: v for k, v in h.items() if v is not None}
@@ -98,9 +98,9 @@ def call(f: WebFrontend, method: str, path: str, body=None, headers=None, raw=No
 
 def owner(f, method, path, body=None, headers=None, raw=None):
     """A request as tailscale serve forwards the owner's: the login header,
-    the public Host and, on a POST or a PATCH, the public Origin."""
+    the public Host and, on a change, the public Origin."""
     h = {**OWNER_H, "Host": PUBLIC_HOST}
-    if method in ("POST", "PATCH"):
+    if method != "GET":
         h["Origin"] = PUBLIC_ORIGIN
     return call(f, method, path, body, {**h, **(headers or {})}, raw)
 
@@ -1708,4 +1708,227 @@ def test_shadow_mode_refuses_a_rename_the_primary_cannot_make(tmp_path):
         assert primary.rooms[cid].is_archived
     finally:
         web.stop()
+
+
+# the owner's own actions: search, reactions, edit and delete
+
+
+def _search_store(tmp_path, monkeypatch, mode):
+    """A started frontend whose store searches by `mode` (fts5 or like)."""
+    if mode == "like":
+        monkeypatch.setattr(wf, "fts5_available", lambda conn: False)
+    f = make(tmp_path)
+    f.start()
+    if f.store.search_mode != mode:
+        f.stop()
+        pytest.skip("this SQLite has no FTS5")
+    return f
+
+
+@pytest.mark.parametrize("mode", ["fts5", "like"])
+def test_search_finds_every_word_newest_first_in_either_mode(tmp_path, monkeypatch, mode):
+    f = _search_store(tmp_path, monkeypatch, mode)
+    try:
+        a = f.post("main", "Weekly plan: the budget table is due Friday.")
+        b = f.post("main", "Budget " + "filler words " * 40 + "the travel table is here", thread_ts=a.thread_key)
+        c = f.post_card("dm", card(title=":lock: Send the budget table?", fallback_text=""))
+        f.post("dm", "Nothing about money here.")
+        owner_row = f.store.add_message("dm", mid=None, thread_key=None, author="owner", kind="message",
+                                        text="Where is the budget table?")
+        hits = f.store.search("budget table")
+        assert [h["id"] for h in hits] == [owner_row["id"], c.id, b.id, a.id]  # a card's text is its title
+        assert set(hits[0]) == {"channel", "channel_name", "thread_key", "thread_title", "id", "author",
+                                "kind", "posted_at", "snippet"}
+        assert hits[1]["thread_title"] == ":lock: Send the budget table?"  # a card names its conversation
+        assert hits[2]["thread_title"] == "Weekly plan: the budget table is due Friday."  # a reply, by its first
+        assert hits[2]["channel_name"] == "ea" and hits[0]["author"] == "owner"
+        long = hits[2]["snippet"]
+        assert len(long) <= 160 and long.startswith("Budget") and long.endswith("\u2026")
+        assert [h["id"] for h in f.store.search("travel table")] == [b.id]
+        mid = f.store.search("travel")[0]["snippet"]
+        assert mid.startswith("\u2026") and "travel" in mid and len(mid) <= 160
+        assert [h["id"] for h in f.store.search("budget", channel="dm")] == [owner_row["id"], c.id]
+        assert len(f.store.search("budget", limit=1)) == 1
+        assert f.store.search("budget missingword") == []
+        # An edit is found by its new words alone; a removed message is not found.
+        f.store.owner_edit("dm", owner_row["id"], "Where is the travel plan?")
+        assert owner_row["id"] not in [h["id"] for h in f.store.search("budget table")]
+        assert [h["id"] for h in f.store.search("travel plan")] == [owner_row["id"]]
+        f.store.owner_remove("dm", owner_row["id"])
+        assert f.store.search("travel plan") == []
+        f.update(a, "Weekly plan: the cost sheet is due Friday.")
+        assert [h["id"] for h in f.store.search("cost sheet")] == [a.id]
+        r = f.post("main", "The CAFÉ receipts are filed.")
+        if mode == "fts5":  # a word matches the start of a word, in any case, with or without accents
+            assert [h["id"] for h in f.store.search("cafe RECEI")] == [r.id]
+            assert f.store.search("ceipts") == []
+            assert f.store.search('" OR * NEAR(') == []  # the index's own syntax is plain words here
+        else:  # anywhere in the text, in any ASCII case
+            assert [h["id"] for h in f.store.search("CEIPTS")] == [r.id]
+            assert f.store.search("%") == f.store.search("_") == []
+    finally:
+        f.stop()
+
+
+def test_an_index_that_missed_rows_is_built_again_on_open(tmp_path):
+    path = tmp_path / "priv" / "webchat.sqlite"
+    store = wf.WebStore(path)
+    if store.search_mode != "fts5":
+        store.close()
+        pytest.skip("this SQLite has no FTS5")
+    store.upsert_channel("main", "ea", "main")
+    store.add_message("main", mid=None, thread_key=None, author="bot", kind="message", text="kept apple")
+    store.close()
+    import sqlite3
+    conn = sqlite3.connect(path)  # a process without the index writes a row
+    conn.execute("INSERT INTO messages(channel, id, thread_key, author, kind, text, posted_at, updated_at) "
+                 "VALUES ('main', 'w9', 't9', 'bot', 'message', 'written apart', 1, 1)")
+    conn.commit()
+    conn.close()
+    store = wf.WebStore(path)
+    assert store.search_mode == "fts5"
+    assert [h["id"] for h in store.search("apart")] == ["w9"]
+    assert [h["id"] for h in store.search("apple")] == ["w1"]
+    store.close()
+
+
+def test_the_search_route_answers_the_owner_alone(fe):
+    a = fe.post("main", "the budget table")
+    fe.post("dm", "the budget sheet")
+    status, _h, body = owner(fe, "GET", "/api/search?q=budget&limit=50")
+    out = json.loads(body)
+    assert status == 200 and out["mode"] == fe.store.search_mode
+    assert [r["channel"] for r in out["results"]] == ["dm", "main"]
+    out = json.loads(owner(fe, "GET", "/api/search?q=budget&channel=main")[2])
+    assert [r["id"] for r in out["results"]] == [a.id]
+    assert owner(fe, "GET", "/api/search?q=budget&channel=nope")[0] == 404
+    assert owner(fe, "GET", "/api/search")[0] == 400
+    assert owner(fe, "GET", "/api/search?q=%20")[0] == 400
+    assert owner(fe, "GET", "/api/search?q=" + "x" * 201)[0] == 400
+    assert owner(fe, "GET", "/api/search?q=x&limit=0")[0] == 400
+    assert owner(fe, "GET", "/api/search?q=x&limit=201")[0] == 400
+    assert call(fe, "GET", "/api/search?q=budget")[0] == 401
+    # Through the relay: a GET, which a device that may only read may make.
+    from botcore.chat import relay_client
+    assert relay_client.path_allowed("/api/search?q=budget%20table&limit=50")
+    assert relay_client.access_allows("read", "GET", "/api/search?q=budget")
+    relay = {"X-Tacitus-Relay": "0123456789abcdef", "X-Tacitus-Relay-Cards": "deny"}
+    assert owner(fe, "GET", "/api/search?q=budget", headers=relay)[0] == 200
+
+
+def test_the_owner_reacts_apart_from_the_bot_s_marks(fe):
+    ref = fe.post("main", "three times work")
+    fe.react("main", ref.id, Status.EYES)
+    before = fe.store.message("main", ref.id)
+    s = Stream(fe)
+    try:
+        s.lines(lambda seen: "retry: 3000" in seen)
+        path = f"/api/messages/main/{ref.id}/react"
+        status, _h, body = owner(fe, "POST", path, {"emoji": "eyes"})
+        row = json.loads(body)
+        assert status == 200 and row["owner_reactions"] == ["eyes"] and row["reactions"] == ["eyes"]
+        ev = s.events(1)[0]
+        assert ev["event"] == "reaction" and json.loads(ev["data"])["owner_reactions"] == ["eyes"]
+        assert json.loads(owner(fe, "POST", path, {"emoji": "\U0001f44d"})[2])["owner_reactions"] == ["eyes", "+1"]
+        assert json.loads(owner(fe, "POST", path, {"emoji": "\u2764"})[2])["owner_reactions"] == ["eyes", "+1", "heart"]
+        assert json.loads(owner(fe, "POST", path, {"emoji": "eyes"})[2])["owner_reactions"] == ["+1", "heart"]
+    finally:
+        s.close()
+    row = fe.store.message("main", ref.id)
+    # The bot's marks, which the thread states read, and the edit time stay as they were.
+    assert row["reactions"] == before["reactions"] and row["updated_at"] == before["updated_at"]
+    # A link from before the move off the primary names the channel's old id.
+    fe.store.redirects["stream:9"] = "main"
+    assert owner(fe, "POST", f"/api/messages/stream%3A9/{ref.id}/react", {"emoji": "joy"})[0] == 200
+    assert fe.store.message("main", ref.id)["owner_reactions"] == ["+1", "heart", "joy"]
+    assert owner(fe, "GET", "/api/search?q=three&channel=stream%3A9")[0] == 200
+    assert owner(fe, "POST", path, {"emoji": "rocket"})[0] == 400
+    assert owner(fe, "POST", path, {})[0] == 400
+    assert owner(fe, "POST", "/api/messages/main/w999/react", {"emoji": "eyes"})[0] == 404
+    assert call(fe, "POST", path, {"emoji": "eyes"})[0] == 401
+    assert owner(fe, "POST", path, {"emoji": "eyes"}, {"Origin": "https://evil.example.test"})[0] == 403
+
+
+def test_the_owner_edits_and_removes_only_their_own_message_in_its_first_15_minutes(fe):
+    got, ev = catcher(fe)
+    row = json.loads(owner(fe, "POST", "/api/channels/main/messages", {"text": "Plese send it"})[2])
+    assert ev.wait(5)
+    ev.clear()
+    path = f"/api/messages/main/{row['id']}"
+    s = Stream(fe)
+    try:
+        s.lines(lambda seen: "retry: 3000" in seen)
+        status, _h, body = owner(fe, "PATCH", path, {"text": "Please send it"})
+        new = json.loads(body)
+        assert status == 200 and new["text"] == "Please send it" and new["updated_at"] > new["posted_at"]
+        e = s.events(1)[0]
+        assert e["event"] == "update" and json.loads(e["data"])["text"] == "Please send it"
+    finally:
+        s.close()
+    stored = fe.store._one("SELECT edits FROM messages WHERE id=?", (row["id"],))
+    assert [x["text"] for x in json.loads(stored["edits"])] == ["Plese send it"]
+    # The bot's later turns read the thread as it is now; the edit dispatches nothing.
+    assert [m.text for m in fe.thread_replies("main", row["thread_key"])] == ["Please send it"]
+    assert not ev.wait(0.3) and len(got) == 1
+    assert owner(fe, "PATCH", path, {"text": ""})[0] == 400
+    assert owner(fe, "PATCH", path, {"text": "x" * 20001})[0] == 400
+    assert owner(fe, "PATCH", path, {"text": "x"}, {"Origin": None})[0] == 403
+    assert call(fe, "PATCH", path, {"text": "x"})[0] == 401
+    # Only the owner's own text message.
+    bot = fe.post("main", "the bot's words")
+    assert owner(fe, "PATCH", f"/api/messages/main/{bot.id}", {"text": "x"})[0] == 403
+    assert owner(fe, "DELETE", f"/api/messages/main/{bot.id}")[0] == 403
+    assert owner(fe, "PATCH", "/api/messages/main/w999", {"text": "x"})[0] == 404
+    up = fe.store.add_message("main", mid=None, thread_key=None, author="owner", kind="file", text="",
+                              file={"id": "f1", "name": "a.txt", "url": "", "mimetype": "text/plain", "size": 1})
+    assert owner(fe, "DELETE", f"/api/messages/main/{up['id']}")[0] == 400
+    # Past 15 minutes: a plain refusal.
+    old = fe.store.add_message("main", mid=None, thread_key=None, author="owner", kind="message",
+                               text="old words", posted_at=time.time() - 16 * 60)
+    status, _h, body = owner(fe, "PATCH", f"/api/messages/main/{old['id']}", {"text": "new"})
+    assert status == 409 and json.loads(body)["error"] == "You can change a message only in its first 15 minutes."
+    status, _h, body = owner(fe, "DELETE", f"/api/messages/main/{old['id']}")
+    assert status == 409 and "remove a message only in its first 15 minutes" in json.loads(body)["error"]
+    # Removed: the row stays, with no text, no history and no reactions of the owner's.
+    owner(fe, "POST", f"{path}/react", {"emoji": "heart"})
+    status, _h, body = owner(fe, "DELETE", path)
+    gone = json.loads(body)
+    assert status == 200 and gone["deleted"] and gone["text"] == "" and gone["owner_reactions"] == []
+    assert fe.store._one("SELECT edits FROM messages WHERE id=?", (row["id"],))["edits"] is None
+    assert owner(fe, "DELETE", path)[0] == 200  # once more: as it is
+    assert owner(fe, "PATCH", path, {"text": "back"})[0] == 409
+    assert owner(fe, "POST", f"{path}/react", {"emoji": "heart"})[0] == 409
+    # A later change from elsewhere (a mirror) writes no text back.
+    fe.mirror_update(MessageRef("main", row["id"], row["thread_key"]), "resurrected")
+    assert fe.store.message("main", row["id"])["text"] == ""
+    # A device the relay lets chat may edit, as it may post; one that only reads may not.
+    from botcore.chat import relay_client
+    assert relay_client.access_allows("chat", "PATCH", path) and relay_client.access_allows("chat", "DELETE", path)
+    assert not relay_client.access_allows("read", "PATCH", path)
+    assert not relay_client.access_allows("read", "DELETE", path)
+    assert {"PATCH", "DELETE"} <= set(relay_client.METHODS)
+
+
+def test_shadow_mode_keeps_the_owner_s_changes_in_the_web_store(tmp_path):
+    """The composite takes messages and clicks only: an edit, a removal and
+    a reaction change the web store and reach nothing else."""
+    f = make(tmp_path)
+    handed: list = []
+
+    def composite(ev):
+        handed.append(ev)
+        ref = MessageRef(ev.channel, "9001", ev.thread_key or "stream:7:topic:new", time.time())
+        f.mirror_post(ref, ev.text, "owner")
+        return ref
+    f.inbound = composite
+    f.start()
+    try:
+        f.mirror_channel("stream:7", "ea", "main")
+        owner(f, "POST", "/api/channels/stream%3A7/messages", {"text": "hi"})
+        assert owner(f, "PATCH", "/api/messages/stream%3A7/9001", {"text": "hello"})[0] == 200
+        assert owner(f, "POST", "/api/messages/stream%3A7/9001/react", {"emoji": "joy"})[0] == 200
+        assert owner(f, "DELETE", "/api/messages/stream%3A7/9001")[0] == 200
+        assert len(handed) == 1 and f.store.message("stream:7", "9001")["deleted"]
+    finally:
+        f.stop()
 

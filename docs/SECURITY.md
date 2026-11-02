@@ -1414,8 +1414,8 @@ request:
   else is 421: a rebound name arrives with the attacker's host.
 - is refused (403) with `Sec-Fetch-Site: cross-site` or `same-site`, a
   GET too. A page on another port of the same host is same-site.
-- as a POST, carries an `Origin` equal to `public_url`'s scheme, host and
-  port. A missing Origin is refused. A loopback client that sends no
+- as a POST, PATCH or DELETE, carries an `Origin` equal to `public_url`'s
+  scheme, host and port. A missing Origin is refused. A loopback client that sends no
   identity header (the relay client) may send this server's loopback
   origin instead.
 
