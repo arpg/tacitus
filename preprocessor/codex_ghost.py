@@ -550,7 +550,8 @@ def _new_ghost_id(run_id: str, argv) -> str:
 
 
 def _draft_answer(tool: str, verb: str, argv, gid: str) -> dict | None:
-    """The JSON the real draft verb prints (graph_actions, gmail_client),
+    """The JSON the real draft verb prints (graph_actions, gmail_client,
+    mail_actions),
     with the synthetic id in place of the server's."""
     if tool == "graph_actions":
         if verb == "create-reply":
@@ -561,6 +562,12 @@ def _draft_answer(tool: str, verb: str, argv, gid: str) -> dict | None:
             return {"status": "updated", "message_id": _opt(argv, "--message-id")}
         if verb == "delete-draft":
             return {"status": "deleted", "message_id": _opt(argv, "--message-id")}
+    if tool == "mail_actions":
+        base = {"provider": _opt(argv, "--provider"), "account": _opt(argv, "--account") or None}
+        if verb in ("create-draft", "create-reply"):
+            return {"status": "draft_created", "id": gid, **base}
+        if verb in ("update-draft", "delete-draft"):
+            return {"status": verb.split("-")[0] + "d", "id": _opt(argv, "--draft-id"), **base}
     if tool == "gmail_client":
         if verb == "create-draft":
             return {"draft_id": gid, "message_id": gid, "thread_id": _opt(argv, "--thread-id"),

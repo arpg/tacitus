@@ -765,6 +765,7 @@ NOT_DRAFT_CHANGING = {
     "mail_actions": {
         "search": "read", "get-message": "read", "get-draft": "read",
         "mark-read": "the read flag only", "mark-unread": "the read flag only",
+        "create-draft": "makes a new draft id, which gets its own card",
     },
 }
 
@@ -846,7 +847,11 @@ def _verb_code(tool: str, verb: str) -> str:
                       main, re.S)
         assert m, f"gmail_client main() has no branch for {verb}"
         seed = m.group(1)
-    return _reach(seed, funcs, gfuncs)
+    code = _reach(seed, funcs, gfuncs)
+    # A unified write runs a provider verb's code: that code is what it runs.
+    for ptool, pverb in (getattr(module, "DELEGATE", {}).get(verb) or {}).values():
+        code += "\n" + _verb_code(ptool, pverb)
+    return code
 
 
 def draft_changing_verbs() -> dict:
@@ -897,7 +902,8 @@ def _placeholders(tmp: Path) -> dict:
     return {"message_id": DRAFT, "draft_id": GDRAFT, "email": GMAIL,
             "conversation_id": CONV, "body": "Changed: wire the funds to the new account.",
             "body_file": str(body), "file": str(new_file), "name": "a.pdf",
-            "attachment_id": "att1", "to": "eve@example.net", "subject": "Changed subject"}
+            "attachment_id": "att1", "to": "eve@example.net", "subject": "Changed subject",
+            "provider": "outlook"}
 
 
 def _argv(tool: str, verb: str, tmp: Path) -> list:
@@ -920,7 +926,13 @@ def _argv(tool: str, verb: str, tmp: Path) -> list:
 
 
 def _run_verb(tool: str, argv: list) -> None:
-    if tool == "graph_actions":
+    if tool == "mail_actions":
+        args = PARSERS[tool]().parse_args(argv)
+        args._mediated = False
+        with redirect_stdout(io.StringIO()):
+            rc = args.func(args)
+        assert not rc, f"mail_actions {argv} exited {rc}"
+    elif tool == "graph_actions":
         args = PARSERS[tool]().parse_args(argv)
         ga._resolve_body(args)
         with redirect_stdout(io.StringIO()):
@@ -943,22 +955,39 @@ def _fresh_fp(tool: str):
         return None   # the draft is gone
 
 
-def test_each_draft_changing_verb_after_a_card_makes_the_click_refuse():
-    for tool, verbs in draft_changing_verbs().items():
+def _cases(changing: dict):
+    """(tool, verb, provider tool, extra argv) for every draft-changing verb.
+    A unified verb runs once per provider whose delegated verb changes a
+    draft (a Gmail reply makes a new draft, which gets its own card)."""
+    for tool, verbs in changing.items():
         for verb in sorted(verbs):
-            with sandbox() as (tmp, _posts):
-                fakes = outlook() if tool == "graph_actions" else gmail()
-                with fakes as fake:
-                    reviewed = _fresh_fp(tool)      # the card is posted
-                    _run_verb(tool, _argv(tool, verb, tmp))
-                    now = _fresh_fp(tool)
-                    assert now != reviewed, (
-                        f"{tool} {verb} ran but the fake draft did not change; give it "
-                        f"a placeholder that changes it")
-                    out = (_cli_send(DRAFT, reviewed) if tool == "graph_actions"
-                           else _cli_send_gmail(reviewed))
-                    assert fake.sent == [], f"{tool} {verb}: the click sent changed content"
-                    assert out.get("status") != "sent", (tool, verb, out)
+            if tool != "mail_actions":
+                yield tool, verb, tool, []
+                continue
+            for prov, (ptool, pverb) in ma.DELEGATE[verb].items():
+                if pverb in changing[ptool]:
+                    takes_id = any(a.dest == "draft_id" for a in _subparsers(PARSERS[tool]())[verb]._actions)
+                    # an Outlook draft id is its message id (argparse keeps the last value)
+                    yield tool, verb, ptool, (["--provider", prov] + (
+                        ["--account", GMAIL] if prov == "gmail" else
+                        ["--draft-id", DRAFT] if takes_id else []))
+
+
+def test_each_draft_changing_verb_after_a_card_makes_the_click_refuse():
+    for tool, verb, kind, extra in _cases(draft_changing_verbs()):
+        with sandbox() as (tmp, _posts):
+            fakes = outlook() if kind == "graph_actions" else gmail()
+            with fakes as fake:
+                reviewed = _fresh_fp(kind)      # the card is posted
+                _run_verb(tool, _argv(tool, verb, tmp) + extra)
+                now = _fresh_fp(kind)
+                assert now != reviewed, (
+                    f"{tool} {verb} {extra} ran but the fake draft did not change; give it "
+                    f"a placeholder that changes it")
+                out = (_cli_send(DRAFT, reviewed) if kind == "graph_actions"
+                       else _cli_send_gmail(reviewed))
+                assert fake.sent == [], f"{tool} {verb} {extra}: the click sent changed content"
+                assert out.get("status") != "sent", (tool, verb, extra, out)
 
 
 def test_each_draft_changing_verb_after_a_queued_send_makes_the_cron_refuse():
