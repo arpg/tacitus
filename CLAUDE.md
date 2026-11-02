@@ -84,8 +84,8 @@ Zulip the streams in the `chat` block of `~/.ea/config/ea-config.json`
 - A file for the user goes on your reply: write its full path
   (`~/.ea/letters/<name>/<name>.pdf`). After your turn the bot attaches
   each named file the turn wrote (PDF, Office, CSV, image or zip, 10 MB
-  or less). Send an older file with `chat_upload.py` (`briefing-data.md`);
-  never ask the user to fetch it. A bare name, a `.tex` or `.md` source,
+  or less). Use `chat_upload.py` for an older file (`briefing-data.md`);
+  never ask the user to fetch it. A bare name, a `.tex` or `.md` source
   or a larger file stays text only.
 
 ## Autonomy tiers
