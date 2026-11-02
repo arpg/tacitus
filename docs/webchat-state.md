@@ -238,6 +238,20 @@ Each override is also a labelled example: one JSON line in
 "previous_by", "message_count"}`, never any text, so the model step can
 be scored later.
 
+**Closure labels.** The EA hands the engine an observer
+(`web_thread_state.observe`): each owner tap and each model answer (its
+state and confidence) also becomes a record in the closure label store,
+`<private dir>/evals/closure-labels.jsonl`, with the thread's features
+as the rules read them then and no text. A nightly `closure_labels.py
+collect` adds the card outcomes, the ledger's closes, reopens and
+proposals, the missed-closure log, and any tap the observer missed;
+`closure_eval.py` scores the rules, the model and the ledger pipeline
+against the owner's labels. A tap also writes back to a linked ledger
+row where that is safe: Done closes an open row on the owner's word
+(no mail moves) and logs the missed closure; Needs me rejects a close
+proposal or reopens a row a signal closed in the last 7 days. See
+docs/ea/closure-signals.md.
+
 ## API (under `base_path`, owner-only like the rest)
 
 - `GET /api/channels/<id>/threads` (the existing threads route) rows gain `state`, `state_by`, `state_reason`, `state_at` and `stale`; a thread with no state row has `"state": "none"`, `state_by` and `state_at` null, `state_reason` "" and `stale` false.
@@ -269,10 +283,8 @@ A needs row is the same with `"channel_name": "dm"`.
 
 ## Out of scope for v0
 
-Writing back to the ledger (an owner's "Done" does not close a ledger
-row; a later version proposes a closure). Zulip gets no stickers; in
-shadow mode the state lives in the web store only. The hosted model
-step.
+Zulip gets no stickers; in shadow mode the state lives in the web store
+only. The hosted model step.
 
 ## Changes from v0
 
@@ -320,6 +332,12 @@ bot side changed it here:
 - **`/api/needs`** leaves out archived channels, and `needs` is a
   reserved channel id. **The POST** answers the thread's row (with
   `channel_name`), as the app reads it.
+- **Writing back to the ledger**, out of scope in v0, is in: an owner's
+  Done closes a linked open row on their word and logs the missed
+  closure, and Needs me rejects a proposal or reopens a recent
+  automatic close (docs/ea/closure-signals.md). The engine has an
+  `observer` for this, which also keeps each tap and model answer as a
+  closure label.
 - **The store** writes never go back (a stale model answer or a rule
   never replaces a newer judgment or the owner's override), and a moved
   thread takes its state.

@@ -1866,6 +1866,9 @@ class WebFrontend(ChatFrontend):
         row = self.store.set_thread_state(channel, key, state, "owner",
                                           _ts.OWNER_REASONS[state], judged_seq=newest)
         self._label(row, before)
+        if self.thread_states is not None:
+            # The host hears the tap too (closure labels, the ledger write-back).
+            self.thread_states.owner_tap(channel, key, row, before)
         return self.store.thread_row(channel, key) or row
 
     def _label(self, row: dict, before: dict) -> None:

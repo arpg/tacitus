@@ -937,6 +937,11 @@ the ones you want with `crontab -e`:
 0 2 * * *          $(pwd)/tests/evals/run_full_if_changed.sh >> ~/.ea-private/logs/eval-full.log 2>&1
 # Monthly: re-measure the writing-style corpus (assistant; see below).
 40 4 1 * *         python3 /opt/ea-system/preprocessor/style_analysis.py run --dispatch >> ~/.ea-private/logs/style-analysis.log 2>&1
+# Nightly, after the 01:30 ledger reconcile: every Done marker (owner taps,
+# card outcomes, ledger closes and reopens, missed closures, model answers)
+# into the owner-private closure label store, then its evaluation
+# (docs/ea/closure-signals.md). Reads only; writes ~/.ea-private/evals.
+45 1 * * *         python3 /opt/ea-system/preprocessor/closure_labels.py collect --report >> ~/.ea-private/logs/closure-labels.log 2>&1
 # Owner plugins' jobs: `python3 /opt/ea-system/scripts/ea-plugin.py cron-lines`
 # prints the lines for the plugins you installed (docs/plugins.md).
 ```

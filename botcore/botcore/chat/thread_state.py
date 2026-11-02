@@ -64,6 +64,13 @@ a card's own conversation or one with a live card, at most `nudge_cap` a
 tick, and none while `quiet()` says the owner's quiet hours hold. The
 rules and the model never read a nudge (its id is in the store's
 `nudges` table), so it changes no state.
+
+Observer. A host may set `observer` on the engine: it hears each owner
+tap (`owner_tap`, from the web front end's override route, on a thread of
+its own) and each model answer, with the thread as the rules read it, so
+the host can keep them as labelled examples and act on a tap (the EA's
+web_thread_state: closure labels and the ledger write-back). A failing
+observer is logged and changes no state.
 """
 from __future__ import annotations
 
@@ -714,6 +721,10 @@ def model_verdict(answer: dict | None, prev: dict | None) -> tuple[str, str, str
 Ledger = Callable[[list, list], list]
 Model = Callable[[str], "str | None"]
 CardRead = Callable[[str, str, str], "dict | None"]
+# observer(event, ctx, *, now, store, **info): event "owner" (info: row,
+# the state row the tap wrote, and before, the row it replaced) or "model"
+# (info: answer, the parsed answer or None, and row, the row written).
+Observer = Callable[..., None]
 
 
 class ThreadStates:
@@ -769,6 +780,8 @@ class ThreadStates:
         self.nudge = nudge
         self.quiet = quiet
         self.nudge_cap = int(nudge_cap)
+        # The host's observer of owner taps and model answers (owner_tap).
+        self.observer: Observer | None = None
 
     # running
 
@@ -937,8 +950,9 @@ class ThreadStates:
             log.info("web chat: the thread-state model's answer did not parse for %s/%s",
                      ctx["channel"], ctx["key"])
         state, by, reason = model_verdict(answer, ctx["prev"])
-        self._store().set_thread_state(ctx["channel"], ctx["key"], state, by, reason,
-                                       judged_seq=ctx["newest"])
+        row = self._store().set_thread_state(ctx["channel"], ctx["key"], state, by, reason,
+                                             judged_seq=ctx["newest"])
+        self._observe("model", ctx, answer=answer, row=row)
         return "model"
 
     # the two passes
@@ -1099,3 +1113,36 @@ class ThreadStates:
                 continue
             posted += 1 if ok else 0
         return posted
+
+    # the observer: each owner tap and each model answer
+
+    def owner_tap(self, channel: str, key: str, row: dict,
+                  before: dict | None) -> threading.Thread | None:
+        """Hand the owner's override to the observer: `row` is the state row
+        the tap wrote, `before` the row it replaced. The thread is read as
+        the rules read it, on a thread of its own, so the route answers at
+        once. Returns that thread (None with no observer)."""
+        if self.observer is None:
+            return None
+
+        def run() -> None:
+            try:
+                got = self.contexts([(channel, key)])
+            except Exception as e:
+                log.warning("web chat: the thread for an owner tap could not be read: %s", e)
+                return
+            if got:
+                self._observe("owner", got[0], row=dict(row), before=dict(before or {}))
+        t = threading.Thread(target=run, name="webchat-state-owner", daemon=True)
+        t.start()
+        return t
+
+    def _observe(self, event: str, ctx: dict, **info: Any) -> None:
+        obs = self.observer
+        if obs is None:
+            return
+        try:
+            obs(event, ctx, now=self.clock(), store=self._store(), **info)
+        except Exception as e:
+            self._warn(f"observer-{event}", "web chat: the thread-state observer failed on %s: "
+                                            "%s", event, e)
