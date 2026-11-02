@@ -979,6 +979,7 @@ function setLive(state) {
   const el = $('live');
   el.className = 'live ' + state;
   el.title = { on: 'Live', off: 'Reconnecting', wait: 'Connecting' }[state];
+  if ($('settings').open) connLine();
 }
 
 // The event stream on the transport in use; `ready` settles once it opens.
@@ -1458,10 +1459,10 @@ function keyBytes(b64) {
 
 const sameKey = (buf, key) => !buf || String(new Uint8Array(buf)) === String(keyBytes(key));
 
-// The drawer's toggle. A subscription this browser already holds is posted
+// The switch on Settings' Notifications page. A subscription this browser already holds is posted
 // again, so the server keeps it after a reset; one made with another key
 // (the server's key was replaced) is dropped. iOS takes notifications only
-// in the app added to the Home Screen; outside it the install line says how.
+// in the app added to the Home Screen; outside it the page and the install line say how.
 // A subscription names this browser's relay device, if it has one: removing
 // the device on the tailnet drops it.
 const subBody = async (sub) => ({ ...sub.toJSON(), device: (await loadPairing())?.device || undefined });
@@ -1470,9 +1471,8 @@ async function initPush() {
   const box = $('notify');
   if (!S.me.push) return;
   const sw = 'serviceWorker' in navigator;
-  if (sw) { $('notify-row').hidden = false; footer(); box.disabled = true; }
   // A browser that takes no push still tells the bot the thread it shows (watchSeen).
-  if (!sw || !('PushManager' in window) || !('Notification' in window)) { S.push = {}; watchSeen(); return; }
+  if (!sw || !('PushManager' in window) || !('Notification' in window)) { S.push = {}; notifyState(); watchSeen(); return; }
   const reg = await navigator.serviceWorker.ready;
   const { key } = await call('GET', '/push/vapid');
   let sub = await reg.pushManager.getSubscription();
@@ -1482,7 +1482,7 @@ async function initPush() {
   box.checked = Boolean(sub) && Notification.permission === 'granted';
   box.disabled = false;
   box.addEventListener('change', toggleNotify);
-  listSubs();
+  notifyState();
   watchSeen();
 }
 
@@ -1523,11 +1523,35 @@ function watchSeen() {
   back();
 }
 
-// Every browser the bot pushes to, each with a Revoke button (this one's own is the toggle).
+// Whether this browser gets notifications, and why not, in one line each for the
+// menu, the page and the drawer's foot ("Notifications off" where they could be on).
+const here = () => (phoneHere() ? 'phone' : 'browser');
+function notifyState() {
+  $('notify-here').textContent = `Notifications on this ${here()}`;
+  const p = S.push;
+  if (!p) return; // the browser not asked yet: initPush calls again
+  const why = !p.reg ? (navigator.standalone === false ? ['Only in the app on your Home Screen', 'On an iPhone or iPad, notifications '
+    + 'come only in the app on your Home Screen. Tap Share, then Add to Home Screen, and open Tacitus from there.']
+    : ['This browser does not show them', 'This browser does not show notifications.'])
+    : Notification.permission === 'denied' ? ['Blocked in the browser settings', 'Notifications are blocked for this site in the browser settings.'] : null;
+  const on = Boolean(p.sub) && !why;
+  $('notify-why').textContent = why ? why[1] : '';
+  $('notify-why').hidden = !why;
+  $('notify-detail').textContent = why ? why[0] : `${on ? 'On' : 'Off'} for this ${here()}`;
+  $('settings-hint').hidden = on || !p.reg;
+}
+
+// Every browser the bot pushes to, named by its push service's maker, each with Remove; this one's own is its switch.
+const MAKERS = [['push.apple.com', 'An iPhone, iPad or Mac'], ['googleapis.com', 'Chrome or Android'], ['mozilla.com', 'Firefox'],
+  ['windows.com', 'Microsoft Edge']];
+const maker = (host) => (MAKERS.find(([end]) => host === end || host.endsWith(`.${end}`)) || ['', 'A browser'])[1];
 async function listSubs() {
   const subs = await call('GET', '/push/subscriptions').catch(() => []);
-  $('push-subs').replaceChildren(...subs.map((s) => h('li', null, h('span', null, `${s.host}, ${when(s.created_at, true)}`),
-    h('button', { type: 'button', class: 'btn small', onclick: () => call('POST', '/push/revoke', { id: s.id })
+  const mine = S.push && S.push.sub ? (await sha256Hex(S.push.sub.endpoint)).slice(0, 16) : '';
+  $('subs-title').hidden = !subs.length;
+  $('push-subs').replaceChildren(...subs.map((s) => h('li', null,
+    h('span', null, `${s.id === mine ? `This ${here()}` : maker(s.host)}, since ${when(s.created_at, true)}`),
+    s.id === mine ? null : h('button', { type: 'button', class: 'btn small', onclick: () => call('POST', '/push/revoke', { id: s.id })
       .then(listSubs, (e) => toast(`Notifications: ${e.message}`)) }, 'Remove'))));
 }
 
@@ -1553,6 +1577,7 @@ async function toggleNotify() {
       ? 'Notifications are blocked for this site in the browser settings.' : `Notifications: ${e.message}`);
   } finally {
     box.disabled = false;
+    notifyState();
     listSubs();
   }
 }
@@ -1578,7 +1603,7 @@ function installHint(prompt) {
   footer();
 }
 
-const footer = () => { $('drawer-foot').hidden = ['notify-row', 'install', 'pair-phone', 'open-settings', 'update-note', 'tour-again'].every((id) => $(id).hidden); };
+const footer = () => { $('drawer-foot').hidden = ['install', 'open-settings', 'update-note'].every((id) => $(id).hidden); };
 
 // iOS shrinks the visual viewport for the keyboard, and from iOS 27 the window
 // too (interactive-widget=resizes-content), the two out of step while the
@@ -1983,14 +2008,14 @@ async function selfState() {
 // can forge one), so it is only a hint: the app reports it and tries
 // again, and never drops its keys over one.
 const RELAY_SAYS = {
-  auth: 'Tacitus did not accept this device. If it was removed, set it up again under "Add a device".',
+  auth: 'Tacitus did not accept this device. If it was removed, set it up again under Settings, then Devices.',
   offline: 'Tacitus cannot be reached away from home right now.',
   timeout: 'Tacitus did not answer in time.',
   busy: 'The away-from-home connection is busy.',
   unsure: 'the connection broke off, and Tacitus may have it anyway. Look in the conversation before you send it again.',
 };
 const pendingNote = (rec) => (rec.hosted ? 'This computer waits for approval. On the phone or computer that gave you the code,'
-  : 'This phone waits for approval. On your computer, open "Add a device" in Tacitus and') + ` tap Approve next to code ${spaced(rec.code)}.`;
+  : 'This phone waits for approval. On your computer, open Settings, then Devices, in Tacitus and') + ` tap Approve next to code ${spaced(rec.code)}.`;
 
 class RelayError extends Error {
   constructor(code, text) {
@@ -2158,7 +2183,7 @@ async function pairFromLink(kind, text, self = false) {
       throw new Error('this is not a setup link');
     }
     if (p.a !== undefined && new URL(p.a).origin !== location.origin) throw new Error('this link opens the app elsewhere');
-    if (!(p.x * 1000 > Date.now())) throw new Error('the link has expired; open a new one under "Add a device"');
+    if (!(p.x * 1000 > Date.now())) throw new Error('the link has expired; open a new one under Settings, then Devices');
     // On the bot's own origin the link gives only the pairing secret: the
     // relay, the install and the keys come from the bot, which answers
     // there. A link whose relay is this page's origin is for the relay's
@@ -2173,7 +2198,7 @@ async function pairFromLink(kind, text, self = false) {
       if (!st || !st.install_id) throw new Error('open the link while this phone is on your own network');
       if (st.install_id !== p.i || st.bot_public !== p.k) throw new Error('the link is for a different Tacitus');
       at = { r: st.relay_url, i: st.install_id, k: st.bot_public, c: st.client_key };
-    } else if (!p.b) throw new Error('the link has no fingerprint of the app; open a new one under "Add a device"');
+    } else if (!p.b) throw new Error('the link has no fingerprint of the app; open a new one under Settings, then Devices');
     else if (typeof verifyBundle !== 'function') return halt(UNCHECKED); // before it makes a key
     if (!safeRelay(at.r)) throw new Error('the link does not use a secure (https) connection');
     if (!/^[a-z2-7]{26}$/.test(at.i) || b64d(String(at.k)).length !== 32 || !/^[A-Za-z0-9_-]{43}$/.test(at.c)) {
@@ -2456,20 +2481,69 @@ const settingsShown = () => {
   return { notify: pages.includes('notify') && Boolean(S.me.push), routing: pages.includes('routing') };
 };
 
-async function openSettings() {
-  const shown = settingsShown();
-  $('settings-note').textContent = '';
-  $('notify-note').textContent = '';
-  $('notify-settings').hidden = !shown.notify;
-  $('routing-settings').hidden = !shown.routing;
-  $('settings-save').hidden = !shown.routing;
+/* -- Settings: the menu and its pages ------------------------------- */
+
+// The drawer's one Settings entry opens a menu of what this browser can change:
+// Notifications where the bot pushes, Devices where adding one works from here,
+// Models where the bot serves the table and the copy is the owner's own, and the
+// tour; under them, how this browser reaches Tacitus now. A page opens in place
+// with Back, and Escape on a page goes back to the menu; Devices and the tour
+// are dialogs of their own, so the menu closes for them.
+const PAGES = { menu: ['settings-menu', 'Settings'], notify: ['notify-settings', 'Notifications'],
+  routing: ['routing-settings', 'Models'] };
+
+function openSettings(page = 'menu') {
   if (!$('settings').open) $('settings').showModal();
-  if (shown.notify) {
-    call('GET', '/settings/notify').then(renderNotify,
-      (e) => { $('notify-note').textContent = `Could not read the settings: ${e.message}`; });
+  settingsPage(page);
+}
+
+async function settingsPage(page) {
+  const from = $('settings').dataset.page;
+  for (const [name, [id]] of Object.entries(PAGES)) $(id).hidden = name !== page;
+  $('settings-title').textContent = PAGES[page][1];
+  $('settings-back').hidden = page === 'menu';
+  $('settings').dataset.page = page;
+  $('settings').scrollTop = 0;
+  if (page === 'menu') {
+    connLine();
+    if (from && from !== 'menu') $(`go-${from}`).focus(); // back where Back came from
+    return;
   }
-  if (!shown.routing) return;
+  $('settings-back').focus();
+  if (page === 'notify') {
+    $('notify-note').textContent = '';
+    notifyState();
+    listSubs();
+    if (!$('notify-kinds').hidden) {
+      call('GET', '/settings/notify').then(renderNotify,
+        (e) => { $('notify-note').textContent = `Could not read the settings: ${e.message}`; });
+    }
+    return;
+  }
+  $('settings-note').textContent = '';
   try { renderSettings(await call('GET', '/settings/routing')); } catch (e) { $('settings-note').textContent = `Could not read the settings: ${e.message}`; }
+}
+
+// The menu's last line: how this browser reaches Tacitus now, the live dot in words.
+function connLine() {
+  const dot = $('live').classList;
+  $('settings-conn').textContent = dot.contains('off') ? 'Not connected right now. Trying again.'
+    : dot.contains('wait') ? 'Connecting...'
+    : T.relay ? `Connected away from home, through ${new URL(T.rec.relay).host}.` : 'Connected on your own network.';
+}
+
+function settingsMenu() {
+  $('open-settings').addEventListener('click', () => openSettings());
+  $('settings-back').addEventListener('click', () => settingsPage('menu'));
+  $('go-notify').addEventListener('click', () => settingsPage('notify'));
+  $('go-routing').addEventListener('click', () => settingsPage('routing'));
+  $('settings').addEventListener('cancel', (e) => {
+    if ($('settings').dataset.page !== 'menu') { e.preventDefault(); settingsPage('menu'); }
+  });
+  $('pair-phone').addEventListener('click', () => { $('settings').close(); addDevice(); });
+  $('tour-again').addEventListener('click', () => { $('settings').close(); welcome(0); });
+  $('settings-save').addEventListener('click', saveSettings);
+  $('notify-rows').addEventListener('change', saveNotify);
 }
 
 async function saveSettings() {
@@ -2713,7 +2787,6 @@ function teaching() {
   });
   $('welcome-cards').addEventListener('click', (e) => { if (Date.now() - swiped < 500) e.stopPropagation(); }, true);
   for (const b of $('welcome').querySelectorAll('.example')) b.addEventListener('click', () => prefill(b));
-  $('tour-again').addEventListener('click', () => welcome(0));
   $('new-room').addEventListener('click', () => {
     $('room-name').value = '';
     roomError('');
@@ -2928,7 +3001,7 @@ async function unreachableNote(e) {
   if (!(await loadPairing())) {
     if (S.pairingError) return `This phone cannot read its saved setup (${S.pairingError}). Close the app fully and open it again.`;
     return 'Tacitus is reachable only on your own network from here. To use it anywhere, open this same app on that network '
-      + 'and tap "Add a device" in the menu, then "Set up this phone".'
+      + 'and tap Settings in the menu, then Devices, then "Set up this phone".'
       + (phoneHere() && !standalone() ? ' The home-screen app and the browser each need their own setup.' : '');
   }
   return `Could not reach Tacitus: ${e.message}`;
@@ -2978,10 +3051,12 @@ async function boot() {
   if (S.push === undefined) { S.push = null; initPush().catch(() => {}); }
   // Adding a device happens where the API answers (the tailnet or this machine), and a computer from
   // the owner's own phone through the relay too, when the bot lets it (owner_routes, handoff).
-  const routes = ownerRoutes();
+  const routes = ownerRoutes(), shown = settingsShown();
   $('pair-phone').hidden = !(routes === 'handoff' ? Boolean(S.me.handoff) : routes === 'all' && Boolean(S.me.relay));
-  $('open-settings').hidden = T.relay || !Object.values(settingsShown()).some(Boolean);
-  $('tour-again').hidden = false;
+  $('go-notify').hidden = !S.me.push;
+  $('notify-kinds').hidden = T.relay || !shown.notify; // the bot saves settings only from the owner's own copy
+  $('go-routing').hidden = T.relay || !shown.routing;
+  $('open-settings').hidden = false;
   footer();
   welcomeOnce();
   if (!T.relay) checkBundle().catch(() => {}); // the bot's own copy: checked meanwhile
@@ -3049,15 +3124,12 @@ async function init() {
   $('messages').addEventListener('scroll', () => { stuck = nearBottom(); }, { passive: true });
   new ResizeObserver(() => { if (stuck && !S.halted) toBottom(); }).observe($('messages'));
   document.addEventListener('touchstart', () => {}, { passive: true }); // iOS applies :active only then
-  $('pair-phone').addEventListener('click', () => addDevice());
   $('phone-relay').addEventListener('click', () => pairPhone('relay'));
   ['here', 'phone', 'computer'].forEach((w) => $(`way-${w}`).addEventListener('click', () => showWay(w)));
   $('handoff-approve').addEventListener('click', () => phoneAct('approve', S.waiting));
   $('handoff-cards').addEventListener('change', (e) => { CARDS[e.target.checked ? 'add' : 'delete'](S.waiting.id); listPhones(); });
   $('setup-form').addEventListener('submit', setUp);
-  $('open-settings').addEventListener('click', openSettings);
-  $('settings-save').addEventListener('click', saveSettings);
-  $('notify-rows').addEventListener('change', saveNotify);
+  settingsMenu();
   teaching();
   roomMenus();
   ownerActions();

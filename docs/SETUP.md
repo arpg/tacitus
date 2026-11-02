@@ -521,7 +521,7 @@ sign-in ([docs/docker.md](docker.md#web-chat), Web chat).
    ([docs/webchat-relay.md](webchat-relay.md), "Owner steps").
 7. **Use Tacitus on your other devices.** With Tailscale on the device,
    open the `public_url` there, signed in to your tailnet. Without it,
-   in the app on a device already signed in: **Add a device**, then
+   in the app on a device already signed in: **Settings**, **Devices**, then
    **A computer**. Open the address it shows on the computer (the hosted
    app, `https://tacitus-ai.github.io/`) and type the code. Then approve
    the computer's six-digit code on the first device. This needs the

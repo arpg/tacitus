@@ -35,14 +35,11 @@
   <div id="channel-list" class="scroll"></div>
   <footer id="drawer-foot" hidden>
     <p id="update-note" role="status" hidden></p>
-    <label class="toggle" id="notify-row" hidden><input type="checkbox" id="notify"> Notifications</label>
-    <ul id="push-subs" class="subs" aria-label="Browsers that get notifications"></ul>
     <div id="install" class="install" hidden><span id="install-text"></span>
       <button type="button" id="install-btn" class="btn small primary" hidden>Install</button>
       <button type="button" id="install-close" class="icon" aria-label="Hide for 30 days"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
-    <button type="button" id="pair-phone" class="btn small" hidden>Add a device</button>
-    <button type="button" id="open-settings" class="btn small" hidden>Settings</button>
-    <button type="button" id="tour-again" class="btn small" hidden>How Tacitus works</button>
+    <button type="button" id="open-settings" class="chan" aria-haspopup="dialog" hidden><span class="c-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg></span>
+      <span class="c-name">Settings</span><span id="settings-hint" class="c-hint" hidden>Notifications off</span></button>
     <button type="button" id="new-room" class="btn small plain" hidden>New room</button>
   </footer>
   <div id="nav-edge" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="channels" aria-label="Menu width"
@@ -129,34 +126,48 @@
 
 <dialog id="settings" aria-labelledby="settings-title">
   <form method="dialog">
-    <h2 id="settings-title">Settings</h2>
-    <section id="notify-settings" aria-labelledby="notify-title" hidden>
-      <h3 id="notify-title">Notifications</h3>
-      <p class="s-key">What reaches your phone while the app is closed. Cards, direct messages and alerts always do.</p>
-      <ul id="notify-rows">
-        <li><label class="toggle"><input type="checkbox" role="switch" name="briefings"> Briefings</label>
-          <p>Your morning briefing and the afternoon update.</p></li>
-        <li><label class="toggle"><input type="checkbox" role="switch" name="replies"> Replies</label>
-          <p>An answer to something you asked Tacitus.</p></li>
-        <li><label class="toggle"><input type="checkbox" role="switch" name="rooms"> Rooms</label>
-          <p>An answer in one of your project rooms.</p></li>
-        <li><span class="s-name" id="notify-quiet">During quiet hours</span>
-          <span class="seg" role="radiogroup" aria-labelledby="notify-quiet">
-            <label><input type="radio" name="quiet" value="queue"> Hold until morning</label>
-            <label><input type="radio" name="quiet" value="send"> Send anyway</label></span>
-          <p>Whether briefings and answers that come at night wait for the end of your quiet hours.</p></li>
-      </ul>
-      <p id="notify-note" aria-live="polite"></p>
+    <header class="set-head">
+      <button type="button" id="settings-back" class="icon" aria-label="Back to Settings" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <h2 id="settings-title">Settings</h2>
+      <button type="submit" id="settings-close" class="icon" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </header>
+    <div id="settings-menu" class="s-menu">
+      <button type="button" id="go-notify" class="s-item" hidden><span class="s-label">Notifications</span><span id="notify-detail" class="s-detail"></span></button>
+      <button type="button" id="pair-phone" class="s-item" hidden><span class="s-label">Devices</span><span class="s-detail">Add a phone or computer, or remove one</span></button>
+      <button type="button" id="go-routing" class="s-item" hidden><span class="s-label">Models</span><span class="s-detail">Which model does each task</span></button>
+      <button type="button" id="tour-again" class="s-item"><span class="s-label">How Tacitus works</span><span class="s-detail">A short tour in three cards</span></button>
+      <p id="settings-conn" class="s-key"></p>
+    </div>
+    <section id="notify-settings" aria-labelledby="settings-title" hidden>
+      <label class="toggle" id="notify-row"><input type="checkbox" role="switch" id="notify" disabled> <span id="notify-here">Notifications on this phone</span></label>
+      <p id="notify-why" class="s-key" hidden></p>
+      <div id="notify-kinds" hidden>
+        <p class="s-key">What reaches your phone while the app is closed. Cards, direct messages and alerts always do.</p>
+        <ul id="notify-rows">
+          <li><label class="toggle"><input type="checkbox" role="switch" name="briefings"> Briefings</label>
+            <p>Your morning briefing and the afternoon update.</p></li>
+          <li><label class="toggle"><input type="checkbox" role="switch" name="replies"> Replies</label>
+            <p>An answer to something you asked Tacitus.</p></li>
+          <li><label class="toggle"><input type="checkbox" role="switch" name="rooms"> Rooms</label>
+            <p>An answer in one of your project rooms.</p></li>
+          <li><span class="s-name" id="notify-quiet">During quiet hours</span>
+            <span class="seg" role="radiogroup" aria-labelledby="notify-quiet">
+              <label><input type="radio" name="quiet" value="queue"> Hold until morning</label>
+              <label><input type="radio" name="quiet" value="send"> Send anyway</label></span>
+            <p>Whether briefings and answers that come at night wait for the end of your quiet hours.</p></li>
+        </ul>
+        <p id="notify-note" aria-live="polite"></p>
+      </div>
+      <h3 id="subs-title" hidden>Where notifications go</h3>
+      <ul id="push-subs" class="subs" aria-labelledby="subs-title"></ul>
     </section>
-    <section id="routing-settings" aria-labelledby="routing-title" hidden>
-      <h3 id="routing-title">Which model does each task</h3>
+    <section id="routing-settings" aria-labelledby="settings-title" hidden>
       <p class="s-key">Local is your own model, Hosted is Claude, and Auto lets Tacitus choose.</p>
       <p id="settings-local"></p>
       <ul id="settings-rows"></ul>
       <p id="settings-note" aria-live="polite"></p>
+      <div class="settings-actions"><button type="button" id="settings-save" class="btn primary">Save</button></div>
     </section>
-    <div class="settings-actions"><button type="button" id="settings-save" class="btn primary">Save</button>
-      <button type="submit" class="btn">Close</button></div>
   </form>
 </dialog>
 
@@ -205,7 +216,7 @@
 <div id="setup" class="gate" hidden>
   <form id="setup-form" novalidate>
     <h2>Set up this computer</h2>
-    <p>On a phone or computer where Tacitus works, open the menu, tap "Add a device", then "A computer". Type the code it shows.</p>
+    <p>On a phone or computer where Tacitus works, open the menu, tap Settings, then Devices, then "A computer". Type the code it shows.</p>
     <input id="setup-code" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="go"
       maxlength="24" placeholder="ABCDE-FGHJK" aria-label="Code" aria-describedby="setup-error">
     <button type="submit" id="setup-go" class="btn primary">Continue</button>

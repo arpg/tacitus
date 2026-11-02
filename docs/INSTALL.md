@@ -182,8 +182,8 @@ Once the chat runs on one device, add the others from it.
   Screen.
 - **Without Tailscale** (a work laptop, a computer you cannot install
   on): this needs the relay (SETUP.md "Web chat", step 6). On a device
-  that is already signed in, open the drawer, tap **Add a device**, then
-  **A computer**. It shows a code and an address. On the computer, open
+  that is already signed in, open the menu, tap **Settings**, then
+  **Devices** and **A computer**. It shows a code and an address. On the computer, open
   that address (`tacitus-ai.github.io`) and type the code. The computer
   shows a six-digit code: tap **Approve** on the first device only when
   it shows the same six digits. Never send the code through chat or mail.

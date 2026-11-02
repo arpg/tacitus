@@ -246,8 +246,8 @@ the bot's machine) never depends on this site.
 
 ## Pairing
 
-1. In the web chat the owner opens "Add a device" (in the channel
-   drawer, shown when the app reaches the bot directly and `/api/me` says
+1. In the web chat the owner opens "Add a device" (Settings, then
+   Devices, shown when the app reaches the bot directly and `/api/me` says
    `relay`): on the tailnet, or on the bot's own machine (a loopback
    page, signed in with the pairing token). It offers "This phone" (pair
    the browser in hand), "Another phone" (a QR code) and "A computer"
@@ -336,7 +336,7 @@ bot's to open. A device already signed in vouches for it instead: the
 owner's web chat on the tailnet or on the bot's machine, or an approved
 own-origin phone through the relay. That device never copies its own key.
 
-1. On that device the owner opens "Add a device", then "A computer"
+1. On that device the owner opens "Add a device" (Settings, then Devices), then "A computer"
    (`POST /api/relay/handoff`, or `webchat-relay.py handoff` on a
    terminal). The bot makes an ordinary one-time pairing (ten minutes,
    one of the eight open) on the hosted copy: `origin` `"hosted"`, the
@@ -1262,7 +1262,7 @@ command as the owner. Tailscale is optional: these steps need none.
    `base_path`). Paste the pairing token from
    `<private dir>/webchat-pair.token` when it asks (docs/webchat.md,
    Identity and auth).
-6. Open the drawer, tap "Add a device", then "Phone not on your network",
+6. Open the menu, tap Settings, then Devices, then "Phone not on your network",
    and scan the code with the phone's camera. The phone opens the app
    from the relay, pairs, and shows "This phone waits for approval" with
    a six-digit code; your DM gets a notice with the device's name and
@@ -1288,7 +1288,7 @@ command as the owner. Tailscale is optional: these steps need none.
    take them back. Without them, you press card buttons in the web chat
    on your computer.
 8. With Tailscale you may pair on the tailnet instead: with `public_url`
-   set, open "Add a device", "Another phone" on the web chat's tailnet address while the
+   set, open Settings, Devices, "Another phone" on the web chat's tailnet address while the
    phone is on the tailnet and signed in. That link opens the app on the
    bot's own origin; that phone runs code from the bot, never from the
    relay, and works off the tailnet through the relay too.
@@ -1318,7 +1318,7 @@ command as the owner. Tailscale is optional: these steps need none.
    new key within a minute; a restart works too.
 11. A computer off the tailnet: on a device already signed in (the web
    chat on the tailnet or on the bot's machine, or an approved phone set
-   up on the tailnet), open "Add a device", then "A computer". It shows a
+   up on the tailnet), open Settings, Devices, then "A computer". It shows a
    code and an address. On the computer, open the address and type the
    code; the computer shows a six-digit code, and Approve appears beside
    it on the first device: tap it only when the codes match. Without the
