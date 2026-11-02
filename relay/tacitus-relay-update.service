@@ -1,8 +1,9 @@
 # The relay host's updater (docs/updates.md, "The relay host"): the newest
 # signed release on the channel in /etc/tacitus-relay/update-channel
 # (latest when absent), installed by that release's own
-# relay/install.sh --tag. relay/install.sh copies this unit and the timer
-# beside it into /etc/systemd/system and enables the timer.
+# relay/install.sh --tag. relay/install.sh writes this unit and the timer
+# beside it into /etc/systemd/system (--no-update-timer leaves them out) and
+# enables the timer.
 [Unit]
 Description=Tacitus relay updater (signed releases)
 After=network-online.target

@@ -369,12 +369,17 @@ The hook it needs from `relay/install.sh`:
 - `--tag vX.Y.Z` installs exactly that tag: the clone at
   `/opt/tacitus-relay/src` ends at the tag's commit, and the script exits
   non-zero when the relay does not answer `/healthz`.
-- It installs `relay/tacitus-relay-update.service` and
-  `relay/tacitus-relay-update.timer` into `/etc/systemd/system/` and
-  enables the timer.
+- It writes `tacitus-relay-update.service` and
+  `tacitus-relay-update.timer` into `/etc/systemd/system/`, with the
+  text of the files of those names in `relay/`, and enables the timer.
+  `--no-update-timer` leaves them out and removes installed ones.
+- With `--tag` it takes the release key from
+  `/etc/tacitus-relay/release-key.pub`, else from the updater's pin in
+  `/var/lib/tacitus-relay/`, and keeps whether the relay serves the app
+  (`--with-app`) as the unit it replaces had it.
 
-Until `install.sh` takes `--tag`, `update.py relay` finds no `--tag`
-option in it, says so and installs nothing.
+An `install.sh` that takes no `--tag` (an older release) makes
+`update.py relay` say so and install nothing.
 
 ## Supply chain
 

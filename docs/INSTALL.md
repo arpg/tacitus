@@ -172,6 +172,28 @@ install without Google skips steps 3, 4, 5, 8, 9 and 12. On macOS, step
 `sudo bash deploy/macos/install-services.sh` and
 `sudo bash deploy/enable-mail-mediation.sh` (SETUP.md "launchd").
 
+### Use Tacitus on your other devices
+
+Once the chat runs on one device, add the others from it.
+
+- **With Tailscale** on the other device: sign it in to your tailnet and
+  open the chat's address (`https://<host>.<tailnet>.ts.net:8444/chat`).
+  Your Tailscale login signs you in. On a phone, add it to the Home
+  Screen.
+- **Without Tailscale** (a work laptop, a computer you cannot install
+  on): this needs the relay (SETUP.md "Web chat", step 6). On a device
+  that is already signed in, open the drawer, tap **Add a device**, then
+  **A computer**. It shows a code and an address. On the computer, open
+  that address (`tacitus-ai.github.io`) and type the code. The computer
+  shows a six-digit code: tap **Approve** on the first device only when
+  it shows the same six digits. Never send the code through chat or mail.
+
+A computer set up the second way runs the app from the hosted site, so
+you trust that site when you set it up and at each update of the app,
+as you trust the relay's copy ([docs/webchat-relay.md](webchat-relay.md),
+"The hosted app"). Send and Create buttons stay off on it unless you
+allow them when you approve.
+
 ### Choosing a chat platform
 
 The `assistant` profile needs a chat platform. The chat carries the most

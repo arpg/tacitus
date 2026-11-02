@@ -59,7 +59,8 @@ def test_the_script_installs_only_a_commit_it_is_named():
              (("--commit", SHA, "--repo", "http://example.test/tacitus.git"), "https URL"),
              (("--commit", SHA, "--repo", "--upload-pack=touch"), "https URL"),
              (("--bogus",), "unknown argument")]
-    if not Path("/etc/tacitus-relay/release-key.pub").exists():
+    if not Path("/etc/tacitus-relay/release-key.pub").exists() \
+            and not Path("/var/lib/tacitus-relay/release-key.pub").exists():
         cases.append((("--tag", "v1.0.0"), "release key"))
     for args, says in cases:
         r = _run(*args)
@@ -126,3 +127,74 @@ def test_the_nginx_snippet_keeps_the_relay_to_itself():
     assert "limit_conn_zone $binary_remote_addr zone=tacitus_relay_conn:" in http
     assert 'map "$request_method:$http_x_relay_key" $tacitus_relay_nokey {' in http
     assert re.search(r'"POST:" 1;', http)
+
+
+def _heredoc(marker: str) -> str:
+    """The body of the heredoc that writes `marker`, with the script's
+    variables filled in."""
+    text = SCRIPT.read_text()
+    body = text.split(marker, 1)[1].split("\nUNIT\n", 1)[0]
+    return body.replace("$PY", "/usr/bin/python3").replace("$CLONE", "/opt/tacitus-relay/src") + "\n"
+
+
+def test_the_script_installs_the_updater_by_default():
+    """The relay host's updater (docs/updates.md, The relay host): the
+    script writes the two units itself, with the text of the files in
+    relay/, and enables the timer; --no-update-timer leaves them out and
+    removes an installed one."""
+    text = SCRIPT.read_text()
+    assert "UPDATE_TIMER=1" in text and "--no-update-timer) UPDATE_TIMER=0" in text
+    assert "UPDATER=/etc/systemd/system/tacitus-relay-update" in text
+    service = _heredoc("cat > $UPDATER.service.new <<UNIT\n")
+    timer = _heredoc("cat > $UPDATER.timer.new <<'UNIT'\n")
+    assert service == (RELAY / "tacitus-relay-update.service").read_text()
+    assert timer == (RELAY / "tacitus-relay-update.timer").read_text()
+    assert "ExecStart=/usr/bin/python3 -I /opt/tacitus-relay/src/scripts/update.py relay" in service
+    assert "OnCalendar=hourly" in timer and "RandomizedDelaySec=55min" in timer
+    # Written beside their place and moved in, never copied from the clone.
+    assert "$CLONE/relay/tacitus-relay-update" not in text
+    assert "mv -f $UPDATER.service.new $UPDATER.service" in text
+    assert "mv -f $UPDATER.timer.new $UPDATER.timer" in text
+    on, off = text.split("if [ $UPDATE_TIMER = 1 ]; then", 1)[1].split("\nelse\n", 1)
+    assert "systemctl enable --now tacitus-relay-update.timer" in on
+    off = off.split("\nfi\n", 1)[0]
+    assert "systemctl disable --now tacitus-relay-update.timer" in off
+    assert "rm -f $UPDATER.service $UPDATER.timer" in off
+    if shutil.which("systemd-analyze"):
+        d = Path(os.environ.get("TMPDIR", "/tmp")) / f"relay-update-{os.getpid()}"
+        d.mkdir()
+        try:
+            (d / "tacitus-relay-update.service").write_text(service)
+            (d / "tacitus-relay-update.timer").write_text(timer)
+            r = subprocess.run(["systemd-analyze", "verify", str(d / "tacitus-relay-update.timer"),
+                                str(d / "tacitus-relay-update.service")],
+                               capture_output=True, text=True, timeout=60)
+            assert r.returncode == 0, r.stderr
+        finally:
+            shutil.rmtree(d)
+
+
+def test_the_new_flags_pass_the_argument_checks():
+    if os.geteuid() == 0:
+        return
+    for extra in (("--no-update-timer",), ("--without-app",), ("--with-app", "--no-update-timer")):
+        r = _run("--commit", SHA, *extra)
+        assert r.returncode != 0 and "run as root" in r.stderr, (extra, r.stderr)
+
+
+def test_an_update_keeps_what_the_relay_serves_and_reports_its_health():
+    """The updater runs a new release's install.sh --tag with no other
+    flag: the relay keeps serving the app when its unit did, takes the key
+    the updater pinned, and the script's exit says whether the relay
+    answered."""
+    text = SCRIPT.read_text()
+    assert 'WITH_APP=""' in text and "--without-app) WITH_APP=0" in text
+    keep = text.index('grep -q -- " --static " "$UNIT"')
+    assert text.index('[ "$(id -u)" = 0 ]') < keep < text.index("cat > $UNIT.new <<UNIT")
+    assert "PINNED_KEY=/var/lib/tacitus-relay/release-key.pub" in text
+    assert '[ -f "$KEY" ] || KEY=$PINNED_KEY' in text
+    # Every key line of the pin, not only the first.
+    assert "head -n 1 \"$KEY\"" not in text
+    assert "sed 's/^/tacitus-release namespaces=\"git\" /'" in text
+    assert text.rstrip().endswith("[ $HEALTHY = 1 ] || exit 1")
+    assert "Releases are not signed yet" not in text

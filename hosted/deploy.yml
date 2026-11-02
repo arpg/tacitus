@@ -1,0 +1,106 @@
+# The hosted Tacitus web app: the newest signed release of the public
+# repository, built and published on this site. In the site repository this
+# file is .github/workflows/deploy.yml (README.md beside it).
+#
+#   check    fetches the release tags and main of the public repository,
+#            verifies the newest tag against release-key.pub in this
+#            repository (build.py pick: the five checks of the updater), and
+#            reads the site's release.txt; it says "deploy" only when the site
+#            serves an older release or none
+#   deploy   fetches and verifies that tag again, builds the site from its
+#            web app with this repository's relays.json (build.py build), and
+#            publishes it with GitHub's own Pages actions
+#
+# Hourly and on demand (Actions > deploy > Run workflow; "force" builds even
+# when the site is current). No secret and no write token: the source is a
+# public repository, and the Pages deployment uses the job's own short-lived
+# token. Every action is pinned by commit, with its version in a comment.
+name: deploy
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Build and publish even when the site already serves the newest release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  SOURCE: https://github.com/arpg/tacitus.git
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+      commit: ${{ steps.pick.outputs.commit }}
+      deploy: ${{ steps.pick.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: site
+          persist-credentials: false
+
+      - name: Fetch the releases
+        run: python3 -I site/build.py fetch --src source.git --repo "$SOURCE"
+
+      - id: pick
+        name: Pick the newest signed release
+        env:
+          SITE: ${{ vars.SITE_URL || format('https://{0}.github.io/', github.repository_owner) }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+        run: |
+          args=(pick --src source.git --key site/release-key.pub --site "$SITE" --github-output "$GITHUB_OUTPUT")
+          [ "$FORCE" != true ] || args+=(--force)
+          python3 -I site/build.py "${args[@]}"
+
+  deploy:
+    needs: check
+    if: needs.check.outputs.deploy == 'yes'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: site
+          persist-credentials: false
+
+      - name: Fetch the releases
+        run: python3 -I site/build.py fetch --src source.git --repo "$SOURCE"
+
+      - name: Build the site from the verified release
+        env:
+          TAG: ${{ needs.check.outputs.tag }}
+          COMMIT: ${{ needs.check.outputs.commit }}
+        run: |
+          relays=()
+          [ ! -f site/relays.json ] || relays=(--relays site/relays.json)
+          python3 -I site/build.py build --src source.git --key site/release-key.pub \
+              --tag "$TAG" --commit "$COMMIT" "${relays[@]}" --out _site
+          cat _site/release.txt
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
