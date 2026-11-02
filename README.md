@@ -12,6 +12,8 @@ ooooooooooooo       .o.         .oooooo.   ooooo ooooooooooooo oooooo     oooo  
 ==========================================================================================
 ```
 
+**The short tour is at [arpg.github.io/tacitus](https://arpg.github.io/tacitus/).** This README is the long one.
+
 **Tacitus** is an executive assistant that you run yourself. Its
 assistant, the EA, reads your mail, keeps a ledger of what you owe to
 whom, drafts replies in your voice and finds meeting times across all
@@ -37,9 +39,9 @@ page names is in this repository.
 
 ## How you talk to it
 
-You write to it as you would to a colleague: "Reply to Nico and say
-Tuesday works." "Find a time with Ari and Oakley next week." "That's
-done." "Open a channel for the field-trial proposal."
+You write to it from your phone as you would to a colleague: "Reply to
+Nico and say Tuesday works." "Find a time with Ari and Oakley next
+week." "That's done." "Open a channel for the field-trial proposal."
 
 The chat is the web chat that the bot serves itself, with no chat server
 to run. The bot keeps the conversation in a file on your machine and
