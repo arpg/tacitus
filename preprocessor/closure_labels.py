@@ -47,6 +47,9 @@ reads done and none as closed. FEATURE_KEYS lists the features.
 
     closure_labels.py collect [--days N] [--store PATH] [--labels PATH] [--report]
     closure_labels.py stats [--labels PATH]
+
+`--report` then writes the evaluation and appends its numbers to the
+history beside the labels (closure_eval.py report, trend).
 """
 from __future__ import annotations
 
@@ -1245,7 +1248,8 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--labels", help=f"the label store (default <private dir>/{EVALS_DIR}/"
                                     f"{LABELS_FILE})")
     c.add_argument("--report", action="store_true",
-                   help="then write the evaluation (closure_eval.py report)")
+                   help="then write the evaluation (closure_eval.py report) and append its "
+                        "numbers to the history beside the labels (closure_eval.py trend)")
     s = sub.add_parser("stats", help="counts by source and label", allow_abbrev=False)
     s.add_argument("--labels")
     a = ap.parse_args(argv)
@@ -1258,7 +1262,7 @@ def main(argv: list[str] | None = None) -> int:
             import closure_eval
         except ModuleNotFoundError:
             from preprocessor import closure_eval
-        rep = closure_eval.write_report(labels=a.labels)
+        rep = closure_eval.write_report(labels=a.labels, history=True)
         out["summary"] = closure_eval.summary_line(rep)
     print(json.dumps(out, sort_keys=True))
     return 1 if out["errors"] else 0
