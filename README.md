@@ -37,9 +37,9 @@ page names is in this repository.
 
 ## How you talk to it
 
-You write to it as you would to a colleague: "Reply to Nico and say
-Tuesday works." "Find a time with Ari and Oakley next week." "That's
-done." "Open a channel for the field-trial proposal."
+You write to it from your phone as you would to a colleague: "Reply to
+Nico and say Tuesday works." "Find a time with Ari and Oakley next
+week." "That's done." "Open a channel for the field-trial proposal."
 
 The chat is the web chat that the bot serves itself, with no chat server
 to run. The bot keeps the conversation in a file on your machine and
