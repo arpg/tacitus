@@ -12,15 +12,15 @@ This is part D of the Tacitus web chat: A is the web front end
 |---|---|
 | `relay/relay_server.py` | The relay: one standalone stdlib script, no repository imports |
 | `botcore/botcore/chat/relay_client.py` | The bot side: `start_relay`, `RelayClient`, the key file, the owner CLI |
-| `botcore/botcore/chat/relay_crypto.py` | The protocol with no I/O: pairing, handshake, sealed frames |
+| `botcore/botcore/chat/relay_crypto.py` | The protocol with no I/O: pairing, handshake, sealed frames, the handoff code and its sealed blob |
 | `botcore/botcore/chat/webui/app.js` | The app's relay transport: the same protocol in WebCrypto, the pairing, "Pair a phone" |
 | `botcore/botcore/chat/webui/qr.js` | The QR encoder for the pairing link (byte mode, level M, versions 1 to 40) |
 | `botcore/botcore/chat/webui/bundle.js`, `sw.js` | The check of the app's code against the bot's signed manifest, and the service worker: `sw.js` is its loader, `bundle.js` its code (docs/webchat.md, Code integrity) |
 | `botcore/botcore/chat/web_bundle.py` | The bot's side of that check: the manifest of `webui/`, signed at start |
 | `botcore/botcore/chat/relay_qr.py` | The same encoder in Python, for the CLI's QR code on a terminal |
-| `scripts/webchat-relay.py` | The owner CLI: `init`, `show`, `pair`, `approve`, `revoke`, `rotate` |
+| `scripts/webchat-relay.py` | The owner CLI: `init`, `show`, `pair`, `handoff`, `approve`, `revoke`, `rotate` |
 | `relay/install.sh`, `relay/snippets/` | The operator's install: a pinned commit, a confined unit, the nginx blocks |
-| `tests/test_relay.py` | Crypto, relay rules, the web front end's routes, a loopback run of the whole path, each attack the security review found, and rotation |
+| `tests/test_relay.py` | Crypto, relay rules, the web front end's routes, a loopback run of the whole path, each attack the security review found, rotation, and the handoff to a computer with each refusal of the relayed owner routes |
 | `tests/test_web_bundle.py` | The signed manifest, its routes, the signing key in the key file, and the attestation |
 | `tests/test_relay_install.py` | The install script's checks, the unit it writes, the nginx rules |
 | `tests/fixtures/relay_vectors.json` | The protocol with fixed keys, made by `relay_crypto`; the app reproduces it in a browser (`tests/test_webui.py`) |
@@ -160,10 +160,32 @@ device gets that level: `"read"` is GET only (and the attestation),
 the owner's explicit choice. Below `"all"` it presses card buttons only
 when the owner allows them for it.
 
+**Hosted copy ("A computer").** A computer that never joins the tailnet,
+and is not the bot's machine, opens the app from a hosted copy at
+`hosted_app` (`https://tacitus-ai.github.io/` by default), built from a
+signed release tag and served by a host with nothing else on its
+origin. It pairs with a handoff code that a device already signed in
+shows (Pairing, A computer with a code), never with a link: the pairing
+payload reaches it sealed, through the relay. The payload carries the
+bundle hash (`b`), and the bot records the device as `origin: "hosted"`
+with its `bundle`. It is trusted as a relay-origin device paired with
+the hash is: once approved it reads and chats (`"chat"`), presses card
+buttons only when the owner allows them (`cards_allowed`), and checks
+its code and attests as the relay's copy does. The copy the host served
+may be another release than the bot's: after approval the computer takes
+the bot's signed bundle through the sealed channel and runs that. The
+trust is the same in kind: the host is trusted at pairing and at each
+fetch of `sw.js`, as the relay is for its copy, so write access to the
+host's repository stays with the owner. A hosted device without a bundle
+hash is let in at no level.
+
 The bot records `"own"` only when the link's app URL has the origin of
 the web block's `public_url`, compared normalized: the scheme, the host
 lowercased and without a trailing dot, and the port written out
-(`https://host:443` is `https://host`). Any other app URL, the relay's
+(`https://host:443` is `https://host`). It records `"hosted"` when the
+app URL has `hosted_app`'s origin (such a pairing opens `hosted_app`
+itself and carries the bundle hash); a `hosted_app` on `public_url`'s or
+the relay's origin turns the handoff off. Any other app URL, the relay's
 origin under any spelling, a URL with a backslash or user info, or a
 bot with no `public_url`, makes a `"relay"` device, which `new_pairing`
 refuses unless asked for one; with a bundle hash the app URL must also
@@ -171,9 +193,10 @@ have the relay's own origin (`on_relay_origin`).
 
 The origin is a property of the device key, not a claim the phone makes.
 The pairing secret travels in the fragment of a link that opens one
-origin, so only a page on that origin reads it, and the device's private
-key then lives in that origin's storage. A relay-origin page cannot read
-the storage of the own-origin app (same-origin policy).
+origin, or sealed under a handoff code to a page on the hosted origin,
+so only a page on that origin reads it, and the device's private key
+then lives in that origin's storage. A relay-origin or hosted page
+cannot read the storage of the own-origin app (same-origin policy).
 
 ## Pairing
 
@@ -257,6 +280,58 @@ A pairing works once, expires in ten minutes, and at most eight are open
 at a time; an expired pairing's secret leaves the key file at the next
 write. A phone whose welcome was lost says a plain hello next: its key
 is already registered (and waits for approval like any new one).
+
+### A computer with a code (the handoff)
+
+A computer off the tailnet has no camera for a QR code and no page of the
+bot's to open. A device already signed in vouches for it instead: the
+owner's web chat on the tailnet or on the bot's machine, or an approved
+own-origin phone through the relay. That device never copies its own key.
+
+1. On that device the owner opens "Add a device", then "A computer"
+   (`POST /api/relay/handoff`, or `webchat-relay.py handoff` on a
+   terminal). The bot makes an ordinary one-time pairing (ten minutes,
+   one of the eight open) on the hosted copy: `origin` `"hosted"`, the
+   bundle hash, `handoff: true` and `by`, the device that asked (its id,
+   or `"owner"` in the owner's own web chat).
+2. The code: ten symbols of Crockford base32
+   (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`), 50 bits from the CSPRNG, shown
+   as `ABCDE-FGHJK`. What a person types is read uppercase, with spaces
+   and dashes dropped, `O` as `0` and `I` and `L` as `1`; any other
+   character outside the alphabet, or a length other than ten, is not a
+   code.
+3. The KDF: `PBKDF2-HMAC-SHA256(password = the ten normalized ASCII
+   symbols, salt = "tacitus-handoff/1", 600000 iterations, 48 bytes)`.
+   The mailbox is the hex of the first 16 bytes (32 lowercase hex), the
+   key the last 32. Both come from the slow KDF, so the relay, which sees
+   the mailbox, cannot test codes cheaply.
+4. The blob: `AES-256-GCM(key, nonce = 12 random bytes, the version-2
+   pairing payload's JSON (the `#tr2=` JSON, with `a` = `hosted_app` and
+   `b` = the bundle hash), aad = "tacitus-handoff/1" || the mailbox in
+   ASCII)`, on the wire as base64url of `nonce || ciphertext`, at most
+   4 KiB. The bot leaves it at the relay (`POST /r/<install>/handoff`)
+   for the pairing's time left, and answers the code and the address to
+   open: `hosted_app`, with `?relay=<the relay URL>` unless the hosted
+   copy's `relays.json` lists this relay (read once per ten minutes).
+   A relay that does not take it drops the pairing again (503).
+5. On the computer the owner opens that address, types the code, and the
+   app derives the mailbox and key, takes the blob once
+   (`GET <relay>/h/<mailbox>`), opens it, checks that `a` is its own
+   page's address, and pairs as from a link (no fragment ever holds the
+   secret). A wrong code finds no mailbox, or a blob that does not open.
+6. The computer waits with its six-digit code like any new device. The
+   owner approves it under "Add a device" on the tailnet, or on the phone
+   that started the handoff (the relayed owner routes, What the bot
+   forwards): that phone approves only a computer its own handoff set
+   up. A handoff started through the relay and an approval made through
+   it each post a notice in the owner's DM naming the phone, and for an
+   approval the computer's name and six-digit code. No notice, log line
+   or record holds the handoff code.
+
+The shared vectors (`tests/fixtures/relay_vectors.json`, `handoff`) give a
+code, its mailbox and key, the nonce, the payload and the blob at 1000
+iterations, and the mailbox and key at 600000 (`production`), with the
+normalization cases.
 
 ## Handshake and sessions
 
@@ -371,7 +446,9 @@ cryptography.
 | `POST /r/{install}/c` | phone | `X-Relay-Key: <client key>`; one `hello`, `req` or `ping` frame | the bot's `welcome`, `res` or `err` frame; 504 with `err` `timeout` after 30 s; 503 `{"error": "unavailable"}` for a bot offline and for a wrong key alike; 413 for a `hello` or `ping` over 4 KiB; 429 over the limits |
 | `POST /r/{install}/sse` | phone | `X-Relay-Key`; one `open` frame (at most 4 KiB) | `{"ticket": <32 hex>, "ttl": 30}`: the stream's ticket, good once, for 30 s; errors as `/c` |
 | `GET /r/{install}/sse?t=<ticket>` | phone | the ticket | `text/event-stream`, chunked: `data: <frame JSON>` per frame, `: ping` every 20 s, closed after `end` or `err`; 503 `unavailable` for an unknown, used or late ticket. The `open` frame reaches the bot when the ticket is spent |
-| `GET /healthz` | operator | | `{"ok", "installs", "streams", "queued_bytes"}` to a monitor on the relay host (a loopback peer, no `X-Forwarded-For`); `{"ok": true}` to anyone else |
+| `POST /r/{install}/handoff` | bot | `Authorization` as for `/bot`; `{"m": <32 hex>, "c": <base64url blob>, "ttl": 1..600}` | `{"ok": true}`: the blob is held for `ttl` seconds, a same-`m` entry of this install replaced; 400 bad body, 401 no token, 403 wrong token or not activated, 409 a mailbox another install holds, 413 a blob over 4 KiB, 429 past 8 held for the install (or, for an install with no poll open, past its address's new-route meter), 503 the relay full. No CORS |
+| `GET /h/{mailbox}` | computer | | `{"c": <blob>}`, and the blob is gone (one read); 404 `{"error": "not found"}` for one unknown or past its time; 429 past 20 lookups a minute from one address, found or not. CORS: any origin, no credentials, `GET, OPTIONS` |
+| `GET /healthz` | operator | | `{"ok", "installs", "streams", "queued_bytes", "handoffs"}` to a monitor on the relay host (a loopback peer, no `X-Forwarded-For`); `{"ok": true}` to anyone else |
 | `GET /...` | phone | | the static app from `--static` (on a hostname of its own only), with a strict CSP, COOP and CORP |
 
 The relay checks a bot's token, and a phone's key, from the headers
@@ -419,12 +496,31 @@ with `http.client` is a later optimisation.
   `/api/pair...` or `/api/relay/...`, compared decoded and lowercased (the
   local server decodes each segment before it routes, so
   `/api/%72elay/pair` is refused too): pairing the web chat and managing
-  relay devices happen in the owner's own web chat only (the tailnet, or
-  the bot's machine). The one exception is `/api/relay/attest`, in
-  exactly that spelling: a phone's check of its app (docs/webchat.md,
-  Code integrity), which a device at any level but `"off"` may post.
-  Nothing else under `/api/relay/` passes. The web front end refuses
-  those routes again for any request that carries `X-Tacitus-Relay`.
+  relay devices happen in the owner's own web chat (the tailnet, or the
+  bot's machine). One exception is `/api/relay/attest`, in exactly that
+  spelling: a phone's check of its app (docs/webchat.md, Code
+  integrity), which a device at any level but `"off"` may post. The
+  other is the relayed owner routes, below. Nothing else under
+  `/api/relay/` passes. The web front end refuses those routes again for
+  any request that carries `X-Tacitus-Relay`, but for the two exceptions.
+- **The relayed owner routes.** An approved device paired on the bot's
+  own origin (its code never came from the relay or a host) may call
+  four owner routes through the relay, each in exactly this spelling
+  with no query: `POST /api/relay/handoff`, `GET /api/relay/devices`,
+  `POST /api/relay/approve` and `POST /api/relay/revoke`. The client
+  forwards these alone and marks each with `X-Tacitus-Relay-Device:
+  <device id>`, which it sets from the session, never from the phone: a
+  copy the phone sends is dropped with every header outside the short
+  list below. The web front end takes such a request only when the mark
+  equals `X-Tacitus-Relay` and the key file's record of that device is
+  own-origin and approved; it then approves only a device whose pairing
+  was a handoff that this same device started (`by`), and revokes any
+  device but the asking one. A waiting device gets its pending 403, and a
+  relay-origin or hosted device gets 403 on all four, whatever its card
+  buttons. `/api/pair`, `/api/relay/pair` and `/api/relay/status` stay
+  closed to every relayed request. `/api/me` says what applies
+  (`owner_routes`: `"all"` in the owner's own web chat, `"handoff"` for
+  such a phone, `"none"` for any other device).
   Never `/api/events` as a request: the event stream opens with an
   `open` frame, and an answer that turns out to be an event stream is
   cut. A replayed request gives up after 60 seconds in all.
@@ -447,10 +543,11 @@ with `http.client` is a later optimisation.
   a frame.
 - The local URL must be `http` on loopback; the relay URL must be `https`
   (plain `http` only on loopback, for tests).
-- A device paired through the relay's origin with a bundle hash reads
-  and chats once approved, attested or not; one paired there without a
-  hash gets `relay_origin_access` (above; nothing at `"off"`, the
-  default). Either presses card buttons only when the owner approved it
+- A device paired through the relay's origin or on the hosted copy with
+  a bundle hash reads and chats once approved, attested or not; one
+  paired on the relay's origin without a hash gets `relay_origin_access`
+  (above; nothing at `"off"`, the default), and a hosted one without a
+  hash gets nothing. Either presses card buttons only when the owner approved it
   with them (`cards`), or, without a hash, at `"all"`. One paired through
   the bot's own origin gets everything; one waiting for approval gets
   nothing.
@@ -464,8 +561,11 @@ the last poll time, the queue of phone frames for the bot, the requests
 waiting for an answer (by frame id), the open event streams, the stream
 tickets not yet spent, a rate bucket and whether a phone has used it. A
 route goes 60 s after the bot's last poll. Per source address, a bucket
-that meters new routes (the address itself is never logged). Nothing goes
-to disk. There are no accounts. A restart drops every route: bots
+that meters new routes and one that meters mailbox lookups (the address
+itself is never logged). Apart from the routes, the handoff blobs by
+mailbox, each with its install and its time, held until read once or
+past their time (at most ten minutes), and kept when a bot stops
+polling. Nothing goes to disk. There are no accounts. A restart drops every route: bots
 reconnect within seconds and phones say hello again. After a `rotate`
 (Rotation, below) the bot polls under a new install id, and the old
 route goes 60 s after the last poll under it.
@@ -482,6 +582,9 @@ address:
 ```
 2026-10-30T22:00:00Z POST c t7iapcqjg3nnr2a3nj6p3dmafl 200 in=812 out=1103 41ms
 ```
+
+A mailbox lookup logs `GET h - 404 in=0 out=24 0ms`: no line names a
+mailbox, and a deposit's line names the install as a poll's does.
 
 The nginx block in front keeps no access log for `/relay/` and logs its
 rate refusals at `info`, so neither an install id with a client address
@@ -508,6 +611,8 @@ them.
 | A `hello`, `ping` or `open` frame | 4 KiB |
 | Stream tickets not yet spent | 8, each good for 30 s |
 | New installs per source address | 20, then one per 10 s |
+| Handoff blobs held | 8, each at most 4 KiB, for at most 600 s; 4096 in all (global) |
+| Mailbox lookups per source address | 20, then one per 3 s (20 a minute) |
 | Online installs (global) | 1000; a full table drops the idle route (no poll open) that no phone used, else the one idle longest |
 | Queued bytes (global) | 512 MiB |
 | Connections (global) | 2048 |
@@ -522,8 +627,10 @@ from a loopback peer (the TLS terminator on the same host), the last
 clients; the relay's own socket timeout is 30 s. The nginx block adds a
 limit per client address (20 requests a second, a burst of 100, 32
 connections), 16 MiB bodies on `/bot` and `/c` only (8 KiB elsewhere),
-and refuses a bot poll without `Authorization` and a phone POST without
-`X-Relay-Key` before the relay sees it.
+and refuses a bot poll or a handoff deposit without `Authorization` and
+a phone POST without `X-Relay-Key` before the relay sees it. On
+`/relay/h/<mailbox>` it takes GET only and adds a meter of 20 a minute
+per address (the `tacitus_relay_handoff` zone in `nginx-http.conf`).
 
 The bot bounds what a relay hands it, since a compromised relay can hand
 it anything: at most 64 frames from one answer (48 MiB at most), at most
@@ -570,7 +677,17 @@ It **cannot**:
   device, or through a relay-origin device the owner did not allow them
   (`cards`), or confirm one by a typed code (the invariant in "For the
   web front end");
-- read earlier sessions after a later key leak (forward secrecy).
+- read earlier sessions after a later key leak (forward secrecy);
+- open a handoff blob, or learn its code: the mailbox it sees comes from
+  the same slow KDF as the key, so each guess at a 50-bit code costs it
+  600000 rounds of PBKDF2, and the blob lives ten minutes and goes at the
+  first read. A blob it forges does not open under the code's key, and
+  a computer that pairs from a real one still waits for the owner's
+  approval by its six-digit code;
+- use a phone paired on the relay's origin, or a hosted computer, to
+  pair or approve a device: neither reaches the owner routes. An
+  own-origin phone reaches them only through its sealed session, and
+  approves only a computer its own handoff set up.
 
 It **can**:
 
@@ -583,6 +700,9 @@ It **can**:
   about the transport only: it says hello again, retries a GET once or
   shows a note (for `auth`, "the bot did not accept this phone"; for a
   POST, that the bot may have it anyway), and never drops its keys over
+  one;
+- withhold or drop a handoff blob, or answer a lookup with 404: the
+  computer then says the code did not work, and the owner makes a new
   one;
 - keep the bot's relay token and the client key. They let it act as this
   install's bot at a relay, which it already is. `rotate` retires both
@@ -615,6 +735,7 @@ The `relay` block sits inside the `web` block of the chat config
     "install_id": "t7iapcqjg3nnr2a3nj6p3dmafl",
     "app_url": "https://<host>.ts.net/chat/",
     "relay_origin_access": "off",
+    "hosted_app": "https://tacitus-ai.github.io/",
     "wait": 25,
     "enabled": true
   }
@@ -628,6 +749,7 @@ The `relay` block sits inside the `web` block of the chat config
 | `install_id` | Optional pin: the bot refuses to start the relay when the key file is another install's, or missing. After a `rotate`, set it to the new id. |
 | `app_url` | Where an own-origin pairing link opens the app. Default: the web block's `public_url`. A device is own-origin only when this is `public_url`'s origin. Without `public_url` (no tailnet) "Pair a phone" pairs only through the relay (an own-origin pairing is a 409). |
 | `relay_origin_access` | What a relay-origin device paired without a bundle hash (from before the signed bundle) may do: `"off"` (nothing; the default), `"read"` (GET only), `"chat"` (all but card actions), `"all"`. A phone paired with "Pair through the relay" (with the bundle hash) needs none of it: once approved it reads and chats. Either presses card buttons only when the owner approved it with them (`cards`), or, without a hash, at `"all"`. |
+| `hosted_app` | Where a computer opens the app to take a handoff code (Pairing, A computer with a code). Default `"https://tacitus-ai.github.io/"`; `""` turns the handoff off. An https origin with the path `/` and nothing else; another value, or one on `public_url`'s or the relay's origin, turns the handoff off with a log line and leaves the relay running. |
 | `wait` | The long-poll's wait in seconds (default 25, at most 55; the relay caps it at 25). |
 | `enabled` | `false` keeps the block but leaves the relay off. |
 
@@ -644,8 +766,15 @@ under an flock on `<key file>.lock`):
               "paired_at": 1793421400, "origin": "relay", "bundle": "<64 hex>",
               "bundle_verified": true}],
  "pairings": [{"id": "<32 hex>", "psk": "<base64url>", "expires": 1793421933,
-               "origin": "relay", "bundle": "<64 hex>"}]}
+               "origin": "relay", "bundle": "<64 hex>"},
+              {"id": "<32 hex>", "psk": "<base64url>", "expires": 1793421990,
+               "origin": "hosted", "bundle": "<64 hex>", "handoff": true,
+               "by": "b15625d7ae6abe8d"}]}
 ```
+
+A pairing behind a handoff code has `"handoff": true` and `"by"` (the
+device that asked for the code, or `"owner"`), and so has the device
+that spends it, with `"origin": "hosted"`.
 
 A device record waiting for approval also has `"pending": true` and its
 `"code"`; Approve removes both and writes `"cards_allowed"` (whether a
@@ -733,24 +862,29 @@ settings. It returns None when there is
 no `relay` block, it is disabled, `cryptography` is missing or the config
 is wrong; it logs why, and the web chat keeps working on the tailnet.
 
-A also adds owner-only routes for the owner's web chat, which the relay never
-forwards (`/api/relay/` is denied on the bot side), and refuses them, and
-`/api/pair`, with 403 when a request carries `X-Tacitus-Relay`:
+A also adds owner-only routes for the owner's web chat, which the relay
+forwards only as the relayed owner routes (What the bot forwards; the
+rest of `/api/relay/` is denied on the bot side), and refuses them, and
+`/api/pair`, with 403 when a request carries `X-Tacitus-Relay` outside
+those (`_relayed_owner_route`: the `X-Tacitus-Relay-Device` mark equals
+`X-Tacitus-Relay`, and the device is own-origin and approved):
 
 | Route | Answers |
 |---|---|
 | `POST /api/relay/pair` | `{}` or `{"via": "own" or "relay"}` → `{"link", "qr", "expires", "origin", "bundle", "access"}`: `link` from `self.relay.new_pairing()` (version 2, with `b` when the bot has a bundle hash), `qr` the QR code's text (the same string), `expires` in Unix seconds, `origin` the `via`, `access` what the device may do once approved (`"all"` own, `"chat"` relay, which presses card buttons only with the owner's `cards`); own: 409 when the link would not open the bot's own origin (no `public_url`); relay: the link opens `<relay url>/`, 409 when the bot has no bundle hash; 400 for another `via` |
-| `GET /api/relay/devices` | `self.relay.devices()` (`device_row`: id, name, paired_at, origin, pending, `code` while pending; for a relay-origin device `cards_allowed`, `bundle_verified` and, when verified, `release`) |
-| `POST /api/relay/approve` | `{"device": <16 hex>, "cards"?: bool}` → `{"ok": true}`: `self.relay.approve(id, cards=...)`, the device's next request works, and a relay-origin device may press card buttons only with `cards` true (approving again changes it); 400 for a malformed id or `cards`, 404 for an unknown one |
-| `POST /api/relay/revoke` | `{"device": <16 hex>}` → `{"ok": true}`: `self.relay.revoke(id)`; its sessions and its open event streams end at once (a stream with `err auth`), and its push subscriptions are dropped; 400 for a malformed id, 404 for an unknown one |
-| `GET /api/relay/status` | `{"enabled": bool, ...self.relay.status()}` (install_id, relay_url, bot_public, client_key, sign_public, connected, last_ok, last_error, sessions, streams, devices, pending), and how "Pair a phone" can pair: `pair_own` (a link to the bot's own origin), `pair_relay` and `bundle` (the bundle hash signed now, or null); `{"enabled": false}` with no relay running |
+| `POST /api/relay/handoff` | `{}` → `{"code": "ABCDE-FGHJK", "expires", "open", "access": "chat"}`: `self.relay.new_handoff(bundle, by=...)` (`make_handoff`: the pairing, the code, the blob left at the relay for the pairing's time left), `open` `self.relay.handoff_address()`; 409 with a plain reason when no relay runs, `hosted_app` is `""` or the bot has no bundle hash, 503 when the relay did not take the blob (the pairing goes again). Relayed (an own-origin phone): `by` is its id, and the owner's DM hears of it, without the code |
+| `GET /api/relay/devices` | `self.relay.devices()` (`device_row`: id, name, paired_at, origin, pending, `code` while pending; for a relay-origin or hosted device `cards_allowed`, `bundle_verified` and, when verified, `release`; for a device set up by a handoff `handoff` and `by`). Relayed, the asking phone's row has `this_device: true` |
+| `POST /api/relay/approve` | `{"device": <16 hex>, "cards"?: bool}` → `{"ok": true}`: `self.relay.approve(id, cards=...)`, the device's next request works, and a relay-origin or hosted device may press card buttons only with `cards` true (approving again changes it); 400 for a malformed id or `cards`, 404 for an unknown one. Relayed: 403 unless the device's `handoff` was started `by` the asking phone; the owner's DM names the phone and the device with its six-digit code |
+| `POST /api/relay/revoke` | `{"device": <16 hex>}` → `{"ok": true}`: `self.relay.revoke(id)`; its sessions and its open event streams end at once (a stream with `err auth`), and its push subscriptions are dropped; 400 for a malformed id, 404 for an unknown one. Relayed: 403 for the asking phone itself |
+| `GET /api/relay/status` | `{"enabled": bool, ...self.relay.status()}` (install_id, relay_url, bot_public, client_key, sign_public, connected, last_ok, last_error, sessions, streams, devices, pending), and how "Add a device" can pair: `pair_own` (a link to the bot's own origin), `pair_relay` and `bundle` (the bundle hash signed now, or null), `handoff` (the handoff route would work now) and `hosted_app`; `{"enabled": false, "handoff": false, "hosted_app": ""}` with no relay running |
 | `POST /api/relay/attest` | `{"bundle": <64 hex>}`, only with `X-Tacitus-Relay` (400 otherwise): `self.relay.attest(device, hash, release)`; 200 `{"ok": true, "bundle_verified": true, "release"}` for the bundle the bot signs now, 409 `{"error", "bundle_verified": false}` for another (the record then says false), 404 for an unknown device. It grants nothing |
 
 With no relay running the others answer 404. `RelayClient.level(device)`
-is `"all"` for an own-origin device. For a relay-origin one it is
-`BUNDLE_ACCESS` (`"chat"`) when it was paired against the bot's signed
-bundle, attested or not, else `relay_origin_access` (`"off"` keeping it
-out); either is `"all"` when `cards_allowed` (never at `"off"`).
+is `"all"` for an own-origin device. For a relay-origin or hosted one it
+is `BUNDLE_ACCESS` (`"chat"`) when it was paired against the bot's signed
+bundle, attested or not, else `relay_origin_access` for a relay-origin
+one and `"off"` for a hosted one (`"off"` keeping it out); either is
+`"all"` when `cards_allowed` (never at `"off"`).
 `WebFrontend.bundle_hash()` is the bundle hash signed now; a front end
 that is not serving (the owner's CLI) signs with the key file's key, so
 it gets the serving bot's hash for the same files. A push subscription
@@ -760,7 +894,10 @@ a subscription whose device is no longer paired, so a device removed
 with the CLI loses its subscriptions at the next push. `/api/me` gains
 `relay` (the client runs) and `card_actions` (false for a request marked
 `X-Tacitus-Relay-Cards: deny`, or relayed without `allow`): the app greys
-out a card's buttons on such a phone.
+out a card's buttons on such a phone. It also says `owner_routes`
+(`"all"`, `"handoff"` or `"none"`, What the bot forwards) and `handoff`
+(whether "A computer" works from this device now), so the app shows only
+what the device reaches.
 
 One invariant binds A and C: a request marked `X-Tacitus-Relay-Cards:
 deny` never confirms a card. The bot side already refuses its card
@@ -1039,6 +1176,18 @@ command as the owner. Tailscale is optional: these steps need none.
    relay's operator, set it as `install_id` in the relay block when the
    block pins one, and pair each phone again. The running bot takes the
    new key within a minute; a restart works too.
+11. A computer off the tailnet: on a device already signed in (the web
+   chat on the tailnet or on the bot's machine, or an approved phone set
+   up on the tailnet), open "Add a device", then "A computer". It shows a
+   code and an address. On the computer, open the address and type the
+   code; the computer shows a six-digit code, and Approve appears beside
+   it on the first device: tap it only when the codes match. Without the
+   UI, `python3 <code>/scripts/webchat-relay.py handoff --key-file ~/.ea-private/webchat-relay.json`
+   prints the code and the address, and `show` and `approve --device <id>`
+   let the computer in. The code works once, for ten minutes; never send
+   it through chat or mail. The computer reads and chats; card buttons
+   on it stay off until you allow them, as for a phone paired through the
+   relay. `"hosted_app": ""` in the relay block turns this off.
 
 ## Later work
 

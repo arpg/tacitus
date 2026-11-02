@@ -21,6 +21,11 @@ with no I/O:
   the bot signs its web app with, and the signed manifest of the app's
   files (docs/webchat.md, Code integrity). `bundle_hash` is the hash of
   the canonical manifest, the value a pairing QR code carries.
+- `new_handoff_code`, `normalize_handoff_code`, `handoff_keys`,
+  `seal_handoff`, `open_handoff`: the code a signed-in device shows to
+  set up a computer, and the sealed pairing payload the relay holds for
+  it in a mailbox. The mailbox and the key both come from a slow KDF of
+  the code, so the relay cannot test codes cheaply.
 
 The crypto comes from the `cryptography` package (installed with msal).
 Without it `AVAILABLE` is False and every key operation raises
@@ -292,7 +297,9 @@ class PairingPayload:
     def version(self) -> int:
         return 2 if self.bundle or self.app else 1
 
-    def encode(self) -> str:
+    def to_json(self) -> bytes:
+        """The payload's JSON, keys sorted and no spaces: what the link's
+        fragment carries in base64url, and what a handoff blob seals."""
         obj = {"v": self.version, "r": self.relay_url, "i": self.install_id,
                "k": b64e(self.bot_public), "c": self.client_key,
                "p": self.pairing_id, "s": b64e(self.psk), "x": int(self.expires)}
@@ -300,7 +307,10 @@ class PairingPayload:
             obj["b"] = self.bundle
         if self.app:
             obj["a"] = self.app
-        return b64e(json.dumps(obj, separators=(",", ":"), sort_keys=True).encode())
+        return json.dumps(obj, separators=(",", ":"), sort_keys=True).encode()
+
+    def encode(self) -> str:
+        return b64e(self.to_json())
 
     def to_string(self, app_url: Optional[str] = None) -> str:
         base = (app_url or self.app or self.relay_url).split("#", 1)[0]
@@ -316,8 +326,18 @@ class PairingPayload:
         if named:
             frag = frag[len(cls.PREFIXES[named]):]
         try:
-            obj = json.loads(b64d(frag.strip()))
-        except (FrameError, ValueError) as exc:
+            raw = b64d(frag.strip())
+        except FrameError as exc:
+            raise HandshakeError("not a pairing payload") from exc
+        return cls.from_json(raw, named)
+
+    @classmethod
+    def from_json(cls, raw: bytes, named: Optional[int] = None) -> "PairingPayload":
+        """The payload of `to_json` bytes (a handoff blob's plaintext);
+        `named` is the version a link's prefix gave, if any."""
+        try:
+            obj = json.loads(raw, parse_constant=_no_constant)
+        except (ValueError, RecursionError) as exc:
             raise HandshakeError("not a pairing payload") from exc
         if not isinstance(obj, dict) or obj.get("v") not in cls.PREFIXES \
                 or named not in (None, obj["v"]):
@@ -358,6 +378,115 @@ def new_pairing(identity: BotIdentity, relay_url: str, *, ttl: int = PAIRING_TTL
                           bot_public=identity.public, client_key=identity.client_key,
                           pairing_id=secrets.token_hex(16), psk=secrets.token_bytes(32),
                           expires=int(now + ttl))
+
+
+# ── the handoff code (a computer set up from a signed-in device) ──────
+#
+# A device that is signed in shows a short code; the owner types it on a
+# computer at the hosted copy of the app. The bot seals a version-2
+# pairing payload under a key from the code and leaves it at the relay in
+# a mailbox whose name comes from the code too. The computer derives both,
+# fetches the blob once, opens it and pairs as from a link. PBKDF2 with
+# many rounds makes each guess at a code cost the relay what it costs the
+# computer, and 50 bits of code leave it nothing to gain by trying.
+
+HANDOFF_PROTOCOL = b"tacitus-handoff/1"
+HANDOFF_ITERATIONS = 600_000
+HANDOFF_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # Crockford base32
+HANDOFF_LENGTH = 10
+# A blob on the wire: base64url of nonce || ciphertext, at most this long.
+HANDOFF_MAX = 4096
+MAILBOX_RE = re.compile(r"^[0-9a-f]{32}$")
+_HANDOFF_LOOKALIKE = {"O": "0", "I": "1", "L": "1"}
+
+
+class HandoffError(ValueError):
+    """A code that is not one, or a blob that does not open under it."""
+
+
+def new_handoff_code() -> str:
+    """A fresh code: ten symbols of HANDOFF_ALPHABET (50 bits), normalized."""
+    return "".join(secrets.choice(HANDOFF_ALPHABET) for _ in range(HANDOFF_LENGTH))
+
+
+def normalize_handoff_code(text: Any) -> Optional[str]:
+    """The ten symbols a person typed, or None when it is not a code:
+    uppercase, spaces and dashes dropped, O read as 0, I and L as 1. Any
+    other character outside the alphabet (one that is not ASCII too), or
+    another length, is not a code."""
+    if not isinstance(text, str) or not text.isascii():
+        return None
+    out = "".join(_HANDOFF_LOOKALIKE.get(ch, ch) for ch in text.upper() if ch not in " -")
+    if len(out) != HANDOFF_LENGTH or any(ch not in HANDOFF_ALPHABET for ch in out):
+        return None
+    return out
+
+
+def format_handoff_code(code: str) -> str:
+    """A code as a person reads it: `ABCDE-FGHJK`."""
+    norm = normalize_handoff_code(code)
+    if norm is None:
+        raise HandoffError("not a code")
+    return f"{norm[:5]}-{norm[5:]}"
+
+
+def handoff_keys(code: str, iterations: int = HANDOFF_ITERATIONS) -> tuple[str, bytes]:
+    """(mailbox, key) of a code: PBKDF2-HMAC-SHA256 of the ten normalized
+    symbols, salt HANDOFF_PROTOCOL, 48 bytes. The mailbox is the first 16
+    as hex, the AES-256-GCM key the last 32. Only a test passes fewer
+    iterations (the shared vectors use 1000 to stay fast)."""
+    norm = normalize_handoff_code(code)
+    if norm is None:
+        raise HandoffError("not a code")
+    out = hashlib.pbkdf2_hmac("sha256", norm.encode("ascii"), HANDOFF_PROTOCOL,
+                              iterations, 48)
+    return out[:16].hex(), out[16:]
+
+
+def _handoff_aad(mailbox: str) -> bytes:
+    return HANDOFF_PROTOCOL + mailbox.encode("ascii")
+
+
+def seal_handoff(mailbox: str, key: bytes, plaintext: bytes,
+                 nonce: Optional[bytes] = None) -> str:
+    """The blob for `mailbox`: base64url of the nonce (12 random bytes) and
+    the AES-256-GCM ciphertext of `plaintext` (a payload's `to_json`), with
+    the protocol and the mailbox as authenticated data. HandoffError when
+    it would pass HANDOFF_MAX."""
+    _need()
+    if not MAILBOX_RE.match(mailbox or "") or len(key) != 32:
+        raise HandoffError("bad mailbox or key")
+    nonce = secrets.token_bytes(12) if nonce is None else nonce
+    if len(nonce) != 12:
+        raise HandoffError("a nonce is 12 bytes")
+    blob = b64e(nonce + AESGCM(key).encrypt(nonce, plaintext, _handoff_aad(mailbox)))
+    if len(blob) > HANDOFF_MAX:
+        raise HandoffError("the payload is too large for a handoff")
+    return blob
+
+
+def open_handoff(mailbox: str, key: bytes, blob: Any) -> PairingPayload:
+    """The pairing payload a blob seals; HandoffError when it does not open
+    under this mailbox and key, or holds no version-2 payload with the app
+    address and the bundle hash."""
+    _need()
+    try:
+        raw = b64d(blob)
+    except FrameError as exc:
+        raise HandoffError("not a handoff blob") from exc
+    if len(raw) < 12 + 16 or len(blob) > HANDOFF_MAX or not MAILBOX_RE.match(mailbox or ""):
+        raise HandoffError("not a handoff blob")
+    try:
+        plain = AESGCM(key).decrypt(raw[:12], raw[12:], _handoff_aad(mailbox))
+    except (InvalidTag, ValueError) as exc:
+        raise HandoffError("the blob does not open with this code") from exc
+    try:
+        payload = PairingPayload.from_json(plain, 2)
+    except HandshakeError as exc:
+        raise HandoffError("the blob holds no pairing") from exc
+    if not payload.app or not payload.bundle:
+        raise HandoffError("a handoff carries the app address and the bundle hash")
+    return payload
 
 
 # ── sessions ──────────────────────────────────────────────────────────
