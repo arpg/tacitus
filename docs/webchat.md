@@ -202,7 +202,7 @@ subset and escapes everything else; it never injects HTML from text.
 | GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool, "relay": bool, "card_actions": bool, "bundle": "<hash>", "settings": ["routing"]}`; `bundle` is the bundle hash the bot signs now, "" when it signs none (Code integrity); `settings` names the settings pages the host registered |
 | GET | `/manifest.sig.json` | the signed manifest of the app's files, without auth (Code integrity); 404 when the bot signs none |
 | GET | `/api/bundle` | the same document, for the owner: the route the relay reaches |
-| GET | `/api/app/{file}` | a file that the signed manifest names, its bytes as on disk, as an attachment with the sandbox policy and the type of its name; 404 for any other name. A phone off the tailnet takes a new release here, through the relay (Code integrity) |
+| GET | `/api/app/{file}` | a file that the signed manifest names, its bytes as on disk (`headers.json` as the bot writes it), as an attachment with the sandbox policy and the type of its name; 404 for any other name. A phone off the tailnet, or on the relay's origin, takes a new release here, through the relay (Code integrity) |
 | GET | `/api/channels` | `[{"id","name","kind","archived","last_at","unread"}]` |
 | GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count`, `last_at` and the thread's state: `state`, `state_by`, `state_reason`, `state_at`, `stale` (State) |
 | GET | `/api/needs` | `{"threads": [...]}`: the threads whose state is `needs_you` or `waiting` in channels that are not archived, each a threads row with `channel_name`; `needs_you` first, then newest first; at most 200; one query, and it moves no read mark (State). `needs` is never a channel id |
@@ -561,8 +561,8 @@ above check).
 A single-page app, phone-first, installable (manifest + a service
 worker that caches the static files only, never API responses).
 No framework, no build step, no CDN; everything under `webui/`. The
-service worker serves only files the bot signed (`bundle.js`; Code
-integrity, below).
+service worker serves only files the bot signed (`sw.js` loads its code
+from `bundle.js`; Code integrity, below).
 
 Layout: a channel list (left on wide screens, a drawer on narrow), a
 thread list for the selected channel, and the open thread with a
@@ -577,7 +577,7 @@ never channel, thread, session, context, specialist, ledger, lane,
 relay, tailnet, Tailscale, bundle, manifest, token, origin, SSE, CSP,
 payload, endpoint, frontend, PWA or standalone.
 `test_every_string_the_person_sees_is_plain` scans each string literal
-of `app.js` and `sw.js`, the page's text and labels and the manifest's
+of `app.js`, `sw.js` and `bundle.js`, the page's text and labels and the manifest's
 words; a literal that is code (one lower-case word: an id, a class, a
 key, a route, an event name) or on its short `NOT_SHOWN` list is
 skipped. Text the bot sends (messages, cards, its error answers, the
@@ -958,7 +958,7 @@ at zero; a visit to the site refills it. Safari (Apple's push service,
 the iOS Home Screen app too) counts each push in which the worker calls
 no `showNotification`, and after three in the subscription's life
 removes the site's subscriptions. So the worker closes the thread's
-notifications and then asks `clearPlan` in `sw.js`: on Chrome and Edge
+notifications and then asks `clearPlan` (the worker's code, `bundle.js`): on Chrome and Edge
 it shows nothing when another notification of the app stays open or a
 window of it is in view, on Firefox when another stays open, and
 otherwise it shows a silent notification under the thread's tag, titled
@@ -1037,7 +1037,7 @@ posts the subscription; off unsubscribes on both sides. At start the app
 posts a subscription the browser already holds, so a reset store learns
 it again. iOS delivers Web Push only to the app added to the Home Screen:
 where `navigator.standalone` is `false` (iOS Safari) the drawer's install
-line says so. `sw.js` shows each push (`showNotification` with the title,
+line says so. The worker (`bundle.js`) shows each push (`showNotification` with the title,
 body, icon, tag and `data.url`) and on a tap focuses the app's window last
 in front and navigates it to the url, else opens one; a window that
 `navigate()` cannot move gets `{open: url}` as a message and routes to it
@@ -1072,6 +1072,19 @@ list with an Ed25519 key. The served document:
 - `files` names each file under `webui/` by its path there. It leaves
   out a dotfile, a link that leaves the folder, a path with a character
   other than `A-Z a-z 0-9 . _ -` and `/`, and `manifest.sig.json`.
+- `files` also names `headers.json`, which the bot writes: the security
+  headers that the app's page is served with, as canonical JSON with the
+  header names in lower case (`WebFrontend.page_headers`,
+  `web_bundle.headers_file`):
+  `{"index.html": {"content-security-policy": "<the page's policy>",
+  "cross-origin-resource-policy": "same-origin", "referrer-policy":
+  "same-origin", "x-content-type-options": "nosniff"}}`. The policy is the
+  install's (`connect-src` names the relay), so the bundle hash changes
+  with it. A file of that name under `webui/` is left out. The headers are
+  a file and not a field of the manifest: a phone that runs an earlier
+  release checks the manifest's shape exactly (`v`, `files`, `built_at`,
+  `key`) and would stop on a new field, but it takes a new file as one
+  more file of the app.
 - `built_at` is the newest modification time of the files. So the hash
   changes when a file changes, not at each start.
 - The manifest is not a file in the repository. The bot makes it.
@@ -1088,7 +1101,9 @@ helpers are `relay_crypto.signing_keypair`, `sign_manifest` and
 auth (it is public data), with `Cache-Control: no-store`. `GET
 /api/bundle` gives the same document to the owner: the relay client
 forwards only `/api/` paths, so this is the route through the relay.
-`/api/me` gives the bundle hash as `bundle`. Without the `cryptography`
+`/api/me` gives the bundle hash as `bundle`. Each file the manifest names
+is at `<base>/<file>` and at `GET /api/app/<file>` (the route through the
+relay), `headers.json` among them. Without the `cryptography`
 package the bot signs nothing: `bundle` is "", both routes answer 404,
 and the app on the own origin skips the check.
 
@@ -1102,10 +1117,39 @@ served. A served file that matches neither the manifest nor the disk
 is logged once and stays unsigned: a phone refuses it.
 `refresh_bundle()` signs on demand.
 
-**The service worker** (`sw.js`, with `bundle.js`). It keeps the trusted
-manifest in Cache Storage (`tacitus-webchat-v3-bundle`) beside its copies
-of the files (`tacitus-webchat-v3`).
+**The service worker** (`sw.js`, which runs `bundle.js`). It keeps the
+trusted manifest in Cache Storage (`tacitus-webchat-v3-bundle`) beside
+its copies of the files (`tacitus-webchat-v3`).
 
+- `sw.js` is a loader, small and stable. The browser fetches it, and the
+  `bundle.js` it imports, only from the page's origin: from the bot on
+  the tailnet, from the relay on the relay's origin. So the worker's code
+  is in `bundle.js` (`TacitusWorker`), a signed file of the app like the
+  others. At each start (the browser stops an idle worker and starts it
+  again for the next event) the loader reads the trusted manifest and the
+  kept copy of `bundle.js` from Cache Storage, and runs that copy as text
+  when its sha256 is the one the manifest names. Else (a first load, a
+  refusal, a browser that does not run the text) it runs the copy that
+  came with `sw.js`. It never fetches the code it runs. It registers the
+  listeners itself and hands each event to `TacitusWorker.start({CACHE,
+  STATE})`, whose functions (`install`, `activate`, `push`, `click`,
+  `message`, `serve`) are the interface; `TacitusWorker.v` numbers it
+  (1), and a copy of another number does not run. The rules for the
+  app's own GET requests (not `/api/`, the relay's routes or the
+  manifest) stay in `sw.js`.
+- To run that text the worker's policy must allow it (`'unsafe-eval'`,
+  in the worker alone; the page's policy does not). The bot sends
+  `sw.js` with no policy; the relay sends it `relay_server.WORKER_CSP`.
+  A relay that sends the page's policy with `sw.js` gets the copy that
+  came with it, a release behind until the relay updates.
+- So a release that changes `bundle.js` reaches the worker as any file
+  does, through the relay too, and runs in it from its next start: a
+  worker can run a release before the page does (the page runs it from
+  its next start). The messages between the page and the worker stay
+  compatible from one release to the next. A change to `sw.js` reaches a
+  phone only from the page's origin: at the next start on the tailnet
+  (the own origin), or once the relay serves that release (the relay's
+  origin). It is rare; a release that makes one says so.
 - Before it has a manifest (the first load), it serves as before and
   keeps each file. The own origin is trusted by definition. The first
   manifest that the page brings must match each file kept until then, or
@@ -1115,39 +1159,57 @@ of the files (`tacitus-webchat-v3`).
   `index.html`). For another file, the kept copy serves (the worker
   checked it when it kept it) and the worker marks the file as suspect.
   When there is no kept copy, the app stops.
-- The page brings the manifest at each start (`adopt`). The worker
-  replaces each kept copy that a new manifest does not name with the
-  network's copy, which must match. After a suspect file it fetches each
-  file again: a file of a new release matches, and a changed file stops
-  the app. A copy that it cannot fetch stays. Off the tailnet the worker
-  fetches nothing, and the page brings a new release through the relay
-  (next item).
-- Off the tailnet, the bot's own copy of the app takes a new release from
-  the bot through the relay (`updateOverRelay` in `app.js`). The relay
-  carries the files only as sealed frames, as it carries the chat. At
-  each start over the relay:
+- On the own origin the page brings the manifest at each start
+  (`adopt`). The worker replaces each kept copy that a new manifest does
+  not name with the network's copy, which must match. After a suspect
+  file it fetches each file again: a file of a new release matches, and
+  a changed file stops the app. A copy that it cannot fetch stays. Off
+  the tailnet, and always on the relay's origin, the worker fetches
+  nothing, and the page brings a new release from the bot through the
+  relay (next item).
+- Through the relay, the page brings each new release from the bot
+  (`bring` in `app.js`): the bot's own copy off the tailnet after
+  start-up (`updateOverRelay`), the relay's copy at every start before
+  the chat (`checkBundle`). The relay carries the files only as sealed
+  frames, as it carries the chat:
   1. The page fetches the manifest (`GET /api/bundle`) and checks its
      signature (`verifyBundle`).
   2. The worker checks the manifest under the key of the manifest that
-     it trusts (a manifest it checked on the tailnet; without one it does
-     nothing). It answers the files whose kept copy the manifest does not
-     name, a file it never kept among them.
+     it trusts. The bot's own copy needs a manifest checked on the
+     tailnet (without one it does nothing); the relay's copy checks its
+     kept files against its first manifest, which the page checked
+     against the QR's hash. It answers the files whose kept copy the
+     manifest does not name, a file it never kept among them.
   3. The page fetches each such file from the bot (`GET
      /api/app/<file>`) and compares its sha256 with the manifest.
   4. The page gives the files to the worker (`postMessage`). The worker
      checks the manifest and each sha256 again, keeps each file with the
-     type the bot sent and the other headers of its kept copy (the page's
-     security policy among them), and then trusts the new manifest.
+     type the bot sent and the release's headers (below), and then
+     trusts the new manifest.
 
-  The worker keeps all the files or none. A file that does not match, a
-  manifest under another key, or a file that did not come keeps nothing,
-  and the page notes the error for the bot (`POST /api/diag`). After an
-  update the page shows "Tacitus updated. Close the app and open it
-  again." as a toast and at the foot of the drawer; an update on the
-  tailnet shows the same line. The new copy runs from the next start: the
-  page does not reload by itself. The browser fetches `sw.js` only from
-  the bot's origin, so a new worker comes at the next start on the
-  tailnet.
+  The worker keeps all the files or none, and its trusted manifest moves
+  only to the bot's current one: on the relay's origin a release comes
+  only from the bot, and a file from the relay is kept only when it is
+  the signed one, so a relay a release behind (or ahead) neither stops
+  the phone nor moves it back. A file that does
+  not match, a manifest under another key, or a file that did not come
+  keeps nothing; the bot's own copy notes the error for the bot (`POST
+  /api/diag`), and the relay's copy says "This phone could not take the
+  latest version of the app from Tacitus yet. Trying again." and runs no
+  chat until it can. After an update the page shows "Tacitus updated.
+  Close the app and open it again." as a toast and at the foot of the
+  drawer; an update on the tailnet shows the same line. The new copy runs
+  from the next start: the page does not reload by itself.
+- **The release's headers.** Each copy the worker keeps carries the
+  security headers that the manifest's `headers.json` names for its path
+  (`KEEP_HEADERS`: the policy, `nosniff`, the referrer policy and
+  `Cross-Origin-Resource-Policy`), whether it came from the network or
+  from the bot through the relay, and a kept copy whose headers the block
+  changes takes them: a release that changes only the page's policy
+  reaches a phone off the tailnet, and shows the same line. The worker
+  keeps the block with the trusted manifest. A manifest without
+  `headers.json` (an earlier bot) keeps the headers of the copy each file
+  replaces, and a file from the network its own.
 - When the app stops, the worker deletes its copies and records the name
   of the file. It sends each page of the app to a refusal page that it
   writes itself, with no script and `default-src 'none'`. The page gives
@@ -1174,12 +1236,17 @@ with "Code verification unavailable" before it makes a key when it has no
    code). After that, it checks it against the key that signed it
    (`signKey`, which it keeps with the pairing after the first check).
 3. It gives the manifest to the worker with `pin`: the worker then takes
-   a later manifest only when the same key signed it.
-4. When the worker finds each file in the manifest, the page sends
-   `POST /api/relay/attest {"bundle": "<hash>"}` through the relay.
+   a later manifest only when the same key signed it. The page brings
+   each file the worker lacks from the bot (above): at the first check
+   the files the relay's copy did not hold, after it each file of a new
+   release.
+4. When the worker holds each file of the manifest, the page sends
+   `POST /api/relay/attest {"bundle": "<hash>"}` through the relay: the
+   new hash after an update.
 
-A mismatch shows the refusal ("Tacitus stopped", with the file), and
-the page attests nothing. A check that cannot run (a browser without
+At the first check, a file of the relay's copy that the bot did not sign
+shows the refusal ("Tacitus stopped", with the file), and the page
+attests nothing. A check that cannot run (a browser without
 Ed25519, a pairing record without the hash) stops the relay's copy too:
 it runs no chat it has not checked.
 
@@ -1227,17 +1294,18 @@ relay that serves changed code on purpose from the first load. That code
 can skip the check, and it can post the bundle hash, which is public. The
 attestation is a claim that the code on the phone makes. Also, the
 browser replaces the service worker when the server sends a new
-`sw.js`, and the old worker cannot stop it. So the check protects against
-a copy from another release, a changed file in a static folder, and
-mistakes. It does not make the code from a dishonest server honest: that
-needs a check outside the page (a browser extension, as Code Verify is),
-or the own origin.
+`sw.js`, and the old worker cannot stop it: on the relay's origin the
+loader is the relay's, and it decides which code the worker runs. So the
+check protects against a copy from another release, a changed file in a
+static folder, and mistakes. It does not make the code from a dishonest
+server honest: that needs a check outside the page (a browser extension,
+as Code Verify is), or the own origin.
 
 Plainly: pairing through the relay trusts the relay's copy of the app at
-pairing time and at each update of the service worker. The owner chooses
-for each such device whether it may press card buttons. Pairing on the
-tailnet (the own origin) has no such trust: the relay never serves code
-to that phone. A new release that reaches it off the tailnet comes from
-the bot, in frames the relay cannot open or change, and the phone checks
-each file against the bot's signature. The relay can hold an update
-back; it cannot change one.
+pairing time and at each update of the service worker. After the first
+check every release comes from the bot, sealed, on both origins: the
+relay can hold an update back, but cannot change one. The owner chooses
+for each relay-origin device whether it may press card buttons. Pairing
+on the tailnet (the own origin) has no such trust: the relay never
+serves code to that phone, and the phone checks each file of a release
+it takes off the tailnet against the bot's signature.

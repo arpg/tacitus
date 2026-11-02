@@ -115,9 +115,10 @@ past is read back from the primary (`card_lookup`, which the composite
 sets) so the rules see it settle, and its row takes the current text.
 
 At start the bot signs the app's files (web_bundle, docs/webchat.md, Code
-integrity): every file under `webui/` and its sha256, signed with an
-Ed25519 key that lives in the relay key file (a key for this process
-alone when no relay runs). It serves the signed manifest at
+integrity): every file under `webui/` and its sha256, and `headers.json`,
+the security headers of the app's page (its policy among them), signed
+with an Ed25519 key that lives in the relay key file (a key for this
+process alone when no relay runs). It serves the signed manifest at
 `<base>/manifest.sig.json` without auth and at `/api/bundle` (the route the
 relay reaches), and each file it names at `/api/app/<file>`, where a phone
 off the tailnet takes a new release; the app's service worker serves a
@@ -299,6 +300,13 @@ HTML_CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 's
             "form-action 'none'")
 # A stored file opened directly runs nothing.
 FILE_CSP = "sandbox; default-src 'none'"
+# The headers every answer carries; with the pages' policy, the app's page's
+# security headers, which the signed bundle names too (headers.json).
+COMMON_HEADERS = (("X-Content-Type-Options", "nosniff"),
+                  ("Referrer-Policy", "same-origin"),
+                  # No page of another origin (a deck on another port of the
+                  # host) may load an answer of this one.
+                  ("Cross-Origin-Resource-Policy", "same-origin"))
 # A relay's origin as the page's connect-src names it: a scheme and a host,
 # nothing a policy could read as another directive.
 _ORIGIN_RE = re.compile(r"^https?://(\[[0-9a-f:.]+\]|[a-z0-9.-]+)(:\d{1,5})?$")
@@ -2430,7 +2438,7 @@ class WebFrontend(ChatFrontend):
             log.warning("web chat: the app is not signed: the cryptography package is missing")
             return ""
         try:
-            new = web_bundle.Bundle(self.webui_dir, self._signing_key())
+            new = web_bundle.Bundle(self.webui_dir, self._signing_key(), self.page_headers())
         except Exception:
             log.exception("web chat: signing the app failed")
             return ""
@@ -2446,6 +2454,12 @@ class WebFrontend(ChatFrontend):
             log.warning("web chat: signed the app again, bundle %s; changed: %s", new.hash[:16],
                         ", ".join(web_bundle.diff(old.files, new.files)) or "built_at")
         return new.hash
+
+    def page_headers(self) -> dict[str, dict[str, str]]:
+        """The security headers the app's page is served with, which the
+        bot signs with the files (headers.json): a phone that keeps a
+        release it took through the relay keeps the release's policy too."""
+        return {"index.html": {"Content-Security-Policy": self.html_csp, **dict(COMMON_HEADERS)}}
 
     def _warn_unsigned(self, paths: list[str], why: str) -> None:
         key = (tuple(paths), why)
@@ -3596,11 +3610,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     # responses
 
     def _common_headers(self) -> None:
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "same-origin")
-        # No page of another origin (a deck on another port of the host)
-        # may load an answer of this one.
-        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        for k, v in COMMON_HEADERS:
+            self.send_header(k, v)
 
     def _send(self, status: int, body: bytes, ctype: str,
               headers: tuple[tuple[str, str], ...] = ()) -> None:
@@ -4254,6 +4265,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         root = self.fe.webui_dir
         if bundle is None or rel not in bundle.files:
             raise _HttpError(404, "not found")
+        if rel in bundle.written:
+            self._send(200, bundle.written[rel], STATIC_TYPES[".json"],
+                       (("Cache-Control", "no-store"), ("Content-Disposition", "attachment"),
+                        ("Content-Security-Policy", FILE_CSP)))
+            return
         target = root / rel
         try:
             if not (target.resolve().is_relative_to(root.resolve()) and target.is_file()):
@@ -4370,6 +4386,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def _static(self, rest: str) -> None:
         root = self.fe.webui_dir
         rel = urllib.parse.unquote(rest.lstrip("/")) or "index.html"
+        bundle = self.fe.bundle
+        if bundle is not None and rel in bundle.written:  # a file the bot writes (headers.json)
+            self._send(200, bundle.written[rel], STATIC_TYPES[".json"], (("Cache-Control", "no-cache"),))
+            return
         parts = rel.split("/")
         if any(p in ("", ".", "..") or p.startswith(".") or "\\" in p or "\x00" in p
                for p in parts):

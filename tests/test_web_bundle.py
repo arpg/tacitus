@@ -1,7 +1,8 @@
 """The web app's signed bundle (docs/webchat.md, Code integrity).
 
 The manifest's canonical form and bundle hash, the Ed25519 signature and
-what it refuses, the files a signing covers, the routes that serve the
+what it refuses, the files a signing covers, the page's security headers
+it carries (headers.json), the routes that serve the
 signed manifest and the files it names, the signing key in the relay key file, a phone's
 attestation recorded on its device (which grants nothing; the owner's
 `cards` flag does), and a file changed on disk found and signed again at
@@ -186,8 +187,9 @@ def test_the_bot_serves_its_signed_manifest(tmp_path):
         assert h["Cross-Origin-Resource-Policy"] == "same-origin"
         doc = json.loads(body)
         m = rc.verify_manifest(doc, expected_hash=f.bundle_hash())
-        assert m["files"] == {n: hashlib.sha256((tmp_path / "webui" / n).read_bytes()).hexdigest()
-                              for n in ("index.html", "app.js")}
+        assert m["files"] == {**{n: hashlib.sha256((tmp_path / "webui" / n).read_bytes()).hexdigest()
+                                 for n in ("index.html", "app.js")},
+                              "headers.json": hashlib.sha256(f.bundle.written["headers.json"]).hexdigest()}
         assert m["key"] == f.bundle.public
         assert _call(f, "GET", "/api/bundle")[0] == 401
         assert _call(f, "GET", "/api/bundle", headers=_owner(f))[2] == body
@@ -222,16 +224,17 @@ def test_the_bot_serves_each_signed_file_for_a_phone_off_the_tailnet(tmp_path):
     f.start()
     try:
         files = f.bundle.files
-        assert set(files) == {"index.html", "app.js", "icon.png"}
+        assert set(files) == {"index.html", "app.js", "icon.png", "headers.json"}
         for name, want in files.items():
             status, h, body = _call(f, "GET", f"/api/app/{name}", headers=_owner(f))
-            assert status == 200 and body == (root / name).read_bytes(), name
+            on_disk = f.bundle.written.get(name) or (root / name).read_bytes()
+            assert status == 200 and body == on_disk, name
             assert hashlib.sha256(body).hexdigest() == want
             assert h["Content-Security-Policy"] == "sandbox; default-src 'none'"
             assert h["Content-Disposition"] == "attachment" and h["Cache-Control"] == "no-store"
         types = {n: _call(f, "GET", f"/api/app/{n}", headers=_owner(f))[1]["Content-Type"] for n in files}
         assert types["icon.png"] == "image/png" and types["app.js"].startswith("text/javascript")
-        assert types["index.html"].startswith("text/html")
+        assert types["index.html"].startswith("text/html") and types["headers.json"] == "application/json"
         assert _call(f, "GET", "/api/app/app.js")[0] == 401
         for path in ("/api/app/.swap", "/api/app/missing.js", "/api/app/manifest.sig.json",
                      "/api/app/../secret.txt", "/api/app/..%2Fsecret.txt", "/api/app/%2e%2e/secret.txt",
@@ -250,6 +253,53 @@ def test_the_bot_serves_each_signed_file_for_a_phone_off_the_tailnet(tmp_path):
         assert _call(f, "GET", "/api/app/app.js", headers=_owner(f))[0] == 404
     finally:
         f.stop()
+
+
+def test_the_signing_carries_the_pages_security_headers(tmp_path, caplog):
+    """The bot signs the headers its page is served with (the policy, and
+    the headers every answer carries) as headers.json, a file the manifest
+    names by its sha256, so a phone that keeps a release it took through the
+    relay keeps the release's policy. The block is the page's own headers;
+    a relay in the config names it in the policy, which changes the bundle
+    hash; a file of that name on disk is left out, and the check of the disk
+    signs nothing again for it."""
+    f = _web(tmp_path)
+    (tmp_path / "webui" / "headers.json").write_text('{"index.html": {}}')
+    with caplog.at_level(logging.WARNING, logger="chat.web"):
+        f.start()
+    try:
+        assert "headers.json" in f.bundle.skipped
+        assert any("leaves out headers.json" in r.getMessage() for r in caplog.records)
+        status, h, page = _call(f, "GET", "/")
+        assert status == 200 and page == (tmp_path / "webui" / "index.html").read_bytes()
+        served = {k.lower(): v for k, v in h.items()
+                  if k.lower() in ("content-security-policy", "x-content-type-options",
+                                   "referrer-policy", "cross-origin-resource-policy")}
+        status, h, body = _call(f, "GET", "/headers.json")
+        assert status == 200 and h["Content-Type"] == "application/json"
+        assert json.loads(body) == {"index.html": served} and len(served) == 4
+        assert body == web_bundle.headers_file({"index.html": served})  # canonical bytes
+        m = rc.verify_manifest(json.loads(_call(f, "GET", "/manifest.sig.json")[2]), expected_hash=f.bundle_hash())
+        assert m["files"]["headers.json"] == hashlib.sha256(body).hexdigest()
+        assert _call(f, "GET", "/api/app/headers.json", headers=_owner(f))[2] == body
+        assert f.check_bundle() == [] and f.note_served("headers.json", body)
+        own = f.page_headers()
+    finally:
+        f.stop()
+    g = _web(tmp_path, relay={"url": "https://relay.example.test/relay", "wait": 1})
+    g.start()
+    try:
+        csp = json.loads(g.bundle.written["headers.json"])["index.html"]["content-security-policy"]
+        assert "connect-src 'self' https://relay.example.test/relay/" in csp and csp == g.html_csp
+        # Another policy is another bundle: the same files under the same key hash apart.
+        root = tmp_path / "webui"
+        assert web_bundle.Bundle(root, KEY_A, own).hash != web_bundle.Bundle(root, KEY_A, g.page_headers()).hash
+        # Without headers the signing names the files on disk alone.
+        assert "headers.json" in web_bundle.Bundle(root, KEY_A).files  # the file on disk, then
+        (root / "headers.json").unlink()
+        assert set(web_bundle.Bundle(root, KEY_A).files) == {"index.html", "app.js"}
+    finally:
+        g.stop()
 
 
 def test_a_changed_file_on_disk_is_signed_again_at_the_check(tmp_path, caplog):

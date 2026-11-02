@@ -16,7 +16,9 @@ with the real web front end. The app checks its code against the bot's
 signed manifest (bundle.js): the service worker serves the signed files
 and refuses a changed one, a copy of the app from the relay attests
 its check, while only the owner lets it press card buttons, and a phone
-off the tailnet takes a new release from the bot through the relay. Each
+off the tailnet, or on the relay's origin, takes a new release from the
+bot through the relay: the worker's code (bundle.js, which sw.js loads)
+and the page's security policy with it. Each
 thread card carries its state's sticker, Needs you gathers the threads
 that wait on the owner, the chips filter a channel, and the owner's
 override posts and follows the bot's `thread_state` events. The app
@@ -262,23 +264,34 @@ def test_the_service_worker_never_caches_the_api():
                       handler)
     assert relay and relay.start() < handler.index("respondWith"), "the relay's routes stay uncached"
     assert re.search(r"const RELAY_ROUTE = /\\/r\\/\[a-z2-7\]\{26\}\\//;", sw)
-    shell = re.search(r"const SHELL = \[(.*?)\];", sw).group(1)
+    worker = read("bundle.js")  # the worker's code, which sw.js runs with each request it lets through
+    shell = re.search(r"const SHELL = \[(.*?)\];", worker).group(1)
     assert "api" not in shell and "'qr.js'" in shell
-    assert "POST" not in sw and "req.method !== 'GET'" in handler
+    assert "POST" not in sw and "POST" not in worker and "req.method !== 'GET'" in handler
 
 
 def test_the_worker_checks_files_against_the_signed_manifest():
     """The worker loads the check the page uses, leaves the signed manifest
-    to the browser, and its refusal page runs no script."""
+    to the browser, and its refusal page runs no script. sw.js is a loader:
+    the worker's code is bundle.js, and the one text it runs as code is the
+    kept copy of bundle.js whose sha256 the trusted manifest names, read from
+    Cache Storage; it fetches nothing itself."""
     sw = read("sw.js")
     assert "importScripts('bundle.js');" in sw
     handler = _handler(sw, "fetch")
     assert "url.pathname.endsWith('/manifest.sig.json')) return;" in handler
     assert handler.index("manifest.sig.json") < handler.index("respondWith")
-    refusal = sw[sw.index("function refusal"):sw.index("async function adopt")]
-    assert "<script" not in refusal and "'Content-Security-Policy': \"default-src 'none'" in refusal
     bundle = read("bundle.js")
+    refusal = bundle[bundle.index("function refusal"):bundle.index("function keepAs")]
+    assert "<script" not in refusal and "'Content-Security-Policy': \"default-src 'none'" in refusal
     assert "{ name: 'Ed25519' }" in bundle and "Object.assign(self, { BundleError, verifyBundle" in bundle
+    code = re.sub(r"/\*.*?\*/|//[^\n]*", "", sw, flags=re.S)  # the loader without its comments
+    assert code.count("eval") == 1 and "(0, eval)(code);" in code and "Function(" not in code
+    kept = code[code.index("async function keptCode"):code.index("const worker =")]
+    assert "trusted.files['bundle.js']" in kept and "crypto.subtle.digest('SHA-256', bytes)" in kept
+    assert "=== want ? new TextDecoder().decode(bytes) : null" in kept
+    assert "fetch(" not in code and "eval" not in re.sub(r"/\*.*?\*/|//[^\n]*", "", bundle, flags=re.S)
+    assert "TacitusWorker: { v: 1, start" in bundle and "const API = 1;" in code
 
 
 def test_the_drawer_has_the_notifications_toggle():
@@ -308,19 +321,29 @@ def _handler(sw: str, event: str) -> str:
     return sw[start:nxt if nxt > 0 else len(sw)]
 
 
+def _function(src: str, name: str) -> str:
+    """The source of one function of the worker's code, up to the next blank line."""
+    start = src.index(f"function {name}(")
+    return src[start:src.index("\n\n", start)]
+
+
 def test_the_service_worker_shows_pushes_and_opens_only_this_app():
     sw = read("sw.js")
-    push = _handler(sw, "push")
-    assert "event.waitUntil(self.registration.showNotification(" in push
-    for key in ("body:", "icon:", "tag:", "data: { url:"):
+    assert "addEventListener('push', (event) => run(event, 'push'))" in sw
+    assert "addEventListener('notificationclick', (event) => run(event, 'click'))" in sw
+    assert "event.waitUntil(worker.then((w) => w[name](event)))" in sw
+    worker = read("bundle.js")
+    push = _function(worker, "push")
+    assert "return self.registration.showNotification(" in push
+    for key in ("body:", "icon:", "tag,", "renotify: Boolean(tag)", "data: { url:"):
         assert key in push, key
-    click = _handler(sw, "notificationclick")
+    click = _function(worker, "click")
     assert "event.notification.close()" in click
     assert "clients.matchAll" in click and "openWindow(url)" in click and ".focus()" in click
     assert "appUrl(event.notification.data" in click
     # a window navigate() cannot move routes itself from a message (app.js)
     assert ".catch(() => win.postMessage({ open: url }))" in click
-    app_url = sw[sw.index("function appUrl"):sw.index("self.addEventListener('notificationclick'")]
+    app_url = _function(worker, "appUrl")
     assert "url.origin === scope.origin" in app_url and "startsWith(scope.pathname)" in app_url
     # a push never reads or writes the cache, and the fetch handler is unchanged
     assert "caches" not in push and "caches" not in click and "caches" not in app_url
@@ -361,7 +384,9 @@ def test_the_app_stays_small():
     # 3,770: 3,700 plus the clear no browser counts as silent (the worker's choice per push service, and the
     # page's own clear of the thread in view).
     # 3,780: 3,770 plus the Phones list stacked at phone width (name, the box, the buttons).
-    assert lines <= 3780, f"{lines} lines: the contract keeps the app near 3,780 with the relay, the phone setup, the thread states and the teaching"
+    # 3,870: 3,780 plus each release from the bot on the relay's origin too, the worker's loader (sw.js runs the
+    # bundle.js it kept and checked) and the release's own security headers on each kept copy.
+    assert lines <= 3870, f"{lines} lines: the contract keeps the app near 3,870 with the relay, the phone setup, the thread states and the teaching"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -1187,9 +1212,11 @@ class _Shown(HTMLParser):
 
 # Literals the person never sees: a media query, a header, the relay
 # protocol's key label (relay_crypto.py), a connection note for the bot
-# (/api/diag; the worker's own answer, which a test pins), a file's name.
+# (/api/diag; the worker's own answer, which a test pins), a file's name,
+# and the check's errors (bundle.js), which go to the bot alone.
 NOT_SHOWN = {"(display-mode: standalone)", "X-Relay-Key", "${} session", "${} does not match the manifest",
-             "webchat-pair.token"}
+             "webchat-pair.token", "not a manifest", "not a signed manifest", "not the bundle the pairing named",
+             "${} is not a headers block"}
 # One word with no space that starts in lower case: an id, a class, a key, a route, an event name.
 CODE_LIKE = re.compile(r"^[^\sA-Z]\S*$")
 
@@ -1199,11 +1226,12 @@ def test_every_string_the_person_sees_is_plain():
     the page and the manifest's words pass the gym coach on a phone: none of
     the words JARGON names, save the literals that are code and NOT_SHOWN."""
     said = []
-    for name in ("app.js", "sw.js"):
+    for name in ("app.js", "sw.js", "bundle.js"):
         strings = _js_strings(read(name))
         # The reader keeps its place: the file's first, middle and last words are found.
         for sentinel in {"app.js": ("Hidden text", "Mark all done", "${}${}/#/"),
-                         "sw.js": ("bundle.js", "notificationclick", "message")}[name]:
+                         "sw.js": ("bundle.js", "notificationclick", "message"),
+                         "bundle.js": ("not base64url", "Handled.", "${} is not a headers block")}[name]:
             assert sentinel in strings, (name, sentinel)
         said += [s for s in strings if not CODE_LIKE.match(s) and s not in NOT_SHOWN]
     page = _Shown()
@@ -2101,6 +2129,45 @@ def _kept(page, name):
     }""", name)
 
 
+KEEP_HEADERS = ["content-security-policy", "x-content-type-options", "referrer-policy", "cross-origin-resource-policy"]
+
+
+def _kept_headers(page, name):
+    """The security headers of the service worker's copy of one file."""
+    return page.evaluate("""async ([name, keep]) => {
+        const hit = await (await caches.open('tacitus-webchat-v3')).match(name === 'index.html' ? './' : name);
+        return hit ? Object.fromEntries(keep.filter((k) => hit.headers.has(k)).map((k) => [k, hit.headers.get(k)])) : null;
+    }""", [name, KEEP_HEADERS])
+
+
+def _restart_worker(page):
+    """Stops the app's service worker, as the browser does after a quiet
+    spell: the next request starts it again from sw.js."""
+    cdp = page.context.new_cdp_session(page)
+    cdp.send("ServiceWorker.enable")
+    cdp.send("ServiceWorker.stopAllWorkers")
+    cdp.detach()
+
+
+# A test's next release of the worker's code (bundle.js): each answer it serves says so.
+NEXT_WORKER = b"""
+(() => {
+  const w = self.TacitusWorker;
+  const start = w.start;
+  w.start = (names) => {
+    const run = start(names);
+    const serve = run.serve;
+    return Object.assign(run, { serve: (req) => serve(req).then((res) => {
+      if (!res.status) return res;
+      const headers = new Headers(res.headers);
+      headers.set('x-tacitus-release', 'next');
+      return new Response(res.body, { status: res.status, headers });
+    }) });
+  };
+})();
+"""
+
+
 def test_a_phone_off_the_tailnet_takes_a_new_release_through_the_relay(browser, relay_bot_deploys, caplog):
     """A phone paired on the tailnet runs the copy its service worker
     checked there. Off the tailnet, the bot deploys a new app.css and signs
@@ -2161,6 +2228,30 @@ def test_a_phone_off_the_tailnet_takes_a_new_release_through_the_relay(browser, 
         expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
         assert page.evaluate("fetch('app.css').then((r) => r.text())") == new.decode()
         expect(page.locator("#update-note")).to_be_hidden()
+
+        # A release that changes only the page's policy: the bot signs it (headers.json),
+        # and the worker's copy of the page takes it, through the relay.
+        policy = fe.html_csp + "; manifest-src 'self'"
+        assert _kept_headers(page, "index.html")["content-security-policy"] == fe.html_csp
+        fe.html_csp = policy
+        fe.refresh_bundle()
+        page.reload()
+        expect(page.locator("#toast")).to_have_text(line, timeout=20000)
+        assert _kept_headers(page, "index.html") == {k.lower(): v for k, v in fe.page_headers()["index.html"].items()}
+        assert _worker_state(page, "trusted")["headers"] == json.loads(fe.bundle.written["headers.json"])
+        assert page.reload().headers["content-security-policy"] == policy  # the next start runs under it
+        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+        # A bot that signs no headers (an earlier release): a page it brings keeps the kept copy's.
+        fe.page_headers = lambda: None
+        html = (webui / "index.html").read_bytes() + b"<!-- the next release -->\n"
+        (webui / "index.html").write_bytes(html)
+        fe.refresh_bundle()
+        assert "headers.json" not in fe.bundle.files
+        page.reload()
+        expect(page.locator("#toast")).to_have_text(line, timeout=20000)
+        assert _kept(page, "index.html") == html.decode()
+        assert _kept_headers(page, "index.html")["content-security-policy"] == policy
+        assert _worker_state(page, "trusted")["headers"] is None
         assert not errors, errors
     finally:
         for c in contexts:
@@ -2262,6 +2353,73 @@ def test_a_relay_origin_phone_refuses_a_copy_the_bot_did_not_sign(browser, relay
         (row,) = fe.relay.devices()
         assert row["bundle_verified"] is False and row["cards_allowed"] is False
         assert "attested_bundle" not in fe.relay.store.device_by_id(device)
+    finally:
+        for c in contexts:
+            c.close()
+
+
+def test_a_relay_origin_phone_takes_a_new_release_from_the_bot_through_the_relay(browser, relay_bot_deploys):
+    """A relay-origin phone runs the relay's copy of the app, checked and
+    attested; its copy of the page carries the bot's signed policy. The bot
+    deploys a release that the relay does not serve: a new bundle.js (the
+    worker's code; sw.js unchanged) and app.css. At its next start the
+    phone takes the changed files from the bot through the relay, checks
+    each, keeps them, says so, and attests the new bundle. The relay's copy,
+    a release behind, neither stops the phone nor moves it back. The worker
+    runs the new bundle.js from its next start, the copy it kept, never the
+    relay's; a kept copy that does not hash to the manifest does not run."""
+    from playwright.sync_api import expect
+    bot = relay_bot_deploys
+    fe, webui, rbase = bot["fe"], bot["webui"], bot["rbase"]
+    line = "Tacitus updated. Close the app and open it again."
+    release = "fetch('app.css').then((r) => r.headers.get('x-tacitus-release'))"
+    contexts = []
+    try:
+        page, errors, device = _relay_origin_phone(browser, bot, contexts)
+        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=20000)
+        first = fe.bundle_hash()
+        wait_for(lambda: fe.relay.store.device_by_id(device).get("attested_bundle") == first, 15)
+        assert _worker_state(page, "trusted")["hash"] == first
+        assert _kept_headers(page, "index.html")["content-security-policy"] == fe.html_csp  # not the relay's
+        sw = fe.bundle.files["sw.js"]
+
+        (webui / "bundle.js").write_bytes((webui / "bundle.js").read_bytes() + NEXT_WORKER)
+        css = (webui / "app.css").read_bytes() + b"\n/* the next release */\n"
+        (webui / "app.css").write_bytes(css)
+        assert fe.refresh_bundle() != first and fe.bundle.files["sw.js"] == sw
+        page.reload()
+        expect(page.locator("#toast")).to_have_text(line, timeout=20000)
+        new = fe.bundle_hash()
+        wait_for(lambda: fe.relay.store.device_by_id(device).get("attested_bundle") == new, 15)
+        assert fe.relay.devices()[0]["bundle_verified"] is True
+        assert _worker_state(page, "trusted") | {"files": None, "headers": None} == {
+            "hash": new, "key": fe.bundle.public, "files": None, "headers": None, "pin": True}
+        assert _kept(page, "app.css") == css.decode()
+        assert _kept(page, "bundle.js") == (webui / "bundle.js").read_text()
+
+        # The relay still serves its own release; the phone runs the bot's, from its copy.
+        import urllib.request
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(f"{rbase}/bundle.js", timeout=5) as r:
+            assert r.read() == (WEBUI / "bundle.js").read_bytes()
+        page.reload()
+        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+        expect(page.locator("#update-note")).to_be_hidden()
+        assert page.evaluate("fetch('app.css').then((r) => r.text())") == css.decode()
+        assert _worker_state(page, "trusted")["hash"] == new
+        assert fe.relay.devices()[0]["bundle_verified"] is True
+        # The worker runs the bundle.js it kept from its next start.
+        _restart_worker(page)
+        assert page.evaluate(release) == "next"
+        # A kept copy that does not hash to the manifest never runs: the loader
+        # takes the copy that came with sw.js (the relay's, a release behind).
+        page.evaluate("""async () => {
+            const c = await caches.open('tacitus-webchat-v3');
+            const hit = await c.match('bundle.js');
+            await c.put('bundle.js', new Response((await hit.text()) + '\\n// changed\\n', { headers: hit.headers }));
+        }""")
+        _restart_worker(page)
+        assert page.evaluate(release) is None
+        assert not errors, errors
     finally:
         for c in contexts:
             c.close()

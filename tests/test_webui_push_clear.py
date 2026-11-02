@@ -23,14 +23,17 @@ sys.path.insert(0, str(TESTS))
 
 from test_webui import WEBUI, app, browser, stub_factory  # noqa: E402,F401  (the fixtures)
 
-# sw.js in a node `vm` context, once per scenario: a `self` whose registration
+# sw.js, which imports the worker's code (bundle.js), in a node `vm` context
+# with no Cache Storage (so it runs that imported copy), once per scenario: a `self` whose registration
 # holds the notifications open (`held`, by tag) and records what the worker
 # shows and closes, whose subscription is on `endpoint`, whose windows have the
 # visibility states in `windows`, and whose timers wait for `runTimers`.
 SW_HARNESS = r"""
 const vm = require('vm');
 const fs = require('fs');
+const path = require('path');
 const src = fs.readFileSync(process.argv[2], 'utf8');
+const imported = (name) => fs.readFileSync(path.join(path.dirname(process.argv[2]), name), 'utf8');
 function load({ endpoint = '', held = [], windows = [], noSubscription = false } = {}) {
   const out = { shown: [], closed: [], posted: [], timers: [] };
   let open = [];
@@ -58,8 +61,8 @@ function load({ endpoint = '', held = [], windows = [], noSubscription = false }
     clients: { matchAll: () => Promise.resolve(windows.map((v) => ({ visibilityState: v,
       postMessage: (m) => out.posted.push(m) }))) },
   };
-  const ctx = vm.createContext({ self, importScripts: () => {}, URL, console,
-    setTimeout: (fn, ms) => out.timers.push([fn, ms]) });
+  const ctx = vm.createContext({ self, URL, console, setTimeout: (fn, ms) => out.timers.push([fn, ms]),
+    importScripts: (...names) => names.forEach((n) => vm.runInContext(imported(n), ctx)) });
   vm.runInContext(src, ctx);
   const fire = (data) => {
     const waits = [];
@@ -79,7 +82,7 @@ const CLEAR = { type: 'clear', tag: 'main/t1', title: 'Tacitus replied' };
 const snap = (o) => JSON.parse(JSON.stringify(o)); // a copy the later steps leave as it is
 (async () => {
   const got = {};
-  const { ctx } = load();
+  const ctx = load().ctx.self.TacitusWorker;
   got.plan = {};
   for (const service of ['apple', 'mozilla', 'chromium', '']) {
     for (const left of [0, 1]) {

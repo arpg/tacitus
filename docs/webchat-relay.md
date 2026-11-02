@@ -15,7 +15,7 @@ This is part D of the Tacitus web chat: A is the web front end
 | `botcore/botcore/chat/relay_crypto.py` | The protocol with no I/O: pairing, handshake, sealed frames |
 | `botcore/botcore/chat/webui/app.js` | The app's relay transport: the same protocol in WebCrypto, the pairing, "Pair a phone" |
 | `botcore/botcore/chat/webui/qr.js` | The QR encoder for the pairing link (byte mode, level M, versions 1 to 40) |
-| `botcore/botcore/chat/webui/bundle.js`, `sw.js` | The check of the app's code against the bot's signed manifest (docs/webchat.md, Code integrity) |
+| `botcore/botcore/chat/webui/bundle.js`, `sw.js` | The check of the app's code against the bot's signed manifest, and the service worker: `sw.js` is its loader, `bundle.js` its code (docs/webchat.md, Code integrity) |
 | `botcore/botcore/chat/web_bundle.py` | The bot's side of that check: the manifest of `webui/`, signed at start |
 | `botcore/botcore/chat/relay_qr.py` | The same encoder in Python, for the CLI's QR code on a terminal |
 | `scripts/webchat-relay.py` | The owner CLI: `init`, `show`, `pair`, `approve`, `revoke`, `rotate` |
@@ -82,9 +82,10 @@ release reaches it off the tailnet from the bot: the page fetches the
 signed manifest (`/api/bundle`) and each changed file (`/api/app/<file>`)
 in sealed frames, as it fetches messages, and the page and its service
 worker check each file against the bot's signature before the worker
-keeps it (docs/webchat.md, Code integrity). A compromised relay sees
-ciphertext and nothing else: it can hold an update back, but not change
-one.
+keeps it (docs/webchat.md, Code integrity). The worker's own code
+(`bundle.js`) and the page's security policy (`headers.json`, which the
+bot signs) come the same way. A compromised relay sees ciphertext and
+nothing else: it can hold an update back, but not change one.
 
 **Relay origin ("Pair through the relay").** For a phone that never
 joins the tailnet, and for an install with no Tailscale at all, a relay
@@ -106,11 +107,17 @@ when it has no `verifyBundle`. Once the device is approved, at every
 start and before the chat runs, the page fetches the bot's signed
 manifest through the sealed channel, checks it against the bundle hash
 from the QR code (then against the key that signed it), and its service
-worker checks each file of the copy against it. When each file matches,
-the phone posts the bundle hash to `/api/relay/attest`, and the bot
-records `bundle_verified` and its release for the device. A mismatch
-shows "Tacitus stopped" with the file that differs, and the phone attests
-nothing.
+worker checks each file of the copy against it. A file the copy lacks
+comes from the bot, sealed. When each file matches, the phone posts the
+bundle hash to `/api/relay/attest`, and the bot records `bundle_verified`
+and its release for the device. A mismatch at this first check shows
+"Tacitus stopped" with the file that differs, and the phone attests
+nothing. After it, the phone takes each new release from the bot through
+the sealed channel, as an own-origin phone does off the tailnet, and
+attests the new hash. From the relay it keeps only a file that is the
+signed one, so the relay's copy may be a release behind or ahead. Only
+`sw.js`, the worker's loader, still comes from the relay (What the check
+buys).
 
 **What such a device may do.** Once approved, it reads and chats
 (`"chat"`: everything but the card actions), whether or not it attested.
@@ -122,13 +129,15 @@ it under "Pair a phone" (off by default; Approve sends it, and on an
 approved phone it approves again), or `webchat-relay.py approve --device
 <id> --cards`. A device that waits for approval gets nothing.
 
-**What the check buys.** It stops a copy of the app that is not the
-bot's: a copy from another release (the relay and the bot out of step,
-Running the relay), a changed file, a stale copy. It does not stop a
+**What the check buys.** At pairing it stops a copy of the app that is
+not the bot's: a copy from another release (the relay and the bot out of
+step, Running the relay), a changed file, a stale copy. After that the
+phone runs the bot's releases, sealed. It does not stop a
 relay that serves changed code on purpose from the first load: that code
 can skip the check and post the bundle hash anyway (the attestation is a
 claim that the phone's code makes, and the hash is public), and the
-browser installs a new service worker whenever the relay sends one. So a
+browser installs a new service worker whenever the relay sends one: the
+loader (`sw.js`) chooses which code the worker runs. So a
 verified relay-origin device still runs code that a dishonest relay can
 choose: that code reads what the phone shows and chats as the owner, and
 the check alone never lets it press a card button. The six-digit code
@@ -548,8 +557,9 @@ It **cannot**:
 - make a phone open a stored file as a page: through the relay a file is
   a raster image or plain bytes to download;
 - make a phone that holds a checked copy of the app run a file that the
-  bot did not sign: its service worker refuses the file and stops the
-  app (docs/webchat.md, Code integrity), until the relay sends a new
+  bot did not sign: its service worker serves the copy it checked in its
+  place, or stops the app when it holds none, and it takes new releases
+  only from the bot, sealed (docs/webchat.md, Code integrity), until the relay sends a new
   service worker (below);
 - learn which installs are online from the outside: `/healthz` gives its
   counts only on the relay host;
@@ -583,9 +593,10 @@ It **can**:
   new service worker, which the browser installs: code that skips the
   check against the bundle hash and posts the attestation anyway reads
   everything that phone shows and chats as the owner, and presses card
-  buttons on a device the owner allowed them. A copy of another release,
-  or one changed where the honest check looks, stops instead (Where the
-  app's code comes from). A phone paired through the own origin is out
+  buttons on a device the owner allowed them. At pairing, a copy of
+  another release, or one changed where the honest check looks, stops
+  instead; after it, an honest worker serves only the bot's releases
+  (Where the app's code comes from). A phone paired through the own origin is out
   of its reach, as long as nothing else is served on the relay's origin
   with it (the hosting rule under Running the relay).
 
@@ -820,8 +831,9 @@ adds nothing.
   chat only after its check of its code (docs/webchat.md, Code
   integrity): the manifest through `/api/bundle`, the check against the
   pairing record's `bundle` (the QR code's hash, first time) and
-  `signKey` (after), the service worker's check of each file, then
-  `POST /api/relay/attest` (Pairing, step 6). Without the hash, or with a
+  `signKey` (after), the service worker's check of each file, each file
+  it lacks (a new release, after the first check) from the bot through
+  `GET /api/app/<file>`, then `POST /api/relay/attest` (Pairing, step 6). Without the hash, or with a
   check that cannot run or does not match, it stops on a full-page notice
   ("Tacitus stopped") and opens no stream. The card buttons stay greyed
   out until the owner allows them for the device. The bot's own copy
@@ -832,8 +844,8 @@ adds nothing.
   checked against the manifest by the page and again by the worker. Then
   it shows "Tacitus updated. Close the app and open it again." It
   attests nothing, and a mismatch keeps nothing and goes to `/api/diag`
-  (docs/webchat.md, Code integrity). The relay's copy does not do this:
-  its code comes from the relay.
+  (docs/webchat.md, Code integrity). The relay's copy takes a new release
+  the same way, at every start before the chat, and attests the new hash.
 
 ## The paid tier and what stays AGPL
 
@@ -873,17 +885,20 @@ with the tailnet's ACL: the relay only ever needs the bot to dial out.
 
 **The release rule.** A relay that serves the app (`--with-app`) serves
 the release that its installs run: the copy it serves is the pinned
-commit's `webui/`, and a relay-origin phone takes it only when it matches
-its own bot's signed manifest (docs/webchat.md, Code integrity). The
-relay serves no manifest: the phone gets it from the bot, through the
-sealed channel. The auto-update channel keeps the relay host and the bot
+commit's `webui/`, and a relay-origin phone takes it, at pairing, only
+when it matches its own bot's signed manifest (docs/webchat.md, Code
+integrity). The relay serves no manifest: the phone gets it from the bot,
+through the sealed channel. After pairing the phone takes each new
+release from its bot through the sealed channel, so a relay and a bot out
+of step (one updated and the other not yet, or a relay with installs on
+several releases) stop no paired phone. Pairing needs them on one
+release: a new phone refuses a relay's copy of another release on
+"Tacitus stopped" with the file that differs, and opens once both run the
+same release. The auto-update channel keeps the relay host and the bot
 on one release (docs/updates.md: the bot's updater and the relay's
-`tacitus-relay-update.timer` follow the same channel). When they drift,
-one updated and the other not yet, the phone refuses the relay's copy on
-"Tacitus stopped" with the file that differs; it opens again once both
-run the same release. A relay with installs on several releases cannot
-serve them all one copy; until it serves one copy per release,
-relay-origin phones work only for the installs on its release.
+`tacitus-relay-update.timer` follow the same channel). The relay serves
+`sw.js` with a policy of its own (`WORKER_CSP`) that lets the worker's
+loader run the code it kept.
 
 **The healthz rule.** `/healthz` gives its counts (online installs,
 streams, queued bytes) only to a request from the relay host itself
@@ -1040,5 +1055,4 @@ command as the owner. Tailscale is optional: these steps need none.
   with `--tag`.
 - A check of the app's code outside the page (a browser extension, in
   the Code Verify pattern), so a relay that serves changed code on
-  purpose cannot pass the check; and a relay that serves one copy of the
-  app per release.
+  purpose cannot pass the check.

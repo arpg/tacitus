@@ -758,6 +758,7 @@ def loop(tmp_path_factory):
     d = tmp_path_factory.mktemp("relay-loop")
     (d / "webui").mkdir()
     (d / "webui" / "index.html").write_text("<!doctype html><title>chat</title>")
+    (d / "webui" / "sw.js").write_text("'use strict';")
     (d / "secret.txt").write_text("outside the static folder")
     (d / "pair.token").write_text(PAIR_TOKEN + "\n")
     FakeAPI.seen = []
@@ -939,7 +940,12 @@ def test_static_ui_and_traversal(loop):
     with NO_PROXY.open(base + "/", timeout=5) as r:
         assert b"<title>chat</title>" in r.read()
         assert "default-src 'self'" in r.headers["Content-Security-Policy"]
+        assert "unsafe-eval" not in r.headers["Content-Security-Policy"]
         assert r.headers["X-Content-Type-Options"] == "nosniff"
+    # The worker's loader runs its checked copy of the worker's code as text: there alone.
+    with NO_PROXY.open(base + "/sw.js", timeout=5) as r:
+        assert r.headers["Content-Security-Policy"] == rs.WORKER_CSP
+        assert "script-src 'self' 'unsafe-eval';" in rs.WORKER_CSP and "default-src 'self'" in rs.WORKER_CSP
     for path in ("/../secret.txt", "/%2e%2e/secret.txt", "/..%2fsecret.txt", "/missing.js"):
         with pytest.raises(urllib.error.HTTPError) as e:
             NO_PROXY.open(base + path, timeout=5)
