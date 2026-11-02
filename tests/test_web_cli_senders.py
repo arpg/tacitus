@@ -244,8 +244,11 @@ def test_an_owner_notify_post_is_mirrored_under_the_zulip_ids(notify_env, monkey
     _owner(monkeypatch)
     priv = _private_chat(notify_env, monkeypatch, ZULIP_BLOCK)
     text = "*Morning* briefing" + chat_notify.SPLIT_MARKER + "second part"
-    assert chat_notify.post("ea-assistant", text, _bypass_quiet=True)
-    assert chat_notify.post("lab", "a pinned note", _bypass_quiet=True)
+    # each post answers with the web chat's thread, as the web chat alone does
+    assert chat_notify.post("ea-assistant", text, _bypass_quiet=True) == \
+        thread_key_for(10, "Morning briefing")
+    assert chat_notify.post("lab", "a pinned note", _bypass_quiet=True) == \
+        thread_key_for(12, "pinned")
     store = WebStore(priv / "webchat.sqlite")
     main = store.channel("stream:10")
     assert (main["name"], main["kind"]) == ("ea", "main")
@@ -291,7 +294,7 @@ def test_a_notify_post_that_is_not_the_owners_is_not_mirrored(notify_env, monkey
     cfg.write_text(json.dumps({"chat": {**ZULIP_BLOCK, "web": {
         "store_path": str(notify_env / "w.sqlite")}}}))
     monkeypatch.setattr(ea_config, "CONFIG_FILE", cfg)
-    assert chat_notify.post("ea-assistant", "x", _bypass_quiet=True)
+    assert chat_notify.post("ea-assistant", "x", _bypass_quiet=True) is True   # no copy, no key
     assert chat_notify._WEB == [None] and not (notify_env / "w.sqlite").exists()
 
 

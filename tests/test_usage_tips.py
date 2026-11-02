@@ -89,7 +89,7 @@ def record_post(calls: list):
     return send
 
 
-def no_push(_text):
+def no_push(_text, _thread=""):
     return {"web": "off"}
 
 
@@ -296,10 +296,11 @@ def test_post_posts_one_tip_and_opens_it(ea):
     first_week_done(ea)
     calls, pushes = [], []
     res = ut.post(ea_dir=ea, now=at("2026-11-09"), usage=usage(ea), facts=CLEAR,
-                  notify=record_post(calls), push=lambda t: pushes.append(t) or {"sent": 1})
+                  notify=record_post(calls),
+                  push=lambda t, k: pushes.append((t, k)) or {"sent": 1})
     assert res["posted"] and res["tip"] == "reply-draft"
     assert calls == [ut.post_text(ut.BY_ID["reply-draft"])]
-    assert pushes == [ut.BY_ID["reply-draft"].pitch]
+    assert pushes == [(ut.BY_ID["reply-draft"].pitch, "")]     # no thread key: the app opens
     state = ut.load_state(ea)
     assert state["open"] == "reply-draft" and "reply-draft" in state["shown"]
     again = ut.post(ea_dir=ea, now=at("2026-11-10"), usage=usage(ea), facts=CLEAR,
@@ -307,7 +308,7 @@ def test_post_posts_one_tip_and_opens_it(ea):
     assert not again["posted"] and "one tip a week" in again["why"] and len(calls) == 1
 
 
-def test_a_new_tip_closes_the_one_left_unanswered(ea):
+def test_a_new_tip_puts_aside_the_one_left_unanswered(ea):
     first_week_done(ea)
     calls = []
     ut.post(ea_dir=ea, now=at("2026-11-09"), usage=usage(ea), facts=CLEAR,
@@ -317,7 +318,11 @@ def test_a_new_tip_closes_the_one_left_unanswered(ea):
     assert res["tip"] == "tomorrow"
     state = ut.load_state(ea)
     assert state["open"] == "tomorrow"
-    assert state["dismissed"]["reply-draft"]["why"] == "no answer"
+    # no answer in 7 days: offered once more 14 days after those 7
+    assert "reply-draft" not in state["dismissed"]
+    assert state["no_answer"]["reply-draft"]["until"] == at("2026-11-30").isoformat()
+    assert ut.tip_status(ut.BY_ID["reply-draft"], state, usage(ea), at("2026-11-16")) == \
+        f"no answer: offered again from {at('2026-11-30').isoformat()}"
     opened = [t for t in ut.CATALOGUE if ut.tip_status(t, state, usage(ea), at("2026-11-16")) == "open"]
     assert [t.id for t in opened] == ["tomorrow"]
 
@@ -541,3 +546,105 @@ def test_the_web_push_goes_at_normal_urgency(monkeypatch):
     assert ut._web_push("I can write a reply to an email for you.") == {"sent": 1}
     assert seen == {"text": "I can write a reply to an email for you.", "tag": ut.PUSH_TAG,
                     "urgency": "normal"}
+
+
+# ── a tip with no answer, and the push that opens the tip ─────────────
+
+def _week(ea, day, **kw):
+    return ut.post(ea_dir=ea, now=at(day), usage=usage(ea), facts=CLEAR,
+                   notify=record_post([]), push=no_push, **kw)
+
+
+def test_a_tip_with_no_answer_is_offered_once_more_then_put_away(ea):
+    first_week_done(ea)
+    assert _week(ea, "2026-11-09")["tip"] == "reply-draft"
+    assert _week(ea, "2026-11-16")["tip"] == "tomorrow"      # reply-draft waits two weeks
+    assert _week(ea, "2026-11-23")["tip"] == "snooze"
+    again = _week(ea, "2026-11-30")                         # 7 days, then 14 more
+    assert again["tip"] == "reply-draft"
+    state = ut.load_state(ea)
+    assert state["offers"]["reply-draft"] == 2 and state["open"] == "reply-draft"
+    # no answer to the second offer: put away for good
+    assert _week(ea, "2026-12-07")["tip"] == "tomorrow"
+    state = ut.load_state(ea)
+    assert state["dismissed"]["reply-draft"]["why"] == "no answer twice"
+    assert ut.tip_status(ut.BY_ID["reply-draft"], state, usage(ea), at("2027-03-01")).startswith(
+        "done")
+    seen = []
+    for day in ("2026-12-14", "2026-12-21", "2026-12-28", "2027-01-04", "2027-01-11",
+                "2027-01-18", "2027-01-25", "2027-02-01", "2027-02-08"):
+        got = _week(ea, day)
+        seen.append(got.get("tip"))
+    assert "reply-draft" not in seen
+    state = ut.load_state(ea)
+    assert max(state["offers"].values()) == ut.OFFER_LIMIT == 2
+
+
+def test_the_answer_window_closes_with_no_new_tip_to_post(ea):
+    """With no other tip left, the open one is still put aside after its
+    7 days, and comes back once 14 days later."""
+    first_week_done(ea)
+    for tip in ut.CATALOGUE[1:]:
+        ut._update_state(lambda s, t=tip.id: s["dismissed"].__setitem__(t, {"why": "test"}), ea)
+    assert _week(ea, "2026-11-09")["tip"] == "reply-draft"
+    # the status reads the window as closed before anything is written
+    st = ut.status(ea_dir=ea, now=at("2026-11-16"), usage=usage(ea))
+    assert st["open"] == "" and ut.load_state(ea)["open"] == "reply-draft"
+    res = _week(ea, "2026-11-16")
+    assert not res["posted"] and res["why"] == "no tip left to suggest"
+    state = ut.load_state(ea)
+    assert state["open"] == "" and "reply-draft" in state["no_answer"]
+    assert not _week(ea, "2026-11-23")["posted"]
+    assert _week(ea, "2026-11-30")["tip"] == "reply-draft"
+    res = _week(ea, "2026-12-07")
+    assert not res["posted"]
+    assert ut.load_state(ea)["dismissed"]["reply-draft"]["why"] == "no answer twice"
+
+
+def test_not_now_on_the_second_offer_puts_the_tip_away(ea):
+    first_week_done(ea)
+    _week(ea, "2026-11-09")
+    _week(ea, "2026-11-16")
+    _week(ea, "2026-11-23")
+    assert _week(ea, "2026-11-30")["tip"] == "reply-draft"
+    ut.handle_reply("reply-draft", "not now", ea_dir=ea, now=at("2026-11-30", "09:00"),
+                    usage=usage(ea))
+    state = ut.load_state(ea)
+    assert state["dismissed"]["reply-draft"]["why"] == "offered twice"
+
+
+def test_a_state_from_before_the_offer_count_counts_a_shown_tip_once(ea):
+    state = ut._empty_state()
+    state["shown"]["snooze"] = at("2026-11-09").isoformat()
+    assert ut.offers(state, "snooze") == 1 and ut.offers(state, "poll") == 0
+    state["open"] = "snooze"
+    assert not ut.settle(state, at("2026-11-16", "08:29"))
+    assert ut.settle(state, at("2026-11-16", "08:30"))
+    assert state["open"] == "" and state["no_answer"]["snooze"]["until"] == \
+        at("2026-11-30").isoformat()
+
+
+def test_the_tip_s_push_opens_its_thread(ea, monkeypatch):
+    first_week_done(ea)
+    pushes = []
+    res = ut.post(ea_dir=ea, now=at("2026-11-09"), usage=usage(ea), facts=CLEAR,
+                  notify=lambda text: "t41",
+                  push=lambda t, k: pushes.append((t, k)) or {"sent": 1})
+    assert res["thread"] == "t41" and pushes == [(ut.BY_ID["reply-draft"].pitch, "t41")]
+    import chat.direct as direct
+    seen = {}
+
+    def fake(text, **kw):
+        seen.update(kw, text=text)
+        return {"sent": 1}
+    monkeypatch.setattr(direct, "web_notify", fake)
+    monkeypatch.setattr(direct, "web_thread_url",
+                        lambda key, **kw: f"https://h.example.test/chat/#/main/{key}")
+    assert ut._web_push("I can write a reply to an email for you.", "t41") == {"sent": 1}
+    assert seen == {"text": "I can write a reply to an email for you.", "tag": ut.PUSH_TAG,
+                    "urgency": "normal", "url": "https://h.example.test/chat/#/main/t41"}
+    # a thread the web chat does not hold: the app opens
+    monkeypatch.setattr(direct, "web_thread_url", lambda key, **kw: "")
+    seen.clear()
+    ut._web_push("I can write a reply to an email for you.", "t99")
+    assert "url" not in seen

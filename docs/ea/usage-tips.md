@@ -31,15 +31,23 @@ hold: 7 days have passed since the first briefing (the onboarding
 questions come first); 7 days have passed since the last tip; it is a
 weekday between 07:00 and 12:00 local; that day's briefing has posted;
 the briefing carried no onboarding question that day; it is not quiet
-hours. A new tip closes the one before it, so one tip is open at a
-time. The post goes through `chat_notify` to the EA channel, its own
-thread, with a push to the web chat's phones at normal urgency.
+hours. One tip is open at a time. The post goes through `chat_notify` to
+the EA channel, its own thread, with a push to the web chat's phones at
+normal urgency. A tap on the push opens the tip's own conversation when
+the web chat holds it (`chat_notify.post` returns the thread's key on
+the web chat and beside Zulip; `chat.direct.web_thread_url` makes its
+address), else the app's start page.
+
+**A tip with no answer.** A tip that got no answer 7 days after it
+posted (or when the next tip posts) is put aside and offered once more
+14 days after those 7 days. A tip is offered twice at most: no answer,
+or *not now*, to the second offer puts it away for good.
 
 **The owner's answer.** In the tip's own thread the chat bot answers
 these words itself, with no model call: *more* posts the next tip there
-now; *not now* pauses the tips for 14 days (that tip comes back, twice
-at most); *never* or *stop* ends them and records a rule in the
-preferences store (`usage-tips-stop`, kind `instruction`, scope
+now; *not now* pauses the tips for 14 days (that tip comes back once,
+within its two offers); *never* or *stop* ends them and records a rule
+in the preferences store (`usage-tips-stop`, kind `instruction`, scope
 `briefing`). Any other message in that thread is a normal turn.
 
 **Seeing, resetting, turning off.** `usage_tips.py status` shows each

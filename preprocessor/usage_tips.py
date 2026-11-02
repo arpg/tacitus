@@ -23,13 +23,16 @@ tick in run-agent.sh): the first tip 7 days after the install's first
 briefing (the onboarding week comes first), then at most one tip per 7
 days, only on a weekday morning (07:00 to 12:00 local) after that day's
 briefing posted, never on a day the briefing carried an onboarding
-question, and never in quiet hours. Posting a tip closes the one before
-it: one tip is open at a time.
+question, and never in quiet hours. One tip is open at a time. A tip with
+no answer 7 days after it posted (or when the next tip posts) is put
+aside and offered once more 14 days after those 7; a tip offered twice is
+put away for good, whatever the answer was: never more than two offers.
 
 The owner answers in the tip's own thread, and the chat bot handles the
 words itself, with no model call (ea-chat-bot.py, _handle_usage_tip_reply):
   more      the next tip now, in the same thread
-  not now   no tips for 14 days; this tip comes back after that, twice at most
+  not now   no tips for 14 days; this tip comes back once after that (two
+            offers at most)
   never     no more tips: a rule in the preferences store (kind
   stop      instruction, scope briefing, id usage-tips-stop) that outranks
             this code; retiring the rule turns the tips back on
@@ -38,7 +41,9 @@ Any other message in the thread is a normal turn.
 The post goes through chat_notify (the EA channel key, so Zulip, Slack and
 the web chat all work), each tip its own thread, and on the web chat a
 push notification at normal urgency (chat.direct.web_notify): a post in the
-EA channel is not pushed on its own.
+EA channel is not pushed on its own. A tap on the push opens the tip's
+own thread when the web chat holds it (chat_notify.post returns its key;
+chat.direct.web_thread_url makes its address), else the app.
 
 State is `~/.ea/state/usage-tips.json`, written through resident_io:
     {"version": 1, "first_briefing": "YYYY-MM-DD", "open": "<id>",
@@ -46,6 +51,8 @@ State is `~/.ea/state/usage-tips.json`, written through resident_io:
      "answered": {"<id>": {"at": "<iso>", "reply": "more|not now|never"}},
      "dismissed": {"<id>": {"at": "<iso>", "why": "..."}},
      "not_now": {"<id>": {"until": "<iso>", "count": n}},
+     "offers": {"<id>": n},
+     "no_answer": {"<id>": {"at": "<iso>", "until": "<iso>"}},
      "never": false, "never_at": "", "never_rule": ""}
 `usage_tips.enabled` in ea-config.json (default true) switches them off.
 
@@ -85,6 +92,9 @@ FIRST_AFTER = timedelta(days=7)    # the onboarding week comes first
 TIP_GAP = timedelta(days=7)        # one tip a week
 NOT_NOW = timedelta(days=14)       # "not now" pauses the tips this long
 NOT_NOW_LIMIT = 2                  # a tip put off this often is not asked again
+NO_ANSWER = timedelta(days=7)      # a tip with no answer this long is put aside
+ASK_AGAIN = timedelta(days=14)     # and offered once more this long after that
+OFFER_LIMIT = 2                    # a tip is offered this often at most
 MORNING = (7, 12)                  # local hours a tip may post: [start, end)
 ROOM_AFTER = 20                    # conversations before the room tip fits
 CHANNEL_KEY = "ea-assistant"       # chat_notify's key for the EA channel
@@ -510,8 +520,8 @@ def post_text(tip: Tip) -> str:
 # ---------------------------------------------------------------------------
 def _empty_state() -> dict:
     return {"version": 1, "first_briefing": "", "open": "", "paused_until": "",
-            "shown": {}, "answered": {}, "dismissed": {}, "not_now": {},
-            "never": False, "never_at": "", "never_rule": ""}
+            "shown": {}, "answered": {}, "dismissed": {}, "not_now": {}, "offers": {},
+            "no_answer": {}, "never": False, "never_at": "", "never_rule": ""}
 
 
 def _parse_state(text: str) -> dict:
@@ -522,7 +532,7 @@ def _parse_state(text: str) -> dict:
         return data
     if not isinstance(raw, dict):
         return data
-    for k in ("shown", "answered", "dismissed", "not_now"):
+    for k in ("shown", "answered", "dismissed", "not_now", "offers", "no_answer"):
         if isinstance(raw.get(k), dict):
             data[k] = raw[k]
     for k in ("first_briefing", "open", "paused_until", "never_at", "never_rule"):
@@ -743,6 +753,10 @@ def tip_status(tip: Tip, state: dict, usage: Usage, now: datetime) -> str:
     until = _when(nn.get("until", ""), now)
     if until and now < until:
         return f"not now until {_stamp(until)}"
+    na = state.get("no_answer", {}).get(tip.id) or {}
+    until = _when(na.get("until", ""), now)
+    if until and now < until and state.get("open") != tip.id:
+        return f"no answer: offered again from {_stamp(until)}"
     try:
         if not tip.ready(usage):
             return f"waits for {tip.needs or 'its moment'}"
@@ -768,15 +782,62 @@ def pick(state: dict, usage: Usage, now: datetime,
     return None
 
 
+def offers(state: dict, tip_id: str) -> int:
+    """How often the tip was offered: the count the state keeps, else one
+    for a tip shown before the count was kept."""
+    n = state.get("offers", {}).get(tip_id)
+    if isinstance(n, int) and not isinstance(n, bool) and n > 0:
+        return n
+    return 1 if tip_id in state.get("shown", {}) else 0
+
+
+def put_aside(state: dict, tip_id: str, now: datetime) -> None:
+    """Close a tip that got no answer (in place): it is offered once more
+    ASK_AGAIN after its answer window (NO_ANSWER from when it was shown),
+    or put away for good once it was offered OFFER_LIMIT times."""
+    if state.get("open") == tip_id:
+        state["open"] = ""
+    if tip_id in state["dismissed"]:
+        return
+    stamp = _stamp(now)
+    if offers(state, tip_id) >= OFFER_LIMIT:
+        state["dismissed"][tip_id] = {"at": stamp, "why": "no answer twice"}
+        return
+    shown = _when(state["shown"].get(tip_id, ""), now) or now
+    state["no_answer"][tip_id] = {"at": stamp, "until": _stamp(shown + NO_ANSWER + ASK_AGAIN)}
+
+
+def settle(state: dict, now: datetime) -> bool:
+    """Put the open tip aside (in place) when NO_ANSWER has passed since it
+    was shown with no answer; True when the state changed."""
+    tip_id = state.get("open")
+    if not tip_id:
+        return False
+    shown = _when(state.get("shown", {}).get(tip_id, ""), now)
+    if shown is None or now < shown + NO_ANSWER:
+        return False
+    put_aside(state, tip_id, now)
+    return True
+
+
+def settled(state: dict, now: datetime) -> dict:
+    """The state as settle() leaves it, as a copy: what the cadence and the
+    status read before any write."""
+    view = json.loads(json.dumps(state))
+    settle(view, now)
+    return view
+
+
 def mark_shown(tip_id: str, now: datetime, ea_dir=None) -> None:
-    """Record a tip as posted. The tip open before it, unanswered, is done:
-    one tip is open at a time."""
+    """Record a tip as posted, and count the offer. The tip open before it,
+    unanswered, is put aside (put_aside): one tip is open at a time."""
     stamp = _stamp(now)
 
     def mark(s):
         prev = s.get("open")
-        if prev and prev != tip_id and prev not in s["dismissed"]:
-            s["dismissed"][prev] = {"at": stamp, "why": "no answer"}
+        if prev and prev != tip_id:
+            put_aside(s, prev, now)
+        s["offers"][tip_id] = offers(s, tip_id) + 1
         s["shown"][tip_id] = stamp
         s["open"] = tip_id
     _update_state(mark, ea_dir)
@@ -785,23 +846,28 @@ def mark_shown(tip_id: str, now: datetime, ea_dir=None) -> None:
 # ---------------------------------------------------------------------------
 # Posting
 # ---------------------------------------------------------------------------
-def _chat_post(text: str, bypass_quiet: bool = False) -> bool:
+def _chat_post(text: str, bypass_quiet: bool = False) -> bool | str:
+    """The tip in its own thread through chat_notify: the thread's key
+    when the web chat holds it, else True; False when the post failed."""
     try:
         import chat_notify
     except ModuleNotFoundError:
         from preprocessor import chat_notify
-    return bool(chat_notify.post(CHANNEL_KEY, text, _bypass_quiet=bypass_quiet))
+    return chat_notify.post(CHANNEL_KEY, text, _bypass_quiet=bypass_quiet) or False
 
 
-def _web_push(text: str) -> dict:
+def _web_push(text: str, thread: str = "") -> dict:
     """A push to the web chat's phones; {"web": "off"} without a web chat.
-    Never raises."""
+    A tap opens the tip's thread (`thread`, the key the post returned)
+    when the web chat holds it, else the app. Never raises."""
     try:
         try:
             from chat import direct
         except ModuleNotFoundError:
             from preprocessor.chat import direct
-        return direct.web_notify(text, tag=PUSH_TAG, urgency="normal")
+        url = direct.web_thread_url(thread) if thread else ""
+        extra = {"url": url} if url else {}
+        return direct.web_notify(text, tag=PUSH_TAG, urgency="normal", **extra)
     except Exception as e:
         return {"web": "error", "why": f"{type(e).__name__}: {e}"}
 
@@ -811,7 +877,7 @@ def next_tip(*, ea_dir=None, now: datetime | None = None, force: bool = False,
     """The tip that would post now and whether the cadence allows it. Writes
     nothing."""
     now = now or local_now()
-    state = load_state(ea_dir)
+    state = settled(load_state(ea_dir), now)
     first = first_briefing(state, ea_dir)
     facts = clock_facts(now, ea_dir) if facts is None else facts
     reason = blocked(state, now, facts=facts, is_stopped=stopped(state, ea_dir),
@@ -827,13 +893,19 @@ def next_tip(*, ea_dir=None, now: datetime | None = None, force: bool = False,
 
 def post(*, ea_dir=None, now: datetime | None = None, force: bool = False,
          usage: Usage | None = None, facts: dict | None = None,
-         notify: Callable[[str], bool] | None = None,
-         push: Callable[[str], dict] | None = None) -> dict:
+         notify: Callable[[str], bool | str] | None = None,
+         push: Callable[[str, str], dict] | None = None) -> dict:
     """Post the next tip when the cadence allows: in the EA channel through
-    chat_notify, its own thread, then a web push. The state records the
-    install's first briefing day the first time one is seen."""
+    chat_notify, its own thread, then a web push that opens that thread
+    (`notify` returns the thread's key, or True when it has none; `push`
+    takes the pitch and that key, "" when none). The state records the
+    install's first briefing day the first time one is seen, and puts aside
+    an open tip whose answer window has passed (settle)."""
     now = now or local_now()
     state = load_state(ea_dir)
+    if settled(state, now) != state:
+        _update_state(lambda s: settle(s, now), ea_dir)
+        state = load_state(ea_dir)
     first = first_briefing(state, ea_dir)
     if first and not state.get("first_briefing"):
         _update_state(lambda s: s.__setitem__("first_briefing", s["first_briefing"] or first),
@@ -851,8 +923,9 @@ def post(*, ea_dir=None, now: datetime | None = None, force: bool = False,
     if not sent:
         return {"posted": False, "why": "the chat post failed", "tip": tip.id}
     mark_shown(tip.id, now, ea_dir)
-    pushed = push(tip.pitch) if push else _web_push(tip.pitch)
-    return {"posted": True, "tip": tip.id, "text": text, "push": pushed}
+    thread = sent if isinstance(sent, str) else ""
+    pushed = push(tip.pitch, thread) if push else _web_push(tip.pitch, thread)
+    return {"posted": True, "tip": tip.id, "text": text, "push": pushed, "thread": thread}
 
 
 # ---------------------------------------------------------------------------
@@ -961,6 +1034,8 @@ def handle_reply(tip_id: str, word: str, *, quote: str = "", ea_dir=None,
             s["not_now"][tip_id] = {"until": until, "count": count}
             if count >= NOT_NOW_LIMIT:
                 s["dismissed"][tip_id] = {"at": stamp, "why": "not now twice"}
+            elif offers(s, tip_id) >= OFFER_LIMIT:
+                s["dismissed"][tip_id] = {"at": stamp, "why": "offered twice"}
             s["paused_until"] = until
         _update_state(later, ea_dir)
         out["text"] = REPLIES["not now"]
@@ -996,7 +1071,7 @@ def handle_reply(tip_id: str, word: str, *, quote: str = "", ea_dir=None,
 # ---------------------------------------------------------------------------
 def status(*, ea_dir=None, now: datetime | None = None, usage: Usage | None = None) -> dict:
     now = now or local_now()
-    state = load_state(ea_dir)
+    state = settled(load_state(ea_dir), now)
     usage = usage or Usage(ea_dir)
     first = first_briefing(state, ea_dir)
     first_day = _day(first)

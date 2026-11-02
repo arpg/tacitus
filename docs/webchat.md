@@ -830,9 +830,11 @@ locked screen. The text loses its emoji shortcodes and Markdown marks
 **Payload.** JSON `{"title", "body", "url", "tag"}`, encrypted to the
 subscription (RFC 8291, `aes128gcm` of RFC 8188, one 4096-byte record),
 padded after the delimiter to a multiple of 256 bytes.
-`url` is the message's web permalink; `tag` is `<channel>/<thread key>`,
-so the device keeps one notification per thread and a new one alerts
-again. TTL is one hour.
+`url` is the message's web permalink (for `web_notify`, the `url` it is
+given, such as a weekly tip's thread from `chat.direct.web_thread_url`,
+else the app's start page); `tag` is `<channel>/<thread key>`, so the
+device keeps one notification per thread and a new one alerts again.
+TTL is one hour.
 
 **Rate.** At most one push per thread in two minutes, counted apart for
 `high` urgency, so a card is never held back by a message push in its

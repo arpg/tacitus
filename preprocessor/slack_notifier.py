@@ -42,8 +42,8 @@ def post_to_slack(channel_key: str, text: str, blocks: Optional[list] = None,
     """Post a message through chat_notify.post (quiet-hours gate, split,
     route by frontend). Returns True on success or deferral, False on a
     real send failure."""
-    return chat_notify.post(channel_key, text, blocks=blocks, priority=priority,
-                            _bypass_quiet=_bypass_quiet)
+    return bool(chat_notify.post(channel_key, text, blocks=blocks, priority=priority,
+                                 _bypass_quiet=_bypass_quiet))
 
 
 def scheduling_channel_key() -> str:
