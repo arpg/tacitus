@@ -2047,7 +2047,8 @@ function teaching() {
 // (verifyBundle, bundle.js) and hands it to the service worker, which serves
 // only matching files. The bot's own copy checks after start-up; the relay's
 // before the chat runs, through the sealed channel, against its pairing's
-// `bundle` (the QR's hash) first and the key that signed it (`signKey`) after.
+// `bundle` (the QR's hash) first and the key that signed it (`signKey`) after,
+// and takes each file its copy lacks from the bot (bring), never the relay.
 // With neither, or no check that runs, it stops; checked, it attests.
 const relayCopy = () => Boolean(T.relay && new URL(T.rec.relay).origin === location.origin);
 const UNCHECKED = 'This copy of the app cannot check its code against your Tacitus, so it does not run. '
@@ -2073,35 +2074,43 @@ async function checkBundle() {
     throw e;
   }
   if (rec && !rec.signKey) await savePairing(Object.assign(rec, { signKey: v.key }));
-  const out = (await toWorker({ bundle: doc, pin: Boolean(rec) })) || (await checkFiles(v.files));
+  const out = (await (rec ? bring(doc, v, true) : toWorker({ bundle: doc }))) || (await checkFiles(v.files));
   if (out.refused) return refuseApp(out.refused, true);
-  if (out.error) throw new Error(out.error);
+  if (out.error || !out.ok) {
+    if (rec) relayNote('This phone could not take the latest version of the app from Tacitus yet. Trying again.');
+    throw new Error(out.error || 'the check of the app did not finish');
+  }
   if (out.updated) appUpdated();
-  if (rec) await call('POST', '/relay/attest', { bundle: v.hash });
+  if (rec) await call('POST', '/relay/attest', { bundle: v.hash }); // the release its worker now keeps
   return v;
 }
 
-// Off the tailnet the worker cannot fetch a new release from this origin, so
-// the bot's own copy brings it through the relay: the signed manifest, then
-// each file the worker's copy lacks (/api/app/<file>), which must hash to the
-// manifest before the worker sees it. The worker checks the manifest under the
-// key it trusts and each file again, and keeps all of them or none.
-async function updateOverRelay() {
+// A release through the relay: the worker answers the files its copy lacks, the
+// page fetches each from the bot (/api/app/<file>) and checks it against the
+// manifest, and the worker checks each again and keeps all or none. `pin`: the
+// relay's copy, whose first check this is too. Null with no worker.
+async function bring(doc, v, pin) {
   const t = T;
-  if (!S.me.bundle) return;
-  const doc = await call('GET', '/bundle');
-  const v = await verifyBundle(doc);
-  let out = (await toWorker({ fromRelay: doc })) || {};
+  const out = await toWorker({ fromRelay: doc, pin });
+  if (!out || !out.want || !out.want.length) return out;
   const files = {};
-  for (const path of out.want || []) {
+  for (const path of out.want) {
     const res = await t.api('GET', `/app/${path}`);
-    if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+    if (!res.ok) return { error: `${path}: HTTP ${res.status}` };
     const bytes = await res.arrayBuffer();
-    if ((await sha256Hex(new Uint8Array(bytes))) !== v.files[path]) throw new Error(`${path} does not match the manifest`);
+    if ((await sha256Hex(new Uint8Array(bytes))) !== v.files[path]) return { error: `${path} does not match the manifest` };
     files[path] = { type: res.headers.get('content-type') || '', bytes };
   }
-  if (Object.keys(files).length) out = (await toWorker({ fromRelay: doc, files })) || {};
-  if (out.error || (out.want && out.want.length)) throw new Error(out.error || `missing ${out.want.join(', ')}`);
+  const last = (await toWorker({ fromRelay: doc, pin, files })) || {};
+  return last.want && last.want.length ? { error: `missing ${last.want.join(', ')}` } : last;
+}
+
+// The bot's own copy off the tailnet, after start-up: its worker cannot reach this origin.
+async function updateOverRelay() {
+  if (!S.me.bundle) return;
+  const doc = await call('GET', '/bundle');
+  const out = (await bring(doc, await verifyBundle(doc), false)) || {};
+  if (out.error) throw new Error(out.error);
   if (out.updated) appUpdated();
 }
 
@@ -2134,7 +2143,7 @@ async function checkFiles(files) {
     const res = await fetch(`${BASE}/${path === 'index.html' ? '' : path}`, { cache: 'no-store' }).catch(() => null);
     if (res && res.ok && (await sha256Hex(new Uint8Array(await res.arrayBuffer()))) !== want) return { refused: path };
   }
-  return {};
+  return { ok: true };
 }
 
 // A file that is not the signed one: the worker (`told` when it knows)

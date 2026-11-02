@@ -91,6 +91,13 @@ STATIC_HEADERS = {
     "Cross-Origin-Resource-Policy": "same-origin",
     "Cache-Control": "no-cache",
 }
+# The service worker's own policy (sw.js): its loader runs, as text, the copy
+# of the worker's code (bundle.js) that it kept and checked against the bot's
+# signed manifest, so a release that comes through the relay runs in the
+# worker too (docs/webchat.md, Code integrity). That needs 'unsafe-eval' in the
+# worker alone; the pages keep the policy above.
+WORKER_CSP = STATIC_HEADERS["Content-Security-Policy"].replace(
+    "script-src 'self'", "script-src 'self' 'unsafe-eval'")
 EXTRA_TYPES = {".webmanifest": "application/manifest+json",
                ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
@@ -815,7 +822,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         for k, v in STATIC_HEADERS.items():
-            self.send_header(k, v)
+            self.send_header(k, WORKER_CSP if k == "Content-Security-Policy" and full.name == "sw.js" else v)
         self.end_headers()
         self.wfile.write(data)
 
