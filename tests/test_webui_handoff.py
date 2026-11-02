@@ -317,6 +317,45 @@ def test_the_computer_screen_takes_a_code_once_and_never_shows_the_secret(browse
         liar.shutdown()
 
 
+def test_a_relay_that_never_answers_does_not_stall_the_setup(browser, tmp_path):
+    """The review's finding: a relay listed first that takes the connection
+    and never answers held the setup forever. Each lookup has its own time
+    (setUp.wait, eight seconds; shorter here), then the next relay is asked."""
+    import socket
+    from playwright.sync_api import expect
+    silent = socket.socket()
+    silent.bind(("127.0.0.1", 0))
+    silent.listen(16)
+    held = []
+    threading.Thread(target=lambda: [held.append(silent.accept()) for _ in range(16)], daemon=True).start()
+    sbase = f"http://127.0.0.1:{silent.getsockname()[1]}"
+    relay = ThreadingHTTPServer(("127.0.0.1", 0), type("R", (_StubRelay,), {"boxes": {}, "asked": [], "hellos": []}))
+    relay.daemon_threads = True
+    threading.Thread(target=relay.serve_forever, daemon=True).start()
+    rbase = f"http://127.0.0.1:{relay.server_address[1]}"
+    site, url = _website(tmp_path / "site", [sbase, rbase])
+    R = relay.RequestHandlerClass
+    payload = made_up_payload(r=rbase, a=url, p="5" * 32)
+    mailbox, blob = seal(CODE, payload, rbase)
+    R.boxes[mailbox] = blob
+    ctx = browser.new_context()
+    try:
+        page = ctx.new_page()
+        page.goto(url)
+        expect(page.locator("#setup")).to_be_visible(timeout=10000)
+        assert page.evaluate("setUp.wait") == 8000
+        page.evaluate("setUp.wait = 1500")
+        page.fill("#setup-code", TYPED)
+        page.click("#setup-go")
+        wait_for(lambda: R.hellos, 15)  # the second relay, past the silent first
+        assert R.asked == [mailbox] and held
+    finally:
+        ctx.close()
+        site.shutdown()
+        relay.shutdown()
+        silent.close()
+
+
 def _hosted(relay_bot, tmp_path, changed: bytes = b"", index: bytes = b""):
     """The website's copy of the app beside relay_bot, listing its relay,
     and the bot's relay block naming it as `hosted_app` (an http origin on

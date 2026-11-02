@@ -173,21 +173,22 @@ class Limits:
     max_handoff_bytes: int = 4096     # one blob (base64url), bytes
     max_handoff_ttl: int = 600        # seconds a blob is held at most
     max_handoffs_total: int = 4096    # blobs held in all (16 MiB at most)
-    max_handoffs_per_source: int = 32  # blobs held per source address (an IPv6 /64)
+    max_handoffs_per_source: int = 32  # blobs held per source address (an IPv6 /48)
     lookup_rate: float = 20 / 60      # mailbox lookups per second per source address
     lookup_burst: int = 20
 
 
 def source_group(source: str) -> str:
-    """The unit a source address is metered by: an IPv4 address, or the /64
-    of an IPv6 one (one host is commonly given a whole /64)."""
+    """The unit a source address is metered by: an IPv4 address, or the /48
+    of an IPv6 one (a tunnel broker hands out a whole /48 for free, so a
+    /64 is no unit of cost)."""
     try:
         ip = ipaddress.ip_address(source)
     except ValueError:
         return source
     if ip.version == 6 and ip.ipv4_mapped is not None:
         return str(ip.ipv4_mapped)
-    return str(ipaddress.ip_network(f"{ip}/64", strict=False)) if ip.version == 6 else str(ip)
+    return str(ipaddress.ip_network(f"{ip}/48", strict=False)) if ip.version == 6 else str(ip)
 
 
 def clean_frame(obj: Any, kinds: frozenset) -> Optional[dict]:
@@ -426,9 +427,10 @@ class Relay:
 
     def _source_ok(self, source: str, now: float) -> bool:
         """Whether `source` may open another route now (a token bucket per
-        address); called with the lock held."""
+        address, an IPv6 /48 counting as one); called with the lock held."""
         lim = self.limits
-        return self._bucket(self._sources, source, now, lim.new_route_rate, lim.new_route_burst)
+        return self._bucket(self._sources, source_group(source), now, lim.new_route_rate,
+                            lim.new_route_burst)
 
     def _make_room(self) -> bool:
         """With the table full, drop the idle route (no poll open) that saw
@@ -630,19 +632,23 @@ class Relay:
         for m in [m for m, (_, _, exp, _) in self.handoffs.items() if exp <= now]:
             del self.handoffs[m]
 
-    def _room_for_handoff(self, group: str) -> bool:
-        """A full table: drop the oldest blob of the source that holds the
-        most, when it holds more than one and more than `group` does;
-        called with the lock held. False otherwise (the table stays full):
-        a fresh address never pushes out a source's only blob."""
-        held: dict[str, int] = {}
-        for _, _, _, g in self.handoffs.values():
-            held[g] = held.get(g, 0) + 1
-        top = max(held, key=held.get, default=None)
-        if top is None or held[top] <= max(1, held.get(group, 0)):
-            return False
-        del self.handoffs[next(m for m, e in self.handoffs.items() if e[3] == top)]
-        return True
+    def _polling(self, install: str, now: float) -> bool:
+        """Whether `install` has a route open (its bot polls), changing
+        nothing; called with the lock held."""
+        route = self.routes.get(install)
+        return route is not None and (route.polls > 0
+                                      or now - route.last_poll <= self.limits.offline_after)
+
+    def _room_for_handoff(self, now: float) -> bool:
+        """A full table, for a deposit from a polling bot: drop the oldest
+        blob of an install with no route open (no bot polls for it, so no
+        bot is waiting on it); called with the lock held. False when every
+        blob belongs to a polling bot (the table stays full)."""
+        for m, (install, _, _, _) in self.handoffs.items():
+            if not self._polling(install, now):
+                del self.handoffs[m]
+                return True
+        return False
 
     def deposit_handoff(self, install: str, auth: Any, body: Any,
                         source: str = "") -> tuple[int, dict]:
@@ -652,10 +658,12 @@ class Relay:
         already holds replaces it, and one another install holds is
         refused. An install with no route open (no bot polling) spends the
         new-route meter of its address, so tokens minted for the purpose do
-        not fill the table cheaply. Each source address (an IPv6 /64) holds
-        at most max_handoffs_per_source, and a full table makes room by
-        dropping the oldest blob of the source that holds the most, so
-        addresses that fill it cannot keep a bot with few blobs out."""
+        not fill the table cheaply. Each source address (an IPv6 /48) holds
+        at most max_handoffs_per_source. A full table makes room for a bot
+        that polls by dropping the oldest blob of an install that does not,
+        and never for an install that does not poll (503): blobs left by
+        tokens minted for the purpose give way to a real bot's, and never
+        push one out."""
         status, err, _ = self.check_bot(install, auth)
         if status != 200:
             return status, err
@@ -684,7 +692,8 @@ class Relay:
                     return 429, {"error": "too many handoffs from this address"}
                 if self._online(install, now) is None and not self._source_ok(source, now):
                     return 429, {"error": "too many new installs from this address"}
-                if len(self.handoffs) >= lim.max_handoffs_total and not self._room_for_handoff(group):
+                if len(self.handoffs) >= lim.max_handoffs_total and not (
+                        self._polling(install, now) and self._room_for_handoff(now)):
                     return 503, {"error": "relay full"}
             self.handoffs[m] = (install, c, now + ttl, group)
         return 200, {"ok": True}

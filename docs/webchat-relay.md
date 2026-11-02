@@ -372,7 +372,8 @@ own-origin phone through the relay. That device never copies its own key.
    app derives `k` once and, for each relay in turn (`?relay=`, else
    `relays.json` in order), that relay's mailbox: it takes the blob once
    (`GET <relay>/h/<mailbox>`) and goes on to the next relay when there
-   is none or it does not open. It checks that `a` is its own page's
+   is none, it does not open, or the relay has not answered in eight
+   seconds. It checks that `a` is its own page's
    address, and pairs as from a link (no fragment ever holds the
    secret). A wrong code finds no mailbox, or a blob that does not open.
 6. The computer waits with its six-digit code like any new device; its
@@ -624,7 +625,7 @@ route goes 60 s after the bot's last poll. Per source address, a bucket
 that meters new routes and one that meters mailbox lookups (the address
 itself is never logged). Apart from the routes, the handoff blobs by
 mailbox, each with its install, its time and the source address (an IPv6
-/64) that left it, which caps the blobs per address; held until read once or
+/48) that left it, which caps the blobs per address; held until read once or
 past their time (at most ten minutes), and kept when a bot stops
 polling. Nothing goes to disk. There are no accounts. A restart drops every route: bots
 reconnect within seconds and phones say hello again. After a `rotate`
@@ -671,8 +672,8 @@ them.
 | Phone frames per second | 20, burst 100 |
 | A `hello`, `ping` or `open` frame | 4 KiB |
 | Stream tickets not yet spent | 8, each good for 30 s |
-| New installs per source address | 20, then one per 10 s |
-| Handoff blobs held | 8, each at most 4 KiB, for at most 600 s; 32 per source address (an IPv6 /64); 4096 in all (global), and a full table drops the oldest blob of the source that holds the most (never a source's only one) |
+| New installs per source address (an IPv6 /48 counts as one) | 20, then one per 10 s |
+| Handoff blobs held | 8, each at most 4 KiB, for at most 600 s; 32 per source address (an IPv6 /48); 4096 in all (global). A full table makes room only for a bot that polls, by dropping the oldest blob of an install no bot polls for; a deposit from such an install then gets 503, and a polling bot's blob is never dropped |
 | Mailbox lookups per source address | 20, then one per 3 s (20 a minute) |
 | Online installs (global) | 1000; a full table drops the idle route (no poll open) that no phone used, else the one idle longest |
 | Queued bytes (global) | 512 MiB |

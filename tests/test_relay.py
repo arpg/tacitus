@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import sys
 import threading
 import time
@@ -2647,36 +2648,75 @@ def test_the_relay_refuses_a_bad_handoff_deposit(tmp_path):
     assert _deposit(gated, token, good)[0] == 200
 
 
-def test_addresses_that_fill_the_handoff_table_cannot_keep_a_bot_out():
-    """The review's finding: tokens minted from a few hundred addresses
-    filled the global table, and a real bot's deposit got 503 for ten
-    minutes. Each source address (an IPv6 /64) now holds a share, and a
-    full table drops the oldest blob of the source that holds the most."""
-    lim = rs.Limits(max_handoffs_total=64, max_handoffs_per_source=16, new_route_burst=10 ** 6)
-    relay = rs.Relay(lim, log=lambda line: None)
-    body = lambda i: {"m": f"{i:032x}", "c": "eA", "ttl": 600}  # noqa: E731
-    n = 0
-    for host in range(1, 5):  # four /64s, each from a fresh address inside it
-        for _ in range(2):
-            token = os.urandom(32)
-            for _ in range(8):
-                status = _deposit(relay, token, body(n), source=f"2001:db8:0:{host}::{n + 1:x}")[0]
-                n += 1
-                assert status == 200
-        assert _deposit(relay, os.urandom(32), body(n), source=f"2001:db8:0:{host}::ffff")[0] == 429
-        n += 1
-    assert len(relay.handoffs) == 64
-    assert rs.source_group("2001:db8:0:1::1") == rs.source_group("2001:db8:0:1:ffff::9")
+def _polling_bot(relay, source="198.51.100.7"):
+    """A bot whose route is open: it polled once (wait 0). Its token."""
+    token = os.urandom(32)
+    assert relay.bot_exchange(rc.install_id_for(token), _bot_auth(token),
+                              {"frames": [], "wait": 0}, source)[0] == 200
+    return token
+
+
+def _attack(relay, sources, per_source=1):
+    """Deposits from installs no bot polls for, one fresh token each; how many the relay took."""
+    took = 0
+    for src in sources:
+        for _ in range(per_source):
+            body = {"m": secrets.token_hex(16), "c": "eA", "ttl": 600}
+            took += _deposit(relay, os.urandom(32), body, source=src)[0] == 200
+    return took
+
+
+def test_one_ipv6_48_cannot_fill_the_handoff_table():
+    """The review's first case: one-blob deposits from 4096 /64s of one /48
+    (a free tunnel-broker block) filled the table and an honest bot got
+    503. A /48 is one source now, for the held-blob cap and the new-route
+    meter alike."""
+    relay = rs.Relay(log=lambda line: None)
+    took = _attack(relay, (f"2001:db8:42:{i:x}::1" for i in range(1, relay.limits.max_handoffs_total + 1)))
+    assert took <= relay.limits.new_route_burst < relay.limits.max_handoffs_total
+    assert rs.source_group("2001:db8:42:1::1") == rs.source_group("2001:db8:42:ffff:1::9")
+    assert rs.source_group("2001:db8:43::1") != rs.source_group("2001:db8:42::1")
     assert rs.source_group("::ffff:192.0.2.1") == "192.0.2.1"
-    # The real bot, from an address of its own: the table makes room.
-    oldest = next(iter(relay.handoffs))
-    assert _deposit(relay, os.urandom(32), body(10 ** 6), source="198.51.100.7") == (200, {"ok": True})
-    assert oldest not in relay.handoffs and len(relay.handoffs) == 64
-    # No room is made by dropping a source's only blob, or for a source as large as the largest.
+    # The held-blob cap counts the /48 too, even for installs whose bots poll.
+    lim = rs.Limits(max_handoffs_per_source=4)
+    capped = rs.Relay(lim, log=lambda line: None)
+    tokens = [_polling_bot(capped, f"2001:db8:42:{i}::1") for i in range(1, 6)]
+    got = [_deposit(capped, t, {"m": f"{i:032x}", "c": "eA", "ttl": 60}, f"2001:db8:42:{i + 1}::1")[0]
+           for i, t in enumerate(tokens)]
+    assert got == [200, 200, 200, 200, 429]
+    token = _polling_bot(relay)
+    for m in ("aa" * 16, "bb" * 16):
+        assert _deposit(relay, token, {"m": m, "c": "eA", "ttl": 600}) == (200, {"ok": True})
+
+
+def test_a_full_handoff_table_never_pushes_out_a_polling_bots_codes():
+    """The review's second case: the eviction from "the largest source"
+    pushed out an honest bot's oldest code at each attacker deposit. Now a
+    full table makes room only for a bot that polls, and only by dropping
+    a blob of an install no bot polls for."""
+    lim = rs.Limits(max_handoffs_total=64, new_route_burst=10 ** 6)
+    relay = rs.Relay(lim, log=lambda line: None)
+    honest = _polling_bot(relay)
+    for m in ("aa" * 16, "bb" * 16):
+        assert _deposit(relay, honest, {"m": m, "c": "eA", "ttl": 600})[0] == 200
+    assert _attack(relay, (f"192.0.2.{i}" for i in range(1, 63))) == 62
+    assert len(relay.handoffs) == 64
+    # The table is full: a deposit from an install no bot polls for is refused, and evicts nothing.
+    assert _attack(relay, (f"203.0.113.{i}" for i in range(1, 50))) == 0
+    assert {"aa" * 16, "bb" * 16} <= set(relay.handoffs) and len(relay.handoffs) == 64
+    # The honest bot's next code takes the place of an attacker's oldest blob.
+    oldest = [m for m, e in relay.handoffs.items() if e[0] != rc.install_id_for(honest)][0]
+    assert _deposit(relay, honest, {"m": "cc" * 16, "c": "eA", "ttl": 600}) == (200, {"ok": True})
+    assert {"aa" * 16, "bb" * 16, "cc" * 16} <= set(relay.handoffs) and oldest not in relay.handoffs
+    # Another polling bot, from an address of its own, gets room too.
+    other = _polling_bot(relay, "198.51.100.8")
+    assert _deposit(relay, other, {"m": "dd" * 16, "c": "eA", "ttl": 600})[0] == 200
+    # A table of polling bots' blobs alone stays full.
     small = rs.Relay(rs.Limits(max_handoffs_total=2), log=lambda line: None)
-    assert _deposit(small, os.urandom(32), body(1), source="192.0.2.1")[0] == 200
-    assert _deposit(small, os.urandom(32), body(2), source="192.0.2.2")[0] == 200
-    assert _deposit(small, os.urandom(32), body(3), source="192.0.2.3")[0] == 503
+    for i, src in enumerate(("192.0.2.1", "192.0.2.2", "192.0.2.3")):
+        t = _polling_bot(small, src)
+        want = 200 if i < 2 else 503
+        assert _deposit(small, t, {"m": f"{i:032x}", "c": "eA", "ttl": 60}, src)[0] == want
 
 
 def test_deposits_from_installs_no_bot_holds_spend_the_address_meter():

@@ -2185,11 +2185,10 @@ async function setUp(e) {
   try {
     const secret = await handoffSecret(code);
     let p = null;
-    for (const relay of S.relays) { // a relay that answers nothing that opens does not end the search
+    for (const relay of S.relays) { // a relay that answers nothing that opens, or in time, does not end the search
       const keys = await handoffKeys(secret, relay);
-      const res = await fetch(`${relay}/h/${keys.mailbox}`, { credentials: 'omit', cache: 'no-store' }).catch(() => null);
-      p = res && res.ok ? await res.json().then((got) => openHandoff(keys, got.c)).catch(() => null) : null;
-      if (p) break;
+      const res = await fetch(`${relay}/h/${keys.mailbox}`, { credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(setUp.wait) }).catch(() => null);
+      if ((p = res && res.ok ? await res.json().then((got) => openHandoff(keys, got.c)).catch(() => null) : null)) break;
     }
     if (!p || p.v !== 2) return say(WRONG_CODE);
     if (p.a !== appHere()) return say('That code is for Tacitus at another address. Make a new one and open the address it shows.');
@@ -2201,6 +2200,7 @@ async function setUp(e) {
     $('setup-go').disabled = false;
   }
 }
+setUp.wait = 8000; // ms for each relay's answer, its body included
 
 // "Add a device". This phone: one button pairs this browser in place and
 // approves it, the owner being signed in here already. Another phone scans
