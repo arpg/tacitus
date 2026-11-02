@@ -93,6 +93,9 @@ REQUIRED_HELPERS = [
     "google_calendar_client.py",
     "scheduling_engine.py",
     "fetch_url.py",
+    # CLAUDE.md names it for a Google Docs link, which fetch_url.py cannot
+    # open (HTTP 401 without the user's Google sign-in).
+    "drive_client.py",
     "email_to_pdf.py",
     # The only reader for a .docx: dontAsk lanes refuse unzip and python3 -c.
     "doc_text.py",

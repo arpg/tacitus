@@ -252,6 +252,7 @@ def test_answers_file_drives_the_whole_wizard_without_input(monkeypatch, tmp_pat
     assert inst["related_domains"] == ["med.example.edu"]
     assert inst["video"] == {"platform": "Zoom", "link": "https://example.zoom.us/my/pat.example"}
     assert profile["zoom_link"] == inst["video"]["link"]
+    assert profile["drive_accounts"] == ["pat.example@example.edu"]
     assert inst["letterhead"]["template_dir"] == "~/.ea/templates/letterhead"
     sched = json.loads((cfg / "scheduling-preferences.json").read_text())
     assert sched["timezone"] == "America/Chicago", "the answer wins over the detected zone"

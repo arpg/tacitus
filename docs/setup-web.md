@@ -24,8 +24,9 @@ Ctrl+C.
 `scripts/install/setup_questions.py` holds every question of every
 phase as data: the answer key, the kind (`text`, `secret`, `yesno`,
 `list`, `int`, `time`, `choice`), the label, the default sources, the
-condition that shows it, and the notes the terminal prints before it.
-Both front ends read it:
+condition that shows it, the notes the terminal prints before it, and
+why it is asked and how the answer helps (`WHY`, and `PHASE_WHY` for the
+screen as a whole). Both front ends read it:
 
 - `user_init.py` walks a phase's questions in order and asks each one at
   the terminal, or takes it from `--answers FILE`;
@@ -64,8 +65,11 @@ README.md, word for word), `identity`, `scheduling`, `inbox`, `autonomy`,
 `groups`, `deadlines`, `style`, `chat` (the chat platform, the web chat
 first, with this machine's tailnet name and the owner's Tailscale login;
 only on `assistant`), `auth` (the app registration values, never a
-sign-in), `reimbursement`, `vip`, `push`. A phase that asks this install
-nothing is left out. Next posts the phase; an error shows under its
+sign-in), `drive` (the Google accounts the Drive reader signs in, never
+the sign-in itself), `reimbursement`, `vip`, `push`. A phase that asks this install
+nothing is left out. Each screen shows its reason under the intro
+("Why this step"), each question its reason above its help, and each
+remaining command on the last screen why it is needed. Next posts the phase; an error shows under its
 field. The profile and the chat platform decide what the later screens
 ask, so the page reads the phases again after each. The last screen runs the `state` phase,
 then the doctor (`scripts/ea-doctor.py --json`), and shows its checklist

@@ -6,6 +6,34 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The EA reads Google Docs.** `preprocessor/drive_client.py` reads a
+  Google Doc (as Markdown), Sheet (CSV of the first sheet) or Slides
+  deck by its link, searches Drive, and saves a stored file for
+  `doc_text.py`, through the install's own Google client with only the
+  `drive.readonly` scope. The resident runs it through the mail
+  mediator (SAFE verbs `read`, `search`, `download`, `accounts`), every
+  lane grants it, and `fetch_url.py` points a Google link that answers
+  401 or a sign-in page at it. A private Docs link used to fail: the
+  claude.ai Drive connector loads only under a browser login, and a
+  setup-token login loads no connector at all.
+- **A Google account connects from the chat, with no terminal.** Say
+  `connect Google Drive <account>`, or let the EA ask for it when a read
+  finds no account (`pending-google-signin.json`): the bot posts a
+  sign-in link, the user approves at Google on any device and pastes
+  back the address the browser lands on, and the bot trades the code
+  owner side (`preprocessor/google_signin.py`, PKCE). The pasted address
+  never reaches a model, and the log keeps the code out. A Drive API
+  that is still off comes back as its one-tap enable link.
+- **Setup signs Drive in, and every step says why.** A `drive` phase
+  (`drive_accounts` in `user-profile.json`), a Google Drive screen on the
+  setup page, a Drive sign-in in `/setup` section 4 and in `setup.sh`,
+  and a doctor row (`auth: google drive`). Every phase, question and
+  finishing step carries the reason it is asked and how the answer helps
+  (`WHY` and `PHASE_WHY` in `setup_questions.py`, a `why` per step in
+  `setup_web.next_steps`, a **Why:** per `/setup` section); the
+  terminal, the page and the skill show the same text, and a test holds
+  every new question to one.
+
 ## v0.2.0 (2026-11-01)
 
 - **Tacitus has its own chat.** A `WebFrontend` serves a web app from the

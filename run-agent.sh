@@ -657,6 +657,9 @@ ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/gmail_client.py 
 ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/google_calendar_client.py *)"
 ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/scheduling_engine.py *)"
 ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/fetch_url.py *)"
+# A private Google Doc, Sheet or Drive file: fetch_url.py gets HTTP 401 for
+# it, so the lanes read it with the install's own read-only Drive sign-in.
+ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/drive_client.py *)"
 ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/email_to_pdf.py *)"
 ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/doc_text.py *)"
 ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/doc_write.py *)"

@@ -62,6 +62,8 @@ injection. The LLM has no mechanism to click Slack buttons.
 | "Sent myself" (close obligation) | ungated | User confirms they already sent from Outlook; closes ledger item only |
 | Archive email | do-and-tell | Moves to archive (reversible, not deletion) |
 | Read/search email and calendar | ungated | Read-only |
+| Read Google Docs and Drive files | ungated | Read-only: `drive_client.py read`, `search` and `download`, SAFE verbs the mediator runs with a token that holds only the `drive.readonly` scope; no Drive write verb exists. A download lands in the resident's own space through the mediator's output staging, and the owner side never parses a file's bytes |
+| Ask for a Google sign-in link | ungated | The EA stages `pending-google-signin.json` (an account and a service) and the bot posts a sign-in link; `connect Google Drive <account>` does the same. Nothing is granted until the user approves at Google and pastes the address the browser lands on. The bot answers that message itself and never hands it to a model; it trades the code with the PKCE verifier it kept in the owner-private directory (`preprocessor/google_signin.py`), so the code alone redeems nothing and works once. The log names the message and keeps the code out |
 | Read Teams DMs | ungated | Read-only. A SAFE verb of the teams-dms owner plugin (`graph_actions.py get-teams-dms`), run by the mediator from the owner's lock; not Graph |
 | Create/move/delete an attendee-less hold on the EA-Managed calendar | ungated | The assistant's own rule store. Nothing on it has attendees, so nothing there mails anyone, and `calendar_reconciler.py` rewrites it every 30 minutes anyway. Enforced on both sides of the mediation boundary; every other calendar write stays button-required. Which calendar that is comes from the owner-private `calendars.json` (`owner_trust.py seed --calendar`), never from the resident's own `scheduling-preferences.json`; with no such file, no calendar write is ungated and the reconciler writes nothing. Only a process known to be the resident (its user, or a test's scratch tree) reads the config's id, as a hint; every other process, including an owner process the owner checks misclassify, reads the private file only (`mail_mediation.owner_side`). A move or delete there also needs the event to have no attendees and EA-Managed as its organizer. |
 
@@ -331,7 +333,8 @@ identical — isolation works the same way on both platforms.
 
 The LLM can only call whitelisted Python scripts via `--allowedTools`:
 `graph_actions.py`, `gmail_client.py`, `google_calendar_client.py`,
-`scheduling_engine.py`, `fetch_url.py`, `email_to_pdf.py`,
+`drive_client.py` (read only, through the mediator), `scheduling_engine.py`,
+`fetch_url.py`, `email_to_pdf.py`,
 `doc_text.py` (reads only files under the EA's document folders),
 `doc_write.py` (writes only .docx and .xlsx files under them; a sheet
 value starting with `=` is written as text, never as a formula),
@@ -407,7 +410,7 @@ constructs the command:
   draft the `*/5` cron later sends. The approved path is
   `graph_actions.py schedule-send` behind its confirm token.)
 - `python3 -c *graph_client*` and the same for `graph_actions`,
-  `gmail_client`, `google_calendar_client` — a verb denial matches a
+  `gmail_client`, `google_calendar_client`, `drive_client`: a verb denial matches a
   command line, but importing the module and calling its function does
   not, so the import route is denied structurally
 - every Gmail MCP send/delete verb and every Google Calendar MCP write
@@ -926,8 +929,8 @@ Even if a malicious email convinces the LLM to act:
 - **Cannot modify source code**: OS permission denied (`ea-bot` user
   has read-only access)
 - **Cannot import libraries directly**: `python3 -c *graph_client*` and
-  the equivalents for `graph_actions`, `gmail_client` and
-  `google_calendar_client` are on the deny list, so the import route
+  the equivalents for `graph_actions`, `gmail_client`,
+  `google_calendar_client` and `drive_client` are on the deny list, so the import route
   around the CLI verb gates is closed structurally
 - **Cannot schedule a deferred send**: `schedule-send` and
   `scheduled_sends.py add` are both denied, and the queue entry the cron
@@ -1129,8 +1132,8 @@ rules, and where each is enforced:
   snoozed-messages records `wake-snoozed` acts on) checks it with the
   mediator's plain-id test first (`mail_mediation.is_plain_id`); a record
   that fails is escalated and kept, and nothing is sent. The same test
-  holds at every other entry: graph_actions, gmail_client and
-  google_calendar_client refuse a non-plain id option whoever runs them
+  holds at every other entry: graph_actions, gmail_client,
+  google_calendar_client and drive_client refuse a non-plain id option whoever runs them
   (`refuse_unplain_ids`); graph_client checks every id it puts into a
   request path (`_id`), since its whole-path check cannot see a slash
   inside an id; the draft journal drops a record whose draft id fails; the

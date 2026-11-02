@@ -40,6 +40,7 @@ TOOLS = {
     "graph_actions": REPO / "preprocessor" / "graph_actions.py",
     "gmail_client": REPO / "preprocessor" / "gmail_client.py",
     "google_calendar_client": REPO / "preprocessor" / "google_calendar_client.py",
+    "drive_client": REPO / "preprocessor" / "drive_client.py",
     "scheduling_engine": REPO / "preprocessor" / "scheduling_engine.py",
     "deck_serve": REPO / "preprocessor" / "deck_serve.py",
     "email_writer": REPO / "preprocessor" / "email_writer.py",

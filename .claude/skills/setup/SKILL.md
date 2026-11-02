@@ -43,6 +43,14 @@ security check.
 When in doubt, stop and ask the user. A ten-minute pause beats a silent
 regression of the security model.
 
+## Say why, every time
+
+Before each question and each step the user types, say in one sentence
+why you ask and how the answer helps: the question's entry in `WHY` of
+`scripts/install/setup_questions.py`, or the `why` of the step in
+`setup_web.py` `next_steps`. Each section opens with a **Why:** for the
+section: say it once, in your own words, when the section starts.
+
 ## How the commands run
 
 Your Bash tool has no terminal: a command that reads an answer from the
@@ -79,12 +87,13 @@ keyboard fails there (Python's `input()` ends in EOFError). So:
   `run_in_background` (`--bind <tailscale ip -4>` for a phone or laptop
   on their tailnet) and give the user the printed address with its `#t=`
   token, to them only. It asks sections 1, 2, 2b, 3's app values, 4's
-  calendars, 6's platform and the push, writes the same files and signs
+  calendars and Drive accounts, 6's platform and the push, writes the same files and signs
   in to nothing (docs/setup-web.md). After they press Done, run section
   0 and go on.
 
 ## 0. Resume
 
+**Why:** a second run must not ask again what a first run answered.
 Before the first question, read what an earlier run left behind and
 skip every question it answered. Each section writes a value this list checks:
 
@@ -99,8 +108,9 @@ skip every question it answered. Each section writes a value this list checks:
   `python3 preprocessor/graph_actions.py list-mail --folder inbox --top 1`
   answers: section 3 is done.
 - `~/.ea/config/scheduling-preferences.json` names an
-  `ea_managed_calendar.calendar_id`, or the user said they never use
-  Google: section 4 is done.
+  `ea_managed_calendar.calendar_id`, and `user-profile.json` has a
+  `drive_accounts` list (empty when they keep no Docs in Google), or the
+  user said they never use Google: section 4 is done.
 - `id ea-bot` answers and `/home/ea-bot/ea-system/CLAUDE.local.md`
   exists: section 5 is done.
 - `python3 scripts/ea-doctor.py --profile <name>` prints no FAIL:
@@ -113,8 +123,9 @@ the first one that is not.
 
 ## 1. Profile
 
-This is the first question, before any other. Ask which profile they
-want, and recommend `email` for a first install: no chat, about an
+**Why:** the profile sets how much the EA may do, so it decides which
+sections apply. This is the first question, before any other. Ask which
+profile they want, and recommend `email` for a first install: no chat, about an
 hour once IT has given them the Outlook app. `assistant` is the upgrade
 path: with the web chat a few steps more, with Zulip about half a day,
 most of it the chat server. The three:
@@ -148,6 +159,7 @@ The table of profiles is docs/SETUP.md "Choose a profile".
 
 ## 2. Identity (all profiles)
 
+**Why:** the EA signs, sorts and drafts under this name, in this zone.
 Ask, one at a time: full name, work email, and role and department (one
 sentence, the way they would introduce themselves). Each is an "Other"
 answer. Then the home timezone: offer the machine's zone (`timedatectl
@@ -158,7 +170,8 @@ The keys of every config file are in docs/SETUP.md "Config files".
 
 ## 2b. Institution (all profiles)
 
-CLAUDE.md names no institution; the `institution` block of
+**Why:** these facts say which mail is internal and where a first email
+never goes on its own. CLAUDE.md names no institution; the `institution` block of
 `user-profile.json` carries it (`preprocessor/institution.py` documents
 every key). Ask these one at a time:
 
@@ -194,6 +207,7 @@ wait until then.
 
 ## 3. Outlook (all profiles)
 
+**Why:** without this sign-in the EA reads no mail and no calendar.
 Ask whether they already have an app registration for the EA in their
 organization's Microsoft 365 tenant. Most people do not, and most cannot
 create one themselves. Choose by the answer:
@@ -224,12 +238,14 @@ create one themselves. Choose by the answer:
 Check before moving on:
 `python3 preprocessor/graph_actions.py calendar-view --days 1`.
 
-## 4. Google Calendar (all profiles, recommended)
+## 4. Google Calendar and Drive (all profiles, recommended)
 
-Ask whether they use Google Calendar or Gmail. Skip this section only if
-they say they never use Google. Otherwise walk them through docs/SETUP.md
-"Google OAuth app": a Google Cloud project, the Calendar API (and Gmail
-API when the EA drafts there), the consent screen **published** ("In
+**Why:** a Google calendar counts as busy time only after its account
+signs in, and a Google Docs link in mail opens only with a Drive
+sign-in. Ask whether they use Google Calendar, Gmail or Google Docs. Skip this section only if they say they
+never use Google. Otherwise walk them through docs/SETUP.md
+"Google OAuth app": a Google Cloud project, the Calendar API, the Google
+Drive API (and the Gmail API when the EA drafts there), the consent screen **published** ("In
 production": in "Testing" status Google ends the refresh tokens after 7
 days), a Desktop OAuth client, its JSON saved as
 `~/.ea/auth/google_client_secret.json` (mode 600). Ask for each Google
@@ -251,9 +267,22 @@ them add one recurring `wh Working Hours` event there; without it the
 solver has no rule store and no place to hold time. It is required on
 `assistant` and optional elsewhere.
 
+Then Google Drive (docs/SETUP.md "Google Drive"): ask which Google
+accounts hold the documents their mail links to ("Other"; empty is fine),
+write them as `drive-accounts` in `answers-drive.json` with
+`"google-drive-now": false`, and run the `drive` phase. On `assistant`
+the sign-in waits for the chat (section 8): the user says `connect
+Google Drive <account>` there and follows the link, with no terminal.
+Elsewhere it is a step they type in the second terminal:
+`python3 preprocessor/drive_client.py setup --email <account>`. Check:
+`python3 preprocessor/drive_client.py test`. Say that the scope is read
+only. An "access blocked" answer means the Workspace administrator must
+allow the app: say so in one line and go on.
+
 ## 5. Service account and permissions (all profiles)
 
-`./scripts/install/setup.sh --profile <name>` ran in section 1; run it again only if the
+**Why:** a message that tricks the EA must not reach the user's files,
+tokens or Send button. `./scripts/install/setup.sh --profile <name>` ran in section 1; run it again only if the
 profile changed. Then the service account, a step the user types in the
 second terminal: `sudo ./scripts/install/setup-ea-user.sh` (Linux) or
 `sudo ./scripts/install/setup-ea-user-macos.sh`.
@@ -274,6 +303,8 @@ On macOS ea-bot has no keychain: the step is
 `cd / && sudo -u ea-bot env HOME=/Users/ea-bot /Users/ea-bot/.local/bin/claude setup-token`
 and the token goes in ea-bot's settings (docs/macos-claude-binary.md);
 the doctor's `ea-bot: Claude login` line is the check.
+A token login (`scripts/install/ea-bot-token.sh` on Linux) loads no
+claude.ai connector; the EA's own Google clients need none (section 7).
 On a Linux desktop session, `newgrp ea` (or a new login) gives their
 shell the `ea` group.
 
@@ -296,7 +327,8 @@ to `user-profile.json`.
 
 ## 6. Chat platform (assistant profile only)
 
-Ask once which chat platform they want, and recommend the web chat:
+**Why:** the chat shows the drafts and buttons; the platform decides who
+stores them. Ask once which chat platform they want, and recommend the web chat:
 the bot serves it itself, as an app on their phone over their tailnet,
 with no chat server, and every message, file and card stays on this
 machine. Zulip suits someone who already runs it. Slack is acceptable
@@ -344,13 +376,13 @@ The scopes the doctor checks are the ones the bot calls.
 The bot service comes in section 8, from the same root step that
 hardens the install (docs/SETUP.md "Services"); `scripts/install/setup.sh` writes no unit.
 
-## 7. Claude Code connectors
+## 7. Claude Code connectors (optional)
 
-The lanes use the claude.ai account connectors for Gmail and Google
-Calendar (and Slack on a Slack install), not servers `claude mcp add`
-makes: they come with the account Claude Code logs in with. `assistant`
-needs them; `email` and `review-only` only if the user has Google set
-up. Ask the user to enable them in claude.ai Settings > Connectors
+**Why:** a fallback only: the EA's own clients read Gmail, Calendar and
+Drive. The claude.ai connectors (and Slack on a Slack install) come with
+ea-bot's Claude account, and only under a browser login; a setup-token
+login loads none, and then this section does not apply. Otherwise ask
+the user to enable them in claude.ai Settings > Connectors
 (claude.ai/customize/connectors) as the account ea-bot logged in with in
 section 5, and to finish each one's sign-in there. Check, as ea-bot:
 `sudo -n -u ea-bot env HOME=/home/ea-bot /home/ea-bot/.local/bin/claude mcp list`
@@ -359,7 +391,7 @@ lists `claude.ai Gmail` and `claude.ai Google Calendar` as connected
 
 ## 7b. Remote writer (optional, any profile that drafts)
 
-Ask once, after the connectors: do they run their own model, or have an
+**Why:** some users want a model of their own to write the bodies. Ask once, after the connectors: do they run their own model, or have an
 OpenAI-compatible endpoint, that should write the email bodies instead
 of Claude? Most say no; then skip this screen and say nothing more. If
 yes, ask for the https endpoint, the model name and the API key, then:
@@ -372,7 +404,8 @@ writer", `docs/llm-lanes.md`).
 
 ## 8. Acceptance
 
-On Linux the hardening step, a `sudo` step the user types in the second
+**Why:** the services move to a tree the EA cannot change, and the doctor
+proves each part works. On Linux the hardening step, a `sudo` step the user types in the second
 terminal: `sudo bash deploy/harden-permissions.sh` (docs/SETUP.md "Hardening"). It
 seeds the owner-owned code tree at `/opt/ea-system` and the owner-private
 files, and moves the services off the ea-bot tree so a prompt-injected
@@ -424,6 +457,7 @@ the one command that re-runs the checklist. Then go on to section 9.
 
 ## 9. First week
 
+**Why:** the EA learns preferences from the user's words, not guesses.
 The EA learns the user's preferences from questions, not from guesses.
 Run `python3 preprocessor/onboarding.py ask --count 3`: it prints the
 first three preference questions, each with an `id`. Ask them one at a

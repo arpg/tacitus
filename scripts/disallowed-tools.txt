@@ -129,6 +129,8 @@ Bash(python3 -c *gmail_client*)
 Bash(python -c *gmail_client*)
 Bash(python3 -c *google_calendar_client*)
 Bash(python -c *google_calendar_client*)
+Bash(python3 -c *drive_client*)
+Bash(python -c *drive_client*)
 
 # --- Tailscale: public exposure --------------------------------------
 # Deck hosting is tailnet-only. The route for a deck is made by

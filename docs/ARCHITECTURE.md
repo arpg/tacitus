@@ -996,8 +996,9 @@ Invoked by cron (morning, afternoon, weekly) or manually.
                    Bash: graph_actions, gmail_client,
                          google_calendar_client, scheduling_engine,
                          ledger, project_store, style_profiles,
-                         closure_metrics, fetch_url, email_to_pdf,
-                         doc_text, poll_filler, booking_link, compile_letter,
+                         closure_metrics, fetch_url, drive_client,
+                         email_to_pdf, doc_text, poll_filler, booking_link,
+                         compile_letter,
                          each plugin entry point (plugin_registry
                          tool-grants; never a state dir), cat, ls
                    File: Read, Write, Edit
@@ -1713,8 +1714,8 @@ pattern.
 
 ### Staged actions and the claim protocol
 
-Five staging files carry an action from a Claude run to a `:lock:` block
-(`STAGED_ACTION_FILES` in `ea-chat-bot.py`):
+These staging files carry an action from a Claude run to a `:lock:` block,
+a room or a link (`STAGED_ACTION_FILES` in `ea-chat-bot.py`):
 
 | Key | File | Sweeper set |
 |---|---|---|
@@ -1723,6 +1724,8 @@ Five staging files carry an action from a Claude run to a `:lock:` block
 | `event_delete` | `pending-event-delete.json` | `CALENDAR_ACTION_FILES` |
 | `schedule_send` | `pending-schedule-send.json` | `SCHEDULE_ACTION_FILES` |
 | `open_channel` | `pending-channel.json` | `CHANNEL_ACTION_FILES` |
+| `publish` | `pending-publish.json` | `PUBLISH_ACTION_FILES` |
+| `google_signin` | `pending-google-signin.json` | `GOOGLE_SIGNIN_ACTION_FILES` |
 
 Each card an enabled plugin declares adds its own pending file as
 `plugin_card:<plugin>:<card>` in `PLUGIN_ACTION_FILES` (docs/plugins.md).
@@ -2453,6 +2456,11 @@ and before the EA switch (`_handle_bot_command`): `adopt session <uuid>
 [as <model>]`, `conversations`, `name this conversation <t>`, `open a
 channel for <project> | for session <uuid> | for this conversation`,
 and `version` (the installed release, `preprocessor/update_status.py`).
+The Google sign-in is answered there too (`preprocessor/google_signin.py`):
+`connect Google Drive <account>` posts a sign-in link, as a staged
+`pending-google-signin.json` does, and a pasted loopback address with a
+sign-in state finishes it owner side, so its one-time code never reaches
+a model and the message log keeps it out.
 A `stop` or `cancel` in a thread whose turn is running ends that
 turn's Claude process (`preprocessor/turn_cancel.py`, `_cancel_thread_runs`):
 no reply is posted, and the drafts the run made before the stop keep

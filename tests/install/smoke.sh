@@ -83,7 +83,7 @@ log "profile $PROFILE, answers $ANSWERS, python $("$PY" --version 2>&1) at $PY, 
 # are not config phases; auth writes the Graph keys and skips the sign-in.
 log "1/5 config from the answers file"
 PHASE_LOG="$(mktemp)"
-for phase in identity scheduling inbox autonomy groups deadlines style auth reimbursement vip push state; do
+for phase in identity scheduling inbox autonomy groups deadlines style auth drive reimbursement vip push state; do
     if "$PY" "$REPO/scripts/install/user_init.py" --answers "$ANSWERS" --phase "$phase" < /dev/null > "$PHASE_LOG" 2>&1; then
         echo "  phase $phase: ok"
     else

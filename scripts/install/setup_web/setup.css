@@ -89,6 +89,8 @@ h3 { font-size: 1rem; margin: 0 0 .25rem; }
 .field.invalid { border-color: var(--bad); }
 .label { display: block; font-weight: 600; margin-bottom: .35rem; }
 .help { margin: 0 0 .4rem; color: var(--muted); font-size: .9rem; }
+.why { margin: 0 0 .5rem; font-size: .9rem; }
+.why strong { font-weight: 600; }
 .err { margin: .45rem 0 0; color: var(--bad); font-size: .9rem; }
 
 input[type="text"], input[type="password"], input[type="time"] {

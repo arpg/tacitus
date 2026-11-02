@@ -85,6 +85,7 @@ READ_VERBS = {
     "style_profiles": ("get",),
     "project_store": ("pack", "match", "list", "get"),
     "google_calendar_client": ("list-events", "list-calendars", "list-ea-managed", "get-event"),
+    "drive_client": ("read", "search", "accounts"),
     "session_index": ("*",),
 }
 DISALLOWED_EXTRA = (

@@ -190,7 +190,7 @@ soon after, once the change replicates.
 | Client type | Desktop app (Google's `installed` client JSON) |
 | Redirect | Loopback, `http://localhost:8400`; a desktop client takes any loopback port [G1] |
 | PKCE | S256; `google-auth-oauthlib` makes the verifier (`Flow.authorization_url`) [G1] |
-| Scopes the code requests | `calendar` (sensitive); `gmail.send` (sensitive); `gmail.readonly` and `gmail.compose` (restricted) [G7] |
+| Scopes the code requests | `calendar` (sensitive); `gmail.send` (sensitive); `gmail.readonly`, `gmail.compose` and `drive.readonly` (restricted) [G7] |
 | Audience | External, In production |
 
 Google treats a desktop app as a public client that cannot keep secrets,
@@ -218,10 +218,10 @@ clients and generative AI summaries, and forbids using the data to train
 any model beyond the user's own [G8]. Tacitus sends mail text to the user's own Claude account
 to provide the user's features; the privacy policy must say so.
 
-**Rollout order.** Calendar needs only the sensitive review, Gmail the
-restricted one. The client ships once the Calendar review passes; Gmail
-through it shows the unverified screen, within the 100-user cap, until
-the security assessment passes. A Workspace institution can mark the app
+**Rollout order.** Calendar needs only the sensitive review, Gmail and
+Drive the restricted one. The client ships once the Calendar review
+passes; Gmail and Drive through it show the unverified screen, within
+the 100-user cap, until the security assessment passes. A Workspace institution can mark the app
 trusted in the Admin console in the meantime [G3].
 
 ## Trust statement
@@ -364,8 +364,8 @@ partner global account, with a DNS-verified custom domain:
 
 Google, in a Cloud project the project owns:
 
-1. **APIs & Services, Library:** enable the Google Calendar API and the
-   Gmail API.
+1. **APIs & Services, Library:** enable the Google Calendar API, the
+   Gmail API and the Google Drive API.
 2. **Google Auth Platform, Branding:** app name, support email, logo,
    home page, privacy policy and terms (on a domain verified in Search
    Console, listed under authorized domains), developer contact.
@@ -373,7 +373,7 @@ Google, in a Cloud project the project owns:
    status ends refresh tokens after seven days (SETUP.md "Google OAuth
    app").
 4. **Data access:** add exactly the scopes the code requests: `calendar`,
-   `gmail.send`, `gmail.readonly`, `gmail.compose`. A request outside the
+   `gmail.send`, `gmail.readonly`, `gmail.compose`, `drive.readonly`. A request outside the
    list shows the unverified screen [G2].
 5. **Clients, Create client, Desktop app** (`Tacitus desktop`); download
    the JSON.

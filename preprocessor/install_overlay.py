@@ -186,13 +186,17 @@ def _web_prompt_strings() -> dict:
 def _accounts_section(profile: dict) -> list[str]:
     gmail = [a for a in profile.get("gmail_accounts") or [] if isinstance(a, str)]
     cals = [a for a in profile.get("calendar_accounts") or [] if isinstance(a, str)]
-    if not (gmail or cals):
+    drive = [a for a in profile.get("drive_accounts") or [] if isinstance(a, str)]
+    if not (gmail or cals or drive):
         return []
     lines = ["## Accounts", ""]
     if gmail:
         lines.append(f"- Gmail accounts the EA may draft from: {_join(gmail)}")
     if cals:
         lines.append(f"- Google calendars read for availability: {_join(cals)}")
+    if drive:
+        lines.append(f"- Google accounts drive_client.py reads Docs and Drive files with "
+                     f"(read only): {_join(drive)}")
     return lines
 
 

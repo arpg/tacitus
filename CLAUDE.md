@@ -186,7 +186,8 @@ before acting on its topic.
 - *Briefing data* (`briefing-data.md`): `today_top` is ranked in code,
   `recently_closed` is a do-not-surface list, `staged_drafts` is the only
   source for a "click Send" instruction.
-- *Web reading* (`web-reading.md`): `fetch_url.py`.
+- *Web reading* (`web-reading.md`): `fetch_url.py`; a Google Docs
+  link: `drive_client.py`.
 - *Snooze / scheduled sends / follow-ups* (`scheduled-sends.md`):
   `graph_actions.py snooze-message`; a deferred send stages
   `pending-schedule-send.json`.
@@ -295,7 +296,7 @@ not retry. `~/.ea/config/` is writable; change it only when the user asks.
 project | area | goal), people, ledger links, filed email gists and a
 journal. The ledger answers "what do I owe"; the store answers "what is
 this about". `pack --project <id>` reads it; `match --text "..."` finds
-the project. Guide: `docs/ea/project-store.md`.
+the project.
 
 ### Confirmation gate (code-enforced, not bypassable)
 
@@ -407,10 +408,9 @@ meeting confirmation is the body.
    row only when it is the declared kind; other evidence proposes.
 7a. ALWAYS pass `--source-message-id` (and `--conversation-id`) when the
    item comes from an email. Every closure signal joins on the
-   conversation id, so a row without one never closes on evidence
-  . `add` derives the
-   conversation id from the message id. A row from no email is fine;
-   `add` warns that it cannot auto-close.
+   conversation id, so a row without one never closes on evidence.
+   `add` derives the conversation id from the message id. A row from
+   no email is fine; `add` warns that it cannot auto-close.
 8. Closing follows `preprocessor/closure.py`. You close a row only when:
    the user said it is done (`ledger.py close --id <id> --note "reason"
    --user-said "<their exact words>"`); it repeats another row

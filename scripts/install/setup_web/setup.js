@@ -99,8 +99,10 @@
       row.append(el('div', { class: 'notice', role: 'note' },
         ...q.notice.split('\n').map((p) => el('p', { text: p }))));
     }
-    const help = [...(q.help || []), q.hint, q.kind === 'list' ? 'Separate them with commas.' : '']
-      .filter(Boolean).map((t) => el('p', { class: 'help', text: t }));
+    // Why the question is asked and how the answer helps, then its help.
+    const why = q.why ? [el('p', { class: 'why' }, el('strong', { text: 'Why: ' }), el('span', { text: q.why }))] : [];
+    const help = [...why, ...[...(q.help || []), q.hint, q.kind === 'list' ? 'Separate them with commas.' : '']
+      .filter(Boolean).map((t) => el('p', { class: 'help', text: t }))];
     if (q.kind === 'yesno') {
       const box = el('input', { type: 'checkbox', id, name: id });
       box.checked = v === true;
@@ -157,6 +159,9 @@
     $('finish').hidden = true;
     $('title').textContent = ph.title;
     $('intro').replaceChildren(...ph.intro.map((t) => el('p', { text: t })));
+    if (ph.why) {
+      $('intro').append(el('p', { class: 'why' }, el('strong', { text: 'Why this step: ' }), el('span', { text: ph.why })));
+    }
     if (ph.id === 'profile' && S.context.acknowledged_on) {
       $('intro').append(el('p', { text: `You accepted the notice on ${S.context.acknowledged_on}.` }));
     }
@@ -238,7 +243,9 @@
     if (!r.ok) { status(r.data.error, true); return; }
     if (!loaded) return;
     $('steps').replaceChildren(...S.finish.map((s) => el('li', {},
-      el('h3', { text: s.title }), el('p', { text: s.text }),
+      el('h3', { text: s.title }),
+      s.why ? el('p', { class: 'why' }, el('strong', { text: 'Why: ' }), el('span', { text: s.why })) : null,
+      el('p', { text: s.text }),
       ...s.commands.map((c) => el('pre', { class: 'cmd' }, el('code', { text: c }))))));
     await doctor();
   }

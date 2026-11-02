@@ -980,9 +980,40 @@ def check_auth(ea_dir: Path, env: dict | None = None):
     toks = sorted(auth.glob("google_token_*.json")) if auth.exists() else []
     (ok if toks else warn)("auth: google tokens", f"{len(toks)} account file(s)",
                            "docs/SETUP.md 'Google OAuth app': google_calendar_client.py --setup for each Google account in scheduling-preferences.json")
+    check_drive(ea_dir, auth)
     key = auth / "scheduled-send-hmac.key"
     (ok if key.exists() else warn)("auth: scheduled-send-hmac.key", "" if key.exists() else "missing",
                                    "docs/SETUP.md 'The deferred-send signing key'")
+
+
+def _drive_token(auth: Path, account: str) -> Path:
+    """The Drive reader's token file for one account (drive_client._token_path)."""
+    safe = account.replace("@", "_at_").replace(".", "_")
+    return auth / f"google_token_{safe}_drive.json"
+
+
+def check_drive(ea_dir: Path, auth: Path) -> None:
+    """The Drive reader: each account user-profile.json lists has a token.
+    Without one, a private Google Docs link in mail answers 401 and the EA
+    asks for the text instead; that is a working install, so a miss warns."""
+    try:
+        prof = json.loads((ea_dir / "config" / "user-profile.json").read_text())
+        listed = [str(a).strip().lower() for a in prof.get("drive_accounts") or []
+                  if isinstance(a, str) and a.strip()]
+    except (OSError, ValueError, AttributeError):
+        listed = []
+    signed = sorted(auth.glob("google_token_*_drive.json")) if auth.exists() else []
+    if not listed:
+        ok("auth: google drive", f"no accounts listed (optional; {len(signed)} signed in)")
+        return
+    missing = [a for a in listed if not _drive_token(auth, a).exists()]
+    if missing:
+        warn("auth: google drive", f"not signed in: {', '.join(missing)}",
+             "docs/SETUP.md 'Google Drive': say 'connect Google Drive <account>' in the EA chat "
+             "for each, or run python3 preprocessor/drive_client.py setup --email <account> in a "
+             "terminal")
+    else:
+        ok("auth: google drive", f"{len(listed)} account(s) signed in, read only")
 
 
 GRAPH_AUTH_METHODS = ("", "confidential", "device_code", "interactive")

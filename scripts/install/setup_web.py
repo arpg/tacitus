@@ -114,78 +114,112 @@ def _hostport(value: str) -> tuple[str, int | None] | None:
 
 
 def next_steps(ctx: dict, platform: str = sys.platform, env: dict | None = None) -> list[dict]:
-    """The steps the page leaves to the terminal, in order, each with its
-    commands as the user types them (the /setup skill's sections 1, 3 to 5,
-    6 and 8)."""
+    """The steps the page leaves to the terminal, in order, each with why it
+    is needed and its commands as the user types them (the /setup skill's
+    sections 1, 3 to 5, 6 and 8)."""
     profile = ctx.get("profile") or "assistant"
     mac = platform == "darwin"
     home = "/Users/ea-bot" if mac else "/home/ea-bot"
     method = (env or {}).get("GRAPH_AUTH_METHOD", "")
+    outlook_why = ("The EA reads your mail and calendar only after you sign in. The token stays "
+                   "on this machine, in a file only you can read.")
     steps = [
         {"title": "In the checkout",
+         "why": "Every command below names its scripts from the checkout.",
          "text": "Run each command below from the checkout, in a terminal on this machine.",
          "commands": [f"cd {REPO}"]},
         {"title": "Packages, templates and the cron lines",
+         "why": "The EA's scripts need these Python packages, and every config file this page "
+                "did not write starts from its template.",
          "text": "Installs the Python packages, copies the config templates this page did not "
                  "write and saves the cron lines without installing them.",
          "commands": [f"./scripts/install/setup.sh --profile {profile}"]},
     ]
     if method == "confidential":
-        steps.append({"title": "Outlook sign-in",
+        steps.append({"title": "Outlook sign-in", "why": outlook_why,
                       "text": "Prints a link, waits for the browser's redirect on localhost:8400 "
                               "and aligns the scopes to what the app grants.",
                       "commands": ["python3 preprocessor/graph_client.py --align --write"]})
     elif method in ("device_code", "interactive"):
-        steps.append({"title": "Outlook sign-in",
+        steps.append({"title": "Outlook sign-in", "why": outlook_why,
                       "text": "Prints a link and a code for any browser.",
                       "commands": ["python3 preprocessor/graph_client.py"]})
     elif not (env or {}).get("GRAPH_CLIENT_ID") and Q.published_graph_client_id():
-        steps.append({"title": "Outlook sign-in (no registration)",
+        steps.append({"title": "Outlook sign-in (no registration)", "why": outlook_why,
                       "text": "Signs in through the Tacitus app: a browser on this machine, or "
                               "a code for any browser. Your institution's IT consents to the "
                               "app once (docs/it-request.md, 'No registration: consent to the "
                               "Tacitus app').",
                       "commands": ["python3 preprocessor/graph_client.py"]})
     else:
-        steps.append({"title": "Outlook sign-in",
+        steps.append({"title": "Outlook sign-in", "why": outlook_why,
                       "text": "No app registration yet: docs/it-request.md asks IT for one, and "
                               "docs/SETUP.md 'Option C: no registration (outlook-web-auth)' is "
                               "the other path. Then answer the Outlook screen again.",
                       "commands": []})
     steps.append({"title": "Google sign-in (optional)",
+                  "why": "A Google calendar counts toward your free time only after its account "
+                         "signs in.",
                   "text": "After docs/SETUP.md 'Google OAuth app', with the client secret saved "
                           "as ~/.ea/auth/google_client_secret.json. It asks you to paste the "
                           "address your browser lands on.",
                   "commands": ["python3 preprocessor/google_calendar_client.py --setup",
                                "python3 preprocessor/google_calendar_client.py --test"]})
+    profile_file = (ctx.get("files") or {}).get(Q.PROFILE_FILE) or {}
+    drive = [str(a) for a in profile_file.get("drive_accounts") or [] if isinstance(a, str)]
+    drive_step = None
+    if drive:
+        chat_way = (f"Once the chat runs, say there: connect Google Drive {drive[0]}. The bot "
+                    "posts a link; sign in, then paste back the address your browser lands on. "
+                    "No terminal is needed. Or run these in one: "
+                    if profile == "assistant" else "Each sign-in asks you to paste the address "
+                                                   "your browser lands on. ")
+        drive_step = {"title": "Google Drive sign-in",
+                      "why": "A Google Docs link in your mail is private to your account, so the "
+                             "EA cannot open it without this sign-in. The sign-in is read only.",
+                      "text": "Turn on the Google Drive API in the same Google Cloud project "
+                              "first (docs/SETUP.md 'Google Drive'). " + chat_way.rstrip(),
+                      "commands": [f"python3 preprocessor/drive_client.py setup --email {a}"
+                                   for a in drive] + ["python3 preprocessor/drive_client.py test"]}
+        if profile != "assistant":
+            steps.append(drive_step)
     if profile != "review-only":
         steps.append({"title": "Your writing style",
+                      "why": "A draft that matches your greetings, sign-offs and tone needs "
+                             "fewer edits.",
                       "text": "Reads 90 days of sent mail, once Outlook is signed in.",
                       "commands": ["python3 scripts/install/user_init.py --style-only"]})
     steps.append({"title": "The service account",
+                  "why": "The EA runs as its own user, so a message that tricks it cannot reach "
+                         "your files, your tokens or your Send button.",
                   "text": "Creates ea-bot, moves ~/.ea into its home and installs its own Claude "
                           "Code and the sudoers rule. After it, this page can no longer write "
                           "the config.",
                   "commands": ["sudo ./scripts/install/setup-ea-user-macos.sh" if mac
                                else "sudo ./scripts/install/setup-ea-user.sh"]})
+    login_why = ("The EA works through its own Claude login, kept apart from your own Claude "
+                 "Code sessions.")
     if mac:
-        steps.append({"title": "ea-bot's Claude login",
+        steps.append({"title": "ea-bot's Claude login", "why": login_why,
                       "text": "ea-bot has no keychain: the token goes in ea-bot's settings "
                               "(docs/macos-claude-binary.md).",
                       "commands": [f"cd / && sudo -u ea-bot env HOME={home} "
                                    f"{home}/.local/bin/claude setup-token"]})
     else:
-        steps.append({"title": "ea-bot's Claude login",
+        steps.append({"title": "ea-bot's Claude login", "why": login_why,
                       "text": "Then type /login, and Ctrl+C when it is done.",
                       "commands": [f"sudo -u ea-bot env HOME={home} claude"]})
     py = "/opt/homebrew/bin/python3" if mac else "/usr/bin/python3"
     steps.append({"title": "The install overlay",
+                  "why": "Every Claude session reads your institution's facts from this one file.",
                   "text": "Carries your institution's facts into every Claude session. Run both "
                           "again after a change to user-profile.json.",
                   "commands": [f"sudo -u ea-bot {py} {home}/ea-system/preprocessor/install_overlay.py render",
                                f"python3 preprocessor/install_overlay.py install --tree {home}/ea-system"]})
     if profile == "assistant" and ctx.get("chat") == "web":
         steps.append({"title": "The chat platform",
+                      "why": "Your phone reaches the chat through this route, on your tailnet "
+                             "only.",
                       "text": "Publishes the web chat on your tailnet, on an HTTPS port of its "
                               "own (docs/SETUP.md 'Web chat'). The hardening step below asks "
                               "you to type its settings back, then starts the bot; open the "
@@ -193,24 +227,34 @@ def next_steps(ctx: dict, platform: str = sys.platform, env: dict | None = None)
                       "commands": [user_init.WEB_SERVE_LINE]})
     elif profile == "assistant":
         steps.append({"title": "The chat platform",
+                      "why": "The EA talks to you in this chat, and the bot needs its settings "
+                             "to connect.",
                       "text": "docs/SETUP.md 'Zulip server', or "
                               "docs/SETUP.md 'Slack'. For Zulip, this prints the chat block "
                               "and the key line.",
                       "commands": ["python3 scripts/zulip_bootstrap.py --site <site> "
                                    "--owner-email <you> --owner-key <key>"]})
     steps.append({"title": "Hardening and services",
+                  "why": "The services then run from a code tree the EA cannot change, so a "
+                         "tricked EA cannot change what runs as you.",
                   "text": "The owner-owned code tree, the owner-private files and the services.",
                   "commands": (["sudo bash deploy/macos/install-services.sh",
                                 "sudo bash deploy/enable-mail-mediation.sh"] if mac
                                else ["sudo bash deploy/harden-permissions.sh"])})
     steps.append({"title": "The cron lines",
+                  "why": "The briefings and the ledger upkeep then run on their own schedule.",
                   "text": "Installs them, pointed at the deployed tree.",
                   "commands": [f"./scripts/install/setup.sh --profile {profile} --install-cron"]})
     steps.append({"title": "The checklist and a first briefing",
+                  "why": "The doctor proves each part works and names the fix for each part that "
+                         "does not. The briefing shows the whole path once.",
                   "text": "Fix each FAIL with the fix printed beside it.",
                   "commands": [f"python3 scripts/ea-doctor.py --profile {profile}",
                                "./run-agent.sh morning-briefing --now"]})
+    if drive_step and profile == "assistant":
+        steps.append(drive_step)  # the chat sign-in needs the bot running
     steps.append({"title": "The first-week questions",
+                  "why": "The EA learns your preferences from your own words, not from guesses.",
                   "text": "Answer each in your own words: python3 preprocessor/onboarding.py "
                           "answer --id <id> --text \"<your words>\".",
                   "commands": ["python3 preprocessor/onboarding.py ask --count 3"]})
