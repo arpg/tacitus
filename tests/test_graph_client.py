@@ -385,6 +385,36 @@ def test_a_429_is_noted_once_per_call_with_retry_after_and_the_body():
     assert len(body) <= 200
 
 
+def test_a_call_does_not_wait_past_its_deadline():
+    """A job with a time limit passes it as `deadline`; each wait before a
+    retry counts in retry_waits, so the job can tell a call used them."""
+    state = {"i": 0, "waits": []}
+    responses = [_FakeResp(504), _FakeResp(504), _FakeResp(504), _FakeResp(200)]
+
+    def fake_requests_get(*a, **kw):
+        state["i"] += 1
+        return responses[state["i"] - 1]
+
+    with _fresh_breakers(), \
+         patch("requests.get", side_effect=fake_requests_get), \
+         patch.object(gc, "_headers", return_value={}), \
+         patch.object(gc, "_api_base", return_value="https://graph"), \
+         patch("time.sleep", side_effect=state["waits"].append):
+        before = gc.retry_waits()
+        try:
+            gc.graph_get("/me/messages", lane="background",
+                         deadline=time.monotonic() + 30)
+            raise AssertionError("the call outlived its deadline")
+        except requests.exceptions.HTTPError as e:
+            assert e.response.status_code == 504
+        # 5 s and 15 s fit in 30 s; the 45 s wait after them does not.
+        assert state["waits"] == [5, 15] and state["i"] == 3
+        assert gc.retry_waits() == before + 2
+        state["i"] = 0
+        assert gc.graph_get("/me/messages", lane="background") == {}
+        assert state["waits"] == [5, 15, 5, 15, 45]
+
+
 def test_an_interactive_call_stops_at_its_time_budget():
     """The person waits, and the mediator ends its child at 120 s: an
     interactive call stops once its next wait would pass the budget."""

@@ -1415,6 +1415,16 @@ def throttled_calls() -> int:
     return _throttled_calls
 
 
+# Waits before a retry in this process: a caller with one retry ladder per
+# run reads it to tell that a call has used it.
+_retry_waits = 0
+
+
+def retry_waits() -> int:
+    """How many times a Graph call in this process waited to retry."""
+    return _retry_waits
+
+
 class GraphThrottled(requests.exceptions.HTTPError):
     """A call that ended on HTTP 429: retries spent, or the probe of an open
     breaker refused. Its message is the plain sentence for the owner;
@@ -1541,7 +1551,8 @@ def _check_endpoint(endpoint: str) -> str:
 
 def graph_get(endpoint: str, params: Optional[dict] = None,
                _retries: int = len(_GRAPH_RETRY_BACKOFF) + 1, *,
-               lane: Optional[str] = None) -> dict:
+               lane: Optional[str] = None,
+               deadline: Optional[float] = None) -> dict:
     """GET request to Graph/Outlook API with retry on transient errors.
 
     Retries a network blip and the transient statuses in
@@ -1556,8 +1567,11 @@ def graph_get(endpoint: str, params: Optional[dict] = None,
     and an interactive call makes one attempt, the half-open probe: success
     closes the breaker, failure re-opens it. An interactive call also stops
     retrying once its next wait would take it past _INTERACTIVE_BUDGET_S.
+
+    `deadline` is a time.monotonic() value: a call does not wait to retry
+    past it, so a job with a time limit spends no more than its limit.
     """
-    global _throttled_calls
+    global _throttled_calls, _retry_waits
     lane = graph_lane(lane)
     interactive = _retry is not None and lane == _retry.INTERACTIVE
     breaker = _breaker_for(lane)
@@ -1574,6 +1588,8 @@ def graph_get(endpoint: str, params: Optional[dict] = None,
         # The time spent so far: the clock, or the waits when the clock
         # stood still through them.
         spent = max(time.monotonic() - started, waited)
+        if deadline is not None and started + spent + wait > deadline:
+            return True
         return interactive and spent + wait > _INTERACTIVE_BUDGET_S
 
     for attempt in range(1, _retries + 1):
@@ -1593,6 +1609,7 @@ def graph_get(endpoint: str, params: Optional[dict] = None,
                 raise
             log.info(f"Graph API timeout (attempt {attempt}/{_retries}), "
                      f"retrying in {wait}s...")
+            _retry_waits += 1
             time.sleep(wait)
             waited += wait
         except requests.exceptions.HTTPError as e:
@@ -1626,6 +1643,7 @@ def graph_get(endpoint: str, params: Optional[dict] = None,
                                      retry_after=ra, retry_at=at) from e
             log.info(f"Graph API HTTP {status} (attempt {attempt}/{_retries}), "
                      f"retrying in {wait}s...")
+            _retry_waits += 1
             time.sleep(wait)
             waited += wait
 

@@ -68,7 +68,8 @@ except ModuleNotFoundError:  # imported as preprocessor.<mod>
     from preprocessor import atomic_io as _atomic
     from preprocessor import resident_io as _resident_io
 import sys
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Allow running as a module from inside `preprocessor/` or as a script.
@@ -2314,6 +2315,200 @@ def scrub_closures(*, open_entries: list[dict] | None = None,
     }
 
 
+# ── Graph reads of a live check ────────────────────────────────────────
+# A live check reads four things from Graph, each for one kind of evidence:
+#
+#   sent      the user's replies (signals 1, 7 and 9)
+#   inbox     acknowledgments, confirmations, completion notes (3, 4, 8)
+#   archive   sent copies and completion notes of archived threads
+#             (`_split_archive`: 7, 8 and 9)
+#   calendar  the meeting a scheduling row asked for (5)
+#
+# Each read selects only the fields its signals use, pages PAGE_SIZE items
+# at a time and stops at its cap; mail comes newest first, so a cap drops
+# the oldest. The reads share one deadline and one retry ladder: once a
+# call has waited to retry, every later call makes one attempt, and a
+# transient failure of such a call ends the reads. The pass then runs on
+# what was read. Every signal is positive evidence, so less mail can only
+# close less, and the next hourly run reads again.
+READ_DEADLINE_S = 240
+MAIL_DAYS_BACK = 14
+CALENDAR_DAYS_BACK = 7
+CALENDAR_DAYS_AHEAD = 14
+PAGE_SIZE = 100
+MAIL_CAP = 500
+CALENDAR_CAP = 300
+SENT_FIELDS = ("subject,from,toRecipients,ccRecipients,sentDateTime,"
+               "receivedDateTime,conversationId")
+INBOX_FIELDS = "subject,from,receivedDateTime,bodyPreview,conversationId"
+ARCHIVE_FIELDS = ("subject,from,toRecipients,ccRecipients,sentDateTime,"
+                  "receivedDateTime")
+CALENDAR_FIELDS = "subject,start,organizer,attendees"
+_TRANSIENT_STATUSES = frozenset({429, 502, 503, 504})
+
+
+def calendar_window(open_entries: list[dict],
+                    now: datetime | None = None) -> tuple[datetime, datetime] | None:
+    """(start, end) of the calendar read, or None when no open row can use
+    one. An event that starts before a row does never satisfies it, so the
+    span opens at the earliest start among the rows the calendar signal
+    walks (`_was_scheduling_entry_legacy` holds them all, the audit-only
+    ones too), CALENDAR_DAYS_BACK ago at the most, and ends
+    CALENDAR_DAYS_AHEAD from now. A row with no readable start opens it
+    at the floor."""
+    now = now or datetime.now(timezone.utc)
+    floor = now - timedelta(days=CALENDAR_DAYS_BACK)
+    earliest, rows = now, 0
+    for entry in open_entries or []:
+        if not _was_scheduling_entry_legacy(entry):
+            continue
+        rows += 1
+        start = closure._parse(_entry_start(entry))
+        if start is None:
+            earliest = floor
+            continue
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        earliest = min(earliest, start)
+    if not rows:
+        return None
+    return (max(earliest, floor), now + timedelta(days=CALENDAR_DAYS_AHEAD))
+
+
+def _error_kind(exc: BaseException) -> str:
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status:
+        return f"HTTP {status}"
+    return type(exc).__name__
+
+
+def _circuit_open(exc: BaseException) -> bool:
+    try:
+        import retry_policy
+        return retry_policy.find_circuit_open(exc) is not None
+    except Exception:
+        return False
+
+
+def _transient(exc: BaseException) -> bool:
+    """A failure the service may not repeat: a status Graph retries, a
+    timeout or a dropped connection."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is not None:
+        return status in _TRANSIENT_STATUSES
+    return any(c.__name__ in ("ConnectionError", "Timeout", "TimeoutError")
+               for c in type(exc).__mro__)
+
+
+class GraphReads:
+    """The Graph calls of one live check, under one deadline and one retry
+    ladder (see above). `graph` is graph_client, or a stand-in with
+    graph_get and retry_waits; `clock` is time.monotonic, or a test's."""
+
+    def __init__(self, graph, *, deadline_s: float = READ_DEADLINE_S,
+                 clock=time.monotonic):
+        self.graph = graph
+        self.clock = clock
+        self.deadline_s = deadline_s
+        self.deadline = clock() + deadline_s
+        self.ladder_spent = False
+        self.calls = 0
+        self.stopped = ""
+
+    def _waits(self) -> int:
+        try:
+            return int(self.graph.retry_waits())
+        except Exception:
+            return 0
+
+    def out_of_time(self) -> bool:
+        return self.clock() >= self.deadline
+
+    def read(self, name: str, endpoint: str, params: dict, cap: int) -> list:
+        """Up to `cap` items of one read, page by page. A failure keeps the
+        pages read before it; [] once the reads have ended."""
+        items: list = []
+        link, query = endpoint, params
+        while link and len(items) < cap and not self.stopped:
+            if self.out_of_time():
+                self.stopped = (f"the {self.deadline_s:g}-second limit passed "
+                                f"{'during' if items else 'before'} the {name} read")
+                break
+            single = self.ladder_spent
+            kw = {"deadline": self.deadline}
+            if single:
+                kw["_retries"] = 1
+            before = self._waits()
+            self.calls += 1
+            try:
+                data = self.graph.graph_get(link, query, **kw)
+            except Exception as e:
+                print(f"  WARNING: Outlook {name} read failed: {e}", file=sys.stderr)
+                if _circuit_open(e):
+                    self.stopped = f"the {name} read met an open circuit breaker"
+                elif _transient(e) and single:
+                    self.stopped = (f"the {name} read failed ({_error_kind(e)}) "
+                                    "after the run had used its retries")
+                elif _transient(e):
+                    self.ladder_spent = True
+                break
+            finally:
+                if self._waits() > before:
+                    self.ladder_spent = True
+            items.extend(data.get("value") or [])
+            link, query = data.get("@odata.nextLink"), None
+        return items[:cap]
+
+
+def read_graph(graph, open_entries: list[dict], *,
+               now: datetime | None = None, clock=time.monotonic,
+               deadline_s: float = READ_DEADLINE_S) -> dict:
+    """The Graph evidence of one live check: {"sent", "inbox", "archive",
+    "calendar"} lists, "calls" (graph_get calls, one a page, each with any
+    retries it made) and "stopped" (why the reads ended early, or "").
+    Reads that ended early log one line."""
+    now = now or datetime.now(timezone.utc)
+    reads = GraphReads(graph, deadline_s=deadline_s, clock=clock)
+    since = (now - timedelta(days=MAIL_DAYS_BACK)).isoformat()
+
+    def mail(name: str, folder: str, fields: str) -> tuple:
+        return (name, f"/me/mailFolders/{folder}/messages",
+                {"$select": fields, "$filter": f"receivedDateTime ge {since}",
+                 "$orderby": "receivedDateTime desc", "$top": PAGE_SIZE},
+                MAIL_CAP)
+
+    plan = [mail("sent", "sentitems", SENT_FIELDS),
+            mail("inbox", "inbox", INBOX_FIELDS),
+            # Sent copies of archived threads live here, not in Sent
+            # Items. See `_split_archive`.
+            mail("archive", "archive", ARCHIVE_FIELDS)]
+    window = calendar_window(open_entries, now)
+    if window is not None:
+        plan.append(("calendar", "/me/calendarView",
+                     {"startDateTime": window[0].isoformat(),
+                      "endDateTime": window[1].isoformat(),
+                      "$select": CALENDAR_FIELDS,
+                      "$orderby": "start/dateTime", "$top": PAGE_SIZE},
+                     CALENDAR_CAP))
+
+    out: dict = {"sent": [], "inbox": [], "archive": [], "calendar": []}
+    unread: list[str] = []
+    for name, endpoint, params, cap in plan:
+        if reads.stopped:
+            unread.append(name)
+            continue
+        out[name] = reads.read(name, endpoint, params, cap)
+        if reads.stopped and not out[name]:
+            unread.append(name)
+    if reads.stopped:
+        print(f"  closure_scrubber: Graph reads ended early, {reads.stopped}; "
+              f"not read: {', '.join(unread) or 'nothing'}; the next run reads "
+              "again", file=sys.stderr)
+    out["calls"] = reads.calls
+    out["stopped"] = reads.stopped
+    return out
+
+
 # ── CLI ────────────────────────────────────────────────────────────────
 
 def _load_user_gmail_accounts() -> list[str]:
@@ -2339,40 +2534,17 @@ def cmd_check(args) -> int:
     except ImportError:
         graph = None  # type: ignore
 
-    inbox: list = []
-    sent: list = []
-    archive: list = []
-    calendar_events: list = []
-    if graph is not None:
-        try:
-            inbox = graph.get_messages("inbox", days_back=14)
-        except Exception as e:
-            print(f"  WARNING: Outlook inbox fetch failed: {e}", file=sys.stderr)
-        try:
-            sent = graph.get_sent(days_back=14)
-        except Exception as e:
-            print(f"  WARNING: Outlook sent fetch failed: {e}", file=sys.stderr)
-        try:
-            # Sent copies of archived threads live here, not in Sent
-            # Items. See `_split_archive`.
-            archive = graph.get_messages("archive", days_back=14)
-        except Exception as e:
-            print(f"  WARNING: Outlook archive fetch failed: {e}", file=sys.stderr)
-        try:
-            # 30-day forward window for the calendar-match signal.
-            # Scheduling entries typically resolve into an event within
-            # 1-3 weeks; 30 days catches a generous tail.
-            calendar_events = graph.get_calendar_view(days_ahead=30)
-        except Exception as e:
-            print(f"  WARNING: Calendar fetch failed: {e}", file=sys.stderr)
+    open_entries = ledger_mod.get_open_entries()
+    reads: dict = read_graph(graph, open_entries) if graph is not None else {}
 
     gmail_accounts = _load_user_gmail_accounts() if not args.no_gmail else []
 
     result = scrub_closures(
-        outlook_sent=sent,
-        outlook_inbox=inbox,
-        outlook_archive=archive,
-        calendar_events=calendar_events,
+        open_entries=open_entries,
+        outlook_sent=reads.get("sent") or [],
+        outlook_inbox=reads.get("inbox") or [],
+        outlook_archive=reads.get("archive") or [],
+        calendar_events=reads.get("calendar") or [],
         gmail_accounts=gmail_accounts,
         dry_run=args.dry_run,
     )

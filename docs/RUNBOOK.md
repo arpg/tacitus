@@ -338,6 +338,14 @@ The mail tagger and `ledger_sync check` back off further: a tick that met
 a 429 makes the job's next 3 ticks skip (`~/.ea/state/tick-backoff.json`)
 and logs one line per skip.
 
+The closure scrubber's hourly check bounds its own reads
+(`closure_scrubber.read_graph`): Sent Items, the inbox and the archive for
+14 days, and the calendar from the earliest open scheduling row (7 days
+back at most) to 14 days ahead, each with only the fields its signals use
+and a cap on pages. The run has a 240-second limit and one retry ladder:
+after a call has retried, a later failure ends the reads, and the run logs
+one `Graph reads ended early` line and scrubs with what it read.
+
 **Diagnosis:** each call that meets a 429 logs one warning with Graph's
 `Retry-After` and the first 200 characters of its answer, which names
 the limit (`ApplicationThrottled`, `MailboxConcurrency`):
@@ -358,7 +366,9 @@ clear on their own. For a recurring one, move the heavy job off the
 shared minute in the crontab master, or lower its read volume.
 
 **Detection:** sentinel check `circuit_breakers` lists each open breaker
-by key.
+by key and says what it does: `graph` (the owner's own mail actions still
+try once each) or `graph-background` (background mail jobs are failing
+fast).
 
 ## Incident-note template (`docs/_local/incidents/YYYY-MM-DD-slug.md`)
 
