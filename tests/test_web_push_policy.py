@@ -1,13 +1,15 @@
 """The web chat's push policy (botcore/botcore/chat/web_push_policy.py;
 docs/webchat.md, Notifications): which of the bot's posts notify the
 owner's devices, the collapse of a thread's pushes, the check that lets
-one text push once (a direct message and its alert), the queue during
-quiet hours, the owner's `notify_push` switches, and the wiring through
-the chat package and the notifier. Digests, nudges and progress lines
-never push. The owner's reply, in the web app or mirrored from the
+one text push once (a direct message and its alert), the quiet a card's
+push gives the answer in the conversation that asked for it, the queue
+during quiet hours, the owner's `notify_push` switches, and the wiring
+through the chat package and the notifier. Digests, nudges and progress
+lines never push. The owner's reply, in the web app or mirrored from the
 primary, drops the thread's queued push, sends one clear to each browser
-a push under the thread reached (within its budget, and never to Apple's
-push service), and runs the thread-state rules at once."""
+a push under the thread reached, and under an alert whose text the
+thread carries (within its budget, and never to Apple's push service),
+and runs the thread-state rules at once."""
 from __future__ import annotations
 
 import json
@@ -166,6 +168,38 @@ def test_a_card_in_the_conversation_counts_as_the_answer(fe):
     assert decide(fe, row(fe, "main", "bot", "Draft created.", thread=o["thread_key"])) is None
 
 
+def test_a_card_asked_for_elsewhere_quiets_the_reply_for_two_minutes(fe):
+    """A card in the DM that a conversation asked for (its card names the
+    conversation, or the bot's pointer there links it) pushes on its own;
+    the answer in that conversation within CARD_QUIETS_S of it does not."""
+    assert pol.CARD_QUIETS_S == 120.0
+    key = row(fe, "main", "owner", "Draft a reply to the committee.")["thread_key"]
+    t0 = time.time()
+    fe.store.add_message("dm", mid=None, thread_key=None, author="bot", kind="card",
+                         text="Send this draft?", posted_at=t0,
+                         card={"title": "Send this draft?", "ea_channel": "main", "thread_ts": key})
+
+    def answer(at, text, thread=key, channel="main"):
+        return fe.store.add_message(channel, mid=None, thread_key=thread, author="bot",
+                                    kind="message", text=text, posted_at=at)
+    assert decide(fe, answer(t0 + 5, "Draft created.")) is None
+    row(fe, "main", "owner", "Also check the room.", thread=key)
+    assert decide(fe, answer(t0 + 119, "The room is free.")) is None
+    row(fe, "main", "owner", "And tomorrow?", thread=key)
+    assert decide(fe, answer(t0 + 121, "Tomorrow is clear.")).clause == "reply"
+    # a card linked by the bot's pointer, and settled since (a status row), counts too
+    room = row(fe, "r1", "owner", "Book the lab for Friday.")["thread_key"]
+    c = fe.store.add_message("dm", mid=None, thread_key=None, author="bot", kind="card",
+                             text="Create this event?", card={"title": "Create this event?"})
+    answer(time.time(), f":lock: The event is in your DM: [open it](https://host.example.test:8444/"
+                        f"chat/#/dm/{c['thread_key']}/{c['id']})", room, "r1")
+    fe.store.change_message("dm", c["id"], "status", kind="status", text="Created.")
+    assert decide(fe, answer(time.time(), "Booked.", room, "r1")) is None
+    # a conversation that asked for no card answers as before
+    other = row(fe, "main", "owner", "What is on tomorrow?")["thread_key"]
+    assert decide(fe, answer(time.time(), "Nothing.", other)).clause == "reply"
+
+
 def test_digests_and_notices_the_owner_never_wrote_in_never_push(fe):
     d = row(fe, "digests", "bot", "*Kept mail*: two messages", origin="mail-digest")
     assert decide(fe, d) is None
@@ -272,6 +306,21 @@ def test_an_answer_pushes_and_its_thread_collapses_for_two_minutes(pushing):
     f.post("main", "Moved as well.", thread_ts=key)      # two minutes on: pushed
     assert until(lambda: len(shown(f)) == 2)
     assert shown(f)[1]["body"] == "Moved as well."
+
+
+@needs_push
+def test_a_card_push_and_the_answer_that_follows_buzz_once(pushing):
+    f = pushing
+    key = owner_says(f, "main", "Draft a reply to the committee.")
+    asked = ConfirmationCard(kind="send", title=":lock: Send this draft?", body="Hello.",
+                             ea_channel="main", thread_ts=key)
+    ref = f.post_card("dm", asked)
+    assert until(lambda: len(f.sent) == 1)
+    f.post("main", f":lock: The draft is in your DM: [open it]({f._permalink('dm', ref.thread_key, ref.id)})",
+           thread_ts=key)
+    f.post("main", "Draft created; the Send button is in your DM.", thread_ts=key)
+    time.sleep(0.2)
+    assert [(p["title"], p["body"], u) for p, u in f.sent] == [("Tacitus", "Send this draft?", "high")]
 
 
 @needs_push
@@ -605,6 +654,42 @@ def test_safari_gets_no_clear_and_its_notification_waits_for_the_next_push(pushi
     assert f.store.push_shown_take(f"main/{key}") == []            # taken: owed to no one
     pushes = [(to, p) for to, (p, _u) in zip(f.to, f.sent) if to == APPLE]
     assert [p["tag"] for _to, p in pushes] == [f"main/{key}"]     # the tag the next push replaces
+
+
+@needs_push
+def test_an_owner_reply_clears_the_alert_its_conversation_carries(pushing, caplog):
+    """A scheduled alert on the web chat alone: the bot posts its text in the
+    DM when due (post_due, no push of its own) and the worker sends the
+    alert's push under `alert:<id>`, which names no conversation. The
+    owner's reply in that DM conversation clears it too, by each browser's
+    rules (none to Apple's push service); an alert whose text the
+    conversation does not carry stays."""
+    f = pushing
+    caplog.set_level(logging.INFO, logger="chat.web.push")
+    subscribe(f, APPLE)
+    text = ":rotating_light: In 15 minutes, at 10:00 am MT: *Tickets*\nLedger `tix`."
+    other = ":rotating_light: The registration page changed"
+    assert pol.is_alert_tag("alert:tix") and pol.is_alert_tag("watch:reg")
+    assert not pol.is_alert_tag("dm/t1")
+    assert "queued_for" in f.notify("Tacitus", text, f.app_url(), "alert:tix", urgency="high",
+                                    at=time.time() + 60, wait=True, dedupe=True)
+    assert f.notify("Tacitus", other, f.app_url(), "watch:reg", urgency="high", wait=True,
+                    dedupe=True)["sent"] == 2
+    f.schedule_post("dm", text, time.time() - 1)
+    assert f.post_due() == 1
+    (due,) = f.store.push_claim_due(time.time() + 120)  # the worker, at the alert's moment
+    f.push.send_all(due["payload"].encode("utf-8"), due["urgency"])
+    assert {p["tag"] for p, _u in f.sent} == {"alert:tix", "watch:reg"}
+    (dm,) = [t for t in f.store.threads("dm") if "Tickets" in t["text"]]
+    owner_says(f, "main", "A conversation the alerts are not in.")
+    owner_says(f, "dm", "Bought them.", dm["thread_key"])
+    assert until(lambda: len(clears_to(f)) == 1)
+    time.sleep(0.2)
+    assert clears_to(f) == [(FCM, {"type": "clear", "tag": "alert:tix", "title": "Tacitus"})]
+    assert skipped(caplog) == [{"what": "push clear skipped", "why": "safari", "tag": "alert:tix",
+                                "host": "web.push.apple.com"}]
+    assert f.store.alerts_shown() == [("watch:reg", pol.fingerprint("Tacitus", other))]
+    assert f.store.push_queued() == []
 
 
 @needs_push

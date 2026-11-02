@@ -89,7 +89,9 @@ removing one drops its push subscriptions.
 
 Settings screens: the host registers a page in `settings_pages` (a name
 and an object with `get()` and `save(body)`; the EA's routing table is
-`routing`, model_routing.WebSettings). `/api/me` lists the names, and
+`routing`, model_routing.WebSettings, and the notification switches
+`notify`, web_notify_settings.NotifySettings, which replaces
+`push_settings` when it saves). `/api/me` lists the names, and
 `/api/settings/<name>` answers the owner: GET is the page's data, POST
 hands the JSON body to `save`, whose ValueError is a 400 with its text. A
 `save` that takes `who` also gets the credential that signed the request
@@ -361,6 +363,7 @@ CREATE TABLE IF NOT EXISTS push_sent(key TEXT PRIMARY KEY, at REAL);
 CREATE TABLE IF NOT EXISTS push_shown(
     endpoint TEXT, tag TEXT, title TEXT, at REAL, PRIMARY KEY(endpoint, tag));
 CREATE TABLE IF NOT EXISTS push_clears(endpoint TEXT, at REAL);
+CREATE TABLE IF NOT EXISTS push_alert(tag TEXT PRIMARY KEY, fp TEXT, at REAL);
 CREATE TABLE IF NOT EXISTS scheduled_posts(
     id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, text TEXT, due_at REAL,
     created_at REAL);
@@ -1817,6 +1820,41 @@ class WebStore:
                 self._conn.execute("DELETE FROM push_shown WHERE tag=?", (tag,))
         return rows
 
+    def alert_note(self, tag: str, fp: str, at: float, keep_s: float = PUSH_SENT_KEEP_S) -> None:
+        """Record the text (its fingerprint) an alert's push under `tag`
+        shows, now or at `at`; records older than keep_s go."""
+        with self._lock:
+            with self._conn:
+                self._conn.execute("INSERT OR REPLACE INTO push_alert(tag, fp, at) VALUES (?,?,?)",
+                                   (tag, fp, float(at)))
+                self._conn.execute("DELETE FROM push_alert WHERE at < ?", (float(at) - keep_s,))
+
+    def alerts_shown(self) -> list[tuple[str, str]]:
+        """(tag, fingerprint) of each alert whose push reached a browser
+        that is still owed a clear for it (push_shown), oldest first."""
+        rows = self._all("SELECT a.tag, a.fp FROM push_alert a WHERE EXISTS (SELECT 1 FROM "
+                         "push_shown s WHERE s.tag = a.tag) ORDER BY a.at")
+        return [(r["tag"], r["fp"]) for r in rows]
+
+    def bot_texts(self, channel: str, thread_key: str, limit: int) -> list[str]:
+        """The text of the bot's newest live messages in a thread, at most
+        `limit`, newest first."""
+        rows = self._all("SELECT text FROM messages WHERE channel=? AND thread_key=? AND author=? "
+                         "AND kind='message' AND history=0 ORDER BY seq DESC LIMIT ?",
+                         (channel, thread_key, BOT, int(limit)))
+        return [r["text"] or "" for r in rows]
+
+    def linked_card_at(self, channel: str, thread_key: str) -> float | None:
+        """When the newest live card this conversation asked for in another
+        thread was posted (card_link; a card the owner settled since is a
+        status row and counts too); None when it links to none."""
+        row = self._one(
+            "SELECT MAX(m.posted_at) AS t FROM card_link l JOIN messages m ON m.id = l.card_id "
+            "AND (l.card_channel = '' OR m.channel = l.card_channel) WHERE l.channel=? AND "
+            "l.thread_key=? AND m.kind IN ('card', 'status') AND m.history=0 AND "
+            "NOT (m.channel = l.channel AND m.thread_key = l.thread_key)", (channel, thread_key))
+        return float(row["t"]) if row and row["t"] is not None else None
+
     def push_clear_slot(self, endpoint: str, now: float, gap_s: float, day_cap: int) -> str:
         """Take a clear's slot for `endpoint` at `now`: "" when it may go (and
         it is recorded), "gap" when one went in the last gap_s seconds, "cap"
@@ -2776,8 +2814,11 @@ class WebFrontend(ChatFrontend):
         alert's through chat.direct.web_notify) a push that goes now is
         dropped when another `dedupe` push with the same text went in the
         last DEDUPE_S seconds, from any process (web_push_policy.fingerprint):
-        an alert's own push after its direct message in the DM. Never
-        raises: push is an extra, and a failure is logged."""
+        an alert's own push after its direct message in the DM. An alert's
+        push (an `alert:` or `watch:` tag) that goes or waits records the
+        text it shows (`push_alert`), for the clear on the owner's reply
+        (_owner_wrote). Never raises: push is an extra, and a failure is
+        logged."""
         if not web_push.AVAILABLE:
             return {"sent": 0, "push": "off"}
         try:
@@ -2791,6 +2832,11 @@ class WebFrontend(ChatFrontend):
             out = self.push.notify(title, body, url, tag, urgency=urgency, at=at, wait=wait)
             if key and (out.get("queued") or out.get("sent")):
                 self.store.push_note(key, now)
+            if web_push_policy.is_alert_tag(tag) and (out.get("queued") or out.get("sent")
+                                                       or out.get("queued_for")):
+                fp = web_push_policy.fingerprint(title, body)
+                if fp:
+                    self.store.alert_note(tag, fp, max(now, float(at or 0)))
             return out
         except Exception:
             log.exception("web chat: a push failed")
@@ -2813,15 +2859,21 @@ class WebFrontend(ChatFrontend):
         budget and the browsers that get none are web_push.Pusher.clear's.
         Never a clear for a thread that notified nothing. The thread's
         two-minute window holds: an answer right after the reply, while the
-        owner is in the conversation, does not buzz again. Never raises."""
+        owner is in the conversation, does not buzz again. An alert whose
+        text a bot message of the thread carries (web_push_policy.alert_tags:
+        the DM post of the alert) is cleared the same way, after the
+        thread's own, within the same budget; a queued alert stays queued.
+        Never raises."""
         if not web_push.AVAILABLE or not row.get("thread_key"):
             return
         tag = self._push_tag(row)
         try:
             self.store.push_cancel(tag)
-            owed = self.store.push_shown_take(tag)
-            if owed:
-                self.push.clear(tag, owed, wait=self.writer_only)
+            alerts = web_push_policy.alert_tags(self.store, row["channel"], row["thread_key"])
+            for t in [tag, *alerts]:
+                owed = self.store.push_shown_take(t)
+                if owed:
+                    self.push.clear(t, owed, wait=self.writer_only)
         except Exception:
             log.exception("web chat: the owner's reply did not clear the thread's notifications")
 
