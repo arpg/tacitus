@@ -330,6 +330,10 @@ code { background: var(--code-bg); border-radius: var(--r-s); padding: 1px 5px; 
 pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--r-m); padding: 10px 12px;
   line-height: 1.5; overflow-x: auto; white-space: pre; }
 pre code { background: none; padding: 0; }
+/* A code block carries its own Copy, top right, over the block's padding. */
+.code-box { position: relative; }
+.code-box pre { padding-right: 76px; }
+.code-copy { position: absolute; top: 6px; right: 6px; min-height: 28px; padding: 3px 10px; font-size: 13px; }
 
 .table-wrap { overflow-x: auto; }
 table { border-collapse: collapse; font-size: 14px; }
