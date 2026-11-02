@@ -327,7 +327,7 @@ RESERVED_CHANNEL_IDS = frozenset({"needs"})
 # limit, the shortest of the platforms a room may live on.
 ROOM_NAME_MAX = 60
 EVENT_TYPES = ("message", "update", "reaction", "card", "status", "file", "channel",
-               "thread_state")
+               "thread_state", "release")
 LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
 # Host names a loopback client (the relay client, a test) puts in Host and
 # Origin, with this server's port.
@@ -1668,6 +1668,11 @@ class WebStore:
             return out
         return self._transaction(run)
 
+    def note_release(self, bundle: str) -> int:
+        """Append a `release` event naming the bundle the bot signs now, so
+        an open app looks for the new release at once; its seq."""
+        return self._transaction(lambda: self._emit("release", "", bundle, {"bundle": bundle}))
+
     def move_thread(self, old_channel: str, old_key: str, new_channel: str,
                     new_key: str) -> int:
         """Re-key every message of a thread to its new channel and key, with
@@ -2764,6 +2769,14 @@ class WebFrontend(ChatFrontend):
         elif old.hash != new.hash:
             log.warning("web chat: signed the app again, bundle %s; changed: %s", new.hash[:16],
                         ", ".join(web_bundle.diff(old.files, new.files)) or "built_at")
+            # A deploy that changed only the app's files restarts nothing, so the
+            # open apps hear of it here (app.js lookAgain).
+            store = self._store
+            if store is not None:
+                try:
+                    store.note_release(new.hash)
+                except Exception as e:
+                    log.warning("web chat: the open apps were not told of the release: %s", e)
         return new.hash
 
     def page_headers(self) -> dict[str, dict[str, str]]:

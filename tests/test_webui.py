@@ -2602,19 +2602,65 @@ NEXT_WORKER = b"""
 """
 
 
+def _hold_looks(page):
+    """This page looks for no release while it is open (app.js lookAgain), so a
+    test of what the next start takes sees the release then."""
+    page.evaluate("S.looking = true")
+
+
+def test_an_open_app_offers_a_release_the_bot_signs_and_takes_it_on_update(browser, relay_bot_deploys):
+    """The bot signs the app again while the app is open on the tailnet (a
+    deploy that changed only the app's files restarts nothing): the stream
+    says `release`, the app checks the release and its worker keeps it, and
+    a note above the composer offers it, with no reload by itself. Update
+    reloads the page, which runs the new release, and the note is gone."""
+    from playwright.sync_api import expect
+    bot = relay_bot_deploys
+    fe, webui = bot["fe"], bot["webui"]
+    line = "A new version of Tacitus is ready."
+    contexts = []
+    try:
+        page = _owner_context(browser, fe, contexts, workers=True).new_page()
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(bot["public"] + "/")
+        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+        first = fe.bundle_hash()
+        wait_for(lambda: (_worker_state(page, "trusted") or {}).get("hash") == first, 15)
+        expect(page.locator("#app-update")).to_be_hidden()
+        page.evaluate("window.__open = true")
+        css = (webui / "app.css").read_bytes() + b"\n/* the next release */\n"
+        (webui / "app.css").write_bytes(css)
+        assert fe.refresh_bundle() != first
+        expect(page.locator("#app-update")).to_be_visible(timeout=20000)
+        expect(page.locator("#app-update")).to_contain_text(line)
+        expect(page.locator("#update-note")).to_have_text(line)
+        assert page.evaluate("window.__open") is True  # no reload in the middle of a conversation
+        assert _worker_state(page, "trusted")["hash"] == fe.bundle_hash()
+        page.click("#app-update-go")
+        page.wait_for_function("window.__open === undefined", timeout=15000)
+        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+        assert page.evaluate("fetch('app.css').then((r) => r.text())") == css.decode()
+        expect(page.locator("#app-update")).to_be_hidden()
+        assert not errors, errors
+    finally:
+        for c in contexts:
+            c.close()
+
+
 def test_a_phone_off_the_tailnet_takes_a_new_release_through_the_relay(browser, relay_bot_deploys, caplog):
     """A phone paired on the tailnet runs the copy its service worker
     checked there. Off the tailnet, the bot deploys a new app.css and signs
-    again. At its next start the phone fetches the signed manifest and the
+    again. At its next start (this test holds the look an open app makes) the phone fetches the signed manifest and the
     changed file from the bot through the relay and checks the file; its
-    worker checks it again and keeps it. The phone says to close the app and
-    open it again, and does not reload. A file that does not hash to the
+    worker checks it again and keeps it. The phone offers the new version,
+    and does not reload. A file that does not hash to the
     manifest is kept by neither, and the phone reports it to the bot."""
     import logging
     from playwright.sync_api import expect
     bot = relay_bot_deploys
     fe, webui = bot["fe"], bot["webui"]
-    line = "Tacitus updated. Close the app and open it again."
+    line = "A new version of Tacitus is ready."
     contexts = []
     try:
         _tail, page, errors, _asked = _pair_and_approve(browser, bot, contexts, workers=True)
@@ -2626,6 +2672,7 @@ def test_a_phone_off_the_tailnet_takes_a_new_release_through_the_relay(browser, 
         page.context.route(re.compile(re.escape(bot["public"]) + "/.*"), lambda route: route.abort())
         new = old + b"\n/* the next release */\n"
         (webui / "app.css").write_bytes(new)
+        _hold_looks(page)
         assert fe.refresh_bundle() != first
 
         # The bot serves app.css with bytes its manifest does not name.
@@ -2652,7 +2699,7 @@ def test_a_phone_off_the_tailnet_takes_a_new_release_through_the_relay(browser, 
         page.reload()
         expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
         page.evaluate("window.__open = true")
-        expect(page.locator("#toast")).to_have_text(line, timeout=20000)
+        expect(page.locator("#app-update")).to_be_visible(timeout=20000)
         expect(page.locator("#update-note")).to_have_text(line)
         assert page.evaluate("window.__open") is True  # no reload in the middle of a conversation
         assert _kept(page, "app.css") == new.decode()
@@ -2668,9 +2715,10 @@ def test_a_phone_off_the_tailnet_takes_a_new_release_through_the_relay(browser, 
         policy = fe.html_csp + "; manifest-src 'self'"
         assert _kept_headers(page, "index.html")["content-security-policy"] == fe.html_csp
         fe.html_csp = policy
+        _hold_looks(page)
         fe.refresh_bundle()
         page.reload()
-        expect(page.locator("#toast")).to_have_text(line, timeout=20000)
+        expect(page.locator("#app-update")).to_be_visible(timeout=20000)
         assert _kept_headers(page, "index.html") == {k.lower(): v for k, v in fe.page_headers()["index.html"].items()}
         assert _worker_state(page, "trusted")["headers"] == json.loads(fe.bundle.written["headers.json"])
         assert page.reload().headers["content-security-policy"] == policy  # the next start runs under it
@@ -2679,10 +2727,11 @@ def test_a_phone_off_the_tailnet_takes_a_new_release_through_the_relay(browser, 
         fe.page_headers = lambda: None
         html = (webui / "index.html").read_bytes() + b"<!-- the next release -->\n"
         (webui / "index.html").write_bytes(html)
+        _hold_looks(page)
         fe.refresh_bundle()
         assert "headers.json" not in fe.bundle.files
         page.reload()
-        expect(page.locator("#toast")).to_have_text(line, timeout=20000)
+        expect(page.locator("#app-update")).to_be_visible(timeout=20000)
         assert _kept(page, "index.html") == html.decode()
         assert _kept_headers(page, "index.html")["content-security-policy"] == policy
         assert _worker_state(page, "trusted")["headers"] is None
@@ -2805,7 +2854,7 @@ def test_a_relay_origin_phone_takes_a_new_release_from_the_bot_through_the_relay
     from playwright.sync_api import expect
     bot = relay_bot_deploys
     fe, webui, rbase = bot["fe"], bot["webui"], bot["rbase"]
-    line = "Tacitus updated. Close the app and open it again."
+    line = "A new version of Tacitus is ready."
     release = "fetch('app.css').then((r) => r.headers.get('x-tacitus-release'))"
     contexts = []
     try:
@@ -2820,9 +2869,10 @@ def test_a_relay_origin_phone_takes_a_new_release_from_the_bot_through_the_relay
         (webui / "bundle.js").write_bytes((webui / "bundle.js").read_bytes() + NEXT_WORKER)
         css = (webui / "app.css").read_bytes() + b"\n/* the next release */\n"
         (webui / "app.css").write_bytes(css)
+        _hold_looks(page)
         assert fe.refresh_bundle() != first and fe.bundle.files["sw.js"] == sw
         page.reload()
-        expect(page.locator("#toast")).to_have_text(line, timeout=20000)
+        expect(page.locator("#app-update")).to_be_visible(timeout=20000)
         new = fe.bundle_hash()
         wait_for(lambda: fe.relay.store.device_by_id(device).get("attested_bundle") == new, 15)
         assert fe.relay.devices()[0]["bundle_verified"] is True

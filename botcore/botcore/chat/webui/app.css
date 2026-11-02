@@ -450,6 +450,28 @@ a.file-link .file-name { color: var(--accent); }
   animation: rise .18s var(--ease);
 }
 @keyframes rise { from { opacity: 0; transform: translate(-50%, 8px); } }
+/* A new release: stays above the composer until the owner takes it; a toast rises above it. */
+#app-update {
+  position: fixed;
+  left: 50%;
+  bottom: calc(80px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  width: min(calc(100% - 32px), 420px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 8px 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-m);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-lg);
+  font-size: 14px;
+  z-index: 41;
+  animation: rise .18s var(--ease);
+}
+#app-update span { flex: 1; min-width: 0; }
+#app-update:not([hidden]) ~ #toast { bottom: calc(136px + env(safe-area-inset-bottom)); }
 .gate {
   position: fixed;
   inset: 0;

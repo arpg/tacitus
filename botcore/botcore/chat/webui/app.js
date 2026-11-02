@@ -14,7 +14,7 @@
 
 const BASE = location.pathname.replace(/\/index\.html$/, '').replace(/\/+$/, '');
 const enc = encodeURIComponent;
-const EVENT_TYPES = ['message', 'update', 'reaction', 'card', 'status', 'file', 'channel', 'thread_state'];
+const EVENT_TYPES = ['message', 'update', 'reaction', 'card', 'status', 'file', 'channel', 'thread_state', 'release'];
 const CREATED = new Set(['message', 'card', 'file']); // the event types that post a message
 const KIND_ORDER = { dm: 0, main: 1, sched: 2, digest: 3, room: 4 };
 const NEW_THREAD = '+'; // never a thread key: every key opens with a letter or digit
@@ -86,6 +86,9 @@ const S = {
   filter: 'all',        // the thread filter chosen in this browser
   card: 0,              // the welcome's card on show
   welcomed: false,      // the welcome had its chance on this page
+  updateReady: false,   // a new release is kept and waits for a reload
+  looking: false,       // a look for a new release is under way
+  lookedAt: 0,          // when the app last looked, coming back to the screen
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1002,9 +1005,11 @@ async function reconnect(handle) {
   if (S.es !== handle) return;
   try {
     await pickTransport();
-    await call('GET', '/me');
+    const me = await call('GET', '/me');
     if (relayCopy() && !(await checkBundle())) return;
     connect();
+    // A restart for a deploy drops the stream: the bot may sign another release now.
+    if (!relayCopy()) lookAgain(me).catch(() => {});
   } catch {
     if ($('pair').hidden) setTimeout(() => reconnect(handle), Math.min(30000, 1000 * 2 ** S.retry++));
   }
@@ -1023,6 +1028,10 @@ function onEvent(type, id, raw) {
 function apply(type, data) {
   if (type === 'thread_state') {
     if (data.channel && data.thread_key) onState(data);
+    return;
+  }
+  if (type === 'release') {
+    if (data.bundle && S.me && data.bundle !== S.me.bundle) lookAgain().catch(() => {});
     return;
   }
   if (type === 'channel') {
@@ -2671,8 +2680,9 @@ async function checkBundle() {
     throw new Error(out.error || 'the check of the app did not finish');
   }
   if (rec) await call('POST', '/relay/attest', { bundle: v.hash }); // the release its worker now keeps
-  // The website's copy checks before its chat opens: the page runs the bot's release from a reload.
-  if (out.updated && rec && rec.hosted) return location.reload();
+  // The website's copy checks before its chat opens: the page runs the bot's release from a
+  // reload. Once the chat is open, a release waits for the owner (appUpdated), as everywhere.
+  if (out.updated && rec && rec.hosted && !S.ready) return location.reload();
   if (out.updated) appUpdated();
   return v;
 }
@@ -2708,13 +2718,38 @@ async function updateOverRelay() {
 }
 
 // A new release is kept, and runs from the next start: the page does not
-// reload in the middle of a conversation.
+// reload in the middle of a conversation. The note above the composer stays
+// until the owner taps Update (a reload, which runs the kept release) or the
+// app starts again; the foot of the drawer says the same.
+const UPDATE_LINE = 'A new version of Tacitus is ready.';
 function appUpdated() {
-  const text = 'Tacitus updated. Close the app and open it again.';
-  toast(text);
-  $('update-note').textContent = text;
+  S.updateReady = true;
+  $('app-update').hidden = false;
+  $('update-note').textContent = UPDATE_LINE;
   $('update-note').hidden = false;
   footer();
+}
+
+// A release while the app is open. The bot says so on the stream when it signs
+// the app again (`release`: a deploy that changed the app's files), a restart
+// for a deploy drops the stream and the reconnect brings /me, and a phone that
+// comes back to the screen asks /me (LOOK_MS apart). A /me that names another
+// bundle than the one this page checked is taken as at start: checked and kept
+// by the worker (checkBundle, or through the relay off the tailnet), and offered
+// by appUpdated. A look that fails leaves S.me as it was, so the next one tries again.
+const LOOK_MS = 60000;
+async function lookAgain(me) {
+  if (S.halted || !S.ready || S.updateReady || S.looking || !S.me) return;
+  S.looking = true;
+  try {
+    const now = me || await call('GET', '/me');
+    if (!now || !now.bundle || now.bundle === S.me.bundle) return;
+    if (!T.relay || relayCopy()) await checkBundle();
+    else await updateOverRelay();
+    S.me = now;
+  } finally {
+    S.looking = false;
+  }
 }
 
 // The service worker's answer, or null without one (none yet, or blocked).
@@ -2940,6 +2975,13 @@ async function init() {
   roomMenus();
   ownerActions();
   $('relay-note').addEventListener('click', () => relayNote(''));
+  $('app-update-go').addEventListener('click', () => location.reload());
+  // A phone back on the screen looks for a release made while it was away.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || Date.now() - S.lookedAt < LOOK_MS) return;
+    S.lookedAt = Date.now();
+    lookAgain().catch(() => {});
+  });
   // Escape closes the drawer, unless it closes a dialog over it.
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !document.querySelector('dialog[open]')) document.body.classList.remove('drawer'); });
   document.addEventListener('visibilitychange', () => {
