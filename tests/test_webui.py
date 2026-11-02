@@ -398,7 +398,9 @@ def test_the_app_stays_small():
     # 4,410: 4,070 plus the owner's own actions (search with its grouped hits and the marked hit, the
     # reaction strip and chips, edit and delete of the owner's message, Copy on a phone).
     # 4,420: 4,410 plus Copy on each code block (the block's text alone), left out of the message's copy.
-    assert lines <= 4420, f"{lines} lines: the contract keeps the app near 4,420 with the relay, the phone setup, the thread states, the teaching, the rooms' menus and the owner's own actions"
+    # 4,470: 4,420 plus the keyboard on a window that shrinks with it (the screen's height per width,
+    #     the pin held a second past the focus, no scroll fight) and the phone's note per keyboard change.
+    assert lines <= 4470, f"{lines} lines: the contract keeps the app near 4,470 with the relay, the phone setup, the thread states, the teaching, the rooms' menus and the owner's own actions"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -631,9 +633,46 @@ def test_only_a_focused_field_lets_a_short_viewport_pin_the_height(app):
     page.evaluate("window.visualViewport.height = 400")
     page.evaluate("window.dispatchEvent(new Event('resize'))")
     assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == "400px"
+    # The focus moving to Send keeps the pin for a second; then the keyboard is read as gone.
     page.evaluate("document.getElementById('text').blur()")
     page.wait_for_timeout(150)
+    assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == "400px"
+    page.wait_for_timeout(1000)
+    page.evaluate("window.dispatchEvent(new Event('resize'))")
     assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == ""
+    assert not errors, errors
+
+
+def test_a_window_that_shrinks_with_the_keyboard_keeps_the_composer_in_view(app):
+    """iOS 27 shrinks the window itself for the keyboard, and the window and the
+    visual viewport disagree while the keyboard moves: the composer stays
+    inside the visual viewport through every step, and the phone notes each
+    keyboard change with where the composer landed."""
+    page, stub, errors = app(viewport={"width": 382, "height": 678}, init=FAKE_VIEWPORT)
+    page.evaluate("__vv.width = 382; __vv.height = 678")
+    open_thread(page, "Draft a reply")
+    page.evaluate("window.dispatchEvent(new Event('resize'))")  # the screen without a keyboard is known
+    page.focus("#text")
+    # The keyboard opens: the window and the visual viewport both read 306.
+    page.set_viewport_size({"width": 382, "height": 306})
+    page.evaluate("__vv.height = 306; __vv.dispatchEvent(new Event('resize'))")
+    box = page.locator("#composer").bounding_box()
+    assert box["y"] + box["height"] <= 306
+    assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == "306px"
+    # The window springs back to 678 while the visual viewport is still 306: the pin holds.
+    page.set_viewport_size({"width": 382, "height": 678})
+    page.wait_for_timeout(100)
+    assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == "306px"
+    box = page.locator("#composer").bounding_box()
+    assert box["y"] + box["height"] <= 306
+    # The keyboard closes: the visual viewport grows, the pin goes, the window's height rules.
+    page.evaluate("document.getElementById('text').blur()")
+    page.evaluate("__vv.height = 678; __vv.dispatchEvent(new Event('resize'))")
+    assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == ""
+    wait_for(lambda: any(e.get("what") == "keyboard" for d in stub.diags for e in d.get("entries", [])))
+    notes = [e for d in stub.diags for e in d.get("entries", []) if e.get("what") == "keyboard"]
+    assert [n["up"] for n in notes] == [True, False]
+    assert notes[0]["composer"] <= 306 and notes[0]["thread"] == "open" and notes[0]["client"] in (306, 678)
     assert not errors, errors
 
 
