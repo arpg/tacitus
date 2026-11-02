@@ -1842,9 +1842,11 @@ def test_card_now_reads_a_card_by_id_and_writes_nothing(tmp_path):
     key = zf.thread_key_for(DM, "lock ABCD uma")
     before = len(c.calls)
     assert fe.card_now(f"stream:{DM}", key, "601") == {"text": live, "filed": False,
-                                                        "edited_at": None}
+                                                        "edited_at": None,
+                                                        "posted_at": 1_800_000_000.0}
     assert fe.card_now(f"stream:{DM}", key, "602") == {"text": settled, "filed": False,
-                                                        "edited_at": 1_800_000_500.0}
+                                                        "edited_at": 1_800_000_500.0,
+                                                        "posted_at": 1_800_000_000.0}
     assert fe.card_now(f"stream:{DM}", key, "603")["filed"] is True
     assert fe.card_now(f"stream:{DM}", key, "699") is None              # no such message
     c.get_messages = lambda req: {"result": "error", "msg": "down"}
@@ -1908,3 +1910,32 @@ def test_a_card_copied_as_text_reads_its_outcome_from_zulip(tmp_path):
     assert comp._primary_card(dm, key, "610")["text"] == settled
     assert web.store.max_event_seq() == after
     assert ts.card_pending(row["text"]) is False
+
+
+def test_a_pointer_s_card_the_copy_never_took_is_read_from_zulip(tmp_path):
+    """The copy took a conversation's pointer to its card, not the card:
+    the thread states read the card from Zulip by the pointer's id, settle
+    the conversation, and the web chat gains no row for it."""
+    comp, fe, c, web = _shadowed(tmp_path)
+    ea = f"stream:{EA}"
+    key = zf.thread_key_for(EA, "Reply to Avery")
+    web.store.add_message(ea, mid="620", thread_key=key, author="owner", kind="message",
+                          text="Draft a reply to Avery.", posted_at=1_800_000_000.0, history=True)
+    web.store.add_message(ea, mid="621", thread_key=key, author="bot", kind="message",
+                          text=":locked: The Send button for this draft is in your DM: [open it]"
+                               f"({SITE}/#narrow/channel/{DM}-ea-dm/topic/x/near/622)",
+                          posted_at=1_800_000_060.0, history=True)
+    settled = (zf.render_card(_card(), "ABCD").split(zf._CARD_RULE)[0] + zf._CARD_RULE
+               + ":check: **Sent**")
+    c.messages_by_anchor[622] = {**_zulip_card(622, settled, edited=1_800_000_300),
+                                 "timestamp": 1_800_000_090}
+    assert web.store.linked_cards(ea, key)[0]["kind"] == "missing"
+    prompts = []
+    states = web.enable_thread_state(model=prompts.append, clock=lambda: 1_800_000_600.0)
+    start = web.store.max_event_seq()
+    states.tick()
+    st = web.store.thread_state(ea, key)
+    assert (st["state"], st["by"], st["reason"]) == ("done", "rule", "Its card was handled: Sent")
+    assert prompts == []
+    assert web.store.message(f"stream:{DM}", "622") is None and web.store.message("", "622") is None
+    assert [t for _s, t, _p in web.store.events_since(start)] == ["thread_state"]

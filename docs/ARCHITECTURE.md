@@ -2305,8 +2305,11 @@ room registry, the routing table), so a feature in use is never
 suggested. The morning briefing's hourly weekday tick runs
 `usage_tips.py post` before run-agent.sh's 4 AM gate; it posts through
 `chat_notify` to the EA channel, its own thread, with a web push at
-normal urgency (`chat.direct.web_notify`), on a weekday morning after
-that day's briefing, 7 days after the last tip. The chat bot answers
+normal urgency (`chat.direct.web_notify`) whose tap opens that thread
+(`chat_notify.post` returns its key on the web chat; `web_thread_url`),
+on a weekday morning after that day's briefing, 7 days after the last
+tip. A tip with no answer in 7 days is offered once more 14 days later,
+and never more than twice. The chat bot answers
 *more*, *not now* and *never* in a tip's thread with no model call
 (`_handle_usage_tip_reply`, first in `_handle_bot_command`); *never*
 adds the rule `usage-tips-stop` (kind instruction, scope briefing) to

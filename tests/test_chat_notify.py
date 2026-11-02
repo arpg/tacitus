@@ -510,6 +510,29 @@ def test_a_web_notify_entry_names_the_channel_and_the_keys_follow_it(web_env, ca
     assert chat_notify.llm_tool_grants() == ""
 
 
+def test_a_web_post_returns_its_thread_and_a_push_can_open_it(web_env, monkeypatch):
+    key = chat_notify.post("ea-assistant", "a tip" + chat_notify.SPLIT_MARKER + "more",
+                           _bypass_quiet=True)
+    store = web_env.wf.WebStore(web_env.store)
+    (row,) = store.threads("main")
+    assert isinstance(key, str) and key == row["thread_key"]
+    digest = chat_notify.post_digest("mail-digest", "kept mail", topic="t")
+    assert digest == store.threads(chat_notify.WEB_DIGEST_ID)[0]["thread_key"]
+    assert chat_notify.post("list-digest", "list items")    # through post(): the key, truthy
+    assert chat_notify.web_direct("a note") is True         # its own contract stays a bool
+    from chat import direct
+    url = direct.web_thread_url(key)
+    assert url.startswith("/") and url.endswith(f"/#/main/{key}")
+    assert direct.web_thread_url("t-nowhere") == "" and direct.web_thread_url("") == ""
+    opened = []
+    monkeypatch.setattr(web_env.wf.WebFrontend, "notify",
+                        lambda self, title, body="", url="", tag="", **kw:
+                        opened.append(url) or {"sent": 1})
+    assert direct.web_notify("a tip", tag="usage-tip", urgency="normal", url=url) == {"sent": 1}
+    direct.web_notify("an alert")
+    assert opened[0] == url and opened[1].endswith("/") and "#" not in opened[1]
+
+
 def test_a_web_post_from_a_process_that_is_not_the_owners_posts_nothing(web_env, monkeypatch,
                                                                         capsys):
     monkeypatch.setattr(web_env.chat.owner_trust, "is_owner_process", lambda: False)

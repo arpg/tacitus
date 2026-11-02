@@ -1055,10 +1055,12 @@ class WebStore:
         """The messages in other threads that the conversation links to
         (card_link), oldest first, each saying whether it is a history row.
         A link the store holds no message for (a card never copied here) is
-        a row of kind `missing`, so no rule takes the cards it can see for
-        all of them."""
+        a row of kind `missing` with the link's card channel and message id
+        ({"kind", "channel", "id", "card": None}), so no rule takes the cards
+        it can see for all of them until the primary gives the card."""
         rows = self._all(
-            "SELECT m.*, l.card_id AS link_id FROM card_link l LEFT JOIN messages m ON "
+            "SELECT m.*, l.card_id AS link_id, l.card_channel AS link_channel FROM card_link l "
+            "LEFT JOIN messages m ON "
             "m.id = l.card_id AND (l.card_channel = '' OR m.channel = l.card_channel) "
             "WHERE l.channel=? AND l.thread_key=? ORDER BY m.seq IS NULL, m.seq LIMIT ?",
             (channel, thread_key, _ts.LINK_CAP))
@@ -1066,7 +1068,8 @@ class WebStore:
         seen: set = set()
         for r in rows:
             if r["seq"] is None:
-                out.append({"kind": "missing", "id": r["link_id"], "card": None})
+                out.append({"kind": "missing", "channel": r["link_channel"], "id": r["link_id"],
+                            "card": None})
                 continue
             if r["seq"] in seen or (r["channel"], r["thread_key"]) == (channel, thread_key):
                 continue
@@ -1137,20 +1140,19 @@ class WebStore:
 
     def nudge_candidates(self, since_before: float, active_after: float,
                          limit: int) -> list[tuple[str, str]]:
-        """The needs_you threads, in channels not archived and with no nudge
-        yet, whose owner last wrote (or tapped the state) at or before
-        `since_before` (a thread the owner never wrote in nor tapped is
-        none) and that were active after `active_after` (the newest message,
-        or the owner's tap): the longest waiting first."""
-        tap = "CASE WHEN s.by = 'owner' THEN COALESCE(s.at, 0) ELSE 0 END"
+        """The needs_you threads a rule or the model set (never one the owner
+        set: Needs me), in channels not archived and with no nudge yet,
+        whose owner last wrote at or before `since_before` (a thread the
+        owner never wrote in is none) and that were active after
+        `active_after` (the newest message): the longest waiting first."""
         rows = self._all(
             "SELECT channel, thread_key FROM (SELECT s.channel AS channel, "
-            "s.thread_key AS thread_key, MAX(COALESCE((SELECT MAX(m.posted_at) FROM messages m "
-            "WHERE m.channel = s.channel AND m.thread_key = s.thread_key AND m.author = ?), 0), "
-            f"{tap}) AS since, "
-            "MAX(COALESCE((SELECT MAX(m.posted_at) FROM messages m WHERE m.channel = s.channel "
-            f"AND m.thread_key = s.thread_key), 0), {tap}) AS active FROM thread_state s "
+            "s.thread_key AS thread_key, COALESCE((SELECT MAX(m.posted_at) FROM messages m "
+            "WHERE m.channel = s.channel AND m.thread_key = s.thread_key AND m.author = ?), 0) "
+            "AS since, COALESCE((SELECT MAX(m.posted_at) FROM messages m WHERE m.channel = "
+            "s.channel AND m.thread_key = s.thread_key), 0) AS active FROM thread_state s "
             "JOIN channels c ON c.id = s.channel AND c.archived = 0 WHERE s.state = 'needs_you' "
+            "AND s.by != 'owner' "
             "AND NOT EXISTS (SELECT 1 FROM nudges n WHERE n.channel = s.channel AND "
             "n.thread_key = s.thread_key)) WHERE since > 0 AND since <= ? AND active > ? "
             "ORDER BY since LIMIT ?",

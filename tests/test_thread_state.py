@@ -934,6 +934,23 @@ LINK_CASES = [
     ("a card copied from Zulip, still with its legend",
      [{**zcard(at=NOW - 2 * 3600), "id": "5522"}], [],
      ("needs_you", "Its card in Direct messages waits for you.")),
+    ("a card the copy never took, read from Zulip: sent",
+     [ts.fetched_card({"channel": "", "id": "5522"},
+                      {"text": ZHEAD + ZRULE + ":check: **Sent**", "filed": False,
+                       "edited_at": NOW - 600, "posted_at": NOW - 3 * 3600 + 90})], [],
+     ("done", "Its card was handled: Sent")),
+    ("a card the copy never took, settled after the owner's change",
+     [ts.fetched_card({"channel": "", "id": "5522"},
+                      {"text": ZHEAD + ZRULE + ":check: **Sent**", "filed": False,
+                       "edited_at": NOW - 600, "posted_at": NOW - 3 * 3600 + 90})],
+     [m(4, "owner", "Make it formal.", reactions=["white_check_mark"], at=NOW - 2 * 3600),
+      m(5, text="Revised.", at=NOW - 2 * 3600 + 60)],
+     ("done", "Its card was handled: Sent")),
+    ("a card the copy never took, read from Zulip: live",
+     [ts.fetched_card({"channel": "", "id": "5522"},
+                      {"text": ZHEAD + ZRULE + CHIPS, "filed": False, "edited_at": None,
+                       "posted_at": NOW - 3 * 3600 + 90})], [],
+     ("needs_you", "Its card in Direct messages waits for you.")),
 ]
 
 
@@ -1209,6 +1226,192 @@ def test_links_made_before_the_table_are_found_once_at_start(store):
     assert [r["channel"] for r in store.linked_cards("stream:4", zask["thread_key"])] == ["stream:49"]
     store.move_thread("stream:4", zask["thread_key"], "stream:4", "stream:4:topic:Avery2")
     assert [r["id"] for r in store.linked_cards("stream:4", "stream:4:topic:Avery2")] == ["101"]
+
+
+# ── linked cards in the model's prompt ────────────────────────────────
+
+def test_the_prompt_gives_each_linked_card_one_line_by_its_time():
+    linked = [dm_card("w6", at=NOW - 8 * DAY),
+              dm_card("w7", kind="status", text=":x: Could not send: the draft is gone.",
+                      at=NOW - 3 * 3600 + 90, updated=NOW - 3 * 3600 + 120),
+              dm_card(kind="status", text=":white_check_mark: Sent.", at=NOW - 3 * 3600 + 100,
+                      updated=NOW - 600),
+              {"kind": "missing", "channel": "", "id": "5522", "card": None}]
+    msgs = ASK + [m(4, "owner", "Did it go?", at=NOW - 300)]
+    p = ts.judge_prompt(msgs, linked=linked, now=NOW)
+    expired = '] card "Confirm send" in Direct messages: expired\n'
+    failed = '] card "Confirm send" in Direct messages: failed\n'
+    sent = '] card "Confirm send" in Direct messages: Sent.\n'
+    for line in (expired, failed, sent):
+        assert p.count(line) == 1, line
+    assert "[bot, " in p.split(failed)[0].splitlines()[-1]
+    # each in its place among the messages: after the first, by the time it last changed
+    at = [p.index(s) for s in ("Draft a reply to Avery.", expired, "[open it]", "Draft created.",
+                               failed, sent, "Did it go?")]
+    assert at == sorted(at)
+    # never a card's body or fields, nor its failure's words; a link to no card is no line
+    for absent in ("model never sees", "x@example.test", "the draft is gone", "5522"):
+        assert absent not in p
+    assert "A card in Direct messages is one this conversation asked for" in p
+    # the hosted part carries the same lines
+    part = ts.batch_part("c1", msgs, linked=linked, now=NOW)
+    assert all(line in part for line in (expired, failed, sent))
+    # a card in Direct messages still live, or one read from Zulip, reads the same way
+    p = ts.judge_prompt(ASK, linked=[dm_card(at=NOW - 3 * 3600 + 90),
+                                     {**zcard(":check: **Sent**", at=NOW - 2 * 3600), "id": "57"}],
+                        now=NOW)
+    assert 'card "Confirm send" in Direct messages: waiting for a button' in p
+    assert 'card "Confirm send" in Direct messages: Sent' in p
+
+
+def _failed_link(store):
+    """A conversation whose card in the DM failed: rule 2b decides nothing."""
+    ask = store.add_message("main", mid=None, thread_key=None, author="owner", kind="message",
+                            text="Draft a reply to Avery.", posted_at=time.time() - 3 * 3600)
+    store.toggle_reaction("main", ask["id"], "white_check_mark", True)
+    store.add_message("dm", mid=None, thread_key=None, author="bot", kind="status",
+                      text=":x: Could not send: the draft is gone.",
+                      card=_send_card("main", ask["thread_key"]), posted_at=time.time() - 3 * 3600)
+    store.add_message("main", mid=None, thread_key=ask["thread_key"], author="bot",
+                      kind="message", text="Draft created.", posted_at=time.time() - 3 * 3600 + 60)
+    return ask["thread_key"]
+
+
+def test_the_model_reads_a_linked_card_that_decides_nothing(store):
+    _failed_link(store)
+    model = FakeModel()
+    out = engine(store, model).tick()
+    assert out["model_calls"] == 1
+    assert 'card "Confirm send" in Direct messages: failed' in model.prompts[0]
+    # the hosted call reads the same line
+    _failed_link(store)
+    hosted = FakeHosted()
+    assert hosted_engine(store, hosted).tick()["hosted_threads"] == 1
+    assert 'card "Confirm send" in Direct messages: failed' in hosted.prompts[0]
+
+
+# ── a linked card the copy never took, read from Zulip ────────────────
+
+ZPOINTER = (":locked: The Send button for this draft is in your DM: [open it]"
+            "(https://chat.example.org/#narrow/channel/6-ea-dm/topic/x/near/{id})")
+
+
+def pointed(store, card_id="5522", at=None):
+    """A conversation copied from Zulip that asked for a card: the owner's
+    ask and the bot's pointer to card `card_id`, which the copy never took.
+    Its thread key."""
+    store.upsert_channel("stream:4", "ea", "main")
+    at = time.time() - 3 * 3600 if at is None else at
+    key = f"stream:4:topic:ask{card_id}"
+    store.add_message("stream:4", mid=f"{card_id}0", thread_key=key, author="owner",
+                      kind="message", text="Draft a reply to Avery.", posted_at=at, history=True)
+    store.add_message("stream:4", mid=f"{card_id}1", thread_key=key, author="bot",
+                      kind="message", text=ZPOINTER.format(id=card_id), posted_at=at + 60,
+                      history=True)
+    return key
+
+
+def zanswer(middle, at, edited=None, filed=False):
+    return {"text": ZHEAD + ZRULE + middle + ZRULE + ZBODY, "filed": filed,
+            "edited_at": edited, "posted_at": at + 90}
+
+
+def test_fetched_card_reads_zulip_s_answer_as_a_mirrored_card():
+    link = {"kind": "missing", "channel": "", "id": "5522", "card": None}
+    live = ts.fetched_card(link, zanswer(CHIPS, NOW - 3600))
+    assert (live["kind"], live["card"]["title"], live["posted_at"]) == (
+        "card", ":locked: **Confirm send**", NOW - 3600 + 90)
+    sent = ts.fetched_card(link, zanswer(":check: **Sent**", NOW - 3600, edited=NOW - 60))
+    assert (sent["kind"], sent["text"], sent["updated_at"]) == ("status", ":check: **Sent**",
+                                                                 NOW - 60)
+    # no edit time known: the posting counts
+    assert ts.fetched_card(link, zanswer(":check: **Sent**", NOW - 3600))["updated_at"] == \
+        NOW - 3600 + 90
+    filed = ts.fetched_card(link, zanswer(CHIPS, NOW - 3600, filed=True))
+    assert (filed["kind"], filed["text"]) == ("status", ts.SETTLED_OUTSIDE)
+    failed = ts.fetched_card(link, zanswer(":cross_mark: Could not send", NOW - 3600))
+    assert ts.outcome(failed["text"]) == "failed"
+    for got in (None, {"text": "Just a note.", "filed": False}, {"text": ""}):
+        assert ts.fetched_card(link, got) is None
+
+
+def test_a_linked_card_the_store_never_took_is_read_from_the_primary(store):
+    clock = [time.time()]
+    key = pointed(store, at=clock[0] - 3 * 3600)
+    (link,) = store.linked_cards("stream:4", key)
+    assert link == {"kind": "missing", "channel": "", "id": "5522", "card": None}
+    # with no primary to ask it stays missing: the model reads the thread
+    model = FakeModel()
+    engine(store, model, clock=lambda: clock[0]).tick()
+    assert len(model.prompts) == 1 and "in Direct messages:" not in model.prompts[0]
+    # the primary has it: settled there, so the conversation is done by rule
+    cards = FakeCards({"5522": zanswer(":check: **Sent**", clock[0] - 3 * 3600,
+                                       edited=clock[0] - 600)})
+    model = FakeModel()
+    e = engine(store, model, cards=cards, clock=lambda: clock[0])
+    out = e.tick()
+    st = store.thread_state("stream:4", key)
+    assert (st["state"], st["by"], st["reason"]) == ("done", "rule", "Its card was handled: Sent")
+    assert model.prompts == [] and cards.calls == [("", "", "5522")] and out["card_reads"] == 1
+    # nothing went into the store: it still holds no such card
+    assert store.linked_cards("stream:4", key)[0]["kind"] == "missing"
+    # a settled answer is final: no read again, whatever the tick
+    clock[0] += 3 * ts.TICK_S
+    assert e.tick()["card_reads"] == 0 and len(cards.calls) == 1
+    assert store.thread_state("stream:4", key)["state"] == "done"
+
+
+def test_a_live_card_the_store_never_took_is_read_each_tick_within_the_cap(store):
+    clock = [time.time()]
+    key = pointed(store, at=clock[0] - 30 * 3600)
+    cards = FakeCards({"5522": zanswer(CHIPS, clock[0] - 30 * 3600)})
+    nudge = Nudges(store)
+    e = engine(store, FakeModel(), cards=cards, clock=lambda: clock[0], nudge=nudge)
+    out = e.tick()
+    st = store.thread_state("stream:4", key)
+    assert (st["state"], st["reason"]) == ("needs_you", ts.CARD_WAITS)
+    assert out["nudges"] == 0 and nudge.calls == []        # its button is the nudge
+    # still live: read again a tick later
+    clock[0] += ts.TICK_S
+    e.tick()
+    assert len(cards.calls) == 2
+    # past the cap, or with no answer, the last answer stands
+    e.card_cap = 0
+    clock[0] += ts.TICK_S
+    assert e.tick()["card_reads"] == 0
+    assert store.thread_state("stream:4", key)["state"] == "needs_you"
+    e.card_cap = ts.CARD_CAP
+    cards.answers["5522"] = None
+    clock[0] += ts.TICK_S
+    e.tick()
+    assert len(cards.calls) == 3 and store.thread_state("stream:4", key)["state"] == "needs_you"
+    # then the owner presses it in Zulip: the next read settles the conversation
+    cards.answers["5522"] = zanswer(":check: **Sent**", clock[0] - 30 * 3600, edited=clock[0])
+    clock[0] += ts.TICK_S
+    e.tick()
+    assert store.thread_state("stream:4", key)["state"] == "done"
+    # a card filed in the done stream is final too: read once
+    other = pointed(store, "5533", at=clock[0] - 3 * 3600)
+    cards.answers["5533"] = zanswer(CHIPS, clock[0] - 3 * 3600, filed=True)
+    before = len(cards.calls)
+    for _ in range(3):
+        clock[0] += ts.TICK_S
+        e.tick()
+    assert [c[2] for c in cards.calls[before:]] == ["5533"]
+    assert store.thread_state("stream:4", other)["reason"] == \
+        f"Its card was handled: {ts.SETTLED_OUTSIDE}"
+
+
+def test_reads_of_cards_the_store_never_took_share_the_tick_s_cap(store):
+    keys = [pointed(store, str(6000 + i)) for i in range(35)]
+    cards = FakeCards({str(6000 + i): zanswer(":check: **Sent**", time.time() - 3 * 3600,
+                                              edited=time.time() - 600) for i in range(35)})
+    e = engine(store, FakeModel(), cards=cards)
+    assert e.tick()["card_reads"] == ts.CARD_CAP
+    assert sum(store.thread_state("stream:4", k)["state"] == "done" for k in keys) == ts.CARD_CAP
+    assert e.tick()["card_reads"] == 5
+    assert {store.thread_state("stream:4", k)["state"] for k in keys} == {"done"}
+    assert e.tick()["card_reads"] == 0
 
 
 # ── the hosted step: one call a tick over a batch of threads ─────────
@@ -1501,12 +1704,13 @@ def test_the_shelf_and_the_nudge_clocks():
     msgs = [m(1, text="A question?", at=NOW - 9 * DAY), m(2, "owner", "Later.", at=NOW - 8 * DAY),
             m(3, text="Sure.", at=NOW - 3 * DAY)]
     assert ts.active_at(msgs, prev) == NOW - 3 * DAY
-    assert ts.nudge_since(msgs, prev) == NOW - 8 * DAY
+    assert ts.nudge_since(msgs) == NOW - 8 * DAY
+    # the owner's tap keeps the conversation off the shelf; the nudge never
+    # goes to a state the owner set
     tapped = {**prev, "by": "owner", "at": NOW - DAY}
-    assert ts.active_at(msgs, tapped) == NOW - DAY and ts.nudge_since(msgs, tapped) == NOW - DAY
-    # a conversation the owner never wrote in nor tapped gets no nudge
-    assert ts.nudge_since(msgs[:1], prev) is None
-    assert ts.nudge_since(msgs[:1], tapped) == NOW - DAY
+    assert ts.active_at(msgs, tapped) == NOW - DAY
+    # a conversation the owner never wrote in gets no nudge
+    assert ts.nudge_since(msgs[:1]) is None
     before = NOW - ts.STALE_S
     assert ts.is_stale("needs_you", "model", NOW, NOW - 8 * DAY, before)
     assert ts.is_stale("waiting", "rule", NOW, NOW - 8 * DAY, before)
@@ -1627,6 +1831,34 @@ def test_the_nudge_skips_what_it_must(store):
         assert e.nudges() == 0
     assert engine(store, nudge=nudge, quiet=lambda: False).nudges() == 1
     assert engine(store).nudges() == 0             # no nudge to post through
+
+
+def test_needs_me_is_never_nudged(store):
+    """The owner tapped Needs me: the owner just said so, and no "Still
+    need this?" line follows, however long the conversation then waits."""
+    key = chat_thread(store, "needs me", at=time.time() - 3 * DAY)
+    store.set_thread_state("main", key, "needs_you", "owner", ts.OWNER_REASONS["needs_you"],
+                           judged_seq=store.newest_seq("main", key))
+    store._conn.execute("UPDATE thread_state SET at=? WHERE thread_key=?",
+                        (time.time() - 30 * 3600, key))
+    store._conn.commit()
+    nudge = Nudges(store)
+    e = engine(store, nudge=nudge)
+    assert e.nudges() == 0 and nudge.calls == []
+    assert store.nudge_candidates(time.time() - ts.NUDGE_AFTER_S, time.time() - ts.STALE_S,
+                                  ts.RULE_CAP) == []
+    ctx = {"messages": store.thread("main", key), "prev": store.thread_state("main", key),
+           "origin": "", "linked": []}
+    assert not ts.nudge_due(ctx, time.time())
+    # the same conversation with the model's needs_you is nudged
+    assert ts.nudge_due({**ctx, "prev": {**ctx["prev"], "by": "model"}}, time.time())
+    # once a new message lands, the model's needs_you after it is nudged as ever
+    store.add_message("main", mid=None, thread_key=key, author="bot", kind="message",
+                      text="Have you decided?")
+    store.set_thread_state("main", key, "needs_you", "model", "A question waits.",
+                           judged_seq=store.newest_seq("main", key))
+    assert store.thread_state("main", key)["by"] == "model"
+    assert e.nudges() == 1 and [c[1] for c in nudge.calls] == [key]
 
 
 def test_the_nudges_are_capped_a_tick_the_longest_waiting_first(store):

@@ -85,10 +85,11 @@ dispatching that input itself, in either of two shapes:
 A card copied from the primary's past is plain text in the shadow, so
 the shadow cannot see it settle. The composite sets `shadow.card_lookup`
 to a callable (channel, thread_key, msg_id) -> the primary's card_now
-answer ({"text", "filed", "edited_at"}, or None) when the primary has that
-read (Zulip), else to None. It also writes the card's current text into
-the shadow row through mirror_update, which writes nothing for an
-unchanged text.
+answer ({"text", "filed", "edited_at", "posted_at"}, or None) when the
+primary has that read (Zulip), else to None. It also writes the card's
+current text into the shadow row through mirror_update, which writes
+nothing for an unchanged text. A card the shadow never took (a pointer's
+card, asked for with no thread key) is read and not written.
 
 A message is posted into the primary as the bot, after WEB_PREFIX and in
 the Slack mrkdwn that post() takes, so it has a primary id, sits in the
@@ -802,15 +803,17 @@ class ShadowFrontend(ChatFrontend):
         the primary's past, as the primary holds it now (its card_now, a
         read). Its current text goes into the shadow row through
         mirror_update, as Markdown when the primary's history is Markdown;
-        an unchanged text writes nothing. None while the shadow is off or
-        when the primary has no answer."""
+        an unchanged text writes nothing. A card the shadow does not hold
+        (a pointer's card the copy never took: no thread key) is read and
+        nothing is written. None while the shadow is off or when the
+        primary has no answer."""
         if self.shadow_off:
             return None
         got = self.primary.card_now(channel, thread_key, msg_id)
         if not isinstance(got, dict):
             return None
         text = got.get("text")
-        if isinstance(text, str) and text.strip():
+        if isinstance(text, str) and text.strip() and channel and thread_key:
             ref = MessageRef(channel, msg_id, thread_key, None)
             extra: dict[str, Any] = {}
             if getattr(self.primary, "history_markdown", False) and \

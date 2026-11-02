@@ -249,9 +249,9 @@ view. Rules set it at once on every change to a thread; the local model
 open, on a tick every 5 minutes; the owner overrides it from the app.
 A conversation reads the cards it asked for in the DM (the `card_link`
 table, from each card's own link and the bot's "is in your DM" pointer),
-a state past 7 days is marked stale, and a `needs_you` state past a day
-gets one "Still need this?" line from the bot (the `nudges` table), which
-no rule and no model reads. It lives in this store alone (those tables,
+a state past 7 days is marked stale, and a `needs_you` state a rule or
+the model set, past a day, gets one "Still need this?" line from the bot
+(the `nudges` table), which no rule and no model reads. It lives in this store alone (those tables,
 `thread_state` and `thread_origin`, and `thread_state` events on the
 stream): in shadow mode nothing reaches Zulip, the nudge included. The
 rules, the model step, the tables and the routes are in
@@ -830,9 +830,11 @@ locked screen. The text loses its emoji shortcodes and Markdown marks
 **Payload.** JSON `{"title", "body", "url", "tag"}`, encrypted to the
 subscription (RFC 8291, `aes128gcm` of RFC 8188, one 4096-byte record),
 padded after the delimiter to a multiple of 256 bytes.
-`url` is the message's web permalink; `tag` is `<channel>/<thread key>`,
-so the device keeps one notification per thread and a new one alerts
-again. TTL is one hour.
+`url` is the message's web permalink (for `web_notify`, the `url` it is
+given, such as a weekly tip's thread from `chat.direct.web_thread_url`,
+else the app's start page); `tag` is `<channel>/<thread key>`, so the
+device keeps one notification per thread and a new one alerts again.
+TTL is one hour.
 
 **Rate.** At most one push per thread in two minutes, counted apart for
 `high` urgency, so a card is never held back by a message push in its
