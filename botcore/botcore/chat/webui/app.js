@@ -634,6 +634,7 @@ function renderChannels() {
       h('summary', {}, `Archived (${old.length})`), old.map(item)));
   }
   document.title = total ? `(${total}) Tacitus` : 'Tacitus';
+  fitNav();
   const others = total - unreadFor(S.channel);
   $('menu').dataset.unread = others > 0 ? String(others) : '';
   // The Needs you entry above the channels, with the count of threads that need the owner this week.
@@ -1500,7 +1501,7 @@ function watchSeen() {
 // Every browser the bot pushes to, each with a Revoke button (this one's own is the toggle).
 async function listSubs() {
   const subs = await call('GET', '/push/subscriptions').catch(() => []);
-  $('push-subs').replaceChildren(...subs.map((s) => h('li', null, `${s.host}, ${when(s.created_at, true)} `,
+  $('push-subs').replaceChildren(...subs.map((s) => h('li', null, h('span', null, `${s.host}, ${when(s.created_at, true)}`),
     h('button', { type: 'button', class: 'btn small', onclick: () => call('POST', '/push/revoke', { id: s.id })
       .then(listSubs, (e) => toast(`Notifications: ${e.message}`)) }, 'Remove'))));
 }
@@ -1610,6 +1611,75 @@ function fitViewport() {
     if (!keyboard) flushDiag().catch(() => {});
   }
   wasKeyboard = keyboard;
+}
+
+/* -- The menu's width ----------------------------------------------- */
+
+// Where the menu is a column (1000px and up), its edge is a handle: a drag
+// (a mouse or a finger) or the arrow keys set the width, Home and End take
+// it to either end, and a double-click or Enter gives back the menu's own
+// width: its longest name on one line in bold, within NAV_FIT (a longer
+// name wraps, and one cut short shows whole on hover). This browser keeps
+// a width set; the stylesheet keeps the panes beside it wide enough to use.
+const NAV_KEY = 'tacitus-menu-width';
+const NAV = [180, 420], NAV_FIT = [240, 300];
+const textWidth = document.createElement('canvas').getContext('2d');
+const within = (w, [lo, hi]) => Math.round(Math.min(Math.max(w, lo), hi));
+const navW = () => Math.round($('channels').getBoundingClientRect().width);
+const rootStyle = document.documentElement.style;
+
+// Sets the width and answers the width shown, which is the one kept.
+function setNav(w) {
+  rootStyle.setProperty('--nav-w', `${within(w, NAV)}px`);
+  const shown = navW();
+  rootStyle.setProperty('--nav-w', `${shown}px`);
+  return shown;
+}
+
+function fitNav() {
+  const names = [...$('channels').querySelectorAll('.c-name')].filter((el) => el.offsetWidth);
+  if (!names.length) return;
+  const st = getComputedStyle(names[0]), w = navW();
+  textWidth.font = `700 ${st.fontSize} ${st.fontFamily}`;
+  // Each name, and the room its row takes beside it (the icon, the padding, a room's dots) less a badge's.
+  const need = Math.max(...names.map((el) => { const box = el.getBoundingClientRect(), tail = el.nextElementSibling;
+    return textWidth.measureText(el.textContent).width + 2 + w - box.width - (tail && tail.offsetWidth ? tail.getBoundingClientRect().right - box.right : 0); }));
+  rootStyle.setProperty('--nav-fit', `${within(need, NAV_FIT)}px`);
+  cutNames();
+}
+
+const cutNames = () => $('channels').querySelectorAll('.c-name').forEach((el) => {
+  if (el.scrollHeight > el.clientHeight + 1) el.title = el.textContent; else el.removeAttribute('title'); });
+
+function navEdge() {
+  const edge = $('nav-edge');
+  const keep = (w) => { try { if (w) localStorage.setItem(NAV_KEY, String(w)); else localStorage.removeItem(NAV_KEY); } catch { /* for this visit */ } };
+  try { const kept = Number(localStorage.getItem(NAV_KEY)); if (kept) rootStyle.setProperty('--nav-w', `${within(kept, NAV)}px`); } catch { /* its own width */ }
+  const reset = () => { rootStyle.removeProperty('--nav-w'); keep(0); };
+  new ResizeObserver(() => { if (!S.halted) { edge.setAttribute('aria-valuenow', String(navW())); cutNames(); } }).observe($('channels'));
+  let drag = null;
+  edge.addEventListener('pointerdown', (e) => {
+    if (e.button) return;
+    e.preventDefault();
+    edge.setPointerCapture(e.pointerId);
+    drag = { x: e.clientX, w: navW(), to: 0 };
+    document.body.classList.add('resizing');
+  });
+  edge.addEventListener('pointermove', (e) => { if (drag) drag.to = setNav(drag.w + e.clientX - drag.x); });
+  ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((t) => edge.addEventListener(t, () => {
+    if (drag && drag.to) keep(drag.to);
+    drag = null;
+    document.body.classList.remove('resizing');
+  }));
+  edge.addEventListener('dblclick', reset);
+  edge.addEventListener('keydown', (e) => {
+    const w = navW(), step = e.shiftKey ? 64 : 16;
+    const to = { ArrowLeft: w - step, ArrowRight: w + step, Home: NAV[0], End: NAV[1] }[e.key];
+    if (e.key === 'Enter') reset();
+    else if (to !== undefined) keep(setNav(to));
+    else return;
+    e.preventDefault();
+  });
 }
 
 /* -- The relay: crypto (relay_crypto.py is the reference) ------------ */
@@ -2902,6 +2972,7 @@ async function init() {
     installHint();
   });
   installHint();
+  navEdge();
   if (window.visualViewport) ['resize', 'scroll'].forEach((t) => visualViewport.addEventListener(t, fitViewport));
   // A fold or a rotation settles its sizes over a few hundred milliseconds: fit again after each.
   const refit = () => { fitViewport(); [250, 600].forEach((ms) => setTimeout(fitViewport, ms)); };

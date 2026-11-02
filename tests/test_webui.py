@@ -8,7 +8,9 @@ the stub server (tests/webui_stub_server.py):
 a thread renders, markup in text stays text, a card's buttons and select
 post to the actions route, an event appends a message and marks unread,
 the composer and the paperclip post, pairing answers a 401, on a phone
-every control is 44px high and nothing scrolls sideways, and the
+every control is 44px high and nothing scrolls sideways, the channel
+list takes the width its names need and its edge drags or keys another
+that the browser keeps, its foot stays inside it at every width, and the
 service worker caches no API response. The relay's crypto reproduces the
 Python vectors (tests/fixtures/relay_vectors.json), the QR encoder draws
 codes a decoder reads, and a phone pairs and chats through a real relay
@@ -430,7 +432,9 @@ def test_the_app_stays_small():
     #     the website's copy taking the bot's release, and the page's own security policy).
     # 4,680: 4,660 plus the review's hardening of it (a mailbox per relay from one PBKDF2 block, the
     #     worker's copies kept and found by their exact address, the first hosted adoption's cleanup).
-    assert lines <= 4680, f"{lines} lines: the contract keeps the app near 4,680 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions and a computer through the relay"
+    # 4,780: 4,680 plus the menu's width (the width its names need, the edge a drag or the keys move,
+    #     kept per browser, the bounds that keep the panes beside it usable) and its foot that stays inside it.
+    assert lines <= 4780, f"{lines} lines: the contract keeps the app near 4,780 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay and the menu's width"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -860,7 +864,157 @@ def test_the_phone_layout_shows_one_pane(app):
     expect(page.locator("#threads")).to_be_visible()
     page.click("#menu")
     expect(page.locator("#channels")).to_be_in_viewport()
+    expect(page.locator("#nav-edge")).to_be_hidden()  # a drawer has no edge to drag
     assert page.evaluate("document.documentElement.scrollWidth") <= 390
+    assert not errors, errors
+
+
+# -- the menu's width: its own, the owner's, and its foot at every width ----
+
+NAV_W = "Math.round($('channels').getBoundingClientRect().width)"
+KEPT_W = "localStorage.getItem('tacitus-menu-width')"
+# The height of each name on show, and the hover text of each.
+NAMES = """[...document.querySelectorAll('#channels .c-name')].filter((el) => el.offsetWidth)
+    .map((el) => [el.textContent, el.offsetHeight, el.getAttribute('title')])"""
+NO_STORAGE = "Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('denied', 'SecurityError'); } });"
+
+
+def _drag(page, dx):
+    box = page.locator("#nav-edge").bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x + dx, y, steps=6)
+    page.mouse.up()
+
+
+def test_the_menu_takes_the_width_its_names_need_and_drags_wider(app):
+    """Where the menu is a column, it is as wide as its longest name on one
+    line, within 240 to 300px; a longer name wraps to a second line, and
+    one cut short there shows whole on hover. Its edge is a separator: a
+    drag sets the width, which this browser keeps over a reload, the
+    conversation keeps 480px whatever the width, and a double-click gives
+    the menu its own width again. Without storage it works the same for
+    the visit."""
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    edge = page.locator("#nav-edge")
+    for k, v in {"role": "separator", "aria-orientation": "vertical", "aria-controls": "channels",
+                 "aria-valuemin": "180", "aria-valuemax": "420", "tabindex": "0"}.items():
+        expect(edge).to_have_attribute(k, v)
+    expect(edge).to_be_visible()
+    own = page.evaluate(NAV_W)
+    assert 240 <= own <= 300
+    expect(edge).to_have_attribute("aria-valuenow", str(own))
+    names = page.evaluate(NAMES)
+    assert {n for n, _h, _t in names} >= {"Direct messages", "Ask Tacitus", "Scheduling", "example-project"}
+    assert all(hgt < 25 and title is None for _n, hgt, title in names), names  # one line each, nothing cut
+    # A long name wraps to two lines at the widest the menu takes by itself; a longer one is cut there.
+    stub.add_room("made up workshop on rooms with long names")
+    stub.add_room("an imaginary programme on the wrapping of very long room names in a narrow menu")
+    expect(page.locator(".c-name", has_text="an-imaginary-programme")).to_have_count(1)
+    wait_for(lambda: page.evaluate(NAV_W) == 300)
+    names = {n: (hgt, title) for n, hgt, title in page.evaluate(NAMES)}
+    hgt, title = names["made-up-workshop-on-rooms-with-long-names"]
+    assert 30 < hgt < 45 and title is None
+    long = "an-imaginary-programme-on-the-wrapping-of-very-long-room-names-in-a-narrow-menu"
+    assert names[long][0] < 45 and names[long][1] == long
+    # A drag sets the width; this browser keeps it.
+    _drag(page, 60)
+    assert page.evaluate(NAV_W) == 360
+    expect(edge).to_have_attribute("aria-valuenow", "360")
+    assert page.evaluate(KEPT_W) == "360"
+    page.reload()
+    page.wait_for_selector(".thread-item")
+    assert page.evaluate(NAV_W) == 360
+    # As wide as it goes: 420px, and on a narrower window the conversation keeps 480px.
+    _drag(page, 300)
+    assert page.evaluate(NAV_W) == 420
+    assert page.evaluate("$('thread').getBoundingClientRect().width") == 1280 - 420 - 320
+    page.set_viewport_size({"width": 1201, "height": 800})
+    assert page.evaluate("$('thread').getBoundingClientRect().width") >= 480
+    page.set_viewport_size({"width": 1280, "height": 800})
+    assert page.evaluate(NAV_W) == 420
+    # A double-click gives back the menu's own width, and forgets the one kept.
+    edge.dblclick()
+    wait_for(lambda: page.evaluate(NAV_W) == 300)
+    assert page.evaluate(KEPT_W) is None
+    assert not errors, errors
+    # A browser that keeps nothing: the menu at its own width, and a drag for this visit.
+    page, stub, errors = app(init=NO_STORAGE)
+    page.wait_for_selector(".thread-item")
+    page.click("#welcome-skip")  # it cannot remember the welcome was closed either
+    own = page.evaluate(NAV_W)
+    assert 240 <= own <= 300
+    _drag(page, 40)
+    assert page.evaluate(NAV_W) == own + 40
+    assert not errors, errors
+
+
+def test_the_menu_s_edge_moves_with_the_keys_and_keeps_the_split(app):
+    """The separator takes the focus: the arrow keys move it 16px (64px with
+    Shift), Home and End take it to 180 and 420px, and Enter gives the menu
+    its own width again. In a window 1000 to 1200px wide, split at its
+    centre, the menu takes from the conversations beside it, which keep
+    300px at the menu's own width and 260px at the owner's."""
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    edge = page.locator("#nav-edge")
+    own = page.evaluate(NAV_W)
+    edge.focus()
+    for key, want in (("ArrowRight", own + 16), ("Shift+ArrowLeft", own - 48), ("Home", 180), ("End", 420)):
+        edge.press(key)
+        assert page.evaluate(NAV_W) == want, key
+        expect(edge).to_have_attribute("aria-valuenow", str(want))
+        assert page.evaluate(KEPT_W) == str(want)
+    edge.press("Enter")
+    assert page.evaluate(NAV_W) == own
+    assert page.evaluate(KEPT_W) is None
+    page.set_viewport_size({"width": 1100, "height": 800})
+    split = "[$('threads').getBoundingClientRect().width, $('thread').getBoundingClientRect().left]"
+    assert page.evaluate(NAV_W) == min(own, 250)
+    assert page.evaluate(split) == [550 - min(own, 250), 550]
+    edge.press("End")
+    assert page.evaluate(NAV_W) == 290
+    assert page.evaluate(split) == [260, 550]
+    assert page.evaluate(KEPT_W) == "290"  # the width shown, not the one asked for
+    assert not errors, errors
+
+
+SUBS = [{"id": "s1", "host": "push.example.com", "created_at": 1767225600, "last_seen": None, "last_ok": None, "failures": 0},
+        {"id": "s2", "host": "notifications.a-long-made-up-push-service.example.org", "created_at": 1767312000,
+         "last_seen": None, "last_ok": None, "failures": 0}]
+# The foot's controls on show, and the subscriptions' rows' parts, that reach outside the menu.
+OUTSIDE = """() => { const nav = $('channels').getBoundingClientRect();
+  return [...document.querySelectorAll('#drawer-foot > *, #drawer-foot button, #push-subs li > *')]
+    .filter((el) => el.offsetWidth).map((el) => [el.id || el.textContent.trim(), el.getBoundingClientRect()])
+    .filter(([, r]) => r.left < nav.left - 0.5 || r.right > nav.right + 0.5).map(([n]) => n); }"""
+
+
+def test_the_menu_s_foot_stays_inside_the_menu_at_every_width(app):
+    """Each browser that gets notifications has its Remove button inside the
+    menu, and so has every other control at its foot: in the drawer of a
+    narrow window, in the column split at the centre and at its narrowest."""
+    from playwright.sync_api import expect
+    page, stub, errors = app(viewport={"width": 700, "height": 800}, push=True, settings=True, subscriptions=SUBS)
+    page.wait_for_selector(".thread-item")
+    page.evaluate(FAKE_PROMPT)  # the install line, with its button
+    expect(page.locator("#push-subs li button")).to_have_text(["Remove", "Remove"])
+    page.click("#menu")
+    expect(page.locator("#channels")).to_be_in_viewport()
+    expect(page.locator("#install-btn")).to_be_visible()
+    page.wait_for_timeout(300)  # the drawer's slide
+    assert page.evaluate(OUTSIDE) == []
+    for width in (1000, 1100, 1280):
+        page.set_viewport_size({"width": width, "height": 800})
+        assert page.evaluate(OUTSIDE) == [], width
+        page.locator("#nav-edge").press("Home")
+        assert page.evaluate(NAV_W) == 180
+        assert page.evaluate(OUTSIDE) == [], width
+        page.locator("#nav-edge").press("Enter")
+    assert page.evaluate(SIDEWAYS) == [0, 0]
     assert not errors, errors
 
 
@@ -2076,12 +2230,14 @@ VECTORS = TESTS / "fixtures" / "relay_vectors.json"
 
 def test_the_relay_keys_stay_in_webcrypto_and_indexeddb():
     js = read("app.js")
-    # Web Storage holds four things, none a key: when this browser hid the
+    # Web Storage holds five things, none a key: when this browser hid the
     # install line, the connection notes it reports to the bot, the
-    # thread filter chosen (a read at start and a write per choice), and
-    # that the welcome was closed once (a read after the channels load, a
-    # write when it closes).
-    assert "sessionStorage" not in js and js.count("localStorage") == 10
+    # thread filter chosen (a read at start and a write per choice), that
+    # the welcome was closed once (a read after the channels load, a write
+    # when it closes), and the menu's width (a read at start, a write per
+    # change, a removal when it goes back to its own).
+    assert "sessionStorage" not in js and js.count("localStorage") == 13
+    assert all(f"localStorage.{verb}(NAV_KEY" in js for verb in ("getItem", "setItem", "removeItem"))
     assert all(f"localStorage.{verb}(WELCOME_KEY" in js for verb in ("getItem", "setItem"))
     assert all(f"localStorage.{verb}(INSTALL_KEY" in js for verb in ("getItem", "setItem"))
     assert all(f"localStorage.{verb}(FILTER_KEY" in js for verb in ("getItem", "setItem"))

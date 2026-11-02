@@ -1,6 +1,9 @@
 /* Tacitus web chat. Phone first: one pane at a time below 600px, the
    channels in a drawer below 1000px (a foldable phone open in landscape is
-   about 950px wide and gets two panes), three columns above. On a dual-screen
+   about 950px wide and gets two panes), three columns above. There the
+   channels are as wide as their names need, or as the owner drags their
+   edge (--nav-w, app.js), and the stylesheet keeps the panes beside them
+   wide enough to use. On a dual-screen
    phone (Surface Duo) one screen is a phone; spanned across both, the
    channels and threads fill the left screen and the thread the right,
    split at the hinge (the viewport segments API, else the centre line). */
@@ -79,7 +82,9 @@ body {
   font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   -webkit-font-smoothing: antialiased;
   display: grid;
-  grid-template-columns: 240px 320px minmax(0, 1fr);
+  /* the channels: the owner's width, else the width their names need (app.js); the conversation keeps 480px */
+  --nav: clamp(180px, var(--nav-w, var(--nav-fit, 240px)), 100% - 800px);
+  grid-template-columns: var(--nav) 320px minmax(0, 1fr);
   height: var(--app-h, 100dvh); /* the visual viewport (app.js): the composer stays above the keyboard */
   padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
   overflow: hidden;
@@ -213,7 +218,17 @@ button, select, textarea, input { font: inherit; color: inherit; }
 .chan.active .c-name { font-weight: 600; }
 .chan.unread .c-name, .thread-item.unread .t-title { font-weight: 700; }
 .c-icon { width: 20px; color: var(--muted); font-weight: 600; text-align: center; flex: none; }
-.c-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-name { flex: 1; min-width: 0; overflow: hidden; overflow-wrap: anywhere; line-height: 1.3; /* a long name wraps to a second line before it is cut */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+
+/* The channels' edge where they are a column: a handle that drags their
+   width (app.js), a line in the accent while it is held, hovered or focused. */
+#nav-edge { display: none; position: absolute; inset: 0 -5px 0 auto; z-index: 5; width: 9px; cursor: col-resize; touch-action: none; }
+#nav-edge::after { content: ""; position: absolute; inset: 0 auto 0 3px; width: 3px; background: var(--accent); opacity: 0; transition: opacity .15s; }
+#nav-edge:hover::after, #nav-edge:focus-visible::after, body.resizing #nav-edge::after { opacity: 1; }
+#nav-edge:focus-visible { outline: none; }
+body.resizing, body.resizing * { cursor: col-resize; -webkit-user-select: none; user-select: none; }
+@media (min-width: 1000px) { #nav-edge { display: block; } }
 
 /* Each thread is its own card, so one is told from the next at a glance:
    the title with its sticker and time on the right, the replies below (in
@@ -276,10 +291,14 @@ button, select, textarea, input { font: inherit; color: inherit; }
 #update-note { margin: 0 0 8px; font-weight: 600; }
 #pair-phone, #open-settings, #tour-again, #new-room { margin: 8px 4px 0 0; }
 .toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
-.install { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--muted); font-size: 13px; }
-.install > span { flex: 1; }
+.install { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 8px; color: var(--muted); font-size: 13px; }
+/* Each row's words wrap, and its buttons go under them where the drawer is too narrow for both. */
+.install > span, .subs li > span { flex: 1 1 9em; min-width: 0; overflow-wrap: anywhere; }
+.install > span { flex-basis: 6em; } /* beside two buttons */
+.install > button, .subs li > button { flex: none; }
+#drawer-foot > .btn { max-width: 100%; }
 .subs { list-style: none; margin: 6px 0 0; padding: 0; color: var(--muted); font-size: 13px; }
-.subs li { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+.subs li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px; }
 .archived summary { padding: 8px 18px; color: var(--muted); cursor: pointer; font-size: 13px; font-weight: 500; }
 .empty { color: var(--muted); padding: 16px; margin: 0; }
 .empty p { margin: 0 0 12px; }
@@ -611,13 +630,17 @@ a.file-link .file-name { color: var(--accent); }
    without the segments API a window 1000 to 1200px wide splits at its centre */
 
 @media (min-width: 1000px) and (max-width: 1200px) {
-  body { grid-template-columns: 200px calc(50% - 200px) minmax(0, 1fr); }
+  /* the conversations keep 300px beside the names' own width, and 260px beside the owner's */
+  body { --nav: clamp(180px, var(--nav-w, min(var(--nav-fit, 240px), 50% - 300px)), 50% - 260px);
+    grid-template-columns: var(--nav) calc(50% - var(--nav)) minmax(0, 1fr); }
   #threads > .bar { padding-right: 20px; } /* 20px clear of the centre line, where a hinge would be */
   #thread-list { padding-right: 8px; }
   #thread > .bar, #messages, #composer { padding-left: 20px; }
 }
 @media (horizontal-viewport-segments: 2) {
-  body { grid-template-columns: 200px calc(env(viewport-segment-right 0 0) - 200px)
+  body { --nav: clamp(180px, var(--nav-w, min(var(--nav-fit, 240px), env(viewport-segment-right 0 0) - 300px)),
+    env(viewport-segment-right 0 0) - 260px);
+    grid-template-columns: var(--nav) calc(env(viewport-segment-right 0 0) - var(--nav))
     calc(env(viewport-segment-left 1 0) - env(viewport-segment-right 0 0)) minmax(0, 1fr); } /* the third column is the hinge */
   #thread { grid-column: 4; }
 }
@@ -639,6 +662,10 @@ a.file-link .file-name { color: var(--accent); }
 @media (pointer: coarse) { /* every control a finger presses is at least 44px high */
   .btn, .btn.small, .example, .card-actions select, .toggle, .filter, .chan, .seg label { min-height: 44px; }
   .ways button { min-height: 44px; }
+  /* the channels' edge: a handle 24px wide with a grip at its middle */
+  #nav-edge { right: -12px; width: 24px; }
+  #nav-edge::after { inset: calc(50% - 20px) auto auto 10px; width: 4px; height: 40px; border-radius: 2px; opacity: 1; }
+  body:not(.resizing) #nav-edge:not(:focus-visible)::after { background: var(--border-strong); }
   .archived summary, .card-quoted summary { padding-block: 13px; }
 }
 
@@ -692,7 +719,7 @@ body.digest #composer, body.digest #new-thread { display: none; }
 .sheet-item.danger { color: var(--danger); }
 .sheet-item:active { background: var(--hover); }
 @media (hover: hover) { .sheet-item:hover { background: var(--hover); } }
-@media (pointer: coarse) { .room-more { display: none; } }
+@media (pointer: coarse) { .room-more { display: none; } .chan-row > .chan { padding-right: 10px; } } /* a long press opens the menu */
 @media (max-width: 599px) {
   #room-menu { width: 100%; max-width: none; margin: auto 0 0; border-width: 1px 0 0; border-radius: var(--r-xl) var(--r-xl) 0 0; }
   #room-menu .sheet { padding-bottom: calc(20px + env(safe-area-inset-bottom)); }

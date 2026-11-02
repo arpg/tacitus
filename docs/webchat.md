@@ -687,6 +687,22 @@ composer at the bottom. The DM channel opens by default. Unread badges
 from the event stream. A top-level message in a channel starts a thread;
 replying stays in it.
 
+The channel list's width. From 1000px wide the channel list is a column
+as wide as its longest name on one line in bold, within 240 to 300px; a
+longer name wraps to a second line, and one cut short there shows whole
+on hover. Its right edge is a handle (`role="separator"`, "Menu width"
+to a screen reader): a drag with a mouse or a finger, or the arrow keys
+(16px, 64px with Shift), set the width between 180 and 420px, Home and
+End take it to either end, and a double-click or Enter gives back the
+list's own width. The browser keeps the width set (`localStorage`); the
+stylesheet holds it narrower where the panes beside it need the room:
+the conversation keeps 480px, and in a window 1000 to 1200px wide, split
+at its centre (a dual screen at its hinge), the thread list keeps 300px
+beside the list's own width and 260px beside one the owner set. Below
+1000px the list is the drawer and has no handle. At the drawer's foot
+each row (a browser that gets notifications, the install line) wraps its
+words and keeps its buttons inside the list at every width.
+
 Words. Every string the person sees or a screen reader reads passes the
 gym coach on a phone: the app says conversation, room, card, code, app,
 "your own network" (the tailnet) and "away from home" (the relay), and
@@ -862,8 +878,9 @@ installed app (`navigator.standalone` false on iOS, `display-mode:
 browser` elsewhere) a line at the drawer's foot says how to install: on
 iOS Share, then Add to Home Screen; in Chrome an Install button for its
 `beforeinstallprompt`. Hiding it lasts 30 days; `localStorage` keeps the
-time it was hidden, the thread filter, that the welcome was closed and
-the connection notes for `/api/diag`, and nothing else. A link to a route of this app
+time it was hidden, the thread filter, that the welcome was closed, the
+channel list's width and the connection notes for `/api/diag`, and
+nothing else. A link to a route of this app
 (`<base>/#/...`, absolute or relative) opens in it; any other keeps
 `target="_blank"`, so the installed app hands it to the browser. On iOS
 the keyboard shrinks only the visual viewport: the app sets its height
