@@ -128,6 +128,14 @@ chats either way, and only the owner's approval with `cards` lets it
 press card buttons. The bot logs a warning when a
 file on disk no longer matches what it signed; `refresh_bundle()` signs
 again.
+
+After the move from shadow mode to the web chat alone
+(scripts/webchat-cutover.py) the mirrored channels have new ids (`main`,
+`dm`, `sched`, `digests`, `r<n>`) and keep their thread keys. The store's
+`meta` row `channel_redirects` maps each old id (`stream:<n>`) to its new
+one; the API routes and the verbs take an old id as the new one
+(`WebStore.canonical`), so a link or a reference made before the move
+still reaches its conversation.
 """
 from __future__ import annotations
 
@@ -155,6 +163,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import asdict
+from dataclasses import replace as _replace
 from datetime import datetime
 from email.message import Message
 from email.utils import collapse_rfc2231_value
@@ -208,6 +217,9 @@ RELAY_KEY_FILE = "webchat-relay.json"
 # The owner's overrides of a thread's state, one JSON line each, beside the
 # store: labelled examples for scoring the model step (docs/webchat-state.md).
 LABELS_FILE = "thread-state-labels.jsonl"
+# The meta row that maps a mirrored channel's id from before the move to
+# the web chat alone to its id now (scripts/webchat-cutover.py).
+REDIRECTS_KEY = "channel_redirects"
 COOKIE = "ea_web"
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
 
@@ -715,6 +727,7 @@ class WebStore:
                 # A store from before the stale shelf: the next tick marks them.
                 self._conn.execute("ALTER TABLE thread_state ADD COLUMN stale INT DEFAULT 0")
             self._conn.commit()
+        self.redirects = self._read_redirects()
         self._subs: list[_Sub] = []
         self._pending: list[tuple[int, str, str]] = []
         self._emitted = 0
@@ -744,6 +757,24 @@ class WebStore:
             return self._one("SELECT 1") is not None
         except sqlite3.Error:
             return False
+
+    def _read_redirects(self) -> dict[str, str]:
+        """The cutover's map of old channel ids to new ones (REDIRECTS_KEY);
+        empty when there is none or it is not a map of strings."""
+        row = self._one("SELECT value FROM meta WHERE key=?", (REDIRECTS_KEY,))
+        try:
+            data = json.loads(row["value"]) if row else {}
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+
+    def canonical(self, cid: str) -> str:
+        """The id a channel id names now: a mirrored channel's id from before
+        the move to the web chat alone gives its new id (`redirects`); any
+        other id is itself."""
+        return self.redirects.get(cid, cid) if cid else cid
 
     def channel(self, cid: str) -> dict | None:
         row = self._one("SELECT * FROM channels WHERE id=?", (cid,))
@@ -2683,6 +2714,18 @@ class WebFrontend(ChatFrontend):
             raise ChatError(f"channel_not_found: {channel}")
         return row
 
+    def _canon(self, channel: str) -> str:
+        """The channel's id now (WebStore.canonical): a reference the core
+        kept from before the move to the web chat alone names the old id.
+        A front end whose store is not open yet (one built only to notify)
+        takes the id as given, and opens nothing."""
+        store = self._store
+        return store.canonical(channel) if store is not None else channel
+
+    def _canon_ref(self, ref: MessageRef) -> MessageRef:
+        channel = self._canon(ref.channel)
+        return ref if channel == ref.channel else _replace(ref, channel=channel)
+
     def _ref(self, row: dict) -> MessageRef:
         return MessageRef(row["channel"], row["id"], row["thread_key"], row["posted_at"],
                           self._permalink(row["channel"], row["thread_key"], row["id"]))
@@ -2875,6 +2918,7 @@ class WebFrontend(ChatFrontend):
         """Post as the bot. `origin`, a notifier's channel key (chat_notify),
         is recorded for the thread the post opens before the push policy
         reads it (store.note_origin)."""
+        channel = self._canon(channel)
         self._channel_or_raise(channel)
         row = self.store.add_message(channel, mid=None,
                                      thread_key=self._thread_for(channel, thread_ts),
@@ -2885,14 +2929,17 @@ class WebFrontend(ChatFrontend):
         return self._ref(row)
 
     def update(self, ref: MessageRef, text: str) -> bool:
+        ref = self._canon_ref(ref)
         return self.store.change_message(ref.channel, ref.id, "update",
                                          text=self._out(text)) is not None
 
     def react(self, channel: str, msg_id: str, status: Status | str) -> bool:
+        channel = self._canon(channel)
         self.store.toggle_reaction(channel, msg_id, _status_name(status), True)
         return self.store.message(channel, msg_id) is not None
 
     def unreact(self, channel: str, msg_id: str, status: Status | str) -> bool:
+        channel = self._canon(channel)
         self.store.toggle_reaction(channel, msg_id, _status_name(status), False)
         return self.store.message(channel, msg_id) is not None
 
@@ -2909,6 +2956,7 @@ class WebFrontend(ChatFrontend):
 
     def post_card(self, channel: str, card: ConfirmationCard, *,
                   thread_ts: str | None = None) -> MessageRef:
+        channel = self._canon(channel)
         self._channel_or_raise(channel)
         row = self.store.add_message(channel, mid=None,
                                      thread_key=self._thread_for(channel, thread_ts),
@@ -2922,6 +2970,7 @@ class WebFrontend(ChatFrontend):
         return True
 
     def update_card(self, ref: MessageRef, card: ConfirmationCard) -> bool:
+        ref = self._canon_ref(ref)
         return self.store.change_message(ref.channel, ref.id, "card", kind="card",
                                          text=self._card_text(card),
                                          card=self._card_json(card)) is not None
@@ -2929,10 +2978,12 @@ class WebFrontend(ChatFrontend):
     def replace_card_with_status(self, ref: MessageRef, text: str) -> bool:
         """The row becomes a `status` row; its text is the core's status line
         as written, which the app renders as card text."""
+        ref = self._canon_ref(ref)
         return self.store.change_message(ref.channel, ref.id, "status", kind="status",
                                          text=text or "") is not None
 
     def message_posted_at(self, ref: MessageRef) -> float | None:
+        ref = self._canon_ref(ref)
         row = self.store.message(ref.channel, ref.id)
         return float(row["posted_at"]) if row and row["posted_at"] is not None else None
 
@@ -2942,10 +2993,11 @@ class WebFrontend(ChatFrontend):
         return DM_ID
 
     def is_dm(self, channel: str) -> bool:
-        row = self.store.channel(channel)
+        row = self.store.channel(self._canon(channel))
         return bool(row and row["kind"] == "dm")
 
     def channel_info(self, channel: str) -> ChannelInfo:
+        channel = self._canon(channel)
         row = self.store.channel(channel)
         if row is None:
             return ChannelInfo(channel, "", is_private=False, is_member=False, exists=False)
@@ -2953,21 +3005,24 @@ class WebFrontend(ChatFrontend):
                            is_archived=row["archived"], is_dm=row["kind"] == "dm")
 
     def channel_members(self, channel: str) -> set[str] | None:
-        return {self.owner_id, self.bot_user_id} if self.store.channel(channel) else None
+        return ({self.owner_id, self.bot_user_id} if self.store.channel(self._canon(channel))
+                else None)
 
     def mention(self, channel: str) -> str:
+        channel = self._canon(channel)
         row = self.store.channel(channel)
         name = (row or {}).get("name") or channel
         return f"[#{name}]({self.room_url(channel)})"
 
     def room_url(self, channel: str) -> str:
-        return f"{self._site()}/#/{urllib.parse.quote(channel, safe='')}"
+        return f"{self._site()}/#/{urllib.parse.quote(self._canon(channel), safe='')}"
 
     def _permalink(self, channel: str, thread_key: str, msg_id: str) -> str:
         q = urllib.parse.quote
         return f"{self._site()}/#/{q(channel, safe='')}/{q(thread_key, safe='')}/{q(msg_id, safe='')}"
 
     def permalink(self, channel: str, msg_id: str) -> str:
+        channel = self._canon(channel)
         row = self.store.message(channel, msg_id)
         return self._permalink(channel, row["thread_key"] if row else msg_id, msg_id)
 
@@ -2988,6 +3043,7 @@ class WebFrontend(ChatFrontend):
 
     def thread_replies(self, channel: str, thread_ts: str,
                        limit: int = 200) -> list[InboundMessage]:
+        channel = self._canon(channel)
         key = self.store.thread_of(channel, thread_ts)
         if not key:
             return []
@@ -3005,6 +3061,7 @@ class WebFrontend(ChatFrontend):
     def recent_messages(self, channel: str, since_s: float,
                         limit: int = 200, *,
                         since_id: str | None = None) -> list[InboundMessage]:
+        channel = self._canon(channel)
         after = self._seq_of(channel, since_id) if since_id else 0
         dm = self.is_dm(channel)
         return [self._inbound_of(r, dm, True)
@@ -3023,15 +3080,17 @@ class WebFrontend(ChatFrontend):
         """One owner, one bot: both are in every room already."""
 
     def set_description(self, channel: str, text: str) -> None:
-        self.store.set_channel(channel, description=text or "")
+        self.store.set_channel(self._canon(channel), description=text or "")
 
     def archive(self, channel: str) -> None:
+        channel = self._canon(channel)
         row = self._channel_or_raise(channel)
         if row["archived"]:
             raise AlreadyArchived(channel)
         self.store.set_channel(channel, archived=True)
 
     def unarchive(self, channel: str) -> None:
+        channel = self._canon(channel)
         row = self._channel_or_raise(channel)
         if not row["archived"]:
             raise NotArchived(channel)
@@ -3055,6 +3114,7 @@ class WebFrontend(ChatFrontend):
 
     def upload(self, channel: str, path: str | Path, *, thread_ts: str | None = None,
                filename: str = "", title: str = "", comment: str = "") -> FileRef:
+        channel = self._canon(channel)
         self._channel_or_raise(channel)
         p = Path(path)
         data = p.read_bytes()
@@ -3617,6 +3677,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             raise _HttpError(401, "not the owner")
         fe, store = self.fe, self.fe.store
         n = len(segs)
+        if n >= 2 and segs[0] in ("channels", "cards", "threads"):
+            # A link from before the move to the web chat alone names its
+            # channel by the old id.
+            segs[1] = store.canonical(segs[1])
         if method == "GET":
             if segs == ["me"]:
                 self._json(200, {"owner": fe.owner_id, "bot": fe.bot_user_id,

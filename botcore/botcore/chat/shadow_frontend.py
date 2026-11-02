@@ -151,7 +151,7 @@ import shutil
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -731,6 +731,51 @@ class ShadowFrontend(ChatFrontend):
                 done(channel)
             except Exception:
                 log.warning("shadow: the history event for %s failed", channel, exc_info=True)
+
+    def export_history(self, channels: list[str] | None = None, *, roots: int = 100000,
+                       thread_limit: int = 5000
+                       ) -> Iterator[tuple[MessageRef, str, str, list[FileRef]]]:
+        """Every message the primary holds in each channel (by default every
+        channel the shadow holds), for the move to the shadow alone
+        (scripts/webchat-cutover.py): one (ref, author, text, files) per
+        message, oldest first in each channel. Unlike backfill there is no
+        window and no cap: a primary with `channel_history` (Zulip) is read
+        whole, page by page; another gives its threads through
+        recent_messages with no time floor (at most `roots`) and
+        thread_replies (at most `thread_limit` each). The author and the
+        text are the history copy's (_history_author); a card is the text
+        the primary shows, with its status line once it was answered;
+        `files` are the primary's FileRefs as they are, for the caller to
+        fetch. It writes nothing. A read the primary fails raises, so an
+        export never ends short without saying so."""
+        if channels is None:
+            with self._lock:
+                channels = list(self._channels)
+        whole = getattr(self.primary, "channel_history", None)
+
+        def threads(cid: str) -> Iterator[InboundMessage]:
+            listed = self.primary.recent_messages(cid, 0.0, roots)
+            self._pace()
+            done: set[str] = set()
+            for root in listed:
+                key = root.thread_key or root.msg_id
+                if not key or key in done:
+                    continue
+                done.add(key)
+                msgs = self.primary.thread_replies(cid, key, thread_limit) or [root]
+                self._pace()
+                yield from msgs
+
+        for cid in channels:
+            for msg in (whole(cid) if callable(whole) else threads(cid)):
+                sub = msg.subtype or ""
+                if not msg.msg_id or (msg.channel and msg.channel != cid) \
+                        or sub == "channel_rename" \
+                        or (sub.startswith("other:") and sub != "other:bot_message"):
+                    continue
+                author, text = self._history_author(cid, msg)
+                ref = MessageRef(cid, msg.msg_id, msg.thread_key or msg.msg_id, msg.posted_at)
+                yield ref, author, text, list(msg.files or [])
 
     # messages
 
