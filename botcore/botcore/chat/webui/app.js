@@ -1553,13 +1553,19 @@ function installHint(prompt) {
 
 const footer = () => { $('drawer-foot').hidden = ['notify-row', 'install', 'pair-phone', 'open-settings', 'update-note', 'tour-again'].every((id) => $(id).hidden); };
 
-// iOS shrinks only the visual viewport for the keyboard: the app takes its
-// height (--app-h) at the top, so the composer stays above the keyboard. The
-// pin is set only while the keyboard is up; otherwise the stylesheet's own
-// height rules, so a screen that changes size (a foldable opening, a window
-// resized) is never held at the old height.
+// iOS shrinks the visual viewport for the keyboard, and from iOS 27 the window
+// too (interactive-widget=resizes-content), the two out of step while the
+// keyboard moves. The visual viewport is the one measure while a field has
+// the focus: the app takes its height (--app-h) at the top, so the composer
+// stays above the keyboard. The pin is set only around the keyboard; otherwise
+// the stylesheet's own height rules, so a screen that changes size (a foldable
+// opening, a window resized) is never held at the old height.
 let lastSize = '';
 let lastShort = '';
+let lastEdit = 0; // when a text field last had the focus
+let full = { w: 0, h: 0 }; // the window with no keyboard, per width (a fold changes the width)
+let wasKeyboard = false;
+let keyboardNotes = 0;
 // The keyboard is up only while a text field has the focus: a screen that
 // reports a short visual viewport for another reason (a foldable open in
 // landscape) must not pin the app to that height.
@@ -1567,19 +1573,42 @@ const editing = () => { const el = document.activeElement; return Boolean(el) &&
 function fitViewport() {
   const vv = window.visualViewport;
   const root = document.documentElement.style;
+  const focused = editing();
+  if (focused) lastEdit = Date.now();
+  const recent = focused || Date.now() - lastEdit < 1000;
   // Only a plausible visual viewport counts: a foldable can report a negative or
   // huge height after a fold, and a stale one on the way to a new posture.
-  const plausible = Boolean(vv) && Number.isFinite(vv.height) && vv.height > 0 && vv.height <= window.innerHeight && Math.abs(vv.scale - 1) <= 0.01;
-  const shorter = plausible && window.innerHeight - vv.height > Math.max(40, window.innerHeight * 0.1);
-  const keyboard = shorter && editing();
+  const client = document.documentElement.clientHeight;
+  const plausible = Boolean(vv) && Number.isFinite(vv.height) && vv.height > 0 && vv.height <= Math.max(window.innerHeight, client) && Math.abs(vv.scale - 1) <= 0.01;
+  // The screen without the keyboard: the tallest window seen at this width, so a
+  // window that shrinks with the keyboard still counts as one with a keyboard.
+  if (full.w !== window.innerWidth) full = { w: window.innerWidth, h: 0 };
+  if (!recent && (!plausible || vv.height >= window.innerHeight - 1)) full.h = Math.max(full.h, window.innerHeight);
+  const screen = Math.max(full.h, window.innerHeight, client);
+  const shorter = plausible && screen - vv.height > Math.max(40, screen * 0.1);
+  // A field has the focus, or had it within the last second: the focus moves to
+  // Send while the keyboard is still up.
+  const keyboard = shorter && recent;
   if (keyboard) root.setProperty('--app-h', `${vv.height}px`);
   else root.removeProperty('--app-h');
-  if (window.scrollY || (vv && vv.offsetTop)) window.scrollTo(0, 0);
+  // The page itself never scrolls: back to the top once the app fits the visual
+  // viewport, or once the keyboard is gone; not while the browser is still
+  // bringing the focused field into view.
+  if ((keyboard || !shorter) && (window.scrollY || (vv && vv.offsetTop))) window.scrollTo(0, 0);
   const size = `${window.innerWidth}x${window.innerHeight}`;
   const vvSize = vv ? `${Math.round(vv.width)}x${Math.round(vv.height)}` : '';
   if (lastSize && size !== lastSize && !keyboard) diagNote({ what: 'resize', from: lastSize, to: size, vv: vvSize });
   if (shorter && !keyboard && lastShort !== `${size}/${vvSize}`) { lastShort = `${size}/${vvSize}`; diagNote({ what: 'short-viewport', size, vv: vvSize }); }
   lastSize = size;
+  // Each keyboard change, a few times a visit: where the composer landed against
+  // the visual viewport, for the phone's own account of a keyboard that hid it.
+  if (keyboard !== wasKeyboard && keyboardNotes < 6) {
+    keyboardNotes++;
+    diagNote({ what: 'keyboard', up: keyboard, size, vv: vvSize, client, offsetTop: Math.round((vv && vv.offsetTop) || 0),
+      composer: Math.round($('composer').getBoundingClientRect().bottom), thread: S.thread === NEW_THREAD ? 'new' : S.thread ? 'open' : 'none' });
+    if (!keyboard) flushDiag().catch(() => {});
+  }
+  wasKeyboard = keyboard;
 }
 
 /* -- The relay: crypto (relay_crypto.py is the reference) ------------ */
@@ -2719,6 +2748,19 @@ async function init() {
   const refit = () => { fitViewport(); [250, 600].forEach((ms) => setTimeout(fitViewport, ms)); };
   ['resize', 'orientationchange', 'pageshow', 'focus'].forEach((t) => window.addEventListener(t, refit));
   ['focusin', 'focusout'].forEach((t) => document.addEventListener(t, () => setTimeout(fitViewport, 50)));
+  // A window left at the keyboard's height after the field blurs (a home-screen
+  // app on an older iOS): one forced layout brings it back, the thread's place kept.
+  document.addEventListener('focusout', () => setTimeout(() => {
+    const vv = window.visualViewport;
+    if (editing() || full.w !== window.innerWidth || !full.h || window.innerHeight >= full.h - 4) return;
+    if (vv && vv.height < window.innerHeight - 1) return; // the keyboard is still there
+    const box = $('messages'), at = box.scrollTop;
+    document.body.style.display = 'none';
+    void document.body.offsetHeight;
+    document.body.style.display = '';
+    box.scrollTop = at;
+    fitViewport();
+  }, 600));
   document.addEventListener('visibilitychange', () => { if (!document.hidden) fitViewport(); });
   fitViewport();
   // The thread holds its newest message in view while its pane shrinks (the keyboard opening).
