@@ -32,9 +32,16 @@ so its length tells the push service little about the text.
 Sending runs on one worker thread (`Pusher.start`). A push for a later
 time (an alert) waits in the store's `push_queue` table, keyed by its
 tag, until the worker that runs in the bot process sends it; a process
-outside the bot (alert.py) writes it there. A clear (`Pusher.clear`,
-{"type": "clear", "tag"}) shows nothing: the service worker closes the
-notifications under the tag, after the owner wrote in that thread.
+outside the bot (alert.py) writes it there. A push delivered under a tag
+is recorded for its subscription (the store's `push_shown`), and when the
+owner writes in that thread each subscription still holding one gets a
+clear (`Pusher.clear`, {"type": "clear", "tag", "title"}): the service
+worker closes the notifications under the tag, and shows a quiet
+"Handled." in their place where the browser would otherwise count a push
+that showed nothing. A clear goes to one subscription at most once in
+CLEAR_GAP_S and CLEAR_DAY_CAP times a day, and never to Apple's push
+service (NO_CLEAR_HOSTS): there the next push under the tag replaces the
+notification.
 
 The crypto comes from the `cryptography` package (installed with msal).
 Without it `AVAILABLE` is False and push is off; the chat works.
@@ -102,6 +109,15 @@ PAD_BLOCK = 256
 # A subscription the app has not posted again for this long is dropped:
 # the app posts its own at every start.
 SUBSCRIPTION_MAX_AGE_S = 30 * 86400
+# A clear goes to one subscription at most once in CLEAR_GAP_S seconds and
+# at most CLEAR_DAY_CAP times in a day; past that its notification stands.
+CLEAR_GAP_S = 600.0
+CLEAR_DAY_CAP = 20
+# Push services whose browser revokes a subscription for pushes that show
+# nothing, with no budget that recovers: WebKit (Safari, the iOS Home Screen
+# app) does so after three in the subscription's life, and a notification
+# closed in the push handler does not count as one shown. They get no clear.
+NO_CLEAR_HOSTS = ("web.push.apple.com",)
 
 _SHORTCODE_RE = re.compile(r":[a-z0-9_+-]+:")
 _MD_LINK_RE = re.compile(r"\[([^\]\n]*)\]\([^)\s]*\)")
@@ -166,6 +182,27 @@ def endpoint_allowed(url: Any) -> bool:
     if parts.scheme != "https" or not host or parts.username or port not in (None, 443):
         return False
     return host in PUSH_HOSTS or any(r.match(host) for r in PUSH_HOST_PATTERNS)
+
+
+def takes_clears(endpoint: Any) -> bool:
+    """False for a subscription on a push service in NO_CLEAR_HOSTS."""
+    try:
+        host = (urllib.parse.urlsplit(str(endpoint or "")).hostname or "").lower()
+    except ValueError:
+        return False
+    return host not in NO_CLEAR_HOSTS
+
+
+def shown_under(payload: bytes) -> tuple[str, str] | None:
+    """(tag, title) of a push that shows a notification under a tag; None
+    for a clear, an untagged push or a payload that is not this module's."""
+    try:
+        data = json.loads(payload)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("type") == "clear" or not data.get("tag"):
+        return None
+    return str(data["tag"]), str(data.get("title") or "")
 
 
 def _hmac(key: bytes, data: bytes) -> bytes:
@@ -359,6 +396,8 @@ class Pusher:
         self.ttl = TTL_S
         self.timeout = TIMEOUT_S
         self.min_gap_s = MIN_GAP_S
+        self.clear_gap_s = CLEAR_GAP_S
+        self.clear_day_cap = CLEAR_DAY_CAP
         self.due_poll_s = DUE_POLL_S
         self._opener = urllib.request.build_opener(_NoRedirect)
         self._jobs: queue.Queue = queue.Queue()
@@ -415,9 +454,12 @@ class Pusher:
             out.append((row["payload"].encode("utf-8"), row["urgency"]))
         return out
 
-    def _send_logged(self, payload: bytes, urgency: str) -> None:
+    def _send_logged(self, payload: bytes, urgency: str, only: frozenset | None = None) -> None:
         try:
-            self.send_all(payload, urgency)
+            if only is None:
+                self.send_all(payload, urgency)
+            else:
+                self.send_all(payload, urgency, only=only)
         except Exception:
             log.exception("web push: a push failed")
 
@@ -476,22 +518,47 @@ class Pusher:
         """Drop the push queued under `tag`; True when there was one."""
         return bool(tag) and self.store.push_cancel(tag)
 
-    def clear(self, tag: str, *, wait: bool = False) -> dict:
-        """Send every subscription a clear for `tag`: {"type": "clear",
-        "tag"}, no title, which the service worker takes as "close the
-        notifications under this tag" and shows nothing. Not rate limited."""
+    def clear(self, tag: str, owed: list[dict], *, wait: bool = False,
+              now: float | None = None) -> dict:
+        """Send a clear for `tag` to each subscription in `owed` (the store's
+        push_shown_take: {"endpoint", "title"}, a push under the tag went
+        there since the owner last wrote in the thread). The payload,
+        {"type": "clear", "tag", "title"}, tells the service worker to close
+        the notifications under the tag; `title` is the one the thread's
+        notification showed, for the quiet "Handled." the worker shows where
+        the browser would count a push that showed nothing. A subscription on
+        Apple's service, or one past its budget (one clear in clear_gap_s,
+        clear_day_cap a day), gets none: its notification stands until the
+        next push under the tag replaces it. Each one skipped is a diag
+        line in the log. The counts: "queued" (or the send's) and "skipped"."""
         _need()
-        if not tag:
-            return {"sent": 0}
-        if not self.store.push_count():
-            return {"sent": 0, "subscriptions": 0}
-        data = json.dumps({"type": "clear", "tag": str(tag)[:200]},
-                          separators=(",", ":")).encode("utf-8")
-        if wait:
-            return self.send_all(data, "normal")
-        self.start()
-        self._jobs.put((data, "normal"))
-        return {"queued": True}
+        now = time.time() if now is None else now
+        groups: dict[str, set[str]] = {}
+        skipped = 0
+        for row in owed if tag else []:
+            endpoint = str(row.get("endpoint") or "")
+            why = ("safari" if not takes_clears(endpoint) else
+                   self.store.push_clear_slot(endpoint, now, self.clear_gap_s,
+                                              self.clear_day_cap))
+            if why:
+                skipped += 1
+                log.info("web chat diag: %s", json.dumps(
+                    {"what": "push clear skipped", "why": why, "tag": str(tag)[:200],
+                     "host": urllib.parse.urlsplit(endpoint).hostname or "?"}, sort_keys=True))
+                continue
+            groups.setdefault(plain_line(row.get("title"), 120) or "Tacitus", set()).add(endpoint)
+        out: dict = {"skipped": skipped}
+        for title, endpoints in groups.items():
+            data = json.dumps({"type": "clear", "tag": str(tag)[:200], "title": title},
+                              ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            if wait:
+                for k, v in self.send_all(data, "normal", only=frozenset(endpoints)).items():
+                    out[k] = out.get(k, 0) + v
+            else:
+                self.start()
+                self._jobs.put((data, "normal", frozenset(endpoints)))
+                out["queued"] = out.get("queued", 0) + len(endpoints)
+        return out
 
     # the subscriptions
 
@@ -515,16 +582,30 @@ class Pusher:
 
     # sending
 
-    def send_all(self, payload: bytes, urgency: str = "normal") -> dict:
+    def send_all(self, payload: bytes, urgency: str = "normal", *,
+                 only: frozenset | None = None) -> dict:
+        """Send `payload` to every subscription, or to those in `only` (a
+        set of endpoints). A push delivered under a tag is recorded for its
+        subscription (the store's push_shown), which the owner's next
+        message in the thread takes for its clear."""
         counts = {"sent": 0, "failed": 0, "dropped": 0, "held": 0}
         now = time.time()
         self.prune(now)
+        shown = shown_under(payload)
         for sub in self.store.push_subscriptions():
             endpoint = sub["endpoint"]
+            if only is not None and endpoint not in only:
+                continue
             if self._retry_at.get(endpoint, 0.0) > now:
                 counts["held"] += 1
                 continue
-            counts[self.send_one(sub, payload, urgency)] += 1
+            result = self.send_one(sub, payload, urgency)
+            counts[result] += 1
+            if result == "sent" and shown:
+                try:
+                    self.store.push_shown(endpoint, shown[0], shown[1], time.time())
+                except Exception:
+                    log.exception("web push: a delivered push could not be recorded")
         return counts
 
     def send_one(self, sub: dict, payload: bytes, urgency: str = "normal") -> str:

@@ -207,6 +207,7 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/push/subscribe` | the browser's `PushSubscription.toJSON()` → `{"ok": true}` |
 | POST | `/api/diag` | `{"entries": [...]}`: what the app saw while it could not connect (storage state, display mode, the error); logged as `web chat diag:` lines, at most 20 per call, never stored → `{"ok": true, "logged": n}` |
 | POST | `/api/push/unsubscribe` | `{"endpoint"}` → `{"ok": true, "removed": bool}` |
+| POST | `/api/push/seen` | `{"endpoint", "tag"}`: the app shows that thread in this browser and closed its notifications there, so the bot owes the browser no clear for it → `{"ok": true, "owed": bool}` (`owed`: one was owed) |
 | GET | `/api/push/subscriptions` | `[{"id", "host", "created_at", "last_seen", "last_ok", "failures"}]`; `id` is a hash of the endpoint, which is never shown |
 | POST | `/api/push/revoke` | `{"id"}` → `{"ok": true, "removed": bool}` |
 | POST | `/api/relay/pair` | `{}` or `{"via": "relay"}` → `{"link", "qr", "expires", "origin", "bundle", "access"}`: a one-time pairing link for a phone (the relay), on the bot's own origin (409 without `public_url`) or on the relay's copy of the app with the signed bundle's hash (409 without one); `access` is what the phone may do once approved (`"all"` own, `"chat"` relay) |
@@ -852,22 +853,51 @@ high urgency. A card and a plain `notify` never take part.
 When the owner's message lands in a thread, typed in the web app or
 mirrored from the primary in shadow mode (`WebStore.on_owner`, which the
 store calls for every live owner row it inserts), the bot drops the push
-queued under the thread's tag and, when a push went out under that tag
-since the owner last wrote there, sends every browser
-`{"type": "clear", "tag": "<channel>/<thread key>"}`. It has no title:
-the service worker closes the notifications under that tag
-(`registration.getNotifications({tag})`, then `close()`) and shows
-nothing. `push_sent` keeps `shown:<tag>` for a push that went now or that
-the worker claimed from the queue, and the clear takes it, so there is
-one clear per push and none for a thread that notified nothing. The
-two-minute window holds: an answer right after the reply does not buzz
-again. The app drops the thread's unread count when the owner's message
-arrives on the stream, also with the thread closed, and the channel's
-count from the server as the server counts it. Browsers expect every push
-to show something (`userVisibleOnly`): a clear whose notification the
-owner already dismissed shows nothing, which Chrome may answer with its
-own "updated in the background" line and Safari may count against the
-subscription.
+queued under the thread's tag and sends
+`{"type": "clear", "tag": "<channel>/<thread key>", "title"}` to each
+browser that is owed one. The `push_shown` table records each push
+delivered under a tag, per subscription, with the title its notification
+showed (`Pusher.send_all`, on a 2xx from the push service); the owner's
+message takes the thread's records (`push_shown_take`), so a browser is
+owed a clear only when a push under the tag reached it since the owner
+last wrote there. The app drops the record itself when it shows the
+thread: on opening it, on coming back into view, and five seconds after a
+push for the thread in view (the worker posts `{shown: tag}` to the
+app's pages), it closes the thread's notifications in this browser and
+posts `/api/push/seen`. Each clear also has a budget (`push_clears`): at
+most one per subscription in ten minutes (`CLEAR_GAP_S`) and twenty in a
+day (`CLEAR_DAY_CAP`). A clear past it is skipped, its notification
+stands until the thread's next push replaces it by tag, and a
+`web chat diag:` line in the log names the push service and the reason
+(`gap`, `cap` or `safari`). The two-minute window holds: an answer right
+after the reply does not buzz again. The app drops the thread's unread
+count when the owner's message arrives on the stream, also with the
+thread closed, and the channel's count from the server as the server
+counts it.
+
+**What each browser gets on a clear.** Every browser expects each push
+to show a notification (`userVisibleOnly`), none counts a notification
+closed in the push handler as one shown, and each punishes a push that
+shows nothing in its own way. Chrome and Edge (Google's and Microsoft's
+push services) count the app's notifications still open when the push
+event ends, need none while a window of the app is in view, and
+otherwise spend a small budget earned by use of the site; past it they
+show their own "This site has been updated in the background". Firefox
+looks three seconds after the push for an open notification of the site
+and, with none, spends a quota of at most 16 that ends the subscription
+at zero; a visit to the site refills it. Safari (Apple's push service,
+the iOS Home Screen app too) counts each push in which the worker calls
+no `showNotification`, and after three in the subscription's life
+removes the site's subscriptions. So the worker closes the thread's
+notifications and then asks `clearPlan` in `sw.js`: on Chrome and Edge
+it shows nothing when another notification of the app stays open or a
+window of it is in view, on Firefox when another stays open, and
+otherwise it shows a silent notification under the thread's tag, titled
+as the thread's notification was, with the body "Handled.", which closes
+itself eight seconds later, after the moment each browser counts. Apple's
+push service (`web.push.apple.com`, `web_push.NO_CLEAR_HOSTS`) gets no
+clear at all: there the next push for the thread replaces the
+notification by tag, and opening the thread in the app clears it.
 
 **Quiet hours.** With `notify_push.quiet` `"queue"`, a briefing's or an
 answer's push waits in `push_queue` until the owner's quiet hours end:

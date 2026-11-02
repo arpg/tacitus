@@ -49,18 +49,66 @@ self.addEventListener('activate', (event) => {
 });
 
 // A push from the bot (web_push.py): {title, body, url, tag}, one notification per tag (a thread), a new
-// one alerting again; {type: 'clear', tag} (the owner wrote there) closes that tag's notifications, shows none.
+// one alerting again, and the app's open pages hear {shown: tag}; {type: 'clear', tag, title} (the owner
+// wrote there) closes that tag's notifications (clearThread).
 self.addEventListener('push', (event) => {
   let d = {}; try { d = event.data ? event.data.json() : {}; } catch { /* not JSON: the title alone */ }
-  if (d.type === 'clear') return event.waitUntil(d.tag ? self.registration.getNotifications({ tag: String(d.tag) }).then((ns) => ns.forEach((n) => n.close())) : Promise.resolve());
+  if (d.type === 'clear') return event.waitUntil(clearThread(d));
+  const tag = d.tag ? String(d.tag) : undefined;
   event.waitUntil(self.registration.showNotification(String(d.title || 'Tacitus'), {
     body: String(d.body || ''),
     icon: new URL('icon-192.png', self.registration.scope).href,
-    tag: d.tag ? String(d.tag) : undefined,
-    renotify: Boolean(d.tag),
+    tag,
+    renotify: Boolean(tag),
     data: { url: String(d.url || '') },
-  }));
+  }).then(() => tag && windows().then((ws) => ws.forEach((w) => w.postMessage({ shown: tag })))));
 });
+
+const windows = () => self.clients.matchAll({ type: 'window', includeUncontrolled: true }).catch(() => []);
+
+// How an endpoint's browser treats a push that shows nothing (docs/webchat.md, Notifications): 'apple'
+// (WebKit revokes the subscription after three), 'mozilla' (Firefox spends a quota that ends it, unless a
+// notification of the site is open three seconds on), 'chromium' (Chrome and Edge show their own line past
+// a small budget, unless a notification of the app is open as the push ends or a window of it is in view), ''.
+function pushService(endpoint) {
+  let host = '';
+  try { host = new URL(String(endpoint || '')).hostname.toLowerCase(); } catch { return ''; }
+  if (host === 'web.push.apple.com') return 'apple';
+  if (host === 'updates.push.services.mozilla.com') return 'mozilla';
+  return /^(fcm\.googleapis\.com|jmt\d+\.google\.com|[a-z0-9-]+\.notify\.windows\.com)$/.test(host) ? 'chromium' : '';
+}
+
+// What a clear shows once the thread's notifications are closed, which no browser counts as one shown:
+// 'replace' (a quiet "Handled." under the tag) or 'none'. `left`: the app's notifications still open;
+// `inView`: a window of the app in view.
+function clearPlan({ service, left, inView }) {
+  if (service === 'apple') return 'replace';
+  return left > 0 || (service === 'chromium' && inView) ? 'none' : 'replace';
+}
+
+// The quiet "Handled." closes after this long: past the push's end, when Chrome counts, and past Firefox's
+// three seconds. A worker stopped sooner leaves it, and the thread's next push replaces it.
+const HANDLED_MS = 8000;
+
+// A clear. A lookup that fails takes the answer that shows the replacement, and the promise never
+// rejects: WebKit counts a rejected push as one that showed nothing.
+function clearThread(d) {
+  const reg = self.registration;
+  const tag = d.tag ? String(d.tag) : '';
+  const lookups = [reg.getNotifications().catch(() => []), reg.pushManager.getSubscription().catch(() => null), windows()];
+  return Promise.all(lookups).then(([open, sub, wins]) => {
+    const mine = open.filter((n) => tag && n.tag === tag);
+    mine.forEach((n) => n.close());
+    const plan = clearPlan({ service: pushService(sub && sub.endpoint), left: open.length - mine.length,
+      inView: wins.some((w) => w.visibilityState === 'visible') });
+    if (plan === 'none') return undefined;
+    return reg.showNotification(String(d.title || 'Tacitus'), { body: 'Handled.', icon: new URL('icon-192.png', reg.scope).href,
+      tag: tag || undefined, silent: true, data: { url: '', handled: true } })
+      // Outside the push's lifetime: Chrome counts the open notifications as it ends.
+      .then(() => { setTimeout(() => reg.getNotifications(tag ? { tag } : undefined)
+        .then((ns) => ns.forEach((n) => n.data && n.data.handled && n.close())).catch(() => {}), HANDLED_MS); });
+  }).catch(() => {});
+}
 
 // A tap opens the app at the push's url: in the app's window last in front
 // (on iOS the installed app's own), which gets the url as a message where
