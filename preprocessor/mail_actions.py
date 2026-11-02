@@ -12,6 +12,7 @@ Step 1 has the reads:
     python3 mail_actions.py get-message --provider outlook|gmail --message-id <id>
     python3 mail_actions.py get-draft --provider outlook|gmail --draft-id <id>
     python3 mail_actions.py mark-read --provider outlook|gmail --message-id <id>
+    python3 mail_actions.py mark-unread --provider outlook|gmail --message-id <id>
 
 The entry point does what graph_actions.py's does: it resolves a run's
 short id handles, and under mail mediation it forwards the call to the
@@ -62,6 +63,15 @@ def cmd_mark_read(args) -> int:
     return 0 if "error" not in result else 1
 
 
+def cmd_mark_unread(args) -> int:
+    import mail_client
+    result = mail_client.mark_unread(
+        provider=args.provider, message_id=args.message_id, account=args.account,
+    )
+    print(json.dumps(result, indent=2))
+    return 0 if "error" not in result else 1
+
+
 PROVIDERS = ("outlook", "gmail")
 
 
@@ -102,6 +112,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_mread.add_argument("--account", default=None, help=acct_help)
     p_mread.add_argument("--message-id", required=True, dest="message_id")
     p_mread.set_defaults(func=cmd_mark_read)
+
+    p_munread = sub.add_parser("mark-unread", allow_abbrev=False,
+                               help="Mark a message unread in place; never moves it")
+    p_munread.add_argument("--provider", required=True, choices=PROVIDERS)
+    p_munread.add_argument("--account", default=None, help=acct_help)
+    p_munread.add_argument("--message-id", required=True, dest="message_id")
+    p_munread.set_defaults(func=cmd_mark_unread)
     return parser
 
 

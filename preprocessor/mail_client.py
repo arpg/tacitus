@@ -6,7 +6,8 @@ optional `account`, and returns one normalized shape, or an
 {"error": ...} dict instead of raising. This module is a library with no
 side effects; mail_actions.py is the CLI over it.
 
-Step 1 has the reads: search, get_message, get_draft, mark_read.
+Step 1 has the reads: search, get_message, get_draft, mark_read and
+mark_unread.
 
 Normalized message shape (search and get_message; get_message adds
 "body" and "has_attachments"):
@@ -308,21 +309,33 @@ def get_draft(provider: str, draft_id: str, account: str | None = None) -> dict:
 def mark_read(provider: str, message_id: str, account: str | None = None) -> dict:
     """Mark a message read in place on either provider; it is not moved or
     archived. Ungated: only the user's own read flag changes."""
+    return _set_read(provider, message_id, account, True)
+
+
+def mark_unread(provider: str, message_id: str, account: str | None = None) -> dict:
+    """Mark a message unread in place on either provider (the user's to-do
+    signal); it is not moved. Ungated, like mark_read."""
+    return _set_read(provider, message_id, account, False)
+
+
+def _set_read(provider: str, message_id: str, account: str | None, read: bool) -> dict:
+    status = "marked_read" if read else "marked_unread"
+    what = "read" if read else "unread"
     provider = (provider or "").lower()
     if provider == "outlook":
         import graph_client as graph
         try:
-            graph.mark_message_read(message_id)
+            (graph.mark_message_read if read else graph.mark_message_unread)(message_id)
         except Exception as e:
-            return {"error": f"Could not mark the message read: {e}"}
-        return {"status": "marked_read", "id": message_id, "provider": "outlook", "account": None}
+            return {"error": f"Could not mark the message {what}: {e}"}
+        return {"status": status, "id": message_id, "provider": "outlook", "account": None}
     elif provider == "gmail":
         import gmail_client
         acct = _resolve_gmail_account(account)
         if not acct:
             return {"error": "No Gmail account configured"}
-        result = gmail_client.mark_read(acct, message_id)
+        result = (gmail_client.mark_read if read else gmail_client.mark_unread)(acct, message_id)
         if "error" in result:
             return {"error": result["error"]}
-        return {"status": "marked_read", "id": message_id, "provider": "gmail", "account": acct}
+        return {"status": status, "id": message_id, "provider": "gmail", "account": acct}
     return _provider_error(provider)

@@ -764,7 +764,7 @@ NOT_DRAFT_CHANGING = {
     },
     "mail_actions": {
         "search": "read", "get-message": "read", "get-draft": "read",
-        "mark-read": "the read flag only",
+        "mark-read": "the read flag only", "mark-unread": "the read flag only",
     },
 }
 

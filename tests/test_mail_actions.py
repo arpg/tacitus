@@ -48,6 +48,8 @@ def _stubs(fail=False):
         lambda mid: calls.append(("outlook.get", mid)) or dict(OUTLOOK_MSG, id=mid))
     g.mark_message_read = boom if fail else (
         lambda mid: calls.append(("outlook.read", mid)) or {})
+    g.mark_message_unread = boom if fail else (
+        lambda mid: calls.append(("outlook.unread", mid)) or {})
 
     err = {"error": "Gmail API error: 404"}
     m.search_messages = lambda acct, q, max_results=20: (
@@ -59,11 +61,14 @@ def _stubs(fail=False):
             "to": "x@example.com", "cc": "", "subject": "Re: Hello", "body": "draft"}))
     m.mark_read = lambda acct, mid: (
         calls.append(("gmail.read", acct, mid)) or (err if fail else {"status": "marked_read"}))
+    m.mark_unread = lambda acct, mid: (
+        calls.append(("gmail.unread", acct, mid)) or (err if fail else {"status": "marked_unread"}))
     sys.modules["graph_client"], sys.modules["gmail_client"] = g, m
     return calls
 
 
 def _run(*argv, fail=False):
+    real = {k: sys.modules.get(k) for k in ("graph_client", "gmail_client")}
     calls = _stubs(fail)
     saved = sys.argv
     sys.argv = ["mail_actions.py", *argv]
@@ -73,6 +78,11 @@ def _run(*argv, fail=False):
             rc = mail_actions.main()
     finally:
         sys.argv = saved
+        for k, mod in real.items():  # later tests in this process get the real clients
+            if mod is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = mod
     return rc, json.loads(out.getvalue()), calls
 
 
@@ -122,15 +132,25 @@ def test_mark_read_both_providers():
     assert rc == 0 and out["account"] == "me@example.com"
 
 
+def test_mark_unread_both_providers():
+    rc, out, calls = _run("mark-unread", "--provider", "outlook", "--message-id", "AAMkOUT=")
+    assert rc == 0 and out["status"] == "marked_unread" and calls == [("outlook.unread", "AAMkOUT=")]
+    rc, out, calls = _run("mark-unread", "--provider", "gmail", "--message-id", "18abc",
+                          "--account", "me@example.com")
+    assert rc == 0 and calls == [("gmail.unread", "me@example.com", "18abc")]
+    assert out["account"] == "me@example.com"
+
+
 def test_client_errors_come_back_as_an_error_dict():
     for argv in (("search", "--query", "x"), ("get-message", "--message-id", "AAMkOUT="),
-                 ("get-draft", "--draft-id", "AAMkOUT="), ("mark-read", "--message-id", "AAMkOUT=")):
+                 ("get-draft", "--draft-id", "AAMkOUT="), ("mark-read", "--message-id", "AAMkOUT="),
+                 ("mark-unread", "--message-id", "AAMkOUT=")):
         for provider in ("outlook", "gmail"):
             rc, out, _ = _run(argv[0], "--provider", provider, *argv[1:],
                               "--account", "me@example.com", fail=True)
             row = out[0] if isinstance(out, list) else out
             assert "error" in row, (argv, provider, out)
-            if argv[0] == "mark-read":
+            if argv[0].startswith("mark-"):
                 assert rc == 1
 
 
@@ -154,7 +174,8 @@ def test_gmail_account_defaults_to_the_profile():
 
 
 def test_the_reads_are_mediated_and_nothing_else_is():
-    assert MM.SAFE["mail_actions"] == {"search", "get-message", "get-draft", "mark-read"}
+    assert MM.SAFE["mail_actions"] == {"search", "get-message", "get-draft", "mark-read",
+                                       "mark-unread"}
     assert "mail_actions" not in MM.GATED
     import mail_mediator
     assert mail_mediator.TOOLS["mail_actions"].name == "mail_actions.py"

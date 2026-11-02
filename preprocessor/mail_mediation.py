@@ -137,7 +137,7 @@ SAFE = {
         "list-drafts",
     },
     # The unified mail CLI (issue #76): reads on either provider.
-    "mail_actions": {"search", "get-message", "get-draft", "mark-read"},
+    "mail_actions": {"search", "get-message", "get-draft", "mark-read", "mark-unread"},
     # list-ea-managed is a READ of the EA's own rule calendar; it returns the
     # event ids a later move or delete has to name. It grants no write:
     # create-event stays GATED apart from the attendee-less auto-hold
