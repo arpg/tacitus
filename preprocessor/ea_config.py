@@ -135,7 +135,7 @@ DEFAULTS = {
     # Settings screen writes; this file's copy only shapes what the
     # resident shows (see get_routing). `thread_state` (the web chat's
     # conversation states, docs/webchat-state.md) is local by default: with
-    # no local model the rules alone set the state.
+    # no local model the hosted model judges, one call a tick.
     "routing": {
         "tasks": {"mail": "auto", "tagging": "auto", "drafting": "auto", "digests": "auto",
                   "briefing": "auto", "audit": "auto", "scheduling": "auto", "chat": "auto",

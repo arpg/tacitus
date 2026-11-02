@@ -1765,7 +1765,8 @@ def _claude_bin() -> str:
     return "claude"
 
 
-def _run_claude(prompt: str, model: str, tools: str) -> dict:
+def _run_claude(prompt: str, model: str, tools: str, *,
+                timeout: float = SAMPLE_TIMEOUT_S) -> dict:
     claude_bin = _claude_bin()
     args = ["-p", prompt, "--model", model, "--output-format", "json",
             "--strict-mcp-config", "--no-session-persistence"]
@@ -1780,7 +1781,7 @@ def _run_claude(prompt: str, model: str, tools: str) -> dict:
             f"PATH={os.environ.get('PATH', '/usr/bin:/bin')}"]
            + [f"{k}={v}" for k, v in claude_cli.no_connector_env(args).items()] + [claude_bin]
            + claude_cli.apply(args, claude_bin=claude_bin, as_ea_bot=True))
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=SAMPLE_TIMEOUT_S,
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                        cwd=str(EA_BOT_HOME))
     out = p.stdout or ""
     try:

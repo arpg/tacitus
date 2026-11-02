@@ -96,7 +96,7 @@ FEATURE_KEYS = frozenset({
     "ends_with_question", "has_live_card", "card_kind", "card_outcome", "has_card_pointer",
     "pointer_card_outcome", "stuck_turn", "mirrored", "interaction_type", "rule_state",
     "rule_id", "prior_state", "prior_by", "reconstructed", "writeback", "confidence",
-    "applied_state",
+    "applied_state", "model_via",
     # the linked ledger row, or the row itself
     "linked_ledger_count", "linked_ledger_type", "linked_ledger_status", "deadline_delta_days",
     "closes_on", "provenance", "signal", "closed_how", "age_days", "has_conversation",
@@ -187,6 +187,7 @@ _RULE_IDS = (
     ("The card was answered", "4-card-outcome"),
     ("linked ledger item", "6-ledger"),
     ("An automated post", "7-automated"),
+    (_ts.QUIET_TAIL, "7-automated"),
 )
 
 # Closing signals by who settled the row: a rule (decisive evidence, a
@@ -685,10 +686,11 @@ def owner_tap_record(ctx: dict, *, row: dict, before: dict | None, now: float,
 
 
 def model_record(ctx: dict, *, answer: dict | None, row: dict | None, now: float,
-                 store: Any = None) -> dict:
+                 store: Any = None, via: str | None = None) -> dict:
     """The record of one model answer: the model's own state and
     confidence (`answer`, thread_state.parse_answer; None when it did not
-    parse), and the state the engine applied (`row`)."""
+    parse), the state the engine applied (`row`) and which model answered
+    (`via`: local or hosted)."""
     feats, head = thread_features(ctx.get("messages") or [], channel=ctx.get("channel_row"),
                                   ledger=ctx.get("ledger"), origin=ctx.get("origin") or "",
                                   devices=ctx.get("devices"), now=now, before=ctx.get("prev"),
@@ -702,6 +704,7 @@ def model_record(ctx: dict, *, answer: dict | None, row: dict | None, now: float
         label = str(answer.get("state") or applied)
     feats["confidence"] = round(conf, 3) if conf is not None else None
     feats["applied_state"] = token(applied)
+    feats["model_via"] = token(via) if via in ("local", "hosted") else None
     lrow = _primary_row(ctx.get("ledger") or [])
     return record("model", kind, label if label in LABELS else "none",
                   key=ref("model", ctx["channel"], ctx["key"], ctx.get("newest"), kind),

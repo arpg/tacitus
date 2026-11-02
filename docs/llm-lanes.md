@@ -153,7 +153,7 @@ backend, is in [model-routing.md](model-routing.md).
 | `audit` | the Sunday audit | `remote_audit.active` | the remote lane | the Claude lane | |
 | `scheduling` | the scheduling channel and the proactive scheduler | `model_tiers.resolve` (lanes `sched-channel`, `proactive`); `remote_llm.mode("scheduling")` | the lane's tier is `local` (the tool gateway, every write checked by the backstop); `enforce` still needs its ghost-week GO | the agent is off and the lane's local picks run on `opus` | stakes rule per message |
 | `chat` | turns in topics, rooms and the DM | `model_tiers.resolve` (lanes `main`, `dm`, `room`) | the lane's tier is `local` | a pick that would run on `local` runs on `opus` | stakes rule per message |
-| `thread_state` | the state of a web chat thread the rules leave open (default `local`; `auto` runs like it) | `web_thread_state.route` | the local model judges it | not built: the rules alone | |
+| `thread_state` | the state of a web chat thread the rules leave open (default `local`; `auto` runs the local model, then the hosted call for what it left) | `web_thread_state.route` | the local model judges it | one Claude call a tick over up to 20 threads (also `local` with no local model) | |
 | `review` | the briefing's still-open check, the nightly reconcile, the backstop on local scheduling writes, the hand-offs | `remote_briefing.audit_judge` | refused | always | stakes: hosted only |
 
 **The floors.** No value lowers them. *Stakes:* `review` is hosted only:

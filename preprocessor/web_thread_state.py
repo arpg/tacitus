@@ -12,14 +12,31 @@ web chat's store. This module gives it what only the EA has:
       status stays `waiting`). The model reads the deadline and the last
       action of a row the rules leave to it.
 
+  route()
+      which model judges this tick, from the `thread_state` task of the
+      routing table (model_routing.py): `local` (set to local, with a local
+      model), `auto` (set to auto, with a local model: the local model, and
+      Claude for the threads left when it does not answer) or `hosted` (set
+      to hosted, or no local model set up: `local` with no endpoint reads
+      hosted, as the table reads it everywhere).
+
   model_answer(prompt)
-      the model's text for one thread, routed by the `thread_state` task of
-      the routing table (model_routing.py). `local` and `auto` call the
-      local endpoint (remote_llm.chat, purpose `chat-thread-state`: the bot's
-      small jobs' breaker, and a short wait for a request slot), with the
-      answer's JSON schema. With no local model, or with `hosted`, it
-      returns None and logs why once an hour: the hosted step is not built,
-      so the rules alone set the state there.
+      the local model's text for one thread, on the local and auto routes:
+      the local endpoint (remote_llm.chat, purpose `chat-thread-state`: the
+      bot's small jobs' breaker, and a short wait for a request slot), with
+      the answer's JSON schema. None on the hosted route, or when the
+      endpoint does not answer.
+
+  hosted_answer(prompt)
+      Claude's text for a batch of threads (thread_state.batch_prompt: up
+      to 20 threads, one JSON array back), on the hosted and auto routes.
+      One tool-less run of the Claude CLI as the resident
+      (mail_privacy._run_claude, the call the nightly ledger reconcile, the
+      briefing's still-open check and the scheduling backstop make), on the
+      `thread_state` model of ea-config.json's `models`, else opus. It runs
+      in the bot's own process on the engine's worker thread, never as a
+      chat turn. A failure returns None (the states stay as they were) and
+      is logged once an hour.
 
   quiet_now()
       True while the owner's quiet hours hold (quiet_hours.should_defer for
@@ -50,8 +67,8 @@ web chat's store. This module gives it what only the EA has:
       on different mail threads. Every write goes through those CLIs, as
       the bot's other ledger writes do; nothing writes the database here.
 
-enable(frontend) hands the four to a web front end (ea-chat-bot.py calls
-it for the web chat, alone or as a shadow).
+enable(frontend) hands them to a web front end (ea-chat-bot.py calls it
+for the web chat, alone or as a shadow).
 """
 from __future__ import annotations
 
@@ -85,19 +102,25 @@ TASK = "thread_state"
 PURPOSE = "chat-thread-state"
 TIMEOUT_S = 45
 MAX_TOKENS = 300
+# The hosted call: the model when ea-config.json's `models` names none for
+# the task (the tier the reconcile and the backstop use), and how long one
+# run may take.
+HOSTED_MODEL = "opus"
+HOSTED_TIMEOUT_S = 300
 # Ids one query names at most (SQLite's bound on parameters is higher).
 CHUNK = 400
-# Seconds between two log lines that say why no model judges.
+# Seconds between two log lines on the same thing (a hosted run that
+# fails, quiet hours that cannot be read).
 QUIET_S = 3600
 
 _said: dict[str, float] = {}
 
 
-def _say_once(key: str, msg: str) -> None:
+def _say_once(key: str, msg: str, level: int = logging.INFO) -> None:
     now = time.monotonic()
     if now - _said.get(key, -QUIET_S - 1) >= QUIET_S:
         _said[key] = now
-        log.info(msg)
+        log.log(level, msg)
 
 
 def ledger_rows(ledger_ids: list, conversation_ids: list,
@@ -135,28 +158,20 @@ def ledger_rows(ledger_ids: list, conversation_ids: list,
 
 
 def route() -> str:
-    """Where the model step runs now: `local`, or `off` with no model to
-    run it on (no local model set up, or `hosted`, which is not built)."""
-    cfg = _remote.config()
+    """Which model judges now: `local`, `auto` (the local model, then
+    Claude for what it leaves when it does not answer) or `hosted`. The
+    engine reads it once a tick."""
     value = _routing.value(TASK)
-    ready = _routing.local_ready(cfg)
-    if value == "hosted":
-        _say_once("hosted", "web chat: thread_state is hosted, and the hosted model step is not "
-                            "built; the rules alone set the state (set it to local to use the "
-                            "local model)")
-        return "off"
-    if not ready:
-        _say_once("no-local", "web chat: no local model is set up for thread_state; the rules "
-                              "alone set the state")
-        return "off"
-    return "local"
+    if value == "hosted" or not _routing.local_ready(_remote.config()):
+        return "hosted"
+    return "auto" if value == "auto" else "local"
 
 
 def model_answer(prompt: str) -> str | None:
-    """The model's text for one thread's prompt, or None when no model can
-    answer now (the tick stops asking until the next one)."""
+    """The local model's text for one thread's prompt, or None when it
+    cannot answer now (the tick stops asking it until the next one)."""
     try:
-        if route() != "local":
+        if route() not in ("local", "auto"):
             return None
         res = _remote.chat([{"role": "user", "content": prompt}], purpose=PURPOSE,
                            schema=_ts.ANSWER_SCHEMA, schema_name="thread_state",
@@ -165,6 +180,39 @@ def model_answer(prompt: str) -> str | None:
         log.warning("web chat: the local model did not judge a thread: %s", e)
         return None
     return str(res.get("content") or "")
+
+
+def _claude(prompt: str) -> str:
+    """One tool-less Claude run as the resident, as the reconcile and the
+    backstop make theirs; its answer text. Raises on a failed run."""
+    try:
+        import ea_config
+        import mail_privacy
+    except ModuleNotFoundError:  # imported as preprocessor.<mod>
+        from preprocessor import ea_config, mail_privacy
+    model = ea_config.get_models().get(TASK) or HOSTED_MODEL
+    r = mail_privacy._run_claude(prompt, model, "", timeout=HOSTED_TIMEOUT_S)
+    if r.get("rc") or not r.get("text"):
+        raise RuntimeError(f"claude rc={r.get('rc')}: {(r.get('stderr') or '')[-160:]}")
+    return str(r["text"])
+
+
+# The hosted runner; tests put a fake here.
+CLAUDE = _claude
+
+
+def hosted_answer(prompt: str) -> str | None:
+    """Claude's text for a batch of threads, or None when the route is
+    local or the run failed (logged once an hour; the states stay as they
+    were)."""
+    try:
+        if route() not in ("hosted", "auto"):
+            return None
+        return CLAUDE(prompt)
+    except Exception as e:
+        _say_once("hosted-failed", f"web chat: the hosted model did not judge the thread states; "
+                                   f"they stay as they were: {str(e)[:300]}", logging.WARNING)
+        return None
 
 
 def quiet_now() -> bool:
@@ -336,7 +384,7 @@ def observe(event: str, ctx: dict, *, now: float, store=None, **info) -> None:
     the write-back itself."""
     if event == "model":
         _labels.record_model(ctx, answer=info.get("answer"), row=info.get("row"), now=now,
-                             store=store)
+                             store=store, via=info.get("via"))
         return
     if event != "owner":
         return
@@ -360,7 +408,8 @@ def enable(frontend) -> bool:
     on = getattr(frontend, "enable_thread_state", None)
     if not callable(on):
         return False
-    states = on(ledger=ledger_rows, model=model_answer, quiet=quiet_now)
+    states = on(ledger=ledger_rows, model=model_answer, hosted=hosted_answer, route=route,
+                quiet=quiet_now)
     if states is not None and hasattr(states, "observer"):
         states.observer = observe
     return True

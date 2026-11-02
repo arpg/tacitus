@@ -88,8 +88,26 @@ thread: the colleague has not replied yet").
    `done`. An open row of any other type (`task`, `deadline`, `waiting`,
    `reimbursement`, `dispute`) is no rule: the thread goes to the model
    with the row's type, status, deadline and last action.
-7. The thread's first message is from the bot and is a briefing, digest, alert, new-device notice or other automated post (the notifier key is known when the post was made; otherwise the known title patterns), and the owner never wrote in it: `none`.
-8. Otherwise: ask the model.
+7. The thread's first message is from the bot and the owner never wrote
+   in it: `none`, whatever it says, whether or not a notifier key was
+   recorded and whether or not its title matches a known pattern. Only
+   the earlier rules give such a thread a state: a live card (2), a
+   new-device notice (2a), a linked card (2b), the bot acting on a press
+   or a card acted on (3c, 4), or a linked ledger row (6). The notifier
+   key and the title only name the post in the reason, in plain words:
+   "The morning briefing: it needs nothing from you until you write in
+   it." ("A digest", "The weekly audit", "A health check from Tacitus",
+   "A notice from Tacitus" for a recorded notifier key, "A card from
+   Tacitus", else "A post from Tacitus").
+   So a thread Tacitus started with a question in it gets no sticker
+   until the owner engages. A briefing hand-off still gets its sticker
+   through its ledger link (rule 6). The closure analysis found 94% of
+   automated posts never touched by the owner, and over 99% of health
+   and ops posts, so a missed ask in an untouched post is the rare case,
+   and a notice the model read as an ask ("held back, review") is the
+   common one.
+8. Otherwise: ask the model. The owner has written in every thread that
+   gets here.
 
 **Shadow mode: mirrored cards read their outcome from Zulip.** A card
 the history copy took from Zulip is a plain text row (no card JSON,
@@ -120,23 +138,35 @@ DM") is not a card: rule 2b reads the card it links to.
 
 ## The stale shelf
 
-A `needs_you` or `waiting` state older than 7 days, by the state's `at`,
-is stale. Each tick marks the states that crossed the line (`stale` 1 on
-the row, one `thread_state` event each, with `"stale": true`); a new
-state, `by` or reason starts fresh (`at` moves, `stale` goes back to 0).
-The threads rows, the needs rows, the POST's answer and every
-`thread_state` event carry `stale`. The app shows a stale state on the
-Older shelf of Needs you with a muted sticker (The app).
+A `needs_you` or `waiting` state is stale when its conversation has been
+quiet for 7 days. Quiet counts from the newest of: the thread's last
+message (the bot's nudge does not count), and the owner's own tap (an
+owner-set state is fresh for 7 days from the tap). The state's own `at`
+does not count, so a new state on an old conversation goes straight to
+the shelf: the rules and the model re-judge old conversations all the
+time, and a state set today on a conversation quiet for a month is not
+this week's work. Each tick sets every mark from that age, both ways (a
+message that lands takes the conversation off the shelf), with one
+`thread_state` event each time a mark changes; a write of the state does
+the same for its own row (`thread_state.is_stale`). The threads rows,
+the needs rows, the POST's answer and every `thread_state` event carry
+`stale`. The app shows a stale state on the Older shelf of Needs you
+with a muted sticker (The app). That sticker still counts its days from
+`state_at`; the conversation's own age is the row's `last_at` (or
+`state_at` when `state_by` is `owner`), which the app has in every row.
 
 ## The nudge
 
-When a `needs_you` state is between 24 hours and 7 days old and the owner
-has written nothing in the conversation since it was set, the bot posts
-one line there: "Still need this? Reply here, or tap Mark done." Once per
-conversation (the `nudges` table). Never on a conversation that opens
-with an automated post (rule 7's test: a notifier key, or the title
-patterns) or with a card, and never while a card in it or linked to it
-is live (its button is the nudge). At most 10 a tick, the longest
+When a `needs_you` conversation's owner last wrote in it 24 hours ago or
+more (or last tapped its state, when that is newer; a conversation the
+owner never wrote in nor tapped gets no nudge), and it is not on the
+stale shelf (active within 7 days: an older one shelves instead), the bot
+posts one line there: "Still need this? Reply here, or tap Mark done."
+The state's own `at` does not count. Once per conversation (the
+`nudges` table). Never on a conversation that opens with an automated
+post (rule 7's test: a notifier key, or the title patterns) or with a
+card, and never while a card in it or linked to it is live (its button
+is the nudge). At most 10 a tick, the longest
 waiting first, in channels that are not archived; none while the owner's
 quiet hours hold (the EA's `quiet_hours.should_defer("normal")`; a check
 that fails counts as quiet).
@@ -152,12 +182,23 @@ asked again. Through the relay it is one more message.
 ## The model
 
 Task `thread_state` in the routing table (docs/model-routing.md), `local`
-by default: the local endpoint (`remote_llm.chat`, purpose
-`chat-thread-state`, with the answer's JSON schema), as `tagging` uses it.
-`auto` means the same, since the task has no switch of its own. With no
-local model set up, or set to `hosted`, the rules alone set the state and
-the bot logs why once an hour: the hosted step is not built (a hosted
-call needs a Claude session). Input: the thread's messages (author, time,
+by default. The engine reads the route once a tick
+(`web_thread_state.route`):
+
+- `local` (set to local, with a local model set up): the local endpoint
+  (`remote_llm.chat`, purpose `chat-thread-state`, with the answer's JSON
+  schema), as `tagging` uses it, one thread a call.
+- `hosted` (set to hosted, or set to local or auto with no local model
+  set up: the table reads `local` with no endpoint as hosted): Claude,
+  one call a tick (below).
+- `auto` (set to auto, with a local model): the local model first; when
+  it does not answer (down, or its breaker open), the threads it left
+  that tick go to the hosted call.
+
+The model is asked only about threads the owner has written in: rule 7
+settles every thread Tacitus started that the owner never wrote in.
+
+Input: the thread's messages (author, time,
 text, card titles and outcomes; never a card's body, fields or quoted
 mail), the channel's kind and name, the linked ledger rows' type,
 status, deadline and last action, today's date. The prompt is
@@ -171,20 +212,65 @@ parse, the thread keeps its previous state (`none` when it had none),
 answer it could use. A call that no model answers writes nothing; the
 next tick asks again.
 
+**The hosted step.** One tool-less run of the Claude CLI as the
+resident (`mail_privacy._run_claude`: the call the nightly ledger
+reconcile, the briefing's still-open check and the scheduling backstop
+make), on the `thread_state` model of `ea-config.json`'s `models`, else
+`opus`, with a 5-minute limit. It runs in the bot's own process on a
+worker thread of the engine, never as a chat turn, so the rules keep
+running on every change while it waits; while one call is under way the
+next tick starts none. One call holds up to 20 threads, newest first, as
+many as fit 100 KB of prompt (a command-line argument holds 128 KiB),
+the rest wait for the next tick. The prompt is
+`thread_state.BATCH_PROMPT`: the same words as the local prompt, with
+each thread's part (`batch_part`: its channel, its linked rows and its
+messages, as the local prompt gives them) under a ref line
+(`=== conversation c1 ===`; a message line always opens with its
+author, so no message can forge one). Output: one JSON array of
+`{"ref", "state", "reason", "confidence"}`, parsed as strictly as the
+local answer (`parse_batch`: one array, a code fence allowed, nothing
+else; each item exactly those keys, checked as `parse_answer` checks
+one), with the same 0.6 floor. A thread whose item fails the checks, or
+that the array answers twice, keeps its state as an answer that does not
+parse does; a thread the array leaves out writes nothing and is asked
+again next tick; an answer that is no array at all counts as an answer
+that does not parse for each thread. A run that fails (no login, a usage
+limit, the time limit) writes nothing, keeps every state, and is logged
+once an hour; the next tick asks again. Cost: one hosted call a tick at
+most (every 5 minutes), and none when no thread is due. A change the
+rules leave open brings the tick forward only for the local model, so
+the hosted call keeps the 5-minute pace and one call holds what the tick
+gathers. What Claude reads is the thread text a chat turn in that topic
+shows it when the chat runs hosted; with the `chat` task set to local,
+set `thread_state` to local too to keep chat text off the hosted model.
+Each answer the observer hears carries `via` (local or hosted), and its
+closure label keeps it as `model_via`, so the two models can be scored
+apart (`closure_eval.py` does not split them yet).
+
 When the model runs: a tick every 5 minutes. The tick first runs the
 rules over every thread with a message in the last 14 days (newest
 first, at most 500; channels not archived), so a rule that turns with
 time (the 20 minutes, a card's age, a ledger row closed, a phone
-approved) moves the sticker with no new message. It then asks the model
-about the threads the rules leave open whose newest `seq` is past the
+approved) moves the sticker with no new message. The rules also run over
+every thread in Needs you, whatever its age (500 threads in all at
+most), so a state the rules now settle moves on the next tick: a
+model's state on a thread the owner never wrote in turns `none` with no
+new message. It then asks the model about the threads the rules leave
+open (each one the owner has written in) whose newest `seq` is past the
 `judged_seq` recorded for them, or whose state a rule set and no rule
-holds now: 20 calls per tick at most, newest first, and none after a
-call that no model answered. The first tick runs at start. A change the
+holds now, newest first: on the local model 20 calls per tick at most,
+and none after a call that no model answered; on the hosted model one
+call. The first tick runs at start. With the local model, a change the
 rules cannot settle brings the next tick forward to one minute after the
 last one. Rules run at once on every event that changes a thread (a
 message, a card outcome, a reaction, in the bot or a command-line
 sender: the engine reads the store's event log every second), so a
 sticker never waits for the model when a rule is decisive.
+
+The event stream counts live events from the moment it subscribes (its
+watermark is read under the store's lock with the subscription), so an
+event a client causes as soon as it reads the stream's first line is
+never taken for an old one.
 
 ## Store
 
@@ -257,7 +343,7 @@ docs/ea/closure-signals.md.
 - `GET /api/channels/<id>/threads` (the existing threads route) rows gain `state`, `state_by`, `state_reason`, `state_at` and `stale`; a thread with no state row has `"state": "none"`, `state_by` and `state_at` null, `state_reason` "" and `stale` false.
 - `GET /api/needs` -> `{"threads": [...]}`: every thread whose state is `needs_you` or `waiting`, in channels that are not archived, each row as the threads route gives it plus `channel` and `channel_name`, `needs_you` first, then newest first (by `last_at`). Cap 200. One query; it moves no read mark (the app calls it on every stream connect and after each `thread_state` event). `needs` is a reserved channel id: the store refuses a channel with it.
 - `POST /api/threads/<channel>/<thread_key>/state` (both parts URL-encoded) body `{"state": "done" | "needs_you" | "waiting"}` -> the thread's row as the threads route gives it, with `channel_name`; `state_by` becomes `owner`. Only those three are settable (400 for anything else, 404 for an unknown channel or thread; a message id names its thread). Through the relay this is a chat action, allowed for an approved device at "chat" (it changes no mail and sends nothing); a device kept off the card buttons may still take it.
-- SSE event `thread_state`: `{"channel", "thread_key", "state", "by", "reason", "at", "stale"}` on every change, and when the tick puts a state on the stale shelf.
+- SSE event `thread_state`: `{"channel", "thread_key", "state", "by", "reason", "at", "stale"}` on every change, and whenever a state's stale mark changes (on or off the shelf).
 
 A threads row:
 
@@ -284,7 +370,7 @@ A needs row is the same with `"channel_name": "dm"`.
 ## Out of scope for v0
 
 Zulip gets no stickers; in shadow mode the state lives in the web store
-only. The hosted model step.
+only.
 
 ## Changes from v0
 
@@ -303,6 +389,26 @@ bot side changed it here:
   fresh ones only.
 - **The nudge** after 24 hours (the `nudges` table): one line, once, never
   read by the rules or the model.
+- **The stale age is the conversation's, not the state's** (the first
+  eval against the owner's taps: every state was new, so nothing shelved
+  for a week while Needs you filled with old conversations). `stale`
+  counts from the thread's last message or the owner's tap, whichever is
+  newer, both ways each tick; a new state on an old conversation is
+  stale at once. The nudge's 24 hours count from the owner's last message
+  (or tap), and it never goes to a conversation on the shelf.
+- **Rule 7 covers every thread the owner never wrote in** (a notice
+  copied from Zulip with no notifier key, matching no title pattern, got
+  "Needs you" because the model read "held back, review" as an ask). A
+  thread Tacitus started that the owner never wrote in is `none` unless
+  an earlier rule fired; the model reads only threads the owner wrote
+  in; the tick runs the rules over every thread in Needs you too, so the
+  model's old states there turn `none` at once; the nudge needs the
+  owner's message or tap.
+- **The hosted model step** is built (the same eval: the local model
+  called every tapped conversation needs_you, and the owner marked them
+  done). `hosted`, and `local` or `auto` with no local model set up, ask
+  Claude, one call a tick over up to 20 threads; `auto` with a local
+  model hands it the threads the local model could not answer.
 
 - **From the closure analysis** (the owner's past Zulip conversations,
   cards and ledger rows): rule 5 (the bot's check => done) is dropped;
@@ -321,10 +427,8 @@ bot side changed it here:
   question mark.
 - **Rule 7** reads a notifier key that `chat_notify` records in
   `thread_origin` when it posts.
-- **The model**: `auto` runs like `local`; the hosted step is not built
-  (rules alone, with a log line); an answer that does not parse keeps
-  the previous state like low confidence does; a call no model answers
-  writes nothing.
+- **The model**: an answer that does not parse keeps the previous state
+  like low confidence does; a call no model answers writes nothing.
 - **The tick** runs the rules over every active thread (cap 500) before
   the model pass, re-asks the model about a rule's state that no longer
   holds, and comes forward to one minute after a change the rules left

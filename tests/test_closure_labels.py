@@ -436,6 +436,7 @@ def test_the_rule_that_gave_a_state():
     assert cl.rule_id("waiting", "The linked ledger item waits on someone else.") \
         == "6-ledger-waiting"
     assert cl.rule_id("none", "An automated post: it needs nothing from you.") == "7-automated"
+    assert cl.rule_id("none", "A post from Tacitus: " + ts.QUIET_TAIL) == "7-automated"
     assert cl.rule_id("needs_you", ts.CARD_WAITS) == "2b-linked-card"
     assert cl.rule_id("done", "Its card was handled: Sent") == "2b-linked-card"
     assert cl.rule_id(None, "") is None
