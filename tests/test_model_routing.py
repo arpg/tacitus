@@ -106,10 +106,14 @@ def test_the_stakes_floor_holds_review_at_hosted_whatever_a_file_says(table):
     assert mr.choice("review", cfg=remote(briefing_audit="remote")) == "hosted"
     assert not mr.local("review", switch_local=True, cfg=remote())
     row = {r["task"]: r for r in mr.rows(cfg=remote(), tiers=ea_config.tiers_from_block({}))}["review"]
-    assert row["locked"] and row["allowed"] == ["hosted"] and row["floor"].startswith("Stakes floor")
-    assert row["effective"] == "hosted"
-    with pytest.raises(mr.RoutingRefused, match="stakes floor"):
+    assert row["locked"] and row["allowed"] == ["hosted"] and row["floor"] == mr.STAKES_FLOOR[0]
+    assert row["effective"] == "hosted" and row["why"] == "only Claude makes these judgment calls"
+    tech = {r["task"]: r for r in mr.rows(cfg=remote(), tiers=ea_config.tiers_from_block({}),
+                                           verbose=True)}["review"]
+    assert tech["floor"].startswith("Stakes floor") and tech["why"] == "the stakes floor"
+    with pytest.raises(mr.RoutingRefused, match="always stays on Hosted") as e:
         mr.save({"review": "local"}, cfg=remote())
+    assert e.value.tech == "review is hosted only (the stakes floor)"
 
 
 def test_the_keep_floor_holds_mail_and_tagging_off_hosted_while_the_list_has_entries(table):
@@ -120,11 +124,15 @@ def test_the_keep_floor_holds_mail_and_tagging_off_hosted_while_the_list_has_ent
     assert rl.mode("mail", kept) == "enforce"
     assert mr.local("tagging", switch_local=True, cfg=kept)
     rows = {r["task"]: r for r in mr.rows(cfg=kept, tiers=ea_config.tiers_from_block({}))}
+    tech = {r["task"]: r for r in mr.rows(cfg=kept, tiers=ea_config.tiers_from_block({}), verbose=True)}
     for task in ("mail", "tagging"):
-        assert rows[task]["allowed"] == ["local", "auto"] and rows[task]["floor"].startswith("Keep floor")
-        assert rows[task]["effective"] == "local" and "keep floor" in rows[task]["why"]
-    with pytest.raises(mr.RoutingRefused, match="keep floor"):
+        assert rows[task]["allowed"] == ["local", "auto"] and rows[task]["floor"] == mr.KEEP_FLOOR[0]
+        assert rows[task]["effective"] == "local"
+        assert rows[task]["why"].startswith("Hosted waits while you keep some mail away from Claude; ")
+        assert tech[task]["floor"].startswith("Keep floor") and "keep floor" in tech[task]["why"]
+    with pytest.raises(mr.RoutingRefused, match="cannot be Hosted while you keep some mail") as e:
         mr.save({"mail": "hosted"}, cfg=kept)
+    assert "keep floor" in e.value.tech
     # with an empty list, hosted is hosted
     empty = remote(mail="enforce")
     assert mr.choice("mail", cfg=empty) == "hosted" and rl.mode("mail", empty) == "off"
@@ -145,10 +153,11 @@ def test_the_admissions_rule_alone_holds_the_floor_and_digests_are_floored(table
     assert mr.local("digests", switch_local=True, cfg=admissions)
     rows = {r["task"]: r for r in mr.rows(cfg=admissions, tiers=ea_config.tiers_from_block({}))}
     assert rows["digests"]["allowed"] == ["local", "auto"] and "admissions" in rows["digests"]["floor"]
-    assert rows["digests"]["effective"] == "local" and "keep floor" in rows["digests"]["why"]
+    assert rows["digests"]["effective"] == "local" and "Hosted waits" in rows["digests"]["why"]
     for task in ("mail", "tagging", "digests"):
-        with pytest.raises(mr.RoutingRefused, match=f"{task} cannot be hosted"):
+        with pytest.raises(mr.RoutingRefused, match=f'"{mr.TASKS[task][0]}" cannot be Hosted') as e:
             mr.save({task: "hosted"}, cfg=admissions)
+        assert e.value.tech.startswith(f"{task} cannot be hosted")
     # with the rule off and nothing listed, digests may be hosted
     assert mr.choice("digests", cfg=remote(digests="remote")) == "hosted"
 
@@ -159,7 +168,9 @@ def test_local_with_no_local_model_reads_hosted(table):
     assert mr.choice("drafting", cfg=off) == "hosted"
     assert not mr.local("drafting", switch_local=True, cfg=off)
     row = {r["task"]: r for r in mr.rows(cfg=off)}["drafting"]
-    assert row["effective"] == "hosted" and "no local model" in row["why"]
+    assert row["effective"] == "hosted"
+    assert row["why"] == "set to Local, but your own model is not set up, so Claude does it"
+    assert "no local model" in {r["task"]: r for r in mr.rows(cfg=off, verbose=True)}["drafting"]["why"]
     assert mr.local_status(off)["configured"] is False
 
 
@@ -238,8 +249,9 @@ def test_save_merges_writes_0600_and_records_the_change(owner):
 
 def test_only_an_owner_process_saves(table, monkeypatch):
     monkeypatch.setattr(owner_trust, "is_owner_process", lambda: False)
-    with pytest.raises(mr.RoutingRefused, match="owner"):
+    with pytest.raises(mr.RoutingRefused, match="runs as you") as e:
         mr.save({"chat": "local"}, cfg=remote())
+    assert "owner" in e.value.tech
 
 
 # ── the decision points ───────────────────────────────────────────────
@@ -411,14 +423,16 @@ def test_the_local_model_state_comes_from_its_last_call_and_its_key(owner, monke
     monkeypatch.setattr(rl, "api_key", lambda: "")
     st = mr.local_status(cfg)
     assert st["configured"] and st["model"] == "local-27b" and st["reachable"] is False
-    assert "REMOTE_LLM_API_KEY" in st["detail"]
+    assert st["detail"] == "Its access key is missing."
+    assert "REMOTE_LLM_API_KEY" in mr.local_status(cfg, verbose=True)["detail"]
     monkeypatch.setattr(rl, "api_key", lambda: "k")
     assert mr.local_status(cfg)["reachable"] is None
     _calls(priv, {"ts": now, "purpose": "mail", "ok": True},
            {"ts": now, "purpose": "mail", "ok": False, "error": "request failed: timed out"},
            {"ts": now, "purpose": "chat-title", "ok": False, "error": "no free request slot within 2s"})
     st = mr.local_status(cfg)
-    assert st["reachable"] is False and "timed out" in st["detail"]
+    assert st["reachable"] is False and st["detail"] == "It did not answer when last asked, 1 min ago."
+    assert "timed out" in mr.local_status(cfg, verbose=True)["detail"]
     _calls(priv, {"ts": now, "purpose": "mail", "ok": False, "error": "HTTP 502: bad gateway"},
            {"ts": now, "purpose": "mail-tune-x", "ok": False, "error": "request failed"},
            {"ts": now, "purpose": "draft", "ok": True})
@@ -473,13 +487,23 @@ def test_the_screen_data_and_the_chat_lines(table):
     assert list(rows) == list(TASKS)
     assert all(r["label"] and r["what"] for r in rows.values())
     assert rows["drafting"]["value"] == "local" and rows["drafting"]["effective"] == "local"
-    assert rows["mail"]["why"] == "the mail switch is enforce" and rows["tagging"]["effective"] == "local"
-    assert rows["chat"]["effective"] == "mixed" and "dm" in rows["chat"]["why"]
+    assert rows["mail"]["why"] == "Auto picked your own model" and rows["tagging"]["effective"] == "local"
+    assert rows["tagging"]["why"] == 'Auto does what "Reading your mail" does'
+    assert rows["chat"]["effective"] == "mixed"
+    assert rows["chat"]["why"] == "Auto picked your own model for Direct messages, and Claude for the rest"
     assert rows["briefing"] == {**rows["briefing"], "value": "auto", "effective": "hosted",
-                                "why": "the briefings switch is off", "locked": False}
+                                "why": "Auto picked Claude", "locked": False}
+    # the same rows in the code's terms, for `show --verbose` and the doctor
+    tech = {r["task"]: r for r in mr.payload(cfg=remote(mail="enforce", keep_from_anthropic=KEEP),
+                                             tiers=ea_config.tiers_from_block({"lanes": {"dm": "local"}}),
+                                             verbose=True)["rows"]}
+    assert tech["mail"]["why"] == "the mail switch is enforce" and "dm" in tech["chat"]["why"]
+    assert tech["briefing"]["why"] == "the briefings switch is off"
+    assert [r["label"] for r in tech.values()] == [r["label"] for r in rows.values()]
+    assert tech["mail"]["what"] == mr.TECH["mail"] != rows["mail"]["what"]
     lines = mr.lines(data)
     assert lines[0].startswith(":control_knobs: *Model routing.* Local model local-27b")
-    assert any(ln.startswith("- *Judgment checks* (`review`): hosted, now hosted") for ln in lines)
+    assert any(ln.startswith("- *Checking its own work* (`review`): hosted, now hosted") for ln in lines)
     assert "Settings" in lines[-1]
     # no em-dash anywhere the owner reads
     assert "—" not in json.dumps(data) + "\n".join(lines)
@@ -491,7 +515,7 @@ def test_the_web_page_saves_through_save_and_answers_the_screen(owner, monkeypat
     assert [r["task"] for r in page.get()["rows"]] == list(TASKS)
     out = page.save({"tasks": {"briefing": "local"}})
     assert out["saved"] and {r["task"]: r for r in out["rows"]}["briefing"]["value"] == "local"
-    with pytest.raises(ValueError, match="stakes floor"):
+    with pytest.raises(ValueError, match='"Checking its own work" always stays on Hosted'):
         page.save({"tasks": {"review": "local"}})
     with pytest.raises(ValueError):
         page.save({})
@@ -520,4 +544,114 @@ def test_the_cli_sets_one_task_and_refuses_a_floor(owner, monkeypatch, capsys):
     assert mr.main(["set", "review", "local"]) == 2
     assert "stakes floor" in capsys.readouterr().err
     assert mr.main(["show"]) == 0
-    assert "(`audit`): local, now local (set to local)" in capsys.readouterr().out
+    assert "*The weekly check* (`audit`): local, now local (set to Local)" in capsys.readouterr().out
+    assert mr.main(["show", "--verbose"]) == 0
+    out = capsys.readouterr().out
+    assert "(`audit`): local, now local (set to local)" in out and "the stakes floor" in out
+
+
+# ── plain words on the Settings screen ────────────────────────────────
+
+sys.path.insert(0, str(REPO / "tests"))
+from plain_words import JARGON  # noqa: E402
+
+# The values the screen reads as code, never shows as a sentence: the task
+# keys, the choices, where the table came from and the local model's name.
+CODE_KEYS = {"task", "value", "values", "allowed", "effective", "source", "model"}
+
+
+def _said(obj, key=None) -> list[str]:
+    """Every string in `obj` the screen can show (all but CODE_KEYS)."""
+    if key in CODE_KEYS:
+        return []
+    if isinstance(obj, str):
+        return [obj]
+    if isinstance(obj, dict):
+        return [s for k, v in obj.items() for s in _said(v, k)]
+    if isinstance(obj, list):
+        return [s for v in obj for s in _said(v, key)]
+    return []
+
+
+def test_every_string_the_settings_screen_can_show_is_plain(owner, monkeypatch):
+    """What /api/settings/routing can serve: the labels and descriptions,
+    the why line and the floor under every value, switch, chat tier and
+    keep list, the local model's state in each case, and every refusal a
+    save can answer. None names a word tests/plain_words.py lists, which
+    the app's own text is held to too; `verbose` keeps the code's terms."""
+    priv, _ea = owner
+    monkeypatch.setattr(rl, "api_key", lambda: "k")
+    on = {"mail": "enforce", "drafting": "remote", "digests": "remote", "briefings": "remote",
+          "audits": "remote", "scheduling": "enforce"}
+    mixed = {"mail": "shadow", "shadow_until": "2099-01-01", "drafting": "ab"}
+    cfgs = [rl._off()] + [remote(keep_from_anthropic=keep, **sw)
+                          for keep in (EMPTY_KEEP, KEEP) for sw in ({}, on, mixed)]
+    lanes = [{}, {"dm": "local"}, {"main": "local", "room": "local"},
+             {k: "local" for k in ("main", "dm", "room", "sched-channel", "proactive")}]
+    said, tech, whys = [], [], set()
+    for cfg in cfgs:
+        for v in mr.VALUES:
+            for ln in lanes:
+                kw = {"cfg": cfg, "routing": {"tasks": {t: v for t in TASKS}},
+                      "tiers": ea_config.tiers_from_block({"lanes": ln})}
+                data = mr.payload(**kw)
+                said += _said(data)
+                whys |= {r["why"] for r in data["rows"]}
+                tech += _said(mr.payload(**kw, verbose=True))
+    # each branch of the why lines is reached
+    for part in (*mr.AUTO_SAYS.values(), mr.JUDGMENT, mr.NOT_SET_UP, "set to Local", "set to Hosted",
+                 "Hosted waits", "@local", "for Direct messages", "for Ask Tacitus and project rooms",
+                 'Auto does what "Reading your mail" does', "Claude takes what it leaves"):
+        assert any(part in w for w in whys), part
+    # the local model's state: no key, no call yet, a failure whose error
+    # names the code's words, an answer, and the breaker open
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    states = []
+    monkeypatch.setattr(rl, "api_key", lambda: "")
+    states.append(remote())
+    monkeypatch.setattr(rl, "api_key", lambda: "k")
+    states.append(remote())
+    for rec in ({"ts": now, "purpose": "mail", "ok": False,
+                 "error": "HTTP 502: the endpoint dropped the session token"},
+                {"ts": now, "purpose": "mail", "ok": True}):
+        _calls(priv, rec)
+        said += _said(mr.local_status(remote()))
+        tech += _said(mr.local_status(remote(), verbose=True))
+
+    class Open:
+        def is_open(self):
+            return True
+    monkeypatch.setattr(rl, "_breaker", lambda *a: Open())
+    states.append(remote())
+    for cfg in states:
+        said += _said(mr.local_status(cfg))
+        tech += _said(mr.local_status(cfg, verbose=True))
+    # every refusal a save answers, through the page the web chat calls
+    page = mr.WebSettings()
+    monkeypatch.setattr(rl, "config", lambda: remote(keep_from_anthropic=KEEP))
+    bodies = [{}, {"tasks": {}}, {"tasks": []}, {"tasks": {"drafts": "local"}},
+              {"tasks": {t: "qwen" for t in TASKS}}, {"tasks": {"review": "local"}},
+              {"tasks": {t: "hosted" for t in TASKS}}]
+    for body in bodies:
+        with pytest.raises(mr.RoutingRefused) as e:
+            page.save(body)
+        said.append(str(e.value))
+        tech.append(e.value.tech)
+
+    def unwritable(*a, **k):
+        raise OSError("the session token store is read-only")
+    monkeypatch.setattr(owner_trust, "write_owner_file", unwritable)
+    with pytest.raises(mr.RoutingRefused) as e:
+        page.save({"tasks": {"chat": "local"}})
+    said.append(str(e.value))
+    tech.append(e.value.tech)
+    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: False)
+    with pytest.raises(mr.RoutingRefused) as e:
+        page.save({"tasks": {"chat": "local"}})
+    said.append(str(e.value))
+    tech.append(e.value.tech)
+    assert said and [s for s in said if JARGON.search(s)] == []
+    assert "—" not in "".join(said)
+    # the code's terms, the local model's own error included, stay for `show --verbose`
+    assert any("switch" in s for s in tech) and any("session token" in s for s in tech)
+    assert any(JARGON.search(s) for s in tech)

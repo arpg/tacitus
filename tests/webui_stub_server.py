@@ -81,17 +81,18 @@ ROUTING = {
     "local": {"configured": True, "model": "local-27b", "reachable": True, "detail": "Answered 2 min ago."},
     "source": "routing.json", "values": ["local", "hosted", "auto"],
     "rows": [
-        {"task": "drafting", "label": "Email bodies", "what": "Writes email bodies in your voice from the brief.",
+        {"task": "drafting", "label": "Writing replies", "what": "Writes email replies in your voice.",
          "value": "auto", "allowed": ["local", "hosted", "auto"], "locked": False, "floor": "",
-         "effective": "local", "why": "the drafting switch is remote"},
-        {"task": "mail", "label": "Read new mail", "what": "Reads each new message into a record.",
+         "effective": "local", "why": "Auto picked your own model"},
+        {"task": "mail", "label": "Reading your mail", "what": "Reads each new message and notes what it asks for.",
          "value": "auto", "allowed": ["local", "auto"], "locked": False,
-         "floor": "Keep floor: hosted is not available while the keep list has entries.",
-         "effective": "local", "why": "the mail switch is enforce"},
-        {"task": "review", "label": "Judgment checks", "what": "Checks if briefing items are still open.",
+         "floor": "Hosted is off while you keep some mail away from Claude (a domain, an address or "
+                  "admissions mail), so that mail never reaches Claude.",
+         "effective": "local", "why": "Auto picked your own model"},
+        {"task": "review", "label": "Checking its own work", "what": "Checks that briefing items are still open.",
          "value": "hosted", "allowed": ["hosted"], "locked": True,
-         "floor": "Stakes floor: these are judgment calls, so only the hosted model does them.",
-         "effective": "hosted", "why": "the stakes floor"},
+         "floor": "Always Hosted: these are judgment calls, so only Claude makes them.",
+         "effective": "hosted", "why": "only Claude makes these judgment calls"},
     ],
 }
 
@@ -521,11 +522,12 @@ class Handler(BaseHTTPRequestHandler):
             rows = {r["task"]: r for r in s.routing["rows"]}
             for task, value in (body.get("tasks") or {}).items():
                 if value not in rows[task]["allowed"]:
-                    return self._json(400, {"error": f"{task} is {rows[task]['allowed'][0]} only (the stakes floor)"})
+                    return self._json(400, {"error": f'"{rows[task]["label"]}" always stays on Hosted: '
+                                                     "only Claude makes these judgment calls."})
             for task, value in body["tasks"].items():
                 rows[task]["value"] = value
                 if value != "auto":
-                    rows[task].update(effective=value, why=f"set to {value}")
+                    rows[task].update(effective=value, why=f"set to {value.title()}")
             return self._json(200, {**s.routing, "saved": True})
         if parts == ["diag"]:
             s.diags.append(json.loads(self._body() or b"{}"))

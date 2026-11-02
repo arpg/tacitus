@@ -33,20 +33,23 @@
 
 Each task names work that one or more switches already served. `auto`
 keeps that switch; `local` and `hosted` outrank it. "What the local
-model sees" is what reaches the endpoint when the task runs there.
+model sees" is what reaches the endpoint when the task runs there. The
+Settings screen names each task by its plain label (`TASKS` in
+`model_routing.py`); the key is the name in `routing.json` and on the
+command line.
 
-| Task | The work | The switch `auto` keeps | What the local model sees |
-|---|---|---|---|
-| `mail` | read each new message into a record (class, ask, deadline, people); the thread briefs on ledger rows with `mail = sealed` | `mail` (`enforce`, `ghost`, `sealed`) | every new message; each open row's thread |
-| `tagging` | Outlook categories on new mail | follows the mail gate | each new message |
-| `drafting` | email bodies in the user's voice | `drafting` (`remote`, `ab`) | the brief, the thread, the draft |
-| `digests` | list and admissions digests | `digests` | the digest mail |
-| `briefing` | the morning briefing and the afternoon update; hard items are handed to Claude one thread each | `briefings` | ledger, records, calendar |
-| `audit` | the Sunday audit; flagged items go to Claude | `audits` | ledger, briefing JSON |
-| `scheduling` | the scheduling channel and the proactive scheduler; every local write passes the Claude backstop | `scheduling`; `tiers.lanes` sched-channel and proactive | the thread, solver output |
-| `chat` | turns in topics, rooms and the DM | `tiers.lanes` main, dm and room; `@local`, `use local` | the topic's transcript |
-| `thread_state` | the state of a web chat thread the rules leave open (docs/webchat-state.md) | none: `auto` runs the local model, and the hosted model takes the threads left when it does not answer | only threads the owner has written in: the thread's messages (card titles and outcomes, never a card's body), the channel, the linked ledger rows' type, status, deadline and last action |
-| `review` | the briefing's still-open check, the nightly ledger reconcile, the scheduling backstop, the hand-offs from the briefings and the audit | none: hosted only | nothing |
+| Task | On the Settings screen | The work | The switch `auto` keeps | What the local model sees |
+|---|---|---|---|---|
+| `mail` | Reading your mail | read each new message into a record (class, ask, deadline, people); the thread briefs on ledger rows with `mail = sealed` | `mail` (`enforce`, `ghost`, `sealed`) | every new message; each open row's thread |
+| `tagging` | Sorting mail | Outlook categories on new mail | follows the mail gate | each new message |
+| `drafting` | Writing replies | email bodies in the user's voice | `drafting` (`remote`, `ab`) | the brief, the thread, the draft |
+| `digests` | Mail digests | list and admissions digests | `digests` | the digest mail |
+| `briefing` | Your briefing | the morning briefing and the afternoon update; hard items are handed to Claude one thread each | `briefings` | ledger, records, calendar |
+| `audit` | The weekly check | the Sunday audit; flagged items go to Claude | `audits` | ledger, briefing JSON |
+| `scheduling` | Finding meeting times | the scheduling channel and the proactive scheduler; every local write passes the Claude backstop | `scheduling`; `tiers.lanes` sched-channel and proactive | the thread, solver output |
+| `chat` | Talking with you | turns in topics, rooms and the DM | `tiers.lanes` main, dm and room; `@local`, `use local` | the topic's transcript |
+| `thread_state` | Noticing what needs you | the state of a web chat thread the rules leave open (docs/webchat-state.md) | none: `auto` runs the local model, and the hosted model takes the threads left when it does not answer | only threads the owner has written in: the thread's messages (card titles and outcomes, never a card's body), the channel, the linked ledger rows' type, status, deadline and last action |
+| `review` | Checking its own work | the briefing's still-open check, the nightly ledger reconcile, the scheduling backstop, the hand-offs from the briefings and the audit | none: hosted only | nothing |
 
 Letters have no task: the `email-author` subagent writes them, whatever
 `drafting` says.
@@ -183,6 +186,14 @@ today.
   row.
 - The `routing` chat command prints each task's value, the model it runs
   on now and why.
+- **Plain words.** The Settings screen, the `routing` chat command and
+  `model_routing.py show` give each task's label and line, why it runs
+  where it runs, the floors and every refusal in plain words: "your own
+  model" for local, "Claude" for hosted, and no term of the code
+  (`tests/plain_words.py` lists the words, which the app's own text
+  avoids too). `show --verbose` and the doctor keep the code's terms:
+  the switches, the lanes and the local model's last error. `set` prints
+  a refusal in those terms.
 - **Not built:** per-task lines in the 17:30 report (local and hosted
   counts and the floor moves, from `tier-turns.jsonl` and
   `remote-llm/calls.jsonl`, sizes and timings only, never text).
@@ -190,8 +201,9 @@ today.
   template, that each lane follows the table at its decision point, that
   every floor holds against a file and a save, that `local` with no local
   model keeps every lane on Claude, that only owner processes read and
-  write `routing.json`, and that a table that cannot be read leaves each
-  switch as it is.
+  write `routing.json`, that a table that cannot be read leaves each
+  switch as it is, and that every string the Settings screen can show is
+  plain.
 
 ## What the table adds over the switches
 
