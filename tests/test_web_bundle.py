@@ -30,6 +30,7 @@ pytest.importorskip("cryptography")
 from botcore.chat import relay_client as rcl  # noqa: E402
 from botcore.chat import relay_crypto as rc  # noqa: E402
 from botcore.chat import web_bundle  # noqa: E402
+from botcore.chat import web_frontend as wf  # noqa: E402
 from botcore.chat.web_frontend import WebFrontend  # noqa: E402
 
 NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -325,6 +326,27 @@ def test_a_changed_file_on_disk_is_signed_again_at_the_check(tmp_path, caplog):
         assert rc.bundle_hash(m) == after
         assert m["files"]["app.js"] == hashlib.sha256(b"console.log('changed')").hexdigest()
         assert "new.css" in m["files"]
+    finally:
+        f.stop()
+
+
+def test_a_new_signing_tells_the_open_apps_once(tmp_path):
+    """The first signing at start names no release; each signing that moves
+    the bundle appends one `release` event with the new hash, which an open
+    app takes as its cue to look (app.js lookAgain); a signing of the same
+    files appends none."""
+    f = _web(tmp_path)
+    f.start()
+    try:
+        releases = lambda: [json.loads(p) for _s, t, p in f.store.events_since(0) if t == "release"]  # noqa: E731
+        assert releases() == []
+        assert f.refresh_bundle() == f.bundle_hash() and releases() == []
+        (tmp_path / "webui" / "app.css").write_text("body{color:red}")
+        after = f.refresh_bundle()
+        assert releases() == [{"bundle": after}]
+        f.refresh_bundle()
+        assert releases() == [{"bundle": after}]
+        assert "release" in wf.EVENT_TYPES
     finally:
         f.stop()
 

@@ -242,7 +242,7 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/channels/{ch}/files` | multipart `file`, optional `text`, `thread_key` → the stored `file` message; dispatches an `InboundMessage` with `files=[FileRef]` |
 | GET | `/api/files/{id}` | the bytes, `Content-Disposition: attachment` |
 | POST | `/api/cards/{ch}/{id}/actions` | `{"action_id", "value"?, "selected"?}` → `{"ok": true}`; dispatches an `ActionEvent` (`source` `button` or `select`) |
-| GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row, `thread_state` events `{"channel", "thread_key", "state", "by", "reason", "at", "stale"}`); a `: ping` comment every 20 s |
+| GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row, `thread_state` events `{"channel", "thread_key", "state", "by", "reason", "at", "stale"}`, `release` events `{"bundle"}` when the bot signs a new release of the app); a `: ping` comment every 20 s |
 | POST | `/api/pair` | `{"token"}` → sets the cookie |
 | GET | `/api/push/vapid` | `{"key": "<base64url P-256 point>"}`, the `applicationServerKey`; 404 when push is off |
 | POST | `/api/push/subscribe` | the browser's `PushSubscription.toJSON()` → `{"ok": true}` |
@@ -1382,10 +1382,18 @@ its copies of the files (`tacitus-webchat-v3`).
   keeps nothing; the bot's own copy notes the error for the bot (`POST
   /api/diag`), and the relay's copy says "This phone could not take the
   latest version of the app from Tacitus yet. Trying again." and runs no
-  chat until it can. After an update the page shows "Tacitus updated.
-  Close the app and open it again." as a toast and at the foot of the
-  drawer; an update on the tailnet shows the same line. The new copy runs
-  from the next start: the page does not reload by itself.
+  chat until it can. After an update the page shows "A new version of
+  Tacitus is ready." above the composer with an Update button, and at the
+  foot of the drawer; an update on the tailnet shows the same note. The
+  note stays until the owner taps Update, which reloads the page onto the
+  kept release; the page never reloads by itself in a conversation (the
+  website's copy reloads only at its start, before the chat opens).
+- **When an open app looks for a release.** At start; when the bot signs
+  the app again (a deploy that changed the app's files restarts nothing,
+  so `refresh_bundle` appends a `release` event naming the new bundle);
+  when the stream comes back after a restart and `/api/me` names another
+  bundle; and when the app comes back to the screen, at most once a
+  minute. A look that fails tries again at the next of these.
 - **The release's headers.** Each copy the worker keeps carries the
   security headers that the manifest's `headers.json` names for its path
   (`KEEP_HEADERS`: the policy, `nosniff`, the referrer policy and
