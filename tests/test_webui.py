@@ -360,7 +360,8 @@ def test_the_app_stays_small():
     # 3,700: 3,680 plus the keyboard check that needs a focused field.
     # 3,770: 3,700 plus the clear no browser counts as silent (the worker's choice per push service, and the
     # page's own clear of the thread in view).
-    assert lines <= 3770, f"{lines} lines: the contract keeps the app near 3,770 with the relay, the phone setup, the thread states and the teaching"
+    # 3,780: 3,770 plus the Phones list stacked at phone width (name, the box, the buttons).
+    assert lines <= 3780, f"{lines} lines: the contract keeps the app near 3,780 with the relay, the phone setup, the thread states and the teaching"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -2370,6 +2371,33 @@ def test_approve_sends_the_card_button_choice(app):
     expect(tablet).to_contain_text("not on your network, app not checked")
     expect(tablet.locator("input[type=checkbox]")).to_be_checked()
     assert not errors, errors
+
+
+def test_each_phone_is_stacked_at_phone_width(app):
+    """At 390px a phone that waits shows its name, then the card-button box,
+    then Approve and Remove filling the last line, each 44px high; on a
+    wide screen the same parts sit in one row."""
+    from playwright.sync_api import expect
+    device = {"id": "1" * 16, "name": "phone", "paired_at": 1793400000, "origin": "relay",
+              "pending": True, "code": "123456", "cards_allowed": False, "bundle_verified": False}
+    boxes = ("[...$('phone-devices').querySelector('li').children].map((c) => {"
+             " const r = c.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })")
+    for width, stacked in ((390, True), (1280, False)):
+        page, stub, errors = app(relay_pairing=True, viewport={"width": width, "height": 844})
+        stub.devices[:] = [dict(device)]
+        page.wait_for_selector(".thread-item")
+        if width < 900:
+            page.click("#menu")
+        page.click("#pair-phone")
+        expect(page.locator("#phone-devices li[data-device]")).to_contain_text("waits for approval")
+        (nl, nt, nw, _), (bl, bt, bw, _), approve, remove = page.evaluate(boxes)
+        if stacked:
+            assert nt < bt < approve[1] == remove[1] and nl == bl == approve[0]
+            assert nw == bw == approve[2] + 8 + remove[2] and approve[2] == remove[2]
+            assert approve[3] >= 44 and remove[3] >= 44
+        else:
+            assert nl < bl < approve[0] < remove[0]
+        assert not errors, errors
 
 
 def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
