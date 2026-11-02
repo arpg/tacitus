@@ -650,4 +650,36 @@ body.digest #composer, body.digest #new-thread { display: none; }
   background: var(--panel); color: var(--muted); font-size: 14px; }
 @media (max-width: 599px) {
   #notify-rows .seg { justify-self: stretch; } /* the two choices fill the row */
+/* A room's menu: the dots beside a room in the drawer (shown on hover or
+   focus with a mouse; a finger long-presses the room instead), and its
+   sheet, docked to the bottom on a phone. */
+
+.chan-row { position: relative; }
+.chan-row > .chan { padding-right: 40px; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.room-more { position: absolute; top: 50%; right: 14px; display: grid; place-items: center; width: 28px; height: 28px; margin-top: -14px;
+  padding: 0; border: 0; border-radius: var(--r-s); background: transparent; color: var(--muted); cursor: pointer; opacity: 0; }
+.room-more::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: currentColor;
+  box-shadow: -6px 0 currentColor, 6px 0 currentColor; }
+.chan-row:hover .room-more, .chan-row:has(.chan.active) .room-more, .room-more:focus-visible { opacity: 1; }
+.room-more:hover { background: var(--hover); color: var(--text); }
+#room-menu { width: min(calc(100% - 32px), 360px); padding: 0; border: 1px solid var(--border); border-radius: var(--r-xl);
+  background: var(--panel); color: var(--text); box-shadow: var(--shadow-lg); }
+#room-menu[open] { animation: fade .18s var(--ease); }
+#room-menu::backdrop { background: var(--scrim); }
+#room-menu .sheet { display: grid; gap: 8px; padding: 20px; }
+#room-menu h2 { margin: 0 0 4px; font-size: 17px; overflow-wrap: anywhere; }
+#room-menu p { margin: 0; }
+#room-menu label { font-weight: 600; }
+#room-menu input { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--bg); font-size: 16px; }
+#room-menu .error:empty { display: none; }
+.sheet-item { min-height: 44px; padding: 10px 14px; border: 0; border-radius: var(--r-m); background: var(--bg); text-align: left;
+  font-size: 16px; cursor: pointer; transition: background-color .15s; }
+.sheet-item.danger { color: var(--danger); }
+.sheet-item:active { background: var(--hover); }
+@media (hover: hover) { .sheet-item:hover { background: var(--hover); } }
+@media (pointer: coarse) { .room-more { display: none; } }
+@media (max-width: 599px) {
+  #room-menu { width: 100%; max-width: none; margin: auto 0 0; border-width: 1px 0 0; border-radius: var(--r-xl) var(--r-xl) 0 0; }
+  #room-menu .sheet { padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+  #room-menu .dialog-actions > .btn { flex: 1; min-height: 44px; }
 }
