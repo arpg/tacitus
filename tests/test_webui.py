@@ -354,7 +354,8 @@ def test_the_app_stays_small():
     # 3,240: 3,190 plus a new release through the relay (the page fetches it, the worker checks and keeps it).
     # 3,430: 3,240 plus the thread states (stickers, Needs you, the filter chips, the override and long press).
     # 3,630: 3,430 plus the teaching (the welcome's three cards, the examples, New room, the empty lists).
-    assert lines <= 3630, f"{lines} lines: the contract keeps the app near 3,630 with the relay, the phone setup, the thread states and the teaching"
+    # 3,680: 3,630 plus the stale shelf (This week and Older in Needs you, Mark all done, the muted sticker).
+    assert lines <= 3680, f"{lines} lines: the contract keeps the app near 3,680 with the relay, the phone setup, the thread states and the teaching"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -897,6 +898,84 @@ def test_a_long_press_on_a_phone_marks_a_thread(app):
     expect(card.locator(".sticker")).to_have_text("Done")
     css = read("app.css")
     assert "-webkit-touch-callout: none; -webkit-user-select: none; user-select: none;" in css
+    assert not errors, errors
+
+
+def test_needs_you_keeps_this_week_apart_from_the_older_shelf(app):
+    from playwright.sync_api import expect
+    page, stub, errors = app(viewport={"width": 390, "height": 844},
+                             context={"has_touch": True, "is_mobile": True, "device_scale_factor": 3})
+    old = stub.add_stale()
+    page.reload()
+    page.wait_for_selector(".thread-item")
+    count = page.locator("#needs-count")
+    expect(count).to_have_text("2")  # this week's only: the two old ones wait under Older
+    page.click("#menu")
+    page.click("#needs-link")
+    expect(page.locator("#thread-list h2.needs-head")).to_have_text("This week")
+    items = page.locator("#thread-list .thread-item")
+    expect(items).to_have_count(3)
+    toggle = page.locator("#older-toggle")
+    expect(toggle).to_have_text("Older (3)")
+    expect(toggle).to_have_attribute("aria-expanded", "false")
+    expect(page.locator(".older .thread-item")).to_have_count(0)  # shut at first
+    toggle.click()
+    expect(toggle).to_have_attribute("aria-expanded", "true")
+    older = page.locator(".older .thread-item")
+    expect(older.locator(".sticker")).to_have_text(["Needs you · 9 days", "Needs you · 12 days",
+                                                    "Waiting · 16 days"])
+    expect(older.first.locator(".sticker")).to_have_class(re.compile(r"\bstale\b"))
+    expect(older.first.locator(".sticker")).to_have_attribute("aria-label", "Needs you · 9 days: A question waits for you.")
+    # muted: an old sticker takes neither the accent nor the amber
+    bg = "(sel) => getComputedStyle(document.querySelector(sel)).backgroundColor"
+    fresh_bg, stale_bg = page.evaluate(bg, ".sticker.st-needs_you:not(.stale)"), page.evaluate(bg, ".sticker.stale")
+    assert stale_bg != fresh_bg and stale_bg != page.evaluate(bg, ".sticker.st-waiting:not(.stale)")
+    assert page.evaluate(SMALL_TARGETS) == []
+    assert page.evaluate(SIDEWAYS)[0] == 0
+    # Mark all done asks once, in plain words; No changes nothing
+    asked = []
+    page.once("dialog", lambda d: (asked.append(d.message), d.dismiss()))
+    page.click("#older-done")
+    wait_for(lambda: asked)
+    assert asked == ["Mark all 3 older items done? They leave Needs you. Nothing is sent or deleted."]
+    assert not stub.state_posts
+    page.once("dialog", lambda d: d.accept())
+    page.click("#older-done")
+    wait_for(lambda: len(stub.state_posts) == 3)
+    assert sorted((p["channel"], p["thread_key"], p["state"]) for p in stub.state_posts) == \
+        sorted((m["channel"], m["thread_key"], "done") for m in old)
+    expect(page.locator("#thread-list .older")).to_have_count(0)
+    expect(page.locator("#thread-list h2.needs-head")).to_have_count(0)
+    expect(items).to_have_count(3)
+    expect(count).to_have_text("2")
+    assert not errors, errors
+
+
+def test_a_state_the_bot_shelves_leaves_the_count_and_shows_its_age(app):
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app()
+    count = page.locator("#needs-count")
+    expect(count).to_have_text("2")
+    page.click("#needs-link")
+    expect(page.locator("#older-toggle")).to_have_count(0)
+    expect(page.locator("#thread-list h2.needs-head")).to_have_count(0)
+    tk = stub.messages[0]["thread_key"]
+    stub.set_state(W.DM, tk, "needs_you", reason="The card still has its Send button.",
+                   at=time.time() - 8 * 86400 - 60, stale=True)
+    expect(count).to_have_text("1")
+    expect(page.locator("#older-toggle")).to_have_text("Older (1)")
+    expect(page.locator("#thread-list h2.needs-head")).to_have_text("This week")
+    expect(page.locator("#thread-list .thread-item")).to_have_count(2)  # the room's and the waiting one
+    # in its own channel the card keeps a muted sticker with its age
+    page.click(f'a.chan[href="#/{W.DM.replace(":", "%3A")}"]')
+    sticker = _card(page, "Draft a reply").locator(".sticker")
+    expect(sticker).to_have_text("Needs you · 8 days")
+    expect(sticker).to_have_class(re.compile(r"\bstale\b"))
+    # the owner's Needs me makes it fresh again
+    stub.set_state(W.DM, tk, "needs_you", "owner", "You set this.")
+    expect(sticker).to_have_text("Needs you")
+    expect(count).to_have_text("2")
     assert not errors, errors
 
 

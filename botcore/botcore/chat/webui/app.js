@@ -79,9 +79,10 @@ const S = {
   route: 0,
   sending: false,
   push: undefined,      // {reg, key, sub} once the toggle is ready
-  states: new Map(),    // channel + thread key -> {state, by, reason, at}
+  states: new Map(),    // channel + thread key -> {state, by, reason, at, stale}
   needs: [],            // the Needs you list: thread rows of every channel
   needsView: false,     // the list pane shows the Needs you list
+  olderOpen: false,     // its Older part is open
   filter: 'all',        // the thread filter chosen in this browser
   card: 0,              // the welcome's card on show
   welcomed: false,      // the welcome had its chance on this page
@@ -632,8 +633,8 @@ function renderChannels() {
   document.title = total ? `(${total}) Tacitus` : 'Tacitus';
   const others = total - unreadFor(S.channel);
   $('menu').dataset.unread = others > 0 ? String(others) : '';
-  // The Needs you entry above the channels, with the count of threads that need the owner.
-  const need = needsRows().filter((r) => stateOf(r.channel, threadOf(r)) === 'needs_you').length;
+  // The Needs you entry above the channels, with the count of threads that need the owner this week.
+  const need = needsRows().filter((r) => stateOf(r.channel, threadOf(r)) === 'needs_you' && !staleOf(r)).length;
   $('needs-link').hidden = false;
   $('needs-link').classList.toggle('active', S.needsView);
   $('needs-count').hidden = !need;
@@ -648,13 +649,14 @@ function threadCard(p, ch, withChannel) {
   const tk = threadOf(p);
   const n = S.threadUnread.get(tkey(ch, tk)) || 0;
   const st = S.states.get(tkey(ch, tk)) || {};
-  const word = STICKERS[st.state];
+  // An old one is muted and says how long it has waited: "Needs you · 9 days".
+  const word = STICKERS[st.state] && (st.stale ? `${STICKERS[st.state]} · ${ageDays(st.at)}` : STICKERS[st.state]);
   const replies = p.reply_count || 0;
   return h('a', {
     class: 'thread-item' + (ch === S.channel && tk === S.thread ? ' active' : '') + (n ? ' unread' : ''),
     href: hashFor(ch, tk), title: word ? st.reason || word : null, 'data-channel': ch, 'data-thread': tk,
   }, h('span', { class: 't-title' }, threadTitle(p)),
-  word ? h('span', { class: `sticker st-${st.state}`, role: 'img', 'aria-label': st.reason ? `${word}: ${st.reason}` : word }, word) : null,
+  word ? h('span', { class: `sticker st-${st.state}` + (st.stale ? ' stale' : ''), role: 'img', 'aria-label': st.reason ? `${word}: ${st.reason}` : word }, word) : null,
   h('time', { class: 't-time' }, when(p.last_at || p.posted_at, true)),
   h('span', { class: 't-meta' }, withChannel ? [h('span', { class: 't-chan' }, channelName(chan(ch)) || p.channel_name || ch), ' · '] : null,
     `${replies} ${replies === 1 ? 'reply' : 'replies'}`),
@@ -665,8 +667,11 @@ function renderThreads() {
   const box = $('thread-list');
   if (S.needsView) {
     const rows = needsRows();
-    box.replaceChildren(...rows.map((r) => threadCard(r, r.channel, true)));
-    if (!rows.length) box.append(h('p', { class: 'empty' }, 'Nothing needs you now.'));
+    const fresh = rows.filter((r) => !staleOf(r)), old = rows.filter(staleOf);
+    box.replaceChildren(...(old.length ? [h('h2', { class: 'needs-head' }, 'This week')] : []),
+      ...fresh.map((r) => threadCard(r, r.channel, true)));
+    if (!fresh.length) box.append(h('p', { class: 'empty' }, old.length ? 'Nothing new this week.' : 'Nothing needs you now.'));
+    if (old.length) box.append(olderPart(old));
     return;
   }
   const th = S.threads.get(S.channel);
@@ -708,8 +713,12 @@ try { S.filter = localStorage.getItem(FILTER_KEY) || 'all'; } catch { /* no stor
 if (!FILTERS.some(([v]) => v === S.filter)) S.filter = 'all';
 
 // A thread row carries state_by, state_reason, state_at; an event carries by, reason, at.
-const rowState = (r) => ({ state: r.state, by: r.state_by ?? r.by, reason: r.state_reason ?? r.reason, at: r.state_at ?? r.at ?? 0 });
+const rowState = (r) => ({ state: r.state, by: r.state_by ?? r.by, reason: r.state_reason ?? r.reason, at: r.state_at ?? r.at ?? 0,
+  stale: Boolean(r.stale) });
 const stateOf = (ch, tk) => (S.states.get(tkey(ch, tk)) || {}).state || 'none';
+// A state the bot put on the stale shelf: a week or more with no change.
+const staleOf = (r) => Boolean((S.states.get(tkey(r.channel, threadOf(r))) || {}).stale);
+const ageDays = (at) => { const d = Math.max(1, Math.floor((Date.now() / 1000 - (at || 0)) / 86400)); return `${d} ${d === 1 ? 'day' : 'days'}`; };
 
 // A row read from the bot keeps its state unless the one held is newer
 // (an event the read did not see yet).
@@ -756,6 +765,40 @@ function onState(d) {
   if (p && !S.needs.some((r) => r.channel === d.channel && threadOf(r) === d.thread_key)) S.needs.push({ ...p, channel: d.channel });
   clearTimeout(S.needsTimer);
   S.needsTimer = setTimeout(loadNeeds, 400);
+  stateShown();
+}
+
+// Needs you's Older part: shut at first, its count on the button that opens
+// it, and one tap to mark them all done (asked once).
+function olderPart(rows) {
+  const toggle = () => { S.olderOpen = !S.olderOpen; renderThreads(); $('older-toggle').focus(); };
+  return h('section', { class: 'older', 'aria-label': 'Older' },
+    h('div', { class: 'needs-head' },
+      h('button', { type: 'button', id: 'older-toggle', class: 'older-toggle', 'aria-expanded': String(S.olderOpen), onclick: toggle },
+        `Older (${rows.length})`),
+      h('button', { type: 'button', id: 'older-done', class: 'btn plain small', onclick: () => markAllDone(rows) }, 'Mark all done')),
+    S.olderOpen ? rows.map((r) => threadCard(r, r.channel, true)) : null);
+}
+
+async function markAllDone(rows) {
+  const n = rows.length;
+  if (!n || !confirm(`Mark all ${n} older ${n === 1 ? 'item' : 'items'} done? They leave Needs you. Nothing is sent or deleted.`)) return;
+  const before = rows.map((r) => [r, S.states.get(tkey(r.channel, threadOf(r)))]);
+  // Stamped now, so a list read before the bot answers each one keeps them done.
+  for (const [r] of before) S.states.set(tkey(r.channel, threadOf(r)), { state: 'done', by: 'owner', at: Date.now() / 1000, reason: 'You marked it done.' });
+  stateShown();
+  let failed = 0, why = '';
+  for (const [r, old] of before) { // one at a time: the bot answers each in turn
+    const key = tkey(r.channel, threadOf(r));
+    try {
+      const row = await call('POST', `/threads/${enc(r.channel)}/${enc(threadOf(r))}/state`, { state: 'done' });
+      if (row && row.state) S.states.set(key, rowState(row));
+    } catch (e) {
+      failed += 1; why = e.message;
+      if (old) S.states.set(key, old); else S.states.delete(key);
+    }
+  }
+  if (failed) toast(`${failed} not changed: ${why}`);
   stateShown();
 }
 

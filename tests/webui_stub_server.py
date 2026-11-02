@@ -31,7 +31,9 @@ Each thread can have a state (`states`, seeded with made-up ones in three
 channels): the thread rows carry it, GET /api/needs lists the threads
 that need the owner or wait, and POST /api/threads/<ch>/<key>/state sets
 the owner's own (recorded in `state_posts`). `set_state` changes one as
-the bot's rules would; each change is a `thread_state` event.
+the bot's rules would; each change is a `thread_state` event. A state
+carries `stale` as the bot's stale shelf sets it; `add_stale` adds made-up
+threads whose state is days old and on the shelf.
 
 With `sign=True` (or `--sign`) it signs the app's files as the bot does
 (web_bundle, which needs the cryptography package) and serves the signed
@@ -214,19 +216,38 @@ class Stub:
         replies and its state."""
         st = self.states.get((m["channel"], m["thread_key"])) or {}
         return {**self.view(m), "state": st.get("state", "none"), "state_by": st.get("by", ""),
-                "state_reason": st.get("reason", ""), "state_at": st.get("at", 0)}
+                "state_reason": st.get("reason", ""), "state_at": st.get("at", 0),
+                "stale": bool(st.get("stale"))}
 
     def set_state(self, channel: str, thread_key: str, state: str, by: str = "rule",
-                  reason: str = "") -> dict:
+                  reason: str = "", *, at: float | None = None, stale: bool = False) -> dict:
         """Set a thread's state and send the `thread_state` event."""
         with self.cond:
-            st = {"state": state, "by": by, "reason": reason, "at": time.time()}
+            st = {"state": state, "by": by, "reason": reason, "at": at or time.time(),
+                  "stale": stale}
             self.states[(channel, thread_key)] = st
             self.eseq += 1
             self.events.append((self.eseq, "thread_state",
                                 {"channel": channel, "thread_key": thread_key, **st}))
             self.cond.notify_all()
             return st
+
+    def add_stale(self, items=None) -> list[dict]:
+        """Threads whose state is days old and on the stale shelf, quietly
+        (as history): [(channel, text, state, days)]; the first messages."""
+        items = items or [(MAIN, "Reply to the visiting speaker about parking", "needs_you", 9),
+                          (ROOM, "Check the draft budget table", "needs_you", 12),
+                          (SCHED, "Find a time with the review panel", "waiting", 16)]
+        out = []
+        for channel, text, state, days in items:
+            at = time.time() - days * 86400
+            m = self.add(channel, text, author="owner", at=at)
+            self.add(channel, "Done. One question is left for you.", thread_key=m["thread_key"], at=at + 60)
+            self.states[(channel, m["thread_key"])] = {
+                "state": state, "by": "model", "reason": "A question waits for you.", "at": at,
+                "stale": True}
+            out.append(m)
+        return out
 
     def needs(self) -> list[dict]:
         """Every thread that needs the owner or waits, needs you first,

@@ -325,9 +325,16 @@ CREATE TABLE IF NOT EXISTS scheduled_posts(
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS thread_state(
     channel TEXT, thread_key TEXT, state TEXT, by TEXT, reason TEXT, at REAL,
-    judged_seq INTEGER, PRIMARY KEY (channel, thread_key));
+    judged_seq INTEGER, stale INT DEFAULT 0, PRIMARY KEY (channel, thread_key));
 CREATE TABLE IF NOT EXISTS thread_origin(
     channel TEXT, thread_key TEXT, origin TEXT, at REAL, PRIMARY KEY (channel, thread_key));
+CREATE TABLE IF NOT EXISTS card_link(
+    channel TEXT, thread_key TEXT, card_channel TEXT, card_id TEXT, at REAL,
+    PRIMARY KEY (channel, thread_key, card_channel, card_id));
+CREATE INDEX IF NOT EXISTS card_link_card ON card_link(card_id);
+CREATE INDEX IF NOT EXISTS messages_id ON messages(id);
+CREATE TABLE IF NOT EXISTS nudges(
+    channel TEXT, thread_key TEXT, msg_id TEXT, at REAL, PRIMARY KEY (channel, thread_key));
 """
 
 
@@ -665,6 +672,10 @@ class WebStore:
             if "device" not in cols:
                 # A store from before: no subscription names a relay device.
                 self._conn.execute("ALTER TABLE push_subscriptions ADD COLUMN device TEXT")
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(thread_state)")}
+            if "stale" not in cols:
+                # A store from before the stale shelf: the next tick marks them.
+                self._conn.execute("ALTER TABLE thread_state ADD COLUMN stale INT DEFAULT 0")
             self._conn.commit()
         self._subs: list[_Sub] = []
         self._pending: list[tuple[int, str, str]] = []
@@ -783,7 +794,7 @@ class WebStore:
         threads that opened before it."""
         rows = self._all(
             "SELECT m.*, t.n AS n, t.last_at AS last_at, s.state AS st_state, s.by AS st_by, "
-            "s.reason AS st_reason, s.at AS st_at FROM messages m "
+            "s.reason AS st_reason, s.at AS st_at, s.stale AS st_stale FROM messages m "
             "JOIN (SELECT MIN(seq) AS first, COUNT(*) AS n, MAX(posted_at) AS last_at "
             "FROM messages WHERE channel=? GROUP BY thread_key) t "
             "ON m.seq = t.first LEFT JOIN thread_state s "
@@ -802,9 +813,10 @@ class WebStore:
     def _state_fields(r: sqlite3.Row) -> dict:
         state = r["st_state"] if r["st_state"] in _ts.STATES else None
         if state is None:
-            return {"state": "none", "state_by": None, "state_reason": "", "state_at": None}
+            return {"state": "none", "state_by": None, "state_reason": "", "state_at": None,
+                    "stale": False}
         return {"state": state, "state_by": r["st_by"], "state_reason": r["st_reason"] or "",
-                "state_at": r["st_at"]}
+                "state_at": r["st_at"], "stale": bool(r["st_stale"])}
 
     # the state of a conversation (docs/webchat-state.md)
 
@@ -817,7 +829,9 @@ class WebStore:
 
     @staticmethod
     def _state_event(row: dict) -> dict:
-        return {k: row[k] for k in ("channel", "thread_key", "state", "by", "reason", "at")}
+        out = {k: row[k] for k in ("channel", "thread_key", "state", "by", "reason", "at")}
+        out["stale"] = bool(row.get("stale"))
+        return out
 
     def set_thread_state(self, channel: str, thread_key: str, state: str, by: str,
                          reason: str, *, judged_seq: int) -> dict:
@@ -844,13 +858,14 @@ class WebStore:
                     self._conn.execute("UPDATE thread_state SET judged_seq=? WHERE channel=? AND "
                                        "thread_key=?", (judged_seq, channel, thread_key))
                 return self._state_event(old)
+            # A change starts the state's age again: it is fresh, not stale.
             new = {"channel": channel, "thread_key": thread_key, "state": state, "by": by,
-                   "reason": reason or "", "at": time.time()}
+                   "reason": reason or "", "at": time.time(), "stale": False}
             self._conn.execute(
-                "INSERT INTO thread_state(channel, thread_key, state, by, reason, at, judged_seq) "
-                "VALUES (?,?,?,?,?,?,?) ON CONFLICT(channel, thread_key) DO UPDATE SET "
+                "INSERT INTO thread_state(channel, thread_key, state, by, reason, at, judged_seq, "
+                "stale) VALUES (?,?,?,?,?,?,?,0) ON CONFLICT(channel, thread_key) DO UPDATE SET "
                 "state=excluded.state, by=excluded.by, reason=excluded.reason, at=excluded.at, "
-                "judged_seq=excluded.judged_seq",
+                "judged_seq=excluded.judged_seq, stale=0",
                 (channel, thread_key, state, by, new["reason"], new["at"], judged_seq))
             self._emit("thread_state", channel, thread_key, new)
             return new
@@ -894,8 +909,9 @@ class WebStore:
     # channel's name, in one statement.
     _STATE_ROWS = (
         "SELECT m.*, x.n AS n, x.last_at AS last_at, x.st_state, x.st_by, x.st_reason, "
-        "x.st_at, x.channel_name FROM (SELECT s.channel, s.thread_key, s.state AS st_state, "
-        "s.by AS st_by, s.reason AS st_reason, s.at AS st_at, c.name AS channel_name, "
+        "x.st_at, x.st_stale, x.channel_name FROM (SELECT s.channel, s.thread_key, "
+        "s.state AS st_state, s.by AS st_by, s.reason AS st_reason, s.at AS st_at, "
+        "s.stale AS st_stale, c.name AS channel_name, "
         "(SELECT MIN(seq) FROM messages WHERE channel=s.channel AND thread_key=s.thread_key) "
         "AS first, (SELECT COUNT(*) FROM messages WHERE channel=s.channel AND "
         "thread_key=s.thread_key) AS n, (SELECT MAX(posted_at) FROM messages WHERE "
@@ -930,6 +946,148 @@ class WebStore:
             where="1 WHERE s.channel = ? AND s.thread_key = ?"), (channel, thread_key))
         got = self._state_rows(rows)
         return got[0] if got else None
+
+    # a conversation's cards in Direct messages, the stale shelf, the nudge
+
+    def _link(self, row: sqlite3.Row) -> None:
+        """Link a stored message to the conversation it belongs to, inside
+        the caller's transaction: a card to the conversation it reports back
+        to (its card JSON's ea_channel and thread_ts, the card registry's
+        link) and a bot's pointer ("... is in your DM: [open it](...)") to the
+        card its link names. A link is kept once."""
+        links: list[tuple[str, str, str, str]] = []
+        origin = _ts.card_origin(_loads(row["card"])) if row["card"] else None
+        if origin is not None:
+            key = self.thread_of(origin[0], origin[1]) or origin[1]
+            if (origin[0], key) != (row["channel"], row["thread_key"]):
+                links.append((origin[0], key, row["channel"], row["id"]))
+        text = row["text"] or ""
+        if row["author"] == BOT and row["kind"] == "message" and "in your DM" in text:
+            links += [(row["channel"], row["thread_key"], ch, cid)
+                      for ch, cid in _ts.pointer_targets(text)]
+        for link in links:
+            self._conn.execute("INSERT OR IGNORE INTO card_link(channel, thread_key, card_channel, "
+                               "card_id, at) VALUES (?,?,?,?,?)", (*link, time.time()))
+
+    def backfill_card_links(self) -> int:
+        """Link the cards and pointers stored before the card_link table,
+        once per store (the meta key `card_link_backfill`); how many
+        messages it read (0 once done)."""
+        if self._one("SELECT 1 FROM meta WHERE key='card_link_backfill'"):
+            return 0
+
+        def run() -> int:
+            rows = self._conn.execute(
+                "SELECT * FROM messages WHERE card IS NOT NULL OR (author=? AND kind='message' "
+                "AND text LIKE '%in your DM%')", (BOT,)).fetchall()
+            for r in rows:
+                self._link(r)
+            self._conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES "
+                               "('card_link_backfill', ?)", (str(time.time()),))
+            return len(rows)
+        return self._transaction(run)
+
+    def linked_cards(self, channel: str, thread_key: str) -> list[dict]:
+        """The messages in other threads that the conversation links to
+        (card_link), oldest first, each saying whether it is a history row.
+        A link the store holds no message for (a card never copied here) is
+        a row of kind `missing`, so no rule takes the cards it can see for
+        all of them."""
+        rows = self._all(
+            "SELECT m.*, l.card_id AS link_id FROM card_link l LEFT JOIN messages m ON "
+            "m.id = l.card_id AND (l.card_channel = '' OR m.channel = l.card_channel) "
+            "WHERE l.channel=? AND l.thread_key=? ORDER BY m.seq IS NULL, m.seq LIMIT ?",
+            (channel, thread_key, _ts.LINK_CAP))
+        out: list[dict] = []
+        seen: set = set()
+        for r in rows:
+            if r["seq"] is None:
+                out.append({"kind": "missing", "id": r["link_id"], "card": None})
+                continue
+            if r["seq"] in seen or (r["channel"], r["thread_key"]) == (channel, thread_key):
+                continue
+            seen.add(r["seq"])
+            j = self._msg_json(r, 0)
+            j["history"] = bool(r["history"])
+            out.append(j)
+        return out
+
+    def card_origins(self, refs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """The conversations linked to any of these (channel, message id)."""
+        want = {(str(c), str(i)) for c, i in refs}
+        ids = sorted({i for _c, i in want})
+        out: list[tuple[str, str]] = []
+        for n in range(0, len(ids), 400):
+            part = ids[n:n + 400]
+            for r in self._all("SELECT channel, thread_key, card_channel, card_id FROM card_link "
+                               f"WHERE card_id IN ({','.join('?' * len(part))})", tuple(part)):
+                key = (r["channel"], r["thread_key"])
+                if (not r["card_channel"] or (r["card_channel"], r["card_id"]) in want) \
+                        and key not in out:
+                    out.append(key)
+        return out
+
+    def linked_threads(self, limit: int) -> list[tuple[str, str]]:
+        """The conversations that link to a card, in channels not archived,
+        newest first."""
+        rows = self._all(
+            "SELECT l.channel AS channel, l.thread_key AS thread_key, MAX(m.posted_at) AS last_at "
+            "FROM (SELECT DISTINCT channel, thread_key FROM card_link) l JOIN channels c "
+            "ON c.id = l.channel AND c.archived = 0 JOIN messages m ON m.channel = l.channel "
+            "AND m.thread_key = l.thread_key GROUP BY l.channel, l.thread_key "
+            "ORDER BY last_at DESC LIMIT ?", (int(limit),))
+        return [(r["channel"], r["thread_key"]) for r in rows]
+
+    def mark_stale(self, before: float) -> int:
+        """Mark each needs_you or waiting state set at or before `before` as
+        stale, with a `thread_state` event each; how many."""
+        def run() -> int:
+            rows = self._conn.execute(
+                "SELECT * FROM thread_state WHERE state IN ('needs_you', 'waiting') AND "
+                "COALESCE(stale, 0) = 0 AND at <= ?", (float(before),)).fetchall()
+            for r in rows:
+                self._conn.execute("UPDATE thread_state SET stale=1 WHERE channel=? AND "
+                                   "thread_key=?", (r["channel"], r["thread_key"]))
+                self._emit("thread_state", r["channel"], r["thread_key"],
+                           self._state_event({**dict(r), "stale": True}))
+            return len(rows)
+        return self._transaction(run)
+
+    def nudge_ids(self, channel: str, thread_key: str) -> set:
+        """The ids of the bot's nudges in the thread."""
+        return {r["msg_id"] for r in self._all("SELECT msg_id FROM nudges WHERE channel=? AND "
+                                              "thread_key=?", (channel, thread_key))}
+
+    def nudge_candidates(self, set_before: float, set_after: float,
+                         limit: int) -> list[tuple[str, str]]:
+        """The needs_you threads, in channels not archived, whose state was
+        set after `set_after` and at or before `set_before` and that have no
+        nudge yet: the longest waiting first."""
+        rows = self._all(
+            "SELECT s.channel AS channel, s.thread_key AS thread_key FROM thread_state s "
+            "JOIN channels c ON c.id = s.channel AND c.archived = 0 WHERE s.state = 'needs_you' "
+            "AND s.at <= ? AND s.at > ? AND NOT EXISTS (SELECT 1 FROM nudges n WHERE "
+            "n.channel = s.channel AND n.thread_key = s.thread_key) ORDER BY s.at LIMIT ?",
+            (float(set_before), float(set_after), int(limit)))
+        return [(r["channel"], r["thread_key"]) for r in rows]
+
+    def post_nudge(self, channel: str, thread_key: str, text: str) -> dict | None:
+        """The bot's nudge in a thread, once: the message (a bot message
+        with its `message` event) and its row in `nudges`, in one
+        transaction. None when the thread has one already, or has no
+        messages."""
+        def run() -> dict | None:
+            if self._conn.execute("SELECT 1 FROM nudges WHERE channel=? AND thread_key=?",
+                                  (channel, thread_key)).fetchone() or not \
+                    self._conn.execute("SELECT 1 FROM messages WHERE channel=? AND thread_key=? "
+                                       "LIMIT 1", (channel, thread_key)).fetchone():
+                return None
+            row = self._insert(channel, None, thread_key, BOT, "message", text, None, None,
+                               time.time(), None, False)
+            self._conn.execute("INSERT INTO nudges(channel, thread_key, msg_id, at) VALUES "
+                               "(?,?,?,?)", (channel, thread_key, row["id"], row["posted_at"]))
+            return row
+        return self._transaction(run)
 
     def parents(self, channel: str, since_s: float, after_seq: int, limit: int) -> list[dict]:
         """Thread-opening messages posted after since_s with seq > after_seq,
@@ -1125,29 +1283,33 @@ class WebStore:
         reads a row whose two times differ as an edit). A `history` row (a
         message from the primary's past) gets no event and never counts as
         unread."""
-        now = time.time()
+        at = posted_at if posted_at is not None else time.time()
+        return self._transaction(lambda: self._insert(
+            channel, mid, thread_key, author, kind, text, card, file, at, event, history))
 
-        def run() -> dict:
-            cur = self._conn.execute(
-                "INSERT INTO messages(channel, id, thread_key, author, kind, text, card, file, "
-                "reactions, posted_at, updated_at, history) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (channel, mid, thread_key, author, kind, text or "",
-                 json.dumps(card) if card is not None else None,
-                 json.dumps(file) if file is not None else None, "[]",
-                 posted_at if posted_at is not None else now,
-                 posted_at if posted_at is not None else now, int(bool(history))))
-            seq = int(cur.lastrowid)
-            if mid is None or thread_key is None:
-                self._conn.execute("UPDATE messages SET id=?, thread_key=? WHERE seq=?",
-                                   (mid if mid is not None else f"w{seq}",
-                                    thread_key if thread_key is not None else f"t{seq}", seq))
-            row = self._conn.execute("SELECT * FROM messages WHERE seq=?", (seq,)).fetchone()
-            out = self._msg_json(row)
-            if not history:
-                self._emit(event or ("message" if kind == "message" else kind), channel,
-                           row["id"], out)
-            return out
-        return self._transaction(run)
+    def _insert(self, channel: str, mid: str | None, thread_key: str | None, author: str,
+                kind: str, text: str, card: dict | None, file: dict | None, at: float,
+                event: str | None, history: bool) -> dict:
+        """add_message's insert, inside the caller's transaction; it links a
+        card or a pointer to a card to its conversation (_link)."""
+        cur = self._conn.execute(
+            "INSERT INTO messages(channel, id, thread_key, author, kind, text, card, file, "
+            "reactions, posted_at, updated_at, history) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (channel, mid, thread_key, author, kind, text or "",
+             json.dumps(card) if card is not None else None,
+             json.dumps(file) if file is not None else None, "[]", at, at, int(bool(history))))
+        seq = int(cur.lastrowid)
+        if mid is None or thread_key is None:
+            self._conn.execute("UPDATE messages SET id=?, thread_key=? WHERE seq=?",
+                               (mid if mid is not None else f"w{seq}",
+                                thread_key if thread_key is not None else f"t{seq}", seq))
+        row = self._conn.execute("SELECT * FROM messages WHERE seq=?", (seq,)).fetchone()
+        self._link(row)
+        out = self._msg_json(row)
+        if not history:
+            self._emit(event or ("message" if kind == "message" else kind), channel,
+                       row["id"], out)
+        return out
 
     def newest_in_thread(self, channel: str, thread_key: str) -> float | None:
         """The posted_at of the thread's newest message; None for a thread
@@ -1186,14 +1348,20 @@ class WebStore:
                     continue
                 self._conn.execute("UPDATE messages SET channel=?, thread_key=? WHERE seq=?",
                                    (new_channel, new_key, row["seq"]))
+                if new_channel != old_channel:
+                    # A card filed in another channel stays linked to its
+                    # conversation.
+                    self._conn.execute("UPDATE OR REPLACE card_link SET card_channel=? WHERE "
+                                       "card_channel=? AND card_id=?",
+                                       (new_channel, old_channel, row["id"]))
                 out = self._msg_json(self._conn.execute("SELECT * FROM messages WHERE seq=?",
                                                         (row["seq"],)).fetchone())
                 self._emit("update", new_channel, row["id"], out)
                 moved += 1
             if (old_channel, old_key) != (new_channel, new_key):
-                # The thread's state and origin go with it; the rules judge
-                # it again on the `update` events.
-                for table in ("thread_state", "thread_origin"):
+                # The thread's state, origin, card links and nudge go with
+                # it; the rules judge it again on the `update` events.
+                for table in ("thread_state", "thread_origin", "card_link", "nudges"):
                     self._conn.execute(f"UPDATE OR REPLACE {table} SET channel=?, thread_key=? "
                                        "WHERE channel=? AND thread_key=?",
                                        (new_channel, new_key, old_channel, old_key))
@@ -1221,8 +1389,10 @@ class WebStore:
                 args.append(val)
             self._conn.execute(f"UPDATE messages SET {', '.join(sets)} WHERE seq=?",
                                (*args, row["seq"]))
-            out = self._msg_json(self._conn.execute("SELECT * FROM messages WHERE seq=?",
-                                                    (row["seq"],)).fetchone())
+            new = self._conn.execute("SELECT * FROM messages WHERE seq=?", (row["seq"],)).fetchone()
+            if "card" in fields or "text" in fields:
+                self._link(new)
+            out = self._msg_json(new)
             self._emit(event, channel, mid, out)
             return out
         return self._transaction(run)
@@ -1644,11 +1814,20 @@ class WebFrontend(ChatFrontend):
         """Judge the state of each conversation (docs/webchat-state.md) from
         start() on: the rules at once on every change, and the tick. The
         host gives the linked ledger rows and the model call; without them
-        the rules alone set the state. Call it before start()."""
+        the rules alone set the state. The nudge posts into this store
+        (`_post_nudge`); the host may pass `quiet`, its quiet-hours check.
+        Call it before start()."""
+        kw.setdefault("nudge", self._post_nudge)
         self.thread_states = _ts.ThreadStates(lambda: self.store, ledger=ledger, model=model,
                                               devices=self._relay_devices,
                                               cards=self._card_lookup, **kw)
         return self.thread_states
+
+    def _post_nudge(self, channel: str, thread_key: str, text: str) -> dict | None:
+        """The "Still need this?" line, as the bot, in this store alone: in
+        shadow mode the primary's thread is left as it is. No push: the
+        line waits for the owner's next look."""
+        return self.store.post_nudge(channel, thread_key, self._out(text))
 
     @property
     def card_lookup(self) -> _ts.CardRead | None:
