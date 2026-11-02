@@ -1630,7 +1630,7 @@ def test_the_routing_table_names_the_task_and_never_warns_for_its_default(monkey
     monkeypatch.setattr(ea_config, "get_routing_source", lambda *a, **k: (block, "default"))
     off = rl._off()
     row = {r["task"]: r for r in mr.rows(cfg=off, tiers=ea_config.tiers_from_block({}))}["thread_state"]
-    assert row["effective"] == "hosted" and "hosted model judges" in row["why"]
+    assert row["effective"] == "hosted" and row["why"].endswith("your own model is not set up, so Claude does it")
     assert row["allowed"] == ["local", "hosted", "auto"] and not row["locked"]
     monkeypatch.setattr(rl, "config", lambda: off)
     status, _detail, fix = mr.doctor_row()

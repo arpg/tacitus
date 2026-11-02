@@ -1103,6 +1103,10 @@ def test_get_chat_defaults_the_web_block(tmp_path):
 
 # ── the Settings screen (/api/settings/<name>) ─────────────────────────
 
+sys.path.insert(0, str(ROOT / "tests"))
+from plain_words import JARGON  # noqa: E402
+
+
 @pytest.fixture
 def routing_page(tmp_path, monkeypatch):
     """The EA's routing page (model_routing.WebSettings) in an owner
@@ -1134,6 +1138,10 @@ def test_the_settings_routes_answer_the_owner_and_save_the_routing_table(fe, rou
     data = json.loads(body)
     assert status == 200 and data["local"]["model"] == "local-27b"
     assert [r["task"] for r in data["rows"]][0] == "mail" and data["values"] == ["local", "hosted", "auto"]
+    # the screen's words are plain (tests/test_model_routing.py scans every case)
+    assert data["rows"][0]["label"] == "Reading your mail"
+    shown = [data["local"]["detail"]] + [r[k] for r in data["rows"] for k in ("label", "what", "why", "floor")]
+    assert not [t for t in shown if JARGON.search(t)]
     status, _h, body = owner(fe, "POST", path, {"tasks": {"chat": "local", "drafting": "hosted"}})
     out = json.loads(body)
     assert status == 200 and out["saved"] is True
@@ -1192,6 +1200,7 @@ def test_the_settings_routes_need_the_owner_and_the_app_s_own_origin(fe, routing
     assert owner(fe, "GET", path, headers={"X-Tacitus-Relay": "1"})[0] == 200
     status, _h, raw = owner(fe, "POST", path, body, {"X-Tacitus-Relay": "1"})
     assert status == 403 and "own web chat" in json.loads(raw)["error"]
+    assert not JARGON.search(json.loads(raw)["error"])
     assert owner(fe, "POST", path, raw=b"[1]", headers={"Content-Type": "application/json"})[0] == 400
     assert not (priv / "routing.json").exists()
 
@@ -1199,11 +1208,17 @@ def test_the_settings_routes_need_the_owner_and_the_app_s_own_origin(fe, routing
 def test_a_floored_row_is_refused_and_nothing_is_written(fe, routing_page, monkeypatch):
     page, priv = routing_page
     fe.settings_pages["routing"] = page
+    said = []
     status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"tasks": {"review": "local"}})
-    assert status == 400 and json.loads(raw)["error"] == "review is hosted only (the stakes floor)"
+    assert status == 400 and json.loads(raw)["error"] == \
+        '"Checking its own work" always stays on Hosted: only Claude makes these judgment calls.'
+    said.append(json.loads(raw)["error"])
     status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"tasks": {"chat": "fable"}})
-    assert status == 400 and "chat takes local, hosted or auto" in json.loads(raw)["error"]
-    assert owner(fe, "POST", "/api/settings/routing", {"other": 1})[0] == 400
+    assert status == 400 and json.loads(raw)["error"] == '"Talking with you" takes Local, Hosted or Auto.'
+    said.append(json.loads(raw)["error"])
+    status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"other": 1})
+    assert status == 400 and json.loads(raw)["error"] == "Choose Local, Hosted or Auto for at least one task."
+    said.append(json.loads(raw)["error"])
     assert not (priv / "routing.json").exists()
     # the keep floor: hosted on mail is refused while the keep list has entries
     import remote_llm
@@ -1211,8 +1226,14 @@ def test_a_floored_row_is_refused_and_nothing_is_written(fe, routing_page, monke
                                                             "addresses": [], "admissions": True}}
     monkeypatch.setattr(remote_llm, "config", lambda: kept)
     status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"tasks": {"mail": "hosted"}})
-    assert status == 400 and "keep floor" in json.loads(raw)["error"]
+    assert status == 400 and json.loads(raw)["error"] == \
+        '"Reading your mail" cannot be Hosted while you keep some mail away from Claude.'
+    said.append(json.loads(raw)["error"])
     assert not (priv / "routing.json").exists()
+    status, _h, raw = owner(fe, "GET", "/api/settings/other")
+    assert status == 404
+    said.append(json.loads(raw)["error"])
+    assert not [t for t in said if JARGON.search(t)]
 
 
 # ── the state of a conversation (docs/webchat-state.md) ─────────────────

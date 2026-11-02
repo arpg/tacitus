@@ -1076,9 +1076,9 @@ PHONE = {"viewport": {"width": 390, "height": 844},
          "context": {"has_touch": True, "is_mobile": True, "device_scale_factor": 3}}
 SIZES = pytest.mark.parametrize("size", ["phone", "desktop"])
 # Words a first-day owner on a phone does not use. The app says conversation,
-# room, card, code, app, your own network and away from home instead.
-JARGON = re.compile(r"\b(channel|thread|session|context|specialist|ledger|lane|relay|tailnet|tailscale|bundle|manifest|token"
-                    r"|origin|sse|csp|payload|endpoint|frontend|pwa|standalone)s?\b", re.I)
+# room, card, code, app, your own network and away from home instead. The
+# bot's Settings text is checked against the same list (tests/plain_words.py).
+from plain_words import JARGON  # noqa: E402
 # The drawer foot's entries on show.
 FOOT = "[...$('drawer-foot').children].filter((el) => !el.hidden).map((el) => el.id)"
 
@@ -2384,28 +2384,31 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     expect(rows).to_have_count(3)
     expect(page.locator("#settings-local")).to_have_text("Local model local-27b: reachable. Answered 2 min ago.")
     drafting, mail, review = (page.locator(f'#settings-rows li[data-task="{t}"]') for t in ("drafting", "mail", "review"))
-    expect(drafting.locator(".s-name")).to_have_text("Email bodies")
+    expect(drafting.locator(".s-name")).to_have_text("Writing replies")
     expect(drafting.locator("input[value=auto]")).to_be_checked()
-    expect(drafting.locator(".s-now")).to_have_text("Now local: the drafting switch is remote.")
+    expect(drafting.locator(".s-now")).to_have_text("Now local: Auto picked your own model.")
     expect(drafting.locator(".s-floor")).to_have_count(0)
     expect(mail.locator("input[value=hosted]")).to_be_disabled()
     expect(mail.locator("input[value=local]")).to_be_enabled()
-    expect(mail.locator(".s-floor")).to_have_text("Keep floor: hosted is not available while the keep list has entries.")
+    expect(mail.locator(".s-floor")).to_have_text("Hosted is off while you keep some mail away from Claude "
+                                                  "(a domain, an address or admissions mail), so that mail "
+                                                  "never reaches Claude.")
     expect(review.locator("input[value=hosted]")).to_be_checked()
     for v in ("local", "auto"):
         expect(review.locator(f"input[value={v}]")).to_be_disabled()
-    expect(review.locator(".s-floor")).to_have_text("Stakes floor: these are judgment calls, so only the hosted model does them.")
+    expect(review.locator(".s-floor")).to_have_text("Always Hosted: these are judgment calls, so only Claude makes them.")
     drafting.locator("input[value=hosted]").check()
     page.click("#settings-save")
     expect(page.locator("#settings-note")).to_have_text("Saved. Each task uses its model from its next run.")
     assert stub.settings_posts == [{"tasks": {"drafting": "hosted", "mail": "auto", "review": "hosted"}}]
     expect(drafting.locator("input[value=hosted]")).to_be_checked()
-    expect(drafting.locator(".s-now")).to_have_text("Now hosted: set to hosted.")
+    expect(drafting.locator(".s-now")).to_have_text("Now hosted: set to Hosted.")
     # a value the bot refuses: the reason stays on screen and nothing changes
     page.evaluate("document.querySelector('#settings-rows li[data-task=review] input[value=local]').disabled = false")
     review.locator("input[value=local]").check()
     page.click("#settings-save")
-    expect(page.locator("#settings-note")).to_have_text("Not saved: review is hosted only (the stakes floor)")
+    expect(page.locator("#settings-note")).to_have_text(
+        'Not saved: "Checking its own work" always stays on Hosted: only Claude makes these judgment calls.')
     assert stub.routing["rows"][2]["value"] == "hosted"
     page.click("#settings button[type=submit]")
     expect(page.locator("#settings")).not_to_be_visible()
