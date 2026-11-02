@@ -16,7 +16,7 @@
 #                     with --tag.
 #   --install-id ID   add this install id to the allow file (repeatable)
 #   --with-app        also serve the web app (--static), for phones paired with
-#                     "Pair through the relay". Only on a hostname of the relay's
+#                     "Phone not on your network". Only on a hostname of the relay's
 #                     own: any other page on that origin could use a paired phone's
 #                     key. Only at the release the bots it serves run: a phone takes
 #                     the copy only when it matches its bot's signed app bundle

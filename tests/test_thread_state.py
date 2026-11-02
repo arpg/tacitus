@@ -59,7 +59,7 @@ def decide(msgs, **kw):
 # ── the rules, one by one and in order ────────────────────────────────
 
 NOTICE = ('A new device asks to reach Tacitus through the relay: "Pixel", pairing code 123 456. '
-          "Approve it under Pair a phone in the web chat only when the phone shows the same code.")
+          "Approve it under Add a device in the web chat only when the device shows the same code.")
 PENDING = [{"id": "0123456789abcdef", "name": "Pixel", "pending": True, "code": "123456"}]
 APPROVED = [{"id": "0123456789abcdef", "name": "Pixel", "pending": False}]
 

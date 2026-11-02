@@ -401,7 +401,7 @@ def test_the_app_stays_small():
     # 1,600 for the chat, about 900 for qr.js and the relay transport (docs/webchat-relay.md),
     # 60 for the relay's device approval, the pairing checks and the file rule, 280 for the
     # check of the app's code (bundle.js, the worker's and the page's part), 10 for the
-    # card-button choice per relay-origin phone under "Pair a phone", and 70 for the
+    # card-button choice per relay-origin phone under "Add a device", and 70 for the
     # Settings screen (the routing table: a row per task, the floors, Save).
     # 2,940: 2,920 plus the phone dialog's one-tap setup and its plain notes.
     # 3,170: 3,120 plus the look (a radius and shadow scale, bubbles, blurred headers, the send state)
@@ -2130,8 +2130,9 @@ def test_the_pairing_dialog_is_in_the_drawer():
     js = read("app.js")
     assert "call('POST', '/relay/pair', via === 'relay' ? { via } : {})" in js and "QR.draw($('phone-qr'), out.qr, 4)" in js
     assert "call('POST', '/relay/handoff', {})" in js
-    # Where the API answers (the tailnet or this machine), or relayed when the bot lets this device start a handoff.
-    assert "routes === 'handoff' || (routes === 'all' && Boolean(S.me.relay))" in js
+    # Where the API answers (the tailnet or this machine), or relayed when the bot lets this device
+    # start a handoff and a code would work now.
+    assert "routes === 'handoff' ? Boolean(S.me.handoff) : routes === 'all' && Boolean(S.me.relay)" in js
     assert "(S.me && S.me.owner_routes) || (T.relay ? 'none' : 'all')" in js
     assert "call('POST', `/relay/${verb}`, { device: d.id, cards })" in js  # Approve and Remove
     assert "'Allow card buttons on this phone'" in js  # beside a relay-origin phone, off by default
@@ -2461,7 +2462,7 @@ def _pair_and_approve(browser, relay_bot, contexts, workers=False):
 
 
 def test_a_phone_pairs_on_the_tailnet_and_chats_through_the_relay(browser, relay_bot):
-    """The owner opens "Pair a phone" on the tailnet origin; a phone opens
+    """The owner opens "Add a device" on the tailnet origin; a phone opens
     the link on that origin while on the tailnet, waits for the owner's
     approval by its code, then reads, writes and confirms a card through
     the relay from off the tailnet."""
@@ -2691,7 +2692,7 @@ def test_a_phone_off_the_tailnet_takes_a_new_release_through_the_relay(browser, 
 
 def _relay_origin_phone(browser, relay_bot, contexts, bundle=None, approve=True):
     """A phone that opens a link to the relay's copy of the app with the
-    bot's bundle hash (or `bundle`), as "Pair through the relay" makes one,
+    bot's bundle hash (or `bundle`), as "Phone not on your network" makes one,
     pairs with no chat.json opt-in, and waits for approval; the bot
     approves it unless `approve` is false. (page, errors, device id)."""
     from playwright.sync_api import expect
@@ -2718,7 +2719,7 @@ def _relay_origin_phone(browser, relay_bot, contexts, bundle=None, approve=True)
 
 def test_a_relay_origin_phone_checks_its_app_and_presses_cards_when_the_owner_allows(browser, relay_bot):
     """A relay-origin phone runs the relay's copy of the app. The owner
-    approves it under "Pair a phone" with card buttons left off (the
+    approves it under "Add a device" with card buttons left off (the
     default). It fetches the bot's signed manifest through the relay, its
     service worker finds every file of the copy in it, and the phone
     attests the bundle: the owner's list drops "app not checked", which
@@ -2905,8 +2906,8 @@ def test_a_relay_copy_that_cannot_check_its_code_pairs_nothing(browser, stub_fac
 
 
 def test_pair_a_phone_offers_the_relay_on_this_machines_own_address(app):
-    """On a loopback origin (no public_url: no tailnet) "Pair a phone" makes
-    no link a phone could not open. It offers "Pair through the relay",
+    """On a loopback origin (no public_url: no tailnet) "Add a device" makes
+    no link a phone could not open. It offers "Phone not on your network",
     which asks for a link to the relay's copy of the app with the bot's
     bundle hash and says what the phone may do once approved."""
     from playwright.sync_api import expect

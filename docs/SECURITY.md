@@ -1460,7 +1460,7 @@ do depends on where its code comes from, recorded at pairing:
 | Device | Its code comes from | What it may do |
 |---|---|---|
 | Own origin (the default on the tailnet) | the bot's tailnet origin, cached by the service worker | everything, card actions included |
-| Relay origin, paired with the bundle hash ("Pair through the relay", or `webchat-relay.py pair --relay-origin`) | the relay's copy of the app at pairing, which checks itself against the bot's signed manifest (the QR carries its hash), then the bot's releases through the sealed channel; a relay that serves changed code on purpose can skip the check and claim it passed | once approved, read and chat (everything but the card actions), attested or not, with no `chat.json` opt-in; card actions only when the owner allows them for that device ("Allow card buttons on this phone", or `approve --cards`). Its check of its own code is recorded (`bundle_verified`, the release) and grants nothing (the app's code, below) |
+| Relay origin, paired with the bundle hash ("Phone not on your network", or `webchat-relay.py pair --relay-origin`) | the relay's copy of the app at pairing, which checks itself against the bot's signed manifest (the QR carries its hash), then the bot's releases through the sealed channel; a relay that serves changed code on purpose can skip the check and claim it passed | once approved, read and chat (everything but the card actions), attested or not, with no `chat.json` opt-in; card actions only when the owner allows them for that device ("Allow card buttons on this phone", or `approve --cards`). Its check of its own code is recorded (`bundle_verified`, the release) and grants nothing (the app's code, below) |
 | Hosted ("Add a device", then "A computer", at the hosted app) | the hosted app's copy at setup (the Pages site of `tacitus-ai/tacitus-ai.github.io`, built hourly from the newest signed release), checked against the bot's signed manifest as a relay copy is, then the bot's releases through the sealed channel; whoever can push to that repository can serve changed code at setup and in each `sw.js` | what a relay-origin device with the bundle hash may do: once approved, read and chat; card actions only when the owner allows them for that device |
 | Relay origin without a hash (paired before the signed bundle) | the relay's copy, unchecked, which a compromised relay can change (read what the phone shows, type as the owner) | nothing unless the owner-private `chat.json` sets `relay_origin_access`: `"read"` (GET only), `"chat"` (everything but the card actions) or `"all"`; the default is `"off"`. Let in, card actions also when the owner allows them for that device |
 | Waiting for approval | either | nothing: every request is a 403 and no event stream opens |
@@ -1469,7 +1469,7 @@ A pairing link is a bearer credential for ten minutes: whoever spends it
 first registers a device. So every new device waits until the owner
 approves it in the web chat (on the tailnet or the bot's machine), where
 the owner compares a six-digit code from the handshake's transcript hash
-(the phone shows it; "Pair a phone" and `webchat-relay.py show` list
+(the phone shows it; "Add a device" and `webchat-relay.py show` list
 it), and the bot posts a notice of each new device in the owner's DM. On
 the bot's own origin the app takes only the pairing secret from a link
 and the relay, install and keys from `/api/relay/status` on the tailnet,

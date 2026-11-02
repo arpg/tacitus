@@ -23,7 +23,7 @@ the code and left at the relay in a mailbox named from the code.
 `KeyStore` is the key file (owner-private, mode 0600): the bot's X25519
 key, the relay token, the Ed25519 key that signs the web app, the paired
 devices and the open pairings. A new device waits for the owner's
-approval under "Pair a phone". The CLI at the
+approval under "Add a device". The CLI at the
 bottom (`scripts/webchat-relay.py` runs it) creates the file, shows the
 install id, opens a pairing, and approves and revokes a device.
 
@@ -801,7 +801,7 @@ def _read_capped(resp: Any, limit: int, deadline: float) -> Optional[bytes]:
     return bytes(out)
 
 
-PENDING = "this phone waits for the owner's approval under Pair a phone"
+PENDING = "this device waits for the owner's approval under Add a device"
 
 
 class RelayClient:
@@ -1701,7 +1701,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 from . import relay_qr
                 print(relay_qr.terminal(link))
             print("Scan it with the phone; it works once, for ten minutes. Then approve the "
-                  "phone here (show, then approve --device <id>) or under Pair a phone in the "
+                  "phone here (show, then approve --device <id>) or under Add a device in the "
                   "web chat, when its code matches. Never send this link through chat or mail.",
                   file=sys.stderr)
             return 0

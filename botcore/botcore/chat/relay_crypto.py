@@ -6,7 +6,7 @@ with no I/O:
 
 - `BotIdentity`: the bot's X25519 key and relay token, and what derives
   from them (the install id, the client key, the public key).
-- `PairingPayload`: what "Pair a phone" shows as a QR code, as a plain
+- `PairingPayload`: what "Add a device" shows as a QR code, as a plain
   string (a link whose fragment carries the payload).
 - `client_hello`, `bot_accept`, `client_finish`: the handshake. It follows
   the Noise IK pattern (the phone knows the bot's static key from the QR)

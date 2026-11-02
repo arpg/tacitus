@@ -1479,7 +1479,7 @@ def test_the_relay_routes_pair_list_approve_and_revoke(web):
 
 
 def test_the_owner_pairs_a_phone_through_the_relay_without_the_opt_in(web):
-    """"Pair through the relay" in the owner's dialog: a v2 link to the
+    """"Phone not on your network" in the owner's dialog: a v2 link to the
     relay's copy of the app with the bundle hash the bot signs, allowed
     while chat.json keeps relay_origin_access "off". The device waits for
     approval, then reads and chats, attested or not; its attestation

@@ -13,14 +13,15 @@ and pairs as from a link, with no secret in its address. Once approved, it
 takes the bot's signed release through the sealed channel and runs that,
 even when the website serves another release.
 
-The handoff's crypto is checked against values this file computes with
-hashlib's PBKDF2 and the AES-GCM that relay_crypto uses, at 1,000
-iterations (the app uses 600,000). The rest of the app's tests are in
-tests/test_webui.py, whose browser fixtures this file borrows.
+The handoff's crypto is checked against the shared vectors
+(tests/fixtures/relay_vectors.json, `handoff`: made by relay_crypto at 1,000
+iterations, with the production values at 600,000), and the full runs use
+the bot's own handoff (POST /api/relay/handoff) and the real relay's
+mailbox. The rest of the app's tests are in tests/test_webui.py, whose
+browser fixtures this file borrows.
 """
 import base64
 import functools
-import hashlib
 import json
 import re
 import shutil
@@ -33,12 +34,14 @@ import pytest
 
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
+sys.path.insert(0, str(TESTS.parent / "botcore"))
 
 from test_webui import (  # noqa: E402,F401  (the fixtures and helpers)
-    WEBUI, _kept, _worker_state, app, browser, relay_bot, stub_factory, wait_for,
+    WEBUI, _kept, _owner_context, _pair_and_approve, _worker_state, app, browser, relay_bot,
+    stub_factory, wait_for,
 )
 
-SALT = b"tacitus-handoff/1"
+VECTORS = json.loads((TESTS / "fixtures" / "relay_vectors.json").read_text())["handoff"]
 CODE = "7K3QX-M9P0D"  # a made-up code: ten symbols of the alphabet
 TYPED = " 7k3qx m9pod "  # as a person might type it, an O for the 0
 
@@ -47,21 +50,17 @@ def b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
-def handoff_keys(code: str, iterations: int = 600000) -> tuple[str, bytes]:
-    out = hashlib.pbkdf2_hmac("sha256", code.replace("-", "").encode(), SALT, iterations, 48)
-    return out[:16].hex(), out[16:]
-
-
-def seal(code: str, payload: dict, iterations: int = 600000, nonce: bytes | None = None) -> tuple[str, str]:
-    """(mailbox, blob) of a handoff, as the bot makes them."""
+def _rc():
     pytest.importorskip("cryptography")
-    sys.path.insert(0, str(TESTS.parent / "botcore"))
     from botcore.chat import relay_crypto
-    import os
-    mailbox, key = handoff_keys(code, iterations)
-    nonce = nonce or os.urandom(12)
-    ct = relay_crypto.AESGCM(key).encrypt(nonce, json.dumps(payload).encode(), SALT + mailbox.encode())
-    return mailbox, b64(nonce + ct)
+    return relay_crypto
+
+
+def seal(code: str, payload: dict) -> tuple[str, str]:
+    """(mailbox, blob) of a handoff, made by relay_crypto as the bot makes them."""
+    rc = _rc()
+    mailbox, key = rc.handoff_keys(code)
+    return mailbox, rc.seal_handoff(mailbox, key, json.dumps(payload).encode())
 
 
 def made_up_payload(**over) -> dict:
@@ -72,29 +71,36 @@ def made_up_payload(**over) -> dict:
     return obj
 
 
-def test_the_handoff_crypto_in_webcrypto_matches_python(app):
-    """The code's normalisation, the mailbox and key from PBKDF2, and the
-    sealed pairing, byte for byte against hashlib and AES-GCM."""
+def test_the_handoff_crypto_in_webcrypto_matches_the_shared_vectors(app):
+    """The code's normalisation (each pair of the vectors), the mailbox and
+    key from PBKDF2 at the vectors' 1,000 iterations and at the app's own
+    600,000, and the sealed pairing, byte for byte as relay_crypto made
+    them. A changed blob or another mailbox does not open."""
+    v = VECTORS
+    rc = _rc()
+    assert v["iterations"] == 1000 and v["production"]["iterations"] == 600000
+    assert v["salt"].encode() == rc.HANDOFF_PROTOCOL
+    assert base64.urlsafe_b64decode(v["aad"] + "==") == v["salt"].encode() + v["mailbox"].encode()
+    assert base64.urlsafe_b64decode(v["blob"] + "==")[:12].hex() == v["nonce"]
     page, stub, errors = app()
     page.wait_for_selector(".thread-item")
-    payload = made_up_payload()
-    mailbox, key = handoff_keys(CODE, 1000)
-    _, blob = seal(CODE, payload, 1000, nonce=bytes(range(12)))
-    out = page.evaluate("""async ([typed, blob]) => {
-        const said = ['abcde-fghjk', 'ABCDE FGHJK', 'OILoil0000', 'abcde-fghj', 'abcde-fghjku', 'UUUUUUUUUU']
-            .map(handoffCode);
-        const keys = await handoffKeys(handoffCode(typed), 1000);
-        const opened = await openHandoff(keys, blob);
-        const flip = blob.slice(0, -2) + (blob.at(-2) === 'A' ? 'B' : 'A') + blob.at(-1);
+    out = page.evaluate("""async ([v, pairs]) => {
+        const said = pairs.map(([typed]) => handoffCode(typed));
+        const keys = await handoffKeys(handoffCode(v.code), v.iterations);
+        const made = await handoffKeys(v.normalized); // the app's own count
+        const opened = await openHandoff(keys, v.blob);
+        const flip = v.blob.slice(0, -2) + (v.blob.at(-2) === 'A' ? 'B' : 'A') + v.blob.at(-1);
         const bent = await openHandoff(keys, flip).then(() => 'opened', (e) => e.name);
-        const other = await openHandoff({ ...keys, mailbox: '0'.repeat(32) }, blob).then(() => 'opened', (e) => e.name);
-        return { said, mailbox: keys.mailbox, key: hex(keys.key), opened, bent, other };
-    }""", [TYPED, blob])
-    assert out["said"] == ["ABCDEFGHJK", "ABCDEFGHJK", "0110110000", "", "", ""]
-    assert out["mailbox"] == mailbox and out["key"] == key.hex()
-    assert out["opened"] == payload
+        const other = await openHandoff({ ...keys, mailbox: '0'.repeat(32) }, v.blob).then(() => 'opened', (e) => e.name);
+        return { said, normalized: handoffCode(v.code), mailbox: keys.mailbox, key: hex(keys.key),
+                 production: { mailbox: made.mailbox, key: hex(made.key) }, opened, bent, other };
+    }""", [v, v["normalize"]])
+    assert out["said"] == [want or "" for _, want in v["normalize"]]
+    assert out["normalized"] == v["normalized"]
+    assert (out["mailbox"], out["key"]) == (v["mailbox"], v["key"])
+    assert out["production"] == {"mailbox": v["production"]["mailbox"], "key": v["production"]["key"]}
+    assert out["opened"] == json.loads(v["payload"])
     assert out["bent"] == "OperationError" and out["other"] == "OperationError"  # the mailbox is bound in
-    assert "600000" in (WEBUI / "app.js").read_text()  # the app's own count
     assert not errors, errors
 
 
@@ -253,7 +259,7 @@ def test_the_computer_screen_takes_a_code_once_and_never_shows_the_secret(browse
         page.fill("#setup-code", "ZZZZZ-ZZZZZ")
         page.click("#setup-go")
         expect(page.locator("#setup-error")).to_have_text("That code did not work. Check it, or make a new one.", timeout=10000)
-        assert R.asked == [handoff_keys("ZZZZZZZZZZ")[0]] and R.hellos == []
+        assert R.asked == [_rc().handoff_keys("ZZZZZZZZZZ")[0]] and R.hellos == []
 
         page.fill("#setup-code", TYPED)
         page.click("#setup-go")
@@ -281,54 +287,132 @@ def test_the_computer_screen_takes_a_code_once_and_never_shows_the_secret(browse
         relay.shutdown()
 
 
-def test_a_computer_sets_up_with_a_code_and_runs_the_bots_release(browser, relay_bot, tmp_path):
-    """The website serves another release than the bot (its app.css
-    differs). The computer types the code, takes the sealed pairing from the
-    relay, pairs through the real relay and waits with its code; once the
-    bot approves it, the app takes the bot's signed files through the sealed
-    channel, keeps them and runs them after one reload: it does not stop,
-    and it attests the bot's release."""
-    from playwright.sync_api import expect
-    from botcore.chat.relay_client import relay_app_url
-    fe, rbase = relay_bot["fe"], relay_bot["rbase"]
-    site, url = _website(tmp_path / "site", [rbase], b"\n/* the website's own release */\n")
-    link = fe.relay.new_pairing(app_url=relay_app_url(rbase), relay_origin=True, bundle=fe.bundle_hash())
-    payload = json.loads(base64.urlsafe_b64decode(link.split("#tr2=")[1] + "=="))
-    payload["a"] = url  # the bot side names the website's copy once it knows the hosted kind
-    mailbox, blob = seal(CODE, payload)
-    taken = []
+def _hosted(relay_bot, tmp_path, changed: bytes = b""):
+    """The website's copy of the app beside relay_bot, listing its relay,
+    and the bot's relay block naming it as `hosted_app` (an http origin on
+    localhost here, which the config check would refuse; the address the
+    computer opens is all the handoff takes from it). (server, address)."""
+    site, url = _website(tmp_path / "site", [relay_bot["rbase"]], changed)
+    relay_bot["fe"].relay.hosted_app = url
+    return site, url
 
-    def box(route):
-        took = route.request.url.endswith("/h/" + mailbox) and not taken
-        taken.append(route.request.url)
-        route.fulfill(status=200 if took else 404, headers={"Access-Control-Allow-Origin": "*"},
-                      content_type="application/json", body=json.dumps({"c": blob} if took else {"error": "not found"}))
+
+def _computer(browser, url, code):
+    """A computer at the website's copy types `code`. (context, page, errors, URLs it asked)."""
+    from playwright.sync_api import expect
     ctx = browser.new_context()
+    page = ctx.new_page()
+    errors, asked = [], []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.on("request", lambda r: asked.append(r.url))
+    page.goto(url)
+    expect(page.locator("#setup")).to_be_visible(timeout=10000)
+    page.fill("#setup-code", code.lower().replace("-", " "))  # typed loosely
+    page.click("#setup-go")
+    expect(page.locator("#relay-note")).to_contain_text("This computer waits for approval", timeout=20000)
+    return ctx, page, errors, asked
+
+
+def _runs_the_bots_release(page, fe, device):
+    """The approved computer took the bot's signed files through the sealed
+    channel, keeps and runs them, and attested the bot's release."""
+    from playwright.sync_api import expect
+    expect(page.locator(".chan .c-name").first).to_be_visible(timeout=40000)
+    expect(page.locator("h1")).not_to_have_text("Tacitus stopped")
+    bot_css = (WEBUI / "app.css").read_text()
+    assert _kept(page, "app.css") == bot_css
+    assert page.evaluate("fetch('app.css').then((r) => r.text())") == bot_css
+    assert _worker_state(page, "trusted")["hash"] == fe.bundle_hash()
+    wait_for(lambda: fe.relay.store.device_by_id(device).get("attested_bundle") == fe.bundle_hash(), 15)
+
+
+def test_a_computer_sets_up_with_a_code_and_runs_the_bots_release(browser, relay_bot, tmp_path):
+    """The owner opens "Add a device", "A computer" in the web chat: the bot
+    makes the code and leaves the sealed pairing with the real relay, and
+    the address to open is the website's copy (which lists the relay, so no
+    ?relay=). The website serves another release than the bot (its app.css
+    differs). The computer types the code, takes the pairing from the relay
+    once, pairs and waits with its code; the owner's dialog shows that code
+    beside Approve. Once approved, the computer takes the bot's signed files
+    through the sealed channel and runs them: it does not stop."""
+    from playwright.sync_api import expect
+    fe, rbase = relay_bot["fe"], relay_bot["rbase"]
+    site, url = _hosted(relay_bot, tmp_path, b"\n/* the website's own release */\n")
+    contexts = []
     try:
-        ctx.route(re.compile(re.escape(rbase) + r"/h/[0-9a-f]{32}$"), box)
-        page = ctx.new_page()
-        errors = []
-        page.on("pageerror", lambda e: errors.append(str(e)))
-        page.goto(url)
-        expect(page.locator("#setup")).to_be_visible(timeout=10000)
-        page.fill("#setup-code", TYPED)
-        page.click("#setup-go")
-        expect(page.locator("#relay-note")).to_contain_text("This computer waits for approval", timeout=20000)
+        tail = _owner_context(browser, fe, contexts).new_page()
+        tail.goto(relay_bot["public"] + "/")
+        tail.click("#pair-phone")
+        expect(tail.locator("#way-computer")).to_be_visible()
+        tail.click("#way-computer")
+        expect(tail.locator("#handoff-code")).to_have_text(re.compile(r"^[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}$"))
+        code = tail.inner_text("#handoff-code")
+        expect(tail.locator("#handoff-open")).to_have_text(url)  # http here: nothing to leave out
+        mailbox = _rc().handoff_keys(code)[0]
+        assert list(relay_bot["relay"].handoffs) == [mailbox]  # left with the real relay
+        assert relay_bot["relay"].handoffs[mailbox][0] == fe.relay.install_id
+
+        ctx, page, errors, asked = _computer(browser, url, code)
+        contexts.append(ctx)
         (d,) = fe.relay.devices()
-        assert d["pending"] is True
+        assert (d["pending"], d["origin"], d["handoff"], d["by"]) == (True, "hosted", True, "owner")
         expect(page.locator("#relay-note")).to_contain_text(f"code {d['code'][:3]} {d['code'][3:]}")
-        assert taken == [f"{rbase}/h/{mailbox}"]
+        assert [u for u in asked if "/h/" in u] == [f"{rbase}/h/{mailbox}"]
+        assert not relay_bot["relay"].handoffs  # read once
         assert page.evaluate("loadPairing().then((r) => [r.hosted, r.bundle])") == [True, fe.bundle_hash()]
-        fe.relay.approve(d["id"])
-        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=40000)
-        expect(page.locator("h1")).not_to_have_text("Tacitus stopped")
-        bot_css = (WEBUI / "app.css").read_text()
-        assert _kept(page, "app.css") == bot_css
-        assert page.evaluate("fetch('app.css').then((r) => r.text())") == bot_css
-        assert _worker_state(page, "trusted")["hash"] == fe.bundle_hash()
-        wait_for(lambda: fe.relay.store.device_by_id(d["id"]).get("attested_bundle") == fe.bundle_hash(), 15)
-        assert "tr2=" not in page.url and payload["s"] not in page.url
+
+        expect(tail.locator("#handoff-ask")).to_have_text(
+            f"The computer shows a six-digit code. Tap Approve if it is {d['code'][:3]} {d['code'][3:]}.", timeout=10000)
+        expect(tail.locator("#handoff-cards")).not_to_be_checked()
+        tail.click("#handoff-approve")
+        wait_for(lambda: not fe.relay.devices()[0]["pending"], 10)
+        assert fe.relay.store.device_by_id(d["id"]).get("cards_allowed") is not True
+        _runs_the_bots_release(page, fe, d["id"])
+        assert "tr2=" not in page.url and code.replace("-", "") not in page.url
         assert not errors, errors
     finally:
-        ctx.close()
+        for c in contexts:
+            c.close()
+        site.shutdown()
+
+
+def test_a_phone_through_the_relay_adds_a_computer(browser, relay_bot, tmp_path):
+    """The owner's own phone, approved and off the tailnet, reaches the bot
+    through the relay: "Add a device" offers A computer alone, the bot makes
+    the code for it (`by`, that phone), the computer takes it, and the phone
+    approves the computer it added. The owner hears of both in the DM."""
+    from playwright.sync_api import expect
+    fe = relay_bot["fe"]
+    site, url = _hosted(relay_bot, tmp_path)
+    contexts = []
+    try:
+        _tail, phone, phone_errors, _asked = _pair_and_approve(browser, relay_bot, contexts)
+        (own,) = fe.relay.devices()
+        assert phone.evaluate("() => T.relay") is True
+        assert phone.evaluate("() => [S.me.owner_routes, S.me.handoff]") == ["handoff", True]
+        phone.click("#pair-phone")
+        expect(phone.locator("#add-ways")).to_be_hidden()
+        expect(phone.locator("#add-computer")).to_be_visible()
+        expect(phone.locator("#handoff-code")).to_have_text(re.compile(r"^\w{5}-\w{5}$"), timeout=10000)
+        code = phone.inner_text("#handoff-code")
+        dm = lambda: [m["text"] for m in fe.store.threads("dm", 50, None)]  # noqa: E731
+        wait_for(lambda: any("made a code to add a computer" in t for t in dm()), 10)
+        assert not any(code in t or code.replace("-", "") in t for t in dm())  # never the code itself
+
+        ctx, page, errors, _ = _computer(browser, url, code)
+        contexts.append(ctx)
+        new = next(d for d in fe.relay.devices() if d["id"] != own["id"])
+        assert (new["pending"], new["origin"], new["by"]) == (True, "hosted", own["id"])
+        expect(phone.locator("#handoff-ask")).to_contain_text(f"{new['code'][:3]} {new['code'][3:]}", timeout=10000)
+        mine = phone.locator(f"#phone-devices li[data-device='{own['id']}']")
+        expect(mine.locator("button", has_text="Remove")).to_have_count(0)  # never itself
+        phone.click("#handoff-approve")
+        wait_for(lambda: not fe.relay.store.device_by_id(new["id"]).get("pending"), 10)
+        wait_for(lambda: any("approved the computer" in t and new["id"] in t for t in dm()), 10)
+        _runs_the_bots_release(page, fe, new["id"])
+        assert not errors, errors
+        assert not phone_errors, phone_errors
+    finally:
+        for c in contexts:
+            c.close()
         site.shutdown()

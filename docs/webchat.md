@@ -742,14 +742,15 @@ Every call goes through one transport interface (`api(method, path,
 body)`, `events(since, sink)`). A browser paired with the relay uses it
 when the base path does not answer (off the tailnet, or on the relay's
 copy of the app); the relay transport, the pairing link (`#tr2=`, and
-`#tr1=` from before), the "Pair a phone" entry in the drawer (also on
-the bot's machine, where it offers "Phone not on your network"), the
-code check on the relay's copy and the QR encoder (`qr.js`) are in
-`docs/webchat-relay.md` (For the web app).
+`#tr1=` from before), the "Add a device" entry in the drawer ("This
+phone", "Another phone", which on the bot's machine offers "Phone not on
+your network", and "A computer"), the "Set up this computer" screen of
+the hosted copy, the code check on the relay's copy and the QR encoder
+(`qr.js`) are in `docs/webchat-relay.md` (Pairing, and For the web app).
 
 Settings. A "Settings" entry at the drawer's foot, shown when it has a
 section to show and never on a relayed copy, opens a dialog in the shape
-of "Pair a phone" with two sections. Notifications, shown when `/api/me`
+of "Add a device" with two sections. Notifications, shown when `/api/me`
 names the `notify` page and says `push`, comes first: a line that says
 what it is for (what reaches the phone with the app closed; cards, direct
 messages and alerts always do), then three switches, each with its line
@@ -1461,13 +1462,14 @@ record in the key file:
   "bundle_verified": false}`;
 - an unknown device: 404.
 
-The record is information for the owner: the list under "Pair a phone"
-shows "verified copy of v1.2.3" or "code not verified". It grants
+The record is information for the owner: the list under "Add a device"
+says "app not checked" beside a device whose check did not pass. It grants
 nothing: the code that made the check came from the relay, so a
 dishonest relay can post the same hash. An approved relay-origin device
 reads and chats whether or not it attested, and gets
 `X-Tacitus-Relay-Cards: allow` only when the owner allows it card buttons
-("Allow card buttons on this phone" beside it under "Pair a phone",
+("Allow card buttons on this phone", or "Allow Send and Create buttons
+on this computer", beside it under "Add a device",
 which sends `POST /api/relay/approve {"device", "cards": true}`, or
 `webchat-relay.py approve --cards`; docs/webchat-relay.md).
 

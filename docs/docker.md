@@ -618,10 +618,11 @@ docker compose run --rm owner python3 /opt/ea-system/deploy/docker/chat_seed.py 
 docker compose restart bot
 ```
 
-`docker compose logs bot` then says `relay: connected`. Pair a phone from
-"Pair a phone" in the web chat at its public address
-(docs/webchat-relay.md, Owner steps, from step 6; the commands there run
-through `docker compose run --rm owner`). `chat_seed.py relay --off`
+`docker compose logs bot` then says `relay: connected`. Add a phone or a
+computer from "Add a device" in the web chat at its public address
+("Another phone" or "A computer"; docs/webchat-relay.md, Owner steps,
+from step 6; the commands there run through `docker compose run --rm
+owner`). `chat_seed.py relay --off`
 removes the block.
 
 ## Self-hosted Zulip

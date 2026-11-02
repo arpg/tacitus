@@ -14,7 +14,7 @@ block for the chat config. `pair` prints a one-time pairing as a QR code
 on the terminal (`--print-link`: the link as text, `#tr2=`; it expires in
 ten minutes). With `--public-url` (the web block's) the link opens the app
 on the bot's own origin. `--relay-origin` opens the relay's copy of the
-app instead, as "Pair through the relay" in the web chat does: the link
+app instead, as "Phone not on your network" in the web chat does: the link
 carries the hash of the bot's signed app bundle, and the phone checks its
 code against it before its chat runs. Whoever runs the relay serves that
 phone's code, so once approved it reads and chats, and presses card
