@@ -1316,6 +1316,13 @@ def cmd_mark_read(args):
     print(json.dumps(graph.mark_message_read(args.message_id)))
 
 
+def cmd_mark_unread(args):
+    """Mark a message unread in place. Ungated, like mark-read. An install
+    that keeps its to-do list as unread mail uses it after drafting a reply:
+    Graph's createReply marks the source read, which reads as done."""
+    print(json.dumps(graph.mark_message_unread(args.message_id)))
+
+
 def cmd_archive_message(args):
     """Move a message to the Archive folder. A message id is stale once the
     message has moved (Graph gives a message a new id per folder), so a 404
@@ -2402,6 +2409,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("mark-read", allow_abbrev=False)
     p.add_argument("--message-id", required=True)
     p.set_defaults(func=cmd_mark_read)
+
+    # mark-unread
+    p = sub.add_parser("mark-unread", allow_abbrev=False)
+    p.add_argument("--message-id", required=True)
+    p.set_defaults(func=cmd_mark_unread)
 
     # archive-message
     p = sub.add_parser("archive-message", allow_abbrev=False)

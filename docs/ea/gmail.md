@@ -92,7 +92,8 @@ python3 /home/ea-bot/ea-system/preprocessor/gmail_client.py remove-attachment \
 ```
 
 **Read flag:** `gmail_client.py mark-read --email <acct> --message-id <id>`
-marks a message read in place (it removes the UNREAD label only).
+marks a message read in place (it removes the UNREAD label only);
+`mark-unread` adds the label back.
 
 **Reading Gmail attachments:** the Gmail MCP cannot fetch attachments. Use the
 CLI (SAFE, mediated, works in every lane):
