@@ -81,10 +81,16 @@ a phone off the tailnet reaches this server through a public relay that
 sees only ciphertext. The owner manages it from their own web chat (the
 tailnet, or this machine) under `/api/relay/` (pair, approve, revoke): a
 phone pairs on the bot's own origin, or on the relay's copy of the app
-with the signed bundle's hash in the link; a relayed request
-(`X-Tacitus-Relay`) never reaches those routes or `/api/pair`, and
-`/api/me` tells the app whether its requests may confirm a card
-(`X-Tacitus-Relay-Cards`). A new device is announced in the DM channel;
+with the signed bundle's hash in the link; a computer pairs on the hosted
+copy of the app with a handoff code (`POST /api/relay/handoff`). A
+relayed request (`X-Tacitus-Relay`) never reaches those routes or
+`/api/pair`, but for four from an approved phone paired on the bot's own
+origin, which the relay client marks (`X-Tacitus-Relay-Device`): start a
+handoff, list the devices, approve a computer that phone handed off, and
+remove any device but itself. `/api/me` tells the app whether its
+requests may confirm a card (`X-Tacitus-Relay-Cards`) and which device
+routes it reaches (`owner_routes`). A new device is announced in the DM
+channel, and so is a handoff or an approval made through the relay;
 removing one drops its push subscriptions.
 
 Rooms: the owner renames a room (`PATCH /api/channels/<id>`), archives
@@ -355,6 +361,13 @@ _ORIGIN_RE = re.compile(r"^https?://(\[[0-9a-f:.]+\]|[a-z0-9.-]+)(:\d{1,5})?$")
 _RELAY_PATH_RE = re.compile(r"^(/(?!\.+(?:/|$))[A-Za-z0-9._~-]+)*$")
 _DEVICE_RE = re.compile(r"^[0-9a-f]{16}$")
 _BUNDLE_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+# The relay client's mark on a relayed owner route: the device id it read
+# from the session (relay_client.OWNER_DEVICE_HEADER).
+OWNER_DEVICE_HEADER = "X-Tacitus-Relay-Device"
+# The owner routes a relayed request may reach, from an approved phone
+# paired on the bot's own origin (relay_client.RELAYED_OWNER_ROUTES).
+RELAYED_OWNER_ROUTES = frozenset({("POST", ("relay", "handoff")), ("GET", ("relay", "devices")),
+                                  ("POST", ("relay", "approve")), ("POST", ("relay", "revoke"))})
 
 STATIC_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -4171,10 +4184,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self._check_fetch_site()
         if method != "GET":
             self._check_origin()
-        if segs and segs[0] in ("pair", "relay") and self.headers.get("X-Tacitus-Relay") is not None \
-                and segs != ["relay", "attest"]:
-            # The relay client never forwards these; this is the second lock.
-            # A phone's attestation of its app is the one relay route it reaches.
+        relayed = self.headers.get("X-Tacitus-Relay") is not None \
+            or self.headers.get(OWNER_DEVICE_HEADER) is not None
+        if segs and segs[0] in ("pair", "relay") and relayed and segs != ["relay", "attest"] \
+                and not self._relayed_owner_route(method, segs):
+            # The relay client forwards none of these but the relayed owner
+            # routes, from an approved own-origin phone; this is the second
+            # lock. A phone's attestation of its app reaches the bot too.
             raise _HttpError(403, "pairing and relay devices are managed in the owner's own web chat")
         if method == "POST" and segs == ["pair"]:
             self._pair()
@@ -4194,6 +4210,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                  "base_path": fe.base_path, "push": web_push.AVAILABLE,
                                  "relay": fe.relay is not None,
                                  "card_actions": self._relay_cards_allowed(),
+                                 **self._owner_routes(),
                                  "bundle": fe.bundle_hash(),
                                  "settings": sorted(fe.settings_pages)})
                 return None
@@ -4400,19 +4417,93 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return True
         return cards == "allow"
 
-    def _relay_api(self, method: str, rest: list[str]) -> None:
-        """`/api/relay/...`: the owner pairs a phone, lists, approves (and
-        chooses whether a relay-origin device may press card buttons) and
-        revokes the paired devices and reads the client's state. `_api` has
-        refused a relayed request already, except a phone's attestation, so
-        the others answer only in the owner's own web chat (the tailnet, or
-        this machine). A pairing opens the app on the bot's own origin, or
-        with `{"via": "relay"}` on the relay's copy, which checks its code
-        against the hash of the signed app bundle the link carries."""
+    def _relayed_owner_route(self, method: str, segs: list[str]) -> bool:
+        """True for a relayed request to one of RELAYED_OWNER_ROUTES that
+        the relay client marked as allowed: its X-Tacitus-Relay-Device is
+        the device the request came through (X-Tacitus-Relay), and that
+        device is paired on the bot's own origin and approved. Anything
+        else relayed stays out of the owner routes."""
+        if (method, tuple(segs)) not in RELAYED_OWNER_ROUTES:
+            return False
+        return bool(self._relay_owner_device())
+
+    def _relay_owner_device(self) -> str:
+        """The device a relayed owner request comes from, once it checks
+        (`_relayed_owner_route`); "" for any other request."""
         relay = self.fe.relay
+        mark = (self.headers.get(OWNER_DEVICE_HEADER) or "").strip()
+        device = (self.headers.get("X-Tacitus-Relay") or "").strip()
+        if relay is None or not _DEVICE_RE.match(mark) or mark != device:
+            return ""
+        rec = relay.store.device_by_id(device)
+        if rec is None or rec.get("origin") != "own" or rec.get("pending"):
+            return ""
+        return device
+
+    def _relayed_device(self) -> dict | None:
+        """The device record of a relayed request (X-Tacitus-Relay); None
+        for a request that did not come through the relay, {} for a device
+        that is not paired."""
+        device = (self.headers.get("X-Tacitus-Relay") or "").strip()
+        if self.headers.get("X-Tacitus-Relay") is None and self.headers.get(OWNER_DEVICE_HEADER) is None:
+            return None
+        relay = self.fe.relay
+        if relay is None or not _DEVICE_RE.match(device):
+            return {}
+        return relay.store.device_by_id(device) or {}
+
+    def _owner_routes(self) -> dict:
+        """What /api/me says of the device management this request reaches:
+        `owner_routes` "all" in the owner's own web chat, "handoff" through
+        the relay from an approved phone paired on the bot's own origin
+        (RELAYED_OWNER_ROUTES), "none" from any other device; `handoff`,
+        whether "A computer" works from here now."""
+        rec = self._relayed_device()
+        if rec is None:
+            routes = "all"
+        elif rec.get("origin") == "own" and not rec.get("pending"):
+            routes = "handoff"
+        else:
+            routes = "none"
+        return {"owner_routes": routes,
+                "handoff": routes != "none" and self._handoff_refusal(self.fe.relay) == ""}
+
+    def _handoff_refusal(self, relay: Any) -> str:
+        """Why a handoff to a computer would not work now, in plain words;
+        "" when it would."""
+        from .relay_client import bundle_hash_of
+        if relay is None:
+            return ("Tacitus is not set up to reach devices outside your own network, so it "
+                    "cannot add a computer that way.")
+        if not getattr(relay, "hosted_app", ""):
+            return "Adding a computer with a code is turned off for this Tacitus."
+        if not bundle_hash_of(self.fe):
+            return ("This Tacitus cannot sign its app, so a computer could not check the copy "
+                    "it opens.")
+        return ""
+
+    def _relay_api(self, method: str, rest: list[str]) -> None:
+        """`/api/relay/...`: the owner pairs a phone, makes a handoff code
+        for a computer, lists, approves (and chooses whether a relay-origin
+        or hosted device may press card buttons) and revokes the paired
+        devices and reads the client's state. `_api` has refused a relayed
+        request already, except a phone's attestation and the relayed owner
+        routes, so the others answer only in the owner's own web chat (the
+        tailnet, or this machine). A relayed owner request (`by`, its
+        device) lists, starts a handoff, approves only a computer that a
+        handoff it started set up, and removes any device but itself. A
+        pairing opens the app on the bot's own origin, or with `{"via":
+        "relay"}` on the relay's copy, which checks its code against the
+        hash of the signed app bundle the link carries."""
+        relay = self.fe.relay
+        by = self._relay_owner_device()
         if method == "GET" and rest == ["status"]:
             self._json(200, {"enabled": relay is not None, **(relay.status() if relay else {}),
-                             **(self._pair_ways(relay) if relay else {})})
+                             **(self._pair_ways(relay) if relay
+                                else {"handoff": False, "hosted_app": ""})})
+            return
+        if method == "POST" and rest == ["handoff"]:
+            self._relay_handoff(relay, by)
             return
         if relay is None:
             raise _HttpError(404, "the relay is off")
@@ -4423,15 +4514,28 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 raise _HttpError(400, "device is a 16-character device id")
             if not isinstance(cards, bool):
                 raise _HttpError(400, "cards is true or false")
+            rec = relay.store.device_by_id(device)
+            if rec is None:
+                raise _HttpError(404, "no such device")
+            if by and not (rec.get("handoff") is True and rec.get("by") == by):
+                raise _HttpError(403, "From this phone you can approve only a computer it "
+                                      "added with a code.")
             if not relay.approve(device, cards=cards):
                 raise _HttpError(404, "no such device")
+            if by:
+                self._relay_handoff_notice(by, rec, approved=True)
             self._json(200, {"ok": True})
             return
         if method == "POST" and rest == ["attest"]:
             self._attest(relay)
             return
         if method == "GET" and rest == ["devices"]:
-            self._json(200, relay.devices())
+            rows = relay.devices()
+            if by:
+                for row in rows:
+                    if row.get("id") == by:
+                        row["this_device"] = True
+            self._json(200, rows)
             return
         if method == "POST" and rest == ["pair"]:
             self._relay_pair(relay)
@@ -4440,6 +4544,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             device = self._read_json().get("device")
             if not isinstance(device, str) or not _DEVICE_RE.match(device):
                 raise _HttpError(400, "device is a 16-character device id")
+            if by and device == by:
+                raise _HttpError(403, "A phone cannot remove itself from here. Remove it in the "
+                                      "web chat on your computer.")
             if not relay.revoke(device):
                 raise _HttpError(404, "no such device")
             if web_push.AVAILABLE:
@@ -4448,17 +4555,75 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         raise _HttpError(404, "not found")
 
+    def _relay_handoff(self, relay: Any, by: str) -> None:
+        """`POST /api/relay/handoff`, `{}`: a one-time code that sets up a
+        computer at the hosted copy of the app (relay_client.make_handoff).
+        `open` is the address to type there; `access` what the computer
+        may do once approved. 409 with a plain reason when the handoff
+        cannot work here, 503 when the relay did not take it. Through the
+        relay (`by`) the owner hears of it in the DM."""
+        from .relay_client import BUNDLE_ACCESS, HandoffUnavailable, RelayError, bundle_hash_of
+        sized = self.headers.get("Content-Length") not in (None, "0") \
+            or self.headers.get("Transfer-Encoding")
+        if sized:
+            self._read_json(MAX_PAIR_BYTES)
+        why = self._handoff_refusal(relay)
+        if why:
+            raise _HttpError(409, why)
+        try:
+            out = relay.new_handoff(bundle_hash_of(self.fe), by=by or "owner")
+        except HandoffUnavailable as e:
+            log.warning("web chat: the relay did not take a handoff: %s", e)
+            raise _HttpError(503, "Tacitus could not pass the code on just now. Try again in "
+                                  "a minute.") from None
+        except RelayError as e:
+            log.warning("web chat: no handoff: %s", e)
+            raise _HttpError(409, "Tacitus could not make a code for a computer now.") from None
+        except Exception:
+            log.exception("web chat: the handoff failed")
+            raise _HttpError(503, "Tacitus could not pass the code on just now. Try again in "
+                                  "a minute.") from None
+        if by:
+            self._relay_handoff_notice(by)
+        self._json(200, {"code": out["code"], "expires": out["expires"],
+                         "open": relay.handoff_address(), "access": BUNDLE_ACCESS})
+
+    def _relay_handoff_notice(self, by: str, new: dict | None = None,
+                              approved: bool = False) -> None:
+        """The owner's DM notice of a handoff started, or a computer
+        approved, from a phone through the relay: which phone, and the
+        computer's name and six-digit code. Never the handoff code."""
+        relay = self.fe.relay
+        rec = (relay.store.device_by_id(by) if relay is not None else None) or {}
+        phone = f"\"{rec.get('name') or 'device'}\" ({by})"
+        if approved and new is not None:
+            code = str(new.get("code") or "")
+            shown = f", code {code[:3]} {code[3:]}" if code else ""
+            text = (f"Your phone {phone} approved the computer \"{new.get('name')}\" "
+                    f"({new.get('id')}){shown}. If that was not you, remove both under Add a "
+                    "device.")
+        else:
+            text = (f"Your phone {phone} made a code to add a computer. It works once, for ten "
+                    "minutes. If that was not you, remove that phone under Add a device.")
+        try:
+            self.fe._relay_notice(text)
+        except Exception:
+            log.exception("web chat: the handoff notice failed")
+
     def _pair_ways(self, relay: Any) -> dict:
-        """How "Pair a phone" can pair: `pair_own`, a link to the bot's own
+        """How "Add a device" can pair: `pair_own`, a link to the bot's own
         origin (public_url); `pair_relay`, a link to the relay's copy of
         the app with the signed bundle's hash (`bundle`); `relay_app`, that
         the relay serves a copy at all (a relay installed without the app
-        answers "not found" there, so the dialog hides that way)."""
+        answers "not found" there, so the dialog hides that way); `handoff`,
+        that a code for a computer would work now, and `hosted_app`, where
+        that computer opens the app ("" when the handoff is off)."""
         from .relay_client import bundle_hash_of
         bundle = bundle_hash_of(self.fe)
         return {"pair_own": relay.can_pair_own(), "pair_relay": bool(bundle),
                 "relay_app": relay_serves_app(getattr(relay, "relay_url", "")),
-                "bundle": bundle or None}
+                "bundle": bundle or None, "handoff": self._handoff_refusal(relay) == "",
+                "hosted_app": getattr(relay, "hosted_app", "")}
 
     def _relay_pair(self, relay: Any) -> None:
         """`POST /api/relay/pair`, `{}` or `{"via": "own" | "relay"}`: a

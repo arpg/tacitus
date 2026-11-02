@@ -223,7 +223,7 @@ subset and escapes everything else; it never injects HTML from text.
 
 | Verb | Path | Body / result |
 |---|---|---|
-| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool, "relay": bool, "card_actions": bool, "bundle": "<hash>", "settings": ["notify", "routing"]}`; `bundle` is the bundle hash the bot signs now, "" when it signs none (Code integrity); `settings` names the settings pages the host registered |
+| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool, "relay": bool, "card_actions": bool, "owner_routes": "all" \| "handoff" \| "none", "handoff": bool, "bundle": "<hash>", "settings": ["notify", "routing"]}`; `owner_routes` is which device routes this request reaches (`"all"` in the owner's own web chat, `"handoff"` through the relay from an approved phone paired on the bot's own origin, `"none"` from any other device; `docs/webchat-relay.md`, the relayed owner routes), `handoff` whether "A computer" works from here now; `bundle` is the bundle hash the bot signs now, "" when it signs none (Code integrity); `settings` names the settings pages the host registered |
 | GET | `/manifest.sig.json` | the signed manifest of the app's files, without auth (Code integrity); 404 when the bot signs none |
 | GET | `/api/bundle` | the same document, for the owner: the route the relay reaches |
 | GET | `/api/app/{file}` | a file that the signed manifest names, its bytes as on disk (`headers.json` as the bot writes it), as an attachment with the sandbox policy and the type of its name; 404 for any other name. A phone off the tailnet, or on the relay's origin, takes a new release here, through the relay (Code integrity) |
@@ -252,21 +252,29 @@ subset and escapes everything else; it never injects HTML from text.
 | GET | `/api/push/subscriptions` | `[{"id", "host", "created_at", "last_seen", "last_ok", "failures"}]`; `id` is a hash of the endpoint, which is never shown |
 | POST | `/api/push/revoke` | `{"id"}` → `{"ok": true, "removed": bool}` |
 | POST | `/api/relay/pair` | `{}` or `{"via": "relay"}` → `{"link", "qr", "expires", "origin", "bundle", "access"}`: a one-time pairing link for a phone (the relay), on the bot's own origin (409 without `public_url`) or on the relay's copy of the app with the signed bundle's hash (409 without one); `access` is what the phone may do once approved (`"all"` own, `"chat"` relay) |
-| GET | `/api/relay/devices` | `[{"id", "name", "paired_at", "origin", "pending", "code"?}]`, the phones paired with the relay; a new one waits with its pairing code. A relay-origin phone also has `cards_allowed` (the owner let it press card buttons), `bundle_verified` (its last check of its app matched) and, when verified, the bot's `release` at that check |
-| POST | `/api/relay/approve` | `{"device", "cards"?}` → `{"ok": true}`: let a waiting phone in, and set whether a relay-origin phone may press card buttons (`cards`, default false; approving again changes it); 400 for a `cards` that is not true or false, 404 for an unknown device |
-| POST | `/api/relay/revoke` | `{"device"}` → `{"ok": true}`: its sessions and streams end, its push subscriptions go; 404 for an unknown device |
-| GET | `/api/relay/status` | `{"enabled": bool, ...}`: the relay client's state (`connected`, `install_id`, `bot_public`, `client_key`, `sign_public`, `devices`, `pending`, ...) and how a phone can pair (`pair_own`, `pair_relay`, and `bundle`, the bundle hash or null) |
+| POST | `/api/relay/handoff` | `{}` → `{"code": "ABCDE-FGHJK", "expires", "open", "access": "chat"}`: a one-time code that sets up a computer at the hosted copy of the app (`docs/webchat-relay.md`, A computer with a code); `open` is the address to type on the computer (the hosted app, with `?relay=<relay url>` unless the hosted copy lists this relay), `expires` in Unix seconds, ten minutes ahead. 409 with a plain reason when there is no relay, no bundle hash or the handoff is off (`hosted_app` ""); 503 when the relay did not take it. Through the relay, from an approved own-origin phone too, which the owner hears of in the DM |
+| GET | `/api/relay/devices` | `[{"id", "name", "paired_at", "origin", "pending", "code"?}]`, the devices paired with the relay; a new one waits with its pairing code. A relay-origin or hosted device also has `cards_allowed` (the owner let it press card buttons), `bundle_verified` (its last check of its app matched) and, when verified, the bot's `release` at that check; one set up with a handoff code has `handoff: true` and `by` (the device that asked for the code, or `"owner"`). Through the relay the asking phone's row has `this_device: true` |
+| POST | `/api/relay/approve` | `{"device", "cards"?}` → `{"ok": true}`: let a waiting device in, and set whether a relay-origin or hosted device may press card buttons (`cards`, default false; approving again changes it); 400 for a `cards` that is not true or false, 404 for an unknown device. Through the relay, only for a device whose handoff this same phone started (403 otherwise), with a DM notice to the owner |
+| POST | `/api/relay/revoke` | `{"device"}` → `{"ok": true}`: its sessions and streams end, its push subscriptions go; 404 for an unknown device. Through the relay, any device but the asking phone itself (403) |
+| GET | `/api/relay/status` | `{"enabled": bool, ...}`: the relay client's state (`connected`, `install_id`, `bot_public`, `client_key`, `sign_public`, `devices`, `pending`, ...), how a phone can pair (`pair_own`, `pair_relay`, and `bundle`, the bundle hash or null), and `handoff` (a code for a computer would work now) with `hosted_app` (where that computer opens the app, "" when off) |
 | GET | `/api/settings/{name}` | the page's data; for `routing` (the EA's routing table, `docs/llm-lanes.md` 1.1): `{"local": {"configured", "model", "reachable", "detail"}, "source", "values", "rows": [{"task", "label", "what", "value", "allowed", "locked", "floor", "effective", "why"}]}`; for `notify` (Notifications): `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}`, the settings in force; 404 for a page the host did not register |
 | POST | `/api/settings/{name}` | for `routing`, `{"tasks": {"<task>": "local" \| "hosted" \| "auto"}}` → the page's data with `"saved": true`; the bot writes the owner-private `routing.json`, never `ea-config.json`. 400 with the reason for an unknown task or value or a value under a floor. For `notify`, the keys to change, any of `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}` → the page's data with `"saved": true`; the bot merges them over the web block's `notify_push` in the owner-private `chat.json` (every other key kept, mode 0600; `preprocessor/web_notify_settings.py`) and pushes by them at once. 400 with the reason for an unknown key, a switch that is not true or false, another `quiet`, an empty body, or a process that is not the owner's. Either page: 403 for a relayed request (settings change only in the owner's own web chat) |
 | POST | `/api/relay/attest` | `{"bundle": "<hash>"}`, from a phone through the relay only → `{"ok": true, "bundle_verified": true, "release"}`, or 409 `{"error", "bundle_verified": false}` for another hash; it records the check and grants nothing (Code integrity) |
 
-The five owner routes under `/api/relay/`, and `/api/pair`, answer only
-in the owner's own web chat (the tailnet, or the bot's machine): a
-request the relay client marks with `X-Tacitus-Relay` gets 403, and the
-client never forwards them. `/api/relay/attest` is the other way round:
-it takes only a request the relay client marks (400 otherwise). With no
-relay running, `/api/relay/status` says `{"enabled": false}` and the
-others answer 404. `card_actions` is false for a request the relay marks
+The owner routes under `/api/relay/`, and `/api/pair`, answer only in
+the owner's own web chat (the tailnet, or the bot's machine): a request
+the relay client marks with `X-Tacitus-Relay` gets 403, and the client
+never forwards them. The exception is four of them, `POST handoff`,
+`GET devices`, `POST approve` and `POST revoke`, from an approved phone
+paired on the bot's own origin: the client forwards those, in exactly
+that spelling, with `X-Tacitus-Relay-Device` set to the session's
+device, and the web front end takes them only when that mark names the
+device in `X-Tacitus-Relay` and its record is own-origin and approved
+(`docs/webchat-relay.md`, What the bot forwards). `/api/relay/attest`
+is the other way round: it takes only a request the relay client marks
+(400 otherwise). With no relay running, `/api/relay/status` says
+`{"enabled": false, "handoff": false, "hosted_app": ""}`, the handoff
+409 and the others 404. `card_actions` is false for a request the relay marks
 as one that may not confirm a card (`docs/webchat-relay.md`, Where the
 app's code comes from).
 
@@ -942,8 +950,9 @@ past its window; 421 for a wrong `Host`; 403 for another site, a POST,
 PATCH or DELETE without this app's `Origin`, a change to a message not
 the owner's, and a card action, push subscription or revoke from a device paired on the relay's origin
 below `"all"` (`X-Tacitus-Relay-Cards: deny`), and a relayed request
-(`X-Tacitus-Relay`) to `/api/pair` or `/api/relay/`; 429 for pairing; 503
-when the relay cannot open a pairing; and 500 for an unexpected failure.
+(`X-Tacitus-Relay`) to `/api/pair` or `/api/relay/` outside the relayed
+owner routes; 429 for pairing; 503 when the relay cannot open a pairing
+or take a handoff; and 500 for an unexpected failure.
 
 **Bodies.** A body has a `Content-Length` of digits only, or is chunked
 (no other `Transfer-Encoding`): each chunk size is 1 to 8 hex digits, and
@@ -1437,8 +1446,9 @@ a browser without it gets a plain error, which the own origin ignores and
 which stops the relay's copy.
 
 **The attestation.** `POST /api/relay/attest` is the one route under
-`/api/relay/` that the relay client forwards, from a device at any level
-but `"off"`. The web front end takes it only with `X-Tacitus-Relay` (else
+`/api/relay/` that the relay client forwards from a device at any level
+but `"off"` (the relayed owner routes come only from an approved
+own-origin phone). The web front end takes it only with `X-Tacitus-Relay` (else
 400) and from the owner (the relay client's cookie). It compares the hash
 with the hash that it signs now, and writes the result into the device's
 record in the key file:
