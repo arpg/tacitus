@@ -443,15 +443,17 @@ def test_a_card_and_a_dm_post_are_pushed_once_per_thread(fe, svc):
     fe.post("dm", "Reply two", thread_ts=c.thread_key)     # within 30 s: held back
     fe.post("main", "Not a DM")                            # not the DM: never pushed
     fe.update_card(c, card(title="Changed"))               # not new: never pushed
-    fe.replace_card_with_status(c, "Sent")
+    fe.replace_card_with_status(c, "Sent")                 # settled: a clear, never a push
     fe.post("dm", "Another thread")                        # another thread: pushed
-    svc.wait(3)
+    svc.wait(4)
     assert [p[5] for p in pushes] == [{"queued": True}, {"queued": True},
                                       {"sent": 0, "skipped": "rate limit"}, {"queued": True}]
     assert [p[4] for p in pushes] == ["high", "normal", "normal", "normal"]
     assert pushes[0][1] == ":lock: *Confirm send*"
+    clear = json.loads(decrypt(svc.requests[2]["body"], key, auth))
+    assert (clear["type"], clear["tag"]) == ("clear", f"dm/{c.thread_key}")
     time.sleep(0.2)
-    assert len(svc.requests) == 3
+    assert len(svc.requests) == 4
 
 
 def test_a_card_push_shows_the_title_and_never_a_field_line_or_body(fe, svc):

@@ -1,11 +1,12 @@
-"""The owner's reply clears the conversation's notifications everywhere
+"""A conversation done with anywhere clears its notifications everywhere
 (docs/webchat.md, Notifications (Web Push)): the service worker closes the
 notifications a clear push names, and shows a quiet "Handled." in their
 place only where the browser would count a push that showed nothing
 (`clearPlan`, per push service); the page closes the notifications of the
-thread it shows and tells the bot, which then owes that browser no clear;
-and the app drops a thread's unread count when the owner's message arrives
-on the stream, from this browser or mirrored from elsewhere, also with the
+thread it shows and tells the bot, push on there or not, which then owes
+that browser no clear and clears the owner's other browsers; and the app
+drops a thread's unread count when the owner's message arrives on the
+stream, from this browser or mirrored from elsewhere, also with the
 thread closed. The rest of the app's tests are in tests/test_webui.py,
 whose browser fixtures this file borrows; the server's side is in
 tests/test_web_push_policy.py."""
@@ -199,16 +200,59 @@ def test_a_clear_that_leaves_nothing_open_shows_a_quiet_handled_and_closes_it(tm
 
 def test_the_page_clears_the_thread_it_shows_without_a_push():
     """The page closes the notifications of the thread in view and tells the
-    bot (POST /push/seen), and a push for that thread while it is in view
-    is closed after SEEN_MS, past Firefox's three seconds. A headless
-    browser cannot grant push, so these are file checks."""
+    bot (POST /push/seen with this browser's endpoint), and a push for that
+    thread while it is in view is closed after SEEN_MS, past Firefox's
+    three seconds; the bot clears the other browsers only when the page
+    has the focus then. A headless browser cannot grant push, so these are
+    file checks; the page with push off is the next test."""
     js = (WEBUI / "app.js").read_text()
     seen = js[js.index("async function seenHere"):js.index("/* -- Installing the app")]
     assert "getNotifications({ tag })" in seen and "n.close()" in seen
-    assert "call('POST', '/push/seen', { endpoint: sub.endpoint, tag })" in seen
-    assert "e.data && e.data.shown" in seen and "SEEN_MS" in seen
+    assert ("call('POST', '/push/seen', { endpoint: sub ? sub.endpoint : undefined, tag, elsewhere })"
+            in seen)
+    assert "e.data && e.data.shown" in seen and "seenLater(tag)" in seen
+    later = js[js.index("const seenLater"):js.index("function watchSeen")]
+    assert "SEEN_MS" in later and "seenHere(tag, document.hasFocus())" in later
     assert re.search(r"const SEEN_MS = (\d+);", js).group(1) == "5000"
     assert "watchSeen();" in js[js.index("async function initPush"):js.index("async function seenHere")]
+
+
+# SEEN_MS (5000 ms) at 20 ms once `__seenFast` is set; another 5000 ms timer of
+# the app runs at start (the wait for the service worker), so it waits for that.
+FAST_SEEN = ("window.__seenFast = false; const realTimeout = window.setTimeout.bind(window); "
+             "window.setTimeout = (fn, ms, ...a) => "
+             "realTimeout(fn, window.__seenFast && ms === 5000 ? 20 : ms, ...a);")
+
+
+def test_a_page_with_push_off_clears_the_thread_it_shows_on_the_other_browsers(app):
+    """A browser with no subscription (a computer with push off) tells the
+    bot the thread it shows, with the tag alone: on opening it, and
+    SEEN_MS after a message arrives in it while the page has the focus;
+    without the focus (a screen left on) it says nothing, and the phone's
+    notification stays."""
+    import time
+    import webui_stub_server as W
+    from test_webui import open_thread, wait_for
+    page, stub, errors = app(push=True, init=FAST_SEEN)
+    new = stub.emit_bot(W.DM, "A thread read on the computer")
+    open_thread(page, "A thread read on the computer")
+    tag = f"{W.DM}/{new['thread_key']}"
+    wait_for(lambda: stub.seen)
+    assert stub.seen == [{"tag": tag, "elsewhere": True}]
+    page.evaluate("window.__seenFast = true; document.hasFocus = () => false")
+    stub.emit_bot(W.DM, "An answer while nobody looks", new["thread_key"])
+    page.wait_for_selector("#messages .msg:has-text('An answer while nobody looks')")
+    time.sleep(0.5)
+    assert len(stub.seen) == 1
+    page.evaluate("document.hasFocus = () => true")
+    stub.emit_bot(W.DM, "An answer the owner reads here", new["thread_key"])
+    wait_for(lambda: len(stub.seen) == 2)
+    assert stub.seen[1] == {"tag": tag, "elsewhere": True}
+    # a message in another thread, not the one in view, says nothing
+    stub.emit_bot(W.DM, "Another thread")
+    time.sleep(0.5)
+    assert len(stub.seen) == 2
+    assert not errors, errors
 
 
 def test_the_owners_message_clears_its_threads_unread_count(app):

@@ -34,8 +34,9 @@ time (an alert) waits in the store's `push_queue` table, keyed by its
 tag, until the worker that runs in the bot process sends it; a process
 outside the bot (alert.py) writes it there. A push delivered under a tag
 is recorded for its subscription (the store's `push_shown`), and when the
-owner writes in that thread each subscription still holding one gets a
-clear (`Pusher.clear`, {"type": "clear", "tag", "title"}): the service
+thread is done with somewhere (the owner writes in it, a page shows it, its
+card settles, the owner marks it done) each subscription still holding one
+gets a clear (`Pusher.clear`, {"type": "clear", "tag", "title"}): the service
 worker closes the notifications under the tag, and shows a quiet
 "Handled." in their place where the browser would otherwise count a push
 that showed nothing. A clear goes to one subscription at most once in
@@ -522,7 +523,7 @@ class Pusher:
               now: float | None = None) -> dict:
         """Send a clear for `tag` to each subscription in `owed` (the store's
         push_shown_take: {"endpoint", "title"}, a push under the tag went
-        there since the owner last wrote in the thread). The payload,
+        there since the thread was last cleared). The payload,
         {"type": "clear", "tag", "title"}, tells the service worker to close
         the notifications under the tag; `title` is the one the thread's
         notification showed, for the quiet "Handled." the worker shows where
@@ -586,8 +587,8 @@ class Pusher:
                  only: frozenset | None = None) -> dict:
         """Send `payload` to every subscription, or to those in `only` (a
         set of endpoints). A push delivered under a tag is recorded for its
-        subscription (the store's push_shown), which the owner's next
-        message in the thread takes for its clear."""
+        subscription (the store's push_shown), which the thread's next
+        clear takes."""
         counts = {"sent": 0, "failed": 0, "dropped": 0, "held": 0}
         now = time.time()
         self.prune(now)

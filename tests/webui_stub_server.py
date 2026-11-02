@@ -33,7 +33,8 @@ change; a key or a value the bot would refuse answers 400 with its words.
 `push=True` makes /api/me say that push works, with a made-up key and no
 subscription, as a bot with the cryptography package does;
 `subscriptions` is the list of browsers that get notifications
-/api/push/subscriptions answers (none by default).
+/api/push/subscriptions answers (none by default); `seen` records each
+POST /api/push/seen (the thread a page shows).
 
 `handoff=True` (with relay_pairing) lets "Add a device" offer A computer:
 /api/relay/status says `handoff` and names the website's copy of the app,
@@ -168,6 +169,7 @@ class Stub:
         self.devices: list[dict] = []
         self.approvals: list[dict] = []
         self.diags: list[dict] = []  # what the app reported under /diag
+        self.seen: list[dict] = []  # each POST /api/push/seen body
         self.echo = echo
         self.closed = False
         self.seq = 0
@@ -663,6 +665,12 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["diag"]:
             s.diags.append(json.loads(self._body() or b"{}"))
             return self._json(200, {"ok": True})
+        if parts == ["push", "seen"] and s.push:
+            body = json.loads(self._body() or b"{}")
+            s.seen.append(body)
+            if not isinstance(body.get("tag"), str) or not body["tag"]:
+                return self._json(400, {"error": "tag is required"})
+            return self._json(200, {"ok": True, "owed": False})
         if parts == ["relay", "approve"] and s.relay_pairing:
             body = json.loads(self._body() or b"{}")
             s.approvals.append(body)

@@ -1086,6 +1086,7 @@ function ingest(m, created = true) {
   // The owner's own message (here, or mirrored from elsewhere) reads its thread, and its channel as the server counts.
   if (isNew && m.author === 'owner') { S.threadUnread.delete(key); S.baseline.delete(m.channel); }
   else if (isNew && !(viewing && document.visibilityState === 'visible')) S.threadUnread.set(key, (S.threadUnread.get(key) || 0) + 1);
+  if (isNew && viewing && S.push && !S.push.sub) seenLater(`${m.channel}/${tk}`); // push off here: no worker says it
   if (viewing) {
     const stick = nearBottom();
     const el = renderMsg(merged);
@@ -1467,11 +1468,11 @@ const subBody = async (sub) => ({ ...sub.toJSON(), device: (await loadPairing())
 
 async function initPush() {
   const box = $('notify');
-  if (!S.me.push || !('serviceWorker' in navigator)) return;
-  $('notify-row').hidden = false;
-  footer();
-  box.disabled = true;
-  if (!('PushManager' in window) || !('Notification' in window)) return;
+  if (!S.me.push) return;
+  const sw = 'serviceWorker' in navigator;
+  if (sw) { $('notify-row').hidden = false; footer(); box.disabled = true; }
+  // A browser that takes no push still tells the bot the thread it shows (watchSeen).
+  if (!sw || !('PushManager' in window) || !('Notification' in window)) { S.push = {}; watchSeen(); return; }
   const reg = await navigator.serviceWorker.ready;
   const { key } = await call('GET', '/push/vapid');
   let sub = await reg.pushManager.getSubscription();
@@ -1485,24 +1486,29 @@ async function initPush() {
   watchSeen();
 }
 
-// A thread this page shows clears its notifications here, with no push: the page closes them and tells
-// the bot, which then owes this browser no clear for it. A push for the thread in view (the worker says
-// {shown: tag}) waits SEEN_MS first: Firefox counts one whose notification is gone in three seconds as silent.
+// A thread this page shows clears its notifications everywhere, push on here or not: the page closes them
+// here and tells the bot, which owes this browser no clear for it and clears the owner's other browsers.
+// Opening the thread or bringing the page into view is the owner's look; a push or a message that arrives
+// for the thread in view counts only while the page has the focus (a screen left on is not the owner
+// reading), and else clears this browser alone. It waits SEEN_MS first: Firefox counts a push whose
+// notification is gone in three seconds as silent. The worker says {shown: tag} for a push here; with push
+// off here, the message on the stream says it (ingest).
 const SEEN_MS = 5000;
 const tagInView = () => (document.visibilityState === 'visible' && S.thread && S.thread !== NEW_THREAD ? `${S.channel}/${S.thread}` : '');
-async function seenHere(tag) {
-  const sub = S.push && S.push.sub;
-  if (!tag || !sub) return;
-  (await S.push.reg.getNotifications({ tag })).forEach((n) => n.close());
-  await call('POST', '/push/seen', { endpoint: sub.endpoint, tag });
+async function seenHere(tag, elsewhere = true) {
+  if (!tag || !S.push) return;
+  const { reg, sub } = S.push;
+  if (reg) (await reg.getNotifications({ tag })).forEach((n) => n.close());
+  if (sub || elsewhere) await call('POST', '/push/seen', { endpoint: sub ? sub.endpoint : undefined, tag, elsewhere });
 }
+const seenLater = (tag) => setTimeout(() => tagInView() === tag && seenHere(tag, document.hasFocus()).catch(() => {}), SEEN_MS);
 function watchSeen() {
   const seen = () => { seenHere(tagInView()).catch(() => {}); };
   window.addEventListener('hashchange', seen);
   document.addEventListener('visibilitychange', seen);
-  navigator.serviceWorker.addEventListener('message', (e) => {
+  navigator.serviceWorker?.addEventListener('message', (e) => {
     const tag = String((e.data && e.data.shown) || '');
-    if (tag) setTimeout(() => tagInView() === tag && seen(), SEEN_MS);
+    if (tag) seenLater(tag);
   });
   seen();
 }

@@ -62,10 +62,13 @@ Web Push (web_push.py), which needs the `cryptography` package and is
 off without it: a new card, a bot message in the DM, a morning briefing
 or an afternoon update, the bot's answer in a conversation the owner
 wrote in (web_push_policy) and a loud alert (`notify`) reach the browsers
-that turned notifications on, even with the app closed. The owner's own
-message in a thread, here or mirrored, sends a clear that closes the
-thread's notifications to each browser a push under it reached
-(`_owner_wrote`).
+that turned notifications on, even with the app closed. A thread done
+with anywhere sends a clear that closes its notifications to each other
+browser a push under it reached (`_clear_thread`): the owner's own
+message in it, here or mirrored (`_owner_wrote`); a page of the app that
+shows it, push on there or not (`/api/push/seen`, `web_seen`); its card
+settled here or on the primary (`_card_settled`); and the owner marking
+it done (`web_set_state`).
 
 The bot serves only a chat block it can trust (`trusted_config`, set by
 chat.load_frontend when the block came from the owner-private chat.json)
@@ -2079,8 +2082,8 @@ class WebStore:
 
     def push_shown_take(self, tag: str) -> list[dict]:
         """Take the records under `tag`, in one transaction: the
-        subscriptions a push under it went to since the owner last wrote in
-        the thread, each {"endpoint", "title", "at"}; one whose subscription
+        subscriptions a push under it went to since the thread was last
+        cleared, each {"endpoint", "title", "at"}; one whose subscription
         is gone is dropped, not returned."""
         with self._lock:
             with self._conn:
@@ -2404,8 +2407,9 @@ class WebFrontend(ChatFrontend):
 
     def web_set_state(self, channel: str, thread_key: str, state: str) -> dict:
         """The owner's override: `state` (done, needs_you or waiting) on the
-        thread, by the owner, until a new message lands in it. The answer
-        is the thread's row as the threads route gives it, with
+        thread, by the owner, until a new message lands in it. A thread
+        marked done clears its notifications everywhere (_clear_thread).
+        The answer is the thread's row as the threads route gives it, with
         `channel_name`."""
         if state not in _ts.SETTABLE:
             raise _HttpError(400, "state is done, needs_you or waiting")
@@ -2419,6 +2423,8 @@ class WebFrontend(ChatFrontend):
         row = self.store.set_thread_state(channel, key, state, "owner",
                                           _ts.OWNER_REASONS[state], judged_seq=newest)
         self._label(row, before)
+        if state == "done":
+            self._clear_thread(channel, key, "marking the thread done")
         if self.thread_states is not None:
             # The host hears the tap too (closure labels, the ledger write-back).
             self.thread_states.owner_tap(channel, key, row, before)
@@ -3131,9 +3137,9 @@ class WebFrontend(ChatFrontend):
         last DEDUPE_S seconds, from any process (web_push_policy.fingerprint):
         an alert's own push after its direct message in the DM. An alert's
         push (an `alert:` or `watch:` tag) that goes or waits records the
-        text it shows (`push_alert`), for the clear on the owner's reply
-        (_owner_wrote). Never raises: push is an extra, and a failure is
-        logged."""
+        text it shows (`push_alert`), for the clear of a conversation that
+        carries it (_clear_thread). Never raises: push is an extra, and a
+        failure is logged."""
         if not web_push.AVAILABLE:
             return {"sent": 0, "push": "off"}
         try:
@@ -3165,32 +3171,69 @@ class WebFrontend(ChatFrontend):
             log.exception("web chat: a queued push could not be cancelled")
             return False
 
-    def _owner_wrote(self, row: dict) -> None:
-        """The owner wrote in a thread, in the web app or (mirrored) on the
-        primary: the push queued for the thread's tag is dropped, and each
-        browser a push under the tag reached since the owner last wrote
-        there, and whose page has not shown the thread since (push_seen),
-        gets a clear, which closes the thread's notifications (sw.js). The
-        budget and the browsers that get none are web_push.Pusher.clear's.
-        Never a clear for a thread that notified nothing. The thread's
-        two-minute window holds: an answer right after the reply, while the
-        owner is in the conversation, does not buzz again. An alert whose
-        text a bot message of the thread carries (web_push_policy.alert_tags:
-        the DM post of the alert) is cleared the same way, after the
-        thread's own, within the same budget; a queued alert stays queued.
-        Never raises."""
-        if not web_push.AVAILABLE or not row.get("thread_key"):
+    def _clear_thread(self, channel: str, thread_key: str, why: str) -> None:
+        """The thread is done with somewhere: the push queued for its tag is
+        dropped, and each browser a push under the tag reached since the
+        thread was last cleared, and whose page has not shown the thread
+        since (push_seen), gets a clear, which closes the thread's
+        notifications (sw.js). The budget and the browsers that get none
+        are web_push.Pusher.clear's. Never a clear for a thread that
+        notified nothing. An alert whose text a bot message of the thread
+        carries (web_push_policy.alert_tags: the DM post of the alert) is
+        cleared the same way, after the thread's own, within the same
+        budget; a queued alert stays queued. `why` names the cause in the
+        log line of a failure. Never raises."""
+        if not web_push.AVAILABLE or not thread_key:
             return
-        tag = self._push_tag(row)
+        tag = self._push_tag({"channel": channel, "thread_key": thread_key})
         try:
             self.store.push_cancel(tag)
-            alerts = web_push_policy.alert_tags(self.store, row["channel"], row["thread_key"])
+            alerts = web_push_policy.alert_tags(self.store, channel, thread_key)
             for t in [tag, *alerts]:
                 owed = self.store.push_shown_take(t)
                 if owed:
                     self.push.clear(t, owed, wait=self.writer_only)
         except Exception:
-            log.exception("web chat: the owner's reply did not clear the thread's notifications")
+            log.exception("web chat: %s did not clear the thread's notifications", why)
+
+    def _owner_wrote(self, row: dict) -> None:
+        """The owner wrote in a thread, in the web app or (mirrored) on the
+        primary: the thread's notifications are cleared everywhere
+        (_clear_thread). The thread's two-minute window holds: an answer
+        right after the reply, while the owner is in the conversation, does
+        not buzz again. Never raises."""
+        self._clear_thread(row.get("channel") or "", row.get("thread_key") or "",
+                           "the owner's reply")
+
+    def _card_settled(self, before: dict | None, row: dict | None) -> None:
+        """A card became a status line (`before` the stored row, `row` the
+        changed one): the owner pressed a button here or on the primary, or
+        the bot retired it. Its buttons are gone, so the notifications of
+        its push (under the card's thread's tag, _push_card) are cleared
+        everywhere. A status that changes again ("Sending...", then
+        "Sent") clears nothing more, so a message the bot posts in the
+        thread meanwhile keeps its notification."""
+        if before and row and before.get("kind") == "card" and row.get("kind") == "status":
+            self._clear_thread(row["channel"], row["thread_key"], "a settled card")
+
+    def web_seen(self, tag: str, endpoint: str = "", elsewhere: bool = True) -> bool:
+        """The app shows the thread under `tag` (`<channel>/<thread key>`)
+        and closed its notifications in its own browser. With `endpoint`
+        (that browser's subscription; "" for a browser with push off) the
+        bot owes that browser no clear for the thread (push_seen). With
+        `elsewhere` the owner is at that page, so the thread is cleared
+        everywhere else (_clear_thread): each other browser a push under it
+        reached gets a clear, and the push queued for it is dropped. True
+        when `endpoint` was owed one."""
+        channel, _, key = tag.partition("/")
+        if channel and key:
+            channel = self.store.canonical(channel)
+            key = self.store.thread_of(channel, key) or key
+            tag = self._push_tag({"channel": channel, "thread_key": key})
+        owed = bool(endpoint) and self.store.push_seen(endpoint, tag)
+        if elsewhere:
+            self._clear_thread(channel, key, "a thread seen in the app")
+        return owed
 
     # scheduled posts (chat.direct.schedule_direct on the web chat alone)
 
@@ -3360,10 +3403,14 @@ class WebFrontend(ChatFrontend):
 
     def replace_card_with_status(self, ref: MessageRef, text: str) -> bool:
         """The row becomes a `status` row; its text is the core's status line
-        as written, which the app renders as card text."""
+        as written, which the app renders as card text. A card that settles
+        so clears its notifications everywhere (_card_settled)."""
         ref = self._canon_ref(ref)
-        return self.store.change_message(ref.channel, ref.id, "status", kind="status",
-                                         text=text or "") is not None
+        before = self.store.message(ref.channel, ref.id)
+        row = self.store.change_message(ref.channel, ref.id, "status", kind="status",
+                                        text=text or "")
+        self._card_settled(before, row)
+        return row is not None
 
     def message_posted_at(self, ref: MessageRef) -> float | None:
         ref = self._canon_ref(ref)
@@ -3666,7 +3713,14 @@ class WebFrontend(ChatFrontend):
         return row
 
     def mirror_card_status(self, ref: MessageRef, text: str) -> dict:
-        return self._mirror_upsert(ref, "status", author=BOT, kind="status", text=text or "")
+        """Store the status line a card on the primary became (the owner
+        pressed its button there or here, or the bot retired it); a card
+        that settles so clears its notifications everywhere
+        (_card_settled)."""
+        before = self.store.message(ref.channel, ref.id)
+        row = self._mirror_upsert(ref, "status", author=BOT, kind="status", text=text or "")
+        self._card_settled(before, row)
+        return row
 
     def mirror_reaction(self, channel: str, msg_id: str, status: Status | str, on: bool) -> bool:
         """True when the message is in the store (whether or not it changed)."""
@@ -4353,13 +4407,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return None
             if segs == ["push", "seen"]:
                 # The app shows a thread and closed its notifications in this
-                # browser: the bot owes it no clear for the thread.
+                # browser: the bot owes it (its `endpoint`, when it has push
+                # on) no clear for the thread, and unless `elsewhere` is
+                # false clears the thread on every other browser
+                # (WebFrontend.web_seen).
                 body = self._read_json()
-                endpoint, tag = body.get("endpoint"), body.get("tag")
-                if not (isinstance(endpoint, str) and endpoint and isinstance(tag, str) and tag):
-                    raise _HttpError(400, "endpoint and tag are required")
-                self._json(200, {"ok": True,
-                                 "owed": self._pusher().store.push_seen(endpoint, tag[:200])})
+                endpoint, tag = body.get("endpoint", ""), body.get("tag")
+                elsewhere = body.get("elsewhere", True)
+                if not (isinstance(tag, str) and tag):
+                    raise _HttpError(400, "tag is required")
+                if not isinstance(endpoint, str) or not isinstance(elsewhere, bool):
+                    raise _HttpError(400, "endpoint is a string and elsewhere true or false")
+                self._pusher()
+                self._json(200, {"ok": True, "owed": fe.web_seen(tag[:200], endpoint, elsewhere)})
                 return None
             if segs == ["push", "unsubscribe"]:
                 endpoint = self._read_json().get("endpoint")

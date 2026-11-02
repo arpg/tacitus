@@ -248,7 +248,7 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/push/subscribe` | the browser's `PushSubscription.toJSON()` → `{"ok": true}` |
 | POST | `/api/diag` | `{"entries": [...]}`: what the app saw while it could not connect (storage state, display mode, the error); logged as `web chat diag:` lines, at most 20 per call, never stored → `{"ok": true, "logged": n}` |
 | POST | `/api/push/unsubscribe` | `{"endpoint"}` → `{"ok": true, "removed": bool}` |
-| POST | `/api/push/seen` | `{"endpoint", "tag"}`: the app shows that thread in this browser and closed its notifications there, so the bot owes the browser no clear for it → `{"ok": true, "owed": bool}` (`owed`: one was owed) |
+| POST | `/api/push/seen` | `{"tag", "endpoint"?, "elsewhere"?}`: the app shows that thread in this browser and closed its notifications there. With `endpoint` (this browser's subscription; a browser with notifications off sends none) the bot owes the browser no clear for it; unless `elsewhere` is `false`, the bot also clears the thread on every other browser and drops the push queued for it (Notifications) → `{"ok": true, "owed": bool}` (`owed`: this browser was owed one) |
 | GET | `/api/push/subscriptions` | `[{"id", "host", "created_at", "last_seen", "last_ok", "failures"}]`; `id` is a hash of the endpoint, which is never shown |
 | POST | `/api/push/revoke` | `{"id"}` → `{"ok": true, "removed": bool}` |
 | POST | `/api/relay/pair` | `{}` or `{"via": "relay"}` → `{"link", "qr", "expires", "origin", "bundle", "access"}`: a one-time pairing link for a phone (the relay), on the bot's own origin (409 without `public_url`) or on the relay's copy of the app with the signed bundle's hash (409 without one); `access` is what the phone may do once approved (`"all"` own, `"chat"` relay) |
@@ -1110,42 +1110,73 @@ line the notification shows, letters and digits only, in the store's
 `push_sent` table). The first one stands, so the alert arrives once, at
 high urgency. A card and a plain `notify` never take part.
 
-**A reply from you clears the conversation's notifications everywhere.**
-When the owner's message lands in a thread, typed in the web app or
-mirrored from the primary in shadow mode (`WebStore.on_owner`, which the
-store calls for every live owner row it inserts), the bot drops the push
-queued under the thread's tag and sends
+**A conversation done with anywhere clears its notifications everywhere.**
+Four things clear a thread, all the same way (`WebFrontend._clear_thread`):
+
+- The owner's message in it, typed in the web app or mirrored from the
+  primary in shadow mode (`WebStore.on_owner`, which the store calls for
+  every live owner row it inserts; `_owner_wrote`).
+- A page of the app that shows it, on any device, with notifications on
+  there or off (`/api/push/seen`, below).
+- Its card settled: a card that becomes a status line because the owner
+  pressed a button in the web app or on the primary, or the bot retired
+  it (`replace_card_with_status`, and `mirror_card_status` in shadow
+  mode; `_card_settled`). A card's push goes under its own thread's tag,
+  so that is the tag cleared. Only the change from card to status
+  clears: a status that changes again ("Sending...", then "Sent") leaves
+  alone a message the bot posted in the thread meanwhile.
+- The owner's Mark done on it, Mark all done too
+  (`POST /api/threads/<channel>/<key>/state` with `done`; Waiting and
+  Needs me clear nothing).
+
+The bot drops the push queued under the thread's tag and sends
 `{"type": "clear", "tag": "<channel>/<thread key>", "title"}` to each
 browser that is owed one. The `push_shown` table records each push
 delivered under a tag, per subscription, with the title its notification
-showed (`Pusher.send_all`, on a 2xx from the push service); the owner's
-message takes the thread's records (`push_shown_take`), so a browser is
-owed a clear only when a push under the tag reached it since the owner
-last wrote there. The app drops the record itself when it shows the
-thread: on opening it, on coming back into view, and five seconds after a
-push for the thread in view (the worker posts `{shown: tag}` to the
-app's pages), it closes the thread's notifications in this browser and
-posts `/api/push/seen`.
+showed (`Pusher.send_all`, on a 2xx from the push service); a clear
+takes the thread's records (`push_shown_take`), so a browser is owed a
+clear only when a push under the tag reached it since the thread was
+last cleared. A thread that notified nothing gets no clear.
+
+A page shows a thread when the page is in view and the thread is open in
+it. On opening the thread, on coming back into view, and five seconds
+after something arrives for the thread in view (a push here: the worker
+posts `{shown: tag}` to the app's pages; with notifications off here,
+the message on the event stream), the page closes the thread's
+notifications in its own browser and posts `/api/push/seen` with the
+tag. The bot owes that browser (its `endpoint`, when it has
+notifications on) no clear for the thread, and clears the thread on
+every other browser: a thread read on the computer stops notifying on
+the phone. Something that arrives while the page does not have the focus
+(`document.hasFocus()`: a screen left on) is not the owner reading: the
+page then posts `elsewhere: false`, which drops this browser's own record
+alone, or with notifications off nothing at all, and the phone keeps its
+notification. The five seconds are Firefox's: it counts a push whose
+notification is gone within three seconds as one that showed nothing.
 
 An alert's push names no conversation: its tag is `alert:<ledger id>`
 (alert.py) or `watch:<id>` (page_watch.py) and its url the app's start
 page. When it goes or is queued, the `push_alert` table keeps the text it
-shows (`web_push_policy.fingerprint`) under its tag. The owner's message
-in a thread then also clears each alert whose push reached a browser
-since and whose text a bot message of that thread carries (the DM post
-of the same alert: on the web chat alone a scheduled alert's post goes
-up in the DM with no push of its own while the alert's push goes under
-its tag), after the thread's own clear and by the same rules; an alert
-still queued stays queued. Each clear also has a budget (`push_clears`): at
+shows (`web_push_policy.fingerprint`) under its tag. Each clear of a
+thread also clears each alert whose push reached a browser since and
+whose text a bot message of that thread carries (the DM post of the same
+alert: on the web chat alone a scheduled alert's post goes up in the DM
+with no push of its own while the alert's push goes under its tag),
+after the thread's own clear and by the same rules; an alert still
+queued stays queued. A page that shows the thread closes only the
+thread's own notifications, so its browser gets the alert's clear as
+well. Each clear also has a budget (`push_clears`): at
 most one per subscription in ten minutes (`CLEAR_GAP_S`) and twenty in a
 day (`CLEAR_DAY_CAP`). A clear past it is skipped, its notification
 stands until the thread's next push replaces it by tag, and a
 `web chat diag:` line in the log names the push service and the reason
-(`gap`, `cap` or `safari`). The two-minute window holds: an answer right
-after the reply does not buzz again. The app drops the thread's unread
-count when the owner's message arrives on the stream, also with the
-thread closed, and the channel's count from the server as the server
-counts it.
+(`gap`, `cap` or `safari`). So of several threads done with on the
+computer within ten minutes, the phone gets the first one's clear; the
+others stand until their next push. The two-minute window holds: an
+answer right after the reply does not buzz again. The app drops the
+thread's unread count when the owner's message arrives on the stream,
+also with the thread closed, and the channel's count from the server as
+the server counts it.
 
 **What each browser gets on a clear.** Every browser expects each push
 to show a notification (`userVisibleOnly`), none counts a notification
