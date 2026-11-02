@@ -1094,7 +1094,10 @@ def analyze_writing_style(sent: list) -> dict:
 # The remote record's scheduling kinds that make a request of the lane.
 # "confirmation" is the other side accepting a time the user offered: the
 # keyword pass never sees it (the user has written to that thread), and it
-# is the moment an invite and a confirming reply are due.
+# is the moment an invite and a confirming reply are due. The model also
+# writes it for mail that only confirms something (a talk slot, a room,
+# attendance), so a record's confirmation counts only when the user's own
+# Sent mail in the thread offered the time it names.
 RECORD_SCHED_KINDS = ("request", "proposes-times", "reschedule", "confirmation")
 
 
@@ -1107,7 +1110,8 @@ def _sched_description(kind: str, subject: str) -> str:
 def _sent_with_bodies(days: int = 14) -> list:
     """The user's Sent mail with bodies, for the thread-state pass: an
     offer of times is longer than a preview. Empty when Graph is not
-    reachable; the pass then finds nothing and the record pass stands."""
+    reachable; the pass then finds nothing, and of the record pass only
+    the acceptances wait for a run that reads the offer."""
     try:
         return graph.get_sent(days_back=days, full_body=True)
     except Exception as e:
@@ -1124,14 +1128,21 @@ def detect_scheduling_requests(inbox: list, sent: list, gate=None, sent_full: li
     acceptance of a time the user offered, times proposed back, a request
     the list misses) is a request too, also in a thread the user has
     written to, as long as it arrived after the user's last message there.
-    A record item carries the record's `offered_times` and `ask`.
+    A record item carries the record's `offered_times` and `ask`. A record
+    that says nothing is owed (state fyi or awaiting-reply, no reply
+    needed) adds nothing.
 
     A third pass needs no model: where the user's own last message in a
     thread names clock times (sched_thread_state), an inbound after it
     that names one of them is an acceptance (kind "confirmation", the one
     time) and one that names other times is a counter ("proposes-times").
     `sent_full` is the Sent mail with bodies; with a gate and none given
-    it is fetched once."""
+    it is fetched once.
+
+    An acceptance needs the user's offer: a record's "confirmation" stays
+    only when this pass agrees, or when a time the record names is one
+    the user offered in that thread. Otherwise it is dropped here, and the
+    message stays an ordinary mail item."""
     sent_convs = {m.get("conversationId") for m in sent if m.get("conversationId")}
     requests_found = []
     import mail_privacy as _mp
@@ -1178,6 +1189,8 @@ def detect_scheduling_requests(inbox: list, sent: list, gate=None, sent_full: li
             rec = gate.record_fields({"message_id": mid, "conversation_id": m.get("conversationId", "")})
             if not rec or rec.get("scheduling") not in RECORD_SCHED_KINDS:
                 continue
+            if not rec.get("needs_reply") and rec.get("state") not in _mp.ACTION_STATES:
+                continue  # a notice, a reminder, an update: nothing is owed
             conv = m.get("conversationId", "")
             if conv and (m.get("receivedDateTime", "") or "") <= sent_times.get(conv, ""):
                 continue  # the user wrote after it: answered
@@ -1201,9 +1214,9 @@ def detect_scheduling_requests(inbox: list, sent: list, gate=None, sent_full: li
 
     if gate is not None and sent_full is None:
         sent_full = _sent_with_bodies()
-    if sent_full:
-        import sched_thread_state as _sts
-        offers = _sts.offers_from_sent(sent_full)
+    import sched_thread_state as _sts
+    offers = _sts.offers_from_sent(sent_full) if sent_full else {}
+    if offers:
         have = {r["message_id"]: r for r in requests_found}
         for m in inbox:
             mid, conv = m.get("id", ""), m.get("conversationId", "")
@@ -1238,7 +1251,17 @@ def detect_scheduling_requests(inbox: list, sent: list, gate=None, sent_full: li
                 "offered_match": state == "accepted",
             })
 
-    return requests_found
+    grounded = []
+    for r in requests_found:
+        if r.get("kind") == "confirmation" and r.get("from_record") and not r.get("offered_match"):
+            offer = offers.get(r.get("conversation_id") or "")
+            pick = (_sts.match_offered(r.get("offered_times"), offer["times"])
+                    if offer and offer["at"] < (r.get("received") or "") else None)
+            if pick is None:
+                continue  # no time the user offered: not an acceptance
+            r.update(offered_times=[pick["start"]], offered_match=True)
+        grounded.append(r)
+    return grounded
 
 
 PROACTIVE_QUEUE_FILE = STATE_DIR / "scheduling-proactive-queue.json"
