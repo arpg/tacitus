@@ -1398,6 +1398,7 @@ def test_the_relay_updater_installs_a_signed_release_with_its_install_sh(tmp_pat
     assert st["held_back"]["version"] == "v0.1.3"
 
 
+@needs_ssh
 def test_the_relay_updater_names_the_commit_it_verified(tmp_path):
     """An install.sh that takes --expect-commit gets the commit the updater
     verified for the tag, so a tag moved after the check is refused."""
