@@ -331,6 +331,8 @@ _LENGTH_RE = re.compile(r"[0-9]{1,12}")
 # Emoji shortcodes, held aside while text converts (WebFrontend._out).
 _SHORTCODE_RE = re.compile(r":[a-z0-9_+-]+:")
 _HELD_RE = re.compile("\x02(\\d+)\x02")
+# A Markdown link in the bot's text (WebFrontend._local_links).
+_MD_LINK_RE = re.compile(r"\[([^\]\n]{1,200})\]\((\S+?)\)")
 
 # The web app's pages load only their own files: nothing inline, nothing
 # from another origin.
@@ -977,6 +979,24 @@ class WebStore:
     def message(self, channel: str, mid: str) -> dict | None:
         row = self._row(channel, mid)
         return self._msg_json(row) if row else None
+
+    def locate(self, channel: str, mid: str) -> dict | None:
+        """{"channel", "thread_key", "id"} of the message a link names: by
+        channel and id, or by the id alone when the link names no channel
+        (a Zulip id is unique on its server) and one channel holds it."""
+        if channel:
+            rows = self._all("SELECT channel, thread_key, id FROM messages WHERE channel=? AND id=?",
+                             (channel, mid))
+        else:
+            rows = self._all("SELECT channel, thread_key, id FROM messages WHERE id=? LIMIT 2", (mid,))
+        return dict(rows[0]) if len(rows) == 1 else None
+
+    def primary_links(self) -> list[dict]:
+        """The bot's messages whose text links to the primary's messages (a
+        Zulip narrow, a Slack permalink): {"channel", "id", "text"}."""
+        return [dict(r) for r in self._all(
+            "SELECT channel, id, text FROM messages WHERE author=? AND deleted_at IS NULL "
+            "AND (text LIKE '%/near/%' OR text LIKE '%/archives/%')", (BOT,))]
 
     def _msg_json(self, row: sqlite3.Row, reply_count: int | None = None) -> dict:
         if reply_count is None:
@@ -2468,6 +2488,10 @@ class WebFrontend(ChatFrontend):
                 return
             self.refused = None
             store.prune_events()
+            try:
+                self.relink()
+            except Exception as e:
+                log.warning("web chat: links to the primary not rewritten: %s", e)
             if self.inbound is None:
                 self._ensure_own_channels()
             cls = _Server6 if ":" in self.bind else _Server
@@ -2984,6 +3008,35 @@ class WebFrontend(ChatFrontend):
         return _HELD_RE.sub(lambda m: held[int(m.group(1))] if int(m.group(1)) < len(held)
                             else "", out)
 
+    def _local_links(self, text: str) -> str:
+        """The bot's Markdown with each link to one of the primary's
+        messages (a Zulip narrow, a Slack permalink) pointing at that
+        message here, when the store holds it. In shadow mode the core
+        builds its links with the primary's permalink, so the pointer "...
+        is in your DM: [open it](...)" opened Zulip from the web app."""
+        if "/near/" not in text and "/archives/" not in text:
+            return text
+
+        def swap(m: re.Match) -> str:
+            got = None if _ts._WEB_LINK_RE.search(m.group(2)) else _ts.link_target(m.group(2))
+            row = self.store.locate(*got) if got else None
+            if row is None:
+                return m.group(0)
+            return f"[{m.group(1)}]({self._permalink(row['channel'], row['thread_key'], row['id'])})"
+        return _MD_LINK_RE.sub(swap, text)
+
+    def relink(self) -> int:
+        """Point the stored links to the primary's messages at their copies
+        here (_local_links): the rows stored before this rewrite, and a
+        pointer copied ahead of its card. How many messages changed."""
+        n = 0
+        for row in self.store.primary_links():
+            text = self._local_links(row["text"] or "")
+            if text != row["text"] and self.store.change_message(row["channel"], row["id"],
+                                                                 "update", text=text):
+                n += 1
+        return n
+
     def _thread_for(self, channel: str, thread_ts: str | None) -> str | None:
         if not thread_ts:
             return None
@@ -3481,7 +3534,12 @@ class WebFrontend(ChatFrontend):
 
     def mirror_backfilled(self, channel: str) -> dict | None:
         """The composite copied history into the channel quietly: one
-        `channel` event, so an open app reads the channel's threads again."""
+        `channel` event, so an open app reads the channel's threads again.
+        A pointer copied before its card's channel links here now."""
+        try:
+            self.relink()
+        except Exception as e:
+            log.warning("web chat: links to the primary not rewritten: %s", e)
         return self.store.touch_channel(channel)
 
     def mirror_move(self, old_channel: str, old_key: str, new_channel: str,
@@ -3553,6 +3611,7 @@ class WebFrontend(ChatFrontend):
         it is and None returned for it."""
         author = OWNER if author == OWNER else BOT
         out = self._out(text) if author == BOT and not markdown else (text or "")
+        out = self._local_links(out) if author == BOT else out
         new = self.store.message(ref.channel, ref.id) is None
         row = self._mirror_upsert(ref, "update", author=author, kind="message", text=out,
                                   set_kind=False, quiet=quiet)
@@ -3567,6 +3626,7 @@ class WebFrontend(ChatFrontend):
         row = self.store.message(ref.channel, ref.id)
         author = row["author"] if row else BOT
         out = self._out(text) if author == BOT and not markdown else (text or "")
+        out = self._local_links(out) if author == BOT else out
         return self._mirror_upsert(ref, "update", author=author, kind="message", text=out,
                                    set_kind=False)
 

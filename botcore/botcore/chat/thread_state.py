@@ -429,22 +429,28 @@ _ZULIP_LINK_RE = re.compile(r"/near/(\d+)$")
 _SLACK_LINK_RE = re.compile(r"/archives/([A-Z0-9]+)/p(\d{10})(\d{6})(?:\?|$)")
 
 
+def link_target(url: str) -> tuple[str, str] | None:
+    """(channel, message id) a message link names, or None; the channel is
+    "" when the link names only the id (Zulip)."""
+    m = _WEB_LINK_RE.search(url)
+    if m:
+        return urllib.parse.unquote(m.group(1)), urllib.parse.unquote(m.group(3))
+    z = _ZULIP_LINK_RE.search(url)
+    if z:
+        return "", z.group(1)
+    s = _SLACK_LINK_RE.search(url)
+    if s:
+        return s.group(1), f"{s.group(2)}.{s.group(3)}"
+    return None
+
+
 def pointer_targets(text: str | None) -> list[tuple[str, str]]:
     """(card channel, card message id) for each pointer to a card in a bot
     message; the channel is "" when the link names only the id (Zulip)."""
     out: list[tuple[str, str]] = []
     for url in POINTER_RE.findall(str(text or "")):
-        m = _WEB_LINK_RE.search(url)
-        if m:
-            got = (urllib.parse.unquote(m.group(1)), urllib.parse.unquote(m.group(3)))
-        elif _ZULIP_LINK_RE.search(url):
-            got = ("", _ZULIP_LINK_RE.search(url).group(1))
-        elif _SLACK_LINK_RE.search(url):
-            s = _SLACK_LINK_RE.search(url)
-            got = (s.group(1), f"{s.group(2)}.{s.group(3)}")
-        else:
-            continue
-        if got[1] and got not in out:
+        got = link_target(url)
+        if got and got[1] and got not in out:
             out.append(got)
     return out
 

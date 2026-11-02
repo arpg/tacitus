@@ -502,6 +502,36 @@ def test_mirror_backfilled_sends_one_channel_event(tmp_path):
     assert f.mirror_backfilled("stream:404") is None
 
 
+def test_a_pointer_to_the_primarys_card_opens_the_card_here(tmp_path):
+    """In shadow mode the core builds the pointer "... is in your DM: <link|open
+    it>" with the primary's permalink, and the web app opened Zulip. A link to
+    a message the store holds points at its copy here: as the pointer is
+    mirrored, and, for a pointer stored ahead of its card, once the card's
+    history is copied. The owner's own text keeps its links."""
+    f = make(tmp_path)
+    f.mirror_channel("stream:7", "ea", "main")
+    f.mirror_channel("stream:6", "ea-dm", "dm")
+    zulip = "https://chat.example.test/#narrow/channel/6-ea-dm/topic/lock.20W7KL/near/{}"
+    f.mirror_card(MessageRef("stream:6", "6232", "stream:6:topic:lock W7KL", 1000.0), card())
+    f.mirror_post(MessageRef("stream:7", "6233", "stream:7:topic:reply", 1001.0),
+                  f":lock: The Send button for this draft is in your DM: <{zulip.format(6232)}|open it>")
+    text = f.store.message("stream:7", "6233")["text"]
+    assert text.endswith(f"[open it]({f.permalink('stream:6', '6232')})"), text
+    assert [r["id"] for r in f.store.linked_cards("stream:7", "stream:7:topic:reply")] == ["6232"]
+    # a pointer copied before its card keeps the primary's link until the card is here
+    f.mirror_post(MessageRef("stream:7", "6301", "stream:7:topic:later", 1002.0),
+                  f":lock: The Create button for this event is in your DM: [open it]({zulip.format(6300)})",
+                  quiet=True, markdown=True)
+    assert f.store.message("stream:7", "6301")["text"].endswith(f"({zulip.format(6300)})")
+    f.mirror_card(MessageRef("stream:6", "6300", "stream:6:topic:lock X9", 1003.0), card())
+    f.mirror_backfilled("stream:6")
+    assert f.store.message("stream:7", "6301")["text"].endswith(f"({f.permalink('stream:6', '6300')})")
+    assert f.relink() == 0, "nothing left to point here"
+    f.mirror_post(MessageRef("stream:7", "6302", "stream:7:topic:later"),
+                  f"see [this]({zulip.format(6232)})", "owner")
+    assert f.store.message("stream:7", "6302")["text"] == f"see [this]({zulip.format(6232)})"
+
+
 def test_mirror_channel_keeps_a_description_not_given(tmp_path):
     f = make(tmp_path)
     f.mirror_channel("stream:9", "ea-atlas", "room", description="the atlas project")
