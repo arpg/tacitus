@@ -26,6 +26,26 @@ keeps only entries in the shape this module writes; the write goes
 through atomic_io. A link at the name is refused on the read and replaced
 on the write, never followed, so no owner-only file reaches the state.
 
+Graph runs two breakers, one per lane (graph_lane() below):
+
+  - `graph` is the interactive lane: the owner's own mail actions
+    (graph_actions.py from a chat turn, the mediator's SAFE ops on the
+    owner's behalf). An open interactive breaker never fails a call fast:
+    the call still makes one attempt, the half-open probe, and its answer
+    closes or re-opens the breaker.
+  - `graph-background` is every cron tick and agent lane (the mail
+    tagger, ledger_sync, the briefing, the reconciler). It fails fast
+    while open, as above.
+
+A background failure counts only toward `graph-background`, so a mailbox
+that Microsoft throttles for the ticks never blocks the person.
+
+TickBackoff gives a tick the step after the breaker: a tick that ended in
+HTTP 429 makes the next TICK_SKIPS ticks of that job skip, so a throttled
+mailbox is not asked again every two minutes. Its state is
+~/.ea/state/tick-backoff.json, beside the breakers, read and written the
+same way.
+
 Usage:
     from retry_policy import CircuitBreaker, CircuitOpen
     _breaker = CircuitBreaker("graph")
@@ -61,7 +81,15 @@ _CACHE_TTL = 1.0             # in-process read cache (graph_get is chatty)
 
 
 class CircuitOpen(RuntimeError):
-    """Raised by raise_if_open() when the service breaker is open."""
+    """Raised by raise_if_open() when the service breaker is open.
+    `service` is the breaker's key and `reopens_at` the epoch second its
+    cooldown ends (the next call after it is the probe)."""
+
+    def __init__(self, message: str = "", *, service: str = "",
+                 reopens_at: float | None = None):
+        super().__init__(message)
+        self.service = service
+        self.reopens_at = reopens_at
 
 
 _NUMBER_FIELDS = ("failures", "last_failure_ts", "opened_at", "cooldown", "opens", "threshold")
@@ -138,15 +166,24 @@ class CircuitBreaker:
             return False  # half-open: let the next call probe
         return True
 
+    def reopens_at(self) -> float | None:
+        """The epoch second the open breaker's cooldown ends, or None when
+        it is not open."""
+        if not self.is_open():
+            return None
+        return (self._entry().get("opened_at") or 0) + self.cooldown
+
     def raise_if_open(self) -> None:
         if self.is_open():
             e = self._entry()
-            age = time.time() - (e.get("opened_at") or 0)
+            opened_at = e.get("opened_at") or 0
+            age = time.time() - opened_at
             raise CircuitOpen(
                 f"{self.service} circuit open "
                 f"({e.get('failures')} consecutive failures, opened "
                 f"{age:.0f}s ago, cooldown {self.cooldown:.0f}s; "
-                f"last error: {e.get('last_error', '?')})")
+                f"last error: {e.get('last_error', '?')})",
+                service=self.service, reopens_at=opened_at + self.cooldown)
 
     def record_failure(self, error: str = "") -> None:
         e = self._entry(fresh=True)
@@ -178,6 +215,141 @@ class CircuitBreaker:
         # Only touch the file when there is something to clear.
         if self._entry().get("failures"):
             self._write(None)
+
+
+# ── Graph lanes ──────────────────────────────────────────────────────
+# The lane of a Graph call comes from its caller: an explicit `lane=` on
+# graph_client's entry points, else EA_GRAPH_LANE, which a process sets
+# for itself and its children (set_graph_lane), else background. The CLIs
+# a chat turn runs (graph_actions, scheduling_engine, email_writer) make
+# their own default interactive; the mediator passes the lane of each
+# request to the child it runs.
+GRAPH_LANE_ENV = "EA_GRAPH_LANE"
+INTERACTIVE = "interactive"
+BACKGROUND = "background"
+GRAPH_BREAKERS = {INTERACTIVE: "graph", BACKGROUND: "graph-background"}
+
+
+def graph_lane(lane: str | None = None) -> str:
+    """The lane a Graph call runs in: `lane` when it names one, else the
+    process's (EA_GRAPH_LANE), else background."""
+    if lane in GRAPH_BREAKERS:
+        return lane
+    env = os.environ.get(GRAPH_LANE_ENV, "").strip()
+    return env if env in GRAPH_BREAKERS else BACKGROUND
+
+
+def set_graph_lane(lane: str, *, only_if_unset: bool = False) -> str:
+    """Make `lane` the lane of this process and of every process it starts.
+    With only_if_unset, a lane the caller already set wins. Returns the
+    process's lane."""
+    if lane not in GRAPH_BREAKERS:
+        raise ValueError(f"unknown Graph lane {lane!r}")
+    current = os.environ.get(GRAPH_LANE_ENV, "").strip()
+    if not (only_if_unset and current in GRAPH_BREAKERS):
+        os.environ[GRAPH_LANE_ENV] = lane
+    return os.environ[GRAPH_LANE_ENV]
+
+
+def graph_breaker_key(lane: str | None = None) -> str:
+    """The breaker key of a lane: `graph` (interactive) or `graph-background`."""
+    return GRAPH_BREAKERS[graph_lane(lane)]
+
+
+def is_throttled(exc: BaseException | None) -> bool:
+    """True when `exc`, or an exception it was raised from, is an HTTP 429
+    answer (a requests HTTPError, or anything carrying `.response`)."""
+    seen = 0
+    while exc is not None and seen < 5:
+        response = getattr(exc, "response", None)
+        if getattr(response, "status_code", None) == 429:
+            return True
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return False
+
+
+def find_circuit_open(exc: BaseException | None) -> CircuitOpen | None:
+    """The CircuitOpen `exc` is, or was raised from, or None."""
+    seen = 0
+    while exc is not None and seen < 5:
+        if isinstance(exc, CircuitOpen):
+            return exc
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return None
+
+
+# ── tick backoff ─────────────────────────────────────────────────────
+TICK_BACKOFF_FILE = EA_DIR / "state" / "tick-backoff.json"
+TICK_SKIPS = 3
+
+
+def _load_ticks() -> dict:
+    """Every job's backoff entry: {"skip": int, "since": float, "reason":
+    str}; {} when the file is missing, unreadable or of another shape."""
+    try:
+        data = json.loads(_rio.read_text(TICK_BACKOFF_FILE) or "{}")
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for job, entry in data.items():
+        if not (isinstance(job, str) and isinstance(entry, dict)):
+            continue
+        skip = entry.get("skip")
+        if not isinstance(skip, int) or isinstance(skip, bool) or skip <= 0:
+            continue
+        clean = {"skip": min(skip, 100)}
+        since = entry.get("since")
+        if isinstance(since, (int, float)) and not isinstance(since, bool):
+            clean["since"] = since
+        if isinstance(entry.get("reason"), str):
+            clean["reason"] = entry["reason"][:200]
+        out[job] = clean
+    return out
+
+
+def _save_ticks(state: dict) -> None:
+    try:
+        _atomic.write_json(TICK_BACKOFF_FILE, state)
+    except Exception:
+        pass
+
+
+class TickBackoff:
+    """The skip count of one periodic job (mail_tagger, ledger_sync).
+
+    throttled() after a tick that ended in HTTP 429; take() at the start
+    of each tick: it returns how many skips were left before this one
+    (0 means run the tick) and uses one up."""
+
+    def __init__(self, job: str, skips: int = TICK_SKIPS):
+        self.job = job
+        self.skips = skips
+
+    def pending(self) -> int:
+        return (_load_ticks().get(self.job) or {}).get("skip", 0)
+
+    def take(self) -> int:
+        state = _load_ticks()
+        entry = state.get(self.job)
+        if not entry:
+            return 0
+        left = entry["skip"]
+        if left > 1:
+            state[self.job] = {**entry, "skip": left - 1}
+        else:
+            state.pop(self.job, None)
+        _save_ticks(state)
+        return left
+
+    def throttled(self, reason: str = "HTTP 429") -> None:
+        state = _load_ticks()
+        state[self.job] = {"skip": self.skips, "since": time.time(),
+                           "reason": str(reason)[:200]}
+        _save_ticks(state)
 
 
 SUSTAINED_OPENS = 3     # a breaker that reopened this often stays listed until a success clears it

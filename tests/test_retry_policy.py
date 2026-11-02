@@ -5,13 +5,22 @@ Pins: open-after-threshold, fail-fast while open, half-open probe after
 cooldown, close-on-success, reopen-on-probe-failure, cross-instance
 state sharing via the JSON file, and open_breakers() surfacing for the
 sentinel.
+
+The Graph lanes: a background failure never opens the interactive
+breaker; a background call fails fast while its breaker is open, an
+interactive call probes once (success closes, failure re-opens); the
+state file from before the lanes keeps working; the tick backoff counts
+down its skips.
 """
 
+import json
 import os
 import sys
 import tempfile
+import time
 import traceback
 from pathlib import Path
+from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "preprocessor"))
@@ -187,6 +196,257 @@ def test_a_sustained_outage_stays_listed_until_a_success():
         assert [s["service"] for s in rp.open_breakers()] == ["remote"]
         b.record_success()
         assert rp.open_breakers() == []
+
+
+# ── Graph lanes ───────────────────────────────────────────────────────
+
+class _Lane:
+    """EA_GRAPH_LANE set (None: unset) for a block, restored after it."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def __enter__(self):
+        self.before = os.environ.get(rp.GRAPH_LANE_ENV)
+        if self.value is None:
+            os.environ.pop(rp.GRAPH_LANE_ENV, None)
+        else:
+            os.environ[rp.GRAPH_LANE_ENV] = self.value
+
+    def __exit__(self, *exc):
+        if self.before is None:
+            os.environ.pop(rp.GRAPH_LANE_ENV, None)
+        else:
+            os.environ[rp.GRAPH_LANE_ENV] = self.before
+
+
+def test_the_graph_lane_comes_from_the_caller():
+    with _Lane(None):
+        assert rp.graph_lane() == "background"
+        assert rp.graph_breaker_key() == "graph-background"
+        assert rp.graph_lane("interactive") == "interactive"
+        assert rp.graph_breaker_key("interactive") == "graph"
+        # a CLI's own default yields to a lane its caller set
+        assert rp.set_graph_lane("interactive", only_if_unset=True) == "interactive"
+        assert rp.set_graph_lane("background", only_if_unset=True) == "interactive"
+        assert rp.graph_lane() == "interactive"
+        # an explicit lane on the call wins over the process's
+        assert rp.graph_lane("background") == "background"
+        rp.set_graph_lane("background")
+        assert rp.graph_lane() == "background"
+    with _Lane("nonsense"):
+        assert rp.graph_lane() == "background"
+    try:
+        rp.set_graph_lane("urgent")
+        assert False, "an unknown lane must be refused"
+    except ValueError:
+        pass
+
+
+def test_a_background_failure_never_opens_the_interactive_breaker():
+    with tempfile.TemporaryDirectory() as td:
+        _setup(Path(td))
+        background, interactive = _breaker("graph-background"), _breaker("graph")
+        for _ in range(3):
+            background.record_failure("HTTP 429 after 6 attempts")
+        assert background.is_open()
+        assert not interactive.is_open()
+        assert [b["service"] for b in rp.open_breakers()] == ["graph-background"]
+
+
+def test_the_state_file_from_before_the_lanes_keeps_working():
+    """That file holds one `graph` entry. It stays where it is, as the
+    interactive lane's entry; graph-background starts closed; a write for
+    one lane carries the other's entry over unchanged."""
+    with tempfile.TemporaryDirectory() as td:
+        _setup(Path(td))
+        now = time.time()
+        rp.STATE_FILE.write_text(json.dumps({"graph": {
+            "failures": 3, "last_failure_ts": now, "opened_at": now - 30,
+            "last_error": "HTTP 429 after 6 attempts"}}))
+        interactive, background = _breaker("graph"), _breaker("graph-background")
+        assert interactive.is_open()
+        assert not background.is_open()
+        background.record_failure("HTTP 429 after 6 attempts")
+        state = json.loads(rp.STATE_FILE.read_text())
+        assert state["graph"]["failures"] == 3 and state["graph"]["opened_at"] == now - 30
+        assert state["graph-background"]["failures"] == 1
+        interactive._cached = None
+        interactive.record_success()
+        state = json.loads(rp.STATE_FILE.read_text())
+        assert "graph" not in state and state["graph-background"]["failures"] == 1
+
+
+def test_circuit_open_names_its_service_and_reopen_time():
+    with tempfile.TemporaryDirectory() as td:
+        _setup(Path(td))
+        b = _breaker("graph-background", threshold=1, cooldown=300.0)
+        b.record_failure("HTTP 429 after 6 attempts")
+        assert abs(b.reopens_at() - (time.time() + 300)) < 5
+        try:
+            try:
+                b.raise_if_open()
+            except rp.CircuitOpen as inner:
+                raise RuntimeError("could not list the inbox") from inner
+        except RuntimeError as outer:
+            opened = rp.find_circuit_open(outer)
+        assert opened is not None and opened.service == "graph-background"
+        assert abs(opened.reopens_at - (time.time() + 300)) < 5
+        assert rp.find_circuit_open(ValueError("x")) is None
+        assert _breaker("graph").reopens_at() is None
+
+
+def test_is_throttled_reads_a_429_through_the_chain():
+    class _Resp:
+        status_code = 429
+
+    class _HTTPError(Exception):
+        response = _Resp()
+
+    assert rp.is_throttled(_HTTPError())
+    try:
+        try:
+            raise _HTTPError()
+        except _HTTPError as inner:
+            raise RuntimeError("wrapped") from inner
+    except RuntimeError as outer:
+        assert rp.is_throttled(outer)
+    assert not rp.is_throttled(RuntimeError("x"))
+    assert not rp.is_throttled(None)
+
+
+def test_the_tick_backoff_skips_the_next_three_ticks():
+    with tempfile.TemporaryDirectory() as td:
+        rp.TICK_BACKOFF_FILE = Path(td) / "tick-backoff.json"
+        tagger = rp.TickBackoff("mail_tagger")
+        assert tagger.take() == 0
+        tagger.throttled("HTTP 429")
+        assert tagger.pending() == rp.TICK_SKIPS == 3
+        rp.TickBackoff("ledger_sync").throttled()
+        assert [tagger.take() for _ in range(4)] == [3, 2, 1, 0]
+        # one job's skips are its own
+        assert rp.TickBackoff("ledger_sync").pending() == 3
+        assert "mail_tagger" not in json.loads(rp.TICK_BACKOFF_FILE.read_text())
+
+
+def test_a_tick_backoff_file_of_another_shape_reads_as_no_backoff():
+    with tempfile.TemporaryDirectory() as td:
+        rp.TICK_BACKOFF_FILE = Path(td) / "tick-backoff.json"
+        for text in ("not json", "[1, 2]", '{"mail_tagger": {"skip": "3"}}',
+                     '{"mail_tagger": {"skip": true}}', '{"mail_tagger": 3}'):
+            rp.TICK_BACKOFF_FILE.write_text(text)
+            assert rp.TickBackoff("mail_tagger").take() == 0, text
+
+
+# ── graph_get in each lane ────────────────────────────────────────────
+
+class _Resp:
+    def __init__(self, status, headers=None, json_data=None, text=""):
+        self.status_code = status
+        self.headers = headers or {}
+        self._json = json_data or {}
+        self.text = text
+        self.content = b"{}"
+
+    def raise_for_status(self):
+        import requests
+        if self.status_code >= 400:
+            err = requests.exceptions.HTTPError(f"{self.status_code}")
+            err.response = self
+            raise err
+
+    def json(self):
+        return self._json
+
+
+def _graph(td):
+    """graph_client with a fresh breaker state in `td`."""
+    import graph_client as gc
+    _setup(Path(td))
+    gc._breakers.clear()
+    return gc
+
+
+def _get(gc, responses, lane):
+    """graph_get on a queue of fake answers, with no sleeping; returns
+    (result or the exception raised, {"calls", "waits"})."""
+    state = {"calls": 0, "waits": []}
+
+    def fake_get(*a, **kw):
+        r = responses[state["calls"]]
+        state["calls"] += 1
+        return r
+    with patch("requests.get", side_effect=fake_get), \
+            patch.object(gc, "_headers", return_value={}), \
+            patch.object(gc, "_api_base", return_value="https://graph"), \
+            patch("time.sleep", side_effect=state["waits"].append):
+        try:
+            result = gc.graph_get("/me/messages", lane=lane)
+        except Exception as e:
+            result = e
+    gc._breakers.clear()
+    return result, state
+
+
+def _open(service, age=30):
+    """Write `service` open, `age` seconds into its cooldown."""
+    now = time.time()
+    state = rp._load_all()
+    state[service] = {"failures": 3, "last_failure_ts": now, "opened_at": now - age,
+                      "last_error": "HTTP 429 after 6 attempts", "cooldown": 300,
+                      "threshold": 3, "opens": 1}
+    rp._save_all(state)
+
+
+def test_a_background_call_fails_fast_while_its_breaker_is_open():
+    with tempfile.TemporaryDirectory() as td:
+        gc = _graph(td)
+        _open("graph-background")
+        result, state = _get(gc, [_Resp(200, json_data={"ok": True})], "background")
+        assert isinstance(result, rp.CircuitOpen) and state["calls"] == 0
+
+
+def test_an_interactive_call_probes_an_open_breaker_and_a_success_closes_it():
+    with tempfile.TemporaryDirectory() as td:
+        gc = _graph(td)
+        _open("graph")
+        _open("graph-background")
+        result, state = _get(gc, [_Resp(200, json_data={"ok": True})], "interactive")
+        assert result == {"ok": True} and state["calls"] == 1
+        after = rp._load_all()
+        assert "graph" not in after
+        assert after["graph-background"]["failures"] == 3   # the other lane is untouched
+
+
+def test_a_failed_probe_reopens_the_breaker_after_one_attempt():
+    with tempfile.TemporaryDirectory() as td:
+        gc = _graph(td)
+        _open("graph", age=200)
+        before = rp._load_all()["graph"]["opened_at"]
+        responses = [_Resp(429, headers={"Retry-After": "5"}), _Resp(200)]
+        result, state = _get(gc, responses, "interactive")
+        assert isinstance(result, gc.GraphThrottled) and result.response.status_code == 429
+        assert state["calls"] == 1 and state["waits"] == []
+        entry = rp._load_all()["graph"]
+        assert entry["failures"] == 4 and entry["opened_at"] > before + 100
+        assert str(result).startswith("Microsoft is limiting mail access right now.")
+
+
+def test_background_throttling_leaves_the_owner_lane_closed():
+    with tempfile.TemporaryDirectory() as td:
+        gc = _graph(td)
+        for _ in range(3):
+            result, state = _get(gc, [_Resp(429, headers={"Retry-After": "2"})] * 6,
+                                 "background")
+            assert isinstance(result, gc.GraphThrottled) and state["calls"] == 6
+        result, state = _get(gc, [_Resp(200)], "background")
+        assert isinstance(result, rp.CircuitOpen) and state["calls"] == 0
+        assert "graph" not in rp._load_all()
+        # the person's call goes through on its full retry ladder
+        result, state = _get(gc, [_Resp(429, headers={"Retry-After": "2"}),
+                                  _Resp(200, json_data={"value": []})], "interactive")
+        assert result == {"value": []} and state["waits"] == [2]
+
 
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

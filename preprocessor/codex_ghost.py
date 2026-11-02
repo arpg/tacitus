@@ -913,7 +913,8 @@ def run_job(job: dict, *, codex_run=None, scratch_runner=None, keep: bool = Fals
         else:
             scratch = prepare_scratch(jid, runner=scratch_runner)
             prompt = lane_prompt(job.get("prompt") or "", scratch) if kind == "briefing" else turn_prompt(job, scratch)
-            prefix = _bot_env({"EA_DIR": str(scratch), "EA_RUN_ID": rid, "EA_BOT_HOME": str(BOT_HOME)})
+            prefix = _bot_env({"EA_DIR": str(scratch), "EA_RUN_ID": rid, "EA_BOT_HOME": str(BOT_HOME),
+                               "EA_GRAPH_LANE": "background"})
             res = (codex_run or codex_cli.run)(
                 prompt, cwd=scratch, sandbox="workspace-write",
                 add_dirs=[BOT_HOME / ".ea" / "state" / "mail-queue"],
@@ -980,7 +981,8 @@ def run_lane_live(prompt: str, *, agent: str, run_id: str, codex_run=None) -> di
     real = BOT_HOME / ".ea"
     full = "# Operating instructions (CLAUDE.md)\n\n" + _core() + "\n\n# This run\n\n" + prompt.strip() \
         + codex_suffix(real, "briefing", live=True)
-    prefix = _bot_env({"EA_DIR": str(real), "EA_RUN_ID": run_id, "EA_BOT_HOME": str(BOT_HOME)})
+    prefix = _bot_env({"EA_DIR": str(real), "EA_RUN_ID": run_id, "EA_BOT_HOME": str(BOT_HOME),
+                       "EA_GRAPH_LANE": "background"})
     return (codex_run or codex_cli.run)(
         full, cwd=BOT_HOME, sandbox="workspace-write",
         add_dirs=[real / "state", real / "docs"], timeout=RUN_TIMEOUT_S["briefing"],

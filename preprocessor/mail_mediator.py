@@ -538,6 +538,7 @@ def handle(req_path: str):
         return
 
     run_id = str(req.get("run_id") or "")[:64]
+    lane = M.child_graph_lane(req.get("lane"))
     # A Codex ghost run (codex_ghost.py) may read; every other verb is
     # recorded for the judge and answered as the real verb answers (a
     # synthetic draft id for a draft), never executed.
@@ -580,18 +581,19 @@ def handle(req_path: str):
         def run():
             try:
                 _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir,
-                         deliveries, rewrites, req_path)
+                         deliveries, rewrites, req_path, lane=lane)
             finally:
                 _async_slots.release()
         threading.Thread(target=run, daemon=True).start()
         return
     _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir, deliveries, rewrites,
-             req_path)
+             req_path, lane=lane)
 
 
 def _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir, deliveries, rewrites,
-             req_path):
-    """Run one validated, staged request as the owner and answer it."""
+             req_path, lane="interactive"):
+    """Run one validated, staged request as the owner and answer it.
+    `lane` is the Graph breaker lane the child's calls run in."""
     cwd, timeout = str(REPO), EXEC_TIMEOUT_S
     plugin_name = ""
     if M.is_plugin_tool(tool):
@@ -627,6 +629,9 @@ def _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir, deliveries, r
     # The child reads the EA-Managed id from the owner-private file only,
     # whatever owner_trust makes of it (mail_mediation.owner_side).
     env[M.OWNER_SIDE_ENV] = "1"
+    # The owner's own actions run in the interactive Graph lane; a cron
+    # lane's request asked for background (mail_mediation.child_graph_lane).
+    env[M.GRAPH_LANE_ENV] = M.child_graph_lane(lane)
     # Forward the dispatch identity so draft_events.record() can label the
     # journal line with its owning run. The value crosses the trust boundary
     # from ea-bot, so it is length-capped and charset-restricted before

@@ -1473,6 +1473,73 @@ def _owner_file_cases():
         os.chmod(_CALENDARS, 0o600)
 
 
+def test_a_request_carries_its_graph_lane_to_the_child():
+    """A cron lane's call (EA_GRAPH_LANE=background) rides in the request
+    and the child runs in that lane; a request with no lane, or one the
+    mediator does not know, runs in the owner's interactive lane. The
+    child's plain throttle line and exit status come back unchanged."""
+    argv = ["search-mail", "--query", "hi"]
+    with tempfile.TemporaryDirectory() as td:
+        tmp = _setup(td)
+        os.environ["EA_FORCE_MEDIATE"] = "1"
+        before = os.environ.get(M.GRAPH_LANE_ENV)
+        os.environ[M.GRAPH_LANE_ENV] = "background"
+        M.QUEUE.mkdir(parents=True, exist_ok=True)
+        holder = {}
+
+        def responder():
+            for _ in range(400):
+                reqs = list(M.QUEUE.glob("req-*.json"))
+                if reqs:
+                    holder["req"] = json.loads(reqs[0].read_text())
+                    rid = reqs[0].name[len("req-"):-len(".json")]
+                    reqs[0].unlink()
+                    (M.QUEUE / f"resp-{rid}.json").write_text(
+                        json.dumps({"stdout": "[]", "stderr": "", "rc": 0}))
+                    return
+                time.sleep(0.02)
+
+        t = threading.Thread(target=responder)
+        t.start()
+        try:
+            M.forward_or_none("graph_actions", argv)
+            assert False, "should have exited after the mediator replied"
+        except SystemExit as e:
+            assert e.code == 0
+        finally:
+            t.join(timeout=5)
+            os.environ.pop("EA_FORCE_MEDIATE", None)
+            if before is None:
+                os.environ.pop(M.GRAPH_LANE_ENV, None)
+            else:
+                os.environ[M.GRAPH_LANE_ENV] = before
+        assert holder["req"]["lane"] == "background"
+
+        mm = _mediator(tmp)
+        envs = []
+        line = "Microsoft is limiting mail access right now. Try again in a few minutes."
+        real = mm.subprocess
+
+        def run(cmd, **kw):
+            envs.append(kw.get("env") or {})
+            return types.SimpleNamespace(stdout="", stderr=line + "\n", returncode=75)
+        mm.subprocess = types.SimpleNamespace(run=run, TimeoutExpired=subprocess.TimeoutExpired)
+        try:
+            for lane in ("background", None, "interactive", "urgent"):
+                rid = uuid.uuid4().hex[:8]
+                req = {"tool": "graph_actions", "verb": argv[0], "argv": argv}
+                if lane is not None:
+                    req["lane"] = lane
+                (M.QUEUE / f"req-{rid}.json").write_text(json.dumps(req))
+                mm.handle(str(M.QUEUE / f"req-{rid}.json"))
+                resp = json.loads((M.QUEUE / f"resp-{rid}.json").read_text())
+                assert resp["rc"] == 75 and resp["stderr"] == line + "\n", resp
+        finally:
+            mm.subprocess = real
+        assert [e.get(M.GRAPH_LANE_ENV) for e in envs] == [
+            "background", "interactive", "interactive", "interactive"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0

@@ -301,6 +301,65 @@ restart catch-up replays the gap from the last message id it saved.
 checks the secrets for the configured frontend (the two Slack tokens, or
 `ZULIP_API_KEY`).
 
+---
+
+## 10. Microsoft throttles the mailbox (Graph HTTP 429)
+
+**Symptom:** cron logs (`mail-tagger.log`, `ledger-sync.log`,
+`admissions-filter.log`, `mail-privacy.log`) show `Graph API HTTP 429
+(attempt N/6)` lines; the sentinel reports `circuit breaker OPEN:
+graph-background`; a mail request in chat answers "Microsoft is limiting
+mail access right now. Try again in a few minutes."
+
+**How the system responds:** every Graph read retries a 429 on Graph's
+`Retry-After`. Calls that spend their retries count toward a circuit
+breaker (`preprocessor/retry_policy.py`, state in
+`~/.ea/state/circuit-breakers.json`: 3 failures open it for 300 s), one
+per lane:
+
+| Lane | Breaker key | Callers | While open |
+|---|---|---|---|
+| interactive | `graph` | `graph_actions.py`, `scheduling_engine.py` and `email_writer.py` run from a chat turn, the mediator's SAFE ops, the chat bot's own tool runs | each call makes one attempt (the probe): success closes the breaker, failure re-opens it |
+| background | `graph-background` | every cron tick and agent lane: `run-agent.sh` (preprocess, the briefing lanes), `run-plugin.sh`, `mail_tagger`, `ledger_sync`, `closure_scrubber`, `calendar_reconciler`, `admissions_filter`, `mail_privacy`, `mail_gate`, and any other importer of `graph_client` | calls fail fast with `CircuitOpen` |
+
+The lane comes from the caller: `graph_get(..., lane=)`, else
+`EA_GRAPH_LANE` (a cron script sets `background`, the CLIs a chat turn
+runs default to `interactive`), else background. A mediated request
+carries the caller's `EA_GRAPH_LANE` in its `lane` field; the mediator
+runs the child in `background` only when the request asks for it. A
+background failure never opens the interactive breaker, so the person's
+own requests keep working while the ticks are throttled.
+
+An interactive call also stops retrying once its next wait would take it
+past 45 s from its first attempt (the mediator ends its child at 120 s). A throttled `graph_actions` verb
+exits 75 with one plain line on stderr, which the EA passes on.
+
+The mail tagger and `ledger_sync check` back off further: a tick that met
+a 429 makes the job's next 3 ticks skip (`~/.ea/state/tick-backoff.json`)
+and logs one line per skip.
+
+**Diagnosis:** each call that meets a 429 logs one warning with Graph's
+`Retry-After` and the first 200 characters of its answer, which names
+the limit (`ApplicationThrottled`, `MailboxConcurrency`):
+
+```bash
+grep -h "WARNING: Graph HTTP 429" ~/.ea-private/logs/*.log | tail
+tail ~/.ea-private/logs/graph-client.log    # the graph_actions runs (chat, mediator)
+python3 preprocessor/retry_policy.py         # the breakers, open and all
+cat ~/.ea/state/tick-backoff.json            # the jobs skipping ticks
+```
+
+Compare the minute of the first 429 with the crontab: jobs that start in
+the same minute (the `:20` closure scrubber run beside the 2-, 5- and
+10-minute ticks) add up against Exchange's per-mailbox limits.
+
+**Fix:** none is needed for a short throttle; the breaker and the skips
+clear on their own. For a recurring one, move the heavy job off the
+shared minute in the crontab master, or lower its read volume.
+
+**Detection:** sentinel check `circuit_breakers` lists each open breaker
+by key.
+
 ## Incident-note template (`docs/_local/incidents/YYYY-MM-DD-slug.md`)
 
 ```markdown

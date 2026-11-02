@@ -8,6 +8,7 @@ in virtually all M365 tenants. See docs/AUTHENTICATION.md for why this is necess
 
 import base64
 import json
+import logging
 import os
 import re
 import secrets
@@ -1290,16 +1291,210 @@ _GRAPH_RETRY_STATUSES = {429, 502, 503, 504}
 # cumulative wait outlasts Graph's peak-load spikes.
 _GRAPH_RETRY_BACKOFF = [5, 15, 45, 90, 180]
 
+# The most time an interactive call spends on its attempts and waits
+# before it stops retrying, counted from its first attempt. The person is
+# waiting, and the mediator ends a child at 120 s: one more request (60 s
+# timeout) after this budget still ends inside that, with the plain words.
+_INTERACTIVE_BUDGET_S = 45
 
-# Circuit breaker: per-call retry handles a 30-60s blip; the breaker handles
-# "Graph has been down all morning" by failing fast instead of re-walking the
-# ~5-min backoff ladder on every cron job. State is shared across processes
-# via ~/.ea/state/circuit-breakers.json; sentinel.py alerts when open.
+# The words the owner reads when Microsoft throttles the mailbox: the
+# message of a GraphThrottled, and graph_actions' one line on stderr.
+THROTTLED_TEXT = "Microsoft is limiting mail access right now. Try again in a few minutes."
+
+
+# Circuit breakers, one per lane (retry_policy.GRAPH_BREAKERS): per-call
+# retry handles a 30-60s blip; the breaker handles "Graph has been down all
+# morning". The background breaker fails its calls fast instead of
+# re-walking the ~5-min backoff ladder on every cron job; the interactive
+# breaker turns the person's call into one attempt, the probe. State is
+# shared across processes via ~/.ea/state/circuit-breakers.json; sentinel.py
+# alerts when one is open.
 try:
-    from retry_policy import CircuitBreaker
-    _graph_breaker = CircuitBreaker("graph")
-except Exception:  # retry_policy missing in stripped deploys — degrade
-    _graph_breaker = None
+    import retry_policy as _retry
+except ModuleNotFoundError:
+    try:
+        from preprocessor import retry_policy as _retry
+    except Exception:  # retry_policy missing in stripped deploys: degrade
+        _retry = None
+except Exception:
+    _retry = None
+
+_breakers: dict = {}
+
+
+def graph_lane(lane: Optional[str] = None) -> str:
+    """The lane of a call: `lane` when it names one, else the process's."""
+    if _retry is None:
+        return lane or "background"
+    return _retry.graph_lane(lane)
+
+
+def _breaker_for(lane: str):
+    """The breaker of `lane`, or None when retry_policy is missing."""
+    if _retry is None:
+        return None
+    key = _retry.graph_breaker_key(lane)
+    if key not in _breakers:
+        try:
+            _breakers[key] = _retry.CircuitBreaker(key)
+        except Exception:
+            return None
+    return _breakers[key]
+
+
+# Notes about retries and throttling. They go to stderr (a cron job's log)
+# unless a CLI points them at a file (notes_to_file): graph_actions owes its
+# caller one plain line on stderr.
+log = logging.getLogger("graph_client")
+
+
+class _StderrNow(logging.StreamHandler):
+    """Writes to whatever sys.stderr is when the record is emitted."""
+
+    @property
+    def stream(self):
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, _value):
+        pass
+
+
+class _NoteFormat(logging.Formatter):
+    def format(self, record):
+        text = record.getMessage()
+        if record.levelno >= logging.WARNING:
+            return f"  {record.levelname}: {text}"
+        return f"  {text}"
+
+
+if not log.handlers:
+    _handler = _StderrNow()
+    _handler.setFormatter(_NoteFormat())
+    log.addHandler(_handler)
+    log.setLevel(logging.INFO)
+    log.propagate = False
+
+
+class _NoteFile(logging.Handler):
+    """Appends each note to a file. `where` is the path, or a function that
+    returns it, called at the first note, so a run with nothing to note
+    creates nothing. A note that cannot be written is dropped: the
+    caller's stderr stays clean."""
+
+    def __init__(self, where):
+        super().__init__()
+        self.where = where
+        self.setFormatter(logging.Formatter(
+            "%(asctime)s graph_client[%(process)d] %(levelname)s %(message)s"))
+
+    def emit(self, record):
+        try:
+            if callable(self.where):
+                self.where = self.where()
+            with open(self.where, "a") as f:
+                f.write(self.format(record) + "\n")
+        except Exception:
+            pass
+
+
+def notes_to_file(where) -> None:
+    """Send the retry and throttle notes to a file instead of stderr:
+    `where` is its path, or a function that returns it at the first note."""
+    for old in list(log.handlers):
+        log.removeHandler(old)
+    log.addHandler(_NoteFile(where))
+
+
+# Calls in this process that ended on HTTP 429: a tick reads it to back off.
+_throttled_calls = 0
+
+
+def throttled_calls() -> int:
+    """How many Graph calls in this process ended on HTTP 429."""
+    return _throttled_calls
+
+
+class GraphThrottled(requests.exceptions.HTTPError):
+    """A call that ended on HTTP 429: retries spent, or the probe of an open
+    breaker refused. Its message is the plain sentence for the owner;
+    `endpoint` is the path, `retry_after` the seconds Graph asked for,
+    `retry_at` the epoch second a new try makes sense, when known."""
+
+    def __init__(self, *args, endpoint: str = "", retry_after: Optional[float] = None,
+                 retry_at: Optional[float] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.endpoint = endpoint
+        self.retry_after = retry_after
+        self.retry_at = retry_at
+
+
+def _clock(at: float) -> str:
+    """`at` as HH:MM in the user's zone."""
+    when = datetime.fromtimestamp(at, timezone.utc)
+    try:
+        return to_user_local(when).strftime("%H:%M")
+    except Exception:
+        return when.astimezone().strftime("%H:%M")
+
+
+def throttled_text(at: Optional[float] = None) -> str:
+    """The plain sentence, with the time to try again when it is at least a
+    minute away."""
+    if at and at - time.time() >= 60:
+        try:
+            return f"{THROTTLED_TEXT[:-1]} (after {_clock(at)})."
+        except Exception:
+            pass
+    return THROTTLED_TEXT
+
+
+def throttle_line(exc: BaseException) -> Optional[str]:
+    """The owner's one line for an error that is Microsoft throttling the
+    mailbox (HTTP 429, or a Graph breaker open), else None."""
+    if _retry is None:
+        return None
+    opened = _retry.find_circuit_open(exc)
+    if opened is not None and str(getattr(opened, "service", "")).startswith("graph"):
+        return throttled_text(getattr(opened, "reopens_at", None))
+    if _retry.is_throttled(exc):
+        at = None
+        cur = exc
+        for _ in range(5):
+            if cur is None:
+                break
+            at = getattr(cur, "retry_at", None)
+            if at:
+                break
+            cur = cur.__cause__ or cur.__context__
+        return throttled_text(at)
+    return None
+
+
+def _retry_after(response) -> Optional[int]:
+    """Graph's Retry-After in seconds, when it sent a number."""
+    ra = response.headers.get("Retry-After") if response is not None else None
+    if ra and str(ra).strip().isdigit():
+        return int(str(ra).strip())
+    return None
+
+
+def _note_throttle(endpoint: str, response, lane: str) -> None:
+    """One warning per call that met a 429: Graph's Retry-After and the
+    start of its answer, which names the limit (mailbox concurrency,
+    application throttling). The answer carries no mail content."""
+    import urllib.parse as _up
+    path = endpoint.split("?", 1)[0]
+    if path.startswith("http"):
+        path = _up.urlsplit(path).path
+    body = ""
+    try:
+        body = (response.text or "")[:200]
+    except Exception:
+        pass
+    body = " ".join(body.split())
+    log.warning(f"Graph HTTP 429 ({lane}) on {path}: "
+                f"Retry-After {_retry_after(response)}; body: {body}")
 
 
 _PATH_REFUSED = re.compile(r"[?#%\\\s\x00-\x1f\x7f]")
@@ -1345,69 +1540,105 @@ def _check_endpoint(endpoint: str) -> str:
 
 
 def graph_get(endpoint: str, params: Optional[dict] = None,
-               _retries: int = len(_GRAPH_RETRY_BACKOFF) + 1) -> dict:
+               _retries: int = len(_GRAPH_RETRY_BACKOFF) + 1, *,
+               lane: Optional[str] = None) -> dict:
     """GET request to Graph/Outlook API with retry on transient errors.
 
     Retries a network blip and the transient statuses in
     _GRAPH_RETRY_STATUSES, honouring Retry-After when Graph sends one.
     Other HTTP errors (4xx auth/not-found, 500 internal) are terminal and
-    propagate immediately.
+    propagate immediately. A call that ends on 429 raises GraphThrottled.
 
-    Raises CircuitOpen immediately (no network call) while the Graph
-    breaker is open, i.e. after 3 consecutive calls exhausted their full
-    retry ladders within the cooldown window.
+    `lane` is the caller's (retry_policy.graph_lane: interactive or
+    background; the process's lane when omitted). While the lane's breaker
+    is open (3 consecutive calls exhausted their retries within the
+    cooldown), a background call raises CircuitOpen with no network call,
+    and an interactive call makes one attempt, the half-open probe: success
+    closes the breaker, failure re-opens it. An interactive call also stops
+    retrying once its next wait would take it past _INTERACTIVE_BUDGET_S.
     """
-    if _graph_breaker is not None:
-        _graph_breaker.raise_if_open()
+    global _throttled_calls
+    lane = graph_lane(lane)
+    interactive = _retry is not None and lane == _retry.INTERACTIVE
+    breaker = _breaker_for(lane)
+    if breaker is not None and breaker.is_open():
+        if not interactive:
+            breaker.raise_if_open()
+        _retries = 1
     url = _check_endpoint(endpoint)
+    started = time.monotonic()
+    waited = 0.0
+    noted = False
+
+    def out_of_time(wait) -> bool:
+        # The time spent so far: the clock, or the waits when the clock
+        # stood still through them.
+        spent = max(time.monotonic() - started, waited)
+        return interactive and spent + wait > _INTERACTIVE_BUDGET_S
+
     for attempt in range(1, _retries + 1):
         try:
             resp = requests.get(url, headers=_headers(), params=params, timeout=60)
             resp.raise_for_status()
             result = _normalize(resp.json())
-            if _graph_breaker is not None:
-                _graph_breaker.record_success()
+            if breaker is not None:
+                breaker.record_success()
             return result
         except (requests.exceptions.ConnectionError,
                  requests.exceptions.Timeout) as e:
-            if attempt == _retries:
-                if _graph_breaker is not None:
-                    _graph_breaker.record_failure(f"timeout: {e}")
+            wait = _GRAPH_RETRY_BACKOFF[attempt - 1] if attempt < _retries else None
+            if wait is None or out_of_time(wait):
+                if breaker is not None:
+                    breaker.record_failure(f"timeout: {e}")
                 raise
-            wait = _GRAPH_RETRY_BACKOFF[attempt - 1]
-            print(f"  Graph API timeout (attempt {attempt}/{_retries}), "
-                  f"retrying in {wait}s...", file=sys.stderr)
+            log.info(f"Graph API timeout (attempt {attempt}/{_retries}), "
+                     f"retrying in {wait}s...")
             time.sleep(wait)
+            waited += wait
         except requests.exceptions.HTTPError as e:
             status = getattr(e.response, "status_code", None)
-            if status not in _GRAPH_RETRY_STATUSES or attempt == _retries:
-                if status in _GRAPH_RETRY_STATUSES and _graph_breaker is not None:
-                    # transient class, retries exhausted -> counts toward
-                    # the breaker. Terminal 4xx/500 do NOT count: they are
-                    # caller errors, not service-down evidence.
-                    _graph_breaker.record_failure(f"HTTP {status} after "
-                                                  f"{attempt} attempts")
+            if status == 429 and not noted:
+                _note_throttle(endpoint, e.response, lane)
+                noted = True
+            if status not in _GRAPH_RETRY_STATUSES:
+                # Terminal 4xx/500 do NOT count toward the breaker: they are
+                # caller errors, not service-down evidence.
                 raise
             # Honor Retry-After if Graph supplied one (mostly for 429),
             # else fall back to our schedule. Cap at 5 min.
-            ra = (e.response.headers.get("Retry-After")
-                  if e.response is not None else None)
-            if ra and ra.isdigit():
-                wait = min(int(ra), 300)
-            else:
-                wait = _GRAPH_RETRY_BACKOFF[attempt - 1]
-            print(f"  Graph API HTTP {status} (attempt {attempt}/{_retries}), "
-                  f"retrying in {wait}s...", file=sys.stderr)
+            ra = _retry_after(e.response)
+            wait = None
+            if attempt < _retries:
+                wait = min(ra, 300) if ra is not None else _GRAPH_RETRY_BACKOFF[attempt - 1]
+            if wait is None or out_of_time(wait):
+                # Transient class, retries exhausted: counts toward the breaker.
+                if breaker is not None:
+                    breaker.record_failure(f"HTTP {status} after {attempt} attempts")
+                if status != 429:
+                    raise
+                _throttled_calls += 1
+                at = breaker.reopens_at() if breaker is not None else None
+                if at is None and ra is not None:
+                    at = time.time() + ra
+                raise GraphThrottled(throttled_text(at), response=e.response,
+                                     request=getattr(e, "request", None),
+                                     endpoint=endpoint.split("?", 1)[0],
+                                     retry_after=ra, retry_at=at) from e
+            log.info(f"Graph API HTTP {status} (attempt {attempt}/{_retries}), "
+                     f"retrying in {wait}s...")
             time.sleep(wait)
+            waited += wait
 
 
-def graph_get_all(endpoint: str, params: Optional[dict] = None) -> list:
+def graph_get_all(endpoint: str, params: Optional[dict] = None, *,
+                  lane: Optional[str] = None) -> list:
     """GET with automatic pagination – returns all items."""
+    kw = {"lane": lane} if lane else {}
     items = []
-    data = graph_get(endpoint, params)
+    data = graph_get(endpoint, params, **kw)
     items.extend(data.get("value", []))
     while "@odata.nextLink" in data:
-        data = graph_get(data["@odata.nextLink"])
+        data = graph_get(data["@odata.nextLink"], **kw)
         items.extend(data.get("value", []))
     return items
 

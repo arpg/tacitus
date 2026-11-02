@@ -540,6 +540,79 @@ def test_a_folder_search_asks_graph_to_search_that_folder():
                     ("/me/messages", '"Gala"')]
 
 
+# ── a throttled verb ends in one plain line ──────────────────────────
+
+def _throttled_run(fn, args):
+    """Run a verb the way graph_actions' __main__ does; (exit code,
+    stdout, stderr)."""
+    import contextlib
+    import io
+    out, err = io.StringIO(), io.StringIO()
+    code = 0
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            with ga._plain_throttle_exit():
+                fn(args)
+        except SystemExit as e:
+            code = e.code
+    return code, out.getvalue(), err.getvalue()
+
+
+def _graph_throttled():
+    import requests
+    resp = requests.Response()
+    resp.status_code = 429
+    return gc.GraphThrottled(gc.THROTTLED_TEXT, response=resp, endpoint="/me/messages",
+                             retry_after=5, retry_at=None)
+
+
+def test_a_throttled_verb_exits_with_one_plain_line():
+    """search-mail lets a Graph error through; a 429 (or an open breaker)
+    ends the run with exit 75 and one plain line, never a traceback."""
+    import retry_policy
+    from time import time as _now
+
+    def boom(*a, **k):
+        raise _graph_throttled()
+    with patch.object(ga.graph, "search_messages", boom):
+        code, out, err = _throttled_run(ga.cmd_search_mail,
+                                        SimpleNamespace(query="x", top=5, folder=None))
+    assert code == ga.THROTTLED_EXIT == 75
+    assert out == "" and err == gc.THROTTLED_TEXT + "\n"
+    assert err == "Microsoft is limiting mail access right now. Try again in a few minutes.\n"
+
+    def shut(*a, **k):
+        raise retry_policy.CircuitOpen("graph-background circuit open (3 consecutive failures)",
+                                       service="graph-background", reopens_at=_now() + 300)
+    with patch.object(ga.graph, "search_messages", shut):
+        code, out, err = _throttled_run(ga.cmd_search_mail,
+                                        SimpleNamespace(query="x", top=5, folder=None))
+    assert code == 75 and len(err.splitlines()) == 1
+    assert err.startswith("Microsoft is limiting mail access right now. Try again in a few minutes (after ")
+    assert "Traceback" not in err and "circuit" not in err
+
+
+def test_any_other_error_still_raises():
+    def boom(*a, **k):
+        raise ValueError("not a throttle")
+    with patch.object(ga.graph, "search_messages", boom):
+        try:
+            _throttled_run(ga.cmd_search_mail, SimpleNamespace(query="x", top=5, folder=None))
+        except ValueError:
+            return
+    raise AssertionError("a non-throttle error was swallowed")
+
+
+def test_the_cli_runs_every_verb_inside_the_plain_exit():
+    """__main__ dispatches inside _plain_throttle_exit, defaults its lane to
+    interactive and keeps the retry notes off stderr."""
+    src = (Path(__file__).resolve().parent.parent / "preprocessor" / "graph_actions.py").read_text()
+    main = src[src.rindex('if __name__ == "__main__":'):]
+    assert "with _plain_throttle_exit():\n        args.func(args)" in main
+    assert "graph.notes_to_file(" in main
+    top = src[src.index('if __name__ == "__main__":'):src.index("import graph_client as graph")]
+    assert "set_graph_lane(_retry_policy.INTERACTIVE, only_if_unset=True)" in top
+
 
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

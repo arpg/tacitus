@@ -2407,4 +2407,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # A tick: its Graph calls run in the background lane unless its caller
+    # set one (retry_policy.graph_lane).
+    import retry_policy
+    retry_policy.set_graph_lane(retry_policy.BACKGROUND, only_if_unset=True)
     sys.exit(main())

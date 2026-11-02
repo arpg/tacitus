@@ -519,6 +519,17 @@ def option_error(tool: str, verb: str, argv: list[str]) -> str | None:
 # that executes as the owner.
 MEDIATED_VERB_ENV = "EA_MEDIATED_VERB"
 
+# The Graph breaker lane (retry_policy.GRAPH_LANE_ENV). A request carries
+# its caller's; the mediator gives the child "background" only when the
+# request says so, and "interactive" otherwise: its SAFE ops run on the
+# owner's behalf.
+GRAPH_LANE_ENV = "EA_GRAPH_LANE"
+
+
+def child_graph_lane(requested) -> str:
+    """The lane the mediator's child runs in for a request's `lane` field."""
+    return "background" if requested == "background" else "interactive"
+
 
 def check_child_parse(parser, args) -> bool:
     """Call right after parse_args() in a mediated tool. In a child the
@@ -1069,7 +1080,10 @@ def forward_or_none(tool: str, argv: list[str], transform=None):
                                # The mediator's child runs as the owner with a fresh
                                # env, so the run id must ride in the request or
                                # every mediated record is unlabelled.
-                               "run_id": os.environ.get("EA_RUN_ID", "")}))
+                               "run_id": os.environ.get("EA_RUN_ID", ""),
+                               # The Graph breaker lane of the caller (a cron
+                               # lane sets background); none is the owner's own.
+                               "lane": os.environ.get(GRAPH_LANE_ENV, "")}))
     try:
         os.chmod(tmp, 0o640)
     except OSError:

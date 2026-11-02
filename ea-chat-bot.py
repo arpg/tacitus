@@ -13804,6 +13804,10 @@ if __name__ == "__main__":
             pass
     _instance_commit = _instance_commit or "unknown"
     log.info(f"EA chat bot starting... (commit {_instance_commit})")
+    # The bot acts for the person: the tools it runs (a Send button, a
+    # card's draft read) make their Graph calls in the interactive lane
+    # (preprocessor/retry_policy.py).
+    os.environ.setdefault("EA_GRAPH_LANE", "interactive")
     try:
         # The deploy hook and the sentinel read this stamp in the state dir;
         # an atomic replace is the owner's write there.

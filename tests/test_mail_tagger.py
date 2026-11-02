@@ -179,3 +179,90 @@ def test_project_lines_carry_parent_aliases_people_and_summary():
     assert "old-grant" not in prompt
     assert mt._first_sentence("Two tracks. The second starts in fall.") == "Two tracks."
     assert mt._first_sentence("x" * 200, cap=20) == "x" * 17 + "..."
+
+
+# ── the throttle backoff ──────────────────────────────────────────────
+
+import retry_policy  # noqa: E402
+
+
+class _Resp429:
+    status_code = 429
+
+
+class ThrottledGraph(FakeGraph):
+    """Graph whose folder reads answer 429 ("raise"), answer while counting
+    a 429 another read of the tick met ("swallow"), or answer ("ok")."""
+
+    def __init__(self, mode="raise"):
+        super().__init__()
+        self.mode = mode
+        self.reads = 0
+        self.count = 0
+
+    def list_folder_messages(self, folder, **kw):
+        self.reads += 1
+        if self.mode == "raise":
+            import requests
+            err = requests.exceptions.HTTPError("429")
+            err.response = _Resp429()
+            raise err
+        if self.mode == "swallow":
+            self.count += 1
+        return [], False
+
+    def throttled_calls(self):
+        return self.count
+
+
+def _guarded(g, tmp_path, **kw):
+    return mt.guarded_tick(graph=g, now=NOW, state_path=tmp_path / "st.json",
+                           log_path=tmp_path / "log.jsonl", router=lambda *a, **k: {},
+                           asker=lambda p: ({}, {}), vocab=VOCAB, **kw)
+
+
+def test_a_throttled_tick_makes_the_next_three_skip(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(retry_policy, "TICK_BACKOFF_FILE", tmp_path / "tick-backoff.json")
+    g = ThrottledGraph()
+    assert _guarded(g, tmp_path) == (None, 1)
+    out = capsys.readouterr().out
+    assert "HTTP 429" in out and "skipping the next 3 ticks" in out
+    assert "Traceback" not in out
+    for left in (2, 1, 0):
+        assert _guarded(g, tmp_path) == (None, 0)
+        lines = capsys.readouterr().out.strip().splitlines()
+        assert len(lines) == 1 and f"skipped; Graph throttled a recent tick ({left} more to skip)" in lines[0]
+    assert g.reads == 1                        # the skipped ticks never asked Graph
+    g.mode = "ok"
+    summary, rc = _guarded(g, tmp_path)         # the fourth tick runs
+    assert rc == 0 and g.reads > 1 and summary["inbox_rows"] == 0
+    assert retry_policy.TickBackoff(mt.BACKOFF_JOB).pending() == 0
+
+
+def test_a_429_the_tick_swallowed_starts_the_backoff_too(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(retry_policy, "TICK_BACKOFF_FILE", tmp_path / "tick-backoff.json")
+    g = ThrottledGraph("swallow")
+    summary, rc = _guarded(g, tmp_path)
+    assert rc == 0 and summary["inbox_rows"] == 0
+    assert "skipping the next 3 ticks" in capsys.readouterr().out
+    assert retry_policy.TickBackoff(mt.BACKOFF_JOB).pending() == 3
+
+
+def test_a_dry_run_neither_skips_nor_starts_the_backoff(tmp_path, monkeypatch):
+    monkeypatch.setattr(retry_policy, "TICK_BACKOFF_FILE", tmp_path / "tick-backoff.json")
+    assert _guarded(ThrottledGraph(), tmp_path, dry_run=True) == (None, 1)
+    assert retry_policy.TickBackoff(mt.BACKOFF_JOB).pending() == 0
+
+
+def test_an_open_breaker_ends_the_tick_in_one_line(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(retry_policy, "TICK_BACKOFF_FILE", tmp_path / "tick-backoff.json")
+
+    class Closed(FakeGraph):
+        def list_folder_messages(self, folder, **kw):
+            raise retry_policy.CircuitOpen("graph-background circuit open (3 consecutive failures)",
+                                           service="graph-background")
+    assert _guarded(Closed(), tmp_path) == (None, 1)
+    out = capsys.readouterr().out.strip().splitlines()
+    assert len(out) == 1 and "graph-background circuit open" in out[0]
+    # an open breaker is no throttled answer: nothing to skip
+    assert retry_policy.TickBackoff(mt.BACKOFF_JOB).pending() == 0
