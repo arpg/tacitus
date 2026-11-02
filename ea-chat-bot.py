@@ -569,12 +569,15 @@ _GMAIL_TOOL_USE_RE = re.compile(
 
 def _is_gmail_draft_tool(tool_name: str, tool_input) -> bool:
     """A tool call whose result may carry a Gmail draft id: the Gmail MCP
-    draft tools, or a Bash line running gmail_client.py create/update-draft."""
+    draft tools, or a Bash line writing a Gmail draft with gmail_client.py
+    or mail_actions.py --provider gmail."""
     if tool_name in _GMAIL_DRAFT_TOOLS:
         return True
     if tool_name == "Bash" and isinstance(tool_input, dict):
         cmd = str(tool_input.get("command", ""))
-        return "gmail_client.py" in cmd and ("create-draft" in cmd or "update-draft" in cmd)
+        gmail = "gmail_client.py" in cmd or ("mail_actions.py" in cmd and "--provider gmail" in cmd)
+        return gmail and any(v in cmd for v in ("create-draft", "create-reply", "update-draft",
+                                                "create-forward"))
     return False
 
 
@@ -2605,6 +2608,7 @@ def _needs_mcp(msg: str, needed_modules: set[str],
 
 
 _BASH_ONLY_TOOLS = (
+    "Bash(python3 {script_dir}/preprocessor/mail_actions.py *),"
     "Bash(python3 {script_dir}/preprocessor/graph_actions.py *),"
     "Bash(python3 {script_dir}/preprocessor/gmail_client.py *),"
     "Bash(python3 {script_dir}/preprocessor/google_calendar_client.py *),"
@@ -2725,7 +2729,7 @@ _MCP_TOOLS = (
     # get_thread / list_drafts / list_labels (NO `gmail_` prefix, and there
     # is no read_message; reads come back through get_thread). A `gmail_*`
     # name matches nothing and the request is denied. Drafts are written
-    # with gmail_client.py create-draft / update-draft in every account:
+    # with mail_actions.py create-draft / update-draft in every account:
     # the connector's create_draft rewrote every link as a google.com/url?q=
     # redirect, so it and update_draft are denied
     # (scripts/disallowed-tools.txt).
@@ -2920,7 +2924,7 @@ def _tools_block(body_file: str, needed_modules: set[str] | None = None) -> str:
   Journal decisions and milestones as they happen; file notable emails to
   their project. A project pack may already be injected above — do not
   re-fetch it.
-- Gmail MCP — for Gmail drafts/search (may be unavailable; use graph_actions.py search-mail as fallback)
+- Gmail MCP — for Gmail search (may be unavailable; use mail_actions.py search --provider gmail as fallback)
 {google_calendar_block}- The EA-Managed calendar is YOUR OWN rule store, and you may edit it
   freely without asking. No button, no pending-event file:
     google_calendar_client.py list-ea-managed [--show-instances]
@@ -10894,7 +10898,7 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 # as they call it directly.
 _LEDGER_SCRIPT_RE = re.compile(r"ledger\.py")
 _LEDGER_VERB_RE = re.compile(r"\b(?:get|list|search|show|find)\s+--")
-_MAIL_SCRIPT_RE = re.compile(r"graph_actions\.py|gmail_client\.py")
+_MAIL_SCRIPT_RE = re.compile(r"mail_actions\.py|graph_actions\.py|gmail_client\.py")
 _MAIL_VERB_RE = re.compile(
     r"\b(?:search|search-threads|search-mail|get-conversation|get-message|get-thread"
     r"|list-mail|list-threads|calendar-view)\s+--")

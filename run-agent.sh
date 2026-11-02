@@ -519,9 +519,10 @@ if [[ "${EA_LITERAL_COMMANDS:-}" == 1 ]]; then
    python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/<script>.py ... for one of the
    granted scripts (that absolute path), jq '<filter>' <file>, cat <file> or
    ls <dir>. No cd, no && or ;, no pipe, no python3 -c, no \$(...), no ~.
-   Outlook mail goes through graph_actions.py (search-mail, get-message,
-   get-conversation, create-reply, create-draft), Gmail through
-   gmail_client.py; never run graph_client.py. Read files with the Read
+   Mail goes through mail_actions.py --provider outlook|gmail (search,
+   get-message, create-reply, create-draft); threads through
+   graph_actions.py get-conversation or gmail_client.py get-thread; never
+   run graph_client.py. Read files with the Read
    tool, filter JSON with jq, and write files with Write or Edit. A call
    refused for its FORM (a pipe, a cd, a relative path): rewrite it as one
    granted command and run it again. A call refused by design (send-draft,
@@ -616,7 +617,7 @@ Begin now."
 # scripts/ea-resident-inner.sh.
 
 # Gmail: the same four read verbs the Slack bot grants. Drafts go through
-# gmail_client.py; the connector's create_draft rewrote every link as a
+# mail_actions.py; the connector's create_draft rewrote every link as a
 # google.com/url?q= redirect, so it and update_draft are denied
 # (scripts/disallowed-tools.txt).
 MCP_GMAIL="mcp__claude_ai_Gmail__search_threads"
@@ -649,6 +650,7 @@ ALLOWED_TOOLS="${MCP_GMAIL},${MCP_GCAL}"
 if [[ -n "$MCP_CHAT" ]]; then
     ALLOWED_TOOLS+=",${MCP_CHAT}"
 fi
+ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/mail_actions.py *)"
 ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/graph_actions.py *)"
 ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/gmail_client.py *)"
 # google_calendar_client.py is the documented replacement for the gcal MCP

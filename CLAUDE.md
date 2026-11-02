@@ -58,8 +58,7 @@ subagent (Agent tool, `subagent_type: "email-author"`). Letters
 (recommendations, formal documents) also come from the subagent. Call it
 in the foreground, never as a background agent: a background call ends
 your turn before the draft exists, and the Send button is never posted.
-You create the draft with `graph_actions.py` (Outlook) or
-`gmail_client.py` (Gmail); neither writer does. With no writer in your
+You create the draft with `mail_actions.py`; neither writer does. With no writer in your
 lane, read `docs/ea/drafting-voice.md` and write the body yourself.
 
 Rules for every lane and writer: run
@@ -178,9 +177,8 @@ before acting on its topic.
 - *Poll filling* (`polls.md`, When2Meet, Doodle): ask-first.
 - *Reimbursement & receipts* (`reimbursement.md`): ask-first; receipts
   are in the ledger, never re-scan the inbox.
-- *Gmail drafts* (`gmail.md`): `gmail_client.py create-draft` (a reply
-  passes `--reply-to-message-id`), `update-draft`, `attach-file`,
-  `remove-attachment`.
+- *Gmail drafts* (`gmail.md`): `mail_actions.py --provider gmail`;
+  `gmail_client.py` keeps `get-thread`, `attach-file`, `remove-attachment`.
 - *List digests* (`list-digests.md`) and *Admissions inquiries*
   (`admissions-inquiries.md`): digested in code; not obligations.
 - *Briefing data* (`briefing-data.md`): `today_top` is ranked in code,
@@ -318,7 +316,7 @@ clicks a button. You CANNOT call them:
 - `request-confirm`: the bot's Python is the only caller.
 - Google Calendar MCP write verbs: denied; only the reads are granted.
 - Gmail MCP `send_message`, `reply`, `forward`, `trash_*`, `create_draft`,
-  `update_draft`: denied. Gmail drafts go through `gmail_client.py`.
+  `update_draft`: denied. Gmail drafts go through `mail_actions.py`.
 
 **Un-gated by design:**
 - The EA-Managed calendar is the EA's own rule store with no attendees.
@@ -338,8 +336,7 @@ clicks a button. You CANNOT call them:
 `archive-message` (`ledger.py close` archives for you) and deleting
 email (only `delete-draft` exists).
 
-**Ungated:** `create-draft`, `create-reply`, `update-draft`,
-`delete-draft`, `get-event`, all reads.
+**Ungated:** `mail_actions.py` draft verbs, `get-event`, all reads.
 
 **Your workflow:** create the draft or staged event IMMEDIATELY when the
 intent is clear. Do not preview the body in chat. Post a SHORT
@@ -367,27 +364,27 @@ meeting confirmation is the body.
    them in `recent_slack_messages` (see `pending_instructions`); read the
    channel only when a chat read tool is granted and you have no briefing.
 3. Check the autonomy tier before acting. Post to chat for ask-first tasks.
-4. Outlook drafts: `python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py create-draft --to <addr> --subject "<subj>" --body-file /path/to/body.txt`
+4. Mail is `python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py <verb> --provider outlook|gmail` (`-h` lists verbs); the provider CLIs keep only their own verbs. A draft: `mail_actions.py create-draft --provider outlook --to <addr> --subject "<subj>" --body-file /path/to/body.txt`
 4a. Name the ledger row a draft delivers: `--ledger-id <id>` on
-   `create-draft`, `create-reply`, `update-draft` (and the
-   `gmail_client.py` equivalents); repeat for more rows. A send closes
+   `create-draft`, `create-reply`, `update-draft`, `create-forward`;
+   repeat for more rows. A send closes
    the rows its draft names and the reply row on its thread; any other
    row on that thread gets a proposal the user confirms.
 5. Outlook replies: write the body to a file first (Write tool), then
-   `python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py create-reply --message-id <id> --conversation-id <conversation_id> --body x --body-file /home/ea-bot/.ea/state/reply-body.txt [--ledger-id <row id>]`
-   (`--body x` is a placeholder; the file wins). ALWAYS pass
+   `python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py create-reply --provider outlook --message-id <id> --conversation-id <conversation_id> --body-file /home/ea-bot/.ea/state/reply-body.txt [--ledger-id <row id>]`.
+   ALWAYS pass
    `--conversation-id` when you have it: a stale message id re-resolves
    through it. NEVER fall back to a plain `create-draft` when a reply
    fails; re-resolve the message and retry, or report the failure. If
    Write says "File has not been read yet", Read it, then Write. Reply-all
    by default; `--sender-only` for poll responses or when the user says so.
-5a. Revising: write the new body, then `graph_actions.py update-draft
-   --message-id <draft-id> --body x --body-file <file>`. NEVER create a
+5a. Revising: write the new body, then `mail_actions.py update-draft
+   --provider <p> --draft-id <draft-id> --body-file <file>`. NEVER create a
    new draft to revise; keep the draft id. One create-reply per thread.
-5b. Deleting a draft: `graph_actions.py delete-draft --message-id <draft-id>`.
+5b. Deleting a draft: `mail_actions.py delete-draft --provider <p> --draft-id <id>`.
 5c. Archive (only when told): `graph_actions.py archive-message --message-id <id>`.
-5c-1. Check a draft's recipients with `preflight-check --message-id
-   <draft-id>`, not `get-message`.
+5c-1. Check a draft's recipients with `mail_actions.py preflight-check
+   --provider <p> --draft-id <id>`, not `get-message`.
 5d. A file's text (.xlsx too): `doc_text.py <path>`; markdown to .docx:
    `doc_write.py docx --in <md> --out <path>`; CSV to a sheet:
    `doc_write.py xlsx`; PDF hints: `scan-attachments`.
@@ -432,7 +429,7 @@ meeting confirmation is the body.
 9. The briefing is a DELTA: only new items. Prior items are in the ledger.
 9a. Read a THREAD with `get-conversation --conversation-id <id>`: every
    message, oldest first, quotes stripped, one call. Do NOT run
-   `search-mail` plus a `get-message` per hit. Every `search-mail` and
+   `search` plus a `get-message` per hit. Every `search` and
    `list-mail` row carries `conversation_id`. `--full` keeps quotes;
    `--max-chars` bounds each message.
 9b. SEALED MAIL. When `mail_gate.mode` is `sealed` (reads carry
@@ -456,7 +453,7 @@ meeting confirmation is the body.
    attachments and no hints, run `scan-attachments` first.
 14. VERIFY BEFORE YOU ASSERT. Packs, briefings and your earlier turns are
    snapshots. A status claim comes from `ledger.py get --id <id>` this
-   turn; a reply claim from `get-conversation` or `search-mail` this
+   turn; a reply claim from `get-conversation` or `search` this
    turn; a "does not exist" claim after two targeted searches, naming
    them; a "could not check" claim names the verb and what it returned.
    In a project room the bot sends a reply back once, with the sentences

@@ -131,7 +131,7 @@ fall back to: direct, concise, match the sender's formality level.
 Before calling `send-draft`, perform a two-layer review:
 
 ### Layer 1: Programmatic preflight
-Run `python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py preflight-check --message-id <draft-id>`.
+Run `python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py preflight-check --provider outlook|gmail --draft-id <draft-id>`.
 This checks for: empty body, missing recipients, a meeting link from
 another video platform in the body, missing quoted thread on replies. If
 it returns errors, fix them before sending. Warnings should be reviewed

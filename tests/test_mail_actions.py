@@ -491,3 +491,112 @@ if __name__ == "__main__":
     for t in tests:
         t()
     print(f"  {len(tests)} passed, 0 failed")
+
+
+# ---- step 4: the provider verbs are denied ------------------------------
+
+def _parser_opts(mod, verb):
+    import argparse
+    subs = next(a for a in mod.build_parser()._actions
+                if isinstance(a, argparse._SubParsersAction)).choices
+    return {o for a in subs[verb]._actions for o in a.option_strings} - {"-h", "--help"}
+
+
+# (unified verb, provider tool) -> provider options spelled another way here
+SPELLED = {
+    "--email": "--account", "--body": "--body-file (graph_actions reads the file)",
+}
+ELSEWHERE = {
+    ("get-draft", "graph_actions"): {"--message-id": "--draft-id", "--raw-html": "always on"},
+    ("update-draft", "graph_actions"): {"--message-id": "--draft-id"},
+    ("delete-draft", "graph_actions"): {"--message-id": "--draft-id"},
+    ("preflight-check", "graph_actions"): {"--message-id": "--draft-id"},
+    ("create-reply", "gmail_client"): {"--reply-to-message-id": "--message-id"},
+    # a Gmail create-draft that answers a message is create-reply
+    ("create-draft", "gmail_client"): {"--reply-to-message-id": "create-reply --message-id",
+                                       "--thread-id": "create-reply --thread-id",
+                                       "--no-quote": "create-reply --no-quote"},
+}
+
+
+def test_every_provider_option_is_on_the_unified_verb():
+    """The deny list leaves the unified CLI the only way to these verbs, so
+    every option of each provider verb is here, or spelled another way."""
+    import gmail_client
+    import graph_actions
+    mods = {"graph_actions": graph_actions, "gmail_client": gmail_client}
+    for verb, by_provider in mail_actions.DELEGATE.items():
+        ours = _parser_opts(mail_actions, verb)
+        for tool, pverb in by_provider.values():
+            missing = _parser_opts(mods[tool], pverb) - ours - set(SPELLED) \
+                - set(ELSEWHERE.get((verb, tool), {}))
+            assert not missing, (verb, tool, pverb, sorted(missing))
+
+
+def test_the_new_reply_and_update_options_reach_the_provider():
+    f = _body()
+    _, _, runs = _write("create-reply", "--provider", "outlook", "--message-id", "AAMkOUT=",
+                        "--body-file", f, "--to", "x@example.edu")
+    assert runs[0][1][runs[0][1].index("--to") + 1] == "x@example.edu"
+    # --to replaces the thread's people on Gmail too: no reply-all lookup
+    _, _, runs = _write("create-reply", "--provider", "gmail", "--account", ME, "--message-id",
+                        "18zzz", "--body-file", f, "--to", "x@example.com", "--subject", "S",
+                        "--bcc", "b@example.com")
+    argv = runs[0][1]
+    assert argv[argv.index("--to") + 1] == "x@example.com" and "--cc" not in argv
+    assert argv[argv.index("--subject") + 1] == "S" and "--bcc" in argv
+    _, _, runs = _write("update-draft", "--provider", "gmail", "--account", ME, "--draft-id",
+                        "r-1", "--body-file", f, "--thread-id", "18thr", "--bcc", "b@example.com")
+    assert "--thread-id" in runs[0][1] and "--bcc" in runs[0][1]
+    _, _, runs = _write("get-draft", "--provider", "gmail", "--account", ME, "--draft-id", "r-1",
+                        "--with-fingerprint", gm_out={"body": "x"})
+    assert runs[0][1][-1] == "--with-fingerprint"
+    for argv in (("create-reply", "--provider", "outlook", "--message-id", "AAMk=",
+                  "--body-file", f, "--bcc", "b@example.com"),
+                 ("update-draft", "--provider", "outlook", "--draft-id", "AAMk=",
+                  "--body-file", f, "--thread-id", "t"),
+                 ("get-draft", "--provider", "outlook", "--draft-id", "AAMk=",
+                  "--with-fingerprint")):
+        rc, out, runs = _write(*argv)
+        assert rc == 2 and "Gmail only" in out["error"] and runs == [], argv
+
+
+def _denied():
+    lines = (ROOT / "scripts" / "disallowed-tools.txt").read_text().splitlines()
+    return {ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")}
+
+
+def test_every_provider_verb_the_unified_cli_runs_is_denied_directly():
+    denied = _denied()
+    plugin = (ROOT / "run-plugin.sh").read_text()
+    for by_provider in mail_actions.DELEGATE.values():
+        for tool, verb in by_provider.values():
+            for form in (f"Bash(python3 *{tool}.py {verb} *)", f"Bash(*{tool}.py {verb} *)"):
+                assert form in denied, form
+            if tool == "graph_actions":
+                # a plugin's grant of the verb gives the unified one
+                assert f"'{verb}': '" in plugin, verb
+    # the verbs only one provider has stay open
+    for tool, verb in (("graph_actions", "get-conversation"), ("gmail_client", "get-thread"),
+                       ("gmail_client", "attach-file"), ("graph_actions", "snooze-message")):
+        assert f"Bash(*{tool}.py {verb} *)" not in denied
+    assert "Bash(python3 {script_dir}/preprocessor/mail_actions.py *)," in \
+        (ROOT / "ea-chat-bot.py").read_text()
+    assert "/preprocessor/mail_actions.py *)" in (ROOT / "run-agent.sh").read_text()
+
+
+def test_no_ea_facing_text_names_a_denied_provider_verb():
+    """A prompt, skill or guide that tells the EA to run a denied verb
+    sends it into a refusal."""
+    import re
+    denied = {pv for by_provider in mail_actions.DELEGATE.values() for pv in by_provider.values()}
+    files = [ROOT / "CLAUDE.md", ROOT / "run-agent.sh", ROOT / "ea-chat-bot.py",
+             ROOT / "preprocessor" / "resident_context.py",
+             ROOT / "preprocessor" / "prompt_logic.py",
+             *(ROOT / "docs" / "ea").glob("*.md"), *(ROOT / "skills").glob("*.md"),
+             *(ROOT / "prompts").glob("*.md")]
+    for path in files:
+        text = path.read_text()
+        for tool, verb in denied:
+            hit = re.search(rf"{tool}\.py[ \\\n]+{re.escape(verb)}\b(?!-)", text)
+            assert not hit, (path.name, f"{tool}.py {verb}")

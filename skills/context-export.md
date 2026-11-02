@@ -15,7 +15,7 @@ automatically. You receive a manifest and write a briefing (see Steps below).
 **Top-level (topic dump):** The user asks to dump context about a topic
 (e.g., "dump the email context about the vendor pilot"). You must:
 1. Search the obligations ledger: `python3 preprocessor/ledger.py search --query "<topic>"`
-2. Search Outlook for relevant emails: `python3 preprocessor/graph_actions.py search-mail --query "<topic>" --top 10`
+2. Search Outlook for relevant emails: `python3 preprocessor/mail_actions.py search --provider outlook --query "<topic>" --top 10`
 3. Read the full bodies of the most relevant emails (use `get-message`)
 4. Write the export to `~/.ea/exports/<topic>-<date>/context-export.md`
 5. Post a confirmation with the file path so the user can retrieve it:

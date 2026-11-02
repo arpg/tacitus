@@ -410,7 +410,10 @@ declares the alias.
   false) and `ledger_write` (`own` or false) go through the
   `ea_plugins.ledger` helper, which sets `source = 'plugin:<name>'` on every
   write. `graph_actions` lists the subcommands the run may call; each
-  becomes one allowlist entry. A plugin never imports `graph_client`: under
+  becomes one allowlist entry. A mail verb that `mail_actions.py` replaces
+  (`search-mail`, `get-message`, the draft verbs, `mark-read`) is denied on
+  `graph_actions.py` and grants the `mail_actions.py` verb instead
+  (`search-mail` grants `search`); the skill calls that one. A plugin never imports `graph_client`: under
   mail mediation the resident has no token. `from ea_plugins import mail`
   gives mediated reads (`messages_from`, `search`, `get_message`), and
   `mail.delivered()` the copies a v2 plugin's `mail_triggers` were handed.

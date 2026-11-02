@@ -63,7 +63,7 @@ to calibrate voice and structure.
 c) **Search email** (if relevant): look up the subject person or program
 in Outlook to get context, the original request, deadlines, etc.
 ```bash
-python3 ~/ea-system/preprocessor/graph_actions.py search-mail --query "<person or program>"
+python3 ~/ea-system/preprocessor/mail_actions.py search --provider outlook --query "<person or program>"
 ```
 
 d) **Read the template**: `<letterhead>/template.tex`
@@ -122,7 +122,7 @@ Show in chat:
 ### 7. On approval
 If the user says "send" or "email it":
 - Search for the relevant email thread to reply to, OR create a new draft
-- Create Outlook draft via graph_actions.py
+- Create Outlook draft via mail_actions.py create-draft --provider outlook
 - Tell the user to attach the PDF from `~/.ea/letters/<slug>.pdf`
   (file attachment requires manual step with current Outlook REST token)
 

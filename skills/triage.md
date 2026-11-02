@@ -34,7 +34,7 @@ Proceed? Or edit the list.
 ### 2. Find each email
 For each action that targets an email:
 ```bash
-python3 ~/ea-system/preprocessor/graph_actions.py search-mail --query "<keywords>"
+python3 ~/ea-system/preprocessor/mail_actions.py search --provider outlook --query "<keywords>"
 ```
 
 Also check the obligations ledger for message IDs already tracked.

@@ -45,5 +45,5 @@ it as an ordinary drafting request on that message.
 
 To find a student's mail in a conversation, read the folder by its name:
 `graph_actions.py list-mail --folder admissions-inquiries` (newest
-first) or `graph_actions.py search-mail --folder admissions-inquiries
---query <name>`.
+first) or `mail_actions.py search --provider outlook --folder
+admissions-inquiries --query <name>`.

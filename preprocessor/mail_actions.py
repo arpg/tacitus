@@ -168,8 +168,12 @@ def _provider_argv(args, acct: str | None) -> tuple[list[str], str]:
         return argv, ""
     if verb == "get-draft":
         # the raw body: a preview or a rewrite needs the draft whole
+        if outlook and args.with_fingerprint:
+            return [], "--with-fingerprint is Gmail only"
         argv += ["--message-id", args.draft_id, "--raw-html"] if outlook \
             else ["--draft-id", args.draft_id]
+        if args.with_fingerprint:
+            argv.append("--with-fingerprint")
         return argv, ""
     if verb not in ("delete-draft", "preflight-check"):
         # graph_actions reads --body-file over --body, which it requires.
@@ -189,12 +193,13 @@ def _provider_argv(args, acct: str | None) -> tuple[list[str], str]:
             argv.append("--force-new-thread")
     elif verb == "create-reply":
         if outlook:
-            if args.thread_id or args.no_quote:
-                return [], "--thread-id and --no-quote are Gmail only"
+            if args.thread_id or args.no_quote or args.subject or args.bcc:
+                return [], "--thread-id, --no-quote, --subject and --bcc are Gmail only"
             if not args.message_id:
                 return [], "--message-id is required"
             argv += ["--message-id", args.message_id]
             opt("--conversation-id", args.conversation_id)
+            opt("--to", args.to)
             opt("--cc", args.cc)
             if args.sender_only:
                 argv.append("--sender-only")
@@ -206,22 +211,28 @@ def _provider_argv(args, acct: str | None) -> tuple[list[str], str]:
             else:
                 argv += ["--thread-id", args.thread_id]
             cc = args.cc
-            if not args.sender_only:
+            # --to replaces the thread's people, as on Outlook: no reply-all Cc
+            if not args.sender_only and not args.to:
                 cc = _gmail_reply_cc(acct, args._answered, args.cc)
+            opt("--to", args.to)
+            opt("--subject", args.subject)
             opt("--cc", cc)
+            opt("--bcc", args.bcc)
             if args.no_quote:
                 argv.append("--no-quote")
     elif verb == "update-draft":
         if outlook and args.subject:
             return [], "an Outlook draft's subject does not change in update-draft"
-        if outlook and (args.reply_to_message_id or args.no_quote):
-            return [], "--reply-to-message-id and --no-quote are Gmail only"
+        if outlook and (args.reply_to_message_id or args.no_quote or args.bcc or args.thread_id):
+            return [], "--reply-to-message-id, --thread-id, --no-quote and --bcc are Gmail only"
         argv += ["--message-id" if outlook else "--draft-id", args.draft_id]
         opt("--to", args.to)
         opt("--cc", args.cc)
         if not outlook:
             opt("--subject", args.subject)
+            opt("--bcc", args.bcc)
             opt("--reply-to-message-id", args.reply_to_message_id)
+            opt("--thread-id", args.thread_id)
             if args.no_quote:
                 argv.append("--no-quote")
     elif verb == "create-forward":
@@ -404,6 +415,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_gdraft.add_argument("--provider", required=True, choices=PROVIDERS)
     p_gdraft.add_argument("--account", default=None, help=acct_help)
     p_gdraft.add_argument("--draft-id", required=True, dest="draft_id")
+    p_gdraft.add_argument("--with-fingerprint", action="store_true", dest="with_fingerprint",
+                          help="Gmail only: add the content fingerprint of this draft version")
     p_gdraft.set_defaults(func=cmd_delegated)
 
     p_mread = sub.add_parser("mark-read", allow_abbrev=False,
@@ -446,7 +459,12 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument("--thread-id", dest="thread_id",
                         help="Gmail only: answer the thread's newest message")
     p_crep.add_argument("--body-file", required=True, dest="body_file")
+    p_crep.add_argument("--to", default=None,
+                        help="OVERRIDE recipients: the reply keeps the quoted thread but goes "
+                             "to these addresses instead of the thread's participants")
+    p_crep.add_argument("--subject", default=None, help="Gmail only (default: Re: the original)")
     p_crep.add_argument("--cc", default=None, help="Addresses added to the Cc line")
+    p_crep.add_argument("--bcc", default=None, help="Gmail only")
     p_crep.add_argument("--sender-only", action="store_true", dest="sender_only")
     p_crep.add_argument("--force", action="store_true",
                         help="Draft even if the user already sent the latest message in "
@@ -470,6 +488,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_udraft.add_argument("--to", default=None)
     p_udraft.add_argument("--cc", default=None)
     p_udraft.add_argument("--subject", default=None, help="Gmail only")
+    p_udraft.add_argument("--bcc", default=None, help="Gmail only")
+    p_udraft.add_argument("--thread-id", default=None, dest="thread_id",
+                          help="Gmail only: move the draft into this thread (answers its newest message)")
     p_udraft.add_argument("--reply-to-message-id", default=None, dest="reply_to_message_id",
                           help="Gmail only: move the draft into that message's thread and quote it")
     p_udraft.add_argument("--no-quote", action="store_true", dest="no_quote",

@@ -12,11 +12,11 @@ request is answered.
 Read the thread you were pointed to, once:
   python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py get-conversation --conversation-id <id or c-ref>
 Find a thread only when the request names none:
-  python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py search-mail --query "<subject words or sender address>" --top 10
+  python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py search --provider outlook --query "<subject words or sender address>" --top 10
   (one search; pick from its rows; every row carries `ref` and `conversation_ref`;
   a row with `"own": true` and `"is_draft": true` is a draft the user wrote)
 Read one message, such as a draft the user wrote:
-  python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py get-message --message-id <id or m-ref>
+  python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py get-message --provider outlook --message-id <id or m-ref>
 The user's calendar for a window (times are UTC; `start_local`/`end_local` are {local_zone}):
   python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py calendar-view --start <YYYY-MM-DDTHH:MM:SS> --end <YYYY-MM-DDTHH:MM:SS>
 Free times for a new meeting (the ONLY source of proposals):
@@ -71,7 +71,7 @@ where an id is asked for. Never retype a long id.
 7. The reply email, only once the user has chosen: write the body to
    /home/ea-bot/.ea/state/reply-body.txt in the user's voice (short,
    plain, no em-dash), then
-   python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py create-reply --message-id <id or m-ref> --conversation-id <id or c-ref> --body x --body-file /home/ea-bot/.ea/state/reply-body.txt
+   python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py create-reply --provider outlook --message-id <id or m-ref> --conversation-id <id or c-ref> --body-file /home/ea-bot/.ea/state/reply-body.txt
    (add --sender-only for a poll reply). Then one short line in the
    thread; the Send button appears in the user's DM. Do not paste the
    body in the thread.
@@ -79,7 +79,7 @@ where an id is asked for. Never retype a long id.
    search row with `"own": true` and `"is_draft": true`. Read it with
    get-message, keep their words, add the times below them, and change
    that draft:
-   python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py update-draft --message-id <m-ref of the draft> --body x --body-file /home/ea-bot/.ea/state/reply-body.txt
+   python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py update-draft --provider outlook --draft-id <m-ref of the draft> --body-file /home/ea-bot/.ea/state/reply-body.txt
    Never create-reply beside a draft the user wrote.
 8. Budget: six tool calls. A call that failed once with the same error
    is not repeated; use another handle or say what failed. If the thread
