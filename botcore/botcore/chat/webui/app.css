@@ -1,5 +1,6 @@
 /* Tacitus web chat. Phone first: one pane at a time below 600px, the
-   channels in a drawer below 900px, three columns above. On a dual-screen
+   channels in a drawer below 1000px (a foldable phone open in landscape is
+   about 950px wide and gets two panes), three columns above. On a dual-screen
    phone (Surface Duo) one screen is a phone; spanned across both, the
    channels and threads fill the left screen and the thread the right,
    split at the hinge (the viewport segments API, else the centre line). */
@@ -552,7 +553,7 @@ a.file-link .file-name { color: var(--accent); }
 
 /* narrow: the channels in a drawer */
 
-@media (max-width: 899px) {
+@media (max-width: 999px) {
   body { grid-template-columns: 300px minmax(0, 1fr); }
   #channels {
     position: fixed;

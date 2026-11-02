@@ -582,7 +582,11 @@ def test_only_a_focused_field_lets_a_short_viewport_pin_the_height(app):
     page.evaluate("document.activeElement && document.activeElement.blur()")
     page.evaluate("window.dispatchEvent(new Event('resize'))")
     assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == ""
+    # A garbage height (a foldable after a fold) pins nothing, focus or not.
     page.focus("#text")
+    page.evaluate("window.visualViewport.height = -33554432; window.dispatchEvent(new Event('resize'))")
+    assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == ""
+    page.evaluate("window.visualViewport.height = 400")
     page.evaluate("window.dispatchEvent(new Event('resize'))")
     assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == "400px"
     page.evaluate("document.getElementById('text').blur()")

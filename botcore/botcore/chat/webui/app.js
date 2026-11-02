@@ -1270,7 +1270,10 @@ const editing = () => { const el = document.activeElement; return Boolean(el) &&
 function fitViewport() {
   const vv = window.visualViewport;
   const root = document.documentElement.style;
-  const shorter = Boolean(vv) && Math.abs(vv.scale - 1) <= 0.01 && vv.height < window.innerHeight - 40;
+  // Only a plausible visual viewport counts: a foldable can report a negative or
+  // huge height after a fold, and a stale one on the way to a new posture.
+  const plausible = Boolean(vv) && Number.isFinite(vv.height) && vv.height > 0 && vv.height <= window.innerHeight && Math.abs(vv.scale - 1) <= 0.01;
+  const shorter = plausible && window.innerHeight - vv.height > Math.max(40, window.innerHeight * 0.1);
   const keyboard = shorter && editing();
   if (keyboard) root.setProperty('--app-h', `${vv.height}px`);
   else root.removeProperty('--app-h');
@@ -2271,7 +2274,9 @@ async function init() {
   });
   installHint();
   if (window.visualViewport) ['resize', 'scroll'].forEach((t) => visualViewport.addEventListener(t, fitViewport));
-  ['resize', 'orientationchange', 'pageshow', 'focus'].forEach((t) => window.addEventListener(t, fitViewport));
+  // A fold or a rotation settles its sizes over a few hundred milliseconds: fit again after each.
+  const refit = () => { fitViewport(); [250, 600].forEach((ms) => setTimeout(fitViewport, ms)); };
+  ['resize', 'orientationchange', 'pageshow', 'focus'].forEach((t) => window.addEventListener(t, refit));
   ['focusin', 'focusout'].forEach((t) => document.addEventListener(t, () => setTimeout(fitViewport, 50)));
   document.addEventListener('visibilitychange', () => { if (!document.hidden) fitViewport(); });
   fitViewport();
