@@ -358,7 +358,9 @@ def test_the_app_stays_small():
     # 3,630: 3,430 plus the teaching (the welcome's three cards, the examples, New room, the empty lists).
     # 3,680: 3,630 plus the stale shelf (This week and Older in Needs you, Mark all done, the muted sticker).
     # 3,700: 3,680 plus the keyboard check that needs a focused field.
-    assert lines <= 3700, f"{lines} lines: the contract keeps the app near 3,700 with the relay, the phone setup, the thread states and the teaching"
+    # 3,770: 3,700 plus the clear no browser counts as silent (the worker's choice per push service, and the
+    # page's own clear of the thread in view).
+    assert lines <= 3770, f"{lines} lines: the contract keeps the app near 3,770 with the relay, the phone setup, the thread states and the teaching"
 
 
 # -- in a browser, against the stub ---------------------------------------

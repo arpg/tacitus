@@ -5,11 +5,13 @@ one text push once (a direct message and its alert), the queue during
 quiet hours, the owner's `notify_push` switches, and the wiring through
 the chat package and the notifier. Digests, nudges and progress lines
 never push. The owner's reply, in the web app or mirrored from the
-primary, drops the thread's queued push, sends one clear for a thread
-that notified, and runs the thread-state rules at once."""
+primary, drops the thread's queued push, sends one clear to each browser
+a push under the thread reached (within its budget, and never to Apple's
+push service), and runs the thread-state rules at once."""
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import time
 from datetime import datetime, timezone
@@ -30,7 +32,7 @@ from chat import web_frontend as wf  # noqa: E402
 from chat.cards import CardAction, ConfirmationCard  # noqa: E402
 from chat.types import MessageRef  # noqa: E402
 from chat.web_frontend import WebFrontend  # noqa: E402
-from test_web_frontend import make  # noqa: E402
+from test_web_frontend import make, owner  # noqa: E402
 
 pol = wf.web_push_policy
 wp = wf.web_push
@@ -204,12 +206,17 @@ def test_the_fingerprint_reads_the_line_a_notification_shows():
 
 def pushing_fe(tmp_path, **cfg) -> WebFrontend:
     """A front end with one made-up subscription whose sends are recorded
-    in `f.sent` ((payload, urgency)), never made."""
+    in `f.sent` ((payload, urgency)), never made; `f.to` records the
+    endpoint of each."""
     f = channels(make(tmp_path, **cfg))
     f.store.push_subscribe(FCM, {"p256dh": "made-up", "auth": "made-up"})
-    f.sent = []
-    f.push.send_all = lambda payload, urgency="normal": f.sent.append(
-        (json.loads(payload), urgency)) or {"sent": 1}
+    f.sent, f.to = [], []
+
+    def send_one(sub, payload, urgency="normal"):
+        f.sent.append((json.loads(payload), urgency))
+        f.to.append(sub["endpoint"])
+        return "sent"
+    f.push.send_one = send_one
     return f
 
 
@@ -462,7 +469,8 @@ def test_an_owner_reply_sends_one_clear_for_a_thread_that_notified(pushing):
     assert until(lambda: len(f.sent) == 1)
     owner_says(f, "main", "Move the first one.", key)
     assert until(lambda: len(f.sent) == 2)
-    assert f.sent[1][0] == {"type": "clear", "tag": f"main/{key}"}     # no title: shows nothing
+    # the title of the thread's notification, for the worker's quiet "Handled."
+    assert f.sent[1][0] == {"type": "clear", "tag": f"main/{key}", "title": "Tacitus replied"}
     owner_says(f, "main", "And the second.", key)                    # nothing shows: no clear
     # the two-minute window holds: the answer right after the reply does not buzz
     f.post("main", "Both moved.", thread_ts=key)
@@ -495,8 +503,108 @@ def test_a_queued_push_that_goes_is_cleared_by_the_next_reply(pushing):
     f.post("main", "Nothing booked.", thread_ts=key)
     (due,) = f.store.push_claim_due(time.time() + 7200)  # the worker sends it at the end
     assert due["tag"] == f"main/{key}"
+    f.push.send_all(due["payload"].encode("utf-8"), due["urgency"])
     owner_says(f, "main", "Book the lab for 10.", key)
-    assert until(lambda: clears(f) == [{"type": "clear", "tag": f"main/{key}"}])
+    assert until(lambda: clears(f) == [{"type": "clear", "tag": f"main/{key}",
+                                        "title": "Tacitus replied"}])
+
+
+MOZ = "https://updates.push.services.mozilla.com/wpush/v2/made-up-subscription"
+APPLE = "https://web.push.apple.com/made-up-subscription"
+WNS = "https://wns2-par02p.notify.windows.com/w/?token=made-up-subscription"
+
+
+def subscribe(f, *endpoints) -> None:
+    for endpoint in endpoints:
+        f.store.push_subscribe(endpoint, {"p256dh": "made-up", "auth": "made-up"})
+
+
+def clears_to(f) -> list[tuple[str, dict]]:
+    """(endpoint, payload) of each clear sent."""
+    return [(to, p) for to, (p, _u) in zip(f.to, f.sent) if p.get("type") == "clear"]
+
+
+def skipped(caplog) -> list[dict]:
+    """The diag lines of the clears skipped."""
+    out = []
+    for r in caplog.records:
+        msg = r.getMessage()
+        if msg.startswith("web chat diag: ") and "push clear skipped" in msg:
+            out.append(json.loads(msg[len("web chat diag: "):]))
+    return out
+
+
+@needs_push
+def test_a_clear_goes_only_where_a_push_went_and_the_page_has_not_shown_the_thread(pushing):
+    """Per subscription: the clear goes to the browsers the thread's push
+    reached, not to one subscribed after it, one whose send failed, or one
+    whose page showed the thread since (POST /api/push/seen)."""
+    f = pushing
+    subscribe(f, MOZ, WNS)
+    real = f.push.send_one
+    f.push.send_one = lambda sub, payload, urgency="normal": (
+        "failed" if sub["endpoint"] == WNS else real(sub, payload, urgency))
+    key = owner_says(f, "main", "What is on tomorrow?")
+    f.post("main", "Two meetings.", thread_ts=key)
+    assert until(lambda: sorted(f.to) == sorted([FCM, MOZ]))
+    late = "https://fcm.googleapis.com/fcm/send/made-up-later"
+    subscribe(f, late)                                   # after the push: owed nothing
+    f.start()
+    tag = f"main/{key}"
+    assert owner(f, "POST", "/api/push/seen", {"endpoint": MOZ, "tag": tag})[0] == 200
+    status, _h, body = owner(f, "POST", "/api/push/seen", {"endpoint": MOZ, "tag": tag})
+    assert status == 200 and json.loads(body) == {"ok": True, "owed": False}
+    assert owner(f, "POST", "/api/push/seen", {"endpoint": MOZ})[0] == 400
+    owner_says(f, "main", "Move the first one.", key)
+    assert until(lambda: len(clears_to(f)) == 1)
+    time.sleep(0.2)
+    assert clears_to(f) == [(FCM, {"type": "clear", "tag": tag, "title": "Tacitus replied"})]
+
+
+@needs_push
+def test_a_browser_gets_one_clear_in_ten_minutes_and_twenty_a_day(pushing, caplog):
+    f = pushing
+    caplog.set_level(logging.INFO, logger="chat.web.push")
+    assert (wp.CLEAR_GAP_S, wp.CLEAR_DAY_CAP) == (600.0, 20)
+    t0 = time.time()
+
+    def clear_at(at: float, tag: str = "main/t1") -> dict:
+        f.store.push_shown(FCM, tag, "Tacitus replied", at)
+        return f.push.clear(tag, f.store.push_shown_take(tag), wait=True, now=at)
+
+    assert clear_at(t0)["sent"] == 1
+    assert clear_at(t0 + 60, "main/t2") == {"skipped": 1}          # within ten minutes
+    assert skipped(caplog) == [{"what": "push clear skipped", "why": "gap", "tag": "main/t2",
+                                "host": "fcm.googleapis.com"}]
+    for k in range(1, 20):                                          # 20 in the day in all
+        assert clear_at(t0 + 601 * k)["sent"] == 1
+    assert clear_at(t0 + 601 * 20) == {"skipped": 1}               # past the daily cap
+    assert skipped(caplog)[-1]["why"] == "cap"
+    assert clear_at(t0 + 86400 + 1)["sent"] == 1                    # the first left the day
+    assert len(clears(f)) == 21
+
+
+@needs_push
+def test_safari_gets_no_clear_and_its_notification_waits_for_the_next_push(pushing, caplog):
+    """WebKit revokes a subscription after three pushes that show nothing:
+    Apple's push service gets no clear, and the thread's next push replaces
+    the notification under its tag."""
+    f = pushing
+    caplog.set_level(logging.INFO, logger="chat.web.push")
+    subscribe(f, APPLE)
+    assert not wp.takes_clears(APPLE) and wp.takes_clears(FCM) and wp.takes_clears(MOZ)
+    key = owner_says(f, "main", "What is on tomorrow?")
+    f.post("main", "Two meetings.", thread_ts=key)
+    assert until(lambda: sorted(f.to) == sorted([FCM, APPLE]))
+    owner_says(f, "main", "Move the first one.", key)
+    assert until(lambda: len(clears_to(f)) == 1)
+    time.sleep(0.2)
+    assert [to for to, _p in clears_to(f)] == [FCM]
+    assert skipped(caplog) == [{"what": "push clear skipped", "why": "safari",
+                                "tag": f"main/{key}", "host": "web.push.apple.com"}]
+    assert f.store.push_shown_take(f"main/{key}") == []            # taken: owed to no one
+    pushes = [(to, p) for to, (p, _u) in zip(f.to, f.sent) if to == APPLE]
+    assert [p["tag"] for _to, p in pushes] == [f"main/{key}"]     # the tag the next push replaces
 
 
 @needs_push
@@ -514,7 +622,8 @@ def test_a_mirrored_owner_reply_clears_like_one_from_the_app(tmp_path):
                       quiet=True)                        # history: no clear
         f.mirror_post(MessageRef("stream:7", "1002", key, time.time()), "Sent it myself.",
                       "owner")
-        assert until(lambda: clears(f) == [{"type": "clear", "tag": f"stream:7/{key}"}])
+        assert until(lambda: clears(f) == [{"type": "clear", "tag": f"stream:7/{key}",
+                                            "title": "Tacitus"}])
     finally:
         f.stop()
 

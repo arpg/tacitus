@@ -1197,6 +1197,29 @@ async function initPush() {
   box.disabled = false;
   box.addEventListener('change', toggleNotify);
   listSubs();
+  watchSeen();
+}
+
+// A thread this page shows clears its notifications here, with no push: the page closes them and tells
+// the bot, which then owes this browser no clear for it. A push for the thread in view (the worker says
+// {shown: tag}) waits SEEN_MS first: Firefox counts one whose notification is gone in three seconds as silent.
+const SEEN_MS = 5000;
+const tagInView = () => (document.visibilityState === 'visible' && S.thread && S.thread !== NEW_THREAD ? `${S.channel}/${S.thread}` : '');
+async function seenHere(tag) {
+  const sub = S.push && S.push.sub;
+  if (!tag || !sub) return;
+  (await S.push.reg.getNotifications({ tag })).forEach((n) => n.close());
+  await call('POST', '/push/seen', { endpoint: sub.endpoint, tag });
+}
+function watchSeen() {
+  const seen = () => { seenHere(tagInView()).catch(() => {}); };
+  window.addEventListener('hashchange', seen);
+  document.addEventListener('visibilitychange', seen);
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    const tag = String((e.data && e.data.shown) || '');
+    if (tag) setTimeout(() => tagInView() === tag && seen(), SEEN_MS);
+  });
+  seen();
 }
 
 // Every browser the bot pushes to, each with a Revoke button (this one's own is the toggle).
