@@ -132,6 +132,33 @@ def test_a_v1_plugin_grants_skip_its_state_dir(tmp_path):
         assert not _rule_matches(g, f"python3 {evil} x")
 
 
+def test_a_plugin_reached_through_a_symlink_runs_by_its_real_path_too(tmp_path):
+    """The bot runs as the owner, whose ~/.ea links to the resident's; the
+    grant read /home/<owner>/.ea/plugins/... while the skill told the
+    resident to run /home/<resident>/.ea/plugins/..., and every plugin
+    call from chat was denied. The rule names both paths; the state dir
+    stays out under either."""
+    real = tmp_path / "resident" / ".ea"
+    pdir = real / "plugins" / "decks"
+    pdir.mkdir(parents=True)
+    (pdir / "plugin.json").write_text(json.dumps(
+        {"name": "decks", "enabled": True, "slack": {"skill": "skill.md", "keywords": ["x"]}}))
+    (pdir / "skill.md").write_text("s")
+    (pdir / "deck_tools.py").write_text("")
+    evil = _plant(pdir / "state")
+    owner_ea = tmp_path / "owner" / ".ea"
+    owner_ea.parent.mkdir()
+    os.symlink(real, owner_ea)
+    R._CACHE["sig"] = None
+    chat = R.plugin_tool_grants(owner_ea / "plugins")
+    assert chat == [f"Bash(python3 {owner_ea}/plugins/decks/deck_tools.py *)",
+                    f"Bash(python3 {pdir}/deck_tools.py *)"]
+    assert any(_rule_matches(g, f"python3 {pdir}/deck_tools.py build --slug x") for g in chat)
+    for g in chat:
+        assert not _rule_matches(g, f"python3 {evil} x")
+        assert not _rule_matches(g, f"python3 {owner_ea}/plugins/decks/state/evil.py x")
+
+
 def test_expansion_refuses_globs_symlinks_and_parent_paths(tmp_path):
     root = tmp_path / "p"
     root.mkdir()
