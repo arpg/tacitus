@@ -57,7 +57,9 @@ start() refuses (Identity and auth):
 }
 ```
 
-`"frontend": "web"` with no `shadow` runs the web front end alone. An
+`"frontend": "web"` with no `shadow` runs the web front end alone, with
+the Scheduling channel; `"sched": false` in the web block leaves it out
+(Implementation notes, Channels and ids). An
 optional `notify` map takes the notifier's channel keys and names a web
 channel for each (`{"personal": {"channel": "dm"}}`); a key it does not
 name posts to the EA channel (CLI senders). The mail digests' keys
@@ -70,7 +72,7 @@ the owner-private `chat.json`.
 `"shadow": "web"` with any primary wraps the primary in `ShadowFrontend`.
 `FRONTENDS` in `preprocessor/chat/__init__.py` gains `"web"`.
 `get_chat` defaults every `web` key (port 8470, base_path `/chat`, bind
-loopback, trust_tailscale_header true, backfill_days 7). `public_url`
+loopback, trust_tailscale_header true, backfill_days 7, sched true). `public_url`
 carries the chat's own HTTPS port: one app per origin (Identity and
 auth). The store is `<private_dir>/webchat.sqlite`
 (owner process) or `<ea_dir>/state/webchat.sqlite` otherwise; a
@@ -598,8 +600,21 @@ no pull-to-refresh.
 What `botcore/botcore/chat/web_frontend.py` does where the contract
 leaves a choice. Additive only: no field, route or key above changes.
 
-**Channels and ids.** Standalone, the EA channel is `main` (name `ea`)
-and the DM is `dm` (name `dm`); there is no scheduling channel. Rooms
+**Channels and ids.** Standalone, the EA channel is `main` (name `ea`),
+the DM is `dm` (name `dm`) and the scheduling channel is `sched` (name
+`Scheduling`), made on start like the other two. `sched_channel` names
+it, so the core runs it as the Zulip scheduling stream: the proactive
+scheduler opens a conversation there for each scheduling request found
+in mail (`preprocess.write_proactive_queue`, which writes the queue
+when `ea_config.web_sched_on` says the channel is on), each thread is
+one session on `prompts/CLAUDE-scheduling.md`, and a Create or Send
+card a turn there stages goes to the DM with a pointer in the thread.
+`"sched": false` in the web block turns it off: `sched_channel` is
+"", a row made before is archived with its threads, and scheduling
+requests wait in the EA channel. In shadow mode the web front end makes
+none of these channels and its own `sched_channel` is ""; the
+composite gives the primary's, and the mirrored scheduling stream is
+the store's channel of kind `sched`. Rooms
 are `r<n>`, files `f<n>`, messages `w<seq>`, threads `t<seq>`. A channel
 row also carries `description`. `unread` counts the bot's messages after
 the owner's last message in the channel or the channel's read mark;

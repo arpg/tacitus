@@ -1270,15 +1270,20 @@ def register_new_scheduling_requests(scheduling: list) -> list:
 
 def sched_channel_configured(chat: dict | None = None) -> bool:
     """Is a dedicated scheduling channel configured for the chat frontend?
-    On Zulip it is chat.zulip.sched_stream; on Slack, EA_SCHED_CHANNEL_ID."""
+    On Zulip it is chat.zulip.sched_stream; on the web chat alone, its
+    Scheduling channel unless the web block says `"sched": false`
+    (ea_config.web_sched_on); on Slack, EA_SCHED_CHANNEL_ID."""
     if chat is None:
         try:
             import ea_config
             chat = ea_config.get_chat()
         except Exception:
             chat = {}
-    if (chat.get("frontend") or "slack") == "zulip":
+    frontend = chat.get("frontend") or "slack"
+    if frontend == "zulip":
         return bool(str((chat.get("zulip") or {}).get("sched_stream") or "").strip())
+    if frontend == "web":
+        return _ea_config.web_sched_on(chat)
     return bool(os.environ.get("EA_SCHED_CHANNEL_ID", "").strip())
 
 
@@ -2716,7 +2721,7 @@ def run_full_daily(force_full: bool = False) -> dict:
         "new_dropped_threads": dropped_delta[:15],
         "new_needs_response": needs_resp_delta[:50],
         "new_scheduling_requests": scheduling_delta,
-        # True when a dedicated #ai-scheduling-assistant channel is configured:
+        # True when a dedicated scheduling channel is configured:
         # the proactive loop opens scheduling requests as conversations there, so
         # briefings should condense them to a one-line handoff, not full detail.
         "scheduling_channel_active": sched_channel_configured(),

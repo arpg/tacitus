@@ -678,8 +678,10 @@ check, cross, ...).
   chat). With the app closed, a new card, a bot message in the DM and a
   loud alert arrive as Web Push notifications (`chat/web_push.py`:
   VAPID and `aes128gcm` with the `cryptography` package, to the
-  browser vendors' push services only). The contract is
-  `docs/webchat.md`.
+  browser vendors' push services only). Alone it makes the EA channel,
+  the DM and Scheduling (`sched_channel`, off with `"sched": false` in
+  the web block), where the proactive scheduler opens its threads as
+  on the Zulip scheduling stream. The contract is `docs/webchat.md`.
 - `ShadowFrontend` (`chat/shadow_frontend.py`) drives a primary (Zulip)
   and mirrors every post, update, card, status line, reaction and file
   into a shadow (the web front end) under the primary's ids, and takes

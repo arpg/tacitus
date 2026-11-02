@@ -35,6 +35,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ea_config  # noqa: E402
 import institution  # noqa: E402
 import owner_trust  # noqa: E402
 import resident_io  # noqa: E402
@@ -135,10 +136,17 @@ def _chat_section(cfg: dict, profile: dict) -> list[str]:
         return lines
     if frontend == "web":
         web = _web_prompt_strings()
+        if ea_config.web_sched_on(chat):
+            channels = ("Channels: `ea` (the EA channel), `dm` (the DM) and `Scheduling` "
+                        "(the scheduling channel, where each scheduling request found in "
+                        "mail opens a conversation); project rooms are rooms in the web "
+                        "chat.")
+        else:
+            channels = ("Channels: `ea` (the EA channel) and `dm` (the DM); project rooms "
+                        "are rooms in the web chat. There is no scheduling channel: "
+                        "meeting requests come in `ea`.")
         lines.append(f"- Platform: the {web['platform']}, which the bot serves itself. "
-                     "Channels: `ea` (the EA channel) and `dm` (the DM); project rooms are "
-                     "rooms in the web chat. There is no scheduling channel: meeting requests "
-                     "come in `ea`.")
+                     + channels)
         lines.append(f"- Each confirmation card goes to the DM with a one-line pointer in the "
                      f"thread: say \"{web['confirm_location']}\", never \"above\".")
     elif frontend == "zulip":

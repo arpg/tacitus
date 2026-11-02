@@ -96,10 +96,10 @@ write `pending-event.json`; describe the proposed event in the briefing
 and leave the draft in the Drafts folder for the user to send.
 
 **If `scheduling_channel_active` is true in the briefing JSON:** a dedicated
-#ai-scheduling-assistant channel is live and the EA opens each scheduling request
+scheduling channel is live and the EA opens each scheduling request
 as a conversation THERE. Do NOT detail `new_scheduling_requests` in this briefing
-or propose times here — condense them to a single handoff line:
-":calendar: N scheduling request(s) — handling in #ai-scheduling-assistant."
+or propose times here; condense them to a single handoff line:
+":calendar: N scheduling request(s): handling in the scheduling channel."
 (When the flag is absent/false, handle them here as usual.)
 
 ### 5a. Follow-ups, snoozed emails, and scheduled sends (pre-computed)

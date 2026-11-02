@@ -34,6 +34,9 @@ are `w<seq>`, a thread is `t<seq of its first message>`, rooms are
 shadow mode (docs/webchat.md, Shadow mode) the composite writes through
 the `mirror_*` methods with the primary's ids and the store mints none;
 the owner's web input goes to `self.inbound` instead of the registry.
+Standalone, the scheduling channel is `sched` (name "Scheduling") unless
+the web block turns it off (`"sched": false`); `sched_channel` names it,
+and is "" in shadow mode, where the composite gives the primary's.
 The history the composite copies in when it starts goes in quietly
 (`quiet=True`): a history row has no event of its own, never counts as
 unread, and never goes before a newer row of its thread.
@@ -184,6 +187,10 @@ OWNER = "owner"
 BOT = "bot"
 MAIN_ID, MAIN_NAME = "main", "ea"
 DM_ID, DM_NAME = "dm", "dm"
+# The scheduling channel the web chat makes when it runs alone, unless
+# the web block says `"sched": false`: the proactive scheduler opens a
+# conversation there for each scheduling request found in mail.
+SCHED_ID, SCHED_NAME = "sched", "Scheduling"
 
 STORE_FILE = "webchat.sqlite"
 FILES_DIR = "webchat-files"
@@ -349,6 +356,14 @@ def _loads(text: str | None) -> Any:
         return json.loads(text)
     except ValueError:
         return None
+
+
+def sched_enabled(cfg: dict | None) -> bool:
+    """True unless the web block turns the scheduling channel off
+    (`"sched"` false, or "false", "0", "no" or "off");
+    ea_config.web_sched_on reads the block by the same rule."""
+    val = (cfg or {}).get("sched", True)
+    return val is not False and str(val).strip().lower() not in ("false", "0", "no", "off")
 
 
 def _norm_base(base: Any) -> str:
@@ -1745,7 +1760,8 @@ class WebFrontend(ChatFrontend):
         self.bot_user_id = BOT
         self.main_channel = MAIN_ID
         self.main_channel_name = MAIN_NAME
-        self.sched_channel = ""
+        # The scheduling channel, on unless the block says `"sched": false`.
+        self.sched_on = sched_enabled(cfg)
         # Shadow mode: the composite takes the owner's web input here
         # (docs/webchat.md); None dispatches it through self.registry.
         self.inbound: Inbound | None = None
@@ -1887,6 +1903,14 @@ class WebFrontend(ChatFrontend):
                     fh.write(json.dumps(line, sort_keys=True) + "\n")
         except OSError as e:
             log.warning("web chat: the override was not recorded in %s: %s", LABELS_FILE, e)
+
+    @property
+    def sched_channel(self) -> str:
+        """The scheduling channel's id: `sched` when the web chat runs
+        alone with the channel on, "" when it is off or a composite drives
+        this frontend (shadow mode, where the composite gives the
+        primary's)."""
+        return SCHED_ID if self.sched_on and self.inbound is None else ""
 
     @property
     def store(self) -> WebStore:
@@ -2278,9 +2302,20 @@ class WebFrontend(ChatFrontend):
         return f"http://{host}:{self.port}{self.base_path}"
 
     def _ensure_own_channels(self) -> None:
+        """The standalone channels: the EA channel, the DM and, while it is
+        on, Scheduling. Turned off, an existing Scheduling row is archived
+        (its threads stay); turned on again, it comes back."""
         for cid, name, kind in ((MAIN_ID, MAIN_NAME, "main"), (DM_ID, DM_NAME, "dm")):
             if self.store.channel(cid) is None:
                 self.store.upsert_channel(cid, name, kind)
+        row = self.store.channel(SCHED_ID)
+        if row is None:
+            if self.sched_on:
+                self.store.upsert_channel(SCHED_ID, SCHED_NAME, "sched")
+            return
+        archived = not self.sched_on
+        if row["kind"] == "sched" and bool(row["archived"]) != archived:
+            self.store.set_channel(SCHED_ID, archived=archived)
 
     def _ensure_pair_token(self) -> None:
         p = self.pair_token_file
