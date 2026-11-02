@@ -848,6 +848,27 @@ line the notification shows, letters and digits only, in the store's
 `push_sent` table). The first one stands, so the alert arrives once, at
 high urgency. A card and a plain `notify` never take part.
 
+**A reply from you clears the conversation's notifications everywhere.**
+When the owner's message lands in a thread, typed in the web app or
+mirrored from the primary in shadow mode (`WebStore.on_owner`, which the
+store calls for every live owner row it inserts), the bot drops the push
+queued under the thread's tag and, when a push went out under that tag
+since the owner last wrote there, sends every browser
+`{"type": "clear", "tag": "<channel>/<thread key>"}`. It has no title:
+the service worker closes the notifications under that tag
+(`registration.getNotifications({tag})`, then `close()`) and shows
+nothing. `push_sent` keeps `shown:<tag>` for a push that went now or that
+the worker claimed from the queue, and the clear takes it, so there is
+one clear per push and none for a thread that notified nothing. The
+two-minute window holds: an answer right after the reply does not buzz
+again. The app drops the thread's unread count when the owner's message
+arrives on the stream, also with the thread closed, and the channel's
+count from the server as the server counts it. Browsers expect every push
+to show something (`userVisibleOnly`): a clear whose notification the
+owner already dismissed shows nothing, which Chrome may answer with its
+own "updated in the background" line and Safari may count against the
+subscription.
+
 **Quiet hours.** With `notify_push.quiet` `"queue"`, a briefing's or an
 answer's push waits in `push_queue` until the owner's quiet hours end:
 the host sets `quiet_until` (`chat.quiet_until`, from

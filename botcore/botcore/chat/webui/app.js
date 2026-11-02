@@ -1069,9 +1069,9 @@ function ingest(m, created = true) {
     }
   }
   const viewing = m.channel === S.channel && tk === S.thread;
-  if (isNew && m.author !== 'owner' && !(viewing && document.visibilityState === 'visible')) {
-    S.threadUnread.set(key, (S.threadUnread.get(key) || 0) + 1);
-  }
+  // The owner's own message (here, or mirrored from elsewhere) reads its thread, and its channel as the server counts.
+  if (isNew && m.author === 'owner') { S.threadUnread.delete(key); S.baseline.delete(m.channel); }
+  else if (isNew && !(viewing && document.visibilityState === 'visible')) S.threadUnread.set(key, (S.threadUnread.get(key) || 0) + 1);
   if (viewing) {
     const stick = nearBottom();
     const el = renderMsg(merged);

@@ -4,7 +4,9 @@ owner's devices, the collapse of a thread's pushes, the check that lets
 one text push once (a direct message and its alert), the queue during
 quiet hours, the owner's `notify_push` switches, and the wiring through
 the chat package and the notifier. Digests, nudges and progress lines
-never push."""
+never push. The owner's reply, in the web app or mirrored from the
+primary, drops the thread's queued push, sends one clear for a thread
+that notified, and runs the thread-state rules at once."""
 from __future__ import annotations
 
 import json
@@ -26,6 +28,7 @@ import chat_notify  # noqa: E402
 import ea_config  # noqa: E402
 from chat import web_frontend as wf  # noqa: E402
 from chat.cards import CardAction, ConfirmationCard  # noqa: E402
+from chat.types import MessageRef  # noqa: E402
 from chat.web_frontend import WebFrontend  # noqa: E402
 from test_web_frontend import make  # noqa: E402
 
@@ -226,6 +229,11 @@ def until(cond, timeout: float = 5.0) -> bool:
     return cond()
 
 
+def shown(f) -> list[dict]:
+    """The pushes that show a notification: every one but the clears."""
+    return [p for p, _u in f.sent if p.get("type") != "clear"]
+
+
 def owner_says(f, channel, text, thread=None) -> str:
     """The owner's message, as web_message stores it; its thread key."""
     return row(f, channel, "owner", text, thread=thread)["thread_key"]
@@ -251,12 +259,12 @@ def test_an_answer_pushes_and_its_thread_collapses_for_two_minutes(pushing):
     owner_says(f, "main", "Move the first one.", key)
     f.post("main", "Moved.", thread_ts=key)              # within two minutes: collapsed
     time.sleep(0.2)
-    assert len(f.sent) == 1
+    assert len(shown(f)) == 1
     f.push._last = {k: t - 121 for k, t in f.push._last.items()}
     owner_says(f, "main", "And the second?", key)
     f.post("main", "Moved as well.", thread_ts=key)      # two minutes on: pushed
-    assert until(lambda: len(f.sent) == 2)
-    assert f.sent[1][0]["body"] == "Moved as well."
+    assert until(lambda: len(shown(f)) == 2)
+    assert shown(f)[1]["body"] == "Moved as well."
 
 
 @needs_push
@@ -437,6 +445,101 @@ def test_a_writer_only_copy_sends_before_returning(tmp_path):
     finally:
         f.stop()
         base.stop()
+
+
+# the owner's reply clears the conversation's notifications
+
+
+def clears(f) -> list[dict]:
+    return [p for p, _u in f.sent if p.get("type") == "clear"]
+
+
+@needs_push
+def test_an_owner_reply_sends_one_clear_for_a_thread_that_notified(pushing):
+    f = pushing
+    key = owner_says(f, "main", "What is on tomorrow?")
+    f.post("main", "Two meetings.", thread_ts=key)
+    assert until(lambda: len(f.sent) == 1)
+    owner_says(f, "main", "Move the first one.", key)
+    assert until(lambda: len(f.sent) == 2)
+    assert f.sent[1][0] == {"type": "clear", "tag": f"main/{key}"}     # no title: shows nothing
+    owner_says(f, "main", "And the second.", key)                    # nothing shows: no clear
+    # the two-minute window holds: the answer right after the reply does not buzz
+    f.post("main", "Both moved.", thread_ts=key)
+    other = owner_says(f, "main", "A thread that never notified.")
+    owner_says(f, "main", "Still nothing to clear.", other)
+    time.sleep(0.2)
+    assert len(clears(f)) == 1 and len(f.sent) == 2
+
+
+@needs_push
+def test_an_owner_reply_drops_the_threads_queued_push(pushing):
+    f = pushing
+    f.quiet_until = lambda: time.time() + 3600
+    key = owner_says(f, "r1", "Status of the draft?")
+    f.post("r1", "With the coauthors.", thread_ts=key)
+    other = owner_says(f, "main", "Anything for tomorrow?")
+    f.post("main", "Nothing booked.", thread_ts=other)
+    assert {q["tag"] for q in f.store.push_queued()} == {f"r1/{key}", f"main/{other}"}
+    owner_says(f, "r1", "Thanks.", key)
+    assert [q["tag"] for q in f.store.push_queued()] == [f"main/{other}"]
+    time.sleep(0.2)
+    assert f.sent == []                                  # nothing showed, so no clear
+
+
+@needs_push
+def test_a_queued_push_that_goes_is_cleared_by_the_next_reply(pushing):
+    f = pushing
+    f.quiet_until = lambda: time.time() + 3600
+    key = owner_says(f, "main", "Anything for tomorrow?")
+    f.post("main", "Nothing booked.", thread_ts=key)
+    (due,) = f.store.push_claim_due(time.time() + 7200)  # the worker sends it at the end
+    assert due["tag"] == f"main/{key}"
+    owner_says(f, "main", "Book the lab for 10.", key)
+    assert until(lambda: clears(f) == [{"type": "clear", "tag": f"main/{key}"}])
+
+
+@needs_push
+def test_a_mirrored_owner_reply_clears_like_one_from_the_app(tmp_path):
+    """Shadow mode: the owner answers on the primary, the composite mirrors
+    the message, and the phone's notification for the thread goes."""
+    f = pushing_fe(tmp_path)
+    f.inbound = lambda ev: None
+    try:
+        f.mirror_channel("stream:7", "ea-dm", "dm")
+        key = "stream:7:topic:lock"
+        f.mirror_card(MessageRef("stream:7", "1001", key, time.time()), card())
+        assert until(lambda: len(f.sent) == 1)
+        f.mirror_post(MessageRef("stream:7", "900", key, time.time() - 60), "older", "owner",
+                      quiet=True)                        # history: no clear
+        f.mirror_post(MessageRef("stream:7", "1002", key, time.time()), "Sent it myself.",
+                      "owner")
+        assert until(lambda: clears(f) == [{"type": "clear", "tag": f"stream:7/{key}"}])
+    finally:
+        f.stop()
+
+
+def test_a_mirrored_owner_message_runs_the_state_rules_at_once(tmp_path):
+    """The rules read the store's event log, so a message the composite
+    mirrors from the primary moves the thread's state as one typed in the
+    web app does: a failed turn needs the owner, the next message is work."""
+    f = make(tmp_path)
+    f.inbound = lambda ev: None
+    try:
+        ts = f.enable_thread_state()
+        f.mirror_channel("stream:9", "ea", "main")
+        key = "stream:9:topic:room booking"
+        ts.changed()                                      # the first call takes the log's end
+        f.mirror_post(MessageRef("stream:9", "101", key, time.time()), "Book the room.", "owner")
+        f.mirror_reaction("stream:9", "101", "x", True)   # the turn failed
+        assert ts.changed() == 1
+        assert f.store.thread_state("stream:9", key)["state"] == "needs_you"
+        f.mirror_post(MessageRef("stream:9", "102", key, time.time()), "Try again.", "owner")
+        assert ts.changed() == 1
+        row = f.store.thread_state("stream:9", key)
+        assert (row["state"], row["by"]) == ("working", "rule")
+    finally:
+        f.stop()
 
 
 # the wiring: the chat package's quiet hours and the notifier's posts

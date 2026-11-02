@@ -62,7 +62,9 @@ Web Push (web_push.py), which needs the `cryptography` package and is
 off without it: a new card, a bot message in the DM, a morning briefing
 or an afternoon update, the bot's answer in a conversation the owner
 wrote in (web_push_policy) and a loud alert (`notify`) reach the browsers
-that turned notifications on, even with the app closed.
+that turned notifications on, even with the app closed. The owner's own
+message in a thread, here or mirrored, sends a clear that closes the
+thread's notifications (`_owner_wrote`).
 
 The bot serves only a chat block it can trust (`trusted_config`, set by
 chat.load_frontend when the block came from the owner-private chat.json)
@@ -252,6 +254,13 @@ HANDLER_TIMEOUT_S = 30
 BUNDLE_CHECK_S = 15.0
 # Threads the Needs you view lists at most.
 NEEDS_CAP = 200
+# Seconds the push_sent table keeps a record: the text checks (ten
+# seconds) and the tags a push went out under, which a notification may
+# show for days.
+PUSH_SENT_KEEP_S = 7 * 86400
+# push_sent's key for "a push went out under this tag and the owner has not
+# written in its thread since" (WebFrontend._owner_wrote).
+SHOWN_PREFIX = "shown:"
 
 # `digest` is a channel of automated digests for the owner alone: a host
 # keeps a channel of that kind out of what its model reads.
@@ -709,6 +718,9 @@ class WebStore:
         # The last event seq handed to the streams, or passed over while
         # none was open: a stream that opens later replays from the log.
         self._delivered = self.max_event_seq()
+        # Called with each live message of the owner's once it is stored
+        # (the web app's, or one the composite mirrors from the primary).
+        self.on_owner: Callable[[dict], None] | None = None
 
     def close(self) -> None:
         with self._lock:
@@ -1357,10 +1369,17 @@ class WebStore:
         updated_at starts at posted_at; every change raises it (the app
         reads a row whose two times differ as an edit). A `history` row (a
         message from the primary's past) gets no event and never counts as
-        unread."""
+        unread. A live row of the owner's goes to `on_owner` after it is
+        stored."""
         at = posted_at if posted_at is not None else time.time()
-        return self._transaction(lambda: self._insert(
+        row = self._transaction(lambda: self._insert(
             channel, mid, thread_key, author, kind, text, card, file, at, event, history))
+        if author == OWNER and not history and self.on_owner is not None:
+            try:
+                self.on_owner(row)
+            except Exception:
+                log.exception("web chat: the owner's message hook failed")
+        return row
 
     def _insert(self, channel: str, mid: str | None, thread_key: str | None, author: str,
                 kind: str, text: str, card: dict | None, file: dict | None, at: float,
@@ -1696,6 +1715,10 @@ class WebStore:
                     "AS seen FROM push_queue q WHERE q.due_at <= ? ORDER BY q.due_at",
                     (OWNER, now))]
                 self._conn.execute("DELETE FROM push_queue WHERE due_at <= ?", (now,))
+                # A push about to go shows under its tag until the owner writes there.
+                self._conn.executemany(
+                    "INSERT OR REPLACE INTO push_sent(key, at) VALUES (?,?)",
+                    [(SHOWN_PREFIX + r["tag"], now) for r in rows if not r["seen"]])
                 self._conn.commit()
             except BaseException:
                 self._conn.rollback()
@@ -1712,13 +1735,20 @@ class WebStore:
         row = self._one("SELECT at FROM push_sent WHERE key=?", (key,))
         return bool(row and row["at"] is not None and float(row["at"]) > since)
 
-    def push_note(self, key: str, at: float, keep_s: float = 3600.0) -> None:
+    def push_note(self, key: str, at: float, keep_s: float = PUSH_SENT_KEEP_S) -> None:
         """Record a push under `key` at `at`; records older than keep_s go."""
         with self._lock:
             with self._conn:
                 self._conn.execute("INSERT OR REPLACE INTO push_sent(key, at) VALUES (?,?)",
                                    (key, float(at)))
                 self._conn.execute("DELETE FROM push_sent WHERE at < ?", (float(at) - keep_s,))
+
+    def push_take(self, key: str) -> bool:
+        """Drop the record under `key`; True when there was one."""
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute("DELETE FROM push_sent WHERE key=?", (key,))
+            return cur.rowcount > 0
 
     def owner_turn(self, channel: str, thread_key: str,
                    before_seq: int) -> tuple[int | None, list[dict]]:
@@ -2031,6 +2061,7 @@ class WebFrontend(ChatFrontend):
         with self._store_lock:
             if self._store is None:
                 self._store = WebStore(self.store_path)
+                self._store.on_owner = self._owner_wrote
             return self._store
 
     @property
@@ -2654,8 +2685,11 @@ class WebFrontend(ChatFrontend):
             if key and self.store.push_sent_within(key, now - web_push_policy.DEDUPE_S):
                 return {"sent": 0, "skipped": "duplicate"}
             out = self.push.notify(title, body, url, tag, urgency=urgency, at=at, wait=wait)
-            if key and (out.get("queued") or out.get("sent")):
-                self.store.push_note(key, now)
+            if out.get("queued") or out.get("sent"):
+                if key:
+                    self.store.push_note(key, now)
+                if tag:
+                    self.store.push_note(SHOWN_PREFIX + tag, now)
             return out
         except Exception:
             log.exception("web chat: a push failed")
@@ -2668,6 +2702,25 @@ class WebFrontend(ChatFrontend):
         except Exception:
             log.exception("web chat: a queued push could not be cancelled")
             return False
+
+    def _owner_wrote(self, row: dict) -> None:
+        """The owner wrote in a thread, in the web app or (mirrored) on the
+        primary: the push queued for the thread's tag is dropped, and when a
+        push went out under the tag since the owner last wrote there, every
+        browser gets a clear for it, which closes the thread's notifications
+        and shows nothing (sw.js). One clear per push sent, never one for a
+        thread that notified nothing. The thread's two-minute window holds:
+        an answer right after the reply, while the owner is in the
+        conversation, does not buzz again. Never raises."""
+        if not web_push.AVAILABLE or not row.get("thread_key"):
+            return
+        tag = self._push_tag(row)
+        try:
+            self.store.push_cancel(tag)
+            if self.store.push_take(SHOWN_PREFIX + tag):
+                self.push.clear(tag, wait=self.writer_only)
+        except Exception:
+            log.exception("web chat: the owner's reply did not clear the thread's notifications")
 
     # scheduled posts (chat.direct.schedule_direct on the web chat alone)
 
