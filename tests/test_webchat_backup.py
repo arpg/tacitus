@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import sqlite3
 import stat
 import subprocess
@@ -184,8 +185,10 @@ def test_restore_prints_the_steps_and_changes_nothing(tmp_path):
     out = r.stdout
     snap = priv / "backups" / "webchat" / f"{TODAY}-cutover"
     assert "Nothing has changed yet" in out
-    assert out.index("systemctl stop ea-chat-bot") < out.index("mv ") < out.index("cp -p") \
-        < out.index("systemctl start ea-chat-bot")
+    # The stop and start lines name the host's service manager.
+    stop, start = (("launchctl bootout", "launchctl bootstrap") if platform.system() == "Darwin"
+                   else ("systemctl stop ea-chat-bot", "systemctl start ea-chat-bot"))
+    assert out.index(stop) < out.index("mv ") < out.index("cp -p") < out.index(start)
     assert f"mv '{priv / 'webchat.sqlite'}'" in out
     assert f"cp -p '{snap / 'webchat.sqlite'}' '{priv / 'webchat.sqlite'}' && chmod 600" in out
     assert f"cp -pR '{snap / 'webchat-files'}' '{priv / 'webchat-files'}'" in out
