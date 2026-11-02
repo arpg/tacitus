@@ -353,7 +353,8 @@ function markdown(text) {
         out.append(h('details', { class: 'spoiler' },
           h('summary', {}, info.slice(7).trim() || 'Hidden text'), markdown(src)));
       } else if (info === 'quote') out.append(h('blockquote', {}, markdown(src)));
-      else out.append(h('pre', {}, h('code', {}, src)));
+      else out.append(h('div', { class: 'code-box' }, h('pre', {}, h('code', {}, src)),
+        h('button', { type: 'button', class: 'btn small code-copy', 'aria-label': 'Copy this block', onclick: () => copyText(src) }, 'Copy')));
     } else if ((m = HEADING_RE.exec(ln))) {
       out.append(inline(m[2], false, h('h' + Math.min(6, m[1].length + 2))));
       i++;
@@ -1204,6 +1205,16 @@ async function react(m, name) {
   try { ingest(await call('POST', `/messages/${enc(m.channel)}/${enc(m.id)}/react`, { emoji: name }), false); } catch (e) { toast(`Not changed: ${e.message}`); }
 }
 
+// A message's words as shown, without the Copy buttons of its code blocks.
+function textOf(node) {
+  if (!node) return '';
+  const btns = [...node.querySelectorAll('.code-copy')];
+  btns.forEach((b) => { b.hidden = true; });
+  const text = node.innerText || '';
+  btns.forEach((b) => { b.hidden = false; });
+  return text;
+}
+
 // The strip over a message: the five reactions, then Edit and Delete on the
 // owner's own words in their first 15 minutes, and Copy, since a long press
 // on a phone selects no text.
@@ -1213,7 +1224,7 @@ function openStrip(el, keyboard) {
   if (!m || m.deleted) return;
   const mine = new Set(m.owner_reactions || []);
   const own = m.author === 'owner' && m.kind === 'message' && Date.now() - m.posted_at * 1000 < EDIT_MS;
-  const text = m.kind === 'message' || m.kind === 'file' ? (el.querySelector('.text') || {}).innerText || '' : '';
+  const text = m.kind === 'message' || m.kind === 'file' ? textOf(el.querySelector('.text')) : '';
   const acts = [own && h('button', { type: 'button', class: 'btn small', onclick: () => startEdit(m) }, 'Edit'),
     own && h('button', { type: 'button', class: 'btn small danger', onclick: () => removeMsg(m) }, 'Delete'),
     text && h('button', { type: 'button', class: 'btn small', onclick: () => copyText(text) }, 'Copy')].filter(Boolean);

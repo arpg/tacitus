@@ -397,7 +397,8 @@ def test_the_app_stays_small():
     # Rename room, Archive room and Bring back, and its phone layout).
     # 4,410: 4,070 plus the owner's own actions (search with its grouped hits and the marked hit, the
     # reaction strip and chips, edit and delete of the owner's message, Copy on a phone).
-    assert lines <= 4410, f"{lines} lines: the contract keeps the app near 4,410 with the relay, the phone setup, the thread states, the teaching, the rooms' menus and the owner's own actions"
+    # 4,420: 4,410 plus Copy on each code block (the block's text alone), left out of the message's copy.
+    assert lines <= 4420, f"{lines} lines: the contract keeps the app near 4,420 with the relay, the phone setup, the thread states, the teaching, the rooms' menus and the owner's own actions"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -553,7 +554,9 @@ def test_the_renderers_build_elements_and_keep_text_as_text(app):
         '<p>[x](javascript:void) <a href="https://e.example/a" target="_blank" '
         'rel="noopener noreferrer">y</a></p>')
     assert md("- a\n- b\n\n1. c") == "<ul><li>a</li><li>b</li></ul><ol><li>c</li></ol>"
-    assert md("> q\n\n```\n<i>\n```") == "<blockquote><p>q</p></blockquote><pre><code>&lt;i&gt;</code></pre>"
+    assert md("> q\n\n```\n<i>\n```") == (
+        '<blockquote><p>q</p></blockquote><div class="code-box"><pre><code>&lt;i&gt;</code></pre>'
+        '<button type="button" class="btn small code-copy" aria-label="Copy this block">Copy</button></div>')
     assert md("one\ntwo") == "<p>one<br>two</p>"
     # A time is not a shortcode; a known shortcode after it still is.
     out = md("at 10:30:00 :lock:")
@@ -3195,3 +3198,26 @@ def test_an_unpaired_browser_off_the_network_is_told_how_to_set_up(app):
     page.reload(wait_until="load")
     expect(page.locator("#toast")).to_contain_text("reachable only on your own network", timeout=15000)
     expect(page.locator("#toast")).to_contain_text('"Set up this phone"')
+
+
+def test_a_code_block_carries_its_own_copy_button(app):
+    """The fenced block gets a Copy that takes the block's text alone; the
+    strip's Copy takes the whole message without the buttons' word."""
+    from playwright.sync_api import expect
+    page, stub, errors = app(context={"permissions": ["clipboard-read", "clipboard-write"]})
+    open_thread(page, "Here is the figure")
+    page.fill("#text", "Run this:\n```\nfirst line\nsecond line\n```")
+    page.press("#text", "Enter")
+    wait_for(lambda: stub.posts)
+    m = next(x for x in stub.messages if x["text"].startswith("Run this"))
+    msg = page.locator(f"#messages .msg[data-id='{m['id']}']")
+    expect(msg.locator(".code-box pre")).to_have_text("first line\nsecond line")
+    expect(msg.locator(".code-copy")).to_have_text("Copy")
+    msg.locator(".code-copy").click()
+    expect(page.locator("#toast")).to_have_text("Copied.")
+    assert page.evaluate("() => navigator.clipboard.readText()") == "first line\nsecond line"
+    msg.hover()
+    msg.locator(".msg-act").click()
+    page.click("#msg-strip button:has-text('Copy')")
+    assert page.evaluate("() => navigator.clipboard.readText()") == "Run this:\n\nfirst line\nsecond line"
+    assert not errors
