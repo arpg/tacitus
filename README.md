@@ -12,6 +12,8 @@ ooooooooooooo       .o.         .oooooo.   ooooo ooooooooooooo oooooo     oooo  
 ==========================================================================================
 ```
 
+**The short tour is at [arpg.github.io/tacitus](https://arpg.github.io/tacitus/).** This README is the long one.
+
 **Tacitus** is an executive assistant that you run yourself. Its
 assistant, the EA, reads your mail, keeps a ledger of what you owe to
 whom, drafts replies in your voice and finds meeting times across all
