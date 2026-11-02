@@ -3,11 +3,12 @@
 working on the app by hand. Standard library only.
 
 It serves botcore/botcore/chat/webui/ under /chat/ and fakes the web front
-end's HTTP API with made-up data held in memory: channels (a DM, the main
-and scheduling channels, a room and an archived room), threads, a draft
-card with actions, a card with a select, a status line, file messages and
-reactions. The event stream replays from Last-Event-ID or ?since= and then
-pushes each new event; with neither it sends only what happens next.
+end's HTTP API with made-up data held in memory: channels (a DM, the main,
+scheduling and mail digest channels, a room and an archived room),
+threads, a draft card with actions, a card with a select, a status line,
+file messages and reactions. The event stream replays from Last-Event-ID
+or ?since= and then pushes each new event; with neither it sends only
+what happens next.
 
 A post gets an echo (an eyes reaction, a bot reply, a check); a card
 click is recorded in `clicks` and the card turns into a status line. A
@@ -68,7 +69,7 @@ TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=u
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; "
        "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 
-DM, MAIN, SCHED, ROOM, OLD = "stream:7", "stream:9", "stream:11", "r1", "r2"
+DM, MAIN, SCHED, ROOM, OLD, DIGEST = "stream:7", "stream:9", "stream:11", "r1", "r2", "digests"
 # The install /api/relay/status names; a pairing link for another is refused.
 STUB_INSTALL = "a" * 26
 STUB_BOT_PUBLIC = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"  # 32 bytes of 1, base64url
@@ -147,6 +148,7 @@ class Stub:
             ROOM: {"id": ROOM, "name": "ea-example-project", "kind": "room", "archived": False,
                    "unread": 0, "description": "A made-up project room"},
             OLD: {"id": OLD, "name": "ea-old-project", "kind": "room", "archived": True, "unread": 0},
+            DIGEST: {"id": DIGEST, "name": "Mail digests", "kind": "digest", "archived": False, "unread": 0},
         }
         self._seed()
         if tick > 0:
@@ -233,18 +235,20 @@ class Stub:
             return st
 
     def add_stale(self, items=None) -> list[dict]:
-        """Threads whose state is days old and on the stale shelf, quietly
-        (as history): [(channel, text, state, days)]; the first messages."""
+        """Threads on the stale shelf, quietly (as history): [(channel, text,
+        state, days)], `days` since the thread's last message; the model set
+        each state two days after it, as the bot ages a shelf from the last
+        message. Answers the first messages."""
         items = items or [(MAIN, "Reply to the visiting speaker about parking", "needs_you", 9),
                           (ROOM, "Check the draft budget table", "needs_you", 12),
                           (SCHED, "Find a time with the review panel", "waiting", 16)]
         out = []
         for channel, text, state, days in items:
             at = time.time() - days * 86400
-            m = self.add(channel, text, author="owner", at=at)
-            self.add(channel, "Done. One question is left for you.", thread_key=m["thread_key"], at=at + 60)
+            m = self.add(channel, text, author="owner", at=at - 60)
+            self.add(channel, "Done. One question is left for you.", thread_key=m["thread_key"], at=at)
             self.states[(channel, m["thread_key"])] = {
-                "state": state, "by": "model", "reason": "A question waits for you.", "at": at,
+                "state": state, "by": "model", "reason": "A question waits for you.", "at": at + 2 * 86400,
                 "stale": True}
             out.append(m)
         return out

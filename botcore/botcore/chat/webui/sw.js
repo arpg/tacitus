@@ -150,10 +150,10 @@ function refusal(req, path) {
   const page = '<!doctype html><html lang="en"><head><meta charset="utf-8">'
     + '<meta name="viewport" content="width=device-width, initial-scale=1"><title>Tacitus stopped</title></head><body>'
     + '<h1>Tacitus stopped</h1>'
-    + `<p>This copy of the app is not the code your bot signed: <code>${esc(path)}</code> does not match it. `
+    + `<p>This copy of the app is not the one your Tacitus signed: <code>${esc(path)}</code> does not match it. `
     + 'The phone deleted its copy of the app and runs none of it.</p>'
-    + '<p>The server that sent the app sent a file that the bot did not sign: a copy from another release, '
-    + 'or a changed file. Open the app on the tailnet, or tell the person who runs the relay.</p>'
+    + '<p>The server that sent the app sent a file your Tacitus did not sign: one from another version, '
+    + 'or a changed file. Open the app on your own network, or tell whoever runs the away-from-home connection.</p>'
     + '<p><a href="./?recheck">Check again</a></p></body></html>';
   return new Response(page, { headers: { 'Content-Type': 'text/html; charset=utf-8',
     'Content-Security-Policy': "default-src 'none'; base-uri 'none'; form-action 'none'" } });
