@@ -221,7 +221,9 @@ def _write(*argv, gmail_msg=None, mediated=False):
                      os.environ.pop("EA_MEDIATED_VERB", None)))
         print(json.dumps({"draft_id": "r-9", "message_id": "m-9", "thread_id": "t-9"}))
     gm.main = gm_main
-    gm.get_message = lambda acct, mid: gmail_msg or {}
+    gm.get_message = lambda acct, mid: (gmail_msg or {}) if mid == "18abc" else {"error": mid}
+    gm._get_service = lambda acct: object()
+    gm._newest_message_in_thread = lambda service, tid: "18abc" if tid == "18thr" else ""
     real = {k: sys.modules.get(k) for k in ("graph_actions", "gmail_client")}
     sys.modules["graph_actions"], sys.modules["gmail_client"] = ga, gm
     try:
@@ -306,6 +308,36 @@ def test_a_mediated_gmail_write_does_not_take_the_lock_again():
                         "--draft-id", "r-1", "--body-file", f)
     assert runs[0][2] is None
 
+
+
+def test_every_provider_reply_and_update_option_is_reachable():
+    """The provider draft verbs go on the deny list in step 4, so the
+    options the EA uses there are here too."""
+    f = _body()
+    msg = {"from": "b@example.com", "to": "me@example.com, c@example.com", "cc": ""}
+    _, _, runs = _write("create-reply", "--provider", "outlook", "--message-id", "AAMkOUT=",
+                        "--body-file", f, "--force")
+    assert "--force" in runs[0][1]
+    _, _, runs = _write("create-reply", "--provider", "gmail", "--account", "me@example.com",
+                        "--thread-id", "18thr", "--body-file", f, "--no-quote", "--force",
+                        gmail_msg=msg)
+    argv = runs[0][1]
+    assert argv[argv.index("--thread-id") + 1] == "18thr" and "--no-quote" in argv
+    assert argv[argv.index("--cc") + 1] == "c@example.com" and "--force" not in argv
+    _, _, runs = _write("create-draft", "--provider", "outlook", "--to", "a@example.edu",
+                        "--subject", "Re: new", "--body-file", f, "--force-new-thread")
+    assert "--force-new-thread" in runs[0][1]
+    _, _, runs = _write("update-draft", "--provider", "gmail", "--account", "me@example.com",
+                        "--draft-id", "r-1", "--body-file", f, "--reply-to-message-id", "18abc",
+                        "--no-quote")
+    argv = runs[0][1]
+    assert argv[argv.index("--reply-to-message-id") + 1] == "18abc" and "--no-quote" in argv
+    for argv in (("create-reply", "--provider", "outlook", "--thread-id", "t"),
+                 ("create-reply", "--provider", "outlook", "--message-id", "AAMk=", "--no-quote"),
+                 ("update-draft", "--provider", "outlook", "--draft-id", "AAMk=",
+                  "--reply-to-message-id", "x")):
+        rc, out, runs = _write(*argv, "--body-file", f)
+        assert rc == 2 and "Gmail only" in out["error"] and runs == [], argv
 
 
 def test_a_ghost_run_gets_a_draft_id_back():

@@ -16,8 +16,10 @@ Step 1 has the reads:
 
 Step 2 has the draft writes:
     python3 mail_actions.py create-draft --provider outlook|gmail --to <a,b> --subject <s> --body-file <f> [--cc <a>] [--bcc <a>] [--ledger-id <id>]...
-    python3 mail_actions.py create-reply --provider outlook|gmail --message-id <id> --body-file <f> [--sender-only] [--cc <a>] [--ledger-id <id>]...
+    python3 mail_actions.py create-reply --provider outlook|gmail --message-id <id> --body-file <f> [--sender-only] [--force] [--cc <a>] [--ledger-id <id>]...
+    python3 mail_actions.py create-reply --provider gmail --thread-id <id> --body-file <f> [--no-quote]
     python3 mail_actions.py update-draft --provider outlook|gmail --draft-id <id> --body-file <f> [--to <a>] [--cc <a>] [--ledger-id <id>]...
+    python3 mail_actions.py update-draft --provider gmail --draft-id <id> --body-file <f> [--reply-to-message-id <id>] [--no-quote]
     python3 mail_actions.py delete-draft --provider outlook|gmail --draft-id <id>
 
 Each write runs the provider CLI's own verb in this process (DELEGATE):
@@ -105,20 +107,28 @@ def _fail(msg: str, code: int = 2) -> int:
     return code
 
 
-def _gmail_reply_cc(acct: str, message_id: str, extra: str) -> tuple[str, str]:
-    """(cc, error) for a Gmail reply-all: the original's To and Cc and the
-    caller's --cc, less the account itself and the sender (who gets the To
-    line from gmail_client)."""
+def _gmail_reply_cc(acct: str, message_id: str, thread_id: str, extra: str) -> tuple[str, str]:
+    """(cc, error) for a Gmail reply-all: the answered message's To and Cc
+    and the caller's --cc, less the account itself and the sender (who gets
+    the To line from gmail_client). With a thread id it answers the message
+    gmail_client answers: the thread's newest one that is not a draft."""
     import email.utils as eu
     import gmail_client
+    if not message_id:
+        service = gmail_client._get_service(acct)
+        message_id = service and gmail_client._newest_message_in_thread(service, thread_id)
+        if not message_id:
+            return "", f"no message found in Gmail thread {thread_id}"
     orig = gmail_client.get_message(acct, message_id)
     if "error" in orig:
         return "", orig["error"]
-    skip = {acct.lower()} | {a.lower() for _n, a in eu.getaddresses(
-        [orig.get("from", ""), orig.get("reply_to", "")]) if a}
+    def addrs(*headers):
+        # getaddresses parses nothing at all when one header is empty (3.12)
+        return [a for _n, a in eu.getaddresses([h for h in headers if h]) if a]
+    skip = {acct.lower()} | {a.lower() for a in addrs(orig.get("from"), orig.get("reply_to"))}
     out = []
-    for _n, a in eu.getaddresses([orig.get("to", ""), orig.get("cc", ""), extra or ""]):
-        if a and a.lower() not in skip and a.lower() not in {x.lower() for x in out}:
+    for a in addrs(orig.get("to"), orig.get("cc"), extra):
+        if a.lower() not in skip and a.lower() not in {x.lower() for x in out}:
             out.append(a)
     return ",".join(out), ""
 
@@ -148,29 +158,48 @@ def _provider_argv(args, acct: str | None) -> tuple[list[str], str]:
         opt("--cc", args.cc)
         if not outlook:
             opt("--bcc", args.bcc)
+        elif args.force_new_thread:
+            argv.append("--force-new-thread")
     elif verb == "create-reply":
         if outlook:
+            if args.thread_id or args.no_quote:
+                return [], "--thread-id and --no-quote are Gmail only"
+            if not args.message_id:
+                return [], "--message-id is required"
             argv += ["--message-id", args.message_id]
             opt("--conversation-id", args.conversation_id)
             opt("--cc", args.cc)
             if args.sender_only:
                 argv.append("--sender-only")
+            if args.force:
+                argv.append("--force")
         else:
-            argv += ["--reply-to-message-id", args.message_id]
+            # gmail_client has no already-replied skip, so --force changes nothing.
+            if args.message_id:
+                argv += ["--reply-to-message-id", args.message_id]
+            else:
+                argv += ["--thread-id", args.thread_id]
             cc = args.cc
             if not args.sender_only:
-                cc, err = _gmail_reply_cc(acct, args.message_id, args.cc)
+                cc, err = _gmail_reply_cc(acct, args.message_id, args.thread_id, args.cc)
                 if err:
                     return [], err
             opt("--cc", cc)
+            if args.no_quote:
+                argv.append("--no-quote")
     elif verb == "update-draft":
         if outlook and args.subject:
             return [], "an Outlook draft's subject does not change in update-draft"
+        if outlook and (args.reply_to_message_id or args.no_quote):
+            return [], "--reply-to-message-id and --no-quote are Gmail only"
         argv += ["--message-id" if outlook else "--draft-id", args.draft_id]
         opt("--to", args.to)
         opt("--cc", args.cc)
         if not outlook:
             opt("--subject", args.subject)
+            opt("--reply-to-message-id", args.reply_to_message_id)
+            if args.no_quote:
+                argv.append("--no-quote")
     else:
         argv += ["--message-id" if outlook else "--draft-id", args.draft_id]
     if outlook and verb != "delete-draft" and args.content_type:
@@ -291,6 +320,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_cdraft.add_argument("--bcc", default=None, help="Gmail only")
     p_cdraft.add_argument("--content-type", default=None, choices=["Text", "HTML"],
                           dest="content_type", help="Outlook only")
+    p_cdraft.add_argument("--force-new-thread", action="store_true", dest="force_new_thread",
+                          help="Outlook: allow a Re:/Fwd: subject on a genuinely new thread. "
+                               "Never to answer a conversation: that is create-reply.")
     p_cdraft.add_argument("--ledger-id", action="append", default=[], dest="ledger_id",
                           help="A ledger row this draft delivers (repeat for more)")
     p_cdraft.set_defaults(func=cmd_draft_write)
@@ -299,10 +331,18 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Create a threaded reply draft (reply-all unless --sender-only)")
     p_crep.add_argument("--provider", required=True, choices=PROVIDERS)
     p_crep.add_argument("--account", default=None, help=acct_help)
-    p_crep.add_argument("--message-id", required=True, dest="message_id")
+    target = p_crep.add_mutually_exclusive_group(required=True)
+    target.add_argument("--message-id", dest="message_id", help="The message answered")
+    target.add_argument("--thread-id", dest="thread_id",
+                        help="Gmail only: answer the thread's newest message")
     p_crep.add_argument("--body-file", required=True, dest="body_file")
     p_crep.add_argument("--cc", default=None, help="Addresses added to the Cc line")
     p_crep.add_argument("--sender-only", action="store_true", dest="sender_only")
+    p_crep.add_argument("--force", action="store_true",
+                        help="Draft even if the user already sent the latest message in "
+                             "the thread (Outlook checks; Gmail has no such check)")
+    p_crep.add_argument("--no-quote", action="store_true", dest="no_quote",
+                        help="Gmail only: leave the quoted message out")
     p_crep.add_argument("--conversation-id", default=None, dest="conversation_id",
                         help="Outlook only: the thread, so a stale message id self-heals")
     p_crep.add_argument("--content-type", default=None, choices=["Text", "HTML"],
@@ -320,6 +360,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_udraft.add_argument("--to", default=None)
     p_udraft.add_argument("--cc", default=None)
     p_udraft.add_argument("--subject", default=None, help="Gmail only")
+    p_udraft.add_argument("--reply-to-message-id", default=None, dest="reply_to_message_id",
+                          help="Gmail only: move the draft into that message's thread and quote it")
+    p_udraft.add_argument("--no-quote", action="store_true", dest="no_quote",
+                          help="Gmail only: drop the quote")
     p_udraft.add_argument("--content-type", default=None, choices=["Text", "HTML"],
                           dest="content_type", help="Outlook only")
     p_udraft.add_argument("--ledger-id", action="append", default=[], dest="ledger_id",
