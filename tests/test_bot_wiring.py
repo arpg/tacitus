@@ -362,6 +362,30 @@ def test_colleague_rooms_are_wired_owner_only_and_marked():
     assert "session_index.py *)" in BOT_SRC
 
 
+def test_the_conversation_index_names_the_web_chats_channels_as_the_app_does():
+    """On the web chat alone the index labels its fixed channels by the
+    app's names (webui/app.js KIND_NAMES); a room keeps its #name, and
+    another front end keeps #ea, #scheduling and DM."""
+    import types
+    rows = {"main": {"kind": "main"}, "dm": {"kind": "dm"}, "sched": {"kind": "sched"},
+            "digests": {"kind": "digest"}, "r1": {"kind": "room", "name": "ea-atlas"}}
+    web = types.SimpleNamespace(name="web", store=types.SimpleNamespace(channel=rows.get),
+                                is_dm=lambda cid: cid == "dm")
+    src = BOT_SRC[BOT_SRC.index("_WEB_CHANNEL_NAMES = {"):BOT_SRC.index("\ndef _colleague_command(")]
+    ns = {"FRONTEND": web, "CHANNEL_ID": "main", "CHANNEL_NAME": "ea", "SCHED_CHANNEL_ID": "sched",
+          "_channel_scope": lambda cid: {"name": "ea-atlas"} if cid == "r1" else None}
+    exec(src, ns)
+    label = ns["_channel_label"]
+    assert [label(c) for c in ("main", "sched", "dm", "digests", "r1")] == \
+        ["Ask Tacitus", "Scheduling", "Direct messages", "Mail digests", "#ea-atlas"]
+    app = (ROOT / "botcore" / "botcore" / "chat" / "webui" / "app.js").read_text()
+    names = re.search(r"const KIND_NAMES = \{([^}]*)\}", app).group(1)
+    for kind, shown in ns["_WEB_CHANNEL_NAMES"].items():
+        assert f"{kind}: '{shown}'" in names, kind
+    ns["FRONTEND"] = types.SimpleNamespace(name="zulip+web", is_dm=lambda cid: cid == "dm")
+    assert [label(c) for c in ("main", "sched", "dm", "r1")] == ["#ea", "#scheduling", "DM", "#ea-atlas"]
+
+
 def test_lane_models_and_room_hygiene():
     """Project specialists run on the room_specialist model, email authors
     on the email_author model (ea-config.json `models`, defaulted); rooms

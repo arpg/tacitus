@@ -449,7 +449,9 @@ sign-in ([docs/docker.md](docker.md#web-chat), Web chat).
    notices and progress lines do not, and the briefing and the answers
    wait for the end of your quiet hours (the `notify_push` block in
    [docs/webchat.md](webchat.md#config) turns them off or sends them at
-   once). The bot then sends encrypted pushes over
+   once). **Settings** in the drawer has the same switches under
+   Notifications, and a change there counts at once. The bot then sends
+   encrypted pushes over
    https to your browser's push service (Google, Apple, Mozilla or
    Microsoft); it needs the `cryptography` package, which the install
    already has. The drawer lists the browsers that get notifications,

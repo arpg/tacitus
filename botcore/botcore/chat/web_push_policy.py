@@ -15,7 +15,9 @@ A new bot message pushes when
       (rooms too): the owner's newest message there is newer than the bot's
       previous answer (a message, a file or a card). A reply in parts
       pushes once, and a reply after a card in the same conversation adds
-      no push to the card's own.
+      no push to the card's own. Nor does a reply within CARD_QUIETS_S of
+      a card this conversation asked for in another one (the DM): the
+      store's `card_link` table names it, and the card's push covers both.
 
 A new card always pushes (WebFrontend._push_card). Nothing else does: a
 digest, a notice the owner never wrote in, the "Still need this?" nudge,
@@ -31,6 +33,13 @@ of the owner's quiet hours ("queue", the default) or go at once ("send").
 The front end applies the decision: the push's title and body, the
 thread's tag, the queue during quiet hours, and the check that drops a
 second push of the same text within DEDUPE_S seconds (`fingerprint`).
+
+An alert's push (alert.py, page_watch.py, through chat.direct.web_notify)
+names no conversation: its tag is `alert:<ledger id>` or `watch:<id>`
+(ALERT_TAGS) and its url the app's start page. The store keeps the text
+it showed (`push_alert`), and `alert_tags` names the alerts whose text a
+bot message of a conversation carries (the DM post of the same alert), so
+the owner's reply there clears the alert's notification as well.
 """
 from __future__ import annotations
 
@@ -47,6 +56,13 @@ BOT = "bot"
 DIRECT_ORIGIN = "personal"
 # Seconds within which a second push of the same text is dropped.
 DEDUPE_S = 10.0
+# Seconds after a card's push in which the answer in the conversation that
+# asked for it adds no push of its own (one buzz, not two).
+CARD_QUIETS_S = 120.0
+# The tags of an alert's push: it names no conversation.
+ALERT_TAGS = ("alert:", "watch:")
+# Bot messages of a conversation read for an alert's text, newest first.
+ALERT_SCAN = 50
 # Lines of a message read for a report's title: a held post's line goes
 # first ("(held 04:00)"), then the report's own.
 TITLE_LINES = 3
@@ -168,6 +184,9 @@ def message_push(store: Any, row: dict | None, settings: Settings) -> Push | Non
         return None
     if any(_answers(r, nudges) for r in since):
         return None
+    card_at = store.linked_card_at(channel, key)
+    if card_at is not None and float(row.get("posted_at") or 0) - card_at < CARD_QUIETS_S:
+        return None
     name = (ch.get("name") or "").strip() if kind == "room" else ""
     return Push("reply", f"Tacitus replied in {name}" if name else "Tacitus replied", text)
 
@@ -179,3 +198,20 @@ def fingerprint(title: str, body: str = "") -> str:
     line = plain_line(body, 2000) or plain_line(title, 2000)
     norm = re.sub(r"\W+", "", line.lower())
     return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:32] if norm else ""
+
+
+def is_alert_tag(tag: str | None) -> bool:
+    """True for the tag of an alert's push (ALERT_TAGS)."""
+    return str(tag or "").startswith(ALERT_TAGS)
+
+
+def alert_tags(store: Any, channel: str, thread_key: str) -> list[str]:
+    """The tags of the alerts whose push reached a browser since the owner
+    last wrote under them, and whose text a bot message of this
+    conversation carries (the same `fingerprint`), oldest first."""
+    shown = store.alerts_shown()
+    if not shown:
+        return []
+    texts = store.bot_texts(channel, thread_key, ALERT_SCAN)
+    here = {fingerprint("", t) for t in texts} - {""}
+    return [tag for tag, fp in shown if fp in here]

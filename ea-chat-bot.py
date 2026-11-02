@@ -89,15 +89,19 @@ _CARDS = FRONTEND.card_registry or _chat.CardRegistry(_chat.private_dir() / "cha
 if FRONTEND.card_registry is None:
     FRONTEND.card_registry = _CARDS
 # The web chat's Settings screen: the routing table (model_routing.py),
-# which the bot writes to the owner-private routing.json. A web front end
-# alone or as the shadow of another serves it, and judges the state of
-# each conversation (docs/webchat-state.md: the rules, the linked ledger
-# rows and the routed model) in its own store alone.
+# which the bot writes to the owner-private routing.json, and the
+# notification switches (web_notify_settings.py), the web block's
+# `notify_push` in the owner-private chat.json. A web front end alone or as
+# the shadow of another serves it, and judges the state of each
+# conversation (docs/webchat-state.md: the rules, the linked ledger rows
+# and the routed model) in its own store alone.
 for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
     if isinstance(getattr(_web, "settings_pages", None), dict):
         from preprocessor import model_routing as _model_routing
+        from preprocessor import web_notify_settings as _web_notify_settings
         from preprocessor import web_thread_state as _web_thread_state
         _web.settings_pages["routing"] = _model_routing.WebSettings()
+        _web.settings_pages["notify"] = _web_notify_settings.NotifySettings(_web)
         _web_thread_state.enable(_web)
 
 
@@ -9645,7 +9649,23 @@ def _dashboard_project_url(project_id: str) -> str:
         return ""
 
 
+# The web chat's own channels by the names its app shows them under
+# (webui/app.js, KIND_NAMES), by the channel's kind in the store.
+_WEB_CHANNEL_NAMES = {"main": "Ask Tacitus", "dm": "Direct messages", "sched": "Scheduling",
+                      "digest": "Mail digests"}
+
+
 def _channel_label(channel_id: str) -> str:
+    """Where a conversation lives, for the conversation index: on the web
+    chat alone the app's name for its fixed channels, else the channel's
+    `#name` (a room's from its scope) or "DM"."""
+    if getattr(FRONTEND, "name", "") == "web":
+        try:
+            row = FRONTEND.store.channel(channel_id) or {}
+        except Exception:
+            row = {}
+        if row.get("kind") in _WEB_CHANNEL_NAMES:
+            return _WEB_CHANNEL_NAMES[row["kind"]]
     if channel_id == CHANNEL_ID:
         return f"#{CHANNEL_NAME}" if "CHANNEL_NAME" in globals() else "#ea"
     if SCHED_CHANNEL_ID and channel_id == SCHED_CHANNEL_ID:

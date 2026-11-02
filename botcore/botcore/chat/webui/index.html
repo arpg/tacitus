@@ -75,6 +75,7 @@
     </button>
     <div id="composer-note" aria-live="polite"></div>
   </form>
+  <p id="composer-off" hidden>Tacitus posts your mail digests here; it does not read replies.</p>
 </main>
 
 <div id="scrim"></div>
@@ -101,11 +102,31 @@
 <dialog id="settings" aria-labelledby="settings-title">
   <form method="dialog">
     <h2 id="settings-title">Settings</h2>
-    <h3>Which model does each task</h3>
-    <p class="s-key">Local is your own model, Hosted is Claude, and Auto lets Tacitus choose.</p>
-    <p id="settings-local"></p>
-    <ul id="settings-rows"></ul>
-    <p id="settings-note" aria-live="polite"></p>
+    <section id="notify-settings" aria-labelledby="notify-title" hidden>
+      <h3 id="notify-title">Notifications</h3>
+      <p class="s-key">What reaches your phone while the app is closed. Cards, direct messages and alerts always do.</p>
+      <ul id="notify-rows">
+        <li><label class="toggle"><input type="checkbox" role="switch" name="briefings"> Briefings</label>
+          <p>Your morning briefing and the afternoon update.</p></li>
+        <li><label class="toggle"><input type="checkbox" role="switch" name="replies"> Replies</label>
+          <p>An answer to something you asked Tacitus.</p></li>
+        <li><label class="toggle"><input type="checkbox" role="switch" name="rooms"> Rooms</label>
+          <p>An answer in one of your project rooms.</p></li>
+        <li><span class="s-name" id="notify-quiet">During quiet hours</span>
+          <span class="seg" role="radiogroup" aria-labelledby="notify-quiet">
+            <label><input type="radio" name="quiet" value="queue"> Hold until morning</label>
+            <label><input type="radio" name="quiet" value="send"> Send anyway</label></span>
+          <p>Whether briefings and answers that come at night wait for the end of your quiet hours.</p></li>
+      </ul>
+      <p id="notify-note" aria-live="polite"></p>
+    </section>
+    <section id="routing-settings" aria-labelledby="routing-title" hidden>
+      <h3 id="routing-title">Which model does each task</h3>
+      <p class="s-key">Local is your own model, Hosted is Claude, and Auto lets Tacitus choose.</p>
+      <p id="settings-local"></p>
+      <ul id="settings-rows"></ul>
+      <p id="settings-note" aria-live="polite"></p>
+    </section>
     <div class="settings-actions"><button type="button" id="settings-save" class="btn primary">Save</button>
       <button type="submit" class="btn">Close</button></div>
   </form>

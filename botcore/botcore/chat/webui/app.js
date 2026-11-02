@@ -959,6 +959,7 @@ async function route() {
   document.body.dataset.view = S.thread ? 'thread' : 'threads';
   $('channel-name').textContent = S.needsView ? 'Needs you' : channelName(chan(ch));
   $('new-thread').hidden = S.needsView;
+  digestView();
   stateShown();
   if (needs) loadNeeds();
   else if (changed || !S.threads.has(ch)) loadThreads(ch);
@@ -1902,9 +1903,25 @@ function renderSettings(data) {
     r.floor ? h('p', { class: 's-floor' }, r.floor) : null)));
 }
 
+// The sections the bot serves: the routing table, and the notification switches where push works.
+const settingsShown = () => {
+  const pages = (S.me && S.me.settings) || [];
+  return { notify: pages.includes('notify') && Boolean(S.me.push), routing: pages.includes('routing') };
+};
+
 async function openSettings() {
+  const shown = settingsShown();
   $('settings-note').textContent = '';
+  $('notify-note').textContent = '';
+  $('notify-settings').hidden = !shown.notify;
+  $('routing-settings').hidden = !shown.routing;
+  $('settings-save').hidden = !shown.routing;
   if (!$('settings').open) $('settings').showModal();
+  if (shown.notify) {
+    call('GET', '/settings/notify').then(renderNotify,
+      (e) => { $('notify-note').textContent = `Could not read the settings: ${e.message}`; });
+  }
+  if (!shown.routing) return;
   try { renderSettings(await call('GET', '/settings/routing')); } catch (e) { $('settings-note').textContent = `Could not read the settings: ${e.message}`; }
 }
 
@@ -1919,6 +1936,34 @@ async function saveSettings() {
     $('settings-note').textContent = `Not saved: ${e.message}`;
   } finally {
     $('settings-save').disabled = false;
+  }
+}
+
+/* -- Settings: notifications (docs/webchat.md, Notifications) ------- */
+
+// Three switches and the quiet-hours choice: the web block's notify_push, which the bot
+// writes. Each change saves at once and the section redraws from the answer; a refusal
+// stays on screen and the section shows what is saved.
+function renderNotify(data) {
+  for (const el of $('notify-rows').querySelectorAll('input')) {
+    el.checked = el.type === 'radio' ? data.quiet === el.value : data[el.name] === true;
+  }
+}
+
+async function saveNotify(e) {
+  const el = e.target;
+  if (!el.name || (el.type === 'radio' && !el.checked)) return;
+  const inputs = [...$('notify-rows').querySelectorAll('input')];
+  inputs.forEach((i) => { i.disabled = true; }); // one save at a time: each answer is the whole section
+  $('notify-note').textContent = '';
+  try {
+    renderNotify(await call('POST', '/settings/notify', { [el.name]: el.type === 'radio' ? el.value : el.checked }));
+    $('notify-note').textContent = 'Saved.';
+  } catch (err) {
+    $('notify-note').textContent = `Not saved: ${err.message}`;
+    await call('GET', '/settings/notify').then(renderNotify, () => {});
+  } finally {
+    inputs.forEach((i) => { i.disabled = false; });
   }
 }
 
@@ -1979,8 +2024,17 @@ function emptyNote(kind) {
   return h('p', { class: 'empty' }, {
     dm: 'Cards that need your tap land here.',
     room: 'This room is for one project. Ask about it here and Tacitus keeps track of it.',
-    sched: 'Tacitus finds meeting times here.', digest: 'Tacitus posts your mail digests here.',
+    sched: 'Tacitus finds meeting times here.', digest: DIGEST_NOTE,
   }[kind] || 'Nothing here yet.');
+}
+
+// The digest channel takes no message: the bot posts there and reads no reply. Its threads
+// show no composer and no New conversation, and a line says why.
+const DIGEST_NOTE = 'Tacitus posts your mail digests here; it does not read replies.';
+function digestView() {
+  const digest = !S.needsView && (chan(S.channel) || {}).kind === 'digest';
+  document.body.classList.toggle('digest', digest);
+  $('composer-off').hidden = !digest;
 }
 
 // New room: the owner's own words to the bot, in a new conversation in the
@@ -2262,7 +2316,7 @@ async function boot() {
   // Pairing a phone happens where the API answers: the tailnet or this machine.
   const phones = Boolean(S.me.relay) && !T.relay;
   $('pair-phone').hidden = !phones;
-  $('open-settings').hidden = T.relay || !(S.me.settings || []).includes('routing');
+  $('open-settings').hidden = T.relay || !Object.values(settingsShown()).some(Boolean);
   $('tour-again').hidden = false;
   footer();
   welcomeOnce();
@@ -2321,6 +2375,7 @@ async function init() {
   $('phone-relay').addEventListener('click', () => pairPhone('relay'));
   $('open-settings').addEventListener('click', openSettings);
   $('settings-save').addEventListener('click', saveSettings);
+  $('notify-rows').addEventListener('change', saveNotify);
   teaching();
   $('relay-note').addEventListener('click', () => relayNote(''));
   // Escape closes the drawer, unless it closes a dialog over it.

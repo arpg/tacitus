@@ -634,3 +634,20 @@ a.file-link .file-name { color: var(--accent); }
 }
 
 .mention { font-weight: 600; color: var(--accent); }
+
+/* Settings, Notifications: a switch for each kind of push and the
+   quiet-hours choice, each saved on change. The digest channel: no
+   composer and no New conversation, and a line that says why. */
+
+#settings section { display: grid; gap: 12px; }
+#notify-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+#notify-rows li { display: grid; gap: 4px; justify-items: start; } /* the quiet-hours name above its choice */
+#notify-rows .toggle { font-weight: 600; }
+#notify-rows p { font-size: 13px; color: var(--muted); }
+#notify-note:empty { display: none; }
+body.digest #composer, body.digest #new-thread { display: none; }
+#composer-off { margin: 0; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border);
+  background: var(--panel); color: var(--muted); font-size: 14px; }
+@media (max-width: 599px) {
+  #notify-rows .seg { justify-self: stretch; } /* the two choices fill the row */
+}

@@ -504,7 +504,11 @@ def test_a_web_notify_entry_names_the_channel_and_the_keys_follow_it(web_env, ca
     assert "'r9'" in capsys.readouterr().out and store.channel("r9") is None
     assert (chat_notify.scheduling_channel_key(), chat_notify.calendar_channel_key(),
             chat_notify.health_channel_key()) == ("scheduling", "scheduling", "health")
+    # with no map, scheduling output goes to Scheduling while it is on
     web_env.block({})
+    assert (chat_notify.scheduling_channel_key(), chat_notify.calendar_channel_key(),
+            chat_notify.health_channel_key()) == ("scheduling", "scheduling", "ea-assistant")
+    web_env.block({"sched": False})
     assert (chat_notify.scheduling_channel_key(), chat_notify.calendar_channel_key(),
             chat_notify.health_channel_key()) == ("ea-assistant",) * 3
     assert chat_notify.llm_tool_grants() == ""
@@ -531,6 +535,39 @@ def test_a_web_post_returns_its_thread_and_a_push_can_open_it(web_env, monkeypat
     assert direct.web_notify("a tip", tag="usage-tip", urgency="normal", url=url) == {"sent": 1}
     direct.web_notify("an alert")
     assert opened[0] == url and opened[1].endswith("/") and "#" not in opened[1]
+
+
+def test_scheduling_posts_land_in_scheduling_on_the_web_chat_alone(web_env):
+    """The `scheduling` key goes to the Scheduling channel while the store
+    holds it (the bot makes it at start, and archives it when the web
+    block turns it off), else to the EA channel; a `web.notify` entry for
+    the key still wins."""
+    store = web_env.wf.WebStore(web_env.store)
+
+    def texts(cid):
+        return [r["text"] for r in store.threads(cid)]
+    # before the bot made Scheduling: the EA channel
+    assert chat_notify.post("scheduling", "Three times for the review.", _bypass_quiet=True)
+    assert texts("main") == ["Three times for the review."] and store.channel("sched") is None
+    store.upsert_channel("sched", "Scheduling", "sched")
+    key = chat_notify.scheduling_channel_key()
+    assert key == "scheduling"
+    assert chat_notify.post(key, "The panel picked Tuesday.", _bypass_quiet=True)
+    (row,) = store.threads("sched")
+    assert row["text"] == "The panel picked Tuesday."
+    assert store.thread_origin("sched", row["thread_key"]) == "scheduling"
+    # other keys stay in the EA channel
+    assert chat_notify.post("ea-assistant", "The weekly audit is green.", _bypass_quiet=True)
+    assert texts("sched") == ["The panel picked Tuesday."]
+    # an explicit map wins
+    web_env.block({"port": 0, "notify": {"scheduling": {"channel": "main"}}})
+    assert chat_notify.post("scheduling", "Mapped to the EA channel.", _bypass_quiet=True)
+    assert "Mapped to the EA channel." in texts("main") and len(texts("sched")) == 1
+    # an archived Scheduling (turned off) sends it back to the EA channel
+    web_env.block({"port": 0})
+    store.set_channel("sched", archived=True)
+    assert chat_notify.post("scheduling", "While Scheduling is off.", _bypass_quiet=True)
+    assert "While Scheduling is off." in texts("main") and len(texts("sched")) == 1
 
 
 def test_a_web_post_from_a_process_that_is_not_the_owners_posts_nothing(web_env, monkeypatch,
