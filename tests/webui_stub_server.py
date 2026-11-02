@@ -31,7 +31,9 @@ list names some of them). The Notifications section reads `notify` (the
 three switches and the quiet-hours choice) and `notify_posts` records each
 change; a key or a value the bot would refuse answers 400 with its words.
 `push=True` makes /api/me say that push works, with a made-up key and no
-subscription, as a bot with the cryptography package does.
+subscription, as a bot with the cryptography package does;
+`subscriptions` is the list of browsers that get notifications
+/api/push/subscriptions answers (none by default).
 
 `handoff=True` (with relay_pairing) lets "Add a device" offer A computer:
 /api/relay/status says `handoff` and names the website's copy of the app,
@@ -138,13 +140,15 @@ class Stub:
 
     def __init__(self, tick: float = 0.0, pair_token: str | None = None, echo: bool = True,
                  sign: bool = False, relay_pairing: bool = False, settings: bool | list = False,
-                 push: bool = False, handoff: bool = False, owner_routes: str | None = None):
+                 push: bool = False, handoff: bool = False, owner_routes: str | None = None,
+                 subscriptions: list | None = None):
         self.cond = threading.Condition()
         self.handoff = handoff
         self.owner_routes = owner_routes
         self.handoffs: list[dict] = []
         self.settings = (["notify", "routing"] if settings is True else list(settings or []))
         self.push = push
+        self.subscriptions = list(subscriptions or [])
         self.routing = json.loads(json.dumps(ROUTING))
         self.settings_posts: list[dict] = []
         self.notify = dict(NOTIFY)
@@ -553,7 +557,7 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["push", "vapid"] and s.push:
             return self._json(200, {"key": STUB_VAPID})
         if parts == ["push", "subscriptions"] and s.push:
-            return self._json(200, [])
+            return self._json(200, s.subscriptions)
         if parts == ["relay", "status"]:
             return self._json(200, {"enabled": True, "install_id": STUB_INSTALL, "connected": False,
                                     "relay_url": "https://relay.example.net",
