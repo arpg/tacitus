@@ -12,6 +12,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+# a scratch EA dir when run as a script (conftest sets one under pytest)
+os.environ.setdefault("EA_DIR", tempfile.mkdtemp(prefix="ea-test-mail-actions-"))
 sys.path.insert(0, str(ROOT / "preprocessor"))
 import mail_actions  # noqa: E402
 import mail_mediation as MM  # noqa: E402
@@ -486,11 +488,6 @@ def test_the_gmail_preflight_checks_the_new_text_like_outlook():
             setattr(gm, k, v)
 
 
-if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    for t in tests:
-        t()
-    print(f"  {len(tests)} passed, 0 failed")
 
 
 # ---- step 4: the provider verbs are denied ------------------------------
@@ -600,3 +597,10 @@ def test_no_ea_facing_text_names_a_denied_provider_verb():
         for tool, verb in denied:
             hit = re.search(rf"{tool}\.py[ \\\n]+{re.escape(verb)}\b(?!-)", text)
             assert not hit, (path.name, f"{tool}.py {verb}")
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    for t in tests:
+        t()
+    print(f"  {len(tests)} passed, 0 failed")
