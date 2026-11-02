@@ -364,11 +364,36 @@ def test_the_app_never_parses_text_as_html():
 
 def test_nothing_comes_from_elsewhere():
     for name in ("index.html", "app.css", "sw.js", "manifest.webmanifest"):
-        assert not re.search(r"https?://", read(name)), name
+        text = read(name).replace(PAGE_CSP, "") if name == "index.html" else read(name)
+        assert not re.search(r"https?://", text), name
     css = read("app.css")
     assert "@import" not in css and "url(" not in css
     # The app's only URLs are the patterns that recognise links in text.
     assert not re.search(r"""["'`]https?://""", read("app.js"))
+
+
+# The page's own policy, for a host that sends no headers (the website's copy
+# of the app): the bot's page policy, with connect-src open to any https relay
+# (the pairing names it) and to a relay on this machine, which the app allows.
+# frame-ancestors has no effect in a meta tag, so it is left out.
+PAGE_CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; "
+            "connect-src 'self' https: http://127.0.0.1:* http://localhost:*; object-src 'none'; "
+            "base-uri 'none'; form-action 'none'")
+
+
+def test_the_page_carries_its_own_security_policy():
+    tags = refs()
+    metas = [a for t, a in tags if t == "meta" and a.get("http-equiv") == "Content-Security-Policy"]
+    assert [m["content"] for m in metas] == [PAGE_CSP]
+    # Before the first stylesheet and script, so it covers them.
+    order = [(t, a.get("http-equiv")) for t, a in tags if t in ("meta", "link", "script")]
+    assert order.index(("meta", "Content-Security-Policy")) < order.index(("link", None))
+    sys.path.insert(0, str(TESTS.parent / "botcore"))
+    from botcore.chat.web_frontend import HTML_CSP
+    bot = dict(d.split(" ", 1) for d in HTML_CSP.split("; "))
+    mine = dict(d.split(" ", 1) for d in PAGE_CSP.split("; "))
+    assert mine.pop("connect-src").startswith("'self' https:")
+    assert mine == {k: v for k, v in bot.items() if k not in ("connect-src", "frame-ancestors")}
 
 
 def test_the_app_stays_small():
@@ -400,7 +425,10 @@ def test_the_app_stays_small():
     # 4,420: 4,410 plus Copy on each code block (the block's text alone), left out of the message's copy.
     # 4,470: 4,420 plus the keyboard on a window that shrinks with it (the screen's height per width,
     #     the pin held a second past the focus, no scroll fight) and the phone's note per keyboard change.
-    assert lines <= 4470, f"{lines} lines: the contract keeps the app near 4,470 with the relay, the phone setup, the thread states, the teaching, the rooms' menus and the owner's own actions"
+    # 4,660: 4,470 plus a computer through the relay ("Add a device" with its three ways, the code and
+    #     Approve for the computer, the "Set up this computer" screen with its PBKDF2 and sealed handoff,
+    #     the website's copy taking the bot's release, and the page's own security policy).
+    assert lines <= 4660, f"{lines} lines: the contract keeps the app near 4,660 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions and a computer through the relay"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -2069,10 +2097,14 @@ def test_the_relay_keys_stay_in_webcrypto_and_indexeddb():
     # the pairing secret leaves the address bar before anything else runs
     body = js[js.index("async function pairFromLink"):]
     assert body.split("\n")[1].strip() == "history.replaceState(null, '', location.pathname + location.search);"
-    # an err frame is a hint: nothing deletes or clears the stored pairing
+    # an err frame is a hint: nothing deletes or clears a stored pairing. The one
+    # delete is a computer's first setup that failed with no earlier pairing (its
+    # code is spent, so it shows the code screen again instead of a dead setup).
     for word in (".delete(", ".clear(", "deleteDatabase"):
         assert word not in js[js.index("function idb"):js.index("function deviceName")], word
-    assert "st.delete" not in js and "deleteDatabase" not in js
+    assert "deleteDatabase" not in js and js.count("st.delete") == 1
+    assert ("if (saved && old) await savePairing(old).catch(() => {}); // a failed pairing keeps the earlier one\n"
+            "    else if (saved && hosted) await idb('readwrite', (st) => st.delete('pairing'))") in js
 
 
 def test_the_relay_key_never_rides_in_a_url():
@@ -2087,16 +2119,24 @@ def test_the_relay_key_never_rides_in_a_url():
 def test_the_pairing_dialog_is_in_the_drawer():
     html = read("index.html")
     nav = html[html.index('<nav id="channels"'):html.index("</nav>")]
-    assert '<button type="button" id="pair-phone" class="btn small" hidden>Pair a phone</button>' in nav
+    assert '<button type="button" id="pair-phone" class="btn small" hidden>Add a device</button>' in nav
     assert '<dialog id="phone"' in html and '<canvas id="phone-qr"' in html
+    assert '<h2 id="phone-title">Add a device</h2>' in html
+    for way, label in (("here", "This phone"), ("phone", "Another phone"), ("computer", "A computer")):
+        assert f'<button type="button" id="way-{way}" aria-pressed="false">{label}</button>' in html
+        assert f'<section id="add-{way}" class="way" hidden>' in html
     assert '<button type="button" id="phone-relay" class="btn" hidden>Phone not on your network</button>' in html
     assert '<button type="button" id="phone-here" class="btn primary" hidden>Set up this phone</button>' in html
     js = read("app.js")
     assert "call('POST', '/relay/pair', via === 'relay' ? { via } : {})" in js and "QR.draw($('phone-qr'), out.qr, 4)" in js
-    assert "Boolean(S.me.relay) && !T.relay" in js  # where the API answers: the tailnet or this machine
+    assert "call('POST', '/relay/handoff', {})" in js
+    # Where the API answers (the tailnet or this machine), or relayed when the bot lets this device start a handoff.
+    assert "routes === 'handoff' || (routes === 'all' && Boolean(S.me.relay))" in js
+    assert "(S.me && S.me.owner_routes) || (T.relay ? 'none' : 'all')" in js
     assert "call('POST', `/relay/${verb}`, { device: d.id, cards })" in js  # Approve and Remove
     assert "'Allow card buttons on this phone'" in js  # beside a relay-origin phone, off by default
-    assert "Never send this link through chat or mail." in js
+    assert "'Allow Send and Create buttons on this computer'" in js and "Allow Send and Create buttons on this computer" in html
+    assert "Never send this link through chat or mail." in js and "Never send this code through chat or mail." in js
 
 
 def test_the_settings_screen_is_in_the_drawer():
@@ -2338,7 +2378,8 @@ def _owner_context(browser, fe, contexts, workers=False):
 
 
 def _pair_and_approve(browser, relay_bot, contexts, workers=False):
-    """The owner opens "Pair a phone" on the tailnet; the phone, on the
+    """The owner opens "Add a device" on the tailnet (Another phone, on a
+    computer); the phone, on the
     tailnet too and signed in, opens the link and shows its code; the owner
     approves the phone whose code matches; then the phone leaves the
     tailnet. The phone runs the service worker when `workers`. (owner page,
@@ -2348,14 +2389,19 @@ def _pair_and_approve(browser, relay_bot, contexts, workers=False):
     tail = _owner_context(browser, fe, contexts).new_page()
     tail.goto(relay_bot["public"] + "/")
     tail.click("#pair-phone")
-    expect(tail.locator("#phone-devices")).to_contain_text("No phone is set up yet.")
+    expect(tail.locator("#phone-devices")).to_contain_text("No device is set up yet.")
     expect(tail.locator("#phone-self")).to_contain_text("This browser is not set up yet.")
+    expect(tail.locator("#way-phone")).to_have_attribute("aria-pressed", "true")
     wait_for(lambda: tail.input_value("#phone-link"), 10)
     link = tail.input_value("#phone-link")
     assert link.startswith(relay_bot["public"] + "/#tr2=")
-    # The phone the owner holds has no second screen to scan from: "Pair this
-    # phone" pairs this very browser from the same link, with no navigation.
+    # The phone the owner holds has no second screen to scan from: "This
+    # computer" ("This phone" on a phone) pairs this very browser from the
+    # same link, with no navigation.
+    expect(tail.locator("#way-here")).to_have_text("This computer")
+    tail.click("#way-here")
     expect(tail.locator("#phone-here")).to_be_visible()
+    assert tail.input_value("#phone-link") == link  # the same pairing serves both ways
     tail.evaluate("() => { window.__paired = []; pairFromLink = (k, t, s) => { window.__paired.push([k, t, s]); }; }")
     tail.click("#phone-here")
     assert tail.evaluate("window.__paired") == [["tr2", link.split("#tr2=")[1], True]]
@@ -2462,7 +2508,7 @@ def test_a_phone_pairs_on_the_tailnet_and_chats_through_the_relay(browser, relay
         # A removed phone hears "auth" and says so; it keeps its keys.
         fe.relay.revoke(devices[0]["id"])
         page.reload()
-        expect(page.locator("#relay-note")).to_contain_text("did not accept this phone", timeout=15000)
+        expect(page.locator("#relay-note")).to_contain_text("did not accept this device", timeout=15000)
         assert page.evaluate("loadPairing().then((r) => Boolean(r && r.priv))")
         assert not errors, errors
     finally:
