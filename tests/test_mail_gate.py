@@ -63,6 +63,22 @@ def _msg(mid, conv, frm="alice@example.edu", received=NOW - timedelta(hours=1)):
             "from": {"emailAddress": {"address": frm}}, "subject": f"subject {mid}",
             "bodyPreview": f"RAW TEXT of {mid}"}
 
+def _unified_outlook(verb, m):
+    """What mail_actions prints for an Outlook read of Graph message `m`:
+    the graph_actions verb's shape, then mail_actions._shape."""
+    import mail_actions
+    row = {"id": m["id"], "subject": m.get("subject"),
+           "from": m["from"]["emailAddress"]["address"],
+           "received": m.get("receivedDateTime", ""), "conversation_id": m.get("conversationId", ""),
+           "preview": m.get("bodyPreview", "")}
+    if verb == "search":
+        return mail_actions._shape("search", "outlook", [row])[0]
+    full = dict(row, **{"from": m["from"]["emailAddress"],
+                        "body": (m.get("body") or {}).get("content", ""),
+                        "body_type": (m.get("body") or {}).get("contentType", "")})
+    return mail_actions._shape(verb, "outlook", full)
+
+
 
 def _item(mid, conv):
     return {"message_id": mid, "conversation_id": conv, "subject": f"subject {mid}",
@@ -201,7 +217,6 @@ def test_cron_lanes_do_not_read_kept_threads(store):
 
 
 def test_cron_lanes_do_not_read_kept_threads_through_the_unified_cli(store):
-    import mail_client
     _rec("k1", "c-kept", kept="listed domain mil")
     _rec("n1", "c-ok")
     for verb in ("get-message", "get-draft"):
@@ -209,14 +224,14 @@ def test_cron_lanes_do_not_read_kept_threads_through_the_unified_cli(store):
         argv = [verb, "--provider", "outlook", flag, "k1"]
         assert mp.release_precheck("mail_actions", verb, argv, "cron-x") != ""
         assert mp.release_precheck("mail_actions", verb, argv, "run-abc") == ""
-    rows = [mail_client._normalize_outlook_search_result(_msg(m, c)) for m, c in
+    rows = [_unified_outlook("search", _msg(m, c)) for m, c in
             (("k1", "c-kept"), ("n1", "c-ok"))]
     out, refusal = mp.release_filter("mail_actions", "search",
                                      ["search", "--provider", "outlook", "--query", "x"],
                                      "cron-x", json.dumps(rows))
     got = json.loads(out)
     assert refusal == "" and [r.get("id") for r in got[:-1]] == ["n1"] and "_note" in got[-1]
-    one = mail_client._normalize_outlook_get_message(dict(_msg("k1", "c-kept"), body={}))
+    one = _unified_outlook("get-draft", dict(_msg("k1", "c-kept"), body={}))
     out, refusal = mp.release_filter("mail_actions", "get-draft",
                                      ["get-draft", "--provider", "outlook", "--draft-id", "k1"],
                                      "cron-x", json.dumps(one))

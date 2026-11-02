@@ -1,6 +1,6 @@
-"""The unified mail CLI's reads (issue #76, step 1): one stubbed-client
-test per verb and provider. Each checks the normalized shape, the error
-dict, and that the flags reach the client."""
+"""The unified mail CLI (issue #76). Every verb runs a provider CLI's
+verb (mail_actions.DELEGATE); these tests run it with fake provider CLIs
+and check the argv each gets and the unified fields added to its output."""
 import io
 import json
 import os
@@ -14,145 +14,162 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "preprocessor"))
 import mail_actions  # noqa: E402
-import mail_client  # noqa: E402
 import mail_mediation as MM  # noqa: E402
 
-OUTLOOK_MSG = {
-    "id": "AAMkOUT=", "conversationId": "AAQkCONV=", "subject": "Hello",
-    "from": {"emailAddress": {"address": "a@example.edu", "name": "A Person"}},
-    "toRecipients": [{"emailAddress": {"address": "me@example.edu"}}],
-    "ccRecipients": [], "receivedDateTime": "2026-10-01T12:00:00Z",
-    "bodyPreview": "hi", "isRead": False, "isDraft": False,
-    "body": {"contentType": "html", "content": "<p>Hi <a href='https://x.test'>link</a></p>"},
-}
-GMAIL_MSG = {
-    "id": "18abc", "thread_id": "18thr", "subject": "Hello",
-    "from": '"B Person" <b@example.com>', "to": "me@example.com, c@example.com",
-    "cc": "", "date": "Thu, 1 Oct 2026 12:00:00 +0000", "snippet": "hi",
-    "label_ids": ["UNREAD", "INBOX"], "body": "plain body",
-}
+ME = "me@example.com"
+# what graph_actions search-mail prints for one hit, and a folder-miss note
+GA_ROW = {"id": "AAMkOUT=", "subject": "Hello", "from": "a@example.edu", "is_draft": False,
+          "own": False, "received": "2026-10-01T12:00:00Z", "has_attachments": False,
+          "conversation_id": "AAQkCONV=", "to": ["me@example.edu"], "cc": [], "preview": "hi"}
+# what graph_actions get-message prints
+GA_MSG = {"id": "AAMkOUT=", "subject": "Hello",
+          "from": {"name": "A Person", "address": "a@example.edu"},
+          "to": [{"name": "", "address": "me@example.edu"}], "cc": [],
+          "received": "2026-10-01T12:00:00Z", "body": "<p>Hi</p>", "body_type": "html",
+          "body_text": "Hi", "has_attachments": False, "importance": "high",
+          "conversation_id": "AAQkCONV="}
+# what gmail_client search / get-message print
+GM_ROW = {"id": "18abc", "thread_id": "18thr", "subject": "Hello",
+          "from": '"B Person" <b@example.com>', "to": "me@example.com, c@example.com",
+          "date": "Thu, 1 Oct 2026 12:00:00 +0000", "snippet": "hi",
+          "label_ids": ["UNREAD", "INBOX"]}
 
 
-def _stubs(fail=False):
-    calls = []
-    g = types.ModuleType("graph_client")
-    m = types.ModuleType("gmail_client")
-
-    def boom(*_a, **_k):
-        raise RuntimeError("graph down")
-
-    def search_messages(query, top=25, folder=None):
-        calls.append(("outlook.search", query, top, folder))
-        return [OUTLOOK_MSG], False
-    g.search_messages = boom if fail else search_messages
-    g.get_message_full = boom if fail else (
-        lambda mid: calls.append(("outlook.get", mid)) or dict(OUTLOOK_MSG, id=mid))
-    g.mark_message_read = boom if fail else (
-        lambda mid: calls.append(("outlook.read", mid)) or {})
-    g.mark_message_unread = boom if fail else (
-        lambda mid: calls.append(("outlook.unread", mid)) or {})
-
-    err = {"error": "Gmail API error: 404"}
-    m.search_messages = lambda acct, q, max_results=20: (
-        calls.append(("gmail.search", acct, q, max_results)) or ([err] if fail else [GMAIL_MSG]))
-    m.get_message = lambda acct, mid: (
-        calls.append(("gmail.get", acct, mid)) or (err if fail else dict(GMAIL_MSG, id=mid)))
-    m.get_draft = lambda acct, did: (
-        calls.append(("gmail.draft", acct, did)) or (err if fail else {
-            "to": "x@example.com", "cc": "", "subject": "Re: Hello", "body": "draft"}))
-    m.mark_read = lambda acct, mid: (
-        calls.append(("gmail.read", acct, mid)) or (err if fail else {"status": "marked_read"}))
-    m.mark_unread = lambda acct, mid: (
-        calls.append(("gmail.unread", acct, mid)) or (err if fail else {"status": "marked_unread"}))
-    sys.modules["graph_client"], sys.modules["gmail_client"] = g, m
-    return calls
+def _body(text="Hello there.\n"):
+    f = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+    f.write(text)
+    f.close()
+    return f.name
 
 
-def _run(*argv, fail=False):
-    real = {k: sys.modules.get(k) for k in ("graph_client", "gmail_client")}
-    calls = _stubs(fail)
-    saved = sys.argv
-    sys.argv = ["mail_actions.py", *argv]
-    out = io.StringIO()
+def _write(*argv, gmail_msg=None, mediated=False, ga_out=None, gm_out=None, rc=0):
+    """Run a unified verb with fake provider CLIs that print `ga_out` /
+    `gm_out` (and exit `rc`); returns (rc, out, runs)."""
+    runs = []
+    ga = types.ModuleType("graph_actions")
+    gm = types.ModuleType("gmail_client")
+
+    ga.run_verb = lambda a: a.func(a)
+
+    def _ga_func(a):
+        runs.append(("graph_actions", [a.verb, *a.rest]))
+        print(json.dumps(ga_out if ga_out is not None else {"status": "draft_created",
+                                                             "id": "AAMkNEW="}))
+        if rc:
+            sys.exit(rc)
+    ga.build_parser = lambda: type("P", (), {"parse_args": lambda self, argv: _ns(argv)})()
+
+    def _ns(argv):
+        n = types.SimpleNamespace(verb=argv[0], rest=argv[1:])
+        n.func = _ga_func
+        return n
+
+    def gm_main():
+        runs.append(("gmail_client", list(sys.argv[1:]),
+                     os.environ.pop("EA_MEDIATED_VERB", None)))
+        print(json.dumps(gm_out if gm_out is not None else {"draft_id": "r-9", "message_id": "m-9",
+                                                             "thread_id": "t-9"}))
+        if rc:
+            sys.exit(rc)
+    gm.main = gm_main
+    gm.get_message = lambda acct, mid: (gmail_msg or {}) if mid == "18abc" else {"error": mid}
+    gm._get_service = lambda acct: object()
+    gm._newest_message_in_thread = lambda service, tid: "18abc" if tid == "18thr" else ""
+    gm.__file__ = ga.__file__ = __file__
+    real = {k: sys.modules.get(k) for k in ("graph_actions", "gmail_client")}
+    sys.modules["graph_actions"], sys.modules["gmail_client"] = ga, gm
     try:
+        args = mail_actions.build_parser().parse_args(list(argv))
+        args._mediated = mediated
+        out = io.StringIO()
         with redirect_stdout(out):
-            rc = mail_actions.main()
+            rc = args.func(args)
     finally:
-        sys.argv = saved
-        for k, mod in real.items():  # later tests in this process get the real clients
+        for k, mod in real.items():
             if mod is None:
                 sys.modules.pop(k, None)
             else:
                 sys.modules[k] = mod
-    return rc, json.loads(out.getvalue()), calls
+    return rc, json.loads(out.getvalue()), runs
 
 
-def test_search_outlook_passes_folder_and_normalizes():
-    rc, out, calls = _run("search", "--provider", "outlook", "--query", "budget",
-                          "--folder", "archive", "--max-results", "5")
-    assert rc == 0 and calls == [("outlook.search", "budget", 5, "archive")]
-    assert out[0]["thread_id"] == "AAQkCONV=" and out[0]["from"] == "a@example.edu"
-    assert out[0]["is_read"] is False and out[0]["provider"] == "outlook"
-    assert out[0]["account"] is None
+
+
+# ---- the reads ------------------------------------------------------------
+
+def test_search_runs_search_mail_and_keeps_its_fields_and_notes():
+    note = {"_note": "0 hits in folder ... NOT evidence"}
+    rc, out, runs = _write("search", "--provider", "outlook", "--query", "budget",
+                           "--folder", "archive", "--top", "5", ga_out=[GA_ROW, note])
+    assert rc == 0 and runs == [("graph_actions", ["search-mail", "--query", "budget",
+                                                   "--top", "5", "--folder", "archive"])]
+    row = out[0]
+    assert row["own"] is False and row["has_attachments"] is False   # search-mail's own fields
+    assert row["thread_id"] == row["conversation_id"] == "AAQkCONV="
+    assert row["date"] == GA_ROW["received"] and row["provider"] == "outlook"
+    assert out[1] == note                                              # its note, untouched
 
 
 def test_search_gmail_normalizes_and_refuses_a_folder():
-    rc, out, calls = _run("search", "--provider", "gmail", "--query", "is:unread",
-                          "--account", "me@example.com")
-    assert calls == [("gmail.search", "me@example.com", "is:unread", 20)]
-    assert out[0]["from"] == "b@example.com"
-    assert out[0]["to"] == ["me@example.com", "c@example.com"]
-    assert out[0]["is_read"] is False and out[0]["account"] == "me@example.com"
-    _, out, calls = _run("search", "--provider", "gmail", "--query", "x",
-                         "--account", "me@example.com", "--folder", "inbox")
-    assert calls == [] and "label:" in out[0]["error"]
+    _, out, runs = _write("search", "--provider", "gmail", "--query", "is:unread",
+                          "--account", ME, gm_out=[GM_ROW])
+    assert runs[0][1] == ["search", "--email", ME, "--query", "is:unread", "--max-results", "20"]
+    row = out[0]
+    assert row["from"] == "b@example.com" and row["from_name"] == "B Person"
+    assert row["to"] == ["me@example.com", "c@example.com"] and row["preview"] == "hi"
+    assert row["is_read"] is False and row["conversation_id"] == "18thr"
+    assert row["account"] == ME
+    rc, out, runs = _write("search", "--provider", "gmail", "--query", "x", "--account", ME,
+                           "--folder", "inbox")
+    assert rc == 2 and runs == [] and "label:" in out["error"]
 
 
-def test_get_message_both_providers():
-    _, out, _ = _run("get-message", "--provider", "outlook", "--message-id", "AAMkOUT=")
-    assert out["body"] == "Hi link [https://x.test]" and out["id"] == "AAMkOUT="
-    _, out, calls = _run("get-message", "--provider", "gmail", "--message-id", "18abc",
-                         "--account", "me@example.com")
-    assert calls == [("gmail.get", "me@example.com", "18abc")]
+def test_get_message_keeps_get_messages_fields():
+    _, out, runs = _write("get-message", "--provider", "outlook", "--message-id", "AAMkOUT=",
+                          "--raw-html", ga_out=dict(GA_MSG))
+    assert runs[0][1] == ["get-message", "--message-id", "AAMkOUT=", "--raw-html"]
+    assert out["from"] == "a@example.edu" and out["from_name"] == "A Person"
+    assert out["to"] == ["me@example.edu"] and out["importance"] == "high"
+    assert out["body_text"] == "Hi" and out["thread_id"] == "AAQkCONV="
+    rc, out, runs = _write("get-message", "--provider", "gmail", "--message-id", "18abc",
+                           "--raw-html", "--account", ME)
+    assert rc == 2 and runs == []
+    _, out, runs = _write("get-message", "--provider", "gmail", "--message-id", "18abc",
+                          "--account", ME, gm_out=dict(GM_ROW, body="plain body"))
+    assert runs[0][1] == ["get-message", "--email", ME, "--message-id", "18abc"]
     assert out["body"] == "plain body" and out["provider"] == "gmail"
 
 
 def test_get_draft_keeps_the_raw_body():
-    _, out, _ = _run("get-draft", "--provider", "outlook", "--draft-id", "AAMkOUT=")
-    assert out["body"].startswith("<p>Hi") and out["body_type"] == "HTML"
-    _, out, _ = _run("get-draft", "--provider", "gmail", "--draft-id", "r-1",
-                     "--account", "me@example.com")
-    assert out["body_type"] == "Text" and out["account"] == "me@example.com"
+    _, out, runs = _write("get-draft", "--provider", "outlook", "--draft-id", "AAMkOUT=",
+                          ga_out=dict(GA_MSG))
+    assert runs[0][1] == ["get-message", "--message-id", "AAMkOUT=", "--raw-html"]
+    assert out["body"] == "<p>Hi</p>" and out["body_type"] == "HTML"
+    assert out["to"] == "me@example.edu" and out["message_id"] == out["id"] == "AAMkOUT="
+    _, out, runs = _write("get-draft", "--provider", "gmail", "--draft-id", "r-1",
+                          "--account", ME, gm_out={"to": "x@example.com", "body": "draft"})
+    assert runs[0][1] == ["get-draft", "--email", ME, "--draft-id", "r-1"]
+    assert out["body_type"] == "Text" and out["account"] == ME
 
 
-def test_mark_read_both_providers():
-    rc, out, calls = _run("mark-read", "--provider", "outlook", "--message-id", "AAMkOUT=")
-    assert rc == 0 and out["status"] == "marked_read" and calls == [("outlook.read", "AAMkOUT=")]
-    rc, out, _ = _run("mark-read", "--provider", "gmail", "--message-id", "18abc",
-                      "--account", "me@example.com")
-    assert rc == 0 and out["account"] == "me@example.com"
+def test_mark_read_and_unread_both_providers():
+    for verb, status in (("mark-read", "marked_read"), ("mark-unread", "marked_unread")):
+        rc, out, runs = _write(verb, "--provider", "outlook", "--message-id", "AAMkOUT=",
+                               ga_out={"message_id": "AAMkOUT="})
+        assert rc == 0 and out["status"] == status
+        assert runs[0][1] == [verb, "--message-id", "AAMkOUT="]
+        rc, out, runs = _write(verb, "--provider", "gmail", "--message-id", "18abc",
+                               "--account", ME, gm_out={"status": status, "message_id": "18abc"})
+        assert rc == 0 and runs[0][1] == [verb, "--email", ME, "--message-id", "18abc"]
 
 
-def test_mark_unread_both_providers():
-    rc, out, calls = _run("mark-unread", "--provider", "outlook", "--message-id", "AAMkOUT=")
-    assert rc == 0 and out["status"] == "marked_unread" and calls == [("outlook.unread", "AAMkOUT=")]
-    rc, out, calls = _run("mark-unread", "--provider", "gmail", "--message-id", "18abc",
-                          "--account", "me@example.com")
-    assert rc == 0 and calls == [("gmail.unread", "me@example.com", "18abc")]
-    assert out["account"] == "me@example.com"
-
-
-def test_client_errors_come_back_as_an_error_dict():
-    for argv in (("search", "--query", "x"), ("get-message", "--message-id", "AAMkOUT="),
-                 ("get-draft", "--draft-id", "AAMkOUT="), ("mark-read", "--message-id", "AAMkOUT="),
-                 ("mark-unread", "--message-id", "AAMkOUT=")):
-        for provider in ("outlook", "gmail"):
-            rc, out, _ = _run(argv[0], "--provider", provider, *argv[1:],
-                              "--account", "me@example.com", fail=True)
-            row = out[0] if isinstance(out, list) else out
-            assert "error" in row, (argv, provider, out)
-            if argv[0].startswith("mark-"):
-                assert rc == 1
+def test_a_provider_error_comes_back_with_a_failing_exit():
+    rc, out, _ = _write("get-message", "--provider", "outlook", "--message-id", "AAMkOUT=",
+                        ga_out={"error": "Could not fetch message: 404"})
+    assert rc == 1 and out["error"].startswith("Could not fetch")
+    rc, out, _ = _write("mark-read", "--provider", "gmail", "--message-id", "18abc",
+                        "--account", ME, gm_out={"error": "Gmail API error"}, rc=1)
+    assert rc == 1 and "error" in out
 
 
 def test_gmail_account_defaults_to_the_profile():
@@ -161,12 +178,13 @@ def test_gmail_account_defaults_to_the_profile():
         saved = os.environ.get("EA_DIR")
         os.environ["EA_DIR"] = d
         try:
-            _, out, _ = _run("get-message", "--provider", "gmail", "--message-id", "18abc")
-            assert "No Gmail account" in out["error"]
+            rc, out, _ = _write("get-message", "--provider", "gmail", "--message-id", "18abc")
+            assert rc == 2 and "No Gmail account" in out["error"]
             (Path(d) / "config" / "user-profile.json").write_text(
                 json.dumps({"gmail_accounts": ["first@example.com", "second@example.com"]}))
-            _, _, calls = _run("get-message", "--provider", "gmail", "--message-id", "18abc")
-            assert calls == [("gmail.get", "first@example.com", "18abc")]
+            _, _, runs = _write("get-message", "--provider", "gmail", "--message-id", "18abc",
+                                gm_out=GM_ROW)
+            assert runs[0][1][:3] == ["get-message", "--email", "first@example.com"]
         finally:
             if saved is None:
                 os.environ.pop("EA_DIR", None)
@@ -187,61 +205,12 @@ def test_the_reads_are_mediated_and_nothing_else_is():
     # handles are resolved, then the call is forwarded, before main() runs
     assert entry.index("resolve_argv") < entry.index('forward_or_none("mail_actions"') \
         < entry.index("main()")
-    # the clients load only inside a verb, after the forward
-    assert "\nimport mail_client" not in src
+    # the provider CLIs load only inside a verb, after the forward
+    assert "\nimport graph_actions" not in src and "\nimport gmail_client" not in src
+
 
 
 # ---- step 2: draft writes ----------------------------------------------
-
-def _body(text="Hello there.\n"):
-    f = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
-    f.write(text)
-    f.close()
-    return f.name
-
-
-def _write(*argv, gmail_msg=None, mediated=False):
-    """Run a write verb with fake provider CLIs; returns (rc, out, runs)."""
-    runs = []
-    ga = types.ModuleType("graph_actions")
-    gm = types.ModuleType("gmail_client")
-
-    ga.run_verb = lambda a: a.func(a)
-
-    def _ga_func(a):
-        runs.append(("graph_actions", [a.verb, *a.rest]))
-        print(json.dumps({"status": "draft_created", "id": "AAMkNEW="}))
-    ga.build_parser = lambda: type("P", (), {"parse_args": lambda self, argv: _ns(argv)})()
-
-    def _ns(argv):
-        n = types.SimpleNamespace(verb=argv[0], rest=argv[1:])
-        n.func = _ga_func
-        return n
-
-    def gm_main():
-        runs.append(("gmail_client", list(sys.argv[1:]),
-                     os.environ.pop("EA_MEDIATED_VERB", None)))
-        print(json.dumps({"draft_id": "r-9", "message_id": "m-9", "thread_id": "t-9"}))
-    gm.main = gm_main
-    gm.get_message = lambda acct, mid: (gmail_msg or {}) if mid == "18abc" else {"error": mid}
-    gm._get_service = lambda acct: object()
-    gm._newest_message_in_thread = lambda service, tid: "18abc" if tid == "18thr" else ""
-    real = {k: sys.modules.get(k) for k in ("graph_actions", "gmail_client")}
-    sys.modules["graph_actions"], sys.modules["gmail_client"] = ga, gm
-    try:
-        args = mail_actions.build_parser().parse_args(list(argv))
-        args._mediated = mediated
-        out = io.StringIO()
-        with redirect_stdout(out):
-            rc = args.func(args)
-    finally:
-        for k, mod in real.items():
-            if mod is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = mod
-    return rc, json.loads(out.getvalue()), runs
-
 
 def test_create_draft_runs_the_provider_verb_with_the_ledger_ids():
     f = _body()
