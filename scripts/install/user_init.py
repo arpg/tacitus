@@ -58,7 +58,7 @@ AUTH_DIR = EA_DIR / "auth"
 
 ALL_PHASES = [
     "profile", "identity", "scheduling", "inbox", "autonomy", "groups",
-    "deadlines", "style", "chat", "auth", "tone", "reimbursement",
+    "deadlines", "style", "chat", "auth", "drive", "tone", "reimbursement",
     "vip", "preferences", "push", "state", "summary",
 ]
 
@@ -496,6 +496,14 @@ def recorded_graph_method() -> str:
     return ""
 
 
+def print_why(text: str, indent: str = "  ") -> None:
+    """A step's or a question's why (setup_questions.WHY), wrapped."""
+    import textwrap
+    if text:
+        print(textwrap.fill(text, width=72, initial_indent=f"{indent}Why: ",
+                            subsequent_indent=indent + "     "))
+
+
 def print_intro(pid: str, ctx: dict) -> None:
     ph = Q.phase(pid)
     section_header(ph["header"])
@@ -503,6 +511,9 @@ def print_intro(pid: str, ctx: dict) -> None:
         if "{private_dir}" in line:
             line = line.replace("{private_dir}", str(ctx.get("private_dir") or private_dir()))
         print(line)
+    if ph.get("why"):
+        print_why(ph["why"])
+        print()
 
 
 def print_notice() -> None:
@@ -522,6 +533,8 @@ def ask_phase(pid: str, ctx: dict) -> dict:
             print(line)
         if q.get("notice"):
             print_notice()
+        if ANSWERS is None:
+            print_why(q.get("why") or "")
         label = Q.label_of(q, values)
         key, kind = q["key"], q["kind"]
         if kind == "yesno":
@@ -989,6 +1002,54 @@ def write_auth(values: dict, ctx: dict, sign_in: bool = False) -> None:
         merge_env_file(EA_DIR / ".env", env_data, mode=0o640)
 
 
+def write_drive(values: dict, ctx: dict, sign_in: bool = False) -> dict:
+    """The accounts the Drive reader signs in, as `drive_accounts` in
+    user-profile.json; the file's other keys stay. With `sign_in` (the
+    terminal) and the answer yes, each account signs in now."""
+    accounts = [a.strip().lower() for a in values.get("drive-accounts") or [] if a.strip()]
+    kept = load_existing(Q.PROFILE_FILE) if (CONFIG_DIR / Q.PROFILE_FILE).exists() else {}
+    merged = dict(kept)
+    merged["drive_accounts"] = accounts
+    save_config(Q.PROFILE_FILE, merged)
+    if not accounts:
+        print("  No Drive accounts: the EA asks you to paste a Google Doc's text instead.")
+    elif sign_in and values.get("google-drive-now"):
+        drive_sign_in(accounts)
+    else:
+        print("  Sign each account in later, in a terminal:")
+        for acct in accounts:
+            print(f"    python3 preprocessor/drive_client.py setup --email {acct}")
+    return merged
+
+
+def drive_sign_in(accounts: list[str]) -> None:
+    """The Drive sign-in of each account, in this process (the terminal only)."""
+    secret_file = AUTH_DIR / "google_client_secret.json"
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
+    import published_apps
+    if not published_apps.google_client_source(secret_file):
+        print(f"\n  Place your Google OAuth client secret at {secret_file} first")
+        print("  (docs/SETUP.md 'Google OAuth app'), then run for each account:")
+        for acct in accounts:
+            print(f"    python3 preprocessor/drive_client.py setup --email {acct}")
+        return
+    import drive_client
+    # The reader takes its paths from EA_DIR at import; --ea-dir moves them.
+    drive_client.EA_DIR, drive_client.AUTH_DIR = EA_DIR, AUTH_DIR
+    drive_client.CLIENT_SECRET_FILE = secret_file
+    for acct in accounts:
+        try:
+            if drive_client.authenticate_account(acct, interactive=True):
+                print(f"  {acct}: signed in for Google Drive, read only.")
+        except Exception as e:  # noqa: BLE001 - the sign-in prints its own cause
+            print(f"  {acct}: the Drive sign-in failed: {e}")
+            print(f"  Retry later: python3 preprocessor/drive_client.py setup --email {acct}")
+    result = drive_client.check_accounts()
+    for row in result.get("accounts") or []:
+        mark = "ok" if row.get("ok") else f"FAIL: {row.get('message')} ({row.get('fix')})"
+        print(f"  Drive check, {row['account']}: {mark}")
+
+
 def write_reimbursement(values: dict, ctx: dict | None = None) -> dict | None:
     """reimbursement-config.json, when the answers turn it on."""
     if not values["reimbursement-configure"]:
@@ -1087,7 +1148,8 @@ def apply_phase(pid: str, values: dict, ctx: dict, inbox: dict | None = None):
         "profile": write_profile, "identity": write_identity,
         "scheduling": write_scheduling, "inbox": write_inbox,
         "groups": write_groups, "deadlines": write_deadlines, "style": write_style,
-        "chat": write_chat, "auth": write_auth, "reimbursement": write_reimbursement, "vip": write_vip,
+        "chat": write_chat, "auth": write_auth, "drive": write_drive,
+        "reimbursement": write_reimbursement, "vip": write_vip,
         "push": write_push,
     }[pid]
     return writer(values, ctx)
@@ -1163,6 +1225,12 @@ def phase_auth(ctx: dict):
     """Guide user through authentication setup."""
     print_intro("auth", ctx)
     write_auth(ask_phase("auth", ctx), ctx, sign_in=True)
+
+
+def phase_drive(ctx: dict):
+    """The Google accounts the Drive reader may use, and their sign-in."""
+    print_intro("drive", ctx)
+    return write_drive(ask_phase("drive", ctx), ctx, sign_in=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1641,6 +1709,7 @@ def main():
             "style": lambda: phase_response_style(ctx),
             "chat": lambda: phase_chat(ctx),
             "auth": lambda: phase_auth(ctx),
+            "drive": lambda: phase_drive(ctx),
             "tone": lambda: phase_tone(args.out, ctx),
             "reimbursement": lambda: phase_reimbursement(ctx),
             "vip": lambda: phase_vip(ctx),
@@ -1680,6 +1749,7 @@ def main():
     phase_response_style(ctx)
     phase_chat(ctx)
     phase_auth(ctx)
+    phase_drive(ctx)
     phase_tone(ctx=ctx)
     phase_reimbursement(ctx)
     phase_vip(ctx)

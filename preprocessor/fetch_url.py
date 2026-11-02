@@ -54,6 +54,12 @@ USER_AGENT = (
 MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024  # 2 MB cap on raw HTML
 MAX_IMAGE_BYTES = 15 * 1024 * 1024    # cap on one saved image
 MAX_PAGE_IMAGES = 15
+# A Google file link needs the user's Google sign-in, which this fetcher
+# never has: a private one answers 401 or a sign-in page. The hint names the
+# reader that has it (drive_client.py, the install's read-only Drive login).
+GOOGLE_FILE_HOSTS = ("docs.google.com", "drive.google.com")
+GOOGLE_FILE_HINT = ("A Google Docs, Sheets, Slides or Drive link that needs a Google "
+                    "sign-in: read it with drive_client.py read --url \"<the link>\".")
 # Where --save-image may write: the decks' folders and the EA's state.
 DECKS_ROOT = Path(os.environ.get("EA_DECKS_ROOT", str(Path.home() / "presentations"))) / "decks"
 SAVE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
@@ -479,6 +485,13 @@ def save_image(url: str, dest: str) -> dict:
     return result
 
 
+def _google_file(url: str) -> bool:
+    try:
+        return (urlsplit(url).hostname or "").lower() in GOOGLE_FILE_HOSTS
+    except ValueError:
+        return False
+
+
 def run(url: str, max_chars: int, force_js: bool):
     result = {
         "url": url,
@@ -553,6 +566,8 @@ def run(url: str, max_chars: int, force_js: bool):
             return result
         except requests.HTTPError as e:
             result["error"] = f"HTTP {e.response.status_code}"
+            if e.response.status_code in (401, 403) and _google_file(url):
+                result["hint"] = GOOGLE_FILE_HINT
             _log_event("error", url=url, preflight_ip=resolved_ip, method=method,
                        reason=result["error"])
             return result
@@ -596,6 +611,9 @@ def run(url: str, max_chars: int, force_js: bool):
 
     if len(text) < 50:
         result["warning"] = "Very little content extracted. Page may require login or is mostly images/JS."
+    if _google_file(url) and (len(text) < 50 or "sign in" in (title or "").lower()
+                              or "sign-in" in (title or "").lower()):
+        result["hint"] = GOOGLE_FILE_HINT
 
     _log_event("done", url=url, preflight_ip=resolved_ip, method=method, outcome="ok",
                chars=full_length)

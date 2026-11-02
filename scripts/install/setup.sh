@@ -76,7 +76,7 @@ echo "For detailed instructions, see docs/SETUP.md"
 echo ""
 
 # 1. Python deps
-echo "Installing Python dependencies..."
+echo "Installing Python dependencies (why: the EA's scripts import them)..."
 # The pip of the python3 the scripts run, not whichever `pip` is first on
 # PATH (on macOS the Homebrew python has no bare `pip`).
 # An externally managed interpreter (PEP 668: Debian, Ubuntu, Homebrew)
@@ -201,6 +201,7 @@ fi
 # 4. Graph API authentication
 echo ""
 echo "=== Microsoft Graph API Authentication ==="
+echo "Why: the EA reads your Outlook mail and calendar only after this sign-in."
 # The sign-in command: the confidential client aligns its scopes as it
 # signs in (docs/SETUP.md 'Microsoft Graph app registration').
 GRAPH_SIGNIN="python3 $SCRIPT_DIR/preprocessor/graph_client.py"
@@ -233,6 +234,7 @@ fi
 echo ""
 echo "=== Google Calendar Authentication ==="
 echo "This authenticates your personal Google Calendar accounts."
+echo "Why: a Google calendar counts toward your free time only after its account signs in."
 echo ""
 if [[ "$NONINTERACTIVE" == 1 ]]; then
     echo "Non-interactive run: the Google sign-in is skipped. It asks you to paste the"
@@ -250,6 +252,38 @@ else
     python3 "$SCRIPT_DIR/preprocessor/google_calendar_client.py" --test
 fi
 
+# 5b. Google Drive (read only): the accounts user-profile.json lists as
+# drive_accounts (the drive phase of user_init.py writes them).
+echo ""
+echo "=== Google Drive (read only) ==="
+echo "Why: a Google Docs link in your mail is private to your account. The EA opens it"
+echo "only with this sign-in, which reads files and cannot change, share or delete one."
+echo ""
+DRIVE_ACCOUNTS="$("$OWNER_IO" read "$EA_DIR/config/user-profile.json" 2>/dev/null | python3 -c '
+import json, re, sys
+try:
+    d = json.loads(sys.stdin.read() or "{}")
+except Exception:
+    d = {}
+for a in (d.get("drive_accounts") if isinstance(d, dict) else None) or []:
+    if isinstance(a, str) and re.fullmatch(r"[^@\s/]+@[^@\s/]+\.[^@\s/]+", a.strip()):
+        print(a.strip())
+' 2>/dev/null || true)"
+if [[ -z "$DRIVE_ACCOUNTS" ]]; then
+    echo "No drive_accounts in user-profile.json: skipped. List them with"
+    echo "  python3 $SCRIPT_DIR/scripts/install/user_init.py --phase drive"
+elif [[ "$NONINTERACTIVE" == 1 || ! -f "$EA_DIR/auth/google_client_secret.json" ]]; then
+    echo "Sign each account in yourself, in a terminal (docs/SETUP.md 'Google Drive'):"
+    while IFS= read -r acct; do
+        echo "  python3 $SCRIPT_DIR/preprocessor/drive_client.py setup --email $acct"
+    done <<< "$DRIVE_ACCOUNTS"
+else
+    while IFS= read -r acct; do
+        python3 "$SCRIPT_DIR/preprocessor/drive_client.py" setup --email "$acct" </dev/tty || \
+            echo "  The Drive sign-in of $acct did not finish; run it again later."
+    done <<< "$DRIVE_ACCOUNTS"
+fi
+
 # 6. Initialize state
 if [[ ! -f "$EA_DIR/state/obligations-ledger.json" ]]; then
     echo "[]" > "$EA_DIR/state/obligations-ledger.json"
@@ -260,6 +294,7 @@ echo '{}' > "$EA_DIR/state/seen-conversations.json" 2>/dev/null || true
 # 7. Install crontab
 echo ""
 echo "=== Crontab Installation ==="
+echo "Why: the briefings and the ledger upkeep run on a schedule, with no one at the keyboard."
 echo ""
 
 # The cron jobs are owner processes (docs/SECURITY.md, "Owner trust rules").
@@ -564,6 +599,7 @@ fi
 if [[ "$HAS_SLACK" == 1 ]]; then
 echo ""
 echo "=== Chat bot service ==="
+echo "Why: the bot connects the chat to the EA, and as a service it comes back after a restart."
 if [[ "$(uname -s)" == Darwin ]]; then
     echo "The bot runs as a LaunchDaemon. After the chat platform is configured:"
     echo "  sudo bash $SCRIPT_DIR/deploy/macos/install-services.sh"
@@ -581,16 +617,26 @@ fi
 echo ""
 echo "=== Setup Complete ==="
 echo ""
-echo "Next steps:"
-echo "  1. Edit $EA_DIR/config/user-profile.json with your details"
-echo "  2. Edit $EA_DIR/config/scheduling-preferences.json with your calendars"
-echo "  3. Edit $EA_DIR/config/vip_senders.txt with your VIP contacts"
+echo "Next steps, each with why it matters:"
+echo "  1. Edit $EA_DIR/config/user-profile.json with your details."
+echo "     Why: the EA signs, sorts and drafts under these facts."
+echo "  2. Edit $EA_DIR/config/scheduling-preferences.json with your calendars."
+echo "     Why: an event on a listed calendar makes you busy, so no time is offered over it."
+echo "  3. Edit $EA_DIR/config/vip_senders.txt with your VIP contacts."
+echo "     Why: a VIP's mail is flagged at once and gets more meeting times."
 echo "  4. Add your projects: python3 $SCRIPT_DIR/preprocessor/project_store.py add --help"
-echo "  5. Enable the Gmail and Google Calendar connectors (and Slack on a Slack install) in"
-echo "     claude.ai Settings > Connectors for the account ea-bot logs in with; check with"
-echo "     claude mcp list as ea-bot (docs/SETUP.md 'Claude Code connectors')"
-echo "  6. Check: python3 $SCRIPT_DIR/scripts/ea-doctor.py --profile $PROFILE"
-echo "  7. Test with: ./run-agent.sh morning-briefing --now   (--now skips the 4 AM gate)"
+echo "     Why: the EA files mail and decisions by project, so each room knows its context."
+echo "  5. Sign in Google Drive for the accounts your mail's Docs links belong to:"
+echo "     python3 $SCRIPT_DIR/preprocessor/drive_client.py setup --email <account>"
+echo "     Why: a private Google Docs link opens only with this read-only sign-in"
+echo "     (docs/SETUP.md 'Google Drive')."
+echo "  6. Optional, with a browser login of ea-bot only: the claude.ai connectors"
+echo "     (docs/SETUP.md 'Claude Code connectors')."
+echo "     Why: a fallback; the EA's own clients already read Gmail, Calendar and Drive."
+echo "  7. Check: python3 $SCRIPT_DIR/scripts/ea-doctor.py --profile $PROFILE"
+echo "     Why: it proves each part works and prints the fix for each part that does not."
+echo "  8. Test with: ./run-agent.sh morning-briefing --now   (--now skips the 4 AM gate)"
+echo "     Why: one briefing shows the whole path from mail to report."
 echo ""
 echo "All times are in your machine's local timezone ($(date +%Z))."
 echo "For detailed setup instructions, see docs/SETUP.md"

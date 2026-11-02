@@ -59,6 +59,10 @@ ea-bot has no route to any of these.
 - `gmail_client.py`: `search`, `get-message`, `get-thread`, `get-draft`, `create-draft`,
   `update-draft`, `delete-draft`, `list-attachments`, `download-attachment`, `list-drafts`
   (ids and times of the newest drafts; how the bot finds a draft the Gmail MCP created)
+- `drive_client.py`: `read`, `search`, `download`, `accounts`. The token holds only
+  `drive.readonly`; `download --output` is staged and delivered like an attachment, and the
+  owner side never parses a file's bytes (`read` returns Google's own text export). Its
+  sign-in (`setup`) and the owner's `test` are not mediated.
 - `google_calendar_client.py`: `get-events`, `list-ea-managed`. The second is a read of the
   EA's own rule calendar, added 2026-08-28: without it the un-gated EA-Managed workflow
   (list the holds, then move or delete one) was refused at the shim as an unknown verb.

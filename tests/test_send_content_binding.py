@@ -767,6 +767,8 @@ NOT_DRAFT_CHANGING = {
 # hold a draft write either.
 NON_MAIL_TOOLS = {
     "google_calendar_client": "preprocessor/google_calendar_client.py",
+    # Read-only Drive (drive.readonly): no mail scope, so no draft to reach.
+    "drive_client": "preprocessor/drive_client.py",
     "scheduling_engine": "preprocessor/scheduling_engine.py",
     "deck_serve": "preprocessor/deck_serve.py",
     "email_writer": "preprocessor/email_writer.py",

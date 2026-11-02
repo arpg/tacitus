@@ -12,6 +12,8 @@ setup page and resolves what the page posts. Each phase is a dict:
               them into paragraphs); `{private_dir}` names the
               owner-private directory
     web_intro the page's intro, when the terminal's does not fit there
+    why       why the step asks and how the answers help (PHASE_WHY;
+              both front ends and the /setup skill show it)
     questions the questions, in the order they are asked
     repeat    keys asked again, as one more entry, while `again` says yes
               (the terminal's loop; an answers file and the page give one)
@@ -41,6 +43,10 @@ Each question is a dict:
                {"key": k, "not_in": [...]}, or "ctx" in place of "key"
     note       lines the terminal prints before the question (the page
                shows them as help)
+    why        why the question is asked and how the answer helps, in a
+               sentence or two (WHY, keyed by the question's key; the
+               terminal prints it before the prompt, the page shows it
+               above the help, and tests hold every question to one)
     notice     the README's "Your responsibility" paragraph goes before it
     terminal_only  only the terminal asks it (it acts at once: a sign-in,
                a scan, a loop)
@@ -495,6 +501,28 @@ PHASES: list[dict] = [
     },
     _auth_phase(bool(published_graph_client_id())),
     {
+        "id": "drive", "web": True,
+        "header": "Phase 8b: Google Drive (Optional)",
+        "title": "Google Drive",
+        "intro": [
+            "  A link to a Google Doc, Sheet or Slides deck in your mail is private",
+            "  to your Google account, so the EA cannot open it on its own. With a",
+            "  sign-in it reads those files, read only: it cannot change, share or",
+            "  delete one. The sign-in uses the Google client of the calendar step,",
+            "  with the Google Drive API turned on (docs/SETUP.md 'Google Drive').\n",
+        ],
+        "questions": [
+            _q("drive-accounts", "Google accounts whose Docs the EA may read, comma-separated "
+                                 "(empty: none)", "list",
+               web_label="Google accounts whose Docs and Drive files the EA may read",
+               check="emails", example=[_ex(PROFILE_FILE, "email"), _lit("you@example.edu")],
+               default=[_ex(PROFILE_FILE, "drive_accounts")]),
+            _q("google-drive-now", "Sign these accounts in to Google Drive now?", "yesno",
+               default=[_lit(True)], when={"key": "drive-accounts", "not_in": [[]]},
+               terminal_only=True),
+        ],
+    },
+    {
         "id": "tone", "web": False,
         "header": "Phase 9: Writing Style Detection",
         "title": "Writing style",
@@ -570,6 +598,222 @@ PHASES: list[dict] = [
         ],
     },
 ]
+
+# Why each step asks and how the answers help. Each front end shows it: the
+# terminal after the header, the page under the intro, the /setup skill
+# before its first question.
+PHASE_WHY = {
+    "profile": "The profile sets how much the EA may do for you: read only, draft, or also "
+               "send after your click. It decides which of the later questions apply.",
+    "identity": "The EA writes and files under your name. It must know who you are and which "
+                "mail comes from your own institution.",
+    "scheduling": "The EA proposes meeting times for you. These answers set the length of a "
+                  "meeting and the calendars that must stay free.",
+    "inbox": "The EA decides which mail is still open work. These answers tell it what your "
+             "inbox means to you.",
+    "autonomy": "The EA acts for you only as far as you allow. These answers set where it asks "
+                "first and where it acts and then reports.",
+    "groups": "A busy group list can fill your briefing with replies that ask nothing of you. "
+              "A list named here is summarized as one item instead.",
+    "deadlines": "A deadline from some senders matters more than from others. A category per "
+                 "sender helps the EA rank the deadlines it finds.",
+    "style": "The EA drafts replies in your voice. These defaults guide it until it learns "
+             "your style from your sent mail.",
+    "chat": "The assistant profile talks to you in a chat. The platform you pick decides "
+            "where your drafts, cards and replies are stored.",
+    "auth": "The EA cannot read mail or calendars without your sign-in. This step connects "
+            "your accounts; the tokens stay on this machine.",
+    "drive": "Your mail often links to a Google Doc, such as meeting notes or a draft for "
+             "review. With this sign-in the EA reads that file instead of asking you to paste it.",
+    "tone": "A draft that sounds like you needs fewer edits. This step learns your greetings, "
+            "closings and tone from your sent mail.",
+    "reimbursement": "A reimbursement form asks for the same facts each time. With them here, "
+                     "the EA fills in a submission for you to check.",
+    "vip": "Some people must never wait. A VIP gets an alert at once and more meeting times.",
+    "push": "Without a chat, a report waits in a file until you open it. A phone push tells "
+            "you that a report is ready.",
+}
+
+WHY = {
+    # profile
+    "profile": "The profile decides what the EA may do: read only, draft, or also send after "
+               "you click Send. It also decides which later questions apply to you.",
+    "acknowledged": "What the EA sends and files goes out under your name. The install goes on "
+                    "only after you accept that it is yours.",
+    # identity
+    "full-name": "The EA signs drafts and letters with your name and finds your own messages "
+                 "by it.",
+    "work-email": "The EA finds your sent mail and your own replies by this address. Its domain "
+                  "is the default for your internal mail.",
+    "role-description": "Your role tells the EA which mail matters to you and how formal a reply "
+                        "must be.",
+    "department": "The EA uses your department to tell internal mail from outside mail and to "
+                  "fill in letters and forms.",
+    "university": "The EA puts your organization's name in letters and forms, and uses it as "
+                  "the default institution name.",
+    "office": "The EA gives your office as the place of an in-person meeting. Leave it empty if "
+              "you do not want that.",
+    "slack-channel-name": "On Slack, this is the private channel where the EA posts to you. "
+                          "Other chat platforms do not use it.",
+    "bio-blurb": "Letters and introductions need a short description of you. With this text the "
+                 "EA does not have to invent one.",
+    "calendar-accounts": "The EA reads these Google calendars when it looks for your free time. "
+                         "It names them when it says where an event is.",
+    "institution-name": "Every EA session knows your institution by this name, and letters and "
+                        "briefings use it.",
+    "institution-domains": "Mail from these domains counts as internal. The EA sets its tone and "
+                           "its safety rules by this list.",
+    "institution-related-domains": "Mail from a sister campus is internal for the admissions "
+                                   "filter too. Without this list it looks like mail from a stranger.",
+    "institution-safety-rail-domain": "The EA never sends a first email outside this domain on its "
+                                      "own. A wrong guess then cannot reach a stranger.",
+    "video-platform": "An online meeting the EA proposes uses this platform, so the invitation "
+                      "carries the right kind of link.",
+    "video-link": "The Create button adds this link to an online meeting, so you do not paste it "
+                  "each time.",
+    # scheduling
+    "timezone": "Every time the EA proposes or reads is in this zone. A wrong zone gives meeting "
+                "times that are hours off.",
+    "cluster-meetings": "Meetings side by side leave longer free blocks for focused work. With "
+                        "yes, the EA proposes times next to the meetings you already have.",
+    "default-duration-minutes": "A request that names no length gets this one, and the EA "
+                                "proposes slots of this length.",
+    "vip-end-time": "A VIP may need a time after your normal day. The EA offers times up to this "
+                    "hour for a VIP only.",
+    "google-calendars": "An event on these calendars makes you busy. Without them the EA can "
+                        "propose a time that clashes with a Google event.",
+    # inbox
+    "inbox-zero": "The answer tells the EA whether a message in your inbox is open work. It "
+                  "decides how much of the inbox each run reads.",
+    "archive-as-completion": "With yes, you close a tracked item by archiving its email from any "
+                             "device. You do not have to tell the EA.",
+    "stale-thread-days": "After this many days without a reply, the EA flags a thread as possibly "
+                         "dropped. A smaller number flags more threads.",
+    # autonomy
+    "conservative-defaults": "With ask-first for every task, you see each action before it "
+                             "happens. You can promote a task later, in chat.",
+    "tier-draft-email-response": "This sets whether the EA asks before it drafts a reply. A "
+                                 "draft never goes out without your click on Send.",
+    "tier-send-scheduling-availability": "This sets whether the EA asks before it offers your "
+                                         "free times. A time once offered is hard to take back.",
+    "tier-upload-letter-of-recommendation": "This sets whether the EA asks before it uploads a "
+                                            "letter you wrote to a portal.",
+    "tier-prep-reimbursement-email": "This sets whether the EA asks before it prepares a "
+                                     "reimbursement email. The email itself always waits for "
+                                     "your Send.",
+    "tier-create-calendar-hold": "This sets whether the EA asks before it holds time on your "
+                                 "calendar. A hold invites no one, and you can move it.",
+    "tier-archive-organize-inbox": "This sets whether the EA asks before it archives mail it "
+                                   "has handled. Archived mail is not deleted.",
+    "tier-update-obligations-ledger": "The ledger is the EA's own list of what you owe. Nobody "
+                                      "else sees it, so most people let the EA update it silently.",
+    "tier-post-slack-summary": "Briefings and status posts go to you only, so most people let "
+                               "the EA post them without asking.",
+    "auto-promote-threshold": "After this many approvals with no edits, the EA suggests that a "
+                              "task can move up a tier. A smaller number suggests it sooner.",
+    # groups
+    "groups-configure": "Reply-all storms on a list can bury real requests. A list set up here "
+                        "becomes one summary item.",
+    "group-name": "The name labels the list's summary in your briefing.",
+    "group-addresses": "Mail among these addresses belongs to the list. The EA summarizes it "
+                       "instead of making an item for each reply.",
+    "group-add-another": "Each list is summarized on its own, so each needs its own entry.",
+    # deadlines
+    "deadlines-configure": "A category per sender domain helps the EA rank a deadline: a grant "
+                           "deadline then comes before a bill reminder.",
+    "deadline-domain": "The EA matches a deadline's sender by this domain.",
+    "deadline-category": "The category tells the EA, and you in the briefing, what kind of "
+                         "deadline this sender sets.",
+    "deadline-add-another": "Each sender domain gets its own category.",
+    # style
+    "style-default": "The EA follows this style when no other rule fits. As it learns from your "
+                     "sent mail, each contact gets its own.",
+    "style-internal": "Colleagues at your institution get this style, so a quick note does not "
+                      "read like a form letter.",
+    "style-external-academic": "People at other institutions get this style. It keeps a first "
+                               "contact more formal.",
+    "style-student": "Students get this style. It keeps your replies to them kind and short.",
+    # chat
+    "chat-platform": "The chat is where the EA shows you drafts and buttons. The platform decides "
+                     "who stores that content: this machine only, your Zulip server, or Slack.",
+    "web-chat-host": "Your phone opens the web chat at this name over your tailnet. Without it "
+                     "the chat has no address yet.",
+    "web-chat-login": "A request from this login is you, so the chat needs no password. Left "
+                      "empty, you pair a browser once with a token.",
+    # auth
+    "graph-auth-method": "The EA reads Outlook through Microsoft Graph. The method must match how "
+                         "the app is registered, or the sign-in fails.",
+    "graph-client-id": "This id names your institution's app registration. Microsoft signs you "
+                       "in to that app and no other.",
+    "graph-tenant-id": "The tenant id sends the sign-in to your institution's directory. Leave it "
+                       "empty for a multi-tenant app.",
+    "graph-redirect-uri": "Microsoft returns the sign-in to this address on your machine. It must "
+                          "match the address in the app registration.",
+    "graph-client-secret": "A confidential client proves it is your app with this secret. Setup "
+                           "keeps it in a file only you can read.",
+    "graph-sign-in-now": "Without a sign-in the EA cannot read your mail. Signing in now lets the "
+                         "later steps check that it works.",
+    "google-calendar-now": "A Google calendar counts toward your free time only after its "
+                           "account signs in. You can also do it later.",
+    "slack-bot-token": "The EA posts to you on Slack with this token. Setup keeps it in a file "
+                       "only you can read.",
+    "slack-app-token": "This token lets the bot receive your replies and button clicks without a "
+                       "public web address.",
+    "slack-channel-id": "The EA posts its briefings and cards in this channel only.",
+    "slack-channel-name-env": "The EA names the channel in its messages and setup steps, so you "
+                              "can find it.",
+    "slack-owner-id": "A message or click from this member is you. The EA takes instructions "
+                      "only from you.",
+    # drive
+    "drive-accounts": "A Google Docs link opens only for an account that can see the file. The "
+                      "EA reads with these accounts and cannot change, share or delete a file.",
+    "google-drive-now": "Without a sign-in, a private Google Docs link answers with a refusal. "
+                        "Each account signs in once in the browser, read only.",
+    # tone
+    "style-analysis-now": "A draft that matches your greetings, sign-offs and tone needs fewer "
+                          "edits. The scan reads 90 days of sent mail once.",
+    # reimbursement
+    "reimbursement-configure": "With these facts, the EA fills in a reimbursement submission "
+                               "from your receipts for you to check.",
+    "reimbursement-first-name": "The form asks for your legal first name, which can differ from "
+                                "the name you sign with.",
+    "reimbursement-last-name": "The form asks for your legal last name.",
+    "reimbursement-email": "The submission goes to this address. Some offices want another "
+                           "address than your work email.",
+    "reimbursement-affiliation": "The form asks for your affiliation, and it decides which rules "
+                                 "apply to your claim.",
+    "reimbursement-form-url": "The EA opens this form to fill it in. Without it, the EA prepares "
+                              "an email instead.",
+    # vip
+    "vip-addresses": "Mail from a VIP is flagged at once, and a VIP gets more meeting times. You "
+                     "can add more later by telling the EA.",
+    # push
+    "push-configure": "Without a chat platform, a report only lands in a file. A push tells your "
+                      "phone that it is ready.",
+    "push-ntfy-url": "The push goes through this ntfy server. Your own server keeps the pushes "
+                     "off a public one.",
+    "push-topic": "On a public server, anyone who knows the topic can read the pushes. A long "
+                  "random topic keeps them yours.",
+    "push-include-text": "With yes, you read the report on the lock screen. With no, the push "
+                         "only says that a report is ready, and its text stays off the server.",
+    "push-click": "Tapping the push opens this address, so you go straight to the report.",
+}
+
+
+def _all_questions() -> list[dict]:
+    out = []
+    for ph in PHASES:
+        out += ph["questions"]
+        if ph.get("again"):
+            out.append(ph["again"])
+    return out
+
+
+for _ph in PHASES:
+    _ph["why"] = PHASE_WHY.get(_ph["id"], "")
+for _qq in _all_questions():
+    _qq["why"] = WHY.get(_qq["key"], "")
+
 
 _BY_ID = {p["id"]: p for p in PHASES}
 TEXT_KINDS = ("text", "secret", "int", "time", "choice")
@@ -953,6 +1197,7 @@ def describe(ctx: dict) -> list[dict]:
             row = {
                 "key": q["key"], "kind": q["kind"],
                 "label": (q.get("web_label") or q["label"]).strip(),
+                "why": q.get("why") or "",
                 "help": paragraphs(q.get("note") or []),
                 "required": bool(q.get("required")),
                 "when": _web_when(q.get("when")),
@@ -976,7 +1221,7 @@ def describe(ctx: dict) -> list[dict]:
         if ph["id"] == "vip" and ctx.get("vips"):
             intro.append(f"  Current VIPs: {', '.join(ctx['vips'])}. They stay; add more here.")
         out.append({"id": ph["id"], "title": ph["title"], "intro": paragraphs(intro),
-                    "questions": qs})
+                    "why": ph.get("why") or "", "questions": qs})
     return out
 
 

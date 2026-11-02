@@ -10,7 +10,8 @@ docs/mail-mediation-spec.md):
   * GATED verbs (send / calendar mutate) are refused for ea-bot outright; they
     run only owner-side after a Slack button.
 
-Each client (graph_actions.py, gmail_client.py, google_calendar_client.py) calls
+Each client (graph_actions.py, gmail_client.py, google_calendar_client.py,
+drive_client.py) calls
 ``forward_or_none(...)`` as the first line of ``main()``. When mediation applies
 it handles the call end-to-end (enqueue -> poll -> print -> exit) and NEVER
 returns; otherwise it returns None and the client runs directly (the owner path, or
@@ -141,6 +142,12 @@ SAFE = {
     # create-event stays GATED apart from the attendee-less auto-hold
     # carve-out below.
     "google_calendar_client": {"get-events", "list-ea-managed"},
+    # The Drive reader (drive_client.py) holds only the drive.readonly
+    # scope: a file's text, a search, a copy of a file into the resident's
+    # space (--output is an OUTPUT_FLAGS path, staged and delivered like a
+    # mail attachment) and the list of signed-in accounts. Its sign-in
+    # (`setup`) and the owner's `test` stay unmediated.
+    "drive_client": {"read", "search", "download", "accounts"},
     # The solver only READS calendars (and writes a local decisions file); no
     # external send/mutate. Mediated so the resident (ea-bot, no token) can run
     # it: the owner-side mediator executes it with the token. Exactly the
@@ -968,7 +975,9 @@ def _file_args(argv: list[str]):
 # characters; anything else (a slash, a dot, a percent escape) could name the
 # same object through another URL spelling and so escape its draft lock.
 ID_FLAGS = {"--message-id", "--draft-id", "--conversation-id", "--event-id",
-            "--thread-id", "--reply-to-message-id", "--attachment-id"}
+            "--thread-id", "--reply-to-message-id", "--attachment-id",
+            # A Drive file id (drive_client.py); no other mediated tool has --id.
+            "--id"}
 _ID_RE = re.compile(r"[A-Za-z0-9_=+-]{1,512}")
 # Gmail attachment ids run longer than message ids; the characters are the same.
 _LONG_ID_RE = re.compile(r"[A-Za-z0-9_=+-]{1,4096}")

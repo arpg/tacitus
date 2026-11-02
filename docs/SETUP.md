@@ -134,6 +134,9 @@ default bind work too. The page asks the profile and the notice, then
 every phase of `scripts/install/user_init.py` that writes config, one per
 screen, with the same checks and the same files as `user_init.py
 --answers`; the definitions are one list, `scripts/install/setup_questions.py`.
+Every screen, question and remaining step says why it is asked and how
+the answer helps (`WHY` and `PHASE_WHY` there, the `why` of each step in
+`setup_web.next_steps`); the terminal and `/setup` give the same reasons.
 It signs in to nothing and runs no root step: its last screen runs the
 doctor and lists, word for word, the commands that are left (`setup.sh`,
 the sign-ins, the service account, the overlay, the hardening, the cron
@@ -278,8 +281,9 @@ recovered on load (the client keeps its first JSON object).
 ## Google OAuth app
 
 Each install needs its own Google Cloud project; the EA reads your
-Google calendars with it and, when a Gmail account is configured, drafts
-there. Once the project publishes its desktop client
+Google calendars with it, reads Google Docs and Drive files once a Drive
+account signs in ([Google Drive](#google-drive)) and, when a Gmail
+account is configured, drafts there. Once the project publishes its desktop client
 (`PUBLISHED_GOOGLE_CLIENT_ID` in `preprocessor/published_apps.py`,
 [published-oauth-apps.md](published-oauth-apps.md)), skip steps 1 to 4:
 with no `~/.ea/auth/google_client_secret.json`, the sign-in in step 5
@@ -288,7 +292,8 @@ uses the published client. A client secret file of your own always wins.
 1. At [console.cloud.google.com](https://console.cloud.google.com/)
    create a project (for example "EA Assistant").
 2. **Enable the Google Calendar API** (APIs & Services > Library). If the
-   EA will draft in Gmail, enable the Gmail API the same way.
+   EA will draft in Gmail, enable the Gmail API the same way; for Google
+   Docs links, the Google Drive API ([Google Drive](#google-drive)).
 3. **OAuth consent screen**: External, app name "EA Assistant", your
    email as a test user. Then **publish the app** (OAuth consent screen >
    Publish app) so its status is "In production". In "Testing" status
@@ -312,6 +317,51 @@ uses the published client. A client secret file of your own always wins.
    ```
 
    Each account's token lands in `~/.ea/auth/google_token_<account>.json`.
+
+### Google Drive
+
+**Why:** your mail links to Google Docs, Sheets and Slides that only your
+account can open: meeting notes, a draft to review, a shared budget.
+`fetch_url.py` has no Google sign-in, so Google answers those links with
+HTTP 401, and the EA has to ask you to paste the text. The claude.ai
+Drive connector is no way around it when ea-bot logs in with a setup
+token, which loads no connector ([Claude Code
+connectors](#claude-code-connectors)). `preprocessor/drive_client.py`
+reads the files through your own Google client with one scope,
+`drive.readonly`: it lists and reads what the account can open, and it
+cannot change, share or delete a file.
+
+1. **Turn on the Google Drive API** in the same Google Cloud project
+   (APIs & Services > Library > Google Drive API > Enable). Why: without
+   it every read answers "the Google Drive API is not enabled".
+2. **List the accounts** as `drive_accounts` in
+   `~/.ea/config/user-profile.json`: the `drive` phase of
+   `scripts/install/user_init.py`, the setup page's Google Drive screen
+   and `/setup` section 4 write it. Why: setup signs each listed account
+   in, and the doctor's `auth: google drive` row checks each one.
+3. **Sign each account in**, in a terminal, and test:
+
+   ```bash
+   python3 preprocessor/drive_client.py setup --email you@example.edu   # one browser sign-in; paste the address it lands on
+   python3 preprocessor/drive_client.py test                            # each account's name, as Drive reports it
+   ```
+
+   Why: the token is what lets the EA open a private file. It lands in
+   `~/.ea/auth/google_token_<account>_drive.json`, owner-only like the
+   other tokens, and the mail mediator uses it on the EA's behalf; ea-bot
+   never reads it.
+
+A Google Workspace account (a university's Google, for example) can
+answer "Access blocked" or `admin_policy_enforced` at the sign-in: the
+Workspace administrator limits which apps may read Drive. Ask them to
+trust your OAuth client for Drive (Google Admin console, Security, API
+controls, Manage third-party app access: add the app by the client id in
+your client JSON and mark it trusted). Until then the EA asks you for a
+document's text. A personal Gmail account has no such policy.
+
+The EA's side of it is `docs/ea/web-reading.md`, "Google Docs, Sheets,
+Slides and Drive files": `read` for the text, `search` to find a file,
+`download` to save one for `doc_text.py`.
 
 ### The EA-Managed calendar
 
@@ -1131,7 +1181,7 @@ install.
 `scripts/install/setup.sh` copies every template in `config/` to `~/.ea/config/`,
 skipping files that exist. `python3 scripts/install/user_init.py` fills the same files
 from a terminal form (phases: `identity`, `scheduling`, `inbox`,
-`autonomy`, `groups`, `deadlines`, `style`, `auth`, `tone`,
+`autonomy`, `groups`, `deadlines`, `style`, `auth`, `drive`, `tone`,
 `reimbursement`, `vip`, `push`, `state`; `--phase <name>` reruns one,
 `--update` shows current values, `--answers FILE` runs with no terminal).
 `tests/validate_config.py` names any placeholder left. After the service
@@ -1140,8 +1190,10 @@ account exists the directory is ea-bot's; owner tools write it through
 
 **`user-profile.json`**: `name`, `email`, `role`, `department`,
 `background`, `slack_channel`, `bio_blurb`, the Google calendar
-accounts, and the `institution` block that says which mail is internal,
-where the safety rail sits and which video platform you use
+accounts, `drive_accounts` (the Google accounts the Drive reader signs
+in, [Google Drive](#google-drive)), and the `institution` block that
+says which mail is internal, where the safety rail sits and which video
+platform you use
 (`preprocessor/institution.py` documents every key): `name`, `domains`
 (the internal mail domains, a list), `related_domains`,
 `safety_rail_domain` (the EA never sends a first email outside it on its
@@ -1266,13 +1318,23 @@ check both copies.
 
 ### Claude Code connectors
 
-The lanes can call Gmail and Google Calendar directly, and Slack on a
-Slack install, through the claude.ai account connectors: the tool
+**Why:** a second, optional way into Gmail, Google Calendar and Google
+Drive. The EA's own clients (`gmail_client.py`,
+`google_calendar_client.py`, [Google Drive](#google-drive)'s
+`drive_client.py`) cover all three without them.
+
+The lanes can call Gmail, Google Calendar and Google Drive, and Slack on
+a Slack install, through the claude.ai account connectors: the tool
 allowlists in `run-agent.sh` and `ea-chat-bot.py` grant
 `mcp__claude_ai_Gmail__*`, `mcp__claude_ai_Google_Calendar__*` and
-`mcp__claude_ai_Slack__*` read verbs. These are not servers you add with
-`claude mcp add`; Claude Code loads them from the claude.ai account it
-is logged in with. Enable them in claude.ai Settings > Connectors
+`mcp__claude_ai_Slack__*` read verbs, and the chat bot and a plugin with
+Drive context the `mcp__claude_ai_Google_Drive__*` ones. These are not
+servers you add with `claude mcp add`; Claude Code loads them from the
+claude.ai account it is logged in with, and only under a browser login
+(`/login`). A setup-token login
+(`scripts/install/ea-bot-token.sh`, and every macOS install) loads no
+connector at all, and `claude mcp list` as ea-bot then prints "No MCP
+servers configured". Enable them in claude.ai Settings > Connectors
 (claude.ai/customize/connectors) for the account ea-bot logs in with
 (the lanes run as ea-bot), and finish each one's sign-in there. Check
 as ea-bot:
@@ -1470,7 +1532,7 @@ accounts (`docs/install-testing.md`).
 | `~/.ea/.env`, `env: <KEY>`, `secret: <KEY>`, `~/.ea-private/secrets.env` | [Secrets](#secrets); [The Slack environment files](#the-slack-environment-files) |
 | `chat: frontend`, `web chat: *`, `zulip: *`, `slack: *` | [Web chat](#web-chat), [Zulip server](#zulip-server), [Slack](#slack) |
 | `auth: graph sign-in path`, `auth: msal_token_cache.json`, `auth: graph token source` | [Microsoft Graph app registration](#microsoft-graph-app-registration) |
-| `auth: google client`, `auth: google tokens`, `EA-Managed calendar`, `EA-Managed calendar (owner copy)` | [Google OAuth app](#google-oauth-app), [The EA-Managed calendar](#the-ea-managed-calendar) |
+| `auth: google client`, `auth: google tokens`, `auth: google drive`, `EA-Managed calendar`, `EA-Managed calendar (owner copy)` | [Google OAuth app](#google-oauth-app), [Google Drive](#google-drive), [The EA-Managed calendar](#the-ea-managed-calendar) |
 | `auth: scheduled-send-hmac.key`, `owner trust: scheduled-send key` | [The deferred-send signing key](#the-deferred-send-signing-key) |
 | `native accounts*`, `auth: graph and google tokens` | [macos-native-accounts.md](macos-native-accounts.md) (a Mac on the native backend) |
 | `install overlay: rendered`, `install overlay: in the lanes' tree` | [The install overlay](#the-install-overlay) |

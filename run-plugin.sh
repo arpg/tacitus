@@ -610,6 +610,9 @@ if ctx.get('google_drive'):
                 'mcp__claude_ai_Google_Drive__get_file_permissions',
                 'mcp__claude_ai_Google_Drive__read_file_content',
                 'mcp__claude_ai_Google_Drive__download_file_content']
+    # The install's own read-only Drive sign-in (drive_client.py), which
+    # works when the claude.ai connector does not load (a setup-token login).
+    allowed.append(f'Bash(python3 {ea_bot_scripts}/drive_client.py *)')
 
 # Plugin-local Bash: one rule per entry point (plugin_registry.py
 # run-grants). A locked (v2) plugin gets the grants the owner accepted

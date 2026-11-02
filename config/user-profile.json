@@ -31,6 +31,8 @@
   ],
   "gmail_accounts": [],
   "gmail_accounts_note": "Gmail accounts the EA may draft from (gmail_client.py --email <addr>). Empty when you use Outlook only.",
+  "drive_accounts": [],
+  "drive_accounts_note": "Google accounts whose Docs and Drive files the EA may read, read only (drive_client.py; each signs in once with drive_client.py setup --email <addr>, docs/SETUP.md 'Google Drive'). Empty: the EA asks you to paste a document's text.",
   "family": [],
   "family_note": "Optional. People the family-sync and rsvp skills may name: [{\"name\": \"...\", \"relation\": \"spouse|child|...\", \"notes\": \"school, team, sitter, ...\"}]. Their calendars go in calendar_accounts and in scheduling-preferences.json family_calendars.",
   "zoom_link": "",

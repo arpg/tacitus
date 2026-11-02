@@ -996,8 +996,9 @@ Invoked by cron (morning, afternoon, weekly) or manually.
                    Bash: graph_actions, gmail_client,
                          google_calendar_client, scheduling_engine,
                          ledger, project_store, style_profiles,
-                         closure_metrics, fetch_url, email_to_pdf,
-                         doc_text, poll_filler, booking_link, compile_letter,
+                         closure_metrics, fetch_url, drive_client,
+                         email_to_pdf, doc_text, poll_filler, booking_link,
+                         compile_letter,
                          each plugin entry point (plugin_registry
                          tool-grants; never a state dir), cat, ls
                    File: Read, Write, Edit

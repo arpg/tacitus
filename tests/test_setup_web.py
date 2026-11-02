@@ -168,7 +168,7 @@ def test_the_terminal_walks_the_same_questions(monkeypatch, tmp_path):
            "detected_timezone": "America/Denver"}
     want: set = set()
     for pid in ("identity", "scheduling", "inbox", "autonomy", "groups", "deadlines", "style",
-                "chat", "auth", "tone", "reimbursement", "vip", "push"):
+                "chat", "auth", "drive", "tone", "reimbursement", "vip", "push"):
         _values, errors = Q.resolve(pid, raw, ctx, "terminal", used=want)
         assert not errors, (pid, errors)
     assert used - {"answer-the-first-week-preference-questions-now"} == want
@@ -570,6 +570,9 @@ def test_the_page_in_a_phone_browser(browser, start, tmp_path):
     page.click("#next")
     expect(page.locator("#title")).to_have_text("You")
     expect(page.locator("#status")).to_contain_text("ea-config.json")
+    # Each step says why it asks, and each question why it is asked.
+    expect(page.locator("#intro .why")).to_contain_text("Why this step:")
+    expect(page.locator('[data-key="full-name"] .why')).to_contain_text("signs drafts and letters")
     page.click("#next")
     expect(page.locator("#f-full-name-err")).to_have_text("An answer is required.")
     page.fill("#f-full-name", "Pat Example")
@@ -590,6 +593,10 @@ def test_the_page_in_a_phone_browser(browser, start, tmp_path):
     page.check("input[name=f-graph-auth-method][value=skip]")
     expect(page.locator('[data-key="graph-client-id"]')).to_be_hidden()
     expect(page.locator('[data-key="slack-bot-token"]')).to_have_count(0)
+    page.click("#next")
+    expect(page.locator("#title")).to_have_text("Google Drive")
+    expect(page.locator('[data-key="google-drive-now"]')).to_have_count(0)
+    page.fill("#f-drive-accounts", "pat@uni.example")
     for title in ("Reimbursement", "VIP senders", "Phone push"):
         page.click("#next")
         expect(page.locator("#title")).to_have_text(title)
@@ -601,14 +608,64 @@ def test_the_page_in_a_phone_browser(browser, start, tmp_path):
     expect(page.locator("#finish h1")).to_be_visible()
     expect(page.locator("#rows li.row.ok").first).to_be_visible(timeout=60000)
     expect(page.locator("#steps")).to_contain_text("./scripts/install/setup.sh --profile email")
+    expect(page.locator("#steps")).to_contain_text("drive_client.py setup --email pat@uni.example")
+    expect(page.locator("#steps li .why").first).to_contain_text("Why:")
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
     assert page.evaluate("getComputedStyle(document.body).backgroundColor") == "rgb(21, 23, 27)"
     assert (tmp_path / "web" / "state" / "obligations-ledger.json").exists()
     profile = json.loads((tmp_path / "web" / "config" / "user-profile.json").read_text())
     assert profile["name"] == "Pat Example" and profile["institution"]["domains"] == ["uni.example"]
+    assert profile["drive_accounts"] == ["pat@uni.example"]
     page.click("#next")
     expect(page.locator("#bye")).to_be_visible()
     t.join(5)
     assert not t.is_alive()
     assert not errors, errors
     ctx.close()
+
+
+# -- every step says why --------------------------------------------------
+
+def test_every_step_and_question_says_why_it_asks_and_how_it_helps():
+    """A setup step the user cannot judge is a step they skip or answer at
+    random. Every phase, every question and every step the finish screen
+    gives carries its reason, and the page receives it."""
+    import re
+    keys = {q["key"] for q in Q._all_questions()}
+    assert set(Q.WHY) == keys, "WHY names exactly the questions"
+    assert set(Q.PHASE_WHY) == {p["id"] for p in Q.PHASES}
+    for text in [*Q.WHY.values(), *Q.PHASE_WHY.values()]:
+        assert text.strip() and "—" not in text
+        for sentence in re.split(r"(?<=[.!?])\s+", text):
+            assert len(sentence.split()) <= 20, sentence
+    for q in Q._all_questions():
+        assert q["why"] == Q.WHY[q["key"]]
+    ctx = {"profile": "assistant", "chat": "web", "ex": {}, "files": {}}
+    for ph in Q.describe(ctx):
+        assert ph["why"], ph["id"]
+        for row in ph["questions"]:
+            assert row["why"], row["key"]
+    for profile in ("email", "review-only", "assistant"):
+        for chat in ("web", "zulip"):
+            for platform in ("linux", "darwin"):
+                for env in ({}, {"GRAPH_AUTH_METHOD": "confidential"},
+                            {"GRAPH_AUTH_METHOD": "device_code"}):
+                    files = {Q.PROFILE_FILE: {"drive_accounts": ["pat@uni.example"]}}
+                    steps = setup_web.next_steps({"profile": profile, "chat": chat, "files": files},
+                                                 platform=platform, env=env)
+                    for step in steps:
+                        assert step.get("why"), (profile, chat, platform, step["title"])
+                    assert any("drive_client.py setup --email pat@uni.example" in c
+                               for s in steps for c in s["commands"])
+
+
+def test_the_setup_skill_says_why_in_every_section():
+    """The /setup skill asks in chat in its own words; each of its numbered
+    sections carries a Why line, and its rules say to give it."""
+    import re
+    text = (ROOT / ".claude" / "skills" / "setup" / "SKILL.md").read_text()
+    sections = re.split(r"^## (?=\d)", text, flags=re.M)[1:]
+    assert len(sections) >= 10
+    for sec in sections:
+        assert "**Why:**" in sec, sec.splitlines()[0]
+    assert "setup_questions.py" in text and "WHY" in text

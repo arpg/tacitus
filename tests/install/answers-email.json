@@ -47,6 +47,9 @@
   "graph-sign-in-now": false,
   "google-calendar-now": false,
 
+  "drive-accounts": ["pat.example@example.edu"],
+  "google-drive-now": false,
+
   "style-analysis-now": false,
   "reimbursement-configure": false,
   "vip-addresses": ["dean@example.edu"],

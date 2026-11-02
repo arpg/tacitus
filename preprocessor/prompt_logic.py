@@ -192,7 +192,11 @@ MODULE_KEYWORDS: dict[str, set[str]] = {
     "gmail": {"gmail", "@gmail.com", "personal email",
               "send from gmail", "gmail draft"},
     "webfetch": {"http://", "https://", "fetch the page", "read the page",
-                 "check this link", "what is this link", "open the link"},
+                 "check this link", "what is this link", "open the link",
+                 # A Google file named without its link ("the notes are in
+                 # the Google Doc"): the guide names drive_client.py.
+                 "google doc", "google drive", "google sheet", "google slides",
+                 "gdoc", "shared doc", "meeting notes"},
     "triage": {"triage", "archive", "clear out", "mark done", "close out",
                "inbox", "what's new", "catch me up", "what did i miss"},
     "drafting": {"draft", "reply to", "respond to", "write to", "write back",

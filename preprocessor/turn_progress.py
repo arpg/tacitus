@@ -47,6 +47,8 @@ SCRIPTS: dict[str, dict[str, str]] = {
     "gmail_client": {"_": "drafting in Gmail", "search": "reading Gmail", "get-message": "reading Gmail",
                      "get-thread": "reading Gmail", "list-drafts": "reading Gmail"},
     "google_calendar_client": {"_": "reading Google Calendar"},
+    "drive_client": {"_": "reading Google Drive", "search": "searching Google Drive",
+                     "download": "saving a Drive file"},
     "overleaf_tools": {"_": "working in Overleaf"},
     "site_tools": {"_": "working on the site"},
     "doc_review": {"_": "opening the review"},
@@ -67,7 +69,7 @@ PAST = {"reading": "read", "writing": "wrote", "finding": "found", "checking": "
         "updating": "updated", "closing": "closed", "proposing": "proposed", "filing": "filed",
         "working": "worked", "drafting": "drafted", "building": "built", "opening": "opened",
         "compiling": "compiled", "recording": "recorded", "logging": "logged", "running": "ran",
-        "using": "used", "looking": "looked"}
+        "using": "used", "looking": "looked", "saving": "saved"}
 
 _SCRIPT = re.compile(r"preprocessor/([a-z_0-9]+)\.py(?:\s+(?:--?[a-z-]+\s+)*([a-z][a-z0-9-]*))?")
 _SKIP = {"ToolSearch", "TodoWrite", "Skill", "AskUserQuestion", "ScheduleWakeup", "Monitor"}

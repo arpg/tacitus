@@ -2601,6 +2601,9 @@ _BASH_ONLY_TOOLS = (
     "Bash(python3 {script_dir}/preprocessor/google_calendar_client.py *),"
     "Bash(python3 {script_dir}/preprocessor/scheduling_engine.py *),"
     "Bash(python3 {script_dir}/preprocessor/fetch_url.py *),"
+    # A private Google Doc, Sheet, Slides or Drive file (fetch_url.py gets
+    # HTTP 401 there): read-only, through the mediator's Drive sign-in.
+    "Bash(python3 {script_dir}/preprocessor/drive_client.py *),"
     "Bash(python3 {script_dir}/preprocessor/email_to_pdf.py *),"
     # Read-only text of a .docx, PDF or text file under ~/.ea's document
     # folders: a dontAsk lane refuses unzip and `python3 -c`.
@@ -2924,6 +2927,9 @@ def _tools_block(body_file: str, needed_modules: set[str] | None = None) -> str:
   is overwritten within 30 minutes, though an edited token WORD is
   preserved. Change the underlying meeting instead.{scheduling_tool_block}
 - Bash(python3 {sd}/preprocessor/fetch_url.py --url <url>) for reading web pages
+- Bash(python3 {sd}/preprocessor/drive_client.py read --url <link>) for a Google
+  Doc, Sheet, Slides or Drive file (private links answer 401 to fetch_url);
+  search --query "<words>" finds one, download --output saves one for doc_text.py
 - Bash(python3 {sd}/preprocessor/doc_text.py <path>) for the text of a .docx,
   .xlsx, PDF or text file under ~/.ea (state, docs, uploads, letters,
   research): comments come at the end; --tracked marks tracked changes; a
