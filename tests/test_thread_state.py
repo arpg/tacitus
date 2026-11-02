@@ -186,9 +186,14 @@ ORDER_CASES = [
      [m(1, kind="card", card=live_card())],
      {"prev": {"state": "done", "by": "owner", "reason": "You marked this done.", "judged_seq": 1}},
      ("done", "owner")),
-    ("a live card beats the hourglass",
-     [m(1, kind="card", card=live_card()), m(2, "owner", "Wait.", reactions=["eyes"])], {},
+    ("a card posted after the owner's message beats the hourglass",
+     [m(1, "owner", "Draft it.", reactions=["eyes"], at=NOW - 2 * MIN),
+      m(2, kind="card", card=live_card(), at=NOW - MIN)], {},
      ("needs_you", "rule")),
+    ("the owner's change beats a live card",
+     [m(1, kind="card", card=live_card(), at=NOW - 10 * MIN),
+      m(2, "owner", "Wait.", reactions=["eyes"], at=NOW - 2 * MIN)], {},
+     ("working", "rule")),
     ("a waiting device beats the owner's unanswered message",
      [m(1, text=NOTICE), m(2, "owner", "Is this my phone?", at=NOW - 3 * 3600)],
      {"devices": PENDING}, ("needs_you", "rule")),
@@ -946,12 +951,157 @@ def test_the_link_rule_sits_after_the_live_card_rule_and_before_the_owner_s_last
     # the owner's override still holds
     prev = {"state": "done", "by": "owner", "reason": "You marked this done.", "judged_seq": 3}
     assert decide(ASK, linked=[dm_card()], prev=prev)[:2] == ("done", "owner")
-    # a live card beats the owner's unanswered message (its button is the next step)
+    # the owner's message after the card, unanswered past the window, is a
+    # stuck turn with the card or without it (rule 1a, then rule 3)
     asked = ASK + [m(4, "owner", "Make it shorter.", at=NOW - 30 * MIN)]
-    assert decide(asked, linked=[dm_card()])[0] == "needs_you"
+    assert decide(asked, linked=[dm_card()]) == ("needs_you", "rule", ts.NOT_ANSWERED)
     assert decide(asked)[2] == ts.NOT_ANSWERED
     # with no link the conversation is the model's, as before
     assert decide(ASK) is None and decide(ASK, linked=[]) is None
+
+
+# ── the owner's change to a live card (rule 1a) ───────────────────────
+
+CARD_ASK = [m(1, "owner", "Draft a reply to Avery.", reactions=["white_check_mark"],
+              at=NOW - 40 * MIN),
+            m(2, kind="card", card=live_card(), at=NOW - 39 * MIN)]
+CARD_HERE = 'The card "Confirm send" still has its buttons.'
+REVISED = ":pencil2: Revised. The new Send card for this draft is below."
+
+
+def change(seq, text="Make it shorter.", at=NOW - 5 * MIN, **kw):
+    return m(seq, "owner", text, at=at, **kw)
+
+
+def test_the_owner_s_change_to_a_card_in_the_thread_is_working_then_stuck():
+    asked = CARD_ASK + [change(3, reactions=["eyes"])]
+    assert decide(asked) == ("working", "rule", ts.CHANGE_WORKING)
+    # a progress line is no answer: still working, the window counts from it
+    busy = asked + [m(4, text=":hourglass_flowing_sand: Still working... (21m)", at=NOW - MIN)]
+    assert decide(busy, now=NOW + 16 * MIN) == ("working", "rule", ts.CHANGE_WORKING)
+    # twenty minutes with no answer is a stuck turn, the card still live
+    assert decide(asked, now=NOW + 20 * MIN) == ("needs_you", "rule", ts.NOT_ANSWERED)
+    # a failed turn needs the owner at once
+    assert decide(CARD_ASK + [change(3, reactions=["x"])]) == \
+        ("needs_you", "rule", ts.NOT_ANSWERED)
+    failed = asked + [m(4, text=":warning: I hit my usage limit.", at=NOW - MIN)]
+    assert decide(failed) == ("needs_you", "rule", ts.NOT_ANSWERED)
+
+
+def test_once_the_bot_answers_the_change_the_card_rule_decides_again():
+    asked = CARD_ASK + [change(3)]
+    # a revised card: the old one retired, a new one below the change
+    revised = [CARD_ASK[0], m(2, kind="status", text=REVISED, card=live_card(),
+                              at=NOW - 39 * MIN, updated=NOW - 2 * MIN),
+               change(3), m(4, kind="card", card=live_card(":lock: *Confirm send (short)*"),
+                            at=NOW - 2 * MIN)]
+    assert decide(revised) == ("needs_you", "rule",
+                               'The card "Confirm send (short)" still has its buttons.')
+    # the card revised in place
+    in_place = [CARD_ASK[0], m(2, kind="card", card=live_card(), at=NOW - 39 * MIN,
+                               updated=NOW - MIN), change(3)]
+    assert decide(in_place) == ("needs_you", "rule", CARD_HERE)
+    # a message from the bot
+    assert decide(asked + [m(4, text="Shorter now: three lines.", at=NOW - MIN)]) == \
+        ("needs_you", "rule", CARD_HERE)
+    # a finished turn with no words, and a change copied from Zulip's past,
+    # are not decisive: the card's buttons are
+    assert decide(CARD_ASK + [change(3, reactions=["white_check_mark"])]) == \
+        ("needs_you", "rule", CARD_HERE)
+    assert decide(CARD_ASK + [{**change(3), "history": True}]) == ("needs_you", "rule", CARD_HERE)
+    # the owner's override still wins
+    prev = {"state": "done", "by": "owner", "reason": "You marked this done.", "judged_seq": 3}
+    assert decide(asked, prev=prev)[:2] == ("done", "owner")
+
+
+def test_the_owner_s_change_to_a_linked_card_is_working_then_stuck():
+    asked = ASK + [change(4, "Add the budget line.")]
+    assert decide(asked, linked=[dm_card()]) == ("working", "rule", ts.CHANGE_WORKING)
+    assert decide(asked, linked=[dm_card()], now=NOW + 20 * MIN) == \
+        ("needs_you", "rule", ts.NOT_ANSWERED)
+    # a card posted in the DM after the owner's message answers it, with a
+    # pointer or through the card's own link alone
+    old = dm_card("w8", kind="status", text=REVISED, updated=NOW - 2 * MIN)
+    new = dm_card(at=NOW - 2 * MIN)
+    pointer = m(5, text=":lock: The new Send card for the revised draft is in your DM: "
+                        "[open it](https://h.example.test/chat/#/dm/t-w9/w9)", at=NOW - 2 * MIN)
+    assert decide(asked + [pointer], linked=[old, new]) == ("needs_you", "rule", ts.CARD_WAITS)
+    assert decide(asked, linked=[old, new]) == ("needs_you", "rule", ts.CARD_WAITS)
+    # the card revised in place, and a message from the bot
+    assert decide(asked, linked=[dm_card(updated=NOW - MIN)]) == \
+        ("needs_you", "rule", ts.CARD_WAITS)
+    assert decide(asked + [m(5, text="Added the line.", at=NOW - MIN)], linked=[dm_card()]) == \
+        ("needs_you", "rule", ts.CARD_WAITS)
+    # a press under way in the DM keeps its own reason
+    assert decide(asked, linked=[dm_card(kind="status", text=":hourglass_flowing_sand: "
+                                                             "Sending...", updated=NOW - MIN)]) \
+        == ("working", "rule", ts.CARD_BUSY)
+
+
+def test_the_closure_label_names_the_rule_of_the_owner_s_change():
+    import closure_labels as cl
+
+    def rule(msgs, now=NOW, **kw):
+        f, _head = cl.thread_features(msgs, channel={"kind": "dm"}, now=now, **kw)
+        return f["rule_id"], f["rule_state"], f["stuck_turn"]
+    asked = CARD_ASK + [change(3)]
+    assert rule(asked) == ("1a-reply-over-card", "working", False)
+    assert rule(asked, now=NOW + 20 * MIN) == ("3-stuck", "needs_you", True)
+    assert rule(asked + [m(4, text="Shorter now.", at=NOW - MIN)]) == \
+        ("2-live-card", "needs_you", False)
+    linked = ASK + [change(4, "Add the budget line.")]
+    assert rule(linked, linked=[dm_card()]) == ("1a-reply-over-card", "working", False)
+    assert rule(linked, linked=[dm_card()], now=NOW + 20 * MIN) == ("3-stuck", "needs_you", True)
+    assert rule(linked, linked=[dm_card(updated=NOW - MIN)]) == \
+        ("2b-linked-card", "needs_you", False)
+    assert cl.rule_id("working", ts.CHANGE_WORKING) == "1a-reply-over-card"
+
+
+def test_the_engine_follows_the_owner_s_change_and_the_bot_s_answer(store):
+    clock = [time.time()]
+    e = engine(store, FakeModel(), clock=lambda: clock[0])
+    e.changed()
+    # a card in the thread itself
+    ask = store.add_message("dm", mid=None, thread_key=None, author="owner", kind="message",
+                            text="Draft a reply to Avery.", posted_at=clock[0] - 120)
+    key = ask["thread_key"]
+    card = store.add_message("dm", mid=None, thread_key=key, author="bot", kind="card",
+                             text="Confirm send", card=live_card(), posted_at=clock[0] - 60)
+    # a card in the DM for a conversation in main, with its pointer
+    ask2 = store.add_message("main", mid=None, thread_key=None, author="owner", kind="message",
+                             text="Draft a reply to Blake.", posted_at=clock[0] - 120)
+    key2 = ask2["thread_key"]
+    card2 = store.add_message("dm", mid=None, thread_key=None, author="bot", kind="card",
+                              text="Confirm send", card=_send_card("main", key2),
+                              posted_at=clock[0] - 60)
+    e.changed()
+    assert store.thread_state("dm", key)["state"] == "needs_you"
+    assert store.thread_state("main", key2)["reason"] == ts.CARD_WAITS
+    for channel, k in (("dm", key), ("main", key2)):
+        store.add_message(channel, mid=None, thread_key=k, author="owner", kind="message",
+                          text="Make it shorter.", posted_at=clock[0])
+    e.changed()
+    for channel, k in (("dm", key), ("main", key2)):
+        st = store.thread_state(channel, k)
+        assert (st["state"], st["by"], st["reason"]) == ("working", "rule", ts.CHANGE_WORKING)
+    # no answer for twenty minutes: the tick calls the turn stuck
+    clock[0] += 21 * MIN
+    assert e.tick()["model_calls"] == 0
+    for channel, k in (("dm", key), ("main", key2)):
+        st = store.thread_state(channel, k)
+        assert (st["state"], st["reason"]) == ("needs_you", ts.NOT_ANSWERED)
+    # the bot answers: a revised card in the thread, the DM card revised in place
+    store.change_message("dm", card["id"], "status", kind="status", text=REVISED)
+    store.add_message("dm", mid=None, thread_key=key, author="bot", kind="card",
+                      text="Confirm send", card=live_card(":lock: *Confirm send (short)*"),
+                      posted_at=clock[0])
+    store.change_message("dm", card2["id"], "card", kind="card",
+                         card=_send_card("main", key2, ":lock: *Confirm send (short)*"))
+    e.changed()
+    st = store.thread_state("dm", key)
+    assert (st["state"], st["reason"]) == \
+        ("needs_you", 'The card "Confirm send (short)" still has its buttons.')
+    assert store.thread_state("main", key2)["reason"] == ts.CARD_WAITS
 
 
 def test_pointers_name_their_card_on_each_platform():

@@ -180,6 +180,7 @@ _RULE_IDS = (
     ("Its card was handled", "2b-linked-card"),
     ("Its cards were handled", "2b-linked-card"),
     ("phone was approved", "2a-device-settled"),
+    (_ts.CHANGE_WORKING, "1a-reply-over-card"),
     (_ts.NOT_ANSWERED, "3-stuck"),
     ("working on your last message", "3-working"),
     ("You wrote last", "3-working"),

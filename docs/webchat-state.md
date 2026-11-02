@@ -33,11 +33,27 @@ thread: the colleague has not replied yet").
 ## Rules (decisive, in this order; the first that fires wins)
 
 1. Owner override newer than the last message: keep it.
-2. A card in the thread whose buttons are live: `needs_you`. A card is
-   live while its row is still a `card` (the bot has recorded no outcome:
-   a pressed card becomes a `status` row with the bot's status line), it
-   has an action or a select, and it is younger than the card registry
-   keeps cards (7 days; an older card's buttons no longer act).
+1a. The owner's change to a live card. The owner wrote after every card
+   the conversation holds or links to (after its posting, a revision in
+   place and its outcome), and the bot has not answered (rule 3's test):
+   the owner is changing what the card holds ("make it shorter", "add the
+   budget line"), and the card is about to be replaced.
+   - within 20 minutes of the owner's message (or of the bot's last
+     progress line): `working`, "Tacitus is working on your change.";
+   - past 20 minutes, or a failed turn: `needs_you`, "Tacitus did not
+     answer this. Ask again." (a stuck turn, as in rule 3).
+   Once the bot answers (a new card, a card revised in place, or a
+   message), rules 2 and 2b decide again. A finished turn with no words
+   and a message copied from Zulip's past are no answer and no change:
+   rules 2 and 2b decide. The rule runs where rule 2 finds a live card in
+   the thread and where rule 2b finds a live linked card, so it outranks
+   only those two, and rule 2a keeps its place.
+2. A card in the thread whose buttons are live (and no rule 1a):
+   `needs_you`. A card is live while its row is still a `card` (the bot
+   has recorded no outcome: a pressed card becomes a `status` row with
+   the bot's status line), it has an action or a select, and it is
+   younger than the card registry keeps cards (7 days; an older card's
+   buttons no longer act).
 2a. The relay's notice of a new device (its text names the pairing code):
    `needs_you` ("A phone waits for your approval.") while a device with
    that code waits for approval, `done` once it is approved or removed.
@@ -47,16 +63,16 @@ thread: the colleague has not replied yet").
    one-line pointer where it was asked ("The Send button for this draft
    is in your DM: [open it](...)"; Create, Reschedule, Delete, Schedule,
    Publish and a plugin's button alike). The store links the two (Store,
-   `card_link`). One linked card still live (rule 2's test): `needs_you`,
-   "Its card in Direct messages waits for you." A press under way within
-   20 minutes: `working`. Every linked card acted on (rule 4's status
-   line, or a mirrored card's) and no owner message in the conversation
-   after the last of them: `done`, "Its card was handled: <its status
-   line in plain words>" ("Its cards were handled: ..." for several). A
-   failed or expired card, a press stuck past 20 minutes, or a link to a
-   card the store does not hold (one never copied from Zulip) decides
-   nothing, and the later rules run. A bot line after the outcome does
-   not reopen it; an owner message does.
+   `card_link`). One linked card still live (rule 2's test, and no rule
+   1a): `needs_you`, "Its card in Direct messages waits for you." A press
+   under way within 20 minutes: `working`. Every linked card acted on
+   (rule 4's status line, or a mirrored card's) and no owner message in
+   the conversation after the last of them: `done`, "Its card was
+   handled: <its status line in plain words>" ("Its cards were handled:
+   ..." for several). A failed or expired card, a press stuck past 20
+   minutes, or a link to a card the store does not hold (one never
+   copied from Zulip) decides nothing, and the later rules run. A bot
+   line after the outcome does not reopen it; an owner message does.
 3. The owner wrote last, and the bot has posted nothing since but
    progress lines (`:hourglass...`) or a failed-turn notice (`:x:`,
    `:warning:`):
@@ -409,6 +425,17 @@ bot side changed it here:
   done). `hosted`, and `local` or `auto` with no local model set up, ask
   Claude, one call a tick over up to 20 threads; `auto` with a local
   model hands it the threads the local model could not answer.
+- **The owner's change to a card outranks the card** (rule 1a: a reply
+  such as "make it shorter" under a live card kept the sticker on Needs
+  you while the bot worked on the change and the card was about to be
+  replaced). An owner message after every card the conversation holds or
+  links to, with no answer yet, is `working` ("Tacitus is working on your
+  change.") for 20 minutes and a stuck turn after, ahead of rules 2 and
+  2b; a new card, a revised card or a message from the bot hands the
+  conversation back to them. Every other rule keeps its place, and the
+  model is not asked about more threads than before. Its closure label's
+  rule id is `1a-reply-over-card`; its stuck turn is `3-stuck`, as rule
+  3's is.
 
 - **From the closure analysis** (the owner's past Zulip conversations,
   cards and ledger rows): rule 5 (the bot's check => done) is dropped;
