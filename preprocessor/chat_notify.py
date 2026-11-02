@@ -24,7 +24,8 @@ ea-config.json):
     new thread, through the writer-only web front end
     (chat.load_frontend(for_cli=True)); the bot's tail thread pushes
     them to the open streams. The channel is the one
-    `chat.web.notify[<channel_key>].channel` names, else the EA channel.
+    `chat.web.notify[<channel_key>].channel` names, else the EA channel
+    (Scheduling for the `scheduling` key while the store holds it).
     A digest key (DIGEST_KEYS) always goes to the digest channel, which
     is made when it is missing. Only an owner process writes the store,
     which is the owner's; any other process posts nothing and says so.
@@ -411,7 +412,8 @@ def room_mention(channel_id: str) -> str:
 # (docs/webchat.md, CLI senders). The `web.notify` map takes the Zulip
 # map's channel keys, each naming a web channel id
 # ({"ea-assistant": {"channel": "main"}}); a key it does not name goes to
-# the EA channel. A digest key goes to the digest channel whatever the
+# the EA channel, and `scheduling` to the Scheduling channel while the
+# store holds it. A digest key goes to the digest channel whatever the
 # map says: the briefing's chat reader reads the EA channel, and a
 # channel of kind `digest` never.
 
@@ -461,12 +463,28 @@ def _web_channel(fe, cid: str) -> bool:
     return True
 
 
+def _web_sched(fe) -> str:
+    """The web chat's Scheduling channel while the store holds it and it
+    is not archived (the bot archives it when the web block turns it
+    off), else ""."""
+    cid = str(getattr(fe, "sched_channel", "") or "")
+    row = fe.store.channel(cid) if cid else None
+    return cid if row and row.get("kind") == "sched" and not row.get("archived") else ""
+
+
 def _web_route(fe, channel_key: str, direct: bool = False) -> str:
     """The web channel a key posts to: the one `web.notify` names, else
-    the DM for a direct message and the EA channel for the rest. A digest
-    key never comes here (_send_digest names its channel)."""
-    return (_web_target(channel_key)
-            or (fe.dm_channel(fe.owner_id) if direct else fe.main_channel))
+    the DM for a direct message, Scheduling for the `scheduling` key while
+    that channel is there, and the EA channel for the rest. A digest key
+    never comes here (_send_digest names its channel)."""
+    target = _web_target(channel_key)
+    if target:
+        return target
+    if direct:
+        return fe.dm_channel(fe.owner_id)
+    if channel_key == "scheduling":
+        return _web_sched(fe) or fe.main_channel
+    return fe.main_channel
 
 
 def _send_web(channel_key: str, parts: list[str], *, channel: str = "",
@@ -635,7 +653,8 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
 
 def scheduling_channel_key() -> str:
     """The channel key for scheduling output: "scheduling" when that
-    channel is configured, else the main EA channel."""
+    channel is configured (on the web chat alone, also while its
+    Scheduling channel is on), else the main EA channel."""
     name = frontend_name()
     if name == "slack":
         return "scheduling" if _load_webhooks().get("scheduling") else "ea-assistant"
@@ -643,7 +662,8 @@ def scheduling_channel_key() -> str:
         target = (_chat_cfg()["zulip"].get("notify") or {}).get("scheduling")
         return "scheduling" if isinstance(target, dict) and target.get("stream") else "ea-assistant"
     if name == "web":
-        return "scheduling" if _web_target("scheduling") else "ea-assistant"
+        on = _web_target("scheduling") or _ea_config().web_sched_on(_chat_cfg())
+        return "scheduling" if on else "ea-assistant"
     return "ea-assistant"
 
 
