@@ -2166,6 +2166,15 @@ def report(post: bool = False) -> dict:
             text += "\n" + "\n".join(tier_lines)
     except Exception as e:
         text += f"\nTiers: report failed ({str(e)[:120]})."
+    try:
+        # The closure detectors against the owner's labels (closure_eval.py):
+        # labels collected, gold, and the rules', model's and ledger's F1.
+        import closure_eval
+        closure_lines = closure_eval.summary_lines()
+        if closure_lines:
+            text += "\n" + "\n".join(closure_lines)
+    except Exception as e:
+        text += f"\nClosure labels: report failed ({str(e)[:120]})."
     if post:
         on = remote_llm.reading("mail", cfg) or remote_llm.reading("scheduling", cfg)
         try:

@@ -1260,3 +1260,223 @@ def test_the_bot_turns_the_states_on_for_its_web_chat():
     assert wts.enable(f) and f.thread_states.ledger is wts.ledger_rows \
         and f.thread_states.model is wts.model_answer
     assert not wts.enable(object())
+    assert f.thread_states.observer is wts.observe
+
+
+# ── the owner's tap: a closure label, and the ledger write-back ───────
+
+class FakeLedgerCLI:
+    """The CLIs the write-back runs, recorded; each answers as it would."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def __call__(self, script, *args):
+        self.calls.append((script, *args))
+        if script == "ledger.py":
+            return {"ok": True, "_exit": 0,
+                    "action": {"close": "closed", "reject": "kept_open"}.get(args[0], "updated")}
+        return {"ok": True, "_exit": 0}
+
+
+def _row(rid, status="open", conv="AAQkconv1=", **kw):
+    return {"id": rid, "type": "task", "status": status, "conversation_id": conv, **kw}
+
+
+def _tap_ctx(store, rows, *, text="Send the signed form to the department.", reply=None):
+    """A thread whose text names each row's id, read as the engine reads it."""
+    at = time.time() - 3 * 3600
+    first = store.add_message("main", mid=None, thread_key=None,
+                              author="bot" if reply else "owner", kind="message", text=text,
+                              posted_at=at)
+    ids = " ".join(f"`{r['id']}`" for r in rows)
+    store.add_message("main", mid=None, thread_key=first["thread_key"], author="owner"
+                      if reply else "bot", kind="message",
+                      text=reply or f"Filed as {ids}.", posted_at=at + 60)
+    if reply:
+        store.add_message("main", mid=None, thread_key=first["thread_key"], author="bot",
+                          kind="message", text=f"Noted {ids}.", posted_at=at + 120)
+    states = ts.ThreadStates(lambda: store, ledger=lambda ids_, convs: [
+        {k: r[k] for k in ("id", "type", "status", "conversation_id")} for r in rows])
+    return states.contexts([("main", first["thread_key"])])[0]
+
+
+@pytest.fixture
+def writeback(store, monkeypatch, tmp_path):
+    monkeypatch.setenv("EA_PRIVATE_DIR", str(tmp_path / "priv"))
+    cli = FakeLedgerCLI()
+    monkeypatch.setattr(wts, "RUN", cli)
+    entries: list[dict] = []
+    monkeypatch.setattr(wts, "_entries", lambda ids, db_path=None: [
+        e for e in entries if e["id"] in set(ids)])
+
+    def tap(rows, state, **kw):
+        entries[:] = rows
+        cli.calls.clear()
+        ctx = _tap_ctx(store, rows, **kw)
+        wts.observe("owner", ctx, now=time.time(), store=store,
+                    row={"state": state, "at": time.time()},
+                    before={"state": "needs_you", "by": "model"})
+        return cli.calls
+    return tap
+
+
+def _labels():
+    import closure_labels as cl
+    return [r for r in cl.load() if r["source"] == "owner-tap"]
+
+
+def test_mark_done_closes_the_open_row_on_the_owner_s_word(writeback):
+    calls = writeback([_row("task-Ab1=")], "done")
+    assert calls == [
+        ("ledger.py", "close", "--id", "task-Ab1=", "--user-said", wts.WEB_DONE_PHRASE,
+         "--note", wts.WEB_DONE_NOTE, "--skip-archive"),
+        ("log_missed_closure.py", "--ledger-id", "task-Ab1=", "--user-message",
+         wts.WEB_DONE_PHRASE, "--source", "web-chat", "--quiet")]
+    # no mail moves: the close skips the archive, and nothing else is run
+    assert not any("archive-message" in c for call in calls for c in call)
+    (rec,) = _labels()
+    assert (rec["label"], rec["features"]["writeback"]) == ("done", "close")
+    assert rec["features"]["linked_ledger_status"] == "open"
+
+
+def test_mark_done_writes_nothing_back_when_it_is_not_safe(writeback):
+    # a briefing names rows in passing
+    assert writeback([_row("task-Ab1=")], "done", text="**Morning briefing**, Mon",
+                     reply="thanks") == []
+    # two open rows on two mail threads
+    assert writeback([_row("task-Ab1="), _row("task-Cd2=", conv="AAQkconv2=")], "done") == []
+    # more rows than the cap, even on one thread
+    assert writeback([_row(f"task-X{i}=") for i in range(4)], "done") == []
+    # nothing open, a plugin's row, or a waiting tap
+    assert writeback([_row("task-Ab1=", status="completed")], "done") == []
+    assert writeback([_row("watch-Ef3=", source="plugin:docket-watcher")], "done") == []
+    assert writeback([_row("task-Ab1=")], "waiting") == []
+    assert [r["features"]["writeback"] for r in _labels()] == \
+        ["automated", "ambiguous", "ambiguous", "none", "none", "none"]
+    # two open rows on one thread close together
+    calls = writeback([_row("task-Ab1="), _row("response-Gh4=")], "done")
+    assert [c[:4] for c in calls if c[0] == "ledger.py"] == [
+        ("ledger.py", "close", "--id", "task-Ab1="), ("ledger.py", "close", "--id", "response-Gh4=")]
+
+
+def test_needs_me_rejects_a_proposal_and_reopens_a_recent_auto_close(writeback):
+    def ago(days):
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - days * DAY))
+    rows = [
+        _row("deadline-Ac1=", close_proposal={"signal": "llm:reconcile"}),
+        _row("response-Aa1=", status="completed", closed_at=ago(2),
+             closed_by={"signal": "user_archived"}),
+        _row("task-Ab1=", status="completed", closed_at=ago(1),
+             closed_by={"signal": "user_stated"}, last_action=wts.WEB_DONE_NOTE),
+        # left alone: closed too long ago, by the owner's own word, or folded
+        _row("response-Old=", status="completed", closed_at=ago(10),
+             closed_by={"signal": "user_archived"}),
+        _row("task-Mine=", status="completed", closed_at=ago(1),
+             closed_by={"signal": "user_stated"}, last_action="done, per user"),
+        _row("task-Dup=", status="completed", closed_at=ago(1),
+             closed_by={"signal": "duplicate_of"}),
+        _row("task-Open=")]
+    calls = writeback(rows, "needs_you")
+    note = next(c[-1] for c in calls if c[:2] == ("ledger.py", "update"))
+    assert "reopened" in note and "web chat" in note
+    assert [c for c in calls if c[0] == "ledger.py"] == [
+        ("ledger.py", "reject", "--id", "deadline-Ac1=", "--actor", "web-chat"),
+        ("ledger.py", "update", "--id", "response-Aa1=", "--status", "open", "--last-action",
+         note),
+        ("ledger.py", "update", "--id", "task-Ab1=", "--status", "open", "--last-action", note)]
+    assert [c for c in calls if c[0] == "item_feedback.py"] == [
+        ("item_feedback.py", "--id", rid, "--kind", "still_open", "--source", "web-chat")
+        for rid in ("deadline-Ac1=", "response-Aa1=", "task-Ab1=")]
+    assert _labels()[-1]["features"]["writeback"] == "reject_reopen"
+    # one more target than the cap: nothing
+    more = rows[:3] + [_row("response-Bb2=", status="completed", closed_at=ago(1),
+                            closed_by={"signal": "linked_send"})]
+    assert writeback(more, "needs_you") == []
+    assert _labels()[-1]["features"]["writeback"] == "ambiguous"
+
+
+def test_the_route_hands_the_tap_to_the_observer(tmp_path, monkeypatch):
+    f = WebFrontend.from_config({}, store_path=tmp_path / "priv" / "webchat.sqlite")
+    f.store.upsert_channel("main", "ea", "main")
+    msg = f.store.add_message("main", mid=None, thread_key=None, author="owner",
+                              kind="message", text="Send the form. `task-Ab1=`")
+    states = f.enable_thread_state(ledger=lambda ids, convs: [_row("task-Ab1=")])
+    heard: list = []
+    states.observer = lambda event, ctx, **info: heard.append((event, ctx, info))
+    started: list = []
+    real = states.owner_tap
+    monkeypatch.setattr(states, "owner_tap", lambda *a: started.append(real(*a)) or started[-1])
+    f.web_set_state("main", msg["thread_key"], "done")
+    started[0].join(5)
+    ((event, ctx, info),) = heard
+    assert event == "owner" and (ctx["channel"], ctx["key"]) == ("main", msg["thread_key"])
+    assert [r["id"] for r in ctx["ledger"]] == ["task-Ab1="]
+    assert info["row"]["state"] == "done" and info["row"]["by"] == "owner"
+    assert info["before"] == {} and info["store"] is f.store and info["now"] > 0
+    # with no observer the route starts nothing
+    states.observer = None
+    assert real("main", msg["thread_key"], info["row"], {}) is None
+
+
+def test_a_model_answer_becomes_a_label(store, monkeypatch, tmp_path):
+    monkeypatch.setenv("EA_PRIVATE_DIR", str(tmp_path / "priv"))
+    key = chat_thread(store)
+    e = engine(store, FakeModel('{"state": "done", "reason": "Done.", "confidence": 0.45}'))
+    heard: list = []
+    e.observer = lambda event, ctx, **info: (heard.append((event, info)),
+                                             wts.observe(event, ctx, **info))
+    e.tick()
+    ((event, info),) = heard
+    assert event == "model" and info["answer"]["confidence"] == 0.45
+    assert info["row"]["state"] == "none"   # below the bar: the state stays as it was
+    import closure_labels as cl
+    (rec,) = [r for r in cl.load() if r["source"] == "model"]
+    assert (rec["kind"], rec["label"], rec["features"]["confidence"],
+            rec["features"]["applied_state"]) == ("unsure", "done", 0.45, "none")
+    assert rec["thread_ref"] == cl.thread_ref("main", key)
+    # a failing observer changes no state and stops nothing
+    e.observer = lambda *a, **k: 1 / 0
+    store.add_message("main", mid=None, thread_key=key, author="bot", kind="message",
+                      text="More.", posted_at=time.time() - 3 * 3600)
+    assert e.tick()["model_calls"] == 1
+
+
+def test_the_write_back_through_the_real_ledger_cli(tmp_path, monkeypatch):
+    """ledger.py and item_feedback.py run for real on a scratch ledger; the
+    missed-closure log (which fetches mail evidence) is recorded instead."""
+    ea = tmp_path / "ea"
+    (ea / "state").mkdir(parents=True)
+    (ea / "logs").mkdir()
+    monkeypatch.setenv("EA_DIR", str(ea))
+    monkeypatch.setattr(ledger, "_is_owner", lambda: False)
+    db = _ledger_db(ea / "state" / "obligations-ledger.db")
+    logged = []
+
+    def run(script, *args):
+        if script == "log_missed_closure.py":
+            logged.append(args)
+            return {"_exit": 0}
+        return wts._cli(script, *args)
+    monkeypatch.setattr(wts, "RUN", run)
+    rows = wts._entries(["response-Ab1="], db_path=db)
+    now = time.time()
+    plan = wts.writeback_plan({"ledger": rows, "messages": [m(1, "owner", "x")],
+                               "channel_row": {"kind": "main"}}, "done", now=now, entries=rows)
+    assert plan == {"action": "close", "ops": [("close", "response-Ab1=")]}
+    assert wts.run_writeback(plan) == [{"op": "close", "id": "response-Ab1=", "ok": True}]
+    (row,) = wts._entries(["response-Ab1="], db_path=db)
+    assert row["status"] == "completed" and row["closed_by"]["signal"] == "user_stated"
+    assert row["last_action"] == wts.WEB_DONE_NOTE and not row.get("email_archived")
+    assert logged == [("--ledger-id", "response-Ab1=", "--user-message", wts.WEB_DONE_PHRASE,
+                       "--source", "web-chat", "--quiet")]
+    # the owner changes their mind: the row the tap closed opens again
+    plan = wts.writeback_plan({"ledger": [row], "messages": [m(1, "owner", "x")],
+                               "channel_row": {"kind": "main"}}, "needs_you", now=time.time(),
+                              entries=[row])
+    assert plan["ops"] == [("reopen", "response-Ab1=")]
+    assert all(r["ok"] for r in wts.run_writeback(plan))
+    (row,) = wts._entries(["response-Ab1="], db_path=db)
+    assert row["status"] == "open" and row.get("confirmed_open_at")
+    feedback = (ea / "logs" / "item-feedback.jsonl").read_text()
+    assert '"kind": "still_open"' in feedback and '"source": "web-chat"' in feedback
