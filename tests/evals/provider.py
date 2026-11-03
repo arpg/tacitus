@@ -629,8 +629,11 @@ def _invoke_codex(env_paths: dict, skill: str, model: str,
                 "ledger commands named, read only the files named, write nothing but the "
                 "test ledger. Your final message is the briefing.")
     env = dict(os.environ, EA_DIR=env_paths["tmpdir"])
+    # The run's temp dir is its own, never /tmp (codex_cli.temp_flags).
+    tmp_dir = Path(env_paths["tmpdir"]) / "tmp"
+    tmp_dir.mkdir(mode=0o700, exist_ok=True)
     res = codex_cli.run(prompt, cwd=env_paths["tmpdir"], model=model, sandbox="workspace-write",
-                        timeout=timeout, env=env)
+                        timeout=timeout, env=env, tmp_dir=tmp_dir)
     res.setdefault("permission_denials", [])
     return res
 

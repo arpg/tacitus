@@ -7,8 +7,9 @@ Codex loads no CLAUDE.md, so a prompt built for it carries the operating
 instructions itself (prompt_logic.build_claude_md with nothing
 discovered). It runs model commands in its own sandbox: `read-only`
 reads anywhere and writes nowhere; `workspace-write` writes only under
-the working root (`-C`) and the `--add-dir` directories. A lane that
-must write the EA state passes that directory, never the code tree.
+the working root (`-C`), the `--add-dir` directories and the temp dirs
+(/tmp and $TMPDIR, or the `tmp_dir` a run names in their place). A lane
+that must write the EA state passes that directory, never the code tree.
 Network is off inside the sandbox.
 
     codex_cli.py probe            exit 0 when codex answers a trivial prompt
@@ -31,6 +32,8 @@ from pathlib import Path
 CODEX_BIN = os.environ.get("EA_CODEX_BIN", "codex")
 PROBE_TIMEOUT_S = 120
 SANDBOXES = ("read-only", "workspace-write")
+# The variables a command reads its temp dir from (temp_flags).
+TEMP_VARS = ("TMPDIR", "TMP", "TEMP")
 
 
 def binary() -> str | None:
@@ -49,8 +52,31 @@ def version() -> str:
     return (r.stdout or "").strip()
 
 
+def temp_flags(tmp_dir) -> list[str]:
+    """The config overrides that give a workspace-write run `tmp_dir` as its
+    temp dir in place of the shared ones.
+
+    By default the sandbox makes /tmp and $TMPDIR writable roots too, and
+    in every writable root it mounts `.git`, `.agents`, `.codex` and `.aws`
+    read-only, making an empty folder for each one that is missing and
+    removing it when the command ends. A command that does not end cleanly
+    (its process group killed) leaves those folders, and an empty `.git`
+    makes Claude Code and Codex take its folder for a project root for
+    every run below it, whoever owns the run (Codex then loads the skills in
+    the `.agents` beside it). With these flags /tmp and $TMPDIR are no
+    roots, and the commands get `tmp_dir` as TMPDIR, TMP and TEMP; the
+    caller passes `tmp_dir` as a root (build does)."""
+    d = json.dumps(str(tmp_dir))
+    flags = ["-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+             "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"]
+    for var in TEMP_VARS:
+        flags += ["-c", f"shell_environment_policy.set.{var}={d}"]
+    return flags
+
+
 def build(*, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
-          last_message_file=None, ephemeral: bool = True, resume: str = "") -> list[str]:
+          last_message_file=None, ephemeral: bool = True, resume: str = "",
+          tmp_dir=None) -> list[str]:
     """The command line for one run. The prompt goes on stdin (`-`), so
     no instruction text ever sits in a process listing.
 
@@ -59,9 +85,17 @@ def build(*, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
     working root and sandbox (resume takes no --sandbox, -C or --add-dir),
     so the process cwd is the thread's root and the sandbox is restated
     as config overrides. A thread meant to be resumed is started with
-    ephemeral=False."""
+    ephemeral=False.
+
+    `tmp_dir`, for a workspace-write run, is a writable root that stands in
+    for /tmp and $TMPDIR (temp_flags); a read-only run writes nowhere and
+    ignores it."""
     if sandbox not in SANDBOXES:
         raise ValueError(f"sandbox must be one of {SANDBOXES}")
+    add_dirs = [Path(d) for d in add_dirs]
+    tmp_dir = Path(tmp_dir) if tmp_dir and sandbox == "workspace-write" else None
+    if tmp_dir is not None and tmp_dir not in add_dirs:
+        add_dirs.append(tmp_dir)
     if resume:
         cmd = [binary() or CODEX_BIN, "exec", "resume", str(resume), "--skip-git-repo-check", "--json",
                "-c", f'sandbox_mode="{sandbox}"']
@@ -73,6 +107,8 @@ def build(*, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
                "--json", "--sandbox", sandbox, "-C", str(cwd)]
         for d in add_dirs:
             cmd += ["--add-dir", str(d)]
+    if tmp_dir is not None:
+        cmd += temp_flags(tmp_dir)
     if ephemeral:
         cmd.append("--ephemeral")
     if model:
@@ -188,7 +224,7 @@ def _run_streaming(cmd, prompt: str, *, timeout: int, cwd: str, env, on_event) -
 
 def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
         timeout: int = 600, env: dict | None = None, prefix=(), last_message_dir=None,
-        ephemeral: bool = True, resume: str = "", on_event=None) -> dict:
+        ephemeral: bool = True, resume: str = "", on_event=None, tmp_dir=None) -> dict:
     """One non-interactive run. Returns {"output", "tool_calls",
     "exit_code", "duration_s", "harness_error", "num_turns", "usage",
     "files", "stderr", "thread_id"}: `output` is the agent's final message
@@ -204,7 +240,9 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
     `last_message_dir` is where the `-o` file goes, a directory that user
     can write (the owner's temp dir is not). `on_event`, when given, gets
     each JSONL event as it arrives (the turn's progress line reads the
-    command items); without it the run is read whole at the end."""
+    command items); without it the run is read whole at the end.
+    `tmp_dir` is the run's temp dir in place of /tmp (build, temp_flags);
+    the caller makes it."""
     prefix = list(prefix or ())
     b = binary()
     if not b and not prefix:
@@ -221,7 +259,7 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
         else:
             last = Path(td_ctx.name) / "last-message.txt"
         cmd = build(cwd=cwd, model=model, sandbox=sandbox, add_dirs=add_dirs,
-                    last_message_file=last, ephemeral=ephemeral, resume=resume)
+                    last_message_file=last, ephemeral=ephemeral, resume=resume, tmp_dir=tmp_dir)
         if prefix:
             cmd = prefix + [CODEX_BIN] + cmd[1:]
         start = time.time()

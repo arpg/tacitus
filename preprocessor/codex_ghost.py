@@ -695,6 +695,32 @@ def remove_scratch(jid: str, runner=None) -> None:
         pass
 
 
+# The temp dir of every Codex run as the resident (a live chat turn, a
+# ghost replay, a live lane), in place of /tmp: the sandbox makes empty
+# guard folders (`.git` among them) in each folder it lets a run write and
+# can leave them behind (codex_cli.temp_flags), and in /tmp they sit above
+# every other user's temp files. Inside the state it is a root the mediator
+# accepts files from, as /tmp was. The system temp dir is emptied by the OS;
+# this one keeps an entry for TMP_KEEP_MIN minutes after its last change.
+CODEX_TMP = BOT_HOME / ".ea" / "state" / "codex-tmp"
+TMP_KEEP_MIN = 24 * 60
+
+
+def ensure_codex_tmp(runner=None) -> Path:
+    """Make CODEX_TMP as the resident, mode 750 like the rest of the state,
+    and remove the entries in it older than TMP_KEEP_MIN minutes; never
+    raises. Returns CODEX_TMP."""
+    run = runner or (lambda c, inp: subprocess.run(c, input=inp, capture_output=True, text=True, timeout=60))
+    for cmd in (_bot_env() + ["install", "-d", "-m", "750", str(CODEX_TMP)],
+                _bot_env() + ["find", str(CODEX_TMP), "-mindepth", "1", "-maxdepth", "1",
+                              "-mmin", f"+{TMP_KEEP_MIN}", "-exec", "rm", "-rf", "--", "{}", "+"]):
+        try:
+            run(cmd, None)
+        except Exception:
+            pass
+    return CODEX_TMP
+
+
 # ── prompts ───────────────────────────────────────────────────────────
 
 def _core() -> str:
@@ -941,7 +967,7 @@ def run_job(job: dict, *, codex_run=None, scratch_runner=None, keep: bool = Fals
                                "EA_GRAPH_LANE": "background"})
             res = (codex_run or codex_cli.run)(
                 prompt, cwd=scratch, sandbox="workspace-write",
-                add_dirs=[BOT_HOME / ".ea" / "state" / "mail-queue"],
+                add_dirs=[BOT_HOME / ".ea" / "state" / "mail-queue"], tmp_dir=ensure_codex_tmp(),
                 timeout=RUN_TIMEOUT_S.get(kind, 600), prefix=prefix, last_message_dir=scratch)
             rec["staged"] = _staged_in(scratch)
         rec["codex"] = {"output": (res.get("output") or "")[:12000],
@@ -1009,7 +1035,7 @@ def run_lane_live(prompt: str, *, agent: str, run_id: str, codex_run=None) -> di
                        "EA_GRAPH_LANE": "background"})
     return (codex_run or codex_cli.run)(
         full, cwd=BOT_HOME, sandbox="workspace-write",
-        add_dirs=[real / "state", real / "docs"], timeout=RUN_TIMEOUT_S["briefing"],
+        add_dirs=[real / "state", real / "docs"], tmp_dir=ensure_codex_tmp(), timeout=RUN_TIMEOUT_S["briefing"],
         prefix=prefix, last_message_dir=BOT_HOME / ".local" / "state" / "ea-lanes")
 
 

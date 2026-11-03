@@ -60,6 +60,52 @@ def test_build_puts_the_prompt_on_stdin_and_names_the_sandbox(tmp_path):
         X.build(cwd=tmp_path, sandbox="danger-full-access")
 
 
+def _config(cmd: list[str]) -> list[str]:
+    return [cmd[i + 1] for i, a in enumerate(cmd) if a == "-c"]
+
+
+def test_a_run_given_a_temp_dir_writes_no_shared_one(tmp_path):
+    """The sandbox makes empty guard folders (`.git` among them) in each
+    folder a run may write and can leave them behind; in /tmp an empty
+    `.git` makes every user's run below it a project's. A run given its
+    own temp dir writes neither /tmp nor $TMPDIR, writes that dir, and its
+    commands get it as TMPDIR, TMP and TEMP."""
+    own = tmp_path / "own tmp"
+    cmd = X.build(cwd=tmp_path, sandbox="workspace-write", add_dirs=[tmp_path / "s"], tmp_dir=own)
+    roots = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--add-dir"]
+    assert roots == [str(tmp_path / "s"), str(own)]
+    conf = _config(cmd)
+    assert "sandbox_workspace_write.exclude_slash_tmp=true" in conf
+    assert "sandbox_workspace_write.exclude_tmpdir_env_var=true" in conf
+    for var in ("TMPDIR", "TMP", "TEMP"):
+        assert f"shell_environment_policy.set.{var}={json.dumps(str(own))}" in conf
+    assert cmd.index("--sandbox") < cmd.index("-c") and cmd[-1] == "-"
+    again = X.build(cwd=tmp_path, sandbox="workspace-write", add_dirs=[own], tmp_dir=own)
+    assert [a for a in again if a == "--add-dir"] == ["--add-dir"], "named once"
+    resumed = X.build(cwd=tmp_path, sandbox="workspace-write", add_dirs=[tmp_path / "s"], tmp_dir=own,
+                      resume="t1")
+    conf = _config(resumed)
+    assert any(c.startswith("sandbox_workspace_write.writable_roots=[") and json.dumps(str(own)) in c for c in conf)
+    assert "sandbox_workspace_write.exclude_slash_tmp=true" in conf
+    for plain in (X.build(cwd=tmp_path, sandbox="workspace-write", add_dirs=[tmp_path / "s"]),
+                  X.build(cwd=tmp_path, sandbox="read-only", tmp_dir=own)):
+        assert not [c for c in _config(plain) if "tmp" in c.lower()], "no temp dir named, the defaults stand"
+        assert str(own) not in plain, "a read-only run writes nowhere"
+
+
+def test_run_passes_the_temp_dir_to_the_command(tmp_path, monkeypatch):
+    args = tmp_path / "args"
+    script = ('for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; '
+              f'printf "%s\\n" "$a" >> "{args}"; done\n'
+              'cat > /dev/null\nprintf "ok" > "$out"\n')
+    monkeypatch.setattr(X, "CODEX_BIN", str(_fake_codex(tmp_path, script)))
+    res = X.run("hello", cwd=tmp_path, sandbox="workspace-write", tmp_dir=tmp_path / "t", timeout=30)
+    assert res["output"] == "ok", res
+    seen = args.read_text().splitlines()
+    assert seen[seen.index("--add-dir") + 1] == str(tmp_path / "t")
+    assert "sandbox_workspace_write.exclude_slash_tmp=true" in seen
+
+
 def test_parse_events_reads_messages_commands_files_and_drops_the_config_notice():
     p = X.parse_events(EVENTS)
     assert p["messages"] == ["Running it.", ":sunny: *Morning Briefing*"]
@@ -167,7 +213,7 @@ def test_run_hands_back_the_thread_id_and_passes_resume_through(tmp_path, monkey
     assert seen["cwd"] == str(tmp_path), "the resumed thread's root is the process cwd"
 
 
-def test_the_provider_switches_harness_and_refuses_an_unknown_one(tmp_path, monkeypatch):
+def test_the_provider_switches_harness_and_refuses_an_unknown_one(tmp_path, monkeypatch, walks_stop_at_tmp_path):
     import provider
     monkeypatch.setenv("EA_EVAL_SCRATCH", str(tmp_path / "scratch"))
     monkeypatch.setattr(provider, "_ancestors_owner_only", lambda d: "")
@@ -217,6 +263,8 @@ def test_the_codex_prompt_carries_the_core_and_the_shared_framing(tmp_path, monk
     assert captured["kw"]["sandbox"] == "workspace-write"
     assert captured["kw"]["cwd"] == str(tmp_path)
     assert captured["kw"]["env"]["EA_DIR"] == str(tmp_path)
+    assert captured["kw"]["tmp_dir"] == tmp_path / "tmp" and (tmp_path / "tmp").is_dir(), \
+        "the run's temp dir is its own, never /tmp"
 
 
 def test_run_streams_each_event_when_asked_and_reads_the_same_result(tmp_path, monkeypatch):

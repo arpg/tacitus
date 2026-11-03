@@ -20,6 +20,8 @@ _REAL_RESIDENT_TEXT = ct._resident_text
 _REAL_CONTEXT_FILES = ct.context_files
 _REAL_LIVE_WRITE_PATHS = ct.live_write_paths
 _REAL_APPLY_STAGED = ct._apply_staged
+# Taken before conftest's stand-in replaces it for every test.
+_REAL_ENSURE_CODEX_TMP = cg.ensure_codex_tmp
 
 
 @pytest.fixture
@@ -93,6 +95,7 @@ def test_a_live_turn_runs_on_the_real_ea_dir_with_writes_confined_and_keeps_its_
     assert "You are Codex, not Claude" in call["prompt"] and "waits for the user's button" in call["prompt"]
     assert call["cwd"] == ct.LIVE_CWD and call["sandbox"] == "workspace-write" and call["ephemeral"] is False
     assert call["resume"] == "" and call["add_dirs"] == FAKE_WRITES
+    assert call["tmp_dir"] == cg.CODEX_TMP, "its temp dir is the resident's own, never /tmp"
     env = {p.split("=", 1)[0]: p.split("=", 1)[1] for p in call["prefix"][5:]}
     assert env["EA_RUN_ID"] == "run-abc" and env["EA_DIR"] == str(ct.REAL_EA_DIR)
     assert rec["output"] == "Done." and rec["mode"] == "live" and rec["thread_id"] == "th-1" and rec["staged"] == {}
@@ -149,7 +152,8 @@ def test_a_ghost_turn_runs_in_a_scratch_root_with_the_prompt_paths_rewritten(pri
     root = root_holder["root"]
     assert real not in call["prompt"].split("# You are Codex")[0], "the real EA_DIR never appears in a ghost's task"
     assert str(root) in call["prompt"] and call["cwd"] == root
-    assert call["add_dirs"] == [ct.REAL_EA_DIR / "state" / "mail-queue"], "the mediator's queue is the one real writable path"
+    assert call["add_dirs"] == [ct.REAL_EA_DIR / "state" / "mail-queue"] and call["tmp_dir"] == cg.CODEX_TMP, \
+        "the real writable paths are the mediator's queue and the resident's temp dir, never /tmp"
     env = {p.split("=", 1)[0]: p.split("=", 1)[1] for p in call["prefix"][5:]}
     assert env["EA_DIR"] == str(root) and env["EA_RUN_ID"] == rid and cg.is_ghost_run(env["EA_RUN_ID"])
     assert rec["mode"] == "ghost" and rec["staged"]["pending-event.json"]["subject"] == "Sync"
@@ -453,6 +457,49 @@ def test_the_live_directory_is_made_as_the_resident_inside_the_state():
     assert tail[:5] == ["install", "-d", "-m", "750", str(ct.LIVE_CWD)]
     assert tail[5:] == [str(d) for d in ct.home_roots()], "the home roots, made with it"
     assert ct.LIVE_CWD.parent == ct.REAL_EA_DIR / "state"
+
+
+def test_each_turn_gets_the_residents_temp_dir_made_before_codex_starts(private, tmp_path, monkeypatch):
+    """Live or ghost, a turn's temp dir is the resident's own folder in the
+    state, made through the turn's scratch runner before Codex starts."""
+    events = []
+    monkeypatch.setattr(cg, "ensure_codex_tmp", lambda runner=None: events.append(("made", runner)) or cg.CODEX_TMP)
+    monkeypatch.setattr(cg, "prepare_scratch", lambda jid, runner=None, **kw: tmp_path / "scratch" / jid / "ea")
+    run = _codex([{"output": "a", "thread_id": "x"}, {"output": "b", "thread_id": "y"}])
+
+    def tracked(prompt, **kw):
+        events.append(("codex", kw["tmp_dir"]))
+        return run(prompt, **kw)
+    ct.run_turn("P", thread_key="t-tmp", run_id="r", live=True, codex_run=tracked, scratch_runner=_scratch)
+    ct.run_turn("P", thread_key="t-tmp-g", run_id="r", live=False, codex_run=tracked, scratch_runner=_scratch)
+    assert events == [("made", _scratch), ("codex", cg.CODEX_TMP)] * 2
+
+
+def test_the_temp_dir_is_made_as_the_resident_and_keeps_a_day(tmp_path, monkeypatch):
+    """Made as the resident beside the live working directory, mode 750
+    like the rest of the state; an entry older than a day is removed, as
+    the OS empties the system temp dir."""
+    cmds = []
+    assert _REAL_ENSURE_CODEX_TMP(runner=lambda c, inp: cmds.append(c)) == cg.CODEX_TMP
+    assert cg.CODEX_TMP.parent == ct.LIVE_CWD.parent == ct.REAL_EA_DIR / "state"
+    assert len(cmds) == 2 and all(c[:4] == ["sudo", "-n", "-u", cg.RESIDENT] for c in cmds)
+    make, prune = ([a for a in c[c.index("env") + 1:] if "=" not in a] for c in cmds)
+    assert make == ["install", "-d", "-m", "750", str(cg.CODEX_TMP)]
+    assert prune[:2] == ["find", str(cg.CODEX_TMP)] and prune[-6:] == ["-exec", "rm", "-rf", "--", "{}", "+"]
+    # The prune itself, on a folder of the test's: the old entry goes, the
+    # fresh one and the folder stay.
+    import subprocess
+    d = tmp_path / "codex-tmp"
+    (d / "old").mkdir(parents=True)
+    (d / "old" / "f").write_text("x")
+    (d / "new").write_text("y")
+    week_ago = os.path.getmtime(d / "old") - 7 * 24 * 3600
+    os.utime(d / "old", (week_ago, week_ago))
+    monkeypatch.setattr(cg, "CODEX_TMP", d)
+    monkeypatch.setattr(cg, "_bot_env", lambda extra=None: ["env"])
+    _REAL_ENSURE_CODEX_TMP(runner=lambda c, inp: subprocess.run(c, input=inp, capture_output=True, text=True,
+                                                                timeout=30))
+    assert sorted(x.name for x in d.iterdir()) == ["new"]
 
 
 def test_a_live_chat_turn_may_ask_in_its_reply_and_writes_where_the_rules_say():

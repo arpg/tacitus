@@ -320,6 +320,7 @@ def test_a_briefing_replay_runs_as_the_resident_with_writes_confined(private, mo
     assert rec["status"] == "ok" and rec["codex"]["output"].endswith("Codex says.")
     assert rec["writes"] and rec["writes"][0]["verb"] == "create-reply"
     assert seen["sandbox"] == "workspace-write" and seen["add_dirs"] == [cg.BOT_HOME / ".ea" / "state" / "mail-queue"]
+    assert seen["tmp_dir"] == cg.CODEX_TMP, "its temp dir is the resident's own, never /tmp"
     prefix = seen["prefix"]
     assert prefix[2:4] == ["-u", cg.RESIDENT] and prefix[4] == "env"
     env = {p.split("=", 1)[0]: p.split("=", 1)[1] for p in prefix[5:]}
@@ -328,6 +329,18 @@ def test_a_briefing_replay_runs_as_the_resident_with_writes_confined(private, mo
     assert "# Operating instructions (CLAUDE.md)" in seen["prompt"] and "You are running as the EA agent" in seen["prompt"]
     assert "You are Codex, not Claude" in seen["prompt"] and "recorded by the mediator" in seen["prompt"]
     assert _rows(cg.TURNS)[-1]["id"] == "briefing-1"
+
+
+def test_a_live_lane_writes_its_state_its_docs_and_its_own_temp_dir():
+    seen = {}
+
+    def codex_run(prompt, **kw):
+        seen.update(kw)
+        return {"output": "ok"}
+    cg.run_lane_live("THE LANE", agent="morning-briefing", run_id="cron-x", codex_run=codex_run)
+    real = cg.BOT_HOME / ".ea"
+    assert seen["sandbox"] == "workspace-write" and seen["add_dirs"] == [real / "state", real / "docs"]
+    assert seen["tmp_dir"] == cg.CODEX_TMP, "its temp dir is the resident's own, never /tmp"
 
 
 def test_a_chat_replay_carries_the_context_and_a_harness_error_is_an_error_row(private, monkeypatch):
