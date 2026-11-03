@@ -55,11 +55,17 @@ def test_review_only_denies_every_drafting_verb_in_every_launcher():
     frag = ROOT / "scripts" / "disallowed-tools.review-only.txt"
     entries = [ln.strip() for ln in frag.read_text().splitlines()
                if ln.strip() and not ln.startswith("#")]
-    blob = "\n".join(entries)
-    for verb in ("graph_actions.py create-draft", "graph_actions.py create-reply",
-                 "graph_actions.py update-draft", "gmail_client.py create-draft",
-                 "gmail_client.py update-draft"):
-        assert verb in blob, verb
+    # Every mail verb that writes a draft body, from the classification
+    # test_send_content_binding keeps: those that make a new draft id, and
+    # create-reply and update-draft. A new one fails here until it is denied.
+    sys.path.insert(0, str(ROOT / "tests"))
+    from test_send_content_binding import NOT_DRAFT_CHANGING, MM
+    for tool, why in NOT_DRAFT_CHANGING.items():
+        verbs = {v for v, r in why.items() if r.startswith("makes a new draft id")}
+        verbs |= {"create-reply", "update-draft"} & set(MM.DRAFT_EDIT_VERBS.get(tool, {}))
+        for verb in sorted(verbs):
+            for form in (f"Bash(python3 *{tool}.py {verb} *)", f"Bash(*{tool}.py {verb} *)"):
+                assert form in entries, form
     assert "mcp__claude_ai_Gmail__create_draft" in entries
     for launcher in ("run-agent.sh", "run-plugin.sh", "scripts/ea-bot-shell.sh",
                      "scripts/ea-resident-inner.sh"):

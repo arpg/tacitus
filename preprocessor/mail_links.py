@@ -213,3 +213,114 @@ def remote_resource_warning(urls: list[str]) -> str:
     return (f":warning: *Remote content:* this draft loads {n} resource"
             f"{'s' if n != 1 else ''} from outside the message when it is opened, "
             f"which the text below does not show: {shown}{more}.")
+
+
+_WD3 = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+_MO3 = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+        "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+_WD_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+            "Saturday", "Sunday"]
+# "Thursday Aug 21", "Fri, August 21", "Wed Sept 3." — a weekday word
+# followed by a month and day. First three letters key both maps, and
+# every weekday and month is unique in its first three, so the loose
+# tail (day/-day/abbrev with optional period) all collapse cleanly.
+_WEEKDAY_DATE_RE = None
+
+
+def weekday_date_mismatches(text: str, today=None) -> list:
+    """Weekday+date pairs whose stated weekday contradicts the calendar.
+
+    A drafted "Thursday Aug 21" when the 21st is a Friday is exactly the
+    kind of hand-computed weekday an LLM gets wrong, and it shipped to a
+    real recipient. This resolves the date to the year that puts it
+    nearest the send date (scheduling is near-future), so it needs no
+    year in the text, and reports the mismatch for preflight to block.
+    Pure: no I/O, unit-testable.
+    """
+    import datetime as _dt
+    global _WEEKDAY_DATE_RE
+    if _WEEKDAY_DATE_RE is None:
+        _WEEKDAY_DATE_RE = re.compile(
+            r"\b(mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat|sun)[a-z]*\.?,?\s+"
+            r"(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+"
+            r"(\d{1,2})\b", re.IGNORECASE)
+    today = today or _dt.date.today()
+    out = []
+    for wd, mon, day in _WEEKDAY_DATE_RE.findall(text):
+        stated = _WD3.get(wd.lower()[:3])
+        month = _MO3.get(mon.lower()[:3])
+        day = int(day)
+        if stated is None or month is None or not (1 <= day <= 31):
+            continue
+        # Resolve to the nearest occurrence across last/this/next year.
+        best = None
+        for yr in (today.year - 1, today.year, today.year + 1):
+            try:
+                cand = _dt.date(yr, month, day)
+            except ValueError:
+                continue
+            if best is None or abs((cand - today).days) < abs((best - today).days):
+                best = cand
+        if best is None or abs((best - today).days) > 400:
+            continue  # far-off or impossible date: not a real appointment
+        if best.weekday() != stated:
+            out.append({
+                "stated": _WD_FULL[stated],
+                "actual": _WD_FULL[best.weekday()],
+                "date": best.strftime("%b %-d %Y"),
+            })
+    return out
+
+
+def _video_platform() -> str:
+    """The institution's video platform from the profile, '' when unknown."""
+    try:
+        try:
+            import institution
+        except ImportError:
+            from preprocessor import institution
+        return institution.video()["platform"]
+    except Exception:
+        return ""
+
+
+def new_text_errors(new_body: str, is_html: bool) -> list[str]:
+    """The hard blocks on a draft's NEW text (above any quoted thread):
+    a Teams link when the institution uses another platform, an em-dash,
+    en-dash or spaced double hyphen, and a weekday that is not the date's.
+    `new_body` is HTML when `is_html` (the Teams check reads its links)."""
+    errors = []
+    # With no platform configured the check is skipped: nothing says
+    # Teams is wrong for this install.
+    platform = _video_platform()
+    if "teams.microsoft.com" in new_body and platform and "teams" not in platform.lower():
+        errors.append(
+            "Body contains a Microsoft Teams link. The user's institution "
+            f"uses {platform}, not Teams. Use "
+            "--online with create-event to add the user's own link."
+        )
+    text = re.sub(r"<[^>]+>", " ", new_body) if is_html else new_body
+    # User preference: never use em-dashes in drafted content. Covers U+2014
+    # and U+2013 (en-dash).
+    if "\u2014" in text or "\u2013" in text:
+        errors.append(
+            "Draft contains an em-dash (\u2014) or en-dash (\u2013). User preference: "
+            "never use em-dashes in drafted content. Replace with a comma, "
+            "period, or rephrase."
+        )
+    # The ASCII double-hyphen used as a dash. A range like "9-5" or a flag
+    # "--online" is a single hyphen or unspaced, so key on " -- ".
+    if " -- " in text:
+        errors.append(
+            "Draft contains ' -- ' (ASCII double-hyphen used as a dash). "
+            "User preference: never use dashes in drafted content. Rephrase "
+            "with a comma, colon, semicolon, or parentheses."
+        )
+    # Hand-computed weekdays are an LLM failure mode and one shipped to a
+    # recipient, so this blocks the send.
+    for mm in weekday_date_mismatches(text):
+        errors.append(
+            f"Draft says '{mm['stated']} {mm['date']}' but {mm['date']} "
+            f"is a {mm['actual']}. Fix the weekday or the date before sending."
+        )
+    return errors

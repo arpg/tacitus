@@ -22,6 +22,10 @@ Step 2 has the draft writes:
     python3 mail_actions.py update-draft --provider gmail --draft-id <id> --body-file <f> [--reply-to-message-id <id>] [--no-quote]
     python3 mail_actions.py delete-draft --provider outlook|gmail --draft-id <id>
 
+Step 3:
+    python3 mail_actions.py create-forward --provider outlook|gmail --message-id <id> --to <a,b> --body-file <f> [--cc <a>] [--ledger-id <id>]...
+    python3 mail_actions.py preflight-check --provider outlook|gmail --draft-id <id>
+
 Each write runs the provider CLI's own verb in this process (DELEGATE):
 its journaling (draft_events) and its checks are the provider verb's
 own; an Outlook verb runs through graph_actions.run_verb, so a throttled
@@ -101,6 +105,10 @@ DELEGATE = {
                      "gmail": ("gmail_client", "update-draft")},
     "delete-draft": {"outlook": ("graph_actions", "delete-draft"),
                      "gmail": ("gmail_client", "delete-draft")},
+    "create-forward": {"outlook": ("graph_actions", "create-forward"),
+                       "gmail": ("gmail_client", "create-forward")},
+    "preflight-check": {"outlook": ("graph_actions", "preflight-check"),
+                        "gmail": ("gmail_client", "preflight-check")},
 }
 
 
@@ -163,7 +171,7 @@ def _provider_argv(args, acct: str | None) -> tuple[list[str], str]:
         if value:
             argv.extend([flag, value])
 
-    if verb != "delete-draft":
+    if verb not in ("delete-draft", "preflight-check"):
         # graph_actions reads --body-file over --body, which it requires.
         argv += (["--body", "-", "--body-file", args.body_file] if outlook
                  else ["--body-file", args.body_file])
@@ -216,22 +224,30 @@ def _provider_argv(args, acct: str | None) -> tuple[list[str], str]:
             opt("--reply-to-message-id", args.reply_to_message_id)
             if args.no_quote:
                 argv.append("--no-quote")
-    else:
+    elif verb == "create-forward":
+        if outlook and args.bcc:
+            return [], "Outlook drafts take no --bcc"
+        argv += ["--message-id", args.message_id, "--to", args.to]
+        opt("--cc", args.cc)
+        if not outlook:
+            opt("--bcc", args.bcc)
+    else:  # delete-draft, preflight-check
         argv += ["--message-id" if outlook else "--draft-id", args.draft_id]
-    if outlook and verb != "delete-draft" and args.content_type:
+    if outlook and getattr(args, "content_type", None):
         argv += ["--content-type", args.content_type]
     return argv, ""
 
 
-def cmd_draft_write(args) -> int:
-    """create-draft, create-reply, update-draft, delete-draft."""
+def cmd_delegated(args) -> int:
+    """Every verb in DELEGATE: run the provider verb, then add the unified
+    fields to what it prints."""
     import mail_client
     acct = None
     if args.provider == "gmail":
         acct = mail_client._resolve_gmail_account(args.account)
         if not acct:
             return _fail("No Gmail account configured")
-    if args.command != "delete-draft":
+    if getattr(args, "body_file", None) is not None:
         try:
             body = Path(args.body_file).read_text(encoding="utf-8")
         except OSError as e:
@@ -358,7 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
                                "Never to answer a conversation: that is create-reply.")
     p_cdraft.add_argument("--ledger-id", action="append", default=[], dest="ledger_id",
                           help="A ledger row this draft delivers (repeat for more)")
-    p_cdraft.set_defaults(func=cmd_draft_write)
+    p_cdraft.set_defaults(func=cmd_delegated)
 
     p_crep = sub.add_parser("create-reply", allow_abbrev=False,
                             help="Create a threaded reply draft (reply-all unless --sender-only)")
@@ -382,7 +398,7 @@ def build_parser() -> argparse.ArgumentParser:
                         dest="content_type", help="Outlook only")
     p_crep.add_argument("--ledger-id", action="append", default=[], dest="ledger_id",
                         help="A ledger row this draft delivers (repeat for more)")
-    p_crep.set_defaults(func=cmd_draft_write)
+    p_crep.set_defaults(func=cmd_delegated)
 
     p_udraft = sub.add_parser("update-draft", allow_abbrev=False,
                               help="Replace a draft's body in place (recipients kept unless given)")
@@ -401,13 +417,36 @@ def build_parser() -> argparse.ArgumentParser:
                           dest="content_type", help="Outlook only")
     p_udraft.add_argument("--ledger-id", action="append", default=[], dest="ledger_id",
                           help="A ledger row this draft delivers (repeat for more)")
-    p_udraft.set_defaults(func=cmd_draft_write)
+    p_udraft.set_defaults(func=cmd_delegated)
 
     p_ddraft = sub.add_parser("delete-draft", allow_abbrev=False, help="Delete a draft")
     p_ddraft.add_argument("--provider", required=True, choices=PROVIDERS)
     p_ddraft.add_argument("--account", default=None, help=acct_help)
     p_ddraft.add_argument("--draft-id", required=True, dest="draft_id")
-    p_ddraft.set_defaults(func=cmd_draft_write)
+    p_ddraft.set_defaults(func=cmd_delegated)
+
+    p_cfwd = sub.add_parser("create-forward", allow_abbrev=False,
+                            help="Forward a message's whole thread, with a note above it")
+    p_cfwd.add_argument("--provider", required=True, choices=PROVIDERS)
+    p_cfwd.add_argument("--account", default=None, help=acct_help)
+    p_cfwd.add_argument("--message-id", required=True, dest="message_id")
+    p_cfwd.add_argument("--to", required=True, help="Comma-separated addresses")
+    p_cfwd.add_argument("--body-file", required=True, dest="body_file",
+                        help="The note above the forwarded thread")
+    p_cfwd.add_argument("--cc", default=None)
+    p_cfwd.add_argument("--bcc", default=None, help="Gmail only")
+    p_cfwd.add_argument("--content-type", default=None, choices=["Text", "HTML"],
+                        dest="content_type", help="Outlook only")
+    p_cfwd.add_argument("--ledger-id", action="append", default=[], dest="ledger_id",
+                        help="A ledger row this draft delivers (repeat for more)")
+    p_cfwd.set_defaults(func=cmd_delegated)
+
+    p_pf = sub.add_parser("preflight-check", allow_abbrev=False,
+                          help="Pre-send review of a draft: errors block the send")
+    p_pf.add_argument("--provider", required=True, choices=PROVIDERS)
+    p_pf.add_argument("--account", default=None, help=acct_help)
+    p_pf.add_argument("--draft-id", required=True, dest="draft_id")
+    p_pf.set_defaults(func=cmd_delegated)
     return parser
 
 

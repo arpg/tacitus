@@ -20,6 +20,12 @@ the draft id in your reply. Add `--ledger-id <row id>` (on `create-draft`
 or `update-draft`) when the draft delivers a ledger row, as on Outlook:
 its Send closes the rows it names and the thread's reply row.
 
+A forward (`gmail_client.py create-forward --email <addr> --message-id
+<id> --to <addr> --body-file <f>`) carries the whole thread, newest
+first, without any unsent draft on it. It does not carry the thread's
+attachments: the result lists them in `attachments_not_carried`; add
+each one the user wants with `attach-file`.
+
 The Send card warns when a draft still has a redirect link (a
 `google.com/url?q=` or SafeLinks address). Such a link usually comes from
 text copied out of a calendar invite or a received email. Put the real

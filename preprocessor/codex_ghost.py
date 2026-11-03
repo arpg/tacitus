@@ -558,17 +558,21 @@ def _draft_answer(tool: str, verb: str, argv, gid: str) -> dict | None:
             return {"status": "reply_draft_created", "id": gid}
         if verb == "create-draft":
             return {"status": "draft_created", "id": gid}
+        if verb == "create-forward":
+            return {"status": "forward_draft_created", "id": gid}
         if verb == "update-draft":
             return {"status": "updated", "message_id": _opt(argv, "--message-id")}
         if verb == "delete-draft":
             return {"status": "deleted", "message_id": _opt(argv, "--message-id")}
     if tool == "mail_actions":
         base = {"provider": _opt(argv, "--provider"), "account": _opt(argv, "--account") or None}
-        if verb in ("create-draft", "create-reply"):
+        if verb in ("create-draft", "create-reply", "create-forward"):
             return {"status": "draft_created", "id": gid, **base}
         if verb in ("update-draft", "delete-draft"):
             return {"status": verb.split("-")[0] + "d", "id": _opt(argv, "--draft-id"), **base}
     if tool == "gmail_client":
+        if verb == "create-forward":
+            return {"draft_id": gid, "message_id": gid, "thread_id": "", "forwarded": 1}
         if verb == "create-draft":
             return {"draft_id": gid, "message_id": gid, "thread_id": _opt(argv, "--thread-id"),
                     "in_reply_to": _opt(argv, "--reply-to-message-id"), "quoted": False}
@@ -603,7 +607,7 @@ def ghost_answer(tool: str, verb: str, argv, run_id: str, *, body: str = "") -> 
                 "to": _opt(margv, "--to"), "cc": _opt(margv, "--cc"), "subject": _opt(margv, "--subject"),
                 "body": (made.get("body") or "")[:BODY_CAP],
                 "message": "a draft this run made; the mediator recorded it, so this is the recorded call"}
-    gid = _new_ghost_id(run_id, argv) if v in ("create-reply", "create-draft") else ""
+    gid = _new_ghost_id(run_id, argv) if v in ("create-reply", "create-draft", "create-forward") else ""
     answer = _draft_answer(tool, v, argv, gid)
     if answer is None:
         answer = {"status": "recorded", "message": f"ghost run: '{tool} {verb}' recorded, not executed"}

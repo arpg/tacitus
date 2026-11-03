@@ -177,7 +177,8 @@ def test_gmail_account_defaults_to_the_profile():
 def test_the_reads_are_mediated_and_nothing_else_is():
     assert MM.SAFE["mail_actions"] == {"search", "get-message", "get-draft", "mark-read",
                                        "mark-unread", "create-draft", "create-reply",
-                                       "update-draft", "delete-draft"}
+                                       "update-draft", "delete-draft", "create-forward",
+                                       "preflight-check"}
     assert "mail_actions" not in MM.GATED
     import mail_mediator
     assert mail_mediator.TOOLS["mail_actions"].name == "mail_actions.py"
@@ -395,6 +396,125 @@ def test_a_ghost_run_gets_a_draft_id_back():
     a = codex_ghost._draft_answer("mail_actions", "update-draft",
                                   ["update-draft", "--provider", "outlook", "--draft-id", "AAMk="], "")
     assert a == {"status": "updated", "id": "AAMk=", "provider": "outlook", "account": None}
+
+
+
+# ---- step 3: create-forward and preflight-check -------------------------
+
+def test_forward_and_preflight_run_the_provider_verbs():
+    f = _body()
+    _, out, runs = _write("create-forward", "--provider", "outlook", "--message-id", "AAMkOUT=",
+                          "--to", "a@example.edu", "--body-file", f, "--ledger-id", "row-1")
+    assert runs[0][1] == ["create-forward", "--body", "-", "--body-file", f,
+                          "--ledger-id", "row-1", "--message-id", "AAMkOUT=",
+                          "--to", "a@example.edu"]
+    _, _, runs = _write("create-forward", "--provider", "gmail", "--account", "me@example.com",
+                        "--message-id", "18abc", "--to", "a@example.com", "--body-file", f,
+                        "--bcc", "b@example.com")
+    assert runs[0][1] == ["create-forward", "--email", "me@example.com", "--body-file", f,
+                          "--message-id", "18abc", "--to", "a@example.com",
+                          "--bcc", "b@example.com"]
+    rc, out, runs = _write("create-forward", "--provider", "outlook", "--message-id", "AAMk=",
+                           "--to", "a@example.edu", "--body-file", f, "--bcc", "b@example.edu")
+    assert rc == 2 and runs == []
+    _, out, runs = _write("preflight-check", "--provider", "outlook", "--draft-id", "AAMkOUT=")
+    assert runs[0][1] == ["preflight-check", "--message-id", "AAMkOUT="]
+    _, out, runs = _write("preflight-check", "--provider", "gmail", "--account", "me@example.com",
+                          "--draft-id", "r-1")
+    assert runs[0][1] == ["preflight-check", "--email", "me@example.com", "--draft-id", "r-1"]
+
+
+class _FakeGmailService:
+    def __init__(self):
+        self.created = []
+
+    def users(self):
+        return self
+
+    def drafts(self):
+        return self
+
+    def create(self, userId, body):
+        self.created.append(body)
+        return self
+
+    def execute(self):
+        return {"id": "r-new", "message": {"id": "m-new", "threadId": "t-new"}}
+
+
+def _gmail_lib(**patches):
+    """The real gmail_client with its network edges replaced (restored by
+    the caller)."""
+    import gmail_client
+    saved = {k: getattr(gmail_client, k) for k in patches}
+    for k, v in patches.items():
+        setattr(gmail_client, k, v)
+    return gmail_client, saved
+
+
+def test_the_gmail_forward_carries_the_whole_thread_newest_first():
+    import base64
+    from email import message_from_bytes
+    svc = _FakeGmailService()
+    thread = [{"id": "1", "from": "a@example.com", "to": "me@example.com", "cc": "",
+               "date": "Mon, 1 Oct 2026", "subject": "Plan", "body": "first message"},
+              {"id": "2", "from": "me@example.com", "to": "a@example.com", "cc": "c@example.com",
+               "date": "Tue, 2 Oct 2026", "subject": "Re: Plan", "body": "second message",
+               "attachments": [{"filename": "plan.pdf", "attachment_id": "att-1"}]},
+              # an unsent reply of the user's on the thread is not forwarded
+              {"id": "3", "from": "me@example.com", "to": "a@example.com", "cc": "",
+               "date": "Wed, 3 Oct 2026", "subject": "Re: Plan", "body": "unsent draft text",
+               "label_ids": ["DRAFT"]}]
+    gm, saved = _gmail_lib(
+        _get_service=lambda email, interactive=False: svc,
+        get_message=lambda email, mid: dict(thread[1], thread_id="t-1"),
+        get_thread=lambda email, tid: {"thread_id": tid, "messages": thread})
+    try:
+        out = gm.create_forward("me@example.com", "2", ["x@example.com"], "See below.\n")
+    finally:
+        for k, v in saved.items():
+            setattr(gm, k, v)
+    assert out["draft_id"] == "r-new" and out["forwarded"] == 2
+    assert out["attachments_not_carried"] == ["plan.pdf"]
+    msg = svc.created[0]["message"]
+    assert "threadId" not in msg   # a forward opens a new conversation
+    m = message_from_bytes(base64.urlsafe_b64decode(msg["raw"]))
+    text = m.get_payload(decode=True).decode()
+    assert m["Subject"] == "Fwd: Re: Plan" and m["To"] == "x@example.com"
+    assert text.startswith("See below.") and text.count(gm.FORWARD_MARKER) == 2
+    assert text.index("second message") < text.index("first message")
+    assert "Cc: c@example.com" in text and "In-Reply-To" not in m
+    assert "unsent draft text" not in text
+
+
+def test_the_gmail_preflight_checks_the_new_text_like_outlook():
+    def draft(body, subject="Re: Plan", to="a@example.com"):
+        return lambda email, did, with_fingerprint=False: {
+            "to": to, "cc": "", "subject": subject, "body": body, "attachments": []}
+    quote = "\n\nOn Mon, 1 Oct 2026 A <a@example.com> wrote:\n> the original\n"
+    gm, saved = _gmail_lib(get_draft=draft("Sounds good." + quote))
+    try:
+        r = gm.preflight_check("me@example.com", "r-1")
+        assert r["ok"] and r["draft_summary"]["has_quoted_thread"], r
+        gm.get_draft = draft("Sounds good \u2014 see you Thursday Oct 2." + quote)
+        r = gm.preflight_check("me@example.com", "r-1")
+        assert not r["ok"] and any("em-dash" in e for e in r["errors"])
+        assert any("Thursday" in e for e in r["errors"])   # Oct 2 2026 is a Friday
+        gm.get_draft = draft(quote.strip())
+        r = gm.preflight_check("me@example.com", "r-1")
+        assert any("only the quoted thread" in e for e in r["errors"])
+        gm.get_draft = draft("Hi.", subject="Re: Plan", to="")
+        r = gm.preflight_check("me@example.com", "r-1")
+        assert "No recipients (To field is empty)." in r["errors"]
+        assert any("no quoted original" in w for w in r["warnings"])
+        # the em-dash in the quoted, forwarded thread is someone else's text
+        gm.get_draft = draft("FYI.\n\n" + gm.FORWARD_MARKER + "\nFrom: a\n\nold \u2014 text",
+                             subject="Fwd: Plan")
+        r = gm.preflight_check("me@example.com", "r-1")
+        assert r["ok"], r
+    finally:
+        for k, v in saved.items():
+            setattr(gm, k, v)
 
 
 if __name__ == "__main__":

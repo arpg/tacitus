@@ -465,6 +465,99 @@ def create_draft(email: str, to: list[str], subject: str, body: str,
     }
 
 
+FORWARD_MARKER = "---------- Forwarded message ---------"
+
+
+def create_forward(email: str, message_id: str, to: list[str], body: str,
+                   cc: list[str] | None = None, bcc: list[str] | None = None) -> dict:
+    """A draft that forwards the whole thread `message_id` is in: `body`,
+    then each message of the thread, newest first, under Gmail's "Forwarded
+    message" header. Like Gmail's own forward it opens a new conversation
+    (no threadId or In-Reply-To).
+
+    A draft in the thread (an unsent reply) is not forwarded.
+
+    shortcut: the forwarded messages' attachments are not carried; the
+    result names them in "attachments_not_carried" so the caller adds them
+    with attach-file, until the forward copies them itself.
+
+    Returns {"draft_id", "message_id", "thread_id", "forwarded",
+    "attachments_not_carried"} or {"error": ...}."""
+    service = _get_service(email)
+    if not service:
+        return {"error": f"No Gmail credentials for {email}"}
+    if not to:
+        return {"error": "a forward needs --to"}
+    orig = get_message(email, message_id)
+    if "error" in orig:
+        return orig
+    thread = get_thread(email, orig.get("thread_id", "")) if orig.get("thread_id") else {}
+    messages = [m for m in (thread.get("messages") or [orig])
+                if "DRAFT" not in (m.get("label_ids") or [])] or [orig]
+    not_carried = [a.get("filename", "") for m in messages for a in (m.get("attachments") or [])
+                   if a.get("filename")]
+    blocks = []
+    for m in reversed(messages):
+        head = [FORWARD_MARKER, f"From: {m.get('from', '')}", f"Date: {m.get('date', '')}",
+                f"Subject: {m.get('subject', '')}", f"To: {m.get('to', '')}"]
+        if m.get("cc"):
+            head.append(f"Cc: {m['cc']}")
+        blocks.append("\n".join(head) + "\n\n" + (m.get("body") or "").strip())
+    subject = orig.get("subject", "") or ""
+    if not subject.lower().startswith(("fwd:", "fw:")):
+        subject = "Fwd: " + subject
+    text = body.rstrip() + "\n\n" + "\n\n".join(blocks) + "\n"
+    raw = _build_raw(email, to, subject, text, cc, bcc)
+    try:
+        draft = service.users().drafts().create(
+            userId="me", body={"message": {"raw": raw}}).execute()
+    except HttpError as e:
+        return {"error": f"Gmail API error: {e}"}
+    created = draft.get("message", {})
+    return {"draft_id": draft.get("id", ""), "message_id": created.get("id", ""),
+            "thread_id": created.get("threadId", ""), "forwarded": len(messages),
+            "attachments_not_carried": not_carried}
+
+
+def preflight_check(email: str, draft_id: str) -> dict:
+    """Pre-send review of a Gmail draft, in graph_client.preflight_check's
+    shape: {"ok", "errors" (hard blocks), "warnings", "draft_summary"}.
+    The checks on the new text are the Outlook ones (mail_links); the new
+    text ends where the quoted reply history or the forwarded thread starts."""
+    d = get_draft(email, draft_id)
+    if "error" in d:
+        return {"ok": False, "errors": [d["error"]], "warnings": [], "draft_summary": {}}
+    body = d.get("body") or ""
+    cut = min(_mail_links.quote_start(body),
+              body.find(FORWARD_MARKER) if FORWARD_MARKER in body else len(body))
+    new_text = body[:cut].strip()
+    has_quoted = cut < len(body)
+    subject = d.get("subject", "")
+    subject = "" if subject == "(no subject)" else subject
+    to_list = _addresses(d.get("to", ""))
+    is_reply = subject.lower().startswith(("re:", "fwd:", "fw:"))
+    errors = []
+    if not new_text:
+        errors.append("Reply body is empty: only the quoted thread is present. "
+                      "The actual reply text is missing." if is_reply and has_quoted
+                      else "Email body is completely empty.")
+    if not to_list:
+        errors.append("No recipients (To field is empty).")
+    errors += _mail_links.new_text_errors(new_text, False)
+    warnings = []
+    if is_reply and not has_quoted:
+        warnings.append("Reply has no quoted original thread. Recipient won't see "
+                        "conversation context. Was create-reply used (not create-draft)?")
+    if not subject.strip():
+        warnings.append("Subject line is empty.")
+    return {"ok": not errors, "errors": errors, "warnings": warnings,
+            "draft_summary": {"subject": subject, "to": to_list,
+                              "cc": _addresses(d.get("cc", "")),
+                              "body_preview": new_text[:500], "body_length": len(new_text),
+                              "is_reply": is_reply, "has_quoted_thread": has_quoted,
+                              "attachments": d.get("attachments", [])}}
+
+
 def list_drafts(email: str, max_results: int = 10, since_epoch: float = 0.0) -> dict:
     """The account's newest drafts: id, message id, thread id and the
     message's internal time. `since_epoch` keeps only drafts whose message
@@ -741,6 +834,8 @@ def get_thread(email: str, thread_id: str) -> dict:
             "cc": headers.get("cc", ""),
             "date": headers.get("date", ""),
             "body": _extract_body(payload),
+            "label_ids": msg.get("labelIds", []),
+            "attachments": [_attachment_meta(p) for p in _attachment_parts(payload)],
         })
     return {"thread_id": thread_id, "messages": messages}
 
@@ -1409,6 +1504,22 @@ def build_parser() -> argparse.ArgumentParser:
                              "rows; with none named, a send closes only a reply "
                              "row on its thread.")
 
+    cfwd = sub.add_parser("create-forward", allow_abbrev=False,
+                          help="Forward a message's whole thread, with a note above it")
+    cfwd.add_argument("--email", required=True)
+    cfwd.add_argument("--message-id", required=True, help="A message of the thread to forward")
+    cfwd.add_argument("--to", required=True, help="Comma-separated recipients")
+    cfwd.add_argument("--cc", default="")
+    cfwd.add_argument("--bcc", default="")
+    cfwd.add_argument("--body-file", required=True, help="The note above the forwarded thread")
+    cfwd.add_argument("--ledger-id", action="append", default=[],
+                      help="A ledger row this draft delivers (repeat for more)")
+
+    pf = sub.add_parser("preflight-check", allow_abbrev=False,
+                        help="Pre-send review of a draft (errors block the send)")
+    pf.add_argument("--email", required=True)
+    pf.add_argument("--draft-id", required=True)
+
     ldrafts = sub.add_parser("list-drafts",
                              help="Newest drafts (ids, times); a read",
                              allow_abbrev=False)
@@ -1606,6 +1717,25 @@ def main():
                               reply_to_message_id=args.reply_to_message_id,
                               thread_id=args.thread_id, quote=not args.no_quote)
         _journal("created", result, "create-draft", args.email, args.ledger_id)
+        print(json.dumps(result, indent=2))
+
+    elif args.command == "create-forward":
+        with open(args.body_file, "r", encoding="utf-8") as f:
+            body = f.read()
+        if not body.strip():
+            print(json.dumps({"error": "the body is empty: write the text to --body-file"}))
+            sys.exit(2)
+        to = [a.strip() for a in args.to.split(",") if a.strip()]
+        cc = [a.strip() for a in args.cc.split(",") if a.strip()] if args.cc else None
+        bcc = [a.strip() for a in args.bcc.split(",") if a.strip()] if args.bcc else None
+        result = create_forward(args.email, args.message_id, to, body, cc=cc, bcc=bcc)
+        _journal("created", result, "create-forward", args.email, args.ledger_id)
+        print(json.dumps(result, indent=2))
+        if "error" in result:
+            sys.exit(1)
+
+    elif args.command == "preflight-check":
+        result = preflight_check(args.email, args.draft_id)
         print(json.dumps(result, indent=2))
 
     elif args.command == "list-drafts":

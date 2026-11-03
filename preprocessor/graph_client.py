@@ -24,6 +24,11 @@ import msal
 import requests
 
 try:
+    import mail_links as _mail_links
+except ModuleNotFoundError:  # imported as preprocessor.graph_client
+    from preprocessor import mail_links as _mail_links
+
+try:
     import owner_trust as _owner_trust
     import published_apps as _published
 except ModuleNotFoundError:  # imported as preprocessor.graph_client
@@ -2506,73 +2511,34 @@ def delete_draft(message_id: str) -> None:
     resp.raise_for_status()
 
 
-_WD3 = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
-_MO3 = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
-        "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
-_WD_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
-            "Saturday", "Sunday"]
-# "Thursday Aug 21", "Fri, August 21", "Wed Sept 3." — a weekday word
-# followed by a month and day. First three letters key both maps, and
-# every weekday and month is unique in its first three, so the loose
-# tail (day/-day/abbrev with optional period) all collapse cleanly.
-_WEEKDAY_DATE_RE = None
+# The checks on a draft's new text are shared with the Gmail preflight.
+weekday_date_mismatches = _mail_links.weekday_date_mismatches
 
 
-def weekday_date_mismatches(text: str, today=None) -> list:
-    """Weekday+date pairs whose stated weekday contradicts the calendar.
-
-    A drafted "Thursday Aug 21" when the 21st is a Friday is exactly the
-    kind of hand-computed weekday an LLM gets wrong, and it shipped to a
-    real recipient. This resolves the date to the year that puts it
-    nearest the send date (scheduling is near-future), so it needs no
-    year in the text, and reports the mismatch for preflight to block.
-    Pure: no I/O, unit-testable.
-    """
-    import datetime as _dt
-    global _WEEKDAY_DATE_RE
-    if _WEEKDAY_DATE_RE is None:
-        _WEEKDAY_DATE_RE = re.compile(
-            r"\b(mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat|sun)[a-z]*\.?,?\s+"
-            r"(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+"
-            r"(\d{1,2})\b", re.IGNORECASE)
-    today = today or _dt.date.today()
-    out = []
-    for wd, mon, day in _WEEKDAY_DATE_RE.findall(text):
-        stated = _WD3.get(wd.lower()[:3])
-        month = _MO3.get(mon.lower()[:3])
-        day = int(day)
-        if stated is None or month is None or not (1 <= day <= 31):
-            continue
-        # Resolve to the nearest occurrence across last/this/next year.
-        best = None
-        for yr in (today.year - 1, today.year, today.year + 1):
-            try:
-                cand = _dt.date(yr, month, day)
-            except ValueError:
-                continue
-            if best is None or abs((cand - today).days) < abs((best - today).days):
-                best = cand
-        if best is None or abs((best - today).days) > 400:
-            continue  # far-off or impossible date: not a real appointment
-        if best.weekday() != stated:
-            out.append({
-                "stated": _WD_FULL[stated],
-                "actual": _WD_FULL[best.weekday()],
-                "date": best.strftime("%b %-d %Y"),
-            })
-    return out
-
-
-def _video_platform() -> str:
-    """The institution's video platform from the profile, '' when unknown."""
-    try:
-        try:
-            import institution
-        except ImportError:
-            from preprocessor import institution
-        return institution.video()["platform"]
-    except Exception:
-        return ""
+def create_forward(message_id: str, to: list[str], comment: str,
+                   cc: Optional[list[str]] = None, content_type: str = "Text") -> dict:
+    """A forward draft through Graph's createForward. Its body already holds
+    the original message, which for a thread embeds the earlier history, so
+    the whole thread comes along. `comment` goes above it, as a reply's text
+    does, with the same fallback when Graph returns an empty or flattened
+    quote."""
+    fwd = graph_post(f"/me/messages/{_id(message_id)}/createForward", {}) or {}
+    if not fwd.get("id"):
+        return {"error": "createForward returned no draft id"}
+    quoted_html = fwd.get("body", {}).get("content", "")
+    if not quoted_html.strip() or _is_quoted_thread_flattened(quoted_html):
+        print("Warning: createForward returned an empty or flattened thread, "
+              "building it from the message", file=sys.stderr)
+        quoted_html = _build_quoted_thread_fallback(message_id)
+    if quoted_html.strip():
+        patch_body = {"body": {"contentType": "HTML",
+                               "content": _build_reply_html(comment, quoted_html, content_type)}}
+    else:
+        patch_body = {"body": {"contentType": content_type, "content": comment}}
+    patch_body["toRecipients"] = [{"emailAddress": {"address": a}} for a in to]
+    if cc:
+        patch_body["ccRecipients"] = [{"emailAddress": {"address": a}} for a in cc]
+    return graph_patch(f"/me/messages/{_id(fwd['id'])}", patch_body)
 
 
 def preflight_check(message_id: str) -> dict:
@@ -2643,46 +2609,9 @@ def preflight_check(message_id: str) -> dict:
             if idx > 0:
                 new_body_html = new_body_html[:idx]
                 break
-    # With no platform configured the check is skipped: nothing says
-    # Teams is wrong for this install.
-    platform = _video_platform()
-    if "teams.microsoft.com" in new_body_html and platform and "teams" not in platform.lower():
-        errors.append(
-            "Body contains a Microsoft Teams link. The user's institution "
-            f"uses {platform}, not Teams. Use "
-            "--online with create-event to add the user's own link."
-        )
-
-    # Em-dash in the NEW reply text (quoted thread is someone else's text,
-    # not ours to police). User preference: never use em-dashes in drafted
-    # content. Covers U+2014 (—) and U+2013 (–, en-dash).
-    if body_type.lower() == "html":
-        new_text_for_emdash = re.sub(r"<[^>]+>", " ", new_body_html)
-    else:
-        new_text_for_emdash = new_body_html
-    if "\u2014" in new_text_for_emdash or "\u2013" in new_text_for_emdash:
-        errors.append(
-            "Draft contains an em-dash (—) or en-dash (–). User preference: "
-            "never use em-dashes in drafted content. Replace with a comma, "
-            "period, or rephrase."
-        )
-    # The rule also covers the ASCII double-hyphen used as a dash. A range
-    # like "9-5" or a flag "--online" is a single hyphen, so key on " -- "
-    # with surrounding spaces to avoid false positives.
-    if " -- " in new_text_for_emdash:
-        errors.append(
-            "Draft contains ' -- ' (ASCII double-hyphen used as a dash). "
-            "User preference: never use dashes in drafted content. Rephrase "
-            "with a comma, colon, semicolon, or parentheses."
-        )
-    # Stated weekday contradicts the calendar date (e.g. Thursday Aug 21
-    # when the 21st is a Friday). Hand-computed weekdays are an LLM failure
-    # mode and one shipped to a recipient, so this blocks the send.
-    for _mm in weekday_date_mismatches(new_text_for_emdash):
-        errors.append(
-            f"Draft says '{_mm['stated']} {_mm['date']}' but {_mm['date']} "
-            f"is a {_mm['actual']}. Fix the weekday or the date before sending."
-        )
+    # The new text's own checks (Teams link, dashes, a weekday that is not
+    # the date's), shared with the Gmail preflight.
+    errors += _mail_links.new_text_errors(new_body_html, body_type.lower() == "html")
 
     # --- Warnings (review recommended) ---
 
