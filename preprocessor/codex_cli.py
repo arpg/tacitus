@@ -79,8 +79,7 @@ def temp_flags(tmp_dir) -> list[str]:
 
 def build(*, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
           last_message_file=None, ephemeral: bool = True, resume: str = "",
-          disable=(), codex_bin: str = "") -> list[str]:
-          tmp_dir=None) -> list[str]:
+          disable=(), codex_bin: str = "", tmp_dir=None) -> list[str]:
     """The command line for one run. The prompt goes on stdin (`-`), so
     no instruction text ever sits in a process listing. `disable` names
     Codex features to turn off for the run (`--disable`; hosted_text
@@ -234,7 +233,7 @@ def _run_streaming(cmd, prompt: str, *, timeout: int, cwd: str, env, on_event) -
 def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
         timeout: int = 600, env: dict | None = None, prefix=(), last_message_dir=None,
         ephemeral: bool = True, resume: str = "", on_event=None, disable=(),
-        codex_bin: str= "", tmp_dir=None) -> dict:
+        codex_bin: str = "", tmp_dir=None) -> dict:
     """One non-interactive run. Returns {"output", "tool_calls",
     "exit_code", "duration_s", "harness_error", "num_turns", "usage",
     "files", "stderr", "thread_id"}: `output` is the agent's final message
