@@ -309,20 +309,6 @@ def test_morning_briefing_noise_rules_left_the_skill():
     assert "## User rules" in s and "preferences.py add --kind avoid" in s
 
 
-if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    passed = failed = 0
-    for t in tests:
-        try:
-            t()
-            print(f"  ✅ {t.__name__}")
-            passed += 1
-        except Exception as e:
-            print(f"  ❌ {t.__name__}: {e}")
-            traceback.print_exc()
-            failed += 1
-    print(f"\n  {passed} passed, {failed} failed")
-    sys.exit(1 if failed else 0)
 
 
 def test_a_write_the_sandbox_refuses_is_staged_and_applied_with_the_users_words(tmp_path, monkeypatch):
@@ -412,3 +398,18 @@ def test_a_read_or_an_unknown_verb_never_stages(tmp_path, monkeypatch):
     res = prefs.apply_staged("x")
     assert [r["why"] for r in res["refused"]] == ["not a verb that stages"] * 2
 
+
+if __name__ == "__main__":
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    passed = failed = 0
+    for t in tests:
+        try:
+            t()
+            print(f"  ✅ {t.__name__}")
+            passed += 1
+        except Exception as e:
+            print(f"  ❌ {t.__name__}: {e}")
+            traceback.print_exc()
+            failed += 1
+    print(f"\n  {passed} passed, {failed} failed")
+    sys.exit(1 if failed else 0)
