@@ -51,6 +51,22 @@ def _msg(i, frm="pat@example.edu", cc=(), subject="Meeting", cid=None, received=
             "toRecipients": [{"emailAddress": {"address": "owner@example.edu"}}],
             "ccRecipients": [{"emailAddress": {"address": a}} for a in cc]}
 
+def _unified_outlook(verb, m):
+    """What mail_actions prints for an Outlook read of Graph message `m`:
+    the graph_actions verb's shape, then mail_actions._shape."""
+    import mail_actions
+    row = {"id": m["id"], "subject": m.get("subject"),
+           "from": m["from"]["emailAddress"]["address"],
+           "received": m.get("receivedDateTime", ""), "conversation_id": m.get("conversationId", ""),
+           "preview": m.get("bodyPreview", "")}
+    if verb == "search":
+        return mail_actions._shape("search", "outlook", [row])[0]
+    full = dict(row, **{"from": m["from"]["emailAddress"],
+                        "body": (m.get("body") or {}).get("content", ""),
+                        "body_type": (m.get("body") or {}).get("contentType", "")})
+    return mail_actions._shape(verb, "outlook", full)
+
+
 
 class FakeGraph:
     MAIL_FIELDS = "id"
@@ -351,6 +367,43 @@ def test_sealed_get_message_returns_the_record_not_the_text(priv):
     assert got["sealed"] is True and got["body"].startswith("Pat asks for a meeting.")
     assert got["remote_record"]["offered_times"] == ["2026-10-20T14:00:00"]
     assert got["id"] == msg["id"] and got["conversation_id"] == "conv1"
+
+
+def test_every_unified_read_is_checked_as_its_graph_actions_twin():
+    import mail_mediation as MM
+    reads = {v for v, why in __import__("test_send_content_binding").NOT_DRAFT_CHANGING[
+        "mail_actions"].items() if why == "read"} - {"preflight-check"}
+    for verb in reads:
+        tool, twin = mp.as_graph_read("mail_actions", verb, [verb, "--provider", "outlook"])
+        assert tool == "graph_actions" and twin in mp.RELEASE_VERBS, verb
+        assert twin in MM.SAFE["graph_actions"], verb
+    # Gmail reads are not filtered on either CLI (gmail_client's are not)
+    assert mp.as_graph_read("mail_actions", "search", ["search", "--provider", "gmail"]) == \
+        ("mail_actions", "search")
+
+
+def test_sealed_unified_outlook_reads_return_the_record(priv):
+    _sealed(priv)
+    msg = dict(_msg(1), body={"contentType": "text", "content": "SECRET BODY TEXT"},
+               bodyPreview="SECRET PREVIEW")
+    _store(msg)
+    one = _unified_outlook("get-message", msg)
+    out, refusal = mp.release_filter("mail_actions", "get-message",
+                                     ["get-message", "--provider", "outlook", "--message-id",
+                                      msg["id"]], "room-run-1", json.dumps(one))
+    assert refusal == "" and "SECRET" not in out
+    got = json.loads(out)
+    assert got["sealed"] is True and got["body"].startswith("Pat asks for a meeting.")
+    rows = [_unified_outlook("search", msg)]
+    out, refusal = mp.release_filter("mail_actions", "search",
+                                     ["search", "--provider", "outlook", "--query", "x"],
+                                     "room-run-2", json.dumps(rows))
+    assert refusal == "" and "SECRET" not in out
+    assert json.loads(out)[0]["preview"].startswith("Pat asks")
+    # the same output as a Gmail read passes as gmail_client's does
+    out, _ = mp.release_filter("mail_actions", "search", ["search", "--provider", "gmail"],
+                               "room-run-3", json.dumps(rows))
+    assert "SECRET" in out
 
 
 def test_sealed_get_conversation_extracts_unread_and_own_mail_inline(priv):

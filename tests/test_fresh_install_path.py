@@ -199,7 +199,8 @@ def test_the_literal_command_rule_is_opt_in():
     count, rule = rules(EA_LITERAL_COMMANDS="1")
     assert count == "five" and rule.startswith("5. EVERY Bash CALL")
     assert "/srv/ea/preprocessor/<script>.py" in rule and "$(...)" in rule
-    assert "mail_actions" not in rule and "never\n   retry it" in rule
+    # mail goes through the unified CLI the lane grants, threads through the provider's
+    assert "mail_actions.py --provider" in rule and "never\n   retry it" in rule
     assert "${RULE_COUNT:-four} rules from CLAUDE.md" in RUN_AGENT and "${LITERAL_RULE:-}" in RUN_AGENT
 
 # ── the doctor on an email profile ───────────────────────────────────

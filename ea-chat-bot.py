@@ -569,12 +569,16 @@ _GMAIL_TOOL_USE_RE = re.compile(
 
 def _is_gmail_draft_tool(tool_name: str, tool_input) -> bool:
     """A tool call whose result may carry a Gmail draft id: the Gmail MCP
-    draft tools, or a Bash line running gmail_client.py create/update-draft."""
+    draft tools, or a Bash line writing a Gmail draft with gmail_client.py
+    or mail_actions.py --provider gmail."""
     if tool_name in _GMAIL_DRAFT_TOOLS:
         return True
     if tool_name == "Bash" and isinstance(tool_input, dict):
         cmd = str(tool_input.get("command", ""))
-        return "gmail_client.py" in cmd and ("create-draft" in cmd or "update-draft" in cmd)
+        gmail = "gmail_client.py" in cmd or (
+            "mail_actions.py" in cmd and ("--provider gmail" in cmd or "--provider=gmail" in cmd))
+        return gmail and any(v in cmd for v in ("create-draft", "create-reply", "update-draft",
+                                                "create-forward"))
     return False
 
 
@@ -2325,9 +2329,9 @@ def _presearch_inbox(briefing_extract: str) -> str:
     log.info(f"Pre-search: injecting {total_hits} inbox results for "
              f"{sum(1 for _, h in search_results if h)}/{len(entity_names)} entities")
     parts.append(
-        "\nUse these IDs directly with graph_actions.py: read a thread with "
-        "get-conversation --conversation-id <id>, reply with create-reply. "
-        "Do not search again for these names."
+        "\nUse these IDs directly: read a thread with graph_actions.py "
+        "get-conversation --conversation-id <id>, reply with mail_actions.py "
+        "create-reply --provider outlook. Do not search again for these names."
     )
     parts.append("=== END INBOX RESULTS ===")
     return "\n".join(parts)
@@ -2605,6 +2609,7 @@ def _needs_mcp(msg: str, needed_modules: set[str],
 
 
 _BASH_ONLY_TOOLS = (
+    "Bash(python3 {script_dir}/preprocessor/mail_actions.py *),"
     "Bash(python3 {script_dir}/preprocessor/graph_actions.py *),"
     "Bash(python3 {script_dir}/preprocessor/gmail_client.py *),"
     "Bash(python3 {script_dir}/preprocessor/google_calendar_client.py *),"
@@ -2725,7 +2730,7 @@ _MCP_TOOLS = (
     # get_thread / list_drafts / list_labels (NO `gmail_` prefix, and there
     # is no read_message; reads come back through get_thread). A `gmail_*`
     # name matches nothing and the request is denied. Drafts are written
-    # with gmail_client.py create-draft / update-draft in every account:
+    # with mail_actions.py create-draft / update-draft in every account:
     # the connector's create_draft rewrote every link as a google.com/url?q=
     # redirect, so it and update_draft are denied
     # (scripts/disallowed-tools.txt).
@@ -2890,26 +2895,25 @@ def _tools_block(body_file: str, needed_modules: set[str] | None = None) -> str:
   gone, do not spawn an agent to audit permissions, and do not touch
   ~/.claude/settings.json; those are dead ends in this subprocess.
 - Read/Write/Edit files
-- Bash(python3 {sd}/preprocessor/graph_actions.py <cmd>) for Outlook:
-  create-draft, create-reply, update-draft, delete-draft, preflight-check,
-  send-draft, get-message, get-conversation, search-mail, list-mail,
-  create-event, update-event, delete-event, get-event,
-  archive-message, snooze-message, wake-snoozed, get-attachments, scan-attachments,
-  attach-file and remove-attachment (on a draft; a swap is remove, then attach)
-  For "what is newest in <folder>": list-mail --folder sentitems --top 25
-  (server-side newest-first; search-mail needs a query and searches the folder).
-  To READ A THREAD: get-conversation --conversation-id <id>. ONE call for
-  the whole thread, quoted history stripped. Never search-mail plus a
-  get-message per hit -- search-mail matches loosely, so you pay for hits
-  that are not in the thread. Every search-mail / list-mail row carries
-  conversation_id.
-  To check a draft's recipients before sending, use preflight-check.
+- Bash(python3 {sd}/preprocessor/mail_actions.py <verb> --provider outlook|gmail)
+  for mail on both providers: search, get-message, get-draft, create-draft,
+  create-reply, update-draft, delete-draft, create-forward, preflight-check,
+  mark-read, mark-unread. Check a draft's recipients before sending with
+  preflight-check. Never search plus a get-message per hit -- search matches
+  loosely, so you pay for hits that are not in the thread.
   IMPORTANT for drafts: Write body text to {bf} first,
   then use --body-file {bf} (avoids shell escaping issues).
-  Pass --body x as placeholder alongside --body-file.
   If Write fails with "File has not been read yet", Read the file first, then use Write
   (or Edit to replace the entire content). Do NOT skip the body file — the draft WILL be
   empty without it.
+- Bash(python3 {sd}/preprocessor/graph_actions.py <cmd>) for Outlook only:
+  get-conversation, list-mail, create-event, update-event, delete-event, get-event,
+  archive-message, snooze-message, wake-snoozed, get-attachments, scan-attachments,
+  attach-file and remove-attachment (on a draft; a swap is remove, then attach).
+  To READ A THREAD: get-conversation --conversation-id <id>. ONE call for
+  the whole thread, quoted history stripped. Every search / list-mail row
+  carries conversation_id. For "what is newest in <folder>": list-mail
+  --folder sentitems --top 25 (server-side newest-first).
 - Bash(python3 {sd}/preprocessor/ledger.py <cmd>) for obligations:
   add, update, close, get, list, search, stats
   (Do NOT read/edit the .db file directly — use this CLI)
@@ -2920,7 +2924,7 @@ def _tools_block(body_file: str, needed_modules: set[str] | None = None) -> str:
   Journal decisions and milestones as they happen; file notable emails to
   their project. A project pack may already be injected above — do not
   re-fetch it.
-- Gmail MCP — for Gmail drafts/search (may be unavailable; use graph_actions.py search-mail as fallback)
+- Gmail MCP — for Gmail search (may be unavailable; use mail_actions.py search --provider gmail as fallback)
 {google_calendar_block}- The EA-Managed calendar is YOUR OWN rule store, and you may edit it
   freely without asking. No button, no pending-event file:
     google_calendar_client.py list-ea-managed [--show-instances]
@@ -10894,7 +10898,7 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 # as they call it directly.
 _LEDGER_SCRIPT_RE = re.compile(r"ledger\.py")
 _LEDGER_VERB_RE = re.compile(r"\b(?:get|list|search|show|find)\s+--")
-_MAIL_SCRIPT_RE = re.compile(r"graph_actions\.py|gmail_client\.py")
+_MAIL_SCRIPT_RE = re.compile(r"mail_actions\.py|graph_actions\.py|gmail_client\.py")
 _MAIL_VERB_RE = re.compile(
     r"\b(?:search|search-threads|search-mail|get-conversation|get-message|get-thread"
     r"|list-mail|list-threads|calendar-view)\s+--")

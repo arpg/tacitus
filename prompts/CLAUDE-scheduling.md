@@ -19,7 +19,7 @@ question) gets one line pointing the user to the EA channel.
 
 1. Read the whole request. If it came by email, read the thread:
    `python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py get-conversation --conversation-id <id>`
-   (or `get-message --message-id <id>`). With sealed mail the thread
+   (or `mail_actions.py get-message --provider outlook --message-id <id>`). With sealed mail the thread
    comes back as the remote model's record of each message: its
    `offered_times` and `scheduling` fields are the sender's proposal,
    and `remote_unread` means try once more or ask. Decide which mode
@@ -98,7 +98,7 @@ question) gets one line pointing the user to the EA channel.
    On exit 3 or 4 give the same brief to the `email-author` subagent
    (Agent tool, `subagent_type: "email-author"`) and write its body to
    that file. Then create the draft:
-   `python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py create-reply --message-id <id> --conversation-id <cid> --body x --body-file /home/ea-bot/.ea/state/reply-body.txt`
+   `python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py create-reply --provider outlook --message-id <id> --conversation-id <cid> --body-file /home/ea-bot/.ea/state/reply-body.txt`
    (`--sender-only` for poll replies, reply-all otherwise). Then post
    one short line; the bot appends the :lock: Send block. Do not
    preview the body in chat and do not ask "how does this look?".

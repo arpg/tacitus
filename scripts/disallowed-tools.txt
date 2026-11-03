@@ -57,6 +57,56 @@ Bash(*gmail_client.py send-draft *)
 # verb structurally cannot invite anyone: create_event() takes no
 # attendee parameter (pinned by test_gcal_ea_managed_writes).
 
+# --- Mail verbs mail_actions.py replaces (#76) -----------------------
+# One CLI for both providers: mail_actions.py runs these same provider
+# verbs in its own process, so their checks and journaling still apply.
+# Denying the direct form leaves one way to search, read and draft. The
+# provider-only verbs (get-conversation, get-thread, attachments, snooze,
+# categories, calendar) stay on their own CLI. The bot's own Python calls
+# these verbs as subprocesses, which this list does not touch.
+Bash(python3 *graph_actions.py search-mail *)
+Bash(*graph_actions.py search-mail *)
+Bash(python3 *graph_actions.py get-message *)
+Bash(*graph_actions.py get-message *)
+Bash(python3 *graph_actions.py get-gmail-draft *)
+Bash(*graph_actions.py get-gmail-draft *)
+Bash(python3 *graph_actions.py create-draft *)
+Bash(*graph_actions.py create-draft *)
+Bash(python3 *graph_actions.py create-reply *)
+Bash(*graph_actions.py create-reply *)
+Bash(python3 *graph_actions.py update-draft *)
+Bash(*graph_actions.py update-draft *)
+Bash(python3 *graph_actions.py delete-draft *)
+Bash(*graph_actions.py delete-draft *)
+Bash(python3 *graph_actions.py create-forward *)
+Bash(*graph_actions.py create-forward *)
+Bash(python3 *graph_actions.py preflight-check *)
+Bash(*graph_actions.py preflight-check *)
+Bash(python3 *graph_actions.py mark-read *)
+Bash(*graph_actions.py mark-read *)
+Bash(python3 *graph_actions.py mark-unread *)
+Bash(*graph_actions.py mark-unread *)
+Bash(python3 *gmail_client.py search *)
+Bash(*gmail_client.py search *)
+Bash(python3 *gmail_client.py get-message *)
+Bash(*gmail_client.py get-message *)
+Bash(python3 *gmail_client.py get-draft *)
+Bash(*gmail_client.py get-draft *)
+Bash(python3 *gmail_client.py create-draft *)
+Bash(*gmail_client.py create-draft *)
+Bash(python3 *gmail_client.py update-draft *)
+Bash(*gmail_client.py update-draft *)
+Bash(python3 *gmail_client.py delete-draft *)
+Bash(*gmail_client.py delete-draft *)
+Bash(python3 *gmail_client.py create-forward *)
+Bash(*gmail_client.py create-forward *)
+Bash(python3 *gmail_client.py preflight-check *)
+Bash(*gmail_client.py preflight-check *)
+Bash(python3 *gmail_client.py mark-read *)
+Bash(*gmail_client.py mark-read *)
+Bash(python3 *gmail_client.py mark-unread *)
+Bash(*gmail_client.py mark-unread *)
+
 # --- Deferred sends --------------------------------------------------
 # `scheduled_sends.py add` parks a draft that the */5 cron later SENDS
 # with no further approval, so it is a send lever wearing a delay. The

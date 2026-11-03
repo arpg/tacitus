@@ -22,7 +22,7 @@ def test_compose_is_compact_and_carries_the_parts():
     assert "propose-meeting" in p and "pending-event.json" in p and '"ref": "m3"' in p
     # The two modes the first live turn missed: a draft the user wrote is
     # finished with update-draft, and an attendee elsewhere gets a zone.
-    assert "update-draft --message-id <m-ref of the draft>" in p and '"own": true' in p and '"is_draft": true' in p
+    assert "update-draft --provider outlook --draft-id <m-ref of the draft>" in p and '"own": true' in p and '"is_draft": true' in p
     assert '"timezone":"Europe/London"' in p and "Never create-reply beside a draft the user wrote." in p
     assert len(p) < 12000
     lane = (ROOT / "prompts/CLAUDE-scheduling.md").read_text() + (ROOT / "skills" / "scheduling-rules.md").read_text()

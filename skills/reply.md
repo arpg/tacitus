@@ -14,7 +14,7 @@ format it cleanly but don't rewrite.
 
 ### 2. Find the email
 ```bash
-python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py search-mail --query "<keywords>"
+python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py search --provider outlook --query "<keywords>"
 ```
 If one clear match, proceed. If multiple matches, pick the most recent
 relevant one. Only ask the user if genuinely ambiguous (same sender,
@@ -23,12 +23,12 @@ multiple active threads on different topics).
 ### 3. Read the thread for context
 ```bash
 python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py get-conversation \
-  --conversation-id <conversation_id from the search-mail row>
+  --conversation-id <conversation_id from the search row>
 ```
 One call returns every message in the thread, oldest-first, with quoted
 history stripped. Use `get-message --message-id <id>` only when you want
 that ONE message and nothing else. Never run a get-message per search
-hit: search-mail matches loosely, so some hits are not in the thread.
+hit: search matches loosely, so some hits are not in the thread.
 
 ### 4. Draft the body
 Compose based on:
@@ -47,8 +47,8 @@ Tools section of the prompt, then call create-reply with --body-file:
 ```bash
 # Step A: Write the final body text to the body file (shown in Tools block).
 # Step B: Create the reply:
-python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py create-reply \
-  --message-id <id> --conversation-id <conversation_id> --body x --body-file <body-file-path> \
+python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py create-reply --provider outlook \
+  --message-id <id> --conversation-id <conversation_id> --body-file <body-file-path> \
   --ledger-id <row id>
 ```
 `--ledger-id` names the ledger row this reply delivers (repeat it for
@@ -81,7 +81,7 @@ body for user review. That block IS the approval step. Do NOT:
 ### 7. If the user asks for changes after draft creation
 Use update-draft with the SAME draft_id. NEVER create a second draft:
 ```bash
-python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py update-draft \
-  --message-id <draft-id> --body x --body-file <body-file-path>
+python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py update-draft --provider outlook \
+  --draft-id <draft-id> --body-file <body-file-path>
 ```
 This updates the existing draft in-place.

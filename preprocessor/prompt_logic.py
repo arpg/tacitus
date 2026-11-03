@@ -116,8 +116,8 @@ EXTRACTABLE_SECTIONS = [
     ("### Gmail drafts and sending",
      "## Data sources",
      "gmail",
-     "- *Gmail drafts*: `gmail_client.py create-draft` (the Gmail MCP draft tools are "
-     "denied). Same Send/Cancel flow as Outlook.\n"),
+     "- *Gmail drafts*: `mail_actions.py create-draft --provider gmail` (the Gmail MCP "
+     "draft tools are denied). Same Send/Cancel flow as Outlook.\n"),
     # _never (Usage tracking) MUST come before snooze: its end boundary is
     # "## Scheduled sends", which snooze's start boundary removes.
     ("## Calendars and scheduling",

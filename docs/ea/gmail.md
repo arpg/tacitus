@@ -2,13 +2,18 @@
 
 For emails sent from the user's Gmail (an address in `gmail_accounts` of
 `user-profile.json`), create the
-draft with the CLI:
+draft with the unified mail CLI (`--account` defaults to the first of
+`gmail_accounts`):
 
 ```bash
-python3 /home/ea-bot/ea-system/preprocessor/gmail_client.py create-draft \
-  --email <gmail address> --to <addr> --subject "<subj>" \
+python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py create-draft \
+  --provider gmail --account <gmail address> --to <addr> --subject "<subj>" \
   --body-file /home/ea-bot/.ea/state/reply-body-<ts>.txt
 ```
+
+`mail_actions.py` runs `gmail_client.py`'s own verb, so everything below
+holds for it. `gmail_client.py` keeps the Gmail-only verbs: `get-thread`,
+`attach-file`, `remove-attachment` and the attachment reads.
 
 The Gmail MCP `create_draft` and `update_draft` are denied. The connector
 rewrote every link in a body as a `google.com/url?q=` redirect, which the
@@ -20,7 +25,7 @@ the draft id in your reply. Add `--ledger-id <row id>` (on `create-draft`
 or `update-draft`) when the draft delivers a ledger row, as on Outlook:
 its Send closes the rows it names and the thread's reply row.
 
-A forward (`gmail_client.py create-forward --email <addr> --message-id
+A forward (`mail_actions.py create-forward --provider gmail --message-id
 <id> --to <addr> --body-file <f>`) carries the whole thread, newest
 first, without any unsent draft on it. It does not carry the thread's
 attachments: the result lists them in `attachments_not_carried`; add
@@ -33,7 +38,7 @@ address in its place, which is the part after `q=` or `url=`, up to the
 first `&`.
 
 **Workflow:**
-1. Create the draft (`gmail_client.py create-draft`)
+1. Create the draft (`mail_actions.py create-draft --provider gmail`)
 2. The bot detects the draft and posts the `:lock:` block in the user's
    DM, with a pointer in the thread
 3. User clicks Send -> bot calls `send-gmail-draft` behind the token gate
@@ -49,24 +54,27 @@ first `&`.
 **Replies MUST name the message they answer.** A "Re:" draft created
 without it opens a new conversation in Gmail (the recipient sees a
 fresh thread, and the sender's own reply lands outside the exchange).
-With the CLI pass the Gmail message id of the message you are answering
-(from `search`, `get-message` or `get-thread`); `--to` and `--subject`
-may be omitted, they default to the original sender and "Re: <subject>":
+Use `create-reply` with the Gmail message id of the message you are
+answering (from `search`, `get-message` or `get-thread`). To is the
+original sender and the subject is "Re: <subject>". It is reply-all, as
+on Outlook: the other To and Cc addresses go on Cc. `--sender-only`
+answers the sender alone:
 
 ```bash
-python3 /home/ea-bot/ea-system/preprocessor/gmail_client.py create-draft \
-  --email <gmail address> --reply-to-message-id <gmail message id> \
+python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py create-reply \
+  --provider gmail --account <gmail address> --message-id <gmail message id> \
   --body-file /home/ea-bot/.ea/state/reply-body-<ts>.txt
 ```
 
-`--thread-id <gmail thread id>` answers a thread's newest message when
-that is what you hold. The client sets threadId, In-Reply-To and
+`--thread-id <gmail thread id>` in place of `--message-id` answers a
+thread's newest message when that is what you hold. The client sets threadId, In-Reply-To and
 References; nothing else threads. It also quotes the message you answer
 below your text ("On <date> <sender> wrote:", then its lines with `>`),
 as Gmail does. Write only your new text in the body file. `--no-quote`
 leaves the quote out.
 
-To revise a draft use `update-draft --draft-id <id> --body-file <file>`,
+To revise a draft use `mail_actions.py update-draft --provider gmail
+--draft-id <id> --body-file <file>`,
 with only the new text in the file. It keeps the draft's thread, its
 quoted history and its attachments. `--reply-to-message-id` on it moves
 a draft that was created as a new conversation into the right thread and
@@ -97,7 +105,7 @@ python3 /home/ea-bot/ea-system/preprocessor/gmail_client.py remove-attachment \
   --email <gmail address> --draft-id <draft id> --name <file name>
 ```
 
-**Read flag:** `gmail_client.py mark-read --email <acct> --message-id <id>`
+**Read flag:** `mail_actions.py mark-read --provider gmail --message-id <id>`
 marks a message read in place (it removes the UNREAD label only);
 `mark-unread` adds the label back.
 
@@ -110,7 +118,7 @@ python3 /home/ea-bot/ea-system/preprocessor/gmail_client.py \
   download-attachment --email <acct> --message-id <id> \
   --name-pattern "<filename substring>" --output ~/.ea/receipts/<trip>/<name>.pdf
 ```
-`get-message` also returns an `attachments` list, so a message you have
+`mail_actions.py get-message --provider gmail` also returns an `attachments` list, so a message you have
 already read tells you what is downloadable. Select with `--attachment-id`
 (exact) or `--name-pattern` (case-insensitive substring); zero or several
 matches is an error, not a guess. Under mail mediation `--output` must sit

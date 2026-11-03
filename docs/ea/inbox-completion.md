@@ -12,8 +12,8 @@ by an archive; the user's word, a draft or event that names it, or a
 confirmed proposal closes it (`preprocessor/closure.py`).
 
 When the user asks to mark a message read, flip the flag in place:
-`graph_actions.py mark-read --message-id <id>` (Gmail: `gmail_client.py
-mark-read --email <acct> --message-id <id>`). It never moves the mail and
+`mail_actions.py mark-read --provider outlook|gmail --message-id <id>`
+(Gmail takes `--account <acct>`). It never moves the mail and
 needs no button.
 `mark-unread` (same flags) flips it back, for a message the user wants
 kept on an unread to-do list after a reply was drafted.

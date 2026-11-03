@@ -748,7 +748,7 @@ def _gate_precheck(tool, verb, argv, run_id) -> str:
         import mail_privacy
         return mail_privacy.release_precheck(tool, verb, list(argv), run_id)
     except Exception as e:
-        return _gate_error(tool, verb, run_id, e)
+        return _gate_error(tool, verb, run_id, e, argv)
 
 
 def _gate_filter(tool, verb, argv, run_id, out):
@@ -756,11 +756,16 @@ def _gate_filter(tool, verb, argv, run_id, out):
         import mail_privacy
         return mail_privacy.release_filter(tool, verb, list(argv), run_id, out)
     except Exception as e:
-        refusal = _gate_error(tool, verb, run_id, e)
+        refusal = _gate_error(tool, verb, run_id, e, argv)
         return ("", refusal) if refusal else (out, "")
 
 
-def _gate_error(tool, verb, run_id, e) -> str:
+def _gate_error(tool, verb, run_id, e, argv=()) -> str:
+    try:
+        import mail_privacy
+        tool, verb = mail_privacy.as_graph_read(tool, verb, list(argv))
+    except Exception:
+        pass
     if not str(run_id or "").startswith("cron-") or tool != "graph_actions":
         return ""
     try:

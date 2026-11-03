@@ -1050,6 +1050,20 @@ def conversation_class(conv_id: str, index: dict) -> str:
 
 RELEASE_VERBS = {"get-message", "get-conversation", "search-mail", "list-mail",
                  "get-attachments", "scan-attachments", "download-attachment"}
+# The unified CLI's Outlook reads are the graph_actions reads they replace
+# (an Outlook draft is read with get-message there). Its output carries
+# id, conversation_id and the header fields these checks read.
+UNIFIED_OUTLOOK_READS = {"search": "search-mail", "get-message": "get-message",
+                         "get-draft": "get-message"}
+
+
+def as_graph_read(tool: str, verb: str, argv: list) -> tuple[str, str]:
+    """(tool, verb) with a mail_actions Outlook read named as its
+    graph_actions twin, so every check below covers both CLIs."""
+    if (tool == "mail_actions" and verb in UNIFIED_OUTLOOK_READS
+            and _flag_value(argv, "--provider") == "outlook"):
+        return "graph_actions", UNIFIED_OUTLOOK_READS[verb]
+    return tool, verb
 
 
 def _walk_ids(obj, conv: str = "", out=None) -> list[tuple[str, str]]:
@@ -1074,6 +1088,7 @@ def note_release(tool: str, verb: str, argv: list, run_id: str, stdout: str) -> 
     their shadow class. Called by the mediator after it has answered;
     never raises and never changes what the caller received."""
     try:
+        tool, verb = as_graph_read(tool, verb, argv)
         if tool != "graph_actions" or verb not in RELEASE_VERBS:
             return
         if not remote_llm.reading("mail"):
@@ -1184,6 +1199,7 @@ def _row_kept(row: dict, index: dict, cfg: dict) -> bool:
 def release_precheck(tool: str, verb: str, argv: list, run_id: str) -> str:
     """'' or the refusal for a cron lane's read of one kept message or
     thread, decided before the read runs."""
+    tool, verb = as_graph_read(tool, verb, argv)
     if tool != "graph_actions" or verb not in RELEASE_VERBS or not _cron_lane(run_id):
         return ""
     if not remote_llm.enforcing("mail"):
@@ -1191,7 +1207,8 @@ def release_precheck(tool: str, verb: str, argv: list, run_id: str) -> str:
     try:
         index = load_index()
         conv = _flag_value(argv, "--conversation-id")
-        mid = _flag_value(argv, "--message-id")
+        # a unified get-draft names its Outlook message as --draft-id
+        mid = _flag_value(argv, "--message-id") or _flag_value(argv, "--draft-id")
         if mid:
             rec = index["by_id"].get(mid)
             if rec is not None and _kept(rec):
@@ -1247,6 +1264,7 @@ def release_filter(tool: str, verb: str, argv: list, run_id: str, stdout: str) -
     for the ghost week. sealed: the cron rules, and every lane gets the
     remote model's records in place of message text; each sealed read is
     recorded the same way."""
+    tool, verb = as_graph_read(tool, verb, argv)
     if tool != "graph_actions" or verb not in RELEASE_VERBS:
         return stdout, ""
     m = remote_llm.mode("mail")

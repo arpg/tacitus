@@ -588,8 +588,17 @@ if ctx.get('ledger_read') or ctx.get('ledger_write'):
 
 # graph_actions: list of allowed subcommands
 ga = ctx.get('graph_actions') or []
+# The mail verbs mail_actions.py replaces are denied on graph_actions.py
+# (scripts/disallowed-tools.txt); such a grant gives the unified verb.
+unified = {'search-mail': 'search', 'get-message': 'get-message',
+           'create-draft': 'create-draft', 'create-reply': 'create-reply',
+           'update-draft': 'update-draft', 'delete-draft': 'delete-draft',
+           'create-forward': 'create-forward', 'preflight-check': 'preflight-check',
+           'mark-read': 'mark-read', 'mark-unread': 'mark-unread'}
 for sub in ga:
     allowed.append(f'Bash(python3 {ea_bot_scripts}/graph_actions.py {sub} *)')
+    if sub in unified:
+        allowed.append(f'Bash(python3 {ea_bot_scripts}/mail_actions.py {unified[sub]} --provider outlook *)')
 
 # fetch_url
 if ctx.get('fetch_url'):
