@@ -6,6 +6,12 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A tier promotion is a verb.** `autonomy_tiers.py promote --task
+  <task> --tier <tier> [--contact <addr>] --quote "<words>"` replaces the
+  edit of `autonomy-tiers.json` that CLAUDE.md rule 12 asked for, refuses
+  a button-required task and a contact override the task does not allow,
+  and from a Codex turn is staged and applied after the turn like a
+  preference.
 - **A Codex turn writes no config file.** Its writable roots held the
   whole `~/.ea/config` folder for `preferences.py`'s sake, which also
   covered `ea-config.json`, `github.json` and `CLAUDE.install.md`. The

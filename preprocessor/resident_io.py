@@ -573,6 +573,19 @@ def _warn_once(msg: str) -> None:
         print(f"resident_io: {msg}", file=sys.stderr)
 
 
+def write_refused(path) -> int | None:
+    """The errno this process gets when it opens `path` for writing (EACCES
+    under landlock, EROFS under a read-only bind, ENOENT when the file is
+    not there), or None when the open succeeds. A probe: the file is opened
+    read-write without O_CREAT and closed, nothing is written."""
+    try:
+        fd = os.open(_abs(path), os.O_RDWR)
+    except OSError as e:
+        return e.errno
+    os.close(fd)
+    return None
+
+
 def _fail(verb: str, path: str, reason) -> bool:
     print(f"resident_io: could not {verb} {path}: {_one_line(reason)}", file=sys.stderr)
     return False

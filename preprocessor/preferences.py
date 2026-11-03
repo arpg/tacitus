@@ -71,7 +71,8 @@ PREFS_FILE = EA_DIR / "config" / "preferences.json"
 # outside the sandbox, when the words it quotes are the user's.
 STAGED_FILE = EA_DIR / "state" / "preferences-staged.jsonl"
 REFUSED_FILE = EA_DIR / "state" / "preferences-staged-refused.jsonl"
-STAGED_VERBS = {"preferences": ("add", "calibrate", "retire"), "onboarding": ("answer", "skip", "stop")}
+STAGED_VERBS = {"preferences": ("add", "calibrate", "retire"), "onboarding": ("answer", "skip", "stop"),
+                "autonomy": ("promote",)}
 _APPLYING = False
 
 KINDS = ("instruction", "prefer", "avoid", "fact")
@@ -500,7 +501,7 @@ def claimed_words(tool: str, argv: list) -> str | None:
     --text`), '' when such a write claims none, None when the write needs
     none (a calibration, a retirement, a skip)."""
     verb = argv[0] if argv else ""
-    if tool == "preferences" and verb == "add":
+    if (tool, verb) in (("preferences", "add"), ("autonomy", "promote")):
         return _option(argv, "--quote")
     if tool == "onboarding" and verb == "answer":
         return _option(argv, "--text")
@@ -514,7 +515,7 @@ def _said(words: str, user_text: str) -> bool:
 
 def apply_staged(user_text: str | None, run_preferences=None, run_onboarding=None) -> dict:
     """Replay the staged writes (STAGED_FILE, then emptied) outside the
-    sandbox. A rule or an onboarding answer is applied only when the words
+    sandbox. A rule, an onboarding answer or a tier promotion is applied only when the words
     it quotes are in `user_text`, the message the user sent this turn: a
     rule lifted from a mail body quotes nothing the user said. Every other
     record (a calibration, a retirement) is applied as it is. A refused
@@ -534,7 +535,8 @@ def apply_staged(user_text: str | None, run_preferences=None, run_onboarding=Non
     if not lines:
         return {"applied": [], "refused": []}
     runners = {"preferences": run_preferences or main,
-               "onboarding": run_onboarding or _onboarding_main}
+               "onboarding": run_onboarding or _onboarding_main,
+               "autonomy": _autonomy_main}
     out = {"applied": [], "refused": []}
 
     def refuse(rec, why):
@@ -576,6 +578,14 @@ def apply_staged(user_text: str | None, run_preferences=None, run_onboarding=Non
     finally:
         _APPLYING = False
     return out
+
+
+def _autonomy_main(argv) -> int:
+    try:
+        import autonomy_tiers
+    except ModuleNotFoundError:
+        from preprocessor import autonomy_tiers
+    return autonomy_tiers.main(argv)
 
 
 def _onboarding_main(argv) -> int:
