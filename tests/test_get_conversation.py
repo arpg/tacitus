@@ -604,12 +604,16 @@ def test_any_other_error_still_raises():
 
 
 def test_the_cli_runs_every_verb_inside_the_plain_exit():
-    """__main__ dispatches inside _plain_throttle_exit, defaults its lane to
-    interactive and keeps the retry notes off stderr."""
+    """__main__ dispatches through run_verb, which runs the verb inside
+    _plain_throttle_exit and keeps the retry notes off stderr (mail_actions
+    runs an Outlook verb through the same function); the lane defaults to
+    interactive."""
     src = (Path(__file__).resolve().parent.parent / "preprocessor" / "graph_actions.py").read_text()
     main = src[src.rindex('if __name__ == "__main__":'):]
-    assert "with _plain_throttle_exit():\n        args.func(args)" in main
-    assert "graph.notes_to_file(" in main
+    assert main.rstrip().endswith("run_verb(args)")
+    verb = src[src.index("def run_verb("):src.index("\n\n\n", src.index("def run_verb("))]
+    assert "with _plain_throttle_exit():\n        args.func(args)" in verb
+    assert "graph.notes_to_file(" in verb and "_resolve_body(args)" in verb
     top = src[src.index('if __name__ == "__main__":'):src.index("import graph_client as graph")]
     assert "set_graph_lane(_retry_policy.INTERACTIVE, only_if_unset=True)" in top
 

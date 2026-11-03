@@ -115,6 +115,23 @@ def _plain_throttle_exit():
         sys.exit(THROTTLED_EXIT)
 
 
+def run_verb(args) -> None:
+    """Run a parsed verb the way the entry point does: the body resolved,
+    retry notes to the owner's log, and a throttled mailbox as
+    THROTTLED_EXIT with one plain line on stderr. mail_actions.py runs an
+    Outlook verb through this in process, so its callers see the same."""
+    _resolve_body(args)
+    # Retry and throttle notes go to a log file: stderr carries the one
+    # plain line a throttled verb ends with.
+    try:
+        from log_paths import owner_log as _owner_log
+        graph.notes_to_file(lambda: _owner_log("graph-client.log"))
+    except Exception:
+        pass
+    with _plain_throttle_exit():
+        args.func(args)
+
+
 PENDING_CONFIRMS_FILE = _owner_state_dir() / "pending-confirmations.json"
 PENDING_CONFIRMS_LOCK = _owner_state_dir() / "pending-confirmations.lock"
 TOKEN_TTL_MINUTES = 30  # Tokens expire after 30 min
@@ -2534,13 +2551,4 @@ if __name__ == "__main__":
     # lock, as the mediator does for the resident (draft_lock.py).
     _mm_child.hold_owner_draft_lock("graph_actions", args.command, sys.argv[1:],
                                     mediated=_mediated)
-    _resolve_body(args)
-    # Retry and throttle notes go to a log file: stderr carries the one
-    # plain line a throttled verb ends with.
-    try:
-        from log_paths import owner_log as _owner_log
-        graph.notes_to_file(lambda: _owner_log("graph-client.log"))
-    except Exception:
-        pass
-    with _plain_throttle_exit():
-        args.func(args)
+    run_verb(args)

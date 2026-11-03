@@ -9,6 +9,7 @@ import tempfile
 import types
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "preprocessor"))
@@ -175,7 +176,8 @@ def test_gmail_account_defaults_to_the_profile():
 
 def test_the_reads_are_mediated_and_nothing_else_is():
     assert MM.SAFE["mail_actions"] == {"search", "get-message", "get-draft", "mark-read",
-                                       "mark-unread"}
+                                       "mark-unread", "create-draft", "create-reply",
+                                       "update-draft", "delete-draft"}
     assert "mail_actions" not in MM.GATED
     import mail_mediator
     assert mail_mediator.TOOLS["mail_actions"].name == "mail_actions.py"
@@ -186,6 +188,213 @@ def test_the_reads_are_mediated_and_nothing_else_is():
         < entry.index("main()")
     # the clients load only inside a verb, after the forward
     assert "\nimport mail_client" not in src
+
+
+# ---- step 2: draft writes ----------------------------------------------
+
+def _body(text="Hello there.\n"):
+    f = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+    f.write(text)
+    f.close()
+    return f.name
+
+
+def _write(*argv, gmail_msg=None, mediated=False):
+    """Run a write verb with fake provider CLIs; returns (rc, out, runs)."""
+    runs = []
+    ga = types.ModuleType("graph_actions")
+    gm = types.ModuleType("gmail_client")
+
+    ga.run_verb = lambda a: a.func(a)
+
+    def _ga_func(a):
+        runs.append(("graph_actions", [a.verb, *a.rest]))
+        print(json.dumps({"status": "draft_created", "id": "AAMkNEW="}))
+    ga.build_parser = lambda: type("P", (), {"parse_args": lambda self, argv: _ns(argv)})()
+
+    def _ns(argv):
+        n = types.SimpleNamespace(verb=argv[0], rest=argv[1:])
+        n.func = _ga_func
+        return n
+
+    def gm_main():
+        runs.append(("gmail_client", list(sys.argv[1:]),
+                     os.environ.pop("EA_MEDIATED_VERB", None)))
+        print(json.dumps({"draft_id": "r-9", "message_id": "m-9", "thread_id": "t-9"}))
+    gm.main = gm_main
+    gm.get_message = lambda acct, mid: (gmail_msg or {}) if mid == "18abc" else {"error": mid}
+    gm._get_service = lambda acct: object()
+    gm._newest_message_in_thread = lambda service, tid: "18abc" if tid == "18thr" else ""
+    real = {k: sys.modules.get(k) for k in ("graph_actions", "gmail_client")}
+    sys.modules["graph_actions"], sys.modules["gmail_client"] = ga, gm
+    try:
+        args = mail_actions.build_parser().parse_args(list(argv))
+        args._mediated = mediated
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = args.func(args)
+    finally:
+        for k, mod in real.items():
+            if mod is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = mod
+    return rc, json.loads(out.getvalue()), runs
+
+
+def test_create_draft_runs_the_provider_verb_with_the_ledger_ids():
+    f = _body()
+    rc, out, runs = _write("create-draft", "--provider", "outlook", "--to", "a@example.edu",
+                           "--subject", "Hi", "--body-file", f, "--ledger-id", "row-1",
+                           "--ledger-id", "row-2")
+    assert rc == 0 and out["id"] == "AAMkNEW=" and out["provider"] == "outlook"
+    assert runs == [("graph_actions", ["create-draft", "--body", "-", "--body-file", f,
+                                       "--ledger-id", "row-1", "--ledger-id", "row-2",
+                                       "--to", "a@example.edu", "--subject", "Hi"])]
+    rc, out, runs = _write("create-draft", "--provider", "gmail", "--account", "me@example.com",
+                           "--to", "a@example.com", "--subject", "Hi", "--body-file", f,
+                           "--bcc", "b@example.com")
+    assert out["id"] == "r-9" and out["thread_id"] == "t-9" and out["account"] == "me@example.com"
+    assert runs[0][1] == ["create-draft", "--email", "me@example.com", "--body-file", f,
+                          "--to", "a@example.com", "--subject", "Hi", "--bcc", "b@example.com"]
+
+
+def test_gmail_reply_is_reply_all_unless_sender_only():
+    f = _body()
+    msg = {"from": "B <b@example.com>", "to": "me@example.com, c@example.com",
+           "cc": "d@example.com, B <b@example.com>"}
+    _, _, runs = _write("create-reply", "--provider", "gmail", "--account", "me@example.com",
+                        "--message-id", "18abc", "--body-file", f, gmail_msg=msg)
+    argv = runs[0][1]
+    assert argv[:2] == ["create-draft", "--email"] and "--reply-to-message-id" in argv
+    assert argv[argv.index("--cc") + 1] == "c@example.com,d@example.com"
+    _, _, runs = _write("create-reply", "--provider", "gmail", "--account", "me@example.com",
+                        "--message-id", "18abc", "--body-file", f, "--sender-only", gmail_msg=msg)
+    assert "--cc" not in runs[0][1]
+    _, _, runs = _write("create-reply", "--provider", "outlook", "--message-id", "AAMkOUT=",
+                        "--conversation-id", "AAQkCONV=", "--body-file", f, "--sender-only")
+    assert "--sender-only" in runs[0][1] and "--conversation-id" in runs[0][1]
+
+
+def test_gmail_reply_skips_a_thread_the_user_answered_last():
+    """gmail_client answers the thread's newest message; when that is the
+    user's own, the reply would go to the user. The skip is graph_actions's."""
+    f = _body()
+    own = {"from": "Me <me@example.com>", "to": "b@example.com", "cc": "c@example.com"}
+    rc, out, runs = _write("create-reply", "--provider", "gmail", "--account", "me@example.com",
+                           "--thread-id", "18thr", "--body-file", f, gmail_msg=own)
+    assert rc == 0 and out["status"] == "skipped" and runs == []
+    assert out["latest_sender"] == "me@example.com" and "--force" in out["override"]
+    rc, out, runs = _write("create-reply", "--provider", "gmail", "--account", "me@example.com",
+                           "--thread-id", "18thr", "--body-file", f, "--force", gmail_msg=own)
+    assert rc == 0 and out["id"] == "r-9"
+    assert runs[0][1][runs[0][1].index("--cc") + 1] == "b@example.com,c@example.com"
+    rc, out, runs = _write("create-reply", "--provider", "gmail", "--account", "me@example.com",
+                           "--thread-id", "18thr", "--body-file", f, "--sender-only",
+                           gmail_msg=own)
+    assert out["status"] == "skipped" and runs == []
+
+
+def test_an_outlook_write_runs_through_graph_actions_run_verb():
+    """A throttled mailbox ends the unified verb as it ends graph_actions:
+    THROTTLED_EXIT and one plain line on stderr, no traceback."""
+    import contextlib
+    import importlib
+    ga = importlib.import_module("graph_actions")
+    runs = []
+
+    def throttled(a):
+        runs.append(a.command)
+        raise RuntimeError("429 from the fake")
+    pargs = ga.build_parser().parse_args(["delete-draft", "--message-id", "AAMkOUT="])
+    pargs.func = throttled
+    err, code = io.StringIO(), None
+    with contextlib.redirect_stderr(err), \
+         patch.object(ga.graph, "throttle_line",
+                      lambda exc: "Outlook is throttling the mailbox; try later."):
+        try:
+            ga.run_verb(pargs)
+        except SystemExit as e:
+            code = e.code
+    assert code == ga.THROTTLED_EXIT and runs == ["delete-draft"]
+    assert err.getvalue().strip() == "Outlook is throttling the mailbox; try later."
+    src = Path(mail_actions.__file__).read_text(encoding="utf-8")
+    assert "graph_actions.run_verb(pargs)" in src and "pargs.func(pargs)" not in src
+
+
+def test_writes_refuse_an_empty_body_and_outlook_only_gaps():
+    for argv in (("create-draft", "--provider", "gmail", "--account", "me@example.com",
+                  "--to", "a@example.com", "--subject", "Hi"),
+                 ("update-draft", "--provider", "outlook", "--draft-id", "AAMkOUT=")):
+        rc, out, runs = _write(*argv, "--body-file", _body("  \n"))
+        assert rc == 2 and "empty" in out["error"] and runs == []
+    rc, out, runs = _write("create-draft", "--provider", "outlook", "--to", "a@example.edu",
+                           "--subject", "Hi", "--body-file", _body(), "--bcc", "b@example.edu")
+    assert rc == 2 and "--bcc" in out["error"] and runs == []
+    rc, out, runs = _write("update-draft", "--provider", "outlook", "--draft-id", "AAMkOUT=",
+                           "--body-file", _body(), "--subject", "New")
+    assert rc == 2 and runs == []
+
+
+def test_update_and_delete_name_the_draft_the_provider_way():
+    f = _body()
+    _, _, runs = _write("update-draft", "--provider", "outlook", "--draft-id", "AAMkOUT=",
+                        "--body-file", f)
+    assert "--message-id" in runs[0][1] and "AAMkOUT=" in runs[0][1]
+    _, out, runs = _write("delete-draft", "--provider", "gmail", "--account", "me@example.com",
+                          "--draft-id", "r-1")
+    assert runs[0][1] == ["delete-draft", "--email", "me@example.com", "--draft-id", "r-1"]
+
+
+def test_a_mediated_gmail_write_does_not_take_the_lock_again():
+    f = _body()
+    _, _, runs = _write("update-draft", "--provider", "gmail", "--account", "me@example.com",
+                        "--draft-id", "r-1", "--body-file", f, mediated=True)
+    assert runs[0][2] == "update-draft"   # gmail_client's check_child_parse sees its verb
+    _, _, runs = _write("update-draft", "--provider", "gmail", "--account", "me@example.com",
+                        "--draft-id", "r-1", "--body-file", f)
+    assert runs[0][2] is None
+
+
+
+def test_every_provider_reply_and_update_option_is_reachable():
+    """The provider draft verbs go on the deny list in step 4, so the
+    options the EA uses there are here too."""
+    f = _body()
+    msg = {"from": "b@example.com", "to": "me@example.com, c@example.com", "cc": ""}
+    _, _, runs = _write("create-reply", "--provider", "outlook", "--message-id", "AAMkOUT=",
+                        "--body-file", f, "--force")
+    assert "--force" in runs[0][1]
+    _, _, runs = _write("create-reply", "--provider", "gmail", "--account", "me@example.com",
+                        "--thread-id", "18thr", "--body-file", f, "--no-quote", "--force",
+                        gmail_msg=msg)
+    argv = runs[0][1]
+    assert argv[argv.index("--thread-id") + 1] == "18thr" and "--no-quote" in argv
+    assert argv[argv.index("--cc") + 1] == "c@example.com" and "--force" not in argv
+    _, _, runs = _write("create-draft", "--provider", "outlook", "--to", "a@example.edu",
+                        "--subject", "Re: new", "--body-file", f, "--force-new-thread")
+    assert "--force-new-thread" in runs[0][1]
+    _, _, runs = _write("update-draft", "--provider", "gmail", "--account", "me@example.com",
+                        "--draft-id", "r-1", "--body-file", f, "--reply-to-message-id", "18abc",
+                        "--no-quote")
+    argv = runs[0][1]
+    assert argv[argv.index("--reply-to-message-id") + 1] == "18abc" and "--no-quote" in argv
+    for argv in (("create-reply", "--provider", "outlook", "--thread-id", "t"),
+                 ("create-reply", "--provider", "outlook", "--message-id", "AAMk=", "--no-quote"),
+                 ("update-draft", "--provider", "outlook", "--draft-id", "AAMk=",
+                  "--reply-to-message-id", "x")):
+        rc, out, runs = _write(*argv, "--body-file", f)
+        assert rc == 2 and "Gmail only" in out["error"] and runs == [], argv
+
+
+def test_a_ghost_run_gets_a_draft_id_back():
+    import codex_ghost
+    a = codex_ghost._draft_answer("mail_actions", "create-reply",
+                                  ["create-reply", "--provider", "gmail"], "ghostdraft-1")
+    assert a["id"] == "ghostdraft-1" and a["provider"] == "gmail"
+    a = codex_ghost._draft_answer("mail_actions", "update-draft",
+                                  ["update-draft", "--provider", "outlook", "--draft-id", "AAMk="], "")
+    assert a == {"status": "updated", "id": "AAMk=", "provider": "outlook", "account": None}
 
 
 if __name__ == "__main__":

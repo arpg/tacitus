@@ -137,8 +137,10 @@ SAFE = {
         # draft the Gmail MCP created, since the MCP journals nothing.
         "list-drafts",
     },
-    # The unified mail CLI (issue #76): reads on either provider.
-    "mail_actions": {"search", "get-message", "get-draft", "mark-read", "mark-unread"},
+    # The unified mail CLI (issue #76): reads and draft writes on either
+    # provider. Each write runs the provider verb's own code (DELEGATE).
+    "mail_actions": {"search", "get-message", "get-draft", "mark-read", "mark-unread",
+                     "create-draft", "create-reply", "update-draft", "delete-draft"},
     # list-ea-managed is a READ of the EA's own rule calendar; it returns the
     # event ids a later move or delete has to name. It grants no write:
     # create-event stays GATED apart from the attendee-less auto-hold
@@ -221,8 +223,10 @@ DRAFT_EDIT_VERBS = {
         "update-draft": "--draft-id", "attach-file": "--draft-id",
         "remove-attachment": "--draft-id", "delete-draft": "--draft-id",
     },
-    # No draft-changing verb yet: the unified writes come in #76 step 2.
-    "mail_actions": {},
+    # create-reply runs graph_actions create-reply on Outlook (None, as there).
+    "mail_actions": {
+        "update-draft": "--draft-id", "delete-draft": "--draft-id", "create-reply": None,
+    },
 }
 
 
