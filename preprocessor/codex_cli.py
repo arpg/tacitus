@@ -7,8 +7,9 @@ Codex loads no CLAUDE.md, so a prompt built for it carries the operating
 instructions itself (prompt_logic.build_claude_md with nothing
 discovered). It runs model commands in its own sandbox: `read-only`
 reads anywhere and writes nowhere; `workspace-write` writes only under
-the working root (`-C`) and the `--add-dir` directories. A lane that
-must write the EA state passes that directory, never the code tree.
+the working root (`-C`), the `--add-dir` directories and the temp dirs
+(/tmp and $TMPDIR, or the `tmp_dir` a run names in their place). A lane
+that must write the EA state passes that directory, never the code tree.
 Network is off inside the sandbox.
 
     codex_cli.py probe            exit 0 when codex answers a trivial prompt
@@ -22,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -31,6 +33,10 @@ from pathlib import Path
 CODEX_BIN = os.environ.get("EA_CODEX_BIN", "codex")
 PROBE_TIMEOUT_S = 120
 SANDBOXES = ("read-only", "workspace-write")
+# The variables a command reads its temp dir from (temp_flags).
+TEMP_VARS = ("TMPDIR", "TMP", "TEMP")
+# The folder in this user's home a probe starts in (probe_root).
+PROBE_DIR_NAME = ".ea-codex-probe"
 
 
 def binary() -> str | None:
@@ -49,9 +55,32 @@ def version() -> str:
     return (r.stdout or "").strip()
 
 
+def temp_flags(tmp_dir) -> list[str]:
+    """The config overrides that give a workspace-write run `tmp_dir` as its
+    temp dir in place of the shared ones.
+
+    By default the sandbox makes /tmp and $TMPDIR writable roots too, and
+    in every writable root it mounts `.git`, `.agents`, `.codex` and `.aws`
+    read-only, making an empty folder for each one that is missing and
+    removing it when the command ends. A command that does not end cleanly
+    (its process group killed) leaves those folders, and an empty `.git`
+    makes Claude Code and Codex take its folder for a project root for
+    every run below it, whoever owns the run (Codex then loads the skills in
+    the `.agents` beside it). With these flags /tmp and $TMPDIR are no
+    roots, and the commands get `tmp_dir` as TMPDIR, TMP and TEMP; the
+    caller passes `tmp_dir` as a root (build does)."""
+    d = json.dumps(str(tmp_dir))
+    flags = ["-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+             "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"]
+    for var in TEMP_VARS:
+        flags += ["-c", f"shell_environment_policy.set.{var}={d}"]
+    return flags
+
+
 def build(*, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
           last_message_file=None, ephemeral: bool = True, resume: str = "",
           disable=(), codex_bin: str = "") -> list[str]:
+          tmp_dir=None) -> list[str]:
     """The command line for one run. The prompt goes on stdin (`-`), so
     no instruction text ever sits in a process listing. `disable` names
     Codex features to turn off for the run (`--disable`; hosted_text
@@ -63,9 +92,17 @@ def build(*, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
     working root and sandbox (resume takes no --sandbox, -C or --add-dir),
     so the process cwd is the thread's root and the sandbox is restated
     as config overrides. A thread meant to be resumed is started with
-    ephemeral=False."""
+    ephemeral=False.
+
+    `tmp_dir`, for a workspace-write run, is a writable root that stands in
+    for /tmp and $TMPDIR (temp_flags); a read-only run writes nowhere and
+    ignores it."""
     if sandbox not in SANDBOXES:
         raise ValueError(f"sandbox must be one of {SANDBOXES}")
+    add_dirs = [Path(d) for d in add_dirs]
+    tmp_dir = Path(tmp_dir) if tmp_dir and sandbox == "workspace-write" else None
+    if tmp_dir is not None and tmp_dir not in add_dirs:
+        add_dirs.append(tmp_dir)
     if resume:
         cmd = [codex_bin or binary() or CODEX_BIN, "exec", "resume", str(resume), "--skip-git-repo-check", "--json",
                "-c", f'sandbox_mode="{sandbox}"']
@@ -79,6 +116,8 @@ def build(*, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
             cmd += ["--add-dir", str(d)]
     for feature in disable:
         cmd += ["--disable", str(feature)]
+    if tmp_dir is not None:
+        cmd += temp_flags(tmp_dir)
     if ephemeral:
         cmd.append("--ephemeral")
     if model:
@@ -195,7 +234,7 @@ def _run_streaming(cmd, prompt: str, *, timeout: int, cwd: str, env, on_event) -
 def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
         timeout: int = 600, env: dict | None = None, prefix=(), last_message_dir=None,
         ephemeral: bool = True, resume: str = "", on_event=None, disable=(),
-        codex_bin: str = "") -> dict:
+        codex_bin: str= "", tmp_dir=None) -> dict:
     """One non-interactive run. Returns {"output", "tool_calls",
     "exit_code", "duration_s", "harness_error", "num_turns", "usage",
     "files", "stderr", "thread_id"}: `output` is the agent's final message
@@ -211,7 +250,9 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
     `last_message_dir` is where the `-o` file goes, a directory that user
     can write (the owner's temp dir is not). `on_event`, when given, gets
     each JSONL event as it arrives (the turn's progress line reads the
-    command items); without it the run is read whole at the end."""
+    command items); without it the run is read whole at the end.
+    `tmp_dir` is the run's temp dir in place of /tmp (build, temp_flags);
+    the caller makes it."""
     prefix = list(prefix or ())
     b = codex_bin or binary()
     if not b and not prefix:
@@ -229,7 +270,7 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
             last = Path(td_ctx.name) / "last-message.txt"
         cmd = build(cwd=cwd, model=model, sandbox=sandbox, add_dirs=add_dirs,
                     last_message_file=last, ephemeral=ephemeral, resume=resume,
-                    disable=disable, codex_bin=codex_bin)
+                    tmp_dir=tmp_dir, disable=disable, codex_bin=codex_bin)
         if prefix:
             cmd = prefix + [CODEX_BIN] + cmd[1:]
         start = time.time()
@@ -279,12 +320,58 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
             "stderr": (r.stderr or "")[-500:], "thread_id": parsed["thread_id"]}
 
 
+def _others_can_write_above(d: Path) -> str:
+    """'' when no user but this one and root can write a folder above `d`,
+    else the first that fails."""
+    me = os.geteuid()
+    for a in d.parents:
+        try:
+            st = os.lstat(a)
+        except OSError as e:
+            return f"{a}: {e.strerror}"
+        if st.st_uid not in (me, 0) or st.st_mode & 0o022:
+            return f"{a} is writable by another user"
+    return ""
+
+
+def probe_root(home=None) -> Path:
+    """The folder a probe starts in: PROBE_DIR_NAME in `home`, by default
+    this user's passwd home (not $HOME), made 0700. Codex takes the folder
+    of a `.git` above its working directory for the project root and loads
+    the skills in the `.agents` beside it, and any user can make both in
+    the system temp dir; here only this user and root can write the folder
+    and every folder above it. RuntimeError when it is a link, not this
+    user's, or another user can write a folder above it."""
+    if home is None:
+        import pwd
+        home = pwd.getpwuid(os.geteuid()).pw_dir
+    root = Path(home) / PROBE_DIR_NAME
+    try:
+        root.mkdir(mode=0o700, exist_ok=True)
+        st = os.lstat(root)
+    except OSError as e:
+        raise RuntimeError(f"cannot make {root}: {e}") from e
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid():
+        raise RuntimeError(f"{root} is not a plain folder of this user's")
+    if st.st_mode & 0o077:
+        os.chmod(root, 0o700)
+    why = _others_can_write_above(root)
+    if why:
+        raise RuntimeError(why)
+    return root
+
+
 def probe(timeout: int = PROBE_TIMEOUT_S) -> tuple[bool, str]:
     """(ok, detail): whether codex answers a trivial prompt, read-only, in
-    an empty directory. The detail names the version or the failure."""
+    an empty directory under probe_root. The detail names the version or
+    the failure."""
     if not binary():
         return False, f"codex not on PATH ({CODEX_BIN})"
-    with tempfile.TemporaryDirectory(prefix="ea-codex-probe-") as td:
+    try:
+        root = probe_root()
+    except RuntimeError as e:
+        return False, f"probe refused: {e}"
+    with tempfile.TemporaryDirectory(prefix="ea-codex-probe-", dir=root) as td:
         res = run("Reply with exactly the word OK and nothing else.", cwd=td,
                   sandbox="read-only", timeout=timeout)
     if res["harness_error"]:

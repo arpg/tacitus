@@ -32,6 +32,10 @@ import provider  # noqa: E402
 
 FIXTURE = REPO / "tests" / "evals" / "fixtures" / "empty-calm-day.json"
 
+# The guard's walks up a path see the test's own directories, not the
+# host's temp dir above them (conftest.walks_stop_at_tmp_path).
+pytestmark = pytest.mark.usefixtures("walks_stop_at_tmp_path")
+
 
 def _arg(cmd: list[str], flag: str) -> str:
     assert flag in cmd, f"{flag} missing from {cmd}"
@@ -171,6 +175,28 @@ def test_scratch_parent_refuses_a_checkout_or_work_tree(tmp_path, monkeypatch):
     _scratch_here(monkeypatch, plain)
     assert provider.scratch_parent() == Path(os.path.realpath(plain))
     assert plain.stat().st_mode & 0o777 == 0o700
+
+
+def test_a_marker_above_the_test_dir_is_the_hosts_and_one_inside_it_is_refused(tmp_path, monkeypatch):
+    """These tests hold whatever sits in the host's temp dir above them (an
+    empty `.git` folder, a CLAUDE.md), and the guard still refuses the same
+    markers inside the test's own directory."""
+    above = tmp_path.parent
+    (above / ".git").mkdir()
+    (above / "CLAUDE.md").write_text("the host's")
+    try:
+        plain = tmp_path / "plain"
+        _scratch_here(monkeypatch, plain)
+        assert provider.scratch_parent() == Path(os.path.realpath(plain))
+        (tmp_path / "CLAUDE.md").write_text("planted")
+        with pytest.raises(RuntimeError, match="memory file"):
+            provider.scratch_parent()
+        (tmp_path / ".git").mkdir()
+        with pytest.raises(RuntimeError, match="work tree"):
+            provider.scratch_parent()
+    finally:
+        (above / ".git").rmdir()
+        (above / "CLAUDE.md").unlink()
 
 
 def test_scratch_parent_refuses_the_resident_home(tmp_path, monkeypatch):

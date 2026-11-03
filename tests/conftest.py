@@ -159,3 +159,54 @@ def _no_real_draft_journal(tmp_path, monkeypatch):
         if real:
             monkeypatch.setattr(mod, "JOURNAL", tmp_path / "draft-events.jsonl")
     yield
+
+
+@pytest.fixture
+def walks_stop_at_tmp_path(tmp_path, monkeypatch):
+    """The eval guard's walks up a path (provider._work_tree_of and
+    claude_cli.memory_on_path) report, for a path inside tmp_path, only what
+    is inside tmp_path. tmp_path sits in the system temp dir, where any user
+    can make a `.git` entry or a memory file (Codex's sandbox leaves empty
+    `.git` folders in the folders a run may write), so what is above it is
+    the host's, not the test's. For any other path (the checkout) the walks
+    are the real ones, and every refusal the guard makes is unchanged."""
+    _evals = str(_Path(__file__).resolve().parent / "evals")
+    if _evals not in _sys.path:
+        _sys.path.insert(0, _evals)
+    import claude_cli
+    import provider
+    base = _Path(os.path.realpath(tmp_path))
+
+    def inside(p) -> bool:
+        p = _Path(os.path.abspath(p))
+        return p == base or base in p.parents
+
+    real_tree, real_memory = provider._work_tree_of, claude_cli.memory_on_path
+
+    def work_tree_of(path):
+        found = real_tree(path)
+        return None if found is not None and inside(path) and not inside(found) else found
+
+    def memory_on_path(cwd):
+        found = real_memory(cwd)
+        return [p for p in found if inside(p)] if inside(cwd) else found
+
+    monkeypatch.setattr(provider, "_work_tree_of", work_tree_of)
+    monkeypatch.setattr(claude_cli, "memory_on_path", memory_on_path)
+    return base
+
+
+@pytest.fixture(autouse=True)
+def _no_resident_codex_dirs(monkeypatch):
+    """codex_ghost.ensure_codex_tmp and ensure_lane_cwd make folders in the
+    resident's real state through sudo, and no test may. Every test gets
+    stand-ins that make nothing and name the same folders; a test of the
+    real ones keeps references taken when its file is imported."""
+    for name in ("codex_ghost", "preprocessor.codex_ghost"):
+        mod = _sys.modules.get(name)
+        if mod is None:
+            continue
+        for fn, const in (("ensure_codex_tmp", "CODEX_TMP"), ("ensure_lane_cwd", "LANE_CWD")):
+            if hasattr(mod, fn):
+                monkeypatch.setattr(mod, fn, lambda runner=None, _m=mod, _c=const: getattr(_m, _c))
+    yield
