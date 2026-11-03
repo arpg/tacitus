@@ -258,29 +258,57 @@ def test_the_bot_wires_the_codex_arm_and_the_tier():
 
 # ── what Claude Code loads by itself, for Codex ───────────────────────
 
-def test_the_context_follows_the_directory_the_claude_run_would_use(private):
+def test_the_context_follows_the_directory_the_claude_run_would_use(private, tmp_path, monkeypatch):
     """A Claude run in the deployed tree loads CLAUDE.md, CLAUDE.local.md and
     the tree's memory index by itself; one in a lane directory (the
-    scheduling and slim reply prompts) loads nothing, since those prompts
-    carry their own instructions. Codex gets exactly that set."""
+    scheduling and slim reply prompts) loads only that lane's own memory
+    index, when it has one. Codex gets exactly that set."""
     tree = ct.context_block(ct.BOT_TREE)
     assert "CORE RULES" in tree and "INSTALL FACTS" in tree and MEMORY_INDEX in tree
     assert tree == ct.context_block(None), "the default is the deployed tree"
-    lane = ct.BOT_HOME / ".local" / "state" / "ea-lanes" / "scheduling"
-    assert ct.context_block(lane) == ""
+    # the real finder and reader on a tree of this test's own
+    import resident_io
+    home = tmp_path / "home"
+    lane = home / ".local" / "state" / "ea-lanes" / "scheduling"
+    lane.mkdir(parents=True)
+    monkeypatch.setattr(ct, "BOT_HOME", home)
+    monkeypatch.setattr(ct, "context_files", _REAL_CONTEXT_FILES)
+    monkeypatch.setattr(ct, "_resident_text", _REAL_RESIDENT_TEXT)
+    monkeypatch.setattr(resident_io, "read_text", lambda p: Path(p).read_text() if Path(p).is_file() else "")
+    assert ct.context_block(lane) == "", "a lane directory carries no instruction file"
+    mem = ct.memory_dir(lane)
+    mem.mkdir(parents=True)
+    (mem / "MEMORY.md").write_text("- [lane note](n.md): a lane fact")
+    block = ct.context_block(lane)
+    assert "lane note" in block and "=== INSTRUCTIONS" not in block, "the lane's own memory, nothing else"
     run = _codex([{"output": "ok", "thread_id": "th"}])
+    monkeypatch.setattr(ct, "context_files", lambda cwd: [])
+    monkeypatch.setattr(ct, "_resident_text", lambda p: "")
     ct.run_turn("SCHED", thread_key="t-s", run_id="r", live=True, fresh_prompt="SCHED", codex_run=run, claude_cwd=lane)
     assert run.calls[0]["prompt"].startswith("SCHED"), "the scheduling prompt goes alone, as it does to Claude"
 
 
-def test_the_memory_is_read_only_to_codex_as_it_is_to_a_claude_lane():
+
+def test_the_memory_is_read_only_to_codex_as_it_is_to_a_claude_lane(tmp_path, monkeypatch):
     import resident_write_paths as rwp
     assert "Edit(~/.claude/projects/*/memory/**)" in rwp.STEERING_RULES
     block = ct.context_block(ct.BOT_TREE)
     assert str(ct.memory_dir(ct.BOT_TREE)) in block and "The folder is read-only" in block
     assert "preferences.py add" in block, "a standing rule of the user's goes to the store, not to memory"
     assert "\u2014" not in ct._MEMORY_HEAD
-    assert ct.memory_dir(ct.BOT_TREE) not in ct.live_write_paths()
+    # the real write list on a tree of this test's own: the memory folder,
+    # the Claude settings and ~/.local are not in it
+    home, ea = tmp_path / "home", tmp_path / "home" / ".ea"
+    for d in ("state", "config", ".claude/projects/x/memory", ".local/codex-vendor", "presentations"):
+        (home / d if d.startswith(".") or d == "presentations" else ea / d).mkdir(parents=True)
+    monkeypatch.setattr(ct, "BOT_HOME", home)
+    monkeypatch.setattr(ct, "REAL_EA_DIR", ea)
+    got = _REAL_LIVE_WRITE_PATHS()
+    assert ea / "state" in got and home / "presentations" in got
+    for off in (home, home / ".claude", home / ".claude" / "projects" / "x" / "memory", home / ".local"):
+        assert off not in got, off
+    assert not any(str(d).startswith(str(home / ".claude")) for d in got)
+
 
 
 def test_the_memory_index_is_cut_where_claude_code_cuts_it(monkeypatch):
@@ -327,6 +355,26 @@ def test_the_memory_folder_is_the_one_claude_code_keeps_for_the_directory():
                                           / "memory")
 
 
+def test_the_home_roots_are_made_before_the_write_list(tmp_path, monkeypatch):
+    """A Claude turn makes ~/proposals or ~/presentations on first use
+    (overleaf_tools clone, a deck build); a Codex turn writes only the
+    folders it was given, so they are made with the live working
+    directory, as the resident, and the write list then carries them."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(ct, "BOT_HOME", home)
+    monkeypatch.setattr(ct.codex_ghost, "_bot_env", lambda extra=None: ["env"])
+    cmds = []
+    _REAL_ENSURE_LIVE_CWD(runner=lambda c, inp: cmds.append(c))
+    assert cmds and cmds[0][:5] == ["env", "install", "-d", "-m", "750"]
+    made = cmds[0][5:]
+    assert made[0] == str(ct.LIVE_CWD)
+    assert set(made[1:]) == {str(d) for d in ct.home_roots()}
+    assert {d.name for d in ct.home_roots()} == {"presentations", "doc-review", "proposals",
+                                                "letters-of-recommendation"}
+    assert all(d.parent == home for d in ct.home_roots())
+
+
 def test_a_live_turn_writes_where_a_claude_turn_writes(tmp_path, monkeypatch):
     """The folders of resident_write_paths (Claude's Write and Edit rules)
     and the ones its allowlisted scripts write (config by an atomic
@@ -361,7 +409,9 @@ def test_the_live_directory_is_made_as_the_resident_inside_the_state():
     cmds = []
     _REAL_ENSURE_LIVE_CWD(runner=lambda c, inp: cmds.append(c))
     assert cmds[0][:4] == ["sudo", "-n", "-u", cg.RESIDENT]
-    assert cmds[0][-5:] == ["install", "-d", "-m", "750", str(ct.LIVE_CWD)]
+    tail = cmds[0][cmds[0].index("install"):]
+    assert tail[:5] == ["install", "-d", "-m", "750", str(ct.LIVE_CWD)]
+    assert tail[5:] == [str(d) for d in ct.home_roots()], "the home roots, made with it"
     assert ct.LIVE_CWD.parent == ct.REAL_EA_DIR / "state"
 
 
