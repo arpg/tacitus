@@ -446,7 +446,7 @@ def test_the_app_stays_small():
     # 4,990: 4,880 plus the Settings menu (one entry at the foot with its hint, a row per page with
     #     what it holds, Back and Close, a page at a time, where notifications go by maker, the
     #     connection in words, and the sheet docked on a phone).
-    assert lines <= 4990, f"{lines} lines: the contract keeps the app near 4,990 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done and the Settings menu"
+    assert lines <= 5030, f"{lines} lines: the contract keeps the app near 5,030 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu and a send that goes again through a restart"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -790,6 +790,41 @@ def test_a_dropped_stream_resumes_from_the_last_event(app):
     assert any(s["since"] == seen for s in stub.streams), stub.streams
     expect(page.locator("#messages .msg")).to_have_count(6)
     assert not [e for e in errors if "EventSource" not in e and "503" not in e], errors
+
+
+def test_a_send_the_host_refuses_goes_again_with_the_same_nonce(app):
+    """A deploy restarts the bot: the send meets a 503 (or no host at
+    all). The composer keeps the text, says so, and sends again with the
+    same nonce, so the host posts it once."""
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    open_thread(page, "Draft a reply")
+    stub.refuse_posts = 2
+    page.fill("#text", "Hold this thought")
+    page.press("#text", "Enter")
+    expect(page.locator("#composer-note")).to_have_text("Tacitus is not answering (a restart?). Trying again.")
+    assert page.input_value("#text") == "Hold this thought"
+    wait_for(lambda: stub.posts, timeout=15)
+    assert len(stub.refused_posts) == 2 and len(stub.posts) == 1
+    assert stub.post_nonces[0] and stub.post_nonces[0] == stub.refused_posts[0].get("nonce")
+    expect(page.locator("#messages .msg.own:has-text('Hold this thought')")).to_be_visible()
+    assert page.input_value("#text") == "" and page.locator("#composer-note").text_content() == ""
+    assert not [e for e in errors if "503" not in e], errors
+
+
+def test_the_open_thread_is_read_again_when_the_stream_comes_back(app):
+    """What the stream missed while it was down (a message the host
+    stored with no event, as a restart in the middle of a reply can leave)
+    shows once the stream is back: the open thread is read again."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app()
+    open_thread(page, "Draft a reply")
+    expect(page.locator("#live.on")).to_be_attached()
+    tk = stub.messages[0]["thread_key"]
+    stub.drop_streams(refuse=1)
+    stub.add(W.DM, "Missed while away", author="bot", thread_key=tk)   # stored, no event
+    expect(page.locator("#messages .msg:has-text('Missed while away')")).to_be_visible(timeout=15000)
 
 
 def test_keys_with_reserved_characters_reach_the_api(app):
