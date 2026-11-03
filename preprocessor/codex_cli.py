@@ -50,9 +50,13 @@ def version() -> str:
 
 
 def build(*, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
-          last_message_file=None, ephemeral: bool = True, resume: str = "") -> list[str]:
+          last_message_file=None, ephemeral: bool = True, resume: str = "",
+          disable=(), codex_bin: str = "") -> list[str]:
     """The command line for one run. The prompt goes on stdin (`-`), so
-    no instruction text ever sits in a process listing.
+    no instruction text ever sits in a process listing. `disable` names
+    Codex features to turn off for the run (`--disable`; hosted_text
+    turns every tool off); `codex_bin` names the binary (default: the one
+    on PATH).
 
     `resume` names a thread from an earlier run (its `thread_id`): the
     command is then `codex exec resume <id>`, which keeps that thread's
@@ -63,16 +67,18 @@ def build(*, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
     if sandbox not in SANDBOXES:
         raise ValueError(f"sandbox must be one of {SANDBOXES}")
     if resume:
-        cmd = [binary() or CODEX_BIN, "exec", "resume", str(resume), "--skip-git-repo-check", "--json",
+        cmd = [codex_bin or binary() or CODEX_BIN, "exec", "resume", str(resume), "--skip-git-repo-check", "--json",
                "-c", f'sandbox_mode="{sandbox}"']
         if add_dirs:
             roots = ", ".join(json.dumps(str(d)) for d in add_dirs)
             cmd += ["-c", f"sandbox_workspace_write.writable_roots=[{roots}]"]
     else:
-        cmd = [binary() or CODEX_BIN, "exec", "--skip-git-repo-check", "--color", "never",
+        cmd = [codex_bin or binary() or CODEX_BIN, "exec", "--skip-git-repo-check", "--color", "never",
                "--json", "--sandbox", sandbox, "-C", str(cwd)]
         for d in add_dirs:
             cmd += ["--add-dir", str(d)]
+    for feature in disable:
+        cmd += ["--disable", str(feature)]
     if ephemeral:
         cmd.append("--ephemeral")
     if model:
@@ -188,7 +194,8 @@ def _run_streaming(cmd, prompt: str, *, timeout: int, cwd: str, env, on_event) -
 
 def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
         timeout: int = 600, env: dict | None = None, prefix=(), last_message_dir=None,
-        ephemeral: bool = True, resume: str = "", on_event=None) -> dict:
+        ephemeral: bool = True, resume: str = "", on_event=None, disable=(),
+        codex_bin: str = "") -> dict:
     """One non-interactive run. Returns {"output", "tool_calls",
     "exit_code", "duration_s", "harness_error", "num_turns", "usage",
     "files", "stderr", "thread_id"}: `output` is the agent's final message
@@ -206,7 +213,7 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
     each JSONL event as it arrives (the turn's progress line reads the
     command items); without it the run is read whole at the end."""
     prefix = list(prefix or ())
-    b = binary()
+    b = codex_bin or binary()
     if not b and not prefix:
         return {"output": "", "tool_calls": [], "exit_code": 127, "duration_s": 0.0,
                 "harness_error": f"codex not found ({CODEX_BIN})", "num_turns": 0,
@@ -221,7 +228,8 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
         else:
             last = Path(td_ctx.name) / "last-message.txt"
         cmd = build(cwd=cwd, model=model, sandbox=sandbox, add_dirs=add_dirs,
-                    last_message_file=last, ephemeral=ephemeral, resume=resume)
+                    last_message_file=last, ephemeral=ephemeral, resume=resume,
+                    disable=disable, codex_bin=codex_bin)
         if prefix:
             cmd = prefix + [CODEX_BIN] + cmd[1:]
         start = time.time()

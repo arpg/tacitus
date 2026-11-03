@@ -3308,8 +3308,9 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     expect(review.locator("input[value=hosted]")).to_be_checked()
     for v in ("local", "auto"):
         expect(review.locator(f"input[value={v}]")).to_be_disabled()
-    expect(review.locator(".s-floor")).to_have_text("Always Hosted, on Claude: these are judgment calls.")
-    expect(review.locator(".s-now")).to_have_text("Now on Claude. Only Claude makes these judgment calls.")
+    expect(review.locator(".s-floor")).to_have_text("Always Hosted: these are judgment calls.")
+    expect(review.locator(".s-now")).to_have_text(
+        "Now on Claude. These are judgment calls, so your own model never makes them.")
     expect(chat.locator(".s-hosted .s-sub")).to_have_text("Hosted model")
     expect(chat.locator("input[name=hosted-chat][value=codex]")).to_be_checked()
     expect(chat.locator(".s-hosted label")).to_have_text(["Claude", "Codex"])
@@ -3331,7 +3332,8 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     review.locator("input[value=local]").check()
     page.click("#settings-save")
     expect(page.locator("#settings-note")).to_have_text(
-        'Not saved: "Checking its own work" always stays on Hosted: only Claude makes these judgment calls.')
+        'Not saved: "Checking its own work" always stays on Hosted: these are judgment calls, '
+        'so your own model never makes them.')
     assert stub.routing["rows"][2]["value"] == "hosted"
     page.click("#settings button[type=submit]")
     expect(page.locator("#settings")).not_to_be_visible()

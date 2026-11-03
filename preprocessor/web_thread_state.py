@@ -182,33 +182,34 @@ def model_answer(prompt: str) -> str | None:
     return str(res.get("content") or "")
 
 
-def _claude(prompt: str) -> str:
-    """One tool-less Claude run as the resident, as the reconcile and the
+def _hosted(prompt: str) -> str:
+    """One tool-less hosted call (hosted_text: Claude, or Codex when the
+    routing table names it for `thread_state`), as the reconcile and the
     backstop make theirs; its answer text. Raises on a failed run."""
     try:
         import ea_config
-        import mail_privacy
+        import hosted_text
     except ModuleNotFoundError:  # imported as preprocessor.<mod>
-        from preprocessor import ea_config, mail_privacy
+        from preprocessor import ea_config, hosted_text
     model = ea_config.get_models().get(TASK) or HOSTED_MODEL
-    r = mail_privacy._run_claude(prompt, model, "", timeout=HOSTED_TIMEOUT_S)
+    r = hosted_text.run(TASK, prompt, model, timeout=HOSTED_TIMEOUT_S)
     if r.get("rc") or not r.get("text"):
-        raise RuntimeError(f"claude rc={r.get('rc')}: {(r.get('stderr') or '')[-160:]}")
+        raise RuntimeError(f"{r.get('model_used')} rc={r.get('rc')}: {(r.get('stderr') or '')[-160:]}")
     return str(r["text"])
 
 
 # The hosted runner; tests put a fake here.
-CLAUDE = _claude
+HOSTED = _hosted
 
 
 def hosted_answer(prompt: str) -> str | None:
-    """Claude's text for a batch of threads, or None when the route is
-    local or the run failed (logged once an hour; the states stay as they
-    were)."""
+    """The hosted model's text for a batch of threads, or None when the
+    route is local or the run failed (logged once an hour; the states stay
+    as they were)."""
     try:
         if route() not in ("hosted", "auto"):
             return None
-        return CLAUDE(prompt)
+        return HOSTED(prompt)
     except Exception as e:
         _say_once("hosted-failed", f"web chat: the hosted model did not judge the thread states; "
                                    f"they stay as they were: {str(e)[:300]}", logging.WARNING)

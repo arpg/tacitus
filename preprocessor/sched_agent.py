@@ -1359,25 +1359,27 @@ def _backstop_material(job: dict, turn: dict, results: list[dict]) -> dict:
             "reply": str(turn.get("reply") or "")[:2000]}
 
 
-def _claude_json(prompt: str, schema: dict, model: str) -> tuple[dict, dict]:
-    """One tool-less Claude run as the resident; (answer, meta)."""
-    import mail_privacy
-    r = mail_privacy._run_claude(prompt, model, "")
+def _hosted_json(prompt: str, schema: dict, model: str) -> tuple[dict, dict]:
+    """One tool-less hosted call (hosted_text, the `review` task: Claude,
+    or Codex when the routing table names it); (answer, meta)."""
+    import hosted_text
+    r = hosted_text.run("review", prompt, model)
     if r.get("rc") or not r.get("text"):
-        raise RuntimeError(f"claude rc={r.get('rc')}: {(r.get('stderr') or '')[-160:]}")
+        raise RuntimeError(f"{r.get('model_used')} rc={r.get('rc')}: {(r.get('stderr') or '')[-160:]}")
     text = str(r["text"]).strip()
     try:
         obj = json.loads(text[text.find("{"):text.rfind("}") + 1])
     except ValueError:
         raise RuntimeError("the backstop's answer is not JSON") from None
-    return obj, {"cost_usd": r.get("cost_usd")}
+    return obj, {"cost_usd": r.get("cost_usd"), "model_used": r.get("model_used") or "claude"}
 
 
 def backstop_review(job: dict, turn: dict, results: list[dict], *, judge=None) -> dict:
-    """Claude's verdict on a live turn's writes: {"verdict", "issues",
-    "note", "model", "cost_usd"}. `judge(prompt, schema, model)` runs
-    the review; tests replace it."""
-    judge = judge or _claude_json
+    """The hosted model's verdict on a live turn's writes: {"verdict",
+    "issues", "note", "model", "cost_usd"}; `model` is "codex" when Codex
+    gave it. `judge(prompt, schema, model)` runs the review; tests
+    replace it."""
+    judge = judge or _hosted_json
     model = backstop_model()
     obj, meta = judge(BACKSTOP_PROMPT.format(**_backstop_material(job, turn, results)),
                       BACKSTOP_SCHEMA, model)
@@ -1386,8 +1388,9 @@ def backstop_review(job: dict, turn: dict, results: list[dict], *, judge=None) -
     # sentence cut mid-word reads as a fault of its own.
     issues = [{"kind": str(i.get("kind") or "other")[:20], "detail": str(i.get("detail") or "")[:1000]}
               for i in (obj.get("issues") or []) if isinstance(i, dict)][:12]
+    used = "codex" if (meta or {}).get("model_used") == "codex" else model
     return {"verdict": verdict, "issues": issues, "note": str(obj.get("note") or "")[:600],
-            "model": model, "cost_usd": (meta or {}).get("cost_usd")}
+            "model": used, "cost_usd": (meta or {}).get("cost_usd")}
 
 
 def withdraw_writes(turn: dict, job: dict, *, runner=None, remover=None) -> list[dict]:
