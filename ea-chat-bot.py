@@ -11097,7 +11097,7 @@ def _remote_llm_shadow_scheduling(*, run_id, channel, thread_ts, msg_ts, user_ms
 
 
 def _codex_turn_live(*, prompt, fresh_prompt, run_id, thread_ts, lane,
-                     progress=None) -> "tuple[ClaudeResult | None, dict]":
+                     progress=None, claude_cwd=None) -> "tuple[ClaudeResult | None, dict]":
     """The Codex arm's turn (codex_turn.run_turn, live): the prompt this
     turn built, on Codex as the resident, on the chat thread's own Codex
     thread. Returns (the result to post, the harness record), or (None,
@@ -11106,7 +11106,7 @@ def _codex_turn_live(*, prompt, fresh_prompt, run_id, thread_ts, lane,
     try:
         from preprocessor import codex_turn as _ct
         rec = _ct.run_turn(prompt, thread_key=thread_ts, run_id=run_id, live=True,
-                           fresh_prompt=fresh_prompt, lane=lane,
+                           fresh_prompt=fresh_prompt, lane=lane, claude_cwd=claude_cwd,
                            on_event=progress.codex_event if progress is not None else None)
     except Exception as e:
         log.warning(f"codex arm: raised, Claude takes the turn: {e}")
@@ -11120,7 +11120,7 @@ def _codex_turn_live(*, prompt, fresh_prompt, run_id, thread_ts, lane,
 
 
 def _codex_ghost_turn(*, run_id, channel, thread_ts, user_id, user_msg, task_block, cr,
-                      elapsed, response, model, prompt="", fresh_prompt="") -> None:
+                      elapsed, response, model, prompt="", fresh_prompt="", claude_cwd="") -> None:
     """Hand one finished Claude turn to the Codex ghost arm
     (codex_ghost.enqueue): the same prompt runs on Codex as the resident
     through the production turn path with posting off (codex_turn,
@@ -11140,6 +11140,7 @@ def _codex_ghost_turn(*, run_id, channel, thread_ts, user_id, user_msg, task_blo
         job = {"kind": "chat", "lane": _turn_lane(channel, user_id), "source_run_id": run_id,
                "channel": channel, "thread_ts": thread_ts, "user_msg": user_msg,
                "task_block": task_block, "model": "", "prompt": prompt, "fresh_prompt": fresh_prompt,
+               "claude_cwd": claude_cwd,
                "claude": {"output": response, "tools": tools, "elapsed_s": round(float(elapsed or 0), 1),
                           "model": model}}
         threading.Thread(target=_cg.enqueue, args=(job,), daemon=True).start()
@@ -12136,9 +12137,13 @@ Reminders:
         # events it made are surfaced by run id as after a Claude turn. A
         # harness error or an empty answer hands the turn to Claude.
         if live_cr is None and arm == "codex":
+            # Codex gets what a Claude run in this turn's directory loads
+            # by itself (codex_turn.context_block): the deployed tree, or
+            # the lane directory of the scheduling and slim reply prompts.
             live_cr, codex_turn_rec = _codex_turn_live(
                 prompt=prompt, fresh_prompt=full_prompt, run_id=run_id, thread_ts=thread_ts,
-                lane=_turn_lane(channel, user_id), progress=progress)
+                lane=_turn_lane(channel, user_id), progress=progress,
+                claude_cwd=str(prompt_cwd or EA_BOT_SCRIPT_DIR))
             if live_cr is None:
                 arm_fallback = ("codex:" + str((codex_turn_rec or {}).get("harness_error") or "no answer"))[:160]
                 log.warning(f"model arm: {arm_fallback}; Claude takes the turn on {MODEL}")
@@ -12660,7 +12665,8 @@ Reminders:
             _codex_ghost_turn(
                 run_id=run_id, channel=channel, thread_ts=thread_ts, user_id=user_id,
                 user_msg=user_msg, task_block=task_block, cr=cr, elapsed=elapsed,
-                response=response, model=run_model, prompt=prompt, fresh_prompt=full_prompt)
+                response=response, model=run_model, prompt=prompt, fresh_prompt=full_prompt,
+                claude_cwd=str(prompt_cwd or EA_BOT_SCRIPT_DIR))
 
     except _TurnCancelled:
         # The user stopped this turn: no reply. What it staged before the

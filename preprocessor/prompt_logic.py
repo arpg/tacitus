@@ -281,14 +281,37 @@ def _site_keywords() -> frozenset[str]:
     return frozenset(w for w in words if len(w) >= 3)
 
 
+# A clock time in a thread ("10:30 to 11:00 am", "3pm"); two of them mark a
+# thread that is about meeting times even when no scheduling phrase occurs
+# (a Send card for a reply that offers times, a triage that proposed some).
+_CLOCK_TIME = re.compile(r"\b\d{1,2}:\d{2}\b|\b\d{1,2}\s*(?:am|pm)\b")
+# A follow-up about the times themselves: a day, a date, a week, a time of
+# day, a verdict on the offered times, or "offer X too".
+_TIME_FOLLOWUP = re.compile(
+    r"\b(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day)?s?\b"
+    r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b"
+    r"|\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b"
+    r"|\b(?:week|weekend|morning|afternoon|evening|tomorrow|today|tonight|holiday|thanksgiving)\b"
+    r"|\b(?:won'?t|doesn'?t|does not|will not|wouldn'?t|isn'?t|not going to)\s+(?:\w+\s+){0,2}work\b"
+    r"|\b(?:times?|slots?|options?|earlier|later|instead|offer)\b")
+
+
+def _scheduling_thread(ctx: str) -> bool:
+    """Is the thread (lowercased) about meeting times?"""
+    return (any(kw in ctx for kw in MODULE_KEYWORDS["scheduling"])
+            or any(p.search(ctx) for p in MODULE_PATTERNS["scheduling"])
+            or len(_CLOCK_TIME.findall(ctx)) >= 2)
+
+
 def detect_needed_modules(msg: str, context: str = "") -> set[str]:
     """Determine which instruction modules a message needs, by keyword match.
 
     `context` is the thread the message answers. It adds only
-    `scheduling`, and only when the message itself asks for drafting: a
-    reply written for a thread that is about meeting someone ("asking if
-    you want to meet with Tyson") must propose times, and the lane needs
-    the scheduling guide to do that."""
+    `scheduling`, in a thread about meeting times, when the message asks
+    for drafting or talks about the times: a reply written for a thread
+    about meeting someone ("asking if you want to meet with Tyson") must
+    propose times, and a follow-up such as "that's Thanksgiving week, it
+    won't work" must find new ones; both need the scheduling guide."""
     lower = msg.lower()
     needed = set()
     keyword_matched = set()
@@ -303,12 +326,11 @@ def detect_needed_modules(msg: str, context: str = "") -> set[str]:
     for module, patterns in MODULE_PATTERNS.items():
         if module not in needed and any(p.search(lower) for p in patterns):
             needed.add(module)
-    if context and "drafting" in needed and "scheduling" not in needed:
-        ctx = context.lower()
-        if (any(kw in ctx for kw in MODULE_KEYWORDS["scheduling"])
-                or any(p.search(ctx) for p in MODULE_PATTERNS["scheduling"])):
-            needed.add("scheduling")
-            keyword_matched.add("scheduling")
+    if (context and "scheduling" not in needed
+            and ("drafting" in needed or _TIME_FOLLOWUP.search(lower))
+            and _scheduling_thread(context.lower())):
+        needed.add("scheduling")
+        keyword_matched.add("scheduling")
     # Scheduling false-positive guard: informational "meeting with" in
     # past-tense or "already" context should not trigger scheduling.
     # Only applies when scheduling was triggered by patterns alone.

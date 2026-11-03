@@ -492,6 +492,23 @@ def test_a_meeting_yes_loads_the_scheduling_guide():
     assert "scheduling" not in detect_needed_modules("what did Lior say?", ctx)
 
 
+def test_a_follow_up_about_the_offered_times_keeps_the_scheduling_guide():
+    """A reply to a Send card that offers times ("that's Thanksgiving week,
+    it won't work") had no module, so the turn found new times without the
+    scheduling guide or the user's scheduling rules. A thread with two
+    clock times is about meeting times; a follow-up about days, weeks or
+    the times themselves in it loads the guide."""
+    card = ("[EA]: Draft to Quill re: materials. Body: Would Nov 23, 10:30 to 11:00 am MT, "
+            "or Nov 24, 10:45 to 11:15 am MT work for you?")
+    for msg in ("That's the week of thanksgiving. It's actually not going to work.",
+                "Offer Wren's slots too", "Tuesday is better", "can you do something earlier?"):
+        assert "scheduling" in detect_needed_modules(msg, card), msg
+    # Not a word about the times, or a thread with no times in it: nothing.
+    assert "scheduling" not in detect_needed_modules("file this under the minor project", card)
+    assert "scheduling" not in detect_needed_modules("That won't work.", "[EA]: The budget memo is ready.")
+    assert "scheduling" not in detect_needed_modules("Tuesday is better", "[EA]: Lunch at 12 noon is fine.")
+
+
 def test_room_scheduling_asks_are_pure_scheduling():
     """The bot sends a room ask to the scheduling pipeline only when the
     modules are exactly {"scheduling"}; these everyday asks must get there,

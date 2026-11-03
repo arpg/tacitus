@@ -120,13 +120,12 @@ gate briefing` finds a GO no older than 14 days (`EA_HARNESS_FORCE=1`
 overrides); otherwise the Claude run goes ahead and the log says why.
 
 **Chat turns** (`preprocessor/codex_turn.py`): the arm `codex` runs a
-chat turn on Codex as the resident. The bot builds the turn's prompt as
-it does for Claude (the fresh prompt with the operating instructions, or
-the slim continuation) and `run_turn` sends it to a Codex thread kept
-per chat thread (`codex exec` once, `codex exec resume` after), with
-writes confined to the EA state, docs and research directories and the
-run id the bot minted, so drafts and staged events surface as after a
-Claude turn. A topic gets the arm with `use codex`, one message with
+chat turn on Codex as the resident. The bot builds the turn's fresh
+prompt as it does for Claude, and `run_turn` sends it, behind what a
+Claude run would load by itself, to a new Codex thread (`codex exec`;
+see "No resume" below), with writes confined to the folders a Claude
+turn writes and the run id the bot minted, so drafts and staged events
+surface as after a Claude turn. A topic gets the arm with `use codex`, one message with
 `@codex`, a lane with `tiers.lanes` in ea-config.json; the footer says
 "EA · Codex". A harness error or an empty answer hands the turn to
 Claude. The same function with `live=False` is the ghost's chat path:
@@ -135,6 +134,34 @@ real path replaced in the prompt, the mediator recording every write,
 the staged files read back for the judge). The email-author subagent
 has no Codex twin yet: a turn that needs it uses `email_writer.py`
 (the remote writer) or writes the body itself.
+
+**What Claude Code loads by itself.** A Claude run loads the instruction
+files on its path (CLAUDE.md, CLAUDE.local.md, .claude/CLAUDE.md from the
+root down, and the resident's ~/.claude/CLAUDE.md) and the first 200
+lines of its project's MEMORY.md, so the bot's prompt leaves out what it
+loads. Codex loads none of them. `codex_turn.context_block` puts the same
+set ahead of each Codex prompt, for the directory the Claude run would
+have used (`claude_cwd`: the deployed tree, or the lane directory of the
+scheduling and slim reply prompts, which loads nothing). Files are read
+as the resident (resident_io). The memory is read-only to Codex, as
+`resident_write_paths.STEERING_RULES` make it to every Claude lane; a
+standing rule of the user's goes to `preferences.py add`.
+
+**What a live turn may write.** A Claude turn's Write and Edit tools may
+change only the `resident_write_paths` paths, and its allowlisted scripts
+write with the resident's own permissions. Codex's sandbox confines every
+write, the scripts' included, so a live turn's writable folders are those
+paths plus the scripts' folders (`SCRIPT_WRITE_DIRS`: config, which
+`preferences.py` replaces atomically, logs and uploads), and /tmp. It
+runs in `~/.ea/state/codex-live` (mode 750): Codex makes its working
+directory writable and cannot start in the read-only deployed tree.
+
+**No resume.** `codex exec resume` drops the writable roots: the resumed
+turn's sandbox policy has none, `-c sandbox_workspace_write.writable_roots`
+is ignored, and resume takes no `--add-dir` (verified on 0.166). Every
+turn is a new Codex thread on the bot's fresh prompt, which carries the
+chat thread's history; the registry keeps the last thread id and the turn
+count.
 
 ## Not covered
 

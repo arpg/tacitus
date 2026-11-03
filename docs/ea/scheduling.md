@@ -38,6 +38,16 @@ An open proposal returns separate windows; offered times (an attendee
 with `availability`) and a poll reply's `--num-options 999` list every
 feasible quarter-hour start inside the window.
 
+**How many times, and how to write them.** A reply that proposes times
+offers three distinct options, unless the user or the thread names
+another count. Solver options that touch or overlap on one day are one
+option: write the joined range ("Monday, Nov 30, 9:00 to 10:00 am MT")
+and say that any slot of the meeting's length in it works. Ask the solver for more options
+than you will offer (`--num-options 6`), so that three distinct ones
+remain after the join, on different days when the solver has them. When
+the user turns the offered times down, run the solver again on the new
+window and offer three again.
+
 **A draft the user wrote.** `search-mail` and `list-mail` rows carry
 `is_draft` and `own`. "Finish the draft I wrote" means read that row with
 `get-message`, keep the user's words, and `update-draft` it; never

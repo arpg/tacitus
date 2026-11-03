@@ -6,6 +6,33 @@ repository that preceded it.
 
 ## Unreleased
 
+- **Codex gets what Claude Code loads by itself.** A Claude chat turn in
+  the deployed tree loads CLAUDE.md, CLAUDE.local.md and the resident's
+  memory index on its own, so the bot's prompt leaves them out; a Codex
+  turn got none of them, and its prompt said they were loaded. Each Codex
+  turn now gets exactly what a Claude run in the same directory loads
+  (`codex_turn.context_block`): the three for the deployed tree, nothing
+  for the lane directories of the scheduling and slim reply prompts. The
+  memory is read-only to Codex, as it is to every Claude lane. A live
+  chat turn may end on a question for the user.
+- **A live Codex turn writes where a Claude turn writes.** It ran in the
+  resident's home, which Codex makes writable, so a turn could write the
+  Codex binary, the Claude settings and the memory. It now runs in
+  `state/codex-live`, and its writable folders are the Claude file tools'
+  paths (`resident_write_paths`) plus the folders the allowlisted scripts
+  write (config, logs, uploads).
+- **Every Codex turn is a new thread.** `codex exec resume` drops the
+  writable roots (a resumed turn's sandbox policy has none, and resume
+  takes no `--add-dir`), so a resumed turn could write nothing but its
+  working directory and `/tmp`. Each turn now starts a new Codex thread
+  on the bot's fresh prompt, which carries the chat thread's history.
+- **A follow-up about offered times keeps the scheduling guide.** A
+  thread with two clock times counts as a scheduling thread, and a reply
+  in it about days, weeks or the times themselves ("that's Thanksgiving
+  week, it won't work", "offer X too") loads the guide and the user's
+  scheduling rules. The guide now says to offer three distinct times and
+  to join solver options that touch on one day into one range.
+
 - **The EA reads Google Docs.** `preprocessor/drive_client.py` reads a
   Google Doc (as Markdown), Sheet (CSV of the first sheet) or Slides
   deck by its link, searches Drive, and saves a stored file for
