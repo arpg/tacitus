@@ -186,9 +186,14 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
             rec = it.get("remote_record") or {}
             due, tags = str(rec.get("deadline") or "")[:10], []
             d = _date(due)
+            optional = bool(d) and _ledger.record_asks_nothing(rec)
             if d and d < today and str(rec.get("scheduling") or "").lower() in _ledger.MEETING_KINDS:
                 # The record's date is the meeting's; held, it is history.
                 tags, due = [f"the meeting was {d:%b} {d.day}"], ""
+            elif optional:
+                # Nothing is asked of him: the date is a chance or an
+                # event, never a due date (off the banner and the do-list).
+                tags, due = [_optional_tag(d, today)], ""
             item = {"kind": kind, "title": it.get("subject") or "(no subject)",
                     "who": it.get("from_name") or it.get("from") or "", "from": it.get("from") or "",
                     "message_id": mid, "conversation_id": conv,
@@ -204,6 +209,7 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                     # came after (a reply after it never reaches the briefing).
                     "replied_earlier": bool(it.get("user_already_replied_in_thread")),
                     "unread_by_remote": bool(it.get("remote_unread")),
+                    "optional": optional,
                     "ledger_id": row.get("id") or "",
                     "brief": row.get("thread_brief") if isinstance(row.get("thread_brief"), dict) else None}
             if item["ledger_id"]:
@@ -228,7 +234,11 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
             tags.append(f"no answer to your question since {unanswered}")
         due = str(o.get("deadline") or "")[:10]
         spent = _ledger.date_spent(o, today)
-        if spent:
+        optional = bool(_date(due)) and _ledger.lapses(o)
+        if optional and not spent:
+            tags.append(_optional_tag(_date(due), today))
+            due = ""
+        elif spent:
             # A passed date that is not overdue work (the meeting was
             # held; the user wrote back after it) leaves the date banner
             # and reaches the model as history, not as a due date.
@@ -246,9 +256,16 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                   "conversation_id": o.get("conversation_id") or "",
                   "summary": (o.get("notes") or "")[:400],
                   "last_action": _last_action(o),
-                  "due": due, "tags": tags,
+                  "due": due, "tags": tags, "optional": optional,
                   "type": o.get("type") or ""})
     return out
+
+
+def _optional_tag(d: date, today: date) -> str:
+    when = "today" if d == today else f"{d:%b} {d.day}"
+    if d < today:
+        return f"optional: nothing was asked of you; it ended {when}"
+    return f"optional: nothing was asked of you; open until {when}"
 
 
 def top_refs(b: dict, cands: dict[str, dict]) -> list[dict]:
@@ -286,7 +303,7 @@ It is {now}.
 
 He wants an ordered do-list fitted to the gaps in his day, then the flexes, then one-line bookkeeping. Every line tells him what to do. Write short plain sentences. Never write an em-dash. Use only the items given, and pick them by ref.
 
-- get_done_today: at most 5 refs, in the order to do them. Start from today_top's order. Drop an item whose summary or last action shows it is settled. An item with `wrote_since` (he has written to that person since their mail) or `in_slack` goes in only if the ask is plainly still open, and the why says what he already did. An item with `replied_earlier` is a new message in a thread he already answered: it goes in, or gets a draft, only when it asks him something new. You may promote an item the ranking cannot see, and the why says so. `when` is a window from today's free time ("before your 9:30", "in the 1-2:30 gap", "first thing"). `why` is a few words.
+- get_done_today: at most 5 refs, in the order to do them. Start from today_top's order. Drop an item whose summary or last action shows it is settled. An item with `wrote_since` (he has written to that person since their mail) or `in_slack` goes in only if the ask is plainly still open, and the why says what he already did. An item with `replied_earlier` is a new message in a thread he already answered: it goes in, or gets a draft, only when it asks him something new. You may promote an item the ranking cannot see, and the why says so. `when` is a window from today's free time ("before your 9:30", "in the 1-2:30 gap", "first thing"). `why` is a few words on what is left to do or what it unblocks; never the due date alone, which code adds from `due_in`. An item tagged optional asks nothing of him: it never goes in get_done_today or needs_you. A meeting is on his calendar, not a to-do: it goes in only for work he must do before it.
 - flexes: at most 4 more refs, one short line each.
 - drafts: replies he would send that the item's summary and ask already answer: a yes, an answer he gave before, a link or a form, an intro, a meeting he already agreed. For each, what the reply must say in one or two sentences. When their ask is a question only he can answer (what he plans, what he needs, his use case, his preference), the reply only thanks them and says he will follow up; never answer for him, and never repeat their own message back to them. Never draft for money, a contract or a legal matter; a dean or a program officer; a decline; a decision only he can make; mail where he is only copied. Those go to needs_you.
 - needs_you: refs with the decision in one line, and what happens once he decides.
@@ -382,12 +399,31 @@ def in_motion(c: dict) -> str:
     return ""
 
 
-def _prompt_items(cands: dict[str, dict]) -> list[dict]:
+def _due_in(due, today: date) -> str:
+    """The due date against today, in words: 'today', 'tomorrow', 'in 3
+    days', '2 days ago'. The model reads these and never works out the
+    distance from two dates itself."""
+    d = _date(due)
+    if not d:
+        return ""
+    n = (d - today).days
+    if n == 0:
+        return "today"
+    if n == 1:
+        return "tomorrow"
+    if n == -1:
+        return "yesterday"
+    return f"in {n} days" if n > 0 else f"{-n} days ago"
+
+
+def _prompt_items(cands: dict[str, dict], today: date | None = None) -> list[dict]:
     keep = ("kind", "title", "who", "summary", "ask", "due", "cc_only", "in_slack",
             "replied_earlier", "last_action", "tags", "type")
     out = []
     for r, c in cands.items():
         d = {"ref": r, **{k: c[k] for k in keep if c.get(k)}}
+        if today is not None and c.get("due"):
+            d["due_in"] = _due_in(c["due"], today)
         if c.get("wrote_since"):
             d["wrote_since"] = _wrote_since_line(c)
         out.append(d)
@@ -404,7 +440,7 @@ def ask_plan(agent: str, b: dict, cands: dict[str, dict], *, rules: str, now: da
     system = (MORNING_PROMPT if morning else AFTERNOON_PROMPT).format(
         profile=_profile(), now=f"{local:%A %Y-%m-%d %H:%M}", rules=rules or "")
     user = {"today_top": top_refs(b, cands) if morning else [],
-            "items": _prompt_items(cands),
+            "items": _prompt_items(cands, local.date()),
             "today_calendar": _calendar(b, local.date()), "free_today": _free(b, local.date()),
             "recently_closed": [_clean(r.get("description"), 120)
                                 for r in (b.get("recently_closed") or [])][:20]}
@@ -437,12 +473,18 @@ def check_plan(obj: dict, cands: dict[str, dict], *, morning: bool) -> dict:
     # No reply is drafted to an item he has already answered, in its thread
     # or by writing to the sender since, or that is in the EA channel: the
     # draft would answer a question that is settled.
-    plan = {"get_done_today": picks("get_done_today", MAX_TOP), "flexes": picks("flexes", MAX_FLEX),
+    # An item that asks nothing of him (a vote, a talk, a call for
+    # volunteers) is never on the do-list or a decision, whatever the model
+    # picked: code holds this, not the prompt.
+    def owed(items):
+        return [p for p in items if not cands[p["ref"]].get("optional")]
+    plan = {"get_done_today": owed(picks("get_done_today", MAX_TOP + 3))[:MAX_TOP],
+            "flexes": picks("flexes", MAX_FLEX),
             "drafts": [p for p in picks("drafts", MAX_DRAFTS)
                        if cands[p["ref"]]["kind"] in ("reply", "dropped", "rsvp")
                        and not in_motion(cands[p["ref"]])]}
     used = {p["ref"] for p in plan["drafts"]}
-    plan["needs_you"] = [p for p in picks("needs_you", 8) if p["ref"] not in used]
+    plan["needs_you"] = [p for p in owed(picks("needs_you", 8)) if p["ref"] not in used]
     used |= {p["ref"] for p in plan["needs_you"]}
     plan["escalate"] = [p for p in picks("escalate", MAX_ESCALATE) if p["ref"] not in used]
     return plan
@@ -648,9 +690,52 @@ def _escalation(cand: dict, pick: dict, now: datetime) -> dict:
 
 # ── the post ──────────────────────────────────────────────────────────
 
+# The ledger's own labels on a row's description ("Due 2026-11-04: ",
+# "Task: "): bookkeeping, not words for the user. The post says the date
+# in its own words.
+_LABEL = re.compile(r"^\s*(?:Due \d{4}-\d{2}-\d{2}:|Task:|Needs response:|Scheduling request:)\s*", re.I)
+
+
+def _title(c: dict) -> str:
+    raw = str(c.get("title") or "")
+    return _LABEL.sub("", raw, count=1).strip() or raw
+
+
 def _line_of(c: dict) -> str:
     who = f" ({_clean(c.get('who'), 60)})" if c.get("who") else ""
-    return f"*{_clean(c.get('title'), 120)}*{who}"
+    return f"*{_clean(_title(c), 120)}*{who}"
+
+
+# A `why` that only restates the due date: code says the date itself.
+_DATE_ONLY = re.compile(
+    r"^\s*(?:it\s+(?:is|was)\s+)?(?:was\s+)?(?:over)?due\s+(?:today|tomorrow|yesterday|"
+    r"(?:on\s+)?(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*(?:\s+[a-z]{3}\s+\d{1,2})?|"
+    r"\d{4}-\d{2}-\d{2}|in\s+\d+\s+days?)\s*\.?\s*$", re.I)
+
+
+def _due_phrase(due, today: date) -> str:
+    """When the item is due, from its date: 'Due today', 'Due tomorrow',
+    'Due Thu Nov 5', 'Was due Mon Nov 2'; '' with no date."""
+    d = _date(due)
+    if not d:
+        return ""
+    if d == today:
+        return "Due today"
+    if d == today + timedelta(days=1):
+        return "Due tomorrow"
+    return f"{'Was due' if d < today else 'Due'} {d:%a %b} {d.day}"
+
+
+def _top_line(c: dict, p: dict, today: date) -> str:
+    """A do-list line: the item, the window, the model's few words on
+    what is left, and the due date in code's words."""
+    why = _clean(p.get("why"), 140)
+    if _DATE_ONLY.match(why or ""):
+        why = ""
+    parts = [x.rstrip(". ") for x in (why, _due_phrase(c.get("due"), today)) if x]
+    tail = ". ".join(parts)
+    return (_line_of(c) + (f": {_clean(p.get('when'), 60)}" if p.get("when") else "")
+            + (f". {tail}" if tail else ""))
 
 
 def _soon_refs(cands: dict[str, dict], today: date, skip: set[str]) -> list[str]:
@@ -757,10 +842,7 @@ def _morning_lists(cands: dict[str, dict], plan: dict, drafts: list[dict],
                                                      else f"{d:%a %b} {d.day}")))
     return {
         "due": due,
-        "top": [(p["ref"], _line_of(cands[p["ref"]])
-                 + (f": {_clean(p.get('when'), 60)}" if p.get("when") else "")
-                 + (f". {_clean(p.get('why'), 140)}" if p.get("why") else "") + mark(p["ref"]))
-                for p in top],
+        "top": [(p["ref"], _top_line(cands[p["ref"]], p, today) + mark(p["ref"])) for p in top],
         "flex": [(p["ref"], f"{_line_of(cands[p['ref']])}: {_clean(p.get('line'), 140)}{mark(p['ref'])}")
                  for p in flex],
         "draft": [(d["ref"], f"{_line_of(cands[d['ref']])}: "
@@ -830,6 +912,12 @@ def render_morning(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime
     n_reply = len(b.get("handled_by_reply") or [])
     if n_reply:
         handled.append(f"{n_reply} answered by your replies")
+    lapsed = b.get("lapsed") or []
+    if lapsed:
+        names = "; ".join(_words(_LABEL.sub("", str(r.get("description") or ""), count=1), 60)
+                          for r in lapsed[:3])
+        handled.append(f"{len(lapsed)} closed when their date passed, with nothing asked of you"
+                       f" ({names}{'; ...' if len(lapsed) > 3 else ''})")
     ok = lists["draft"]
     if ok:
         handled.append(f"{len(ok)} draft(s) staged")

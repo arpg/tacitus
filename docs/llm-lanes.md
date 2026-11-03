@@ -682,6 +682,18 @@ line; it never falls back to a Claude run.
 - **One mention per item.** A do-list item does not repeat in the date
   banner, "Needs you" or "Sent to Claude"; the banner names only due
   items no other section shows.
+- **What asks nothing is never a to-do.** A dated item whose mail asks
+  nothing of the user and wants no reply (a contest vote, a talk, a town
+  hall, a call for volunteers) reaches the model tagged optional, with no
+  due date, so it never reaches the date banner; `check_plan` keeps it
+  off the do-list and "Needs you" whatever the model picked. Once its
+  date passes the row closes itself (`ledger.close_lapsed`, below) and
+  the post names it once under "Quietly handled".
+- **Dates in code's words.** Each item reaches the model with `due_in`
+  ("today", "yesterday", "in 3 days"), and the do-list line ends with
+  the due date code writes ("Due tomorrow", "Was due Mon Nov 2"). A
+  `why` that only restates the date is dropped. The ledger's labels on a
+  description ("Due 2026-11-04: ", "Task: ") never reach the post.
 - **Project rooms get their slice** (`preprocessor/briefing_rooms.py`).
   An item belongs to a project by its ledger link, then by its filed
   thread, then by the strict project matcher (score 3 or more; a tie
@@ -716,7 +728,7 @@ one-click confirm (closure.py):
 :sunny: *Morning Briefing, Mon Oct 12*
 
 :dart: *Get done today* (in this order, fitted to your gaps)
-1. *Slides for Thursday's review* (Pat Rivera): in the 1-2:30 gap. Pat merges the deck Wednesday
+1. *Slides for Thursday's review* (Pat Rivera): in the 1-2:30 gap. Pat merges the deck Wednesday. Due Wed Oct 14
 
 :leaves: *Flexes* (fine today, fine tomorrow)
 - *Travel form for the Portland trip*: file it this week

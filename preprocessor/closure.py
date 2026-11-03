@@ -107,6 +107,11 @@ def _parse(ts) -> datetime | None:
 # own answer to the invite the row asks about.
 SUBMISSION_SIGNALS = frozenset({"inbound_ack:submission-ack"})
 EVENT_SIGNALS = frozenset({"meeting_response_sent"})
+# The row's date passed and ended it (ledger.lapses, ledger.close_lapsed):
+# decisive on a row the EA declared to lapse, or on a row intake made from
+# mail that asked nothing, when the user never wrote in its thread; a
+# thread he wrote in may hold work the records missed, so it proposes.
+LAPSE_SIGNALS = frozenset({"lapsed"})
 
 
 def is_plugin_row(entry: dict) -> bool:
@@ -136,6 +141,13 @@ def tier(signal: str, entry: dict) -> str:
     if signal in ARCHIVE_SIGNALS:
         return DECISIVE if _ledger.is_detector_row(entry.get("id") or "") else PROPOSAL
     how = _ledger.closes_on(entry)
+    if signal in LAPSE_SIGNALS:
+        if not _ledger.lapses(entry):
+            return PROPOSAL
+        brief = entry.get("thread_brief")
+        wrote = isinstance(brief, dict) and bool(brief.get("last_from_user"))
+        intake = str(entry.get("id") or "").startswith("deadline-")
+        return PROPOSAL if intake and wrote else DECISIVE
     if how == "submission" and signal in SUBMISSION_SIGNALS:
         return DECISIVE
     if how == "event" and signal in EVENT_SIGNALS:

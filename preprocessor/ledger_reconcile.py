@@ -20,11 +20,12 @@ composes each thread into a brief, and Claude judges the briefs.
        mail when the row's words show a trace of it, or, with no call,
        the one project the words name. The rest form a loose bucket,
        chunked.
-    3. One tool-less Claude call per group judges the briefs: open, done
-       or duplicate, a thread for a row that has none, and one line on
+    3. One tool-less Claude call per group judges the briefs: open, done,
+       duplicate or lapsed (a chance that ended, such as a vote or an
+       RSVP), a thread for a row that has none, and one line on
        what changed. Refs it invents are dropped. A kept thread (a
        keep_from_anthropic sender) reaches it as counts and dates only.
-    4. Code writes: a `done` or `duplicate` verdict is a close PROPOSAL
+    4. Code writes: a `done`, `duplicate` or `lapsed` verdict is a close PROPOSAL
        (closure.propose; the morning briefing's "Looks done?" line and
        the DM card carry it, one click closes); a note is appended to
        last_action with the date; a thread goes onto the row's
@@ -68,9 +69,12 @@ RUNS = "reconcile.jsonl"
 EXIT_OFF = 3
 SIGNAL = "llm:reconcile"
 DUP_SIGNAL = "llm:reconcile-duplicate"
+LAPSE_SIGNAL = "llm:reconcile-lapsed"
 ACTOR = "reconcile"
 MODEL = "opus"
-VERDICTS = ("open", "done", "duplicate")
+VERDICTS = ("open", "done", "duplicate", "lapsed")
+# A verdict that proposes a close, and the signal it proposes under.
+PROPOSING = {"done": SIGNAL, "duplicate": DUP_SIGNAL, "lapsed": LAPSE_SIGNAL}
 
 GROUP_CAP = 14          # rows per Claude call
 LOOSE_LABEL = "loose"
@@ -432,10 +436,10 @@ It is {now}.
 You get one group of open ledger rows ({group}) and, for each, what the mail shows: the row's own thread as a list of messages (date, who, a one-line gist, the ask), or candidate threads (T refs) that may be the row's thread. "the user" is the professor. A thread marked kept shows counts and dates only. Nothing here is the mail's text.
 
 For every row, by its ref, answer:
-- verdict: "done" when the thread shows the row's work happened (he replied to the person who asked, the thing was sent, the meeting was placed, the question was answered); "duplicate" when another row in this group (give `of`) carries the same work; else "open". Never say done because time passed, and never because the row's note sounds finished: the thread must show it.
+- verdict: "done" when the thread shows the row's work happened (he replied to the person who asked, the thing was sent, the meeting was placed, the question was answered); "duplicate" when another row in this group (give `of`) carries the same work; "lapsed" when the row's only work was a chance that ended at a time now past (a vote, an RSVP, a registration, a sign-up, a call for nominations or volunteers, going to an event) and the thread shows it ended (the event was held, the results came out, the window closed); else "open". Never say done because time passed, and never because the row's note sounds finished: the thread must show it. Work he still owes after its date (a letter, a review, a report, a form) is never lapsed.
 - thread: for a row with candidate threads, the T ref that is the row's own thread, or "" when none is. A thread that merely mentions the topic is not the row's thread.
 - note: one sentence, at most {note_chars} characters, on what the mail shows that the row's last_action does not: a reply arrived, the date moved, the thing was sent, who now owns it. Empty when nothing new happened, when the last_action already says it, or when the thread is kept (counts only); never write "nothing new" or that content is not visible. Plain words, no em-dash, no advice.
-- why: one short sentence for a done or duplicate verdict, naming the message (date and who) that shows it.
+- why: one short sentence for a done, duplicate or lapsed verdict, naming the message (date and who) that shows it.
 
 Answer with a JSON array of objects {{"ref", "verdict", "of", "thread", "note", "why"}}, one per row, no other text.
 
@@ -515,7 +519,7 @@ def parse_verdicts(text: str, items: list[dict], threads: dict[str, dict]) -> li
             thread = ""
         note = re.sub(r"\s+", " ", str(v.get("note") or "")).strip()[:NOTE_CHARS]
         why = re.sub(r"\s+", " ", str(v.get("why") or "")).strip()[:300]
-        if verdict in ("done", "duplicate") and not why:
+        if verdict in PROPOSING and not why:
             verdict = "open"
         out.append({"ref": ref, "verdict": verdict, "of": of, "thread": thread,
                     "note": note.replace("—", ","), "why": why.replace("—", ",")})
@@ -588,10 +592,10 @@ def apply(group: dict, items: list[dict], threads: dict[str, dict], verdicts: li
                 out["threaded"].append({"id": row["id"], "conversation_id": conv,
                                         "on_row": not _ledger.closes_on_reply(row)})
                 touched = True
-        if v["verdict"] in ("done", "duplicate"):
-            why = v["why"] if v["verdict"] == "done" else f"duplicate of {rec['of']}: {v['why']}"
+        if v["verdict"] in PROPOSING:
+            why = f"duplicate of {rec['of']}: {v['why']}" if v["verdict"] == "duplicate" else v["why"]
             res = {"action": "dry-run"} if dry_run else propose(
-                row["id"], signal=SIGNAL if v["verdict"] == "done" else DUP_SIGNAL,
+                row["id"], signal=PROPOSING[v["verdict"]],
                 note=why, evidence={"thread": rec.get("thread") or row.get("conversation_id") or "",
                                     "group": group["label"]},
                 evidence_ts=(by_ref[v["ref"]].get("thread") or {}).get("latest") or "")

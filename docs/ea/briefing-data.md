@@ -35,6 +35,10 @@ The preprocessor (Python, no Claude tokens) produces a DELTA briefing JSON:
   strips it from a draft that names it.
 - `recently_closed`: ledger items closed in the last 7 days.
   DO-NOT-SURFACE list. Never brief anything here as open or pending.
+- `lapsed`: rows this run closed because their date passed and their
+  mail asked nothing of the user (a vote, a talk, an RSVP). Name them in
+  one "Quietly handled" line, never as missed. An open row whose mail
+  asks nothing (`ledger.lapses`) is never a to-do or OVERDUE.
 - `staged_drafts`: the Outlook Drafts folder, verbatim. This is the ONLY
   permissible source for a "click Send" instruction; ledger notes about
   drafts go stale the moment the user sends.

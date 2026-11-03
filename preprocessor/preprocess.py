@@ -512,6 +512,18 @@ def _clock_time_in(text: str) -> str:
     return re.sub(r"\s+", "", m.group(1)).lower() if m else ""
 
 
+def briefing_rows(open_obligations: list, today_top: list, cap: int = 30) -> list:
+    """The open rows the briefing JSON carries: the rows today_top names
+    first, in its order, then the rest in theirs, `cap` in all. The lanes
+    see only this slice, so a ranked row cut from it is a ranked row the
+    briefing can never show."""
+    ranked = [t.get("ref") for t in today_top or [] if t.get("ref")]
+    by_id = {o.get("id"): o for o in open_obligations if o.get("id")}
+    head = [by_id[r] for r in dict.fromkeys(ranked) if r in by_id]
+    taken = {o.get("id") for o in head}
+    return (head + [o for o in open_obligations if o.get("id") not in taken])[:cap]
+
+
 def build_today_top(needs_resp: list, dropped: list, deadlines: list,
                     rsvps: list, obligations: list, vip_senders: list,
                     cap: int = 5, floor: int = 30) -> tuple:
@@ -2009,6 +2021,11 @@ def mail_row_kind(item: dict) -> dict:
     if deadline and (owes or not rr.get("needs_reply")):
         out.update(prefix="deadline-", type="deadline", deadline=deadline,
                    description=f"Due {deadline}: {subject}")
+        if _ledger_mod.record_asks_nothing(rr):
+            # Nothing is asked of the user, so the date is a chance that
+            # closes or an event (a vote, a contest, a talk), not a debt:
+            # the row closes itself once the date passes (ledger.lapses).
+            out["closes_on"] = "lapse"
     elif owes:
         out.update(prefix="task-", type="task", description=f"Task: {subject}")
     if rr.get("ask"):
@@ -2094,7 +2111,7 @@ def update_ledger_from_analysis(
             (id, type, status, description, from_email, source_message_id,
              conversation_id, date_identified, deadline, last_action, notes, metadata,
              created_at, updated_at)
-            VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, '', ?, '{}', ?, ?)
+            VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)
         """, (
             entry_id,
             kind["type"],
@@ -2105,6 +2122,7 @@ def update_ledger_from_analysis(
             now,
             kind["deadline"] or None,
             kind["notes"][:500],
+            json.dumps({"closes_on": kind["closes_on"]}) if kind.get("closes_on") else "{}",
             now, now,
         ))
         db.commit()
@@ -2558,6 +2576,17 @@ def run_full_daily(force_full: bool = False) -> dict:
     # Resurrect follow-up items whose date has arrived
     resurrected = _ledger_mod.resurrect_due_follow_ups()
 
+    # Close the rows whose date passed and ended them: a vote, an RSVP or
+    # an event that asked nothing of the user (ledger.close_lapsed).
+    try:
+        lapsed = _ledger_mod.close_lapsed()
+    except Exception as e:
+        print(f"  Lapse sweep skipped: {e}", file=sys.stderr)
+        lapsed = []
+    if lapsed:
+        print(f"  Lapsed: {sum(1 for r in lapsed if r['action'] == 'closed')} closed, "
+              f"{sum(1 for r in lapsed if r['action'] == 'proposed')} proposed", file=sys.stderr)
+
     # Pre-filter stale obligations (>7 days open)
     stale = _ledger_mod.get_stale_entries(7)
 
@@ -2756,7 +2785,12 @@ def run_full_daily(force_full: bool = False) -> dict:
         "calendar_fetch_errors": LAST_CALENDAR_FETCH_ERRORS,
         # Ledger is the persistent brain – Claude reads this
         # instead of re-reading old emails
-        "open_obligations": open_obligations[:30],
+        # The rows today_top ranks come first, so the queue's rows are
+        # always in the slice the briefing lanes read.
+        "open_obligations": briefing_rows(open_obligations, today_top),
+        # Rows closed this run because their date passed and their mail
+        # asked nothing (ledger.close_lapsed): one "Quietly handled" line.
+        "lapsed": [r for r in lapsed if r["action"] == "closed"][:20],
         # Closed in the last 7 days. DO-NOT-SURFACE list: anything here is
         # settled — never brief it as open/pending, regardless of what
         # prior briefings or emails suggest.

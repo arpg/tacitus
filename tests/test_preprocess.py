@@ -456,9 +456,13 @@ def test_mail_row_kind_types_the_row_by_the_remote_record():
     assert (k["prefix"], k["type"], k["deadline"]) == ("deadline-", "deadline", "2026-10-15")
     assert k["description"] == "Due 2026-10-15: Communication regarding Manuscript ID JRNL-26-7385"
     assert k["notes"].endswith("Ask: Submit the recommendation.")
-    # a dated reminder that asks for no reply still tracks the date
+    # a dated record that asks for no reply still tracks the date; with no
+    # ask either, the date is a chance or an event and the row lapses
     k = mail_row_kind(dict(base, remote_record={"state": "fyi", "needs_reply": False, "deadline": "2026-10-07"}))
-    assert (k["prefix"], k["type"]) == ("deadline-", "deadline")
+    assert (k["prefix"], k["type"], k.get("closes_on")) == ("deadline-", "deadline", "lapse")
+    k = mail_row_kind(dict(base, remote_record={"state": "todo", "needs_reply": False, "deadline": "2026-10-07",
+                                                 "ask": "Send the signed form."}))
+    assert (k["prefix"], k.get("closes_on")) == ("deadline-", None)
     # a dated question put to the user is a reply owed by then, not a task
     k = mail_row_kind(dict(base, remote_record={"state": "needs-reply", "needs_reply": True, "deadline": "2026-10-07"}))
     assert (k["prefix"], k["type"]) == ("response-", "response_needed")
@@ -658,5 +662,17 @@ def test_a_closed_threads_row_reopens_on_a_newer_message():
     assert L.get_entry("response-convreopen12")["status"] == "completed"
 
 
+def test_the_briefing_slice_carries_every_row_today_top_ranks():
+    """The lanes read only the briefing's slice of open rows, so a ranked
+    row cut from it could never be shown: the ranked rows come first."""
+    from preprocessor.preprocess import briefing_rows
+    rows = [{"id": f"row-{n}"} for n in range(40)]
+    top = [{"ref": "row-35"}, {"ref": "msg-not-a-row"}, {"ref": "row-2"}, {"ref": "row-35"}]
+    out = briefing_rows(rows, top, cap=5)
+    assert [o["id"] for o in out] == ["row-35", "row-2", "row-0", "row-1", "row-3"]
+    assert [o["id"] for o in briefing_rows(rows, [], cap=3)] == ["row-0", "row-1", "row-2"]
+
+
 if __name__ == "__main__":
     main()
+
