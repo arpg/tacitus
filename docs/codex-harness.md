@@ -15,10 +15,11 @@ a production lane.
   (`tests/evals/provider.py _claude_prompt`).
 - **Tools.** There is no allow list. Codex runs shell commands inside its
   own sandbox: `read-only` reads anywhere and writes nowhere;
-  `workspace-write` writes only under the working root (`-C`) and the
-  `--add-dir` directories. The eval sets the root to the run's throwaway
-  EA_DIR, so the test ledger and a staged event land there and the code
-  tree stays read-only. Network is off inside the sandbox.
+  `workspace-write` writes only under the working root (`-C`), the
+  `--add-dir` directories and the temp dir (see "Temp files" below). The
+  eval sets the root to the run's throwaway EA_DIR, so the test ledger and
+  a staged event land there and the code tree stays read-only. Network is
+  off inside the sandbox.
 - **Output.** The final agent message (`-o`) is the result; the JSONL
   event stream gives the commands it ran (`command_execution` items,
   reported as Bash tool calls), the files it changed, and the token usage.
@@ -42,6 +43,13 @@ python3 tests/release/run_release.py --lane briefing --harness codex --tag codex
 A release run on Codex is scored by the same assertions and judge as a
 Claude run and compared only with earlier Codex runs, never with a
 Claude baseline.
+
+The probe starts in a new folder under `~/.ea-codex-probe` (mode 700, in
+the passwd home of the user who runs it, not `$HOME`), never under /tmp.
+Codex takes the folder of a `.git` above its working directory for the
+project root and loads the skills in the `.agents` beside it, and any
+user can make both in /tmp. The probe is refused when another user can
+write a folder above its own.
 
 ## The ghost arm
 
@@ -120,8 +128,12 @@ gate (`model_routing.py harness`).
 
 `EA_HARNESS=codex` in the environment of `run-agent.sh` runs a briefing
 lane on Codex for real: `codex_ghost.py run-lane --live` as the resident
-against the real EA_DIR, writes confined to its state and docs, the same
-prompt and the same output handling. It runs only when `codex_ghost.py
+against the real EA_DIR, from `~/.ea/state/codex-lane` (`LANE_CWD`, made
+as the resident, mode 750), writes confined to its state and docs, the
+same prompt and the same output handling. The Claude lane starts in the
+resident's home; the Codex lane does not, because Codex makes its working
+directory writable (see "Temp files"). The prompt names every file by
+its full path, and a line after it says where the Codex run starts. It runs only when `codex_ghost.py
 gate briefing` finds a GO no older than 14 days (`EA_HARNESS_FORCE=1`
 overrides); otherwise the Claude run goes ahead and the log says why.
 
@@ -157,10 +169,32 @@ standing rule of the user's goes to `preferences.py add`.
 change only the `resident_write_paths` paths, and its allowlisted scripts
 write with the resident's own permissions. Codex's sandbox confines every
 write, the scripts' included, so a live turn's writable folders are those
-paths plus the scripts' folders (`SCRIPT_WRITE_DIRS`: logs and uploads),
-and /tmp. It runs in `~/.ea/state/codex-live` (mode 750): Codex makes
-its working directory writable and cannot start in the read-only
+paths plus the scripts' folders (`SCRIPT_WRITE_DIRS`: logs and uploads)
+and its temp dir. It runs in `~/.ea/state/codex-live` (mode 750): Codex
+makes its working directory writable and cannot start in the read-only
 deployed tree.
+
+**Temp files.** By default Codex's workspace-write sandbox also makes
+/tmp and `$TMPDIR` writable. In every folder a run may write it mounts
+`.git`, `.agents`, `.codex` and `.aws` read-only, and it makes an empty
+folder for each one that is missing and removes it when the command
+ends. A command that does not end cleanly (its process group killed)
+leaves those folders. An empty `.git` in /tmp makes Claude Code and Codex
+take /tmp for a project root for every run below it, whoever owns the
+run: the eval guard (`tests/evals/provider.py scratch_parent`) refuses a
+scratch dir under it, and Codex loads the skills in the `.agents` beside
+it. So no Codex run as the resident writes /tmp: a live turn, a ghost
+replay and a live lane get `~/.ea/state/codex-tmp` (`codex_ghost.CODEX_TMP`,
+made as the resident, mode 750, entries kept for a day after their last
+change) as their temp dir (`codex_cli.temp_flags`: /tmp and `$TMPDIR` are
+no roots, the folder is one, and the commands get it as TMPDIR, TMP and
+TEMP). It sits in the state, which the mediator accepts files from, as
+it did /tmp. An eval run on Codex gets a `tmp` folder in its own
+throwaway EA_DIR. A working directory is a writable root too, with the
+same guard folders, so no Codex run as the resident starts in the
+resident's home: a `.git` left there would sit above every Claude lane
+folder (`~/.local/state/ea-lanes/<lane>`), and the whole home would be
+writable to the run.
 
 The config folder is not a root (`NO_WRITE_DIRS`): a folder root would
 cover `ea-config.json`, `github.json` and `CLAUDE.install.md`, which

@@ -94,7 +94,8 @@ def live_write_paths() -> list[Path]:
     """The folders a live turn may write: the paths a Claude turn's Write
     and Edit tools may change (resident_write_paths: globs expanded, a file
     by its folder) and SCRIPT_WRITE_DIRS, existing ones only, in order.
-    /tmp needs no entry: every Codex sandbox can write it."""
+    /tmp is not one: a Codex turn's temp dir is codex_ghost.CODEX_TMP
+    (run_turn), and /tmp is read-only to it."""
     import resident_write_paths
     pats = resident_write_paths.paths(str(BOT_HOME), str(REAL_EA_DIR))
     pats += [str(REAL_EA_DIR / d) for d in SCRIPT_WRITE_DIRS]
@@ -358,6 +359,9 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
         add_dirs = [REAL_EA_DIR / "state" / "mail-queue"]
         ea_dir = root
         wrap = lambda p: ghost_prompt(p, root)  # noqa: E731
+    # Temp files go to the resident's own temp dir, never /tmp
+    # (codex_cli.temp_flags): a live turn and a ghost alike.
+    tmp_dir = codex_ghost.ensure_codex_tmp(runner=scratch_runner)
     prefix = codex_ghost._bot_env({"EA_DIR": str(ea_dir), "EA_RUN_ID": run_id, "EA_BOT_HOME": str(BOT_HOME)})
     runner = codex_run or codex_cli.run
     last_dir = root if not live else BOT_HOME / ".local" / "state" / "ea-lanes"
@@ -366,7 +370,7 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
     if block:
         text = block + "\n\n" + text
     extra = {"on_event": on_event} if on_event is not None else {}
-    res = runner(wrap(text), cwd=root, sandbox="workspace-write", add_dirs=add_dirs, model=model,
+    res = runner(wrap(text), cwd=root, sandbox="workspace-write", add_dirs=add_dirs, tmp_dir=tmp_dir, model=model,
                  timeout=timeout, prefix=prefix, last_message_dir=last_dir, ephemeral=False, resume="", **extra)
     tid = res.get("thread_id") or ""
     if tid and persist and not res.get("harness_error"):
