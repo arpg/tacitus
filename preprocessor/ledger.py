@@ -384,7 +384,7 @@ TYPES = {
 def types_with(trait: str) -> frozenset:
     """The types that have `trait` on. Rules read these sets, never a list
     of type names of their own."""
-    return frozenset(t for t, d in TYPES.items() if getattr(d, trait))
+    return frozenset(t for t, d in {**TYPES, **PLUGIN_TYPES}.items() if getattr(d, trait))
 
 
 TYPE_ALIASES = {
@@ -468,6 +468,43 @@ CONFIG_TYPES, CONFIG_TYPE_ERRORS = config_types(
 for _err in CONFIG_TYPE_ERRORS:
     print(f"ledger: ea-config.json ledger_types: {_err}", file=sys.stderr)
 TYPES.update(CONFIG_TYPES)
+
+
+def _declared_plugin_types() -> dict:
+    """The enabled plugins' ledger_types blocks (plugin_registry). Empty
+    outside an owner process, where a plugin type reads as undeclared."""
+    try:
+        try:
+            import plugin_registry as _plugins
+        except ModuleNotFoundError:
+            from preprocessor import plugin_registry as _plugins
+        return _plugins.ledger_types()
+    except Exception:
+        return {}
+
+
+def plugin_types(declared: dict) -> tuple[dict, list[str]]:
+    """The plugin types the rules read by trait, checked as a config type
+    is, and why each refused one was refused. A plugin row keeps any type
+    either way (checked_type); an undeclared or refused one keeps today's
+    behaviour. These never join TYPES, so a main-EA row cannot use one."""
+    types, errors = {}, []
+    for plugin, block in sorted(declared.items()):
+        found, errs = config_types(block)
+        errors += [f"plugin {plugin}: {e}" for e in errs]
+        for name, t in found.items():
+            if name in types:
+                errors.append(f"plugin {plugin}: {name!r}: another plugin declares it")
+                types.pop(name)
+            else:
+                types[name] = t
+    return types, errors
+
+
+# Plugin types only add traits to a word no core or config type uses.
+PLUGIN_TYPES, PLUGIN_TYPE_ERRORS = plugin_types(_declared_plugin_types())
+for _err in PLUGIN_TYPE_ERRORS:
+    print(f"ledger: {_err}", file=sys.stderr)
 
 
 def _status_filter(text: str) -> list[str]:
@@ -2127,7 +2164,9 @@ def cmd_types(args) -> int:
     _output({"types": {k: v.meaning for k, v in TYPES.items()}, "statuses": list(STATUSES),
              "aliases": {**TYPE_ALIASES, **STATUS_IS_TYPE},
              "config_types": {k: v._asdict() for k, v in CONFIG_TYPES.items()},
-             "config_errors": CONFIG_TYPE_ERRORS})
+             "config_errors": CONFIG_TYPE_ERRORS,
+             "plugin_types": {k: v._asdict() for k, v in PLUGIN_TYPES.items()},
+             "plugin_errors": PLUGIN_TYPE_ERRORS})
     return 0
 
 
