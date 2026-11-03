@@ -221,6 +221,32 @@ turn is a new Codex thread on the bot's fresh prompt, which carries the
 chat thread's history; the registry keeps the last thread id and the turn
 count.
 
+## Tool-less calls
+
+Three routing tasks make one tool-less call to a hosted model and read
+its text: `tagging` (`mail_tagger`), `thread_state` (`web_thread_state`)
+and `review` (the briefing's still-open check, the nightly reconcile and
+the backstop on local scheduling writes). Each goes through
+`preprocessor/hosted_text.py`, which asks the routing table for the
+task's hosted model. On Codex the call is `codex exec` with every tool
+off (`--disable` for the shell, the apps, the plugins, the hooks and the
+image viewer), read-only and ephemeral, on the account's own model. A
+run that executes a tool anyway counts as no answer.
+
+- As the resident by default, in an empty working folder of its own
+  (`~/.ea/state/codex-text`, mode 750), as Claude's `_run_claude` runs:
+  the review and the thread states read records, not mail text.
+- As the owner for the tagger, whose prompt carries the mail text: that
+  text stays in the owner's processes, as it does for the tagger's Claude
+  run. The owner's binary is `EA_CODEX_BIN`, `codex` on PATH, or the
+  newest under `~/.nvm` (cron's PATH has none), with its own folder put
+  on PATH for `node`.
+
+A Codex call that gives no answer (a harness error, a timeout, an empty
+reply, a tool call) hands the call to Claude once, and the run log says
+so. `python3 preprocessor/hosted_text.py probe [--as-owner]` makes one
+call.
+
 ## Not covered
 
 The chat lanes in production (the ghost replays them), the scheduling and reply lanes, sessions (`--resume`),

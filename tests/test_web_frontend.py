@@ -1268,7 +1268,7 @@ def test_a_floored_row_is_refused_and_nothing_is_written(fe, routing_page, monke
     said = []
     status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"tasks": {"review": "local"}})
     assert status == 400 and json.loads(raw)["error"] == \
-        '"Checking its own work" always stays on Hosted: only Claude makes these judgment calls.'
+        '"Checking its own work" always stays on Hosted: these are judgment calls, so your own model never makes them.'
     said.append(json.loads(raw)["error"])
     status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"tasks": {"chat": "fable"}})
     assert status == 400 and json.loads(raw)["error"] == '"Talking with you" takes Local, Hosted or Auto.'

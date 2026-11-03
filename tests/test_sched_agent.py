@@ -460,7 +460,7 @@ def test_build_prompt_carries_rules_tools_and_task(monkeypatch):
 def _live(monkeypatch, verdict="ok"):
     monkeypatch.setattr(rl, "config", lambda: _cfg(scheduling="enforce"))
     # The backstop's Claude run is scripted: `verdict` for every review.
-    monkeypatch.setattr(sa, "_claude_json", lambda prompt, schema, model: (
+    monkeypatch.setattr(sa, "_hosted_json", lambda prompt, schema, model: (
         {"verdict": verdict, "issues": [] if verdict == "ok" else [{"kind": "time", "detail": "2pm is busy"}],
          "note": "scripted"}, {"cost_usd": 0.05}))
     monkeypatch.setattr(sa, "backstop_model", lambda: "opus")
@@ -579,7 +579,7 @@ def test_backstop_withholds_defective_writes_and_claude_takes_the_turn(store, mo
 
 def test_backstop_fails_closed_and_can_be_switched_off(store, monkeypatch):
     _live(monkeypatch)
-    monkeypatch.setattr(sa, "_claude_json", lambda *a: (_ for _ in ()).throw(RuntimeError("claude rc=1")))
+    monkeypatch.setattr(sa, "_hosted_json", lambda *a: (_ for _ in ()).throw(RuntimeError("claude rc=1")))
     steps = [step("create-reply", {"message_id": "m1", "conversation_id": "c1", "body": "ok"}),
              step("reply", {"text": "Drafted."})]
     runner = FakeRunner({"create-reply": {"status": "reply_draft_created", "id": "d1"},

@@ -115,15 +115,15 @@ no restart. A table that cannot be read leaves each switch as it is.
 | Task | Decision point | `local` | `hosted` |
 |---|---|---|---|
 | `mail` | `remote_llm.mode("mail")` (`model_routing.mail_mode`) | `off` and `shadow` read `enforce`; `ghost` and `sealed` stay | the gate is off |
-| `tagging` | `mail_tagger._remote_mode` | the local model tags | Claude Haiku tags |
+| `tagging` | `mail_tagger._remote_mode` | the local model tags | the hosted model tags: Claude Haiku, or Codex as the owner (`hosted_text`) |
 | `drafting` | `email_writer.writer_on`, `draft_ab.mode` | the writer (`remote`) | the `email-author` subagent |
 | `digests` | `remote_digests.main` | the remote lane | the Claude lane |
 | `briefing` | `remote_briefing.active` | the remote lane | the Claude lane |
 | `audit` | `remote_audit.active` | the remote lane | the Claude lane |
 | `scheduling` | `model_tiers.resolve` (lanes sched-channel, proactive); `remote_llm.mode("scheduling")` | the lane's tier is `local`; `scheduling enforce` still needs its ghost-week GO | the agent is off, and the lane's local picks run on `opus` |
 | `chat` | `model_tiers.resolve` (lanes main, dm, room) | the lane's tier is `local` | a pick that would run on `local` runs on `opus` |
-| `thread_state` | `web_thread_state.route` | the local model judges a thread the rules leave open, one thread a call (`auto`: the hosted call takes the threads left when it does not answer) | one tool-less Claude call a tick (`mail_privacy._run_claude`, as the reconcile and the backstop; the `thread_state` model in `models`, else opus) over up to 20 threads, one JSON array back; none when no thread is due; a failure keeps the states and logs once an hour |
-| `review` | `remote_briefing.audit_judge` | refused | always |
+| `thread_state` | `web_thread_state.route` | the local model judges a thread the rules leave open, one thread a call (`auto`: the hosted call takes the threads left when it does not answer) | one tool-less hosted call a tick (`hosted_text.run`, as the reconcile and the backstop: Claude with the `thread_state` model in `models`, else opus, or Codex) over up to 20 threads, one JSON array back; none when no thread is due; a failure keeps the states and logs once an hour |
+| `review` | `remote_briefing.audit_judge` | refused | always, on Claude or Codex (`hosted_text`) |
 
 `remote_llm.py switches` shows each switch's `effective` value with the
 table applied.

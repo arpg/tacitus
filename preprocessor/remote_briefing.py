@@ -1024,24 +1024,29 @@ AUDIT_MODEL = "opus"
 
 
 def audit_judge(cfg: dict | None = None) -> str:
-    """Who gives the verdicts: "claude" unless remote-llm.json says
-    `"briefing_audit": "remote"`. Whether an item is still open is a
-    judgment, so it stays with Claude; kept mail never reaches the prompt
-    (open_claims_audit.without_kept). The check is the routing table's
-    `review` task, which the stakes floor holds at hosted."""
+    """Who gives the verdicts: the hosted model the routing table names
+    for `review` ("claude" or "codex", hosted_text.model_for), unless
+    remote-llm.json says `"briefing_audit": "remote"`. Whether an item is
+    still open is a judgment, so it stays with a hosted model; kept mail
+    never reaches the prompt (open_claims_audit.without_kept). The check
+    is the routing table's `review` task, which the stakes floor holds at
+    hosted."""
     cfg = cfg if cfg is not None else remote_llm.config()
-    return "remote" if remote_llm.local_for("review", cfg.get("briefing_audit") == "remote", cfg) \
-        else "claude"
+    if remote_llm.local_for("review", cfg.get("briefing_audit") == "remote", cfg):
+        return "remote"
+    import hosted_text
+    return hosted_text.model_for("review")
 
 
-def _claude_verdicts(prompt: str) -> str:
-    """One tool-less Claude run as the resident; its answer text."""
+def _hosted_verdicts(prompt: str) -> str:
+    """One tool-less hosted call (hosted_text, the `review` task); its
+    answer text."""
     import ea_config
-    import mail_privacy
+    import hosted_text
     model = ea_config.get_models().get("briefing_audit") or AUDIT_MODEL
-    r = mail_privacy._run_claude(f"{AUDIT_SYSTEM}\n\n{prompt}", model, "")
+    r = hosted_text.run("review", f"{AUDIT_SYSTEM}\n\n{prompt}", model)
     if r.get("rc") or not r.get("text"):
-        raise RuntimeError(f"claude rc={r.get('rc')}: {(r.get('stderr') or '')[-160:]}")
+        raise RuntimeError(f"{r.get('model_used')} rc={r.get('rc')}: {(r.get('stderr') or '')[-160:]}")
     return str(r["text"])
 
 
@@ -1062,27 +1067,28 @@ def audit_post(agent: str, text: str, b: dict, *, dry_run: bool, chat=None,
                rendered: list[str] | None = None, judge=None) -> dict:
     """open_claims_audit on the post: every row in `rendered` (the rows
     the post shows) and every other row its words name with evidence.
-    Claude gives the verdicts (audit_judge); the remote model answers
-    when Claude cannot. Returns {closed, closed_rows, unsure_rows,
+    A hosted model gives the verdicts (audit_judge); the remote model
+    answers when it cannot. Returns {closed, closed_rows, unsure_rows,
     parked, asked, judge}; {} on any failure, which leaves the post as
     it is."""
     try:
         import open_claims_audit as oca
         who = audit_judge()
         rec = oca.prepare(agent=agent, post=text, briefing=b, rendered=rendered,
-                          claude_safe=(who == "claude"))
+                          claude_safe=(who != "remote"))
         out = {"asked": rec.get("asked", 0), "parked": [p["id"] for p in rec.get("parked") or []],
                "closed": [], "closed_rows": [], "unsure_rows": [], "judge": who}
         if not rec.get("asked") or dry_run:
             return out
         answer = ""
-        if who == "claude":
+        if who != "remote":
             try:
-                answer = (judge or _claude_verdicts)(rec["prompt"])
+                answer = (judge or _hosted_verdicts)(rec["prompt"])
             except Exception as e:
-                print(f"remote_briefing: Claude audit failed, the remote model answers: "
+                name = {"claude": "Claude", "codex": "Codex"}.get(who, who)
+                print(f"remote_briefing: {name} audit failed, the remote model answers: "
                       f"{str(e)[:160]}", file=sys.stderr)
-                out["judge"] = "remote (Claude failed)"
+                out["judge"] = f"remote ({name} failed)"
         if not answer:
             answer = _remote_verdicts(rec["prompt"], chat)
         verdicts = oca.parse_verdicts(answer)

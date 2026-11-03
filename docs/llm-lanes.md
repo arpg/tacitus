@@ -146,15 +146,15 @@ backend, is in [model-routing.md](model-routing.md).
 | Task | What it does | Decision point | `local` | `hosted` | Floor |
 |---|---|---|---|---|---|
 | `mail` | reads each new message into a record | `remote_llm.mode("mail")` | `off` and `shadow` read `enforce`; `ghost` and `sealed` stay | the gate is off | keep |
-| `tagging` | Outlook categories | `mail_tagger._remote_mode` | the remote model tags | Claude Haiku tags | keep |
+| `tagging` | Outlook categories | `mail_tagger._remote_mode` | the remote model tags | Claude Haiku tags, or Codex as the owner (`hosted_text`) | keep |
 | `drafting` | email bodies in the user's voice | `email_writer.writer_on`, `draft_ab.mode` | the writer (`remote`) | the `email-author` subagent | |
 | `digests` | list and admissions digests | `remote_digests.main` | the remote lane | the Claude lane | |
 | `briefing` | the morning briefing and the afternoon update | `remote_briefing.active` | the remote lane | the Claude lane | |
 | `audit` | the Sunday audit | `remote_audit.active` | the remote lane | the Claude lane | |
 | `scheduling` | the scheduling channel and the proactive scheduler | `model_tiers.resolve` (lanes `sched-channel`, `proactive`); `remote_llm.mode("scheduling")` | the lane's tier is `local` (the tool gateway, every write checked by the backstop); `enforce` still needs its ghost-week GO | the agent is off and the lane's local picks run on `opus` | stakes rule per message |
 | `chat` | turns in topics, rooms and the DM | `model_tiers.resolve` (lanes `main`, `dm`, `room`) | the lane's tier is `local` | a pick that would run on `local` runs on `opus` | stakes rule per message |
-| `thread_state` | the state of a web chat thread the rules leave open (default `local`; `auto` runs the local model, then the hosted call for what it left) | `web_thread_state.route` | the local model judges it | one Claude call a tick over up to 20 threads (also `local` with no local model) | |
-| `review` | the briefing's still-open check, the nightly reconcile, the backstop on local scheduling writes, the hand-offs | `remote_briefing.audit_judge` | refused | always | stakes: hosted only |
+| `thread_state` | the state of a web chat thread the rules leave open (default `local`; `auto` runs the local model, then the hosted call for what it left) | `web_thread_state.route` | the local model judges it | one tool-less hosted call a tick (`hosted_text`: Claude or Codex) over up to 20 threads (also `local` with no local model) | |
+| `review` | the briefing's still-open check, the nightly reconcile, the backstop on local scheduling writes, the hand-offs | `remote_briefing.audit_judge` | refused | always, on Claude or Codex (`hosted_text`) | stakes: hosted only |
 
 **The floors.** No value lowers them. *Stakes:* `review` is hosted only:
 a file that says otherwise reads `hosted`, and a save is refused. In chat
@@ -169,14 +169,16 @@ the mediator's kept checks then keep that mail from every other task.
 `auto`, the block's `hosted` map says which hosted model: `claude` or
 `codex`. Codex is a choice only where a Codex route exists
 (`ea_config.ROUTING_CODEX_TASKS`): `chat` and `scheduling` run their
-lanes on the `codex` tier (docs/codex-harness.md), and `briefing`,
-`audit` and `digests` hand their Claude lane to Codex in `run-agent.sh`
+lanes on the `codex` tier (docs/codex-harness.md); `briefing`, `audit`
+and `digests` hand their Claude lane to Codex in `run-agent.sh`
 (`model_routing.py harness --agent <agent>` prints `codex`, with no ghost
-gate: the owner chose it). The other tasks' hosted part is Claude, and a
-file that asks for Codex there is named and dropped: `tagging`,
-`thread_state` and `review` are Claude calls, `mail` hosted is the gate
-off (the lanes read the mail on whichever model runs them), and
-`drafting` hosted is the turn's own model. A task the map leaves out
+gate: the owner chose it); and `tagging`, `thread_state` and `review`
+make their tool-less call through `preprocessor/hosted_text.py`, on Codex
+with every tool off (docs/codex-harness.md, "Tool-less calls"). `mail`
+and `drafting` have no choice of their own, and a file that asks for
+Codex there is named and dropped: `mail` hosted is the gate off (the
+lanes read the mail on whichever model runs them), and `drafting` hosted
+is the turn's own model. A task the map leaves out
 runs where it runs today: the chat and scheduling lanes' `tiers.lanes`,
 Claude for the rest. Codex has no network in its sandbox, so the chat
 row says so when chat is on Codex: links, Drive, GitHub and Overleaf

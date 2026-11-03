@@ -2510,21 +2510,34 @@ function hostedPick(data, r) {
           disabled: !r.hosted_allowed.includes(m) }), names[m] || m))));
 }
 
+// A "?" beside a task's name opens what the task is, in plain words, under the row:
+// a tap on a phone, a click on a computer; a second press closes it.
+function helpFor(r) {
+  if (!r.help) return [null, null];
+  const note = h('p', { class: 's-help', id: `help-${r.task}`, hidden: true }, r.help);
+  const btn = h('button', { type: 'button', class: 's-help-btn', 'aria-expanded': 'false',
+    'aria-controls': note.id, 'aria-label': `What is "${r.label}"?`,
+    onclick: () => { note.hidden = !note.hidden; btn.setAttribute('aria-expanded', String(!note.hidden)); } },
+  h('span', { 'aria-hidden': 'true' }, '?'));
+  return [btn, note];
+}
+
 function renderSettings(data) {
   const loc = data.local;
   $('settings-local').textContent = loc.configured ? `Local model ${loc.model}: `
     + `${loc.reachable === false ? 'not reachable' : loc.reachable ? 'reachable' : 'not checked yet'}. ${loc.detail}` : loc.detail;
   $('settings-local').className = loc.reachable === false ? 'error' : '';
-  $('settings-rows').replaceChildren(...data.rows.map((r) => h('li', { 'data-task': r.task },
-    h('span', { class: 's-name' }, r.label),
+  $('settings-rows').replaceChildren(...data.rows.map((r) => { const [ask, help] = helpFor(r); return h('li', { 'data-task': r.task },
+    h('span', { class: 's-name' }, r.label, ask),
     h('span', { class: 'seg', role: 'radiogroup', 'aria-label': r.label }, data.values.map((v) => h('label', {},
       h('input', { type: 'radio', name: `route-${r.task}`, value: v, checked: r.value === v,
         disabled: !r.allowed.includes(v) }), ROUTE_WORDS[v] || v))),
+    help,
     (r.hosted_allowed || []).length > 1 ? hostedPick(data, r) : null,
     h('p', {}, r.what),
     r.hosted_note ? h('p', { class: 's-note' }, r.hosted_note) : null,
     h('p', { class: 's-now' }, `Now on ${r.runs_on || r.effective}. ${cap(r.why)}.`),
-    r.floor ? h('p', { class: 's-floor' }, r.floor) : null)));
+    r.floor ? h('p', { class: 's-floor' }, r.floor) : null); }));
 }
 
 // The sections the bot serves: the routing table, and the notification switches where push works.

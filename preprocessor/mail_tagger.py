@@ -460,12 +460,31 @@ def ask_remote(prompt: str) -> tuple[dict, dict]:
                                               "model": r.get("model"), "cost_usd": 0.0}
 
 
+def ask_codex(prompt: str) -> tuple[dict, dict] | None:
+    """The tags from one tool-less Codex call as the owner (hosted_text:
+    the prompt carries mail text, which stays in the owner's processes);
+    None when Codex gave no answer, and Claude tags instead."""
+    import hosted_text
+    r = hosted_text.codex(prompt, timeout=MODEL_TIMEOUT_S, as_owner=True)
+    if r.get("rc") or not r.get("text"):
+        print(f"mail_tagger: Codex did not answer ({r.get('stderr')}); Claude tags", file=sys.stderr)
+        return None
+    return parse_verdicts(r["text"]), {"model": "codex", "cost_usd": None, "usage": r.get("usage")}
+
+
 def ask_model(prompt: str, model: str | None = None) -> tuple[dict, dict]:
     """One tool-less model call. Returns (verdicts, usage); verdicts is
     {} when the call failed or returned no JSON. In the enforce mode the
-    remote model answers and no Claude model is called."""
+    remote model answers and no hosted model is called; hosted, the
+    routing table's hosted model for `tagging` does (Codex as the owner,
+    with Claude when Codex gives no answer)."""
     if _remote_mode():
         return ask_remote(prompt)
+    import hosted_text
+    if hosted_text.model_for("tagging") == "codex":
+        got = ask_codex(prompt)
+        if got is not None:
+            return got
     model = model or model_name()
     exe = _claude_cmd()
     args = ["-p", prompt, "--model", model, "--output-format", "json", "--strict-mcp-config",

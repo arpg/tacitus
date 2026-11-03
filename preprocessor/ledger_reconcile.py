@@ -470,13 +470,15 @@ def prompt_for(group: dict, items: list[dict], *, now: datetime) -> str:
     return system + "\n\n" + json.dumps({"rows": items}, ensure_ascii=False)
 
 
-def _claude_judge(prompt: str) -> tuple[str, float | None]:
+def _hosted_judge(prompt: str) -> tuple[str, float | None]:
+    """One tool-less hosted call (hosted_text, the `review` task): Claude,
+    or Codex when the routing table names it."""
     import ea_config
-    import mail_privacy
+    import hosted_text
     model = ea_config.get_models().get("reconcile") or MODEL
-    r = mail_privacy._run_claude(prompt, model, "")
+    r = hosted_text.run("review", prompt, model)
     if r.get("rc") or not r.get("text"):
-        raise RuntimeError(f"claude rc={r.get('rc')}: {(r.get('stderr') or '')[-160:]}")
+        raise RuntimeError(f"{r.get('model_used')} rc={r.get('rc')}: {(r.get('stderr') or '')[-160:]}")
     return str(r["text"]), r.get("cost_usd")
 
 
@@ -662,7 +664,7 @@ def run(*, dry_run: bool = False, only: str = "", now: datetime | None = None,
     grp, linked = groups(rows, conn, only=only, link=(lambda *a: None) if dry_run else None)
     df = doc_freq(rows)
     table = thread_table(index, now=now, user=user)
-    judge = judge or _claude_judge
+    judge = judge or _hosted_judge
     rec.update(rows=len(rows), groups=len(grp), linked=linked, proposed=[], noted=[],
                threaded=[], filed=0, skipped=[], failed=[], cost_usd=0.0)
     for g in grp:

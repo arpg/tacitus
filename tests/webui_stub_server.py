@@ -123,18 +123,21 @@ ROUTING = {
          "value": "auto", "allowed": ["local", "hosted", "auto"], "locked": False, "floor": "",
          "hosted": "claude", "hosted_allowed": ["claude"],
          "hosted_note": "Hosted: the model that asks for the reply writes it.",
+         "help": "Writes the text of an email reply in your voice. Nothing goes out until you tap Send.",
          "effective": "local", "runs_on": "your own model", "why": "Auto picked your own model"},
         {"task": "mail", "label": "Reading your mail", "what": "Reads each new message and notes what it asks for.",
          "value": "auto", "allowed": ["local", "auto"], "locked": False,
          "floor": "Hosted is off while you keep some mail away from hosted models (a domain, an address "
                   "or admissions mail), so that mail never reaches Claude or Codex.",
          "hosted": "claude", "hosted_allowed": ["claude"], "hosted_note": "",
+         "help": "When a new email comes in, Tacitus reads it once and writes a short note.",
          "effective": "local", "runs_on": "your own model", "why": "Auto picked your own model"},
         {"task": "review", "label": "Checking its own work", "what": "Checks that briefing items are still open.",
          "value": "hosted", "allowed": ["hosted"], "locked": True,
-         "floor": "Always Hosted, on Claude: these are judgment calls.",
+         "floor": "Always Hosted: these are judgment calls.",
          "hosted": "claude", "hosted_allowed": ["claude"], "hosted_note": "",
-         "effective": "hosted", "runs_on": "Claude", "why": "only Claude makes these judgment calls"},
+         "effective": "hosted", "runs_on": "Claude",
+         "why": "these are judgment calls, so your own model never makes them"},
         {"task": "chat", "label": "Talking with you", "what": "Answers you in the chat.",
          "value": "auto", "allowed": ["local", "hosted", "auto"], "locked": False, "floor": "",
          "hosted": "codex", "hosted_allowed": ["claude", "codex"],
@@ -685,10 +688,10 @@ class Handler(BaseHTTPRequestHandler):
             for task, value in (body.get("tasks") or {}).items():
                 if value not in rows[task]["allowed"]:
                     return self._json(400, {"error": f'"{rows[task]["label"]}" always stays on Hosted: '
-                                                     "only Claude makes these judgment calls."})
+                                                     "these are judgment calls, so your own model never makes them."})
             for task, model in (body.get("hosted") or {}).items():
                 if model not in rows[task]["hosted_allowed"]:
-                    return self._json(400, {"error": f'"{rows[task]["label"]}" runs only on Claude when hosted.'})
+                    return self._json(400, {"error": f'"{rows[task]["label"]}" has no hosted model of its own to pick.'})
             for task, value in body["tasks"].items():
                 rows[task]["value"] = value
                 if value != "auto":

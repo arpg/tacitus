@@ -396,11 +396,15 @@ ROUTING_VALUES = ("local", "hosted", "auto")
 ROUTING_FLOORS = {"review": "hosted"}
 # Which hosted model a task uses when it runs hosted (by its value or by
 # auto): the routing block's `hosted` map. Codex is a choice only where a
-# Codex route exists: the chat and scheduling lanes (a `codex` tier) and
-# the cron lanes run-agent.sh can hand to Codex. Every other task's hosted
-# part is Claude. A task the map leaves out runs where it runs today.
+# Codex route exists: the chat and scheduling lanes (a `codex` tier), the
+# cron lanes run-agent.sh can hand to Codex, and the tool-less calls
+# (hosted_text: the tagger, the thread states, the review). `mail` hosted
+# is the gate off and `drafting` hosted is the turn's own model, so they
+# have no choice of their own. A task the map leaves out runs where it
+# runs today.
 ROUTING_HOSTED = ("claude", "codex")
-ROUTING_CODEX_TASKS = ("chat", "scheduling", "briefing", "audit", "digests")
+ROUTING_CODEX_TASKS = ("tagging", "digests", "briefing", "audit", "scheduling", "chat",
+                       "thread_state", "review")
 
 
 def routing_problems(val) -> list[str]:
@@ -426,7 +430,7 @@ def routing_problems(val) -> list[str]:
         elif value not in ROUTING_HOSTED:
             out.append(f"hosted {task} takes claude or codex, not {value!r}")
         elif value == "codex" and task not in ROUTING_CODEX_TASKS:
-            out.append(f"{task} has no Codex route; hosted {task} is claude only")
+            out.append(f"{task} has no Codex route; its hosted part follows the model that runs it")
     for task, value in tasks.items():
         if task not in ROUTING_TASKS:
             out.append(f"no task {task!r}; the tasks are {', '.join(ROUTING_TASKS)}")

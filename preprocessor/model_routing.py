@@ -17,24 +17,27 @@ Which hosted model a task uses, whenever it runs hosted (by its value or
 by auto), is the block's `hosted` map: `claude` or `codex`. Codex is a
 choice for the tasks with a Codex route (ea_config.ROUTING_CODEX_TASKS):
 `chat` and `scheduling`, whose lanes then run on the `codex` tier
-(model_tiers.resolve puts the map over the tiers block), and `briefing`,
+(model_tiers.resolve puts the map over the tiers block); `briefing`,
 `audit` and `digests`, whose Claude lane run-agent.sh then hands to Codex
-(`harness`). Every other task's hosted part is Claude. A task the map
-leaves out runs where it runs today: the chat and scheduling lanes'
-tiers block, Claude for the rest.
+(`harness`); and `tagging`, `thread_state` and `review`, whose tool-less
+calls hosted_text makes on Codex with every tool off. `mail` hosted is
+the gate off and `drafting` hosted is the turn's own model, so neither
+has a choice of its own. A task the map leaves out runs where it runs
+today: the chat and scheduling lanes' tiers block, Claude for the rest.
 
 `thread_state` (the web chat's conversation states, docs/webchat-state.md)
 has no switch of its own and defaults to local: `local` runs it on the
-local model when one is set up, and `auto` too, with Claude taking the
-threads left when the local model does not answer; with none set up, or
-with `hosted`, Claude judges them, one call a tick (web_thread_state.py).
+local model when one is set up, and `auto` too, with the hosted model
+taking the threads left when the local model does not answer; with none
+set up, or with `hosted`, the hosted model judges them, one call a tick
+(web_thread_state.py).
 
 Each lane asks at its own decision point: `local()` for the switches a
 lane reads from remote-llm.json, `mail_mode()` and `scheduling_mode()`
 inside remote_llm.mode(), and `lane_route()` inside model_tiers.resolve.
 The table never turns on a lane the endpoint cannot serve, and never
 passes a ghost-week gate: `local` on scheduling acts through the tier
-lane default (the tool gateway, every write checked by the Claude
+lane default (the tool gateway, every write checked by the hosted
 backstop), not through `scheduling enforce`. Two floors sit under every
 value:
 
@@ -46,7 +49,8 @@ value:
           over a lane default, and the briefing's rails stay in
           remote_briefing.
   keep    `mail`, `tagging` and `digests` read new mail in an owner
-          process, so `hosted` there would hand kept mail to Claude.
+          process, so `hosted` there would hand kept mail to a hosted
+          model (Claude or Codex).
           While the keep list (`keep_from_anthropic` in remote-llm.json)
           keeps anything (a domain, an address, or the admissions rule,
           on unless set false), `hosted` reads `auto` and saving it is
@@ -113,7 +117,7 @@ TASKS = {
               "Goes over everything still open each Sunday. Flagged items go to a hosted model."),
     "scheduling": ("Finding meeting times",
                    "Answers meeting requests and finds times. "
-                   "Claude checks every draft and invite your own model makes."),
+                   "A hosted model checks every draft and invite your own model makes."),
     "chat": ("Talking with you",
              "Answers you in the chat. A message about money, a contract, a dean or a decline "
              "never goes to your own model."),
@@ -143,9 +147,8 @@ TECH = {
 }
 assert tuple(TASKS) == tuple(TECH) == _ea_config.ROUTING_TASKS
 # The floors' lines under a row: (plain, technical).
-STAKES_FLOOR = ("Always Hosted, on Claude: these are judgment calls.",
-                "Stakes floor: these are judgment calls, so only the hosted model does them; "
-                "the hosted model is Claude.")
+STAKES_FLOOR = ("Always Hosted: these are judgment calls.",
+                "Stakes floor: these are judgment calls, so only a hosted model does them.")
 KEEP_FLOOR = ("Hosted is off while you keep some mail away from hosted models (a domain, an "
               "address or admissions mail), so that mail never reaches Claude or Codex.",
               "Keep floor: hosted is not available while the keep list keeps anything "
@@ -156,10 +159,25 @@ KEEP_FLOOR = ("Hosted is off while you keep some mail away from hosted models (a
 HOSTED_NOTES = {
     "mail": ("Hosted: the model that does each task reads the whole message.",
              "Hosted turns the mail gate off: the lanes, on Claude or Codex, read the mail itself."),
-    "tagging": ("Hosted is Claude. Codex cannot do this yet.", "The hosted tagger is a Claude call."),
     "drafting": ("Hosted: the model that asks for the reply writes it.",
                  "Hosted turns the writer off: the turn's own model (Claude or Codex) writes the body."),
-    "thread_state": ("Hosted is Claude. Codex cannot do this yet.", "The hosted judge is a Claude call."),
+}
+# Behind the "?" beside a task's name on the Settings screen: what the
+# task is, in plain words, for the names that do not say it themselves.
+HELP = {
+    "mail": ("When a new email comes in, Tacitus reads it once and writes a short note: what the "
+             "sender wants from you, by when, and who is involved. Your briefing, your to-do list "
+             "and your replies work from these notes. On Local, your own model reads each email, "
+             "and the full text stays with it. On Hosted, the full email goes to Claude or Codex."),
+    "tagging": ("Puts colored labels (Outlook categories) on each new email: the project it belongs "
+                "to, and what it wants from you, such as needs a reply, to do or just for your "
+                "information. In Outlook you can search and filter by these labels. Sorting only "
+                "adds labels. It never moves, answers or deletes an email."),
+    "drafting": ("Writes the text of an email reply in your voice, from a short note on what the "
+                 "reply must say. The reply waits as a draft, and nothing goes out until you tap "
+                 "Send. On Local, your own model writes it. On Hosted, the model that asked for "
+                 "the reply (Claude or Codex) writes it. Letters, such as recommendations, always "
+                 "come from a hosted model."),
 }
 # Under a row set to Codex, what Codex cannot do there.
 CODEX_NOTE = ("Codex cannot open web links, Drive, GitHub or Overleaf. "
@@ -394,7 +412,7 @@ def local_status(cfg: dict | None = None, *, verbose: bool = False) -> dict:
 # is the hosted model's name.
 AUTO_SAYS = {"local": "Auto picked your own model", "hosted": "Auto picked {hosted}",
              "mixed": "Auto is trying your own model and {hosted} side by side"}
-JUDGMENT = "only Claude makes these judgment calls"
+JUDGMENT = "these are judgment calls, so your own model never makes them"
 NOT_SET_UP = "your own model is not set up, so {hosted} does it"
 
 
@@ -468,8 +486,9 @@ def rows(*, cfg: dict | None = None, routing: dict | None = None,
     "effective" (local | hosted | mixed), "why", "hosted" (claude |
     codex: the model its hosted part uses), "hosted_allowed" (the hosted
     models it can take), "hosted_note", "runs_on" (what it runs on now,
-    named)}. `what`, `floor`, `hosted_note` and `why` are plain words, or
-    with `verbose` the code's terms."""
+    named), "help" (the "?" text, '' for none)}. `what`, `floor`,
+    `hosted_note` and `why` are plain words, or with `verbose` the code's
+    terms; `help` is plain words always."""
     cfg = _remote_cfg(cfg)
     tiers = tiers if tiers is not None else _ea_config.get_tiers()
     block = routing if routing is not None else _ea_config.get_routing()
@@ -484,7 +503,8 @@ def rows(*, cfg: dict | None = None, routing: dict | None = None,
         row = {"task": task, "label": label, "what": TECH[task] if verbose else what, "value": v,
                "allowed": list(VALUES), "locked": False, "floor": "", "hosted": hm,
                "hosted_allowed": list(HOSTED) if task in CODEX_TASKS else ["claude"],
-               "hosted_note": HOSTED_NOTES[task][pick] if task in HOSTED_NOTES else ""}
+               "hosted_note": HOSTED_NOTES[task][pick] if task in HOSTED_NOTES else "",
+               "help": HELP.get(task, "")}
         if task == "chat" and hm == "codex":
             row["hosted_note"] = CODEX_NOTE[pick]
         if task in FLOORS:
@@ -561,7 +581,8 @@ def _refusals(tasks: dict, kept: bool, hosted: dict | None = None) -> list[tuple
         elif m not in HOSTED:
             plain = f"{name} takes Claude or Codex as its hosted model."
         elif tech:
-            plain = f"{name} runs only on Claude when hosted. Codex cannot do it yet."
+            plain = f"{name} has no hosted model of its own to pick. " + (
+                HOSTED_NOTES[task][0] if task in HOSTED_NOTES else "Codex cannot do it yet.")
         else:
             continue
         out.append((plain, "; ".join(tech)))

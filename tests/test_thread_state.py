@@ -1953,7 +1953,7 @@ def test_the_route_follows_the_table_and_each_model_answers_on_its_own(routing, 
         calls.append(kw)
         return {"content": GOOD}
     monkeypatch.setattr(rl, "chat", fake_chat)
-    monkeypatch.setattr(wts, "CLAUDE", lambda prompt: runs.append(prompt) or "[]")
+    monkeypatch.setattr(wts, "HOSTED", lambda prompt: runs.append(prompt) or "[]")
     for value, cfg, want in (("local", LOCAL, "local"), ("auto", LOCAL, "auto"),
                              ("hosted", LOCAL, "hosted"),
                              # local with no endpoint reads hosted, as the table reads it
@@ -1976,7 +1976,7 @@ def test_the_route_follows_the_table_and_each_model_answers_on_its_own(routing, 
 def test_a_failed_hosted_run_answers_none_and_logs_once_an_hour(routing, monkeypatch, caplog):
     def fail(prompt):
         raise RuntimeError("claude rc=1: usage limit")
-    monkeypatch.setattr(wts, "CLAUDE", fail)
+    monkeypatch.setattr(wts, "HOSTED", fail)
     routing("hosted", LOCAL)
     with caplog.at_level("INFO", logger="chat.web.state"):
         assert wts.hosted_answer("batch") is None
@@ -1985,7 +1985,11 @@ def test_a_failed_hosted_run_answers_none_and_logs_once_an_hour(routing, monkeyp
     assert len(lines) == 1 and "usage limit" in lines[0]
 
 
-def test_the_hosted_run_is_the_tool_less_claude_call_the_reconcile_makes(monkeypatch):
+def test_the_hosted_run_is_the_tool_less_call_the_reconcile_makes(monkeypatch):
+    """Claude's tool-less run as the resident, with the task's model and
+    timeout; Codex when the routing table names it for the task, with
+    Claude when Codex gives no answer."""
+    import hosted_text
     import mail_privacy
     got = []
 
@@ -1993,16 +1997,24 @@ def test_the_hosted_run_is_the_tool_less_claude_call_the_reconcile_makes(monkeyp
         got.append((prompt, model, tools, timeout))
         return {"text": "[]", "rc": 0, "stderr": ""}
     monkeypatch.setattr(mail_privacy, "_run_claude", run)
+    monkeypatch.setattr(hosted_text, "model_for", lambda task: "claude")
     monkeypatch.setattr(ea_config, "get_models", lambda *a, **k: {"room_specialist": "x"})
-    assert wts._claude("batch") == "[]"
+    assert wts._hosted("batch") == "[]"
     assert got == [("batch", "opus", "", wts.HOSTED_TIMEOUT_S)]
     monkeypatch.setattr(ea_config, "get_models", lambda *a, **k: {"thread_state": "claude-x-1"})
-    wts._claude("batch")
+    wts._hosted("batch")
     assert got[-1][1] == "claude-x-1"
     monkeypatch.setattr(mail_privacy, "_run_claude",
                         lambda *a, **k: {"text": "", "rc": 1, "stderr": "not logged in"})
     with pytest.raises(RuntimeError, match="not logged in"):
-        wts._claude("batch")
+        wts._hosted("batch")
+    # on Codex: the call goes there with the task's timeout
+    asked = []
+    monkeypatch.setattr(hosted_text, "model_for", lambda task: asked.append(task) or "codex")
+    monkeypatch.setattr(hosted_text, "codex", lambda prompt, **kw: asked.append(kw) or
+                        {"text": "[1]", "rc": 0, "stderr": ""})
+    assert wts._hosted("batch") == "[1]"
+    assert asked == ["thread_state", {"timeout": wts.HOSTED_TIMEOUT_S}]
 
 
 def test_the_routing_table_names_the_task_and_never_warns_for_its_default(monkeypatch):
