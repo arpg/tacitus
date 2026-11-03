@@ -546,9 +546,12 @@ ON_USER_TYPES = types_with("on_user")
 #   submission  an acknowledgement of the submission in its own thread
 #   event       the meeting it asks for is on the calendar or answered
 #   manual      only the user's word, or a draft or event that names it
+#   lapse       its date passing: a chance that closes (a vote, an RSVP,
+#               a registration, a call for nominations, an event), not
+#               work still owed after the date (lapses())
 # A row without one falls back on its kind: a detector row and a reply
 # type close on a reply; everything else needs the user or a link.
-CLOSES_ON = ("reply", "submission", "event", "manual")
+CLOSES_ON = ("reply", "submission", "event", "manual", "lapse")
 
 
 def closes_on(entry: dict) -> str:
@@ -1712,6 +1715,50 @@ def acted_since(entry: dict, day) -> str:
     return at.isoformat() if at > day else ""
 
 
+def asks_nothing(entry: dict) -> bool:
+    """The row's mail asks nothing of the user: its thread brief (the
+    remote model's record of each message) names no ask, in the thread or
+    in any message from someone else, and wants no reply, and intake
+    noted no ask. A row with no brief (the EA's own rows, a row from
+    before the records) is never read this way."""
+    brief = entry.get("thread_brief")
+    if not isinstance(brief, dict) or not brief.get("messages"):
+        return False
+    if brief.get("needs_reply") or str(brief.get("ask") or "").strip():
+        return False
+    if "Ask:" in str(entry.get("notes") or ""):
+        return False
+    return not any(str(m.get("ask") or "").strip() for m in brief["messages"]
+                   if isinstance(m, dict) and not m.get("own"))
+
+
+def record_asks_nothing(rec: dict | None) -> bool:
+    """A single message's record asks nothing of the user and wants no
+    reply: its date can only be a chance or an event, never a debt."""
+    return isinstance(rec, dict) and bool(rec) and not rec.get("needs_reply") \
+        and not str(rec.get("ask") or "").strip()
+
+
+def lapses(entry: dict) -> bool:
+    """The row's date ends it: once the date passes there is nothing left
+    to do. A row the EA wrote lapses when it is declared to (`closes_on`
+    lapse). A dated row intake made from mail lapses while its mail asks
+    nothing of the user (asks_nothing): a vote, a contest, a talk, a town
+    hall, a call for volunteers. Intake declares it from the first
+    message's record; once the thread brief exists the whole thread
+    decides, so a later ask in the thread (a nomination to confirm) keeps
+    the row. A row declared to close another way never lapses."""
+    how = closes_on(entry)
+    if how and how != "lapse":
+        return False
+    if not str(entry.get("id") or "").startswith("deadline-"):
+        return how == "lapse"
+    brief = entry.get("thread_brief")
+    if isinstance(brief, dict) and brief.get("messages"):
+        return asks_nothing(entry)
+    return how == "lapse"
+
+
 def date_spent(entry: dict, today=None) -> str:
     """Why the row's past deadline is not overdue work, or '' when it is
     (or the date has not passed). A meeting's date passes when the meeting
@@ -1731,6 +1778,8 @@ def date_spent(entry: dict, today=None) -> str:
         return ""
     if is_meeting_date(entry):
         return f"the meeting was {due:%b} {due.day}"
+    if lapses(entry):
+        return "nothing was asked of you"
     acted = acted_since(entry, due)
     if acted:
         at = date.fromisoformat(acted)
@@ -1784,6 +1833,51 @@ def resurrect_due_follow_ups(db_path: Path | None = None,
         conn.commit()
     conn.close()
     return [_row_to_dict(r) for r in rows]
+
+
+def close_lapsed(db_path: Path | None = None, today=None) -> list[dict]:
+    """Close the open main-EA rows whose date has passed and ended them
+    (lapses()): a vote, an RSVP or an event that asked nothing of the
+    user leaves nothing to do once its day is over. closure.settle decides
+    each one under its `lapsed` signal: a declared lapse, or a row whose
+    thread the user never wrote in, closes; a row the user wrote in or
+    kept open is proposed instead. Returns [{"id", "action",
+    "description", "deadline"}] for each row it settled. Called by the
+    preprocessor before the briefing is built."""
+    import closure
+    if today is None:
+        today = datetime.now().astimezone().date()
+    path = db_path or DB_PATH
+    conn = guarded_connect(path)
+    conn.row_factory = sqlite3.Row
+    src_sql, src_params = _source_filter_sql(None, False)
+    rows = conn.execute(f"""
+        SELECT * FROM ledger
+        WHERE status IN ('open', 'follow_up', 'snoozed')
+        AND deadline IS NOT NULL AND deadline != '' AND substr(deadline, 1, 10) < ?
+        {src_sql}
+    """, [today.isoformat()] + list(src_params)).fetchall()
+    out = []
+    for r in rows:
+        entry = _row_to_dict(r)
+        if not lapses(entry):
+            continue
+        due = str(entry.get("deadline") or "")[:10]
+        try:
+            d = date.fromisoformat(due)
+        except ValueError:
+            continue
+        note = (f"{today.isoformat()}: closed when its {d:%b} {d.day} date passed; "
+                "its mail asked nothing of you")
+        res = closure.settle(conn, entry["id"], signal="lapsed", actor="intake", note=note,
+                             evidence={"deadline": due}, sweep=False,
+                             why=f"Its {d:%b} {d.day} date passed, and its mail asked nothing of you.")
+        if res.get("action") in ("closed", "proposed"):
+            out.append({"id": entry["id"], "action": res["action"],
+                        "description": entry.get("description") or "", "deadline": due})
+    conn.commit()
+    conn.close()
+    return out
 
 
 def get_closed_conversation_ids(db_path: Path | None = None,
@@ -2248,7 +2342,8 @@ def main():
                        help="What finishes this row: reply (the user's reply to its "
                             "correspondent), submission (an acknowledgement in its "
                             "thread), event (the meeting is set), manual (only the "
-                            "user or a draft/event that names it)")
+                            "user or a draft/event that names it), lapse (its date "
+                            "passing: a vote, an RSVP, a sign-up)")
     p_add.add_argument("--set", nargs="*", metavar="KEY=VALUE",
                        help="Extra fields (core or metadata)")
 

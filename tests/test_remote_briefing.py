@@ -784,3 +784,70 @@ def test_the_preview_goes_where_the_mail_digests_go(monkeypatch):
                         lambda: {"ea-assistant": "https://hooks.example/A"})
     monkeypatch.setattr(chat_notify, "_send_slack", lambda *a: pytest.fail("posted on Slack"))
     assert rb._preview("Morning briefing") is False
+
+
+def _vote_row(due: str) -> dict:
+    """A college-wide call to vote in a contest: the record asks nothing."""
+    return {"id": "deadline-vote", "type": "deadline", "deadline": due,
+            "description": f"Due {due}: Staff contest: cast your vote now!", "from_email": "staff-list@example.edu",
+            "thread_brief": {"needs_reply": False, "ask": "", "messages": [
+                {"from": "staff-list@example.edu", "ask": "", "state": "todo", "deadline": due}]}}
+
+
+def test_an_item_that_asks_nothing_is_never_a_to_do_a_decision_or_in_the_date_banner():
+    b = _briefing()
+    b["open_obligations"].append(_vote_row("2026-10-12"))
+    b["new_needs_response"].append({
+        "message_id": "m-talk", "conversation_id": "c-talk", "subject": "Speaker series talk Friday",
+        "from": "events@example.edu", "remote_record": {"ask": "", "needs_reply": False, "deadline": "2026-10-13"}})
+    c = rb.candidates(b, today=NOW.date())
+    vote = next(r for r in c if c[r].get("ledger_id") == "deadline-vote")
+    talk = next(r for r in c if c[r].get("message_id") == "m-talk")
+    for r in (vote, talk):
+        assert c[r]["optional"] and c[r]["due"] == ""
+        assert any(t.startswith("optional: nothing was asked of you") for t in c[r]["tags"])
+    plan = rb.check_plan({"get_done_today": [{"ref": vote, "when": "first thing", "why": "closes today"}],
+                          "flexes": [], "drafts": [], "escalate": [],
+                          "needs_you": [{"ref": talk, "decision": "go or not"}]}, c, morning=True)
+    assert plan["get_done_today"] == [] and plan["needs_you"] == []
+    post = rb.render_morning(b, c, plan, now=NOW, drafts=[], escalated=[])
+    assert "contest" not in post and "Speaker series" not in post
+
+
+def test_a_lapsed_row_is_history_for_the_model_and_a_quiet_line_once_closed():
+    b = _briefing()
+    b["open_obligations"].append(_vote_row("2026-10-09"))
+    c = rb.candidates(b, today=NOW.date())
+    vote = next(r for r in c if c[r].get("ledger_id") == "deadline-vote")
+    assert c[vote]["due"] == "" and c[vote]["tags"] == ["its Oct 9 date passed; nothing was asked of you"]
+    b["lapsed"] = [{"id": "deadline-vote", "description": "Due 2026-10-09: Staff contest: cast your vote now!"}]
+    post = rb.render_morning(b, c, {"get_done_today": []}, now=NOW, drafts=[], escalated=[])
+    assert "1 closed when their date passed, with nothing asked of you (Staff contest" in post
+    assert "Due 2026-10-09" not in post
+
+
+def test_the_do_list_says_the_due_date_in_code_and_drops_the_ledger_labels():
+    """The model wrote "Due today" for an item due the day before: code
+    says when each item is due, from its date, and a why that only
+    restates the date gives way to it. The ledger's "Due <date>:" and
+    "Task:" labels never reach the post."""
+    b = _briefing()
+    b["open_obligations"] += [
+        {"id": "deadline-late", "type": "deadline", "deadline": "2026-10-11",
+         "description": "Due 2026-10-11: Review the intro sequence notes"},
+        {"id": "task-forms", "type": "task", "description": "Task: Sign the waiver"}]
+    c = rb.candidates(b, today=NOW.date())
+    late = next(r for r in c if c[r].get("ledger_id") == "deadline-late")
+    forms = next(r for r in c if c[r].get("ledger_id") == "task-forms")
+    nsf = next(r for r in c if c[r].get("ledger_id") == "row-nsf")
+    items = {i["ref"]: i for i in rb._prompt_items(c, NOW.date())}
+    assert items[late]["due_in"] == "yesterday" and items[nsf]["due_in"] == "in 2 days"
+    assert "due_in" not in items[forms]
+    plan = {"get_done_today": [{"ref": late, "when": "first thing", "why": "Due today"},
+                               {"ref": nsf, "when": "in the 1-2:30 gap", "why": "the PI needs the numbers"},
+                               {"ref": forms, "when": "", "why": "due tomorrow."}]}
+    post = rb.render_morning(b, c, plan, now=NOW, drafts=[], escalated=[])
+    assert "1. *Review the intro sequence notes*: first thing. Was due Sun Oct 11" in post
+    assert "2. *NSF annual report*: in the 1-2:30 gap. the PI needs the numbers. Due Wed Oct 14" in post
+    assert "3. *Sign the waiver*" in post and "due tomorrow" not in post.lower()
+    assert "Due 2026-10-11:" not in post and "Task:" not in post

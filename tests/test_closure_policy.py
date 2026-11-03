@@ -521,3 +521,75 @@ def test_a_fresh_proposal_waits_for_the_batch_to_settle():
                                                  "proposal": {"at": now}}]}
     ns["_LAST_PROPOSAL_CHECK"][0] = 0.0
     assert ns["_post_close_proposals"]() == 0 and "cards" not in calls
+
+
+# ── 6. a date that ends a row ─────────────────────────────────────────
+
+def _brief(*, ask="", needs_reply=False, wrote=""):
+    return {"thread_brief": {"needs_reply": needs_reply, "ask": "", "last_from_user": wrote,
+                             "messages": [{"from": "staff-list@example.edu", "ask": ask,
+                                           "state": "todo", "deadline": "2026-10-30"}]}}
+
+
+def test_a_dated_row_whose_mail_asks_nothing_lapses_and_owed_work_never_does():
+    """A vote, a contest or a talk sent to a whole list: the record names
+    no ask, so its date is a chance that closes, not a debt. A row with an
+    ask, a row with no brief (the EA's own) and a row declared to close
+    another way never lapse; a declared lapse always does."""
+    vote = {"id": "deadline-vote", "deadline": "2026-10-30", **_brief()}
+    assert ledger_mod.lapses(vote) and ledger_mod.asks_nothing(vote)
+    assert not ledger_mod.lapses({**vote, **_brief(ask="Upload the letter.")})
+    assert not ledger_mod.lapses({**vote, **_brief(needs_reply=True)})
+    assert not ledger_mod.lapses({**vote, "notes": "Ask: Send the form."})
+    assert not ledger_mod.lapses({"id": "deadline-x", "deadline": "2026-10-30"})
+    assert not ledger_mod.lapses({"id": "my-own-row", "deadline": "2026-10-30", **_brief()})
+    assert not ledger_mod.lapses({**vote, "closes_on": "manual"})
+    assert ledger_mod.lapses({"id": "my-own-row", "closes_on": "lapse"})
+    # intake declares it from the first record; a later ask in the thread keeps the row
+    declared = {"id": "deadline-vote", "deadline": "2026-10-30", "closes_on": "lapse"}
+    assert ledger_mod.lapses(declared) and ledger_mod.lapses({**declared, **_brief()})
+    assert not ledger_mod.lapses({**declared, **_brief(ask="Confirm your nomination.")})
+    from datetime import date
+    assert ledger_mod.date_spent(vote, date(2026, 11, 3)) == "nothing was asked of you"
+    assert ledger_mod.date_spent(vote, date(2026, 10, 30)) == ""
+    assert ledger_mod.record_asks_nothing({"state": "todo", "ask": "", "needs_reply": False})
+    assert not ledger_mod.record_asks_nothing({"state": "todo", "ask": "Vote.", "needs_reply": False})
+    assert not ledger_mod.record_asks_nothing({})
+
+
+def test_the_lapsed_signal_closes_only_a_row_that_lapses_and_he_never_wrote_in():
+    vote = {"id": "deadline-vote", "deadline": "2026-10-30", **_brief()}
+    assert closure.tier("lapsed", vote) == closure.DECISIVE
+    assert closure.tier("lapsed", {**vote, **_brief(wrote="2026-10-29T15:00:00Z")}) == closure.PROPOSAL
+    declared = {"id": "my-own-row", "closes_on": "lapse", **_brief(wrote="2026-10-29T15:00:00Z")}
+    assert closure.tier("lapsed", declared) == closure.DECISIVE
+    intake = {"id": "deadline-vote", "closes_on": "lapse", **_brief(wrote="2026-10-29T15:00:00Z")}
+    assert closure.tier("lapsed", intake) == closure.PROPOSAL
+    assert closure.tier("lapsed", {**vote, **_brief(ask="Upload the letter.")}) == closure.PROPOSAL
+
+
+def test_the_sweep_closes_lapsed_rows_after_their_date_and_leaves_the_rest(tmp_path):
+    from datetime import date
+    conn = _db(tmp_path)
+    _add(conn, "deadline-vote", meta=_brief())
+    _add(conn, "deadline-letter", meta=_brief(ask="Upload the letter."))
+    _add(conn, "deadline-talk", meta=_brief(wrote="2026-10-29T15:00:00Z"))
+    _add(conn, "deadline-later", meta=_brief())
+    for rid, due in (("deadline-vote", "2026-10-30"), ("deadline-letter", "2026-10-30"),
+                     ("deadline-talk", "2026-10-30"), ("deadline-later", "2026-11-20")):
+        conn.execute("UPDATE ledger SET deadline = ? WHERE id = ?", (due, rid))
+    conn.commit()
+    conn.close()
+    out = ledger_mod.close_lapsed(db_path=tmp_path / "ledger.db", today=date(2026, 11, 3))
+    assert {(r["id"], r["action"]) for r in out} == {("deadline-vote", "closed"),
+                                                      ("deadline-talk", "proposed")}
+    conn = sqlite3.connect(str(tmp_path / "ledger.db"))
+    conn.row_factory = sqlite3.Row
+    vote = _row(conn, "deadline-vote")
+    assert vote["status"] == "completed" and "Oct 30 date passed" in vote["last_action"]
+    assert vote["closed_by"]["signal"] == "lapsed"
+    assert _row(conn, "deadline-talk")["status"] == "open"
+    assert _row(conn, "deadline-talk")["close_proposal"]["signal"] == "lapsed"
+    assert _row(conn, "deadline-letter")["status"] == "open"
+    assert _row(conn, "deadline-later")["status"] == "open"
+    assert ("close", "lapsed") in _events(conn, "deadline-vote")

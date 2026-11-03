@@ -263,6 +263,22 @@ def test_done_and_duplicate_propose_and_never_close(priv, db):
     conn.close()
 
 
+def test_a_chance_that_ended_is_a_lapsed_proposal_and_never_a_close(priv, db):
+    """A row whose only work was a chance that ended (a vote, an RSVP, an
+    event) and whose thread shows it ended: the judge says lapsed, with
+    the message that shows it, and code proposes under its own signal."""
+    _records()
+    judge = _judge({"site visit": {"verdict": "lapsed", "why": "The organizers posted the results on Oct 22."}})
+    rec = _run(db, judge)
+    assert [p["id"] for p in rec["proposed"]] == ["response-visit"]
+    row = ledger_mod.get_entry("response-visit")
+    assert row["status"] == "open" and row["close_proposal"]["signal"] == lr.LAPSE_SIGNAL
+    assert row["close_proposal"]["why"] == "The organizers posted the results on Oct 22."
+    assert "lapsed" in judge.prompts[0] and "never lapsed" in judge.prompts[0]
+    items = [{"ref": "R1"}]
+    assert lr.parse_verdicts('[{"ref": "R1", "verdict": "lapsed"}]', items, {})[0]["verdict"] == "open"
+
+
 def test_a_reply_row_keeps_its_thread_in_metadata_only(priv, db):
     _records()
     judge = _judge({"seminar slot": {"thread": True}})

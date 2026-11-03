@@ -2528,9 +2528,22 @@ does not hide newer evidence of another kind. Plugin rows keep their own
 lifecycle: their closes are recorded, never second-guessed.
 
 A row says what finishes it when it is written: `ledger.py add
---closes-on reply|submission|event|manual`. That is how a task whose
+--closes-on reply|submission|event|manual|lapse`. That is how a task whose
 deliverable is an email closes on the reply without a click, while a portal
 submission in the same thread never does.
+
+`lapse` is a date that ends the row: a vote, an RSVP, a sign-up or an
+event, where nothing is owed once the day is over. Intake declares it on a
+dated row whose mail record names no ask and wants no reply, and
+`ledger.lapses` reads the same of an older row from its thread brief.
+Each preprocessor run, `ledger.close_lapsed` settles the rows whose date
+has passed under the `lapsed` signal: decisive on a row the EA declared
+to lapse, or on an intake row whose thread the user never wrote in; a
+proposal on one he wrote in or kept open. An intake row lapses only while
+its whole thread asks nothing: a later ask keeps it. The briefing names the closed rows once under "Quietly
+handled", and the nightly reconcile can propose `lapsed` for a row the
+EA wrote whose thread shows the chance ended (the results came out, the
+event was held). Work still owed after its date never lapses.
 
 Every transition (close, reopen, propose, confirm, reject) is a row in
 `ledger_events` with its signal, actor and evidence, and `ledger.py
