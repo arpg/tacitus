@@ -2656,6 +2656,7 @@ _BASH_ONLY_TOOLS = (
     # preference is recorded with `preferences.py add` instead of anyone
     # editing a skill. One ea-bot-owned config file.
     "Bash(python3 {script_dir}/preprocessor/preferences.py *),"
+    "Bash(python3 {script_dir}/preprocessor/autonomy_tiers.py *),"
     "Bash(python3 {script_dir}/preprocessor/onboarding.py *),"
     # The conversation index: what the other sessions on this host are
     # doing. Read-only over the ea-bot user's own transcripts.

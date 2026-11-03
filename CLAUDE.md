@@ -114,8 +114,9 @@ submissions.
 Ledger updates, briefing posts.
 
 The user can promote a task in chat ("for LoR uploads, just do them and
-tell me": update the config; "for scheduling with Dr. Smith, just send
-it": a per-contact override). Check `per_contact_overrides` first.
+tell me"; "for scheduling with Dr. Smith, just send it"): run
+`autonomy_tiers.py promote --task <task> --tier <tier> [--contact <addr>]
+--quote "<their words>"`. Check `per_contact_overrides` first.
 Button-required tasks CANNOT be promoted.
 
 ### Autonomy safety rails
@@ -364,7 +365,7 @@ meeting confirmation is the body.
    them in `recent_slack_messages` (see `pending_instructions`); read the
    channel only when a chat read tool is granted and you have no briefing.
 3. Check the autonomy tier before acting. Post to chat for ask-first tasks.
-4. Mail is `python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py <verb> --provider outlook|gmail`; the provider CLIs keep only their own verbs. A draft: `mail_actions.py create-draft --provider outlook --to <addr> --subject "<subj>" --body-file /path/to/body.txt`
+4. Mail is `python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py <verb> --provider outlook|gmail`. A draft: `mail_actions.py create-draft --provider outlook --to <addr> --subject "<subj>" --body-file /path/to/body.txt`
 4a. Name the ledger row a draft delivers: `--ledger-id <id>` on
    `create-draft`, `create-reply`, `update-draft`, `create-forward`;
    repeat for more rows. A send closes
@@ -384,7 +385,7 @@ meeting confirmation is the body.
 5b. Deleting a draft: `mail_actions.py delete-draft --provider <p> --draft-id <id>`.
 5c. Archive (only when told): `graph_actions.py archive-message --message-id <id>`.
 5c-1. Check a draft's recipients with `mail_actions.py preflight-check
-   --provider <p> --draft-id <id>`, not `get-message`.
+   --provider <p> --draft-id <id>`.
 5d. A file's text (.xlsx too): `doc_text.py <path>`; markdown to .docx:
    `doc_write.py docx --in <md> --out <path>`; CSV to a sheet:
    `doc_write.py xlsx`; PDF hints: `scan-attachments`.
@@ -446,7 +447,7 @@ meeting confirmation is the body.
 11. For scheduling use `availability_merged` from the briefing; re-check
    live only when the briefing is over an hour old or for a same-day
    meeting. For a poll, check the sender's proposed dates.
-12. When the user promotes a task tier, update the config file.
+12. A tier promotion: `autonomy_tiers.py promote` (Autonomy tiers above).
 13. CHECK `attachment_hints` before drafting: submission addresses,
    deadlines, required documents, portals. With
    `attachment_hints.submission_emails`, send there too. With

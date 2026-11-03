@@ -708,6 +708,7 @@ ALLOWED_TOOLS+=",Bash(jq *)"
 # `preferences.py add|calibrate`. Reads and in-place writes to one
 # ea-bot-owned config file; no external effect.
 ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/preferences.py *)"
+ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/autonomy_tiers.py *)"
 ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/onboarding.py *)"
 ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/alert.py *)"
 ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/page_watch.py *)"

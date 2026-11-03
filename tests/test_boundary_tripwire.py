@@ -130,6 +130,11 @@ WRITERS = [
     W("calendar_reconciler", lambda m, p: m.log_release("series-1", "Focus"), attr="DECISIONS_FILE"),
     W("scheduling_engine", lambda m, p: m._append_decision({"k": 1}), attr="DECISIONS_FILE"),
     W("preferences", lambda m, p: m.update(lambda d: d["calibration"].append({"note": "x"}), p), name="config/preferences.json"),
+    # the tiers file is seeded through the same update_text the verb uses
+    W("autonomy_tiers",
+      lambda m, p: (m._resident_io.update_text(p, lambda t: '{"task_tiers": {"t": {"tier": "ask-first"}}}\n')
+                    and m.promote(p, task="t", tier="do-and-tell", quote="just do it")),
+      name="config/autonomy-tiers.json"),
     W("quiet_hours", lambda m, p: m.defer("ea-assistant", "x"), attr="QUEUE_FILE"),
     W("quiet_hours", lambda m, p: m.set_hour_override("morning-briefing", "2026-09-29", 7), attr="HOUR_OVERRIDE_FILE"),
     W("ea_channels", lambda m, p: m._mutate(lambda rows: rows.update(C1={"a": 1}), p), name="config/ea-channels.json"),

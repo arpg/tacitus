@@ -170,9 +170,9 @@ only when the words it quotes (`--quote`, `--text`) are in that message,
 so a rule lifted from a mail body is refused and kept in
 `preferences-staged-refused.jsonl` with the reason; a calibration or a
 retirement carries no quote and is applied as it is. The turn's record
-carries the outcome (`preferences`). A tier promotion (an edit of
-`autonomy-tiers.json`) has no verb and cannot be written from a Codex
-turn; the suffix tells Codex to say so.
+carries the outcome (`preferences`). A tier promotion is a verb too,
+`autonomy_tiers.py promote --task <task> --tier <tier> [--contact <addr>]
+--quote "<words>"` (CLAUDE.md rule 12), staged and applied the same way.
 
 **No resume.** `codex exec resume` drops the writable roots: the resumed
 turn's sandbox policy has none, `-c sandbox_workspace_write.writable_roots`
