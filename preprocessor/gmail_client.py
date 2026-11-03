@@ -475,11 +475,14 @@ def create_forward(email: str, message_id: str, to: list[str], body: str,
     message" header. Like Gmail's own forward it opens a new conversation
     (no threadId or In-Reply-To).
 
-    shortcut: the forwarded messages' attachments are not carried; add them
-    with attach-file until the forward copies them itself.
+    A draft in the thread (an unsent reply) is not forwarded.
 
-    Returns {"draft_id", "message_id", "thread_id", "forwarded"} or
-    {"error": ...}."""
+    shortcut: the forwarded messages' attachments are not carried; the
+    result names them in "attachments_not_carried" so the caller adds them
+    with attach-file, until the forward copies them itself.
+
+    Returns {"draft_id", "message_id", "thread_id", "forwarded",
+    "attachments_not_carried"} or {"error": ...}."""
     service = _get_service(email)
     if not service:
         return {"error": f"No Gmail credentials for {email}"}
@@ -489,7 +492,10 @@ def create_forward(email: str, message_id: str, to: list[str], body: str,
     if "error" in orig:
         return orig
     thread = get_thread(email, orig.get("thread_id", "")) if orig.get("thread_id") else {}
-    messages = thread.get("messages") or [orig]
+    messages = [m for m in (thread.get("messages") or [orig])
+                if "DRAFT" not in (m.get("label_ids") or [])] or [orig]
+    not_carried = [a.get("filename", "") for m in messages for a in (m.get("attachments") or [])
+                   if a.get("filename")]
     blocks = []
     for m in reversed(messages):
         head = [FORWARD_MARKER, f"From: {m.get('from', '')}", f"Date: {m.get('date', '')}",
@@ -509,7 +515,8 @@ def create_forward(email: str, message_id: str, to: list[str], body: str,
         return {"error": f"Gmail API error: {e}"}
     created = draft.get("message", {})
     return {"draft_id": draft.get("id", ""), "message_id": created.get("id", ""),
-            "thread_id": created.get("threadId", ""), "forwarded": len(messages)}
+            "thread_id": created.get("threadId", ""), "forwarded": len(messages),
+            "attachments_not_carried": not_carried}
 
 
 def preflight_check(email: str, draft_id: str) -> dict:
@@ -827,6 +834,8 @@ def get_thread(email: str, thread_id: str) -> dict:
             "cc": headers.get("cc", ""),
             "date": headers.get("date", ""),
             "body": _extract_body(payload),
+            "label_ids": msg.get("labelIds", []),
+            "attachments": [_attachment_meta(p) for p in _attachment_parts(payload)],
         })
     return {"thread_id": thread_id, "messages": messages}
 

@@ -2522,7 +2522,9 @@ def create_forward(message_id: str, to: list[str], comment: str,
     the whole thread comes along. `comment` goes above it, as a reply's text
     does, with the same fallback when Graph returns an empty or flattened
     quote."""
-    fwd = graph_post(f"/me/messages/{_id(message_id)}/createForward", {})
+    fwd = graph_post(f"/me/messages/{_id(message_id)}/createForward", {}) or {}
+    if not fwd.get("id"):
+        return {"error": "createForward returned no draft id"}
     quoted_html = fwd.get("body", {}).get("content", "")
     if not quoted_html.strip() or _is_quoted_thread_flattened(quoted_html):
         print("Warning: createForward returned an empty or flattened thread, "

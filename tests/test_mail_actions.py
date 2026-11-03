@@ -459,7 +459,12 @@ def test_the_gmail_forward_carries_the_whole_thread_newest_first():
     thread = [{"id": "1", "from": "a@example.com", "to": "me@example.com", "cc": "",
                "date": "Mon, 1 Oct 2026", "subject": "Plan", "body": "first message"},
               {"id": "2", "from": "me@example.com", "to": "a@example.com", "cc": "c@example.com",
-               "date": "Tue, 2 Oct 2026", "subject": "Re: Plan", "body": "second message"}]
+               "date": "Tue, 2 Oct 2026", "subject": "Re: Plan", "body": "second message",
+               "attachments": [{"filename": "plan.pdf", "attachment_id": "att-1"}]},
+              # an unsent reply of the user's on the thread is not forwarded
+              {"id": "3", "from": "me@example.com", "to": "a@example.com", "cc": "",
+               "date": "Wed, 3 Oct 2026", "subject": "Re: Plan", "body": "unsent draft text",
+               "label_ids": ["DRAFT"]}]
     gm, saved = _gmail_lib(
         _get_service=lambda email, interactive=False: svc,
         get_message=lambda email, mid: dict(thread[1], thread_id="t-1"),
@@ -470,6 +475,7 @@ def test_the_gmail_forward_carries_the_whole_thread_newest_first():
         for k, v in saved.items():
             setattr(gm, k, v)
     assert out["draft_id"] == "r-new" and out["forwarded"] == 2
+    assert out["attachments_not_carried"] == ["plan.pdf"]
     msg = svc.created[0]["message"]
     assert "threadId" not in msg   # a forward opens a new conversation
     m = message_from_bytes(base64.urlsafe_b64decode(msg["raw"]))
@@ -478,6 +484,7 @@ def test_the_gmail_forward_carries_the_whole_thread_newest_first():
     assert text.startswith("See below.") and text.count(gm.FORWARD_MARKER) == 2
     assert text.index("second message") < text.index("first message")
     assert "Cc: c@example.com" in text and "In-Reply-To" not in m
+    assert "unsent draft text" not in text
 
 
 def test_the_gmail_preflight_checks_the_new_text_like_outlook():
