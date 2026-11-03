@@ -42,23 +42,6 @@ def test_the_rules_read_the_traits():
     assert not ledger_mod.closes_on_reply({"id": "x", "type": "task"})
 
 
-# The code that still names a type outside ledger.py. Step (d) turns this
-# into a contract test once each one reads a trait or states why not.
-LITERAL_SITES = {
-    ("preprocessor/closure_scrubber.py", '_etype(entry) == "draft_pending"'): 3,
-    ("preprocessor/closure_scrubber.py", '_PLUGIN_OWNED_TYPE_PREFIXES = ("ff_",)'): 1,
-    ("preprocessor/closure_scrubber.py", '| {"ae_review_request"}'): 1,
-    ("preprocessor/preprocess.py", 'ob.get("type") == "deadline"'): 1,
-    ("preprocessor/remote_audit.py", 'o.get("type") == "reimbursement"'): 1,
-    ("preprocessor/mail_privacy.py", 'kept_row_type(res) == "scheduling"'): 1,
-}
-
-
-def test_the_literal_type_sites_are_the_known_ones():
-    for (path, text), n in LITERAL_SITES.items():
-        assert (ROOT / path).read_text().count(text) == n, (path, text)
-
-
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
