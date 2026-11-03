@@ -25,7 +25,7 @@ the draft id in your reply. Add `--ledger-id <row id>` (on `create-draft`
 or `update-draft`) when the draft delivers a ledger row, as on Outlook:
 its Send closes the rows it names and the thread's reply row.
 
-A forward (`gmail_client.py create-forward --email <addr> --message-id
+A forward (`mail_actions.py create-forward --provider gmail --message-id
 <id> --to <addr> --body-file <f>`) carries the whole thread, newest
 first, without any unsent draft on it. It does not carry the thread's
 attachments: the result lists them in `attachments_not_carried`; add

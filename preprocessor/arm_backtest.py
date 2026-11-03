@@ -77,7 +77,8 @@ SMOKE = [
 ]
 
 READ_VERBS = {
-    "graph_actions": ("get-message", "get-conversation", "search-mail", "list-mail", "calendar-view",
+    "mail_actions": ("search", "get-message", "get-draft"),
+    "graph_actions": ("get-conversation", "list-mail", "calendar-view",
                       "get-event", "resolve-contact", "get-attachments", "scan-attachments"),
     "scheduling_engine": ("*",),
     "booking_link": ("*",),
@@ -94,6 +95,9 @@ DISALLOWED_EXTRA = (
     "Bash(python3 *graph_actions.py update-draft *)", "Bash(python3 *graph_actions.py delete-draft *)",
     "Bash(python3 *graph_actions.py archive-message *)", "Bash(python3 *graph_actions.py snooze-message *)",
     "Bash(python3 *gmail_client.py create-draft *)", "Bash(python3 *gmail_client.py update-draft *)",
+    "Bash(python3 *mail_actions.py create-reply *)", "Bash(python3 *mail_actions.py create-draft *)",
+    "Bash(python3 *mail_actions.py update-draft *)", "Bash(python3 *mail_actions.py delete-draft *)",
+    "Bash(python3 *mail_actions.py create-forward *)",
     "Bash(python3 *email_writer.py *)", "Bash(python3 *ledger.py add *)", "Bash(python3 *ledger.py update *)",
     "Bash(python3 *ledger.py close *)", "Bash(python3 *project_store.py journal *)",
     "Bash(python3 *scheduling_engine.py log-decision *)", "Bash(python3 *google_calendar_client.py create-event *)",

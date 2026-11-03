@@ -55,7 +55,9 @@ def test_run_arm_parses_the_transcript_and_classifies_the_outcome(monkeypatch):
     assert cmd[:5] == ["sudo", "-n", "-u", "ea-bot", "env"] and "EA_RUN_ID=shadow-armbt-1" in cmd
     assert "--no-session-persistence" in cmd and "--tools" in cmd and cmd[cmd.index("--tools") + 1] == "Bash,Read,Write" and "--bare" in cmd
     allowed = cmd[cmd.index("--allowedTools") + 1]
-    assert "graph_actions.py search-mail *" in allowed and "scheduling_engine.py *" in allowed
+    assert "mail_actions.py search *" in allowed and "scheduling_engine.py *" in allowed
+    assert "graph_actions.py get-conversation *" in allowed
+    assert "graph_actions.py search-mail *" not in allowed   # denied: the unified verb replaces it
     assert "create-reply" not in allowed
     dis = cmd[cmd.index("--disallowedTools") + 1]
     assert "Write" in dis.split(",") and "Bash(python3 *graph_actions.py create-reply *)" in dis

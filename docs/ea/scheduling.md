@@ -48,7 +48,7 @@ remain after the join, on different days when the solver has them. When
 the user turns the offered times down, run the solver again on the new
 window and offer three again.
 
-**A draft the user wrote.** `search-mail` and `list-mail` rows carry
+**A draft the user wrote.** `search` and `list-mail` rows carry
 `is_draft` and `own`. "Finish the draft I wrote" means read that row with
 `get-message`, keep the user's words, and `update-draft` it; never
 `create-reply` beside it.

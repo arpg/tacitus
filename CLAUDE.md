@@ -364,7 +364,7 @@ meeting confirmation is the body.
    them in `recent_slack_messages` (see `pending_instructions`); read the
    channel only when a chat read tool is granted and you have no briefing.
 3. Check the autonomy tier before acting. Post to chat for ask-first tasks.
-4. Mail is `python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py <verb> --provider outlook|gmail` (`-h` lists verbs); the provider CLIs keep only their own verbs. A draft: `mail_actions.py create-draft --provider outlook --to <addr> --subject "<subj>" --body-file /path/to/body.txt`
+4. Mail is `python3 /home/ea-bot/ea-system/preprocessor/mail_actions.py <verb> --provider outlook|gmail`; the provider CLIs keep only their own verbs. A draft: `mail_actions.py create-draft --provider outlook --to <addr> --subject "<subj>" --body-file /path/to/body.txt`
 4a. Name the ledger row a draft delivers: `--ledger-id <id>` on
    `create-draft`, `create-reply`, `update-draft`, `create-forward`;
    repeat for more rows. A send closes

@@ -597,6 +597,19 @@ def test_no_ea_facing_text_names_a_denied_provider_verb():
         for tool, verb in denied:
             hit = re.search(rf"{tool}\.py[ \\\n]+{re.escape(verb)}\b(?!-)", text)
             assert not hit, (path.name, f"{tool}.py {verb}")
+    # The bot's Tools block lists each CLI's verbs under its line: a denied
+    # verb under a provider CLI's line sends the EA into a refusal too.
+    src = (ROOT / "ea-chat-bot.py").read_text()
+    block = src[src.index("def _tools_block("):]
+    block = block[:block.index("\ndef ", 10)]
+    assert "mail_actions.py <verb> --provider outlook|gmail" in block
+    bullet_re = r"(graph_actions|gmail_client)\.py <cmd>\)[^\n]*\n((?:  [^\n]*\n)*)"
+    for m in re.finditer(bullet_re, block):
+        tool, bullet = m.group(1), m.group(2)
+        for t, verb in denied:
+            if t == tool:
+                assert not re.search(rf"\b{re.escape(verb)}\b", bullet), (tool, verb)
+    assert "with graph_actions.py: read a thread" not in src
 
 
 if __name__ == "__main__":

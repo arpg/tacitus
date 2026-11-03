@@ -598,7 +598,7 @@ unified = {'search-mail': 'search', 'get-message': 'get-message',
 for sub in ga:
     allowed.append(f'Bash(python3 {ea_bot_scripts}/graph_actions.py {sub} *)')
     if sub in unified:
-        allowed.append(f'Bash(python3 {ea_bot_scripts}/mail_actions.py {unified[sub]} *)')
+        allowed.append(f'Bash(python3 {ea_bot_scripts}/mail_actions.py {unified[sub]} --provider outlook *)')
 
 # fetch_url
 if ctx.get('fetch_url'):

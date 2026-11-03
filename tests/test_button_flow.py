@@ -231,6 +231,7 @@ def test_gmail_tool_recognition():
     assert not is_tool("Bash", {"command": "python3 .../gmail_client.py search --query x"})
     assert is_tool("Bash", {"command": "python3 .../mail_actions.py create-reply --provider gmail --message-id m"})
     assert is_tool("Bash", {"command": "python3 .../gmail_client.py create-forward --email a"})
+    assert is_tool("Bash", {"command": "python3 .../mail_actions.py update-draft --provider=gmail --draft-id d"})
     assert not is_tool("Bash", {"command": "python3 .../mail_actions.py create-reply --provider outlook"})
     assert not is_tool("Bash", {"command": "python3 .../mail_actions.py search --provider gmail"})
     assert not is_tool("Bash", {"command": "python3 .../graph_actions.py create-reply"})
