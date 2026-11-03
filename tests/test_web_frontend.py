@@ -664,6 +664,33 @@ def test_pairing_sets_the_cookie(tmp_path):
         f.stop()
 
 
+def test_a_send_with_a_nonce_is_taken_once_and_a_refused_hand_in_is_a_503(fe):
+    """The browser retries a send the host did not answer, with the same
+    nonce: the second post answers the first row and dispatches nothing.
+    A hand-in the composite returns nothing for (the bot restarting) is a
+    503, never a silent ok that loses the message."""
+    got, ev = catcher(fe)
+    body = {"text": "once please", "nonce": "n-1"}
+    s1, _h, b1 = owner(fe, "POST", "/api/channels/main/messages", body)
+    assert s1 == 200 and ev.wait(5)
+    ev.clear()
+    s2, _h, b2 = owner(fe, "POST", "/api/channels/main/messages", body)
+    assert s2 == 200 and json.loads(b2)["id"] == json.loads(b1)["id"]
+    assert not ev.wait(1) and len(got) == 1, "the retry dispatched nothing"
+    s3, _h, b3 = owner(fe, "POST", "/api/channels/main/messages", {"text": "once please", "nonce": "n-2"})
+    assert s3 == 200 and json.loads(b3)["id"] != json.loads(b1)["id"], "another nonce is another message"
+    assert owner(fe, "POST", "/api/channels/main/messages", {"text": "x", "nonce": "n" * 65})[0] == 400
+    assert owner(fe, "POST", "/api/channels/main/messages", {"text": "x", "nonce": 5})[0] == 400
+    fe.inbound = lambda ev_: None
+    try:
+        status, _h, b = owner(fe, "POST", "/api/channels/main/messages", {"text": "lost?", "nonce": "n-3"})
+    finally:
+        fe.inbound = None
+    assert status == 503 and "restarting" in json.loads(b)["error"]
+    status, _h, b = owner(fe, "POST", "/api/channels/main/messages", {"text": "lost?", "nonce": "n-3"})
+    assert status == 200, "the retry after the 503 is taken"
+
+
 def test_a_post_from_another_origin_is_refused(fe):
     for origin in ("https://evil.example.test", "https://host.example.test",
                    "https://host.example.test:443", "http://host.example.test:8444",

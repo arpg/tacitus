@@ -194,6 +194,8 @@ class Stub:
         # Each stream request: its Last-Event-ID header and its ?since=.
         self.streams: list[dict] = []
         self.refuse_streams = 0
+        self.refuse_posts = 0   # the next sends answer 503, as a restarting host does
+        self.refused_posts: list = []
         self.generation = 0
         self.channels = {
             DM: {"id": DM, "name": "", "kind": "dm", "archived": False, "unread": 0},
@@ -430,10 +432,12 @@ class Stub:
 
     # inbound from the app
 
-    def post(self, channel: str, text: str, thread_key: str | None, file: dict | None = None) -> dict:
+    def post(self, channel: str, text: str, thread_key: str | None, file: dict | None = None,
+             nonce: str | None = None) -> dict:
         m = self.add(channel, text, author="owner", kind="file" if file else "message",
                      thread_key=thread_key, file=file, event="file" if file else "message")
-        self.posts.append({"channel": channel, "text": text, "thread_key": thread_key, "file": file})
+        self.posts.append({"channel": channel, "text": text, "thread_key": thread_key, "file": file,
+                           "nonce": nonce})
         if self.echo:
             def later():
                 self.change(m, "reaction", reactions=["eyes"])
@@ -629,9 +633,14 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) == 3 and parts[0] == "channels" and parts[1] in s.channels:
             if parts[2] == "messages":
                 data = json.loads(self._body() or b"{}")
+                if s.refuse_posts > 0:
+                    s.refuse_posts -= 1
+                    s.refused_posts.append(data)
+                    return self._json(503, {"error": "restarting"})
                 if not str(data.get("text") or "").strip():
                     return self._json(400, {"error": "empty message"})
-                return self._json(200, s.post(parts[1], data["text"], data.get("thread_key")))
+                return self._json(200, s.post(parts[1], data["text"], data.get("thread_key"),
+                                              nonce=data.get("nonce")))
             if parts[2] == "files":
                 fields = {name: (fname, data) for name, fname, data in self._parts()}
                 if "file" not in fields:

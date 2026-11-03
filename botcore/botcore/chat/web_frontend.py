@@ -316,6 +316,8 @@ OWNER_REACTIONS = {"+1": "\U0001f44d", "white_check_mark": "✅", "heart": "❤�
                    "eyes": "\U0001f440", "joy": "\U0001f602"}
 # Seconds after posting in which the owner may edit or remove a message.
 EDIT_WINDOW_S = 15 * 60
+NONCE_TTL_S = 15 * 60
+NONCE_MAX_CHARS = 64
 # Search: the most hits one search answers, a hit's snippet, the longest query.
 SEARCH_CAP = 200
 SNIPPET_CHARS = 160
@@ -2369,6 +2371,9 @@ class WebFrontend(ChatFrontend):
         # Shadow mode: the composite takes the owner's web input here
         # (docs/webchat.md); None dispatches it through self.registry.
         self.inbound: Inbound | None = None
+        # The owner's sends by nonce, for a retry after a lost answer: the
+        # same message is taken once (NONCE_TTL_S).
+        self._nonces: dict[str, tuple[float, dict]] = {}
         self.notice: Callable[[str], None] | None = None
         self.ping_s = PING_S
         self.tail_s = TAIL_S
@@ -3851,10 +3856,29 @@ class WebFrontend(ChatFrontend):
                 raise _HttpError(404, "no such thread")
         return ch, key
 
-    def web_message(self, channel: str, text: str,
-                    thread_key: str | None) -> tuple[dict, Callable[[], None] | None]:
+    def _nonce_seen(self, nonce: str | None) -> dict | None:
+        """The row a nonce already posted, or None. Old nonces are dropped."""
+        now = time.time()
+        for k in [k for k, (at, _row) in self._nonces.items() if now - at > NONCE_TTL_S]:
+            self._nonces.pop(k, None)
+        hit = self._nonces.get(nonce) if nonce else None
+        return hit[1] if hit else None
+
+    def _nonce_keep(self, nonce: str | None, row: dict) -> None:
+        if nonce and isinstance(row, dict) and row.get("id"):
+            self._nonces[nonce] = (time.time(), row)
+
+    def web_message(self, channel: str, text: str, thread_key: str | None,
+                    nonce: str | None = None) -> tuple[dict, Callable[[], None] | None]:
         """Store the owner's message and build its dispatch: (the stored
-        message, a call to run once the reply is sent)."""
+        message, a call to run once the reply is sent). A `nonce` the
+        browser sent before answers the same row and dispatches nothing: a
+        retry after a lost answer posts once. A hand-in the composite did
+        not take (the bot is restarting) is a 503, so the browser tries
+        again, never a silent "ok"."""
+        seen = self._nonce_seen(nonce)
+        if seen is not None:
+            return seen, None
         ch, key = self._target(channel, thread_key)
         msg = InboundMessage(channel=channel, msg_id="", text=text, user_id=self.owner_id,
                              posted_at=time.time(), thread_key=key, is_reply=bool(key),
@@ -3862,12 +3886,14 @@ class WebFrontend(ChatFrontend):
         if self.inbound is not None:
             ref = self._hand_in(msg)
             if ref is None:
-                return {"ok": True}, None
+                raise _HttpError(503, "Tacitus did not take the message (restarting?). Sent again in a moment.")
             self.note_owner_post(ref.channel, ref.id)
             row = self.store.message(ref.channel, ref.id) or self.mirror_post(ref, text, OWNER)
+            self._nonce_keep(nonce, row)
             return row, None
         row = self.store.add_message(channel, mid=None, thread_key=key, author=OWNER,
                                      kind="message", text=text)
+        self._nonce_keep(nonce, row)
         msg.msg_id, msg.thread_key, msg.posted_at = row["id"], row["thread_key"], row["posted_at"]
         return row, lambda: self._dispatch(msg)
 
@@ -4435,7 +4461,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     raise _HttpError(400, "text is required")
                 if len(text) > MAX_TEXT_CHARS:
                     raise _HttpError(400, "text is too long")
-                row, after = fe.web_message(segs[1], text, self._key(body.get("thread_key")))
+                nonce = body.get("nonce")
+                if nonce is not None and (not isinstance(nonce, str) or len(nonce) > NONCE_MAX_CHARS):
+                    raise _HttpError(400, "nonce is a short string")
+                row, after = fe.web_message(segs[1], text, self._key(body.get("thread_key")), nonce)
                 self._json(200, row)
                 return after
             if n == 3 and segs[0] == "channels" and segs[2] == "files":

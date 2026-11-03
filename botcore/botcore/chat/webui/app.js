@@ -991,7 +991,7 @@ function connect() {
   let opened;
   const handle = { ready: new Promise((resolve) => { opened = resolve; }) };
   const es = T.events(S.lastSeq, {
-    open: () => { S.retry = 0; setLive('on'); opened(); loadNeeds(); },
+    open: () => { S.retry = 0; setLive('on'); opened(); loadNeeds(); if (S.ready) resync(); },
     event: onEvent,
     down: (closed) => {
       setLive('off');
@@ -1003,12 +1003,24 @@ function connect() {
   return handle;
 }
 
+// The stream is back after a drop (a deploy restarts the bot): the open
+// place is read again, so what the stream missed in between shows now.
+function resync() {
+  if (!S.channel || S.needsView) return;
+  if (!S.threads.has(S.channel) || true) loadThreads(S.channel);
+  if (S.thread && S.thread !== NEW_THREAD) openThread(S.channel, S.thread, S.route).catch(() => {});
+}
+
 async function reconnect(handle) {
   if (S.es !== handle) return;
   try {
     await pickTransport();
     const me = await call('GET', '/me');
-    if (relayCopy() && !(await checkBundle())) return;
+    if (relayCopy() && !(await checkBundle())) {
+      // the copy is being replaced or refused: look again, never stop here
+      setTimeout(() => reconnect(handle), 30000);
+      return;
+    }
     connect();
     // A restart for a deploy drops the stream: the bot may sign another release now.
     if (!relayCopy()) lookAgain(me).catch(() => {});
@@ -1136,13 +1148,37 @@ function target() {
   return chan(ch) ? { ch, tk: tk && tk !== NEW_THREAD ? tk : null } : { ch: S.channel, tk: null };
 }
 
+// A send that the host did not take (the connection refused while the bot
+// restarts for a deploy, or a 502/503/504) goes again, with the same nonce
+// so the host posts it once, for up to ~45 s. `step` says how long the
+// composer has been trying.
+const SEND_RETRY_S = [1, 2, 4, 8, 10, 10, 10];
+function retriable(e) {
+  return e instanceof TypeError || [502, 503, 504].includes(e && e.status);
+}
+async function sending(fn, step) {
+  for (let i = 0; ; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (!retriable(e) || i >= SEND_RETRY_S.length) throw e;
+      if (step) step(i);
+      await new Promise((resolve) => { setTimeout(resolve, SEND_RETRY_S[i] * 1000); });
+    }
+  }
+}
+function nonce() {
+  return (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
+}
+
 async function submit(build, text) {
-  if (S.sending || !S.channel) return;
+  if (S.sending) return;
+  if (!S.channel) { note('Not sent: the app is still connecting. Try again in a moment.'); return; }
   const { ch, tk } = target();
   S.sending = true;
   $('composer').classList.add('busy');
   try {
-    const m = await build(ch, tk);
+    const m = await sending(() => build(ch, tk), () => note('Tacitus is not answering (a restart?). Trying again.'));
     if ($('text').value === text) $('text').value = ''; // keep what was typed meanwhile
     grow();
     note('');
@@ -1160,7 +1196,8 @@ function send() {
   if (S.editing) return saveEdit();
   const text = $('text').value;
   if (!text.trim()) return;
-  submit((ch, tk) => call('POST', `/channels/${enc(ch)}/messages`, tk ? { text, thread_key: tk } : { text }), text);
+  const n = nonce();
+  submit((ch, tk) => call('POST', `/channels/${enc(ch)}/messages`, tk ? { text, thread_key: tk, nonce: n } : { text, nonce: n }), text);
 }
 
 function upload(file) {
