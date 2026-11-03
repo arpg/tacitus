@@ -25,8 +25,8 @@ or decisive evidence closes; any other close is recorded as a proposal the
 user confirms in chat, and the row stays open.
 
 A main-EA row's --type is one of TYPES (`ledger.py types` lists them with
-their meaning); other spellings fold into them and anything else is
-refused. --status is open, follow_up, snoozed or completed.
+their meaning), built in or from ea-config.json's `ledger_types`; other
+spellings fold into them and anything else is refused. --status is open, follow_up, snoozed or completed.
 
 All output is JSON for easy parsing by the LLM.
 """
@@ -48,6 +48,10 @@ try:
     import owner_trust as _owner_trust
 except ModuleNotFoundError:  # imported as preprocessor.<mod>
     from preprocessor import owner_trust as _owner_trust
+try:
+    import ea_config as _ea_config
+except ModuleNotFoundError:  # imported as preprocessor.<mod>
+    from preprocessor import ea_config as _ea_config
 
 EA_DIR = Path(os.environ.get("EA_DIR", os.path.expanduser("~/.ea")))
 DB_PATH = EA_DIR / "state" / "obligations-ledger.db"
@@ -400,6 +404,46 @@ TYPE_ALIASES = {
         "outbound_email", "note", "informational", "reminder", "test")},
 }
 
+TRAITS = Type._fields[1:]
+
+
+def config_types(block) -> tuple[dict, list[str]]:
+    """An install's own types (ea-config.json `ledger_types`), and why each
+    refused one was refused. Every trait must be stated: deliverable and
+    waiting are guards, so a trait left off is not the safe side. A refused
+    type is left out, so a row of it fails on add as an unknown type."""
+    if block is None:
+        return {}, []
+    if not isinstance(block, dict):
+        return {}, ["ledger_types must be an object of type name to definition"]
+    types, errors = {}, []
+    for raw, spec in block.items():
+        name = _word(raw)
+        if not name or name in TYPES or name in TYPE_ALIASES or name in STATUS_IS_TYPE:
+            errors.append(f"{raw!r}: the name is empty or already a type or an alias")
+            continue
+        if not isinstance(spec, dict) or not isinstance(spec.get("meaning"), str) \
+                or not spec["meaning"].strip():
+            errors.append(f"{raw!r}: needs a 'meaning'")
+            continue
+        traits = spec.get("traits")
+        if not isinstance(traits, dict):
+            errors.append(f"{raw!r}: needs 'traits' with each of {', '.join(TRAITS)}")
+            continue
+        unknown = sorted(set(traits) - set(TRAITS))
+        missing = [t for t in TRAITS if t not in traits]
+        if unknown or missing:
+            errors.append(f"{raw!r}: " + "; ".join(
+                ([f"unknown traits {', '.join(unknown)}"] if unknown else [])
+                + ([f"missing traits {', '.join(missing)}"] if missing else [])))
+            continue
+        if not all(isinstance(v, bool) for v in traits.values()):
+            errors.append(f"{raw!r}: each trait is true or false")
+            continue
+        types[name] = Type(spec["meaning"].strip(), **traits)
+    return types, errors
+
+
 # A row is open, parked until a date (follow_up: follow_up_after; snoozed:
 # snooze_until), or done. Readers still accept 'closed' for done.
 OPEN_STATUSES = ("open", "follow_up", "snoozed")
@@ -416,6 +460,14 @@ STATUS_IS_TYPE = {"waiting": "waiting", "awaiting": "waiting", "waiting_on": "wa
 
 def _word(value: str | None) -> str:
     return (value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+# No ledger_types block means no change: TYPES stays the built-ins.
+CONFIG_TYPES, CONFIG_TYPE_ERRORS = config_types(
+    _ea_config.load(EA_DIR / "config" / "ea-config.json").get("ledger_types"))
+for _err in CONFIG_TYPE_ERRORS:
+    print(f"ledger: ea-config.json ledger_types: {_err}", file=sys.stderr)
+TYPES.update(CONFIG_TYPES)
 
 
 def _status_filter(text: str) -> list[str]:
@@ -2073,7 +2125,9 @@ def cmd_normalize(args) -> int:
 def cmd_types(args) -> int:
     """The type and status words a row may carry."""
     _output({"types": {k: v.meaning for k, v in TYPES.items()}, "statuses": list(STATUSES),
-             "aliases": {**TYPE_ALIASES, **STATUS_IS_TYPE}})
+             "aliases": {**TYPE_ALIASES, **STATUS_IS_TYPE},
+             "config_types": {k: v._asdict() for k, v in CONFIG_TYPES.items()},
+             "config_errors": CONFIG_TYPE_ERRORS})
     return 0
 
 
