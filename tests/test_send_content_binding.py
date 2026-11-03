@@ -748,7 +748,7 @@ NOT_DRAFT_CHANGING = {
         "archive-message": "moves received mail; content unchanged",
         "archive-conversation": "moves received mail; content unchanged",
         "snooze-message": "moves received mail; content unchanged",
-        "mark-read": "the read flag only",
+        "mark-read": "the read flag only", "mark-unread": "the read flag only",
         "set-categories": "a mailbox label; not part of what is sent",
         "wake-snoozed": "moves received mail back to the inbox",
         "create-todo": "a To Do task, not mail",
@@ -756,7 +756,7 @@ NOT_DRAFT_CHANGING = {
     },
     "gmail_client": {
         "search": "read", "get-message": "read", "get-thread": "read", "get-draft": "read",
-        "mark-read": "the read flag only",
+        "mark-read": "the read flag only", "mark-unread": "the read flag only",
         "list-attachments": "read", "download-attachment": "read; writes a local file",
         "list-drafts": "read",
         "create-draft": "makes a new draft id, which gets its own card",

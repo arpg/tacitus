@@ -15,6 +15,8 @@ When the user asks to mark a message read, flip the flag in place:
 `graph_actions.py mark-read --message-id <id>` (Gmail: `gmail_client.py
 mark-read --email <acct> --message-id <id>`). It never moves the mail and
 needs no button.
+`mark-unread` (same flags) flips it back, for a message the user wants
+kept on an unread to-do list after a reply was drafted.
 
 This behavior is configurable via `inbox_as_completion` in
 `~/.ea/config/autonomy-tiers.json`. When `enabled: false`, ledger
