@@ -201,6 +201,8 @@ GATED = {
         "create-event", "update-event", "delete-event",
     },
     "gmail_client": {"send-draft"},
+    # The unified send runs the two above in its own process (mail_actions.DELEGATE).
+    "mail_actions": {"send-draft"},
     # All three write the user's own Google calendars when the bot runs them
     # with a button token. The resident reaches them only through the
     # EA-Managed carve-out below.

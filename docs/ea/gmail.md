@@ -41,7 +41,7 @@ first `&`.
 1. Create the draft (`mail_actions.py create-draft --provider gmail`)
 2. The bot detects the draft and posts the `:lock:` block in the user's
    DM, with a pointer in the thread
-3. User clicks Send -> bot calls `send-gmail-draft` behind the token gate
+3. User clicks Send -> bot calls `mail_actions.py send-draft` behind the token gate
 4. Do NOT call any Gmail send tool directly; `gmail_client.py send-draft`
    is refused for you
 

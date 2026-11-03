@@ -21,6 +21,9 @@ Step 2 has the draft writes:
     python3 mail_actions.py update-draft --provider gmail --draft-id <id> --body-file <f> [--reply-to-message-id <id>] [--no-quote]
     python3 mail_actions.py delete-draft --provider outlook|gmail --draft-id <id>
 
+Step 5, the bot's only (GATED: refused for the EA, denied in every lane):
+    python3 mail_actions.py send-draft --provider outlook|gmail --draft-id <id> --confirm-token <t>
+
 Step 3:
     python3 mail_actions.py create-forward --provider outlook|gmail --message-id <id> --to <a,b> --body-file <f> [--cc <a>] [--ledger-id <id>]...
     python3 mail_actions.py preflight-check --provider outlook|gmail --draft-id <id>
@@ -77,6 +80,10 @@ DELEGATE = {
                        "gmail": ("gmail_client", "create-forward")},
     "preflight-check": {"outlook": ("graph_actions", "preflight-check"),
                         "gmail": ("gmail_client", "preflight-check")},
+    # Each provider verb validates and consumes the one-time token, then sends
+    # only while the draft still has the fingerprint the token names.
+    "send-draft": {"outlook": ("graph_actions", "send-draft"),
+                   "gmail": ("gmail_client", "send-draft")},
 }
 
 
@@ -174,6 +181,15 @@ def _provider_argv(args, acct: str | None) -> tuple[list[str], str]:
             else ["--draft-id", args.draft_id]
         if args.with_fingerprint:
             argv.append("--with-fingerprint")
+        return argv, ""
+    if verb == "send-draft":
+        if outlook and args.fingerprint:
+            return [], "--fingerprint is Gmail only (Outlook takes it from the token)"
+        # one argv element each: a value that starts with "-" is not an option
+        argv += ["--message-id" if outlook else "--draft-id", args.draft_id,
+                 f"--confirm-token={args.confirm_token or ''}"]
+        if args.fingerprint:
+            argv.append(f"--fingerprint={args.fingerprint}")
         return argv, ""
     if verb not in ("delete-draft", "preflight-check"):
         # graph_actions reads --body-file over --body, which it requires.
@@ -530,6 +546,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_pf.add_argument("--account", default=None, help=acct_help)
     p_pf.add_argument("--draft-id", required=True, dest="draft_id")
     p_pf.set_defaults(func=cmd_delegated)
+
+    p_send = sub.add_parser("send-draft", allow_abbrev=False,
+                            help="Send a draft the user approved (the bot's, with its token)")
+    p_send.add_argument("--provider", required=True, choices=PROVIDERS)
+    p_send.add_argument("--account", default=None, help=acct_help)
+    p_send.add_argument("--draft-id", required=True, dest="draft_id")
+    p_send.add_argument("--confirm-token", default=None, dest="confirm_token",
+                        help="The one-time token the bot mints when the user clicks Send")
+    p_send.add_argument("--fingerprint", default=None,
+                        help="Gmail only: refuse unless the token names this content")
+    p_send.set_defaults(func=cmd_delegated)
     return parser
 
 

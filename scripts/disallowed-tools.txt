@@ -49,6 +49,8 @@ Bash(*graph_actions.py request-confirm *)
 # all. This line is the backstop for that case.
 Bash(python3 *gmail_client.py send-draft *)
 Bash(*gmail_client.py send-draft *)
+Bash(python3 *mail_actions.py send-draft *)
+Bash(*mail_actions.py send-draft *)
 # google_calendar_client.py create-event is deliberately NOT denied: the
 # EA-Managed auto-hold carve-out in
 # mail_mediation.is_ea_managed_autohold is the documented un-gated path

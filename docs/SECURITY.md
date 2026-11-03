@@ -400,7 +400,9 @@ of legitimate subcommands. A complementary `--disallowedTools` list
 denies the dangerous subset by name regardless of how the LLM
 constructs the command:
 
-- `send-draft`, `send-gmail-draft`
+- `send-draft`, `send-gmail-draft`, and `send-draft` on `gmail_client.py`
+  and `mail_actions.py` (the bot sends through `mail_actions.py`, which
+  runs the provider send and its token and fingerprint check)
 - `create-event`, `update-event`, `delete-event`
 - `schedule-send`
 - `request-confirm` (denied because it would otherwise let the LLM

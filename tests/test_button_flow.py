@@ -291,11 +291,13 @@ def test_security_posture_unchanged():
     send verb."""
     import mail_mediation as M
     assert M.GATED["gmail_client"] == {"send-draft"}
+    assert M.GATED["mail_actions"] == {"send-draft"}
     assert {"send-draft", "send-gmail-draft", "schedule-send", "request-confirm",
             "create-event", "update-event", "delete-event"} <= M.GATED["graph_actions"]
     deny = (REPO / "scripts" / "disallowed-tools.txt").read_text()
     for frag in ("graph_actions.py send-draft", "graph_actions.py send-gmail-draft",
-                 "gmail_client.py send-draft", "mcp__claude_ai_Gmail__send_message"):
+                 "gmail_client.py send-draft", "mail_actions.py send-draft",
+                 "mcp__claude_ai_Gmail__send_message"):
         assert frag in deny, frag
     new_code = "\n".join(_fn_src(n) for n in (
         "_post_new_draft", "_post_unjournalled_gmail_drafts", "_gmail_drafts_since",
@@ -362,7 +364,9 @@ def test_approve_send_claims_before_spawning():
     # The token gate is still exactly the same call, unchanged.
     ex = _fn_src("_execute_send")
     assert 'request-confirm", "--action", "send"' in ex
-    assert '"send-gmail-draft", "--email", gmail_email' in ex
+    # both providers send through the unified verb, which runs each one's own send
+    assert '"send-draft", "--provider", "gmail", "--account", gmail_email' in ex
+    assert '"send-draft", "--provider", "outlook", "--draft-id", draft_id' in ex
     assert 'f"--confirm-token={token}"' in ex
 
 

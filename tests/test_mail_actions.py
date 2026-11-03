@@ -199,7 +199,9 @@ def test_the_reads_are_mediated_and_nothing_else_is():
                                        "mark-unread", "create-draft", "create-reply",
                                        "update-draft", "delete-draft", "create-forward",
                                        "preflight-check"}
-    assert "mail_actions" not in MM.GATED
+    # the send is the bot's alone: refused for the EA, never forwarded
+    assert MM.GATED["mail_actions"] == {"send-draft"}
+    assert MM.SAFE["mail_actions"].isdisjoint(MM.GATED["mail_actions"])
     import mail_mediator
     assert mail_mediator.TOOLS["mail_actions"].name == "mail_actions.py"
     src = (ROOT / "preprocessor" / "mail_actions.py").read_text()
@@ -508,6 +510,7 @@ ELSEWHERE = {
     ("update-draft", "graph_actions"): {"--message-id": "--draft-id"},
     ("delete-draft", "graph_actions"): {"--message-id": "--draft-id"},
     ("preflight-check", "graph_actions"): {"--message-id": "--draft-id"},
+    ("send-draft", "graph_actions"): {"--message-id": "--draft-id"},
     ("create-reply", "gmail_client"): {"--reply-to-message-id": "--message-id"},
     # a Gmail create-draft that answers a message is create-reply
     ("create-draft", "gmail_client"): {"--reply-to-message-id": "create-reply --message-id",
@@ -570,7 +573,7 @@ def test_every_provider_verb_the_unified_cli_runs_is_denied_directly():
         for tool, verb in by_provider.values():
             for form in (f"Bash(python3 *{tool}.py {verb} *)", f"Bash(*{tool}.py {verb} *)"):
                 assert form in denied, form
-            if tool == "graph_actions":
+            if tool == "graph_actions" and verb not in MM.GATED[tool]:
                 # a plugin's grant of the verb gives the unified one
                 assert f"'{verb}': '" in plugin, verb
     # the verbs only one provider has stay open
@@ -586,7 +589,9 @@ def test_no_ea_facing_text_names_a_denied_provider_verb():
     """A prompt, skill or guide that tells the EA to run a denied verb
     sends it into a refusal."""
     import re
-    denied = {pv for by_provider in mail_actions.DELEGATE.values() for pv in by_provider.values()}
+    # a gated verb is named only to say it is refused
+    denied = {pv for by_provider in mail_actions.DELEGATE.values() for pv in by_provider.values()
+              if not MM.is_gated(*pv)}
     files = [ROOT / "CLAUDE.md", ROOT / "run-agent.sh", ROOT / "ea-chat-bot.py",
              ROOT / "preprocessor" / "resident_context.py",
              ROOT / "preprocessor" / "prompt_logic.py",
@@ -611,6 +616,66 @@ def test_no_ea_facing_text_names_a_denied_provider_verb():
                 assert not re.search(rf"\b{re.escape(verb)}\b", bullet), (tool, verb)
     assert "with graph_actions.py: read a thread" not in src
 
+
+
+# ---- step 5: send-draft ---------------------------------------------------
+
+def _send(*argv, token_entry=None):
+    """Run the unified send through the REAL provider verbs, with the token
+    store and the provider send faked; returns (rc, out, sends)."""
+    import gmail_client
+    import graph_actions
+    sends = []
+    saved = (graph_actions._validate_and_consume_token, graph_actions.graph.send_draft,
+             graph_actions.graph.issue_inprocess_approval, gmail_client._send_token_ok,
+             gmail_client.send_draft)
+    graph_actions._validate_and_consume_token = lambda tok, action, mid: (
+        token_entry if tok == "tok-good" and action == "send" and mid == "d-1" else None)
+    graph_actions.graph.issue_inprocess_approval = lambda *a: "approval"
+    graph_actions.graph.send_draft = lambda mid, confirm_token, fingerprint: (
+        sends.append(("outlook", mid, fingerprint)) or {"status": "sent"})
+    gmail_client._send_token_ok = lambda tok, did: token_entry if tok == "tok-good" else None
+    gmail_client.send_draft = lambda email, did, fingerprint="": (
+        sends.append(("gmail", did, fingerprint)) or {"status": "sent", "draft_id": did})
+    try:
+        args = mail_actions.build_parser().parse_args(list(argv))
+        args._mediated = False
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = args.func(args)
+    finally:
+        (graph_actions._validate_and_consume_token, graph_actions.graph.send_draft,
+         graph_actions.graph.issue_inprocess_approval, gmail_client._send_token_ok,
+         gmail_client.send_draft) = saved
+    return rc, json.loads(out.getvalue()), sends
+
+
+def test_send_draft_sends_only_with_the_token_and_its_fingerprint():
+    reviewed = {"fingerprint": "fp-reviewed"}
+    for prov, extra in (("outlook", ()), ("gmail", ("--account", ME))):
+        base = ("send-draft", "--provider", prov, *extra, "--draft-id", "d-1")
+        rc, out, sends = _send(*base, "--confirm-token", "tok-good", token_entry=reviewed)
+        assert rc == 0 and out["status"] == "sent" and out["provider"] == prov, prov
+        assert sends == [(prov, "d-1", "fp-reviewed")], prov
+        for bad in (("--confirm-token", "tok-forged"), ()):
+            rc, out, sends = _send(*base, *bad, token_entry=reviewed)
+            assert rc != 0 and "BLOCKED" in out["error"] and sends == [], (prov, bad)
+        # a token that names no reviewed content sends nothing
+        rc, out, sends = _send(*base, "--confirm-token", "tok-good", token_entry={})
+        assert rc != 0 and "BLOCKED" in out["error"] and sends == [], prov
+    rc, out, sends = _send("send-draft", "--provider", "gmail", "--account", ME, "--draft-id", "d-1",
+                           "--confirm-token", "tok-good", "--fingerprint", "fp-other",
+                           token_entry=reviewed)
+    assert rc != 0 and sends == []
+
+
+def test_send_draft_is_refused_for_the_ea():
+    assert MM.is_gated("mail_actions", "send-draft") and not MM.is_safe("mail_actions", "send-draft")
+    # not a draft edit: each provider send holds the draft's lock itself
+    assert "send-draft" not in MM.DRAFT_EDIT_VERBS["mail_actions"]
+    denied = _denied()
+    for form in ("Bash(python3 *mail_actions.py send-draft *)", "Bash(*mail_actions.py send-draft *)"):
+        assert form in denied
 
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
