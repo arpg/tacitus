@@ -630,7 +630,7 @@ def _send(*argv, token_entry=None):
              graph_actions.graph.issue_inprocess_approval, gmail_client._send_token_ok,
              gmail_client.send_draft)
     graph_actions._validate_and_consume_token = lambda tok, action, mid: (
-        token_entry if tok == "tok-good" and action == "send" else None)
+        token_entry if tok == "tok-good" and action == "send" and mid == "d-1" else None)
     graph_actions.graph.issue_inprocess_approval = lambda *a: "approval"
     graph_actions.graph.send_draft = lambda mid, confirm_token, fingerprint: (
         sends.append(("outlook", mid, fingerprint)) or {"status": "sent"})

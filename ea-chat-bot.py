@@ -3701,7 +3701,11 @@ def _execute_send(channel: str, thread_ts: str, confirm_msg_ts: str | None,
             return False
 
         if email_system == "gmail":
-            # Gmail path: token -> send (no Outlook preflight)
+            # Gmail path: token -> send (no Outlook preflight). The send names
+            # the draft's mailbox; an empty one would fall back to the
+            # profile's first account.
+            if not gmail_email:
+                raise RuntimeError("the draft's Gmail account is not recorded; nothing sent")
             token_result = sp.run(
                 ["python3", str(SCRIPT_DIR / "preprocessor" / "graph_actions.py"),
                  "request-confirm", "--action", "send",
