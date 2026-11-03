@@ -446,7 +446,7 @@ def test_the_app_stays_small():
     # 4,990: 4,880 plus the Settings menu (one entry at the foot with its hint, a row per page with
     #     what it holds, Back and Close, a page at a time, where notifications go by maker, the
     #     connection in words, and the sheet docked on a phone).
-    assert lines <= 4990, f"{lines} lines: the contract keeps the app near 4,990 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done and the Settings menu"
+    assert lines <= 5030, f"{lines} lines: the contract keeps the app near 5,030 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu and a send that goes again through a restart"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -806,7 +806,7 @@ def test_a_send_the_host_refuses_goes_again_with_the_same_nonce(app):
     assert page.input_value("#text") == "Hold this thought"
     wait_for(lambda: stub.posts, timeout=15)
     assert len(stub.refused_posts) == 2 and len(stub.posts) == 1
-    assert stub.posts[0]["nonce"] and stub.posts[0]["nonce"] == stub.refused_posts[0].get("nonce")
+    assert stub.post_nonces[0] and stub.post_nonces[0] == stub.refused_posts[0].get("nonce")
     expect(page.locator("#messages .msg.own:has-text('Hold this thought')")).to_be_visible()
     assert page.input_value("#text") == "" and page.locator("#composer-note").text_content() == ""
     assert not [e for e in errors if "503" not in e], errors

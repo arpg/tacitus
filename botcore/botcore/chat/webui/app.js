@@ -1167,7 +1167,7 @@ async function sending(fn, step) {
     }
   }
 }
-function nonce() {
+function sendNonce() {
   return (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
 }
 
@@ -1196,7 +1196,7 @@ function send() {
   if (S.editing) return saveEdit();
   const text = $('text').value;
   if (!text.trim()) return;
-  const n = nonce();
+  const n = sendNonce();
   submit((ch, tk) => call('POST', `/channels/${enc(ch)}/messages`, tk ? { text, thread_key: tk, nonce: n } : { text, nonce: n }), text);
 }
 

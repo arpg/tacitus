@@ -196,6 +196,7 @@ class Stub:
         self.refuse_streams = 0
         self.refuse_posts = 0   # the next sends answer 503, as a restarting host does
         self.refused_posts: list = []
+        self.post_nonces: list = []   # one per post, the browser's nonce or None
         self.generation = 0
         self.channels = {
             DM: {"id": DM, "name": "", "kind": "dm", "archived": False, "unread": 0},
@@ -436,8 +437,8 @@ class Stub:
              nonce: str | None = None) -> dict:
         m = self.add(channel, text, author="owner", kind="file" if file else "message",
                      thread_key=thread_key, file=file, event="file" if file else "message")
-        self.posts.append({"channel": channel, "text": text, "thread_key": thread_key, "file": file,
-                           "nonce": nonce})
+        self.posts.append({"channel": channel, "text": text, "thread_key": thread_key, "file": file})
+        self.post_nonces.append(nonce)
         if self.echo:
             def later():
                 self.change(m, "reaction", reactions=["eyes"])
