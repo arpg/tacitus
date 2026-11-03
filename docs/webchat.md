@@ -806,7 +806,11 @@ browser" and has no Remove, since its switch is above.
 
 Models: the local model's name and state at the top, a line that says what the values mean
 (Local is the owner's own model, Hosted is Claude or Codex, Auto lets
-Tacitus choose), then one row per task with Local, Hosted and Auto; under
+Tacitus choose), then one row per task with Local, Hosted and Auto (a
+"?" beside a name the bot sends `help` for, Reading your mail, Sorting
+mail and Writing replies, opens what the task is in plain words under the
+row, and closes it on a second press; on a touch screen its press area is
+44px around a small circle); under
 a task with a Codex route, "Hosted model" with Claude and Codex; under
 another, a line on what Hosted means there; a line on what the task
 does, a line on the model it runs on now and why ("Now on Codex. Auto

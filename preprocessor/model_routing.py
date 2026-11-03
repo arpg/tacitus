@@ -162,6 +162,23 @@ HOSTED_NOTES = {
     "drafting": ("Hosted: the model that asks for the reply writes it.",
                  "Hosted turns the writer off: the turn's own model (Claude or Codex) writes the body."),
 }
+# Behind the "?" beside a task's name on the Settings screen: what the
+# task is, in plain words, for the names that do not say it themselves.
+HELP = {
+    "mail": ("When a new email comes in, Tacitus reads it once and writes a short note: what the "
+             "sender wants from you, by when, and who is involved. Your briefing, your to-do list "
+             "and your replies work from these notes. On Local, your own model reads each email, "
+             "and the full text stays with it. On Hosted, the full email goes to Claude or Codex."),
+    "tagging": ("Puts colored labels (Outlook categories) on each new email: the project it belongs "
+                "to, and what it wants from you, such as needs a reply, to do or just for your "
+                "information. In Outlook you can search and filter by these labels. Sorting only "
+                "adds labels. It never moves, answers or deletes an email."),
+    "drafting": ("Writes the text of an email reply in your voice, from a short note on what the "
+                 "reply must say. The reply waits as a draft, and nothing goes out until you tap "
+                 "Send. On Local, your own model writes it. On Hosted, the model that asked for "
+                 "the reply (Claude or Codex) writes it. Letters, such as recommendations, always "
+                 "come from a hosted model."),
+}
 # Under a row set to Codex, what Codex cannot do there.
 CODEX_NOTE = ("Codex cannot open web links, Drive, GitHub or Overleaf. "
               "Start a message with @claude to send one to Claude.",
@@ -469,8 +486,9 @@ def rows(*, cfg: dict | None = None, routing: dict | None = None,
     "effective" (local | hosted | mixed), "why", "hosted" (claude |
     codex: the model its hosted part uses), "hosted_allowed" (the hosted
     models it can take), "hosted_note", "runs_on" (what it runs on now,
-    named)}. `what`, `floor`, `hosted_note` and `why` are plain words, or
-    with `verbose` the code's terms."""
+    named), "help" (the "?" text, '' for none)}. `what`, `floor`,
+    `hosted_note` and `why` are plain words, or with `verbose` the code's
+    terms; `help` is plain words always."""
     cfg = _remote_cfg(cfg)
     tiers = tiers if tiers is not None else _ea_config.get_tiers()
     block = routing if routing is not None else _ea_config.get_routing()
@@ -485,7 +503,8 @@ def rows(*, cfg: dict | None = None, routing: dict | None = None,
         row = {"task": task, "label": label, "what": TECH[task] if verbose else what, "value": v,
                "allowed": list(VALUES), "locked": False, "floor": "", "hosted": hm,
                "hosted_allowed": list(HOSTED) if task in CODEX_TASKS else ["claude"],
-               "hosted_note": HOSTED_NOTES[task][pick] if task in HOSTED_NOTES else ""}
+               "hosted_note": HOSTED_NOTES[task][pick] if task in HOSTED_NOTES else "",
+               "help": HELP.get(task, "")}
         if task == "chat" and hm == "codex":
             row["hosted_note"] = CODEX_NOTE[pick]
         if task in FLOORS:

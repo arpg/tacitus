@@ -448,7 +448,9 @@ def test_the_app_stays_small():
     #     connection in words, and the sheet docked on a phone).
     # 5,050: 5,030 plus the hosted model per task on the Models page (Claude or Codex where a task
     #     has both, the line under a task with no choice) and its save.
-    assert lines <= 5050, f"{lines} lines: the contract keeps the app near 5,050 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart and the hosted model per task"
+    # 5,070: 5,050 plus the "?" beside a task's name on the Models page (its note under the row, the
+    #     small circle in a finger's press area on a touch screen).
+    assert lines <= 5070, f"{lines} lines: the contract keeps the app near 5,070 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model per task and its help"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -3294,7 +3296,7 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     expect(page.locator("#settings-local")).to_have_text("Local model local-27b: reachable. Answered 2 min ago.")
     drafting, mail, review, chat = (page.locator(f'#settings-rows li[data-task="{t}"]')
                                     for t in ("drafting", "mail", "review", "chat"))
-    expect(drafting.locator(".s-name")).to_have_text("Writing replies")
+    expect(drafting.locator(".s-name")).to_contain_text("Writing replies")
     expect(drafting.locator("input[value=auto]")).to_be_checked()
     expect(drafting.locator(".s-now")).to_have_text("Now on your own model. Auto picked your own model.")
     expect(drafting.locator(".s-note")).to_have_text("Hosted: the model that asks for the reply writes it.")
@@ -3316,6 +3318,20 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     expect(chat.locator(".s-hosted label")).to_have_text(["Claude", "Codex"])
     expect(chat.locator(".s-now")).to_have_text("Now on Codex. Auto picked Codex.")
     expect(chat.locator(".s-note")).to_contain_text("@claude")
+    # the "?" beside a name the bot gives help for: it opens and closes the note under the row
+    expect(review.locator(".s-help-btn")).to_have_count(0)
+    expect(chat.locator(".s-help-btn")).to_have_count(0)
+    ask = drafting.locator(".s-help-btn")
+    expect(ask).to_have_attribute("aria-label", 'What is "Writing replies"?')
+    expect(ask).to_have_attribute("aria-expanded", "false")
+    expect(drafting.locator(".s-help")).to_be_hidden()
+    ask.click()
+    expect(drafting.locator(".s-help")).to_have_text(
+        "Writes the text of an email reply in your voice. Nothing goes out until you tap Send.")
+    expect(ask).to_have_attribute("aria-expanded", "true")
+    expect(mail.locator(".s-help")).to_be_hidden()                 # each row opens its own
+    ask.click()
+    expect(drafting.locator(".s-help")).to_be_hidden()
     drafting.locator("input[value=hosted]").check()
     chat.locator("input[name=hosted-chat][value=claude]").check()
     page.click("#settings-save")
@@ -3375,6 +3391,11 @@ def test_the_settings_menu_fits_a_phone_and_shows_only_what_the_bot_serves(app):
         assert page.evaluate(SETTINGS_SMALL) == [], title
         assert page.evaluate("$('settings').scrollWidth - $('settings').clientWidth") == 0
         assert page.evaluate(SIDEWAYS) == [0, 0]
+        if row == "go-routing":   # a tap on a "?" opens its note, and the sheet still fits
+            page.locator("#settings-rows .s-help-btn").first.tap()
+            expect(page.locator("#settings-rows .s-help").first).to_be_visible()
+            assert page.evaluate(SETTINGS_SMALL) == []
+            assert page.evaluate("$('settings').scrollWidth - $('settings').clientWidth") == 0
         if row == "go-notify":
             page.click("#settings-back")
         else:
