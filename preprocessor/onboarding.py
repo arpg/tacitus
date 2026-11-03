@@ -435,9 +435,21 @@ def main(argv=None) -> int:
     sub.add_parser("stop", help="the user said stop: mark the bank done", allow_abbrev=False)
     p = sub.add_parser("status", help="answered, skipped, remaining", allow_abbrev=False)
     p.add_argument("--json", action="store_true")
+    argv = list(sys.argv[1:] if argv is None else argv)
     args = ap.parse_args(argv)
-    return {"next": _cmd_next, "ask": _cmd_ask, "answer": _cmd_answer,
-            "skip": _cmd_skip, "stop": _cmd_stop, "status": _cmd_status}[args.cmd](args)
+    handler = {"next": _cmd_next, "ask": _cmd_ask, "answer": _cmd_answer,
+               "skip": _cmd_skip, "stop": _cmd_stop, "status": _cmd_status}[args.cmd]
+    try:
+        return handler(args)
+    except OSError as e:
+        # A Codex turn cannot write the preferences store: the answer waits
+        # for preferences.py apply-staged, which the bot runs after the turn.
+        if _prefs._APPLYING or args.cmd not in _prefs.STAGED_VERBS["onboarding"] or not _prefs.sandbox_refused(e):
+            raise
+        _prefs.stage("onboarding", argv)
+        print(json.dumps({"status": "staged", "file": str(_prefs.STAGED_FILE),
+                          "note": "applied after this turn when the answer is the user's words"}))
+        return 0
 
 
 if __name__ == "__main__":

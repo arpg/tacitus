@@ -6,6 +6,15 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A Codex turn writes no config file.** Its writable roots held the
+  whole `~/.ea/config` folder for `preferences.py`'s sake, which also
+  covered `ea-config.json`, `github.json` and `CLAUDE.install.md`. The
+  folder is closed to the sandbox now; `preferences.py add|calibrate|
+  retire` and `onboarding.py answer` stage the write and the bot applies
+  it after the turn as the resident (`preferences.py apply-staged`), a
+  rule or an answer only when the words it quotes are in the user's
+  message of that turn. A refused record stays in
+  `state/preferences-staged-refused.jsonl` with its reason.
 - **Codex gets what Claude Code loads by itself.** A Claude chat turn in
   the deployed tree loads CLAUDE.md, CLAUDE.local.md and the resident's
   memory index on its own, so the bot's prompt leaves them out; a Codex

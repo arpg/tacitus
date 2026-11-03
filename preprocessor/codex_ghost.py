@@ -724,7 +724,11 @@ def codex_suffix(scratch: Path, kind: str, *, live: bool = False) -> str:
     # cron lane write only their EA_DIR and have no reader.
     live_chat = live and kind == "chat"
     files = ("Write files only where the rules above say to; the sandbox refuses every other path, and your "
-             "memory folder is read-only." if live_chat else "Never write a file outside EA_DIR.")
+             "memory folder is read-only. The config folder is not writable here: `preferences.py add` and "
+             "`onboarding.py answer` answer \"staged\" and are applied after this turn, when the --quote is "
+             "the user's words in this message, so quote the user exactly; a tier promotion "
+             "(autonomy-tiers.json) cannot be written from here, say so in your reply."
+             if live_chat else "Never write a file outside EA_DIR.")
     asking = ("You cannot ask the user anything while you work: a question for the user goes in your final message."
               if live_chat else "Do not ask the user anything; this run is unattended.")
     return f"""

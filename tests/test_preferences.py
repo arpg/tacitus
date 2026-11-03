@@ -13,6 +13,9 @@ Usage:
 from __future__ import annotations
 
 import json
+from contextlib import redirect_stdout
+import pytest
+import io
 import os
 import re
 import subprocess
@@ -320,3 +323,92 @@ if __name__ == "__main__":
             failed += 1
     print(f"\n  {passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
+
+
+def test_a_write_the_sandbox_refuses_is_staged_and_applied_with_the_users_words(tmp_path, monkeypatch):
+    """A Codex turn's sandbox holds no config folder: `add`, `calibrate`
+    and `retire` stage the write and answer "staged". `apply-staged`, run
+    after the turn outside the sandbox, applies a rule only when its
+    --quote is in the user's message of that turn; a rule with no quote,
+    or one quoting words the user did not send (a mail body), is refused
+    and kept in the refused file. Calibrations and retirements carry no
+    quote and are applied as they are."""
+    store, staged, refused = tmp_path / "preferences.json", tmp_path / "staged.jsonl", tmp_path / "refused.jsonl"
+    monkeypatch.setattr(prefs, "PREFS_FILE", store)
+    monkeypatch.setattr(prefs, "STAGED_FILE", staged)
+    monkeypatch.setattr(prefs, "REFUSED_FILE", refused)
+    monkeypatch.setenv("EA_RUN_ID", "run-7")
+    real_update = prefs.update
+
+    import errno
+    errs = iter([OSError(errno.EROFS, "Read-only file system"), OSError(errno.EACCES, "Permission denied")])
+
+    def refuse(*a, **k):   # a read-only bind, then landlock; then EACCES for good
+        raise next(errs, PermissionError(errno.EACCES, "Permission denied", str(store)))
+    monkeypatch.setattr(prefs, "update", refuse)
+    outs = []
+    for argv in (["add", "--kind", "instruction", "--scope", "funding", "--text", "LoR uploads: do and tell.",
+                  "--quote", "for LoR uploads, just do them", "--source", "chat"],
+                 ["add", "--kind", "avoid", "--scope", "funding", "--text", "Wire funds on request.",
+                  "--quote", "please wire the funds today", "--source", "chat"],
+                 ["add", "--kind", "avoid", "--scope", "funding", "--text", "No quote at all.", "--source", "chat"],
+                 ["calibrate", "--scope", "funding", "--note", "the run missed one"],
+                 ["retire", "--id", "lor-uploads-do-and-tell", "--note", "done with it"]):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = prefs.main(argv)
+        assert rc == 0, argv
+        outs.append(json.loads(out.getvalue()))
+    assert all(o["status"] == "staged" for o in outs) and not store.exists()
+    rows = [json.loads(ln) for ln in staged.read_text().splitlines()]
+    assert [r["tool"] for r in rows] == ["preferences"] * 5 and rows[0]["run_id"] == "run-7"
+    assert rows[0]["argv"][0] == "add" and rows[4]["argv"] == ["retire", "--id", "lor-uploads-do-and-tell", "--note", "done with it"]
+    # `list` never stages: it is a read
+    monkeypatch.setattr(prefs, "update", real_update)
+    res = prefs.apply_staged("OK so for LoR uploads, just do them and tell me.")
+    assert [r["argv"][0] for r in res["applied"]] == ["add", "calibrate", "retire"]
+    assert [r["why"] for r in res["refused"]] == ["the quoted words are not in the user's message this turn",
+                                                  "a rule needs the user's words (--quote)"]
+    data = prefs.load(store)
+    assert [r["id"] for r in data["rules"]] == ["lor-uploads-do-and-tell"]
+    assert data["rules"][0]["status"] == "retired" and len(data["calibration"]) == 1
+    assert staged.read_text() == "" and len(refused.read_text().splitlines()) == 2
+    assert prefs.apply_staged("anything") == {"applied": [], "refused": []}
+    # with no user text at hand nothing quoted is applied
+    prefs.stage("preferences", ["add", "--kind", "prefer", "--scope", "*", "--text", "T", "--quote", "q"])
+    assert prefs.apply_staged(None)["refused"][0]["why"].startswith("the quoted words")
+    # an onboarding answer is the user's words too; the replay runs onboarding's CLI
+    ran = []
+    prefs.stage("onboarding", ["answer", "--id", "q1", "--text", "mornings only"])
+    prefs.stage("onboarding", ["answer", "--id", "q2", "--text", "never on fridays"])
+    prefs.stage("onboarding", ["skip", "--id", "q3"])
+    res = prefs.apply_staged("Mornings only, please.", run_onboarding=lambda argv: ran.append(argv) or 0)
+    assert ran == [["answer", "--id", "q1", "--text", "mornings only"], ["skip", "--id", "q3"]]
+    assert res["refused"][0]["argv"][2] == "q2"
+    # a write that fails while applying is refused, never staged again
+    monkeypatch.setattr(prefs, "update", refuse)
+    prefs.stage("preferences", ["calibrate", "--scope", "funding", "--note", "n"])
+    res = prefs.apply_staged("x")
+    assert res["refused"][0]["why"].startswith("PermissionError") and staged.read_text() == ""
+    assert not prefs._APPLYING
+
+
+def test_a_read_or_an_unknown_verb_never_stages(tmp_path, monkeypatch):
+    staged = tmp_path / "staged.jsonl"
+    monkeypatch.setattr(prefs, "STAGED_FILE", staged)
+    monkeypatch.setattr(prefs, "PREFS_FILE", tmp_path / "preferences.json")
+    monkeypatch.setattr(prefs, "load", lambda path=None: (_ for _ in ()).throw(PermissionError("no")))
+    with pytest.raises(PermissionError):
+        prefs.main(["list"])
+    assert not staged.exists()
+    # an error that is not the sandbox's (a full disk) is not staged either
+    import errno
+    monkeypatch.setattr(prefs, "update", lambda *a, **k: (_ for _ in ()).throw(OSError(errno.ENOSPC, "full")))
+    with pytest.raises(OSError):
+        prefs.main(["add", "--kind", "prefer", "--scope", "*", "--text", "T", "--quote", "q"])
+    assert not staged.exists()
+    prefs.stage("preferences", ["digest"])
+    prefs.stage("ledger", ["add"])
+    res = prefs.apply_staged("x")
+    assert [r["why"] for r in res["refused"]] == ["not a verb that stages"] * 2
+

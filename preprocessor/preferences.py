@@ -66,6 +66,13 @@ except ModuleNotFoundError:  # imported as preprocessor.<mod>
 
 EA_DIR = Path(os.environ.get("EA_DIR", Path.home() / ".ea"))
 PREFS_FILE = EA_DIR / "config" / "preferences.json"
+# A write the sandbox refused (a Codex turn: the config folder is not among
+# its writable roots) waits here; `apply-staged` replays it after the turn,
+# outside the sandbox, when the words it quotes are the user's.
+STAGED_FILE = EA_DIR / "state" / "preferences-staged.jsonl"
+REFUSED_FILE = EA_DIR / "state" / "preferences-staged-refused.jsonl"
+STAGED_VERBS = {"preferences": ("add", "calibrate", "retire"), "onboarding": ("answer", "skip", "stop")}
+_APPLYING = False
 
 KINDS = ("instruction", "prefer", "avoid", "fact")
 # Where a rule came from: the chat (any frontend), a hand edit, or the
@@ -456,6 +463,138 @@ def _cmd_list(args) -> int:
     return 0
 
 
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def sandbox_refused(e: BaseException) -> bool:
+    """The error a sandboxed turn gets on a write outside its roots: EACCES
+    (landlock), EPERM, or EROFS (a read-only bind)."""
+    import errno as _errno
+    return isinstance(e, OSError) and e.errno in (_errno.EACCES, _errno.EPERM, _errno.EROFS)
+
+
+def stage(tool: str, argv) -> dict:
+    """Record a write the sandbox refused, to replay after the turn: the
+    tool (`preferences` or `onboarding`), its argv and the run id."""
+    rec = {"ts": _now_iso(), "tool": tool, "argv": [str(a) for a in argv],
+           "run_id": os.environ.get("EA_RUN_ID", "")}
+    if not _resident_io.append_text(STAGED_FILE, json.dumps(rec, ensure_ascii=False) + "\n"):
+        raise OSError(f"preferences: could not stage the write in {STAGED_FILE}")
+    return rec
+
+
+def _option(argv: list, name: str) -> str:
+    """The value after `name` in argv, or `--name=value`, or ''."""
+    for i, a in enumerate(argv):
+        if a == name and i + 1 < len(argv):
+            return str(argv[i + 1])
+        if a.startswith(name + "="):
+            return a[len(name) + 1:]
+    return ""
+
+
+def claimed_words(tool: str, argv: list) -> str | None:
+    """The user's words a staged write claims (`add --quote`, `answer
+    --text`), '' when such a write claims none, None when the write needs
+    none (a calibration, a retirement, a skip)."""
+    verb = argv[0] if argv else ""
+    if tool == "preferences" and verb == "add":
+        return _option(argv, "--quote")
+    if tool == "onboarding" and verb == "answer":
+        return _option(argv, "--text")
+    return None
+
+
+def _said(words: str, user_text: str) -> bool:
+    norm = lambda t: " ".join(str(t).split()).casefold()  # noqa: E731
+    return bool(norm(words)) and norm(words) in norm(user_text)
+
+
+def apply_staged(user_text: str | None, run_preferences=None, run_onboarding=None) -> dict:
+    """Replay the staged writes (STAGED_FILE, then emptied) outside the
+    sandbox. A rule or an onboarding answer is applied only when the words
+    it quotes are in `user_text`, the message the user sent this turn: a
+    rule lifted from a mail body quotes nothing the user said. Every other
+    record (a calibration, a retirement) is applied as it is. A refused
+    record goes to REFUSED_FILE with its reason. Returns {"applied": [...],
+    "refused": [...]} with each record and, for a refusal, "why"."""
+    global _APPLYING
+    import io as _io
+    from contextlib import redirect_stdout
+    box: dict = {"lines": []}
+
+    def take(text: str) -> str:   # the records, and the file emptied under the lock
+        box["lines"] = [ln for ln in (text or "").splitlines() if ln.strip()]
+        return ""
+    if not _resident_io.update_text(STAGED_FILE, take):
+        return {"applied": [], "refused": [], "error": f"could not read {STAGED_FILE}"}
+    lines = box["lines"]
+    if not lines:
+        return {"applied": [], "refused": []}
+    runners = {"preferences": run_preferences or main,
+               "onboarding": run_onboarding or _onboarding_main}
+    out = {"applied": [], "refused": []}
+
+    def refuse(rec, why):
+        rec = dict(rec, why=why)
+        out["refused"].append(rec)
+        _resident_io.append_text(REFUSED_FILE, json.dumps(rec, ensure_ascii=False) + "\n")
+
+    _APPLYING = True
+    try:
+        for ln in lines:
+            try:
+                rec = json.loads(ln)
+                tool, argv = rec["tool"], list(rec["argv"])
+            except (ValueError, KeyError, TypeError):
+                refuse({"line": ln[:200]}, "not a staged write")
+                continue
+            if tool not in STAGED_VERBS or not argv or argv[0] not in STAGED_VERBS[tool]:
+                refuse(rec, "not a verb that stages")
+                continue
+            words = claimed_words(tool, argv)
+            if words is not None:
+                if not words:
+                    refuse(rec, "a rule needs the user's words (--quote)")
+                    continue
+                if user_text is None or not _said(words, user_text):
+                    refuse(rec, "the quoted words are not in the user's message this turn")
+                    continue
+            buf = _io.StringIO()
+            try:
+                with redirect_stdout(buf):
+                    rc = runners[tool](argv)
+            except Exception as e:  # the store refused: keep the record
+                refuse(rec, f"{type(e).__name__}: {e}"[:300])
+                continue
+            if rc:
+                refuse(rec, (buf.getvalue().strip() or f"exit {rc}")[:300])
+                continue
+            out["applied"].append(dict(rec, output=buf.getvalue().strip()[:300]))
+    finally:
+        _APPLYING = False
+    return out
+
+
+def _onboarding_main(argv) -> int:
+    try:
+        import onboarding
+    except ModuleNotFoundError:
+        from preprocessor import onboarding
+    return onboarding.main(argv)
+
+
+def _cmd_apply_staged(args) -> int:
+    text = None
+    if args.user_text_file:
+        text = sys.stdin.read() if args.user_text_file == "-" else Path(args.user_text_file).read_text(encoding="utf-8")
+    res = apply_staged(text)
+    print(json.dumps(res, ensure_ascii=False))
+    return 0
+
+
 def _cmd_add(args) -> int:
     try:
         rule = update(lambda d: add_rule(
@@ -676,10 +815,26 @@ def main(argv=None) -> int:
     p.add_argument("--json", action="store_true")
     p.add_argument("--dry-run", action="store_true",
                    help="do not advance the cursor (preview)")
+    p = sub.add_parser("apply-staged", help="replay the writes a sandboxed turn staged", allow_abbrev=False)
+    p.add_argument("--user-text-file", help="the user's message this turn ('-' reads stdin); "
+                                            "a rule whose quote is not in it is refused")
+    argv = list(sys.argv[1:] if argv is None else argv)
     args = ap.parse_args(argv)
-    return {"render": _cmd_render, "list": _cmd_list, "add": _cmd_add,
-            "calibrate": _cmd_calibrate, "retire": _cmd_retire,
-            "show": _cmd_show, "digest": _cmd_digest}[args.cmd](args)
+    handler = {"render": _cmd_render, "list": _cmd_list, "add": _cmd_add,
+               "calibrate": _cmd_calibrate, "retire": _cmd_retire,
+               "show": _cmd_show, "digest": _cmd_digest,
+               "apply-staged": _cmd_apply_staged}[args.cmd]
+    try:
+        return handler(args)
+    except OSError as e:
+        # The sandbox of a Codex turn holds no config folder: the write
+        # waits for apply-staged, which the bot runs after the turn.
+        if _APPLYING or args.cmd not in STAGED_VERBS["preferences"] or not sandbox_refused(e):
+            raise
+        stage("preferences", argv)
+        print(json.dumps({"status": "staged", "file": str(STAGED_FILE),
+                          "note": "applied after this turn when the quote is the user's words"}))
+        return 0
 
 
 if __name__ == "__main__":
