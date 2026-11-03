@@ -704,21 +704,38 @@ def remove_scratch(jid: str, runner=None) -> None:
 # this one keeps an entry for TMP_KEEP_MIN minutes after its last change.
 CODEX_TMP = BOT_HOME / ".ea" / "state" / "codex-tmp"
 TMP_KEEP_MIN = 24 * 60
+# A live lane's working directory (run_lane_live): a folder of its own in
+# the state, as a chat turn's is (codex_turn.LIVE_CWD). Codex makes its
+# working directory a writable root and puts the guard folders in it, so
+# the resident's home would be writable to the lane, and a `.git` left
+# there would sit above every Claude lane folder.
+LANE_CWD = BOT_HOME / ".ea" / "state" / "codex-lane"
+
+
+def _as_resident(cmds, runner=None) -> None:
+    """Run each command as the resident; never raises."""
+    run = runner or (lambda c, inp: subprocess.run(c, input=inp, capture_output=True, text=True, timeout=60))
+    for cmd in cmds:
+        try:
+            run(_bot_env() + cmd, None)
+        except Exception:
+            pass
 
 
 def ensure_codex_tmp(runner=None) -> Path:
     """Make CODEX_TMP as the resident, mode 750 like the rest of the state,
     and remove the entries in it older than TMP_KEEP_MIN minutes; never
     raises. Returns CODEX_TMP."""
-    run = runner or (lambda c, inp: subprocess.run(c, input=inp, capture_output=True, text=True, timeout=60))
-    for cmd in (_bot_env() + ["install", "-d", "-m", "750", str(CODEX_TMP)],
-                _bot_env() + ["find", str(CODEX_TMP), "-mindepth", "1", "-maxdepth", "1",
-                              "-mmin", f"+{TMP_KEEP_MIN}", "-exec", "rm", "-rf", "--", "{}", "+"]):
-        try:
-            run(cmd, None)
-        except Exception:
-            pass
+    _as_resident((["install", "-d", "-m", "750", str(CODEX_TMP)],
+                  ["find", str(CODEX_TMP), "-mindepth", "1", "-maxdepth", "1",
+                   "-mmin", f"+{TMP_KEEP_MIN}", "-exec", "rm", "-rf", "--", "{}", "+"]), runner)
     return CODEX_TMP
+
+
+def ensure_lane_cwd(runner=None) -> Path:
+    """Make LANE_CWD as the resident, mode 750; never raises. Returns it."""
+    _as_resident((["install", "-d", "-m", "750", str(LANE_CWD)],), runner)
+    return LANE_CWD
 
 
 # ── prompts ───────────────────────────────────────────────────────────
@@ -1026,15 +1043,20 @@ def _staged_in(root: Path) -> dict:
 
 def run_lane_live(prompt: str, *, agent: str, run_id: str, codex_run=None) -> dict:
     """The production path: the lane on Codex as the resident against the
-    real EA_DIR, writes confined to its state and docs. The caller
-    (run-agent.sh) asks `gate briefing` first."""
+    real EA_DIR, from LANE_CWD, writes confined to its state and docs. The
+    caller (run-agent.sh) asks `gate briefing` first. Its prompt says the
+    run starts in the resident's home, where the Claude lane starts, and
+    names every file by its full path; a line after it says where this run
+    starts."""
     real = BOT_HOME / ".ea"
+    cwd = ensure_lane_cwd()
     full = "# Operating instructions (CLAUDE.md)\n\n" + _core() + "\n\n# This run\n\n" + prompt.strip() \
+        + f"\n\nThis Codex run starts in {cwd}, not in {BOT_HOME}: name every path in full." \
         + codex_suffix(real, "briefing", live=True)
     prefix = _bot_env({"EA_DIR": str(real), "EA_RUN_ID": run_id, "EA_BOT_HOME": str(BOT_HOME),
                        "EA_GRAPH_LANE": "background"})
     return (codex_run or codex_cli.run)(
-        full, cwd=BOT_HOME, sandbox="workspace-write",
+        full, cwd=cwd, sandbox="workspace-write",
         add_dirs=[real / "state", real / "docs"], tmp_dir=ensure_codex_tmp(), timeout=RUN_TIMEOUT_S["briefing"],
         prefix=prefix, last_message_dir=BOT_HOME / ".local" / "state" / "ea-lanes")
 

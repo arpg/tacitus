@@ -44,6 +44,13 @@ A release run on Codex is scored by the same assertions and judge as a
 Claude run and compared only with earlier Codex runs, never with a
 Claude baseline.
 
+The probe starts in a new folder under `~/.ea-codex-probe` (mode 700, in
+the passwd home of the user who runs it, not `$HOME`), never under /tmp.
+Codex takes the folder of a `.git` above its working directory for the
+project root and loads the skills in the `.agents` beside it, and any
+user can make both in /tmp. The probe is refused when another user can
+write a folder above its own.
+
 ## The ghost arm
 
 `preprocessor/codex_ghost.py` runs Codex beside the production Claude
@@ -121,8 +128,12 @@ gate (`model_routing.py harness`).
 
 `EA_HARNESS=codex` in the environment of `run-agent.sh` runs a briefing
 lane on Codex for real: `codex_ghost.py run-lane --live` as the resident
-against the real EA_DIR, writes confined to its state and docs, the same
-prompt and the same output handling. It runs only when `codex_ghost.py
+against the real EA_DIR, from `~/.ea/state/codex-lane` (`LANE_CWD`, made
+as the resident, mode 750), writes confined to its state and docs, the
+same prompt and the same output handling. The Claude lane starts in the
+resident's home; the Codex lane does not, because Codex makes its working
+directory writable (see "Temp files"). The prompt names every file by
+its full path, and a line after it says where the Codex run starts. It runs only when `codex_ghost.py
 gate briefing` finds a GO no older than 14 days (`EA_HARNESS_FORCE=1`
 overrides); otherwise the Claude run goes ahead and the log says why.
 
@@ -179,7 +190,11 @@ change) as their temp dir (`codex_cli.temp_flags`: /tmp and `$TMPDIR` are
 no roots, the folder is one, and the commands get it as TMPDIR, TMP and
 TEMP). It sits in the state, which the mediator accepts files from, as
 it did /tmp. An eval run on Codex gets a `tmp` folder in its own
-throwaway EA_DIR.
+throwaway EA_DIR. A working directory is a writable root too, with the
+same guard folders, so no Codex run as the resident starts in the
+resident's home: a `.git` left there would sit above every Claude lane
+folder (`~/.local/state/ea-lanes/<lane>`), and the whole home would be
+writable to the run.
 
 The config folder is not a root (`NO_WRITE_DIRS`): a folder root would
 cover `ea-config.json`, `github.json` and `CLAUDE.install.md`, which

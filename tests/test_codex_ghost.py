@@ -18,6 +18,9 @@ import codex_cli  # noqa: E402
 import codex_ghost as cg  # noqa: E402
 import remote_llm  # noqa: E402
 
+# Taken before conftest's stand-in replaces it for every test.
+_REAL_ENSURE_LANE_CWD = cg.ensure_lane_cwd
+
 
 @pytest.fixture
 def private(tmp_path, monkeypatch):
@@ -331,16 +334,35 @@ def test_a_briefing_replay_runs_as_the_resident_with_writes_confined(private, mo
     assert _rows(cg.TURNS)[-1]["id"] == "briefing-1"
 
 
-def test_a_live_lane_writes_its_state_its_docs_and_its_own_temp_dir():
-    seen = {}
+def test_a_live_lane_starts_in_its_own_folder_and_writes_its_state_its_docs_and_its_temp_dir(monkeypatch):
+    """Codex makes a run's working directory writable and puts its guard
+    folders (`.git` among them) there: a lane started in the resident's home
+    could write the whole home and leave a `.git` above every Claude lane
+    folder. It starts in a folder of its own in the state, made before it
+    runs, and its prompt says so."""
+    events, seen = [], {}
+    monkeypatch.setattr(cg, "ensure_lane_cwd", lambda runner=None: events.append("made") or cg.LANE_CWD)
 
     def codex_run(prompt, **kw):
-        seen.update(kw)
+        events.append("codex")
+        seen.update(kw, prompt=prompt)
         return {"output": "ok"}
     cg.run_lane_live("THE LANE", agent="morning-briefing", run_id="cron-x", codex_run=codex_run)
     real = cg.BOT_HOME / ".ea"
+    assert events == ["made", "codex"]
+    assert seen["cwd"] == cg.LANE_CWD and cg.LANE_CWD.parent == real / "state"
+    assert seen["cwd"] != cg.BOT_HOME and cg.BOT_HOME not in seen["add_dirs"]
     assert seen["sandbox"] == "workspace-write" and seen["add_dirs"] == [real / "state", real / "docs"]
     assert seen["tmp_dir"] == cg.CODEX_TMP, "its temp dir is the resident's own, never /tmp"
+    assert f"This Codex run starts in {cg.LANE_CWD}, not in {cg.BOT_HOME}" in seen["prompt"]
+    assert seen["prompt"].index("THE LANE") < seen["prompt"].index("This Codex run starts in")
+
+
+def test_the_lane_folder_is_made_as_the_resident_inside_the_state():
+    cmds = []
+    assert _REAL_ENSURE_LANE_CWD(runner=lambda c, inp: cmds.append(c)) == cg.LANE_CWD
+    assert len(cmds) == 1 and cmds[0][:4] == ["sudo", "-n", "-u", cg.RESIDENT]
+    assert cmds[0][cmds[0].index("install"):] == ["install", "-d", "-m", "750", str(cg.LANE_CWD)]
 
 
 def test_a_chat_replay_carries_the_context_and_a_harness_error_is_an_error_row(private, monkeypatch):

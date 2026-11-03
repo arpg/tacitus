@@ -197,13 +197,16 @@ def walks_stop_at_tmp_path(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_resident_codex_tmp(monkeypatch):
-    """codex_ghost.ensure_codex_tmp makes a folder in the resident's real
-    state through sudo, and no test may. Every test gets a stand-in that
-    makes nothing and names the same folder; a test of the real one keeps
-    a reference taken when its file is imported."""
+def _no_resident_codex_dirs(monkeypatch):
+    """codex_ghost.ensure_codex_tmp and ensure_lane_cwd make folders in the
+    resident's real state through sudo, and no test may. Every test gets
+    stand-ins that make nothing and name the same folders; a test of the
+    real ones keeps references taken when its file is imported."""
     for name in ("codex_ghost", "preprocessor.codex_ghost"):
         mod = _sys.modules.get(name)
-        if mod is not None and hasattr(mod, "ensure_codex_tmp"):
-            monkeypatch.setattr(mod, "ensure_codex_tmp", lambda runner=None, _m=mod: _m.CODEX_TMP)
+        if mod is None:
+            continue
+        for fn, const in (("ensure_codex_tmp", "CODEX_TMP"), ("ensure_lane_cwd", "LANE_CWD")):
+            if hasattr(mod, fn):
+                monkeypatch.setattr(mod, fn, lambda runner=None, _m=mod, _c=const: getattr(_m, _c))
     yield

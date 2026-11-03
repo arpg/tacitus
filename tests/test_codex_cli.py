@@ -164,12 +164,19 @@ def test_run_reports_a_missing_binary_and_a_silent_failure(tmp_path, monkeypatch
 
 
 def test_probe_wants_the_word_ok(tmp_path, monkeypatch):
-    ok_script = ('for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done\n'
+    cwd_seen = tmp_path / "cwd-seen"
+    ok_script = ('for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; '
+                 f'if [ "$prev" = "-C" ]; then printf "%s" "$a" > "{cwd_seen}"; fi; prev="$a"; done\n'
                  'cat > /dev/null\nprintf "OK" > "$out"\n')
     fake = _fake_codex(tmp_path, ok_script)
     monkeypatch.setattr(X, "CODEX_BIN", str(fake))
+    root = tmp_path / "probe-root"
+    root.mkdir(mode=0o700)
+    monkeypatch.setattr(X, "probe_root", lambda: root)
     ok, _detail = X.probe(timeout=30)
     assert ok
+    assert Path(cwd_seen.read_text()).parent == root, "the probe starts in a folder under probe_root"
+    assert list(root.iterdir()) == [], "and removes it after"
     _fake_codex(tmp_path, ok_script.replace('printf "OK"', 'printf "nah"'))
     ok, detail = X.probe(timeout=30)
     assert not ok and "unexpected answer" in detail
@@ -177,6 +184,49 @@ def test_probe_wants_the_word_ok(tmp_path, monkeypatch):
     (tmp_path / "bin" / "codex").write_text("not a program")
     ok, detail = X.probe(timeout=30)
     assert not ok and "could not start" in detail
+
+
+def test_the_probe_starts_where_no_other_user_can_plant_a_project(tmp_path, monkeypatch):
+    """Codex takes the folder of a `.git` above its working directory for the
+    project root and loads the skills in the `.agents` beside it. The probe
+    starts in a 0700 folder in this user's passwd home (not $HOME), and is
+    refused when another user can write a folder above it."""
+    import pwd
+    # Another user can write a folder above: refused, and the probe never
+    # starts codex.
+    shared = tmp_path / "shared"
+    (shared / "home").mkdir(parents=True)
+    os.chmod(shared / "home", 0o755)
+    os.chmod(shared, 0o1777)
+    assert X._others_can_write_above(shared / "home" / X.PROBE_DIR_NAME) == f"{shared} is writable by another user"
+    with pytest.raises(RuntimeError, match="writable by another user"):
+        X.probe_root(home=shared / "home")
+    monkeypatch.setattr(X, "binary", lambda: "/usr/bin/codex")
+    monkeypatch.setattr(X, "run", lambda *a, **k: pytest.fail("codex started"))
+    real_root = X.probe_root
+    monkeypatch.setattr(X, "probe_root", lambda: real_root(home=shared / "home"))
+    ok, detail = X.probe(timeout=5)
+    assert not ok and detail.startswith("probe refused:") and str(shared) in detail
+    monkeypatch.setattr(X, "probe_root", real_root)
+    # The folders above are the test's to judge from here on (the system
+    # temp dir above tmp_path is the host's).
+    monkeypatch.setattr(X, "_others_can_write_above", lambda d: "")
+
+    class _Pw:
+        pw_dir = str(tmp_path / "pw-home")
+    (tmp_path / "pw-home").mkdir(mode=0o755)
+    monkeypatch.setenv("HOME", str(tmp_path / "elsewhere"))
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: _Pw())
+    root = X.probe_root()
+    assert root == tmp_path / "pw-home" / X.PROBE_DIR_NAME and root.stat().st_mode & 0o777 == 0o700
+    os.chmod(root, 0o755)
+    assert X.probe_root().stat().st_mode & 0o777 == 0o700, "a looser folder is made private again"
+    linked = tmp_path / "linked-home"
+    (tmp_path / "elsewhere-dir").mkdir()
+    linked.mkdir()
+    os.symlink(tmp_path / "elsewhere-dir", linked / X.PROBE_DIR_NAME)
+    with pytest.raises(RuntimeError, match="not a plain folder"):
+        X.probe_root(home=linked)
 
 
 def test_a_thread_is_started_persistent_and_resumed_with_its_sandbox_restated(tmp_path):

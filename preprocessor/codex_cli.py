@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,8 @@ PROBE_TIMEOUT_S = 120
 SANDBOXES = ("read-only", "workspace-write")
 # The variables a command reads its temp dir from (temp_flags).
 TEMP_VARS = ("TMPDIR", "TMP", "TEMP")
+# The folder in this user's home a probe starts in (probe_root).
+PROBE_DIR_NAME = ".ea-codex-probe"
 
 
 def binary() -> str | None:
@@ -309,12 +312,58 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
             "stderr": (r.stderr or "")[-500:], "thread_id": parsed["thread_id"]}
 
 
+def _others_can_write_above(d: Path) -> str:
+    """'' when no user but this one and root can write a folder above `d`,
+    else the first that fails."""
+    me = os.geteuid()
+    for a in d.parents:
+        try:
+            st = os.lstat(a)
+        except OSError as e:
+            return f"{a}: {e.strerror}"
+        if st.st_uid not in (me, 0) or st.st_mode & 0o022:
+            return f"{a} is writable by another user"
+    return ""
+
+
+def probe_root(home=None) -> Path:
+    """The folder a probe starts in: PROBE_DIR_NAME in `home`, by default
+    this user's passwd home (not $HOME), made 0700. Codex takes the folder
+    of a `.git` above its working directory for the project root and loads
+    the skills in the `.agents` beside it, and any user can make both in
+    the system temp dir; here only this user and root can write the folder
+    and every folder above it. RuntimeError when it is a link, not this
+    user's, or another user can write a folder above it."""
+    if home is None:
+        import pwd
+        home = pwd.getpwuid(os.geteuid()).pw_dir
+    root = Path(home) / PROBE_DIR_NAME
+    try:
+        root.mkdir(mode=0o700, exist_ok=True)
+        st = os.lstat(root)
+    except OSError as e:
+        raise RuntimeError(f"cannot make {root}: {e}") from e
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid():
+        raise RuntimeError(f"{root} is not a plain folder of this user's")
+    if st.st_mode & 0o077:
+        os.chmod(root, 0o700)
+    why = _others_can_write_above(root)
+    if why:
+        raise RuntimeError(why)
+    return root
+
+
 def probe(timeout: int = PROBE_TIMEOUT_S) -> tuple[bool, str]:
     """(ok, detail): whether codex answers a trivial prompt, read-only, in
-    an empty directory. The detail names the version or the failure."""
+    an empty directory under probe_root. The detail names the version or
+    the failure."""
     if not binary():
         return False, f"codex not on PATH ({CODEX_BIN})"
-    with tempfile.TemporaryDirectory(prefix="ea-codex-probe-") as td:
+    try:
+        root = probe_root()
+    except RuntimeError as e:
+        return False, f"probe refused: {e}"
+    with tempfile.TemporaryDirectory(prefix="ea-codex-probe-", dir=root) as td:
         res = run("Reply with exactly the word OK and nothing else.", cwd=td,
                   sandbox="read-only", timeout=timeout)
     if res["harness_error"]:
