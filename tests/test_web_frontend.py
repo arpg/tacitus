@@ -1274,7 +1274,8 @@ def test_a_floored_row_is_refused_and_nothing_is_written(fe, routing_page, monke
     assert status == 400 and json.loads(raw)["error"] == '"Talking with you" takes Local, Hosted or Auto.'
     said.append(json.loads(raw)["error"])
     status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"other": 1})
-    assert status == 400 and json.loads(raw)["error"] == "Choose Local, Hosted or Auto for at least one task."
+    assert status == 400 and json.loads(raw)["error"] == \
+        "Choose Local, Hosted or Auto, or a hosted model, for at least one task."
     said.append(json.loads(raw)["error"])
     assert not (priv / "routing.json").exists()
     # the keep floor: hosted on mail is refused while the keep list has entries
@@ -1284,7 +1285,7 @@ def test_a_floored_row_is_refused_and_nothing_is_written(fe, routing_page, monke
     monkeypatch.setattr(remote_llm, "config", lambda: kept)
     status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"tasks": {"mail": "hosted"}})
     assert status == 400 and json.loads(raw)["error"] == \
-        '"Reading your mail" cannot be Hosted while you keep some mail away from Claude.'
+        '"Reading your mail" cannot be Hosted while you keep some mail away from hosted models.'
     said.append(json.loads(raw)["error"])
     assert not (priv / "routing.json").exists()
     status, _h, raw = owner(fe, "GET", "/api/settings/other")
