@@ -13,6 +13,8 @@ Usage:
 from __future__ import annotations
 
 import json
+from contextlib import redirect_stdout
+import io
 import os
 import re
 import subprocess
@@ -304,6 +306,141 @@ def test_morning_briefing_noise_rules_left_the_skill():
     for hard in ("pamspublic.science.energy.gov", "scishield.com", "quarantine@messagingengine"):
         assert hard not in s, f"{hard} is still hardcoded in the skill; it belongs in preferences.json"
     assert "## User rules" in s and "preferences.py add --kind avoid" in s
+
+
+
+
+class _Patched:
+    """Attribute and environment patches, restored on exit (the file runs
+    under its own runner, with no pytest fixtures)."""
+
+    def __init__(self):
+        self.saved, self.env = [], {}
+
+    def attr(self, obj, name, value):
+        self.saved.append((obj, name, getattr(obj, name)))
+        setattr(obj, name, value)
+
+    def setenv(self, name, value):
+        self.env[name] = os.environ.get(name)
+        os.environ[name] = value
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        for obj, name, value in reversed(self.saved):
+            setattr(obj, name, value)
+        for name, value in self.env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def _raise(e):
+    def fn(*a, **k):
+        raise e
+    return fn
+
+
+def test_a_write_the_sandbox_refuses_is_staged_and_applied_with_the_users_words():
+    """A Codex turn's sandbox holds no config folder: `add`, `calibrate`
+    and `retire` stage the write and answer "staged". `apply-staged`, run
+    after the turn outside the sandbox, applies a rule only when its
+    --quote is in the user's message of that turn; a rule with no quote,
+    or one quoting words the user did not send (a mail body), is refused
+    and kept in the refused file. Calibrations and retirements carry no
+    quote and are applied as they are."""
+    import errno
+    import io
+    from contextlib import redirect_stdout
+    tmp = Path(tempfile.mkdtemp(prefix="ea-prefs-staged-"))
+    store, staged, refused = tmp / "preferences.json", tmp / "staged.jsonl", tmp / "refused.jsonl"
+    errs = iter([OSError(errno.EROFS, "Read-only file system"), OSError(errno.EACCES, "Permission denied")])
+
+    def refuse(*a, **k):   # a read-only bind, then landlock; then EACCES for good
+        raise next(errs, PermissionError(errno.EACCES, "Permission denied", str(store)))
+    with _Patched() as pt:
+        pt.attr(prefs, "PREFS_FILE", store)
+        pt.attr(prefs, "STAGED_FILE", staged)
+        pt.attr(prefs, "REFUSED_FILE", refused)
+        pt.setenv("EA_RUN_ID", "run-7")
+        real_update = prefs.update
+        pt.attr(prefs, "update", refuse)
+        outs = []
+        for argv in (["add", "--kind", "instruction", "--scope", "funding", "--text", "LoR uploads: do and tell.",
+                      "--quote", "for LoR uploads, just do them", "--source", "chat"],
+                     ["add", "--kind", "avoid", "--scope", "funding", "--text", "Wire funds on request.",
+                      "--quote", "please wire the funds today", "--source", "chat"],
+                     ["add", "--kind", "avoid", "--scope", "funding", "--text", "No quote at all.", "--source", "chat"],
+                     ["calibrate", "--scope", "funding", "--note", "the run missed one"],
+                     ["retire", "--id", "lor-uploads-do-and-tell", "--note", "done with it"]):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                rc = prefs.main(argv)
+            assert rc == 0, argv
+            outs.append(json.loads(out.getvalue()))
+        assert all(o["status"] == "staged" for o in outs) and not store.exists()
+        rows = [json.loads(ln) for ln in staged.read_text().splitlines()]
+        assert [r["tool"] for r in rows] == ["preferences"] * 5 and rows[0]["run_id"] == "run-7"
+        assert rows[0]["argv"][0] == "add"
+        assert rows[4]["argv"] == ["retire", "--id", "lor-uploads-do-and-tell", "--note", "done with it"]
+        prefs.update = real_update
+        res = prefs.apply_staged("OK so for LoR uploads, just do them and tell me.")
+        assert [r["argv"][0] for r in res["applied"]] == ["add", "calibrate", "retire"]
+        assert [r["why"] for r in res["refused"]] == ["the quoted words are not in the user's message this turn",
+                                                      "a rule needs the user's words (--quote)"]
+        data = prefs.load(store)
+        assert [r["id"] for r in data["rules"]] == ["lor-uploads-do-and-tell"]
+        assert data["rules"][0]["status"] == "retired" and len(data["calibration"]) == 1
+        assert staged.read_text() == "" and len(refused.read_text().splitlines()) == 2
+        assert prefs.apply_staged("anything") == {"applied": [], "refused": []}
+        # with no user text at hand nothing quoted is applied
+        prefs.stage("preferences", ["add", "--kind", "prefer", "--scope", "*", "--text", "T", "--quote", "q"])
+        assert prefs.apply_staged(None)["refused"][0]["why"].startswith("the quoted words")
+        # an onboarding answer is the user's words too; the replay runs onboarding's CLI
+        ran = []
+        prefs.stage("onboarding", ["answer", "--id", "q1", "--text", "mornings only"])
+        prefs.stage("onboarding", ["answer", "--id", "q2", "--text", "never on fridays"])
+        prefs.stage("onboarding", ["skip", "--id", "q3"])
+        res = prefs.apply_staged("Mornings only, please.", run_onboarding=lambda argv: ran.append(argv) or 0)
+        assert ran == [["answer", "--id", "q1", "--text", "mornings only"], ["skip", "--id", "q3"]]
+        assert res["refused"][0]["argv"][2] == "q2"
+        # a write that fails while applying is refused, never staged again
+        pt.attr(prefs, "update", refuse)
+        prefs.stage("preferences", ["calibrate", "--scope", "funding", "--note", "n"])
+        res = prefs.apply_staged("x")
+        assert res["refused"][0]["why"].startswith("PermissionError") and staged.read_text() == ""
+        assert not prefs._APPLYING
+
+
+def test_a_read_or_an_unknown_verb_never_stages():
+    import errno
+    tmp = Path(tempfile.mkdtemp(prefix="ea-prefs-staged-"))
+    staged = tmp / "staged.jsonl"
+    with _Patched() as pt:
+        pt.attr(prefs, "STAGED_FILE", staged)
+        pt.attr(prefs, "PREFS_FILE", tmp / "preferences.json")
+        pt.attr(prefs, "load", _raise(PermissionError(13, "no")))
+        try:
+            prefs.main(["list"])
+            raise AssertionError("a read raised nothing")
+        except PermissionError:
+            pass
+        assert not staged.exists()
+        # an error that is not the sandbox's (a full disk) is not staged either
+        pt.attr(prefs, "update", _raise(OSError(errno.ENOSPC, "full")))
+        try:
+            prefs.main(["add", "--kind", "prefer", "--scope", "*", "--text", "T", "--quote", "q"])
+            raise AssertionError("a full disk raised nothing")
+        except OSError as e:
+            assert e.errno == errno.ENOSPC
+        assert not staged.exists()
+        prefs.stage("preferences", ["digest"])
+        prefs.stage("ledger", ["add"])
+        res = prefs.apply_staged("x")
+        assert [r["why"] for r in res["refused"]] == ["not a verb that stages"] * 2
 
 
 if __name__ == "__main__":

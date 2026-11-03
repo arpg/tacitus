@@ -151,10 +151,28 @@ standing rule of the user's goes to `preferences.py add`.
 change only the `resident_write_paths` paths, and its allowlisted scripts
 write with the resident's own permissions. Codex's sandbox confines every
 write, the scripts' included, so a live turn's writable folders are those
-paths plus the scripts' folders (`SCRIPT_WRITE_DIRS`: config, which
-`preferences.py` replaces atomically, logs and uploads), and /tmp. It
-runs in `~/.ea/state/codex-live` (mode 750): Codex makes its working
-directory writable and cannot start in the read-only deployed tree.
+paths plus the scripts' folders (`SCRIPT_WRITE_DIRS`: logs and uploads),
+and /tmp. It runs in `~/.ea/state/codex-live` (mode 750): Codex makes
+its working directory writable and cannot start in the read-only
+deployed tree.
+
+The config folder is not a root (`NO_WRITE_DIRS`): a folder root would
+cover `ea-config.json`, `github.json` and `CLAUDE.install.md`, which
+steer every later run, and `config/autonomy-tiers.json` in the Claude
+write paths does not open it. The two verbs that write there from a
+turn, `preferences.py add|calibrate|retire` and `onboarding.py answer`,
+meet a `PermissionError` in the sandbox and stage the write instead
+(`~/.ea/state/preferences-staged.jsonl`, the argv and the run id),
+answering `{"status": "staged"}`. After the turn the bot runs
+`preferences.py apply-staged` as the resident, outside the sandbox, with
+the user's message of that turn on stdin: a rule or an answer is applied
+only when the words it quotes (`--quote`, `--text`) are in that message,
+so a rule lifted from a mail body is refused and kept in
+`preferences-staged-refused.jsonl` with the reason; a calibration or a
+retirement carries no quote and is applied as it is. The turn's record
+carries the outcome (`preferences`). A tier promotion (an edit of
+`autonomy-tiers.json`) has no verb and cannot be written from a Codex
+turn; the suffix tells Codex to say so.
 
 **No resume.** `codex exec resume` drops the writable roots: the resumed
 turn's sandbox policy has none, `-c sandbox_workspace_write.writable_roots`

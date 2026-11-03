@@ -79,7 +79,13 @@ LIVE_CWD = REAL_EA_DIR / "state" / "codex-live"
 # confines every write, the scripts' included, so their folders are named.
 log = logging.getLogger("codex_turn")
 
-SCRIPT_WRITE_DIRS = ("config", "logs", "uploads")
+STAGED_FILE = REAL_EA_DIR / "state" / "preferences-staged.jsonl"
+SCRIPT_WRITE_DIRS = ("logs", "uploads")
+# The config folder is not a root: a folder root would cover ea-config.json,
+# github.json and CLAUDE.install.md, which steer every later run. The two
+# verbs that write there from a turn (preferences.py, onboarding.py) stage
+# the write instead, and the bot applies it after the turn (_apply_staged).
+NO_WRITE_DIRS = ("config",)
 # Claude Code loads the first 200 lines of a project's MEMORY.md.
 MEMORY_INDEX_LINES = 200
 
@@ -92,6 +98,7 @@ def live_write_paths() -> list[Path]:
     import resident_write_paths
     pats = resident_write_paths.paths(str(BOT_HOME), str(REAL_EA_DIR))
     pats += [str(REAL_EA_DIR / d) for d in SCRIPT_WRITE_DIRS]
+    closed = [REAL_EA_DIR / d for d in NO_WRITE_DIRS]
     out: list[Path] = []
     for pat in pats:
         pat = pat[:-3] if pat.endswith("/**") else pat
@@ -100,8 +107,35 @@ def live_write_paths() -> list[Path]:
         hits = sorted(Path("/").glob(pat.lstrip("/"))) if "*" in pat else [Path(pat)]
         for h in hits:
             d = h if h.is_dir() else (h.parent if h.is_file() else None)
-            if d is not None and d not in out:
+            if d is not None and d not in out and d not in closed:
                 out.append(d)
+    return out
+
+
+def _apply_staged(user_text: str, runner=None) -> dict:
+    """After a live turn: replay the preference and onboarding writes the
+    sandbox refused (preferences.py apply-staged), as the resident, outside
+    the sandbox, with the user's message of this turn on stdin so a rule
+    is applied only when the words it quotes are the user's. Returns the
+    verb's {"applied", "refused"}, or {} when nothing was staged."""
+    try:
+        if STAGED_FILE.stat().st_size == 0:
+            return {}
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        pass
+    cmd = codex_ghost._bot_env({"EA_DIR": str(REAL_EA_DIR)}) + [
+        "python3", str(BOT_TREE / "preprocessor" / "preferences.py"), "apply-staged", "--user-text-file", "-"]
+    run = runner or (lambda c, inp: subprocess.run(c, input=inp, capture_output=True, text=True, timeout=60))
+    try:
+        res = run(cmd, user_text or "")
+        out = json.loads((getattr(res, "stdout", "") or "").strip() or "{}")
+    except Exception as e:
+        log.warning("codex turn: apply-staged failed: %s", e)
+        return {}
+    for rec in out.get("refused") or []:
+        log.warning("codex turn: a staged %s write was refused: %s", rec.get("tool"), rec.get("why"))
     return out
 
 
@@ -289,12 +323,15 @@ def _shape(res: dict, thread_id: str, mode: str, staged: dict | None = None) -> 
 def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_prompt: str = "",
              lane: str = "", model: str = "", timeout: int | None = None, codex_run=None,
              scratch_runner=None, clear_runner=None, on_event=None, persist: bool = True,
-             keep_scratch: bool = False, claude_cwd=None) -> dict:
+             keep_scratch: bool = False, claude_cwd=None, user_text: str = "") -> dict:
     """One turn. `fresh_prompt` is the fresh prompt the bot built for this
     turn (it carries the chat thread's history); `prompt`, the prompt it
     would send a resumed Claude session, stands in when there is none.
     `claude_cwd` is the directory the Claude run would have started in
-    (default: the deployed tree), which decides the context block. Returns
+    (default: the deployed tree), which decides the context block.
+    `user_text` is the message the user sent this turn: a live turn's
+    staged preference writes are applied after it only when the words they
+    quote are in it. Returns
     the bot's result shape (`_shape`); `harness_error` set means Codex did
     not answer and the caller lets Claude take the turn.
 
@@ -334,6 +371,7 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
     tid = res.get("thread_id") or ""
     if tid and persist and not res.get("harness_error"):
         remember_thread(thread_key, mode, tid, root)
+    prefs = _apply_staged(user_text, runner=scratch_runner) if live else {}
     staged = None
     if not live:
         staged = read_staged(root)
@@ -342,7 +380,10 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
                 codex_ghost.remove_scratch(jid, runner=clear_runner)
         elif staged:
             clear_staged(root, runner=clear_runner)
-    return _shape(res, tid, mode, staged)
+    shaped = _shape(res, tid, mode, staged)
+    if prefs:
+        shaped["preferences"] = prefs
+    return shaped
 
 
 def ghost_scratch_id(thread_key: str) -> str:

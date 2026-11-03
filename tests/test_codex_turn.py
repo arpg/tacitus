@@ -19,6 +19,7 @@ _REAL_ENSURE_LIVE_CWD = ct._ensure_live_cwd
 _REAL_RESIDENT_TEXT = ct._resident_text
 _REAL_CONTEXT_FILES = ct.context_files
 _REAL_LIVE_WRITE_PATHS = ct.live_write_paths
+_REAL_APPLY_STAGED = ct._apply_staged
 
 
 @pytest.fixture
@@ -35,7 +36,7 @@ def private(tmp_path, monkeypatch):
 
 
 MEMORY_INDEX = "# Memory index\n\n- [A tool quirk](tool-quirk.md): what the verb really returns"
-FAKE_WRITES = [ct.REAL_EA_DIR / "state", ct.REAL_EA_DIR / "config"]
+FAKE_WRITES = [ct.REAL_EA_DIR / "state", ct.REAL_EA_DIR / "docs"]
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +53,7 @@ def _no_resident(monkeypatch):
     monkeypatch.setattr(ct, "live_write_paths", lambda: list(FAKE_WRITES))
     made = []
     monkeypatch.setattr(ct, "_ensure_live_cwd", lambda runner=None: made.append(ct.LIVE_CWD))
+    monkeypatch.setattr(ct, "_apply_staged", lambda text, runner=None: {})
     return made
 
 
@@ -391,18 +393,56 @@ def test_a_live_turn_writes_where_a_claude_turn_writes(tmp_path, monkeypatch):
     monkeypatch.setattr(ct, "BOT_HOME", home)
     monkeypatch.setattr(ct, "REAL_EA_DIR", ea)
     got = _REAL_LIVE_WRITE_PATHS()
-    want = [ea / d for d in ("state", "docs", "letters", "research", "receipts", "exports", "plugins/p1/state",
-                             "config")]
+    want = [ea / d for d in ("state", "docs", "letters", "research", "receipts", "exports", "plugins/p1/state")]
     want += [home / d for d in ("presentations", "doc-review", "proposals")] + [ea / "logs", ea / "uploads"]
     assert got == want, got
-    assert len(got) == len(set(got)), "autonomy-tiers.json is covered by its folder once"
+    assert ea / "config" not in got, ("the config folder would cover ea-config.json, github.json and "
+                                      "CLAUDE.install.md; autonomy-tiers.json does not open it")
     for p in rwp.paths(str(home), str(ea)):
         base = Path(p[:-3] if p.endswith("/**") else p)
-        if p.startswith("/tmp") or "*" in p or not base.exists():
-            continue
+        if p.startswith("/tmp") or "*" in p or not base.exists() or base.parent == ea / "config":
+            continue   # a file in config opens no folder root
         assert base in got or base.parent in got, p
     for never in (home, ea, ea / "plugins" / "p1", ea / "plugins" / "p1" / "bin", home / ".claude"):
         assert never not in got
+
+
+def test_the_staged_preference_writes_are_applied_after_a_live_turn_as_the_resident(private, monkeypatch, tmp_path):
+    """preferences.py add and onboarding.py answer cannot write the config
+    folder from the sandbox; they stage the write, and after the turn the
+    bot replays it as the resident with the user's message on stdin, so a
+    rule is applied only when the words it quotes are the user's."""
+    staged = tmp_path / "preferences-staged.jsonl"
+    monkeypatch.setattr(ct, "STAGED_FILE", staged)
+    monkeypatch.setattr(ct.codex_ghost, "_bot_env", lambda extra=None: ["sudo", "-u", "ea-bot", "env",
+                                                                        *(f"{k}={v}" for k, v in (extra or {}).items())])
+    runs = []
+
+    class _Res:
+        stdout = json.dumps({"applied": [{"tool": "preferences", "argv": ["add"]}],
+                             "refused": [{"tool": "preferences", "argv": ["add"], "why": "the quoted words are not in the user's message this turn"}]})
+
+    def runner(cmd, inp):
+        runs.append((cmd, inp))
+        return _Res()
+    assert _REAL_APPLY_STAGED("hello", runner=runner) == {} and runs == [], "nothing staged: no run"
+    staged.write_text('{"tool": "preferences", "argv": ["add"]}\n')
+    out = _REAL_APPLY_STAGED("for LoR uploads, just do them", runner=runner)
+    cmd, inp = runs[0]
+    assert cmd[:3] == ["sudo", "-u", "ea-bot"] and f"EA_DIR={ct.REAL_EA_DIR}" in cmd
+    assert cmd[-4:] == [str(ct.BOT_TREE / "preprocessor" / "preferences.py"), "apply-staged", "--user-text-file", "-"]
+    assert inp == "for LoR uploads, just do them", "the user's message, on stdin"
+    assert len(out["applied"]) == 1 and len(out["refused"]) == 1
+    # the live turn hands the user's message over and carries the outcome
+    seen = []
+    monkeypatch.setattr(ct, "_apply_staged", lambda text, runner=None: seen.append(text) or {"applied": [1], "refused": []})
+    run = _codex([{"output": "ok", "thread_id": "th"}])
+    rec = ct.run_turn("P", thread_key="t-p", run_id="r", live=True, fresh_prompt="P", codex_run=run,
+                      user_text="just do them")
+    assert seen == ["just do them"] and rec["preferences"] == {"applied": [1], "refused": []}
+    ghost = _codex([{"output": "ok", "thread_id": "th"}])
+    ct.run_turn("P", thread_key="t-g", run_id="r", live=False, fresh_prompt="P", codex_run=ghost, persist=False)
+    assert seen == ["just do them"], "a ghost turn applies nothing"
 
 
 def test_the_live_directory_is_made_as_the_resident_inside_the_state():

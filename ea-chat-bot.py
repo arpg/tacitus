@@ -11113,7 +11113,7 @@ def _remote_llm_shadow_scheduling(*, run_id, channel, thread_ts, msg_ts, user_ms
 
 
 def _codex_turn_live(*, prompt, fresh_prompt, run_id, thread_ts, lane,
-                     progress=None, claude_cwd=None) -> "tuple[ClaudeResult | None, dict]":
+                     progress=None, claude_cwd=None, user_text="") -> "tuple[ClaudeResult | None, dict]":
     """The Codex arm's turn (codex_turn.run_turn, live): the prompt this
     turn built, on Codex as the resident, on the chat thread's own Codex
     thread. Returns (the result to post, the harness record), or (None,
@@ -11123,6 +11123,7 @@ def _codex_turn_live(*, prompt, fresh_prompt, run_id, thread_ts, lane,
         from preprocessor import codex_turn as _ct
         rec = _ct.run_turn(prompt, thread_key=thread_ts, run_id=run_id, live=True,
                            fresh_prompt=fresh_prompt, lane=lane, claude_cwd=claude_cwd,
+                           user_text=user_text,
                            on_event=progress.codex_event if progress is not None else None)
     except Exception as e:
         log.warning(f"codex arm: raised, Claude takes the turn: {e}")
@@ -12159,7 +12160,7 @@ Reminders:
             live_cr, codex_turn_rec = _codex_turn_live(
                 prompt=prompt, fresh_prompt=full_prompt, run_id=run_id, thread_ts=thread_ts,
                 lane=_turn_lane(channel, user_id), progress=progress,
-                claude_cwd=str(prompt_cwd or EA_BOT_SCRIPT_DIR))
+                claude_cwd=str(prompt_cwd or EA_BOT_SCRIPT_DIR), user_text=user_msg)
             if live_cr is None:
                 arm_fallback = ("codex:" + str((codex_turn_rec or {}).get("harness_error") or "no answer"))[:160]
                 log.warning(f"model arm: {arm_fallback}; Claude takes the turn on {MODEL}")

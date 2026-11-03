@@ -271,3 +271,24 @@ def test_the_judge_accepts_a_briefing_that_ends_with_the_question_block():
         "in your own words; say *skip* to pass or *stop asking* to end the questions.\n")
     verdict = judge.briefing_format_valid(briefing, {})
     assert verdict["pass"], verdict["reason"]
+
+
+def test_an_answer_the_sandbox_refuses_is_staged_for_the_bot(tmp_path, monkeypatch):
+    """From a Codex turn the preferences store is not writable: the answer
+    is staged (preferences.STAGED_FILE) and applied after the turn when
+    the text is the user's words; the question is not marked answered
+    until then."""
+    import io
+    from contextlib import redirect_stdout
+    staged = tmp_path / "staged.jsonl"
+    monkeypatch.setattr(prefs, "STAGED_FILE", staged)
+    monkeypatch.setattr(prefs, "update", lambda *a, **k: (_ for _ in ()).throw(PermissionError(13, "no")))
+    qid = BANK[0]["id"]
+    out = io.StringIO()
+    with redirect_stdout(out):
+        rc = onboarding.main(["answer", "--id", qid, "--text", "mornings only"])
+    assert rc == 0 and json.loads(out.getvalue())["status"] == "staged"
+    row = json.loads(staged.read_text())
+    assert row["tool"] == "onboarding" and row["argv"] == ["answer", "--id", qid, "--text", "mornings only"]
+    assert onboarding.load_state()["answered"].get(qid) is None
+
