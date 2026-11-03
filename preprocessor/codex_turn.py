@@ -22,21 +22,29 @@ as a ghost (mail writes recorded, never executed), nothing posted. What
 the turn staged (pending-event*.json, pending-schedule-send.json) is read
 from the scratch state and returned as `staged`, so the judge sees it.
 
-Codex threads: the first turn in a chat thread starts a Codex thread
-(`codex exec`, not ephemeral) and its id is kept in the owner-private
-registry, one per chat thread and mode; later turns resume it
-(`codex exec resume <id>`). A resume that fails starts a new thread with
-the fresh prompt the caller passes as `fresh_prompt`. The ghost arm
-passes `persist=False`: each replay is a new thread on a new scratch,
+Codex threads: every turn is a new Codex thread on the bot's fresh
+prompt, which carries the chat thread's history (`codex exec resume`
+drops the sandbox's writable roots; run_turn says how). The registry,
+one row per chat thread and mode, keeps the last thread id and the turn
+count; a ghost row also keeps its scratch root, which the thread's next
+ghost turn reuses. The ghost arm passes `persist=False`: each replay is
 kept nowhere, and the scratch is removed after the turn.
 
 A ghost's thread id and a production thread id are never the same
 registry row: the ghost's scratch root is that thread's root.
+
+What Claude Code loads by itself, Codex gets in the prompt: the
+instruction files on the Claude run's path and the memory index, for the
+directory that run would have used (`context_block`). The memory is
+read-only to Codex, as it is to the Claude lanes. A live turn writes
+where a Claude turn's file tools and scripts write (`live_write_paths`),
+from a working directory of its own (LIVE_CWD).
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -53,11 +61,115 @@ REAL_EA_DIR = BOT_HOME / ".ea"
 THREADS = f"{codex_ghost.STORE}/threads.json"
 TURN_TIMEOUT_S = 600
 ROOM_TIMEOUT_S = 1200
-# What a production turn may write: the EA state and the directories the
-# EA writes documents into. Never the code, never the config.
-LIVE_WRITABLE = ("state", "docs", "research", "letters", "uploads", "receipts")
 STAGED_FILES = ("pending-event.json", "pending-event-update.json", "pending-event-delete.json",
                 "pending-schedule-send.json", "pending-channel.json", "pending-publish.json")
+# A live turn's working directory: an empty folder of its own inside the
+# EA state, which a Claude turn may write too. A Claude turn runs in the
+# deployed tree, read-only to the resident; Codex cannot start there (its
+# sandbox makes a guard folder in the working directory), and in the
+# resident's home it would make every file there writable to the model.
+LIVE_CWD = REAL_EA_DIR / "state" / "codex-live"
+# What the scripts a Claude turn may run write outside the file tools'
+# paths (resident_write_paths): the preference rules and the tier
+# promotions in config (by an atomic replace, so the whole folder), the
+# logs (missed-closures.log, item-feedback.jsonl, fetch-url.log), the chat
+# uploads. Claude's rules confine its Write and Edit tools and leave the
+# allowlisted scripts to the resident's own permissions; Codex's sandbox
+# confines every write, the scripts' included, so their folders are named.
+SCRIPT_WRITE_DIRS = ("config", "logs", "uploads")
+# Claude Code loads the first 200 lines of a project's MEMORY.md.
+MEMORY_INDEX_LINES = 200
+
+
+def live_write_paths() -> list[Path]:
+    """The folders a live turn may write: the paths a Claude turn's Write
+    and Edit tools may change (resident_write_paths: globs expanded, a file
+    by its folder) and SCRIPT_WRITE_DIRS, existing ones only, in order.
+    /tmp needs no entry: every Codex sandbox can write it."""
+    import resident_write_paths
+    pats = resident_write_paths.paths(str(BOT_HOME), str(REAL_EA_DIR))
+    pats += [str(REAL_EA_DIR / d) for d in SCRIPT_WRITE_DIRS]
+    out: list[Path] = []
+    for pat in pats:
+        pat = pat[:-3] if pat.endswith("/**") else pat
+        if pat in ("", "/tmp"):
+            continue
+        hits = sorted(Path("/").glob(pat.lstrip("/"))) if "*" in pat else [Path(pat)]
+        for h in hits:
+            d = h if h.is_dir() else (h.parent if h.is_file() else None)
+            if d is not None and d not in out:
+                out.append(d)
+    return out
+
+
+# ── what Claude Code loads by itself ──────────────────────────────────
+#
+# A Claude run loads, from its working directory and the ones above it,
+# CLAUDE.md, CLAUDE.local.md and .claude/CLAUDE.md, plus the user's
+# ~/.claude/CLAUDE.md and the project's memory index; the bot's prompt
+# leaves out what the run loads (claude_cli.discovered_memory) and says it
+# is loaded. Codex loads none of it, so each Codex turn gets exactly that
+# set for the directory the Claude run would have used: the deployed tree
+# for most turns, a lane directory (which loads nothing) for the
+# scheduling and slim reply prompts. The memory is read-only, as it is to
+# a Claude lane (resident_write_paths.STEERING_RULES).
+
+_MEMORY_HEAD = """Your memory is the folder {dir}. The Claude sessions of this EA wrote there what they learned on earlier turns, and MEMORY.md, below, is its index, one line per note. When a line bears on the task, read that note with `cat` before you act. The folder is read-only, as it is to the Claude lanes: a standing preference or rule the user states goes to `preferences.py add` (the operating instructions, "Personal rules")."""
+
+
+def memory_dir(claude_cwd) -> Path:
+    """The Claude memory folder for a working directory (the project folder
+    slack_sessions.project_dir_name names)."""
+    name = re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(claude_cwd)))
+    return BOT_HOME / ".claude" / "projects" / name / "memory"
+
+
+def context_files(claude_cwd) -> list[Path]:
+    """The instruction files a Claude run started in `claude_cwd` loads by
+    itself, the most general first: the user's, then the ones on the path
+    from the root down (claude_cli.memory_on_path)."""
+    import claude_cli
+    user = BOT_HOME / ".claude" / "CLAUDE.md"
+    found = [user] if user.is_file() else []
+    return found + list(reversed(claude_cli.memory_on_path(claude_cwd)))
+
+
+def _resident_text(path: Path) -> str:
+    """A file's text read as the resident, the way a Claude run reads it
+    (resident_io: no owner read of a resident path), or ''."""
+    try:
+        import resident_io
+        return resident_io.read_text(path) or ""
+    except Exception:
+        return ""
+
+
+def context_block(claude_cwd=None) -> str:
+    """What a Claude run in `claude_cwd` (default: the deployed tree) loads
+    by itself, in the fences the bot's own prompts use; '' when that is
+    nothing."""
+    cwd = claude_cwd or BOT_TREE
+    parts = []
+    for f in context_files(cwd):
+        text = _resident_text(f).strip()
+        if text:
+            parts.append(f"=== INSTRUCTIONS ({f}) ===\n{text}\n=== END INSTRUCTIONS ===")
+    mem = memory_dir(cwd)
+    index = "\n".join(_resident_text(mem / "MEMORY.md").splitlines()[:MEMORY_INDEX_LINES]).strip()
+    if index:
+        parts.append(f"=== YOUR MEMORY ===\n{_MEMORY_HEAD.format(dir=mem)}\n\n{index}\n=== END YOUR MEMORY ===")
+    return "\n\n".join(parts)
+
+
+def _ensure_live_cwd(runner=None) -> None:
+    """Make LIVE_CWD as the resident, mode 750 like the rest of the state
+    (the bot starts Codex from inside it, through the group); never raises."""
+    cmd = codex_ghost._bot_env() + ["install", "-d", "-m", "750", str(LIVE_CWD)]
+    run = runner or (lambda c, inp: subprocess.run(c, input=inp, capture_output=True, text=True, timeout=30))
+    try:
+        run(cmd, None)
+    except Exception:
+        pass
 
 
 # ── the thread registry ───────────────────────────────────────────────
@@ -158,19 +270,28 @@ def _shape(res: dict, thread_id: str, mode: str, staged: dict | None = None) -> 
 def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_prompt: str = "",
              lane: str = "", model: str = "", timeout: int | None = None, codex_run=None,
              scratch_runner=None, clear_runner=None, on_event=None, persist: bool = True,
-             keep_scratch: bool = False) -> dict:
-    """One turn. `prompt` is what the bot would send Claude this turn
-    (fresh or continuation); `fresh_prompt` is the fresh prompt, used when
-    this thread has no Codex thread yet or its resume fails. Returns the
-    bot's result shape (`_shape`); `harness_error` set means Codex did
-    not answer and the caller lets Claude take the turn."""
+             keep_scratch: bool = False, claude_cwd=None) -> dict:
+    """One turn. `fresh_prompt` is the fresh prompt the bot built for this
+    turn (it carries the chat thread's history); `prompt`, the prompt it
+    would send a resumed Claude session, stands in when there is none.
+    `claude_cwd` is the directory the Claude run would have started in
+    (default: the deployed tree), which decides the context block. Returns
+    the bot's result shape (`_shape`); `harness_error` set means Codex did
+    not answer and the caller lets Claude take the turn.
+
+    Every turn is a new Codex thread. `codex exec resume` drops the
+    writable roots (0.166: the resumed turn's sandbox policy has none,
+    `-c sandbox_workspace_write.writable_roots` is ignored and resume takes
+    no --add-dir), so a resumed turn could write nothing but its working
+    directory and /tmp: no ledger, no draft, no mail request."""
     mode = "live" if live else "ghost"
     persist = persist or live
     timeout = timeout or (ROOM_TIMEOUT_S if lane == "room" else TURN_TIMEOUT_S)
     row = thread_row(thread_key, mode) if persist else {}
     if live:
-        root = BOT_HOME
-        add_dirs = [REAL_EA_DIR / d for d in LIVE_WRITABLE]
+        root = LIVE_CWD
+        _ensure_live_cwd(runner=scratch_runner)
+        add_dirs = live_write_paths()
         ea_dir = REAL_EA_DIR
         wrap = live_prompt
     else:
@@ -184,20 +305,14 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
     prefix = codex_ghost._bot_env({"EA_DIR": str(ea_dir), "EA_RUN_ID": run_id, "EA_BOT_HOME": str(BOT_HOME)})
     runner = codex_run or codex_cli.run
     last_dir = root if not live else BOT_HOME / ".local" / "state" / "ea-lanes"
-
-    def go(text: str, resume: str) -> dict:
-        extra = {"on_event": on_event} if on_event is not None else {}
-        return runner(wrap(text), cwd=root, sandbox="workspace-write", add_dirs=add_dirs, model=model,
-                      timeout=timeout, prefix=prefix, last_message_dir=last_dir, ephemeral=False,
-                      resume=resume, **extra)
-
-    resumed = bool(row.get("thread_id"))
-    res = go(prompt if resumed else (fresh_prompt or prompt), row.get("thread_id") or "")
-    if resumed and res.get("harness_error") and not res.get("output"):
-        # The thread is gone or refused: start over with the fresh prompt.
-        forget_thread(thread_key, mode)
-        res = go(fresh_prompt or prompt, "")
-    tid = res.get("thread_id") or row.get("thread_id") or ""
+    text = fresh_prompt or prompt
+    block = context_block(claude_cwd)
+    if block:
+        text = block + "\n\n" + text
+    extra = {"on_event": on_event} if on_event is not None else {}
+    res = runner(wrap(text), cwd=root, sandbox="workspace-write", add_dirs=add_dirs, model=model,
+                 timeout=timeout, prefix=prefix, last_message_dir=last_dir, ephemeral=False, resume="", **extra)
+    tid = res.get("thread_id") or ""
     if tid and persist and not res.get("harness_error"):
         remember_thread(thread_key, mode, tid, root)
     staged = None

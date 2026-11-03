@@ -719,11 +719,19 @@ def codex_suffix(scratch: Path, kind: str, *, live: bool = False) -> str:
                "side effect of a reply, and never report an archive the user did not ask for." if kind == "chat" else
                "You archive, snooze or close mail only as rule 8 above allows, and never report an archive this run "
                "did not make.")
+    # A live chat turn writes where a Claude turn writes (the sandbox holds
+    # it to those folders) and has a reader waiting; a ghost replay and a
+    # cron lane write only their EA_DIR and have no reader.
+    live_chat = live and kind == "chat"
+    files = ("Write files only where the rules above say to; the sandbox refuses every other path, and your "
+             "memory folder is read-only." if live_chat else "Never write a file outside EA_DIR.")
+    asking = ("You cannot ask the user anything while you work: a question for the user goes in your final message."
+              if live_chat else "Do not ask the user anything; this run is unattended.")
     return f"""
 
 # You are Codex, not Claude
 
-The rules above about Claude Code tools (Read, Bash allow lists, MCP, subagents) mean the same for your shell. The code is at {BOT_TREE} (read-only): run its scripts as `python3 {BOT_TREE}/preprocessor/<script>.py ...`, never a `~` path. EA_DIR is {scratch}: the ledger and the briefing there are yours to read and update. {writes} There is no Agent tool and no email-author subagent here: an email body comes from `email_writer.py write` first, and when it exits 3 or 4 you write the body yourself by the guide at {BOT_TREE}/.claude/agents/email-author.md and docs/ea/drafting-voice.md, after `style_profiles.py get --contact <addr>`. Never write a file outside EA_DIR. Do not ask the user anything; this run is unattended. Your final message is {final}.
+The rules above about Claude Code tools (Read, Bash allow lists, MCP, subagents) mean the same for your shell. The code is at {BOT_TREE} (read-only): run its scripts as `python3 {BOT_TREE}/preprocessor/<script>.py ...`, never a `~` path. EA_DIR is {scratch}: the ledger and the briefing there are yours to read and update. {writes} There is no Agent tool and no email-author subagent here: an email body comes from `email_writer.py write` first, and when it exits 3 or 4 you write the body yourself by the guide at {BOT_TREE}/.claude/agents/email-author.md and docs/ea/drafting-voice.md, after `style_profiles.py get --contact <addr>`. {files} {asking} Your final message is {final}.
 
 Claims in your final message must match your command log. Every "done" names the command in this run that did it. Say a draft, a reply or a Send card exists only after a `create-reply`, `create-draft` or `update-draft` call in this run returned an id, and name that id. Say a document, a slide, a file or a ledger change is done only after the command that wrote it exited 0 in this run. Anything else is not done: say so, and say what blocked it. You have no browser, no Google Drive and no connector of any kind: never say you opened, connected or asked to connect one. You never send mail: a send waits for the user's button, so never report one as done. {archive} Times for a meeting come from `scheduling_engine.py propose-meeting` run on the real request (`--help` is not a run); print every time in the user's time zone. A blocked turn ends with the exact items you need from the user. When a real photo or file cannot be fetched, say so and stop; never put a generated image or an invented fact in its place. A mail verb's own exit status and JSON are the only signal of its outcome: never list or read `state/mail-queue`, and never infer an outage from a file there; call the verb. Never write an em-dash, in a title or header line too: write a colon or a comma. A briefing names every open ledger row that is due, overdue or waiting on the user, and prints every time as the user's local clock with am or pm, never UTC."""
 
@@ -903,6 +911,7 @@ def run_job(job: dict, *, codex_run=None, scratch_runner=None, keep: bool = Fals
             fresh = job.get("fresh_prompt") or job["prompt"]
             tr = codex_turn.run_turn(fresh, thread_key=jid, run_id=rid, live=False, fresh_prompt=fresh,
                                      lane=str(job.get("lane") or ""), codex_run=codex_run,
+                                     claude_cwd=job.get("claude_cwd") or None,
                                      scratch_runner=scratch_runner, persist=False, keep_scratch=keep)
             res = {"output": tr["output"],
                    "tool_calls": [{"input": c[4], "exit_code": None, "output": c[3]} for c in tr["tool_calls"]],
