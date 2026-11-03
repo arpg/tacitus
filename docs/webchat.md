@@ -805,11 +805,14 @@ it was made, with Remove (`/api/push/revoke`); this browser's own row
 browser" and has no Remove, since its switch is above.
 
 Models: the local model's name and state at the top, a line that says what the values mean
-(Local is the owner's own model, Hosted is Claude, Auto lets Tacitus
-choose), then one row per task with Local, Hosted and Auto, a line on
-what the task does, a line on the model it runs on now and why, and the
-floor's line under a row a floor holds (the values it refuses are
-disabled). Save, for this section alone, posts the enabled choices and
+(Local is the owner's own model, Hosted is Claude or Codex, Auto lets
+Tacitus choose), then one row per task with Local, Hosted and Auto; under
+a task with a Codex route, "Hosted model" with Claude and Codex; under
+another, a line on what Hosted means there; a line on what the task
+does, a line on the model it runs on now and why ("Now on Codex. Auto
+picked Codex."), and the floor's line under a row a floor holds (the
+values it refuses are disabled). Save, for this section alone, posts the
+enabled choices (`tasks`, and `hosted` when a row has the choice) and
 redraws from the answer, with "Saved." or the bot's reason under the
 rows.
 

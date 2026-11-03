@@ -21,7 +21,10 @@
   chose where it runs: on the Mac itself, on the owner's own server, or
   on a colleague's. The endpoint must be https; a model on the same Mac
   sits behind a TLS proxy (`tailscale serve`, Caddy).
-- **hosted**: Claude through Claude Code, on the `opus` or `fable` tier.
+- **hosted**: a hosted model: Claude through Claude Code (the `opus` or
+  `fable` tier), or Codex through the Codex CLI (the `codex` tier) for a
+  task with a Codex route. The routing block's `hosted` map picks one per
+  task (docs/llm-lanes.md section 1.1, "The hosted model").
 - **auto**: the remote layer's switches and the `tiers` block decide, as
   they did before the table.
 - **task**: one kind of model work with its own inputs, for example
@@ -189,7 +192,8 @@ today.
 - **Plain words.** The Settings screen, the `routing` chat command and
   `model_routing.py show` give each task's label and line, why it runs
   where it runs, the floors and every refusal in plain words: "your own
-  model" for local, "Claude" for hosted, and no term of the code
+  model" for local, the hosted model's name ("Claude", "Codex") for
+  hosted, and no term of the code
   (`tests/plain_words.py` lists the words, which the app's own text
   avoids too). `show --verbose` and the doctor keep the code's terms:
   the switches, the lanes and the local model's last error. `set` prints

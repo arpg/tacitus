@@ -94,7 +94,7 @@ def test_a_wrong_task_or_value_is_named_and_dropped():
     assert ea_config.routing_problems("x") == ["the routing block is not a JSON object"]
     # a flat block is named, not silently ignored
     assert ea_config.routing_problems({"chat": "local", "_doc": "x"}) == \
-        ["routing takes its values under tasks, not 'chat'"]
+        ["routing takes its values under tasks and hosted, not 'chat'"]
 
 
 def test_the_stakes_floor_holds_review_at_hosted_whatever_a_file_says(table):
@@ -128,7 +128,7 @@ def test_the_keep_floor_holds_mail_and_tagging_off_hosted_while_the_list_has_ent
     for task in ("mail", "tagging"):
         assert rows[task]["allowed"] == ["local", "auto"] and rows[task]["floor"] == mr.KEEP_FLOOR[0]
         assert rows[task]["effective"] == "local"
-        assert rows[task]["why"].startswith("Hosted waits while you keep some mail away from Claude; ")
+        assert rows[task]["why"].startswith("Hosted waits while you keep some mail away from hosted models; ")
         assert tech[task]["floor"].startswith("Keep floor") and "keep floor" in tech[task]["why"]
     with pytest.raises(mr.RoutingRefused, match="cannot be Hosted while you keep some mail") as e:
         mr.save({"mail": "hosted"}, cfg=kept)
@@ -407,6 +407,119 @@ def test_the_chat_and_scheduling_lanes_take_the_table_over_the_lane_default():
     assert mr.lane_route("other-lane", local) == "auto"
 
 
+def test_the_hosted_model_is_claude_or_codex_and_codex_only_where_it_has_a_route():
+    """The `hosted` map names Claude or Codex per task. Codex is a choice
+    only for the tasks with a Codex route; a file that asks for it
+    elsewhere, or for another model, is named and dropped."""
+    assert mr.CODEX_TASKS == ("chat", "scheduling", "briefing", "audit", "digests")
+    bad = {"hosted": {"review": "codex", "mail": "codex", "chat": "gpt", "drafts": "claude",
+                      "briefing": "codex", "tagging": "claude"}}
+    problems = ea_config.routing_problems(bad)
+    assert any("review has no Codex route" in p for p in problems)
+    assert any("mail has no Codex route" in p for p in problems)
+    assert any("hosted chat takes claude or codex" in p for p in problems)
+    assert any("no task 'drafts' in hosted" in p for p in problems) and len(problems) == 4
+    assert ea_config.routing_from_block(bad)["hosted"] == {"briefing": "codex", "tagging": "claude"}
+    assert ea_config.routing_problems({"hosted": []}) == ["routing.hosted is not a JSON object"]
+    # with no choice, a task runs where it runs today: the chat and
+    # scheduling lanes' tiers block, Claude for every other task
+    lanes = ea_config.tiers_from_block({"lanes": {"main": "codex", "sched-channel": "opus"}})
+    none = {"tasks": {}}
+    assert mr.hosted_model("chat", routing=none, tiers=lanes) == "codex"
+    assert mr.hosted_model("scheduling", routing=none, tiers=lanes) == "claude"
+    assert mr.hosted_model("briefing", routing=none, tiers=lanes) == "claude"
+    picked = {"hosted": {"chat": "claude", "briefing": "codex"}}
+    assert mr.hosted_model("chat", routing=picked, tiers=lanes) == "claude"
+    assert mr.hosted_model("briefing", routing=picked, tiers=lanes) == "codex"
+    # run-agent.sh hands a cron lane to Codex only on the owner's choice
+    assert mr.harness("morning-briefing", picked) == mr.harness("afternoon-catchup", picked) == "codex"
+    assert mr.harness("weekly-audit", picked) == "claude" and mr.harness("deadline-watchdog", picked) == "claude"
+    assert mr.harness("list-digest", {"hosted": {"digests": "codex"}}) == "codex"
+
+
+def test_the_screen_rows_name_the_hosted_model_and_what_it_cannot_do(table):
+    table(chat="hosted", review="hosted")
+    lanes = ea_config.tiers_from_block({"lanes": {k: "codex" for k in ("main", "dm", "room")}})
+    rows = {r["task"]: r for r in mr.rows(cfg=remote(), tiers=lanes)}
+    assert rows["chat"]["hosted"] == "codex" and rows["chat"]["hosted_allowed"] == ["claude", "codex"]
+    assert rows["chat"]["why"] == "set to Hosted" and rows["chat"]["runs_on"] == "Codex"
+    assert rows["chat"]["hosted_note"] == mr.CODEX_NOTE[0] and "@claude" in mr.CODEX_NOTE[0]
+    assert rows["briefing"]["why"] == "Auto picked Claude" and rows["briefing"]["runs_on"] == "Claude"
+    for task in ("mail", "tagging", "drafting", "thread_state", "review"):
+        assert rows[task]["hosted_allowed"] == ["claude"] and rows[task]["hosted"] == "claude", task
+    assert rows["tagging"]["hosted_note"] == "Hosted is Claude. Codex cannot do this yet."
+    assert rows["review"]["floor"] == "Always Hosted, on Claude: these are judgment calls."
+    assert rows["mail"]["runs_on"] == "Claude"
+    rows = {r["task"]: r for r in mr.rows(cfg=remote(mail="enforce"), tiers=lanes)}
+    assert rows["mail"]["runs_on"] == "your own model" and rows["chat"]["hosted_note"]
+    data = mr.payload(cfg=remote(), tiers=lanes)
+    assert data["hosted_values"] == ["claude", "codex"]
+    assert data["hosted_names"] == {"claude": "Claude", "codex": "Codex"}
+
+
+def test_saving_a_hosted_model_keeps_the_values_and_refuses_codex_without_a_route(owner, monkeypatch):
+    priv, _ea = owner
+    monkeypatch.setattr(rl, "config", lambda: remote())
+    page = mr.WebSettings()
+    page.save({"tasks": {"chat": "hosted"}})
+    out = page.save({"hosted": {"chat": "codex", "briefing": "codex"}})
+    assert out["saved"] and {r["task"]: r["hosted"] for r in out["rows"]}["chat"] == "codex"
+    block = json.loads((priv / owner_trust.ROUTING_FILE).read_text())
+    assert block["tasks"]["chat"] == "hosted" and block["hosted"] == {"chat": "codex", "briefing": "codex"}
+    page.save({"tasks": {"audit": "local"}})
+    block = json.loads((priv / owner_trust.ROUTING_FILE).read_text())
+    assert block["hosted"] == {"chat": "codex", "briefing": "codex"} and block["tasks"]["audit"] == "local"
+    with pytest.raises(mr.RoutingRefused, match="runs only on Claude when hosted") as e:
+        page.save({"hosted": {"review": "codex"}})
+    assert "no Codex route" in e.value.tech
+    assert mr.main(["set", "chat", "claude"]) == 0
+    assert json.loads((priv / owner_trust.ROUTING_FILE).read_text())["hosted"]["chat"] == "claude"
+    log = [json.loads(ln) for ln in (priv / rl.STORE_DIRNAME / mr.CHANGES).read_text().splitlines()]
+    assert {"hosted.chat": ["", "codex"], "hosted.briefing": ["", "codex"]} == log[1]["changed"]
+    assert log[-1]["changed"] == {"hosted.chat": ["codex", "claude"]}
+
+
+def test_the_chat_lanes_take_the_hosted_model_over_the_tiers_block():
+    """Codex in Settings runs a lane's hosted pick on Codex; Claude takes
+    a `codex` lane default back to the bot's own model. The owner's tag,
+    pin and topic name still outrank both, and the stakes rule sends a
+    local pick to the chosen hosted model."""
+    import model_tiers as mt
+    rc = remote()
+    codex = {"tasks": {}, "hosted": {"chat": "codex", "scheduling": "codex"}}
+    claude = {"tasks": {}, "hosted": {"chat": "claude"}}
+    pick = mt.resolve(lane="dm", cfg={}, remote_cfg=rc, routing=codex)
+    assert pick == {"tier": "codex", "source": "routing", "explicit": True, "note": ""}
+    assert mt.resolve(lane="proactive", cfg={}, remote_cfg=rc, routing=codex)["tier"] == "codex"
+    assert mt.resolve(lane="room", cfg={"lanes": {"room": "fable"}}, remote_cfg=rc, routing=codex)["tier"] == "codex"
+    lanes = {"lanes": {"main": "codex", "dm": "codex"}}
+    pick = mt.resolve(lane="main", cfg=lanes, remote_cfg=rc, routing=claude)
+    assert (pick["tier"], pick["source"], pick["explicit"]) == ("opus", "default", False)
+    pick = mt.resolve(lane="room", cfg={"lanes": {"room": "codex"}}, session_meta={"model": "claude-opus-5-5"},
+                      remote_cfg=rc, routing=claude)
+    assert (pick["tier"], pick["source"]) == ("opus", "session")
+    # the map is per task: scheduling keeps its codex lane under a chat choice
+    assert mt.resolve(lane="sched-channel", cfg={"lanes": {"sched-channel": "codex"}}, remote_cfg=rc,
+                      routing=claude)["tier"] == "codex"
+    # the owner's own picks in a topic outrank it
+    assert mt.resolve(lane="dm", tag="opus", cfg={}, remote_cfg=rc, routing=codex)["tier"] == "opus"
+    assert mt.resolve(lane="dm", session_meta={"tier": "fable"}, cfg={}, remote_cfg=rc,
+                      routing=codex)["tier"] == "fable"
+    # a local lane stays local under auto; hosted moves it to the chosen model
+    local_dm = {"lanes": {"dm": "local"}}
+    assert mt.resolve(lane="dm", cfg=local_dm, remote_cfg=rc, routing=codex)["tier"] == "local"
+    hosted = {"tasks": {"chat": "hosted"}, "hosted": {"chat": "codex"}}
+    pick = mt.resolve(lane="dm", cfg=local_dm, remote_cfg=rc, routing=hosted)
+    assert (pick["tier"], pick["source"]) == ("codex", "routing")
+    pick = mt.resolve(lane="dm", cfg={}, remote_cfg=rc, arm="remote", routing=hosted)
+    assert (pick["tier"], pick["source"]) == ("codex", "routing")
+    local = {"tasks": {"chat": "local"}, "hosted": {"chat": "codex"}}
+    pick = mt.resolve(lane="dm", user_msg="Should I decline the dean's offer?", cfg={}, remote_cfg=rc,
+                      routing=local)
+    assert (pick["tier"], pick["note"]) == ("codex", "stakes")
+    assert mt.resolve(lane="dm", cfg={}, remote_cfg={"endpoint": ""}, routing=local)["tier"] == "codex"
+
+
 # ── the local model's state, the doctor, the screen's data ───────────
 
 def _calls(priv: Path, *recs) -> None:
@@ -503,7 +616,8 @@ def test_the_screen_data_and_the_chat_lines(table):
     assert tech["mail"]["what"] == mr.TECH["mail"] != rows["mail"]["what"]
     lines = mr.lines(data)
     assert lines[0].startswith(":control_knobs: *Model routing.* Local model local-27b")
-    assert any(ln.startswith("- *Checking its own work* (`review`): hosted, now hosted") for ln in lines)
+    assert any(ln.startswith("- *Checking its own work* (`review`): hosted, hosted on Claude, now Claude")
+               for ln in lines)
     assert "Settings" in lines[-1]
     # no em-dash anywhere the owner reads
     assert "—" not in json.dumps(data) + "\n".join(lines)
@@ -540,14 +654,16 @@ def test_the_bot_answers_routing_without_a_model_call():
 def test_the_cli_sets_one_task_and_refuses_a_floor(owner, monkeypatch, capsys):
     monkeypatch.setattr(rl, "config", lambda: remote())
     assert mr.main(["set", "audit", "local"]) == 0
-    assert json.loads(capsys.readouterr().out) == {"task": "audit", "value": "local"}
+    assert json.loads(capsys.readouterr().out) == {"task": "audit", "value": "local", "hosted": "claude"}
     assert mr.main(["set", "review", "local"]) == 2
     assert "stakes floor" in capsys.readouterr().err
     assert mr.main(["show"]) == 0
-    assert "*The weekly check* (`audit`): local, now local (set to Local)" in capsys.readouterr().out
+    assert ("*The weekly check* (`audit`): local, hosted on Claude, now your own model (set to Local)"
+            in capsys.readouterr().out)
     assert mr.main(["show", "--verbose"]) == 0
     out = capsys.readouterr().out
-    assert "(`audit`): local, now local (set to local)" in out and "the stakes floor" in out
+    assert "(`audit`): local, hosted on Claude, now your own model (set to local)" in out
+    assert "the stakes floor" in out
 
 
 # ── plain words on the Settings screen ────────────────────────────────
@@ -557,7 +673,8 @@ from plain_words import JARGON  # noqa: E402
 
 # The values the screen reads as code, never shows as a sentence: the task
 # keys, the choices, where the table came from and the local model's name.
-CODE_KEYS = {"task", "value", "values", "allowed", "effective", "source", "model"}
+CODE_KEYS = {"task", "value", "values", "allowed", "effective", "source", "model", "hosted",
+             "hosted_allowed", "hosted_values"}
 
 
 def _said(obj, key=None) -> list[str]:
@@ -587,19 +704,22 @@ def test_every_string_the_settings_screen_can_show_is_plain(owner, monkeypatch):
     cfgs = [rl._off()] + [remote(keep_from_anthropic=keep, **sw)
                           for keep in (EMPTY_KEEP, KEEP) for sw in ({}, on, mixed)]
     lanes = [{}, {"dm": "local"}, {"main": "local", "room": "local"},
-             {k: "local" for k in ("main", "dm", "room", "sched-channel", "proactive")}]
+             {k: "local" for k in ("main", "dm", "room", "sched-channel", "proactive")},
+             {k: "codex" for k in ("main", "dm", "room", "sched-channel", "proactive")}]
     said, tech, whys = [], [], set()
     for cfg in cfgs:
         for v in mr.VALUES:
             for ln in lanes:
-                kw = {"cfg": cfg, "routing": {"tasks": {t: v for t in TASKS}},
+                kw = {"cfg": cfg, "routing": {"tasks": {t: v for t in TASKS},
+                                              "hosted": {t: "codex" for t in mr.CODEX_TASKS}},
                       "tiers": ea_config.tiers_from_block({"lanes": ln})}
                 data = mr.payload(**kw)
                 said += _said(data)
                 whys |= {r["why"] for r in data["rows"]}
                 tech += _said(mr.payload(**kw, verbose=True))
     # each branch of the why lines is reached
-    for part in (*mr.AUTO_SAYS.values(), mr.JUDGMENT, mr.NOT_SET_UP, "set to Local", "set to Hosted",
+    for part in (*(a.format(hosted="Claude") for a in mr.AUTO_SAYS.values()), mr.JUDGMENT,
+                 mr.NOT_SET_UP.format(hosted="Claude"), "set to Local", "set to Hosted",
                  "Hosted waits", "@local", "for Direct messages", "for Ask Tacitus and project rooms",
                  'Auto does what "Reading your mail" does', "Claude takes what it leaves"):
         assert any(part in w for w in whys), part
@@ -631,7 +751,8 @@ def test_every_string_the_settings_screen_can_show_is_plain(owner, monkeypatch):
     monkeypatch.setattr(rl, "config", lambda: remote(keep_from_anthropic=KEEP))
     bodies = [{}, {"tasks": {}}, {"tasks": []}, {"tasks": {"drafts": "local"}},
               {"tasks": {t: "qwen" for t in TASKS}}, {"tasks": {"review": "local"}},
-              {"tasks": {t: "hosted" for t in TASKS}}]
+              {"tasks": {t: "hosted" for t in TASKS}}, {"hosted": {"review": "codex"}},
+              {"hosted": {"chat": "gpt"}}, {"hosted": {"drafts": "codex"}}, {"hosted": []}]
     for body in bodies:
         with pytest.raises(mr.RoutingRefused) as e:
             page.save(body)
@@ -655,3 +776,18 @@ def test_every_string_the_settings_screen_can_show_is_plain(owner, monkeypatch):
     # the code's terms, the local model's own error included, stay for `show --verbose`
     assert any("switch" in s for s in tech) and any("session token" in s for s in tech)
     assert any(JARGON.search(s) for s in tech)
+
+
+def test_run_agent_asks_the_table_which_harness_runs_a_cron_lane():
+    """run-agent.sh asks `model_routing.py harness` before its Claude lane,
+    and a codex answer runs the Codex lane with no gate; EA_HARNESS keeps
+    its gated path. A remote lane that already wrote the post asks nothing."""
+    sh = (REPO / "run-agent.sh").read_text()
+    ask = sh.index('model_routing.py" harness')
+    assert sh.index('if [[ "$REMOTE_BRIEFING" == 0 ]]; then\n    ROUTED_HARNESS=') < ask
+    assert '--agent "$AGENT" 2>>"$LOG_FILE" || echo claude)' in sh
+    routed = sh.index('if [[ "$ROUTED_HARNESS" == "codex" ]]; then\n    CODEX_LANE=1')
+    assert ask < routed < sh.index('elif [[ "$REMOTE_BRIEFING" == 0 && "${EA_HARNESS:-claude}" == "codex" ]]')
+    assert set(mr.AGENT_TASK.values()) == {"briefing", "audit", "digests"} <= set(mr.CODEX_TASKS)
+    import remote_digests
+    assert set(remote_digests.AGENTS) <= set(mr.AGENT_TASK)

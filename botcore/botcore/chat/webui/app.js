@@ -2494,8 +2494,21 @@ async function phoneAct(verb, d) {
 
 // One row per task: local, hosted or auto (the remote-LLM switches decide), what the task
 // does, the model it runs on now and, where a floor holds a value, what the floor says.
-// The local model's state heads the screen. Only the owner's own web chat saves.
+// A task with a Codex route also picks its hosted model, Claude or Codex; under any
+// other task a line says what Hosted means there. The local model's state heads the
+// screen. Only the owner's own web chat saves.
 const ROUTE_WORDS = { local: 'Local', hosted: 'Hosted', auto: 'Auto' };
+const cap = (t) => (t ? t[0].toUpperCase() + t.slice(1) : t);
+
+function hostedPick(data, r) {
+  const names = data.hosted_names || {};
+  return h('span', { class: 's-hosted' },
+    h('span', { class: 's-sub', id: `hosted-${r.task}-name` }, 'Hosted model'),
+    h('span', { class: 'seg', role: 'radiogroup', 'aria-labelledby': `hosted-${r.task}-name` },
+      (data.hosted_values || []).map((m) => h('label', {},
+        h('input', { type: 'radio', name: `hosted-${r.task}`, value: m, checked: r.hosted === m,
+          disabled: !r.hosted_allowed.includes(m) }), names[m] || m))));
+}
 
 function renderSettings(data) {
   const loc = data.local;
@@ -2507,8 +2520,10 @@ function renderSettings(data) {
     h('span', { class: 'seg', role: 'radiogroup', 'aria-label': r.label }, data.values.map((v) => h('label', {},
       h('input', { type: 'radio', name: `route-${r.task}`, value: v, checked: r.value === v,
         disabled: !r.allowed.includes(v) }), ROUTE_WORDS[v] || v))),
+    (r.hosted_allowed || []).length > 1 ? hostedPick(data, r) : null,
     h('p', {}, r.what),
-    h('p', { class: 's-now' }, `Now ${r.effective}: ${r.why}.`),
+    r.hosted_note ? h('p', { class: 's-note' }, r.hosted_note) : null,
+    h('p', { class: 's-now' }, `Now on ${r.runs_on || r.effective}. ${cap(r.why)}.`),
     r.floor ? h('p', { class: 's-floor' }, r.floor) : null)));
 }
 
@@ -2584,11 +2599,14 @@ function settingsMenu() {
 }
 
 async function saveSettings() {
-  const tasks = {};
-  for (const el of $('settings-rows').querySelectorAll('input:checked:not(:disabled)')) tasks[el.name.slice(6)] = el.value;
+  const tasks = {}, hosted = {};
+  for (const el of $('settings-rows').querySelectorAll('input:checked:not(:disabled)')) {
+    if (el.name.startsWith('hosted-')) hosted[el.name.slice(7)] = el.value;
+    else tasks[el.name.slice(6)] = el.value;
+  }
   $('settings-save').disabled = true;
   try {
-    renderSettings(await call('POST', '/settings/routing', { tasks }));
+    renderSettings(await call('POST', '/settings/routing', Object.keys(hosted).length ? { tasks, hosted } : { tasks }));
     $('settings-note').textContent = 'Saved. Each task uses its model from its next run.';
   } catch (e) {
     $('settings-note').textContent = `Not saved: ${e.message}`;

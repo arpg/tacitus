@@ -140,7 +140,7 @@ backend, is in [model-routing.md](model-routing.md).
 | Value | Meaning |
 |---|---|
 | `local` | The local model (the endpoint in `remote-llm.json`) does the task. With no endpoint set up the task reads `hosted`, as `@local` does in chat. |
-| `hosted` | Claude does the task, whatever the switch says. |
+| `hosted` | A hosted model does the task, whatever the switch says: Claude, or Codex where the task has a Codex route (the hosted model, below). |
 | `auto` | The switch and the tiers block decide, as before the table. Every task but `review` and `thread_state` defaults to it, so an install with no table runs as it did. |
 
 | Task | What it does | Decision point | `local` | `hosted` | Floor |
@@ -165,11 +165,32 @@ in an owner process, so while `keep_from_anthropic` names a domain or an
 address, `hosted` there reads `auto` and a save is refused; the gate and
 the mediator's kept checks then keep that mail from every other task.
 
+**The hosted model.** Whenever a task runs hosted, by its value or by
+`auto`, the block's `hosted` map says which hosted model: `claude` or
+`codex`. Codex is a choice only where a Codex route exists
+(`ea_config.ROUTING_CODEX_TASKS`): `chat` and `scheduling` run their
+lanes on the `codex` tier (docs/codex-harness.md), and `briefing`,
+`audit` and `digests` hand their Claude lane to Codex in `run-agent.sh`
+(`model_routing.py harness --agent <agent>` prints `codex`, with no ghost
+gate: the owner chose it). The other tasks' hosted part is Claude, and a
+file that asks for Codex there is named and dropped: `tagging`,
+`thread_state` and `review` are Claude calls, `mail` hosted is the gate
+off (the lanes read the mail on whichever model runs them), and
+`drafting` hosted is the turn's own model. A task the map leaves out
+runs where it runs today: the chat and scheduling lanes' `tiers.lanes`,
+Claude for the rest. Codex has no network in its sandbox, so the chat
+row says so when chat is on Codex: links, Drive, GitHub and Overleaf
+turns fail there, and `@claude` sends one turn to Claude.
+
 **Precedence in chat.** A message tag, a topic pin and a topic name are
 the owner's own picks for one topic, and outrank the table. The table's
 `local` or `hosted` outranks `tiers.lanes`. `hosted` moves only a pick
 that would run on `local` (a lane default, the A/B draw, a local
-session); a room keeps its specialist's model.
+session); a room keeps its specialist's model. The hosted model outranks
+`tiers.lanes` too: Codex makes the lane's hosted pick `codex` (a `fable`
+lane default included), Claude takes a `codex` lane default back to the
+bot's own model, and a pick the stakes rule or a missing local model
+moves off `local` goes to the hosted model chosen.
 
 **Where it lives.** `<private dir>/routing.json` (0600), the only copy an
 owner process reads; without it every task is at its default. The
@@ -179,12 +200,16 @@ table moves mail between models. A `routing.json` that fails the owner
 checks reads as the defaults, and the doctor's row FAILs.
 
 **Changing it.** The web chat's Models page (Settings at the drawer's foot, then Models: a
-row per task with Local, Hosted and Auto, the floor's line under a
-locked row, the local model's state at the top, Save), or as the owner:
+row per task with Local, Hosted and Auto, a Claude or Codex choice under a
+task that has both, a line on what Hosted means under one that has not,
+the floor's line under a locked row, the local model's state at the top,
+Save), or as the owner:
 
 ```text
 $ python3 /opt/ea-system/preprocessor/model_routing.py set drafting hosted
-{"task": "drafting", "value": "hosted"}
+{"task": "drafting", "value": "hosted", "hosted": "claude"}
+$ python3 /opt/ea-system/preprocessor/model_routing.py set chat codex
+{"task": "chat", "value": "auto", "hosted": "codex"}
 $ python3 /opt/ea-system/preprocessor/model_routing.py show
 ```
 

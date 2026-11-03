@@ -22,7 +22,10 @@ Four ways to pick one, strongest first:
   4. the lane's default: the owner's routing table (model_routing.py)
      when the lane's task (`chat` for main, dm and room; `scheduling` for
      sched-channel and proactive) is `local` or `hosted`, else ea-config
-     `tiers.lanes` (main, dm, sched-channel, room, proactive).
+     `tiers.lanes` (main, dm, sched-channel, room, proactive). The table's
+     hosted model for the task (Settings: Claude or Codex) sits over the
+     tiers block: Codex makes a hosted pick `codex`, Claude takes a
+     `codex` lane default back to the bot's own model.
 
 With none of them the turn runs where today's knobs put it: an adopted
 session's own model, a room's specialist, the scheduler model, the
@@ -196,6 +199,16 @@ def _lane_route(lane: str, routing: dict | None) -> str:
         return "auto"
 
 
+def _lane_hosted(lane: str, routing: dict | None) -> str:
+    """The owner's hosted model for the lane's task (`claude`, `codex`),
+    '' when the table names none or cannot be read."""
+    try:
+        import model_routing
+        return model_routing.lane_hosted(lane, routing)
+    except Exception:
+        return ""
+
+
 def resolve(*, lane: str, user_msg: str = "", tag: str = "", thread_ts: str = "",
             session_meta: dict | None = None, arm: str = "", cfg: dict | None = None,
             fable_turns_today: int | None = None, remote_cfg: dict | None = None,
@@ -214,7 +227,15 @@ def resolve(*, lane: str, user_msg: str = "", tag: str = "", thread_ts: str = ""
     meta = session_meta or {}
     s = settings(cfg)
     route = _lane_route(lane, routing)
+    hosted = _lane_hosted(lane, routing)
+    # A hosted pick's tier: Codex when the owner chose it, else the bot's own model.
+    hosted_tier = "codex" if hosted == "codex" else "opus"
     lane_tier = s["lanes"].get(lane) if s["lanes"].get(lane) in TIERS else ""
+    lane_source = f"{lane} default"
+    if hosted == "codex" and lane_tier != "local":
+        lane_tier, lane_source = "codex", "routing"
+    elif hosted == "claude" and lane_tier == "codex":
+        lane_tier = ""
     tier, source = "", ""
     if tag in TIERS:
         tier, source = tag, "tag"
@@ -225,7 +246,9 @@ def resolve(*, lane: str, user_msg: str = "", tag: str = "", thread_ts: str = ""
     elif route == "local":
         tier, source = "local", "routing"
     elif lane_tier and not (route == "hosted" and lane_tier == "local"):
-        tier, source = lane_tier, f"{lane} default"
+        tier, source = lane_tier, lane_source
+    elif route == "hosted" and lane_tier == "local" and hosted == "codex":
+        tier, source = "codex", "routing"
     explicit = bool(tier)
     if not tier:
         if meta.get("model"):
@@ -237,12 +260,12 @@ def resolve(*, lane: str, user_msg: str = "", tag: str = "", thread_ts: str = ""
             tier, source = "opus", ("routing" if route == "hosted" and lane_tier == "local"
                                     else "default")
     if route == "hosted" and tier == "local" and source not in ("tag", "pinned", "topic name"):
-        tier, source, explicit = "opus", "routing", True
+        tier, source, explicit = hosted_tier, "routing", True
     note = ""
     if tier == "local" and not (remote_cfg if remote_cfg is not None else _rl.config()).get("endpoint"):
-        tier, note, explicit = "opus", "no-local", True
+        tier, note, explicit = hosted_tier, "no-local", True
     if tier == "local" and source != "tag" and high_stakes(user_msg):
-        tier, note, explicit = "opus", "stakes", True
+        tier, note, explicit = hosted_tier, "stakes", True
     cap = int(s.get("fable_daily_turns") or 0)
     if tier == "fable" and cap > 0:
         used = _fable_turns_today() if fable_turns_today is None else fable_turns_today
