@@ -127,7 +127,7 @@ def test_the_morning_post_puts_only_owed_dates_under_overdue():
     assert by["m-sync"]["due"] == "" and by["m-sync"]["tags"] == ["the meeting was Oct 27"]
     post = rb.render_morning(b, c, {}, now=NOW, drafts=[], escalated=[])
     assert post.count("OVERDUE") == 1, post
-    assert "OVERDUE: *Due 2026-10-22: Your letter for a student*" in post
+    assert "OVERDUE: *Your letter for a student*, was due Thu Oct 22" in post
     assert "Exec committee" not in post.split(":dart:")[0]
     assert "Goal setting" not in post.split(":dart:")[0]
     # the model's view carries the tag, so it cannot call the row overdue

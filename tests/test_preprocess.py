@@ -662,10 +662,6 @@ def test_a_closed_threads_row_reopens_on_a_newer_message():
     assert L.get_entry("response-convreopen12")["status"] == "completed"
 
 
-if __name__ == "__main__":
-    main()
-
-
 def test_the_briefing_slice_carries_every_row_today_top_ranks():
     """The lanes read only the briefing's slice of open rows, so a ranked
     row cut from it could never be shown: the ranked rows come first."""
@@ -675,3 +671,8 @@ def test_the_briefing_slice_carries_every_row_today_top_ranks():
     out = briefing_rows(rows, top, cap=5)
     assert [o["id"] for o in out] == ["row-35", "row-2", "row-0", "row-1", "row-3"]
     assert [o["id"] for o in briefing_rows(rows, [], cap=3)] == ["row-0", "row-1", "row-2"]
+
+
+if __name__ == "__main__":
+    main()
+

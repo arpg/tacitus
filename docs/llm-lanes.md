@@ -703,7 +703,7 @@ one-click confirm (closure.py):
 :sunny: *Morning Briefing, Mon Oct 12*
 
 :dart: *Get done today* (in this order, fitted to your gaps)
-1. *Slides for Thursday's review* (Pat Rivera): in the 1-2:30 gap. Pat merges the deck Wednesday
+1. *Slides for Thursday's review* (Pat Rivera): in the 1-2:30 gap. Pat merges the deck Wednesday. Due Wed Oct 14
 
 :leaves: *Flexes* (fine today, fine tomorrow)
 - *Travel form for the Portland trip*: file it this week
