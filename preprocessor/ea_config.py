@@ -144,6 +144,7 @@ DEFAULTS = {
         "tasks": {"mail": "auto", "tagging": "auto", "drafting": "auto", "digests": "auto",
                   "briefing": "auto", "audit": "auto", "scheduling": "auto", "chat": "auto",
                   "thread_state": "local", "review": "hosted"},
+        "hosted": {},
     },
     # Where mail and calendars come from (docs/macos-native-accounts.md).
     # mail.backend: "graph" (Outlook through Microsoft Graph, with any
@@ -393,6 +394,13 @@ ROUTING_VALUES = ("local", "hosted", "auto")
 # The stakes floor: a task that is a judgment call by nature takes only
 # this value, whatever a file says.
 ROUTING_FLOORS = {"review": "hosted"}
+# Which hosted model a task uses when it runs hosted (by its value or by
+# auto): the routing block's `hosted` map. Codex is a choice only where a
+# Codex route exists: the chat and scheduling lanes (a `codex` tier) and
+# the cron lanes run-agent.sh can hand to Codex. Every other task's hosted
+# part is Claude. A task the map leaves out runs where it runs today.
+ROUTING_HOSTED = ("claude", "codex")
+ROUTING_CODEX_TASKS = ("chat", "scheduling", "briefing", "audit", "digests")
 
 
 def routing_problems(val) -> list[str]:
@@ -406,8 +414,19 @@ def routing_problems(val) -> list[str]:
     tasks = val.get("tasks", {})
     if not isinstance(tasks, dict):
         return ["routing.tasks is not a JSON object"]
-    out = [f"routing takes its values under tasks, not {k!r}" for k in val
-           if k != "tasks" and not k.startswith("_")]
+    out = [f"routing takes its values under tasks and hosted, not {k!r}" for k in val
+           if k not in ("tasks", "hosted") and not k.startswith("_")]
+    hosted = val.get("hosted", {})
+    if not isinstance(hosted, dict):
+        out.append("routing.hosted is not a JSON object")
+        hosted = {}
+    for task, value in hosted.items():
+        if task not in ROUTING_TASKS:
+            out.append(f"no task {task!r} in hosted; the tasks are {', '.join(ROUTING_TASKS)}")
+        elif value not in ROUTING_HOSTED:
+            out.append(f"hosted {task} takes claude or codex, not {value!r}")
+        elif value == "codex" and task not in ROUTING_CODEX_TASKS:
+            out.append(f"{task} has no Codex route; hosted {task} is claude only")
     for task, value in tasks.items():
         if task not in ROUTING_TASKS:
             out.append(f"no task {task!r}; the tasks are {', '.join(ROUTING_TASKS)}")
@@ -427,7 +446,10 @@ def routing_from_block(val) -> dict:
     if isinstance(given, dict):
         tasks.update({k: v for k, v in given.items() if k in tasks and v in ROUTING_VALUES})
     tasks.update(ROUTING_FLOORS)
-    return {"tasks": tasks}
+    hosted = val.get("hosted") if isinstance(val, dict) else None
+    picked = {k: v for k, v in hosted.items() if k in tasks and v in ROUTING_HOSTED
+              and (v == "claude" or k in ROUTING_CODEX_TASKS)} if isinstance(hosted, dict) else {}
+    return {"tasks": tasks, "hosted": picked}
 
 
 def get_routing_source(config_path: Path | None = None) -> tuple[dict, str]:

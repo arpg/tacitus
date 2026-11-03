@@ -740,9 +740,19 @@ ALLOWED_TOOLS+=",Bash(cat *),Bash(ls *),Read,Agent"
 # the same prompt, writes confined to the EA state. It runs only when the
 # ghost arm's final verdict for briefings is GO (codex_ghost.py gate), or
 # with EA_HARNESS_FORCE=1; otherwise the Claude run below goes ahead and
-# the log says why.
+# the log says why. The owner's Settings choice (the routing table's
+# hosted model for the agent's task: briefing, audit or digests) runs the
+# lane on Codex with no gate: `model_routing.py harness` says codex.
 CODEX_LANE=0
-if [[ "$REMOTE_BRIEFING" == 0 && "${EA_HARNESS:-claude}" == "codex" ]]; then
+ROUTED_HARNESS=claude
+if [[ "$REMOTE_BRIEFING" == 0 ]]; then
+    ROUTED_HARNESS=$(EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/model_routing.py" harness \
+        --agent "$AGENT" 2>>"$LOG_FILE" || echo claude)
+fi
+if [[ "$ROUTED_HARNESS" == "codex" ]]; then
+    CODEX_LANE=1
+    log "Harness: codex (the hosted model in Settings)"
+elif [[ "$REMOTE_BRIEFING" == 0 && "${EA_HARNESS:-claude}" == "codex" ]]; then
     case "$AGENT" in
         morning-briefing|afternoon-catchup)
             GATE_WHY=$(EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/codex_ghost.py" gate briefing 2>>"$LOG_FILE")

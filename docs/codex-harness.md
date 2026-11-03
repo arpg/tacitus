@@ -112,6 +112,12 @@ grades it against Claude. Claude stays the workhorse throughout.
 
 ## Production
 
+The owner picks Codex per task on the web chat's Models page (the
+routing table's hosted model, docs/llm-lanes.md section 1.1): `chat` and
+`scheduling` then run their lanes on the `codex` tier, and `briefing`,
+`audit` and `digests` run their Claude lane on Codex as below, with no
+gate (`model_routing.py harness`).
+
 `EA_HARNESS=codex` in the environment of `run-agent.sh` runs a briefing
 lane on Codex for real: `codex_ghost.py run-lane --live` as the resident
 against the real EA_DIR, writes confined to its state and docs, the same

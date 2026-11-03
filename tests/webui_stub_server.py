@@ -117,21 +117,33 @@ STUB_VAPID = base64.urlsafe_b64encode(b"\x04" + bytes(range(64))).rstrip(b"=").d
 ROUTING = {
     "local": {"configured": True, "model": "local-27b", "reachable": True, "detail": "Answered 2 min ago."},
     "source": "routing.json", "values": ["local", "hosted", "auto"],
+    "hosted_values": ["claude", "codex"], "hosted_names": {"claude": "Claude", "codex": "Codex"},
     "rows": [
         {"task": "drafting", "label": "Writing replies", "what": "Writes email replies in your voice.",
          "value": "auto", "allowed": ["local", "hosted", "auto"], "locked": False, "floor": "",
-         "effective": "local", "why": "Auto picked your own model"},
+         "hosted": "claude", "hosted_allowed": ["claude"],
+         "hosted_note": "Hosted: the model that asks for the reply writes it.",
+         "effective": "local", "runs_on": "your own model", "why": "Auto picked your own model"},
         {"task": "mail", "label": "Reading your mail", "what": "Reads each new message and notes what it asks for.",
          "value": "auto", "allowed": ["local", "auto"], "locked": False,
-         "floor": "Hosted is off while you keep some mail away from Claude (a domain, an address or "
-                  "admissions mail), so that mail never reaches Claude.",
-         "effective": "local", "why": "Auto picked your own model"},
+         "floor": "Hosted is off while you keep some mail away from hosted models (a domain, an address "
+                  "or admissions mail), so that mail never reaches Claude or Codex.",
+         "hosted": "claude", "hosted_allowed": ["claude"], "hosted_note": "",
+         "effective": "local", "runs_on": "your own model", "why": "Auto picked your own model"},
         {"task": "review", "label": "Checking its own work", "what": "Checks that briefing items are still open.",
          "value": "hosted", "allowed": ["hosted"], "locked": True,
-         "floor": "Always Hosted: these are judgment calls, so only Claude makes them.",
-         "effective": "hosted", "why": "only Claude makes these judgment calls"},
+         "floor": "Always Hosted, on Claude: these are judgment calls.",
+         "hosted": "claude", "hosted_allowed": ["claude"], "hosted_note": "",
+         "effective": "hosted", "runs_on": "Claude", "why": "only Claude makes these judgment calls"},
+        {"task": "chat", "label": "Talking with you", "what": "Answers you in the chat.",
+         "value": "auto", "allowed": ["local", "hosted", "auto"], "locked": False, "floor": "",
+         "hosted": "codex", "hosted_allowed": ["claude", "codex"],
+         "hosted_note": "Codex cannot open web links, Drive, GitHub or Overleaf. "
+                        "Start a message with @claude to send one to Claude.",
+         "effective": "hosted", "runs_on": "Codex", "why": "Auto picked Codex"},
     ],
 }
+STUB_NAMES = {"claude": "Claude", "codex": "Codex"}
 
 
 def _b64(data: str | bytes) -> str:
@@ -674,10 +686,22 @@ class Handler(BaseHTTPRequestHandler):
                 if value not in rows[task]["allowed"]:
                     return self._json(400, {"error": f'"{rows[task]["label"]}" always stays on Hosted: '
                                                      "only Claude makes these judgment calls."})
+            for task, model in (body.get("hosted") or {}).items():
+                if model not in rows[task]["hosted_allowed"]:
+                    return self._json(400, {"error": f'"{rows[task]["label"]}" runs only on Claude when hosted.'})
             for task, value in body["tasks"].items():
                 rows[task]["value"] = value
                 if value != "auto":
-                    rows[task].update(effective=value, why=f"set to {value.title()}")
+                    rows[task].update(effective=value, why=f"set to {value.title()}",
+                                      runs_on="your own model" if value == "local"
+                                      else STUB_NAMES[rows[task]["hosted"]])
+            for task, model in (body.get("hosted") or {}).items():
+                rows[task]["hosted"] = model
+                if rows[task]["effective"] == "hosted":
+                    rows[task]["runs_on"] = STUB_NAMES[model]
+                    if rows[task]["value"] == "auto":
+                        rows[task]["why"] = f"Auto picked {STUB_NAMES[model]}"
+                    rows[task]["hosted_note"] = (ROUTING["rows"][3]["hosted_note"] if model == "codex" else "")
             return self._json(200, {**s.routing, "saved": True})
         if parts == ["diag"]:
             s.diags.append(json.loads(self._body() or b"{}"))
