@@ -322,8 +322,9 @@ def cmd_delegated(args) -> int:
             return _fail(f"cannot read --body-file: {e}")
         if not body.strip():
             return _fail("the body is empty: write the text to --body-file")
-    if args.command == "create-reply" and args.provider == "gmail":
+    if args.command == "create-reply" and args.provider == "gmail" and not args.to:
         # gmail_client has no already-replied skip: make graph_actions's here.
+        # --to names the people, so the thread is not read for them.
         args._answered, err = _gmail_answered(acct, args.message_id, args.thread_id)
         if err:
             return _fail(err)
