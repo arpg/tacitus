@@ -286,14 +286,21 @@ def _site_keywords() -> frozenset[str]:
 # (a Send card for a reply that offers times, a triage that proposed some).
 _CLOCK_TIME = re.compile(r"\b\d{1,2}:\d{2}\b|\b\d{1,2}\s*(?:am|pm)\b")
 # A follow-up about the times themselves: a day, a date, a week, a time of
-# day, a verdict on the offered times, or "offer X too".
+# day, a verdict on the offered times, or "offer X too". Day and month
+# names are spelled out: "mark 3", "decide 3" and "we sat on it" are not
+# dates, and "today", "instead" or "times" alone are not about the offer.
 _TIME_FOLLOWUP = re.compile(
-    r"\b(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day)?s?\b"
-    r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b"
+    r"\b(?:mon|tues?|wed(?:nes)?|thu(?:rs?)?|fri|satur|sun)days?\b"
+    r"|\b(?:mon|tue|tues|wed|thu|thur|thurs|fri)\b"
+    r"|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?"
+    r"|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?\b"
     r"|\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b"
-    r"|\b(?:week|weekend|morning|afternoon|evening|tomorrow|today|tonight|holiday|thanksgiving)\b"
+    r"|\b(?:next|this|that|the|a|another|following|same|of)\s+week\b|\bweekend\b"
+    r"|\b(?:morning|afternoon|evening|tomorrow|tonight|thanksgiving|holiday)\b"
     r"|\b(?:won'?t|doesn'?t|does not|will not|wouldn'?t|isn'?t|not going to)\s+(?:\w+\s+){0,2}work\b"
-    r"|\b(?:times?|slots?|options?|earlier|later|instead|offer)\b")
+    r"|\b(?:other|another|more|different|earlier|later|those|these|the|both|all|neither|either|new)"
+    r"\s+(?:times?|slots?|options?)\b"
+    r"|\b(?:a|the)\s+slot\b|\bslots\b|\bearlier\b|\blater\b|\boffer\b")
 
 
 def _scheduling_thread(ctx: str) -> bool:

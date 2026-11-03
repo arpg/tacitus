@@ -507,6 +507,11 @@ def test_a_follow_up_about_the_offered_times_keeps_the_scheduling_guide():
     assert "scheduling" not in detect_needed_modules("file this under the minor project", card)
     assert "scheduling" not in detect_needed_modules("That won't work.", "[EA]: The budget memo is ready.")
     assert "scheduling" not in detect_needed_modules("Tuesday is better", "[EA]: Lunch at 12 noon is fine.")
+    # Ordinary words in a thread about times are not a follow-up about them.
+    for msg in ("mark 3 of them closed", "decide 3 things for me", "we sat on it for a while",
+                "close the first one, I did that today", "send it to Bo instead",
+                "how many times did he write?", "note it for the record"):
+        assert "scheduling" not in detect_needed_modules(msg, card), msg
 
 
 def test_room_scheduling_asks_are_pure_scheduling():

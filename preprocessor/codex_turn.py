@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import logging
 import subprocess
 import sys
 import time
@@ -76,6 +77,8 @@ LIVE_CWD = REAL_EA_DIR / "state" / "codex-live"
 # uploads. Claude's rules confine its Write and Edit tools and leave the
 # allowlisted scripts to the resident's own permissions; Codex's sandbox
 # confines every write, the scripts' included, so their folders are named.
+log = logging.getLogger("codex_turn")
+
 SCRIPT_WRITE_DIRS = ("config", "logs", "uploads")
 # Claude Code loads the first 200 lines of a project's MEMORY.md.
 MEMORY_INDEX_LINES = 200
@@ -139,9 +142,13 @@ def _resident_text(path: Path) -> str:
     (resident_io: no owner read of a resident path), or ''."""
     try:
         import resident_io
-        return resident_io.read_text(path) or ""
-    except Exception:
+        text = resident_io.read_text(path) or ""
+    except Exception as e:
+        log.warning("codex context: %s not read as the resident: %s", path, e)
         return ""
+    if not text:
+        log.warning("codex context: %s is empty or unreadable", path)
+    return text
 
 
 def context_block(claude_cwd=None) -> str:
@@ -161,10 +168,22 @@ def context_block(claude_cwd=None) -> str:
     return "\n\n".join(parts)
 
 
+def home_roots() -> list[Path]:
+    """The folders under the resident's home a Claude turn may write whole
+    (resident_write_paths: presentations, the doc-review and Overleaf
+    clones). A Claude turn makes one on first use; a Codex turn cannot,
+    since its sandbox writes only the folders it was given."""
+    import resident_write_paths
+    return [BOT_HOME / rel for base, rel, recursive in resident_write_paths.WRITE_PATHS
+            if base == "home" and recursive]
+
+
 def _ensure_live_cwd(runner=None) -> None:
-    """Make LIVE_CWD as the resident, mode 750 like the rest of the state
-    (the bot starts Codex from inside it, through the group); never raises."""
-    cmd = codex_ghost._bot_env() + ["install", "-d", "-m", "750", str(LIVE_CWD)]
+    """Make LIVE_CWD and the home roots as the resident, mode 750 like the
+    rest of the state (the bot starts Codex from inside LIVE_CWD, through
+    the group); never raises."""
+    cmd = codex_ghost._bot_env() + ["install", "-d", "-m", "750", str(LIVE_CWD),
+                                    *map(str, home_roots())]
     run = runner or (lambda c, inp: subprocess.run(c, input=inp, capture_output=True, text=True, timeout=30))
     try:
         run(cmd, None)
