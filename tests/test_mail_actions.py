@@ -9,6 +9,7 @@ import tempfile
 import types
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "preprocessor"))
@@ -204,7 +205,7 @@ def _write(*argv, gmail_msg=None, mediated=False):
     ga = types.ModuleType("graph_actions")
     gm = types.ModuleType("gmail_client")
 
-    ga._resolve_body = lambda a: None
+    ga.run_verb = lambda a: a.func(a)
 
     def _ga_func(a):
         runs.append(("graph_actions", [a.verb, *a.rest]))
@@ -273,6 +274,52 @@ def test_gmail_reply_is_reply_all_unless_sender_only():
     _, _, runs = _write("create-reply", "--provider", "outlook", "--message-id", "AAMkOUT=",
                         "--conversation-id", "AAQkCONV=", "--body-file", f, "--sender-only")
     assert "--sender-only" in runs[0][1] and "--conversation-id" in runs[0][1]
+
+
+def test_gmail_reply_skips_a_thread_the_user_answered_last():
+    """gmail_client answers the thread's newest message; when that is the
+    user's own, the reply would go to the user. The skip is graph_actions's."""
+    f = _body()
+    own = {"from": "Me <me@example.com>", "to": "b@example.com", "cc": "c@example.com"}
+    rc, out, runs = _write("create-reply", "--provider", "gmail", "--account", "me@example.com",
+                           "--thread-id", "18thr", "--body-file", f, gmail_msg=own)
+    assert rc == 0 and out["status"] == "skipped" and runs == []
+    assert out["latest_sender"] == "me@example.com" and "--force" in out["override"]
+    rc, out, runs = _write("create-reply", "--provider", "gmail", "--account", "me@example.com",
+                           "--thread-id", "18thr", "--body-file", f, "--force", gmail_msg=own)
+    assert rc == 0 and out["id"] == "r-9"
+    assert runs[0][1][runs[0][1].index("--cc") + 1] == "b@example.com,c@example.com"
+    rc, out, runs = _write("create-reply", "--provider", "gmail", "--account", "me@example.com",
+                           "--thread-id", "18thr", "--body-file", f, "--sender-only",
+                           gmail_msg=own)
+    assert out["status"] == "skipped" and runs == []
+
+
+def test_an_outlook_write_runs_through_graph_actions_run_verb():
+    """A throttled mailbox ends the unified verb as it ends graph_actions:
+    THROTTLED_EXIT and one plain line on stderr, no traceback."""
+    import contextlib
+    import importlib
+    ga = importlib.import_module("graph_actions")
+    runs = []
+
+    def throttled(a):
+        runs.append(a.command)
+        raise RuntimeError("429 from the fake")
+    pargs = ga.build_parser().parse_args(["delete-draft", "--message-id", "AAMkOUT="])
+    pargs.func = throttled
+    err, code = io.StringIO(), None
+    with contextlib.redirect_stderr(err), \
+         patch.object(ga.graph, "throttle_line",
+                      lambda exc: "Outlook is throttling the mailbox; try later."):
+        try:
+            ga.run_verb(pargs)
+        except SystemExit as e:
+            code = e.code
+    assert code == ga.THROTTLED_EXIT and runs == ["delete-draft"]
+    assert err.getvalue().strip() == "Outlook is throttling the mailbox; try later."
+    src = Path(mail_actions.__file__).read_text(encoding="utf-8")
+    assert "graph_actions.run_verb(pargs)" in src and "pargs.func(pargs)" not in src
 
 
 def test_writes_refuse_an_empty_body_and_outlook_only_gaps():

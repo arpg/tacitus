@@ -23,10 +23,12 @@ Step 2 has the draft writes:
     python3 mail_actions.py delete-draft --provider outlook|gmail --draft-id <id>
 
 Each write runs the provider CLI's own verb in this process (DELEGATE):
-its journaling (draft_events), its checks and create-reply's skip when
-the user already replied are the provider verb's own. The unified verb
-adds "id", "provider" and "account" to what that verb prints. A reply is
-reply-all unless --sender-only, on both providers.
+its journaling (draft_events) and its checks are the provider verb's
+own; an Outlook verb runs through graph_actions.run_verb, so a throttled
+mailbox ends the same way. The unified verb adds "id", "provider" and
+"account" to what that verb prints. A reply is reply-all unless
+--sender-only, on both providers, and create-reply skips a thread whose
+latest message is the user's own on both (--force overrides).
 
 The entry point does what graph_actions.py's does: it resolves a run's
 short id handles, and under mail mediation it forwards the call to the
@@ -107,30 +109,47 @@ def _fail(msg: str, code: int = 2) -> int:
     return code
 
 
-def _gmail_reply_cc(acct: str, message_id: str, thread_id: str, extra: str) -> tuple[str, str]:
-    """(cc, error) for a Gmail reply-all: the answered message's To and Cc
-    and the caller's --cc, less the account itself and the sender (who gets
-    the To line from gmail_client). With a thread id it answers the message
-    gmail_client answers: the thread's newest one that is not a draft."""
+def _addrs(*headers) -> list[str]:
     import email.utils as eu
+    # getaddresses parses nothing at all when one header is empty (3.12)
+    return [a for _n, a in eu.getaddresses([h for h in headers if h]) if a]
+
+
+def _gmail_answered(acct: str, message_id: str, thread_id: str) -> tuple[dict, str]:
+    """(the message a Gmail reply answers, error). With a thread id it is
+    the message gmail_client answers: the thread's newest one that is not
+    a draft."""
     import gmail_client
     if not message_id:
         service = gmail_client._get_service(acct)
         message_id = service and gmail_client._newest_message_in_thread(service, thread_id)
         if not message_id:
-            return "", f"no message found in Gmail thread {thread_id}"
+            return {}, f"no message found in Gmail thread {thread_id}"
     orig = gmail_client.get_message(acct, message_id)
     if "error" in orig:
-        return "", orig["error"]
-    def addrs(*headers):
-        # getaddresses parses nothing at all when one header is empty (3.12)
-        return [a for _n, a in eu.getaddresses([h for h in headers if h]) if a]
+        return {}, orig["error"]
+    return orig, ""
+
+
+def _gmail_user_replied(acct: str, orig: dict) -> str:
+    """The sender of `orig` when it is the account itself: the user sent the
+    thread's latest message, so there is nothing to answer (the skip
+    graph_actions create-reply makes on Outlook)."""
+    sender = _addrs(orig.get("from"))
+    return sender[0] if sender and sender[0].lower() == acct.lower() else ""
+
+
+def _gmail_reply_cc(acct: str, orig: dict, extra: str) -> str:
+    """The Cc of a Gmail reply-all: the answered message's To and Cc and the
+    caller's --cc, less the account itself and the sender (who gets the To
+    line from gmail_client)."""
+    addrs = _addrs
     skip = {acct.lower()} | {a.lower() for a in addrs(orig.get("from"), orig.get("reply_to"))}
     out = []
     for a in addrs(orig.get("to"), orig.get("cc"), extra):
         if a.lower() not in skip and a.lower() not in {x.lower() for x in out}:
             out.append(a)
-    return ",".join(out), ""
+    return ",".join(out)
 
 
 def _provider_argv(args, acct: str | None) -> tuple[list[str], str]:
@@ -174,16 +193,13 @@ def _provider_argv(args, acct: str | None) -> tuple[list[str], str]:
             if args.force:
                 argv.append("--force")
         else:
-            # gmail_client has no already-replied skip, so --force changes nothing.
             if args.message_id:
                 argv += ["--reply-to-message-id", args.message_id]
             else:
                 argv += ["--thread-id", args.thread_id]
             cc = args.cc
             if not args.sender_only:
-                cc, err = _gmail_reply_cc(acct, args.message_id, args.thread_id, args.cc)
-                if err:
-                    return [], err
+                cc = _gmail_reply_cc(acct, args._answered, args.cc)
             opt("--cc", cc)
             if args.no_quote:
                 argv.append("--no-quote")
@@ -222,6 +238,24 @@ def cmd_draft_write(args) -> int:
             return _fail(f"cannot read --body-file: {e}")
         if not body.strip():
             return _fail("the body is empty: write the text to --body-file")
+    if args.command == "create-reply" and args.provider == "gmail":
+        # gmail_client has no already-replied skip: make graph_actions's here.
+        args._answered, err = _gmail_answered(acct, args.message_id, args.thread_id)
+        if err:
+            return _fail(err)
+        sender = _gmail_user_replied(acct, args._answered)
+        if sender and not args.force:
+            print(json.dumps({
+                "status": "skipped",
+                "reason": ("user already sent the latest message in this "
+                           "thread; not drafting a reply"),
+                "latest_sender": sender,
+                "override": ("when the user asked for this reply in the "
+                             "current thread, run the same create-reply "
+                             "with --force"),
+                "provider": "gmail", "account": acct,
+            }, indent=2))
+            return 0
     pargv, err = _provider_argv(args, acct)
     if err:
         return _fail(err)
@@ -232,8 +266,7 @@ def cmd_draft_write(args) -> int:
             if tool == "graph_actions":
                 import graph_actions
                 pargs = graph_actions.build_parser().parse_args(pargv)
-                graph_actions._resolve_body(pargs)
-                pargs.func(pargs)
+                graph_actions.run_verb(pargs)
             else:
                 import gmail_client
                 sys.argv = ["gmail_client.py", *pargv]
@@ -340,7 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_crep.add_argument("--sender-only", action="store_true", dest="sender_only")
     p_crep.add_argument("--force", action="store_true",
                         help="Draft even if the user already sent the latest message in "
-                             "the thread (Outlook checks; Gmail has no such check)")
+                             "the thread")
     p_crep.add_argument("--no-quote", action="store_true", dest="no_quote",
                         help="Gmail only: leave the quoted message out")
     p_crep.add_argument("--conversation-id", default=None, dest="conversation_id",
@@ -399,4 +432,8 @@ if __name__ == "__main__":
     sys.argv[1:] = _id_handles.resolve_argv(sys.argv[1:])
     from mail_mediation import forward_or_none
     forward_or_none("mail_actions", sys.argv[1:], transform=_id_handles.annotate_output)
+    # The verb runs in this process: the owner's own action unless the
+    # caller (a cron, the mediator for a background lane) set the lane.
+    import retry_policy as _retry_policy
+    _retry_policy.set_graph_lane(_retry_policy.INTERACTIVE, only_if_unset=True)
     sys.exit(main())

@@ -1215,7 +1215,7 @@ def test_the_mail_clis_take_the_owner_lock_before_they_dispatch():
     """graph_actions, gmail_client and mail_actions take it right after the child-parse
     check and before the verb runs; remote_briefing's draft is a
     graph_actions.py create-reply run, so it holds the lock too."""
-    for path, dispatch in ((ROOT / "preprocessor" / "graph_actions.py", "args.func(args)"),
+    for path, dispatch in ((ROOT / "preprocessor" / "graph_actions.py", "run_verb(args)"),
                            (ROOT / "preprocessor" / "gmail_client.py",
                             'if args.setup or args.command == "setup":'),
                            (ROOT / "preprocessor" / "mail_actions.py", "return args.func(args)")):
