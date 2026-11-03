@@ -33,7 +33,7 @@ class _Atomic:
         Path(path).write_text(json.dumps(data))
 
 
-def _ns(tmp: Path, *, create_ok=True):
+def _ns(tmp: Path, *, create_ok=True, enabled=True):
     created, posts, cards = [], [], []
     ns = {
         "json": json, "time": time, "threading": threading, "_atomic": _Atomic,
@@ -58,6 +58,7 @@ def _ns(tmp: Path, *, create_ok=True):
     }
     exec(compile(_block("# An Outlook event with no attendees mails no one",
                         "def _load_button_payloads("), "ea-chat-bot.py[block]", "exec"), ns)
+    ns["_guestless_enabled"] = lambda: enabled
     exec(compile(_fn_src("_post_staged_action"), "ea-chat-bot.py[fn]", "exec"), ns)
     return ns, created, posts, cards
 
@@ -131,3 +132,23 @@ def test_a_failed_create_falls_back_to_the_card_and_can_be_retried():
         ns["_post_staged_action"]("C1", "T1", {"action": "event_create", **_ev()})
         assert len(created) == 1 and len(cards) == 1 and posts == []
         assert json.loads((Path(td) / "guestless-events.json").read_text()) == {}
+
+def test_with_the_option_off_a_guestless_event_gets_its_card():
+    with tempfile.TemporaryDirectory() as td:
+        ns, created, posts, cards = _ns(Path(td), enabled=False)
+        ns["_post_staged_action"]("C1", "T1", {"action": "event_create", **_ev()})
+        assert created == [] and posts == [] and len(cards) == 1
+
+
+def test_the_option_is_on_unless_the_install_turns_it_off():
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "preprocessor"))
+    import ea_config
+    with tempfile.TemporaryDirectory() as td:
+        cfg = Path(td) / "ea-config.json"
+        assert ea_config.guestless_events_enabled(cfg)
+        cfg.write_text('{"guestless_events": {"enabled": "no"}}')
+        assert ea_config.guestless_events_enabled(cfg)
+        cfg.write_text('{"guestless_events": {"enabled": false}}')
+        assert not ea_config.guestless_events_enabled(cfg)
+
