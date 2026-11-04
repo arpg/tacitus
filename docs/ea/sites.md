@@ -24,6 +24,17 @@ exist, with an example slug for each:
 - `<private-slug>`: private, behind sign-in (`private: true`). See "Private
   site" below.
 
+**Codex backend.** The bot refreshes configured site refs as ea-bot before
+live chat turns. Inside the network-isolated sandbox, `status` and `preview`
+read those refs (`status` marks them `cached`). A refresh failure is included
+in the turn context; cached refs are not proof that GitHub is current.
+`commit`, `pull` and `revert` return `status: staged`; do not retry them or
+report them as complete. After the turn the bot runs these exact tool verbs
+as ea-bot with the same safe-git checks and a fresh fetch. A successful queued
+commit or revert stages its exact commit for the usual Publish card. A failed
+step is reported; publishing still requires the owner's click and one-time
+token. Raw git and general network access remain unavailable to the model.
+
 **Everything on a site is public.** Anyone on the internet can read it, and
 search engines index it. Put nothing there that is not already meant for the
 invitees: no names of speakers who have not confirmed, no internal notes,

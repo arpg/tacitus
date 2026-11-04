@@ -214,6 +214,17 @@ carries the outcome (`preferences`). A tier promotion is a verb too,
 `autonomy_tiers.py promote --task <task> --tier <tier> [--contact <addr>]
 --quote "<words>"` (CLAUDE.md rule 12), staged and applied the same way.
 
+**Site repositories.** Live chat turns refresh the configured site clones
+through `site_tools.py prefetch` as the resident before entering the sandbox.
+This updates refs only, preserving local edits. The refresh results accompany
+the prompt, including errors. Sandboxed status and preview use those cached
+refs. Commit, pull and revert are the only site verbs accepted by the staged
+write replay. They run after the turn as the resident, fetch again and retain
+the normal conflict, content and safe-git checks. Successful commits stage
+`pending-publish.json`; the existing card preview, scan, approval and exact
+commit token checks remain in force. Neither the network policy nor the
+writable roots change, and ghost turns never prefetch or replay these writes.
+
 **No resume.** `codex exec resume` drops the writable roots: the resumed
 turn's sandbox policy has none, `-c sandbox_workspace_write.writable_roots`
 is ignored, and resume takes no `--add-dir` (verified on 0.166). Every

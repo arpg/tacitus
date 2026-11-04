@@ -113,6 +113,18 @@ def live_write_paths() -> list[Path]:
     return out
 
 
+def _prefetch_sites(runner=None) -> dict:
+    """Fetch only configured repositories, as ea-bot outside the sandbox."""
+    cmd = codex_ghost._bot_env({"EA_DIR": str(REAL_EA_DIR)}) + [
+        "python3", str(BOT_TREE / "preprocessor" / "site_tools.py"), "prefetch"]
+    run = runner or (lambda c, inp: subprocess.run(c, input=inp, capture_output=True, text=True, timeout=60))
+    try:
+        res = run(cmd, None)
+        return json.loads(res.stdout) if res.returncode == 0 else {"error": (res.stderr or "prefetch failed")[-300:]}
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        return {"error": str(e)[:300]}
+
+
 def _apply_staged(user_text: str, runner=None) -> dict:
     """After a live turn: replay the preference and onboarding writes the
     sandbox refused (preferences.py apply-staged), as the resident, outside
@@ -146,6 +158,14 @@ def _doc_review_note(applied: dict) -> str:
     model only staged them."""
     lines, replies = [], 0
     for rec in (r for r in (applied.get("applied") or []) if isinstance(r, dict)):
+        if rec.get("tool") == "site_tools":
+            result = rec.get("result") or {}
+            site = result.get("site") or "site"
+            if result.get("publish_staged"):
+                lines.append(f"Prepared {site} commit {str(result.get('commit') or '')[:7]} for Publish approval.")
+            else:
+                lines.append(f"Completed the queued {site} step: {result.get('status') or 'ok'}.")
+            continue
         if rec.get("tool") != "doc_review":
             continue
         verb = (rec.get("argv") or [""])[0]
@@ -159,8 +179,8 @@ def _doc_review_note(applied: dict) -> str:
     if replies:
         lines.append(f"Replied on {replies} review thread{'' if replies == 1 else 's'}.")
     for rec in (r for r in (applied.get("refused") or []) if isinstance(r, dict)):
-        if rec.get("tool") == "doc_review":
-            lines.append(f"A review step ({(rec.get('argv') or [''])[0]}) did not run: {rec.get('why')}")
+        if rec.get("tool") in ("doc_review", "site_tools"):
+            lines.append(f"A queued step ({(rec.get('argv') or [''])[0]}) did not run: {rec.get('why')}")
     return "\n".join(lines)
 
 
@@ -372,6 +392,7 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
     if live:
         root = LIVE_CWD
         _ensure_live_cwd(runner=scratch_runner)
+        site_refresh = _prefetch_sites(runner=scratch_runner)
         add_dirs = live_write_paths()
         ea_dir = REAL_EA_DIR
         wrap = live_prompt
@@ -393,6 +414,8 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
     block = context_block(claude_cwd)
     if block:
         text = block + "\n\n" + text
+    if live:
+        text += "\nSite repository refresh before this turn: " + json.dumps(site_refresh)
     extra = {"on_event": on_event} if on_event is not None else {}
     res = runner(wrap(text), cwd=root, sandbox="workspace-write", add_dirs=add_dirs, tmp_dir=tmp_dir, model=model,
                  timeout=timeout, prefix=prefix, last_message_dir=last_dir, ephemeral=False, resume="", **extra)

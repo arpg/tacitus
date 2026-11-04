@@ -72,6 +72,7 @@ PREFS_FILE = EA_DIR / "config" / "preferences.json"
 STAGED_FILE = EA_DIR / "state" / "preferences-staged.jsonl"
 REFUSED_FILE = EA_DIR / "state" / "preferences-staged-refused.jsonl"
 STAGED_VERBS = {"preferences": ("add", "calibrate", "retire"), "onboarding": ("answer", "skip", "stop"),
+                "site_tools": ("pull", "commit", "revert"),
                 "autonomy": ("promote",), "doc_review": ("open", "update", "reply", "resolve")}
 _APPLYING = False
 
@@ -523,7 +524,7 @@ def apply_staged(user_text: str | None, run_preferences=None, run_onboarding=Non
     "refused": [...]} with each record and, for a refusal, "why"."""
     global _APPLYING
     import io as _io
-    from contextlib import redirect_stdout
+    from contextlib import redirect_stdout, redirect_stderr
     box: dict = {"lines": []}
 
     def take(text: str) -> str:   # the records, and the file emptied under the lock
@@ -536,7 +537,8 @@ def apply_staged(user_text: str | None, run_preferences=None, run_onboarding=Non
         return {"applied": [], "refused": []}
     runners = {"preferences": run_preferences or main,
                "onboarding": run_onboarding or _onboarding_main,
-               "autonomy": _autonomy_main, "doc_review": _doc_review_main}
+               "autonomy": _autonomy_main, "doc_review": _doc_review_main,
+               "site_tools": _site_tools_main}
     out = {"applied": [], "refused": []}
 
     def refuse(rec, why):
@@ -569,9 +571,9 @@ def apply_staged(user_text: str | None, run_preferences=None, run_onboarding=Non
             if pr in stale_prs and argv[0] in ("reply", "resolve"):
                 refuse(rec, f"the update of PR #{pr} did not land, so this reply waits for the next review")
                 continue
-            buf = _io.StringIO()
+            buf, err = _io.StringIO(), _io.StringIO()
             try:
-                with redirect_stdout(buf):
+                with redirect_stdout(buf), redirect_stderr(err):
                     rc = runners[tool](argv)
             except Exception as e:  # the store refused: keep the record
                 refuse(rec, f"{type(e).__name__}: {e}"[:300])
@@ -579,11 +581,15 @@ def apply_staged(user_text: str | None, run_preferences=None, run_onboarding=Non
                     stale_prs.add(pr)
                 continue
             if rc:
-                refuse(rec, (buf.getvalue().strip() or f"exit {rc}")[:300])
+                refuse(rec, (err.getvalue().strip() or buf.getvalue().strip() or f"exit {rc}")[:300])
                 if tool == "doc_review" and argv[0] == "update":
                     stale_prs.add(pr)
                 continue
-            out["applied"].append(dict(rec, output=buf.getvalue().strip()[:300]))
+            applied = dict(rec, output=buf.getvalue().strip()[:300])
+            if tool == "site_tools":
+                result = json.loads(buf.getvalue())
+                applied["result"] = {k: result[k] for k in ("status", "site", "commit", "publish_staged") if k in result}
+            out["applied"].append(applied)
     finally:
         _APPLYING = False
     return out
@@ -595,6 +601,14 @@ def _autonomy_main(argv) -> int:
     except ModuleNotFoundError:
         from preprocessor import autonomy_tiers
     return autonomy_tiers.main(argv)
+
+
+def _site_tools_main(argv) -> int:
+    try:
+        import site_tools
+    except ModuleNotFoundError:
+        from preprocessor import site_tools
+    return site_tools.main(argv)
 
 
 def _doc_review_main(argv) -> int:

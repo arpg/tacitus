@@ -56,6 +56,7 @@ def _no_resident(monkeypatch):
     made = []
     monkeypatch.setattr(ct, "_ensure_live_cwd", lambda runner=None: made.append(ct.LIVE_CWD))
     monkeypatch.setattr(ct, "_apply_staged", lambda text, runner=None: {})
+    monkeypatch.setattr(ct, "_prefetch_sites", lambda runner=None: {"status": "ok", "sites": []})
     return made
 
 
@@ -516,3 +517,11 @@ def test_the_bot_hands_codex_the_directory_the_claude_run_would_use():
     assert "fresh_prompt=fresh_prompt, lane=lane, claude_cwd=claude_cwd," in bot
     ghost = (REPO / "preprocessor" / "codex_ghost.py").read_text()
     assert 'claude_cwd=job.get("claude_cwd") or None' in ghost
+
+
+def test_site_replay_note_reports_commit_and_refusal_without_claiming_publication():
+    note = ct._doc_review_note({'applied': [{'tool': 'site_tools', 'argv': ['commit'],
+        'result': {'site': 'schedule', 'commit': 'a' * 40, 'publish_staged': True}}],
+        'refused': [{'tool': 'site_tools', 'argv': ['commit'], 'why': 'GitHub changed'}]})
+    assert 'schedule commit aaaaaaa for Publish approval' in note
+    assert 'GitHub changed' in note and 'published' not in note
