@@ -196,14 +196,59 @@ def test_open_in_a_sandbox_with_a_read_only_git_is_staged_then_opened_by_the_rep
         raise OSError(errno.EROFS, "Read-only file system")
     with monkeypatch.context() as m:
         m.setattr(dr.tempfile, "TemporaryFile", ro)
-        assert dr._stage_open(argv)["status"] == "staged"
+        assert dr._stage_write(argv)["status"] == "staged"
     assert draft.exists()
     monkeypatch.setattr(dr, "GitHub", FakeGitHub)
     out = preferences.apply_staged("open it")
     assert out["refused"] == [], [r["why"] for r in out["refused"]]
     assert len(out["applied"]) == 1
     assert json.loads(out["applied"][0]["output"])["status"] == "opened" and not draft.exists()
-    assert dr._stage_open(argv) is None   # a writable clone never stages
+    assert dr._stage_write(argv) is None   # a writable clone never stages
+
+
+def test_a_review_in_a_sandbox_reads_the_prefetch_and_stages_update_reply_resolve(env, monkeypatch):
+    """No network and a read-only .git: review and fetch answer from the
+    copy the bot prefetched; update, reply and resolve stage and run in
+    order after the turn. A failed update holds back the replies."""
+    import preferences
+    monkeypatch.setattr(preferences, "STAGED_FILE", env["ea"] / "state" / "staged.jsonl")
+    monkeypatch.setattr(preferences, "REFUSED_FILE", env["ea"] / "state" / "refused.jsonl")
+    gh = FakeGitHub()
+    dr.cmd_open(gh, str(_draft(env, "Line one. Line two.\n")), "Year 2 outline")
+    gh.graph[1] = _pull(threads=[_thread("PRRT_t1", 2, "shorter")])
+    assert dr.cmd_prefetch(gh, 1) == {"status": "prefetched", "pr": 1, "threads": 1}
+    monkeypatch.setattr(dr, "_clone_git_writable", lambda: False)
+    assert dr._cached("review", 1)["open_threads"][0]["thread_id"] == "PRRT_t1"
+    out = env["ea"] / "state" / "copy.md"
+    assert dr._cached("fetch", 1, str(out))["cached"] is True
+    assert out.read_text() == "Line one.\nLine two.\n"
+    with pytest.raises(dr.ReviewError, match="no prefetched copy"):
+        dr._cached("review", 2)
+    out.write_text("Line one.\nTwo.\n")
+    for argv in (["update", "--pr", "1", "--file", str(out), "--message", "Address review"],
+                 ["reply", "--pr", "1", "--comment-id", "72", "--body", "Shortened."],
+                 ["resolve", "--pr", "1", "--thread-id", "PRRT_t1"]):
+        assert dr._stage_write(argv)["status"] == "staged"
+    assert _origin_file(env, "review/year-2-outline", "docs/year-2-outline.md") == "Line one.\nLine two.\n"
+    monkeypatch.undo()
+    monkeypatch.setattr(dr, "clone_dir", lambda: env["clone"])
+    monkeypatch.setattr(dr, "remote_url", lambda: str(env["origin"]))
+    monkeypatch.setattr(dr, "EA_DIR", env["ea"])
+    monkeypatch.setattr(dr, "registry_file", lambda: env["ea"] / "state" / "doc-reviews.json")
+    monkeypatch.setattr(preferences, "STAGED_FILE", env["ea"] / "state" / "staged.jsonl")
+    monkeypatch.setattr(preferences, "REFUSED_FILE", env["ea"] / "state" / "refused.jsonl")
+    monkeypatch.setattr(dr, "GitHub", lambda: gh)
+    res = preferences.apply_staged("")
+    assert res["refused"] == [] and len(res["applied"]) == 3, [r["why"] for r in res["refused"]]
+    assert _origin_file(env, "review/year-2-outline", "docs/year-2-outline.md") == "Line one.\nTwo.\n"
+    assert gh.replies == [(1, 72, "Shortened.")] and gh.resolved == ["PRRT_t1"]
+    # a refused update holds back the replies that claim it
+    for argv in (["update", "--pr", "1", "--file", str(env["ea"] / "docs" / "none.md")],
+                 ["reply", "--pr", "1", "--comment-id", "73", "--body", "Done."]):
+        preferences.stage("doc_review", argv)
+    res = preferences.apply_staged("")
+    assert len(res["refused"]) == 2 and "did not land" in res["refused"][1]["why"]
+    assert gh.replies == [(1, 72, "Shortened.")]
 
 
 def test_purge_refuses_outside_docs_and_links(env, tmp_path):

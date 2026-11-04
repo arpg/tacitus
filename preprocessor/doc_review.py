@@ -495,16 +495,53 @@ def _clone_git_writable() -> bool:
         return not preferences.sandbox_refused(e)
 
 
-def _stage_open(argv: list[str]) -> dict | None:
-    """Leave an `open` for the bot to replay after the turn, outside the
+STAGEABLE = ("open", "update", "reply", "resolve")
+
+
+def _stage_write(argv: list[str]) -> dict | None:
+    """Leave a write for the bot to replay after the turn, outside the
     sandbox (preferences.apply_staged), or None when this is that replay or
-    the clone is writable."""
+    the clone is writable. A Codex sandbox has no network and a read-only
+    .git: the verbs that push or call GitHub wait, in the order they were
+    called."""
     import preferences
     if preferences._APPLYING or _clone_git_writable():
         return None
     preferences.stage("doc_review", argv)
     return {"status": "staged", "file": str(preferences.STAGED_FILE),
-            "note": "the pull request opens after this turn; the bot reports its link"}
+            "note": "this runs after this turn; the bot reports the result"}
+
+
+def _cache_dir() -> Path:
+    return EA_DIR / "state" / "doc-review-cache"
+
+
+def cmd_prefetch(gh: GitHub, pr: int) -> dict:
+    """The bot's step before a review turn: the pull request's text and open
+    threads, read outside the sandbox, for `review` and `fetch` to answer
+    from inside one."""
+    row = _entry(gh, pr)
+    text, review = _row_text(row), cmd_review(gh, pr)
+    d = _cache_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{int(pr)}.md").write_text(text)
+    (d / f"{int(pr)}.review.json").write_text(json.dumps(review))
+    return {"status": "prefetched", "pr": pr, "threads": len(review.get("open_threads") or [])}
+
+
+def _cached(verb: str, pr: int, out: str = "") -> dict:
+    """`review` or `fetch` in a sandbox: the prefetched copy."""
+    d = _cache_dir()
+    try:
+        if verb == "review":
+            return json.loads((d / f"{int(pr)}.review.json").read_text())
+        text = (d / f"{int(pr)}.md").read_text()
+    except (OSError, ValueError) as e:
+        raise ReviewError(f"no prefetched copy of PR #{pr} here, and this turn has no network; "
+                          f"ask the user to submit the review again") from e
+    Path(out).write_text(text)
+    return {"status": "fetched", "pr": pr, "bytes": len(text.encode("utf-8")), "out": out,
+            "cached": True}
 
 
 def cmd_open(gh: GitHub, file: str, title: str, slug: str = "", thread: str = "",
@@ -748,6 +785,8 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--thread", default="")
     s.add_argument("--project", default="")
     s.add_argument("--purge", action="store_true")
+    s = sub.add_parser("prefetch", allow_abbrev=False)
+    s.add_argument("--pr", type=int, required=True)
     s = sub.add_parser("fetch", allow_abbrev=False)
     s.add_argument("--pr", type=int, required=True)
     s.add_argument("--out", required=True)
@@ -792,9 +831,13 @@ def main(argv: list[str] | None = None) -> int:
             _repo()
             _owner_login()
             gh = GitHub()
-            if args.verb == "open" and (staged := _stage_open(
-                    ["open"] + (sys.argv[2:] if argv is None else list(argv)[1:]))):
+            if args.verb in STAGEABLE and (staged := _stage_write(
+                    [args.verb] + (sys.argv[2:] if argv is None else list(argv)[1:]))):
                 res = staged
+            elif args.verb in ("review", "fetch") and not _clone_git_writable():
+                res = _cached(args.verb, args.pr, getattr(args, "out", ""))
+            elif args.verb == "prefetch":
+                res = cmd_prefetch(gh, args.pr)
             elif args.verb == "open":
                 res = cmd_open(gh, args.file, args.title, args.slug, args.thread,
                                args.project, args.purge)
