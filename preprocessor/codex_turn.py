@@ -141,18 +141,26 @@ def _apply_staged(user_text: str, runner=None) -> dict:
 
 
 def _doc_review_note(applied: dict) -> str:
-    """The reply lines for the pull requests `apply-staged` opened (or
-    failed to open) after a turn: the sandbox cannot run git, so the model
-    only staged them."""
-    lines = []
+    """The reply lines for the doc_review writes `apply-staged` made (or
+    refused) after a turn: the sandbox has no network and no git, so the
+    model only staged them."""
+    lines, replies = [], 0
     for rec in (r for r in (applied.get("applied") or []) if isinstance(r, dict)):
         if rec.get("tool") != "doc_review":
             continue
+        verb = (rec.get("argv") or [""])[0]
         m = re.search(r'"url":\s*"([^"]+)"', rec.get("output") or "")
-        lines.append(f"Opened the review: {m.group(1)}" if m else "Opened a review pull request.")
+        if verb == "open":
+            lines.append(f"Opened the review: {m.group(1)}" if m else "Opened a review pull request.")
+        elif verb == "update":
+            lines.append("Pushed the revision to the pull request." if m is None else f"Pushed the revision: {m.group(1)}")
+        elif verb == "reply":
+            replies += 1
+    if replies:
+        lines.append(f"Replied on {replies} review thread{'' if replies == 1 else 's'}.")
     for rec in (r for r in (applied.get("refused") or []) if isinstance(r, dict)):
         if rec.get("tool") == "doc_review":
-            lines.append(f"The review pull request did not open: {rec.get('why')}")
+            lines.append(f"A review step ({(rec.get('argv') or [''])[0]}) did not run: {rec.get('why')}")
     return "\n".join(lines)
 
 

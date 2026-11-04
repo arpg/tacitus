@@ -13944,6 +13944,10 @@ def _doc_review_tick():
             text=(f":memo: You submitted a review of {link}: {n} open "
                   f"comment{'' if n == 1 else 's'}. I am working through it."))
         key = seed.thread_key or seed.id
+        try:  # a Codex turn has no network: it reads this copy of the review and the text
+            _doc_review_cli("prefetch", "--pr", str(ev["pr"]), timeout=120)
+        except Exception as e:
+            log.warning(f"doc review: PR #{ev['pr']} not prefetched: {e}")
         if key != thread:
             _doc_review_cli("set-thread", "--pr", str(ev["pr"]), "--thread", key)
         log.info(f"doc review: PR #{ev['pr']} review {ev.get('review_id')} -> {key}")

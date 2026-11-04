@@ -72,7 +72,7 @@ PREFS_FILE = EA_DIR / "config" / "preferences.json"
 STAGED_FILE = EA_DIR / "state" / "preferences-staged.jsonl"
 REFUSED_FILE = EA_DIR / "state" / "preferences-staged-refused.jsonl"
 STAGED_VERBS = {"preferences": ("add", "calibrate", "retire"), "onboarding": ("answer", "skip", "stop"),
-                "autonomy": ("promote",), "doc_review": ("open",)}
+                "autonomy": ("promote",), "doc_review": ("open", "update", "reply", "resolve")}
 _APPLYING = False
 
 KINDS = ("instruction", "prefer", "avoid", "fact")
@@ -545,6 +545,7 @@ def apply_staged(user_text: str | None, run_preferences=None, run_onboarding=Non
         _resident_io.append_text(REFUSED_FILE, json.dumps(rec, ensure_ascii=False) + "\n")
 
     _APPLYING = True
+    stale_prs: set[str] = set()   # a doc_review update that failed: its replies would claim a change
     try:
         for ln in lines:
             try:
@@ -564,15 +565,23 @@ def apply_staged(user_text: str | None, run_preferences=None, run_onboarding=Non
                 if user_text is None or not _said(words, user_text):
                     refuse(rec, "the quoted words are not in the user's message this turn")
                     continue
+            pr = _option(argv, "--pr") if tool == "doc_review" else ""
+            if pr in stale_prs and argv[0] in ("reply", "resolve"):
+                refuse(rec, f"the update of PR #{pr} did not land, so this reply waits for the next review")
+                continue
             buf = _io.StringIO()
             try:
                 with redirect_stdout(buf):
                     rc = runners[tool](argv)
             except Exception as e:  # the store refused: keep the record
                 refuse(rec, f"{type(e).__name__}: {e}"[:300])
+                if tool == "doc_review" and argv[0] == "update":
+                    stale_prs.add(pr)
                 continue
             if rc:
                 refuse(rec, (buf.getvalue().strip() or f"exit {rc}")[:300])
+                if tool == "doc_review" and argv[0] == "update":
+                    stale_prs.add(pr)
                 continue
             out["applied"].append(dict(rec, output=buf.getvalue().strip()[:300]))
     finally:
