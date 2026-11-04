@@ -27,6 +27,10 @@ When you are not sure, keep it local and ask.
    thread's key> --project <id> --purge`. It commits the file on its own
    branch, one sentence per line, pushes it, opens the pull request, reads the
    pushed copy back, and returns `pr`, `url` and `verified`.
+   In a Codex turn the sandbox mounts `.git` read-only, so `open` answers
+   `"status": "staged"` and the bot opens the pull request after the turn
+   and adds its link to your reply. Do not retry, and do not call it
+   failed; say the pull request opens after this turn.
 3. With `--purge`, it deletes the local draft when `verified` is true, so the
    pull request is the only copy. Without it, `purge --pr <n> --file <that
    file>` does the same later; it refuses when the text is different.

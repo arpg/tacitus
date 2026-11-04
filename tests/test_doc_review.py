@@ -180,6 +180,32 @@ def test_open_pushes_a_branch_opens_a_pr_and_can_purge_the_draft(env):
         dr.cmd_open(gh, str(_draft(env, "x")), "Year 2 outline")
 
 
+def test_open_in_a_sandbox_with_a_read_only_git_is_staged_then_opened_by_the_replay(env, monkeypatch):
+    """A Codex turn's sandbox mounts .git read-only, on purpose: `open`
+    stages itself, and apply-staged (after the turn, outside the sandbox)
+    opens the pull request and purges the draft."""
+    import errno
+    import json
+    import preferences
+    monkeypatch.setattr(preferences, "STAGED_FILE", env["ea"] / "state" / "staged.jsonl")
+    monkeypatch.setattr(preferences, "REFUSED_FILE", env["ea"] / "state" / "refused.jsonl")
+    draft = _draft(env, "# Year 2\n\nThrust A comes first.")
+    argv = ["open", "--file", str(draft), "--title", "Year 2 outline", "--purge"]
+
+    def ro(*a, **k):
+        raise OSError(errno.EROFS, "Read-only file system")
+    with monkeypatch.context() as m:
+        m.setattr(dr.tempfile, "TemporaryFile", ro)
+        assert dr._stage_open(argv)["status"] == "staged"
+    assert draft.exists()
+    monkeypatch.setattr(dr, "GitHub", FakeGitHub)
+    out = preferences.apply_staged("open it")
+    assert out["refused"] == [], [r["why"] for r in out["refused"]]
+    assert len(out["applied"]) == 1
+    assert json.loads(out["applied"][0]["output"])["status"] == "opened" and not draft.exists()
+    assert dr._stage_open(argv) is None   # a writable clone never stages
+
+
 def test_purge_refuses_outside_docs_and_links(env, tmp_path):
     outside = tmp_path / "elsewhere.md"
     outside.write_text("x")

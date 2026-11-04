@@ -483,6 +483,30 @@ def _draft_path(file: str) -> Path:
     return real
 
 
+def _clone_git_writable() -> bool:
+    """False when the clone's .git takes no write: a Codex turn's sandbox
+    mounts every .git read-only, on purpose, so a fetch cannot record
+    FETCH_HEAD there."""
+    try:
+        with tempfile.TemporaryFile(dir=clone_dir() / ".git"):
+            return True
+    except OSError as e:
+        import preferences
+        return not preferences.sandbox_refused(e)
+
+
+def _stage_open(argv: list[str]) -> dict | None:
+    """Leave an `open` for the bot to replay after the turn, outside the
+    sandbox (preferences.apply_staged), or None when this is that replay or
+    the clone is writable."""
+    import preferences
+    if preferences._APPLYING or _clone_git_writable():
+        return None
+    preferences.stage("doc_review", argv)
+    return {"status": "staged", "file": str(preferences.STAGED_FILE),
+            "note": "the pull request opens after this turn; the bot reports its link"}
+
+
 def cmd_open(gh: GitHub, file: str, title: str, slug: str = "", thread: str = "",
              project: str = "", purge: bool = False) -> dict:
     title = " ".join((title or "").split())
@@ -768,7 +792,10 @@ def main(argv: list[str] | None = None) -> int:
             _repo()
             _owner_login()
             gh = GitHub()
-            if args.verb == "open":
+            if args.verb == "open" and (staged := _stage_open(
+                    ["open"] + (sys.argv[2:] if argv is None else list(argv)[1:]))):
+                res = staged
+            elif args.verb == "open":
                 res = cmd_open(gh, args.file, args.title, args.slug, args.thread,
                                args.project, args.purge)
             elif args.verb == "fetch":

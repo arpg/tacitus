@@ -140,6 +140,22 @@ def _apply_staged(user_text: str, runner=None) -> dict:
     return out
 
 
+def _doc_review_note(applied: dict) -> str:
+    """The reply lines for the pull requests `apply-staged` opened (or
+    failed to open) after a turn: the sandbox cannot run git, so the model
+    only staged them."""
+    lines = []
+    for rec in (r for r in (applied.get("applied") or []) if isinstance(r, dict)):
+        if rec.get("tool") != "doc_review":
+            continue
+        m = re.search(r'"url":\s*"([^"]+)"', rec.get("output") or "")
+        lines.append(f"Opened the review: {m.group(1)}" if m else "Opened a review pull request.")
+    for rec in (r for r in (applied.get("refused") or []) if isinstance(r, dict)):
+        if rec.get("tool") == "doc_review":
+            lines.append(f"The review pull request did not open: {rec.get('why')}")
+    return "\n".join(lines)
+
+
 # ── what Claude Code loads by itself ──────────────────────────────────
 #
 # A Claude run loads, from its working directory and the ones above it,
@@ -387,6 +403,9 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
     shaped = _shape(res, tid, mode, staged)
     if prefs:
         shaped["preferences"] = prefs
+        note = _doc_review_note(prefs)
+        if note:
+            shaped["output"] = (shaped["output"].rstrip() + "\n\n" + note).strip()
     return shaped
 
 

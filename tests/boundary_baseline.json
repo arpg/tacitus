@@ -33,6 +33,15 @@
       "lines": [
         "self._conn = sqlite3.connect(str(self.path), check_same_thread=False, timeout=10)"
       ]
+    },
+    {
+      "file": "preprocessor/preferences.py",
+      "rule": "py-resident-module",
+      "reason": "apply-staged replays a staged doc_review open. It runs only as the resident (codex_turn._apply_staged starts it through the resident's sudo), and no owner process calls it.",
+      "lines": [
+        "import doc_review",
+        "from preprocessor import doc_review"
+      ]
     }
   ]
 }

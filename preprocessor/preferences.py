@@ -72,7 +72,7 @@ PREFS_FILE = EA_DIR / "config" / "preferences.json"
 STAGED_FILE = EA_DIR / "state" / "preferences-staged.jsonl"
 REFUSED_FILE = EA_DIR / "state" / "preferences-staged-refused.jsonl"
 STAGED_VERBS = {"preferences": ("add", "calibrate", "retire"), "onboarding": ("answer", "skip", "stop"),
-                "autonomy": ("promote",)}
+                "autonomy": ("promote",), "doc_review": ("open",)}
 _APPLYING = False
 
 KINDS = ("instruction", "prefer", "avoid", "fact")
@@ -536,7 +536,7 @@ def apply_staged(user_text: str | None, run_preferences=None, run_onboarding=Non
         return {"applied": [], "refused": []}
     runners = {"preferences": run_preferences or main,
                "onboarding": run_onboarding or _onboarding_main,
-               "autonomy": _autonomy_main}
+               "autonomy": _autonomy_main, "doc_review": _doc_review_main}
     out = {"applied": [], "refused": []}
 
     def refuse(rec, why):
@@ -586,6 +586,14 @@ def _autonomy_main(argv) -> int:
     except ModuleNotFoundError:
         from preprocessor import autonomy_tiers
     return autonomy_tiers.main(argv)
+
+
+def _doc_review_main(argv) -> int:
+    try:
+        import doc_review
+    except ModuleNotFoundError:
+        from preprocessor import doc_review
+    return doc_review.main(argv)
 
 
 def _onboarding_main(argv) -> int:
