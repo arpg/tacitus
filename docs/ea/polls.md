@@ -24,3 +24,9 @@ filled like the others; a Calendly booking page is read-only
 stops before the submit and leaves a screenshot unless `--go` is given:
 run it without `--go` first, show the user the screenshot path, and run
 it again with `--go` when they say so.
+
+A Codex turn runs `poll_filler.py` through the mediator: its sandbox has no
+network and cannot start Chromium, so the mediator runs the same program as
+ea-bot outside it (`EA_POLL_DIRECT=1`). Call it as above. The mediator reads
+`--available-file` itself and hands the worker the slot ids inline. The
+allowlist, the configured-name rule and the `--go` stop are unchanged.

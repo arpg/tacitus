@@ -1540,6 +1540,45 @@ def test_a_request_carries_its_graph_lane_to_the_child():
             "background", "interactive", "interactive", "interactive"]
 
 
+def test_poll_filler_is_mediated_and_forwards_unless_it_is_the_worker():
+    import poll_filler
+    assert M.SAFE["poll_filler"] == {"read-poll", "fill-poll"}
+    assert "--available-file" in M.FILE_FLAGS
+    seen = []
+
+    def forward(tool, argv, transform=None):
+        seen.append((tool, list(argv)))
+        raise SystemExit(0)
+    real_forward, real_argv = poll_filler.M.forward_or_none, sys.argv
+    poll_filler.M.forward_or_none = forward
+    sys.argv = ["poll_filler.py", "read-poll", "--url", "https://www.when2meet.com/?1-a"]
+    direct = os.environ.pop("EA_POLL_DIRECT", None)
+    try:
+        try:
+            poll_filler.main()
+        except SystemExit:
+            pass
+        assert seen == [("poll_filler", ["read-poll", "--url", "https://www.when2meet.com/?1-a"])]
+        # The worker the mediator starts sets the flag and skips the forward.
+        os.environ["EA_POLL_DIRECT"] = "1"
+        seen.clear()
+        real_cmd = poll_filler.cmd_read_poll
+        poll_filler.cmd_read_poll = lambda args: seen.append(("ran", args.url))
+        try:
+            poll_filler.build_parser().set_defaults  # the parser builds without running anything
+            poll_filler.main()
+        except SystemExit:
+            pass
+        finally:
+            poll_filler.cmd_read_poll = real_cmd
+        assert seen and seen[0][0] != "poll_filler"
+    finally:
+        poll_filler.M.forward_or_none, sys.argv = real_forward, real_argv
+        os.environ.pop("EA_POLL_DIRECT", None)
+        if direct is not None:
+            os.environ["EA_POLL_DIRECT"] = direct
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0

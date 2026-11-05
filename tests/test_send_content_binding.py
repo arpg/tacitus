@@ -785,6 +785,7 @@ NON_MAIL_TOOLS = {
     "email_writer": "preprocessor/email_writer.py",
     "plugin_cards": "preprocessor/plugin_cards.py",
     "web_browser": "preprocessor/web_browser.py",
+    "poll_filler": "preprocessor/poll_filler.py",
 }
 NON_MAIL_DRAFT_MARKERS = ("update-draft", "update_draft(", "attach-file", "attach_file(",
                           "remove-attachment", "drafts().update(", "graph_patch(")
