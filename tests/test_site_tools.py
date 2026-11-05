@@ -543,3 +543,23 @@ def test_remote_change_after_staging_refuses_commit_and_card(env, monkeypatch, t
     assert len(result['refused']) == 1 and not result['applied']
     assert not (tmp_path / 'state' / gate.STAGE_FILE).exists()
     assert (env['clone'] / 'index.html').read_text() == 'local schedule edit\n'
+
+
+def test_commit_without_network_uses_the_cached_main_and_says_so(env, monkeypatch):
+    (env["clone"] / "index.html").write_text("<p>offline</p>\n")
+
+    def down(slug):
+        raise st.SiteError("git fetch: unable to access: Could not resolve host")
+    monkeypatch.setattr(st, "_fetch", down)
+    res = st.cmd_commit(SLUG, "offline edit")
+    assert res["status"] == "committed" and res["cached"] is True and "note" in res
+
+
+def test_pull_without_network_stages_for_the_replay(env, monkeypatch, tmp_path, capsys):
+    import preferences
+    monkeypatch.setattr(preferences, "STAGED_FILE", tmp_path / "staged.jsonl")
+    monkeypatch.setattr(st, "_git", lambda slug, *a: (_ for _ in ()).throw(
+        st.SiteError("git fetch: fatal: unable to access: Could not resolve host: github.com")))
+    assert st.main(["pull", "--site", SLUG]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "staged"
+    assert "pull" in (tmp_path / "staged.jsonl").read_text()
