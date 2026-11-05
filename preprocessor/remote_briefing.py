@@ -840,7 +840,7 @@ def _morning_lists(cands: dict[str, dict], plan: dict, drafts: list[dict],
         d = _date(cands[r].get("due"))
         due.append((r, f"{_line_of(cands[r])}, " + (f"was due {d:%a %b} {d.day}" if d < today
                                                      else f"{d:%a %b} {d.day}")))
-    return {
+    lists = {
         "due": due,
         "top": [(p["ref"], _top_line(cands[p["ref"]], p, today) + mark(p["ref"])) for p in top],
         "flex": [(p["ref"], f"{_line_of(cands[p['ref']])}: {_clean(p.get('line'), 140)}{mark(p['ref'])}")
@@ -854,6 +854,32 @@ def _morning_lists(cands: dict[str, dict], plan: dict, drafts: list[dict],
         "escalated": [(e["ref"], f"{_line_of(cands[e['ref']])}: {_clean(e.get('why'), 140)}")
                       for e in escalated],
     }
+    return _one_per_thread(cands, lists)
+
+
+# Highest first: a thread shows in the first of these sections that has it.
+# "draft" stays out: a staged draft is the Send instruction for a thread
+# the do-list may also name.
+_SECTION_ORDER = ("top", "needs", "escalated", "flex", "due")
+
+
+def _one_per_thread(cands: dict[str, dict], lists: dict) -> dict:
+    """`lists` with each thread once. Two refs on one thread (a mail item
+    and its ledger row, or two rows) are one item to the reader, so a
+    ledger row or a conversation already shown is dropped below."""
+    seen: set[str] = set()
+    out = dict(lists)
+    for sec in _SECTION_ORDER:
+        kept = []
+        for ref, line in lists.get(sec) or []:
+            c = cands.get(ref) or {}
+            keys = {f"{k}:{c[k]}" for k in ("ledger_id", "conversation_id") if c.get(k)}
+            if keys & seen:
+                continue
+            kept.append((ref, line))
+            seen |= keys
+        out[sec] = kept
+    return out
 
 
 def _afternoon_lists(cands: dict[str, dict], plan: dict, audit: dict) -> dict:
