@@ -589,9 +589,39 @@ def cmd_pull(slug: str) -> dict:
         if ahead:
             raise SiteError(f"the clone has {ahead} unpushed commit(s) and GitHub has {behind} "
                             f"newer one(s); ask the owner how to combine them")
-        _git(slug, "merge", "-q", "--ff-only", f"origin/{BRANCH}")
+        kept = _changes(slug)
+        if kept:
+            _pull_over_edits(slug)
+        else:
+            _git(slug, "merge", "-q", "--ff-only", f"origin/{BRANCH}")
         return {"status": "pulled", "site": slug, "commits": behind,
+                "kept_local_changes": [c["path"] for c in kept],
                 "head": _git(slug, "rev-parse", "--short", "HEAD").strip()}
+
+
+def _pull_over_edits(slug: str) -> None:
+    """Fast-forward with uncommitted edits in the clone: stash them
+    (untracked files too), fast-forward, put them back. When they do not
+    apply on the new main, the clone returns to its state before the pull
+    and the error names the files."""
+    old = _git(slug, "rev-parse", "HEAD").strip()
+    _git(slug, "stash", "push", "-u", "-q", "-m", "site_tools pull")
+    try:
+        _git(slug, "merge", "-q", "--ff-only", f"origin/{BRANCH}")
+        pop = _run_git(slug, "stash", "pop", "-q")
+        if pop.returncode == 0:
+            return
+        detail = (pop.stderr or pop.stdout).strip()[:300]
+    except SiteError as e:
+        detail = str(e)
+    # Back out: the stash is still held; the tree holds only what the failed
+    # pop wrote, because the stash took every untracked file.
+    _git(slug, "reset", "-q", "--hard", "HEAD")
+    _git(slug, "clean", "-fdq")
+    _git(slug, "reset", "-q", "--hard", old)
+    _git(slug, "stash", "pop", "-q")
+    raise SiteError("the local edits do not apply on GitHub's newer main; the clone is back "
+                    f"as it was. Commit the edits and ask the owner how to combine them: {detail}")
 
 
 def cmd_add_file(slug: str, src: str, dest: str) -> dict:
