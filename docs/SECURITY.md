@@ -53,6 +53,7 @@ injection. The LLM has no mechanism to click Slack buttons.
 | Schedule deferred send | button-required | Will send email at a future time |
 | Delete email | button-required | Permanent, irreversible |
 | Publish a site, push to Overleaf | button-required | Puts the EA's work in front of the public, partners or co-authors ("Public publishing" under Layer 3) |
+| Generic web form data entry, uploads and submission | button-required | Autosave and upload widgets can disclose data before Submit. `web_browser.py` first stages an exact plan for review; only the owner's click authorizes execution |
 
 ### Ungated actions (safe to call directly)
 
@@ -522,6 +523,43 @@ out of untrusted email, so it enforces an SSRF policy in code (B8-01):
   way out; the log records its size, type, SHA-256 and destination;
 - every fetch, block and error is appended as one JSONL record (URL,
   resolved IP, method, outcome) to `~/.ea/logs/fetch-url.log`.
+
+**The on-demand browser (`web_browser.py`) uses the mediator queue without
+owner privileges.** The service drops to `ea-bot` with a clean environment
+and a fresh browser context. It borrows no owner token, cookie or login.
+Every HTTP request, redirect and subresource is fulfilled through the
+same public-address policy and pinned DNS; requests ignore environment
+proxies and netrc credentials. Service workers, WebSockets and downloads
+are blocked. Chromium uses a nonworking proxy, with QUIC disabled and
+WebRTC configured to avoid non-proxied UDP; only the checked Python broker
+has a working HTTP transport. This follows the proxy handling described in
+[RFC 8828](https://www.rfc-editor.org/rfc/rfc8828.html). These are browser
+configuration controls, not a separate kernel network namespace.
+Screenshots use the confined resident writer.
+
+Public reads need no card, as with the existing readers. Generic data
+entry is broader than the older domain-restricted scheduling poll tools:
+therefore both fill and submit first stage an owner confirmation card.
+Writes fail closed without the mediated owner-confirmation service.
+The one-use token binds the exact form URL, actions, answer values,
+permitted HTTPS origins, upload hashes, final control and success marker.
+The card refuses hidden formatting or a payload it cannot show in full.
+The mediator never accepts an approval token from a model's request;
+its clean worker can only stage. Only the bot's owner-click executor
+supplies the token to the resident worker. Files are confined to existing
+EA roots, no links, at most 20 MiB; their hashes are rechecked and the
+verified bytes are frozen before entry. Once entry starts, all requests,
+including GETs and redirects, must remain on the approved HTTPS origins.
+A click without completion text, or a submission timeout, is an unknown
+outcome, not a successful submission or a safe automatic retry.
+
+This preserves the existing owner/credential and internal-network
+boundaries and adds a code gate for the new disclosure capability.
+It does **not** prevent general exfiltration through an allowed read URL:
+a convinced model can still put text in a URL, just as with `WebFetch`
+or `fetch_url.py` (the stated limitation below). A browser compromise also
+runs with the resident's existing Unix permissions, as with the older
+Playwright tools; this is not a claim of a separate browser OS sandbox.
 
 The other modules that reach the network log there too
 (`preprocessor/outbound_log.py`): `booking_link.py`'s cal.com and Calendly reads,

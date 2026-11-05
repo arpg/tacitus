@@ -237,6 +237,7 @@ def _mediator(monkeypatch):
     monkeypatch.setattr(MM, "STAGING_ROOT", SANDBOX / "mediator-staging")
     # One thread: the email writer's requests otherwise run on their own.
     monkeypatch.setattr(MM, "ASYNC_TOOLS", set())
+    monkeypatch.setattr(MM.pwd, "getpwnam", lambda name: types.SimpleNamespace(pw_dir="/home/ea-bot"))
     M.QUEUE.mkdir(parents=True, exist_ok=True)
     started: list[list[str]] = []
 
@@ -261,6 +262,12 @@ def _submit(started: list, tool: str, verb: str, argv: list[str]) -> list[str] |
     if len(started) == before:
         return None
     cmd = started[-1]
+    if tool == "web_browser":
+        assert cmd[:6] == ["sudo", "-n", "-u", "ea-bot", "env", "-i"], cmd
+        assert "EA_BROWSER_DIRECT=1" in cmd
+        script = cmd.index(str(MM.TOOLS[tool]))
+        assert cmd[script - 1] == "python3"
+        return cmd[script + 1:]
     assert cmd[1] == str(MM.TOOLS[tool]), cmd
     return cmd[2:]
 

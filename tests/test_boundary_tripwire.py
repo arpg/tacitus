@@ -128,6 +128,8 @@ def _plugin_release() -> Path:
 WRITERS = [
     # resident_io: appends
     W("item_feedback", lambda m, p: m._append({"k": 1}), attr="FEEDBACK_LOG"),
+    W("web_browser", lambda m, p: m.save_screenshot(p, b"test screenshot"), name="state/browser/preview.png"),
+    W("web_browser", lambda m, p: m.stage_plan(p, {"url": "https://forms.example"}), name="state/pending-browser.json"),
     W("open_claims_audit", lambda m, p: m._append({"k": 1}), attr="AUDIT_LOG"),
     W("log_missed_closure", lambda m, p: m._append({"k": 1}), attr="LOG_PATH"),
     W("closure_scrubber", lambda m, p: m._append_jsonl(p, [{"k": 1}]), name="logs/closure-scrubber.log"),

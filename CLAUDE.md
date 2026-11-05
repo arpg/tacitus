@@ -102,7 +102,7 @@ bypass it, and you have no way to click a button.
 - A deferred send (stage `pending-schedule-send.json`; the Schedule
   button queues it)
 - Deleting emails (permanent deletion, not archive)
-- Publishing a site or pushing to Overleaf
+- Site/Overleaf publishing; generic form writes
 
 **ask-first**: post what you want to do, wait for approval. Drafting
 replies, scheduling responses (promotable per contact), reimbursement

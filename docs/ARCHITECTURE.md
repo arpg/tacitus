@@ -2133,6 +2133,26 @@ EA-Managed calendar (a personal block that emails no one). See
 [SECURITY.md](SECURITY.md) Layer 5 and
 [mail-mediation-spec.md](mail-mediation-spec.md).
 
+On-demand public web access also uses this queue (`web_browser.py
+read|fill|submit`), but the mediator drops to `ea-bot` before starting the
+browser. It supplies a clean environment and a fresh browser context, not
+owner credentials or a saved login. Each HTTP request, redirect and
+subresource goes through the existing public-address policy and pinned
+DNS; WebSockets, service workers and downloads are blocked. Uploads are
+confined to the existing file roots. Codex's sandbox retains no network
+access. Live prompts name this tool even when the latest message has no
+URL, covering email-discovered links and retries missed by prefetch.
+Fill and submit first stage `pending-browser.json`. The bot shows the
+exact plan on an owner confirmation card, then mints a one-time token
+bound to its URL, answers, upload hashes and HTTPS origins. The mediator's
+model-requested workers receive no approval token and can only stage;
+the owner-click executor drops to the resident and verifies the token
+before data entry. Upload bytes are checked against their reviewed hashes.
+After data entry begins, every request must stay on an approved HTTPS
+origin. Submission also requires an observed completion message. A missing confirmation or a
+submission timeout is an unknown outcome, never an automatic retry. The
+existing autonomy tiers and button gates still govern external actions.
+
 The same boundary carries deck hosting. The deck tool itself (scaffold,
 lint, build, render, PDF) is a plugin, not core: every owner builds
 slides their own way, so the core keeps only what crosses the user

@@ -408,6 +408,19 @@ def _render_room_picker(card: ConfirmationCard) -> list[dict]:
     return blocks + _footer(card)
 
 
+def _render_browser(card: ConfirmationCard) -> list[dict]:
+    # A form approval must show the whole bound payload. The generic
+    # status renderer truncates long cards; plain text also prevents a
+    # form label or answer from disguising a link or mentioning a user.
+    text = "\n".join(_ct.strip_inert(line) for line in [card.title, *card.lines])
+    blocks = [{"type": "section", "text": {"type": "plain_text", "text": chunk, "emoji": False}}
+              for chunk in _chunks(text, 2800)]
+    blocks += [_actions_block(card, [_button(a) for a in card.actions])]
+    if len(blocks) > MAX_BLOCKS:
+        raise ChatError("form approval is too large to display in full")
+    return blocks + _footer(card)
+
+
 RENDERERS = {
     "send": _render_draft,
     "schedule": _render_draft,
@@ -416,6 +429,7 @@ RENDERERS = {
     "event_delete": _render_event_delete,
     "plugin": _render_plain,
     "publish": _render_plain,
+    "browser": _render_browser,
     "bulk": _render_plain,
     "close": _render_plain,
     "room_picker": _render_room_picker,

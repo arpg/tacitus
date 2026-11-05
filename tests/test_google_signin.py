@@ -274,7 +274,7 @@ def test_the_staged_request_posts_the_link_where_it_was_asked(bot):
 def test_the_bot_wires_the_sign_in_before_the_ea_and_keeps_the_code_out_of_its_log():
     src = BOT.read_text()
     assert '("google_signin", "pending-google-signin.json")' in src
-    assert "+ PUBLISH_ACTION_FILES + GOOGLE_SIGNIN_ACTION_FILES)" in src
+    assert "+ PUBLISH_ACTION_FILES + GOOGLE_SIGNIN_ACTION_FILES + BROWSER_ACTION_FILES)" in src
     cmd = _block("def _handle_bot_command", "    # \"adopt session <uuid>")
     assert "_handle_google_signin(channel, thread_ts, msg_ts, user_msg)" in cmd
     assert '"[a Google sign-in address]"' in src
