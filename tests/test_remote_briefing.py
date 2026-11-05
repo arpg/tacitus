@@ -851,3 +851,14 @@ def test_the_do_list_says_the_due_date_in_code_and_drops_the_ledger_labels():
     assert "2. *NSF annual report*: in the 1-2:30 gap. the PI needs the numbers. Due Wed Oct 14" in post
     assert "3. *Sign the waiver*" in post and "due tomorrow" not in post.lower()
     assert "Due 2026-10-11:" not in post and "Task:" not in post
+
+
+def test_one_thread_with_two_refs_shows_once():
+    cands = {"R1": {"ledger_id": "", "conversation_id": "conv-a"},
+             "L1": {"ledger_id": "row-1", "conversation_id": "conv-a"},
+             "L2": {"ledger_id": "row-2", "conversation_id": "conv-b"}}
+    lists = {"needs": [("R1", "r1 line")], "flex": [("L1", "l1 line"), ("L2", "l2 line")],
+             "top": [], "due": []}
+    out = rb._one_per_thread(cands, lists)
+    assert out["needs"] == [("R1", "r1 line")]
+    assert out["flex"] == [("L2", "l2 line")]
