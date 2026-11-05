@@ -40,6 +40,11 @@ against the last fetched main (`cached: true`; publish rechecks), and `pull`
 and `revert` stage themselves for the same replay. `publish` and `push` stay
 behind the owner's Publish card in every lane.
 
+`pull` also works over uncommitted edits in the clone: it stashes them,
+fast-forwards and puts them back, and reports `kept_local_changes`. When the
+edits do not apply on the newer main, the clone returns to how it was and the
+error says so; the lane never discards an edit.
+
 **Everything on a site is public.** Anyone on the internet can read it, and
 search engines index it. Put nothing there that is not already meant for the
 invitees: no names of speakers who have not confirmed, no internal notes,

@@ -563,3 +563,38 @@ def test_pull_without_network_stages_for_the_replay(env, monkeypatch, tmp_path, 
     assert st.main(["pull", "--site", SLUG]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "staged"
     assert "pull" in (tmp_path / "staged.jsonl").read_text()
+
+
+def _lines(n: int, tag: str = "") -> str:
+    return "".join(f"line {i}{tag if i in (1, n) else ''}\n" for i in range(1, n + 1))
+
+
+def test_pull_keeps_local_edits_that_apply_on_the_new_main(env):
+    (env["seed"] / "page.md").write_text(_lines(30))
+    _run("git", "add", "page.md", cwd=env["seed"])
+    _run("git", "commit", "-q", "-m", "page", cwd=env["seed"])
+    _run("git", "push", "-q", "origin", "main", cwd=env["seed"])
+    st.cmd_pull(SLUG)
+    # The owner edits the top of the page; the EA edits the bottom and adds a file.
+    _owner_edit(env["seed"], "page.md", _lines(30).replace("line 1\n", "line 1 owner\n"))
+    (env["clone"] / "page.md").write_text(_lines(30).replace("line 30\n", "line 30 ea\n"))
+    (env["clone"] / "new.pdf").write_text("pdf")
+    res = st.cmd_pull(SLUG)
+    assert res["status"] == "pulled" and sorted(res["kept_local_changes"]) == ["new.pdf", "page.md"]
+    text = (env["clone"] / "page.md").read_text()
+    assert "line 1 owner" in text and "line 30 ea" in text
+    assert (env["clone"] / "new.pdf").read_text() == "pdf"
+    assert _run("git", "stash", "list", cwd=env["clone"]) == ""
+
+
+def test_pull_restores_the_clone_when_local_edits_conflict(env):
+    _owner_edit(env["seed"], "index.html", "<p>owner</p>\n")
+    (env["clone"] / "index.html").write_text("<p>ea</p>\n")
+    (env["clone"] / "new.pdf").write_text("pdf")
+    before = _run("git", "rev-parse", "HEAD", cwd=env["clone"])
+    with pytest.raises(st.SiteError, match="back as it was"):
+        st.cmd_pull(SLUG)
+    assert _run("git", "rev-parse", "HEAD", cwd=env["clone"]) == before
+    assert (env["clone"] / "index.html").read_text() == "<p>ea</p>\n"
+    assert (env["clone"] / "new.pdf").read_text() == "pdf"
+    assert _run("git", "stash", "list", cwd=env["clone"]) == ""
