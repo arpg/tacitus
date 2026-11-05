@@ -60,6 +60,7 @@ EA_DIR = os.environ.get("EA_DIR", os.path.expanduser("~/.ea"))
 EXPORTS_DIR = os.path.join(EA_DIR, "exports")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mail_mediation as M  # noqa: E402
 import outbound_log  # noqa: E402
 import owner_trust  # noqa: E402
 
@@ -1322,7 +1323,8 @@ def cmd_fill_poll(args):
     print(json.dumps(result, indent=2))
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI's parser, also what the mediator's argv tripwire parses with."""
     parser = argparse.ArgumentParser(
         description="Read and fill scheduling polls (When2Meet, WhenIsGood, Doodle, Framadate, Timeful)",
         allow_abbrev=False)
@@ -1357,8 +1359,19 @@ def main():
                     help="Calendly: submit the vote. Without it the fill selects the slots, "
                          "fills the form, takes a screenshot and stops before the submit.")
     fp.set_defaults(func=cmd_fill_poll)
+    return parser
 
+
+def main():
+    # A Codex turn's sandbox has no network and cannot start Chromium, so
+    # the mediator runs this program as ea-bot outside it. The direct flag
+    # only skips the forward; set inside the sandbox it escapes nothing,
+    # because the sandbox still has no network.
+    if os.environ.get("EA_POLL_DIRECT") != "1":
+        M.forward_or_none("poll_filler", sys.argv[1:])
+    parser = build_parser()
     args = parser.parse_args()
+    M.check_child_parse(parser, args)
     args.func(args)
 
 

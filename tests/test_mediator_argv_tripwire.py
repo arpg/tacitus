@@ -111,6 +111,11 @@ IN_ROOT_INPUT = EA_DIR / "state" / "tripwire-input.txt"
 IN_ROOT_OUTPUT = EA_DIR / "state" / "tripwire-output.bin"
 IN_ROOT_INPUT.write_text("tripwire body\n")
 
+# A file option whose content the owner-side mediator reads from the staging
+# copy and passes to the resident's worker inline, so no path reaches the
+# child (test_a_polls_slot_file_reaches_the_worker_inline).
+INLINED_FILES = {("poll_filler", "available_file")}
+
 PATH_WORDS = {"file", "files", "path", "paths", "output", "out", "dest", "dir",
               "directory", "input", "screenshot"}
 
@@ -262,9 +267,9 @@ def _submit(started: list, tool: str, verb: str, argv: list[str]) -> list[str] |
     if len(started) == before:
         return None
     cmd = started[-1]
-    if tool == "web_browser":
+    if tool in ("web_browser", "poll_filler"):
         assert cmd[:6] == ["sudo", "-n", "-u", "ea-bot", "env", "-i"], cmd
-        assert "EA_BROWSER_DIRECT=1" in cmd
+        assert ("EA_BROWSER_DIRECT=1" if tool == "web_browser" else "EA_POLL_DIRECT=1") in cmd
         script = cmd.index(str(MM.TOOLS[tool]))
         assert cmd[script - 1] == "python3"
         return cmd[script + 1:]
@@ -324,7 +329,8 @@ def test_a_path_the_child_resolves_stays_in_the_allowed_roots(tool, verb, monkey
     started = _mediator(monkeypatch)
     sp = _sub(tool, verb)
     escaped = []
-    for action in (a for a in _own_actions(sp) if _path_valued(a) and a.option_strings):
+    for action in (a for a in _own_actions(sp) if _path_valued(a) and a.option_strings
+                   and (tool, a.dest) not in INLINED_FILES):
         base = [verb] + _fillers(tool, verb, skip=action)
         # The control: exact spelling, a file in an allowed root, staged.
         exact = _submit(started, tool, verb, base + _one(action))
@@ -482,3 +488,19 @@ def test_the_carve_out_cannot_be_split_across_two_calendar_ids(monkeypatch):
                 verb, pair)
         assert _submit(started, "google_calendar_client", verb,
                        base + ["--calendar-id", EA_MANAGED]) is not None, verb
+
+
+def test_a_polls_slot_file_reaches_the_worker_inline(monkeypatch):
+    started = _mediator(monkeypatch)
+    ok = EA_DIR / "state" / "tripwire-slots.json"
+    ok.write_text('["1795273200", "1795274100"]')
+    child = _submit(started, "poll_filler", "fill-poll",
+                    ["fill-poll", "--url", "https://www.when2meet.com/?1-a", "--available-file", str(ok)])
+    assert child == ["fill-poll", "--url", "https://www.when2meet.com/?1-a",
+                     "--available", '["1795273200", "1795274100"]'], child
+    for bad in ('{"a": 1}', "not json", '[["x"]]', "[" + '"1",' * 100000 + '"2"]'):
+        ok.write_text(bad)
+        assert _submit(started, "poll_filler", "fill-poll",
+                       ["fill-poll", "--url", "https://www.when2meet.com/?1-a", "--available-file", str(ok)]) is None, bad
+    assert _submit(started, "poll_filler", "fill-poll",
+                   ["fill-poll", "--url", "https://www.when2meet.com/?1-a", "--available-file", DECOY]) is None

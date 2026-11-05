@@ -47,10 +47,15 @@ TOOLS = {
     "email_writer": REPO / "preprocessor" / "email_writer.py",
     "plugin_cards": REPO / "preprocessor" / "plugin_cards.py",
     "web_browser": REPO / "preprocessor" / "web_browser.py",
+    "poll_filler": REPO / "preprocessor" / "poll_filler.py",
 }
+# Tools that run as the resident (ea-bot) outside Codex's network sandbox,
+# never as the owner, and the variable that tells each one it is that worker.
+RESIDENT_BROWSER_TOOLS = {"web_browser": "EA_BROWSER_DIRECT", "poll_filler": "EA_POLL_DIRECT"}
+MAX_AVAILABLE_BYTES = 256 * 1024
 # Tools whose calls take long (remote writing, browser rendering): each runs on
 # its own thread, so the queue keeps serving every other verb meanwhile.
-ASYNC_TOOLS = {"email_writer", "web_browser"}
+ASYNC_TOOLS = {"email_writer", *RESIDENT_BROWSER_TOOLS}
 ASYNC_MAX = 4
 _async_slots = threading.BoundedSemaphore(ASYNC_MAX)
 _browser_slots = threading.BoundedSemaphore(2)
@@ -475,6 +480,31 @@ def _stage_paths(rid: str, argv: list[str]):
     return new_argv, stage_dir, deliveries, rewrites
 
 
+def _inline_available(argv: list[str]) -> list[str]:
+    """argv with a staged `--available-file <path>` replaced by `--available
+    <JSON array text>`: read here, as the owner, from the staging copy, and
+    checked to be a short JSON array of strings or numbers."""
+    out, i = [], 0
+    while i < len(argv):
+        tok = argv[i]
+        name, eq, attached = tok.partition("=")
+        if name == "--available-file":
+            path = attached if eq else (argv[i + 1] if i + 1 < len(argv) else "")
+            i += 1 if eq else 2
+            with open(path, "rb") as f:
+                raw = f.read(MAX_AVAILABLE_BYTES + 1)
+            if len(raw) > MAX_AVAILABLE_BYTES:
+                raise ValueError("--available-file is too large")
+            data = json.loads(raw.decode("utf-8"))
+            if not isinstance(data, list) or not all(isinstance(x, (str, int)) and not isinstance(x, bool) for x in data):
+                raise ValueError("--available-file must hold a JSON array of slot ids")
+            out += ["--available", json.dumps(data)]
+            continue
+        out.append(tok)
+        i += 1
+    return out
+
+
 def _deliver(deliveries) -> list[str]:
     """Write staged outputs to their requested destinations. Returns errors."""
     errors = []
@@ -578,9 +608,9 @@ def handle(req_path: str):
             shutil.rmtree(stage_dir, ignore_errors=True)
         return
 
-    pool = _browser_slots if tool == "web_browser" else _async_slots
+    pool = _browser_slots if tool in RESIDENT_BROWSER_TOOLS else _async_slots
     acquired = tool in ASYNC_TOOLS and pool.acquire(blocking=False)
-    if tool == "web_browser" and tool in ASYNC_TOOLS and not acquired:
+    if tool in RESIDENT_BROWSER_TOOLS and tool in ASYNC_TOOLS and not acquired:
         _respond(rid, "", json.dumps({"status": "error", "message": "browser workers are busy; no action started"}), 3)
         _cleanup(req_path)
         if stage_dir is not None:
@@ -652,15 +682,27 @@ def _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir, deliveries, r
         env["EA_RUN_ID"] = run_id
     else:
         env.pop("EA_RUN_ID", None)
-    if tool == "web_browser":
+    if tool in RESIDENT_BROWSER_TOOLS:
         # The queue crosses Codex's network sandbox, NOT the Unix identity
         # boundary. No owner environment, cookies, tokens or filesystem access.
+        if tool == "poll_filler":
+            # The staged --available-file is owner-private, so the resident
+            # cannot open it: the slot ids go inline instead.
+            try:
+                child_argv = _inline_available(child_argv)
+            except (OSError, ValueError) as e:
+                _respond(rid, "", json.dumps({"status": "error", "message": f"mediator refused: {e}"}), 2)
+                _audit(tool, verb, "REFUSED-PATH")
+                _cleanup(req_path)
+                if stage_dir is not None:
+                    shutil.rmtree(stage_dir, ignore_errors=True)
+                return
         resident = pwd.getpwnam(M.RESIDENT_USER)
         home = resident.pw_dir
         cmd = ["sudo", "-n", "-u", M.RESIDENT_USER, "env", "-i",
                f"HOME={home}",
                f"PATH={REPO}/.venv/bin:{home}/.local/bin:/usr/local/bin:/usr/bin:/bin",
-               f"EA_DIR={M.EA_DIR.resolve()}", "EA_BROWSER_DIRECT=1",
+               f"EA_DIR={M.EA_DIR.resolve()}", f"{RESIDENT_BROWSER_TOOLS[tool]}=1",
                f"{M.MEDIATED_VERB_ENV}={verb}", "python3",
                str(TOOLS[tool]), *child_argv]
         env = {"PATH": "/usr/bin:/bin"}

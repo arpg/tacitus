@@ -184,6 +184,10 @@ SAFE = {
     # Without the owner-click token these verbs only stage a review card.
     # The clean worker environment never accepts a token from the request.
     "web_browser": {"read", "fill", "submit"},
+    # Scheduling polls (poll_filler.py allowlists the poll sites itself).
+    # Chromium cannot start in a Codex turn's sandbox, so the mediator runs
+    # it as the resident outside it. A fill is ask-first, as on Claude.
+    "poll_filler": {"read-poll", "fill-poll"},
     # The remote email writer. It reads the brief the resident staged, the
     # thread and the draft (reads the resident has already), sends them to
     # the remote endpoint the owner approved for all mail, and writes the
@@ -259,7 +263,8 @@ def draft_lock_scope(tool: str, verb: str, argv: list[str]):
 # File-path flags whose value must stay inside ea-bot's own dirs, so a
 # owner-executed op cannot be steered to read/write owner or system files.
 FILE_FLAGS = {"--output", "--body-file", "--path", "--file", "--screenshot",
-              "--attachment", "--out", "--dest", "--input", "--brief-file"}
+              "--attachment", "--out", "--dest", "--input", "--brief-file",
+              "--available-file"}
 # The subset the CHILD WRITES (everything else it reads). The mediator stages
 # both directions through an owner-private directory rather than handing the child
 # an ea-bot-controlled path at all; see mail_mediator._stage_paths. Only
