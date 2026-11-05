@@ -2615,6 +2615,7 @@ _BASH_ONLY_TOOLS = (
     "Bash(python3 {script_dir}/preprocessor/google_calendar_client.py *),"
     "Bash(python3 {script_dir}/preprocessor/scheduling_engine.py *),"
     "Bash(python3 {script_dir}/preprocessor/fetch_url.py *),"
+    "Bash(python3 {script_dir}/preprocessor/web_browser.py *),"
     # A private Google Doc, Sheet, Slides or Drive file (fetch_url.py gets
     # HTTP 401 there): read-only, through the mediator's Drive sign-in.
     "Bash(python3 {script_dir}/preprocessor/drive_client.py *),"
@@ -2941,6 +2942,15 @@ def _tools_block(body_file: str, needed_modules: set[str] | None = None) -> str:
   is overwritten within 30 minutes, though an edited token WORD is
   preserved. Change the underlying meeting instead.{scheduling_tool_block}
 - Bash(python3 {sd}/preprocessor/fetch_url.py --url <url>) for reading web pages
+- Bash(python3 {sd}/preprocessor/web_browser.py read --url <url>) for on-demand
+  browser reads, including links found in email or earlier turns. This runs
+  through the mediator outside Codex's network sandbox, as ea-bot.
+  web_browser.py fill --url <url> --actions-json '<array>' previews forms;
+  submit also needs --submit-selector and --success-text. Read web-reading.md
+  for action shapes and submission verification. Fill and submit stage an
+  owner confirmation card; no data entry or upload runs before the click.
+  Use this path
+  after a sandbox DNS failure; do not ask the user for screenshots first.
 - Bash(python3 {sd}/preprocessor/drive_client.py read --url <link>) for a Google
   Doc, Sheet, Slides or Drive file (private links answer 401 to fetch_url);
   search --query "<words>" finds one, download --output saves one for doc_text.py
@@ -7166,6 +7176,65 @@ def handle_cancel_publish(ev: "_chat.ActionEvent"):
                                  ":no_entry_sign: Not published. The commit stays in the clone.")
 
 
+def _post_browser_card(channel: str, thread_ts: str | None, act: dict) -> None:
+    from preprocessor import browser_gate as bg
+    try:
+        item = bg.validate(act.get("item"))
+        review = bg.render(item)
+    except Exception as e:
+        FRONTEND.post(channel=channel, thread_ts=thread_ts,
+                      text=f":warning: No form approval was posted: {str(e)[:300]}")
+        return
+    value = {"thread_ts": thread_ts, "ea_channel": channel, "item": item}
+    card = _chat.ConfirmationCard(
+        kind="browser", title=review["title"], lines=review["lines"],
+        actions=[_chat.CardAction("approve_browser", review["label"], value, "primary", "approve"),
+                 _chat.CardAction("cancel_browser", "Cancel", value, "danger", "cancel")],
+        block_id=f"confirm_browser_{bg.digest(item)[:12]}_{thread_ts}",
+        fallback_text=review["title"], thread_ts=thread_ts, ea_channel=channel)
+    _deliver_confirmation(channel, thread_ts, card, "Form approval", "browser")
+
+
+def _run_browser(ev: "_chat.ActionEvent") -> None:
+    from preprocessor import browser_gate as bg
+    value = _card_value(ev)
+    try:
+        item = bg.validate(value.get("item"))
+        token = bg.mint(item)
+        result = bg.execute(item, token, tree=SCRIPT_DIR, ea_dir=str(EA_DIR))
+        if result.get("submitted") is True:
+            message = "The form confirmed submission."
+        elif item["verb"] == "submit" and result.get("submitted") is None:
+            message = "Submission status is unknown. I will not retry automatically."
+        elif result.get("ok"):
+            message = "The approved answers were entered. The final Submit control was not clicked."
+        else:
+            message = "The approved form action did not complete: " + str(result.get("error") or "unknown error")[:400]
+        if result.get("screenshot"):
+            message += "\nScreenshot: " + result["screenshot"]
+    except Exception as e:
+        message = "The form action stopped: " + str(e)[:400]
+    _replace_buttons_with_status(ev.card.channel, ev.card.id, message)
+    FRONTEND.post(channel=value.get("ea_channel") or ev.card.channel,
+                  thread_ts=value.get("thread_ts"), text=message)
+
+
+@app.action("approve_browser")
+def handle_approve_browser(ev: "_chat.ActionEvent"):
+    if not _verify_button_user(ev) or _reject_if_stale_confirmation(ev, "browser"):
+        return
+    if not _claim_plugin_card(ev):
+        return
+    _replace_buttons_with_status(ev.card.channel, ev.card.id, ":hourglass_flowing_sand: Running the approved form action...")
+    threading.Thread(target=_run_browser, args=(ev,), daemon=True).start()
+
+
+@app.action("cancel_browser")
+def handle_cancel_browser(ev: "_chat.ActionEvent"):
+    if _verify_button_user(ev) and _claim_plugin_card(ev):
+        _replace_buttons_with_status(ev.card.channel, ev.card.id, "Cancelled. No form answers were sent.")
+
+
 # The sweeper is a fallback, not a competitor. It may claim a staged file
 # only once no dispatch can still be finishing it. IDLE: nothing is running,
 # so a file this old was written out of band (cron, plugin, maintenance
@@ -7200,7 +7269,7 @@ def _pending_events_poller():
     was written, the confirmation goes into THAT conversation. Only a
     genuinely orphaned file lands at the channel root."""
     swept = (CALENDAR_ACTION_FILES + SCHEDULE_ACTION_FILES + CHANNEL_ACTION_FILES
-             + PUBLISH_ACTION_FILES + GOOGLE_SIGNIN_ACTION_FILES)
+             + PUBLISH_ACTION_FILES + GOOGLE_SIGNIN_ACTION_FILES + BROWSER_ACTION_FILES)
     while True:
         try:
             busy = _dispatches_active() > 0
@@ -8414,6 +8483,7 @@ STAGED_ACTION_FILES = (
     # A site publish or an Overleaf push of one commit (publish_gate.py):
     # {"site"|"overleaf": ..., "commit": "<sha>", "thread_ts": ...}.
     ("publish", "pending-publish.json"),
+    ("browser", "pending-browser.json"),
     # A Google sign-in link for the user (google_signin.py):
     # {"account": "<address>", "service": "drive", "thread_ts": ...}. The
     # bot posts the link; nothing is signed in until the user approves.
@@ -8457,6 +8527,7 @@ PUBLISH_ACTION_FILES = tuple(f for f in STAGED_ACTION_FILES
                              if f[0] == "publish")
 GOOGLE_SIGNIN_ACTION_FILES = tuple(f for f in STAGED_ACTION_FILES
                                    if f[0] == "google_signin")
+BROWSER_ACTION_FILES = tuple(f for f in STAGED_ACTION_FILES if f[0] == "browser")
 PLUGIN_ACTION_FILES = tuple(f for f in STAGED_ACTION_FILES
                             if f[0].startswith("plugin_card:"))
 
@@ -8840,6 +8911,8 @@ def _post_staged_action(channel: str, thread_ts: str | None,
         _open_channel_action(channel, thread_ts, act)
     elif kind == "publish":
         _post_publish_card(channel, thread_ts, act)
+    elif kind == "browser":
+        _post_browser_card(channel, thread_ts, act)
     elif kind == "google_signin":
         _google_signin_action(channel, thread_ts, act)
 

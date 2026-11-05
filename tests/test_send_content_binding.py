@@ -784,6 +784,7 @@ NON_MAIL_TOOLS = {
     "deck_serve": "preprocessor/deck_serve.py",
     "email_writer": "preprocessor/email_writer.py",
     "plugin_cards": "preprocessor/plugin_cards.py",
+    "web_browser": "preprocessor/web_browser.py",
 }
 NON_MAIL_DRAFT_MARKERS = ("update-draft", "update_draft(", "attach-file", "attach_file(",
                           "remove-attachment", "drafts().update(", "graph_patch(")

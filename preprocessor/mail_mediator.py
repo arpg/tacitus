@@ -46,12 +46,14 @@ TOOLS = {
     "deck_serve": REPO / "preprocessor" / "deck_serve.py",
     "email_writer": REPO / "preprocessor" / "email_writer.py",
     "plugin_cards": REPO / "preprocessor" / "plugin_cards.py",
+    "web_browser": REPO / "preprocessor" / "web_browser.py",
 }
-# Tools whose calls take long (a remote model writing a body): each runs on
+# Tools whose calls take long (remote writing, browser rendering): each runs on
 # its own thread, so the queue keeps serving every other verb meanwhile.
-ASYNC_TOOLS = {"email_writer"}
+ASYNC_TOOLS = {"email_writer", "web_browser"}
 ASYNC_MAX = 4
 _async_slots = threading.BoundedSemaphore(ASYNC_MAX)
+_browser_slots = threading.BoundedSemaphore(2)
 from log_paths import owner_log  # the mediator runs only as the owner
 AUDIT = owner_log("mail-mediator.log")
 IDLE_S = 0.3
@@ -576,7 +578,15 @@ def handle(req_path: str):
             shutil.rmtree(stage_dir, ignore_errors=True)
         return
 
-    if tool in ASYNC_TOOLS and _async_slots.acquire(blocking=False):
+    pool = _browser_slots if tool == "web_browser" else _async_slots
+    acquired = tool in ASYNC_TOOLS and pool.acquire(blocking=False)
+    if tool == "web_browser" and tool in ASYNC_TOOLS and not acquired:
+        _respond(rid, "", json.dumps({"status": "error", "message": "browser workers are busy; no action started"}), 3)
+        _cleanup(req_path)
+        if stage_dir is not None:
+            shutil.rmtree(stage_dir, ignore_errors=True)
+        return
+    if acquired:
         # The request file goes now, so the loop does not pick it up again.
         _cleanup(req_path)
 
@@ -585,7 +595,7 @@ def handle(req_path: str):
                 _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir,
                          deliveries, rewrites, req_path, lane=lane)
             finally:
-                _async_slots.release()
+                pool.release()
         threading.Thread(target=run, daemon=True).start()
         return
     _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir, deliveries, rewrites,
@@ -642,6 +652,18 @@ def _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir, deliveries, r
         env["EA_RUN_ID"] = run_id
     else:
         env.pop("EA_RUN_ID", None)
+    if tool == "web_browser":
+        # The queue crosses Codex's network sandbox, NOT the Unix identity
+        # boundary. No owner environment, cookies, tokens or filesystem access.
+        resident = pwd.getpwnam(M.RESIDENT_USER)
+        home = resident.pw_dir
+        cmd = ["sudo", "-n", "-u", M.RESIDENT_USER, "env", "-i",
+               f"HOME={home}",
+               f"PATH={REPO}/.venv/bin:{home}/.local/bin:/usr/local/bin:/usr/bin:/bin",
+               f"EA_DIR={M.EA_DIR.resolve()}", "EA_BROWSER_DIRECT=1",
+               f"{M.MEDIATED_VERB_ENV}={verb}", "python3",
+               str(TOOLS[tool]), *child_argv]
+        env = {"PATH": "/usr/bin:/bin"}
     # A verb that changes a draft runs under that draft's lock, the lock a
     # send holds from its content check to the send (draft_lock.py).
     scope = None if plugin_name else M.draft_lock_scope(tool, verb, argv)
@@ -679,8 +701,12 @@ def _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir, deliveries, r
             if rc == 0:
                 _note_release(tool, verb, argv, run_id, out)
     except subprocess.TimeoutExpired:
-        _respond(rid, "", json.dumps(
-            {"status": "error", "message": "mediator exec timeout"}), 3)
+        if tool == "web_browser" and verb == "submit":
+            _respond(rid, json.dumps({"ok": False, "submitted": None,
+                     "error": "Browser submission timed out. Status unknown; inspect before any retry."}), "", 3)
+        else:
+            _respond(rid, "", json.dumps(
+                {"status": "error", "message": "mediator exec timeout"}), 3)
         _audit(tool, verb, "EXEC-TIMEOUT")
     except draft_lock.Busy:
         _respond(rid, "", json.dumps(

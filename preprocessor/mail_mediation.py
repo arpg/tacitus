@@ -180,6 +180,10 @@ SAFE = {
     # Funnel on the node). There is no funnel verb anywhere, so a route
     # created this way is tailnet-only by construction.
     "deck_serve": {"serve", "off", "status"},
+    # Browser requests execute as the resident, never with owner credentials.
+    # Without the owner-click token these verbs only stage a review card.
+    # The clean worker environment never accepts a token from the request.
+    "web_browser": {"read", "fill", "submit"},
     # The remote email writer. It reads the brief the resident staged, the
     # thread and the draft (reads the resident has already), sends them to
     # the remote endpoint the owner approved for all mail, and writes the
