@@ -253,9 +253,22 @@ def _stage_publish(result: dict) -> None:
             raise SiteError("commit kept, but could not stage the Publish card")
 
 
+class OfflineError(SiteError):
+    """git could not reach GitHub (a turn with no network)."""
+
+
+_OFFLINE_MARKERS = ("could not resolve host", "unable to access", "failed to connect",
+                    "network is unreachable", "connection timed out", "temporary failure")
+
+
 def _fetch(slug: str) -> None:
-    _git(slug, "fetch", "-q", remote_url(slug),
-         f"+refs/heads/{BRANCH}:refs/remotes/origin/{BRANCH}")
+    try:
+        _git(slug, "fetch", "-q", remote_url(slug),
+             f"+refs/heads/{BRANCH}:refs/remotes/origin/{BRANCH}")
+    except SiteError as e:
+        if any(m in str(e).lower() for m in _OFFLINE_MARKERS):
+            raise OfflineError(str(e)) from None
+        raise
 
 
 def _ahead_behind(slug: str) -> tuple[int, int]:
@@ -632,7 +645,18 @@ def cmd_commit(slug: str, message: str) -> dict:
     if not message:
         raise SiteError("a commit needs --message: one line saying what changed")
     with _lock(slug):
-        _fetch(slug)
+        # A commit is local. With no network (a sandboxed turn) it uses the
+        # refs the last fetch left; publish fetches again and refuses a
+        # commit that is not a fast-forward of GitHub's main. The queued
+        # replay after the turn has network and still refuses.
+        cached = False
+        try:
+            _fetch(slug)
+        except SiteError:
+            import preferences
+            if preferences._APPLYING or _run_git(slug, "rev-parse", "--verify", "-q", f"origin/{BRANCH}").returncode:
+                raise
+            cached = True
         ahead, behind = _ahead_behind(slug)
         if behind:
             raise SiteError(f"GitHub has {behind} commit(s) the clone lacks (someone edited the "
@@ -651,8 +675,12 @@ def cmd_commit(slug: str, message: str) -> dict:
         _git(slug, "add", "-A")
         _git(slug, "commit", "-q", "-m", message)
         sha = _git(slug, "rev-parse", "HEAD").strip()
-        return {"status": "committed", "site": slug, "commit": sha,
-                "files": [c["path"] for c in changes], "stage": _staging_hint(slug, sha)}
+        res = {"status": "committed", "site": slug, "commit": sha,
+               "files": [c["path"] for c in changes], "stage": _staging_hint(slug, sha)}
+        if cached:
+            res["cached"] = True
+            res["note"] = "GitHub was not reachable; checked against the last fetched main. Publish rechecks."
+        return res
 
 
 def cmd_preview(slug: str, commit: str, max_chars: int) -> dict:
@@ -788,6 +816,17 @@ def main(argv: list[str] | None = None) -> int:
         if preferences._APPLYING and args.verb in ("commit", "revert"):
             _stage_publish(res)
             res["publish_staged"] = bool(res.get("stage"))
+    except OfflineError as e:
+        import preferences
+        if args.verb in ("pull", "revert") and not preferences._APPLYING:
+            # No network in this turn: the bot replays the verb after it,
+            # with network and the same checks.
+            preferences.stage("site_tools", list(sys.argv[1:] if argv is None else argv))
+            print(json.dumps({"status": "staged", "site": args.site, "note":
+                              "GitHub was not reachable. The bot runs this after the turn."}))
+            return 0
+        print(json.dumps({"status": "error", "error": str(e)}), file=sys.stderr)
+        return 2
     except (SiteError, OSError, subprocess.TimeoutExpired) as e:
         print(json.dumps({"status": "error", "error": str(e)}), file=sys.stderr)
         return 2

@@ -35,6 +35,11 @@ commit or revert stages its exact commit for the usual Publish card. A failed
 step is reported; publishing still requires the owner's click and one-time
 token. Raw git and general network access remain unavailable to the model.
 
+With the clone's `.git` writable but no network, `commit` still commits
+against the last fetched main (`cached: true`; publish rechecks), and `pull`
+and `revert` stage themselves for the same replay. `publish` and `push` stay
+behind the owner's Publish card in every lane.
+
 **Everything on a site is public.** Anyone on the internet can read it, and
 search engines index it. Put nothing there that is not already meant for the
 invitees: no names of speakers who have not confirmed, no internal notes,
