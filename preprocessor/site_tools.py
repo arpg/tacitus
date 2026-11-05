@@ -69,6 +69,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -204,6 +205,54 @@ def _git(slug: str, *args: str) -> str:
     return r.stdout
 
 
+def _clone_git_writable(slug: str) -> bool:
+    """Codex protects .git even when the site's working tree is writable."""
+    import preferences
+    try:
+        with tempfile.TemporaryFile(dir=clone_dir(slug) / ".git"):
+            return True
+    except OSError as e:
+        if preferences.sandbox_refused(e):
+            return False
+        raise
+
+
+def cmd_prefetch() -> dict:
+    """Refresh configured clones as the resident before a live Codex turn.
+
+    Only refs are updated; edited working files and local commits are kept.
+    Each failure is reported without preventing access to other sites.
+    """
+    results = []
+    for slug in sorted(SITES):
+        if not (clone_dir(slug) / ".git").is_dir():
+            continue
+        try:
+            _fetch(slug)
+            results.append({"site": slug, "status": "ok"})
+        except (SiteError, OSError, subprocess.TimeoutExpired) as e:
+            results.append({"site": slug, "status": "error", "error": str(e)[:300]})
+    return {"status": "ok", "sites": results}
+
+
+def _stage_write(argv: list[str], slug: str) -> dict | None:
+    import preferences
+    if preferences._APPLYING or _clone_git_writable(slug):
+        return None
+    preferences.stage("site_tools", argv)
+    return {"status": "staged", "site": slug,
+            "note": "The bot runs this after the turn. A successful commit stages a Publish card; publishing still requires the owner's click."}
+
+
+def _stage_publish(result: dict) -> None:
+    """After replay, hand the exact local commit to the existing card flow."""
+    import resident_io
+    if result.get("stage"):
+        path = EA_DIR / "state" / _gate.STAGE_FILE
+        if not resident_io.replace_text(path, json.dumps(result["stage"]["request"])):
+            raise SiteError("commit kept, but could not stage the Publish card")
+
+
 def _fetch(slug: str) -> None:
     _git(slug, "fetch", "-q", remote_url(slug),
          f"+refs/heads/{BRANCH}:refs/remotes/origin/{BRANCH}")
@@ -302,10 +351,11 @@ def _is_ancestor(slug: str, older: str, newer: str) -> bool:
         return False
 
 
-def _publishable(slug: str, commit: str) -> tuple[str, str]:
+def _publishable(slug: str, commit: str, *, cached: bool = False) -> tuple[str, str]:
     """(commit, base): the full commit and GitHub's main, after a fetch,
     once the commit is a fast-forward of main that adds no em-dash."""
-    _fetch(slug)
+    if not cached:
+        _fetch(slug)
     sha = _commit_id(slug, commit)
     base = _git(slug, "rev-parse", f"origin/{BRANCH}").strip()
     if sha == base:
@@ -499,12 +549,14 @@ def cmd_list() -> dict:
 
 def cmd_status(slug: str) -> dict:
     site = _site(slug)
-    _fetch(slug)
+    cached = not _clone_git_writable(slug)
+    if not cached:
+        _fetch(slug)
     ahead, behind = _ahead_behind(slug)
     return {"status": "ok", "site": slug, "url": site["url"], "repo": site["repo"],
             "clone": str(clone_dir(slug)), "head": _git(slug, "rev-parse", "--short", "HEAD").strip(),
             "unpushed_commits": ahead, "github_commits_missing": behind,
-            "changes": _changes(slug)}
+            "changes": _changes(slug), "cached": cached}
 
 
 def cmd_diff(slug: str, max_chars: int) -> dict:
@@ -608,7 +660,7 @@ def cmd_preview(slug: str, commit: str, max_chars: int) -> dict:
     GitHub's main, for the owner's card. Read only."""
     site = _site(slug)
     with _lock(slug):
-        sha, base = _publishable(slug, commit)
+        sha, base = _publishable(slug, commit, cached=not _clone_git_writable(slug))
         names = _git(slug, "diff", "--name-status", "--no-renames", base, sha)
         diff = _range_diff(slug, base, sha)
         subject = _git(slug, "log", "-1", "--format=%s", sha).strip()
@@ -674,6 +726,7 @@ def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Edit and publish the EA's GitHub Pages sites.", allow_abbrev=False)
     sub = ap.add_subparsers(dest="verb", required=True)
     sub.add_parser("list", allow_abbrev=False)
+    sub.add_parser("prefetch", allow_abbrev=False)
     for verb in ("status", "diff", "pull", "add-file", "commit", "revert", "preview", "publish"):
         s = sub.add_parser(verb, allow_abbrev=False)
         s.add_argument("--site", required=True)
@@ -703,8 +756,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.verb == "list":
             res = cmd_list()
+        elif args.verb == "prefetch":
+            res = cmd_prefetch()
         else:
             _site(args.site)
+            if args.verb in ("commit", "pull", "revert"):
+                staged = _stage_write(list(sys.argv[1:] if argv is None else argv), args.site)
+                if staged:
+                    print(json.dumps(staged))
+                    return 0
+            if args.verb == "publish" and not _clone_git_writable(args.site):
+                raise SiteError("Publishing requires the owner's Publish card outside this sandbox")
             if args.verb == "status":
                 res = cmd_status(args.site)
             elif args.verb == "diff":
@@ -722,6 +784,10 @@ def main(argv: list[str] | None = None) -> int:
                                   token=args.confirm_token)
             else:
                 res = cmd_revert(args.site, args.commit)
+        import preferences
+        if preferences._APPLYING and args.verb in ("commit", "revert"):
+            _stage_publish(res)
+            res["publish_staged"] = bool(res.get("stage"))
     except (SiteError, OSError, subprocess.TimeoutExpired) as e:
         print(json.dumps({"status": "error", "error": str(e)}), file=sys.stderr)
         return 2

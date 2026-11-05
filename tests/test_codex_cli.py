@@ -333,5 +333,12 @@ def test_run_streams_each_event_when_asked_and_reads_the_same_result(tmp_path, m
     assert any(e.get("type") == "item.completed" for e in seen), "the events arrived as they were printed"
     assert [e.get("type") for e in seen] == [json.loads(l)["type"] for l in EVENTS.splitlines() if l.strip()]
 
+
+def test_build_turns_on_live_web_search_only_when_asked(tmp_path):
+    base = X.build(cwd=tmp_path)
+    on = X.build(cwd=tmp_path, search=True)
+    assert "web_search" not in " ".join(base)
+    assert on[on.index('web_search="live"') - 1] == "-c"
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

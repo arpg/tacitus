@@ -467,3 +467,79 @@ def test_a_token_is_bound_to_the_repository_the_card_named(env, monkeypatch):
     monkeypatch.setitem(st.SITES, SLUG, other)
     with pytest.raises(st.SiteError, match="BLOCKED"):
         st.cmd_publish(SLUG, item["commit"], item["base"], False, token=token)
+
+
+def test_codex_commit_is_replayed_and_stages_card_without_publishing(env, monkeypatch, tmp_path, capsys):
+    import preferences
+    monkeypatch.setattr(preferences, 'STAGED_FILE', tmp_path / 'staged.jsonl')
+    monkeypatch.setattr(preferences, 'REFUSED_FILE', tmp_path / 'refused.jsonl')
+    monkeypatch.setattr(st, 'EA_DIR', tmp_path)
+    (tmp_path / 'state').mkdir()
+    (env['clone'] / 'index.html').write_text('<p>updated schedule</p>\n')
+    origin_before = _origin_log(env['origin'])
+    with monkeypatch.context() as box:
+        box.setattr(st, '_clone_git_writable', lambda slug: False)
+        box.setattr(st, '_run_git', lambda *a, **kw: pytest.fail('staging must not use git or network'))
+        assert st.main(['commit', '--site', SLUG, '--message', 'Update schedule']) == 0
+    assert json.loads(capsys.readouterr().out)['status'] == 'staged'
+    result = preferences.apply_staged('Update schedule')
+    assert not result['refused'] and len(result['applied']) == 1
+    request = json.loads((tmp_path / 'state' / gate.STAGE_FILE).read_text())
+    assert request['site'] == SLUG and len(request['commit']) == 40
+    assert _origin_log(env['origin']) == origin_before, 'replay never publishes'
+    assert st.cmd_preview(SLUG, request['commit'], 20000)['files']
+    with pytest.raises(st.SiteError):
+        st.cmd_publish(SLUG, request['commit'], _run('git', 'rev-parse', 'origin/main', cwd=env['clone']), False)
+
+
+def test_codex_status_reads_cached_refs_without_fetch(env, monkeypatch):
+    real = st._run_git
+    def local_only(slug, *args, **kw):
+        assert args[0] != 'fetch', 'sandbox must not attempt DNS or write FETCH_HEAD'
+        return real(slug, *args, **kw)
+    monkeypatch.setattr(st, '_clone_git_writable', lambda slug: False)
+    monkeypatch.setattr(st, '_run_git', local_only)
+    assert st.cmd_status(SLUG)['cached'] is True
+
+
+def test_replay_refuses_site_publish_and_failed_commit_creates_no_card(env, monkeypatch, tmp_path):
+    import preferences
+    monkeypatch.setattr(preferences, 'STAGED_FILE', tmp_path / 'staged.jsonl')
+    monkeypatch.setattr(preferences, 'REFUSED_FILE', tmp_path / 'refused.jsonl')
+    monkeypatch.setattr(st, 'EA_DIR', tmp_path)
+    (tmp_path / 'state').mkdir()
+    preferences.stage('site_tools', ['publish', '--site', SLUG, '--commit', 'a' * 40, '--base', 'b' * 40])
+    preferences.stage('site_tools', ['commit', '--site', SLUG, '--message', 'Update'])
+    monkeypatch.setattr(st, '_fetch', lambda slug: (_ for _ in ()).throw(st.SiteError('host unavailable')))
+    result = preferences.apply_staged('Update')
+    assert len(result['refused']) == 2 and not result['applied']
+    assert 'host unavailable' in result['refused'][1]['why']
+    assert not (tmp_path / 'state' / gate.STAGE_FILE).exists()
+
+
+def test_prefetch_preserves_edited_working_tree_and_reports_each_failure(env, monkeypatch):
+    (env['clone'] / 'index.html').write_text('local edit\n')
+    assert st.cmd_prefetch()['sites'] == [{'site': SLUG, 'status': 'ok'}]
+    assert (env['clone'] / 'index.html').read_text() == 'local edit\n'
+    monkeypatch.setattr(st, '_fetch', lambda slug: (_ for _ in ()).throw(st.SiteError('host unavailable')))
+    assert st.cmd_prefetch()['sites'][0]['status'] == 'error'
+
+
+def test_remote_change_after_staging_refuses_commit_and_card(env, monkeypatch, tmp_path):
+    import preferences
+    monkeypatch.setattr(preferences, 'STAGED_FILE', tmp_path / 'staged.jsonl')
+    monkeypatch.setattr(preferences, 'REFUSED_FILE', tmp_path / 'refused.jsonl')
+    monkeypatch.setattr(st, 'EA_DIR', tmp_path)
+    (tmp_path / 'state').mkdir()
+    (env['clone'] / 'index.html').write_text('local schedule edit\n')
+    with monkeypatch.context() as box:
+        box.setattr(st, '_clone_git_writable', lambda slug: False)
+        assert st.main(['commit', '--site', SLUG, '--message', 'Update schedule']) == 0
+    (env['seed'] / 'index.html').write_text('someone else edited\n')
+    _run('git', 'add', 'index.html', cwd=env['seed'])
+    _run('git', 'commit', '-qm', 'Remote edit', cwd=env['seed'])
+    _run('git', 'push', '-q', 'origin', 'main', cwd=env['seed'])
+    result = preferences.apply_staged('Update schedule')
+    assert len(result['refused']) == 1 and not result['applied']
+    assert not (tmp_path / 'state' / gate.STAGE_FILE).exists()
+    assert (env['clone'] / 'index.html').read_text() == 'local schedule edit\n'

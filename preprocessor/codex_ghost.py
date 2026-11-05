@@ -783,6 +783,11 @@ def codex_suffix(scratch: Path, kind: str, *, live: bool = False) -> str:
              "the user's words in this message, so quote the user exactly; `autonomy_tiers.py promote` "
              "(a tier promotion) is staged the same way."
              if live_chat else "Never write a file outside EA_DIR.")
+    if live_chat:
+        files += (" Site repositories are refreshed before this turn. Use site_tools.py for every repository step, never raw git. "
+                  "Its status and preview use cached refs here; commit, pull and revert answer staged and run after this turn. "
+                  "Do not retry a staged step or call it a DNS failure. The bot reports the result and stages successful commits "
+                  "for the existing Publish button. Never claim a queued commit or card already exists.")
     asking = ("You cannot ask the user anything while you work: a question for the user goes in your final message."
               if live_chat else "Do not ask the user anything; this run is unattended.")
     return f"""

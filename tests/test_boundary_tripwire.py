@@ -102,6 +102,16 @@ def _veto(m, p: Path) -> None:
     store.save()
 
 
+def _stage_publish_in(m, ea_dir: Path) -> None:
+    """site_tools' Publish staging, with the module's EA state in the case."""
+    keep = m.EA_DIR
+    m.EA_DIR = ea_dir
+    try:
+        m._stage_publish({"stage": {"request": {"site": "x"}}})
+    finally:
+        m.EA_DIR = keep
+
+
 def _plugin_ctx(m, plugins_dir: Path):
     """An ea-plugin context whose resident tree is the case directory."""
     return m.Context(private=PRIV, agent_dir=plugins_dir, ea_dir=plugins_dir.parent,
@@ -146,6 +156,7 @@ WRITERS = [
     W("style_analysis", lambda m, p: m.save({"window": {"to": "2026-09"}}), attr="LATEST"),
     W("alert", lambda m, p: m._rewrite_pending([{"id": "x"}]), attr="PENDING"),
     W("page_watch", lambda m, p: m._save(p, [{"id": "x"}]), name="state/page-watches.json"),
+    W("site_tools", lambda m, p: _stage_publish_in(m, p.parents[1]), name="state/pending-publish.json"),
     W("mail_privacy", lambda m, p: m._write_reduced("{}"), attr="REDUCED_BRIEFING"),
     W("remote_digests", lambda m, p: m._write_report("list-digest", "x"), attr="REPORT_DIR",
       name="reports/list-digest-latest.md"),
