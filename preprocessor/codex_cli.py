@@ -10,7 +10,8 @@ reads anywhere and writes nowhere; `workspace-write` writes only under
 the working root (`-C`), the `--add-dir` directories and the temp dirs
 (/tmp and $TMPDIR, or the `tmp_dir` a run names in their place). A lane
 that must write the EA state passes that directory, never the code tree.
-Network is off inside the sandbox.
+Network is off inside the sandbox; the hosted `web_search` tool (`search=True`)
+runs on the provider's side and needs none.
 
     codex_cli.py probe            exit 0 when codex answers a trivial prompt
     codex_cli.py version          the installed version, or exit 1
@@ -79,7 +80,7 @@ def temp_flags(tmp_dir) -> list[str]:
 
 def build(*, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
           last_message_file=None, ephemeral: bool = True, resume: str = "",
-          disable=(), codex_bin: str = "", tmp_dir=None) -> list[str]:
+          disable=(), codex_bin: str = "", tmp_dir=None, search: bool = False) -> list[str]:
     """The command line for one run. The prompt goes on stdin (`-`), so
     no instruction text ever sits in a process listing. `disable` names
     Codex features to turn off for the run (`--disable`; hosted_text
@@ -117,6 +118,8 @@ def build(*, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
         cmd += ["--disable", str(feature)]
     if tmp_dir is not None:
         cmd += temp_flags(tmp_dir)
+    if search:
+        cmd += ["-c", 'web_search="live"']
     if ephemeral:
         cmd.append("--ephemeral")
     if model:
@@ -233,7 +236,7 @@ def _run_streaming(cmd, prompt: str, *, timeout: int, cwd: str, env, on_event) -
 def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
         timeout: int = 600, env: dict | None = None, prefix=(), last_message_dir=None,
         ephemeral: bool = True, resume: str = "", on_event=None, disable=(),
-        codex_bin: str = "", tmp_dir=None) -> dict:
+        codex_bin: str = "", tmp_dir=None, search: bool = False) -> dict:
     """One non-interactive run. Returns {"output", "tool_calls",
     "exit_code", "duration_s", "harness_error", "num_turns", "usage",
     "files", "stderr", "thread_id"}: `output` is the agent's final message
@@ -251,7 +254,8 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
     each JSONL event as it arrives (the turn's progress line reads the
     command items); without it the run is read whole at the end.
     `tmp_dir` is the run's temp dir in place of /tmp (build, temp_flags);
-    the caller makes it."""
+    the caller makes it. `search` turns on the hosted `web_search` tool (live
+    results; the provider runs it, so the sandbox still has no network)."""
     prefix = list(prefix or ())
     b = codex_bin or binary()
     if not b and not prefix:
@@ -269,7 +273,7 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
             last = Path(td_ctx.name) / "last-message.txt"
         cmd = build(cwd=cwd, model=model, sandbox=sandbox, add_dirs=add_dirs,
                     last_message_file=last, ephemeral=ephemeral, resume=resume,
-                    tmp_dir=tmp_dir, disable=disable, codex_bin=codex_bin)
+                    tmp_dir=tmp_dir, disable=disable, codex_bin=codex_bin, search=search)
         if prefix:
             cmd = prefix + [CODEX_BIN] + cmd[1:]
         start = time.time()

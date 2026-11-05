@@ -25,6 +25,13 @@ saved. A photo page is not the image: read the page first and take the
 URL from its `images`. Note the source and its license or credit line as
 you save it; a deck slide carries the credit.
 
+A Codex turn's sandbox has no network, so `fetch_url.py` fails inside it
+(DNS error). The bot reads the links in the user's message before the turn
+(`codex_turn._prefetch_pages`, up to three, outside the sandbox, same address
+policy and log) and puts the pages in the prompt as data. For anything else
+the turn has Codex's hosted `web_search` tool (live results, run by the
+provider). Neither reads a login-gated page: ask the user to paste it.
+
 A scheduled (cron) run has no WebFetch or WebSearch: `fetch_url.py` is its
 only web reader. Every request either way is logged and reviewed daily.
 
