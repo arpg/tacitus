@@ -289,6 +289,29 @@ def test_time_parsing_handles_the_common_shapes():
     assert sa.extract_times("Jan 5 at 10am", TODAY, TZ)[0][0]["start"].year == 2027
 
 
+def test_a_clock_in_another_zone_is_read_in_that_zone():
+    # the same window on two clocks is one time (an offer the EA writes)
+    two = sa.extract_times("Tue Nov 3, 3:30-4:00 PM MT (1:30-2:00 PM AKT) or Wed Nov 4, 3:15-3:45 PM MT "
+                           "(5:15-5:45 PM ET)", TODAY, TZ)[0]
+    assert _fmt(two) == [("11-03 15:30", "16:00"), ("11-04 15:15", "15:45")]
+    # "to noon" ends a range; the zone after it still applies
+    assert _fmt(sa.extract_times("Monday, November 30, 9:00 to 10:00 am MT (11:00 am to noon ET)", TODAY, TZ)[0]) == [
+        ("11-30 09:00", "10:00")]
+    # a city clock, and one a day ahead there
+    assert _fmt(sa.extract_times("Tue Nov 3, 5:00-5:30 PM MT (12:00-12:30 AM Wed in London)", TODAY, TZ)[0]) == [
+        ("11-03 17:00", "17:30")]
+    assert _fmt(sa.extract_times("Tue Nov 3, 5:00-5:30 PM MT (9:00-9:30 AM Wed in Tokyo)", TODAY, TZ)[0]) == [
+        ("11-03 17:00", "17:30")]
+    # a time named only in another zone is converted; daylight labels follow the date
+    assert _fmt(sa.extract_times("Could we do Thu Nov 5 at 3 pm Eastern?", TODAY, TZ)[0]) == [("11-05 13:00", None)]
+    assert _fmt(sa.extract_times("Thu Oct 15 at 3 pm EST", TODAY, TZ)[0]) == [("10-15 13:00", None)]
+    # a place is not a zone; the user's own region keeps the user's zone
+    assert _fmt(sa.extract_times("Tue Nov 3 at 3pm in Room 101", TODAY, TZ)[0]) == [("11-03 15:00", None)]
+    phx = ZoneInfo("America/Phoenix")
+    t = sa.extract_times("Tue Nov 3 at 3pm MST", TODAY, phx)[0][0]
+    assert t["start"].tzinfo == phx and t["start"].hour == 15
+
+
 def test_weekday_mismatch_is_a_rule_break():
     assert "weekday-mismatch" in sa.rule_breaks("Monday Oct 13 at 11:15", today=TODAY, tz=TZ)
     assert sa.rule_breaks("Tuesday Oct 13 at 11:15", today=TODAY, tz=TZ) == []

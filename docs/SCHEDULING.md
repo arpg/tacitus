@@ -306,6 +306,28 @@ If the primary pass finds few options, the solver automatically tries
 relaxation (movable 1:1s). Conditional options appear with labels like
 "Move 1:1 with Jordan (Tue 10:00) to accommodate" so you can decide.
 
+### "They said one of my times works"
+
+No model stages this invite. The ten-minute intake and the hourly
+check find the reply that takes a time from the user's last offer in
+the thread, and `sched_acceptance.py` builds the event: the thread's
+subject, the accepted slot on the user's clock, the length from the
+reply, the offer ("a 30-minute Zoom") or the preference
+`preferred_duration_minutes`, the one who accepted as attendee (the
+rest of the thread optional), and the user's video link unless the
+thread says phone or in person. `validate-draft` checks the slot; a conflict is
+named in the thread, and the Create card waits for the click. A turn
+then drafts the confirming reply. Code hands the thread to the model
+instead, with its reason in the first line, when the offer went to
+several people or to someone else, the reply hedges ("probably",
+"instead"), the reply took a window longer than the meeting, no length
+is known, or the time has passed.
+
+```bash
+python3 preprocessor/sched_thread_state.py analyze --thread-file thread.json   # what the thread says
+python3 preprocessor/sched_backtest.py --days 14                               # what code would have staged
+```
+
 ## Scheduler trace (the Slack guidepost)
 
 Every Slack reply that involved the scheduling engine carries a

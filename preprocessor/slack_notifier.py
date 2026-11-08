@@ -70,6 +70,8 @@ def notify_scheduling_requests(scheduling_data: list, availability: list):
         return
 
     for req in scheduling_data:
+        if req.get("staged_event"):
+            continue  # an accepted time: its thread and Create card come from the bot
         slot_text = "\n".join(
             f"  • {s['day']}: {s['start'][11:16]} – {s['end'][11:16]}"
             for s in availability[:8]

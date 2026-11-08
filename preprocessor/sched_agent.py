@@ -646,9 +646,50 @@ _DATE_WORDS = re.compile(
     re.I)
 _CLOCK = re.compile(
     r"(?<![\d/:-])(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ap>[ap]\.?m\.?)?"
-    r"(?:\s*(?:-|to|until)\s*(?P<h2>\d{1,2})(?::(?P<m2>\d{2}))?\s*(?P<ap2>[ap]\.?m\.?)?)?"
+    r"(?:\s*(?:-|to|until)\s*(?:(?P<h2>\d{1,2})(?::(?P<m2>\d{2}))?\s*(?P<ap2>[ap]\.?m\.?)?"
+    r"|(?P<noon2>noon|midnight)))?"
     r"(?![\d/])",
     re.I)
+
+# A zone named right after a clock: "3:30-4:00 PM MT", "(1:30-2:00 PM AKT)",
+# "2 pm Eastern", "5:30-6:00 PM in London", "7:00-7:30 AM Wed in Tokyo"
+# (sched_render writes the label and "in <city>" forms for an attendee's
+# clock; its ZONE_LABELS reads them back). The clock is read in that zone; a
+# weekday before it moves the date to that day.
+_ZONE_AFTER = re.compile(
+    r"\s*\(?\s*(?:(?P<wd>(?i:mon|tue|wed|thu|fri|sat|sun))[a-z]*\.?\s+)?"
+    r"(?:in\s+(?P<city>[A-Z][A-Za-z]+(?:[ _-][A-Z][A-Za-z]+)?)"
+    r"|(?P<word>(?i:eastern|central|mountain|pacific|alaska|hawaii)(?:\s+(?i:time))?)\b"
+    r"|(?P<abbr>[A-Z]{2,5})\b)")
+_CITY_ZONES: dict = {}
+_CITY_AREAS = ("Africa", "America", "Asia", "Atlantic", "Australia", "Europe", "Indian", "Pacific")
+
+
+def _city_zone(city: str) -> ZoneInfo | None:
+    """The zone named for this city ("London", "New York"): a city zone
+    only, never a region alias such as US/Mountain."""
+    if not _CITY_ZONES:
+        from zoneinfo import available_timezones
+        for name in sorted(available_timezones()):
+            if name.split("/", 1)[0] in _CITY_AREAS:
+                _CITY_ZONES.setdefault(name.rsplit("/", 1)[-1].lower(), name)
+    name = _CITY_ZONES.get("_".join(re.split(r"[ _-]", city.strip())).lower())
+    return ZoneInfo(name) if name else None
+
+
+def _zone_named(m: re.Match, tz: ZoneInfo) -> ZoneInfo | None:
+    """The zone a _ZONE_AFTER match names, or None. A regional label is the
+    user's own zone when the user lives in that region."""
+    if m.group("city"):
+        return _city_zone(m.group("city"))
+    from sched_render import REGION_ZONES, ZONE_LABELS
+    label = (m.group("word") or "").split()[0].lower() if m.group("word") else ZONE_LABELS.get(m.group("abbr") or "")
+    if not label:
+        return None
+    if label in REGION_ZONES:
+        canonical, members = REGION_ZONES[label]
+        return tz if getattr(tz, "key", "") in members else ZoneInfo(canonical)
+    return ZoneInfo(label)
 
 
 def _parse_iso(s: str, tz: ZoneInfo | None = None) -> datetime | None:
@@ -699,8 +740,11 @@ def _resolve_year(month: int, day: int, year: int | None, today: date) -> date |
 def extract_times(text: str, today: date | None = None,
                   tz: ZoneInfo | None = None) -> tuple[list[dict], list[str]]:
     """Concrete times named in free text. Returns (times, mismatches):
-    times are {"start": datetime, "end": datetime | None}; mismatches name
-    each "<weekday> <date>" pair whose weekday is wrong."""
+    times are {"start": datetime, "end": datetime | None} on the clock of
+    `tz`; mismatches name each "<weekday> <date>" pair whose weekday is
+    wrong. A clock followed by another zone's name is read in that zone,
+    so the same window written on two clocks ("3:30 PM MT (5:30 PM ET)")
+    is one time, not two."""
     tz = tz or ZoneInfo(DEFAULT_TZ)
     today = today or datetime.now(tz).date()
     text = text or ""
@@ -743,20 +787,32 @@ def extract_times(text: str, today: date | None = None,
         stop = dates[i + 1].start() if i + 1 < len(dates) else len(text)
         window = text[m.end():min(stop, m.end() + 160)]
         for c in _CLOCK.finditer(window):
-            if not (c.group("m") or c.group("ap") or c.group("h2")):
+            if not (c.group("m") or c.group("ap") or c.group("h2") or c.group("noon2")):
                 continue
             h = _hour24(int(c.group("h")), c.group("ap"), c.group("ap2"))
             if h is None:
                 continue
-            start = datetime(d.year, d.month, d.day, h, int(c.group("m") or 0), tzinfo=tz)
+            day, zone = d, tz
+            z = _ZONE_AFTER.match(window, c.end())
+            named = _zone_named(z, tz) if z else None
+            if named is not None:
+                zone = named
+                if z.group("wd"):
+                    want = z.group("wd").lower()[:3]
+                    day = next((d + timedelta(days=k) for k in (0, 1, -1)
+                                if (d + timedelta(days=k)).strftime("%a").lower() == want), d)
+            start = datetime(day.year, day.month, day.day, h, int(c.group("m") or 0), tzinfo=zone)
             end = None
-            if c.group("h2"):
-                h2 = _hour24(int(c.group("h2")), c.group("ap2"), c.group("ap"))
+            if c.group("h2") or c.group("noon2"):
+                if c.group("noon2"):
+                    h2, m2 = (12, 0) if c.group("noon2").lower() == "noon" else (0, 0)
+                else:
+                    h2, m2 = _hour24(int(c.group("h2")), c.group("ap2"), c.group("ap")), int(c.group("m2") or 0)
                 if h2 is not None:
-                    end = datetime(d.year, d.month, d.day, h2, int(c.group("m2") or 0), tzinfo=tz)
+                    end = datetime(day.year, day.month, day.day, h2, m2, tzinfo=zone)
                     if end <= start:
-                        end = None
-            add(start, end)
+                        end = end + timedelta(days=1) if c.group("noon2") else None
+            add(start.astimezone(tz), end.astimezone(tz) if end else None)
     return found, mismatches
 
 

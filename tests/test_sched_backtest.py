@@ -54,3 +54,40 @@ def test_without_the_sent_join_answered_is_unknown():
                  sent_times=None, since="2026-10-01T00:00:00Z")[0]
     assert v["answered"] is None
     assert sb.summarize([v])["by_kind"]["proposes-times"]["answered"] == 0
+
+
+def test_the_replay_counts_what_code_would_stage_for_each_accepted_time():
+    """sched_acceptance.from_thread over each conversation: an offer and a
+    reply that takes one of its times stages; a reply from someone the
+    offer did not go to goes to a thread with its reason; a thread with no
+    acceptance, or one before the window, counts nothing. The log's counts
+    sit beside it."""
+    me, them, other = "kit.calloway@example.edu", "morgan.vasquez41@example.org", "rowan.pike58@example.org"
+    offer = ("Hi Morgan, any of these for a 30-minute Zoom? Tue Nov 3, 2026, 3:30-4:00 PM MT (5:30-6:00 PM ET) "
+             "or Wed Nov 4, 2026, 3:15-3:45 PM MT (5:15-5:45 PM ET). Kit")
+
+    def thread(reply_from, reply_at, reply_text):
+        return [{"from": {"address": me}, "sent": "2026-11-02T19:14:28Z", "subject": "Re: Plans", "to": [them],
+                 "text": offer},
+                {"from": {"address": reply_from}, "sent": reply_at, "subject": "Re: Plans", "to": [me],
+                 "text": reply_text}]
+    threads = {
+        "c-yes": thread(them, "2026-11-02T21:00:24Z", "Tue Nov 3, 2026, 3:30-4:00 PM MT (5:30-6:00 PM ET)\nSee you then."),
+        "c-other": thread(other, "2026-11-02T21:30:00Z", "Wed Nov 4, 2026, 3:15-3:45 PM MT works for me."),
+        "c-none": thread(them, "2026-11-02T22:00:00Z", "Let me check and get back to you."),
+        "c-old": thread(them, "2026-10-01T10:00:00Z", "Tue Nov 3, 2026, 3:30-4:00 PM MT works."),
+    }
+    ctx = {"addrs": {me}, "first": "Kit", "tz": "America/Denver", "default_minutes": 30}
+    r = sb.replay_acceptances(threads, ctx, since="2026-10-25T00:00:00Z")
+    assert (r["accepted"], r["would_stage"], r["handoff"]) == (2, 1, 1), r
+    assert r["reasons"] == {"They were not among the people the offer went to.": 1}
+    staged = next(i for i in r["items"] if i["staged"])
+    assert staged["conversation_id"] == "c-yes" and staged["when"] == "Tue Nov 3, 3:30-4:00 PM MT"
+    logged = sb.logged_acceptances([{"ts": "2026-11-02T21:10:00+00:00", "status": "staged"},
+                                    {"ts": "2026-11-02T21:40:00+00:00", "status": "handoff"},
+                                    {"ts": "2026-10-01T00:00:00+00:00", "status": "staged"}],
+                                   "2026-10-25T00:00:00Z")
+    assert logged == {"staged": 1, "handoff": 1}
+    text = sb.render_replay(r, logged)
+    assert text.startswith("accepted times replayed: 2; code would stage an invite for 1, hand 1 to a thread")
+    assert "staged by code in the window (the log): 1, handed to a thread: 1" in text

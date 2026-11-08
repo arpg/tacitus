@@ -68,6 +68,9 @@ where an id is asked for. Never retype a long id.
    no attendees is created at once): write the JSON below to
    /home/ea-bot/.ea/state/pending-event.json and say so in one line.
    Never create, update or delete an event or send mail yourself.
+   A thread that opens with "I staged the invite" (someone took a time
+   the user offered) already has its Create button: stage no event, and
+   draft the confirming reply as in step 7.
 7. The reply email, only once the user has chosen: write the body to
    /home/ea-bot/.ea/state/reply-body.txt in the user's voice (short,
    plain, no em-dash), then

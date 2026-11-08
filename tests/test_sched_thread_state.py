@@ -35,7 +35,9 @@ def test_an_offer_then_a_pick_is_an_acceptance():
     assert a["state"] == "accepted"
     assert [o["start"] for o in a["offered"]] == ["2026-11-02T14:30:00-07:00", "2026-11-03T10:45:00-07:00",
                                                    "2026-11-04T14:45:00-07:00"]
-    assert a["accepted"] == {"start": "2026-11-04T14:45:00-07:00", "end": "2026-11-04T15:15:00-07:00"}
+    assert a["accepted"] == {"start": "2026-11-04T14:45:00-07:00", "end": "2026-11-04T15:15:00-07:00",
+                             "named_end": True,
+                             "window": {"start": "2026-11-04T14:45:00-07:00", "end": "2026-11-04T15:15:00-07:00"}}
     assert a["offered_at"] == "2026-10-21T22:32:00Z" and a["inbound_at"] == "2026-10-22T22:53:00Z"
 
 
@@ -77,6 +79,44 @@ def test_graph_shapes_and_the_sent_offers_index():
     inbound = {"from": {"emailAddress": {"address": THEM}}, "receivedDateTime": "2026-10-22T22:53:00Z", "bodyPreview": ACCEPT}
     a = st.analyze(sent[:1] + [inbound], {ME}, today=TODAY, tz=TZ)
     assert a["state"] == "accepted"
+
+
+def test_only_the_replys_own_words_count():
+    """A reply quotes the offer below an attribution line; a preview cuts
+    that line short. The quoted times and the attribution's clock are not
+    picks."""
+    offer = ("Hi Morgan, any of these for a 30-minute Zoom? - Tue Nov 3, 3:30-4:00 PM MT (5:30-6:00 PM ET) "
+             "- Wed Nov 4, 3:15-3:45 PM MT (5:15-5:45 PM ET) Kit")
+    times = st.offers_from_sent([{"conversationId": "c1", "sentDateTime": "2026-11-02T19:14:28Z",
+                                  "from": {"emailAddress": {"address": ME}}, "body": {"content": offer}}],
+                                today=TODAY, tz=TZ)["c1"]["times"]
+    assert len(times) == 2, "the other side's clock is the same slot"
+    full = ("Hi Kit,\r\nTue Nov 3, 3:30-4:00 PM MT (5:30-6:00 PM ET)\r\nSee you tomorrow.\r\n-- Morgan\r\n\r\n"
+            "On Mon, Nov 2, 2026 at 10:14 AM Kit Calloway <kit.calloway@example.edu> wrote:\r\n" + offer)
+    assert st.classify_reply(full, times, today=TODAY, tz=TZ)[0] == "accepted"
+    assert st.classify_reply(full[:150], times, today=TODAY, tz=TZ)[0] == "accepted", "a preview cut mid-attribution"
+    assert st.new_text("Works.\n> Tue Nov 3, 3:30 PM") == "Works.\n"
+    assert st.new_text("Works.\n________________________________\nFrom: Kit\nSent: Monday") == "Works.\n"
+    assert st.new_text("On Tuesday 3:30 works for me.") == "On Tuesday 3:30 works for me.", "not an attribution"
+    html = ('<html><body><div>Tue Nov 3 at 3:30 PM works.</div><div id="divRplyFwdMsg">From: Kit<br>'
+            'Wed Nov 4, 3:15 PM</div></body></html>')
+    assert "Wed Nov 4" not in st.new_text(html) and "3:30 PM works." in st.new_text(html)
+    assert "Wed" not in st.new_text('<p>Yes, Tuesday.</p><blockquote>Wed Nov 4, 3:15 PM</blockquote>')
+
+
+def test_a_time_inside_an_offered_window_takes_that_window():
+    offered = [{"start": "2026-11-03T15:45:00-07:00", "end": "2026-11-03T16:45:00-07:00"},
+               {"start": "2026-11-04T11:00:00-07:00", "end": "2026-11-04T12:00:00-07:00"}]
+    kind, picks, others = st.classify_reply("Tue Nov 3, 4:00-4:30 PM works for me.", offered, today=TODAY, tz=TZ)
+    assert kind == "accepted" and others == []
+    assert picks[0] == {"start": "2026-11-03T16:00:00-07:00", "end": "2026-11-03T16:30:00-07:00", "named_end": True,
+                        "window": offered[0]}
+    # past the window's end is a counter, not a pick
+    assert st.classify_reply("Tue Nov 3, 4:30-5:30 PM works.", offered, today=TODAY, tz=TZ)[0] == "counter"
+    # the record's time inside a window grounds it too
+    slot = st.match_offered(["2026-11-04T11:30:00"], offered, tz=TZ)
+    assert slot["start"] == "2026-11-04T11:30:00-07:00" and slot["window"] == offered[1] and not slot["named_end"]
+    assert st.match_offered(["2026-11-04T12:30:00"], offered, tz=TZ) is None
 
 
 def test_the_cli_reads_a_thread_file(tmp_path):

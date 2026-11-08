@@ -19,6 +19,13 @@ for a "can we move it?" email. The first three take `--ignore-event
 <id>` (repeatable) to treat one of the user's own events as free for
 that call, which is how "can Uma join my existing 1:1" gets answered.
 
+**An accepted time.** When someone takes a time the user offered, code
+stages the invite: the scheduling thread opens with "I staged the
+invite" and the Create card is in the user's DM. That thread needs only
+the confirming reply. Never stage a second event for it. A thread that
+opens with "I did not stage the invite" gives the reason; work it as a
+request.
+
 **Booking links.** A cal.com or Calendly link someone sends is read with
 `booking_link.py`, which only reads: `propose` runs `propose-meeting`
 with each link's open slots as that person's availability. Never book

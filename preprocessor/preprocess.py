@@ -1154,7 +1154,12 @@ def detect_scheduling_requests(inbox: list, sent: list, gate=None, sent_full: li
     An acceptance needs the user's offer: a record's "confirmation" stays
     only when this pass agrees, or when a time the record names is one
     the user offered in that thread. Otherwise it is dropped here, and the
-    message stays an ordinary mail item."""
+    message stays an ordinary mail item.
+
+    A grounded acceptance leaves with `acceptance`: the event code stages
+    for it, or the reason a thread must decide (sched_acceptance); a reply
+    that names several offered times or other times leaves with its
+    `handoff` reason. queue_scheduling acts on both."""
     sent_convs = {m.get("conversationId") for m in sent if m.get("conversationId")}
     requests_found = []
     import mail_privacy as _mp
@@ -1228,6 +1233,7 @@ def detect_scheduling_requests(inbox: list, sent: list, gate=None, sent_full: li
         sent_full = _sent_with_bodies()
     import sched_thread_state as _sts
     offers = _sts.offers_from_sent(sent_full) if sent_full else {}
+    slots: dict = {}
     if offers:
         have = {r["message_id"]: r for r in requests_found}
         for m in inbox:
@@ -1241,10 +1247,14 @@ def detect_scheduling_requests(inbox: list, sent: list, gate=None, sent_full: li
             if any(skip in from_addr.lower() for skip in ["noreply", "no-reply", "notifications"]):
                 continue
             state, picks, others = _sts.classify_reply(m.get("bodyPreview", "") or "", offer["times"])
+            handoff = ""
             if state == "accepted":
                 kind, times, note = "confirmation", [picks[0]["start"]], f"Accepted {picks[0]['start']}, one of the times the user offered."
+                slots[mid] = picks[0]
             elif state in ("counter", "several"):
                 kind, times, note = "proposes-times", [t["start"] for t in (picks + others)], "Named other times than the user offered."
+                handoff = (f"They named {len(picks)} of the times you offered." if state == "several"
+                           else "They named a time you did not offer.")
             else:
                 continue
             prior = have.get(mid)
@@ -1254,13 +1264,15 @@ def detect_scheduling_requests(inbox: list, sent: list, gate=None, sent_full: li
                 prior["offered_times"] = times
                 prior["kind"] = kind
                 prior["offered_match"] = (state == "accepted")
+                if handoff:
+                    prior["handoff"] = handoff
                 continue
             requests_found.append({
                 "message_id": mid, "conversation_id": conv, "subject": m.get("subject", ""),
                 "from": from_addr, "from_name": m.get("from", {}).get("emailAddress", {}).get("name", ""),
                 "received": m.get("receivedDateTime", ""), "body_preview": m.get("bodyPreview", "")[:500],
                 "kind": kind, "offered_times": times, "ask": note, "from_state": True,
-                "offered_match": state == "accepted",
+                "offered_match": state == "accepted", **({"handoff": handoff} if handoff else {}),
             })
 
     grounded = []
@@ -1272,8 +1284,42 @@ def detect_scheduling_requests(inbox: list, sent: list, gate=None, sent_full: li
             if pick is None:
                 continue  # no time the user offered: not an acceptance
             r.update(offered_times=[pick["start"]], offered_match=True)
+            slots[r["message_id"]] = pick
         grounded.append(r)
+    _plan_acceptances(grounded, slots, offers, {m.get("id"): m for m in inbox if m.get("id")})
     return grounded
+
+
+def _plan_acceptances(items: list, slots: dict, offers: dict, inbox_by_id: dict, ctx: dict | None = None,
+                      now: datetime | None = None) -> None:
+    """Give each grounded acceptance its `acceptance`: the event code
+    stages for it, or the reason it cannot (sched_acceptance.build_event).
+    The offer's and the reply's text are read here and kept out of the
+    item; a failure leaves the item as it was, for the model thread."""
+    want = [r for r in items if r.get("kind") == "confirmation" and r.get("offered_match")
+            and r.get("message_id") in slots]
+    if not want:
+        return
+    try:
+        import sched_acceptance as _acc
+        import sched_thread_state as _sts
+        ctx = ctx or _acc.context()
+    except Exception as e:
+        print(f"  acceptances not planned: {e}", file=sys.stderr)
+        return
+    for r in want:
+        m = inbox_by_id.get(r["message_id"]) or {}
+        offer = offers.get(r.get("conversation_id") or "")
+        if not offer:
+            continue
+        reply = {"from": r.get("from") or "", "from_name": r.get("from_name") or "",
+                 "to": _sts.addrs(m, "to"), "cc": _sts.addrs(m, "cc"),
+                 "subject": r.get("subject") or "", "text": _sts.new_text(m.get("bodyPreview") or "")}
+        try:
+            r["acceptance"] = _acc.build_event(slots[r["message_id"]], offer=offer, reply=reply, ctx=ctx,
+                                               conversation_id=r.get("conversation_id") or "", now=now)
+        except Exception as e:
+            print(f"  acceptance {r['message_id'][-8:]} not planned: {e}", file=sys.stderr)
 
 
 PROACTIVE_QUEUE_FILE = STATE_DIR / "scheduling-proactive-queue.json"
@@ -1284,15 +1330,40 @@ def register_new_scheduling_requests(scheduling: list) -> list:
     """The requests the ledger has not seen: add each as a sched- row (so
     it never re-notifies) and return them. Shared by the hourly
     scheduling check and the ten-minute intake, so a request is opened
-    once whichever sees it first."""
+    once whichever sees it first.
+
+    A grounded acceptance (an `acceptance` key) is the exception: the
+    intake's needs-response pass runs first and may already hold the
+    message on the thread's response row. The acceptance still goes on,
+    once (sched_acceptance.seen), with that row as its `row_id`, so the
+    invite is staged and the row records it."""
     known_ids = _ledger_mod.get_all_source_message_ids()
-    new = [s for s in scheduling if s["message_id"] not in known_ids]
+    new = []
+    staged_before = None
+    for s in scheduling:
+        if s["message_id"] not in known_ids:
+            new.append(s)
+            continue
+        if not isinstance(s.get("acceptance"), dict):
+            continue
+        import sched_acceptance as _acc
+        if staged_before is None:
+            staged_before = _acc._store_read()
+        if _acc.seen(s, staged_before):
+            continue
+        rows = _ledger_mod.entry_ids_for_message(s["message_id"])
+        if rows:
+            s["row_id"] = rows[0]
+        new.append(s)
     for s in new:
+        if s.get("row_id"):
+            continue
         notes = s.get("body_preview", "")[:300]
         if s.get("offered_times"):
             notes = f"Times named: {', '.join(s['offered_times'][:6])}. " + (s.get("ask") or notes)
+        s["row_id"] = f"sched-{s['message_id'][-12:]}"
         _ledger_mod.add_entry(
-            entry_id=f"sched-{s['message_id'][-12:]}",
+            entry_id=s["row_id"],
             entry_type="scheduling",
             description=_sched_description(s.get("kind"), s["subject"]),
             from_email=s.get("from", ""),
@@ -1301,6 +1372,39 @@ def register_new_scheduling_requests(scheduling: list) -> list:
             notes=notes[:500],
         )
     return new
+
+
+def lane_scheduling(found: list, gate) -> list:
+    """The scheduling detector's items as the scheduling lane takes them:
+    what the gate passes, and the grounded acceptances it leaves out
+    (mail_gate.Gate.acceptances: a reply the record calls FYI, and kept
+    mail whose invite code stages, with no text)."""
+    passed = gate.items(found)
+    extra = getattr(gate, "acceptances", None)
+    if callable(extra):
+        passed += extra(found, passed)
+    return passed
+
+
+def queue_scheduling(found: list, gate) -> tuple[list, int]:
+    """Register the new scheduling requests, stage the invite for each
+    grounded acceptance (sched_acceptance.stage, no model), and merge
+    the rest into the bot's proactive queue. (new requests, queue length).
+    With no scheduling channel no thread opens and no card is posted, so
+    nothing is staged and the requests register as before."""
+    items = lane_scheduling(found, gate)
+    if not sched_channel_configured():
+        items = [{k: v for k, v in s.items() if k != "acceptance"} for s in items if not s.get("kept")]
+    new = register_new_scheduling_requests(items)
+    try:
+        import sched_acceptance as _acc
+        new = _acc.stage(new)
+    except Exception as e:
+        print(f"  acceptances not staged: {e}", file=sys.stderr)
+        for s in new:
+            s.pop("acceptance", None)
+        new = [s for s in new if not s.get("kept")]
+    return new, write_proactive_queue(new)
 
 
 def sched_channel_configured(chat: dict | None = None) -> bool:
@@ -2851,9 +2955,7 @@ def run_scheduling_check() -> dict:
     working_hours = graph.get_working_hours()
 
     gate = _mail_gate(inbox, "scheduling-check")
-    scheduling = gate.items(detect_scheduling_requests(inbox, sent, gate=gate))
-    new_scheduling = register_new_scheduling_requests(scheduling)
-    write_proactive_queue(new_scheduling)
+    new_scheduling, _queued = queue_scheduling(detect_scheduling_requests(inbox, sent, gate=gate), gate)
 
     availability = compute_merged_availability(calendar)
 
@@ -2908,14 +3010,14 @@ def run_intake_check() -> dict:
     # Scheduling and reschedule requests ride the same ten-minute cadence
     # into the bot's proactive queue, so a "can we move Tuesday?" reaches
     # the scheduling channel within minutes instead of at the next hourly
-    # check. Same detector, same ledger dedupe, same queue merge.
-    new_scheduling = register_new_scheduling_requests(
-        gate.items(detect_scheduling_requests(inbox, sent, gate=gate)))
-    queued = write_proactive_queue(new_scheduling)
+    # check. Same detector, same ledger dedupe, same queue merge; an
+    # accepted time gets its invite staged by code on the way.
+    new_scheduling, queued = queue_scheduling(detect_scheduling_requests(inbox, sent, gate=gate), gate)
     if new_scheduling:
         print(f"  Intake: {len(new_scheduling)} scheduling request(s) queued "
               f"({sum(1 for s in new_scheduling if s.get('kind') == 'reschedule')} "
-              f"reschedule)", file=sys.stderr)
+              f"reschedule, {sum(1 for s in new_scheduling if s.get('staged_event'))} "
+              f"invite(s) staged)", file=sys.stderr)
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),

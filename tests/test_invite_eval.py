@@ -66,3 +66,32 @@ def test_the_summary_counts_and_the_line_names_the_failures():
     assert line.startswith(":calendar: invite eval 2026-10-22: 2 invites, 1 with a failed check")
     assert "phone call" in line and "Interview: Kit / Morgan" in line
     assert ie.render(ie.summarize([]), "2026-10-22").endswith("no invites")
+
+
+def test_invites_staged_from_accepted_times_are_scored_and_counted():
+    """The acceptance log (sched_acceptance) feeds the same checks; the line
+    says how many invites came from accepted times and how many accepted
+    times went to a thread instead."""
+    from datetime import datetime, timezone
+    log = [{"ts": "2026-10-22T20:00:00+00:00", "status": "staged", "message_id": "msg-accept-0001",
+            "conversation_id": "conv-1", "sender": "morgan.vasquez41@example.org", "minutes": 30,
+            "event": dict(REC["event"], source="sched-acceptance")},
+           {"ts": "2026-10-22T21:00:00+00:00", "status": "handoff", "why": "The offer went to 2 people."},
+           {"ts": "2026-10-01T21:00:00+00:00", "status": "staged", "event": REC["event"]},   # before the window
+           {"ts": "2026-10-22T22:00:00+00:00", "status": "staged"}]                          # no event
+    invites, handoffs = ie.acceptance_invites(log, datetime(2026, 10, 22, tzinfo=timezone.utc))
+    assert handoffs == 1 and len(invites) == 1
+    inv = invites[0]
+    assert inv["source"] == "sched-acceptance" and inv["run_id"] == "acc-ept-0001" and inv["kind"] == "invite"
+    assert inv["intent"] == {"sender_email": "morgan.vasquez41@example.org", "duration_minutes": 30}
+    s = ie.score_invite(inv, STATE, wants_phone=True, calendar=CAL, user_tz=TZ)
+    assert s["ok"] and s["source"] == "sched-acceptance"
+    pipeline = ie.score_invite(REC, STATE, wants_phone=True, calendar=CAL, user_tz=TZ)
+    summary = ie.summarize([s, pipeline], handoffs)
+    assert summary["from_acceptances"] == 1 and summary["acceptance_handoffs"] == 1
+    line = ie.render(summary, "2026-10-22")
+    assert line.startswith(":calendar: invite eval 2026-10-22: 2 invites (1 staged from accepted times), "
+                           "0 with a failed check")
+    assert line.endswith("1 accepted time went to a thread")
+    assert ie.render(ie.summarize([], 2), "2026-10-22") == (
+        ":calendar: invite eval 2026-10-22: no invites; 2 accepted times went to a thread")

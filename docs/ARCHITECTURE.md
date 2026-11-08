@@ -200,6 +200,39 @@ option is unconditional at fit 0.75 or better; otherwise
 with a pointer in the thread) or proposes the top three as a scheduler
 would. The move itself never bypasses the button.
 
+## Accepted times: the invite staged by code
+
+When the other side takes a time the user offered, no model stages the
+invite. `detect_scheduling_requests` grounds the acceptance first: the
+reply's own words (`sched_thread_state.new_text`: HTML made text, quoted
+history cut) name one of the times in the user's last offer in the
+thread, or the remote record's `confirmation` names one
+(`match_offered`). The times are read zone by zone
+(`sched_agent.extract_times`): an offer that writes each slot on two
+clocks ("3:30-4:00 PM MT (5:30-6:00 PM ET)") names one time, not two.
+`sched_acceptance.build_event` then writes the event in the
+`pending-event.json` shape (subject from the thread, the accepted slot
+on the user's clock, its length from the reply, the offer or
+`preferred_duration_minutes`, the one who accepted as attendee and the
+rest of the thread as optional, `online` unless the thread says phone or
+in person, `source: "sched-acceptance"`), or the reason it cannot: the
+offer went to several people or not to the one who answered, the reply
+hedges, the reply took a window longer than the meeting, no length is
+known, the time has passed. `queue_scheduling` registers the request
+(an acceptance whose message a needs-response row already holds still
+goes on, once, with that row), runs `validate-draft` on the slot (a
+conflict is noted, not fatal; an event at that time that is this
+meeting stops it), sets the row's `last_action`, logs the acceptance in
+the owner store (`sched-acceptances.jsonl`) and queues the item with its
+`staged_event`. The bot's proactive tick posts the thread's line and the
+Create card through the same `_post_staged_action` every staged event
+takes, then starts one turn that only drafts the confirming reply. Mail
+kept from Anthropic reaches the queue only this way (`Gate.acceptances`,
+no text): its card is posted and no turn runs. An acceptance code cannot
+stage opens the thread as before, its reason in the first line.
+`invite_eval` scores the staged invites nightly; `sched_backtest`
+replays the window's threads and counts what code would stage.
+
 ## Holds the EA may clear itself
 
 Two kinds of hold exist, and both are released without a button. On

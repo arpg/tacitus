@@ -1622,6 +1622,34 @@ def set_metadata(entry_id: str, db_path: Path | None = None, **fields) -> bool:
         conn.close()
 
 
+def set_last_action(entry_id: str, text: str, db_path: Path | None = None) -> bool:
+    """Replace one row's last_action (work done on it, by an owner-side
+    writer). False when the row is missing."""
+    path = db_path or DB_PATH
+    conn = guarded_connect(path)
+    try:
+        cur = conn.execute("UPDATE ledger SET last_action = ?, updated_at = ? WHERE id = ?",
+                           (str(text), _now(), entry_id))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def entry_ids_for_message(message_id: str, db_path: Path | None = None) -> list[str]:
+    """The ids of the rows whose source is this message, newest first."""
+    if not message_id:
+        return []
+    path = db_path or DB_PATH
+    conn = guarded_connect(path)
+    try:
+        rows = conn.execute("SELECT id FROM ledger WHERE source_message_id = ? ORDER BY updated_at DESC",
+                            (message_id,)).fetchall()
+    finally:
+        conn.close()
+    return [r[0] for r in rows]
+
+
 def get_entry(entry_id: str, db_path: Path | None = None) -> dict | None:
     """Get a single entry by ID. For use by preprocessor."""
     path = db_path or DB_PATH
