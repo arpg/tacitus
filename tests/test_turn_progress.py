@@ -76,7 +76,7 @@ def test_both_runners_feed_the_heartbeat():
     assert "progress.summary() or" in bot, "the heartbeat prefers the summary"
     assert "FRONTEND.update(ref, text)" in bot, "later beats edit the first post"
     i = bot.index("heartbeat_stop = threading.Event()\n        def _heartbeat")
-    assert i < bot.index("if live_cr is None and arm == \"codex\":"), "the heartbeat covers a live Codex turn"
+    assert i < bot.index("if live_cr is None and harness_turn is not None:"), "the heartbeat covers a live Codex turn"
     cli = (ROOT / "preprocessor" / "codex_cli.py").read_text()
     assert "on_event" in cli and "subprocess.Popen(" in cli, "Codex streams its events when asked"
     turn = (ROOT / "preprocessor" / "codex_turn.py").read_text()

@@ -1143,7 +1143,7 @@ def test_the_remote_arm_runs_the_same_harness_through_the_gateway():
     assert body.index("_backstop_remote_turn(") < body.index("FRONTEND.post(\n                channel=channel,\n                thread_ts=thread_ts,\n                text=chunk,")
     # The shadow scheduling job runs beside Claude's own turns only, not
     # behind a remote turn Claude redid.
-    assert "if live_cr is None and arm == \"claude\" and remote_turn is None and (" in body
+    assert "if live_cr is None and _routing.is_base(arm) and remote_turn is None and (" in body
     # A redone remote turn keeps its own scorecard row; Claude's redo is marked.
     assert "remote_turn = {\"cr\": cr, \"elapsed_s\": elapsed, \"model\": run_model," in body
     assert "lane=lane_name, arm=remote_turn.get(\"arm\", \"remote\"), model=remote_turn[\"model\"]," in body
@@ -1204,7 +1204,7 @@ def test_the_gateway_environment_rides_on_the_sudo_command():
 
 def test_the_arm_commands_and_outcome_hooks_are_wired():
     cmd = _fn_body("_handle_bot_command")
-    assert '"remote" if tier == "local" else "codex" if tier == "codex" else "claude",' in cmd
+    assert "_arms.pin(channel, thread_ts, _tiers.arm_of(tier), lane=lane, reason=\"user\")" in cmd
     assert "_arms.arm_of(channel, thread_ts)" in cmd
     note = _fn_body("_remote_llm_note")
     assert "_arms.note_event_outcome(*args)" in note

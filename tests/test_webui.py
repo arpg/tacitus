@@ -459,7 +459,9 @@ def test_the_app_stays_small():
     #     a Draft mark on its card) and the files that wait in the composer until Send (several at
     #     once, chosen, dropped or pasted, a chip each with its cross, one request with the words).
     # 5,310: both together, drafts and files with links routed in place and the calm connection line.
-    assert lines <= 5310, f"{lines} lines: the contract keeps the app near 5,310 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model per task and its help, the drafts and the files that wait for Send, links routed in place and a calm connection line"
+    # 5,320: 5,310 plus the one hosted-model switch at the top of the Models page, and each task's line
+    #     saying whether it follows the switch or is set apart, with Use default.
+    assert lines <= 5320, f"{lines} lines: the contract keeps the app near 5,320 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch, per task and its help, the drafts and the files that wait for Send, links routed in place and a calm connection line"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -2760,7 +2762,8 @@ def test_the_settings_menu_is_in_the_drawer():
     assert dlg.index('id="notify-settings"') < dlg.index('id="routing-settings"')
     js = read("app.js")
     assert "call('GET', '/settings/routing')" in js
-    assert "call('POST', '/settings/routing', Object.keys(hosted).length ? { tasks, hosted } : { tasks })" in js
+    assert "renderSettings(await call('POST', '/settings/routing', body));" in js
+    assert "if (pick && pick.value !== $('settings-default').dataset.was) body.hosted_default = pick.value;" in js
     assert "call('GET', '/settings/notify')" in js and "call('POST', '/settings/notify', {" in js
     assert "notify: pages.includes('notify') && Boolean(S.me.push), routing: pages.includes('routing')" in js
     assert "$('notify-kinds').hidden = T.relay || !shown.notify;" in js
@@ -3684,8 +3687,14 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     page.click("#go-routing")
     expect(page.locator("#settings-title")).to_have_text("Models")
     expect(page.locator("#routing-settings .s-key").first).to_have_text(
-        "Local is your own model. Hosted is Claude or Codex: pick one under each task that can use both. "
-        "Auto lets Tacitus choose.")
+        "Local is your own model. Hosted is Claude or Codex: pick one for every task here, or set a task "
+        "that can use both apart under it. Auto lets Tacitus choose.")
+    # the one switch heads the page: the hosted model of every task not set apart
+    switch = page.locator("#settings-default")
+    expect(switch.locator(".s-name")).to_have_text("Hosted model")
+    expect(switch.locator("label")).to_have_text(["Claude", "Codex"])
+    expect(switch.locator("input[value=codex]")).to_be_checked()
+    expect(switch.locator("p")).to_have_text("Every task below uses it unless you set the task apart.")
     rows = page.locator("#settings-rows li")
     expect(rows).to_have_count(4)
     expect(page.locator("#settings-local")).to_have_text("Local model local-27b: reachable. Answered 2 min ago.")
@@ -3713,6 +3722,11 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     expect(chat.locator(".s-hosted label")).to_have_text(["Claude", "Codex"])
     expect(chat.locator(".s-now")).to_have_text("Now on Codex. Auto picked Codex.")
     expect(chat.locator(".s-note")).to_contain_text("@claude")
+    # a task that can use both says whether it follows the switch or is set apart
+    expect(chat.locator(".s-own")).to_have_text("Follows the hosted model at the top.")
+    expect(review.locator(".s-own")).to_have_text("Set for this task. Use default")
+    expect(review.locator("input[name=hosted-review][value=claude]")).to_be_checked()
+    expect(drafting.locator(".s-own")).to_have_count(0)
     # the "?" beside a name the bot gives help for: it opens and closes the note under the row
     expect(review.locator(".s-help-btn")).to_have_count(0)
     expect(chat.locator(".s-help-btn")).to_have_count(0)
@@ -3738,6 +3752,24 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     expect(chat.locator("input[name=hosted-chat][value=claude]")).to_be_checked()
     expect(chat.locator(".s-now")).to_have_text("Now on Claude. Auto picked Claude.")
     expect(chat.locator(".s-note")).to_have_count(0)
+    expect(chat.locator(".s-own")).to_have_text("Set for this task. Use default")
+    # Use default: the task follows the switch again, and a flip of the switch moves it with
+    # the rest; Save sends 'default' for the task and the switch, nothing for a row left alone
+    chat.locator(".s-own button").click()
+    expect(chat.locator("input[name=hosted-chat][value=codex]")).to_be_checked()
+    expect(chat.locator(".s-own")).to_have_text("Follows the hosted model at the top.")
+    switch.locator("input[value=claude]").check()
+    expect(chat.locator("input[name=hosted-chat][value=claude]")).to_be_checked()
+    expect(review.locator("input[name=hosted-review][value=claude]")).to_be_checked()
+    page.evaluate("document.getElementById('settings-note').textContent = ''")  # wait for this save's own line
+    page.click("#settings-save")
+    expect(page.locator("#settings-note")).to_have_text("Saved. Each task uses its model from its next run.")
+    assert stub.settings_posts[1] == {"tasks": {"drafting": "hosted", "mail": "auto", "review": "hosted",
+                                                "chat": "auto"}, "hosted": {"chat": "default"},
+                                      "hosted_default": "claude"}
+    expect(switch.locator("input[value=claude]")).to_be_checked()
+    expect(chat.locator(".s-own")).to_have_text("Follows the hosted model at the top.")
+    expect(review.locator(".s-own")).to_have_text("Set for this task. Use default")
     # a value the bot refuses: the reason stays on screen and nothing changes
     page.evaluate("document.querySelector('#settings-rows li[data-task=review] input[value=local]').disabled = false")
     review.locator("input[value=local]").check()

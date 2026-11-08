@@ -841,19 +841,27 @@ it was made, with Remove (`/api/push/revoke`); this browser's own row
 (its endpoint's id, the sha256 the bot lists) says "This phone" or "This
 browser" and has no Remove, since its switch is above.
 
-Models: the local model's name and state at the top, a line that says what the values mean
-(Local is the owner's own model, Hosted is Claude or Codex, Auto lets
-Tacitus choose), then one row per task with Local, Hosted and Auto (a
+Models: a line that says what the values mean (Local is the owner's
+own model, Hosted is Claude or Codex, picked once for every task or set
+apart per task, Auto lets Tacitus choose); "Hosted model" with Claude
+and Codex, the one switch for every task not set apart (docs/model-routing.md,
+"The hosted model: one switch"); the local model's name and state;
+then one row per task with Local, Hosted and Auto (a
 "?" beside a name the bot sends `help` for, Reading your mail, Sorting
 mail and Writing replies, opens what the task is in plain words under the
 row, and closes it on a second press; on a touch screen its press area is
 44px around a small circle); under
-a task with a Codex route, "Hosted model" with Claude and Codex; under
+a task with a Codex route, "Hosted model" with Claude and Codex and a
+line that says "Follows the hosted model at the top." or "Set for this
+task." with Use default, which makes the task follow the switch again (a
+flip of the switch moves every row that follows it on screen); under
 another, a line on what Hosted means there; a line on what the task
 does, a line on the model it runs on now and why ("Now on Codex. Auto
 picked Codex."), and the floor's line under a row a floor holds (the
 values it refuses are disabled). Save, for this section alone, posts the
-enabled choices (`tasks`, and `hosted` when a row has the choice) and
+enabled choices (`tasks`; `hosted` only for a row whose own model
+changed, `default` for one that follows the switch again; and
+`hosted_default` when the switch moved) and
 redraws from the answer, with "Saved." or the bot's reason under the
 rows.
 

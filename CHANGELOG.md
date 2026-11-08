@@ -59,6 +59,35 @@ repository that preceded it.
   the release log counts reads by level and by the turn's model. The
   engaged-person store remembers whom the user wrote to. A first-week
   question asks how much of an applicant's mail the EA may see.
+- **One switch moves every task between Claude and Codex.** The routing
+  table takes `hosted_default` (`claude` or `codex`): every task without
+  an override runs hosted on it, the chat and scheduling lanes' default
+  tier included, the briefings, the audit and the digests, and the
+  tool-less calls of the tagger, the thread states and the review. The
+  per-task `hosted` map stays as overrides, which survive a flip. `mail`
+  and `drafting` have no hosted model of their own and stay on Claude;
+  `show` and the Models page say so. `model_routing.py set-hosted
+  claude|codex [--task <task>]` and `--clear-task <task>` set it; `show`
+  marks each task default, override or fixed. A table from before the
+  switch that names a model for every task with a choice reads as a
+  switch: the one model they name, else the `chat` entry's, with an
+  override for each task that differs; the next save writes it in that
+  shape. A message tag, a
+  topic pin and a topic name still outrank it; `EA_MODEL` names the
+  Claude model and does not pick between the two (docs/model-routing.md,
+  the precedence table).
+- **The hosted models are one registry.** `ea_config.HOSTED_MODELS` holds
+  each model's name, harness, chat tier, arm, model-id prefixes and the
+  tasks it can take; the tiers, their aliases, the footer's names, the
+  A/B arms, the Settings choices and the validation come from it. The
+  policy code asks `model_routing.is_hosted`, `is_local`, `is_base` and
+  `for_model` instead of naming a model (the chat bot's tier and arm
+  pick, its cost and ghost checks, the scheduling backstop's record, the
+  tagger, `hosted_text`, the doctor row), and the harness code is found
+  by the model's harness (`_HARNESS_TURNS`, `hosted_text.CALLS`).
+  `tests/test_hosted_switch.py` fails on a new branch on a model's name
+  outside its allowlist of harness and record files.
+
 - **A tier promotion is a verb.** `autonomy_tiers.py promote --task
   <task> --tier <tier> [--contact <addr>] --quote "<words>"` replaces the
   edit of `autonomy-tiers.json` that CLAUDE.md rule 12 asked for, refuses

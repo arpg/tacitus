@@ -35,6 +35,7 @@ if sys_path_entry not in sys.path:
     sys.path.insert(0, sys_path_entry)
 from claude_usage import get_usage, format_usage_footer as _fmt_usage, format_usage_report
 from preprocessor import model_tiers as _tiers
+from preprocessor import model_routing as _routing
 from log_paths import owner_log_dir as _owner_log_dir, owner_log as _owner_log
 
 # ---------------------------------------------------------------------------
@@ -10940,9 +10941,7 @@ def _handle_bot_command(channel: str, thread_ts: str, msg_ts: str,
             lane = _turn_lane(channel, "")
             if _cmd["cmd"] == "use":
                 tier = _cmd["tier"]
-                _arms.pin(channel, thread_ts,
-                          "remote" if tier == "local" else "codex" if tier == "codex" else "claude",
-                          lane=lane, reason="user")
+                _arms.pin(channel, thread_ts, _tiers.arm_of(tier), lane=lane, reason="user")
                 sid, _resuming, _meta = _sess.lookup(thread_ts)
                 _sess.remember(thread_ts, tier=tier)
                 text = (f":label: Pinned: this topic now runs on {_tiers.NAMES[tier]}. "
@@ -11454,6 +11453,13 @@ def _codex_turn_live(*, prompt, fresh_prompt, run_id, thread_ts, lane,
                         num_turns=rec["num_turns"], duration_ms=rec["duration_ms"]), rec
 
 
+# The turn runner of each hosted harness besides Claude Code's own, by
+# harness (model_routing.harness_of): a hosted arm whose harness is here
+# runs its turn there before the Claude run, which takes the turn when it
+# gives no answer.
+_HARNESS_TURNS = {"codex": _codex_turn_live}
+
+
 def _codex_ghost_turn(*, run_id, channel, thread_ts, user_id, user_msg, task_block, cr,
                       elapsed, response, model, prompt="", fresh_prompt="", claude_cwd="") -> None:
     """Hand one finished Claude turn to the Codex ghost arm
@@ -11546,7 +11552,7 @@ def _remote_scheduling_live(*, run_id, channel, thread_ts, msg_ts, user_msg, use
     except Exception as e:
         log.warning(f"remote scheduling: agent raised, Claude takes the turn: {e}")
         return None
-    if turn.get("fallback") == "claude" or not turn.get("reply"):
+    if _routing.for_model(turn.get("fallback")) or not turn.get("reply"):
         review = turn.get("backstop") or {}
         why = ("the backstop withheld its writes: "
                + "; ".join(str(i.get("detail") or "")[:80] for i in review.get("issues") or [])
@@ -12098,15 +12104,14 @@ actually want.
                 from preprocessor import tool_gateway as _gw
                 arm, arm_env = "remote", _gw.lane_env(variant_name="slim")
                 run_model, run_effort = _arms.remote_model() + "+slim", ""
-            elif tier_pick["explicit"] and tier_pick["tier"] in ("opus", "fable"):
-                arm, arm_env = "claude", None
+            elif tier_pick["explicit"] and _routing.is_hosted(tier_pick["tier"]):
+                # A hosted tier: Claude's (opus, fable) runs here; another
+                # hosted model's runs on its own harness below (_HARNESS_TURNS:
+                # Codex, codex_turn.py), and Claude takes the turn on a
+                # harness error. The effort flag is Claude Code's alone.
+                arm, arm_env = _tiers.arm_of(tier_pick["tier"]), None
                 run_model, tier_effort = _tiers.model_for(tier_pick["tier"], default_model=MODEL)
-                run_effort = tier_effort or run_effort
-            elif tier_pick["explicit"] and tier_pick["tier"] == "codex":
-                # The Codex arm (codex_turn.py): the turn's own prompt on
-                # Codex as the resident; Claude takes the turn on a harness error.
-                arm, arm_env = "codex", None
-                run_model, run_effort = "codex", ""
+                run_effort = tier_effort or (run_effort if _routing.is_base(arm) else "")
             if tier_pick["explicit"]:
                 log.info(f"tier: {tier_pick['tier']} ({tier_pick['source']}"
                          f"{', ' + tier_pick['note'] if tier_pick['note'] else ''}) -> {run_model}")
@@ -12465,22 +12470,24 @@ Reminders:
         hb_thread = threading.Thread(target=_heartbeat, daemon=True)
         hb_thread.start()
 
-        # The Codex arm (model_arms arm "codex"; `use codex`, `@codex`): the
-        # prompt this turn built runs on Codex as the resident
+        # A hosted arm on a harness of its own (_HARNESS_TURNS; the Codex
+        # arm, model_arms arm "codex": `use codex`, `@codex`, the switch):
+        # the prompt this turn built runs on Codex as the resident
         # (codex_turn.run_turn, live), on a Codex thread kept per chat
         # thread. Codex's answer takes the turn, and the drafts and staged
         # events it made are surfaced by run id as after a Claude turn. A
         # harness error or an empty answer hands the turn to Claude.
-        if live_cr is None and arm == "codex":
+        harness_turn = _HARNESS_TURNS.get(_routing.harness_of(arm))
+        if live_cr is None and harness_turn is not None:
             # Codex gets what a Claude run in this turn's directory loads
             # by itself (codex_turn.context_block): the deployed tree, or
             # the lane directory of the scheduling and slim reply prompts.
-            live_cr, codex_turn_rec = _codex_turn_live(
+            live_cr, codex_turn_rec = harness_turn(
                 prompt=prompt, fresh_prompt=full_prompt, run_id=run_id, thread_ts=thread_ts,
                 lane=_turn_lane(channel, user_id), progress=progress,
                 claude_cwd=str(prompt_cwd or EA_BOT_SCRIPT_DIR), user_text=user_msg)
             if live_cr is None:
-                arm_fallback = ("codex:" + str((codex_turn_rec or {}).get("harness_error") or "no answer"))[:160]
+                arm_fallback = (f"{arm}:" + str((codex_turn_rec or {}).get("harness_error") or "no answer"))[:160]
                 log.warning(f"model arm: {arm_fallback}; Claude takes the turn on {MODEL}")
                 run_model, run_effort = MODEL, ""
             arm, arm_env = "claude", None
@@ -12768,7 +12775,7 @@ Reminders:
         # `arm` reads claude by then for the records.
         tier_name = "local" if live_cr is not None else _tiers.tier_of_model(run_model, arm)
         if live_cr is not None and codex_turn_rec is not None:
-            tier_name = "codex"
+            tier_name = _tiers.tier_of_model(run_model)
         footer_backstop = (pipeline_turn or {}).get("backstop") if live_cr is not None else arm_backstop
         usage_footer = _record_invocation(
             run_model, elapsed, cr.stderr, cost_usd=cr.cost_usd, usage=cr.usage,
@@ -12846,7 +12853,7 @@ Reminders:
                         run_id=run_id, channel=channel, thread_ts=thread_ts,
                         lane=lane_name, arm=arm, model=run_model,
                         rc=cr.returncode, elapsed_s=claude_elapsed, num_turns=cr.num_turns,
-                        cost_usd=(cr.cost_usd if arm == "claude" else None),
+                        cost_usd=(cr.cost_usd if _routing.is_base(arm) else None),
                         tools=len(cr.tool_calls), drafts=_run_draft_bodies(journal_offset, run_id),
                         events_staged=sum(1 for _t, f in STAGED_ACTION_FILES
                                           if (EA_DIR / "state" / f).exists()),
@@ -12986,7 +12993,7 @@ Reminders:
         # which records what it would have done and posts nothing. A
         # message the remote arm already took (and Claude redid) is not
         # run a third time: the arm's row is that measure.
-        if live_cr is None and arm == "claude" and remote_turn is None and (
+        if live_cr is None and _routing.is_base(arm) and remote_turn is None and (
                 scheduling_only or "scheduling" in needed_modules
                 or _used_scheduling_tools(cr.tool_calls)):
             _remote_llm_shadow_scheduling(
@@ -12996,7 +13003,7 @@ Reminders:
                 cr=cr, elapsed=elapsed, response=response)
         # The Codex ghost arm (docs/codex-harness.md): a turn Claude answered
         # is replayed on Codex off to the side while a window is open.
-        if live_cr is None and arm == "claude" and remote_turn is None:
+        if live_cr is None and _routing.is_base(arm) and remote_turn is None:
             _codex_ghost_turn(
                 run_id=run_id, channel=channel, thread_ts=thread_ts, user_id=user_id,
                 user_msg=user_msg, task_block=task_block, cr=cr, elapsed=elapsed,

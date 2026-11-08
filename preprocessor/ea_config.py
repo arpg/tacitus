@@ -170,10 +170,13 @@ DEFAULTS = {
     },
     # Model routing (preprocessor/model_routing.py): which model does each
     # task. `local` is the owner's own endpoint (remote-llm.json), `hosted`
-    # is Claude, `auto` leaves the task where the remote layer's switches
-    # and the tiers block put it. Two floors in code sit under every value:
-    # `review` is hosted only (the stakes floor), and `mail` and `tagging`
-    # take `hosted` only while the keep list names no one (the keep floor).
+    # is a hosted model (HOSTED_MODELS), `auto` leaves the task where the
+    # remote layer's switches and the tiers block put it. Two floors in
+    # code sit under every value: `review` is hosted only (the stakes
+    # floor), and `mail` and `tagging` take `hosted` only while the keep
+    # list names no one (the keep floor). Which hosted model: the one
+    # switch `hosted_default` (claude or codex; absent until the owner
+    # sets it), with the `hosted` map's per-task overrides over it.
     # Owner processes read <private_dir>/routing.json, which the web chat's
     # Settings screen writes; this file's copy only shapes what the
     # resident shows (see get_routing). `thread_state` (the web chat's
@@ -433,17 +436,48 @@ ROUTING_VALUES = ("local", "hosted", "auto")
 # The stakes floor: a task that is a judgment call by nature takes only
 # this value, whatever a file says.
 ROUTING_FLOORS = {"review": "hosted"}
+# The hosted models, one entry each. A new hosted model is one entry here
+# plus its harness (docs/model-routing.md, "Adding a hosted model"); the
+# policy code asks model_routing (is_hosted, is_local, is_base, for_model)
+# and never names a model.
+#   name     what the owner reads;
+#   harness  the program that runs it: `claude` (Claude Code, the bot's
+#            own) or `codex` (the Codex CLI); a second model on a harness
+#            that exists needs no new code;
+#   tier     the chat tier it runs as (model_tiers), and `tiers` every
+#            chat tier that is this model;
+#   arm      its arm in model_arms;
+#   names    the prefixes of its model ids and aliases ("claude-opus-5-5",
+#            "sonnet", "codex", "gpt-..."), so a recorded model id finds
+#            its entry;
+#   tasks    the routing tasks it can take; None for every task.
+# The first entry is the base: the bot's own harness runs it, every task
+# can run on it, and a hosted model that gives no answer hands the call
+# to it. `mail` hosted is the gate off and `drafting` hosted is the
+# turn's own model, so neither is in any other entry's tasks: they have
+# no choice of their own.
+HOSTED_MODELS = {
+    "claude": {"name": "Claude", "harness": "claude", "tier": "opus", "tiers": ("opus", "fable"),
+               "arm": "claude", "names": ("claude", "opus", "fable", "sonnet", "haiku"),
+               "tasks": None},
+    "codex": {"name": "Codex", "harness": "codex", "tier": "codex", "tiers": ("codex",),
+              "arm": "codex", "names": ("codex", "gpt"),
+              "tasks": ("tagging", "digests", "briefing", "audit", "scheduling", "chat",
+                        "thread_state", "review")},
+}
+HOSTED_BASE = next(iter(HOSTED_MODELS))
 # Which hosted model a task uses when it runs hosted (by its value or by
-# auto): the routing block's `hosted` map. Codex is a choice only where a
-# Codex route exists: the chat and scheduling lanes (a `codex` tier), the
-# cron lanes run-agent.sh can hand to Codex, and the tool-less calls
-# (hosted_text: the tagger, the thread states, the review). `mail` hosted
-# is the gate off and `drafting` hosted is the turn's own model, so they
-# have no choice of their own. A task the map leaves out runs where it
-# runs today.
-ROUTING_HOSTED = ("claude", "codex")
-ROUTING_CODEX_TASKS = ("tagging", "digests", "briefing", "audit", "scheduling", "chat",
-                       "thread_state", "review")
+# auto): the routing block's `hosted_default` (the one switch), with the
+# `hosted` map's per-task overrides over it. A model is a choice for a
+# task only where its entry lists the task.
+ROUTING_HOSTED = tuple(HOSTED_MODELS)
+ROUTING_CODEX_TASKS = HOSTED_MODELS["codex"]["tasks"]
+
+
+def hosted_takes(model: str, task: str) -> bool:
+    """`model` (a HOSTED_MODELS key) can take routing task `task`."""
+    tasks = (HOSTED_MODELS.get(model) or {"tasks": ()})["tasks"]
+    return tasks is None or task in tasks
 
 
 def routing_problems(val) -> list[str]:
@@ -457,8 +491,10 @@ def routing_problems(val) -> list[str]:
     tasks = val.get("tasks", {})
     if not isinstance(tasks, dict):
         return ["routing.tasks is not a JSON object"]
-    out = [f"routing takes its values under tasks and hosted, not {k!r}" for k in val
-           if k not in ("tasks", "hosted") and not k.startswith("_")]
+    out = [f"routing takes its values under tasks, hosted and hosted_default, not {k!r}" for k in val
+           if k not in ("tasks", "hosted", "hosted_default") and not k.startswith("_")]
+    if "hosted_default" in val and val["hosted_default"] not in ROUTING_HOSTED:
+        out.append(f"hosted_default takes {' or '.join(ROUTING_HOSTED)}, not {val['hosted_default']!r}")
     hosted = val.get("hosted", {})
     if not isinstance(hosted, dict):
         out.append("routing.hosted is not a JSON object")
@@ -467,9 +503,10 @@ def routing_problems(val) -> list[str]:
         if task not in ROUTING_TASKS:
             out.append(f"no task {task!r} in hosted; the tasks are {', '.join(ROUTING_TASKS)}")
         elif value not in ROUTING_HOSTED:
-            out.append(f"hosted {task} takes claude or codex, not {value!r}")
-        elif value == "codex" and task not in ROUTING_CODEX_TASKS:
-            out.append(f"{task} has no Codex route; its hosted part follows the model that runs it")
+            out.append(f"hosted {task} takes {' or '.join(ROUTING_HOSTED)}, not {value!r}")
+        elif not hosted_takes(value, task):
+            out.append(f"{task} has no {HOSTED_MODELS[value]['name']} route; "
+                       "its hosted part follows the model that runs it")
     for task, value in tasks.items():
         if task not in ROUTING_TASKS:
             out.append(f"no task {task!r}; the tasks are {', '.join(ROUTING_TASKS)}")
@@ -483,7 +520,8 @@ def routing_problems(val) -> list[str]:
 def routing_from_block(val) -> dict:
     """A routing block merged over DEFAULTS["routing"]: an unknown task or
     value is dropped, and a floored task takes its floor, so no file can
-    route a judgment call to the local model."""
+    route a judgment call to the local model. `hosted_default` is kept
+    only when the file sets it to a hosted model; absent, no switch is set."""
     tasks = dict(DEFAULTS["routing"]["tasks"])
     given = val.get("tasks") if isinstance(val, dict) else None
     if isinstance(given, dict):
@@ -491,8 +529,38 @@ def routing_from_block(val) -> dict:
     tasks.update(ROUTING_FLOORS)
     hosted = val.get("hosted") if isinstance(val, dict) else None
     picked = {k: v for k, v in hosted.items() if k in tasks and v in ROUTING_HOSTED
-              and (v == "claude" or k in ROUTING_CODEX_TASKS)} if isinstance(hosted, dict) else {}
-    return {"tasks": tasks, "hosted": picked}
+              and hosted_takes(v, k)} if isinstance(hosted, dict) else {}
+    out = {"tasks": tasks, "hosted": picked}
+    default = val.get("hosted_default") if isinstance(val, dict) else None
+    if default in ROUTING_HOSTED:
+        out["hosted_default"] = default
+    elif _old_screen_switch(picked):
+        # A table from before the switch, saved by the screen that wrote
+        # every task's model: the switch it implies, with an override only
+        # for each task whose entry differs. The next save writes it in
+        # this shape.
+        out["hosted_default"] = _old_screen_switch(picked)
+        out["hosted"] = {k: v for k, v in picked.items()
+                         if k in _choosable() and v != out["hosted_default"]}
+    return out
+
+
+def _choosable() -> list[str]:
+    """The routing tasks that have a choice of hosted model."""
+    return [t for t in ROUTING_TASKS if sum(hosted_takes(m, t) for m in ROUTING_HOSTED) > 1]
+
+
+def _old_screen_switch(picked: dict) -> str:
+    """The switch a table from before it implies, when `picked` names a
+    model for every task that has a choice (the shape the earlier Settings
+    screen saved): the one model they all name, else the `chat` entry's
+    model, the one the owner talks to. '' for any other table, whose
+    entries stay overrides as written."""
+    choosable = _choosable()
+    if not choosable or any(t not in picked for t in choosable):
+        return ""
+    named = {picked[t] for t in choosable}
+    return named.pop() if len(named) == 1 else picked.get("chat", "")
 
 
 def get_routing_source(config_path: Path | None = None) -> tuple[dict, str]:

@@ -551,7 +551,7 @@ def test_the_live_scheduling_branch_runs_before_claude_and_falls_back():
     assert handler.index("live_cr = _remote_scheduling_live(") < handler.index("if live_cr is not None:\n            cr = live_cr")
     assert "elif resuming:" in handler
     assert "if live_cr is None:\n            try:\n                _sessions.mark_used(thread_ts)" in handler
-    assert "if live_cr is None and arm == \"claude\" and remote_turn is None and (\n                scheduling_only" in handler
+    assert "if live_cr is None and _routing.is_base(arm) and remote_turn is None and (\n                scheduling_only" in handler
     assert "if scheduling_only and (sched_lane or user_id == \"proactive-scheduler\")" in handler
 
     import types
@@ -596,8 +596,9 @@ def test_the_live_scheduling_branch_runs_before_claude_and_falls_back():
         import logging
         from datetime import datetime, timezone
         import time
+        import model_routing
         ns = {"ClaudeResult": ClaudeResult, "log": logging.getLogger("t"), "datetime": datetime,
-              "timezone": timezone, "time": time}
+              "timezone": timezone, "time": time, "_routing": model_routing}
         exec(_fn("_remote_scheduling_live"), ns)
         live = ns["_remote_scheduling_live"]
         kw = dict(run_id="r1", channel="C", thread_ts="t", msg_ts="m", user_msg="find time",

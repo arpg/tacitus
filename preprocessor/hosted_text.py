@@ -25,6 +25,11 @@ reply) hands the call to Claude once (`run`), and the result says so
 Codex. The result is _run_claude's shape: {"text", "cost_usd", "rc",
 "stderr"}, plus "model_used" (claude | codex) and "fell_back".
 
+The call goes by the model's harness (CALLS), never by its name: a second
+hosted model on the Codex CLI takes the same call, and a new harness is
+one function here and one CALLS entry. Claude is the base
+(model_routing.is_base): the caller's own Claude run, and the fallback.
+
     hosted_text.py probe [--as-owner]   one tool-less Codex call; exit 0 on an answer
 """
 from __future__ import annotations
@@ -47,17 +52,43 @@ CODEX_OFF = ("shell_tool", "unified_exec", "apps", "plugins", "hooks", "view_ima
 CODEX_PREAMBLE = ("Answer from the text below alone. You have no tools: run nothing and read "
                   "nothing. Reply with the answer the text asks for and nothing else.")
 CODEX_TIMEOUT_S = 600
+# The tool-less call of each harness besides Claude's own (the caller's
+# `claude`): the name of the function in this module, looked up when the
+# call is made.
+CALLS = {"codex": "codex"}
+
+
+def _routing():
+    import model_routing
+    return model_routing
 
 
 def model_for(task: str) -> str:
-    """`claude` or `codex`: the hosted model the routing table names for
-    `task`; `claude` when the table cannot be read."""
+    """The hosted model (`claude`, `codex`) the routing table names for
+    `task`; the base (Claude) when the table cannot be read."""
     try:
-        import model_routing
-        return model_routing.hosted_model(task)
+        return _routing().hosted_model(task)
     except Exception as e:
         print(f"hosted_text: the routing table is unread, {task} runs on Claude: {e}", file=sys.stderr)
-        return "claude"
+        return _routing().BASE
+
+
+def is_base(model: str) -> bool:
+    """`model` is the base hosted model, whose call is the caller's own
+    Claude run."""
+    return _routing().is_base(model)
+
+
+def call(model: str, prompt: str, **kw) -> dict:
+    """One tool-less call on `model`'s harness (CALLS), with `codex`'s
+    keywords (`timeout`, `as_owner`). rc 127 and the reason in stderr when
+    the harness has no tool-less call here."""
+    name = CALLS.get(_routing().harness_of(model), "")
+    fn = getattr(sys.modules[__name__], name, None) if name else None
+    if fn is None:
+        return {"text": "", "cost_usd": None, "rc": 127, "stderr": f"no tool-less call for {model}",
+                "usage": {}}
+    return fn(prompt, **kw)
 
 
 def _resident():
@@ -132,24 +163,27 @@ def codex(prompt: str, *, timeout: float = CODEX_TIMEOUT_S, as_owner: bool = Fal
 def run(task: str, prompt: str, model: str, *, timeout: float | None = None,
         claude=None, codex_call=None) -> dict:
     """One tool-less call for `task` on the hosted model the table names:
-    `model` is the Claude model, which a Codex run does not use (it runs
-    on the account's own). A Codex run with no answer hands the call to
-    Claude once."""
+    `model` is the Claude model, which another hosted model does not use
+    (Codex runs on the account's own). A run on another hosted model with
+    no answer hands the call to Claude once. `codex_call` stands in for
+    that model's call in tests."""
     if claude is None:
         import mail_privacy
 
         def claude(p, m, **kw):
             return mail_privacy._run_claude(p, m, "", **kw)
     ckw = {"timeout": timeout} if timeout else {}
-    if model_for(task) == "codex":
-        r = (codex_call or codex)(prompt, **({"timeout": timeout} if timeout else {}))
+    base = _routing().BASE
+    used = model_for(task)
+    if not is_base(used):
+        r = codex_call(prompt, **ckw) if codex_call else call(used, prompt, **ckw)
         if not r.get("rc") and r.get("text"):
-            return {**r, "model_used": "codex", "fell_back": ""}
+            return {**r, "model_used": used, "fell_back": ""}
         why = str(r.get("stderr") or "no answer")[:200]
-        print(f"hosted_text: Codex did not answer for {task} ({why}); Claude answers", file=sys.stderr)
+        print(f"hosted_text: {used} did not answer for {task} ({why}); Claude answers", file=sys.stderr)
         out = claude(prompt, model, **ckw)
-        return {**out, "model_used": "claude", "fell_back": why}
-    return {**claude(prompt, model, **ckw), "model_used": "claude", "fell_back": ""}
+        return {**out, "model_used": base, "fell_back": why}
+    return {**claude(prompt, model, **ckw), "model_used": base, "fell_back": ""}
 
 
 def main(argv=None) -> int:

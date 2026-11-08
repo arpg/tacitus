@@ -1446,7 +1446,11 @@ def backstop_review(job: dict, turn: dict, results: list[dict], *, judge=None) -
     # sentence cut mid-word reads as a fault of its own.
     issues = [{"kind": str(i.get("kind") or "other")[:20], "detail": str(i.get("detail") or "")[:1000]}
               for i in (obj.get("issues") or []) if isinstance(i, dict)][:12]
-    used = "codex" if (meta or {}).get("model_used") == "codex" else model
+    # The record names the model that judged: another hosted model by its
+    # key, Claude by the model id it ran.
+    import model_routing
+    by = model_routing.for_model((meta or {}).get("model_used"))
+    used = by.key if by and not by.base else model
     return {"verdict": verdict, "issues": issues, "note": str(obj.get("note") or "")[:600],
             "model": used, "cost_usd": (meta or {}).get("cost_usd")}
 

@@ -574,7 +574,12 @@ floors sit under it: `review` is hosted only, and `mail` and `tagging`
 take `hosted` only while the keep list is empty. The table is
 `<private_dir>/routing.json`, written by the web chat's Settings screen
 (`/api/settings/routing`) and `model_routing.py set`; owner processes
-never read the `routing` block in `ea-config.json`.
+never read the `routing` block in `ea-config.json`. Which hosted model a
+task runs on is one switch, `hosted_default` (Claude or Codex), with
+per-task overrides over it (`model_routing.py set-hosted`). The hosted
+models are one registry (`ea_config.HOSTED_MODELS`), and the policy code
+asks `model_routing` by class (`is_hosted`, `is_local`, `is_base`,
+`for_model`) instead of naming a model (docs/model-routing.md).
 
 Neither cutover is set blind. `mail = ghost` and `scheduling = shadow`
 open a dated week (`ghost_week.py`) in which every lane's mail read is

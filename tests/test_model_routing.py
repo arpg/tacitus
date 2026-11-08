@@ -94,7 +94,7 @@ def test_a_wrong_task_or_value_is_named_and_dropped():
     assert ea_config.routing_problems("x") == ["the routing block is not a JSON object"]
     # a flat block is named, not silently ignored
     assert ea_config.routing_problems({"chat": "local", "_doc": "x"}) == \
-        ["routing takes its values under tasks and hosted, not 'chat'"]
+        ["routing takes its values under tasks, hosted and hosted_default, not 'chat'"]
 
 
 def test_the_stakes_floor_holds_review_at_hosted_whatever_a_file_says(table):
@@ -627,7 +627,7 @@ def test_the_screen_data_and_the_chat_lines(table):
     assert tech["mail"]["what"] == mr.TECH["mail"] != rows["mail"]["what"]
     lines = mr.lines(data)
     assert lines[0].startswith(":control_knobs: *Model routing.* Local model local-27b")
-    assert any(ln.startswith("- *Checking its own work* (`review`): hosted, hosted on Claude, now Claude")
+    assert any(ln.startswith("- *Checking its own work* (`review`): hosted, hosted on Claude (default), now Claude")
                for ln in lines)
     assert "Settings" in lines[-1]
     # no em-dash anywhere the owner reads
@@ -669,11 +669,11 @@ def test_the_cli_sets_one_task_and_refuses_a_floor(owner, monkeypatch, capsys):
     assert mr.main(["set", "review", "local"]) == 2
     assert "stakes floor" in capsys.readouterr().err
     assert mr.main(["show"]) == 0
-    assert ("*The weekly check* (`audit`): local, hosted on Claude, now your own model (set to Local)"
+    assert ("*The weekly check* (`audit`): local, hosted on Claude (default), now your own model (set to Local)"
             in capsys.readouterr().out)
     assert mr.main(["show", "--verbose"]) == 0
     out = capsys.readouterr().out
-    assert "(`audit`): local, hosted on Claude, now your own model (set to local)" in out
+    assert "(`audit`): local, hosted on Claude (default), now your own model (set to local)" in out
     assert "the stakes floor" in out
 
 

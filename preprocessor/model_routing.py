@@ -14,16 +14,23 @@ thinks of it and gives it one of three values:
           defaults to auto.
 
 Which hosted model a task uses, whenever it runs hosted (by its value or
-by auto), is the block's `hosted` map: `claude` or `codex`. Codex is a
-choice for the tasks with a Codex route (ea_config.ROUTING_CODEX_TASKS):
-`chat` and `scheduling`, whose lanes then run on the `codex` tier
-(model_tiers.resolve puts the map over the tiers block); `briefing`,
-`audit` and `digests`, whose Claude lane run-agent.sh then hands to Codex
-(`harness`); and `tagging`, `thread_state` and `review`, whose tool-less
-calls hosted_text makes on Codex with every tool off. `mail` hosted is
-the gate off and `drafting` hosted is the turn's own model, so neither
-has a choice of its own. A task the map leaves out runs where it runs
-today: the chat and scheduling lanes' tiers block, Claude for the rest.
+by auto), is one switch with overrides: `hosted_default` (`claude` or
+`codex`) for every task, and the block's `hosted` map for a task the
+owner set apart (`hosted_map`). A model is a choice only for the tasks
+its entry in ea_config.HOSTED_MODELS lists. Codex takes `chat` and
+`scheduling`, whose lanes then run on the `codex` tier (model_tiers.resolve
+puts the choice over the tiers block); `briefing`, `audit` and `digests`,
+whose Claude lane run-agent.sh then hands to Codex (`harness`); and
+`tagging`, `thread_state` and `review`, whose tool-less calls hosted_text
+makes on Codex with every tool off. `mail` hosted is the gate off and
+`drafting` hosted is the turn's own model, so neither has a choice of
+its own: they read Claude whatever the switch says, and `show` says why.
+With no switch set and no override, a task runs where it ran before the
+switch: the chat and scheduling lanes' tiers block, Claude for the rest.
+
+The policy code never names a hosted model: it asks `is_hosted`,
+`is_local`, `is_base` or `for_model` here, so the next hosted model is
+one entry in ea_config.HOSTED_MODELS and its harness.
 
 `thread_state` (the web chat's conversation states, docs/webchat-state.md)
 has no switch of its own and defaults to local: `local` runs it on the
@@ -74,10 +81,16 @@ the lanes and the local model's last error. The task keys are the same
 in both, in the config and on the command line.
 
 CLI (as the owner):
-    model_routing.py show [--json] [--verbose]  each task: the value, the model it runs on now, why
+    model_routing.py show [--json] [--verbose]  the hosted model, then each task: the value,
+                                                its hosted model (default or override), the
+                                                model it runs on now, why
+    model_routing.py set-hosted claude|codex    the switch: every task without an override
+    model_routing.py set-hosted <m> --task <t>  an override for one task
+    model_routing.py set-hosted --clear-task <t> [--clear-task <t2>]
+                                                the task follows the switch again
     model_routing.py set <task> <value>         write one task (validated, 0600): local,
                                                 hosted or auto, or claude or codex for its
-                                                hosted model
+                                                hosted model (an override)
     model_routing.py harness --agent <agent>    claude or codex: where run-agent.sh runs
                                                 the agent's Claude lane
 """
@@ -87,6 +100,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -97,9 +111,14 @@ VALUES = _ea_config.ROUTING_VALUES
 FLOORS = _ea_config.ROUTING_FLOORS
 HOSTED = _ea_config.ROUTING_HOSTED
 CODEX_TASKS = _ea_config.ROUTING_CODEX_TASKS
+REGISTRY = _ea_config.HOSTED_MODELS
+BASE = _ea_config.HOSTED_BASE
 KEEP_FLOORED = ("mail", "tagging", "digests")
 CHANGES = "routing-changes.jsonl"
-MODEL_NAMES = {"claude": "Claude", "codex": "Codex"}
+MODEL_NAMES = {k: m["name"] for k, m in REGISTRY.items()}
+# In a save's `hosted` map, this value drops the task's override: the task
+# follows the switch again.
+FOLLOW = "default"
 # The cron agents whose Claude lane is a task's hosted part: run-agent.sh
 # asks `harness` before it starts one.
 AGENT_TASK = {"morning-briefing": "briefing", "afternoon-catchup": "briefing",
@@ -186,6 +205,9 @@ CODEX_NOTE = ("Codex cannot open web links, Drive, GitHub or Overleaf. "
               "Start a message with @claude to send one to Claude.",
               "Codex runs with no network: URL, Drive, GitHub, Overleaf and deck turns fail; "
               "@claude sends one turn to Claude.")
+# What a harness cannot do in chat, by harness (HOSTED_MODELS[...]["harness"]):
+# the chat row shows it while chat runs on a model of that harness.
+HARNESS_LIMITS = {"codex": CODEX_NOTE}
 # Where each chat lane's turns happen, as the web chat names them.
 PLACES = {"main": "Ask Tacitus", "dm": "Direct messages", "room": "project rooms"}
 # The chat lanes (ea-chat-bot.py _turn_lane) and the task each belongs to.
@@ -210,51 +232,208 @@ def _remote_cfg(cfg: dict | None) -> dict:
     return remote_llm.config()
 
 
+# ── the hosted models ─────────────────────────────────────────────────
+
+# The names that mean the owner's own model wherever the code records one:
+# a tier, an arm, the release log's `local:<model>`, the tool gateway's
+# `<model>+slim` and the pipeline's `pipeline/<model>`. Every other name,
+# the empty one included, is a hosted (frontier) model: Claude, Codex or
+# any model added later (is_hosted).
+LOCAL_NAMES = ("local", "remote", "pipeline", "qwen", "on-prem", "onprem")
+
+
+@dataclass(frozen=True)
+class HostedModel:
+    """One entry of ea_config.HOSTED_MODELS, by its key."""
+    key: str
+    name: str
+    harness: str
+    tier: str
+    tiers: tuple
+    arm: str
+    names: tuple
+    tasks: tuple | None
+
+    @property
+    def base(self) -> bool:
+        """The bot's own model: every task runs on it, and a hosted model
+        that gives no answer hands its call to it."""
+        return self.key == BASE
+
+    def takes(self, task: str) -> bool:
+        return _ea_config.hosted_takes(self.key, task)
+
+
+def _entry(key: str) -> HostedModel:
+    m = REGISTRY[key]
+    return HostedModel(key=key, name=m["name"], harness=m["harness"], tier=m["tier"],
+                       tiers=tuple(m["tiers"]), arm=m["arm"], names=tuple(m["names"]),
+                       tasks=None if m["tasks"] is None else tuple(m["tasks"]))
+
+
+def hosted_models() -> list[HostedModel]:
+    """Every hosted model, the base first."""
+    return [_entry(k) for k in REGISTRY]
+
+
+def base() -> HostedModel:
+    return _entry(BASE)
+
+
+def is_local(name: str) -> bool:
+    """`name` is the local model: a tier or arm (`local`, `remote`,
+    `pipeline`), `local:<model>`, the tool gateway's `<model>+slim` or
+    `pipeline/<model>`."""
+    n = str(name or "").strip().lower()
+    return (n in LOCAL_NAMES or n.startswith(("local:", "pipeline/")) or n.endswith("+slim"))
+
+
+def for_model(name: str) -> HostedModel | None:
+    """The hosted model `name` belongs to: a HOSTED_MODELS key, a chat tier
+    (`opus`, `fable`, `codex`), an arm, or a model id a run records
+    (`claude-opus-5-5[1m]`, `sonnet`, `codex`, `gpt-...`). None for a
+    local name and for a name no entry claims."""
+    n = str(name or "").strip().lower()
+    if not n or is_local(n):
+        return None
+    for key, m in REGISTRY.items():
+        if n == key or n == m["arm"] or n in m["tiers"] or n.startswith(tuple(m["names"])):
+            return _entry(key)
+    return None
+
+
+def family(name: str) -> str:
+    """The HOSTED_MODELS key `name` belongs to; '' for none."""
+    m = for_model(name)
+    return m.key if m else ""
+
+
+def is_hosted(name: str) -> bool:
+    """True when `name` is a hosted model: any name that is not the local
+    model's. The one class check the privacy paths make (keep levels, the
+    keep floor, the release counts), so a switch between hosted models, or
+    a new one, changes none of them. An unknown or empty name counts as
+    hosted, so a privacy check fails closed; a routing branch that needs
+    the model's registry entry asks `for_model`."""
+    return not is_local(name)
+
+
+def is_base(name: str) -> bool:
+    """`name` is the base hosted model, the one the bot's own harness runs."""
+    m = for_model(name)
+    return bool(m and m.base)
+
+
+def harness_of(name: str) -> str:
+    """The harness that runs `name` (`claude`, `codex`); '' for a local or
+    unknown name."""
+    m = for_model(name)
+    return m.harness if m else ""
+
+
+def allowed(task: str) -> list[str]:
+    """The hosted models `task` can take, the base first."""
+    return [k for k in REGISTRY if _ea_config.hosted_takes(k, task)]
+
+
 # ── the table ─────────────────────────────────────────────────────────
+
+def _block(routing: dict | None) -> dict:
+    """The routing block as routing_from_block gives it; default
+    ea_config.get_routing()."""
+    return _ea_config.routing_from_block(routing if routing is not None else _ea_config.get_routing())
+
 
 def table(routing: dict | None = None) -> dict[str, str]:
     """{task: value} with the floors applied. `routing` is a routing
-    block ({"tasks": {...}, "hosted": {...}}); default ea_config.get_routing()."""
-    block = routing if routing is not None else _ea_config.get_routing()
-    return dict(_ea_config.routing_from_block(block)["tasks"])
+    block ({"tasks": {...}, "hosted": {...}, "hosted_default": ...});
+    default ea_config.get_routing()."""
+    return dict(_block(routing)["tasks"])
+
+
+def hosted_default(routing: dict | None = None) -> str:
+    """The switch: the hosted model every task without an override runs
+    on; '' when the owner has not set it (Claude, and the chat and
+    scheduling lanes keep their tiers block)."""
+    return _block(routing).get("hosted_default", "")
+
+
+def overrides(routing: dict | None = None) -> dict[str, str]:
+    """{task: model}: the tasks the owner set apart from the switch."""
+    return dict(_block(routing)["hosted"])
 
 
 def hosted_map(routing: dict | None = None) -> dict[str, str]:
-    """{task: claude | codex}: the owner's hosted-model choices, only the
-    tasks the owner set (a Codex choice only where a Codex route exists)."""
-    block = routing if routing is not None else _ea_config.get_routing()
-    return dict(_ea_config.routing_from_block(block)["hosted"])
+    """{task: model} for every task: the task's override, else the switch
+    (`hosted_default`), else the base (Claude). A model the task cannot
+    take reads the base."""
+    block = _block(routing)
+    default = block.get("hosted_default") or BASE
+    out = {}
+    for task in TASKS:
+        m = block["hosted"].get(task) or default
+        out[task] = m if _ea_config.hosted_takes(m, task) else BASE
+    return out
+
+
+def hosted_source(task: str, routing: dict | None = None) -> str:
+    """Where the task's hosted model comes from: `override` (its own
+    entry), `default` (the switch, or the base with none set), or `fixed`
+    (the task has no choice of its own, or the switch names a model that
+    cannot take it, so it stays on the base)."""
+    block = _block(routing)
+    if len(allowed(task)) < 2:
+        return "fixed"
+    if task in block["hosted"]:
+        return "override"
+    default = block.get("hosted_default") or BASE
+    return "default" if _ea_config.hosted_takes(default, task) else "fixed"
+
+
+def _chosen(task: str, block: dict) -> bool:
+    """The owner chose the task's hosted model: an override or the switch."""
+    return task in block["hosted"] or bool(block.get("hosted_default"))
+
+
+# The lane whose tiers block named a hosted model for a task before the
+# switch existed: with neither the switch nor an override set, it still does.
+_TIERS_LANE = {"chat": "main", "scheduling": "sched-channel"}
 
 
 def hosted_model(task: str, *, routing: dict | None = None, tiers: dict | None = None) -> str:
-    """`claude` or `codex`: the hosted model `task` uses when it runs
-    hosted. The owner's choice, else where it runs today: the chat and
-    scheduling lanes take the tiers block's `codex` (the main and the
-    scheduling channel's lane), every other task Claude."""
-    picked = hosted_map(routing).get(task)
-    if picked in HOSTED:
-        return picked
-    if task in ("chat", "scheduling"):
-        tiers = tiers if tiers is not None else _ea_config.get_tiers()
-        lane = "main" if task == "chat" else "sched-channel"
-        return "codex" if (tiers.get("lanes") or {}).get(lane) == "codex" else "claude"
-    return "claude"
+    """The hosted model (a HOSTED_MODELS key) `task` uses when it runs
+    hosted: `hosted_map`. With no switch and no override set, the chat and
+    scheduling tasks take the model the tiers block's lane default names
+    (`codex` on the main or the scheduling channel's lane), as before the
+    switch; every other task the base."""
+    block = _block(routing)
+    if _chosen(task, block) or task not in _TIERS_LANE:
+        return hosted_map(block)[task]
+    tiers = tiers if tiers is not None else _ea_config.get_tiers()
+    named = family((tiers.get("lanes") or {}).get(_TIERS_LANE[task]))
+    return named if named and _ea_config.hosted_takes(named, task) else BASE
 
 
 def lane_hosted(lane: str, routing: dict | None = None) -> str:
-    """The owner's hosted-model choice for a chat lane's task (LANE_TASK),
-    '' when the map leaves the task out. model_tiers.resolve puts it over
-    the tiers block's lane default."""
+    """The hosted model the owner chose for a chat lane's task (LANE_TASK):
+    the override, else the switch; '' when neither is set, so the tiers
+    block's lane default stands. model_tiers.resolve puts it over the
+    tiers block."""
     task = LANE_TASK.get(lane)
-    return hosted_map(routing).get(task, "") if task else ""
+    if not task:
+        return ""
+    block = _block(routing)
+    return hosted_map(block)[task] if _chosen(task, block) else ""
 
 
 def harness(agent: str, routing: dict | None = None) -> str:
-    """`codex` when the owner set the hosted model of the agent's task
-    (AGENT_TASK) to Codex, else `claude`. run-agent.sh asks before it
-    starts the agent's Claude lane; EA_HARNESS still forces Codex."""
+    """The harness that runs the agent's Claude lane (`claude` or
+    `codex`): its task's hosted model (AGENT_TASK, `hosted_map`), so the
+    switch moves the briefings, the audit and the digests with the rest.
+    run-agent.sh asks before it starts the lane; EA_HARNESS still forces
+    Codex."""
     task = AGENT_TASK.get(agent)
-    return "codex" if task and hosted_map(routing).get(task) == "codex" else "claude"
+    return REGISTRY[hosted_map(routing)[task] if task else BASE]["harness"]
 
 
 def value(task: str, routing: dict | None = None) -> str:
@@ -275,21 +454,6 @@ def keep_listed(cfg: dict) -> bool:
     if not isinstance(ks, dict):
         ks = cfg.get("keep_from_anthropic") or {}
     return bool(ks.get("domains") or ks.get("addresses") or ks.get("admissions"))
-
-
-# The names that mean the owner's own model. Every other name, the empty
-# one included, is a hosted (frontier) model: Claude, Codex or any model
-# added later.
-LOCAL_NAMES = ("local", "remote")
-
-
-def is_hosted(model: str) -> bool:
-    """True when `model` is a hosted model. The one class check the privacy
-    paths make (keep levels, the keep floor, the release counts), so a
-    switch between hosted models, or a new one, changes none of them. An
-    unknown name counts as hosted."""
-    m = str(model or "").strip().lower()
-    return not (m in LOCAL_NAMES or m.startswith("local:"))
 
 
 def choice(task: str, *, cfg: dict | None = None, routing: dict | None = None) -> str:
@@ -498,34 +662,51 @@ def runs_on(effective: str, hosted: str) -> str:
             "mixed": f"your own model and {name}"}.get(effective, effective)
 
 
+def _fixed_why(task: str, asked: str, pick: int) -> str:
+    """Why a `fixed` task stays on the base, (plain, technical)[pick]."""
+    b = MODEL_NAMES[BASE]
+    if len(allowed(task)) < 2:
+        return ("it has no hosted model of its own to pick",
+                "no hosted model of its own: " + HOSTED_NOTES.get(task, ("", "it takes only the base"))[1]
+                )[pick]
+    name = MODEL_NAMES.get(asked, asked)
+    return (f"{name} cannot do it, so it stays on {b}",
+            f"{asked} cannot take {task}; it reads {BASE}")[pick]
+
+
 def rows(*, cfg: dict | None = None, routing: dict | None = None,
          tiers: dict | None = None, verbose: bool = False) -> list[dict]:
     """One row per task for the screen, the doctor and the chat command:
     {"task", "label", "what", "value", "allowed", "locked", "floor",
     "effective" (local | hosted | mixed), "why", "hosted" (claude |
     codex: the model its hosted part uses), "hosted_allowed" (the hosted
-    models it can take), "hosted_note", "runs_on" (what it runs on now,
-    named), "help" (the "?" text, '' for none)}. `what`, `floor`,
-    `hosted_note` and `why` are plain words, or with `verbose` the code's
+    models it can take), "hosted_source" (default | override | fixed:
+    hosted_source), "hosted_why" (why a fixed task stays where it is, ''
+    otherwise), "hosted_note", "runs_on" (what it runs on now, named),
+    "help" (the "?" text, '' for none)}. `what`, `floor`, `hosted_note`,
+    `hosted_why` and `why` are plain words, or with `verbose` the code's
     terms; `help` is plain words always."""
     cfg = _remote_cfg(cfg)
     tiers = tiers if tiers is not None else _ea_config.get_tiers()
-    block = routing if routing is not None else _ea_config.get_routing()
+    block = _block(routing)
     tab = table(block)
     kept = keep_listed(cfg)
     pick = 1 if verbose else 0
+    asked = block.get("hosted_default") or BASE
     out, done = [], {}
     for task, (label, what) in TASKS.items():
         v = tab[task]
         hm = hosted_model(task, routing=block, tiers=tiers)
         name = MODEL_NAMES[hm] if not verbose else f"the hosted model ({hm})"
+        source = hosted_source(task, block)
         row = {"task": task, "label": label, "what": TECH[task] if verbose else what, "value": v,
                "allowed": list(VALUES), "locked": False, "floor": "", "hosted": hm,
-               "hosted_allowed": list(HOSTED) if task in CODEX_TASKS else ["claude"],
+               "hosted_allowed": allowed(task), "hosted_source": source,
+               "hosted_why": _fixed_why(task, asked, pick) if source == "fixed" else "",
                "hosted_note": HOSTED_NOTES[task][pick] if task in HOSTED_NOTES else "",
                "help": HELP.get(task, "")}
-        if task == "chat" and hm == "codex":
-            row["hosted_note"] = CODEX_NOTE[pick]
+        if task == "chat" and REGISTRY[hm]["harness"] in HARNESS_LIMITS:
+            row["hosted_note"] = HARNESS_LIMITS[REGISTRY[hm]["harness"]][pick]
         if task in FLOORS:
             row.update(allowed=[FLOORS[task]], locked=True, floor=STAKES_FLOOR[pick])
         elif task in KEEP_FLOORED and kept:
@@ -561,47 +742,67 @@ def payload(*, cfg: dict | None = None, routing: dict | None = None,
     words; `verbose` gives the code's terms (`show --verbose`, the doctor)."""
     cfg = _remote_cfg(cfg)
     source = "given" if routing is not None else _ea_config.get_routing_source()[1]
+    default = hosted_default(routing)
     return {"local": local_status(cfg, verbose=verbose), "source": source, "values": list(VALUES),
             "hosted_values": list(HOSTED), "hosted_names": dict(MODEL_NAMES),
+            "hosted_default": default or BASE, "hosted_default_set": bool(default),
             "rows": rows(cfg=cfg, routing=routing, tiers=tiers, verbose=verbose)}
 
 
 def lines(data: dict | None = None) -> list[str]:
-    """The table as chat lines (the `routing` command, `show`)."""
+    """The table as chat lines (the `routing` command, `show`): the hosted
+    model first, then each task with its hosted model marked `default`
+    (it follows the switch), `override` (its own choice) or `fixed` (with
+    why)."""
     data = data if data is not None else payload()
     loc = data["local"]
     head = (f"Local model {loc['model']}: {loc['detail']}" if loc["configured"] else loc["detail"])
     out = [f":control_knobs: *Model routing.* {head}"]
+    default = MODEL_NAMES.get(data["hosted_default"], data["hosted_default"])
+    out.append(f"*Hosted model:* {default} for every task not set apart"
+               + ("." if data.get("hosted_default_set") else " (not chosen yet)."))
     for r in data["rows"]:
+        mark = r.get("hosted_source", "default")
+        if mark == "fixed":
+            mark = f"fixed: {r['hosted_why']}"
         out.append(f"- *{r['label']}* (`{r['task']}`): {r['value']}, hosted on "
-                   f"{MODEL_NAMES.get(r['hosted'], r['hosted'])}, now {r['runs_on']} ({r['why']})")
+                   f"{MODEL_NAMES.get(r['hosted'], r['hosted'])} ({mark}), now {r['runs_on']} ({r['why']})")
     if str(data.get("source", "")).startswith("refused"):
         out.append(f"routing.json is {data['source']}; every task reads auto.")
     out.append("Change it in the web chat's Settings, or as the owner: "
-               "`python3 preprocessor/model_routing.py set <task> local|hosted|auto|claude|codex`.")
+               "`python3 preprocessor/model_routing.py set-hosted claude|codex [--task <task>]`, "
+               "`set-hosted --clear-task <task>`, or `set <task> local|hosted|auto`.")
     return out
 
 
 # ── saving ────────────────────────────────────────────────────────────
 
-def _refusals(tasks: dict, kept: bool, hosted: dict | None = None) -> list[tuple[str, str]]:
+def _refusals(tasks: dict, kept: bool, hosted: dict | None = None,
+              default=None) -> list[tuple[str, str]]:
     """(plain, technical) for each task `save` refuses: an unknown task, a
     value that is not local, hosted or auto, a value under the stakes
     floor, and `hosted` under the keep floor while the keep list keeps
-    anything; in `hosted`, a model that is not Claude or Codex, and Codex
-    for a task with no Codex route. The technical text is
-    ea_config.routing_problems' own."""
+    anything; in `hosted`, a model that is not a hosted model (FOLLOW
+    drops an override), and a model for a task it cannot take; for the
+    switch (`default`), a model that is not a hosted model. The technical
+    text is ea_config.routing_problems' own."""
     out = []
+    names = " or ".join(MODEL_NAMES.values())
+    if default is not None and default not in HOSTED:
+        out.append((f"The hosted model is {names}.",
+                    "; ".join(_ea_config.routing_problems({"hosted_default": default}))))
     for task, m in (hosted or {}).items():
         tech = _ea_config.routing_problems({"hosted": {task: m}})
         name = f'"{TASKS[task][0]}"' if task in TASKS else ""
         if task not in TASKS:
             plain = f"Tacitus has no task named {task!r}."
+        elif m == FOLLOW:
+            continue
         elif m not in HOSTED:
-            plain = f"{name} takes Claude or Codex as its hosted model."
+            plain = f"{name} takes {names} as its hosted model."
         elif tech:
             plain = f"{name} has no hosted model of its own to pick. " + (
-                HOSTED_NOTES[task][0] if task in HOSTED_NOTES else "Codex cannot do it yet.")
+                HOSTED_NOTES[task][0] if task in HOSTED_NOTES else f"{MODEL_NAMES[m]} cannot do it yet.")
         else:
             continue
         out.append((plain, "; ".join(tech)))
@@ -623,21 +824,24 @@ def _refusals(tasks: dict, kept: bool, hosted: dict | None = None) -> list[tuple
     return out
 
 
-def save(tasks, *, hosted=None, cfg: dict | None = None, via: str = "cli",
+def save(tasks, *, hosted=None, hosted_default=None, cfg: dict | None = None, via: str = "cli",
          who: dict | None = None) -> dict:
-    """Merge `tasks` ({task: value}) and `hosted` ({task: claude | codex})
-    over the table in force and write <private_dir>/routing.json (0600).
-    Owner processes only. Raises RoutingRefused for an unknown task or
-    value, a floored value, `hosted` on a keep-floored task while the keep
-    list keeps anything, or Codex for a task with no Codex route. `who`
+    """Merge `tasks` ({task: value}), `hosted` ({task: claude | codex},
+    or FOLLOW to drop the task's override) and the switch `hosted_default`
+    (claude | codex) over the table in force and write
+    <private_dir>/routing.json (0600). Owner processes only. Overrides
+    stay when the switch moves. Raises RoutingRefused for an unknown task
+    or value, a floored value, `hosted` on a keep-floored task while the
+    keep list keeps anything, or a model for a task it cannot take. `who`
     ({"credential", "device"}, from the web front end) goes into the
     change log line."""
     tasks = {} if tasks is None else tasks
     hosted = {} if hosted is None else hosted
-    if not isinstance(tasks, dict) or not isinstance(hosted, dict) or not (tasks or hosted):
+    if not isinstance(tasks, dict) or not isinstance(hosted, dict) or not (tasks or hosted or hosted_default):
         raise RoutingRefused("Choose Local, Hosted or Auto, or a hosted model, for at least one task.",
-                             "tasks and hosted must be JSON objects that name at least one task")
-    problems = _refusals(tasks, keep_listed(_remote_cfg(cfg)), hosted)
+                             "tasks and hosted must be JSON objects that name at least one task, "
+                             "or hosted_default a hosted model")
+    problems = _refusals(tasks, keep_listed(_remote_cfg(cfg)), hosted, hosted_default)
     if problems:
         raise RoutingRefused(" ".join(p for p, _t in problems), "; ".join(t for _p, t in problems))
     ot = _ea_config._owner_trust()
@@ -646,8 +850,12 @@ def save(tasks, *, hosted=None, cfg: dict | None = None, via: str = "cli",
                              "may change these settings.",
                              "only the owner's processes write the routing table")
     current, _source = _ea_config.get_routing_source()
-    block = _ea_config.routing_from_block({"tasks": {**current["tasks"], **tasks},
-                                           "hosted": {**current.get("hosted", {}), **hosted}})
+    picked = {k: v for k, v in {**current.get("hosted", {}), **hosted}.items()
+              if hosted.get(k) != FOLLOW}
+    raw = {"tasks": {**current["tasks"], **tasks}, "hosted": picked}
+    if hosted_default or current.get("hosted_default"):
+        raw["hosted_default"] = hosted_default or current["hosted_default"]
+    block = _ea_config.routing_from_block(raw)
     try:
         ot.write_owner_file(ot.private_dir() / ot.ROUTING_FILE,
                             (json.dumps(block, indent=2) + "\n").encode(), mode=0o600)
@@ -659,8 +867,11 @@ def save(tasks, *, hosted=None, cfg: dict | None = None, via: str = "cli",
         changed = {k: [current["tasks"][k], v] for k, v in block["tasks"].items()
                    if current["tasks"][k] != v}
         was = current.get("hosted", {})
-        changed.update({f"hosted.{k}": [was.get(k, ""), v] for k, v in block["hosted"].items()
-                        if was.get(k, "") != v})
+        changed.update({f"hosted.{k}": [was.get(k, ""), block["hosted"].get(k, "")]
+                        for k in {**was, **block["hosted"]}
+                        if was.get(k, "") != block["hosted"].get(k, "")})
+        if current.get("hosted_default", "") != block.get("hosted_default", ""):
+            changed["hosted_default"] = [current.get("hosted_default", ""), block["hosted_default"]]
         line = {"ts": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "via": via, "changed": changed}
         for key in ("credential", "device"):
@@ -680,7 +891,8 @@ class WebSettings:
         return payload()
 
     def save(self, body: dict, who: dict | None = None) -> dict:
-        save(body.get("tasks"), hosted=body.get("hosted"), via="web", who=who)
+        save(body.get("tasks"), hosted=body.get("hosted"), hosted_default=body.get("hosted_default"),
+             via="web", who=who)
         return {**payload(), "saved": True}
 
 
@@ -696,9 +908,12 @@ def doctor_row(*, cfg: dict | None = None) -> tuple[str, str, str]:
     for r in data["rows"]:
         by.setdefault(r["effective"], []).append(r["task"])
     detail = "; ".join(f"{k}: {', '.join(by[k])}" for k in ("local", "mixed", "hosted") if k in by)
-    codex = [r["task"] for r in data["rows"] if r["hosted"] == "codex"]
-    if codex:
-        detail += f"; hosted on codex: {', '.join(codex)}"
+    if data["hosted_default_set"]:
+        detail += f"; hosted default: {data['hosted_default']}"
+    for m in hosted_models():
+        on = [r["task"] for r in data["rows"] if r["hosted"] == m.key and not m.base]
+        if on:
+            detail += f"; hosted on {m.key}: {', '.join(on)}"
     loc = data["local"]
     detail += (f"; local model {loc['model']}: {loc['detail']}" if loc["configured"]
                else "; no local model")
@@ -722,14 +937,21 @@ def main(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("show", help="each task: the value, the model it runs on now, why")
+    s = sub.add_parser("show", help="the hosted model, then each task: the value, its hosted model "
+                                    "(default or override), the model it runs on now, why")
     s.add_argument("--json", action="store_true")
     s.add_argument("--verbose", action="store_true",
                    help="the code's terms: the switches, the lanes, the local model's last error")
     p = sub.add_parser("set", help="write one task into the owner-private routing.json")
     p.add_argument("task", choices=list(TASKS))
     p.add_argument("value", choices=list(VALUES) + list(HOSTED),
-                   help="local, hosted or auto; or claude or codex for the task's hosted model")
+                   help="local, hosted or auto; or claude or codex for the task's hosted model (an override)")
+    sh = sub.add_parser("set-hosted", help="the hosted model for every task, or one task's override")
+    sh.add_argument("model", nargs="?", choices=list(HOSTED),
+                    help="claude or codex: every task without an override, or with --task that task")
+    sh.add_argument("--task", choices=list(TASKS), help="set an override for this task only")
+    sh.add_argument("--clear-task", action="append", default=[], choices=list(TASKS),
+                    help="drop this task's override, so it follows the hosted model again (repeatable)")
     h = sub.add_parser("harness", help="claude or codex: where run-agent.sh runs the agent's Claude lane")
     h.add_argument("--agent", required=True)
     a = ap.parse_args(argv)
@@ -737,8 +959,24 @@ def main(argv=None) -> int:
         try:
             print(harness(a.agent))
         except Exception as e:
-            print(f"harness: the routing table is unread ({e}); claude", file=sys.stderr)
-            print("claude")
+            print(f"harness: the routing table is unread ({e}); {REGISTRY[BASE]['harness']}", file=sys.stderr)
+            print(REGISTRY[BASE]["harness"])
+        return 0
+    if a.cmd == "set-hosted":
+        if not a.model and not a.clear_task:
+            ap.error("set-hosted needs a model, --clear-task, or both")
+        if a.task and not a.model:
+            ap.error("--task needs a model")
+        hosted = {t: FOLLOW for t in a.clear_task}
+        if a.task:
+            hosted[a.task] = a.model
+        try:
+            block = save({}, hosted=hosted, hosted_default=None if a.task else a.model)
+        except RoutingRefused as e:
+            print(f"set-hosted refused: {e.tech}", file=sys.stderr)
+            return 2
+        print(json.dumps({"hosted_default": block.get("hosted_default", ""),
+                          "overrides": block["hosted"], "hosted": hosted_map(block)}))
         return 0
     if a.cmd == "set":
         model = a.value in HOSTED

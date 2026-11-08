@@ -467,16 +467,17 @@ def ask_remote(prompt: str) -> tuple[dict, dict]:
                                               "model": r.get("model"), "cost_usd": 0.0}
 
 
-def ask_codex(prompt: str) -> tuple[dict, dict] | None:
-    """The tags from one tool-less Codex call as the owner (hosted_text:
-    the prompt carries mail text, which stays in the owner's processes);
-    None when Codex gave no answer, and Claude tags instead."""
+def ask_hosted(prompt: str, model: str) -> tuple[dict, dict] | None:
+    """The tags from one tool-less call on `model`, a hosted model other
+    than Claude (Codex), as the owner (hosted_text.call: the prompt carries
+    mail text, which stays in the owner's processes); None when it gave no
+    answer, and Claude tags instead."""
     import hosted_text
-    r = hosted_text.codex(prompt, timeout=MODEL_TIMEOUT_S, as_owner=True)
+    r = hosted_text.call(model, prompt, timeout=MODEL_TIMEOUT_S, as_owner=True)
     if r.get("rc") or not r.get("text"):
-        print(f"mail_tagger: Codex did not answer ({r.get('stderr')}); Claude tags", file=sys.stderr)
+        print(f"mail_tagger: {model} did not answer ({r.get('stderr')}); Claude tags", file=sys.stderr)
         return None
-    return parse_verdicts(r["text"]), {"model": "codex", "cost_usd": None, "usage": r.get("usage")}
+    return parse_verdicts(r["text"]), {"model": model, "cost_usd": None, "usage": r.get("usage")}
 
 
 def ask_model(prompt: str, model: str | None = None) -> tuple[dict, dict]:
@@ -488,8 +489,9 @@ def ask_model(prompt: str, model: str | None = None) -> tuple[dict, dict]:
     if _remote_mode():
         return ask_remote(prompt)
     import hosted_text
-    if hosted_text.model_for("tagging") == "codex":
-        got = ask_codex(prompt)
+    hosted = hosted_text.model_for("tagging")
+    if not hosted_text.is_base(hosted):
+        got = ask_hosted(prompt, hosted)
         if got is not None:
             return got
     model = model or model_name()

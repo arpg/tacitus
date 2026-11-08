@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Tiers: who the user is talking to in a chat topic.
 
-Three tiers, by name:
+The tiers, by name:
 
   local   the on-prem model through the tool gateway (the `remote` arm of
           model_arms); every scheduling write it makes passes the Claude
           backstop before a button;
   opus    the default colleague (the bot's own model, EA_MODEL);
-  fable   the frontier model, for the hard calls.
+  fable   the frontier model, for the hard calls;
+  codex   Codex through its own harness (codex_turn).
+
+The hosted tiers come from the hosted models' registry
+(ea_config.HOSTED_MODELS): a new hosted model brings its tier, its
+aliases and its footer name with its entry.
 
 Four ways to pick one, strongest first:
 
@@ -23,9 +28,11 @@ Four ways to pick one, strongest first:
      when the lane's task (`chat` for main, dm and room; `scheduling` for
      sched-channel and proactive) is `local` or `hosted`, else ea-config
      `tiers.lanes` (main, dm, sched-channel, room, proactive). The table's
-     hosted model for the task (Settings: Claude or Codex) sits over the
-     tiers block: Codex makes a hosted pick `codex`, Claude takes a
-     `codex` lane default back to the bot's own model.
+     hosted model for the task (its override, else the one switch
+     `hosted_default`; Settings: Claude or Codex) sits over the tiers
+     block: Codex makes a hosted pick `codex`, Claude takes a `codex`
+     lane default back to the bot's own model. With neither set, a
+     `codex` lane default stands.
 
 With none of them the turn runs where today's knobs put it: an adopted
 session's own model, a room's specialist, the scheduler model, the
@@ -50,16 +57,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ea_config as _ea_config  # noqa: E402
+import model_routing as _routing  # noqa: E402
 import remote_llm as _rl  # noqa: E402
 
-TIERS = ("local", "opus", "fable", "codex")
 TIER_TURNS = "tier-turns.jsonl"
 FABLE_MODEL = "claude-fable-5-1"
 
-ALIASES = {"fable": "fable", "opus": "opus", "claude": "opus",
-           "local": "local", "qwen": "local", "remote": "local", "on-prem": "local", "onprem": "local",
-           "codex": "codex"}
-_ALIAS_RE = r"(fable|opus|claude|local|qwen|remote|on-?prem|codex)"
+# The tiers, the names a message or a pin may use for them, and the names
+# the footer says, from the hosted models' registry (ea_config.HOSTED_MODELS):
+# each hosted model is its tiers ("opus" and "fable" are Claude's) and its
+# key names its default tier, so a new hosted model adds its tier here
+# with no edit.
+_LOCAL_ALIASES = {"local": "local", "qwen": "local", "remote": "local", "on-prem": "local",
+                  "onprem": "local"}
+TIERS = ("local",) + tuple(t for m in _routing.hosted_models() for t in m.tiers)
+ALIASES = {**{t: t for t in TIERS if t != "local"},
+           **{m.key: m.tier for m in _routing.hosted_models()}, **_LOCAL_ALIASES}
+_ALIAS_RE = "(" + "|".join(sorted((re.escape(a) for a in ALIASES if a not in ("on-prem", "onprem")),
+                                  key=len, reverse=True) + ["on-?prem"]) + ")"
 
 TAG_RE = re.compile(r"^\s*(?:@" + _ALIAS_RE + r"\b[:,]?|ask\s+" + _ALIAS_RE + r"\s*[:,])\s*", re.I)
 _USE_RE = re.compile(r"^\s*(?:use|switch\s+to)\s+" + _ALIAS_RE +
@@ -78,7 +93,8 @@ STAKES_RE = re.compile(
     r"\bpromotion\b|\bgrievance\b|\bpersonnel\b|\bHR\b|\bresign|\bcomplaint\b|\bnegotiat",
     re.I)
 
-NAMES = {"local": "the on-prem model", "opus": "Opus", "fable": "Fable", "codex": "Codex"}
+NAMES = {"local": "the on-prem model", "opus": "Opus", "fable": "Fable",
+         **{m.tier: m.name for m in _routing.hosted_models() if not m.base}}
 
 
 def tier_of(alias: str) -> str:
@@ -147,11 +163,22 @@ def topic_tier(thread_ts: str) -> str:
 
 def tier_of_model(model: str, arm: str = "") -> str:
     """Which tier a run's model and arm amount to, for the footer."""
-    if arm == "remote" or str(model or "").endswith("+slim"):
+    if _routing.is_local(arm) or str(model or "").endswith("+slim"):
         return "local"
-    if arm == "codex" or str(model or "").startswith("codex"):
-        return "codex"
+    for name in (arm, model):
+        m = _routing.for_model(name)
+        if m and not m.base:
+            return m.tier
     return "fable" if "fable" in str(model or "").lower() else "opus"
+
+
+def arm_of(tier: str) -> str:
+    """The model_arms arm a tier runs on: `remote` for `local`, else its
+    hosted model's arm (`claude` for `opus` and `fable`)."""
+    if tier == "local":
+        return "remote"
+    m = _routing.for_model(tier)
+    return m.arm if m else _routing.base().arm
 
 
 def high_stakes(text: str) -> bool:
@@ -171,10 +198,12 @@ def model_for(tier: str, *, default_model: str, cfg: dict | None = None) -> tupl
     s = settings(cfg)
     if tier == "fable":
         return s["models"].get("fable") or FABLE_MODEL, s["efforts"].get("fable") or ""
-    if tier == "codex":
-        # The Codex arm's model is the resident's config.toml; "codex" is
-        # the label the bot records and the footer names.
-        return "codex", ""
+    m = _routing.for_model(tier)
+    if m and not m.base:
+        # A hosted model on a harness of its own runs the model its harness
+        # is set up with (Codex: the resident's config.toml); its key is the
+        # label the bot records and the footer names.
+        return m.key, ""
     return s["models"].get("opus") or default_model, s["efforts"].get("opus") or ""
 
 
@@ -182,7 +211,7 @@ def model_alias(name: str, *, default_model: str, cfg: dict | None = None) -> st
     """`adopt session <id> as fable`: a tier name becomes its model id; any
     other name is a model id already."""
     tier = tier_of(name)
-    if tier in ("opus", "fable"):
+    if _routing.is_base(tier):
         return model_for(tier, default_model=default_model, cfg=cfg)[0]
     return name
 
@@ -193,18 +222,17 @@ def _lane_route(lane: str, routing: dict | None) -> str:
     """The routing table's value for the lane's task; `auto` when it
     cannot be read, which leaves the pick as it was before the table."""
     try:
-        import model_routing
-        return model_routing.lane_route(lane, routing)
+        return _routing.lane_route(lane, routing)
     except Exception:
         return "auto"
 
 
 def _lane_hosted(lane: str, routing: dict | None) -> str:
-    """The owner's hosted model for the lane's task (`claude`, `codex`),
-    '' when the table names none or cannot be read."""
+    """The hosted model the owner chose for the lane's task (the task's
+    override, else the switch), '' when neither is set or the table
+    cannot be read."""
     try:
-        import model_routing
-        return model_routing.lane_hosted(lane, routing)
+        return _routing.lane_hosted(lane, routing)
     except Exception:
         return ""
 
@@ -227,15 +255,23 @@ def resolve(*, lane: str, user_msg: str = "", tag: str = "", thread_ts: str = ""
     meta = session_meta or {}
     s = settings(cfg)
     route = _lane_route(lane, routing)
-    hosted = _lane_hosted(lane, routing)
-    # A hosted pick's tier: Codex when the owner chose it, else the bot's own model.
-    hosted_tier = "codex" if hosted == "codex" else "opus"
+    hosted = _routing.for_model(_lane_hosted(lane, routing))
+    # A hosted pick's tier: the chosen model's own (`opus` for Claude, the
+    # bot's own model; `codex` for Codex), the base's with no choice.
+    hosted_tier = (hosted or _routing.base()).tier
+    # The choice is the hosted model a lane runs on: a lane default of
+    # another hosted model gives way to it (a `fable` default under Codex,
+    # a `codex` default under Claude), one of its own tiers stays (`fable`
+    # under Claude), and `local` stays. Claude, the base, is the bot's own
+    # model with no explicit pick, so a room keeps its specialist's model.
     lane_tier = s["lanes"].get(lane) if s["lanes"].get(lane) in TIERS else ""
     lane_source = f"{lane} default"
-    if hosted == "codex" and lane_tier != "local":
-        lane_tier, lane_source = "codex", "routing"
-    elif hosted == "claude" and lane_tier == "codex":
-        lane_tier = ""
+    if hosted and lane_tier != "local":
+        own = _routing.family(lane_tier) == hosted.key
+        if hosted.base and not own:
+            lane_tier = ""
+        elif not hosted.base:
+            lane_tier, lane_source = (lane_tier if own else hosted.tier), "routing"
     tier, source = "", ""
     if tag in TIERS:
         tier, source = tag, "tag"
@@ -247,8 +283,8 @@ def resolve(*, lane: str, user_msg: str = "", tag: str = "", thread_ts: str = ""
         tier, source = "local", "routing"
     elif lane_tier and not (route == "hosted" and lane_tier == "local"):
         tier, source = lane_tier, lane_source
-    elif route == "hosted" and lane_tier == "local" and hosted == "codex":
-        tier, source = "codex", "routing"
+    elif route == "hosted" and lane_tier == "local" and hosted and not hosted.base:
+        tier, source = hosted.tier, "routing"
     explicit = bool(tier)
     if not tier:
         if meta.get("model"):
