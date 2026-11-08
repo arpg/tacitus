@@ -103,6 +103,9 @@ for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
         _web.settings_pages["routing"] = _model_routing.WebSettings()
         _web.settings_pages["notify"] = _web_notify_settings.NotifySettings(_web)
         _web_thread_state.enable(_web)
+        # The New room button shows only in a mode with rooms (_rooms_on,
+        # read when the app asks).
+        _web.rooms_enabled = lambda: _rooms_on()
 
 
 def _private_state(name: str) -> Path:
@@ -2708,12 +2711,24 @@ def _load_disallowed_tools() -> str:
     into a comma-separated CSV.
     """
     path = SCRIPT_DIR / "scripts" / "disallowed-tools.txt"
+    paths = [path]
+    # "drafting": false in ea-config.json adds every drafting verb, as in
+    # the other launchers; a failed read counts as off.
+    try:
+        from preprocessor import ea_config as _ea_config
+        drafting = _ea_config.profile_features()["drafting"]
+    except Exception as e:
+        log.warning(f"drafting switch unreadable, drafting verbs denied: {e}")
+        drafting = False
+    if not drafting:
+        paths.append(SCRIPT_DIR / "scripts" / "disallowed-tools.no-drafting.txt")
     lines = []
-    if path.exists():
-        for ln in path.read_text().splitlines():
-            s = ln.strip()
-            if s and not s.startswith("#"):
-                lines.append(s)
+    for p in paths:
+        if p.exists():
+            for ln in p.read_text().splitlines():
+                s = ln.strip()
+                if s and not s.startswith("#") and s not in lines:
+                    lines.append(s)
     # Denials an enabled plugin declares (docs/plugins.md) join the list.
     try:
         from preprocessor.plugin_registry import denied_tools as _plugin_denied_tools
@@ -10069,8 +10084,9 @@ def _colleague_command(channel: str, thread_ts: str, msg_ts: str,
         lines.append("_`name this conversation <title>` renames a thread; "
                      "`adopt session <uuid>` continues a shell session here; "
                      "`resume this conversation` revives an aged-out thread; "
-                     "`open a channel for this conversation` gives it a room; "
-                     "`which model` names the topic's arm, `use claude` / `use qwen` pins it._")
+                     + ("`open a channel for this conversation` gives it a room; "
+                        if _rooms_on() else "")
+                     + "`which model` names the topic's arm, `use claude` / `use qwen` pins it._")
         return {"ok": True, "text": "\n".join(lines)}
 
     m = _NAME_THREAD_RE.match(text)
@@ -10109,6 +10125,8 @@ def _colleague_command(channel: str, thread_ts: str, msg_ts: str,
                          f"Your next message continues it with its whole memory.")}
 
     m = _OPEN_CHANNEL_RE.match(text)
+    if m and not _rooms_on():
+        return {"ok": True, "text": ROOMS_OFF_TEXT}
     if m:
         if m.group("session") or m.group("this"):
             sid = (m.group("session") or "").lower()
@@ -10136,10 +10154,32 @@ def _colleague_command(channel: str, thread_ts: str, msg_ts: str,
     return None
 
 
+ROOMS_OFF_TEXT = (":information_source: Project rooms come with the collaborator mode. "
+                  "This install runs the assistant mode: one chat and no rooms, so we "
+                  "keep working here. To add rooms, run `python3 preprocessor/ea_config.py "
+                  "set-profile collaborator` in the Tacitus folder on the computer that "
+                  "runs it.")
+
+
+def _rooms_on() -> bool:
+    """Project and session rooms are the collaborator mode's (the `rooms`
+    feature of preprocessor/ea_config.py). With it off, every path that
+    opens a room answers ROOMS_OFF_TEXT instead. Read on each call, so a
+    mode change needs no restart."""
+    try:
+        from preprocessor import ea_config as _ea_config
+        return bool(_ea_config.profile_features()["rooms"])
+    except Exception as e:
+        log.warning(f"rooms switch unreadable, no room opened: {e}")
+        return False
+
+
 def _open_session_channel(session_id: str, model: str = "") -> dict:
     """Spawn #tmp-<id8>, a private room that mirrors one Claude session
     (a shell conversation, or a thread promoted to a room). Every
     message in it resumes that session."""
+    if not _rooms_on():
+        return {"ok": False, "rooms_off": True, "text": ROOMS_OFF_TEXT}
     from preprocessor import ea_channels as _ea_channels
     from preprocessor import slack_sessions as _sessions_mod
     sid = (session_id or "").strip().lower()
@@ -10346,6 +10386,8 @@ def _open_project_channel(channel: str, thread_ts: str, name: str,
     stream or a web chat room, through the chat frontend), invite the
     owner, register it, and post the project's opening context. A server
     that refuses the room gets _room_not_permitted_text."""
+    if not _rooms_on():
+        return {"ok": False, "rooms_off": True, "text": ROOMS_OFF_TEXT}
     from preprocessor import ea_channels as _ea_channels
     query = (project_query or name).strip().strip("\"'")
     pid, pname, candidates = _resolve_project_candidates(query)
@@ -10497,6 +10539,8 @@ def _room_picker(channel: str, thread_ts: str, query: str, candidates: list) -> 
     and a Create button that hands this thread to Claude to mint the row
     (the room then opens by itself, as for any project created in a turn).
     Returns a command result with the `card` and its plain-text fallback."""
+    if not _rooms_on():
+        return {"ok": False, "rooms_off": True, "text": ROOMS_OFF_TEXT}
     from preprocessor import project_store as _ps
     try:
         active = _ps.list_active()
@@ -10553,6 +10597,12 @@ def _dispatch_room_create(channel: str, thread_ts: str, name: str, user_id: str)
     register the project from this conversation. The row it writes makes
     the room appear by itself (_open_rooms_for_new_projects), so the
     instruction forbids the model from staging or announcing one."""
+    if not _rooms_on():
+        try:
+            FRONTEND.post(channel=channel, thread_ts=thread_ts or None, text=ROOMS_OFF_TEXT)
+        except Exception as e:
+            log.warning(f"rooms-off answer failed: {e}")
+        return
     from preprocessor import ea_channels as _ea_channels
     slug = _ea_channels.slug(name)[len(_ea_channels.NAME_PREFIX):] if name else ""
     try:
@@ -10746,6 +10796,11 @@ def _open_channel_action(channel: str, thread_ts: str | None, act: dict) -> None
     """A staged room request (pending-channel.json). The model cannot create
     Slack channels; it stages {"project": "<id or name>"} and the bot runs
     the same path the `open a channel` command uses, then announces it."""
+    if not _rooms_on():
+        _announce_room(channel, thread_ts, {"ok": False, "rooms_off": True,
+                                            "text": ROOMS_OFF_TEXT})
+        log.info("Staged room request refused: rooms are off in this mode")
+        return
     query = str(act.get("project") or act.get("name") or "").strip()
     if not query:
         try:
@@ -10773,8 +10828,9 @@ def _open_rooms_for_new_projects(channel: str, thread_ts: str | None,
     one. Attribution is by time (the store has no run id): the resident
     lane is serial, and in the per-thread lane the worst case is the
     announcement landing in a sibling thread while the room itself is
-    right. Returns the number of rooms opened."""
-    if not run_started:
+    right. Returns the number of rooms opened. With rooms off (the
+    assistant mode) the project is registered and no room opens."""
+    if not run_started or not _rooms_on():
         return 0
     try:
         from preprocessor import project_store as _ps

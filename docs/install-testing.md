@@ -41,7 +41,7 @@ from a copy of its head commit on a branch here
 The setup page (`scripts/install/setup_web.py`, docs/setup-web.md) is
 in the wall too (`tests/test_setup_web.py`): every phase posted to it
 writes, byte for byte and with the same modes, what `user_init.py
---answers tests/install/answers-email.json --phase <p>` writes; its
+--answers tests/install/answers-reviewer.json --phase <p>` writes; its
 gates, its checks and, where Playwright and Chromium are installed, the
 page itself in a phone-sized browser are tested there.
 
@@ -59,15 +59,15 @@ since macOS ships bash 3.2.
 `tests/install/smoke.sh` is the fresh-install path a new user follows,
 with nothing read from the terminal:
 
-1. The config, from `tests/install/answers-email.json`:
+1. The config, from `tests/install/answers-reviewer.json`:
    `python3 scripts/install/user_init.py --answers <file> --phase <phase>` for each
    config phase (`identity`, `scheduling`, `inbox`, `autonomy`, `groups`,
    `deadlines`, `style`, `auth`, `reimbursement`, `vip`, `push`,
    `state`). `tone` reads sent mail and `summary` only prints, so neither
    runs. `auth` writes the Graph keys for the device-code flow and skips
    the sign-in.
-2. `EA_NONINTERACTIVE=1 ./scripts/install/setup.sh --profile email`: the templates, the
-   profile, the cron template. The flag (or `--non-interactive`, or a
+2. `EA_NONINTERACTIVE=1 ./scripts/install/setup.sh --profile reviewer`: the templates, the
+   mode, the cron template. The flag (or `--non-interactive`, or a
    standard input that is not a terminal) skips the Graph and Google
    sign-ins, printing the command for each, and saves the cron entries to
    `~/.ea-private/crontab-template.txt` instead of installing them
@@ -79,7 +79,7 @@ with nothing read from the terminal:
    image).
 4. The install overlay: `install_overlay.py render` as ea-bot,
    `install --tree` as the owner (SETUP.md "The install overlay").
-5. `scripts/ea-doctor.py --profile email --expect-missing <names>`. The
+5. `scripts/ea-doctor.py --profile reviewer --expect-missing <names>`. The
    smoke exits with the doctor's status.
 
 The overlay install and the doctor run through `sudo -u <owner>` so the
@@ -95,7 +95,7 @@ once the installer closes that home. The `install-smoke-macos` job
 installs it with Homebrew first. No macOS machine was available when
 this was written; the macOS branches are small and marked in the script.
 
-Settings: `EA_SMOKE_PROFILE` (default `email`), `EA_SMOKE_ANSWERS`,
+Settings: `EA_SMOKE_PROFILE` (default `reviewer`), `EA_SMOKE_ANSWERS`,
 `EA_SMOKE_EXPECT_MISSING`, `EA_SMOKE_PYTHON`.
 
 The smoke refuses to run as root or when `~/.ea` exists: it installs
@@ -108,11 +108,11 @@ starts with one of the names. A name that matches no FAIL is reported
 (`expected_missing_unmatched` in `--json`, "did not fail" in the text)
 and changes nothing. The smoke names these three:
 
-| Check name | Why it cannot pass with no accounts | Profile |
+| Check name | Why it cannot pass with no accounts | Mode |
 |---|---|---|
-| `ea-bot: Claude login` | ea-bot has run no `/login`; `.claude/.credentials.json` and the settings token are both absent | every profile |
-| `auth: msal_token_cache.json` | no Graph sign-in has happened, so the token cache does not exist | every profile |
-| `EA-Managed calendar` | `scheduling-preferences.json` names no `ea_managed_calendar.calendar_id` | a FAIL on `assistant`; a WARN on `email` and `review-only`, where naming it is harmless |
+| `ea-bot: Claude login` | ea-bot has run no `/login`; `.claude/.credentials.json` and the settings token are both absent | every mode |
+| `auth: msal_token_cache.json` | no Graph sign-in has happened, so the token cache does not exist | every mode |
+| `EA-Managed calendar` | `scheduling-preferences.json` names no `ea_managed_calendar.calendar_id` | a FAIL on `assistant` and `collaborator`; a WARN on `reviewer`, where naming it is harmless |
 
 A prefix stands for a family: `config:` covers every `config: <file>`
 check. Other names the doctor can print on a bare machine, for an
@@ -147,7 +147,7 @@ setup page reads too. The keys, by phase:
 
 | Phase | Keys |
 |---|---|
-| profile | `profile` (`email`, `review-only`, `assistant`), `acknowledged` (only while `ea-config.json` records no acceptance; it must be yes); not in a full run, which leaves the profile to `scripts/install/setup.sh` |
+| profile | `profile` (`reviewer`, `assistant`, `collaborator`), `acknowledged` (only while `ea-config.json` records no acceptance; it must be yes), and for `reviewer` `drafting` (yes or no: reply drafts in the mailbox; no records `"drafting": false`) and `reports` (`weekdays`, `daily` or `none`: `reports.schedule`); not in a full run, which leaves the mode to `scripts/install/setup.sh` |
 | identity | `full-name`, `work-email`, `role-description`, `department`, `university`, `office`, `slack-channel-name`, `bio-blurb`, `calendar-accounts`, `institution-name`, `institution-domains`, `institution-related-domains`, `institution-safety-rail-domain`, `video-platform`, `video-link` |
 | scheduling | `timezone`, `cluster-meetings`, `default-duration-minutes`, `vip-end-time`, `google-calendars` |
 | inbox | `inbox-zero`, `archive-as-completion`, `stale-thread-days` |
@@ -155,15 +155,15 @@ setup page reads too. The keys, by phase:
 | groups | `groups-configure`, `group-name`, `group-addresses`, `group-add-another` |
 | deadlines | `deadlines-configure`, `deadline-domain`, `deadline-category`, `deadline-add-another` |
 | style | `style-default`, `style-internal`, `style-external-academic`, `style-student` |
-| chat | `chat-platform` (`web`, `zulip`, `slack`, or `1`-`3`; only on the `assistant` profile; the web chat is the default), `web-chat-host` (this machine's tailnet name; `public_url` becomes `https://<host>:8444/chat`), `web-chat-login` (the owner's Tailscale login); the two web keys only with `web` |
-| auth | `graph-auth-method` (`1`-`4`, or `confidential`, `device_code`, `interactive`, `skip`), `graph-client-id`, `graph-tenant-id`, `graph-redirect-uri`, `graph-client-secret`, `graph-sign-in-now`, `google-calendar-now`, `slack-bot-token`, `slack-app-token`, `slack-channel-id`, `slack-channel-name-env`, `slack-owner-id` (the Slack keys only on the `assistant` profile with Slack as the chat; the secrets go to `~/.ea-private/secrets.env`) |
+| chat | `chat-platform` (`web`, `zulip`, `slack`, or `1`-`3`; only on `assistant` and `collaborator`; the web chat is the default), `web-chat-host` (this machine's tailnet name; `public_url` becomes `https://<host>:8444/chat`), `web-chat-login` (the owner's Tailscale login); the two web keys only with `web` |
+| auth | `graph-auth-method` (`1`-`4`, or `confidential`, `device_code`, `interactive`, `skip`), `graph-client-id`, `graph-tenant-id`, `graph-redirect-uri`, `graph-client-secret`, `graph-sign-in-now`, `google-calendar-now`, `slack-bot-token`, `slack-app-token`, `slack-channel-id`, `slack-channel-name-env`, `slack-owner-id` (the Slack keys only in a chat mode with Slack as the chat; the secrets go to `~/.ea-private/secrets.env`) |
 | drive | `drive-accounts` (the Google accounts the Drive reader signs in; `drive_accounts` in `user-profile.json`), `google-drive-now` (the sign-in, terminal only, asked when accounts are listed) |
 | tone | `style-analysis-now` |
 | reimbursement | `reimbursement-configure`, `reimbursement-first-name`, `reimbursement-last-name`, `reimbursement-email`, `reimbursement-affiliation`, `reimbursement-form-url` |
 | vip | `vip-addresses` |
 | push | `push-configure`, `push-ntfy-url`, `push-topic`, `push-include-text`, `push-click` |
 
-`tests/install/answers-email.json` is a complete `email` install: a
+`tests/install/answers-reviewer.json` is a complete `reviewer` install: a
 made-up person at `example.edu`, an institution block, zone
 `America/Chicago`, no chat platform, no remote model, Outlook by device
 code with the sign-in deferred, and an ntfy push. The identity phase now

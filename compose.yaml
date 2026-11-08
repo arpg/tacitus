@@ -1,10 +1,12 @@
-# The EA as containers. Quick start, login, profiles and upgrades:
+# The EA as containers. Quick start, login, modes and upgrades:
 # docs/docker.md. Settings come from .env next to this file
 # (deploy/docker/env.example lists them).
 #
 #   docker compose run --rm setup                 the first configuration, once
-#   docker compose up -d                          email or review-only profile
+#   docker compose up -d                          the reviewer mode (no chat)
 #   docker compose --profile assistant up -d      adds the chat bot and its web chat
+#                                                 (assistant or collaborator mode;
+#                                                 --profile collaborator does the same)
 #   docker compose --profile zulip up -d          adds a self-hosted Zulip
 #   docker compose run --rm agent claude          Claude as ea-bot (auth login)
 #   docker compose run --rm owner <command>       a command as the owner
@@ -26,7 +28,7 @@ x-ea: &ea
   init: true
   environment:
     TZ: ${TZ:-UTC}
-    EA_PROFILE: ${EA_PROFILE:-email}
+    EA_PROFILE: ${EA_PROFILE:-reviewer}
     EA_MAIL_MEDIATION: ${EA_MAIL_MEDIATION:-1}
     # The address the owner opens the web chat at, behind a TLS proxy; the
     # setup role writes it into the owner-private chat.json.
@@ -79,7 +81,7 @@ services:
     <<: *ea
     command: ["bot"]
     restart: unless-stopped
-    profiles: ["assistant"]
+    profiles: ["assistant", "collaborator"]
     expose:
       - "8470"
     ports:

@@ -53,7 +53,8 @@ a notification while the app is closed.
 <img src="docs/figures/webchat-phone.png" alt="The web chat on a phone: a draft reply on a card with its Send button" width="300">
 
 The `ea` channel holds the conversations, one thread each. Your DM holds
-every confirmation card. Each project gets a room of its own.
+every confirmation card. In the collaborator mode each big project also
+gets a room of its own.
 
 | You say | The EA does |
 |---|---|
@@ -61,7 +62,7 @@ every confirmation card. Each project gets a room of its own.
 | "that's done" / "snooze the vendor thread until Wednesday" | Closes or snoozes the ledger item and archives the mail |
 | "find a time with Ari and Oakley next week" | Runs the solver over every calendar, proposes times, stages the invite behind a Create button |
 | "fill the When2Meet in that email" | Reads the poll, shows the conflicts, fills it when you say so |
-| "open a channel for the field-trial proposal" | Creates the project room and posts the project's context |
+| "open a channel for the field-trial proposal" | Creates the project room and posts the project's context (collaborator mode) |
 | "never show me DOE PAMS notices" | Records the rule in your words; every later briefing obeys it |
 
 Off the tailnet, a phone reaches the web chat through a relay that sees
@@ -87,15 +88,15 @@ three.
 and removal. [docs/SETUP.md](docs/SETUP.md) is the reference behind each
 step. To run in containers, read [docs/docker.md](docs/docker.md).
 
-Start with the `email` profile, which takes about an hour once IT has
-registered the app. Move to `assistant` when you want the chat and its
-buttons.
+Setup asks first which mode you want. `assistant` is the default. Take
+`reviewer` if you want no chat at all: it is the quickest install, about
+an hour once IT has registered the app. You can change the mode later.
 
-| Profile | What you get |
+| Mode | What you get |
 |---|---|
-| `email` (start here) | Triage, the ledger, drafts in your voice, meeting times proposed in the report (no holds or events: nothing places one without the chat buttons). Briefings land in `~/.ea/state/reports/<agent>-latest.md`, with a phone push if you want one. You send drafts from Outlook yourself. |
-| `review-only` | `email` without drafting: the EA reads, tracks and briefs, and writes nothing to the mailbox. |
-| `assistant` | Everything: the web chat (or Zulip or Slack), the Send and Create cards, project rooms, plugins. |
+| `reviewer` | No chat. Triage, the ledger, drafts in your voice left in your mailbox, meeting times proposed in the report (no holds or events: nothing places one without the chat buttons). Reports land in `~/.ea/state/reports/<agent>-latest.md` on the schedule you pick (weekdays, every day, or only when you run one), with a phone push if you want one. You send drafts from Outlook yourself. `"drafting": false` in `ea-config.json` turns the drafts off. |
+| `assistant` (default) | One chat on your phone: the web chat (or Zulip or Slack) with the EA channel, your DM with the Send and Create cards, scheduling and digests, plugins. No project rooms. |
+| `collaborator` | The assistant, plus a room for each big project. |
 
 ## What stays on your machine
 
@@ -141,8 +142,8 @@ included, stays under the AGPL.
 - **Obligations close themselves.** When you reply, accept an invite or
   archive a thread, the matching ledger item closes. When you have to
   tell the EA that something is done, it logs that as a defect to fix.
-- **Each project gets a room** with a specialist session that already
-  knows the project's people, mail and decisions.
+- **Each project gets a room** (collaborator mode) with a specialist
+  session that already knows the project's people, mail and decisions.
 
 ## Why you can trust it with your inbox
 
@@ -197,11 +198,11 @@ tagged and without attendees.
 
 | Feature | Status | What it does |
 |---|---|---|
-| Triage and the obligations ledger | Stable | Reads the inbox before each briefing (morning, afternoon, weekly); on the `assistant` profile it also checks new mail every 10 minutes during business hours. Finds what needs a reply and which threads were dropped, ranks them, and tracks each one until it closes. |
+| Triage and the obligations ledger | Stable | Reads the inbox before each briefing (morning, afternoon, weekly); in the assistant and collaborator modes it also checks new mail every 10 minutes during business hours. Finds what needs a reply and which threads were dropped, ranks them, and tracks each one until it closes. |
 | Drafts in your voice | Stable | Learns from 90 days of your sent mail how you write to each person: greeting, closing, length, formality. The draft to your dean reads differently from the draft to your student. |
 | The review card | Stable | One card per draft with Send, Edit, Handled, Sent myself and Cancel. The text you approve is the text that goes out. Outlook and Gmail share the flow. |
 | Scheduling | Stable | An OR-tools solver over Outlook and your Google calendars. Your rules live as recurring events on a calendar you edit in your calendar app. Detects reschedule requests within minutes. Fills When2Meet, Doodle and similar polls after you see the conflicts. |
-| Rooms and memory | Stable | One session per conversation and one specialist per project room. A project store holds people, filed mail and a decision journal. Rules you state in chat are stored in your words and applied wherever they fit. |
+| Rooms and memory | Stable | One session per conversation and, in the collaborator mode, one specialist per project room. A project store holds people, filed mail and a decision journal. Rules you state in chat are stored in your words and applied wherever they fit. |
 | Web chat | Stable | The bot's own chat, installed on your phone as an app, with notifications and a relay for off the tailnet. Runs alone or beside Zulip. The chat that new features land in first. See [docs/webchat.md](docs/webchat.md). |
 | Your other devices | Beta | With Tailscale, open the chat's address on the device. Without it, open Settings, then Devices, and tap A computer: type the code it shows at the hosted app on the computer, and approve the computer from your phone. See [docs/INSTALL.md](docs/INSTALL.md#use-tacitus-on-your-other-devices). |
 | Plugins | Stable | Personal and institution features live in plugins with declared capabilities, outside the core. See [docs/plugins.md](docs/plugins.md). |

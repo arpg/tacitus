@@ -98,7 +98,19 @@ def _q(key: str, label: str, kind: str = "text", **kw) -> dict:
     return {"key": key, "label": label, "kind": kind, **kw}
 
 
-_CHAT_PROFILE = {"ctx": "profile", "not_in": ["email", "review-only"]}
+# The ctx profile is a mode (preprocessor/ea_config.py PROFILES): the two
+# chat modes ask about the chat; the reviewer has none.
+_CHAT_PROFILE = {"ctx": "profile", "not_in": ["reviewer"]}
+_REVIEWER = {"key": "profile", "is": "reviewer"}
+# The three modes, one plain line each (ea_config.PROFILE_SUMMARY says the
+# same; tests/test_setup_modes.py holds the two together).
+MODE_LINES = {
+    "reviewer": "No chat. It reads your mail and calendar, leaves reply drafts in your "
+                "mailbox, and writes you a report when you want one.",
+    "assistant": "One chat on your phone. It drafts replies, finds meeting times and asks "
+                 "before anything goes out.",
+    "collaborator": "The assistant, plus a separate chat room for each big project.",
+}
 _CHAT_ASKED = [_CHAT_PROFILE, {"ctx": "chat", "not_in": ["zulip", "web"]}]
 _WEB_CHOSEN = [_CHAT_PROFILE, {"key": "chat-platform", "is": "web"}]
 # The web chat's defaults (docs/webchat.md, Config) and the HTTPS port
@@ -231,26 +243,28 @@ def _auth_phase(published: bool) -> dict:
 PHASES: list[dict] = [
     {
         "id": "profile", "web": True,
-        "header": "Profile and Notice",
-        "title": "Profile",
+        "header": "Mode and Notice",
+        "title": "Mode",
         "intro": [
-            "  The profile decides what the EA does and which questions follow.",
-            "  Start with email; move to assistant when you want the chat rooms",
-            "  and the Send and Create buttons.",
+            "  The mode decides how you work with the EA and which questions follow.",
+            "  Most people pick assistant. You can change the mode later.",
             "",
         ],
         "questions": [
-            _q("profile", "Install profile (email, review-only or assistant)", "choice",
-               web_label="Install profile",
+            _q("profile", "Mode (reviewer, assistant or collaborator)", "choice",
+               web_label="Mode",
+               choices=[[mode, f"{mode}: {line}"] for mode, line in MODE_LINES.items()],
+               default=[["ctx", "recorded_profile"], _lit("assistant")]),
+            _q("drafting", "Leave reply drafts in your mailbox for you to send?", "yesno",
+               default=[["ctx", "recorded_drafting"], _lit(True)], when=_REVIEWER),
+            _q("reports", "When should your report come (weekdays, daily or none)?", "choice",
+               web_label="When your report comes",
                choices=[
-                   ["email", "email (start here): triage, the ledger and drafts in your voice; "
-                             "no chat platform, briefings as files and a phone push"],
-                   ["review-only", "review-only: email without drafting; nothing is written "
-                                   "to the mailbox"],
-                   ["assistant", "assistant: everything, plus the chat platform, the Send and "
-                                 "Create buttons, the rooms and plugins (about half a day)"],
+                   ["weekdays", "weekdays: each weekday morning"],
+                   ["daily", "daily: every morning, weekends too"],
+                   ["none", "none: only when you ask for one"],
                ],
-               default=[["ctx", "recorded_profile"], _lit("email")]),
+               default=[["ctx", "recorded_reports"], _lit("weekdays")], when=_REVIEWER),
             _q("acknowledged", "Have you read the notice above, and do you accept that what "
                                "the EA sends and files under your name is yours?", "yesno",
                web_label="I have read the notice and accept that what the EA sends and files "
@@ -465,12 +479,12 @@ PHASES: list[dict] = [
         "header": "Phase 7b: Chat Platform",
         "title": "Chat",
         "intro": [
-            "  The assistant profile talks to you in a chat. The web chat is the",
-            "  bot's own: an app on your phone over your tailnet, with no chat",
-            "  server and nothing stored outside this machine. Zulip is a chat",
-            "  server you run here; Slack keeps every message, draft and card on",
-            "  Slack's servers. docs/INSTALL.md 'Choosing a chat platform' compares",
-            "  them.\n",
+            "  The assistant and collaborator modes talk to you in a chat. The",
+            "  web chat is the bot's own: an app on your phone over your tailnet,",
+            "  with no chat server and nothing stored outside this machine. Zulip",
+            "  is a chat server you run here; Slack keeps every message, draft and",
+            "  card on Slack's servers. docs/INSTALL.md 'Choosing a chat platform'",
+            "  compares them.\n",
         ],
         "questions": [
             _q("chat-platform", "Chat platform (web, zulip or slack)", "choice",
@@ -580,9 +594,9 @@ PHASES: list[dict] = [
         "header": "Phase 12: Phone Push (Optional)",
         "title": "Phone push",
         "intro": [
-            "  An email or review-only install has no chat channel: a report is",
-            "  a file in ~/.ea/state/reports/. With the ntfy app on your phone,",
-            "  each report also sends a short push. The settings are written to",
+            "  The reviewer mode has no chat: a report is a file in",
+            "  ~/.ea/state/reports/. With the ntfy app on your phone, each report",
+            "  also sends a short push. The settings are written to",
             "  {private_dir}/push.json (owner-only, mode 600).\n",
         ],
         "questions": [
@@ -604,8 +618,8 @@ PHASES: list[dict] = [
 # terminal after the header, the page under the intro, the /setup skill
 # before its first question.
 PHASE_WHY = {
-    "profile": "The profile sets how much the EA may do for you: read only, draft, or also "
-               "send after your click. It decides which of the later questions apply.",
+    "profile": "The mode sets how you work with the EA: reports, one chat, or a chat with "
+               "project rooms. It decides which of the later questions apply.",
     "identity": "The EA writes and files under your name. It must know who you are and which "
                 "mail comes from your own institution.",
     "scheduling": "The EA proposes meeting times for you. These answers set the length of a "
@@ -620,8 +634,8 @@ PHASE_WHY = {
                  "sender helps the EA rank the deadlines it finds.",
     "style": "The EA drafts replies in your voice. These defaults guide it until it learns "
              "your style from your sent mail.",
-    "chat": "The assistant profile talks to you in a chat. The platform you pick decides "
-            "where your drafts, cards and replies are stored.",
+    "chat": "The assistant and collaborator modes talk to you in a chat. The platform you "
+            "pick decides where your drafts, cards and replies are stored.",
     "auth": "The EA cannot read mail or calendars without your sign-in. This step connects "
             "your accounts; the tokens stay on this machine.",
     "drive": "Your mail often links to a Google Doc, such as meeting notes or a draft for "
@@ -637,8 +651,13 @@ PHASE_WHY = {
 
 WHY = {
     # profile
-    "profile": "The profile decides what the EA may do: read only, draft, or also send after "
-               "you click Send. It also decides which later questions apply to you.",
+    "profile": "The mode decides how you work with the EA. Reviewer sends reports, assistant is "
+               "one chat, collaborator adds project rooms. It also decides which later questions "
+               "apply to you.",
+    "drafting": "With drafts on, a reply waits in your Drafts folder and you send it yourself. "
+                "With drafts off, the EA only reads and reports.",
+    "reports": "Without a chat, the report is how the EA tells you what needs you. Pick the "
+               "days it comes; you can ask for one at any time.",
     "acknowledged": "What the EA sends and files goes out under your name. The install goes on "
                     "only after you accept that it is yours.",
     # identity

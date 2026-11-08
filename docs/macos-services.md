@@ -5,7 +5,7 @@ Companion to [macos-claude-binary.md](macos-claude-binary.md).*
 
 ## Why this exists
 
-The `assistant` profile runs two long-lived services as the **owner** (not
+The `assistant` and `collaborator` modes run two long-lived services as the **owner** (not
 ea-bot): the chat bot and the mail mediator. On Linux they are systemd units,
 hardened by `deploy/harden-permissions.sh` (SETUP.md "Hardening"). Neither
 systemd nor that script exists on macOS, so they are ported to launchd here.
@@ -56,12 +56,12 @@ evaluates them as shell.
 
 1. `sudo bash scripts/install/setup-ea-user-macos.sh` (the service account and its own
    Claude Code).
-2. On `assistant`, the chat platform (SETUP.md "Zulip server", or "Slack")
-   and its secret in `~/.ea-private/secrets.env`. On `email` and
-   `review-only` there is none.
-3. `sudo bash deploy/macos/install-services.sh`, on every profile. It
-   installs the mediator job always and the bot job only when the profile
-   has a chat platform (a bot job from an earlier profile is removed).
+2. On `assistant` and `collaborator`, the chat platform (SETUP.md "Zulip server", or "Slack")
+   and its secret in `~/.ea-private/secrets.env`. On `reviewer` there is
+   none.
+3. `sudo bash deploy/macos/install-services.sh`, in every mode. It
+   installs the mediator job always and the bot job only when the mode
+   has a chat platform (a bot job from an earlier mode is removed).
    Step 3 of it seeds
    `chat.json` from `ea-config.json`'s chat block **only when the file is
    missing**. Run before step 2, it would freeze the template values, and the

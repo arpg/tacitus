@@ -167,9 +167,12 @@ class Stub:
     def __init__(self, tick: float = 0.0, pair_token: str | None = None, echo: bool = True,
                  sign: bool = False, relay_pairing: bool = False, settings: bool | list = False,
                  push: bool = False, handoff: bool = False, owner_routes: str | None = None,
-                 subscriptions: list | None = None, public_url: str | None = None):
+                 subscriptions: list | None = None, public_url: str | None = None,
+                 rooms: bool | None = None):
         self.cond = threading.Condition()
         self.public_url = public_url
+        # /api/me's `rooms`: None leaves it out, as a bot from before it did
+        self.rooms = rooms
         self.handoff = handoff
         self.owner_routes = owner_routes
         self.handoffs: list[dict] = []
@@ -586,6 +589,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"owner": "owner", "bot": "bot", "public_url": s.public_url,
                                     "bundle": s.bundle.hash if s.bundle else "",
                                     "settings": s.settings, "push": s.push,
+                                    **({"rooms": s.rooms} if s.rooms is not None else {}),
                                     **({"relay": True} if s.relay_pairing else {}),
                                     **({"owner_routes": s.owner_routes, "handoff": s.handoff} if s.owner_routes else {})})
         if parts == ["settings", "routing"] and "routing" in s.settings:

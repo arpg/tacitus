@@ -36,11 +36,12 @@ body:
   - type: dropdown
     id: profile
     attributes:
-      label: Install profile
+      label: Install mode
+      description: "The mode setup asked for first (`profile` in ea-config.json). An older install's profile name maps: the two with no chat are reviewer, and assistant (with project rooms) is collaborator."
       options:
-        - email
-        - review-only
+        - reviewer
         - assistant
+        - collaborator
         - I did not get far enough to choose
     validations:
       required: true
@@ -61,7 +62,7 @@ body:
       label: Where it happened
       options:
         - install.sh
-        - /setup 1. Profile
+        - /setup 1. Mode
         - /setup 2. Identity or 2b. Institution
         - /setup 3. Outlook (app registration or sign-in)
         - /setup 4. Google Calendar
@@ -85,7 +86,7 @@ body:
     attributes:
       label: Doctor output
       description: |
-        Run `python3 scripts/ea-doctor.py --profile <your profile>` in your checkout and
+        Run `python3 scripts/ea-doctor.py --profile <your mode>` in your checkout and
         paste the output. Remove your email address and any names before you paste.
       render: text
   - type: textarea

@@ -242,11 +242,17 @@ def test_tips_wait_until_they_fit(ea):
     assert ut.BY_ID["model-settings"].ready(usage(ea, local=False)) is False
     assert ut.BY_ID["model-settings"].ready(usage(ea)) is True
     room = ut.BY_ID["project-room"]
+    (ea / "config" / "ea-config.json").write_text(
+        json.dumps({"profile": "collaborator", "profile_version": 2}))
     for i in range(19):
         owner_says(path, f"question {i}", thread=f"t{i}")
     assert room.ready(usage(ea)) is False
     owner_says(path, "question 19", thread="t19")
     assert room.ready(usage(ea)) is True
+    # the assistant mode has no rooms, so the room tip never fits there
+    (ea / "config" / "ea-config.json").write_text(
+        json.dumps({"profile": "assistant", "profile_version": 2}))
+    assert room.ready(usage(ea)) is False
 
 
 # ── the cadence ───────────────────────────────────────────────────────

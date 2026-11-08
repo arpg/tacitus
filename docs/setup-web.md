@@ -60,17 +60,18 @@ scan) is marked `terminal_only` and is not on the page.
 ## Screens
 
 One phase per screen, Previous and Next, in the order of a full terminal
-run: `profile` (the profile and the "Your responsibility" notice from
+run: `profile` (the mode, reviewer, assistant or collaborator, the
+reviewer's two switches, and the "Your responsibility" notice from
 README.md, word for word), `identity`, `scheduling`, `inbox`, `autonomy`,
 `groups`, `deadlines`, `style`, `chat` (the chat platform, the web chat
 first, with this machine's tailnet name and the owner's Tailscale login;
-only on `assistant`), `auth` (the app registration values, never a
+only on `assistant` and `collaborator`), `auth` (the app registration values, never a
 sign-in), `drive` (the Google accounts the Drive reader signs in, never
 the sign-in itself), `reimbursement`, `vip`, `push`. A phase that asks this install
 nothing is left out. Each screen shows its reason under the intro
 ("Why this step"), each question its reason above its help, and each
 remaining command on the last screen why it is needed. Next posts the phase; an error shows under its
-field. The profile and the chat platform decide what the later screens
+field. The mode and the chat platform decide what the later screens
 ask, so the page reads the phases again after each. The last screen runs the `state` phase,
 then the doctor (`scripts/ea-doctor.py --json`), and shows its checklist
 as green, amber and red rows, with each fix, and the commands that are
@@ -78,11 +79,14 @@ left. The page is phone first, follows the system's dark or light theme,
 and is three files: `setup_web/index.html`, `setup.js`, `setup.css`.
 
 The `profile` phase is new and also on the terminal
-(`user_init.py --phase profile`, keys `profile` and `acknowledged`). It
-records `"profile"` and `"acknowledged"` in `ea-config.json` the way
-`setup.sh --profile <name> --acknowledged` does, starting from the
-template when the file does not exist yet, so `setup.sh` run later finds
-both recorded and changes neither.
+(`user_init.py --phase profile`, keys `profile`, `acknowledged`, and for
+`reviewer` `drafting` and `reports`). It records `"profile"` with
+`"profile_version": 2` and `"acknowledged"` in `ea-config.json` the way
+`setup.sh --profile <name> --acknowledged` does, and for a reviewer
+`"drafting": false` when drafts are off and `reports.schedule`
+(`weekdays`, `daily` or `none`). It starts from the template when the
+file does not exist yet, so `setup.sh` run later finds them recorded and
+changes none.
 
 ## What stays on the terminal
 
@@ -93,7 +97,7 @@ The page lists these at the end, with the commands:
 - the Graph and Google sign-ins (a browser redirect on this machine or a
   pasted address), and the writing-style scan, which reads sent mail;
 - the service account, ea-bot's Claude login, the install overlay, the
-  chat platform's own step on `assistant` (the `tailscale serve` line for
+  chat platform's own step on `assistant` and `collaborator` (the `tailscale serve` line for
   the web chat, the Zulip bootstrap or the Slack app), the hardening and
   services, the cron install, the doctor, the first briefing, the
   first-week questions.
@@ -108,7 +112,7 @@ Every route under `/api/` needs the token in the `X-Setup-Token` header.
 
 | Route | Does |
 |---|---|
-| `GET /api/phases` | the web phases and their questions for this install's profile and chat platform, the notice, the finishing steps |
+| `GET /api/phases` | the web phases and their questions for this install's mode and chat platform, the notice, the finishing steps |
 | `GET /api/answers` | the current value of every question: the existing config, else the default |
 | `POST /api/answers` | `{"phase": id, "answers": {key: value}}`: 422 with `{"errors": {key: message}}`, or 200 with the files written |
 | `POST /api/doctor` | runs the doctor; `{"results": [{status, name, detail, fix}], "pass", "warn", "fail"}` |
@@ -152,8 +156,8 @@ The patterns are the web chat's (`botcore/botcore/chat/web_frontend.py`):
 
 `tests/test_setup_web.py`: the phases JSON is the definitions; posted
 answers write byte for byte what `user_init.py --answers --phase <p>`
-writes from `tests/install/answers-email.json`; validation errors come
+writes from `tests/install/answers-reviewer.json`; validation errors come
 back keyed and write nothing; the token, Host, Origin and size gates;
 the doctor route returns rows; Done stops the server; the bind rule; and,
 where Playwright and Chromium are installed, the page in a phone-sized
-browser from the profile screen to the checklist.
+browser from the mode screen to the checklist.

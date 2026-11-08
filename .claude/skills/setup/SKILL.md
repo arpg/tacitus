@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Guided install of the EA system, the front door for a new user. Offers the browser setup page first, or asks here: the profile first, then the account questions one screen at a time, writes the config, runs the service-account and cron installers, ends with the doctor's checklist green, and asks the first three preference questions.
+description: Guided install of the EA system, the front door for a new user. Offers the browser setup page first, or asks here: the mode first, then the account questions one screen at a time, writes the config, runs the service-account and cron installers, ends with the doctor's checklist green, and asks the first three preference questions.
 ---
 
 You are installing the EA system for the person in front of you. Work
@@ -64,7 +64,7 @@ keyboard fails there (Python's `input()` ends in EOFError). So:
   answers to `~/.ea-private/answers-<phase>.json` (mode 600;
   `mkdir -m 700 -p ~/.ea-private` first), then run
   `python3 scripts/install/user_init.py --answers ~/.ea-private/answers-<phase>.json --phase <phase>`.
-  The keys are in docs/install-testing.md; `tests/install/answers-email.json`
+  The keys are in docs/install-testing.md; `tests/install/answers-reviewer.json`
   is a complete example. Delete a file that holds a secret once its phase
   has run.
 - **`scripts/install/setup.sh`** sees no terminal and runs non-interactive by itself: it
@@ -121,43 +121,47 @@ skip every question it answered. Each section writes a value this list checks:
 Tell the user in one line which sections you found done, then start at
 the first one that is not.
 
-## 1. Profile
+## 1. Mode
 
-**Why:** the profile sets how much the EA may do, so it decides which
-sections apply. This is the first question, before any other. Ask which
-profile they want, and recommend `email` for a first install: no chat, about an
-hour once IT has given them the Outlook app. `assistant` is the upgrade
-path: with the web chat a few steps more, with Zulip about half a day,
-most of it the chat server. The three:
+**Why:** the mode sets how the user works with the EA, so it decides
+which sections apply. Ask it first, before any other question, unless
+`/setup` started with `--profile <name>` (`./install.sh --profile`): then
+say which and go on. Offer these three word for word; recommend `assistant`:
 
-- `email` (recommended first): the EA reads Outlook, keeps the ledger,
-  drafts replies in the user's voice and proposes meeting times in its
-  report; no holds, no events, no chat platform. The user works with it
-  in the Claude Code shell and sends every draft from Outlook. Briefings
-  land in `~/.ea/state/reports/<agent>-latest.md`, by phone push when set up.
-- `review-only`: `email` without drafting; nothing is written to the mailbox.
-- `assistant`: everything, plus the chat platform (the web chat, Zulip
-  or Slack): the EA channel, the direct message, project and session
-  rooms, the Send and Create buttons, the resident session, plugins, and
-  on Zulip and Slack a scheduling channel.
+- `reviewer`: No chat. It reads your mail and calendar, leaves reply drafts in your mailbox, and writes you a report when you want one.
+- `assistant`: One chat on your phone. It drafts replies, finds meeting times and asks before anything goes out.
+- `collaborator`: The assistant, plus a separate chat room for each big project.
+
+`reviewer` has no chat, buttons, holds or events: the user works in the Claude
+Code shell, sends drafts from Outlook and reads reports in
+`~/.ea/state/reports/<agent>-latest.md` (a phone push when set up). A chat
+mode adds the chat (web chat, Zulip or Slack): the EA channel, the DM with the
+Send and Create buttons, scheduling and digests in the same app, the resident
+and plugins; `collaborator` adds project and session rooms. For `reviewer` ask
+two more: leave reply drafts in the mailbox (default yes; no means it only
+reads and reports), and when the report comes: `weekdays`, `daily` or `none`
+(only when asked). A report comes any time: `./run-agent.sh morning-briefing --now`.
 
 Then show the notice: print the "Your responsibility" paragraph of
 `README.md` word for word and ask whether they have read it and accept
 that what the EA sends and files under their name is theirs. On
 anything but a yes, stop; `/setup` resumes when they are ready. Never
 shorten the paragraph or answer for them. On a yes, run
-`./scripts/install/setup.sh --profile <name> --acknowledged`. It installs the Python packages,
-copies every config template into `~/.ea/config/` (a file already there
-is kept), records the profile and the acknowledgment date in
-`ea-config.json`, and saves the cron lines without installing them. Run it now, while `~/.ea` is still the
-user's own directory, and never write `ea-config.json` by hand before
-it: the template would be skipped. To move from `email` to `assistant`
-later, run `./scripts/install/setup.sh --profile assistant` and do section 6.
-`python3 preprocessor/ea_config.py features --profile <name>` prints
-what the profile turns on; use it to decide which sections below apply.
-The table of profiles is docs/SETUP.md "Choose a profile".
+`./scripts/install/setup.sh --profile <name> --acknowledged` (`reviewer`:
+add `--reports <answer>`). It installs the Python packages, copies every
+config template into `~/.ea/config/` (a file already there is kept),
+records the mode and the acknowledgment date in `ea-config.json`, and
+saves the cron lines without installing them. Run it now, while `~/.ea`
+is still the user's own directory, and never write `ea-config.json` by
+hand before it: the template would be skipped. A reviewer with no drafts:
+then `answers-profile.json` (`profile`, `acknowledged`, `"drafting": false`,
+`reports`) and the `profile` phase. From `reviewer` to a chat mode later:
+`./scripts/install/setup.sh --profile <name>` and section 6; between the
+chat modes, `python3 preprocessor/ea_config.py set-profile <name>` is the
+whole switch. `python3 preprocessor/ea_config.py features --profile <name>`
+prints what the mode turns on. The table is docs/SETUP.md "Choose a mode".
 
-## 2. Identity (all profiles)
+## 2. Identity (all modes)
 
 **Why:** the EA signs, sorts and drafts under this name, in this zone.
 Ask, one at a time: full name, work email, and role and department (one
@@ -168,7 +172,7 @@ show -p Timezone --value`, or `readlink /etc/localtime` on macOS) and
 used. One `identity` phase writes sections 2 and 2b together, after 2b.
 The keys of every config file are in docs/SETUP.md "Config files".
 
-## 2b. Institution (all profiles)
+## 2b. Institution (all modes)
 
 **Why:** these facts say which mail is internal and where a first email
 never goes on its own. CLAUDE.md names no institution; the `institution` block of
@@ -205,7 +209,7 @@ The overlay render and install at the end of section 5 carry these
 facts into every Claude session. They need the service account, so they
 wait until then.
 
-## 3. Outlook (all profiles)
+## 3. Outlook (all modes)
 
 **Why:** without this sign-in the EA reads no mail and no calendar.
 Ask whether they already have an app registration for the EA in their
@@ -238,7 +242,7 @@ create one themselves. Choose by the answer:
 Check before moving on:
 `python3 preprocessor/graph_actions.py calendar-view --days 1`.
 
-## 4. Google Calendar and Drive (all profiles, recommended)
+## 4. Google Calendar and Drive (all modes, recommended)
 
 **Why:** a Google calendar counts as busy time only after its account
 signs in, and a Google Docs link in mail opens only with a Drive
@@ -265,12 +269,12 @@ mediator allows button-free writes only to the id in the owner-private
 Ask for their working hours (the one time this install asks) and have
 them add one recurring `wh Working Hours` event there; without it the
 solver has no rule store and no place to hold time. It is required on
-`assistant` and optional elsewhere.
+`assistant` and `collaborator` and optional on `reviewer`.
 
 Then Google Drive (docs/SETUP.md "Google Drive"): ask which Google
 accounts hold the documents their mail links to ("Other"; empty is fine),
 write them as `drive-accounts` in `answers-drive.json` with
-`"google-drive-now": false`, and run the `drive` phase. On `assistant`
+`"google-drive-now": false`, and run the `drive` phase. In a chat mode
 the sign-in waits for the chat (section 8): the user says `connect
 Google Drive <account>` there and follows the link, with no terminal.
 Elsewhere it is a step they type in the second terminal:
@@ -279,11 +283,11 @@ Elsewhere it is a step they type in the second terminal:
 only. An "access blocked" answer means the Workspace administrator must
 allow the app: say so in one line and go on.
 
-## 5. Service account and permissions (all profiles)
+## 5. Service account and permissions (all modes)
 
 **Why:** a message that tricks the EA must not reach the user's files,
 tokens or Send button. `./scripts/install/setup.sh --profile <name>` ran in section 1; run it again only if the
-profile changed. Then the service account, a step the user types in the
+mode changed. Then the service account, a step the user types in the
 second terminal: `sudo ./scripts/install/setup-ea-user.sh` (Linux) or
 `sudo ./scripts/install/setup-ea-user-macos.sh`.
 It creates `ea-bot`, moves `~/.ea` into ea-bot's home, installs ea-bot's
@@ -325,7 +329,7 @@ differences are docs/SETUP.md "macOS notes". The doctor's two `install
 overlay` lines confirm both steps. Run both again after any later change
 to `user-profile.json`.
 
-## 6. Chat platform (assistant profile only)
+## 6. Chat platform (assistant and collaborator)
 
 **Why:** the chat shows the drafts and buttons; the platform decides who
 stores them. Ask once which chat platform they want, and recommend the web chat:
@@ -389,7 +393,7 @@ section 5, and to finish each one's sign-in there. Check, as ea-bot:
 lists `claude.ai Gmail` and `claude.ai Google Calendar` as connected
 (docs/SETUP.md "Claude Code connectors").
 
-## 7b. Remote writer (optional, any profile that drafts)
+## 7b. Remote writer (optional, any mode that drafts)
 
 **Why:** some users want a model of their own to write the bodies. Ask once, after the connectors: do they run their own model, or have an
 OpenAI-compatible endpoint, that should write the email bodies instead
@@ -409,17 +413,17 @@ proves each part works. On Linux the hardening step, a `sudo` step the user type
 terminal: `sudo bash deploy/harden-permissions.sh` (docs/SETUP.md "Hardening"). It
 seeds the owner-owned code tree at `/opt/ea-system` and the owner-private
 files, and moves the services off the ea-bot tree so a prompt-injected
-EA cannot reach the owner account. It says which bot unit it found: on
-`assistant` it writes and starts the bot's system unit (docs/SETUP.md
-"Services"); on a profile with no chat platform it says the bot-unit
-steps are skipped, which is expected. When a service does not stay up,
+EA cannot reach the owner account. It says which bot unit it found: in
+a chat mode it writes and starts the bot's system unit (docs/SETUP.md
+"Services"); on `reviewer`, which has no chat platform, it says the
+bot-unit steps are skipped, which is expected. When a service does not stay up,
 it ends with a WARNING and that service's last log lines; a bot line
 `the chat setting <NAME> is not set` sends you back to section 6. Check:
-`test -f /opt/ea-system/.deployed-commit`, and on `assistant`
+`test -f /opt/ea-system/.deployed-commit`, and in a chat mode
 `systemctl is-active ea-chat-bot`. Mail mediation is already on:
 `scripts/install/setup-ea-user.sh` ran `deploy/enable-mail-mediation.sh`.
 
-On macOS, on every profile, two `sudo` steps the user types in the
+On macOS, in every mode, two `sudo` steps the user types in the
 second terminal instead: `sudo bash deploy/macos/install-services.sh` (the owner-owned
 `/opt/ea-system`, the owner-private files and the LaunchDaemons: the
 mediator always, the bot only with a chat platform), then
@@ -437,28 +441,27 @@ Then run `python3 scripts/ea-doctor.py --profile <name>` and fix every
 FAIL it prints, using the fix text next to each; each fix names the
 docs/SETUP.md appendix for its check, and docs/SETUP.md "Troubleshooting and the
 doctor's checks" maps every check name to one. Warnings about features
-the profile does not use are expected.
+the mode does not use are expected.
 
 Finish by running one briefing by hand,
 `./run-agent.sh morning-briefing --now` (`--now` skips the 4 AM gate),
-and showing the user where the report landed: the EA channel for
-`assistant`, otherwise `~/.ea/state/reports/morning-briefing-latest.md`
+and showing the user where the report landed: the EA channel in a chat
+mode, on `reviewer` `~/.ea/state/reports/morning-briefing-latest.md`
 and the phone push when one is configured.
 
-For `email` and `review-only`, offer the phone push once (docs/SETUP.md
+For `reviewer`, offer the phone push once (docs/SETUP.md
 "Phone push"): they install the ntfy app and pick a long random topic;
 `answers-push.json` (`"push-configure": true`, `push-topic`) and the
 `push` phase write `~/.ea-private/push.json`;
 `python3 preprocessor/push_notify.py test` proves it. The briefing above
 then sends a push too.
 
-Say three lines: the profile installed, where the EA talks to them, and
+Say three lines: the mode installed, where the EA talks to them, and
 the one command that re-runs the checklist. Then go on to section 9.
 
 ## 9. First week
 
 **Why:** the EA learns preferences from the user's words, not guesses.
-The EA learns the user's preferences from questions, not from guesses.
 Run `python3 preprocessor/onboarding.py ask --count 3`: it prints the
 first three preference questions, each with an `id`. Ask them one at a
 time with AskUserQuestion, as free text ("Other"), in the user's own
@@ -477,6 +480,6 @@ install here.
 
 When the three are recorded, tell the user: the morning briefing asks
 one more question each day for a week, at the end of the briefing; they
-answer in the thread (or in the shell on `email` and `review-only`), and
+answer in the thread (or in the shell on `reviewer`), and
 saying "stop the questions" ends the series at any time. That is the
 last thing the install says.

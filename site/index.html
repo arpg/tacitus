@@ -220,6 +220,7 @@ pre.sh { margin: 0; background: var(--bg); border: 1px solid var(--line); border
 pre.sh .c { color: var(--muted); }
 .req { margin-top: 20px; display: grid; gap: 6px; font-size: 15px; color: var(--fg-2); }
 .req .eyebrow { color: var(--muted); margin-bottom: 2px; }
+.req b { color: var(--fg); font-weight: 600; }
 
 /* how it works */
 .how { padding-block: 84px; border-bottom: 1px solid var(--line); }
@@ -339,6 +340,13 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 28px; justify-content: 
         <li><b>Leave the house.</b> Tap <i>Set up this phone</i> once. The phone makes its own keys, you approve it by matching a six-digit code, and the app checks every file it runs against your computer's signature.</li>
       </ol>
       <div class="req">
+        <p class="eyebrow">Setup asks first: which mode</p>
+        <span>&middot; <b>Reviewer.</b> No chat. It leaves reply drafts in your mailbox and writes you a report when you want one.</span>
+        <span>&middot; <b>Assistant.</b> One chat on your phone. It drafts replies, finds meeting times and asks before anything goes out. Setup picks this one unless you choose another.</span>
+        <span>&middot; <b>Collaborator.</b> The assistant, plus a separate chat room for each big project.</span>
+        <span>You can switch later.</span>
+      </div>
+      <div class="req">
         <p class="eyebrow">You need</p>
         <span>&middot; A Claude Pro or Max subscription, or a ChatGPT subscription that includes Codex</span>
         <span>&middot; A Microsoft 365 account and an app registration from your IT group (the longest wait)</span>
@@ -367,7 +375,7 @@ cd ea-system &amp;&amp; ./install.sh
   <div class="wrap">
     <div class="slot"><div class="t">04:00</div><h3>It reads the night's mail.</h3><p>Plain code merges the inbox, the calendars and the list of what you owe. The model judges only what is left.</p></div>
     <div class="slot"><div class="t">07:00</div><h3>A briefing is waiting.</h3><p>What needs you today, which replies are already drafted, which threads have waited too long.</p></div>
-    <div class="slot"><div class="t">Any time</div><h3>You write to it like a colleague.</h3><p>One conversation per request. A room of its own for a big project.</p></div>
+    <div class="slot"><div class="t">Any time</div><h3>You write to it like a colleague.</h3><p>One conversation per request. In the collaborator mode, a room of its own for a big project.</p></div>
     <div class="slot"><div class="t">Your tap</div><h3>Send. Create. Reschedule.</h3><p>Each is a button on a card. The model has no way to press it.</p></div>
   </div>
 </section>
@@ -648,6 +656,7 @@ cd ea-system &amp;&amp; ./install.sh
       <ul>
         <li>"Open a room for the spring fundraiser" opens one.</li>
         <li>Drop in a call transcript and the plan updates.</li>
+        <li>Rooms come with the collaborator mode. Setup asks which mode you want, and you can switch later.</li>
       </ul>
       <p class="gets"><b>You get</b>One place per project that remembers it for you.</p>
     </aside>

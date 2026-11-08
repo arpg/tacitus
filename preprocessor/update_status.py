@@ -168,20 +168,26 @@ def profile(ea: Path) -> str:
         return "assistant"
 
 
+def has_chat(ea: Path) -> bool:
+    """The install's mode has a chat (assistant or collaborator)."""
+    return profile(ea) != "reviewer"
+
+
 def effective_channel(live: Path, private: Path, ea: Path) -> tuple[str, str]:
     """(channel, source), channel one of latest, stable, off.
 
     With no setting, a plain tree belongs to the post-commit hook ("off",
     source "hook"): the maintainer's machine deploys its own commits and is
     never updated behind the hook. A release layout, or no tree yet, takes
-    the profile's default. "auto" is the profile's default too."""
+    the mode's default. "auto" is the mode's default too: latest with a
+    chat, stable on reviewer."""
     value, source = channel_setting(private, ea)
     if not value:
         if tree_kind(live) == "plain":
             return "off", "hook"
         value, source = "auto", "default"
     if value == "auto":
-        value = "latest" if profile(ea) == "assistant" else "stable"
+        value = "latest" if has_chat(ea) else "stable"
     return value, source
 
 

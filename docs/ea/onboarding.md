@@ -17,7 +17,7 @@ never worth showing, and reviewing requests. Each question names the
 or personal names; the user supplies those.
 
 **How it is asked.**
-- Chat profile: the preprocessor runs `onboarding.py next` for the
+- A chat mode (assistant, collaborator): the preprocessor runs `onboarding.py next` for the
   morning briefing, which ends with the question of the day under
   `:seedling: *One question*`. The user answers in that thread; the
   turn runs `onboarding.py answer --id <id> --text "<their words>"` and
@@ -25,7 +25,7 @@ or personal names; the user supplies those.
   asking* runs `stop`. The afternoon catchup never asks; it only
   records an answer. One question a day: `next` returns nothing while
   the question asked today is still open (`--force` overrides).
-- Email profile: the whole bank in one sitting, either
+- The reviewer mode: the whole bank in one sitting, either
   `python3 scripts/install/user_init.py --phase preferences` (interactive) or
   `python3 preprocessor/onboarding.py ask --count 3`, which prints the
   questions with the exact `answer` and `skip` commands. The setup

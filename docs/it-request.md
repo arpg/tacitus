@@ -109,7 +109,7 @@ only the user's machine; the project runs no server and holds no token. The
 permissions are `Mail.Read`, `Mail.ReadWrite`, `Mail.Send`,
 `Calendars.ReadBasic`, `Calendars.Read`, `Calendars.ReadWrite`,
 `MailboxSettings.Read`, `offline_access`, `openid` and `profile`; each
-user's install asks for the least its profile needs (the table in
+user's install asks for the least its mode needs (the table in
 `docs/published-oauth-apps.md`). A tenant that limits the EA to other
 people's free/busy consents to `Calendars.ReadBasic` alone.
 
@@ -119,10 +119,11 @@ and accepts):
 
 `<the link that python3 preprocessor/published_apps.py admin-consent-url --tenant <tenant id> prints>`
 
-The link asks for the sign-in permissions and the `email` profile's
+The link asks for the sign-in permissions and the reviewer mode's
 (`Mail.ReadWrite`, `Calendars.Read`, `MailboxSettings.Read`). For the
-assistant, whose Send and Create buttons need `Mail.Send` and
-`Calendars.ReadWrite`, the link is the one `--profile assistant` prints.
+assistant and collaborator modes, whose Send and Create buttons need
+`Mail.Send` and `Calendars.ReadWrite`, the link is the one
+`--profile assistant` prints.
 
 An administrator can instead sign in to Tacitus once and tick "Consent
 on behalf of your organization". Please also set "Assignment required?"

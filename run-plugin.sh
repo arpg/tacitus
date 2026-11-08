@@ -326,10 +326,11 @@ else
     DISALLOWED_TOOLS=""
     log "WARNING: $DISALLOWED_FILE missing; running without --disallowedTools"
 fi
-# The review-only profile also denies every drafting verb.
-if [[ "$(EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/ea_config.py" profile 2>/dev/null)" == "review-only" \
-      && -f "$SCRIPT_DIR/scripts/disallowed-tools.review-only.txt" ]]; then
-    DISALLOWED_TOOLS+=",$(grep -v '^[[:space:]]*#' "$SCRIPT_DIR/scripts/disallowed-tools.review-only.txt" \
+# "drafting": false in ea-config.json (any mode) also denies every drafting
+# verb. A failed read denies them too.
+if ! EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/ea_config.py" feature drafting >/dev/null 2>&1 \
+      && [[ -f "$SCRIPT_DIR/scripts/disallowed-tools.no-drafting.txt" ]]; then
+    DISALLOWED_TOOLS+=",$(grep -v '^[[:space:]]*#' "$SCRIPT_DIR/scripts/disallowed-tools.no-drafting.txt" \
         | sed '/^[[:space:]]*$/d' | paste -sd ',' -)"
 fi
 # Denials the enabled plugins declare (docs/plugins.md), from the owner's lock.

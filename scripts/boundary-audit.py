@@ -118,7 +118,7 @@ UNITS = ("ea-chat-bot", "ea-mail-mediator")
 MEDIATOR_UNIT = "ea-mail-mediator"
 # Out of ~/.ea on purpose: whoever can write this file can silence the audit.
 STATE_FILE = Path.home() / ".local" / "state" / "ea-boundary-audit" / "state.json"
-DENY_LISTS = ("scripts/disallowed-tools.txt", "scripts/disallowed-tools.review-only.txt")
+DENY_LISTS = ("scripts/disallowed-tools.txt", "scripts/disallowed-tools.no-drafting.txt")
 # Every file in the auth directory with "token" in its name: the MSAL
 # cache, the Google tokens and whatever an owner plugin's harvest writes.
 TOKEN_GLOB = "*token*"

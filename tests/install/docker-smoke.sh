@@ -5,7 +5,7 @@
 # machine's install:
 #
 #   setup  the container path: the entrypoint's setup role with
-#          tests/install/answers-email.json, against three named volumes
+#          tests/install/answers-reviewer.json, against three named volumes
 #          made for the run, the way `docker compose run --rm setup
 #          --answers FILE` runs it. The role runs the config phases as
 #          ea-bot, writes ~/.ea/.env, skips the logins (they need a
@@ -24,8 +24,8 @@
 #   bash tests/install/docker-smoke.sh setup        # one of them: setup or host
 #   EA_SMOKE_IMAGE=ea-system:latest bash tests/install/docker-smoke.sh
 #
-# Settings: EA_SMOKE_IMAGE, EA_SMOKE_PROFILE (the setup role's profile,
-# default email), EA_SMOKE_ANSWERS (the answers file), EA_SMOKE_OWNER (the
+# Settings: EA_SMOKE_IMAGE, EA_SMOKE_PROFILE (the setup role's mode,
+# default reviewer), EA_SMOKE_ANSWERS (the answers file), EA_SMOKE_OWNER (the
 # host part's owner user). Every container and volume the script makes
 # is removed at the end, whatever the result.
 set -euo pipefail
@@ -33,8 +33,8 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 IMAGE="${EA_SMOKE_IMAGE:-ea-system:worktree-check}"
 OWNER="${EA_SMOKE_OWNER:-smoke}"
-PROFILE="${EA_SMOKE_PROFILE:-email}"
-ANSWERS="${EA_SMOKE_ANSWERS:-$REPO/tests/install/answers-email.json}"
+PROFILE="${EA_SMOKE_PROFILE:-reviewer}"
+ANSWERS="${EA_SMOKE_ANSWERS:-$REPO/tests/install/answers-reviewer.json}"
 PART="${1:-all}"
 NAME="ea-install-smoke-$$"
 VOLUMES=("$NAME-data" "$NAME-private" "$NAME-claude")
@@ -67,7 +67,7 @@ smoke_setup() {
     local owner v out rc=0
     owner="$(image_owner)"
     [ -n "$owner" ] || die "$IMAGE names no owner user (EA_OWNER_USER)"
-    log "setup role: profile $PROFILE, answers $ANSWERS, owner $owner, volumes ${VOLUMES[*]}"
+    log "setup role: mode $PROFILE, answers $ANSWERS, owner $owner, volumes ${VOLUMES[*]}"
     for v in "${VOLUMES[@]}"; do
         docker volume create "$v" >/dev/null
     done

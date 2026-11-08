@@ -211,6 +211,14 @@ class Usage:
         return "web" in (self.chat.get("frontend"), self.chat.get("shadow"))
 
     @property
+    def rooms_on(self) -> bool:
+        """The install's mode has project rooms (collaborator)."""
+        try:
+            return bool(_ea_config.profile_features(config_path=config_file(self.ea_dir))["rooms"])
+        except Exception:
+            return False
+
+    @property
     def relay_on(self) -> bool:
         """A relay is set up, so a phone can pair to use the chat off the
         owner's own network."""
@@ -486,8 +494,8 @@ CATALOGUE: list[Tip] = [
         "Open a room for the spring fundraiser.",
         "Everything about it stays in one place, and I remember it there.",
         uses=lambda u: u.rooms() > 0,
-        ready=lambda u: u.conversations() >= ROOM_AFTER,
-        needs=f"{ROOM_AFTER} conversations or more"),
+        ready=lambda u: u.rooms_on and u.conversations() >= ROOM_AFTER,
+        needs=f"the collaborator mode and {ROOM_AFTER} conversations or more"),
     Tip("model-settings",
         "You can choose which jobs run on your own AI model.",
         "Open the menu, tap Settings, then Models.",

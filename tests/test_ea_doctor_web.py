@@ -153,9 +153,9 @@ def test_shadow_mode_reports_zulip_and_the_web_chat(tmp_path):
     assert rows["web chat: store"]["status"] == "PASS"
 
 
-def test_the_email_profile_checks_no_web_chat(tmp_path):
+def test_the_reviewer_mode_checks_no_web_chat(tmp_path):
     ea, priv = _install(tmp_path, {"frontend": "web", "web": {}})
-    rows = _rows(ea, priv, profile="email")
+    rows = _rows(ea, priv, profile="reviewer")
     assert not [n for n in rows if n.startswith("web chat")]
 
 

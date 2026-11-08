@@ -35,7 +35,7 @@ def test_runtime_code_restarts():
     assert _restarts(["docs/ARCHITECTURE.md", "ea-chat-bot.py"])
     assert _restarts(["preprocessor/draft_events.py"])
     assert _restarts(["scripts/disallowed-tools.txt"])
-    assert _restarts(["scripts/disallowed-tools.review-only.txt"])
+    assert _restarts(["scripts/disallowed-tools.no-drafting.txt"])
     assert _restarts(["requirements.txt"])
     # The chat layer the bot holds in memory lives in the botcore package.
     assert _restarts(["botcore/botcore/chat/zulip_frontend.py"])

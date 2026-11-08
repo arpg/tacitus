@@ -149,8 +149,16 @@ def test_scopes_are_least_per_profile_and_the_registration_covers_them_all():
     for profile, scopes in published_apps.GRAPH_SCOPES_BY_PROFILE.items():
         assert set(scopes) <= set(reg), profile
     assert published_apps.graph_scopes("availability") == ["Calendars.ReadBasic"]
-    assert "Mail.Send" not in published_apps.graph_scopes("email")
-    assert not any("Write" in s or "Send" in s for s in published_apps.graph_scopes("review-only"))
+    assert "Mail.Send" not in published_apps.graph_scopes("reviewer")
+    assert "Mail.ReadWrite" in published_apps.graph_scopes("reviewer")
+    # a reviewer with drafting off reads only
+    read_only = published_apps.graph_scopes("reviewer", drafting=False)
+    assert read_only == published_apps.graph_scopes("read-only")
+    assert not any("Write" in s or "Send" in s for s in read_only)
+    # the old mode names map: email is the reviewer, review-only reads only
+    assert published_apps.graph_scopes("email") == published_apps.graph_scopes("reviewer")
+    assert published_apps.graph_scopes("review-only") == read_only
+    assert published_apps.graph_scopes("collaborator") == list(published_apps.PUBLISHED_GRAPH_SCOPES)
     assert published_apps.graph_scopes(None) == list(published_apps.PUBLISHED_GRAPH_SCOPES)
     assert published_apps.graph_scopes("assistant") == list(published_apps.PUBLISHED_GRAPH_SCOPES)
     for unused in ("User.Read", "Contacts.Read", "People.Read", "Files.Read", "Tasks.ReadWrite"):
@@ -168,8 +176,8 @@ def test_admin_consent_url(monkeypatch):
     assert q["redirect_uri"] == published_apps.PUBLISHED_GRAPH_CONSENT_REDIRECT
     scopes = q["scope"].split()
     assert scopes[:3] == ["openid", "profile", "offline_access"]
-    # the default is one profile's scopes, the email profile's: no Send, no calendar writes
-    assert scopes[3:] == [f"https://graph.microsoft.com/{s}" for s in published_apps.graph_scopes("email")]
+    # the default is one scope set, the reviewer's: no Send, no calendar writes
+    assert scopes[3:] == [f"https://graph.microsoft.com/{s}" for s in published_apps.graph_scopes("reviewer")]
     assert "https://graph.microsoft.com/Mail.Send" not in scopes
 
     def scopes_of(*a, **k):

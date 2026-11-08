@@ -88,7 +88,7 @@ def _text(p: Path) -> str:
 
 def test_setup_md_has_the_named_appendices():
     names, _ = headings()
-    for must in ("Prerequisites", "Choose a profile", "Microsoft Graph app registration",
+    for must in ("Prerequisites", "Choose a mode", "Microsoft Graph app registration",
                  "Google OAuth app", "The EA-Managed calendar", "Zulip server", "Slack",
                  "The service account", "Services", "Cron schedule", "Hardening", "Config files",
                  "Docker", "macOS notes", "Troubleshooting and the doctor's checks",
@@ -225,7 +225,7 @@ def test_the_skill_runs_nothing_that_reads_the_terminal():
                   "id ea-bot && test -L ~/.ea", ".claude/.credentials.json"):
         assert check in skill, check
     # the skill lets scripts/install/setup.sh copy the templates before anything writes config
-    sec1 = skill[skill.index("## 1. Profile"):skill.index("## 2. Identity")]
+    sec1 = skill[skill.index("## 1. Mode"):skill.index("## 2. Identity")]
     assert "./scripts/install/setup.sh --profile <name>" in sec1
     assert "mkdir -p ~/.ea" not in skill
 

@@ -3,13 +3,18 @@
 
 The scheduler service runs this at start, as the owner, and hands the
 output to supercronic. It holds the same jobs scripts/install/setup.sh and docs/SETUP.md "Cron schedule"
-install on a host, for the install profile in ea-config.json:
+install on a host, for the mode in ea-config.json (preprocessor/ea_config.py
+reads it: an old name counts as its mode):
 
-  - every profile: the briefings, the weekly audit, intake, ledger sync,
-    the closure scrubber, the calendar reconciler, the style sync, the
-    persistence digest;
-  - assistant: the chat checks, deferred sends, the quiet-hours flush and
-    the monthly style analysis, which all need the chat platform;
+  - every mode: intake, ledger sync, the closure scrubber, the calendar
+    reconciler, the persistence digest, and the style sync while drafting
+    is on;
+  - the report agents (the briefings and the weekly audit) on
+    reports.schedule: weekdays, daily, or none, which leaves them to a
+    run by hand;
+  - assistant and collaborator: the chat checks, deferred sends, the
+    quiet-hours flush and the monthly style analysis, which all need the
+    chat platform;
   - the admissions filter and digest, when ea-config.json enables them;
   - one line per schedule of each plugin in ~/.ea/plugins: a v1 plugin
     from its own plugin.json when that says enabled; a v2 plugin from the
@@ -40,26 +45,36 @@ from pathlib import Path
 # directory, the same tree the scheduler runs this script from.
 TREE = Path(__file__).resolve().parent.parent.parent
 
-PROFILES = ("email", "review-only", "assistant")
+if str(TREE / "preprocessor") not in sys.path:
+    sys.path.insert(0, str(TREE / "preprocessor"))
+import ea_config  # noqa: E402
 
+PROFILES = ea_config.PROFILES
+
+# The report agents: (schedule with {days} for the reports.schedule days,
+# command, log file name). "none" leaves them out.
+REPORT_DAYS = {"weekdays": "1-5", "daily": "*", "none": ""}
+REPORTS = (
+    ("0 * * * {days}", "run-agent.sh morning-briefing", "morning.log"),
+    ("0 15 * * {days}", "run-agent.sh afternoon-catchup", "afternoon.log"),
+    ("0 20 * * 0", "run-agent.sh weekly-audit --model opus", "weekly.log"),
+)
+STYLE_SYNC = ("20 4 * * 1", "python3 {code}/preprocessor/style_profiles.py sync --days 21",
+              "style-profiles.log")
 # (schedule, command relative to the code dir, log file name)
 COMMON = (
-    ("0 * * * 1-5", "run-agent.sh morning-briefing", "morning.log"),
-    ("0 15 * * 1-5", "run-agent.sh afternoon-catchup", "afternoon.log"),
-    ("0 20 * * 0", "run-agent.sh weekly-audit --model opus", "weekly.log"),
     ("*/10 7-19 * * 1-5", "run-agent.sh intake-check", "intake-check.log"),
     ("*/15 * * * *", "python3 {code}/preprocessor/ledger_sync.py check", "ledger-sync.log"),
     ("20 7-14,16-21 * * *", "python3 {code}/preprocessor/closure_scrubber.py check --json",
      "closure-scrubber-cron.log"),
     ("7,37 * * * *", "python3 {code}/preprocessor/calendar_reconciler.py --apply",
      "calendar-reconciler.log"),
-    ("20 4 * * 1", "python3 {code}/preprocessor/style_profiles.py sync --days 21",
-     "style-profiles.log"),
     ("40 6 * * *", "python3 {code}/scripts/persistence-digest.py", "persistence-digest.log"),
     ("30 6 * * *", "python3 {code}/scripts/preferences-digest.py", "preferences-digest.log"),
     ("45 6 * * *", "python3 {code}/scripts/outbound-review.py", "outbound-review.log"),
 )
-ASSISTANT = (
+# The chat modes' jobs (assistant and collaborator).
+CHAT = (
     ("0 8-20 * * 1-5", "run-agent.sh scheduling-check", "scheduling-check.log"),
     ("*/30 8-18 * * 1-5", "run-agent.sh priority-check", "priority-check.log"),
     ("*/5 * * * *", "python3 {code}/preprocessor/scheduled_sends.py check", "scheduled-sends.log"),
@@ -243,14 +258,32 @@ def extra_lines(path: Path) -> list[str]:
     return ["", f"# Owner extras ({comment(path)})", path.read_text().rstrip("\n")]
 
 
-def render(profile: str, code: Path, ea_dir: Path, log_dir: Path, extra: Path,
+def render(profile: str | None, code: Path, ea_dir: Path, log_dir: Path, extra: Path,
            private: Path) -> str:
+    """The crontab for `profile`, a mode or an old name (mapped, with the
+    drafting switch it implied), else the mode the copied config holds,
+    with the config's drafting switch and reports.schedule."""
     cfg = read_config(ea_dir)
-    lines = [f"# EA cron jobs for the {profile} profile. Written by deploy/docker/crontab.py",
+    if profile:
+        mode, implied = ea_config.profile_name(profile)
+    else:
+        mode, implied, _ = ea_config.resolve_profile(cfg)
+    drafting = ea_config.drafting_on(cfg, implied)
+    schedule = ea_config.get_report_schedule(ea_dir / "config" / "ea-config.json")
+    lines = [f"# EA cron jobs for the {mode} mode. Written by deploy/docker/crontab.py",
              "# at scheduler start; edit ~/.ea-private/crontab.extra to add lines."]
+    days = REPORT_DAYS[schedule]
+    if days:
+        lines += [job(when.format(days=days), cmd, log, code, log_dir)
+                  for when, cmd, log in REPORTS]
+    else:
+        lines.append(f"# Reports on demand (reports.schedule none): {code}/run-agent.sh "
+                     "morning-briefing --now")
     lines += [job(*j, code, log_dir) for j in COMMON]
-    if profile == "assistant":
-        lines += [job(*j, code, log_dir) for j in ASSISTANT]
+    if drafting:
+        lines.append(job(*STYLE_SYNC, code, log_dir))
+    if ea_config.PROFILE_FEATURES[mode]["slack"]:
+        lines += [job(*j, code, log_dir) for j in CHAT]
     admissions = cfg.get("admissions_filter")
     if isinstance(admissions, dict) and admissions.get("enabled"):
         lines += [job(*j, code, log_dir) for j in ADMISSIONS]
@@ -264,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
     home = Path.home()
     private_default = Path(os.environ.get("EA_PRIVATE_DIR") or home / ".ea-private")
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--profile", choices=PROFILES)
+    ap.add_argument("--profile", choices=[*PROFILES, *ea_config.LEGACY_PROFILES])
     ap.add_argument("--code-dir", type=Path, default=Path("/opt/ea-system"))
     ap.add_argument("--ea-dir", type=Path, default=Path(os.environ.get("EA_DIR") or home / ".ea"))
     ap.add_argument("--private-dir", type=Path, default=private_default,
@@ -272,13 +305,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--log-dir", type=Path, default=None)
     ap.add_argument("--extra", type=Path, default=None)
     a = ap.parse_args(argv)
-    profile = a.profile or read_config(a.ea_dir).get("profile") or "assistant"
-    if profile not in PROFILES:
-        print(f"crontab.py: unknown profile {profile!r} in ea-config.json", file=sys.stderr)
+    stored = read_config(a.ea_dir).get("profile")
+    if not a.profile and stored and stored not in (*PROFILES, *ea_config.LEGACY_PROFILES):
+        print(f"crontab.py: unknown profile {stored!r} in ea-config.json", file=sys.stderr)
         return 2
     log_dir = a.log_dir or a.private_dir / "logs"
     extra = a.extra or a.private_dir / "crontab.extra"
-    sys.stdout.write(render(profile, a.code_dir, a.ea_dir, log_dir, extra, a.private_dir))
+    sys.stdout.write(render(a.profile, a.code_dir, a.ea_dir, log_dir, extra, a.private_dir))
     return 0
 
 

@@ -27,7 +27,7 @@ Usage:
     python3 scripts/install/user_init.py --chat zulip --zulip-site https://chat.example.edu \
         --zulip-bot-email ea-bot@chat.example.edu --zulip-owner-id 8
                                              # Talk to the EA over Zulip
-    python3 scripts/install/user_init.py --answers tests/install/answers-email.json
+    python3 scripts/install/user_init.py --answers tests/install/answers-reviewer.json
                                              # Every answer from a file; no prompt
                                              # reads the terminal (install tests)
 
@@ -72,7 +72,7 @@ ALL_PHASES = [
 # key means the prompt's default (what Enter gives), an empty value the
 # same, and a required prompt with no default and no key stops the run
 # and names the key. The keys are the explicit `key` of each prompt;
-# docs/install-testing.md lists them, tests/install/answers-email.json
+# docs/install-testing.md lists them, tests/install/answers-reviewer.json
 # is a complete example. Keys the run looked up go in ANSWERS_USED.
 # setup_questions.parse reads a value the same way for the setup page.
 ANSWERS: dict | None = None
@@ -104,7 +104,7 @@ def _read(display: str) -> str:
     except EOFError:
         raise SystemExit(f"\nuser_init.py: no terminal to ask {display.strip()!r} on. "
                          "Run it in a terminal, or give every answer in a file: "
-                         "--answers FILE (tests/install/answers-email.json is an example)")
+                         "--answers FILE (tests/install/answers-reviewer.json is an example)")
 
 
 def prompt(question: str, default: str = "", required: bool = False,
@@ -276,6 +276,21 @@ def web_chat_block(host: str = "", login: str = "", current: dict | None = None)
     return block
 
 
+def _ea_config():
+    """preprocessor/ea_config.py of this checkout: the modes and their
+    features."""
+    pre = str(Path(__file__).resolve().parents[2] / "preprocessor")
+    if pre not in sys.path:
+        sys.path.insert(0, pre)
+    import ea_config
+    return ea_config
+
+
+def has_chat(ctx: dict) -> bool:
+    """The install's mode has a chat (assistant or collaborator)."""
+    return ctx.get("profile") != "reviewer"
+
+
 def chat_block(frontend: str, site: str = "", bot_email: str = "",
                owner_id: str = "", web_host: str = "", web_login: str = "") -> dict | None:
     """The `chat` block for ea-config.json, or None for Slack (the default
@@ -427,6 +442,22 @@ def read_vips() -> list[str]:
             if line.strip() and not line.startswith("#")]
 
 
+def old_profile_answers(answers: dict) -> dict:
+    """An answers file that names a profile by its old name gets the mode
+    and the switch the old name implied (ea_config.profile_name); a given
+    `drafting` answer wins."""
+    name = answers.get("profile")
+    ec = _ea_config()
+    if not isinstance(name, str) or name in ec.PROFILES or name not in ec.LEGACY_PROFILES:
+        return answers
+    mode, implied = ec.profile_name(name)
+    print(f"  --answers: profile {name!r} is an old name; it is {mode!r} now.")
+    out = {**answers, "profile": mode}
+    if implied.get("drafting") is False:
+        out.setdefault("drafting", False)
+    return out
+
+
 def _once(fn):
     """`fn`, called at most once."""
     memo: list = []
@@ -447,6 +478,9 @@ def context(chat: str | None = None, load: bool = True, tz=None) -> dict:
     ex:    the same, offered as defaults, the profile without the template's
            placeholders;
     profile, chat: what ea-config.json records (`chat` wins over the file);
+           the profile is a mode, an old name read as its mode;
+    recorded_drafting, recorded_reports: the reviewer's two switches as
+           ea-config.json records them;
     acknowledged: whether the README notice is recorded as accepted;
     detected_timezone: `tz`, else this machine's zone, looked up on use."""
     cfg = load_existing("ea-config.json")
@@ -457,12 +491,18 @@ def context(chat: str | None = None, load: bool = True, tz=None) -> dict:
                                           template_values(Q.PROFILE_FILE))
     ack = cfg.get("acknowledged") if isinstance(cfg.get("acknowledged"), dict) else {}
     block = cfg.get("chat") if isinstance(cfg.get("chat"), dict) else {}
-    recorded = cfg.get("profile") if cfg.get("profile") in ("email", "review-only", "assistant") else None
+    ec = _ea_config()
+    mode, implied, _ = ec.resolve_profile(cfg)
+    recorded = mode if cfg.get("profile") else None
+    reports = cfg.get("reports") if isinstance(cfg.get("reports"), dict) else {}
     return {
         "files": files,
         "ex": ex,
         "recorded_profile": recorded,
-        "profile": recorded or "assistant",
+        "profile": recorded or ec.DEFAULT_PROFILE,
+        "recorded_drafting": ec.drafting_on(cfg, implied),
+        "recorded_reports": reports.get("schedule") if reports.get("schedule")
+        in ec.REPORT_SCHEDULES else None,
         "chat": chat or str(block.get("frontend") or "slack"),
         "chat_choice": _recorded_chat(block, chat),
         "web_host": _web_host_of(block),
@@ -570,13 +610,23 @@ def ask_phase(pid: str, ctx: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def write_profile(values: dict, ctx: dict) -> dict:
-    """The profile and, once, the date the notice was accepted, in
-    ea-config.json, as scripts/install/setup.sh --profile <name> --acknowledged
-    records them. With no file yet it starts from the template, which
-    setup.sh would have copied first; setup.sh run later keeps both."""
+    """The mode (with its version marker) and, once, the date the notice
+    was accepted, in ea-config.json, as scripts/install/setup.sh --profile
+    <name> --acknowledged records them; for the reviewer also "drafting"
+    and reports.schedule. With no file yet it starts from the template,
+    which setup.sh would have copied first; setup.sh run later keeps them."""
     path = CONFIG_DIR / "ea-config.json"
     data = load_existing("ea-config.json") if path.exists() else template_values("ea-config.json")
     data["profile"] = values["profile"]
+    data["profile_version"] = _ea_config().PROFILE_VERSION
+    if values["profile"] == "reviewer":
+        if values.get("drafting") is False:
+            data["drafting"] = False
+        elif data.get("drafting") is False:
+            data["drafting"] = True
+        if values.get("reports"):
+            block = data.get("reports") if isinstance(data.get("reports"), dict) else {}
+            data["reports"] = {**block, "schedule": values["reports"]}
     ack = data.get("acknowledged") if isinstance(data.get("acknowledged"), dict) else {}
     if values.get("acknowledged") and not ack.get("responsibility"):
         ack["responsibility"] = date.today().isoformat()
@@ -821,14 +871,15 @@ def published_graph_env(profile: str | None) -> dict:
             "GRAPH_SCOPES": ""}
 
 
-def published_graph_private(profile: str | None) -> dict:
+def published_graph_private(profile: str | None, drafting: bool = True) -> dict:
     """The owner-private secrets.env keys for the published app:
-    GRAPH_SCOPES, the least the profile needs (preprocessor/published_apps.py).
-    An owner process takes the published app's settings only from there
-    (graph_client, PUBLISHED_SETTING_KEYS)."""
+    GRAPH_SCOPES, the least the mode needs (preprocessor/published_apps.py;
+    a reviewer with drafting off reads only). An owner process takes the
+    published app's settings only from there (graph_client,
+    PUBLISHED_SETTING_KEYS)."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
     import published_apps
-    return {"GRAPH_SCOPES": " ".join(published_apps.graph_scopes(profile))}
+    return {"GRAPH_SCOPES": " ".join(published_apps.graph_scopes(profile, drafting))}
 
 
 def graph_sign_in(method: str) -> None:
@@ -893,7 +944,7 @@ def write_chat(values: dict, ctx: dict | None = None) -> dict | None:
     for `web` (web_chat_block), the frontend for zulip or slack when the
     block names another. The hardening step copies the block into the
     owner-private chat.json, where the bot reads it, after each trusted
-    value is typed back. Nothing on a profile with no chat (not asked)."""
+    value is typed back. Nothing in the reviewer mode, which has no chat (not asked)."""
     platform = values.get("chat-platform")
     if not platform:
         return None
@@ -948,7 +999,8 @@ def write_auth(values: dict, ctx: dict, sign_in: bool = False) -> None:
             # method or tenant of the user's own, and the profile's scopes
             # in the owner-private file.
             env_data = published_graph_env(ctx.get("profile"))
-            private_data = published_graph_private(ctx.get("profile"))
+            private_data = published_graph_private(ctx.get("profile"),
+                                                   ctx.get("recorded_drafting", True) is not False)
             merge_env_file(private_secrets_file(), private_data)
         else:
             env_data = {"GRAPH_AUTH_METHOD": method, "GRAPH_CLIENT_ID": values["graph-client-id"]}
@@ -976,8 +1028,8 @@ def write_auth(values: dict, ctx: dict, sign_in: bool = False) -> None:
         else:
             print("  Skipped.")
 
-    if ctx.get("profile") in ("email", "review-only"):
-        return  # no chat platform on this profile: no chat credentials to ask
+    if not has_chat(ctx):
+        return  # no chat platform in the reviewer mode: no chat credentials to ask
     if ctx.get("chat") == "web":
         print("\n  --- Web chat ---\n")
         print("  The web chat needs no token: the bot serves it and writes its own pairing")
@@ -1211,7 +1263,7 @@ def phase_response_style(ctx: dict) -> dict:
 
 
 def phase_chat(ctx: dict) -> dict:
-    """The chat platform (the assistant profile only); the phases after it
+    """The chat platform (the assistant and collaborator modes); the phases after it
     read the choice from `ctx`."""
     print_intro("chat", ctx)
     values = ask_phase("chat", ctx)
@@ -1623,7 +1675,7 @@ def main():
     parser.add_argument(
         "--answers", type=str, default=None, metavar="FILE",
         help="JSON file of answers by prompt key; no prompt reads the terminal "
-             "(tests/install/answers-email.json is a complete example)",
+             "(tests/install/answers-reviewer.json is a complete example)",
     )
     parser.add_argument(
         "--chat", choices=["web", "zulip", "slack"], default=None,
@@ -1651,7 +1703,7 @@ def main():
             parser.error(f"--answers {args.answers}: {e}")
         if not isinstance(loaded, dict):
             parser.error(f"--answers {args.answers}: not a JSON object")
-        ANSWERS = loaded
+        ANSWERS = old_profile_answers(loaded)
         ANSWERS_USED.clear()
     if args.chat == "zulip":
         missing = [f"--{n}" for n in ("zulip-site", "zulip-bot-email", "zulip-owner-id")

@@ -213,12 +213,12 @@ def test_a_manifest_field_that_is_not_plain_never_becomes_a_cron_line(tmp_path):
     _plugin(ea_dir, "list", "[1, 2]")
     _plugin(ea_dir, "broken", "{not json")
     live = _live_tree(tmp_path)
-    _, home, _ = _run_setup(tmp_path, live, profile="email")
+    _, home, _ = _run_setup(tmp_path, live, profile="reviewer")
     crontab = (tmp_path / "crontab").read_text()
     assert "owned" not in "\n".join(_jobs(crontab)), crontab
-    # the email profile: no chat checks, no intake, no deferred sends, no
+    # the reviewer mode: no chat checks, no intake, no deferred sends, no
     # reconciler; the ledger sync, scrubber, quiet-hours flush and style
-    # sync stay, and the profile is recorded
+    # sync stay, and the mode is recorded
     jobs = "\n".join(_jobs(crontab))
     for absent in ("scheduling-check", "priority-check", "intake-check",
                    "scheduled_sends.py", "calendar_reconciler.py"):
@@ -227,7 +227,7 @@ def test_a_manifest_field_that_is_not_plain_never_becomes_a_cron_line(tmp_path):
                     "style_profiles.py sync", "morning-briefing", "afternoon-catchup", "weekly-audit",
                     "scripts/persistence-digest.py"):
         assert present in jobs, present
-    assert json.loads((home / ".ea" / "config" / "ea-config.json").read_text())["profile"] == "email"
+    assert json.loads((home / ".ea" / "config" / "ea-config.json").read_text())["profile"] == "reviewer"
     plugin_jobs = [j for j in _jobs(crontab) if "run-plugin.sh" in j]
     # the plain plugin line and the one plain extra schedule (its label made one line)
     assert [j.split(">>")[0].split() for j in plugin_jobs] == [
@@ -244,7 +244,7 @@ def test_a_rerun_replaces_the_maintenance_lines_instead_of_doubling_them(tmp_pat
     python3 maintenance lines included, so a second run (a profile change,
     or pointing the jobs at the deployed tree) leaves one copy of each."""
     live = _live_tree(tmp_path)
-    _run_setup(tmp_path, live, profile="email")
+    _run_setup(tmp_path, live, profile="reviewer")
     first = (tmp_path / "crontab").read_text()
     _run_setup(tmp_path, live, profile="assistant")
     second = (tmp_path / "crontab").read_text()
@@ -253,12 +253,12 @@ def test_a_rerun_replaces_the_maintenance_lines_instead_of_doubling_them(tmp_pat
     assert sum("ledger_sync.py check" in j for j in jobs) == 1
     assert sum("quiet_hours.py flush" in j for j in jobs) == 1
     assert len(jobs) > len(_jobs(first)), "assistant adds the chat lines"
-    assert "profile: assistant" in second and "profile: email" not in second
+    assert "profile: assistant" in second and "profile: reviewer" not in second
 
 
 def test_skipped_entries_are_saved_where_only_the_owner_can_change_them(tmp_path):
     live = _live_tree(tmp_path)
-    _, home, r = _run_setup(tmp_path, live, answer="n", profile="email")
+    _, home, r = _run_setup(tmp_path, live, answer="n", profile="reviewer")
     saved = home / ".ea-private" / "crontab-template.txt"
     assert saved.is_file() and _mode(saved) == 0o600
     assert not (home / ".ea" / "crontab-template.txt").exists()
@@ -279,7 +279,7 @@ def test_no_terminal_and_no_token_exits_0_after_printing_the_sign_in_command(tmp
     home = tmp_path / "home"
     (home / ".ea").mkdir(parents=True)
     (home / ".ea" / ".env").write_text("GRAPH_AUTH_METHOD=device_code\nGRAPH_CLIENT_ID=abc\n")
-    _, _, r = _run_setup(tmp_path, live, answer="n", profile="email")
+    _, _, r = _run_setup(tmp_path, live, answer="n", profile="reviewer")
     assert "Non-interactive run (standard input is not a terminal)" in r.stdout
     assert "No Graph sign-in yet. Sign in yourself" in r.stdout
     assert f"python3 {repo}/preprocessor/graph_client.py" in r.stdout
@@ -298,12 +298,12 @@ def test_a_git_checkout_gets_the_deploy_hooks(tmp_path):
     (repo / ".githooks").mkdir()
     git = ["git", "-C", str(repo)]
     subprocess.run(git + ["init", "-q"], check=True)
-    _, _, r = _run_setup(tmp_path, live, answer="n", profile="email")
+    _, _, r = _run_setup(tmp_path, live, answer="n", profile="reviewer")
     got = subprocess.run(git + ["config", "--get", "core.hooksPath"], capture_output=True, text=True)
     assert got.stdout.strip() == ".githooks"
     assert "core.hooksPath set to .githooks" in r.stdout
     subprocess.run(git + ["config", "core.hooksPath", "/elsewhere"], check=True)
-    _, _, r = _run_setup(tmp_path, live, answer="n", profile="email")
+    _, _, r = _run_setup(tmp_path, live, answer="n", profile="reviewer")
     got = subprocess.run(git + ["config", "--get", "core.hooksPath"], capture_output=True, text=True)
     assert got.stdout.strip() == "/elsewhere" and "already /elsewhere" in r.stdout
     guide = (ROOT / "docs/INSTALL.md").read_text()
@@ -353,6 +353,32 @@ def test_a_v2_plugin_takes_its_cron_lines_from_the_owners_lock(tmp_path):
     assert "owned" not in jobs and "v2off" not in jobs
 
 
+def test_the_reports_schedule_and_the_old_names_shape_the_cron_lines(tmp_path):
+    """--reports records reports.schedule and writes the report agents for
+    it: daily runs every day, none leaves only the command to run one by
+    hand. An old name on the command line maps to its mode with a note;
+    the one that meant no drafts records "drafting": false, and the style
+    sync goes."""
+    live = _live_tree(tmp_path)
+    _, home, r = _run_setup(tmp_path, live, profile="reviewer", extra_args=["--reports", "daily"])
+    cfg = home / ".ea" / "config" / "ea-config.json"
+    doc = json.loads(cfg.read_text())
+    assert doc["reports"]["schedule"] == "daily" and doc["profile_version"] == 2
+    jobs = _jobs((tmp_path / "crontab").read_text())
+    assert any(j.startswith("0 * * * * ") and "morning-briefing" in j for j in jobs), jobs
+    _run_setup(tmp_path, live, profile="reviewer", extra_args=["--reports", "none"])
+    crontab = (tmp_path / "crontab").read_text()
+    jobs = "\n".join(_jobs(crontab))
+    for absent in ("morning-briefing", "afternoon-catchup", "weekly-audit"):
+        assert absent not in jobs, absent
+    assert "run-agent.sh morning-briefing --now" in crontab and "ledger_sync.py check" in jobs
+    _, _, r = _run_setup(tmp_path, live, profile="review-only")
+    assert "is an old name" in r.stdout
+    doc = json.loads(cfg.read_text())
+    assert (doc["profile"], doc["drafting"]) == ("reviewer", False)
+    assert "style_profiles.py sync" not in "\n".join(_jobs((tmp_path / "crontab").read_text()))
+
+
 def test_acknowledged_records_the_notice_date_once(tmp_path):
     """--acknowledged writes the date the user read the responsibility
     notice beside the profile; a later run without the flag keeps it,
@@ -368,10 +394,10 @@ def test_acknowledged_records_the_notice_date_once(tmp_path):
     assert doc["profile"] == "assistant" and len(when) == 10 and when[4] == "-"
     doc["acknowledged"]["responsibility"] = "2026-01-02"
     cfg.write_text(json.dumps(doc))
-    _, _, r = _run_setup(tmp_path, live, answer="n", profile="email", extra_args=["--acknowledged"])
+    _, _, r = _run_setup(tmp_path, live, answer="n", profile="reviewer", extra_args=["--acknowledged"])
     doc = json.loads(cfg.read_text())
-    assert doc["profile"] == "email" and doc["acknowledged"]["responsibility"] == "2026-01-02"
-    _, _, r = _run_setup(tmp_path, live, answer="n", profile="email")
+    assert doc["profile"] == "reviewer" and doc["acknowledged"]["responsibility"] == "2026-01-02"
+    _, _, r = _run_setup(tmp_path, live, answer="n", profile="reviewer")
     assert "Profile already recorded" in r.stdout
     assert json.loads(cfg.read_text())["acknowledged"]["responsibility"] == "2026-01-02"
 

@@ -360,7 +360,7 @@ def _run_report_block(w: dict, state: Path, agent: str = "weekly-audit") -> subp
         "set -euo pipefail\n"
         f"PYTHON3={shlex.quote(sys.executable)}\nSCRIPT_DIR={shlex.quote(str(REPO))}\n"
         f"STATE_DIR={shlex.quote(str(state))}\nLOG_FILE={shlex.quote(str(log_file))}\n"
-        f"AGENT={agent}\nCLAUDE_OUTPUT='ATTACKER TEXT'\nHAS_SLACK=0\nPROFILE=email\n"
+        f"AGENT={agent}\nCLAUDE_OUTPUT='ATTACKER TEXT'\nHAS_SLACK=0\nPROFILE=reviewer\n"
         'VALIDATION=ok\nLIST_DIGEST_DISPOSITION=""\n'
         'log() { echo "[t] $*" >> "$LOG_FILE"; }\n'
         + _report_block()

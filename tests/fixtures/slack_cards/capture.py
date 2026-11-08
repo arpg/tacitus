@@ -152,6 +152,8 @@ def build_ns(*, draft=None, sched_warning="", dm=DM, stash_ref=PAYLOAD_REF,
     # The bulk card's state, in memory.
     store = {"batches": {}}
     ns.update({
+        # the picker is a collaborator-mode card: rooms on
+        "_rooms_on": lambda: True, "ROOMS_OFF_TEXT": "",
         "_BULK_LOCK": threading.Lock(),
         "_BULK_PENDING": {"ids": list((bulk or {}).get("ids", [])), "timer": None,
                           "dm_channel": (bulk or {}).get("dm_channel", "")},

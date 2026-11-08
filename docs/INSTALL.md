@@ -10,7 +10,7 @@ Setup runs every command it can. A fresh `assistant` install with the
 web chat, on Linux, needs twelve steps from you once IT has registered
 the app: the commands that need your password or a full-screen login,
 the sign-ins in a browser, and your phone. [Your steps](#your-steps)
-lists them. An `email` install without Google needs six.
+lists them. A `reviewer` install without Google needs six.
 
 [SETUP.md](SETUP.md) is the reference behind each step. You need it only
 when a step fails or you want the background; setup and the health check
@@ -22,33 +22,41 @@ Start the IT request first. Everything else fits in one sitting.
 
 | What | Needed for | Lead time | How |
 |---|---|---|---|
-| An always-on machine with `sudo` | every profile | none | Linux (a server, a NUC) or macOS. WSL2 is untested. |
-| Claude Pro or Max | every profile | minutes | The EA's service account signs in with its own copy and uses your quota. |
-| An Outlook app registration | every profile | days, sometimes weeks | Send [docs/it-request.md](it-request.md) to your IT group. It lists the permissions, the data flow and the security model. If you can register apps yourself, see SETUP.md "Microsoft Graph app registration". |
+| An always-on machine with `sudo` | every mode | none | Linux (a server, a NUC) or macOS. WSL2 is untested. |
+| Claude Pro or Max | every mode | minutes | The EA's service account signs in with its own copy and uses your quota. |
+| An Outlook app registration | every mode | days, sometimes weeks | Send [docs/it-request.md](it-request.md) to your IT group. It lists the permissions, the data flow and the security model. If you can register apps yourself, see SETUP.md "Microsoft Graph app registration". |
 | A Google Cloud OAuth app | Google Calendar or Gmail | 15 minutes | SETUP.md "Google OAuth app". Google shows an "unverified app" screen at sign-in; continue through "Advanced". You are the only user. Publish the app, or Google ends the sign-in every 7 days. |
-| An `EA-Managed` Google calendar | `assistant` (optional elsewhere) | 2 minutes | A secondary calendar where your scheduling rules live as recurring events. Setup tells you when to create it. |
-| Tailscale on the machine and on your phone | `assistant` with the web chat | minutes | The bot serves the web chat on your tailnet. See [Choosing a chat platform](#choosing-a-chat-platform). In Docker, a TLS proxy and a host name take its place ([docs/docker.md](docker.md#web-chat)). |
-| Docker, or a Slack workspace | `assistant` on Zulip or Slack instead | minutes | Docker runs the Zulip chat server. A Docker install on the web chat needs no Zulip. |
+| An `EA-Managed` Google calendar | `assistant` and `collaborator` (optional on `reviewer`) | 2 minutes | A secondary calendar where your scheduling rules live as recurring events. Setup tells you when to create it. |
+| Tailscale on the machine and on your phone | `assistant` and `collaborator` with the web chat | minutes | The bot serves the web chat on your tailnet. See [Choosing a chat platform](#choosing-a-chat-platform). In Docker, a TLS proxy and a host name take its place ([docs/docker.md](docker.md#web-chat)). |
+| Docker, or a Slack workspace | `assistant` and `collaborator` on Zulip or Slack instead | minutes | Docker runs the Zulip chat server. A Docker install on the web chat needs no Zulip. |
 | A model you host | optional | varies | Any OpenAI-compatible endpoint (vLLM, Ollama). It reads mail and writes drafts in place of Claude. See [docs/remote-llm.md](remote-llm.md). |
 
 Python 3.10 to 3.14 must be on the machine. On macOS use Homebrew's
 Python; Apple's `/usr/bin/python3` is 3.9. `install.sh` checks this and
 names the command that installs what is missing.
 
-## 2. Choose a profile
+## 2. Choose a mode
 
-| Profile | What you get | Time to install |
+Setup asks this first. `assistant` is the default.
+
+| Mode | What you get | Time to install |
 |---|---|---|
-| `email` (start here) | Triage, the ledger, drafts in your voice, meeting times proposed in the report (no holds or events: nothing places one without the chat buttons). Briefings land in `~/.ea/state/reports/<agent>-latest.md`, with a phone push if you want one. You work with the EA in the Claude Code shell and send drafts from Outlook yourself. | About an hour |
-| `review-only` | `email` without drafting: the EA reads, tracks and briefs, and writes nothing to the mailbox. A deny list in every launcher enforces it. | About an hour |
-| `assistant` | Everything: the web chat (or Zulip or Slack), the Send and Create cards, project rooms, plugins. | Longer: the twelve steps below. Zulip adds its chat server. |
+| `reviewer` | No chat. Triage, the ledger, drafts in your voice left in your mailbox, meeting times proposed in the report (no holds or events: nothing places one without the chat buttons). Reports land in `~/.ea/state/reports/<agent>-latest.md` on the schedule you pick: weekdays, every day, or only when you run `./run-agent.sh morning-briefing --now`. A phone push if you want one. You work with the EA in the Claude Code shell and send drafts from Outlook yourself. | About an hour |
+| `assistant` | One chat on your phone: the web chat (or Zulip or Slack) with the EA channel, your DM with the Send and Create cards, scheduling and digests in the same app, plugins. No project rooms. | Longer: the twelve steps below. Zulip adds its chat server. |
+| `collaborator` | The assistant, plus a room for each big project. | The same as `assistant`. |
 
-Without a chat platform there are no cards, and sending needs a card's
-token. So an `email` or `review-only` install cannot send mail or create
-an event at all. To move up later, run
-`./scripts/install/setup.sh --profile assistant` (it records the new
-profile), then `claude "/setup"` in the checkout. Setup skips what is
-already done.
+Without a chat there are no cards, and sending needs a card's token. So
+a `reviewer` install cannot send mail or create an event at all. For a
+reviewer that writes no drafts either, set `"drafting": false` in
+`~/.ea/config/ea-config.json`; a deny list in every launcher enforces it.
+
+To add the chat later, run
+`./scripts/install/setup.sh --profile assistant --install-cron` (it
+records the new mode), then `claude "/setup"` in the checkout. Setup
+skips what is already done. Between `assistant` and `collaborator`
+nothing else changes:
+`python3 preprocessor/ea_config.py set-profile collaborator` turns the
+project rooms on, and `set-profile assistant` turns them off.
 
 ## 3. Run the installer
 
@@ -95,8 +103,9 @@ The page writes the same files as the terminal and signs in to nothing;
 setup goes on from where the page stops. Or answer in the terminal, one
 question at a time.
 
-1. **Profile.** `email`, `review-only` or `assistant`, and the "Your
-   responsibility" notice from the README.
+1. **Mode.** `reviewer`, `assistant` or `collaborator`, and the "Your
+   responsibility" notice from the README. A reviewer also picks when its
+   reports come and whether it leaves drafts.
 2. **You and your institution.** Name, work address, role; your
    institution's mail domains and video platform. A first email to
    anyone outside those domains always waits for your approval.
@@ -108,7 +117,7 @@ question at a time.
    `EA-Managed` calendar, and your working hours.
 5. **The service account.** Creates the `ea-bot` user that Claude runs
    as, and turns on the mail mediator.
-6. **Chat** (`assistant` only). Setup asks which: the web chat
+6. **Chat** (`assistant` and `collaborator`). Setup asks which: the web chat
    (recommended), Zulip or Slack. For the web chat it asks this
    machine's tailnet name and your Tailscale login, writes the settings
    and gives you the `tailscale serve` line (step 8 below).
@@ -165,8 +174,9 @@ where you do it and what it does.
     the Home Screen, and turn on Notifications in the channel drawer.
 
 The count leaves out the IT request, which comes before the install,
-and the questions you answer, since setup writes the files. An `email`
-install without Google skips steps 3, 4, 5, 8, 9 and 12. On macOS, step
+and the questions you answer, since setup writes the files. A `reviewer`
+install without Google skips steps 3, 4, 5, 8, 9 and 12. A
+`collaborator` install has the same twelve steps as `assistant`. On macOS, step
 6 is `sudo ./scripts/install/setup-ea-user-macos.sh`, step 7 is
 `claude setup-token` (SETUP.md "macOS notes"), and steps 10 and 11 are
 `sudo bash deploy/macos/install-services.sh` and
@@ -196,7 +206,7 @@ allow them when you approve.
 
 ### Choosing a chat platform
 
-The `assistant` profile needs a chat platform. The chat carries the most
+The `assistant` and `collaborator` modes need a chat platform. The chat carries the most
 sensitive text you have: quoted mail, draft replies, calendar detail.
 The platform decides who holds that text.
 
@@ -225,12 +235,12 @@ its settings.
 ## 4. Check the install
 
 ```bash
-python3 scripts/ea-doctor.py --profile <name>   # check each part the profile needs
+python3 scripts/ea-doctor.py --profile <name>   # check each part the mode needs
 ```
 
 The doctor prints PASS, WARN or FAIL for each part. Each FAIL carries
 its fix and the SETUP.md section that explains it. Warnings about
-features your profile does not use are expected. Run it again at any
+features your mode does not use are expected. Run it again at any
 time. On Linux, the root steps are step 11 above, and one command runs
 whichever are still missing:
 
@@ -244,14 +254,15 @@ To see a briefing now, without waiting for the morning:
 ./run-agent.sh morning-briefing --now   # one briefing now; --now skips the 4 AM gate
 ```
 
-On `assistant` it posts in the `ea` channel. Otherwise it is in
-`~/.ea/state/reports/morning-briefing-latest.md`, and on your phone if
-you set up the push.
+On `assistant` and `collaborator` it posts in the `ea` channel. On
+`reviewer` it is in `~/.ea/state/reports/morning-briefing-latest.md`, and
+on your phone if you set up the push. The same command gives a reviewer
+a report whenever it wants one.
 
 ## 5. The first week
 
 The morning briefing ends with one preference question a day for a
-week. Answer in the thread (or in the shell on `email`). The EA stores
+week. Answer in the thread (or in the shell on `reviewer`). The EA stores
 each answer in your words as a standing rule. Say "stop the questions"
 to end the series.
 
@@ -271,7 +282,7 @@ What you can change later, by asking the EA or by editing the file:
 ## Other ways to install
 
 **Docker.** The EA runs as containers on one host, with no account,
-unit or crontab on the host. On `assistant` the bot container serves the
+unit or crontab on the host. On `assistant` and `collaborator` the bot container serves the
 web chat behind a TLS proxy you run (a Caddy example ships beside
 `compose.yaml`), so no chat server is needed; Zulip is a compose profile
 for an install that wants it. [docs/docker.md](docker.md) covers the
@@ -380,7 +391,7 @@ settings, the web chat's history and its nightly snapshots in
 `~/.local/share/ea-system` shim. Also revoke the EA's access where you
 granted it: the Microsoft app's consent (or ask IT to remove the
 registration), the Google OAuth client, the claude.ai connectors, and on
-`assistant` the Slack app or the Zulip bot. A Docker install is
+`assistant` and `collaborator` the Slack app or the Zulip bot. A Docker install is
 `docker compose down -v` (the `-v` deletes the volumes and every token
 in them).
 
@@ -418,6 +429,6 @@ the tests for `tag:ea-host:8443`.
 3. For a running install that stopped working, see
    [docs/RUNBOOK.md](RUNBOOK.md).
 4. Still stuck: open an issue with the **Install or first-week
-   feedback** form. It asks for the version, the OS, the profile, the
+   feedback** form. It asks for the version, the OS, the mode, the
    step and the doctor's output. Replace real names, addresses and mail
    text with made-up values.

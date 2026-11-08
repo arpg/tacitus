@@ -26,7 +26,7 @@
 # Run AFTER the chat platform is configured (docs/SETUP.md "Zulip server" or "Slack"): step 3 below
 # seeds ~/.ea-private/chat.json from ea-config.json's chat block only when the
 # file is missing, so running earlier would freeze the template values.
-# On a profile with no chat platform (email, review-only) it installs the
+# On a mode with no chat platform (reviewer) it installs the
 # mediator alone; deploy/enable-mail-mediation.sh then turns mediation on.
 #
 #   sudo bash deploy/macos/install-services.sh            # install / re-install

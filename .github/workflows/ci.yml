@@ -209,7 +209,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
-      - name: Install smoke (email profile, no accounts)
+      - name: Install smoke (reviewer mode, no accounts)
         # The runner's own python3 and passwordless sudo: the path a new
         # user's machine takes. The job ends with the doctor's status.
         run: bash tests/install/smoke.sh
@@ -227,7 +227,7 @@ jobs:
         # run ahead of the wheels some requirements publish.
         run: brew list python@3.12 >/dev/null 2>&1 || brew install python@3.12
 
-      - name: Install smoke (email profile, no accounts)
+      - name: Install smoke (reviewer mode, no accounts)
         env:
           # libexec/bin holds an unversioned python3, so the directory
           # the smoke puts first on PATH answers 3.12 to scripts/install/setup.sh's `python3`.

@@ -127,16 +127,42 @@ def test_the_dispatch_embeds_the_core_only_for_a_run_that_cannot_discover_it(ea,
     assert "## Rules" not in partial and "Ana Lopez" in partial
 
 
-def test_an_email_install_renders_one_line_saying_there_is_no_chat(ea):
-    cfg = ea / "config" / "ea-config.json"
-    cfg.write_text(json.dumps({"profile": "email"}))
+def _chat(cfg, doc: dict) -> str:
+    cfg.write_text(json.dumps(doc))
     text = io_.render_text()
-    chat = text[text.index("## Chat"):text.index("## Accounts")]
-    assert "Install profile: `email`" in chat and "no chat channel" in chat
+    return text[text.index("## Chat"):text.index("## Accounts")]
+
+
+def test_a_reviewer_install_renders_one_line_saying_there_is_no_chat(ea):
+    cfg = ea / "config" / "ea-config.json"
+    chat = _chat(cfg, {"profile": "reviewer", "profile_version": 2})
+    assert "Install profile: `reviewer`" in chat and "no chat channel" in chat
     assert "reports/<agent>-latest.md" in chat and "phone push" in chat
+    assert "sends drafts from Outlook" in chat
     assert "Platform:" not in chat and "Slack" not in chat
-    cfg.write_text(json.dumps({"profile": "review-only"}))
-    assert "Install profile: `review-only`. There is no chat channel" in io_.render_text()
+    # drafting off: the overlay says so instead of promising drafts
+    chat = _chat(cfg, {"profile": "reviewer", "profile_version": 2, "drafting": False})
+    assert "Install profile: `reviewer`. There is no chat channel" in chat
+    assert "drafting is off" in chat and "sends drafts" not in chat
+    # an old name reads as its mode
+    assert "Install profile: `reviewer`" in _chat(cfg, {"profile": "email"})
+    assert "drafting is off" in _chat(cfg, {"profile": "review-only"})
+
+
+def test_the_assistant_mode_tells_the_ea_there_are_no_rooms(ea):
+    cfg = ea / "config" / "ea-config.json"
+    chat = _chat(cfg, {"profile": "assistant", "profile_version": 2,
+                       "chat": {"frontend": "zulip", "zulip": {"stream": "ea"}}})
+    assert "Install profile: `assistant`" in chat
+    assert "there are no project rooms" in chat and "`ea-<project>` streams" not in chat
+    assert "set-profile collaborator" in chat and "pending-channel.json" in chat
+    chat = _chat(cfg, {"profile": "collaborator", "profile_version": 2,
+                       "chat": {"frontend": "zulip", "zulip": {"stream": "ea"}}})
+    assert "Install profile: `collaborator`" in chat and "`ea-<project>` streams" in chat
+    assert "No project rooms" not in chat
+    # the old assistant had rooms: without the version marker it reads as collaborator
+    chat = _chat(cfg, {"profile": "assistant", "chat": {"frontend": "zulip"}})
+    assert "Install profile: `collaborator`" in chat
 
 
 def test_a_web_chat_install_names_the_web_chat_and_where_the_send_button_is(ea):
@@ -146,24 +172,26 @@ def test_a_web_chat_install_names_the_web_chat_and_where_the_send_button_is(ea):
     Slack, not Zulip."""
     from chat.web_frontend import WebFrontend
     cfg = ea / "config" / "ea-config.json"
-    cfg.write_text(json.dumps({"profile": "assistant", "chat": {"frontend": "web"}}))
+    cfg.write_text(json.dumps({"profile": "collaborator", "profile_version": 2,
+                               "chat": {"frontend": "web"}}))
     text = io_.render_text()
     chat = text[text.index("## Chat"):text.index("## Accounts")]
     assert f"Platform: the {WebFrontend.PROMPT_STRINGS['platform']}" in chat
     assert WebFrontend.PROMPT_STRINGS["confirm_location"] in chat
     assert "`ea` (the EA channel)" in chat and "`dm` (the DM)" in chat
     assert "`Scheduling` (the scheduling channel" in chat
-    assert "no scheduling channel" not in chat and "Install profile: `assistant`" in chat
+    assert "no scheduling channel" not in chat and "Install profile: `collaborator`" in chat
+    assert "project rooms are rooms in the web chat" in chat
     for other in ("Slack", "Zulip", "stream", "reaction"):
         assert other not in chat, other
     assert chr(0x2014) not in text and chr(0x2013) not in text
     # with Scheduling turned off, meeting requests come in the EA channel
-    cfg.write_text(json.dumps({"profile": "assistant",
+    cfg.write_text(json.dumps({"profile": "assistant", "profile_version": 2,
                                "chat": {"frontend": "web", "web": {"sched": False}}}))
     chat = io_.render_text()
     chat = chat[chat.index("## Chat"):chat.index("## Accounts")]
     assert "no scheduling channel: meeting requests come in `ea`" in chat
-    assert "`Scheduling`" not in chat
+    assert "`Scheduling`" not in chat and "there are no project rooms" in chat
     # beside Zulip, the Zulip line stands and the mirror is named
     cfg.write_text(json.dumps({"profile": "assistant", "chat": {
         "frontend": "zulip", "shadow": "web", "zulip": {"stream": "ea", "dm_stream": "ea-dm"}}}))

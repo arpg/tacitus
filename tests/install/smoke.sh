@@ -6,14 +6,14 @@
 #
 #   1. the config, from an answers file (scripts/install/user_init.py --answers, one
 #      --phase at a time, the way /setup section 2 does it);
-#   2. ./scripts/install/setup.sh --profile <profile>, non-interactive (templates, the
-#      profile, the cron template; the sign-ins are skipped);
+#   2. ./scripts/install/setup.sh --profile <mode>, non-interactive (templates, the
+#      mode, the cron template; the sign-ins are skipped);
 #   3. the service-account installer with sudo (scripts/install/setup-ea-user.sh, or
 #      scripts/install/setup-ea-user-macos.sh on macOS): the ea-bot user, the deployed
 #      tree, ~/.ea moved into ea-bot's home, the sudoers rule;
 #   4. the install overlay, rendered as ea-bot and installed as the owner
 #      (docs/SETUP.md "The install overlay");
-#   5. scripts/ea-doctor.py for the profile, with --expect-missing for the
+#   5. scripts/ea-doctor.py for the mode, with --expect-missing for the
 #      checks no account can satisfy. The exit status is the doctor's.
 #
 # It needs a machine it may install into: passwordless sudo, no ~/.ea
@@ -23,8 +23,8 @@
 # machine with a live install: it refuses when ~/.ea exists.
 #
 # Settings (environment):
-#   EA_SMOKE_PROFILE         email (default), review-only or assistant
-#   EA_SMOKE_ANSWERS         the answers file (default: answers-email.json)
+#   EA_SMOKE_PROFILE         reviewer (default), assistant or collaborator
+#   EA_SMOKE_ANSWERS         the answers file (default: answers-reviewer.json)
 #   EA_SMOKE_EXPECT_MISSING  the doctor's --expect-missing value
 #   EA_SMOKE_PYTHON          the python3 to run the owner-side steps with
 #
@@ -32,11 +32,11 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-PROFILE="${EA_SMOKE_PROFILE:-email}"
-ANSWERS="${EA_SMOKE_ANSWERS:-$REPO/tests/install/answers-email.json}"
+PROFILE="${EA_SMOKE_PROFILE:-reviewer}"
+ANSWERS="${EA_SMOKE_ANSWERS:-$REPO/tests/install/answers-reviewer.json}"
 # The three misses an install with no accounts has: ea-bot's Claude login,
-# the Graph token, the EA-Managed calendar (a WARN on the email and
-# review-only profiles, where naming it is harmless).
+# the Graph token, the EA-Managed calendar (a WARN on the reviewer mode,
+# where naming it is harmless).
 EXPECT="${EA_SMOKE_EXPECT_MISSING:-ea-bot: Claude login,auth: msal_token_cache.json,EA-Managed calendar}"
 ME="$(id -un)"
 OS="$(uname -s)"
@@ -77,7 +77,7 @@ case "$OS" in
         ;;
 esac
 export PATH="$(dirname "$PY"):$PATH"
-log "profile $PROFILE, answers $ANSWERS, python $("$PY" --version 2>&1) at $PY, $OS"
+log "mode $PROFILE, answers $ANSWERS, python $("$PY" --version 2>&1) at $PY, $OS"
 
 # 1. The config, one phase at a time. tone (reads sent mail) and summary
 # are not config phases; auth writes the Graph keys and skips the sign-in.
@@ -93,7 +93,7 @@ for phase in identity scheduling inbox autonomy groups deadlines style auth driv
 done
 rm -f "$PHASE_LOG"
 
-# 2. scripts/install/setup.sh: the templates, the profile, the cron template, no sign-in.
+# 2. scripts/install/setup.sh: the templates, the mode, the cron template, no sign-in.
 # Through bash, as the service-account script runs: a checkout that came
 # in as a tar or a zip may carry no executable bit.
 log "2/5 ./scripts/install/setup.sh --profile $PROFILE --non-interactive"

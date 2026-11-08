@@ -328,6 +328,7 @@ def _room_ns(monkeypatch, *, registry, owned=None, status=None):
                       _project_opening_post=lambda pid: f"PACK {pid}",
                       _publish_home=lambda: None, dataclasses=__import__("dataclasses"),
                       _room_picker=lambda *a: {"ok": True, "picker": True, "text": "picker"},
+                      _rooms_on=lambda: True, ROOMS_OFF_TEXT="rooms are off",
                       _follow_thread_move=lambda *a: notes.append(("moved", a)))
     monkeypatch.setattr(_ea_channels, "scope_of", lambda c, path=None: reg.get(c))
     for name in ROOM_FNS:

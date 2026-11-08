@@ -67,12 +67,16 @@ if [[ -f "$SCRIPT_DIR/.venv/bin/python3" ]]; then
 fi
 PYTHON3="$(command -v python3)"
 
-# The install profile decides where reports go. Without Slack every
-# report is a file under ~/.ea/state/reports/ and nothing is posted.
+# The install's mode decides where reports go. Without a chat (the
+# reviewer mode) every report is a file under ~/.ea/state/reports/ and
+# nothing is posted.
 PROFILE="$(EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/ea_config.py" profile 2>/dev/null || echo assistant)"
-# `chat` is the platform-neutral name of the feature (Slack or Zulip).
+# `chat` is the platform-neutral name of the feature (the web chat, Zulip or Slack).
 HAS_SLACK=1
 EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/ea_config.py" feature chat >/dev/null 2>&1 || HAS_SLACK=0
+# "drafting": false in ea-config.json, in any mode; a failed read counts as off.
+HAS_DRAFTING=1
+EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/ea_config.py" feature drafting >/dev/null 2>&1 || HAS_DRAFTING=0
 PREPROCESS="$SCRIPT_DIR/preprocessor/preprocess.py"
 SKILL_DIR="$SCRIPT_DIR/skills"
 STATE_DIR="$EA_DIR/state"
@@ -384,10 +388,10 @@ else
     DISALLOWED_TOOLS=""
     log "WARNING: $DISALLOWED_FILE missing; running without --disallowedTools"
 fi
-# The review-only profile also denies every drafting verb.
-if [[ "$PROFILE" == "review-only" && -f "$SCRIPT_DIR/scripts/disallowed-tools.review-only.txt" ]]; then
-    REVIEW_ONLY_DENY=$(grep -v '^[[:space:]]*#' "$SCRIPT_DIR/scripts/disallowed-tools.review-only.txt" | sed '/^[[:space:]]*$/d' | paste -sd ',' -)
-    DISALLOWED_TOOLS+=",$REVIEW_ONLY_DENY"
+# With drafting off, every drafting verb is denied too.
+if [[ "$HAS_DRAFTING" != 1 && -f "$SCRIPT_DIR/scripts/disallowed-tools.no-drafting.txt" ]]; then
+    NO_DRAFTING_DENY=$(grep -v '^[[:space:]]*#' "$SCRIPT_DIR/scripts/disallowed-tools.no-drafting.txt" | sed '/^[[:space:]]*$/d' | paste -sd ',' -)
+    DISALLOWED_TOOLS+=",$NO_DRAFTING_DENY"
 fi
 # Denials the enabled plugins declare (docs/plugins.md), from the owner's lock.
 PLUGIN_DENIED=$(EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/plugin_registry.py" denied-tools 2>/dev/null || true)
@@ -483,19 +487,23 @@ if [[ -n "$INSTALL_FACTS" ]]; then
 else
     log "No install overlay at $EA_DIR/config/CLAUDE.install.md (install_overlay.py render writes it)"
 fi
-# Without a chat platform (the email and review-only profiles) nothing
-# consumes a staged event or a draft card: the bot is the only reader of
-# pending-event.json and the only poster of Send buttons. The skills are
-# written for the chat case, so the agent is told what changes.
+# Without a chat platform (the reviewer mode) nothing consumes a staged
+# event or a draft card: the bot is the only reader of pending-event.json
+# and the only poster of Send buttons. The skills are written for the chat
+# case, so the agent is told what changes.
 if [[ "$HAS_SLACK" != 1 ]]; then
-    # A heredoc, not a quoted string: only PROFILE and AGENT expand in it.
+    NO_DRAFTING_LINE=""
+    if [[ "${HAS_DRAFTING:-1}" != 1 ]]; then
+        NO_DRAFTING_LINE="- Drafting is off on this install (\"drafting\": false): write no draft. Put what a reply should say in the report instead."$'\n'
+    fi
+    # A heredoc, not a quoted string: only PROFILE, AGENT and NO_DRAFTING_LINE expand in it.
     NO_CHAT_BLOCK=$(cat <<EOF
 ## No chat channel
 
 This install (profile ${PROFILE}) has no chat platform. There are no buttons and no cards: nobody can click Send, Create, Edit or Handled, and no bot reads a staged file.
 - Do not write pending-event.json, pending-event-update.json, pending-event-delete.json or pending-schedule-send.json, and do not stage anything that needs a click.
 - A draft you create stays in the Drafts folder; the user sends it from Outlook. Say so in the report; never tell the user to click Send.
-- Describe each proposed event and each draft as text in the report: who, when, and what the body says.
+${NO_DRAFTING_LINE}- Describe each proposed event and each draft as text in the report: who, when, and what the body says.
 - The briefing JSON has no recent_slack_messages; skip the chat-replies step.
 - The report is delivered as a file (~/.ea/state/reports/${AGENT}-latest.md) and as a phone push when one is configured. Write it for that: plain text, nothing that assumes a chat thread.
 EOF
@@ -1179,7 +1187,7 @@ sys.exit(0 if (msg and slack.post_to_slack('ea-assistant', msg)) else 1)
         POST_RC="${PIPESTATUS[0]}"
         set -e
     else
-        log "Profile $PROFILE has no Slack; the report file is the delivery."
+        log "Mode $PROFILE has no chat; the report file is the delivery."
         POST_RC=0
         # A phone push when the owner set one up (preprocessor/push_notify.py);
         # without push.json it does nothing, and a failed push never fails the run.

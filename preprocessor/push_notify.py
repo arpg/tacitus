@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Phone push for installs with no chat platform, through ntfy.
 
-An `email` or `review-only` install has no chat channel: a report is a
+A `reviewer` install has no chat channel: a report is a
 file under ~/.ea/state/reports/ and a line on the web board. When the
 owner sets up a push, run-agent.sh calls this module after it writes a
 report, and the phone shows a short notice.

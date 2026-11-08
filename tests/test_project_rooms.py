@@ -58,7 +58,7 @@ def test_bot_opens_rooms_after_detection_in_both_lanes():
     # idempotent, active only, the command's own path, no rename
     assert '_ea_channels.for_project(pid)' in fn and 'row.get("status") != "active"' in fn
     assert '_open_project_channel(channel, thread_ts or "", "", pid)' in fn
-    assert "if not run_started:\n        return 0" in fn
+    assert "if not run_started or not _rooms_on():\n        return 0" in fn
     # the thread hears about it, the room links back (shared announcer)
     assert "_announce_room(channel, thread_ts, res," in fn
     ann = _fn_src("_announce_room")
@@ -78,7 +78,7 @@ def test_bot_opens_rooms_after_detection_in_both_lanes():
 
 def test_the_model_is_told_the_room_comes_by_itself():
     core = (REPO / "CLAUDE.md").read_text()
-    assert "gets its\n  room the same way, automatically" in core or "automatically, after your turn" in core
+    assert "gets its room after your turn" in " ".join(core.split())
     guide = (REPO / "docs" / "ea" / "project-store.md").read_text()
     assert "do not tell the user to say `open a\n  channel`" in guide or "do not tell the user to say" in guide
 
@@ -159,6 +159,48 @@ def test_no_match_offers_buttons_instead_of_bouncing():
     assert '_post_card(channel, dataclasses.replace(res["card"], fallback_text=text)' in ann
     for path in ("CLAUDE.md", "docs/ea/project-store.md"):
         assert "picker" in (REPO / path).read_text(), path
+
+
+def test_every_room_path_asks_the_rooms_switch_first():
+    """Rooms are the collaborator mode's. Each path that makes a room asks
+    the switch before anything else and answers ROOMS_OFF_TEXT; the
+    switch reads the mode on each call, so a mode change needs no restart."""
+    on = _fn_src("_rooms_on")
+    assert 'profile_features()["rooms"]' in on
+    for fn in ("_open_project_channel", "_open_session_channel", "_room_picker"):
+        body = _fn_src(fn)
+        doc_end = body.index('"""', body.index('"""') + 3) + 3
+        assert body[doc_end:].lstrip().startswith("if not _rooms_on():"), fn
+        assert '"rooms_off": True, "text": ROOMS_OFF_TEXT' in body, fn
+    assert "if not _rooms_on():" in _fn_src("_dispatch_room_create")
+    assert "if not _rooms_on():" in _fn_src("_open_channel_action")
+    cmd = _fn_src("_colleague_command")
+    assert "if m and not _rooms_on():\n        return {\"ok\": True, \"text\": ROOMS_OFF_TEXT}" in cmd
+    assert cmd.index("if m and not _rooms_on():") < cmd.index('if m.group("session") or m.group("this"):')
+
+
+def test_add_project_names_the_room_step_for_the_mode():
+    import contextlib
+    import io
+    import json
+    import ea_config
+    cfg = Path(tempfile.mkdtemp(prefix="ea-test-rooms-cfg-")) / "ea-config.json"
+    saved = ea_config.CONFIG_FILE
+    ea_config.CONFIG_FILE = cfg
+
+    def add(pid: str) -> dict:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _add(pid)
+        return json.loads(out.getvalue())
+    try:
+        cfg.write_text(json.dumps({"profile": "assistant", "profile_version": 2}))
+        got = add("solo-chat-project")
+        assert got["ok"] and got["room"].startswith("none: project rooms come with the collaborator mode")
+        cfg.write_text(json.dumps({"profile": "collaborator", "profile_version": 2}))
+        assert add("room-project")["room"] == "the bot opens its room after this turn"
+    finally:
+        ea_config.CONFIG_FILE = saved
 
 
 def test_suggest_projects_finds_loosely_named_projects():
