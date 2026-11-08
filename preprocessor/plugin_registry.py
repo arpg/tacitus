@@ -894,11 +894,13 @@ def ledger_types(lock=None) -> dict:
 def mail_rules(lock=None) -> dict:
     """The enabled plugins' mail rules, merged and sorted."""
     out = {"closure_confirm_senders": set(), "closure_exclude_senders": set(),
-           "keep_from_anthropic_domains": set()}
+           "keep_from_frontier_domains": set()}
     for lp in managed_plugins(lock=lock):
         rules = lp.manifest["capabilities"]["mail_rules"]
         for key in out:
             out[key].update(rules.get(key) or [])
+        # A manifest parsed before the rename holds the old key.
+        out["keep_from_frontier_domains"].update(rules.get("keep_from_anthropic_domains") or [])
     return {k: sorted(v) for k, v in out.items()}
 
 

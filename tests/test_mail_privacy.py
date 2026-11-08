@@ -136,7 +136,7 @@ def test_kept_row_plan_creates_folds_nudges_and_closes_from_the_records():
     assert row["id"] == "kept-c-oct13" and row["type"] == "deadline" and row["deadline"] == "2026-10-15"
     assert row["description"].startswith("Communication regarding Manuscript")
     assert "Pat Lee asks" in row["notes"] and "Ask: Submit it." in row["notes"]
-    assert row["metadata"]["kept_from_claude"].startswith("never-send") and row["conversation_id"] == "c-oct13"
+    assert row["metadata"]["kept_from_frontier"].startswith("never-send") and row["conversation_id"] == "c-oct13"
     # Typed by state: an undated todo is a task, a plain ask a response row,
     # a meeting a scheduling row; FYI and the user's own mail make nothing.
     kinds = {}
@@ -229,8 +229,8 @@ def test_tick_extracts_everything_labels_kept_and_skips_own_mail(priv):
     assert res["ok"] == 2 and res["kept"] == 1 and res["skipped"] == 1
     assert len(calls) == 2 and len(graph.fetched) == 2  # the listed one goes to the model too
     recs = {r["conversation_id"]: r for r in rl.read(mp.EXTRACTIONS)}
-    assert recs["conv2"]["keep_from_anthropic"] == "listed domain mil"
-    assert recs["conv1"]["keep_from_anthropic"] == ""
+    assert recs["conv2"]["keep_from_frontier"] == "listed domain mil" and recs["conv2"]["keep_level"] == "local"
+    assert recs["conv1"]["keep_from_frontier"] == "" and recs["conv1"]["keep_level"] == "full"
     again = mp.tick(graph=graph, chat=_chat(), now=NOW)
     assert again["ok"] == 0 and again["skipped"] == 3
 
@@ -247,7 +247,7 @@ def test_redo_withheld_extracts_what_an_older_version_held_back(priv):
     assert res["redone"] == 1 and res["ok"] == 1
     mp._INDEX_CACHE.update(mtime=None, index=None)
     rec = mp.load_index()["by_key"][old["key"]]
-    assert rec["status"] == "ok" and rec["keep_from_anthropic"] == "listed domain mil"
+    assert rec["status"] == "ok" and rec["keep_from_frontier"] == "listed domain mil"
 
 
 def test_tick_is_a_noop_with_the_switch_off(priv):
@@ -311,8 +311,8 @@ def test_reduce_briefing_replaces_previews_and_stubs_confidential(priv):
     assert items[0]["extracted"]["ask"] == "Pick a time." and "body_preview" not in items[0]
     assert items[1]["extracted"] == {"confidential": "health", "needs_reply": True,
                                      "deadline": "2026-10-30"}
-    assert items[2] == {"conversation_id": "conv3", "subject": "(kept from Claude)",
-                        "extracted": {"kept_from_anthropic": True, "needs_reply": True,
+    assert items[2] == {"conversation_id": "conv3", "subject": "(kept on your machine)",
+                        "extracted": {"kept_from_frontier": True, "kept_level": "Kept on your machine", "needs_reply": True,
                                       "deadline": "2026-10-30"}}
     assert items[3]["body_preview"] == "raw text nine"   # never extracted
     assert stats == {"previews": 4, "replaced": 2, "confidential": 1, "kept": 1,
@@ -466,7 +466,7 @@ def test_enforce_leaves_a_room_read_alone_and_sealed_keeps_the_cron_rules(priv):
     assert out == "" and refusal == mp.KEPT_REFUSAL
     out, refusal = mp.release_filter("graph_actions", "get-message", [], "room-run", raw)
     assert refusal == "" and "RAW" not in out
-    assert json.loads(out)["kept_from_claude"] == "listed domain mil"
+    assert json.loads(out)["kept_from_frontier"] == "listed domain mil"
 
 
 def test_sealed_failure_refuses_the_read(priv, monkeypatch):

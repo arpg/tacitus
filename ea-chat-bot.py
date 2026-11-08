@@ -487,6 +487,13 @@ def _sudo_claude_cmd(claude_args: list[str], run_id: str = "",
             env_vars.append(f"{var}={val}")
     for k, v in (extra_env or {}).items():
         env_vars.append(f"{k}={v}")
+    if "EA_TURN_MODEL" not in (extra_env or {}):
+        # The turn's model, for the mail release log's counts by model
+        # (data only; the on-prem arm's gateway env names it `local`).
+        named = next((str(claude_args[i + 1]) for i, a in enumerate(claude_args[:-1])
+                      if a == "--model"), "")
+        named = "".join(c for c in named if c.isalnum() or c in "._-")[:30]
+        env_vars.append(f"EA_TURN_MODEL=claude:{named}" if named else "EA_TURN_MODEL=claude")
     for k, v in _claude_cli.no_connector_env(claude_args).items():
         env_vars.append(f"{k}={v}")
     return (["sudo", "-u", EA_BOT_USER, "env"] + env_vars + [CLAUDE_BIN]

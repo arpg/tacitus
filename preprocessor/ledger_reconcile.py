@@ -24,7 +24,7 @@ composes each thread into a brief, and Claude judges the briefs.
        duplicate or lapsed (a chance that ended, such as a vote or an
        RSVP), a thread for a row that has none, and one line on
        what changed. Refs it invents are dropped. A kept thread (a
-       keep_from_anthropic sender) reaches it as counts and dates only.
+       keep_from_frontier sender) reaches it as counts and dates only.
     4. Code writes: a `done`, `duplicate` or `lapsed` verdict is a close PROPOSAL
        (closure.propose_or_promote; the morning briefing's "Looks done?"
        line and the DM card carry it, one click closes; a signal the hill
@@ -233,7 +233,7 @@ def thread_view(brief: dict | None) -> dict | None:
     asks. A kept thread shows counts and dates only."""
     if not brief:
         return None
-    if brief.get("kept_from_claude"):
+    if brief.get("kept_from_frontier") or brief.get("kept_from_claude"):
         return _kept_stub(brief)
     msgs = sorted(brief.get("messages") or [], key=lambda m: m.get("received") or "")[-MSG_CAP:]
     view = {"subject": brief.get("subject") or "", "message_count": brief.get("message_count"),

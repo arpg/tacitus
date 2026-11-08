@@ -31,8 +31,8 @@ lane's privileges and none of the owner's. Write verbs are never run at
 all. Reads carry EA_RUN_ID=shadow-<run_id>, so the mediator log tells
 them apart from Claude's.
 
-Keep from Anthropic. The remote model sees every turn. A turn whose task
-text or tool output names an address on the keep_from_anthropic list is
+Keep from frontier models. The remote model sees every turn. A turn whose task
+text or tool output names an address on the keep_from_frontier list is
 labelled with the reason: it is a turn an enforce mode would leave to the
 remote model alone, and the report counts them.
 
@@ -429,6 +429,8 @@ def _resident_cmd(script: str, argv: list[str], run_id: str, *, live: bool = Fal
         f"PATH={os.environ.get('PATH', '/usr/bin:/usr/local/bin')}",
         f"PYTHONPATH={os.environ.get('PYTHONPATH', '')}",
         run_env,
+        # The model for the mail release log (data only): the local agent.
+        "EA_TURN_MODEL=local",
     ]
     # EA_GRAPH_LANE: a tick that runs the pipeline (mail_privacy) keeps its
     # tool calls in the background Graph lane through the mediator.
@@ -1183,9 +1185,9 @@ def run_agent(job: dict, *, chat=None, runner=None, clock=time.monotonic, live: 
             "lane": job.get("lane", ""), "mixed": bool(job.get("mixed")), "live": bool(live),
             "status": "ok", "steps": [], "reply": "", "writes": [],
             "solver_options": [], "latency_s": 0.0, "cold_start": False,
-            "schema_failures": 0, "error": "", "keep_from_anthropic": ""}
+            "schema_failures": 0, "error": "", "keep_from_frontier": ""}
     results: list[dict] = []
-    turn["keep_from_anthropic"] = _kept_in(
+    turn["keep_from_frontier"] = _kept_in(
         str(job.get("task_block") or "") + "\n" + str(job.get("user_msg") or ""))
 
     messages, _tz = build_prompt(job)
@@ -1256,8 +1258,8 @@ def run_agent(job: dict, *, chat=None, runner=None, clock=time.monotonic, live: 
                 parsed = _parse_json_out(out)
                 results.append({"tool": action, "args": args, "rc": rc, "parsed": parsed})
                 obs_text = out if rc == 0 else f"exit {rc}\n{out}\n{(err or '')[-1500:]}"
-                if not turn["keep_from_anthropic"]:
-                    turn["keep_from_anthropic"] = _kept_in(obs_text)
+                if not turn["keep_from_frontier"]:
+                    turn["keep_from_frontier"] = _kept_in(obs_text)
             step["ok"] = True
         except StepError as e:
             turn["schema_failures"] += 1
@@ -1709,7 +1711,7 @@ def report(since: date | None = None) -> dict:
         "cold_starts": sum(1 for t in turns if t.get("cold_start")),
         "schema_failures": sum(int(t.get("schema_failures") or 0) for t in turns),
         "errors": by_status.get("error", 0),
-        "kept_from_anthropic": sum(1 for t in turns if t.get("keep_from_anthropic")),
+        "kept_from_frontier": sum(1 for t in turns if t.get("keep_from_frontier") or t.get("keep_from_anthropic")),
     }
 
 

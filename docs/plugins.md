@@ -167,7 +167,7 @@ and `extra_schedules`.
     "denied_tools": ["Bash(python3 *tool.py send *)"],
     "cards": [],
     "mail_rules": {"closure_confirm_senders": [], "closure_exclude_senders": [],
-                   "keep_from_anthropic_domains": []},
+                   "keep_from_frontier_domains": []},
     "mail_triggers": [{"id": "alerts", "from": ["alerts@notes.example.org"]}],
     "network": {"domains": ["api.example.org"], "local": []},
     "secrets": ["EXAMPLE_TOKEN"],
@@ -288,8 +288,10 @@ owner-zone plugin, whose executor runs as the owner (`"user": "owner"`).
 **mail_rules.** `closure_confirm_senders` are sender substrings whose mail
 can close a ledger row (as `CONFIRMATION_SENDER_SUBSTRINGS` in
 `closure_scrubber.py`); `closure_exclude_senders` never count, even when a
-core substring matches; `keep_from_anthropic_domains` join the remote
-model's keep list (`remote_llm.py`). A substring shorter than six
+core substring matches; `keep_from_frontier_domains` join the keep list
+(`remote_llm.py`), whose mail no hosted model reads (a manifest that names
+them `keep_from_anthropic_domains`, the old name, is read the same way).
+A substring shorter than six
 characters, or with no `@` or `.`, is refused as too broad.
 
 **mail_triggers.** New mail handed to the plugin as it arrives. The
@@ -318,8 +320,10 @@ a message's Graph id, and a mailbox search does not cover Deleted Items.
 - An agent-zone plugin's copies are in
   `<EA_DIR>/state/plugin-mail/<name>.json`, rewritten from the owner's
   queue on each delivery. An owner-zone plugin reads the owner's queue.
-- Mail with an address on the `keep_from_anthropic` list never goes to an
-  agent-zone plugin.
+- Mail with an address on the `keep_from_frontier` list never goes to an
+  agent-zone plugin, and with a local model set up neither does any mail
+  kept at a level below full (applicant mail, a rule of the user's;
+  `privacy_rules.py`).
 - With the mail switch `sealed`, an agent-zone plugin's copy has no body;
   `delivered()` reads it through `get-message`, which is sealed like any
   lane's read.

@@ -163,7 +163,7 @@ def test_digest_posts_fyi_and_kept_only(store):
     assert r == {"posted": True, "rows": 2}
     text = posted[0]
     assert "summary of f1" in text and "Due 2026-10-20" in text and "*Teaching*" in text
-    assert "Kept from Claude" in text and "Needs your reply" in text
+    assert "Kept on your machine" in text and "Needs your reply" in text
     assert "a1" not in text and "l1" not in text and "o1" not in text
     assert mg.digest(now=NOW + timedelta(minutes=5), post=lambda *a: True) == {"posted": False, "rows": 0}
     _cfg(store, mail="shadow")

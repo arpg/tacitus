@@ -18,7 +18,7 @@ Then:
     the judge's position bias cancels;
   * a Sonnet judge with the sent email: which body is closer to it.
 
-Mail labelled keep_from_anthropic never goes to the judge: it is scored
+Mail labelled keep_from_frontier never goes to the judge: it is scored
 by edit ratio alone.
 
 Verbs (owner process):
@@ -60,6 +60,12 @@ _CONV = re.compile(r"--conversation-id[= ]+['\"]?([A-Za-z0-9=+/_-]{20,})")
 # The statuses graph_actions prints for a new draft, a new reply draft and
 # a reply that reused the thread's existing draft.
 _CREATED = re.compile(r'"(?:reply_)?draft_created"|"reused_existing_draft"')
+
+
+def _kept_item(x: dict) -> bool:
+    """A backtest item kept from hosted models, under either name of the
+    label (items built before the rename carry keep_from_anthropic)."""
+    return bool(x.get("keep_from_frontier") or x.get("keep_from_anthropic"))
 
 
 def _parse(s) -> datetime | None:
@@ -275,14 +281,14 @@ def build(*, graph=None, log=print) -> dict:
                 m = mine[0]
                 item["sent_body"] = draft_ab.own_text(m)
                 item["sent_ts"] = m.get("sentDateTime")
-            # Kept from Anthropic: any participant of the thread on the list.
+            # Kept from frontier models: any participant of the thread on the list.
             for m in convs[cid]:
                 people = ([mail_tuning._addr(m.get("from"))] + mail_tuning._addrs(m.get("toRecipients"))
                           + mail_tuning._addrs(m.get("ccRecipients")))
                 why = next((remote_llm.keep_reason(a, cfg) for a in people
                             if remote_llm.keep_reason(a, cfg)), "")
                 if why:
-                    item["keep_from_anthropic"] = why
+                    item["keep_from_frontier"] = why
                     break
         # The contact the subagent would look up: the one the prompt names,
         # else the draft's first To address.
@@ -296,7 +302,7 @@ def build(*, graph=None, log=print) -> dict:
     items = remote_llm.read(ITEMS)
     return {"items": made, "with_claude_body": sum(1 for x in items if x["claude_body"]),
             "sent": sum(1 for x in items if x.get("sent_body")),
-            "kept": sum(1 for x in items if x.get("keep_from_anthropic")),
+            "kept": sum(1 for x in items if _kept_item(x)),
             "prompts_naming_missing_files": sum(1 for x in items if x["missing_files"])}
 
 
@@ -404,7 +410,7 @@ def judge(*, log=print, seed: int = 21) -> dict:
     remote = {r["draft_id"]: r for r in remote_llm.read(REMOTE)
               if r.get("qwen_body") and not r.get("need")}
     items = [x for x in remote_llm.read(ITEMS)
-             if x["draft_id"] in remote and x.get("claude_body") and not x.get("keep_from_anthropic")]
+             if x["draft_id"] in remote and x.get("claude_body") and not _kept_item(x)]
     rng = random.Random(seed)
     jobs = []
     for order in ("claude_first", "remote_first"):

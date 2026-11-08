@@ -12,9 +12,22 @@ what counts as urgent, what the EA must never do on its own, meeting
 limits beyond working hours and protected days, when not to interrupt,
 the sign-off and tone for drafts, who never gets a draft without asking,
 standing facts (roles, grants, eligibility), briefing length, funding
-never worth showing, and reviewing requests. Each question names the
-`scope` and `kind` its answer becomes. The bank carries no institution
-or personal names; the user supplies those.
+never worth showing, reviewing requests, and how much of an applicant's
+mail the EA may see once the user has written back. Each question names
+the `scope` and `kind` its answer becomes. The bank carries no
+institution or personal names; the user supplies those.
+
+**The applicant-mail question** (`applicant-mail`, scope `privacy`) is
+asked only where the user's own model is set up (`requires:
+local-model`). The answer picks a keep level: 1 nothing (the mail stays
+on the user's machine), 2 facts only (who wrote, when, the times offered
+or taken), 3 a short summary made on the user's machine (the default).
+Record it as for any question: `onboarding.py answer --id applicant-mail
+--text "<their words>"`. A number or the words work ("3", "a summary is
+fine"); an answer that names no level is refused, so ask again. The
+rule's text is a plain sentence for that level, and the rule replaces
+the built-in `privacy-engaged-applicants` level (docs/remote-llm.md,
+"Keep from frontier models").
 
 **How it is asked.**
 - A chat mode (assistant, collaborator): the preprocessor runs `onboarding.py next` for the

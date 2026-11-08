@@ -16,7 +16,7 @@ owner process, `run` exits 3 and run-agent.sh runs the Claude lane.
 The morning run:
   1. Code gives every candidate item a ref: today's ranked queue, new mail
      that needs a reply, dropped threads, RSVPs, and the open ledger rows
-     (deadlines, follow-ups, stale rows). Mail kept from Claude is not a
+     (deadlines, follow-ups, stale rows). Mail kept from hosted models is not a
      candidate: the post lands in the EA stream, which Claude lanes read.
   2. One remote call, under a strict schema, picks by ref: the ordered
      "get done today" list with when and why, the flexes, the replies to

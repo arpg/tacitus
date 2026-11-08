@@ -1117,6 +1117,10 @@ def forward_or_none(tool: str, argv: list[str], transform=None):
                                # env, so the run id must ride in the request or
                                # every mediated record is unlabelled.
                                "run_id": os.environ.get("EA_RUN_ID", ""),
+                               # The model of the turn (EA_TURN_MODEL), for the
+                               # release log's counts by model. Data only: the
+                               # resident writes it, so nothing gates on it.
+                               "model": os.environ.get("EA_TURN_MODEL", "")[:40],
                                # The Graph breaker lane of the caller (a cron
                                # lane sets background); none is the owner's own.
                                "lane": os.environ.get(GRAPH_LANE_ENV, "")}))

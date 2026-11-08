@@ -207,7 +207,8 @@ def test_preferences_phase_records_each_answer_as_a_rule(monkeypatch, tmp_path, 
     assert store["rules"][0]["source"] == "onboarding"
     st = onboarding.status(ea_dir=tmp_path)
     assert st["answered"] == [bank[0]["id"], bank[2]["id"]]
-    assert len(st["remaining"]) == len(bank) - 2
+    # a question that waits on a local model is not asked without one
+    assert len(st["remaining"]) == len([q for q in bank if not q.get("requires")]) - 2
     out = capsys.readouterr().out
     assert bank[1]["question"] in out and "Recorded 2 rule(s)" in out
 

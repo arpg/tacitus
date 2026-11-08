@@ -807,6 +807,7 @@ CLAUDE_OUTPUT=$(printf '%s' "$PROMPT" | sudo -u ea-bot env \
     HOME="$EA_BOT_HOME" \
     EA_DIR="$EA_DIR" \
     EA_RUN_ID="cron-${AGENT}-${TIMESTAMP}" \
+    EA_TURN_MODEL=claude \
     EA_GRAPH_LANE=background \
     PATH="$EA_BOT_SCRIPT_DIR/.venv/bin:$EA_BOT_HOME/.local/bin:$PATH" \
     ${GRAPH_CLIENT_ID:+GRAPH_CLIENT_ID="$GRAPH_CLIENT_ID"} \
@@ -956,6 +957,7 @@ You MUST write the briefing content as your text output. Start with :sunny: for 
         HOME="$EA_BOT_HOME" \
         EA_DIR="$EA_DIR" \
     EA_RUN_ID="cron-${AGENT}-${TIMESTAMP}" \
+    EA_TURN_MODEL=claude \
     EA_GRAPH_LANE=background \
         PATH="$EA_BOT_SCRIPT_DIR/.venv/bin:$EA_BOT_HOME/.local/bin:$PATH" \
         ${GRAPH_CLIENT_ID:+GRAPH_CLIENT_ID="$GRAPH_CLIENT_ID"} \
@@ -1031,6 +1033,7 @@ invoke_claude() {
         HOME="$EA_BOT_HOME" \
         EA_DIR="$EA_DIR" \
     EA_RUN_ID="cron-${AGENT}-${TIMESTAMP}" \
+    EA_TURN_MODEL=claude \
     EA_GRAPH_LANE=background \
         PATH="$EA_BOT_SCRIPT_DIR/.venv/bin:$EA_BOT_HOME/.local/bin:$PATH" \
         ${GRAPH_CLIENT_ID:+GRAPH_CLIENT_ID="$GRAPH_CLIENT_ID"} \

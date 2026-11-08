@@ -39,7 +39,7 @@ CONFIG = {
     "endpoint": "https://models.example.edu/v1", "model": "qwen3.8-mm",
     "mail": "enforce", "scheduling": "shadow", "drafting": "remote", "digests": "remote",
     "shadow_until": "2026-11-02",
-    "keep_from_anthropic": {"domains": ["mil", "contractor.example.com"], "addresses": [], "admissions": True},
+    "keep_from_frontier": {"domains": ["mil", "contractor.example.com"], "addresses": [], "admissions": True},
 }
 
 # The made-up mailbox: what arrived, and what the remote model made of it.
@@ -140,7 +140,7 @@ def _setup(tmp: Path):
         remote_llm.append(mail_privacy.EXTRACTIONS, {
             "key": f"k-{m['id']}", "id": m["id"], "conversation_id": m["conv"],
             "received": _iso(_received(m)), "from": m["from"], "subject": m["subject"],
-            "status": "ok", "keep_from_anthropic": m.get("kept", ""), "result": res})
+            "status": "ok", "keep_from_frontier": m.get("kept", ""), "result": res})
     mail_privacy._INDEX_CACHE.update(mtime=None, index=None)
 
 

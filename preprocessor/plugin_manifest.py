@@ -178,7 +178,7 @@ def _empty_capabilities() -> dict:
     return {"schedules": [], "chat": None, "skills": [], "tools": [], "denied_tools": [],
             "cards": [], "mail_rules": {"closure_confirm_senders": [],
                                         "closure_exclude_senders": [],
-                                        "keep_from_anthropic_domains": []},
+                                        "keep_from_frontier_domains": []},
             "network": {"domains": [], "local": []}, "secrets": [],
             "owner_hooks": {"verbs": [], "auth_sources": [], "cron": []},
             "claude_plugin": "", "mail_triggers": [], "ledger_types": {}}
@@ -317,11 +317,17 @@ def _norm_mail_rules(m, errors: list) -> dict:
             if len(v) < 6 or not ("@" in v or "." in v):
                 errors.append(f"capabilities.mail_rules.{key}: {v!r} is too broad")
         out[key] = vals
-    doms = [d.strip().lower().lstrip("@") for d in _strs(m.get("keep_from_anthropic_domains"))]
+    # keep_from_frontier_domains; a manifest written before the rename
+    # names them keep_from_anthropic_domains, read the same way.
+    doms = []
+    for d in _strs(m.get("keep_from_frontier_domains")) + _strs(m.get("keep_from_anthropic_domains")):
+        d = d.strip().lower().lstrip("@")
+        if d and d not in doms:
+            doms.append(d)
     for d in doms:
         if not HOST_RE.match(d):
-            errors.append(f"capabilities.mail_rules.keep_from_anthropic_domains: bad domain {d!r}")
-    out["keep_from_anthropic_domains"] = doms
+            errors.append(f"capabilities.mail_rules.keep_from_frontier_domains: bad domain {d!r}")
+    out["keep_from_frontier_domains"] = doms
     return out
 
 
@@ -678,8 +684,8 @@ def describe(summary: dict) -> list[str]:
         lines.append(f"mail rule: mail from *{s}* can close a ledger row")
     for s in mr["closure_exclude_senders"]:
         lines.append(f"mail rule: mail from *{s}* never closes a ledger row")
-    for d in mr["keep_from_anthropic_domains"]:
-        lines.append(f"mail rule: mail from {d} stays with the remote model")
+    for d in mr.get("keep_from_frontier_domains") or mr.get("keep_from_anthropic_domains") or []:
+        lines.append(f"mail rule: mail from {d} stays on your machine, away from hosted models")
     for name, spec in (summary.get("ledger_types") or {}).items():
         on = [t for t, v in (spec.get("traits") or {}).items() if v]
         lines.append(f"ledger type: {name} ({', '.join(on) or 'no traits on'})")

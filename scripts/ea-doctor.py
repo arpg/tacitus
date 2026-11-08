@@ -1831,6 +1831,28 @@ def check_remote_llm():
                           f"add {remote_llm.SECRET_NAME} to the private secrets.env")
 
 
+def check_privacy_rules():
+    """The keep rules in force (preprocessor/privacy_rules.py), in one
+    row: how much of the keep list's mail, applicant mail and the mail of
+    the user's own rules a hosted model may see. WARN when remote-llm.json
+    still names the keep list keep_from_anthropic, or a privacy rule in
+    the preferences store names nothing the code can apply."""
+    sys.path.insert(0, str(REPO / "preprocessor"))
+    try:
+        import remote_llm
+        import model_routing
+        import privacy_rules
+        cfg = remote_llm.config()
+        if not model_routing.local_ready(cfg):
+            ok("privacy rules", "no local model set up: every lane reads mail as it is")
+            return
+        status, detail, fix = privacy_rules.doctor_row(cfg)
+    except Exception as e:
+        warn("privacy rules", f"unreadable: {e}")
+        return
+    {"PASS": ok, "WARN": warn}[status]("privacy rules", detail, fix)
+
+
 def check_model_routing():
     """The owner's routing table (preprocessor/model_routing.py): the model
     each task runs on now, and the local model's state from its breaker
@@ -2129,6 +2151,7 @@ def main() -> int:
         check_hardening()
         check_decks(ea_dir)
         check_remote_llm()
+        check_privacy_rules()
         check_model_routing()
         if not NEEDS_SLACK:
             check_push()

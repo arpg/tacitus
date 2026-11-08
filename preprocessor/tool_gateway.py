@@ -881,7 +881,9 @@ def lane_env(port: int = PORT, *, model: str = "", variant_name: str = "") -> di
             "ANTHROPIC_MODEL": model, "ANTHROPIC_SMALL_FAST_MODEL": model,
             "ANTHROPIC_DEFAULT_HAIKU_MODEL": model, "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
             "ANTHROPIC_DEFAULT_OPUS_MODEL": model, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-            "DISABLE_BUG_COMMAND": "1", "DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1"}
+            "DISABLE_BUG_COMMAND": "1", "DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1",
+            # The turn's model for the mail release log: the owner's own.
+            "EA_TURN_MODEL": "local"}
 
 
 def main(argv=None) -> int:

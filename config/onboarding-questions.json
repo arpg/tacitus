@@ -1,5 +1,5 @@
 {
-  "_doc": "The first-week question bank (preprocessor/onboarding.py). The morning briefing asks one a day in a chat mode; the reviewer mode answers them in one sitting (onboarding.py ask, scripts/install/user_init.py --phase preferences). An answer becomes a rule in ~/.ea/config/preferences.json: kind and scope come from the question, text is `topic: <the answer>`, quote is the answer, source is onboarding. Order is the order asked. No institution or personal names here: the user supplies those in the answers.",
+  "_doc": "The first-week question bank (preprocessor/onboarding.py). The morning briefing asks one a day in a chat mode; the reviewer mode answers them in one sitting (onboarding.py ask, scripts/install/user_init.py --phase preferences). An answer becomes a rule in ~/.ea/config/preferences.json: kind and scope come from the question, text is `topic: <the answer>`, quote is the answer, source is onboarding. Order is the order asked. No institution or personal names here: the user supplies those in the answers. A question with `privacy` records a keep rule (privacy_rules.py): the answer picks a level from `answers` (a number or the words), and the rule's text is that level's line in `rule_texts`. A question with `requires: local-model` is asked only where the user's own model is set up.",
   "version": 1,
   "questions": [
     {
@@ -109,6 +109,29 @@
       "question": "How should the EA handle requests to review or edit?",
       "why": "Review invitations are triaged on this rule before they reach you.",
       "example": "Decline anything outside my field; accept at most one review a month."
+    },
+    {
+      "id": "applicant-mail",
+      "scope": "privacy",
+      "kind": "instruction",
+      "topic": "Mail from prospective students",
+      "question": "Once you have written back to a prospective student, how much of their mail may the assistant see?",
+      "why": "Their mail stays on your machine until you write back, and their files always do. Answer 1 to keep it all there, 2 for facts only (who wrote, when, and the times they offered or took), or 3 for a short summary made on your machine, the default. With 3 the assistant can remind you of a reply you owe and set up the meeting you offered.",
+      "example": "3. A summary is fine once I have answered them.",
+      "requires": "local-model",
+      "privacy": {
+        "match": "engaged"
+      },
+      "answers": {
+        "1": "local",
+        "2": "facts",
+        "3": "summary"
+      },
+      "rule_texts": {
+        "local": "Mail from prospective students stays on your machine, also after you write back.",
+        "facts": "Once you have written to an applicant, the assistant sees only who wrote, when, and the times they offered or took.",
+        "summary": "Once you have written to an applicant, the assistant may read a short summary of their mail, made on your machine. It never reads the mail itself."
+      }
     }
   ]
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Mail gate: what Claude's bulk lanes may see of the mail when the mail
-switch is `enforce` (docs/remote-llm.md, "Enforce").
+"""Mail gate: what the hosted model's bulk lanes (Claude, Codex or any
+other) may see of the mail when the mail switch is `enforce`
+(docs/remote-llm.md, "Enforce").
 
 The remote model reads every message first (mail_privacy.py). The
 preprocessor's detectors still run on the raw inbox, because a reply the
@@ -13,16 +14,21 @@ the scheduling queue or the briefing file sees it:
     times. The subject, sender and ids stay, so a lane can name the item
     and pull the thread when it acts on it. The message text does not.
   * FYI and awaiting-reply mail is left out. The remote digest posts it.
-  * mail on the keep_from_anthropic list is left out.
+  * mail kept on the machine (keep level local: the keep_from_frontier
+    list, applicant mail the user has not engaged with) is left out. Mail
+    kept at `summary` passes as above with no verbatim quote; at `facts`
+    it passes as mail_privacy.FACT_FIELDS alone (sender, subject, dates,
+    times, the kind of ask, file names), with no text and no summary.
+    Each kept item says its level in plain words (`kept_level`).
   * mail the remote model has not read yet is held: it is left out of
     this run and out of the run's seen sets, so a later run surfaces it.
     Mail still unread HOLD_LIMIT after it arrived passes as sender,
     subject and ids only, so an endpoint outage never loses it.
 
 Bot runs (a room, a thread, the DM) pull single threads through the
-mediator as before; the mediator keeps kept threads from the cron lanes
-only (filter_release). Outside `enforce` every call passes its input
-through unchanged.
+mediator; the mediator keeps local threads from the cron lanes and hands
+every lane a kept message at its level (mail_privacy.release_filter).
+Outside `enforce` every call passes its input through unchanged.
 """
 from __future__ import annotations
 
@@ -83,12 +89,13 @@ def remote_text(rec: dict) -> str:
     return " ".join(parts)[:1200]
 
 
-def _record_fields(rec: dict) -> dict:
+def _record_fields(rec: dict, level: str = "full") -> dict:
+    """The record's fields an item carries: no verbatim quote below full."""
     res = rec.get("result") or {}
     out = {k: res.get(k) for k in ("state", "needs_reply", "ask", "deadline", "scheduling",
                                     "offered_times", "people", "tone", "domain")}
     for k in ("links", "quotes", "attachments"):
-        if res.get(k):
+        if res.get(k) and (k != "quotes" or level == "full"):
             out[k] = res[k]
     return out
 
@@ -99,6 +106,23 @@ def _swap_previews(item: dict, text: str) -> dict:
     for k in had or ["body_preview"]:
         out[k] = text
     return out
+
+
+def level_view(item: dict, rec: dict, dec: dict) -> dict:
+    """A detector's item as the lanes get it at its keep level: the record
+    in place of the text (full, summary), or FACT_FIELDS alone (facts).
+    A kept item names its level in plain words."""
+    import mail_privacy
+    import privacy_rules
+    level = dec.get("level", "full")
+    o = _swap_previews(item, remote_text(rec) if level != "facts" else "")
+    o["remote_record"] = _record_fields(rec, level)
+    if level == "full":
+        return o
+    o["kept_level"] = privacy_rules.plain(level)
+    if dec.get("reason"):
+        o[mail_privacy.KEPT_FIELD] = dec["reason"]
+    return mail_privacy.facts_view(o) if level == "facts" else o
 
 
 def actionable(rec: dict) -> bool:
@@ -185,17 +209,35 @@ class Gate:
 
     # ── classes ──────────────────────────────────────────────────────
 
+    def keep_ctx(self) -> dict:
+        """The keep rules' context with this run's config, once per run."""
+        import mail_privacy
+        if getattr(self, "_ctx", None) is None:
+            self._ctx = mail_privacy.keep_context(getattr(self, "cfg", None))
+        return self._ctx
+
+    def decision(self, rec: dict | None) -> dict:
+        """The keep decision for one record (full for none)."""
+        import mail_privacy
+        if not rec:
+            return dict(mail_privacy._FULL)
+        return mail_privacy.decision_of(rec, index=getattr(self, "index", None), ctx=self.keep_ctx())
+
     def _record(self, item: dict) -> dict | None:
         mid = item.get("message_id") or item.get("id") or ""
         rec = self.index["by_id"].get(mid)
         if rec or mid in self.msgs:
             return rec
-        # An item about mail this run did not fetch: the thread's latest
-        # record speaks for it.
+        # An item about mail this run did not fetch: the thread's strictest
+        # kept record speaks for it, else its latest record.
         conv = item.get("conversation_id") or item.get("conversationId") or ""
-        recs = [r for r in self.index["by_conv"].get(conv) or [] if r.get("status") == "ok"]
-        if any(r.get("keep_from_anthropic") for r in self.index["by_conv"].get(conv) or []):
-            return next(r for r in self.index["by_conv"][conv] if r.get("keep_from_anthropic"))
+        allr = self.index["by_conv"].get(conv) or []
+        import privacy_rules
+        kept = sorted(((privacy_rules.rank(self.decision(r)["level"]), r) for r in allr),
+                      key=lambda kr: kr[0])
+        if kept and kept[0][0] < privacy_rules.rank("full"):
+            return kept[0][1]
+        recs = [r for r in allr if r.get("status") == "ok"]
         return max(recs, key=lambda r: r.get("received") or "") if recs else None
 
     def _listed(self, item: dict) -> bool:
@@ -220,18 +262,26 @@ class Gate:
         rec = self._record(item)
         if not rec or rec.get("status") != "ok":
             return None
-        return _record_fields(rec)
+        dec = self.decision(rec)
+        if dec["level"] == "local":
+            return None
+        out = _record_fields(rec, dec["level"])
+        if dec["level"] == "facts":
+            import mail_privacy
+            out = {k: out.get(k) for k in mail_privacy.RECORD_FACT_FIELDS if k in out}
+        return out
 
     def classify(self, item: dict) -> tuple[str, dict | None]:
-        """(class, record): action | fyi | kept | own | pending | unread."""
+        """(class, record): action | fyi | kept | own | pending | unread.
+        `kept` is mail kept on the machine (level local); mail kept at
+        facts or summary is action or fyi, and items() gives its view."""
         mid = item.get("message_id") or item.get("id") or ""
         msg = self.msgs.get(mid)
         if msg is not None and self._own(msg):
             return "own", None
         rec = self._record(item)
         if rec is not None:
-            import mail_privacy
-            if mail_privacy._kept(rec):
+            if self.decision(rec)["level"] == "local":
                 return "kept", rec
             if rec.get("status") == "ok":
                 return ("action" if actionable(rec) else "fyi"), rec
@@ -253,9 +303,10 @@ class Gate:
             cls, rec = self.classify(it)
             self.counts[cls] += 1
             if cls == "action":
-                o = _swap_previews(it, remote_text(rec))
-                o["remote_record"] = _record_fields(rec)
-                out.append(o)
+                dec = self.decision(rec)
+                if dec["level"] != "full":
+                    self.counts[f"kept_{dec['level']}"] += 1
+                out.append(level_view(it, rec, dec))
             elif cls in ("own", "unread"):
                 o = _swap_previews(it, "")
                 if cls == "unread":
@@ -268,9 +319,10 @@ class Gate:
     def acceptances(self, items: list[dict], passed: list[dict]) -> list[dict]:
         """The grounded acceptances (an `acceptance` key, preprocess) that
         `items` left out of `passed`: one whose record asks nothing ("see
-        you then" reads as FYI to the model), with the record's text; and
-        one kept from Anthropic whose invite code can stage, with no text
-        at all and `kept` set, so no model turn ever reads it."""
+        you then" reads as FYI to the model), as its keep level's view
+        (level_view: the record's text, or the facts alone); and one kept
+        on the machine whose invite code can stage, with no text at all
+        and `kept` set, so no model turn ever reads it."""
         if not self.on:
             return []
         have = {i.get("message_id") for i in passed or []}
@@ -281,8 +333,7 @@ class Gate:
                 continue
             cls, rec = self.classify(it)
             if cls == "fyi":
-                o = _swap_previews(it, remote_text(rec))
-                o["remote_record"] = _record_fields(rec)
+                o = level_view(it, rec, self.decision(rec))
             elif cls == "kept" and acc.get("event"):
                 o = _swap_previews(it, "")
                 o.update(ask="", kept=True)
@@ -301,7 +352,15 @@ class Gate:
             cls, rec = self.classify(it)
             if cls == "kept":
                 continue
-            out.append(_swap_previews(it, remote_text(rec) if rec and rec.get("status") == "ok" else ""))
+            o = _swap_previews(it, remote_text(rec) if rec and rec.get("status") == "ok" else "")
+            dec = self.decision(rec)
+            if dec["level"] == "facts":
+                import mail_privacy
+                o = mail_privacy.facts_view(_swap_previews(it, ""))
+            if dec["level"] != "full":
+                import privacy_rules
+                o["kept_level"] = privacy_rules.plain(dec["level"])
+            out.append(o)
         return out
 
     def ready(self, msgs: list[dict]) -> list[dict]:
@@ -316,9 +375,11 @@ class Gate:
         held_msgs = sum(1 for m in self.msgs.values() if self.classify(m)[0] == "pending")
         out = {"mode": remote_llm.mode("mail", self.cfg),
                "note": ("Email text is not in this file. Actionable mail carries the remote "
-                        "model's summary; FYI mail and mail kept from Claude are left out and "
-                        "go to the remote digest. Pull a thread with get-conversation when "
-                        "you act on it."),
+                        "model's summary; FYI mail and mail kept on the user's machine are left "
+                        "out and go to the mail digest. An item marked kept_level is kept from "
+                        "hosted models at that level: 'Summary' carries the summary only, "
+                        "'Facts only' carries sender, subject, dates and times only. Pull a "
+                        "thread with get-conversation when you act on it."),
                "messages_fetched": len(self.msgs), "held_for_remote_read": held_msgs,
                "items": dict(self.counts)}
         if self.error:
@@ -356,7 +417,8 @@ def _list_senders() -> set[str]:
 
 def digest_rows(since: datetime, until: datetime) -> list[tuple[str, dict]]:
     """(kind, record) for the mail left out of the lanes that arrived in
-    (since, until]: `kept` (any state) and `fyi`, oldest first."""
+    (since, until]: `kept` (kept on the machine, any state) and `fyi`,
+    oldest first. The digest goes to the user alone, never to a model."""
     import mail_privacy
     user = mail_privacy._user_addresses()
     lists = _list_senders()
@@ -407,7 +469,17 @@ def _line(rec: dict) -> str:
     subj = (rec.get("subject") or "(no subject)").strip()
     text = str(res.get("summary") or "").strip() or "(not read)"
     due = f" Due {res['deadline']}." if res.get("deadline") else ""
-    return f"• *{who}*, {subj}: {text}{due}"
+    tag = ""
+    try:
+        import mail_privacy
+        import privacy_rules
+        level = mail_privacy.level_of(rec)
+        if level in ("facts", "summary"):
+            # A hosted model saw this one at its level only.
+            tag = f" ({privacy_rules.plain(level)})"
+    except Exception:
+        pass
+    return f"• *{who}*, {subj}{tag}: {text}{due}"
 
 
 def render_digest(rows: list[tuple[str, dict]], since: datetime,
@@ -417,12 +489,12 @@ def render_digest(rows: list[tuple[str, dict]], since: datetime,
     kept = [r for k, r in rows if k == "kept"]
     fyi = [r for k, r in rows if k == "fyi"]
     local = since.astimezone()
-    out = [f"*Mail the remote model held back from Claude since {local:%a %H:%M}* "
-           f"({len(fyi)} FYI, {len(kept)} kept). Written by the remote model; Claude did not "
-           "see these. Ask in #ea to act on one."]
+    out = [f"*Mail your own model held back from the hosted models since {local:%a %H:%M}* "
+           f"({len(fyi)} FYI, {len(kept)} kept). Written by your own model; no hosted model "
+           "saw these. Ask in #ea to act on one."]
     shown = 0
     if kept:
-        out.append("\n*Kept from Claude*")
+        out.append("\n*Kept on your machine*")
         for r in kept[:DIGEST_CAP]:
             res = r.get("result") or {}
             flag = " *Needs your reply.*" if res.get("needs_reply") else ""

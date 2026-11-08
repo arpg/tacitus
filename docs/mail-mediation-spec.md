@@ -65,8 +65,13 @@ ea-bot has no route to any of these.
   (`remote_llm.image_model`), so the picture itself stays with the owner. `--output`
   is an OUTPUT_FLAGS path, staged and delivered like `download-attachment`'s; the
   child writes it only outside sealed mail. The verb waits on a model, so the
-  mediator runs it on a thread of its own (`ASYNC_VERBS`), and a cron lane's call on
-  a kept thread is refused before it runs, as its `download-attachment` twin's is.
+  mediator runs it on a thread of its own (`ASYNC_VERBS`). On a message kept from
+  hosted models (any keep level below full, or applicant mail at every level;
+  `privacy_rules.py`), it is refused before it runs for every lane, a chat turn
+  included, as its `download-attachment` and `scan-attachments` twins are.
+- Every mediated read's request carries the turn's model (`EA_TURN_MODEL`: `claude:<model>`,
+  `codex` or `local`), which the release log counts as data. The resident writes it, so
+  no check gates on it: the keep levels apply by lane (cron or not) and by message.
 - `drive_client.py`: `read`, `search`, `download`, `accounts`. The token holds only
   `drive.readonly`; `download --output` is staged and delivered like an attachment, and the
   owner side never parses a file's bytes (`read` returns Google's own text export). Its

@@ -161,8 +161,9 @@ Two rules in code sit under every value. No file lowers them.
    moved to the hosted model by the table.
 2. **The keep floor.** `mail`, `tagging` and `digests` read new mail in
    an owner process (`digests` the list and admissions mail), so `hosted`
-   there would hand kept mail to Claude. While the keep list
-   (`keep_from_anthropic` in `remote-llm.json`) keeps anything (a domain,
+   there would hand kept mail to a hosted model, Claude or Codex. While the keep list
+   (`keep_from_frontier` in `remote-llm.json`, read under its old name
+   `keep_from_anthropic` too) keeps anything (a domain,
    an address, or the admissions rule, which is on unless it says
    `"admissions": false`), `hosted` on any of the three reads `auto`, and
    a save of `hosted` is refused. The mail gate and the mediator's kept

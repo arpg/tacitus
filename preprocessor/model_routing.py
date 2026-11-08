@@ -51,10 +51,12 @@ value:
   keep    `mail`, `tagging` and `digests` read new mail in an owner
           process, so `hosted` there would hand kept mail to a hosted
           model (Claude or Codex).
-          While the keep list (`keep_from_anthropic` in remote-llm.json)
-          keeps anything (a domain, an address, or the admissions rule,
-          on unless set false), `hosted` reads `auto` and saving it is
-          refused.
+          While the keep list (`keep_from_frontier` in remote-llm.json,
+          read under its old name `keep_from_anthropic` too) keeps
+          anything (a domain, an address, or the admissions rule, on
+          unless set false), `hosted` reads `auto` and saving it is
+          refused. Every privacy decision keys on the model's class
+          (`is_hosted`), never on its name.
 
 The table is <private_dir>/routing.json (0600), read by
 ea_config.get_routing in owner processes and written by `save`: the web
@@ -269,8 +271,25 @@ def keep_listed(cfg: dict) -> bool:
     """The keep list keeps something: it names a domain or an address, or
     its admissions rule is on (remote_llm.config() reads a missing value
     as on)."""
-    ks = cfg.get("keep_from_anthropic") or {}
+    ks = cfg.get("keep_from_frontier")
+    if not isinstance(ks, dict):
+        ks = cfg.get("keep_from_anthropic") or {}
     return bool(ks.get("domains") or ks.get("addresses") or ks.get("admissions"))
+
+
+# The names that mean the owner's own model. Every other name, the empty
+# one included, is a hosted (frontier) model: Claude, Codex or any model
+# added later.
+LOCAL_NAMES = ("local", "remote")
+
+
+def is_hosted(model: str) -> bool:
+    """True when `model` is a hosted model. The one class check the privacy
+    paths make (keep levels, the keep floor, the release counts), so a
+    switch between hosted models, or a new one, changes none of them. An
+    unknown name counts as hosted."""
+    m = str(model or "").strip().lower()
+    return not (m in LOCAL_NAMES or m.startswith("local:"))
 
 
 def choice(task: str, *, cfg: dict | None = None, routing: dict | None = None) -> str:

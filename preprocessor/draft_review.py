@@ -66,7 +66,7 @@ def load_items() -> list[dict]:
                     "claude": draft_ab.split_notes(x["claude_body"])[0],
                     "remote": draft_ab.split_notes(remote[d]["qwen_body"])[0],
                     "sent": x.get("sent_body") or "",
-                    "kept": bool(x.get("keep_from_anthropic")),
+                    "kept": bool(x.get("keep_from_frontier") or x.get("keep_from_anthropic")),
                     "judged": judged.get(d, [])})
     return out
 
@@ -210,7 +210,7 @@ def _judge_lines(x: dict) -> str:
             w = bt._writer(r.get("closer"), r.get("order"))
             out.append(f"Closer to what you sent: <span class={w}>{_e(w)}</span>.")
     if not out:
-        return "<p class=mute>No judge verdict (kept from Claude).</p>" if x["kept"] else ""
+        return "<p class=mute>No judge verdict (kept from hosted models).</p>" if x["kept"] else ""
     return "<p class=mute>Sonnet judge</p><ul>" + "".join(f"<li>{s}</li>" for s in out) + "</ul>"
 
 
@@ -221,7 +221,7 @@ def item_page(base: str, items: list[dict], n: int, tok: str, vts: dict) -> byte
     bodies = {c: ("claude", x["claude"]), ("2" if c == "1" else "1"): ("remote", x["remote"])}
     v = vts.get(x["draft_id"])
     head = (f"<div class=nav><a href='{base}/'>All items</a><span class=mute>{n} of {len(items)}"
-            f"{' · kept from Claude' if x['kept'] else ''}</span></div>"
+            f"{' · kept from hosted models' if x['kept'] else ''}</span></div>"
             f"<h1>To {_e(x['recipient'])}</h1><p class=mute>Written {_e(x['ts'])} UTC</p>"
             f"<div class=card><div class=lab>Task the writer got</div><div class=task>{_e(x['task'])}</div></div>")
     cards = []

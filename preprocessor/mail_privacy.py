@@ -27,10 +27,11 @@ final-report, status and purge read what is stored.
     sync-briefs          write a thread brief onto every open ledger row with a
                          conversation id (the tick does this too, when mail is
                          enforced)
-    sync-kept-rows       a ledger row for every kept message that asks for
-                         something (subject, the remote model's summary, ask
-                         and deadline; no text), closed from the thread's
-                         records (the tick does this too, when mail is enforced)
+    sync-kept-rows       a ledger row for every message kept on the machine
+                         (level local) that asks for something (subject, the
+                         remote model's summary, ask and deadline; no text),
+                         closed from the thread's records (the tick does this
+                         too, when mail is enforced)
     brief --conversation-id <id>
                          print one thread's brief from the store
     purge                delete everything this experiment stored
@@ -40,17 +41,22 @@ cut, 8000 chars) to the remote model, which returns a record in a fixed
 schema: sensitivity and its kind, whether a reply is needed, the ask, the
 deadline, scheduling content, people and their roles, tone flags, the
 Outlook state and domain tags, a summary. Every message goes to the remote
-model. A message whose participants hit the keep_from_anthropic list, or
-one from outside the institution that the admissions filter would move, is labelled
-`keep_from_anthropic`: an enforce mode would let only the remote model see
-it, so the reduced briefing stubs it and the reports count Claude's reads
-of it.
+model. Each record also carries its keep level (privacy_rules.py): how
+much of it a hosted model, Claude, Codex or any other, may see. `local`
+(a participant on the keep_from_frontier list, or applicant mail the user
+has not engaged with), `facts` (FACT_FIELDS only), `summary` (the remote
+model's record, never the text) or `full`. The record stores the facts
+the level comes from (keep_facts) and the reason (`keep_from_frontier`,
+read under its old name `keep_from_anthropic` too); every reader asks
+level_of(), which decides again with the rules and the engagement of now.
 
 The mediator calls `note_release()` after each mail read it serves, so the
 report can say how often a chat turn read a thread the shadow classed
-confidential: the friction an enforce mode would add. In the `enforce`
-mode its `release_precheck()` and `release_filter()` keep listed threads
-from the cron lanes; in the `ghost` mode `release_filter()` also seals
+confidential or kept, by level and by the model that read it. In the
+`enforce` mode its `release_precheck()` and `release_filter()` keep local
+threads from the cron lanes, hand every lane the level's view of a kept
+message, and refuse the files of kept mail to every lane; in the `ghost`
+mode `release_filter()` also seals
 each read on the side and records both for the ghost week
 (ghost_week.py); in the `sealed` mode it hands every lane
 `seal_output()`: the remote model's record of each message in place of
@@ -76,6 +82,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import owner_trust as _owner_trust  # noqa: E402
 import remote_llm  # noqa: E402
 import claude_cli  # noqa: E402
+import privacy_rules  # noqa: E402
 
 EA_DIR = Path(os.environ.get("EA_DIR", Path.home() / ".ea"))
 EA_BOT_HOME = Path(os.environ.get("EA_BOT_HOME", "/home/ea-bot"))
@@ -328,27 +335,149 @@ def validate(obj: dict) -> dict:
 _DUE_WORDS = re.compile(r"\b(?:due|overdue|deadline|late)\b", re.IGNORECASE)
 
 
+# ── keep levels ───────────────────────────────────────────────────────
+# How much of a message a hosted model (Claude, Codex or any other) may
+# see: privacy_rules.py decides it from the facts stored on the record
+# (keep_facts) and the user's rules, again at each read, so the user's
+# reply today lifts an applicant's earlier mail too.
+
+KEEP_FIELD = "keep_from_frontier"            # the reason, on an extraction record
+LEGACY_KEEP_FIELD = "keep_from_anthropic"
+KEPT_FIELD = "kept_from_frontier"            # the reason, on a ledger row, a brief, a read
+LEGACY_KEPT_FIELD = "kept_from_claude"
+
+# The fields a `facts` view keeps, in each shape it meets (a detector's
+# item, a read verb's row, a Graph message): ids, headers, dates, the
+# times offered or taken, the kind of ask, flags and file names. Every
+# other field, the text above all, is left out.
+FACT_FIELDS = frozenset({
+    # ids and headers
+    "id", "message_id", "conversation_id", "conversationId", "subject", "from", "from_name",
+    "from_email", "to", "cc", "toRecipients", "ccRecipients", "received", "receivedDateTime",
+    "sent", "sentDateTime", "latest_received", "latest_from", "message_count", "is_draft",
+    "isDraft", "is_read", "isRead", "importance", "categories", "flag", "is_flagged", "flagged",
+    "has_attachments", "hasAttachments", "attachments", "web_link", "webLink",
+    # what the detectors work out in code
+    "is_calendar_invite", "is_reminder", "is_vip", "is_urgent", "high", "category", "group",
+    "domain", "days_in_inbox", "days_stale", "answered_at", "user_already_replied_in_thread",
+    "user_is_cc_only", "user_is_direct_recipient", "owed_to_user", "response_signals",
+    "from_record", "from_state",
+    # meeting times and the deadline
+    "kind", "offered_times", "offered_match", "accepted", "acceptance", "handoff",
+    "extracted_date", "deadline",
+    # the gate's and the store's own marks
+    "remote_record", "remote_unread", "own", "kept", "kept_level", "keep_level", KEPT_FIELD,
+    "row_id", "staged_event",
+})
+# The remote record's fields a facts view keeps: enums, dates and file names.
+RECORD_FACT_FIELDS = ("state", "needs_reply", "deadline", "scheduling", "offered_times", "domain",
+                      "attachments")
+ATTACHMENT_FACT_KEYS = ("name", "type", "size", "inline", "image")
+
+
+def kept_reason(rec: dict | None) -> str:
+    """The keep reason an extraction record carries, under either name;
+    '' for ordinary mail."""
+    rec = rec or {}
+    return str(rec.get(KEEP_FIELD) or rec.get(LEGACY_KEEP_FIELD) or "")
+
+
+def kept_label(obj: dict | None) -> str:
+    """The keep reason a ledger row, a thread brief or a read carries,
+    under either name."""
+    obj = obj or {}
+    return str(obj.get(KEPT_FIELD) or obj.get(LEGACY_KEPT_FIELD) or "")
+
+
+def _attachment_facts(atts) -> list:
+    return [{k: a.get(k) for k in ATTACHMENT_FACT_KEYS if k in a}
+            for a in atts or [] if isinstance(a, dict)]
+
+
+def facts_view(obj: dict) -> dict:
+    """One item, row or message as a `facts` level hands it to a hosted
+    model: FACT_FIELDS only, its record's RECORD_FACT_FIELDS only, file
+    names and flags only."""
+    out = {k: v for k, v in obj.items() if k in FACT_FIELDS}
+    if isinstance(out.get("remote_record"), dict):
+        out["remote_record"] = {k: out["remote_record"].get(k) for k in RECORD_FACT_FIELDS
+                                if k in out["remote_record"]}
+        if "attachments" in out["remote_record"]:
+            out["remote_record"]["attachments"] = _attachment_facts(out["remote_record"]["attachments"])
+    if isinstance(out.get("attachments"), list):
+        out["attachments"] = _attachment_facts(out["attachments"]) if all(
+            isinstance(a, dict) for a in out["attachments"]) else [str(a) for a in out["attachments"]]
+    return out
+
+
+def keep_context(cfg: dict | None = None) -> dict:
+    """privacy_rules.context(), with `cfg`'s keep list when one is given."""
+    ctx = privacy_rules.context()
+    if cfg is not None:
+        ctx = {**ctx, "cfg": cfg, "keep": remote_llm.keep_list(cfg)}
+    return ctx
+
+
+def keep_decision(msg: dict, body: str, cfg: dict, *, own: bool = False,
+                  ctx: dict | None = None) -> tuple[dict, dict]:
+    """(facts, decision) for one Graph-shaped message and its text: the
+    facts the record stores (privacy_rules.message_facts) and the level
+    they give now (privacy_rules.decide)."""
+    ctx = ctx if ctx is not None else keep_context(cfg)
+    facts = privacy_rules.message_facts(msg, body, cfg, own=own, ctx=ctx)
+    dec = privacy_rules.decide(facts, sender=_addr(msg.get("from")), name=facts.get("name") or "",
+                               conv=msg.get("conversationId") or "", own=own, ctx=ctx)
+    return facts, dec
+
+
 def keep_reason(msg: dict, body: str, cfg: dict) -> str:
-    """Why this message belongs to the remote model alone, or ''. Every
-    participant is checked against the keep_from_anthropic list; with
-    `admissions` on, a message from outside the institution that the admissions filter
-    would move counts too. It labels the record and gates nothing."""
-    people = [_addr(msg.get("from"))] + _addrs(msg.get("toRecipients")) + _addrs(msg.get("ccRecipients"))
-    for a in people:
-        why = remote_llm.keep_reason(a, cfg)
-        if why:
-            return why
-    if (cfg.get("keep_from_anthropic") or {}).get("admissions", True):
-        try:
-            import admissions_filter as af
-            frm = _addr(msg.get("from"))
-            if frm and not af.is_internal(frm):
-                score, _ = af.score_text(msg.get("subject") or "", body)
-                if score >= af.MATCH_SCORE:
-                    return "admissions"
-        except Exception:
-            pass
-    return ""
+    """Why this message stays away from hosted models, or '' for ordinary
+    mail: a participant on the keep list, or applicant mail (the
+    admissions filter's score, from outside the institution, with the
+    `admissions` rule on). keep_decision() says how far it is kept."""
+    return keep_decision(msg, body, cfg)[1]["reason"]
+
+
+def facts_of(rec: dict) -> dict:
+    """The keep facts of a record: stored by process(), or read from a
+    record written before the levels (its reason alone)."""
+    if isinstance(rec.get("keep_facts"), dict):
+        return rec["keep_facts"]
+    why = kept_reason(rec)
+    frm = str(rec.get("from") or "").lower()
+    base = {"participants": [frm] if frm else [], "name": ""}
+    if why == "admissions":
+        return {**base, "topic": True}
+    if why:
+        return {**base, "listed": why}
+    return base
+
+
+_FULL = {"level": "full", "reason": "", "rule": "", "files_kept": False, "engaged": ""}
+
+
+def decision_of(rec: dict | None, *, index: dict | None = None, ctx: dict | None = None) -> dict:
+    """The keep decision for one extraction record now. A record the
+    remote model held back is local. The user's own message in an
+    applicant's thread follows the thread (the user has written: engaged)."""
+    if not rec:
+        return dict(_FULL)
+    if rec.get("status") == "withheld":
+        return {"level": "local", "reason": kept_reason(rec) or "withheld", "rule": "",
+                "files_kept": True, "engaged": ""}
+    facts = facts_of(rec)
+    own = bool(rec.get("own"))
+    conv = rec.get("conversation_id") or ""
+    if own and not facts.get("topic") and conv:
+        idx = index if index is not None else load_index()
+        if any(facts_of(r).get("topic") for r in idx["by_conv"].get(conv) or [] if not r.get("own")):
+            facts = {**facts, "topic": True}
+    return privacy_rules.decide(facts, sender=str(rec.get("from") or ""), name=facts.get("name") or "",
+                                conv=conv, own=own, ctx=ctx)
+
+
+def level_of(rec: dict | None, *, index: dict | None = None, ctx: dict | None = None) -> str:
+    return decision_of(rec, index=index, ctx=ctx)["level"]
 
 
 _URL = re.compile(r"https?://[^\s<>\"')\]]+")
@@ -533,7 +662,18 @@ def process(msg: dict, *, graph, cfg: dict, chat=None, full: dict | None = None,
     except Exception as e:
         rec.update(status="error", error=f"fetch failed: {str(e)[:200]}")
         return rec
-    rec["keep_from_anthropic"] = keep_reason(msg, body, cfg)
+    try:
+        facts, dec = keep_decision(msg, body, cfg, own=own)
+    except Exception as e:
+        # A decision that fails keeps the message on the machine, at every
+        # later read too.
+        why = f"keep rules failed: {str(e)[:80]}"
+        facts, dec = {"listed": why}, {"level": "local", "reason": why, "rule": ""}
+    rec[KEEP_FIELD] = dec["reason"]
+    rec["keep_level"] = dec["level"]
+    rec["keep_facts"] = facts
+    if dec.get("rule"):
+        rec["keep_rule"] = dec["rule"]
     rec["body_chars"] = len(body)
     fb = (fetched or {}).get("body") if isinstance(fetched, dict) else None
     html = (fb.get("content") or "") if isinstance(fb, dict) and \
@@ -625,7 +765,7 @@ def run_pass(msgs: list[dict], *, graph, cfg: dict, state: dict, cap: int | None
         rec = process(msg, graph=graph, cfg=cfg, chat=chat)
         done += 1
         counts[rec["status"]] += 1
-        counts["kept"] += bool(rec.get("keep_from_anthropic"))
+        counts["kept"] += bool(kept_reason(rec))
         remote_llm.append(EXTRACTIONS, rec)
         if rec["status"] == "error":
             n = state["attempts"].get(key, 0) + 1
@@ -667,6 +807,40 @@ def _note_own_sends(st: dict, msgs: list[dict], user: set[str], *, graph,
     st["own_sent"] = {c: t for c, t in sent.items() if str(t) >= cutoff}
 
 
+ENGAGED_BOOTSTRAP = timedelta(days=30)
+
+
+def _note_engaged(st: dict, msgs: list[dict], user: set[str], *, graph, now: datetime) -> int:
+    """The people the user writes to, into the engaged-person store
+    (privacy_rules.note_engaged): a new thread from an applicant the user
+    has answered starts at the engaged level. The first tick after an
+    upgrade reads a month of Sent Items to start the store."""
+    sent: dict[str, str] = {}
+
+    def take(m):
+        at = m.get("sentDateTime") or m.get("receivedDateTime") or ""
+        for a in _addrs(m.get("toRecipients")) + _addrs(m.get("ccRecipients")):
+            if a not in user and at > sent.get(a, ""):
+                sent[a] = at
+
+    if not st.get("engaged_seeded"):
+        try:
+            for m in _sent_since(graph, now - ENGAGED_BOOTSTRAP):
+                take(m)
+            st["engaged_seeded"] = _iso(now)
+        except Exception as e:
+            print(f"mail_privacy: sent items unreadable for the engaged store: {str(e)[:120]}",
+                  file=sys.stderr)
+    for m in msgs:
+        if not m.get("isDraft") and _addr(m.get("from")) in user:
+            take(m)
+    try:
+        return privacy_rules.note_engaged(sent)
+    except Exception as e:
+        print(f"mail_privacy: the engaged store was not written: {str(e)[:120]}", file=sys.stderr)
+        return 0
+
+
 def tick(*, graph=None, chat=None, now: datetime | None = None) -> dict:
     cfg = remote_llm.config()
     if not remote_llm.reading("mail", cfg):
@@ -681,8 +855,15 @@ def tick(*, graph=None, chat=None, now: datetime | None = None) -> dict:
             msgs = _received_since(graph, since)
             user = _user_addresses()
             _note_own_sends(st, msgs, user, graph=graph, now=now)
+            engaged = _note_engaged(st, msgs, user, graph=graph, now=now)
+            if not st.get("privacy_seeded") and privacy_rules.ensure_seeded() is not None:
+                # The built-in keep rules, seeded once into the user's
+                # store, where `preferences.py list --scope privacy` shows them.
+                st["privacy_seeded"] = _iso(now)
             counts = run_pass(msgs, graph=graph, cfg=cfg, state=st, cap=TICK_CAP,
                               user=user, chat=chat)
+            if engaged:
+                counts["engaged_new"] = engaged
             # A capped pass leaves the clock where it was, so the next
             # tick picks up the rest.
             if counts["ok"] + counts["error"] < TICK_CAP:
@@ -797,13 +978,16 @@ def load_index() -> dict:
     return index
 
 
-def _kept(rec: dict) -> bool:
-    return bool(rec.get("keep_from_anthropic")) or rec.get("status") == "withheld"
+def _kept(rec: dict, *, index: dict | None = None, ctx: dict | None = None) -> bool:
+    """Kept on the machine (level local): the cron lanes drop it and the
+    mediator refuses a cron read of it. A facts or summary record is not:
+    it passes as its level's view."""
+    return level_of(rec, index=index, ctx=ctx) == "local"
 
 
 # ── kept mail that asks for something: a ledger row ───────────────────
-# A cron lane never sees a kept message (release_filter prunes it), so an
-# ask in one would reach nothing but the remote digest. The owner's tick
+# A cron lane never sees a message kept on the machine (release_filter
+# prunes it), so an ask in one would reach nothing but the mail digest. The owner's tick
 # writes a row for it instead, from the record alone: the subject, the
 # remote model's one-line summary, its ask and its deadline, typed by the
 # record's state. The message text stays out of Claude's reach. The row
@@ -841,8 +1025,8 @@ def kept_row_fields(rec: dict) -> dict:
     """What a kept record's row carries: the subject, the remote model's
     summary, the ask and the deadline; never the text."""
     res = rec.get("result") or {}
-    reason = rec.get("keep_from_anthropic") or "withheld"
-    notes = [f"Kept from Claude ({reason}); written by the remote model."]
+    reason = kept_reason(rec) or "withheld"
+    notes = [f"Kept on your machine ({reason}); written by your own model."]
     if res.get("summary"):
         notes.append(str(res["summary"]).strip())
     if res.get("ask"):
@@ -857,7 +1041,7 @@ def kept_row_fields(rec: dict) -> dict:
             "from_email": rec.get("from") or "",
             "source_message_id": rec.get("id") or "",
             "conversation_id": rec.get("conversation_id") or "",
-            "metadata": {"kept_from_claude": reason, "remote_state": res.get("state"),
+            "metadata": {KEPT_FIELD: reason, "remote_state": res.get("state"),
                          "kept_received": rec.get("received") or "", "written_by": "remote model"}}
 
 
@@ -890,13 +1074,15 @@ def kept_row_plan(index: dict, rows: list[dict], *, user: set[str], now: datetim
     plan = {"create": [], "update": [], "close": []}
 
     # The newest actionable kept record per conversation, inside the window.
-    # Mail kept for the admissions rule is the admissions filter's: it is
+    # Applicant mail kept on the machine is the admissions filter's: it is
     # moved to its folder and digested weekly, and is not an obligation.
+    # Applicant mail the user has engaged with is not kept on the machine
+    # (privacy_rules: the engaged level), so the lanes track it as its view.
     latest: dict[str, dict] = {}
     for rec in (index.get("by_key") or {}).values():
-        if not _kept(rec) or rec.get("status") != "ok" or rec.get("own"):
+        if rec.get("status") != "ok" or rec.get("own") or not _kept(rec, index=index):
             continue
-        if rec.get("keep_from_anthropic") == "admissions":
+        if kept_reason(rec) == "admissions":
             continue
         if (rec.get("from") or "").lower() in user or not mail_gate.actionable(rec):
             continue
@@ -1041,13 +1227,23 @@ def sync_kept_rows(*, now: datetime | None = None, index: dict | None = None,
     return done
 
 
-def conversation_class(conv_id: str, index: dict) -> str:
+def conversation_level(conv_id: str, index: dict, ctx: dict | None = None) -> str:
+    """The strictest keep level among one thread's records; full when it
+    has none."""
+    level = "full"
+    for r in index["by_conv"].get(conv_id) or []:
+        level = privacy_rules.stricter(level, level_of(r, index=index, ctx=ctx))
+    return level
+
+
+def conversation_class(conv_id: str, index: dict, ctx: dict | None = None) -> str:
     """kept | confidential | normal | unknown for one thread. `kept` means
-    an enforce mode would let only the remote model see it."""
+    a message of it is kept on the machine (level local): an enforce mode
+    keeps the thread from the cron lanes."""
     recs = index["by_conv"].get(conv_id) or []
     if not recs:
         return "unknown"
-    if any(_kept(r) for r in recs):
+    if any(_kept(r, index=index, ctx=ctx) for r in recs):
         return "kept"
     if any((r.get("result") or {}).get("sensitivity") == "confidential" for r in recs):
         return "confidential"
@@ -1096,10 +1292,14 @@ def _walk_ids(obj, conv: str = "", out=None) -> list[tuple[str, str]]:
     return out
 
 
-def note_release(tool: str, verb: str, argv: list, run_id: str, stdout: str) -> None:
-    """Record which threads a mediated mail read handed to a lane, and
-    their shadow class. Called by the mediator after it has answered;
-    never raises and never changes what the caller received."""
+def note_release(tool: str, verb: str, argv: list, run_id: str, stdout: str,
+                 model: str = "") -> None:
+    """Record which threads a mediated mail read handed to a lane, their
+    shadow class and keep level, and the model of the turn that read
+    them (`model`, the name the turn's request carries, kept as data:
+    counted by name, classed by model_routing.is_hosted). Called by the
+    mediator after it has answered; never raises and never changes what
+    the caller received."""
     try:
         tool, verb = as_graph_read(tool, verb, argv)
         if tool != "graph_actions" or verb not in RELEASE_VERBS:
@@ -1131,29 +1331,41 @@ def note_release(tool: str, verb: str, argv: list, run_id: str, stdout: str) -> 
                         if rec and rec.get("conversation_id"):
                             convs.add(rec["conversation_id"])
         classes: dict[str, int] = {}
+        levels: dict[str, int] = {}
         flagged = []
+        ctx = privacy_rules.context()
         for c in convs:
-            cls = conversation_class(c, index)
+            cls = conversation_class(c, index, ctx)
             classes[cls] = classes.get(cls, 0) + 1
-            if cls in ("confidential", "kept"):
+            lvl = conversation_level(c, index, ctx)
+            levels[lvl] = levels.get(lvl, 0) + 1
+            if cls in ("confidential", "kept") or lvl != "full":
                 flagged.append(c)
         rid = str(run_id or "")[:64]
+        import model_routing
+        name = str(model or "").strip()[:40]
         remote_llm.append(RELEASES, {
             "ts": _iso(_now()), "verb": verb, "run_id": rid,
             "shadow": rid.startswith("shadow-"),
             "sealed": remote_llm.mode("mail") == "sealed",
             "messages": len(pairs), "threads": len(convs),
-            "classes": classes, "flagged_threads": flagged[:20],
+            "classes": classes, "levels": levels, "flagged_threads": flagged[:20],
+            "model": name or "unknown", "hosted": model_routing.is_hosted(name),
         })
     except Exception as e:
         print(f"mail_privacy.note_release: {e}", file=sys.stderr)
 
 
 # ── enforce and sealed: what a lane's mail read returns ──────────────
-# In the `enforce` mode a cron lane (run id `cron-...`) reads no thread on
-# the keep_from_anthropic list: a read of one such message or thread is
-# refused before it runs, and search and list results lose those rows.
-# Bot runs (a room, a thread, the DM) read as before.
+# In the `enforce` mode a cron lane (run id `cron-...`) reads no thread
+# kept on the machine (level local): a read of one such message or thread
+# is refused before it runs, and search and list results lose those rows.
+# Every lane, a cron lane or a bot run (a room, a thread, the DM; on Claude,
+# Codex or any model), gets a message kept at any level as that level's
+# view: the remote model's record in place of the text (local, summary) or
+# FACT_FIELDS alone (facts). Ordinary mail reads as before. The files of a
+# kept message, and of applicant mail at every level, are refused to every
+# lane (FILE_VERBS): no download, no PDF scan, no image description.
 #
 # In the `ghost` mode the lanes get what `enforce` gives them, and each
 # read is sealed on the side, in a thread of its own, so the ghost week
@@ -1170,9 +1382,17 @@ def note_release(tool: str, verb: str, argv: list, run_id: str, stdout: str) -> 
 # brief of a thread says what he answered. Any failure while sealing
 # refuses the read: raw text never passes by accident.
 
-KEPT_REFUSAL = ("This thread is kept from Claude (keep_from_anthropic). A cron lane "
-                "does not read it; the remote digest covers it, and the user can ask "
+KEPT_REFUSAL = ("This thread is kept on the user's machine (keep_from_frontier). A cron "
+                "lane does not read it; the mail digest covers it, and the user can ask "
                 "for it in a room or thread.")
+FILES_REFUSAL = ("The files on this message stay on the user's machine (keep_from_frontier): "
+                 "no lane downloads, scans or describes them. The user opens them in Outlook.")
+KEPT_NOTE = ("Kept mail: a message marked kept_level is shown as far as its keep level "
+             "allows: the remote model's record in place of the text, or its facts alone. "
+             "Do not ask for the text; the user reads it in Outlook.")
+# The read verbs that hand over a file's content (describe-attachment is
+# download-attachment here, as_graph_read).
+FILE_VERBS = {"download-attachment", "scan-attachments"}
 SEALED_NOTE = ("Sealed mail: the text of each message is replaced by the remote model's "
                "record (summary, ask, deadline, offered times). A message marked "
                "remote_unread has not been read by it yet; try again in a minute or ask "
@@ -1197,58 +1417,157 @@ def _flag_value(argv: list, flag: str) -> str:
     return ""
 
 
-def _row_kept(row: dict, index: dict, cfg: dict) -> bool:
+_TEXT_KEYS = ("text", "body", "body_type", "body_text", "uniqueBody", "latest_preview",
+              "body_preview", "bodyPreview", "preview", "snippet")
+
+
+def _row_text(row: dict) -> str:
+    body = row.get("text") if row.get("text") is not None else row.get("body")
+    if isinstance(body, dict):
+        body = body.get("content")
+    if not body:
+        body = next((row.get(k) for k in _TEXT_KEYS if isinstance(row.get(k), str) and row.get(k)), "")
+    return str(body or "")
+
+
+def _as_graph(row: dict) -> dict:
+    """A read verb's row, or a Graph message, in the Graph shape the keep
+    facts read."""
+    if "conversationId" in row or "receivedDateTime" in row or "bodyPreview" in row:
+        return row
+    return _graph_message(row)
+
+
+def row_decision(row: dict, index: dict, cfg: dict, ctx: dict | None = None,
+                 *, conv: str = "") -> tuple[dict | None, dict]:
+    """(record, keep decision) for one row of a read: from its record when
+    the remote model has read it, else from the row itself (its headers
+    and the text it carries) in code. A thread kept on the machine keeps
+    every row of it there."""
+    ctx = ctx if ctx is not None else keep_context(cfg)
     mid = row.get("id") or row.get("message_id") or ""
-    rec = index["by_id"].get(mid)
-    if rec is not None and _kept(rec):
-        return True
-    conv = row.get("conversation_id") or row.get("conversationId") or (rec or {}).get("conversation_id") or ""
-    if conv and conversation_class(conv, index) == "kept":
-        return True
+    rec = index["by_id"].get(mid) if mid else None
+    if rec is not None:
+        dec = decision_of(rec, index=index, ctx=ctx)
+    else:
+        msg = _as_graph(row)
+        if conv and not msg.get("conversationId"):
+            msg = {**msg, "conversationId": conv}
+        own = _addr(msg.get("from")) in (ctx.get("user") or set())
+        _facts, dec = keep_decision(msg, _row_text(row), cfg, own=own, ctx=ctx)
     heads = json.dumps({k: row.get(k) for k in _HEADER_KEYS if k in row}, default=str)
-    return any(remote_llm.keep_reason(a, cfg) for a in _ADDR.findall(heads))
+    listed = next((w for w in (remote_llm.keep_reason(a, cfg) for a in _ADDR.findall(heads)) if w), "")
+    if dec["level"] != "local" and listed:
+        dec = {**dec, "level": "local", "reason": listed, "files_kept": True}
+    conv = conv or row.get("conversation_id") or row.get("conversationId") or (rec or {}).get("conversation_id") or ""
+    if conv and dec["level"] != "local":
+        # No row is more open than its thread: the user's own reply in an
+        # applicant's thread, or a message no record covers yet, takes the
+        # thread's strictest level.
+        thread = conversation_level(conv, index, ctx)
+        if privacy_rules.rank(thread) < privacy_rules.rank(dec["level"]):
+            dec = {**dec, "level": thread, "reason": dec.get("reason") or "kept thread", "files_kept": True}
+    return rec, dec
+
+
+def _row_kept(row: dict, index: dict, cfg: dict, ctx: dict | None = None) -> bool:
+    return row_decision(row, index, cfg, ctx)[1]["level"] == "local"
+
+
+def level_view(row: dict, rec: dict | None, dec: dict) -> dict:
+    """One row as its keep level hands it to a hosted model: FACT_FIELDS
+    alone at facts; below full the record's text (summary, ask, due date,
+    offered times, never a verbatim quote) in place of every text field;
+    the row itself at full."""
+    level = dec.get("level", "full")
+    if level == "full":
+        return row
+    out = {k: v for k, v in row.items() if k not in _TEXT_KEYS}
+    if level == "facts":
+        out = facts_view(out)
+    else:
+        import mail_gate
+        text = mail_gate.remote_text(rec) if rec and rec.get("status") == "ok" else ""
+        for k in [k for k in _TEXT_KEYS if k in row and k not in ("body_type",)] or []:
+            out[k] = text
+    out["kept_level"] = privacy_rules.plain(level)
+    if dec.get("reason"):
+        out[KEPT_FIELD] = dec["reason"]
+    return out
 
 
 def release_precheck(tool: str, verb: str, argv: list, run_id: str) -> str:
-    """'' or the refusal for a cron lane's read of one kept message or
-    thread, decided before the read runs."""
+    """'' or the refusal, decided before the read runs: a cron lane's read
+    of one message or thread kept on the machine; and any lane's read of
+    the files of a kept message (FILE_VERBS)."""
     tool, verb = as_graph_read(tool, verb, argv)
-    if tool != "graph_actions" or verb not in RELEASE_VERBS or not _cron_lane(run_id):
+    cron = _cron_lane(run_id)
+    if tool != "graph_actions" or verb not in RELEASE_VERBS or not (cron or verb in FILE_VERBS):
         return ""
     if not remote_llm.enforcing("mail"):
         return ""
     try:
         index = load_index()
+        ctx = privacy_rules.context()
         conv = _flag_value(argv, "--conversation-id")
         # a unified get-draft names its Outlook message as --draft-id
         mid = _flag_value(argv, "--message-id") or _flag_value(argv, "--draft-id")
-        if mid:
-            rec = index["by_id"].get(mid)
-            if rec is not None and _kept(rec):
-                return KEPT_REFUSAL
-            conv = conv or (rec or {}).get("conversation_id", "")
-        if conv and conversation_class(conv, index) == "kept":
+        rec = index["by_id"].get(mid) if mid else None
+        if verb in FILE_VERBS and rec is not None and decision_of(rec, index=index, ctx=ctx)["files_kept"]:
+            return FILES_REFUSAL
+        if not cron:
+            return ""
+        if rec is not None and _kept(rec, index=index, ctx=ctx):
+            return KEPT_REFUSAL
+        conv = conv or (rec or {}).get("conversation_id", "")
+        if conv and conversation_class(conv, index, ctx) == "kept":
             return KEPT_REFUSAL
         return ""
     except Exception as e:
+        if not cron:
+            return ""
         return f"The mail gate could not check this read ({str(e)[:120]}); refused for a cron lane."
 
 
-def _prune_kept(data, index: dict, cfg: dict) -> tuple[object, str]:
-    """(data without kept rows, refusal) for a cron lane's read after it
-    ran: kept rows are removed from a list; a single kept message or
-    thread is refused."""
+def _prune_kept(data, index: dict, cfg: dict, *, ctx: dict | None = None,
+                views: bool = True) -> tuple[object, str]:
+    """(data without the rows kept on the machine, refusal) for a cron
+    lane's read after it ran, and for any mail a hosted model is about to
+    judge (open_claims_audit): local rows are removed from a list; a
+    single local message or thread is refused. With `views`, a row kept
+    at facts or summary becomes its level's view (level_view)."""
+    ctx = ctx if ctx is not None else keep_context(cfg)
     if isinstance(data, list):
-        rows = [r for r in data if not (isinstance(r, dict) and r.get("id") and _row_kept(r, index, cfg))]
-        if len(rows) != len(data):
-            rows.append({"_note": f"{len(data) - len(rows)} result(s) kept from Claude were left out."})
+        rows = []
+        for r in data:
+            if not (isinstance(r, dict) and r.get("id")):
+                rows.append(r)
+                continue
+            rec, dec = row_decision(r, index, cfg, ctx)
+            if dec["level"] == "local":
+                continue
+            rows.append(level_view(r, rec, dec) if views else r)
+        dropped = sum(1 for r in data if isinstance(r, dict) and r.get("id")) - \
+            sum(1 for r in rows if isinstance(r, dict) and r.get("id"))
+        if dropped:
+            rows.append({"_note": f"{dropped} result(s) kept on the user's machine were left out."})
         return rows, ""
     if isinstance(data, dict):
         msgs = data.get("messages")
-        if isinstance(msgs, list) and any(isinstance(m, dict) and _row_kept(m, index, cfg) for m in msgs):
-            return None, KEPT_REFUSAL
-        if data.get("id") and _row_kept(data, index, cfg):
-            return None, KEPT_REFUSAL
+        conv = str(data.get("conversation_id") or "")
+        if isinstance(msgs, list):
+            decided = [(m, *row_decision(m, index, cfg, ctx, conv=conv)) for m in msgs if isinstance(m, dict)]
+            if any(dec["level"] == "local" for _m, _r, dec in decided):
+                return None, KEPT_REFUSAL
+            if views and any(dec["level"] != "full" for _m, _r, dec in decided):
+                data = dict(data, messages=[level_view(m, rec, dec) for m, rec, dec in decided])
+            return data, ""
+        if data.get("id"):
+            rec, dec = row_decision(data, index, cfg, ctx)
+            if dec["level"] == "local":
+                return None, KEPT_REFUSAL
+            if views and dec["level"] != "full":
+                return level_view(data, rec, dec), ""
     return data, ""
 
 
@@ -1270,13 +1589,36 @@ def _ghost_record(verb: str, argv: list, run_id: str, stdout: str, **kw) -> None
         print(f"mail_privacy: ghost record: {str(e)[:120]}", file=sys.stderr)
 
 
+def _row_ids(verb: str, data) -> list[dict]:
+    """The message rows of a read verb's JSON (seal_output's rows)."""
+    if verb == "get-message" and isinstance(data, dict):
+        return [data]
+    if verb == "get-conversation" and isinstance(data, dict):
+        return [m for m in data.get("messages") or [] if isinstance(m, dict)]
+    if isinstance(data, list):
+        return [m for m in data if isinstance(m, dict) and m.get("id")]
+    return []
+
+
+def kept_rows(verb: str, data, *, index: dict, cfg: dict, ctx: dict | None = None) -> set[str]:
+    """The ids of a read's rows kept at any level below full."""
+    conv = str(data.get("conversation_id") or "") if isinstance(data, dict) else ""
+    out = set()
+    for m in _row_ids(verb, data):
+        if m.get("id") and row_decision(m, index, cfg, ctx, conv=conv)[1]["level"] != "full":
+            out.add(m["id"])
+    return out
+
+
 def release_filter(tool: str, verb: str, argv: list, run_id: str, stdout: str) -> tuple[str, str]:
     """(stdout, refusal) for a lane's read after it ran. enforce: a cron
-    lane loses kept rows and is refused a kept message or thread. ghost:
-    the same, and what the lane got is sealed on the side and recorded
-    for the ghost week. sealed: the cron rules, and every lane gets the
-    remote model's records in place of message text; each sealed read is
-    recorded the same way."""
+    lane loses the rows kept on the machine and is refused such a message
+    or thread; every lane, on any model, gets a message kept at any level
+    as its level's view (seal_output on those rows). ghost: the same, and
+    what the lane got is sealed on the side and recorded for the ghost
+    week. sealed: the cron rules, and every lane gets the remote model's
+    records in place of message text, each at its level; each sealed read
+    is recorded the same way."""
     tool, verb = as_graph_read(tool, verb, argv)
     if tool != "graph_actions" or verb not in RELEASE_VERBS:
         return stdout, ""
@@ -1284,35 +1626,37 @@ def release_filter(tool: str, verb: str, argv: list, run_id: str, stdout: str) -
     if m not in ("enforce", "ghost", "sealed"):
         return stdout, ""
     cron = _cron_lane(run_id)
-    if m == "enforce" and not cron:
-        return stdout, ""
-    if m == "ghost" and not cron:
-        if verb in SEAL_VERBS:
-            _ghost(verb, argv, run_id, stdout)
-        return stdout, ""
     try:
         if not (stdout or "").strip():
             return stdout, ""
-        data = json.loads(stdout)
+        try:
+            data = json.loads(stdout)
+        except ValueError:
+            if cron or m == "sealed":
+                raise
+            # A bot run's read that is not JSON (an error text) names no
+            # message to keep; it passes as it did before the levels.
+            if m == "ghost" and verb in SEAL_VERBS:
+                _ghost(verb, argv, run_id, stdout)
+            return stdout, ""
         index, cfg = load_index(), remote_llm.config()
+        ctx = keep_context(cfg)
         changed = False
         if cron:
-            pruned, refusal = _prune_kept(data, index, cfg)
+            pruned, refusal = _prune_kept(data, index, cfg, ctx=ctx, views=False)
             if refusal:
                 return "", refusal
             changed = pruned is not data or (isinstance(pruned, list) and len(pruned) != len(data))
             data = pruned
         out = json.dumps(data, indent=2, default=str) if changed else stdout
-        if m == "ghost":
-            if verb in SEAL_VERBS:
-                _ghost(verb, argv, run_id, out)
+        if verb not in SEAL_VERBS:
             return out, ""
-        if m == "sealed" and verb in SEAL_VERBS:
+        if m == "sealed":
             # A fresh parse: seal_output edits in place, and the record
             # keeps the text the lane would have had.
             t0 = time.monotonic()
             try:
-                sealed = seal_output(verb, json.loads(out), index=index, cfg=cfg)
+                sealed = seal_output(verb, json.loads(out), index=index, cfg=cfg, ctx=ctx)
             except Exception as e:
                 _ghost_record(verb, argv, run_id, out, seal_s=time.monotonic() - t0,
                               seal_error=str(e), index=index)
@@ -1320,6 +1664,14 @@ def release_filter(tool: str, verb: str, argv: list, run_id: str, stdout: str) -
             _ghost_record(verb, argv, run_id, out, sealed=sealed, seal_s=time.monotonic() - t0,
                           index=index)
             return json.dumps(sealed, indent=2, default=str), ""
+        # enforce and ghost: the kept rows reach the lane as their level's
+        # view; ordinary mail passes as it is.
+        kept = kept_rows(verb, data, index=index, cfg=cfg, ctx=ctx)
+        if kept:
+            out = json.dumps(seal_output(verb, json.loads(out), index=index, cfg=cfg, ctx=ctx, only=kept),
+                             indent=2, default=str)
+        if m == "ghost":
+            _ghost(verb, argv, run_id, out)
         return out, ""
     except Exception as e:
         return "", f"The mail gate could not check this read ({str(e)[:120]}); refused."
@@ -1327,28 +1679,38 @@ def release_filter(tool: str, verb: str, argv: list, run_id: str, stdout: str) -
 
 # ── sealed: the remote model's record in place of the text ───────────
 
-def _sealed_fields(rec: dict | None) -> dict:
-    """The record's fields a lane gets with a sealed message."""
-    if not rec:
-        return {"remote_unread": True, "remote_text": ""}
-    if rec.get("status") != "ok":
-        out = {"remote_unread": True, "remote_text": ""}
-        if _kept(rec):
-            out["kept_from_claude"] = rec.get("keep_from_anthropic") or "withheld"
-        return out
+def _sealed_fields(rec: dict | None, dec: dict | None = None) -> dict:
+    """The record's fields a lane gets with a sealed message, at its keep
+    level: the record at full; the record without its verbatim quotes
+    below full; the record's enums, dates and file names alone at facts.
+    A kept message is marked with its level in plain words and the reason."""
+    dec = dec if dec is not None else decision_of(rec)
+    level = dec.get("level", "full")
+    marks = {}
+    if level != "full":
+        marks["kept_level"] = privacy_rules.plain(level)
+        if dec.get("reason"):
+            marks[KEPT_FIELD] = dec["reason"]
+    if not rec or rec.get("status") != "ok":
+        return {"remote_unread": True, "remote_text": "", **marks}
     import mail_gate
     res = rec.get("result") or {}
-    out = {"remote_text": mail_gate.remote_text(rec),
-           "remote_record": {k: res.get(k) for k in (
-               "state", "needs_reply", "ask", "deadline", "scheduling",
-               "offered_times", "people", "tone", "domain", "sensitivity")}}
-    for k in ("links", "quotes", "attachments"):
-        if res.get(k):
-            out["remote_record"][k] = res[k]
+    if level == "facts":
+        out = {"remote_text": "",
+               "remote_record": {k: res.get(k) for k in RECORD_FACT_FIELDS if k != "attachments"}}
+        if res.get("attachments"):
+            out["remote_record"]["attachments"] = _attachment_facts(res["attachments"])
+    else:
+        out = {"remote_text": mail_gate.remote_text(rec),
+               "remote_record": {k: res.get(k) for k in (
+                   "state", "needs_reply", "ask", "deadline", "scheduling",
+                   "offered_times", "people", "tone", "domain", "sensitivity")}}
+        for k in ("links", "quotes", "attachments"):
+            if res.get(k) and (k != "quotes" or level == "full"):
+                out["remote_record"][k] = res[k]
     if rec.get("own"):
         out["own"] = True
-    if rec.get("keep_from_anthropic"):
-        out["kept_from_claude"] = rec["keep_from_anthropic"]
+    out.update(marks)
     return out
 
 
@@ -1416,24 +1778,32 @@ def _graph_message(m: dict) -> dict:
 
 
 def seal_output(verb: str, data, *, index: dict | None = None, cfg: dict | None = None,
-                graph=None, chat=None, budget_s: float = SEAL_BUDGET_S):
+                graph=None, chat=None, budget_s: float = SEAL_BUDGET_S, ctx: dict | None = None,
+                only: set[str] | None = None):
     """The read verb's JSON with every message text replaced by the remote
-    model's record. Messages the model has not read are extracted here
-    first, within the budget."""
+    model's record at the message's keep level (_sealed_fields; a facts
+    row keeps FACT_FIELDS alone). Messages the model has not read are
+    extracted here first, within the budget. `only` seals those row ids
+    and leaves the rest as they are (a kept message in an enforce read)."""
     index = index if index is not None else load_index()
     cfg = cfg if cfg is not None else remote_llm.config()
+    ctx = ctx if ctx is not None else keep_context(cfg)
     if isinstance(data, dict) and data.get("error"):
         return data
+    conv = ""
     if verb == "get-message" and isinstance(data, dict):
         rows = [data]
     elif verb == "get-conversation" and isinstance(data, dict):
         rows = [m for m in data.get("messages") or [] if isinstance(m, dict)]
+        conv = str(data.get("conversation_id") or "")
         for m in rows:
-            m.setdefault("conversation_id", data.get("conversation_id") or "")
+            m.setdefault("conversation_id", conv)
     elif isinstance(data, list):
         rows = [m for m in data if isinstance(m, dict) and m.get("id")]
     else:
         return data
+    if only is not None:
+        rows = [m for m in rows if m.get("id") in only]
 
     text_rows = [m for m in rows if verb in ("get-message", "get-conversation")]
     unread = [m for m in text_rows if m.get("id") and index["by_id"].get(m["id"]) is None
@@ -1443,19 +1813,25 @@ def seal_output(verb: str, data, *, index: dict | None = None, cfg: dict | None 
                         cfg=cfg, chat=chat, budget_s=budget_s)
         index = load_index()
 
-    for m in rows:
-        rec = index["by_id"].get(m.get("id") or "")
-        fields = _sealed_fields(rec)
-        for k in ("text", "body", "body_type", "body_text", *PREVIEW_KEYS):
+    decided = [(m, *row_decision(m, index, cfg, ctx, conv=conv)) for m in rows]
+    for m, rec, dec in decided:
+        fields = _sealed_fields(rec, dec)
+        for k in _TEXT_KEYS:
             m.pop(k, None)
         m["text" if verb == "get-conversation" else "body" if verb == "get-message"
           else "preview"] = fields.pop("remote_text")
         m.update(fields)
+        if dec.get("level") == "facts":
+            view = facts_view(m)
+            m.clear()
+            m.update(view)
+    note = SEALED_NOTE if only is None else KEPT_NOTE
     if isinstance(data, dict):
-        data["sealed"] = True
-        data["_note"] = SEALED_NOTE
+        if only is None:
+            data["sealed"] = True
+        data["_note"] = note
     elif rows:
-        data.append({"_note": SEALED_NOTE})
+        data.append({"_note": note})
     return data
 
 
@@ -1475,39 +1851,54 @@ def thread_brief(conv_id: str, index: dict | None = None, *, user: set[str] | No
         return None
     msgs, people, kept = [], [], ""
     latest_in = None
+    strictest, reason = "full", ""
+    ctx = privacy_rules.context()
     for r in recs:
         res = r.get("result") or {}
         own = bool(r.get("own")) or (r.get("from") or "") in user
+        dec = decision_of(r, index=index, ctx=ctx)
+        level = dec["level"]
         m = {"id": r.get("id") or "", "from": r.get("from") or "", "received": r.get("received") or "",
              "own": own}
+        if level != "full":
+            # Below full: no verbatim quote; at facts, no gist, ask or link.
+            m["level"] = privacy_rules.plain(level)
         if r.get("status") == "ok":
-            m["gist"] = res.get("summary") or ""
-            for k in ("links", "quotes"):
-                if res.get(k):
-                    m[k] = list(res[k])
+            if level != "facts":
+                m["gist"] = res.get("summary") or ""
+                if res.get("links"):
+                    m["links"] = list(res["links"])
+                if res.get("quotes") and level == "full":
+                    m["quotes"] = list(res["quotes"])
             if res.get("attachments"):
                 atts = [a for a in res["attachments"] if isinstance(a, dict)]
                 m["attachments"] = [a.get("name") for a in atts]
                 # A picture worth reading (not a small inline logo): the
-                # row's reader knows to run describe-attachment on it.
+                # row's reader knows to run describe-attachment on it. Not
+                # on a message whose files stay on the machine.
                 import mail_images
-                if any(a.get("image") and not mail_images.small(
+                if not dec.get("files_kept") and any(a.get("image") and not mail_images.small(
                         {"is_inline": a.get("inline"), "size": a.get("size")}) for a in atts):
                     m["has_images"] = True
             if not own:
-                m.update({"state": res.get("state"), "ask": res.get("ask") or "",
+                m.update({"state": res.get("state"),
+                          "ask": (res.get("ask") or "") if level != "facts" else "",
                           "deadline": res.get("deadline") or "",
                           "offered_times": list(res.get("offered_times") or [])})
-                latest_in = (r, res)
+                latest_in = (r, res, level)
             elif res.get("awaits_reply"):
-                m.update({"awaits_reply": True, "asked": res.get("asked_of_them") or ""})
-            for p in res.get("people") or []:
-                if isinstance(p, dict) and p.get("name") and p not in people:
-                    people.append({"name": p["name"], "role": p.get("role", "")})
+                m.update({"awaits_reply": True,
+                          "asked": (res.get("asked_of_them") or "") if level != "facts" else ""})
+            if level != "facts":
+                for p in res.get("people") or []:
+                    if isinstance(p, dict) and p.get("name") and p not in people:
+                        people.append({"name": p["name"], "role": p.get("role", "")})
         else:
             m["unread"] = True
-        if _kept(r):
-            kept = kept or r.get("keep_from_anthropic") or "withheld"
+        if level == "local":
+            kept = kept or dec.get("reason") or "withheld"
+        if privacy_rules.rank(level) < privacy_rules.rank(strictest):
+            strictest, reason = level, dec.get("reason") or reason
         msgs.append(m)
     own_msgs = [m for m in msgs if m["own"]]
     last_in = max((m for m in msgs if not m["own"]), key=lambda m: m["received"], default=None)
@@ -1534,15 +1925,22 @@ def thread_brief(conv_id: str, index: dict | None = None, *, user: set[str] | No
     if links:
         brief["links"] = links[:LINKS_CAP]
     if latest_in:
-        r, res = latest_in
-        brief.update({"ask": res.get("ask") or "", "state": res.get("state"),
+        r, res, level = latest_in
+        brief.update({"ask": (res.get("ask") or "") if level != "facts" else "", "state": res.get("state"),
                       "needs_reply": bool(res.get("needs_reply")),
                       "deadline": res.get("deadline") or "",
                       "offered_times": list(res.get("offered_times") or []),
                       "scheduling": res.get("scheduling") or "none",
                       "domain": res.get("domain") or ""})
+    if strictest != "full":
+        # The thread's strictest level, in plain words for whoever reads
+        # the row, and its code for the lanes.
+        brief["keep_level"] = strictest
+        brief["kept_level"] = privacy_rules.plain(strictest)
+        if reason:
+            brief["kept_reason"] = reason
     if kept:
-        brief["kept_from_claude"] = kept
+        brief[KEPT_FIELD] = kept
     return brief
 
 
@@ -1669,10 +2067,12 @@ def _stub(rec: dict) -> dict:
 
 def reduce_briefing(briefing: dict, index: dict) -> tuple[dict, dict]:
     """(reduced copy, stats): the briefing as an enforce mode would hand it
-    to Claude. Every mail preview becomes the extracted record (a stub for
-    a confidential thread). A thread kept from Anthropic keeps only who
-    sent it and whether it needs a reply by a date; its subject goes too.
-    Mail never extracted keeps its preview. Events go through the shim."""
+    to a hosted model. Every mail preview becomes the extracted record (a
+    stub for a confidential thread). A message kept on the machine or at
+    facts keeps only who sent it and whether it needs a reply by a date; a
+    local one loses its subject too. Each kept stub names its level in
+    plain words. Mail never extracted keeps its preview. Events go through
+    the shim."""
     stats = {"previews": 0, "replaced": 0, "confidential": 0, "kept": 0, "unknown": 0,
              "events": 0}
 
@@ -1695,15 +2095,16 @@ def reduce_briefing(briefing: dict, index: dict) -> tuple[dict, dict]:
         if keys:
             stats["previews"] += 1
             rec = find(obj)
+            level = level_of(rec, index=index) if rec is not None else "full"
             if rec is None:
                 stats["unknown"] += 1
-            elif _kept(rec):
+            elif level in ("local", "facts"):
                 for k in keys:
                     out.pop(k, None)
-                if "subject" in out:
-                    out["subject"] = "(kept from Claude)"
                 res = rec.get("result") or {}
-                out["extracted"] = {"kept_from_anthropic": True,
+                if level == "local" and "subject" in out:
+                    out["subject"] = "(kept on your machine)"
+                out["extracted"] = {KEPT_FIELD: True, "kept_level": privacy_rules.plain(level),
                                     "needs_reply": res.get("needs_reply"),
                                     "deadline": res.get("deadline", "")}
                 stats["kept"] += 1
@@ -1711,6 +2112,8 @@ def reduce_briefing(briefing: dict, index: dict) -> tuple[dict, dict]:
                 for k in keys:
                     out.pop(k, None)
                 out["extracted"] = _stub(rec)
+                if level != "full":
+                    out["extracted"]["kept_level"] = privacy_rules.plain(level)
                 stats["replaced"] += 1
                 if (rec.get("result") or {}).get("sensitivity") == "confidential":
                     stats["confidential"] += 1
@@ -1883,7 +2286,7 @@ def claude_sample() -> dict:
 
 def _sent_since(graph, since: datetime) -> list[dict]:
     return graph.graph_get_all("/me/mailFolders/sentitems/messages", {
-        "$select": "id,conversationId,sentDateTime",
+        "$select": "id,conversationId,sentDateTime,toRecipients,ccRecipients",
         "$filter": f"sentDateTime ge {_iso(since)}",
         "$orderby": "sentDateTime desc",
         "$top": 200,
@@ -1949,13 +2352,19 @@ def measure(*, graph=None, now: datetime | None = None, with_mail: bool = True) 
                  "errors": sum(1 for r in recs if r.get("status") == "error"),
                  "not_yet_redone": sum(1 for r in recs if r.get("status") == "withheld")}
     reasons: dict[str, int] = {}
+    levels = {lvl: 0 for lvl in privacy_rules.LEVELS}
+    ctx = privacy_rules.context()
     for r in recs:
-        if _kept(r):
-            why = r.get("keep_from_anthropic") or r.get("reason", "")
-            key = "admissions" if why == "admissions" else "list"
+        dec = decision_of(r, index=index, ctx=ctx)
+        levels[dec["level"]] = levels.get(dec["level"], 0) + 1
+        if dec["level"] != "full":
+            why = dec.get("reason") or kept_reason(r) or r.get("reason", "")
+            key = ("admissions" if why == "admissions" else "your rules" if why == "your rule"
+                   else "withheld" if why == "withheld" else "list")
             reasons[key] = reasons.get(key, 0) + 1
     out["kept"] = sum(reasons.values())
     out["kept_by_reason"] = reasons
+    out["kept_by_level"] = {k: v for k, v in levels.items() if k != "full"}
     kinds: dict[str, int] = {}
     for r in ok:
         res = r["result"]
@@ -2039,6 +2448,22 @@ def measure(*, graph=None, now: datetime | None = None, with_mail: bool = True) 
     out["chat_reads"] = len(rel)
     out["chat_reads_flagged"] = sum(1 for r in rel if r.get("flagged_threads"))
     out["chat_flagged_threads"] = len({t for r in rel for t in r.get("flagged_threads") or []})
+    # Reads of kept mail by the model of the turn (its name, as data) and
+    # by level; a read from before the levels counts under `unknown`.
+    by_model: dict[str, int] = {}
+    by_level: dict[str, int] = {}
+    for r in rel:
+        lv = {k: v for k, v in (r.get("levels") or {}).items() if k != "full"}
+        if not lv and (r.get("classes") or {}).get("kept"):
+            lv = {"local": r["classes"]["kept"]}
+        if not lv:
+            continue
+        name = str(r.get("model") or "unknown")
+        by_model[name] = by_model.get(name, 0) + 1
+        for k, v in lv.items():
+            by_level[k] = by_level.get(k, 0) + int(v or 0)
+    out["kept_reads_by_model"] = by_model
+    out["kept_reads_by_level"] = by_level
 
     briefs = remote_llm.read(BRIEFINGS)
     if briefs:
@@ -2111,12 +2536,19 @@ def summary_text(m: dict, s: dict, day_n: int, cfg: dict | None = None) -> str:
         f"Mail: {m['messages']} messages. {m['ok']} extracted, {m['errors']} errors. "
         f"Warm p95 {_fmt(m.get('latency_p95_s'))} s. {m.get('cold_starts', 0)} cold starts.")
     kr = m.get("kept_by_reason") or {}
+    kl = m.get("kept_by_level") or {}
     lines.append(
-        f"Kept from Claude in an enforce mode: {m.get('kept', 0)} "
-        f"(list {kr.get('list', 0)}, admissions {kr.get('admissions', 0)}).")
+        f"Kept from frontier models: {m.get('kept', 0)} "
+        f"(list {kr.get('list', 0)}, admissions {kr.get('admissions', 0)}"
+        + (f", your rules {kr['your rules']}" if kr.get("your rules") else "") + "; "
+        + ", ".join(f"{privacy_rules.plain(k).lower()} {kl.get(k, 0)}" for k in ("local", "facts", "summary"))
+        + ").")
+    reads = m.get("kept_reads_by_model") or {}
     lines.append(
         f"Confidential: {m['confidential']}. Tone flags: {m['tone_flags']}. "
-        f"Chat reads of a kept or confidential thread: {m['chat_reads_flagged']} of {m['chat_reads']}.")
+        f"Chat reads of a kept or confidential thread: {m['chat_reads_flagged']} of {m['chat_reads']}"
+        + (" (kept, by model: " + ", ".join(f"{k} {v}" for k, v in sorted(reads.items())) + ")"
+           if reads else "") + ".")
     lines.append(
         f"Needs-reply recall {_fmt(m.get('needs_reply_recall'), True)} "
         f"(replied n={m.get('replied', 'n/a')}). Ledger recall {_fmt(m.get('ledger_recall'), True)}. "

@@ -23,6 +23,13 @@ Division of labour:
     has no `auto-tagged` category.
   * `status`: the state file in one screen.
 
+Kept mail: when the tagger runs on a hosted model (Claude, Codex or any
+other; the check is the class, never the name), a message kept from
+hosted models (privacy_rules.py: the keep list, applicant mail, a rule of
+the user's) is tagged by the local model in a batch of its own, and when
+that model gives no answer it ends with the marker alone (kept_skipped).
+It never reaches the hosted call.
+
 The feature is per install: off unless ea-config.json sets
 `mail_tagger.enabled` to true. Off, `tick` runs only the plugin mail
 triggers, when a plugin declares one, and those see no topic tags.
@@ -564,10 +571,55 @@ def _set(graph, mid: str, cats: list[str]) -> None:
 
 # ── the passes ───────────────────────────────────────────────────────
 
+def kept_ids(msgs: list[dict], cfg: dict | None = None) -> set[str]:
+    """The ids of the messages kept from hosted models (keep level below
+    full, privacy_rules.py: the keep list, applicant mail, a rule of the
+    user's), from each one's record or, unread, its headers and preview.
+    Empty with no local model set up: the keep list lives in the local
+    model's config, and with none every lane reads all mail."""
+    try:
+        import remote_llm
+        import model_routing
+        cfg = cfg if cfg is not None else remote_llm.config()
+        if not model_routing.local_ready(cfg):
+            return set()
+        import mail_privacy
+        import privacy_rules
+        index = mail_privacy.load_index()
+        ctx = mail_privacy.keep_context(cfg)
+        out = set()
+        for m in msgs:
+            rec = index["by_id"].get(m.get("id") or "")
+            if rec is not None:
+                level = mail_privacy.decision_of(rec, index=index, ctx=ctx)["level"]
+            else:
+                level = privacy_rules.for_message(m, m.get("bodyPreview") or "", cfg, ctx=ctx)["level"]
+            if level != "full":
+                out.add(m.get("id"))
+        return out
+    except Exception as e:
+        # A keep check that fails keeps every message from the hosted model.
+        print(f"mail_tagger: keep check failed, no hosted call this pass: {str(e)[:120]}",
+              file=sys.stderr)
+        return {m.get("id") for m in msgs}
+
+
+def _hosted_tagger() -> bool:
+    """True when ask_model calls a hosted model (Claude, Codex or another),
+    False when the local model tags (_remote_mode). A class check: which
+    hosted model it is never matters here."""
+    return not _remote_mode()
+
+
 def tag_messages(msgs: list[dict], *, graph, state: dict, dry_run: bool,
                  now: datetime, vocab: list[dict] | None = None,
-                 asker=None, log_path: Path | None = None) -> dict:
-    """Tag every message in msgs that has no marker yet. Returns a summary."""
+                 asker=None, log_path: Path | None = None, local_asker=None,
+                 kept: set[str] | None = None) -> dict:
+    """Tag every message in msgs that has no marker yet. Returns a summary.
+    When the tagger runs on a hosted model, a message kept from hosted
+    models (kept_ids) goes to the local model (`local_asker`, ask_remote)
+    in a batch of its own, never to the hosted one; when the local model
+    gives no answer it gets the marker alone and counts as kept_skipped."""
     user = _user_addresses()
     todo = [m for m in msgs if not is_tagged(m) and m.get("id")
             and (dry_run or m["id"] not in state["recent"])]
@@ -576,12 +628,28 @@ def tag_messages(msgs: list[dict], *, graph, state: dict, dry_run: bool,
     vocab = vocab if vocab is not None else project_vocab()
     vocab_ids = {v["id"] for v in vocab}
     asker = asker or ask_model
+    hosted = _hosted_tagger()
+    if hosted:
+        kept = kept if kept is not None else kept_ids(todo)
+    else:
+        kept = set()
+    kept_skipped = 0
     tagged = failed = 0
     details = []
-    for start in range(0, len(todo), BATCH_CAP):
-        batch = todo[start:start + BATCH_CAP]
+    batches = [(todo_part[i:i + BATCH_CAP], local) for todo_part, local in
+               (([m for m in todo if m["id"] not in kept], False),
+                ([m for m in todo if m["id"] in kept], True))
+               for i in range(0, len(todo_part), BATCH_CAP)]
+    for batch, local in batches:
         compacted = [compact(m, i, user) for i, m in enumerate(batch)]
-        verdicts, usage = asker(build_prompt(compacted, vocab, state.get("senders") or {}))
+        prompt = build_prompt(compacted, vocab, state.get("senders") or {})
+        if local:
+            # A local model that gives no answer leaves the batch to the
+            # retries below, and then the marker alone: never a hosted call.
+            verdicts, usage = (local_asker or ask_remote)(prompt)
+            usage = {**(usage or {}), "kept": True}
+        else:
+            verdicts, usage = asker(prompt)
         for i, m in enumerate(batch):
             mid = m["id"]
             cats = validate(verdicts.get(str(i)), vocab_ids)
@@ -592,6 +660,7 @@ def tag_messages(msgs: list[dict], *, graph, state: dict, dry_run: bool,
                     failed += 1
                     continue
                 cats = [MARKER]           # give up on judgement, keep the marker
+                kept_skipped += bool(local)
             final = merge(_cats(m), cats)
             details.append({"subject": (m.get("subject") or "")[:70], "cats": final})
             if not dry_run:
@@ -612,8 +681,12 @@ def tag_messages(msgs: list[dict], *, graph, state: dict, dry_run: bool,
                              "subject": (m.get("subject") or "")[:120],
                              "cats": final, "usage": usage}, log_path)
             tagged += 1
-    return {"tagged": tagged, "failed": failed, "skipped": len(msgs) - len(todo),
-            "details": details}
+    out = {"tagged": tagged, "failed": failed, "skipped": len(msgs) - len(todo),
+           "details": details}
+    if kept:
+        out["kept_local"] = sum(1 for m in todo if m["id"] in kept)
+        out["kept_skipped"] = kept_skipped
+    return out
 
 
 def flip_answered(sent: list[dict], *, graph, user: set[str] | None = None,

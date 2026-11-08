@@ -26,8 +26,10 @@ Where it goes:
     from the queue on each delivery, for an agent-zone plugin. An
     owner-zone plugin reads its queue (ea_plugins.mail.delivered()).
 
-Mail with an address on the keep_from_anthropic list never goes to an
-agent-zone plugin. With the mail switch `sealed`, an agent-zone plugin
+Mail with an address on the keep_from_frontier list, and with a local
+model set up any mail kept at a level below full (privacy_rules.py:
+applicant mail, a rule of the user's), never goes to an agent-zone
+plugin, whose lane runs on a hosted model. With the mail switch `sealed`, an agent-zone plugin
 gets the ids without the body; its own read is then sealed like any
 lane's.
 
@@ -155,7 +157,11 @@ def _addresses(msg: dict) -> list[str]:
     return [a for a in out if a]
 
 
-def _kept(msg: dict, cfg) -> str:
+def _kept(msg: dict, cfg, full: dict | None = None) -> str:
+    """Why this message stays away from an agent-zone plugin (whose lane
+    runs on a hosted model), or ''. The keep list; and, with a local model
+    set up, the message's keep level (privacy_rules), from its record or,
+    unread, from its headers and text: any level below full keeps it."""
     try:
         import remote_llm
         cfg = cfg if cfg is not None else remote_llm.config()
@@ -163,8 +169,21 @@ def _kept(msg: dict, cfg) -> str:
             why = remote_llm.keep_reason(a, cfg)
             if why:
                 return why
+        import model_routing
+        if model_routing.local_ready(cfg):
+            import mail_privacy
+            import privacy_rules
+            rec = mail_privacy.load_index()["by_id"].get(msg.get("id") or "")
+            if rec is not None:
+                dec = mail_privacy.decision_of(rec)
+            else:
+                import admissions_filter as af
+                body = af.body_text(full) if full else (msg.get("bodyPreview") or "")
+                dec = privacy_rules.for_message(msg, body, cfg)
+            if dec["level"] != "full":
+                return dec.get("reason") or dec["level"]
     except Exception as e:
-        # A keep list that cannot be read keeps the mail from the plugin.
+        # A keep check that fails keeps the mail from the plugin.
         return f"keep list unreadable: {str(e)[:80]}"
     return ""
 
@@ -285,7 +304,7 @@ def route(msgs: list[dict], *, graph, now: datetime | None = None, cats_by_id=No
             if plugin in done or (t.get("bulk") and not bulk):
                 continue
             if zone == "agent":
-                why = _kept(m, cfg)
+                why = _kept(m, cfg, full)
                 if why:
                     skipped_kept += 1
                     details.append({"plugin": plugin, "trigger": t["id"], "kept": why,

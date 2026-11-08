@@ -515,8 +515,9 @@ def _fetch_archive(days: int = 14) -> tuple[list, str]:
 
 
 def without_kept(msgs: list) -> list:
-    """`msgs` less the mail kept from Anthropic (mail_privacy's keep
-    list): the verdict may run on Claude. Fails closed: when the gate
+    """`msgs` less the mail kept on the machine (mail_privacy's keep
+    levels), and the mail kept at facts or summary as its level's view:
+    the verdict runs on a hosted model. Fails closed: when the gate
     cannot say, no mail goes."""
     if not msgs:
         return []

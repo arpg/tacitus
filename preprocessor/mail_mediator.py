@@ -575,6 +575,9 @@ def handle(req_path: str):
         return
 
     run_id = str(req.get("run_id") or "")[:64]
+    # The turn's model as its request names it: counted in the release log,
+    # never a gate (the resident writes the request).
+    model = "".join(c for c in str(req.get("model") or "")[:40] if c.isalnum() or c in "._:-")
     lane = M.child_graph_lane(req.get("lane"))
     # A Codex ghost run (codex_ghost.py) may read; every other verb is
     # recorded for the judge and answered as the real verb answers (a
@@ -626,19 +629,20 @@ def handle(req_path: str):
         def run():
             try:
                 _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir,
-                         deliveries, rewrites, req_path, lane=lane)
+                         deliveries, rewrites, req_path, lane=lane, model=model)
             finally:
                 pool.release()
         threading.Thread(target=run, daemon=True).start()
         return
     _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir, deliveries, rewrites,
-             req_path, lane=lane)
+             req_path, lane=lane, model=model)
 
 
 def _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir, deliveries, rewrites,
-             req_path, lane="interactive"):
+             req_path, lane="interactive", model=""):
     """Run one validated, staged request as the owner and answer it.
-    `lane` is the Graph breaker lane the child's calls run in."""
+    `lane` is the Graph breaker lane the child's calls run in; `model` the
+    turn's model as its request names it (the release log counts it)."""
     cwd, timeout = str(REPO), EXEC_TIMEOUT_S
     plugin_name = ""
     if M.is_plugin_tool(tool):
@@ -744,7 +748,7 @@ def _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir, deliveries, r
         if not errors:
             _audit(tool, verb, f"rc={rc}")
             if rc == 0:
-                _note_release(tool, verb, argv, run_id, out)
+                _note_release(tool, verb, argv, run_id, out, model)
     except subprocess.TimeoutExpired:
         if tool == "web_browser" and verb == "submit":
             _respond(rid, json.dumps({"ok": False, "submitted": None,
@@ -848,13 +852,14 @@ def _gate_error(tool, verb, run_id, e, argv=()) -> str:
     return f"The mail gate failed ({str(e)[:100]}); refused for a cron lane."
 
 
-def _note_release(tool, verb, argv, run_id, out):
-    """The remote-LLM shadow run's record of which threads a mail read
-    handed to a lane (docs/remote-llm.md). It runs after the answer is
-    sent, does nothing while that experiment is off, and never raises."""
+def _note_release(tool, verb, argv, run_id, out, model=""):
+    """The remote-LLM layer's record of which threads a mail read handed
+    to a lane, at which keep level and to which model (docs/remote-llm.md).
+    It runs after the answer is sent, does nothing while the mail switch
+    is off, and never raises."""
     try:
         import mail_privacy
-        mail_privacy.note_release(tool, verb, list(argv), run_id, out)
+        mail_privacy.note_release(tool, verb, list(argv), run_id, out, model=model)
     except Exception:
         pass
 

@@ -159,7 +159,7 @@ def test_ghost_keeps_the_cron_rules_and_skips_the_shadow_agents_reads(priv, monk
                       "received": "2026-10-14T14:00:00Z", "body": "x", "conversation_id": "convK"})
     out, refusal = mp.release_filter("graph_actions", "get-message", ["--message-id", mid],
                                      "cron-weekly-audit-1", raw)
-    assert out == "" and "kept from Claude" in refusal
+    assert out == "" and "kept on the user's machine" in refusal
     assert gw.ghost_read("get-message", [], "shadow-abc", raw) is None
     assert rl.read(gw.READS) == []
 
