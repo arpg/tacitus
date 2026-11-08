@@ -256,6 +256,27 @@ def test_a_card_reason_names_its_title_in_plain_words():
         == "The card was answered: Sent."
 
 
+def test_a_note_that_only_undoes_waits_on_nobody():
+    """A close made at once posts a note whose one button reopens the row
+    (`undo`): the thread is no card that needs the owner."""
+    note = {"kind": "closed", "title": ":white_check_mark: *Closed:* a row",
+            "actions": [{"id": "reopen_closed", "label": "Reopen",
+                         "value": {"ledger_id": "task-Ab1="}}], "undo": True}
+    assert decide([m(1, kind="card", card=note)])[:2] == ("none", "rule")
+    assert decide([m(1, kind="card", card={**note, "undo": False})])[0] == "needs_you"
+
+
+def test_a_card_that_expired_with_no_answer_leaves_needs_you():
+    expired = ":zzz: No answer in 7 days. It is on the briefing's Looks done? line now."
+    assert ts.outcome(expired) == "expired" and ts.outcome(":sleeping: x") == "expired"
+    got = decide([m(1, kind="status", text=expired, card={"title": "3 items look done"},
+                    updated=NOW - 60)])
+    assert got[:2] == ("none", "rule")
+    # a linked card that expired settles nothing for its conversation
+    linked = [m(5, kind="status", text=expired, card={"title": "x"}, updated=NOW - 60)]
+    assert ts.linked_state(linked, [m(1, "owner", "Close the form row.")], NOW) is None
+
+
 def test_asks_reads_a_question_outside_links_and_code():
     assert ts.asks("Which one works?")
     assert ts.asks("Tuesday or Wednesday?\nI can hold both.")
@@ -2111,10 +2132,11 @@ def test_mark_done_closes_the_open_row_on_the_owner_s_word(writeback):
     calls = writeback([_row("task-Ab1=")], "done")
     assert calls == [
         ("ledger.py", "close", "--id", "task-Ab1=", "--user-said", wts.WEB_DONE_PHRASE,
-         "--note", wts.WEB_DONE_NOTE, "--skip-archive"),
+         "--note", wts.WEB_DONE_NOTE),
         ("log_missed_closure.py", "--ledger-id", "task-Ab1=", "--user-message",
          wts.WEB_DONE_PHRASE, "--source", "web-chat", "--quiet")]
-    # no mail moves: the close skips the archive, and nothing else is run
+    # the close archives the row's mail as any close does (ledger.py), so
+    # the owner never archives it by hand; nothing else is run
     assert not any("archive-message" in c for call in calls for c in call)
     (rec,) = _labels()
     assert (rec["label"], rec["features"]["writeback"]) == ("done", "close")
@@ -2177,6 +2199,82 @@ def test_needs_me_rejects_a_proposal_and_reopens_a_recent_auto_close(writeback):
     assert _labels()[-1]["features"]["writeback"] == "ambiguous"
 
 
+def _proposal_card_ctx(store, ids, *, live=True):
+    """A "This looks done" card's own thread in the DM, whose buttons name
+    its rows, read as the engine reads it."""
+    value = {"batch": "b1", "ledger_ids": list(ids)}
+    card = {"kind": "close", "title": f":white_check_mark: *{len(ids)} items look done.*",
+            "lines": [f"{i}. a row" for i in range(1, len(ids) + 1)],
+            "actions": [{"id": "close_all_proposed", "label": "Close all", "value": value},
+                        {"id": "review_proposed", "label": "One by one", "value": value}]}
+    msg = store.add_message("dm", mid=None, thread_key=None, author="bot",
+                            kind="card" if live else "status",
+                            text="" if live else ":white_check_mark: Closed 2.", card=card,
+                            posted_at=time.time() - 600)
+    states = ts.ThreadStates(lambda: store, ledger=lambda ids_, convs: [
+        {"id": i, "type": "task", "status": "open", "conversation_id": ""} for i in ids_])
+    return msg, states.contexts([("dm", msg["thread_key"])])[0]
+
+
+def test_mark_done_on_a_proposal_card_is_its_close_and_settles_the_card(store, monkeypatch):
+    """One decision, one surface: the owner's Mark done on the card's own
+    thread confirms the rows the card names (no missed closure: a signal
+    did fire), whatever their threads, and the card gives way to its
+    status line as a click on Close would."""
+    cli = FakeLedgerCLI()
+    monkeypatch.setattr(wts, "RUN", cli)
+    retired: list = []
+    monkeypatch.setattr(wts, "CARD_STATUS", lambda ch, mid, text: retired.append((ch, mid, text)))
+    ids = ["deadline-Ac1=", "task-Ab1=", "task-Cd2=", "task-Ef3="]
+    msg, ctx = _proposal_card_ctx(store, ids)
+    assert [r["id"] for r in ctx["ledger"]] == ids
+    rows = [_row(i, conv=f"AAQkconv{n}=", close_proposal={"signal": "llm:reconcile"})
+            for n, i in enumerate(ids)] + [_row("task-Gone=")]
+    rows[3]["status"] = "completed"          # closed on other evidence since the card
+    plan = wts.writeback_plan(ctx, "done", now=time.time(), entries=rows)
+    assert plan == {"action": "confirm", "ops": [("confirm", i) for i in ids[:3]],
+                    "card": ("dm", msg["id"])}
+    wts.run_writeback(plan)
+    assert cli.calls == [("ledger.py", "confirm", "--id", i, "--actor", "web-chat")
+                         for i in ids[:3]]
+    assert retired == [("dm", msg["id"], wts.CARD_DONE["confirm"])]
+    assert ts.outcome(wts.CARD_DONE["confirm"]) == "acted"
+    # Needs me on the card is its Still open
+    cli.calls.clear()
+    plan = wts.writeback_plan(ctx, "needs_you", now=time.time(), entries=rows)
+    assert plan["ops"] == [("reject", i) for i in ids[:3]] and plan["card"] == ("dm", msg["id"])
+    wts.run_writeback(plan)
+    assert retired[-1][2] == wts.CARD_DONE["reject"]
+    import closure_labels as cl
+    assert cl.outcome_class(wts.CARD_DONE["reject"]) == "kept_open"
+
+
+def test_a_settled_card_or_one_that_names_no_rows_writes_nothing_more(store, monkeypatch):
+    monkeypatch.setattr(wts, "CARD_STATUS", lambda *a: pytest.fail("no card to settle"))
+    _msg, ctx = _proposal_card_ctx(store, ["task-Ab1="], live=False)
+    done = [_row("task-Ab1=", status="completed")]
+    plan = wts.writeback_plan(ctx, "done", now=time.time(), entries=done)
+    assert plan["ops"] == [] and "card" not in plan and wts.run_writeback(plan) == []
+    assert wts.proposal_card(ctx["messages"], time.time()) is None
+    # a live card whose rows were all closed elsewhere loses its dead buttons
+    retired: list = []
+    monkeypatch.setattr(wts, "CARD_STATUS", lambda ch, mid, text: retired.append(text))
+    msg, live = _proposal_card_ctx(store, ["task-Ab1="])
+    plan = wts.writeback_plan(live, "done", now=time.time(), entries=done)
+    assert (plan["action"], plan["ops"], plan["card"]) == ("none", [], ("dm", msg["id"]))
+    assert wts.run_writeback(plan) == [] and retired == [wts.CARD_DONE["none"]]
+    old = {"kind": "card", "channel": "dm", "id": "9", "posted_at": time.time(),
+           "card": {"kind": "close", "actions": [{"id": "close_proposed", "value": "task-Ab1="}]}}
+    assert wts.proposal_card([old], time.time()) is None
+
+
+def test_mark_done_confirms_a_linked_row_that_looked_done(writeback):
+    calls = writeback([_row("task-Ab1=", close_proposal={"signal": "calendar_event_match"})],
+                      "done")
+    assert calls == [("ledger.py", "confirm", "--id", "task-Ab1=", "--actor", "web-chat")]
+    assert _labels()[-1]["features"]["writeback"] == "confirm"
+
+
 def test_the_route_hands_the_tap_to_the_observer(tmp_path, monkeypatch):
     f = WebFrontend.from_config({}, store_path=tmp_path / "priv" / "webchat.sqlite")
     f.store.upsert_channel("main", "ea", "main")
@@ -2233,6 +2331,11 @@ def test_the_write_back_through_the_real_ledger_cli(tmp_path, monkeypatch):
     monkeypatch.setenv("EA_DIR", str(ea))
     monkeypatch.setattr(ledger, "_is_owner", lambda: False)
     db = _ledger_db(ea / "state" / "obligations-ledger.db")
+    # No mail ids on the row: the close archives nothing, so no mail call runs.
+    conn = sqlite3.connect(str(db))
+    conn.execute("UPDATE ledger SET conversation_id = NULL WHERE id = 'response-Ab1='")
+    conn.commit()
+    conn.close()
     logged = []
 
     def run(script, *args):

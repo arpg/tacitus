@@ -53,7 +53,10 @@ thread: the colleague has not replied yet").
    has recorded no outcome: a pressed card becomes a `status` row with
    the bot's status line), it has an action or a select, and it is
    younger than the card registry keeps cards (7 days; an older card's
-   buttons no longer act).
+   buttons no longer act). A card marked `undo` is never live: it is a
+   note of something already done whose button only undoes it (the
+   closure hill climb's note for a row it closed at once, with Reopen),
+   and it waits on nobody.
 2a. The relay's notice of a new device (its text names the pairing code):
    `needs_you` ("A phone waits for your approval.") while a device with
    that code waits for approval, `done` once it is approved or removed.
@@ -91,9 +94,13 @@ thread: the colleague has not replied yet").
 3c. A card whose status line shows the bot acting on the press
    (`:hourglass...`, "Sending...") within the last 20 minutes: `working`.
 4. A card acted on (its status line as the bot records it: Sent, Created,
-   Handled, Cancelled; not a failure, `:x:` or `:warning:`) and no later
-   message that asks anything (a later owner message, or a bot message
-   with a question mark outside links and code): `done`.
+   Handled, Cancelled; not a failure, `:x:` or `:warning:`, and not an
+   expiry, `:zzz:`) and no later message that asks anything (a later
+   owner message, or a bot message with a question mark outside links
+   and code): `done`. A close-proposal card with no answer for 7 days
+   gives way to an expiry line (its rows stay on the briefing's "Looks
+   done?" line), so its thread leaves Needs you: rule 7 then reads it as
+   a post that needs nothing.
 5. Dropped. The bot's `white_check_mark` sits on nearly every owner
    message, including threads that ended open: it marks a finished turn,
    not a closed conversation. A thread that ends on the bot's prose goes
@@ -378,10 +385,20 @@ collect` adds the card outcomes, the ledger's closes, reopens and
 proposals, the missed-closure log, and any tap the observer missed;
 `closure_eval.py` scores the rules, the model and the ledger pipeline
 against the owner's labels. A tap also writes back to a linked ledger
-row where that is safe: Done closes an open row on the owner's word
-(no mail moves) and logs the missed closure; Needs me rejects a close
-proposal or reopens a row a signal closed in the last 7 days. See
+row where that is safe. Done on a live "This looks done" card's thread
+is the card's Close: it confirms the rows the card's buttons name, and
+the card gives way to its status line, so one tap settles the card, the
+rows and the thread. Done elsewhere confirms a linked row that carries a
+close proposal, and closes any other open linked row on the owner's word
+(its mail is archived as any close archives it) and logs the missed
+closure. Needs me rejects a close proposal (on a live card, its Still
+open) or reopens a row a signal closed in the last 7 days. See
 docs/ea/closure-signals.md.
+
+The header button flips its label when a rule changes the open thread's
+state (a press on a card settles it a moment later). A tap that lands
+within 2 seconds of a flip was aimed at the old label, so the app drops
+it: a Close followed at once by Mark done never lands as Needs me.
 
 ## API (under `base_path`, owner-only like the rest)
 

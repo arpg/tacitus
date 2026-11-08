@@ -1175,7 +1175,9 @@ def cmd_close(args) -> int:
 
 
 def cmd_propose(args) -> int:
-    """Record that a row looks done, without closing it."""
+    """Record that a row looks done, without closing it. For an owner
+    process whose signal the hill climb promoted (closure_policy.py), the
+    row closes at once instead, and the bot's note tells the user."""
     import closure
     db = _get_db()
     if not db.execute("SELECT 1 FROM ledger WHERE id = ?", (args.id,)).fetchone():
@@ -1184,12 +1186,45 @@ def cmd_propose(args) -> int:
         return 1
     sig = (args.signal or "").strip() or f"llm:{_lane()}"
     evidence = {"evidence": args.evidence} if args.evidence else None
-    res = closure.propose(db, args.id, signal=sig, actor="cli:" + _lane(),
-                          note=args.why or "", evidence=evidence,
-                          evidence_ts=args.evidence_ts or "")
+    res = closure.propose_or_promote(db, args.id, signal=sig,
+                                     actor="cli:" + ("owner" if _is_owner() else _lane()),
+                                     note=args.why or "", evidence=evidence,
+                                     evidence_ts=args.evidence_ts or "")
     db.commit()
     db.close()
-    _output({"ok": res["action"] == "proposed", **res})
+    _output({"ok": res["action"] in ("proposed", "closed"), **res})
+    return 0
+
+
+def cmd_promoted(args) -> int:
+    """The rows the hill climb closed at once that the user has not been
+    told of. `--noted ID...` (the bot, after its note is up) archives each
+    row's mail as any close does and marks it told."""
+    import closure
+    db = _get_db()
+    out: dict = {}
+    if args.noted:
+        if not _is_owner():
+            _output({"error": "promoted --noted is the bot's, after it posts the note"})
+            db.close()
+            return 1
+        done = []
+        for rid in args.noted:
+            row = db.execute("SELECT * FROM ledger WHERE id = ?", (rid,)).fetchone()
+            if row is None or not closure.mark_noted(db, rid):
+                continue
+            arch = _archive_after_close(db, row, [rid], skip=False)
+            db.commit()
+            done.append({"id": rid, **arch})
+        out["noted"] = done
+    rows = closure.promoted_closes(db)
+    db.close()
+    out.update(count=len(rows), entries=[
+        {"id": r["id"], "type": r.get("type"), "description": r.get("description"),
+         "signal": (r.get("closed_by") or {}).get("signal"),
+         "why": (r.get("closed_by") or {}).get("why") or "",
+         "closed_at": r.get("closed_at")} for r in rows])
+    _output(out)
     return 0
 
 
@@ -1244,8 +1279,11 @@ def cmd_proposals(args) -> int:
 
 
 def cmd_closure_report(args) -> int:
-    """Per signal: closes, false closes (reopened), proposals and their fate."""
+    """Per signal: closes, false closes (reopened), proposals and their
+    fate, and the hill climb's state for it (`policy`: promoted, demoted,
+    base, or never for a signal outside the loop)."""
     import closure
+    import closure_policy
     db = _get_db()
     since = ""
     if args.days:
@@ -1253,6 +1291,12 @@ def cmd_closure_report(args) -> int:
             "%Y-%m-%dT%H:%M:%SZ")
     rep = closure.report(db, since=since)
     db.close()
+    for sig, row in rep["signals"].items():
+        row["policy"] = (closure_policy.state(sig) or "base") if closure_policy.in_loop(sig) \
+            else "never"
+    data = closure_policy.load()
+    rep["policy"] = {"enabled": closure_policy.enabled(), "frozen": bool(data.get("frozen")),
+                     "updated_at": data.get("updated_at") or ""}
     _output(rep, pretty=True)
     return 0
 
@@ -2444,6 +2488,13 @@ def main():
                            allow_abbrev=False)
     p_rep.add_argument("--days", type=int, default=30)
 
+    p_promo = sub.add_parser("promoted",
+                             help="Rows the hill climb closed at once that the user was "
+                                  "not told of yet", allow_abbrev=False)
+    p_promo.add_argument("--noted", nargs="*", metavar="ID",
+                         help="The bot posted the note for these: archive their mail "
+                              "and mark them told (owner processes)")
+
     # get
     p_get = sub.add_parser("get", help="Get a single entry", allow_abbrev=False)
     p_get.add_argument("--id", required=True)
@@ -2526,6 +2577,7 @@ def main():
         "reject": cmd_reject,
         "proposals": cmd_proposals,
         "closure-report": cmd_closure_report,
+        "promoted": cmd_promoted,
         "get": cmd_get,
         "list": cmd_list,
         "search": cmd_search,

@@ -739,7 +739,7 @@ one-click confirm (closure.py):
 
 :white_check_mark: *Quietly handled*: 2 answered by your replies; 1 draft(s) staged.
 
-:grey_question: *Looks done?* (1) Close or keep each on the card in your DM: NSF annual report (submitted Friday in Research.gov).
+:grey_question: *Looks done?* (1) Close or keep each one on its card in your DM, or tell me here: NSF annual report (submitted Friday in Research.gov).
 
 :envelope: *Drafts ready* (1): Send, Edit or Handled on each block in your DM; one Send-all card when several are ready
 - *Slides for Thursday's review* (Pat Rivera): Yes, the final slides go out tonight.

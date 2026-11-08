@@ -86,22 +86,71 @@ message by the closure analysis's patterns.
 A closure the owner has to state is a detector defect, so a tap closes
 the loop where that is safe:
 
-- **Mark done** on a conversation whose linked rows are open:
-  `ledger.py close --user-said "marked done in the web chat"
-  --skip-archive` (no mail moves), then `log_missed_closure.py` with the
-  same words and source `web-chat`.
+- **Mark done** on a live "This looks done" card's own thread: the
+  card's Close. `ledger.py confirm` for each row its buttons name
+  (`ledger_id`, `ledger_ids`) that still carries its proposal, then the
+  card gives way to its status line. One tap settles the card, the rows
+  and the thread; no missed closure is logged, since a signal fired.
+- **Mark done** on any other conversation whose linked rows are open: a
+  row that carries a close proposal is confirmed the same way; any other
+  row closes with `ledger.py close --user-said "marked done in the web
+  chat"`, which archives its mail as any close does, then
+  `log_missed_closure.py` with the same words and source `web-chat`.
 - **Needs me** on a conversation whose row carries a close proposal:
-  `ledger.py reject`. On a row a signal closed in the last 7 days (not
-  the owner's own word, and not a duplicate fold): `ledger.py update
+  `ledger.py reject` (on a live card, its Still open, and the card gives
+  way to its status line). On a row a signal closed in the last 7 days
+  (not the owner's own word, and not a duplicate fold): `ledger.py update
   --status open`, which records the reopen and vetoes the signal. A row
   the web chat's own Done closed opens again the same way. Each then
   gets `item_feedback.py --kind still_open`.
 
 Nothing is written back for an automated post or a reply in one (a
 briefing names many rows), for more than 3 rows, or for several open
-rows on different mail threads. The record's `writeback` feature says
-what the tap did (`close`, `reject`, `reopen`, `none`, `automated`,
+rows on different mail threads; a card names its own rows, so none of
+those limits holds its Close. The record's `writeback` feature says what
+the tap did (`confirm`, `close`, `reject`, `reopen`, `none`, `automated`,
 `ambiguous`).
+
+### The hill climb: signals move by the owner's record
+
+`preprocessor/closure_policy.py` learns, per signal, from the owner's
+own decisions in `ledger_events`: proposals confirmed (a card, a Mark
+done, the owner's word while it stood) or kept open, and closes made at
+once that stood two days or that the owner reopened. A new message that
+reopens a closed row (`renew`) is a new ask, not a false close.
+
+| move | when | what changes |
+|---|---|---|
+| promoted | 15 or more decisions on the rows where the signal proposes, precision 0.92 or more over the last 30, none kept open in the last 10 | its proposals close at once (tier `promoted`); the bot archives the mail and posts one note in the DM with a Reopen button |
+| demoted | a close made at once reopened in the last 5, or precision under 0.85 | a promoted signal proposes again; a decisive one proposes until its proposals earn it back by the promotion test |
+
+A reopen of a close made at once moves its signal at once; the nightly
+run keeps the numbers. Never in the loop: the owner's word or click, a
+standing rule, a duplicate, a send that names the row, the Send button's
+reply close, and a model lane the resident runs. A resident's request, a
+row the owner kept open and a row that waits on someone else are never
+promoted.
+
+The nightly `collect --report` runs `closure_policy.update` after the
+eval. It writes `~/.ea/state/closure-policy.json` (each signal's state,
+the numbers behind it, the last changes) and posts each change as one
+line to the health channel. `ledger.py closure-report` shows each
+signal's `policy` (promoted, demoted, base, or never). The switch is
+`closure.hill_climb` in `ea-config.json` (on; false turns every move
+off), and an install with no chat buttons gets no promotion (no Reopen).
+
+```
+python3 /opt/ea-system/preprocessor/closure_policy.py show [--json]
+python3 /opt/ea-system/preprocessor/closure_policy.py freeze [--off]
+python3 /opt/ea-system/preprocessor/closure_policy.py reset
+python3 /opt/ea-system/preprocessor/closure_policy.py backtest [--days 30] [--json]
+```
+
+`backtest` replays the recorded decisions with the loop on: per signal,
+the clicks the owner would not have made, the closes he would have
+reopened, the clicks a demotion adds and the wrong closes it holds back.
+It also says what closing renewed rows at once would do; on that record
+they stay proposals.
 
 ### Reading the evaluation
 

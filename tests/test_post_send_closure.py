@@ -387,6 +387,23 @@ def test_each_way_a_draft_leaves_names_its_own_signal():
     assert outcomes["handled"][2] == "user_handled"
     assert outcomes["outlook_send"][2] == "linked_send"
     assert set(outcomes) == set(ns["_LEFT_OPEN_WHY"])
+    # Every way a draft leaves archives the mail its close settles: the
+    # owner never archives by hand what a send closed.
+    assert not any(skip for _note, skip, *_rest in outcomes.values())
+
+
+def test_a_send_closes_its_row_with_the_archive_and_waits_for_it():
+    ns, _ = _closure_ns()
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append((cmd, kw.get("timeout")))
+        return types.SimpleNamespace(stdout='{"action": "closed"}', returncode=0)
+    with patch("subprocess.run", side_effect=run):
+        ns["_close_ledger_row"]("C1", "T1", {"id": "response-a"}, "sent", skip_archive=False,
+                                signal="send_reply_row", announced=[])
+    ((cmd, timeout),) = calls
+    assert "--skip-archive" not in cmd and timeout == 60
 
 
 def test_a_named_row_closes_once_even_when_it_is_the_reply_row():

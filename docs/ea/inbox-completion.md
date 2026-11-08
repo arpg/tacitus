@@ -27,6 +27,28 @@ similar, set `enabled: false`.
 Items with status `snoozed` are also checked — if the user manually
 moves a snoozed email back and then archives it, the item closes.
 
+A new message in a closed row's thread opens the row again (a `renew`
+event). The close was right; the new message is a new ask. Evidence
+after it proposes the close, and the user confirms on the card.
+
+## Closes the user no longer clicks
+
+Some signals close at once, because the user confirmed their proposals
+each time (the hill climb, `preprocessor/closure_policy.py`). Such a row
+is `completed` with `closed_by.tier` `promoted`. The bot archives its
+mail and posts one note in the DM with a Reopen button. The row is
+closed: never brief it as open, and never as a proposal. When the user
+says it is not done, reopen it: `python3
+/home/ea-bot/ea-system/preprocessor/ledger.py update --id <id> --status
+open --last-action "<date>: reopened, the user said <their words>"`. A
+reopen makes that signal ask the user first again.
+
+A send through the card closes the rows it settles and archives their
+mail, so the user does not archive it by hand. A close proposal card
+with no answer for a week expires; its rows stay on the briefing's
+"Looks done?" line, and the user's reply there closes or keeps them
+(`close --user-said`, or `reject`).
+
 ## Pre-send open-claim audit and item feedback
 
 Two layers guard what a briefing asserts as open (set 2026-09-02, after

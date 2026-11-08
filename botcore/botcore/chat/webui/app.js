@@ -757,12 +757,19 @@ async function loadNeeds() {
   if (S.ready) { renderChannels(); renderThreads(); }
 }
 
+// A tap within FLIP_GUARD_MS of the header button's label flipping was aimed at the old
+// label (a card's Close, then Mark done at once as a rule settles it): it does nothing.
+const FLIP_GUARD_MS = 1500, shown = { key: '', label: '', at: 0 };
+
 function stateShown() {
   renderChannels();
   renderThreads();
   const btn = $('thread-state');
   btn.hidden = !S.thread || S.thread === NEW_THREAD;
-  btn.textContent = stateOf(S.channel, S.thread) === 'done' ? 'Needs me' : 'Mark done';
+  const label = stateOf(S.channel, S.thread) === 'done' ? 'Needs me' : 'Mark done', key = tkey(S.channel, S.thread);
+  if (key === shown.key && label !== shown.label) shown.at = Date.now();
+  Object.assign(shown, { key, label });
+  btn.textContent = label;
 }
 
 // A `thread_state` event: the sticker, the filter and Needs you follow, and
@@ -3142,7 +3149,7 @@ async function init() {
     if (e.target.closest('a.chan')) document.body.classList.remove('drawer');
   });
   $('back').addEventListener('click', () => { location.hash = S.needsView ? hashFor(NEEDS) : hashFor(S.channel); });
-  $('thread-state').addEventListener('click', () => setState(S.channel, S.thread));
+  $('thread-state').addEventListener('click', () => { if (Date.now() - shown.at >= FLIP_GUARD_MS) setState(S.channel, S.thread); });
   longPress($('thread-list'));
   $('new-thread').addEventListener('click', () => { location.hash = hashFor(S.channel, NEW_THREAD); $('text').focus(); });
   $('composer').addEventListener('submit', (e) => { e.preventDefault(); send(); });

@@ -664,14 +664,18 @@ class VetoStore:
         self.data["closes"][entry_id] = {"signal": signal, "ts": _utc_now()}
         self.dirty = True
 
-    def note_reopen(self, entry_id: str) -> str:
-        """The entry is open but we closed it: a human reopened it.
+    def note_reopen(self, entry_id: str, renewed_at: str = "") -> str:
+        """The entry is open but we closed it: a human reopened it, unless a
+        new message in its thread reopened it after the close (`renewed_at`,
+        closure.note_renew): a new ask, and the close stood.
 
         Returns the vetoed signal name, or '' if we never closed it."""
         rec = self.data["closes"].pop(entry_id, None)
         if not rec:
             return ""
         self.dirty = True
+        if renewed_at and renewed_at >= str(rec.get("ts") or ""):
+            return ""
         signal = rec.get("signal") or ""
         if signal:
             self.add_veto(entry_id, signal, "reopened after auto-close")
@@ -2104,14 +2108,15 @@ def scrub_closures(*, open_entries: list[dict] | None = None,
     inbound_all = (outlook_inbox or []) + archived_inbound
 
     # Standing vetoes, and the reopens that create new ones. An entry we
-    # closed that is open again was put back by a human.
+    # closed that is open again was put back by a human, unless a new
+    # message in its thread renewed it.
     vetoes = VetoStore.load(veto_store_path)
     new_vetoes: list[dict] = []
     for entry in open_entries:
         eid = entry.get("id") or ""
         if not eid:
             continue
-        signal = vetoes.note_reopen(eid)
+        signal = vetoes.note_reopen(eid, renewed_at=str(entry.get("renewed_at") or ""))
         if signal:
             new_vetoes.append({"id": eid, "signal": signal,
                                "source": "reopened after auto-close"})
