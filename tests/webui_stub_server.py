@@ -13,7 +13,10 @@ what happens next.
 A post gets an echo (an eyes reaction, a bot reply, a check); a card
 click is recorded in `clicks` and the card turns into a status line. A
 post that asks for a room ("open a room for X") gets a new room, named
-from X, announced with a `channel` event, as the bot's reply says.
+from X, announced with a `channel` event, as the bot's reply says. An
+upload takes one `file` part or several, as the bot does: the first
+file's message carries the text, the others follow it in the same
+thread, and `uploads` records each request.
 `emit_bot` (or POST /_stub/emit) posts a bot message from outside, and
 `--tick N` posts one every N seconds. `drop_streams` closes the open
 streams (and can refuse the next ones); `streams` records how each stream
@@ -201,6 +204,7 @@ class Stub:
         self.files: dict[str, tuple[str, str, bytes]] = {}
         self.clicks: list[dict] = []
         self.posts: list[dict] = []
+        self.uploads: list[dict] = []  # each POST .../files: its text, thread key, nonce and (name, bytes) per file
         self.owner_actions: list[dict] = []  # each search, reaction, edit and removal
         # (channel, thread key) -> {"state", "by", "reason", "at"}
         self.states: dict[tuple[str, str], dict] = {}
@@ -658,17 +662,29 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, s.post(parts[1], data["text"], data.get("thread_key"),
                                               nonce=data.get("nonce")))
             if parts[2] == "files":
-                fields = {name: (fname, data) for name, fname, data in self._parts()}
-                if "file" not in fields:
+                # One `file` part or several: the first file's row carries the text,
+                # the others follow it in the same thread, as the bot stores them.
+                got = self._parts()
+                fields = {name: (fname, data) for name, fname, data in got}
+                files = [(fname, data) for name, fname, data in got if name == "file"]
+                if not files:
                     return self._json(400, {"error": "no file"})
-                fname, data = fields["file"]
-                fid = f"f{len(s.files) + 1}"
-                mime = "image/png" if data.startswith(b"\x89PNG") else "application/octet-stream"
-                s.files[fid] = (fname or "upload", mime, data)
                 text = fields.get("text", (None, b""))[1].decode()
                 tk = fields.get("thread_key", (None, b""))[1].decode() or None
-                ref = {"id": fid, "name": fname, "url": "", "mimetype": mime, "size": len(data)}
-                return self._json(200, s.post(parts[1], text, tk, file=ref))
+                nonce = fields.get("nonce", (None, b""))[1].decode() or None
+                s.uploads.append({"channel": parts[1], "text": text, "thread_key": tk, "nonce": nonce,
+                                  "files": [(fname, data) for fname, data in files]})
+                refs = []
+                for fname, data in files:
+                    fid = f"f{len(s.files) + 1}"
+                    mime = "image/png" if data.startswith(b"\x89PNG") else "application/octet-stream"
+                    s.files[fid] = (fname or "upload", mime, data)
+                    refs.append({"id": fid, "name": fname, "url": "", "mimetype": mime, "size": len(data)})
+                first = s.post(parts[1], text, tk, file=refs[0], nonce=nonce)
+                for ref in refs[1:]:
+                    s.add(parts[1], "", author="owner", kind="file", thread_key=first["thread_key"], file=ref,
+                          event="file")
+                return self._json(200, first)
         if parts == ["settings", "notify"] and "notify" in s.settings:
             body = json.loads(self._body() or b"{}")
             s.notify_posts.append(body)

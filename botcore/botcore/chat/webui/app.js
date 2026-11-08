@@ -650,8 +650,8 @@ function renderChannels() {
   $('new-room').hidden = !mainChannel();
 }
 
-// One thread's card: its title, its sticker and time, its channel (in the
-// Needs you list) and replies, and its unread count.
+// One thread's card: its title, its sticker and time, a Draft mark, its
+// channel (in the Needs you list) and replies, and its unread count.
 function threadCard(p, ch, withChannel) {
   const tk = threadOf(p);
   const n = S.threadUnread.get(tkey(ch, tk)) || 0;
@@ -665,7 +665,8 @@ function threadCard(p, ch, withChannel) {
   }, h('span', { class: 't-title' }, threadTitle(p)),
   word ? h('span', { class: `sticker st-${st.state}` + (st.stale ? ' stale' : ''), role: 'img', 'aria-label': st.reason ? `${word}: ${st.reason}` : word }, word) : null,
   h('time', { class: 't-time' }, when(p.last_at || p.posted_at, true)),
-  h('span', { class: 't-meta' }, withChannel ? [h('span', { class: 't-chan' }, channelName(chan(ch)) || p.channel_name || ch), ' · '] : null,
+  h('span', { class: 't-meta' }, draftIn(S.drafts.get(tkey(ch, tk))) ? [h('span', { class: 't-draft' }, 'Draft'), ' · '] : null,
+    withChannel ? [h('span', { class: 't-chan' }, channelName(chan(ch)) || p.channel_name || ch), ' · '] : null,
     `${replies} ${replies === 1 ? 'reply' : 'replies'}`),
   n ? h('span', { class: 'badge', 'aria-label': `${n} unread` }, String(n)) : null);
 }
@@ -974,6 +975,7 @@ async function route() {
   $('channel-name').textContent = S.needsView ? 'Needs you' : channelName(chan(ch));
   $('new-thread').hidden = S.needsView;
   digestView();
+  swapDraft();
   stateShown();
   if (needs) loadNeeds();
   else if (changed || !S.threads.has(ch)) loadThreads(ch);
@@ -1138,7 +1140,7 @@ async function fixParent(ch, tk) {
   } catch { /* the list keeps the message it has */ }
 }
 
-/* -- Composer and uploads ------------------------------------------- */
+/* -- Composer, drafts and attachments ------------------------------- */
 
 function note(text) { $('composer-note').textContent = text || ''; }
 
@@ -1153,6 +1155,139 @@ function grow() {
 function target() {
   const { ch, tk } = parseHash();
   return chan(ch) ? { ch, tk: tk && tk !== NEW_THREAD ? tk : null } : { ch: S.channel, tk: null };
+}
+
+// A draft per place (a conversation, or a new one in a channel): the words
+// and the files the owner left there stay with it, come back on the return,
+// and go with a send. Web Storage keeps the words and the files' names, a
+// key per place, the newest DRAFTS_KEPT; a file's bytes stay in this page.
+const DRAFT_KEY = 'tacitus-draft:';
+const DRAFTS_KEPT = 50;
+const MAX_FILES = 10, MAX_BYTES = 50 * 1024 * 1024; // one message's files, as the bot takes them
+Object.assign(S, { drafts: new Map(), draftAt: null, pending: [] }); // place -> {text, files, at, lost}
+const placeOf = (ch, tk) => (ch ? tkey(ch, tk || NEW_THREAD) : '');
+const draftIn = (d) => Boolean(d && (d.text.trim() || d.files.length));
+const draftKeys = () => Object.keys(localStorage).filter((k) => k.startsWith(DRAFT_KEY));
+const readDraft = (k) => { try { return JSON.parse(localStorage.getItem(k)) || {}; } catch { return {}; } };
+try {
+  for (const k of draftKeys()) {
+    const d = readDraft(k);
+    if (typeof d.text === 'string') S.drafts.set(k.slice(DRAFT_KEY.length), { text: d.text, files: [], lost: Array.isArray(d.files) ? d.files : null, at: d.at || 0 });
+  }
+} catch { /* no storage: drafts last this visit */ }
+
+function keepDraft(place) {
+  const d = S.drafts.get(place);
+  try {
+    if (!draftIn(d)) { localStorage.removeItem(DRAFT_KEY + place); return; }
+    localStorage.setItem(DRAFT_KEY + place, JSON.stringify({ text: d.text, files: d.files.map((f) => f.name), at: d.at }));
+    const keys = draftKeys();
+    if (keys.length > DRAFTS_KEPT) {
+      keys.map((k) => [k, readDraft(k).at || 0]).sort((a, b) => b[1] - a[1]).slice(DRAFTS_KEPT).forEach(([k]) => localStorage.removeItem(k));
+    }
+  } catch { /* kept in this page */ }
+}
+
+// The composer into its place's draft. Words under edit are no draft: the
+// draft is what the edit put aside.
+function saveDraft() {
+  const place = S.draftAt;
+  if (!place || S.editing) return;
+  const had = draftIn(S.drafts.get(place));
+  const d = { text: $('text').value, files: [...S.pending], at: Date.now() };
+  if (draftIn(d)) S.drafts.set(place, d); else S.drafts.delete(place);
+  keepDraft(place);
+  if (had !== draftIn(d)) renderThreads(); // its card's Draft mark
+}
+
+// The composer follows the place in view: what it held stays where it was
+// written, and the new place's draft comes back, with a word on the files a
+// reload took from it.
+function swapDraft() {
+  const { ch, tk } = target();
+  const place = placeOf(ch, tk);
+  if (place === S.draftAt) return;
+  if (S.editing) endEdit();
+  saveDraft();
+  S.draftAt = place;
+  const d = S.drafts.get(place) || { text: '', files: [] };
+  $('text').value = d.text;
+  S.pending = [...d.files];
+  grow();
+  renderPending();
+  note(d.lost && d.lost.length ? `Attach again: ${d.lost.join(', ')}. A file does not stay when the app closes.` : '');
+  d.lost = null;
+}
+
+// The files waiting for Send, a chip each: its name, its size, and a cross
+// that takes it off. An edit hides them: they wait for the draft's send.
+function renderPending() {
+  const box = $('pending');
+  box.hidden = !S.pending.length || Boolean(S.editing);
+  box.replaceChildren(...S.pending.map((f, i) => h('span', { class: 'pend' }, emojiNode('paperclip'),
+    h('span', { class: 'file-name' }, f.name || 'file'), h('span', { class: 'size' }, size(f.size)),
+    h('button', { type: 'button', class: 'icon', 'aria-label': `Remove ${f.name || 'file'}`, onclick: () => {
+      S.pending.splice(i, 1);
+      renderPending();
+      saveDraft();
+      const left = box.querySelectorAll('button');
+      (left[Math.min(i, left.length - 1)] || $('attach')).focus();
+    } }, '×'))));
+  $('composer').classList.toggle('has-files', !box.hidden);
+}
+
+// A file chosen, dropped or pasted waits in the composer until Send.
+function attach(list) {
+  const files = [...(list || [])];
+  if (!files.length || !S.draftAt) return;
+  if (S.editing) { note('Finish the edit first, then attach.'); return; }
+  const room = Math.max(0, MAX_FILES - S.pending.length);
+  S.pending.push(...files.slice(0, room));
+  note(files.length > room ? `One message takes at most ${MAX_FILES} files.` : '');
+  renderPending();
+  saveDraft();
+}
+
+// A send takes out of its place's draft the words it carried, while they
+// are as sent, and its files; what was typed meanwhile stays.
+function sent(place, text, files) {
+  if (place !== S.draftAt) {
+    const d = S.drafts.get(place);
+    if (!d) return;
+    Object.assign(d, { text: d.text === text ? '' : d.text, files: d.files.filter((f) => !files.includes(f)) });
+    if (!draftIn(d)) S.drafts.delete(place);
+    keepDraft(place);
+    renderThreads();
+    return;
+  }
+  if ($('text').value === text) $('text').value = '';
+  if (S.editing && S.editing.kept === text) S.editing.kept = '';
+  S.pending = S.pending.filter((f) => !files.includes(f));
+  grow();
+  renderPending();
+  saveDraft();
+}
+
+// A file dragged over the open conversation rings it, and dropped there
+// waits in the composer. A drop anywhere else does nothing, so a near miss
+// never opens the file in the app's place.
+function dropFiles() {
+  const dragged = (e) => [...((e.dataTransfer && e.dataTransfer.types) || [])].includes('Files');
+  const here = (e) => Boolean(e.target.closest && e.target.closest('#thread')) && !document.body.classList.contains('digest');
+  window.addEventListener('dragover', (e) => {
+    if (!dragged(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = here(e) ? 'copy' : 'none';
+    $('thread').classList.toggle('dropping', here(e));
+    clearTimeout(S.dropTimer); // no dragleave to trust: the ring goes once the drag stops passing over
+    S.dropTimer = setTimeout(() => $('thread').classList.remove('dropping'), 200);
+  });
+  window.addEventListener('drop', (e) => {
+    if (!dragged(e)) return;
+    e.preventDefault();
+    $('thread').classList.remove('dropping');
+    if (here(e)) attach(e.dataTransfer.files);
+  });
 }
 
 // A send that the host did not take (the connection refused while the bot
@@ -1178,19 +1313,23 @@ function sendNonce() {
   return (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
 }
 
-async function submit(build, text) {
+async function submit(build, text, files) {
   if (S.sending) return;
   if (!S.channel) { note('Not sent: the app is still connecting. Try again in a moment.'); return; }
   const { ch, tk } = target();
+  const place = placeOf(ch, tk);
   S.sending = true;
   $('composer').classList.add('busy');
   try {
     const m = await sending(() => build(ch, tk), () => note('Tacitus is not answering (a restart?). Trying again.'));
-    if ($('text').value === text) $('text').value = ''; // keep what was typed meanwhile
-    grow();
+    sent(place, text, files);
     note('');
     if (m && m.id) ingest(m);
-    if (!tk && m && m.thread_key && ch === S.channel) location.hash = hashFor(ch, m.thread_key);
+    if (!tk && m && m.thread_key && ch === S.channel) {
+      // The new conversation takes what was typed while it was sent.
+      if (S.draftAt === place) { S.drafts.delete(place); keepDraft(place); S.draftAt = placeOf(ch, m.thread_key); saveDraft(); }
+      location.hash = hashFor(ch, m.thread_key);
+    }
   } catch (e) {
     note(`Not sent: ${e.message}`);
   } finally {
@@ -1199,28 +1338,35 @@ async function submit(build, text) {
   }
 }
 
+// Send: the words alone, or the words and every file waiting, in one
+// request; the bot posts the files in order in the conversation and
+// Tacitus reads them as one message. Away from home the relay takes at most
+// RELAY_MAX_BODY in a request, so larger files wait for the own network.
 function send() {
   if (S.editing) return saveEdit();
-  const text = $('text').value;
-  if (!text.trim()) return;
+  const text = $('text').value, files = [...S.pending];
+  if (!text.trim() && !files.length) return;
   const n = sendNonce();
-  submit((ch, tk) => call('POST', `/channels/${enc(ch)}/messages`, tk ? { text, thread_key: tk, nonce: n } : { text, nonce: n }), text);
-}
-
-function upload(file) {
-  const text = $('text').value;
-  if (T.relay && file.size > RELAY_MAX_BODY) {
-    note('Away from home a file can be at most 10 MB. Send larger ones when you are on your own network.');
+  if (!files.length) {
+    submit((ch, tk) => call('POST', `/channels/${enc(ch)}/messages`, tk ? { text, thread_key: tk, nonce: n } : { text, nonce: n }), text, files);
     return;
   }
-  note(`Uploading ${file.name} (${size(file.size)})...`);
+  const total = files.reduce((sum, f) => sum + f.size, 0);
+  const bytes = total + TE.encode(text).length + 1024 * (files.length + 1); // the form's own lines too
+  if (T.relay && bytes > RELAY_MAX_BODY) {
+    note('Away from home you can send at most 10 MB of files at once. Send larger ones when you are on your own network.');
+    return;
+  }
+  if (bytes > MAX_BYTES) { note('You can send at most 50 MB of files at once.'); return; }
+  note(`Uploading ${files.length === 1 ? files[0].name : `${files.length} files`} (${size(total)})...`);
   submit((ch, tk) => {
     const fd = new FormData();
-    fd.append('file', file, file.name);
+    files.forEach((f) => fd.append('file', f, f.name));
     if (text.trim()) fd.append('text', text);
     if (tk) fd.append('thread_key', tk);
+    fd.append('nonce', n);
     return call('POST', `/channels/${enc(ch)}/files`, fd);
-  }, text);
+  }, text, files);
 }
 
 /* -- Owner actions: search, reactions, edit and delete -------------- */
@@ -1324,6 +1470,7 @@ function startEdit(m) {
   (S.nodes.get(m.id) || h('i')).classList.add('editing');
   $('editing').hidden = false;
   $('attach').disabled = true;
+  renderPending();
   grow();
   $('text').focus();
 }
@@ -1335,6 +1482,7 @@ function endEdit() {
   S.editing = null;
   $('editing').hidden = true;
   $('attach').disabled = false;
+  renderPending();
   note('');
   grow();
 }
@@ -2785,9 +2933,11 @@ function prefill(btn) {
   const slot = (btn.querySelector('b') || {}).textContent || '';
   const at = slot ? text.indexOf(slot) : text.length;
   location.hash = hashFor(main.id, NEW_THREAD);
+  swapDraft(); // the composer is the new conversation's now, before its route runs
   document.body.dataset.view = 'thread';
   document.body.classList.remove('drawer');
   $('text').value = text;
+  saveDraft();
   grow();
   $('text').focus();
   $('text').setSelectionRange(at, at + slot.length);
@@ -3151,18 +3301,24 @@ async function init() {
   $('back').addEventListener('click', () => { location.hash = S.needsView ? hashFor(NEEDS) : hashFor(S.channel); });
   $('thread-state').addEventListener('click', () => { if (Date.now() - shown.at >= FLIP_GUARD_MS) setState(S.channel, S.thread); });
   longPress($('thread-list'));
-  $('new-thread').addEventListener('click', () => { location.hash = hashFor(S.channel, NEW_THREAD); $('text').focus(); });
+  $('new-thread').addEventListener('click', () => { location.hash = hashFor(S.channel, NEW_THREAD); swapDraft(); $('text').focus(); });
   $('composer').addEventListener('submit', (e) => { e.preventDefault(); send(); });
   $('text').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
-  $('text').addEventListener('input', grow);
+  $('text').addEventListener('input', () => { grow(); saveDraft(); });
   $('attach').addEventListener('click', () => $('file').click());
   $('file').addEventListener('change', () => {
-    const f = $('file').files[0];
+    const files = [...$('file').files];
     $('file').value = '';
-    if (f) upload(f);
+    attach(files);
   });
+  // A pasted file or image waits with the others; pasted words stay words.
+  $('text').addEventListener('paste', (e) => {
+    const files = [...((e.clipboardData && e.clipboardData.files) || [])];
+    if (files.length && !S.editing) { e.preventDefault(); attach(files); }
+  });
+  dropFiles();
   $('pair-form').addEventListener('submit', pair);
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installHint(e); });
   window.addEventListener('appinstalled', () => installHint(null));

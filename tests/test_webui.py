@@ -7,7 +7,9 @@ themes. Where Playwright and a browser are installed, the app runs against
 the stub server (tests/webui_stub_server.py):
 a thread renders, markup in text stays text, a card's buttons and select
 post to the actions route, an event appends a message and marks unread,
-the composer and the paperclip post, pairing answers a 401, on a phone
+the composer posts, keeps a draft per conversation (through a reload)
+and holds the files chosen, dropped or pasted until Send posts them with
+the words in one request, pairing answers a 401, on a phone
 every control is 44px high and nothing scrolls sideways, the channel
 list takes the width its names need and its edge drags or keys another
 that the browser keeps, its foot stays inside it at every width, and the
@@ -450,7 +452,10 @@ def test_the_app_stays_small():
     #     has both, the line under a task with no choice) and its save.
     # 5,070: 5,050 plus the "?" beside a task's name on the Models page (its note under the row, the
     #     small circle in a finger's press area on a touch screen).
-    assert lines <= 5070, f"{lines} lines: the contract keeps the app near 5,070 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model per task and its help"
+    # 5,230: 5,070 plus a draft per conversation (kept per place in the browser, back after a reload,
+    #     a Draft mark on its card) and the files that wait in the composer until Send (several at
+    #     once, chosen, dropped or pasted, a chip each with its cross, one request with the words).
+    assert lines <= 5230, f"{lines} lines: the contract keeps the app near 5,230 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model per task and its help, the drafts and the files that wait for Send"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -883,9 +888,221 @@ def test_the_paperclip_uploads_and_files_render(app):
 
     page.fill("#text", "The chart")
     page.set_input_files("#file", str(WEBUI / "icon-512.png"))
+    expect(page.locator("#pending .pend")).to_contain_text("icon-512.png")
+    page.press("#text", "Enter")
     wait_for(lambda: stub.posts)
     assert stub.posts[0]["text"] == "The chart" and stub.posts[0]["file"]["name"] == "icon-512.png"
     expect(page.locator(".msg.own .file img")).to_have_count(2)
+    assert not errors, errors
+
+
+def go(page, title):
+    """Open a conversation from the list while another is open: its card is
+    the active one once its route ran."""
+    from playwright.sync_api import expect
+    page.click(f".thread-item:has-text({json.dumps(title)})")
+    expect(page.locator(".thread-item.active")).to_contain_text(title)
+
+
+def _drafts(page) -> dict:
+    """The drafts this browser keeps, by the place's key."""
+    return page.evaluate("Object.fromEntries(Object.keys(localStorage).filter((k) => k.startsWith('tacitus-draft:'))"
+                         ".map((k) => [k.slice(14), JSON.parse(localStorage.getItem(k))]))")
+
+
+def test_a_draft_stays_with_its_conversation_and_goes_with_the_send(app):
+    """What is typed in a conversation, or in a new one, stays there when
+    the owner moves on, comes back on the return and after a reload, marks
+    the conversation's card, and a send clears it."""
+    from urllib.parse import quote
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app()
+    open_thread(page, "Draft a reply")
+    reply_key = page.locator(".thread-item.active").get_attribute("data-thread")
+    page.fill("#text", "half a reply")
+    expect(page.locator(".thread-item.active .t-draft")).to_have_text("Draft")
+    go(page, "Here is the figure")
+    figure_key = page.locator(".thread-item.active").get_attribute("data-thread")
+    assert page.input_value("#text") == ""
+    expect(page.locator(".thread-item:has-text('Draft a reply') .t-draft")).to_be_visible()
+    page.fill("#text", "about the figure")
+    page.click("#new-thread")
+    expect(page.locator("#thread-title")).to_have_text("New conversation")
+    assert page.input_value("#text") == ""
+    page.fill("#text", "a new one")
+    page.click(f"a.chan[href='#/{quote(W.MAIN, safe='')}']")
+    expect(page.locator(".chan.active .c-name")).to_have_text("Ask Tacitus")
+    assert page.input_value("#text") == ""
+    page.click(f"a.chan[href='#/{quote(W.DM, safe='')}']")
+    expect(page.locator(".chan.active .c-name")).to_have_text("Direct messages")
+    assert page.input_value("#text") == "a new one"  # the place with no conversation open starts a new one
+    go(page, "Draft a reply")
+    assert page.input_value("#text") == "half a reply"
+    kept = _drafts(page)
+    assert (kept[f"{W.DM}\n{reply_key}"]["text"], kept[f"{W.DM}\n{figure_key}"]["text"], kept[f"{W.DM}\n+"]["text"]) == \
+        ("half a reply", "about the figure", "a new one")
+    # A reload keeps the words, and the mark.
+    page.reload()
+    page.wait_for_selector(".thread-item")
+    expect(page.locator(".thread-item:has-text('Draft a reply') .t-draft")).to_be_visible()
+    expect(page.locator("#text")).to_have_value("half a reply")
+    go(page, "Here is the figure")
+    expect(page.locator("#text")).to_have_value("about the figure")
+    # A send clears its draft and the mark; another place's stays.
+    go(page, "Draft a reply")
+    page.press("#text", "Enter")
+    wait_for(lambda: stub.posts)
+    assert stub.posts[-1]["text"] == "half a reply" and stub.posts[-1]["thread_key"] == reply_key
+    expect(page.locator("#text")).to_have_value("")
+    expect(page.locator(".thread-item:has-text('Draft a reply') .t-draft")).to_have_count(0)
+    assert f"{W.DM}\n{reply_key}" not in _drafts(page)
+    assert _drafts(page)[f"{W.DM}\n{figure_key}"]["text"] == "about the figure"
+    # A new conversation's send clears the new conversation's draft; what it opens has none.
+    page.click("#new-thread")
+    expect(page.locator("#text")).to_have_value("a new one")
+    page.press("#text", "Enter")
+    wait_for(lambda: len(stub.posts) == 2)
+    new_key = next(m for m in stub.messages if m["text"] == "a new one")["thread_key"]
+    expect(page).to_have_url(re.compile(re.escape(new_key) + "$"))
+    expect(page.locator("#text")).to_have_value("")
+    assert f"{W.DM}\n+" not in _drafts(page) and f"{W.DM}\n{new_key}" not in _drafts(page)
+    assert not errors, errors
+
+
+def test_a_chosen_file_waits_for_send_and_goes_with_the_words(app):
+    """Choosing files adds them to the composer and sends nothing; a cross
+    takes one off; they stay with their conversation's draft; Send posts the
+    words and every file in one request, in order, into the conversation."""
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    open_thread(page, "Here is the figure")
+    tk = page.locator(".thread-item.active").get_attribute("data-thread")
+    page.fill("#text", "Both of these")
+    page.set_input_files("#file", [str(WEBUI / "icon-512.png"), str(WEBUI / "favicon.svg"), str(WEBUI / "icon-192.png")])
+    expect(page.locator("#pending .pend .file-name")).to_have_text(["icon-512.png", "favicon.svg", "icon-192.png"])
+    page.wait_for_timeout(300)
+    assert not stub.uploads and not stub.posts
+    page.click("#pending button[aria-label='Remove favicon.svg']")
+    expect(page.locator("#pending .pend .file-name")).to_have_text(["icon-512.png", "icon-192.png"])
+    expect(page.locator("#pending button[aria-label='Remove icon-192.png']")).to_be_focused()
+    expect(page.locator("#composer")).to_have_class(re.compile(r"\bhas-files\b"))  # Send is filled, as for words
+    # The files are part of the conversation's draft: another conversation has none, and they come back.
+    go(page, "Draft a reply")
+    expect(page.locator("#pending")).to_be_hidden()
+    go(page, "Here is the figure")
+    expect(page.locator("#pending .pend .file-name")).to_have_text(["icon-512.png", "icon-192.png"])
+    assert page.input_value("#text") == "Both of these"
+    page.click("#send")
+    wait_for(lambda: stub.uploads)
+    up = stub.uploads[0]
+    assert (up["text"], up["thread_key"]) == ("Both of these", tk) and up["nonce"]
+    assert [name for name, _ in up["files"]] == ["icon-512.png", "icon-192.png"]
+    assert up["files"][0][1] == (WEBUI / "icon-512.png").read_bytes()
+    expect(page.locator("#pending")).to_be_hidden()
+    expect(page.locator("#text")).to_have_value("")
+    own = page.locator("#messages .msg.own.kind-file")
+    expect(own).to_have_count(3)  # the conversation's own, then the two sent
+    expect(own.nth(1)).to_contain_text("Both of these")
+    expect(own.nth(1).locator(".file-name")).to_have_text("icon-512.png")
+    expect(own.nth(2).locator(".file-name")).to_have_text("icon-192.png")
+    assert len(stub.uploads) == 1
+    assert not errors, errors
+
+
+def test_a_dropped_or_pasted_file_waits_in_the_composer(app):
+    """A file dropped on the conversation, or pasted into the field, waits
+    with the others; a drop elsewhere adds nothing and opens nothing. Files
+    alone send with no words. Away from home a send over 10 MB is refused
+    with a plain note."""
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    open_thread(page, "Here is the figure")
+    tk = page.locator(".thread-item.active").get_attribute("data-thread")
+    drop = """([sel, name, size]) => {
+      const dt = new DataTransfer();
+      dt.items.add(new File([new Uint8Array(size || 5)], name, { type: 'text/plain' }));
+      const ev = new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true });
+      document.querySelector(sel).dispatchEvent(ev);
+      return ev.defaultPrevented;
+    }"""
+    assert page.evaluate(drop, ["#messages", "notes.txt", 0]) is True
+    expect(page.locator("#pending .pend .file-name")).to_have_text(["notes.txt"])
+    assert page.evaluate(drop, ["#thread-list", "missed.txt", 0]) is True  # prevented: the page stays
+    expect(page.locator("#pending .pend")).to_have_count(1)
+    page.fill("#text", "words")
+    pasted = page.evaluate("""() => {
+      const dt = new DataTransfer();
+      dt.items.add(new File([new Uint8Array([137, 80, 78, 71])], 'image.png', { type: 'image/png' }));
+      const ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+      document.querySelector('#text').dispatchEvent(ev);
+      return ev.defaultPrevented;
+    }""")
+    assert pasted is True
+    expect(page.locator("#pending .pend .file-name")).to_have_text(["notes.txt", "image.png"])
+    assert page.input_value("#text") == "words"
+    page.fill("#text", "")
+    # Away from home a request carries at most 10 MB: the send waits, with a plain note.
+    page.evaluate("T = { ...DIRECT, relay: true }")
+    page.evaluate(drop, ["#composer", "big.bin", 11 * 1024 * 1024])
+    page.click("#send")
+    expect(page.locator("#composer-note")).to_have_text(
+        "Away from home you can send at most 10 MB of files at once. Send larger ones when you are on your own network.")
+    page.evaluate("T = DIRECT")
+    page.click("#pending button[aria-label='Remove big.bin']")
+    page.click("#send")
+    wait_for(lambda: stub.uploads)
+    up = stub.uploads[0]
+    assert (up["text"], up["thread_key"]) == ("", tk)
+    assert [name for name, _ in up["files"]] == ["notes.txt", "image.png"]
+    expect(page.locator("#pending")).to_be_hidden()
+    assert len(stub.uploads) == 1
+    assert not errors, errors
+
+
+def test_an_edit_puts_the_draft_and_its_files_aside(app):
+    """An edit of the owner's message hides the files waiting and takes no
+    new one; what it types is no draft; Cancel brings the draft back whole."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app()
+    open_thread(page, "Here is the figure")
+    tk = page.locator(".thread-item.active").get_attribute("data-thread")
+    page.fill("#text", "Sent first")
+    page.press("#text", "Enter")
+    wait_for(lambda: stub.posts)
+    m = next(x for x in stub.messages if x["text"] == "Sent first")
+    page.fill("#text", "the draft")
+    page.set_input_files("#file", str(WEBUI / "favicon.svg"))
+    msg = page.locator(f"#messages .msg[data-id='{m['id']}']")
+    msg.hover()
+    msg.locator(".msg-act").click()
+    page.click("#msg-strip button:has-text('Edit')")
+    expect(page.locator("#pending")).to_be_hidden()
+    page.fill("#text", "Sent first, changed")
+    page.evaluate("""() => {
+      const dt = new DataTransfer();
+      dt.items.add(new File(['x'], 'late.txt', { type: 'text/plain' }));
+      document.querySelector('#messages').dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+    }""")
+    expect(page.locator("#composer-note")).to_have_text("Finish the edit first, then attach.")
+    assert _drafts(page)[f"{W.DM}\n{tk}"] == {"text": "the draft", "files": ["favicon.svg"],
+                                             "at": _drafts(page)[f"{W.DM}\n{tk}"]["at"]}
+    page.click("#edit-cancel")
+    expect(page.locator("#pending .pend .file-name")).to_have_text(["favicon.svg"])
+    assert page.input_value("#text") == "the draft"
+    assert not stub.uploads
+    assert not errors, errors
+
+
+def test_a_phone_keeps_44px_targets_with_files_waiting(app):
+    from playwright.sync_api import expect
+    page, stub, errors = app(**PHONE)
+    open_thread(page, "Here is the figure")
+    page.set_input_files("#file", [str(WEBUI / "icon-512.png"), str(WEBUI / "favicon.svg")])
+    expect(page.locator("#pending .pend")).to_have_count(2)
+    assert page.evaluate(SMALL_TARGETS) == []
+    assert page.evaluate(SIDEWAYS) == [0, 0]
     assert not errors, errors
 
 
@@ -2295,13 +2512,19 @@ VECTORS = TESTS / "fixtures" / "relay_vectors.json"
 
 def test_the_relay_keys_stay_in_webcrypto_and_indexeddb():
     js = read("app.js")
-    # Web Storage holds five things, none a key: when this browser hid the
+    # Web Storage holds six things, none a key: when this browser hid the
     # install line, the connection notes it reports to the bot, the
     # thread filter chosen (a read at start and a write per choice), that
     # the welcome was closed once (a read after the channels load, a write
-    # when it closes), and the menu's width (a read at start, a write per
-    # change, a removal when it goes back to its own).
-    assert "sessionStorage" not in js and js.count("localStorage") == 13
+    # when it closes), the menu's width (a read at start, a write per
+    # change, a removal when it goes back to its own), and the drafts, the
+    # owner's words and their files' names per place (each read at start, a
+    # write per change, a removal when one empties or falls past the newest
+    # DRAFTS_KEPT, which reads them all).
+    assert "sessionStorage" not in js and js.count("localStorage") == 18
+    assert all(f"localStorage.{verb}(DRAFT_KEY" in js for verb in ("setItem", "removeItem"))
+    assert "const draftKeys = () => Object.keys(localStorage).filter((k) => k.startsWith(DRAFT_KEY));" in js
+    assert "JSON.parse(localStorage.getItem(k)) || {}" in js and "localStorage.removeItem(k)" in js
     assert all(f"localStorage.{verb}(NAV_KEY" in js for verb in ("getItem", "setItem", "removeItem"))
     assert all(f"localStorage.{verb}(WELCOME_KEY" in js for verb in ("getItem", "setItem"))
     assert all(f"localStorage.{verb}(INSTALL_KEY" in js for verb in ("getItem", "setItem"))

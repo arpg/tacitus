@@ -74,8 +74,9 @@ dispatching that input itself, in either of two shapes:
 
     inbound(<InboundMessage>)    channel, text and thread_key (the primary's
                                  key, or None for a new thread); an upload
-                                 carries its bytes' local path in
-                                 raw["path"] and its name in files[0]
+                                 carries its files' local paths in
+                                 raw["paths"] (or one in raw["path"]) and
+                                 their names in files, in the same order
     inbound("message", channel=..., text=..., thread_key=..., files=[...])
         both return the MessageRef of the primary message that carries it
     inbound(<ActionEvent>)
@@ -1064,11 +1065,10 @@ class ShadowFrontend(ChatFrontend):
             return self._web_action(kind)
         if isinstance(kind, InboundMessage):
             msg = kind
-            path = str((msg.raw or {}).get("path") or "")
-            files: list = []
-            if path:
-                name = msg.files[0].name if msg.files else ""
-                files.append({"path": path, "name": name or Path(path).name})
+            raw = msg.raw or {}
+            paths = [str(p) for p in raw.get("paths") or [raw.get("path")] if p]
+            files = [{"path": path, "name": (msg.files[n].name if n < len(msg.files) else "")
+                      or Path(path).name} for n, path in enumerate(paths)]
             return self._web_message(msg.channel, msg.text or "", msg.thread_key or None, files)
         if kind == "message":
             return self._web_message(str(payload.get("channel") or ""),

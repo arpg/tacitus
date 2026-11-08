@@ -279,6 +279,9 @@ EVENT_KEEP_S = 14 * 86400
 STREAM_QUEUE = 2000
 MAX_JSON_BYTES = 1 << 20
 MAX_UPLOAD_BYTES = 50 << 20
+# Files one upload takes: the first carries the text, the others follow it
+# in the same thread, and the core gets them in one message.
+MAX_UPLOAD_FILES = 10
 MAX_TEXT_CHARS = 20000
 COOKIE_MAX_AGE = 365 * 86400
 # The pairing route reads at most this many bytes.
@@ -756,8 +759,17 @@ def _origin_key(url: str) -> tuple[str, str, int] | None:
 
 def parse_multipart(content_type: str, body: bytes) -> dict[str, dict]:
     """The parts of a multipart/form-data body by field name:
-    {name: {"filename": str | None, "type": str, "data": bytes}}.
-    Raises ValueError for a body that is not multipart."""
+    {name: {"filename": str | None, "type": str, "data": bytes}}; of two
+    parts with one name, the last. Raises ValueError for a body that is
+    not multipart."""
+    return dict(multipart_parts(content_type, body))
+
+
+def multipart_parts(content_type: str, body: bytes) -> list[tuple[str, dict]]:
+    """Every part of a multipart/form-data body in order, as (field name,
+    part) with the part as parse_multipart gives it, so a name that comes
+    more than once (several `file` parts) keeps each. Raises ValueError for
+    a body that is not multipart."""
     ct = Message()
     ct["content-type"] = content_type or ""
     if ct.get_content_maintype() != "multipart":
@@ -766,7 +778,7 @@ def parse_multipart(content_type: str, body: bytes) -> dict[str, dict]:
     if not boundary or not isinstance(boundary, str):
         raise ValueError("no multipart boundary")
     delim = b"\r\n--" + boundary.encode("latin-1")
-    out: dict[str, dict] = {}
+    out: list[tuple[str, dict]] = []
     for chunk in (b"\r\n" + body).split(delim)[1:]:
         if chunk.startswith(b"--"):
             break
@@ -785,9 +797,9 @@ def parse_multipart(content_type: str, body: bytes) -> dict[str, dict]:
         if not name:
             continue
         name = collapse_rfc2231_value(name)
-        out[str(name)] = {"filename": hdr.get_filename(),
-                          "type": hdr.get_content_type() if hdr.get("content-type") else "",
-                          "data": data}
+        out.append((str(name), {"filename": hdr.get_filename(),
+                                "type": hdr.get_content_type() if hdr.get("content-type") else "",
+                                "data": data}))
     return out
 
 
@@ -3897,38 +3909,59 @@ class WebFrontend(ChatFrontend):
         msg.msg_id, msg.thread_key, msg.posted_at = row["id"], row["thread_key"], row["posted_at"]
         return row, lambda: self._dispatch(msg)
 
-    def web_upload(self, channel: str, name: str, data: bytes, mimetype: str, text: str,
-                   thread_key: str | None) -> tuple[dict, Callable[[], None] | None]:
-        """Store the owner's upload and build its dispatch, as web_message."""
+    def web_upload(self, channel: str, files: list[tuple[str, bytes, str]], text: str,
+                   thread_key: str | None,
+                   nonce: str | None = None) -> tuple[dict, Callable[[], None] | None]:
+        """Store the owner's upload of one file or several, each (name,
+        bytes, type), and build its dispatch, as web_message: the first
+        file's row carries the text, each other file is a row of its own
+        after it in the same thread, and the core gets one message with
+        every file. The answer is the first row; the stream brings the
+        others."""
+        seen = self._nonce_seen(nonce)
+        if seen is not None:
+            return seen, None
         ch, key = self._target(channel, thread_key)
-        name = safe_name(name, "upload")
-        mimetype = self._mimetype(name, mimetype)
+        named = [(safe_name(name, "upload"), data, mt) for name, data, mt in files]
+        files = [(name, data, self._mimetype(name, mt)) for name, data, mt in named]
         msg = InboundMessage(channel=channel, msg_id="", text=text, user_id=self.owner_id,
                              posted_at=time.time(), thread_key=key, is_reply=bool(key),
                              is_dm=ch["kind"] == "dm", subtype="file_share",
                              raw={"source": "web"})
         if self.inbound is not None:
-            return self._upload_shadow(msg, name, data, mimetype, text), None
-        fid = self.store.add_file(None, channel, name, data, mimetype)["id"]
-        fj = self._file_json(fid, name, mimetype, len(data))
-        row = self.store.add_message(channel, mid=None, thread_key=key, author=OWNER,
-                                     kind="file", text=text, file=fj)
-        msg.msg_id, msg.thread_key, msg.posted_at = row["id"], row["thread_key"], row["posted_at"]
-        msg.files = [FileRef(name=name, url=fj["url"], id=fid, mimetype=mimetype)]
-        return row, lambda: self._dispatch(msg)
+            row = self._upload_shadow(msg, files, text)
+            self._nonce_keep(nonce, row)
+            return row, None
+        rows: list[dict] = []
+        for name, data, mimetype in files:
+            fid = self.store.add_file(None, channel, name, data, mimetype)["id"]
+            fj = self._file_json(fid, name, mimetype, len(data))
+            rows.append(self.store.add_message(
+                channel, mid=None, author=OWNER, kind="file", file=fj,
+                thread_key=rows[0]["thread_key"] if rows else key, text="" if rows else text))
+            msg.files.append(FileRef(name=name, url=fj["url"], id=fid, mimetype=mimetype))
+        first = rows[0]
+        self._nonce_keep(nonce, first)
+        msg.msg_id, msg.thread_key, msg.posted_at = first["id"], first["thread_key"], first["posted_at"]
+        return first, lambda: self._dispatch(msg)
 
-    def _upload_shadow(self, msg: InboundMessage, name: str, data: bytes, mimetype: str,
+    def _upload_shadow(self, msg: InboundMessage, files: list[tuple[str, bytes, str]],
                        text: str) -> dict:
-        """Shadow mode: the bytes wait in a temp file whose path is
-        msg.raw["path"] while the composite uploads them to the primary;
-        the stored row keeps them under the primary's file id."""
+        """Shadow mode: the bytes of each file wait in a temp file, their
+        paths in msg.raw["paths"] (the first also in msg.raw["path"]),
+        while the composite uploads them to the primary; the first file's
+        row keeps its bytes under the primary's file id, and the composite
+        writes the others' rows with theirs."""
         incoming = self.store.files_dir / "incoming"
         incoming.mkdir(parents=True, exist_ok=True, mode=0o700)
-        tmp = incoming / secrets.token_hex(12)
-        _write_private(tmp, data)
-        msg.raw["path"] = str(tmp)
-        msg.files = [FileRef(name=name, mimetype=mimetype)]
+        tmps: list[Path] = []
+        name, data, mimetype = files[0]
         try:
+            for _n, body, _t in files:
+                tmps.append(incoming / secrets.token_hex(12))
+                _write_private(tmps[-1], body)
+            msg.raw["path"], msg.raw["paths"] = str(tmps[0]), [str(t) for t in tmps]
+            msg.files = [FileRef(name=n, mimetype=t) for n, _d, t in files]
             ref = self._hand_in(msg)
             if ref is None:
                 return {"ok": True}
@@ -3937,7 +3970,7 @@ class WebFrontend(ChatFrontend):
             if row is None:
                 return self.mirror_file(ref, FileRef(name=name, mimetype=mimetype,
                                                      id=f"{ref.channel}:{ref.id}"),
-                                        OWNER, path=tmp, text=text)
+                                        OWNER, path=tmps[0], text=text)
             f = row.get("file")
             if isinstance(f, dict) and not (f.get("id") and self.store.file(f["id"])):
                 fid = f.get("id") or f"{ref.channel}:{ref.id}"
@@ -3947,10 +3980,11 @@ class WebFrontend(ChatFrontend):
                     file=self._file_json(fid, name, mimetype, len(data))) or row
             return row
         finally:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+            for tmp in tmps:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
 
     def web_action(self, channel: str, msg_id: str, action_id: str,
                    selected: str = "") -> Callable[[], None] | None:
@@ -5117,14 +5151,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self._json(200, {"ok": True}, (("Set-Cookie", "; ".join(attrs)),))
 
     def _upload(self, channel: str) -> Callable[[], None] | None:
+        """One `file` part or several (MAX_UPLOAD_FILES), with an optional
+        `text`, `thread_key` and `nonce`: one message of the owner's."""
         ctype = self.headers.get("Content-Type") or ""
         try:
-            fields = parse_multipart(ctype, self._read_body(MAX_UPLOAD_BYTES))
+            parts = multipart_parts(ctype, self._read_body(MAX_UPLOAD_BYTES))
         except ValueError as e:
             raise _HttpError(400, str(e)) from None
-        part = fields.get("file")
-        if not part or part.get("filename") is None:
+        fields = dict(parts)
+        files = [p for name, p in parts if name == "file"]
+        if not files or any(p.get("filename") is None for p in files):
             raise _HttpError(400, "a file part is required")
+        if len(files) > MAX_UPLOAD_FILES:
+            raise _HttpError(400, f"Send at most {MAX_UPLOAD_FILES} files at once.")
 
         def text_of(key: str) -> str:
             f = fields.get(key)
@@ -5132,9 +5171,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         text = text_of("text")
         if len(text) > MAX_TEXT_CHARS:
             raise _HttpError(400, "text is too long")
-        row, after = self.fe.web_upload(channel, part["filename"] or "", part["data"],
-                                        part.get("type") or "", text,
-                                        self._key(text_of("thread_key").strip() or None))
+        nonce = text_of("nonce") or None
+        if nonce is not None and len(nonce) > NONCE_MAX_CHARS:
+            raise _HttpError(400, "nonce is a short string")
+        row, after = self.fe.web_upload(
+            channel, [(p["filename"] or "", p["data"], p.get("type") or "") for p in files], text,
+            self._key(text_of("thread_key").strip() or None), nonce)
         self._json(200, row)
         return after
 

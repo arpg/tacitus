@@ -239,7 +239,7 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/messages/{ch}/{id}/react` | `{"emoji"}`, one of `+1`, `white_check_mark`, `heart`, `eyes`, `joy` (or its glyph) → the message JSON: the owner's reaction toggled, with a `reaction` event; 400 for another emoji, 404 for an unknown message, 409 for a removed one |
 | PATCH | `/api/messages/{ch}/{id}` | `{"text"}` → the message JSON with the new text, the old one kept in `edits`, `updated_at` raised and an `update` event; the owner's own text message only (403 for the bot's, 400 for a card or a file), in its first 15 minutes (409 after, with a plain error), 409 for a removed one |
 | DELETE | `/api/messages/{ch}/{id}` | → the message JSON, `deleted` true, text "" (`edits` and `owner_reactions` dropped), with an `update` event; the same rules as PATCH; a removed message answers as it is |
-| POST | `/api/channels/{ch}/files` | multipart `file`, optional `text`, `thread_key` → the stored `file` message; dispatches an `InboundMessage` with `files=[FileRef]` |
+| POST | `/api/channels/{ch}/files` | multipart `file` (one part, or up to 10 parts in order), optional `text`, `thread_key`, `nonce` → the stored `file` message of the first file, which carries the text; each other file is a `file` message of its own after it in the same thread (the stream brings them); dispatches one `InboundMessage` with `files=[FileRef, ...]`, every file in order. A `nonce` the browser sent before answers the same row and dispatches nothing, as for a message; 400 for more than 10 files |
 | GET | `/api/files/{id}` | the bytes, `Content-Disposition: attachment` |
 | POST | `/api/cards/{ch}/{id}/actions` | `{"action_id", "value"?, "selected"?}` → `{"ok": true}`; dispatches an `ActionEvent` (`source` `button` or `select`) |
 | GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row, `thread_state` events `{"channel", "thread_key", "state", "by", "reason", "at", "stale"}`, `release` events `{"bundle"}` when the bot signs a new release of the app); a `: ping` comment every 20 s |
@@ -751,9 +751,38 @@ name and size, images inline.
 
 Live updates: `EventSource(base + "/api/events")`, replay from the last
 seen seq, reconnect handled by the browser. Composer: Enter sends,
-Shift+Enter newline; a paperclip button posts to `/api/files`. Sign-in:
-on 401 show a field for the sign-in code (the pairing token) that posts
-to `/api/pair`.
+Shift+Enter newline. Sign-in: on 401 show a field for the sign-in code
+(the pairing token) that posts to `/api/pair`.
+
+Drafts. The composer keeps a draft per place: a conversation (channel
+and thread key), or a new conversation in a channel (the `+` route and
+the channel's own route share it, since both post a new one). Leaving a
+place keeps what was typed and the files waiting there; coming back puts
+them back; a send takes out what it carried (the words, while they are
+still as sent, and its files), and what was typed meanwhile stays. A new
+conversation's draft moves with it to the conversation the send opens.
+The words of an edit are no draft: Edit puts the draft aside, and Cancel,
+Escape or Send brings it back. A conversation with a draft has "Draft"
+on its card. The browser keeps each draft's words and its files' names in
+`localStorage` (`tacitus-draft:<channel>\n<thread key or +>`, the newest
+50), so a reload or a reopened app has the words; a file's bytes live in
+the page only, so after a reload the composer names the files to attach
+again.
+
+Attachments. The paperclip (several files at once), a file dropped on the
+open conversation or on the composer, and a file or image pasted into
+the field each add the file to the composer, as a chip with its name,
+its size and a cross that takes it off; nothing goes out until Send, at
+most 10 files to a message. A drop anywhere else in the app does nothing
+(so a near miss never opens the file in the app's place); a digest
+conversation, with no composer, takes none. Send posts the words and
+every file waiting in one request to `/files` (one `file` part each, in
+order, with the send's nonce), which the bot keeps as the text with the
+first file and the others after it in the conversation, and the core
+reads as one message. Through the relay a request carries at most 10 MB
+(`RELAY_MAX_BODY`), so the app refuses a larger send there with a plain
+note and keeps the files; on the owner's own network the bot takes 50 MB
+in all.
 
 Every call goes through one transport interface (`api(method, path,
 body)`, `events(since, sink)`). A browser paired with the relay uses it
@@ -883,17 +912,19 @@ first 15 minutes, and Copy. On a touch screen a message selects no text
 (a code block does), so Copy is the way to take its words. A tap on one
 of the owner's five in the chips under a message toggles it. Edit puts
 the words in the composer under an "Editing your message" line with
-Cancel, rings the message and holds the paperclip; Send saves them
+Cancel, rings the message, holds the paperclip and hides the files
+waiting (they stay with the draft); Send saves them
 (`PATCH`), and what was typed before comes back; Cancel or Escape leaves
 the message as it is. Delete asks once ("Delete this message? This cannot
 be undone.") and the message then shows "You removed this message". A
 refusal from the bot shows under the composer.
 
 Dark and light from `prefers-color-scheme`. Keep the whole app under
-~4,410 lines with the relay transport, the QR encoder, the code check,
+~5,230 lines with the relay transport, the QR encoder, the code check,
 the update through the relay, the per-phone card-button choice, the
 Settings screen and its Notifications, the thread states with their stale
-shelf, the teaching, the rooms' menus and the owner's own actions;
+shelf, the teaching, the rooms' menus, the owner's own actions, the
+drafts and the files that wait for Send;
 readable by one maintainer.
 
 Installing on a phone. The manifest (`display: standalone`, `scope` and
@@ -913,8 +944,9 @@ browser` elsewhere) a line at the drawer's foot says how to install: on
 iOS Share, then Add to Home Screen; in Chrome an Install button for its
 `beforeinstallprompt`. Hiding it lasts 30 days; `localStorage` keeps the
 time it was hidden, the thread filter, that the welcome was closed, the
-channel list's width and the connection notes for `/api/diag`, and
-nothing else. A link to a route of this app
+channel list's width, the connection notes for `/api/diag` and the
+drafts' words with their files' names (Drafts, above), and nothing else.
+A link to a route of this app
 (`<base>/#/...`, absolute or relative) opens in it; any other keeps
 `target="_blank"`, so the installed app hands it to the browser. On iOS
 the keyboard shrinks only the visual viewport: the app sets its height
@@ -1037,8 +1069,11 @@ on disk is never served.
 `<base_path>/api/files/<encoded id>`; a mirrored file kept only on the
 primary has an empty `id` and the primary's absolute `url`.
 `GET /api/files/{id}` answers with `Content-Disposition: attachment` and
-`Content-Security-Policy: sandbox`; an `<img>` still renders it. Uploads
-are at most 50 MB; message text at most 20,000 characters.
+`Content-Security-Policy: sandbox`; an `<img>` still renders it. An
+upload is at most 50 MB in all and 10 files (`MAX_UPLOAD_FILES`); message
+text at most 20,000 characters. Standalone, each file of an upload is a
+row of its own (`f<n>`, `w<seq>`), the first with the text and the thread
+it names (or a new one), the others in that thread.
 
 **Links the core writes.** `room_url` is `<site>/#/<channel>` and
 `permalink` is `<site>/#/<channel>/<thread_key>/<msg_id>`, where site is
@@ -1057,8 +1092,10 @@ the prompts use it as an adjective ("a real-time {platform} message").
   `user_id` "owner", `thread_key` None for a new thread (else the stored
   key, which is the primary's), `is_dm`, and `raw` `{"source": "web"}`.
   An upload also has `subtype` "file_share", `files` [FileRef(name,
-  mimetype)] and `raw["path"]`, a temp file holding the bytes, deleted
-  after the call. For a message or an upload `inbound` returns the
+  mimetype)], one per file in order, and `raw["paths"]`, a temp file per
+  file holding its bytes (`raw["path"]` is the first), deleted after the
+  call; the composite uploads each to the primary under one post and
+  writes the rows `<id>`, `<id>:1`, ... with their bytes. For a message or an upload `inbound` returns the
   primary's `MessageRef`; the browser gets the row stored under it. When
   the composite has not mirrored that row, the web frontend stores it
   (author owner). For an upload whose stored row has no bytes here, it

@@ -123,9 +123,11 @@ def catcher(f: WebFrontend):
     return got, ev
 
 
-def multipart(fields: dict, boundary: str = "b0undary") -> tuple[bytes, str]:
+def multipart(fields, boundary: str = "b0undary") -> tuple[bytes, str]:
+    """A multipart body from a dict, or from (name, value) pairs where a
+    name comes more than once."""
     out = b""
-    for name, val in fields.items():
+    for name, val in (fields.items() if isinstance(fields, dict) else fields):
         if isinstance(val, tuple):
             fname, ctype, data = val
             out += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; "
@@ -780,6 +782,57 @@ def test_an_upload_stores_the_file_and_dispatches_a_file_ref(fe, tmp_path, monke
     body, ctype = multipart({"text": "no file"})
     assert owner(fe, "POST", "/api/channels/dm/files", raw=body,
                  headers={"Content-Type": ctype})[0] == 400
+
+
+def test_several_files_post_as_one_message_in_one_thread(fe, tmp_path, monkeypatch):
+    """One request with several `file` parts: the first file's row carries
+    the text, each other file follows it in the same thread, and the core
+    gets one message with every file. A nonce sent again answers the same
+    row and dispatches nothing; more than MAX_UPLOAD_FILES is refused."""
+    monkeypatch.setenv("EA_DIR", str(tmp_path / "ea"))
+    got, ev = catcher(fe)
+    body, ctype = multipart([("text", "both of these"), ("nonce", "n-1"),
+                             ("file", ("a.txt", "text/plain", b"first")),
+                             ("file", ("b.pdf", "application/pdf", b"%PDF-1.4 second"))])
+    status, _h, out = owner(fe, "POST", "/api/channels/main/files", raw=body,
+                            headers={"Content-Type": ctype})
+    row = json.loads(out)
+    assert status == 200 and row["text"] == "both of these" and row["file"]["name"] == "a.txt"
+    rows = json.loads(owner(fe, "GET", f"/api/channels/main/threads/{row['thread_key']}")[2])
+    assert [(r["text"], r["file"]["name"], r["author"]) for r in rows] == \
+        [("both of these", "a.txt", "owner"), ("", "b.pdf", "owner")]
+    assert ev.wait(5)
+    time.sleep(0.2)
+    assert len(got) == 1
+    msg = got[0]
+    assert (msg.msg_id, msg.text, msg.subtype) == (row["id"], "both of these", "file_share")
+    assert [f.name for f in msg.files] == ["a.txt", "b.pdf"]
+    assert [owner(fe, "GET", "/api/files/" + f.id)[2] for f in msg.files] == [b"first", b"%PDF-1.4 second"]
+    # The same nonce again (an answer lost on the way back): the same row, nothing new.
+    status, _h, again = owner(fe, "POST", "/api/channels/main/files", raw=body,
+                              headers={"Content-Type": ctype})
+    assert status == 200 and json.loads(again)["id"] == row["id"]
+    assert len(json.loads(owner(fe, "GET", "/api/channels/main/threads")[2])) == 1
+    time.sleep(0.2)
+    assert len(got) == 1
+    # A reply puts every file in the thread it names.
+    body, ctype = multipart([("thread_key", row["thread_key"]), ("file", ("c.txt", "text/plain", b"c")),
+                             ("file", ("d.txt", "text/plain", b"d"))])
+    assert owner(fe, "POST", "/api/channels/main/files", raw=body, headers={"Content-Type": ctype})[0] == 200
+    rows = json.loads(owner(fe, "GET", f"/api/channels/main/threads/{row['thread_key']}")[2])
+    assert [r["file"]["name"] for r in rows] == ["a.txt", "b.pdf", "c.txt", "d.txt"]
+    body, ctype = multipart([("file", (f"{n}.txt", "text/plain", b"x")) for n in range(wf.MAX_UPLOAD_FILES + 1)])
+    status, _h, out = owner(fe, "POST", "/api/channels/main/files", raw=body, headers={"Content-Type": ctype})
+    assert status == 400 and json.loads(out)["error"] == f"Send at most {wf.MAX_UPLOAD_FILES} files at once."
+
+
+def test_parse_multipart_keeps_every_part_of_a_repeated_name():
+    body, ctype = multipart([("file", ("a.txt", "text/plain", b"1")), ("text", "hi"),
+                             ("file", ("b.txt", "text/plain", b"2"))])
+    parts = wf.multipart_parts(ctype, body)
+    assert [(n, p["filename"], p["data"]) for n, p in parts] == \
+        [("file", "a.txt", b"1"), ("text", None, b"hi"), ("file", "b.txt", b"2")]
+    assert parse_multipart(ctype, body)["file"]["filename"] == "b.txt"  # the last, as before
 
 
 def test_threads_list_newest_first_and_a_thread_oldest_first(fe):

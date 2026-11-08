@@ -74,10 +74,11 @@
   <form id="composer" autocomplete="off">
     <div id="editing" hidden><span>Editing your message</span>
       <button type="button" id="edit-cancel" class="btn small plain">Cancel</button></div>
-    <button type="button" id="attach" class="icon" aria-label="Attach a file">
+    <div id="pending" role="group" aria-label="Files to send" hidden></div>
+    <button type="button" id="attach" class="icon" aria-label="Attach files">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5l-8.2 8.2a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/></svg>
     </button>
-    <input type="file" id="file" hidden>
+    <input type="file" id="file" multiple hidden>
     <textarea id="text" rows="1" placeholder="Reply" aria-label="Message" enterkeyhint="send"></textarea>
     <button type="submit" id="send" class="icon send" aria-label="Send">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12l16-8-6 16-2.5-6.5z"/></svg>
