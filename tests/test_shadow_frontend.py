@@ -819,6 +819,28 @@ def test_the_history_copy_takes_recent_threads_quietly(tmp_path):
     assert web.store.channel("C_MAIN")["unread"] == 1
 
 
+def test_several_web_files_go_up_as_one_message_of_the_owners(tmp_path):
+    """The web front end's upload of two files in shadow mode: each goes up
+    through the primary under one post, the core gets one message with both,
+    the shadow keeps a row and the bytes of each, and no temp file stays."""
+    fe, primary, web, _now = _setup(tmp_path)
+    seen = []
+    fe.registry.event("message")(seen.append)
+    row, after = web.web_upload("C_MAIN", [("a.txt", b"one", "text/plain"), ("b.txt", b"two", "text/plain")],
+                                "two files", None)
+    assert after is None
+    assert [(u["filename"], u["thread_ts"]) for u in primary.uploads] == \
+        [("a.txt", row["thread_key"]), ("b.txt", row["thread_key"])]
+    msg = seen[-1]
+    assert (msg.msg_id, msg.text) == (row["id"], "two files")
+    assert msg.files == [u["file"] for u in primary.uploads]
+    second = web.store.message("C_MAIN", f"{row['id']}:1")
+    assert (row["text"], row["file"]["name"], second["file"]["name"], second["author"]) == \
+        ("two files", "a.txt", "b.txt", "owner")
+    assert [Path(web.store.file(r["file"]["id"])["path"]).read_bytes() for r in (row, second)] == [b"one", b"two"]
+    assert not list((web.store.files_dir / "incoming").iterdir())
+
+
 def test_a_second_copy_adds_nothing_but_what_came_since(tmp_path):
     fe, primary, web, now = _setup(tmp_path)
     fe.backfill()

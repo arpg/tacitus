@@ -453,6 +453,15 @@ a.file-link .file-name { color: var(--accent); }
 #text::placeholder { color: var(--muted); }
 #composer-note { flex-basis: 100%; color: var(--muted); font-size: 13px; padding: 0 8px; }
 #composer-note:empty { display: none; }
+/* Files waiting for Send: a chip each over the field, the send button filled as for text; a file
+   dragged over the conversation rings it. A conversation's card with a draft says so. */
+#pending { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; padding: 0 4px 4px; }
+.pend { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; padding-left: 10px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--bg); font-size: 13px; }
+.pend .icon { width: 32px; height: 32px; color: var(--muted); font-size: 18px; }
+#composer.has-files #send { background: var(--accent); color: var(--accent-text); }
+#thread.dropping #messages { box-shadow: inset 0 0 0 2px var(--accent); }
+.t-draft { color: var(--accent); font-weight: 600; }
 
 /* overlays */
 
@@ -849,6 +858,7 @@ button.chip { cursor: pointer; }
   #search-open { min-height: 44px; }
   .msg { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
   .msg pre, .card-body { -webkit-user-select: text; user-select: text; }
-  /* A 44px target around each 26px pill, without the row growing. */
+  /* A 44px target around each 26px pill, without the row growing; and the cross on a waiting file. */
   .reactions button.chip { min-height: 44px; margin-block: -9px; }
+  .pend .icon { width: 44px; height: 44px; margin-block: -6px; }
 }

@@ -1056,7 +1056,8 @@ adds nothing.
   has the app's origin. So only a png, jpeg, gif or webp keeps its type
   (an image shows from it); anything else, an SVG or an HTML file among
   them, is `application/octet-stream`, and every link to a blob downloads
-  it, never opens it. An upload through the relay is at most 10 MB.
+  it, never opens it. An upload through the relay is at most 10 MB, all
+  the files of one send together (one request; docs/webchat.md, Attachments).
 - A push subscription names this browser's relay device, if it has one.
 - The service worker leaves the relay's routes (`/r/<install>/...`) and
   any path ending in `/healthz` to the browser, like the API.
