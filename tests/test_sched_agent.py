@@ -21,6 +21,16 @@ TZ = ZoneInfo("America/Denver")
 TODAY = date(2026, 10, 8)
 
 
+
+@pytest.fixture(autouse=True)
+def _local_chat_ready(monkeypatch):
+    """The scheduling agent's live mode is the local model answering a
+    scheduling turn, which the chat floor stops; these tests cover the
+    mode itself, so the floor is lifted (tests/test_routing_presets_floor.py
+    covers the floor)."""
+    import ea_config
+    monkeypatch.setattr(ea_config, "local_chat_ready", lambda *a, **k: True)
+
 def _cfg(scheduling="shadow", until="2099-12-31"):
     return {"endpoint": "https://example.invalid/v1", "model": "m", "shadow_until": until,
             "mail": "off", "scheduling": scheduling,

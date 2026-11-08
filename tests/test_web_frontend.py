@@ -1259,18 +1259,18 @@ def test_the_settings_routes_answer_the_owner_and_save_the_routing_table(fe, rou
     assert data["rows"][0]["label"] == "Reading your mail"
     shown = [data["local"]["detail"]] + [r[k] for r in data["rows"] for k in ("label", "what", "why", "floor")]
     assert not [t for t in shown if JARGON.search(t)]
-    status, _h, body = owner(fe, "POST", path, {"tasks": {"chat": "local", "drafting": "hosted"}})
+    status, _h, body = owner(fe, "POST", path, {"tasks": {"briefing": "local", "drafting": "hosted"}})
     out = json.loads(body)
     assert status == 200 and out["saved"] is True
-    assert {r["task"]: r["value"] for r in out["rows"]}["chat"] == "local"
+    assert {r["task"]: r["value"] for r in out["rows"]}["briefing"] == "local"
     saved = json.loads((priv / "routing.json").read_text())["tasks"]
-    assert saved["chat"] == "local" and saved["drafting"] == "hosted"
+    assert saved["briefing"] == "local" and saved["drafting"] == "hosted"
     assert (priv / "routing.json").stat().st_mode & 0o777 == 0o600
     assert owner(fe, "GET", "/api/settings/other")[0] == 404
     # the change log names the credential that signed the save in
     log = [json.loads(ln) for ln in (priv / "remote-llm" / "routing-changes.jsonl").read_text().splitlines()]
     assert log[-1]["via"] == "web" and log[-1]["credential"] == "header" and "device" not in log[-1]
-    assert log[-1]["changed"]["chat"] == ["auto", "local"]
+    assert log[-1]["changed"]["briefing"] == ["auto", "local"]
 
 
 def test_a_settings_save_hands_the_page_who_made_it(fe):
@@ -1328,14 +1328,20 @@ def test_a_floored_row_is_refused_and_nothing_is_written(fe, routing_page, monke
     said = []
     status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"tasks": {"review": "local"}})
     assert status == 400 and json.loads(raw)["error"] == \
-        '"Checking its own work" always stays on Hosted: these are judgment calls, so your own model never makes them.'
+        '"Checking its own work" always stays on Claude or Codex: these are judgment calls, so your own model never makes them.'
     said.append(json.loads(raw)["error"])
     status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"tasks": {"chat": "fable"}})
-    assert status == 400 and json.loads(raw)["error"] == '"Talking with you" takes Local, Hosted or Auto.'
+    assert status == 400 and json.loads(raw)["error"] == '"Talking with you" takes your own model, Claude or Codex, or Auto.'
+    said.append(json.loads(raw)["error"])
+    # the chat floor: talking with you stays off the owner's own model, in one plain line
+    status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"tasks": {"chat": "local"}})
+    assert status == 400 and json.loads(raw)["error"] == (
+        "Your own model does not hold up in conversation yet. Talking with you and finding meeting "
+        "times stay on Claude or Codex for now.")
     said.append(json.loads(raw)["error"])
     status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"other": 1})
     assert status == 400 and json.loads(raw)["error"] == \
-        "Choose Local, Hosted or Auto, or a hosted model, for at least one task."
+        "Choose your own model, Claude or Codex, or Auto for at least one task."
     said.append(json.loads(raw)["error"])
     assert not (priv / "routing.json").exists()
     # the keep floor: hosted on mail is refused while the keep list has entries
@@ -1345,7 +1351,7 @@ def test_a_floored_row_is_refused_and_nothing_is_written(fe, routing_page, monke
     monkeypatch.setattr(remote_llm, "config", lambda: kept)
     status, _h, raw = owner(fe, "POST", "/api/settings/routing", {"tasks": {"mail": "hosted"}})
     assert status == 400 and json.loads(raw)["error"] == \
-        '"Reading your mail" cannot be Hosted while you keep some mail away from hosted models.'
+        '"Reading your mail" cannot use Claude or Codex while you keep some mail away from hosted models.'
     said.append(json.loads(raw)["error"])
     assert not (priv / "routing.json").exists()
     status, _h, raw = owner(fe, "GET", "/api/settings/other")

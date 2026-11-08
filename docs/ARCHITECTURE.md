@@ -579,7 +579,11 @@ task runs on is one switch, `hosted_default` (Claude or Codex), with
 per-task overrides over it (`model_routing.py set-hosted`). The hosted
 models are one registry (`ea_config.HOSTED_MODELS`), and the policy code
 asks `model_routing` by class (`is_hosted`, `is_local`, `is_base`,
-`for_model`) instead of naming a model (docs/model-routing.md).
+`for_model`) instead of naming a model (docs/model-routing.md). Presets
+keep whole tables under a name (`model_routing.py preset`), and while
+`local_chat_ready` is false the chat floor keeps chat and scheduling turns
+off the owner's own model (`model_tiers.resolve` carries
+`floor: "local_chat"`).
 
 Neither cutover is set blind. `mail = ghost` and `scheduling = shadow`
 open a dated week (`ghost_week.py`) in which every lane's mail read is

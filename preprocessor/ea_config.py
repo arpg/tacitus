@@ -188,6 +188,12 @@ DEFAULTS = {
                   "thread_state": "local", "review": "hosted"},
         "hosted": {},
     },
+    # The chat floor (model_routing.CHAT_FLOORED): while this is false, the
+    # `chat` and `scheduling` tasks never run on the owner's own model,
+    # whatever the table, a lane default, an A/B draw, an `@local` tag or a
+    # `use local` pin says; they run on the hosted model instead. The local
+    # model does not hold up in conversation yet; set true once it does.
+    "local_chat_ready": False,
     # Where mail and calendars come from (docs/macos-native-accounts.md).
     # mail.backend: "graph" (Outlook through Microsoft Graph, with any
     # Gmail accounts beside it), "gmail" (Gmail only) or "macos" (the
@@ -431,6 +437,12 @@ def get_tiers(config_path: Path | None = None) -> dict:
     return tiers_from_block(load(config_path).get("tiers"))
 
 
+def local_chat_ready(config_path: Path | None = None) -> bool:
+    """The owner's own model may hold a conversation: false keeps the
+    chat floor (model_routing.CHAT_FLOORED) in force."""
+    return load(config_path).get("local_chat_ready") is True
+
+
 ROUTING_TASKS = tuple(DEFAULTS["routing"]["tasks"])
 ROUTING_VALUES = ("local", "hosted", "auto")
 # The stakes floor: a task that is a judgment call by nature takes only
@@ -491,10 +503,18 @@ def routing_problems(val) -> list[str]:
     tasks = val.get("tasks", {})
     if not isinstance(tasks, dict):
         return ["routing.tasks is not a JSON object"]
-    out = [f"routing takes its values under tasks, hosted and hosted_default, not {k!r}" for k in val
-           if k not in ("tasks", "hosted", "hosted_default") and not k.startswith("_")]
+    out = [f"routing takes its values under tasks, hosted, hosted_default and presets, not {k!r}"
+           for k in val if k not in ROUTING_KEYS and not k.startswith("_")]
     if "hosted_default" in val and val["hosted_default"] not in ROUTING_HOSTED:
         out.append(f"hosted_default takes {' or '.join(ROUTING_HOSTED)}, not {val['hosted_default']!r}")
+    presets = val.get("presets", {})
+    if not isinstance(presets, dict):
+        out.append("routing.presets is not a JSON object")
+        presets = {}
+    for name, p in presets.items():
+        why = preset_problems(name, p)
+        if why:
+            out.append(f"preset {name!r}: {why}")
     hosted = val.get("hosted", {})
     if not isinstance(hosted, dict):
         out.append("routing.hosted is not a JSON object")
@@ -515,6 +535,33 @@ def routing_problems(val) -> list[str]:
         elif task in ROUTING_FLOORS and value not in (ROUTING_FLOORS[task], "auto"):
             out.append(f"{task} is {ROUTING_FLOORS[task]} only (the stakes floor)")
     return out
+
+
+# The keys a routing block takes: the values per task, the per-task hosted
+# overrides, the one hosted switch and the owner's saved presets.
+ROUTING_KEYS = ("tasks", "hosted", "hosted_default", "presets")
+PRESET_NAME_MAX = 40
+
+
+def preset_problems(name, p) -> str:
+    """Why a saved preset cannot be kept as written, '' when it can: its
+    name (1 to PRESET_NAME_MAX letters, digits, spaces, dashes or
+    underscores) and its tasks, overrides and switch, each as the table
+    takes them."""
+    if not isinstance(name, str) or not name.strip() or len(name) > PRESET_NAME_MAX \
+            or not all(c.isalnum() or c in " -_" for c in name):
+        return "a preset name is 1 to 40 letters, digits, spaces, dashes or underscores"
+    if not isinstance(p, dict) or not isinstance(p.get("tasks", {}), dict) \
+            or not isinstance(p.get("hosted", {}), dict):
+        return "a preset is an object with tasks and hosted objects"
+    bad = [t for t, v in p.get("tasks", {}).items() if t not in ROUTING_TASKS or v not in ROUTING_VALUES]
+    bad += [t for t, m in p.get("hosted", {}).items()
+            if t not in ROUTING_TASKS or m not in ROUTING_HOSTED or not hosted_takes(m, t)]
+    if bad:
+        return f"it names {', '.join(sorted(set(bad)))} with a value the table does not take"
+    if p.get("hosted_default") not in (None, "", *ROUTING_HOSTED):
+        return f"its hosted_default takes {' or '.join(ROUTING_HOSTED)}"
+    return ""
 
 
 def routing_from_block(val) -> dict:
@@ -542,6 +589,11 @@ def routing_from_block(val) -> dict:
         out["hosted_default"] = _old_screen_switch(picked)
         out["hosted"] = {k: v for k, v in picked.items()
                          if k in _choosable() and v != out["hosted_default"]}
+    presets = val.get("presets") if isinstance(val, dict) else None
+    if isinstance(presets, dict):
+        kept = {k: v for k, v in presets.items() if not preset_problems(k, v)}
+        if kept:
+            out["presets"] = kept
     return out
 
 

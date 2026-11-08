@@ -240,10 +240,10 @@ def _lane_hosted(lane: str, routing: dict | None) -> str:
 def resolve(*, lane: str, user_msg: str = "", tag: str = "", thread_ts: str = "",
             session_meta: dict | None = None, arm: str = "", cfg: dict | None = None,
             fable_turns_today: int | None = None, remote_cfg: dict | None = None,
-            routing: dict | None = None) -> dict:
+            routing: dict | None = None, local_chat_ready: bool | None = None) -> dict:
     """The tier this turn runs on and why.
 
-    {"tier", "source", "explicit", "note"}: `explicit` is True when one of
+    {"tier", "source", "explicit", "note", "floor"}: `explicit` is True when one of
     the four ways named the tier (the bot then sets the model itself);
     False when the tier only describes where today's knobs put the turn
     (`session` for an adopted or room session's own model, `draw` for an
@@ -251,7 +251,12 @@ def resolve(*, lane: str, user_msg: str = "", tag: str = "", thread_ts: str = ""
     `routing`, default ea_config.get_routing()). `note` is 'stakes',
     'budget' or 'no-local' when a rule moved the pick to `opus`, else ''.
     'no-local': the install has no remote endpoint (`remote_cfg`, default
-    remote_llm.config()), so a local pick runs on Claude."""
+    remote_llm.config()), so a local pick runs on Claude. `floor` is
+    'local_chat' (and `note` too) when the chat floor moved a local pick
+    on a chat or scheduling lane to the hosted model: while
+    `local_chat_ready` (default ea_config.local_chat_ready()) is false,
+    nothing, an `@local` tag and a `use local` pin included, runs those
+    lanes on the owner's own model."""
     meta = session_meta or {}
     s = settings(cfg)
     route = _lane_route(lane, routing)
@@ -289,7 +294,7 @@ def resolve(*, lane: str, user_msg: str = "", tag: str = "", thread_ts: str = ""
     if not tier:
         if meta.get("model"):
             tier, source = tier_of_model(meta["model"]), "session"
-        elif arm == "remote":
+        elif _routing.is_local(arm):
             tier, source = "local", "draw"
         else:
             # `hosted` passed over a local lane default: the bot's own model.
@@ -297,7 +302,10 @@ def resolve(*, lane: str, user_msg: str = "", tag: str = "", thread_ts: str = ""
                                     else "default")
     if route == "hosted" and tier == "local" and source not in ("tag", "pinned", "topic name"):
         tier, source, explicit = hosted_tier, "routing", True
-    note = ""
+    note = floor = ""
+    if tier == "local" and _chat_floored(lane, local_chat_ready):
+        tier, explicit = hosted_tier, True
+        note = floor = _routing.LOCAL_CHAT_FLOOR
     if tier == "local" and not (remote_cfg if remote_cfg is not None else _rl.config()).get("endpoint"):
         tier, note, explicit = hosted_tier, "no-local", True
     if tier == "local" and source != "tag" and high_stakes(user_msg):
@@ -307,7 +315,23 @@ def resolve(*, lane: str, user_msg: str = "", tag: str = "", thread_ts: str = ""
         used = _fable_turns_today() if fable_turns_today is None else fable_turns_today
         if used >= cap:
             tier, note, explicit = "opus", "budget", True
-    return {"tier": tier, "source": source, "explicit": explicit, "note": note}
+    return {"tier": tier, "source": source, "explicit": explicit, "note": note, "floor": floor}
+
+
+def _chat_floored(lane: str, ready: bool | None = None) -> bool:
+    """The chat floor holds the lane's task (model_routing.CHAT_FLOORED):
+    a local pick there runs on the hosted model. `ready` stands in for
+    ea_config.local_chat_ready()."""
+    task = _routing.LANE_TASK.get(lane, "")
+    if task not in _routing.CHAT_FLOORED:
+        return False
+    return not ready if ready is not None else _routing.chat_floor_holds(task)
+
+
+def chat_floor_note(lane: str) -> str:
+    """The note a refused `@local` tag or `use local` pin answers with on
+    a lane the chat floor holds, in plain words; '' elsewhere."""
+    return _routing.LOCAL_CHAT_NOTE[0] if _chat_floored(lane) else ""
 
 
 def label(tier: str, *, backstop: dict | None = None, note: str = "") -> str:
@@ -322,6 +346,8 @@ def label(tier: str, *, backstop: dict | None = None, note: str = "") -> str:
         text += " (Fable budget spent)"
     elif note == "no-local":
         text += " (no local model set up)"
+    elif note == _routing.LOCAL_CHAT_FLOOR:
+        text += " (your own model: not yet)"
     return text
 
 

@@ -841,12 +841,17 @@ it was made, with Remove (`/api/push/revoke`); this browser's own row
 (its endpoint's id, the sha256 the bot lists) says "This phone" or "This
 browser" and has no Remove, since its switch is above.
 
-Models: a line that says what the values mean (Local is the owner's
-own model, Hosted is Claude or Codex, picked once for every task or set
-apart per task, Auto lets Tacitus choose); "Hosted model" with Claude
+Models: a line that says what the values mean (each task runs on the
+owner's own model, on Claude or Codex, picked once for every task or set
+apart per task, or on Auto, which lets Tacitus choose); "Presets", a
+button for each preset with the one in force pressed (a pressed one is
+sent alone on Save, `preset`) and "Save current as...", which asks for a
+name in the browser's own box (docs/model-routing.md, "Presets"); "Hosted model" with Claude
 and Codex, the one switch for every task not set apart (docs/model-routing.md,
 "The hosted model: one switch"); the local model's name and state;
-then one row per task with Local, Hosted and Auto (a
+then one row per task with Your own model, the task's hosted model by
+name (Claude or Codex) and Auto, "Your own model" disabled under the chat
+floor's line on talking with you and finding meeting times (a
 "?" beside a name the bot sends `help` for, Reading your mail, Sorting
 mail and Writing replies, opens what the task is in plain words under the
 row, and closes it on a second press; on a touch screen its press area is

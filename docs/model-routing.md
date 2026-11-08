@@ -186,6 +186,51 @@ missing local model do the same. `EA_MODEL` and `tiers.models.opus`
 name the Claude model a Claude turn runs on; neither picks between
 Claude and Codex.
 
+Over every row sits the chat floor (below): while it holds, a pick that
+would run a chat or scheduling turn on the owner's own model (rows 1 to
+5, an A/B draw, a local session) runs on the hosted model rows 6 to 8
+name, and `model_tiers.resolve` says so with `floor: "local_chat"`.
+
+## Presets
+
+A preset is a whole table under a name, the owner's stash of settings:
+the task values, the switch and the overrides. `apply` writes a
+preset's task values and its switch (a preset without a switch leaves
+it as it is) and makes its overrides the whole override map, so a
+built-in clears every override. `save` keeps the table in force under a
+name in `routing.json`'s `presets`; a later save keeps them.
+
+| Preset | On the screen | Task values | Switch |
+|---|---|---|---|
+| `private` | Private | `auto` for mail, tagging, drafting, digests, briefing and audit (the remote switches put them on the own model where it is set up for them), `local` for thread_state, `hosted` for chat, scheduling and review | unchanged |
+| `claude` | All Claude | `hosted` for every task, `local` for thread_state | `claude` |
+| `codex` | All Codex | `hosted` for every task, `local` for thread_state | `codex` |
+
+The built-ins are `BUILTIN_PRESETS` in `model_routing.py`, defined in
+code and never written; a saved preset cannot take their names. Under
+the keep floor a preset's `hosted` on mail, tagging or digests is
+written as `auto`, and the answer says so in a line; a value another
+floor refuses (the chat floor, the stakes floor) refuses the whole
+preset.
+
+```text
+$ python3 /opt/ea-system/preprocessor/model_routing.py preset list
+private: Private. Mail, replies, digests, your briefing and the weekly check go to ...
+claude (now): All Claude. Claude does every task. Your own model notices what needs you.
+codex: All Codex. Codex does every task. Your own model notices what needs you.
+$ python3 /opt/ea-system/preprocessor/model_routing.py preset save "Travel week" --note "on the road"
+$ python3 /opt/ea-system/preprocessor/model_routing.py preset apply codex
+```
+
+The Models page has a Presets row at its top: a button for each
+preset, the one the table matches pressed (a saved preset before a
+built-in that makes the same table), and "Save current as...", which
+asks for a name in the browser's own box. A pressed button is sent
+alone on Save (`{"preset": "<name>"}`), and "Save current as..." sends
+`{"preset": {"save": "<name>"}}`; the rows redraw from the answer. The
+change log line of an applied preset names it (`preset`), and a saved
+one is `presets.<name>`.
+
 ## Adding a hosted model
 
 The policy code never names a hosted model. It asks `model_routing` by
@@ -240,7 +285,28 @@ pick but the tag (below).
 
 ## The floors
 
-Two rules in code sit under every value. No file lowers them.
+Three rules in code sit under every value. No file lowers them.
+
+0. **The chat floor, for now.** `chat` (the lanes main, dm and room) and
+   `scheduling` (sched-channel and proactive) never run on the owner's
+   own model while `local_chat_ready` in `ea-config.json` is false, its
+   default. `set chat local`, `set scheduling local` and a preset that
+   names either `local` are refused with one line; an `@local` tag or a
+   `use local` pin on those lanes answers with the same line, pins
+   nothing and runs the turn on the hosted model; a lane default, the
+   table's `local` and an A/B draw (the on-prem arm, the pipeline) run on
+   the hosted model too, and the scheduling agent's `enforce` reads
+   `shadow`. `model_tiers.resolve` carries `floor: "local_chat"` (and the
+   note `local_chat`, which the footer says as "your own model: not yet"),
+   and the bot logs it. The Settings screen disables "Your own model" on
+   those two rows and shows the line under them; `show` says "your own
+   model: not yet" on them. The line, in plain words:
+
+   > Your own model does not hold up in conversation yet. Talking with you
+   > and finding meeting times stay on Claude or Codex for now.
+
+   Setting `local_chat_ready` to true lifts it once the local model holds
+   up in conversation.
 
 1. **The stakes floor.** `review` is hosted only: `routing_from_block`
    gives it `hosted` whatever the file says, and a save of `local` is
@@ -290,9 +356,13 @@ today.
   `model_routing.py show` give each task's label and line, why it runs
   where it runs, the floors and every refusal in plain words: "your own
   model" for local, the hosted model's name ("Claude", "Codex") for
-  hosted, and no term of the code
-  (`tests/plain_words.py` lists the words, which the app's own text
-  avoids too). `show --verbose` and the doctor keep the code's terms:
+  hosted, and no term of the code. Each task's choice on the screen
+  reads "Your own model", the task's hosted model by name (Claude or
+  Codex) and "Auto"; the words "Local" and "Hosted" are the code's.
+  `tests/plain_words.py` lists the words the screen never uses, which
+  the app's own text avoids too, and `tests/test_routing_presets_floor.py`
+  holds the presets, the chat floor's line and the choices to it.
+  `show --verbose` and the doctor keep the code's terms:
   the switches, the lanes and the local model's last error. `set` prints
   a refusal in those terms.
 - **Not built:** per-task lines in the 17:30 report (local and hosted

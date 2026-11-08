@@ -2705,9 +2705,12 @@ async function phoneAct(verb, d) {
 // The hosted model at the top is the one switch, Claude or Codex, for every task. A task
 // that can use both also picks its own, and says under it whether it follows the switch
 // or is set apart, with Use default to follow it again; under any other task a line says
-// what Hosted means there. The local model's state follows the switch. Only the owner's
-// own web chat saves.
-const ROUTE_WORDS = { local: 'Local', hosted: 'Hosted', auto: 'Auto' };
+// what Hosted means there. The local model's state follows the switch. A choice reads
+// Your own model, the task's hosted model by name (Claude or Codex) or Auto; a row a
+// floor holds has the choices it refuses disabled and the floor's line under it. The
+// presets head the page. Only the owner's own web chat saves.
+const ROUTE_WORDS = { local: 'Your own model', hosted: 'Claude or Codex', auto: 'Auto' };
+let presetPick = ''; // the preset button pressed since the page was drawn, sent alone on Save
 const cap = (t) => (t ? t[0].toUpperCase() + t.slice(1) : t);
 const pickIn = (box, m) => { const i = box.querySelector(`input[value="${m}"]`); if (i && !i.disabled) i.checked = true; };
 const seg = (data, name, by, now, ok, change) => h('span', { class: 'seg', role: 'radiogroup', 'aria-labelledby': by,
@@ -2720,6 +2723,27 @@ function defaultPick(data) {
     seg(data, 'hosted-default', 'hosted-default-name', data.hosted_default, () => true,
       (e) => $('settings-rows').querySelectorAll('li[data-follow]').forEach((li) => pickIn(li, e.target.value))),
     h('p', {}, 'Every task below uses it unless you set the task apart.'));
+}
+
+// The presets: a button each, the built-ins first, the one in force pressed; "Save current
+// as..." keeps the table in force under a name the owner types.
+function presetsRow(data) {
+  presetPick = '';
+  const pick = (p, b) => { presetPick = p.name; $('settings-note').textContent = `Save applies ${p.label}.`;
+    b.parentNode.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); };
+  $('settings-presets').replaceChildren(h('span', { class: 's-name' }, 'Presets'),
+    h('button', { type: 'button', class: 'btn small', onclick: savePreset }, 'Save current as...'),
+    h('span', { class: 'seg ways' }, (data.presets || []).map((p) => h('button', { type: 'button', title: p.note,
+      'aria-pressed': String(p.name === data.preset_now), onclick: (e) => pick(p, e.currentTarget) }, p.label))));
+}
+
+async function savePreset() {
+  const name = (window.prompt('A name for these settings:') || '').trim();
+  if (!name) return;
+  try {
+    renderSettings(await call('POST', '/settings/routing', { preset: { save: name } }));
+    $('settings-note').textContent = `Saved as ${name}.`;
+  } catch (e) { $('settings-note').textContent = `Not saved: ${e.message}`; }
 }
 
 function hostedPick(data, r) {
@@ -2751,12 +2775,14 @@ function renderSettings(data) {
     + `${loc.reachable === false ? 'not reachable' : loc.reachable ? 'reachable' : 'not checked yet'}. ${loc.detail}` : loc.detail;
   $('settings-local').className = loc.reachable === false ? 'error' : '';
   defaultPick(data);
+  presetsRow(data);
   $('settings-rows').replaceChildren(...data.rows.map((r) => { const [ask, help] = helpFor(r); return h('li', { 'data-task': r.task,
     'data-follow': r.hosted_source !== 'override' && '1', 'data-was': r.hosted_source, 'data-model': r.hosted },
     h('span', { class: 's-name' }, r.label, ask),
     h('span', { class: 'seg', role: 'radiogroup', 'aria-label': r.label }, data.values.map((v) => h('label', {},
       h('input', { type: 'radio', name: `route-${r.task}`, value: v, checked: r.value === v,
-        disabled: !r.allowed.includes(v) }), ROUTE_WORDS[v] || v))),
+        disabled: !r.allowed.includes(v) }), v === 'hosted' ? (data.hosted_names || {})[r.hosted] || ROUTE_WORDS[v]
+        : ROUTE_WORDS[v] || v))),
     help,
     (r.hosted_allowed || []).length > 1 ? hostedPick(data, r) : null,
     h('p', {}, r.what),
@@ -2852,8 +2878,9 @@ async function saveSettings() {
   if (Object.keys(hosted).length) body.hosted = hosted;
   $('settings-save').disabled = true;
   try {
-    renderSettings(await call('POST', '/settings/routing', body));
-    $('settings-note').textContent = 'Saved. Each task uses its model from its next run.';
+    const out = await call('POST', '/settings/routing', presetPick ? { preset: presetPick } : body);
+    renderSettings(out);
+    $('settings-note').textContent = ['Saved. Each task uses its model from its next run.', ...(out.notes || [])].join(' ');
   } catch (e) {
     $('settings-note').textContent = `Not saved: ${e.message}`;
   } finally {

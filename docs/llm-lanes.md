@@ -217,7 +217,9 @@ checks reads as the defaults, and the doctor's row FAILs.
 
 **Changing it.** The web chat's Models page (Settings at the drawer's
 foot, then Models: the hosted model for every task at the top, Claude or
-Codex; a row per task with Local, Hosted and Auto, and under a task that
+Codex; the presets; a row per task with Your own model, its hosted model
+by name and Auto (Your own model disabled under the chat floor on chat and
+scheduling, docs/model-routing.md), and under a task that
 has both a Claude or Codex choice marked as the default or its own, with
 "Use default"; a line on what Hosted means under a task that has no
 choice, the floor's line under a locked row, the local model's state,
