@@ -120,11 +120,24 @@ grades it against Claude. Claude stays the workhorse throughout.
 
 ## Production
 
-The owner picks Codex per task on the web chat's Models page (the
-routing table's hosted model, docs/llm-lanes.md section 1.1): `chat` and
-`scheduling` then run their lanes on the `codex` tier, and `briefing`,
-`audit` and `digests` run their Claude lane on Codex as below, with no
-gate (`model_routing.py harness`).
+The owner moves every task to Codex, and back, with one switch: "Hosted
+model" at the top of the web chat's Models page, or `model_routing.py
+set-hosted codex|claude` (the routing table's `hosted_default`,
+docs/model-routing.md, "The hosted model: one switch"). A task can be
+set apart from it (an override). `chat` and `scheduling` then run their
+lanes on the `codex` tier, `briefing`, `audit` and `digests` run their
+Claude lane on Codex as below, with no gate (`model_routing.py
+harness`), and `tagging`, `thread_state` and `review` make their
+tool-less call on Codex ("Tool-less calls" below). `mail` and `drafting`
+have no hosted model of their own and stay on Claude.
+
+The code that runs a turn or a call on Codex is the harness: the bot's
+`_HARNESS_TURNS` (`codex_turn.run_turn`), `hosted_text.CALLS`
+(`hosted_text.codex`), the lane runner in `run-agent.sh`
+(`codex_ghost.py run-lane`) and this page's modules. Everything else
+asks `model_routing` by class (`is_hosted`, `is_base`, `for_model`) and
+finds Codex by its entry in `ea_config.HOSTED_MODELS`, so a second model
+on the Codex CLI is one more entry there.
 
 `EA_HARNESS=codex` in the environment of `run-agent.sh` runs a briefing
 lane on Codex for real: `codex_ghost.py run-lane --live` as the resident
@@ -143,9 +156,11 @@ prompt as it does for Claude, and `run_turn` sends it, behind what a
 Claude run would load by itself, to a new Codex thread (`codex exec`;
 see "No resume" below), with writes confined to the folders a Claude
 turn writes and the run id the bot minted, so drafts and staged events
-surface as after a Claude turn. A topic gets the arm with `use codex`, one message with
-`@codex`, a lane with `tiers.lanes` in ea-config.json; the footer says
-"EA · Codex". A harness error or an empty answer hands the turn to
+surface as after a Claude turn. Every chat lane gets the arm with the
+switch at Codex, a topic with `use codex`, one message with `@codex`, a
+lane with `tiers.lanes` in ea-config.json while no switch is set; the
+footer says "EA · Codex". `@claude` or `use claude` sends a turn or a
+topic back to Claude whatever the switch says. A harness error or an empty answer hands the turn to
 Claude. The same function with `live=False` is the ghost's chat path:
 the production path with posting off (a scratch EA_DIR per thread, the
 real path replaced in the prompt, the mediator recording every write,

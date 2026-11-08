@@ -568,7 +568,7 @@ def test_a_reply_that_claims_a_draft_without_a_write_is_a_mismatch_the_judge_see
 def test_the_bot_and_the_lane_runner_hand_turns_to_the_ghost():
     bot = (REPO / "ea-chat-bot.py").read_text()
     assert "def _codex_ghost_turn(" in bot
-    assert 'if live_cr is None and arm == "claude" and remote_turn is None:\n            _codex_ghost_turn(' in bot
+    assert 'if live_cr is None and _routing.is_base(arm) and remote_turn is None:\n            _codex_ghost_turn(' in bot
     assert '_cg.active("chat")' in bot and "threading.Thread(target=_cg.enqueue" in bot
     lane = (REPO / "run-agent.sh").read_text()
     assert 'codex_ghost.py" gate briefing' in lane and "run-lane" in lane and "EA_HARNESS:-claude" in lane

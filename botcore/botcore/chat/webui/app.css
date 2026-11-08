@@ -576,8 +576,8 @@ a.file-link .file-name { color: var(--accent); }
 #phone-devices li { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 #phone-devices .empty { padding: 0; }
 #settings-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; }
-#settings-rows li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; }
-#settings-rows p, .s-key { grid-column: 1 / -1; font-size: 13px; color: var(--muted); }
+#settings-rows li, #settings-default { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; }
+#settings-rows p, #settings-default p, .s-key { grid-column: 1 / -1; font-size: 13px; color: var(--muted); }
 #settings-rows .s-floor { color: var(--text); border-left: 3px solid var(--warn); padding-left: 8px; }
 #settings-rows .s-hosted { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 #settings-rows .s-sub { font-size: 13px; color: var(--muted); }

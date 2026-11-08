@@ -125,10 +125,11 @@ ROUTING = {
     "local": {"configured": True, "model": "local-27b", "reachable": True, "detail": "Answered 2 min ago."},
     "source": "routing.json", "values": ["local", "hosted", "auto"],
     "hosted_values": ["claude", "codex"], "hosted_names": {"claude": "Claude", "codex": "Codex"},
+    "hosted_default": "codex", "hosted_default_set": True,
     "rows": [
         {"task": "drafting", "label": "Writing replies", "what": "Writes email replies in your voice.",
          "value": "auto", "allowed": ["local", "hosted", "auto"], "locked": False, "floor": "",
-         "hosted": "claude", "hosted_allowed": ["claude"],
+         "hosted": "claude", "hosted_allowed": ["claude"], "hosted_source": "fixed",
          "hosted_note": "Hosted: the model that asks for the reply writes it.",
          "help": "Writes the text of an email reply in your voice. Nothing goes out until you tap Send.",
          "effective": "local", "runs_on": "your own model", "why": "Auto picked your own model"},
@@ -136,18 +137,18 @@ ROUTING = {
          "value": "auto", "allowed": ["local", "auto"], "locked": False,
          "floor": "Hosted is off while you keep some mail away from hosted models (a domain, an address "
                   "or admissions mail), so that mail never reaches Claude or Codex.",
-         "hosted": "claude", "hosted_allowed": ["claude"], "hosted_note": "",
+         "hosted": "claude", "hosted_allowed": ["claude"], "hosted_source": "fixed", "hosted_note": "",
          "help": "When a new email comes in, Tacitus reads it once and writes a short note.",
          "effective": "local", "runs_on": "your own model", "why": "Auto picked your own model"},
         {"task": "review", "label": "Checking its own work", "what": "Checks that briefing items are still open.",
          "value": "hosted", "allowed": ["hosted"], "locked": True,
          "floor": "Always Hosted: these are judgment calls.",
-         "hosted": "claude", "hosted_allowed": ["claude"], "hosted_note": "",
-         "effective": "hosted", "runs_on": "Claude",
+         "hosted": "claude", "hosted_allowed": ["claude", "codex"], "hosted_source": "override",
+         "hosted_note": "", "effective": "hosted", "runs_on": "Claude",
          "why": "these are judgment calls, so your own model never makes them"},
         {"task": "chat", "label": "Talking with you", "what": "Answers you in the chat.",
          "value": "auto", "allowed": ["local", "hosted", "auto"], "locked": False, "floor": "",
-         "hosted": "codex", "hosted_allowed": ["claude", "codex"],
+         "hosted": "codex", "hosted_allowed": ["claude", "codex"], "hosted_source": "default",
          "hosted_note": "Codex cannot open web links, Drive, GitHub or Overleaf. "
                         "Start a message with @claude to send one to Claude.",
          "effective": "hosted", "runs_on": "Codex", "why": "Auto picked Codex"},
@@ -715,15 +716,27 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(400, {"error": f'"{rows[task]["label"]}" always stays on Hosted: '
                                                      "these are judgment calls, so your own model never makes them."})
             for task, model in (body.get("hosted") or {}).items():
-                if model not in rows[task]["hosted_allowed"]:
+                if model not in rows[task]["hosted_allowed"] + ["default"]:
                     return self._json(400, {"error": f'"{rows[task]["label"]}" has no hosted model of its own to pick.'})
+            # the switch moves every task that follows it; "default" makes a task follow it again
+            s.routing["hosted_default"] = body.get("hosted_default") or s.routing["hosted_default"]
+            picked = {t: r["hosted"] for t, r in rows.items() if r["hosted_source"] == "override"}
+            picked.update(body.get("hosted") or {})
+            moves = {}
+            for task, row in rows.items():
+                if len(row["hosted_allowed"]) > 1:
+                    own = picked.get(task, "default") != "default"
+                    model = picked[task] if own else s.routing["hosted_default"]
+                    row["hosted_source"] = "override" if own else "default"
+                    if model != row["hosted"]:
+                        moves[task] = model
             for task, value in body["tasks"].items():
                 rows[task]["value"] = value
                 if value != "auto":
                     rows[task].update(effective=value, why=f"set to {value.title()}",
                                       runs_on="your own model" if value == "local"
                                       else STUB_NAMES[rows[task]["hosted"]])
-            for task, model in (body.get("hosted") or {}).items():
+            for task, model in moves.items():
                 rows[task]["hosted"] = model
                 if rows[task]["effective"] == "hosted":
                     rows[task]["runs_on"] = STUB_NAMES[model]

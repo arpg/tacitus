@@ -2702,20 +2702,35 @@ async function phoneAct(verb, d) {
 
 // One row per task: local, hosted or auto (the remote-LLM switches decide), what the task
 // does, the model it runs on now and, where a floor holds a value, what the floor says.
-// A task with a Codex route also picks its hosted model, Claude or Codex; under any
-// other task a line says what Hosted means there. The local model's state heads the
-// screen. Only the owner's own web chat saves.
+// The hosted model at the top is the one switch, Claude or Codex, for every task. A task
+// that can use both also picks its own, and says under it whether it follows the switch
+// or is set apart, with Use default to follow it again; under any other task a line says
+// what Hosted means there. The local model's state follows the switch. Only the owner's
+// own web chat saves.
 const ROUTE_WORDS = { local: 'Local', hosted: 'Hosted', auto: 'Auto' };
 const cap = (t) => (t ? t[0].toUpperCase() + t.slice(1) : t);
+const pickIn = (box, m) => { const i = box.querySelector(`input[value="${m}"]`); if (i && !i.disabled) i.checked = true; };
+const seg = (data, name, by, now, ok, change) => h('span', { class: 'seg', role: 'radiogroup', 'aria-labelledby': by,
+  onchange: change }, (data.hosted_values || []).map((m) => h('label', {}, h('input', { type: 'radio', name,
+  value: m, checked: now === m, disabled: !ok(m) }), (data.hosted_names || {})[m] || m)));
+
+function defaultPick(data) {
+  $('settings-default').dataset.was = data.hosted_default;
+  $('settings-default').replaceChildren(h('span', { class: 's-name', id: 'hosted-default-name' }, 'Hosted model'),
+    seg(data, 'hosted-default', 'hosted-default-name', data.hosted_default, () => true,
+      (e) => $('settings-rows').querySelectorAll('li[data-follow]').forEach((li) => pickIn(li, e.target.value))),
+    h('p', {}, 'Every task below uses it unless you set the task apart.'));
+}
 
 function hostedPick(data, r) {
-  const names = data.hosted_names || {};
-  return h('span', { class: 's-hosted' },
-    h('span', { class: 's-sub', id: `hosted-${r.task}-name` }, 'Hosted model'),
-    h('span', { class: 'seg', role: 'radiogroup', 'aria-labelledby': `hosted-${r.task}-name` },
-      (data.hosted_values || []).map((m) => h('label', {},
-        h('input', { type: 'radio', name: `hosted-${r.task}`, value: m, checked: r.hosted === m,
-          disabled: !r.hosted_allowed.includes(m) }), names[m] || m))));
+  const own = h('p', { class: 's-own' });
+  const mark = (apart) => own.replaceChildren(apart ? 'Set for this task. ' : 'Follows the hosted model at the top.',
+    apart ? h('button', { type: 'button', class: 'btn small', onclick: () => { own.closest('li').dataset.follow = '1';
+      pickIn(own.closest('li'), $('settings-default').querySelector('input:checked').value); mark(false); } }, 'Use default') : '');
+  mark(r.hosted_source === 'override');
+  return [h('span', { class: 's-hosted' }, h('span', { class: 's-sub', id: `hosted-${r.task}-name` }, 'Hosted model'),
+    seg(data, `hosted-${r.task}`, `hosted-${r.task}-name`, r.hosted, (m) => r.hosted_allowed.includes(m),
+      (e) => { delete e.currentTarget.closest('li').dataset.follow; mark(true); })), own];
 }
 
 // A "?" beside a task's name opens what the task is, in plain words, under the row:
@@ -2735,7 +2750,9 @@ function renderSettings(data) {
   $('settings-local').textContent = loc.configured ? `Local model ${loc.model}: `
     + `${loc.reachable === false ? 'not reachable' : loc.reachable ? 'reachable' : 'not checked yet'}. ${loc.detail}` : loc.detail;
   $('settings-local').className = loc.reachable === false ? 'error' : '';
-  $('settings-rows').replaceChildren(...data.rows.map((r) => { const [ask, help] = helpFor(r); return h('li', { 'data-task': r.task },
+  defaultPick(data);
+  $('settings-rows').replaceChildren(...data.rows.map((r) => { const [ask, help] = helpFor(r); return h('li', { 'data-task': r.task,
+    'data-follow': r.hosted_source !== 'override' && '1', 'data-was': r.hosted_source, 'data-model': r.hosted },
     h('span', { class: 's-name' }, r.label, ask),
     h('span', { class: 'seg', role: 'radiogroup', 'aria-label': r.label }, data.values.map((v) => h('label', {},
       h('input', { type: 'radio', name: `route-${r.task}`, value: v, checked: r.value === v,
@@ -2820,15 +2837,22 @@ function settingsMenu() {
   $('notify-rows').addEventListener('change', saveNotify);
 }
 
+// Save sends the values, a task's own hosted model only where it changed ('default' when the
+// task follows the switch again), and the switch only when it moved.
 async function saveSettings() {
-  const tasks = {}, hosted = {};
+  const tasks = {}, hosted = {}, body = { tasks };
   for (const el of $('settings-rows').querySelectorAll('input:checked:not(:disabled)')) {
-    if (el.name.startsWith('hosted-')) hosted[el.name.slice(7)] = el.value;
-    else tasks[el.name.slice(6)] = el.value;
+    const li = el.closest('li'), apart = li.dataset.was === 'override';
+    if (!el.name.startsWith('hosted-')) tasks[li.dataset.task] = el.value;
+    else if (li.dataset.follow) { if (apart) hosted[li.dataset.task] = 'default'; }
+    else if (!apart || el.value !== li.dataset.model) hosted[li.dataset.task] = el.value;
   }
+  const pick = $('settings-default').querySelector('input:checked');
+  if (pick && pick.value !== $('settings-default').dataset.was) body.hosted_default = pick.value;
+  if (Object.keys(hosted).length) body.hosted = hosted;
   $('settings-save').disabled = true;
   try {
-    renderSettings(await call('POST', '/settings/routing', Object.keys(hosted).length ? { tasks, hosted } : { tasks }));
+    renderSettings(await call('POST', '/settings/routing', body));
     $('settings-note').textContent = 'Saved. Each task uses its model from its next run.';
   } catch (e) {
     $('settings-note').textContent = `Not saved: ${e.message}`;

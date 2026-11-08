@@ -169,9 +169,13 @@ floor keys on the model's class (`model_routing.is_hosted`), never on its
 name.
 
 **The hosted model.** Whenever a task runs hosted, by its value or by
-`auto`, the block's `hosted` map says which hosted model: `claude` or
-`codex`. Codex is a choice only where a Codex route exists
-(`ea_config.ROUTING_CODEX_TASKS`): `chat` and `scheduling` run their
+`auto`, one switch says which hosted model, `claude` or `codex`: the
+block's `hosted_default`, with the `hosted` map's per-task overrides
+over it (`model_routing.hosted_map`; docs/model-routing.md, "The hosted
+model: one switch"). Overrides stay when the switch moves, and a task a
+model cannot take reads Claude. Codex is a choice only where a Codex
+route exists (its entry in `ea_config.HOSTED_MODELS`, the
+registry of hosted models): `chat` and `scheduling` run their
 lanes on the `codex` tier (docs/codex-harness.md); `briefing`, `audit`
 and `digests` hand their Claude lane to Codex in `run-agent.sh`
 (`model_routing.py harness --agent <agent>` prints `codex`, with no ghost
@@ -181,21 +185,28 @@ with every tool off (docs/codex-harness.md, "Tool-less calls"). `mail`
 and `drafting` have no choice of their own, and a file that asks for
 Codex there is named and dropped: `mail` hosted is the gate off (the
 lanes read the mail on whichever model runs them), and `drafting` hosted
-is the turn's own model. A task the map leaves out
-runs where it runs today: the chat and scheduling lanes' `tiers.lanes`,
-Claude for the rest. Codex has no network in its sandbox, so the chat
+is the turn's own model. With no switch and no override set, a task
+runs where it ran before the switch: the chat and scheduling lanes'
+`tiers.lanes`, Claude for the rest. A table from before the switch that
+names a model for every task with a choice reads as a switch (the one
+model they name, else the `chat` entry's) with an override for each task
+that differs. Codex has no network in its sandbox, so the chat
 row says so when chat is on Codex: links, Drive, GitHub and Overleaf
 turns fail there, and `@claude` sends one turn to Claude.
 
-**Precedence in chat.** A message tag, a topic pin and a topic name are
-the owner's own picks for one topic, and outrank the table. The table's
-`local` or `hosted` outranks `tiers.lanes`. `hosted` moves only a pick
-that would run on `local` (a lane default, the A/B draw, a local
-session); a room keeps its specialist's model. The hosted model outranks
-`tiers.lanes` too: Codex makes the lane's hosted pick `codex` (a `fable`
-lane default included), Claude takes a `codex` lane default back to the
-bot's own model, and a pick the stakes rule or a missing local model
-moves off `local` goes to the hosted model chosen.
+**Precedence in chat.** One table, in docs/model-routing.md ("The
+hosted model: one switch"): a message tag, a topic pin and a topic name
+are the owner's own picks for one topic and outrank the table; then the
+task's `local`, a `local` lane default, the task's hosted override, the
+switch, a `codex` lane default (only with neither set), and last the
+knobs of today on Claude (a session's model, a room's specialist, the
+A/B draw, `EA_MODEL`). `hosted` moves only a pick that would run on
+`local` (a lane default, the A/B draw, a local session). Codex makes the
+lane's hosted pick `codex` (a `fable` lane default included); Claude
+takes a `codex` lane default back to the bot's own model, and a room
+keeps its specialist's model; a pick the stakes rule or a missing local
+model moves off `local` goes to the hosted model chosen. `EA_MODEL`
+names the Claude model, not a choice between Claude and Codex.
 
 **Where it lives.** `<private dir>/routing.json` (0600), the only copy an
 owner process reads; without it every task is at its default. The
@@ -204,17 +215,21 @@ only what the resident shows: that file is ea-bot's to write, and the
 table moves mail between models. A `routing.json` that fails the owner
 checks reads as the defaults, and the doctor's row FAILs.
 
-**Changing it.** The web chat's Models page (Settings at the drawer's foot, then Models: a
-row per task with Local, Hosted and Auto, a Claude or Codex choice under a
-task that has both, a line on what Hosted means under one that has not,
-the floor's line under a locked row, the local model's state at the top,
+**Changing it.** The web chat's Models page (Settings at the drawer's
+foot, then Models: the hosted model for every task at the top, Claude or
+Codex; a row per task with Local, Hosted and Auto, and under a task that
+has both a Claude or Codex choice marked as the default or its own, with
+"Use default"; a line on what Hosted means under a task that has no
+choice, the floor's line under a locked row, the local model's state,
 Save), or as the owner:
 
 ```text
+$ python3 /opt/ea-system/preprocessor/model_routing.py set-hosted codex
+{"hosted_default": "codex", "overrides": {}, "hosted": {...}}
+$ python3 /opt/ea-system/preprocessor/model_routing.py set-hosted claude --task review
+$ python3 /opt/ea-system/preprocessor/model_routing.py set-hosted --clear-task review
 $ python3 /opt/ea-system/preprocessor/model_routing.py set drafting hosted
 {"task": "drafting", "value": "hosted", "hosted": "claude"}
-$ python3 /opt/ea-system/preprocessor/model_routing.py set chat codex
-{"task": "chat", "value": "auto", "hosted": "codex"}
 $ python3 /opt/ea-system/preprocessor/model_routing.py show
 ```
 
@@ -1485,10 +1500,15 @@ named so before it starts. (4) A lane default in ea-config:
           "efforts": {"opus": "", "fable": ""}, "lanes": {"dm": "fable"}, "fable_daily_turns": 0}
 ```
 
-With none of the four the turn stays where the knobs already put it:
-an adopted session's own model, a room's specialist, the scheduler
-model, the A/B's drawn arm, `EA_MODEL`. `adopt session <id> as fable`
-takes a tier name as well as a model id.
+The routing table's hosted model (the switch `hosted_default`, or the
+task's override; section 1.1) sits over the lane default: Codex there
+runs every lane's turn on the `codex` tier, Claude leaves it with the
+knobs below. With none of these the turn stays where the knobs already
+put it: an adopted session's own model, a room's specialist, the
+scheduler model, the A/B's drawn arm, `EA_MODEL`. `adopt session <id>
+as fable` takes a tier name as well as a model id. The hosted tiers
+(`opus`, `fable`, `codex`), their aliases and their footer names come
+from the registry `ea_config.HOSTED_MODELS`.
 
 **A switch keeps the thread.** `use fable` in the middle of an Opus
 topic resumes the same transcript; nothing is re-explained. Down to

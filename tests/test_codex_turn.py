@@ -250,10 +250,14 @@ def test_a_codex_run_meets_the_same_gates_as_a_claude_run():
 def test_the_bot_wires_the_codex_arm_and_the_tier():
     bot = (REPO / "ea-chat-bot.py").read_text()
     assert "def _codex_turn_live(" in bot
-    assert 'if live_cr is None and arm == "codex":' in bot
-    assert "live_cr, codex_turn_rec = _codex_turn_live(" in bot
-    assert 'elif tier_pick["explicit"] and tier_pick["tier"] == "codex":' in bot
-    assert '"remote" if tier == "local" else "codex" if tier == "codex" else "claude"' in bot
+    # the arm runs on its harness's turn runner, found by the arm's harness
+    assert '_HARNESS_TURNS = {"codex": _codex_turn_live}' in bot
+    assert "harness_turn = _HARNESS_TURNS.get(_routing.harness_of(arm))" in bot
+    assert "if live_cr is None and harness_turn is not None:" in bot
+    assert "live_cr, codex_turn_rec = harness_turn(" in bot
+    assert 'elif tier_pick["explicit"] and _routing.is_hosted(tier_pick["tier"]):' in bot
+    assert "arm, arm_env = _tiers.arm_of(tier_pick[\"tier\"]), None" in bot
+    assert "_arms.pin(channel, thread_ts, _tiers.arm_of(tier), lane=lane" in bot
     assert "prompt=prompt, fresh_prompt=full_prompt,\n" in bot, "the ghost gets the prompt the bot sent Claude"
     import model_arms
     import model_tiers
@@ -263,6 +267,8 @@ def test_the_bot_wires_the_codex_arm_and_the_tier():
     assert model_tiers.parse_command("use codex")["tier"] == "codex"
     assert model_tiers.split_tag("@codex find a time")[0] == "codex"
     assert model_tiers.model_for("codex", default_model="m") == ("codex", "")
+    assert [model_tiers.arm_of(t) for t in ("local", "opus", "fable", "codex")] == \
+        ["remote", "claude", "claude", "codex"]
 
 
 # ── what Claude Code loads by itself, for Codex ───────────────────────

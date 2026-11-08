@@ -33,6 +33,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import model_routing as _routing  # noqa: E402
 import owner_trust as _owner_trust  # noqa: E402
 import remote_llm as _rl  # noqa: E402
 
@@ -40,12 +41,18 @@ ARMS_FILE = "ab-arms.json"
 TURNS = "ab-turns.jsonl"
 DRAFTS = "ab-drafts.jsonl"
 EVENTS = "ab-events.jsonl"
-ARMS = ("claude", "remote", "pipeline", "codex")
+# The control arm is the base hosted model's (Claude, the bot as it is);
+# the local arms follow it, then every other hosted model's arm from the
+# registry (ea_config.HOSTED_MODELS), so a new hosted model is an arm here
+# with no edit.
+CONTROL = _routing.base().arm
+ARMS = (CONTROL, "remote", "pipeline") + tuple(m.arm for m in _routing.hosted_models() if not m.base)
 LANES = ("main", "dm", "sched-channel", "room", "proactive")
 DEFAULT_DAYS = 14
 EDITED_AT = 0.15          # edit ratio at or above which a sent draft counts as edited
-_ALIASES = {"claude": "claude", "qwen": "remote", "remote": "remote", "on-prem": "remote",
-            "onprem": "remote", "local": "remote", "pipeline": "pipeline", "codex": "codex"}
+_ALIASES = {"qwen": "remote", "remote": "remote", "on-prem": "remote", "onprem": "remote",
+            "local": "remote", "pipeline": "pipeline",
+            **{m.key: m.arm for m in _routing.hosted_models()}}
 
 
 def _now() -> datetime:
@@ -68,7 +75,7 @@ def settings(cfg: dict | None = None) -> dict:
     kind = str(ab.get("arm") or "remote")
     return {"share": float(ab.get("share") or 0.0), "lanes": list(ab.get("lanes") or []),
             "from": str(ab.get("from") or ""), "until": str(ab.get("until") or ""),
-            "arm": kind if kind in ARMS and kind != "claude" else "remote"}
+            "arm": kind if kind in ARMS and kind != CONTROL else "remote"}
 
 
 def enabled(cfg: dict | None = None, today: date | None = None) -> bool:
@@ -110,7 +117,7 @@ def enable(share: float = 0.5, lanes: list[str] | None = None, days: int = DEFAU
     """Write the `ab` block: a share, the lanes, a window of `days` from
     today, and which arm a drawn topic gets (`remote`, the on-prem model
     in the Claude Code harness; `pipeline`, sched_pipeline). Owner only."""
-    if arm not in ARMS or arm == "claude":
+    if arm not in ARMS or arm == CONTROL:
         raise ValueError("arm is remote or pipeline")
     if not _rl._owner():
         raise _rl.RemoteLLMError("only the owner can set the A/B")
@@ -173,15 +180,15 @@ def arm_for(channel: str, thread_ts: str, lane: str, *, cfg: dict | None = None,
     Claude, and is not recorded."""
     cfg = cfg if cfg is not None else _rl.config()
     if not _rl._owner():
-        return "claude"
+        return CONTROL
     arms = _load_arms()
     row = arms.get(_key(channel, thread_ts))
     if row and row.get("arm") in ARMS:
         return row["arm"]
     if not enabled(cfg, today) or lane not in settings(cfg)["lanes"]:
-        return "claude"
+        return CONTROL
     draw = (rng or random).random()
-    arm = settings(cfg)["arm"] if draw < settings(cfg)["share"] else "claude"
+    arm = settings(cfg)["arm"] if draw < settings(cfg)["share"] else CONTROL
     arms[_key(channel, thread_ts)] = {"arm": arm, "lane": lane, "assigned": _iso(), "pinned": False,
                                       "reason": "drawn", "draw": round(draw, 3)}
     _save_arms(arms)

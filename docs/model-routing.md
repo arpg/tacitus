@@ -23,8 +23,9 @@
   sits behind a TLS proxy (`tailscale serve`, Caddy).
 - **hosted**: a hosted model: Claude through Claude Code (the `opus` or
   `fable` tier), or Codex through the Codex CLI (the `codex` tier) for a
-  task with a Codex route. The routing block's `hosted` map picks one per
-  task (docs/llm-lanes.md section 1.1, "The hosted model").
+  task with a Codex route. One switch, `hosted_default`, picks it for
+  every task, and the `hosted` map overrides it per task ("The hosted
+  model: one switch" below).
 - **auto**: the remote layer's switches and the `tiers` block decide, as
   they did before the table.
 - **task**: one kind of model work with its own inputs, for example
@@ -101,10 +102,114 @@ one key, `tasks`:
   reason (`routing_problems`).
 - **Changing it.** The web chat's Settings screen (owner only, never on
   a relayed copy) or, as the owner, `model_routing.py set <task>
-  local|hosted|auto`. Each change is one line in `routing-changes.jsonl`
-  in the remote-LLM store: the time, `via` (`web` or `cli`), what changed
-  and, for a web save, the credential that signed the request in
-  (`cookie` or `header`) and the device of a relayed request.
+  local|hosted|auto` and `model_routing.py set-hosted` (below). Each
+  change is one line in `routing-changes.jsonl` in the remote-LLM store:
+  the time, `via` (`web` or `cli`), what changed (`hosted_default` for
+  the switch, `hosted.<task>` for an override) and, for a web save, the
+  credential that signed the request in (`cookie` or `header`) and the
+  device of a relayed request.
+
+## The hosted model: one switch
+
+Moving from Claude to Codex and back is one value, not a sweep of the
+tasks. `routing.json` holds the switch beside the tasks:
+
+```json
+{
+  "tasks": {"chat": "auto", "briefing": "auto"},
+  "hosted_default": "codex",
+  "hosted": {"review": "claude"}
+}
+```
+
+- **`hosted_default`** (`claude` or `codex`) is the hosted model of every
+  task that runs hosted, by its value or by `auto`. Flip it and every
+  task without an override moves together: the chat and scheduling lanes
+  (their default tier), the briefings, the audit and the digests
+  (`run-agent.sh` asks `model_routing.py harness`), and the tool-less
+  calls of the tagger, the thread states and the review (`hosted_text`).
+- **`hosted`** holds the overrides: a task the owner set apart keeps its
+  model when the switch moves. It is empty by default. "Use default" on
+  the Settings screen, or `set-hosted --clear-task <task>`, drops one.
+- **A task a model cannot take** reads Claude whatever the switch says:
+  `mail` hosted is the gate off and `drafting` hosted is the turn's own
+  model, so neither has a hosted model of its own. `show` and the screen
+  mark such a task `fixed` and say why.
+- **No switch set** (the key absent, as on an install from before it):
+  every task without an override runs on Claude, and the chat and
+  scheduling lanes keep a `codex` lane default from the `tiers` block, as
+  before. Once the switch is set it outranks that lane default.
+- **A table from before the switch.** The earlier Settings screen saved
+  a model for every task. When `hosted_default` is absent and the file
+  names a model for every task that has a choice, the switch is the one
+  model they all name, or, when they name two, the `chat` entry's model
+  (the one the owner talks to); each task whose entry differs from it
+  stays an override, so no task moves. The next save writes the file in
+  that shape. A file that names only some tasks keeps its entries as
+  overrides and sets no switch.
+
+```text
+$ python3 /opt/ea-system/preprocessor/model_routing.py set-hosted codex
+{"hosted_default": "codex", "overrides": {}, "hosted": {...}}
+$ python3 /opt/ea-system/preprocessor/model_routing.py set-hosted claude --task review
+$ python3 /opt/ea-system/preprocessor/model_routing.py set-hosted --clear-task review
+$ python3 /opt/ea-system/preprocessor/model_routing.py show
+*Hosted model:* Codex for every task not set apart.
+- *Your briefing* (`briefing`): auto, hosted on Codex (default), now Codex (...)
+- *Checking its own work* (`review`): hosted, hosted on Claude (override), now Claude (...)
+- *Reading your mail* (`mail`): auto, hosted on Claude (fixed: it has no hosted model of its own to pick), ...
+```
+
+`set <task> claude|codex` still writes one override.
+
+**Which model a chat turn runs on**, strongest first. The same order
+holds in the scheduling channel and the proactive scheduler, with the
+`scheduling` task in place of `chat`.
+
+| | Source | Scope | Example |
+|---|---|---|---|
+| 1 | a tag on the message | that turn | `@codex`, `@claude` (Opus), `@fable`, `@local` |
+| 2 | a pin on the topic | the topic | `use codex`, `use claude`, `escalate`, `hand back` |
+| 3 | the topic's name | the topic | `[codex] budget plan` |
+| 4 | the task's value `local` | the task | `set chat local` |
+| 5 | a `local` lane default | the lane | `tiers.lanes.dm = "local"` |
+| 6 | the task's hosted override | the task | `set-hosted codex --task chat` |
+| 7 | the switch | every task | `set-hosted codex` |
+| 8 | a `codex` lane default | the lane | `tiers.lanes.main = "codex"`, only with no switch and no override |
+| 9 | today's knobs, on Claude | the turn | an adopted session's model, a room's specialist, the scheduler model, the A/B's drawn arm, `EA_MODEL` |
+
+Under Claude (6 or 7) a `fable` lane default stays `fable` and a room
+keeps its specialist's model; under Codex they run on Codex. The task's
+value `hosted` moves a pick that would run on `local` (5, the A/B draw,
+a local session) to the hosted model 6 or 7 names; the stakes rule and a
+missing local model do the same. `EA_MODEL` and `tiers.models.opus`
+name the Claude model a Claude turn runs on; neither picks between
+Claude and Codex.
+
+## Adding a hosted model
+
+The policy code never names a hosted model. It asks `model_routing` by
+class: `is_hosted(name)`, `is_local(name)`, `is_base(name)` (Claude, the
+model the bot's own harness runs and every fallback goes to) and
+`for_model(name)`, which finds a registry entry from a key, a chat tier,
+an arm or a recorded model id. A new hosted model is:
+
+1. **One entry in `ea_config.HOSTED_MODELS`:** its name, its harness,
+   its chat tier, its arm, the prefixes of its model ids and the routing
+   tasks it can take. The tiers, the aliases (`@<tier>`, `use <tier>`,
+   `[<tier>]`), the footer's name, the A/B arms, the Settings choices,
+   the switch and the validation take it from there.
+2. **A harness, when it runs on a program that has none yet:** a turn
+   runner in the bot's `_HARNESS_TURNS`, a tool-less call in
+   `hosted_text.CALLS`, a lane runner in `run-agent.sh`, and a line in
+   `HARNESS_LIMITS` when the harness cannot do something in chat. A
+   model on the Codex CLI reuses Codex's harness and needs none of it.
+
+`tests/test_hosted_switch.py` adds a made-up model with one entry and
+checks that each of those places takes it. It also scans the production
+code for a branch on a hosted model's name: a new one fails the test
+unless its file is in the test's allowlist with the reason (a harness
+file, or a record that labels the hosted side of a measure).
 
 ## How the lanes read it
 
@@ -128,19 +233,10 @@ no restart. A table that cannot be read leaves each switch as it is.
 `remote_llm.py switches` shows each switch's `effective` value with the
 table applied.
 
-**Precedence in chat and scheduling turns**, strongest first:
-
-1. the message's tag (`@local`, `@opus`, `@fable`);
-2. the topic's pin (`use local`);
-3. the topic's name (`[fable] ...`);
-4. the table's `local` or `hosted` for the lane's task;
-5. `tiers.lanes`;
-6. where today's knobs put the turn: an adopted session's model, a
-   room's specialist, the A/B's drawn arm, or the bot's own model.
-
-`hosted` moves only a pick that would run on `local`; a room keeps its
-specialist's model, and a `fable` lane default stays `fable`. The stakes
-rule sits over every pick but the tag (below).
+**Precedence in chat and scheduling turns:** the table in "The hosted
+model: one switch" above, the one place it is written. `hosted` moves
+only a pick that would run on `local`. The stakes rule sits over every
+pick but the tag (below).
 
 ## The floors
 
@@ -226,6 +322,9 @@ today.
   set both run as before. The design's `hosted` default for a task with
   no entry was not built; a task added later takes the default
   `ea_config.DEFAULTS` gives it.
+- **One switch between hosted models.** Claude to Codex and back is
+  `hosted_default`, with the per-task overrides kept across a flip; no
+  lane needs an edit when the owner swaps them.
 
 What it does not add: a model choice inside a task (that stays the
 switches and the tiers), or any change to what the mediator lets either
