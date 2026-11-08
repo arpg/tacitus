@@ -37,7 +37,7 @@ scheduling, take autonomous action where trusted, and post to chat.
 
 ### 2. Check the chat for user replies (from preprocessor)
 This step applies when a chat channel is configured (the `assistant`
-profile). Without one the briefing JSON has no `recent_slack_messages`
+and `collaborator` modes). Without one the briefing JSON has no `recent_slack_messages`
 and there are no replies to check: skip to step 3.
 
 The preprocessor fetches the last 24 hours of messages from the EA channel.

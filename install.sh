@@ -15,6 +15,9 @@
 #   --check       print the prerequisite table and exit 0 (all present) or 1
 #   --no-launch   do everything but start Claude Code; print the two
 #                 commands to run by hand
+#   --profile M   the mode, reviewer, assistant or collaborator: the setup
+#                 skill starts with it as the answer to its first question
+#                 (the old names email and review-only mean reviewer)
 #   EA_SRC        where to clone (default: $HOME/ea-system)
 #   EA_REPO       the clone URL (default: the arpg/tacitus GitHub URL)
 #   EA_PYTHON     the python3 to use when the first on PATH is too old
@@ -40,6 +43,8 @@ DEFAULT_REPO="https://github.com/arpg/tacitus.git"
 CLAUDE_INSTALLER="https://claude.ai/install.sh"
 
 MODE="install"
+SETUP_PROFILE=""
+SETUP_CMD="/setup"
 PLATFORM=""
 PKG_HINT=""
 PY=""
@@ -54,9 +59,24 @@ row()  { printf '  %-8s %-12s %s\n' "$1" "$2" "$3"; }
 die()  { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 
 usage() {
-    say "usage: install.sh [--check | --no-launch]"
+    say "usage: install.sh [--check | --no-launch] [--profile reviewer|assistant|collaborator]"
     say "  --check      print the prerequisite table; exit 0 when all are present"
     say "  --no-launch  install everything, then print the commands instead of starting Claude Code"
+    say "  --profile    the mode setup starts with: reviewer (no chat, reports only),"
+    say "               assistant (one chat) or collaborator (a chat plus project rooms)"
+}
+
+# The mode for --profile: one of the three, or an old name mapped with a
+# note (preprocessor/ea_config.py LEGACY_PROFILES).
+set_profile() {
+    case "$1" in
+        reviewer|assistant|collaborator) SETUP_PROFILE="$1" ;;
+        email|review-only)
+            SETUP_PROFILE="reviewer"
+            say "--profile $1 is an old name: it is reviewer now." ;;
+        *) usage >&2; exit 2 ;;
+    esac
+    SETUP_CMD="/setup --profile $SETUP_PROFILE"
 }
 
 # ── Platform ────────────────────────────────────────────────────────
@@ -348,15 +368,15 @@ launch() {
             *) say "  export PATH=\"\$HOME/.local/bin:\$PATH\"   # and add it to your shell profile" ;;
         esac
         say "  cd $SRC"
-        say '  claude "/setup"'
+        say "  claude \"$SETUP_CMD\""
         exit 0
     fi
     say "Starting Claude Code with the setup skill..."
     # A piped run has the script on stdin; the session needs the terminal.
     if [ ! -t 0 ] && [ -r /dev/tty ]; then
-        exec claude "/setup" </dev/tty
+        exec claude "$SETUP_CMD" </dev/tty
     fi
-    exec claude "/setup"
+    exec claude "$SETUP_CMD"
 }
 
 main() {
@@ -364,6 +384,11 @@ main() {
         case "$1" in
             --check) MODE="check" ;;
             --no-launch) MODE="no-launch" ;;
+            --profile)
+                [ $# -ge 2 ] || { usage >&2; exit 2; }
+                set_profile "$2"
+                shift ;;
+            --profile=*) set_profile "${1#--profile=}" ;;
             -h|--help) usage; exit 0 ;;
             *) usage >&2; exit 2 ;;
         esac

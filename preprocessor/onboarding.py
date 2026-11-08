@@ -7,9 +7,9 @@ the first briefings and drafts are generic. This module asks the bank in
 `config/onboarding-questions.json` and turns each answer into a standing
 rule in the user's own words, through `preferences.py` (kind and scope
 from the question, the answer as the quote, source `onboarding`). The
-morning briefing on a chat profile ends with the question of the day
+morning briefing in a chat mode ends with the question of the day
 (the preprocessor puts it in the briefing JSON as `onboarding_question`);
-the email profile answers the bank in one sitting (`ask --count N`,
+the reviewer mode answers the bank in one sitting (`ask --count N`,
 `scripts/install/user_init.py --phase preferences`).
 
 State is `~/.ea/state/onboarding.json`, written through resident_io like

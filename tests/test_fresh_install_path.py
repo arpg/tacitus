@@ -1,5 +1,5 @@
 """The fresh-install path for a user who follows the README quick start
-with the email profile: no chat server, no remote model.
+in the reviewer mode: no chat server, no remote model.
 
 Each test runs the real shell out of scripts/install/setup.sh or run-agent.sh in a scratch
 directory with stubs on PATH, or reads the scripts and docs the install
@@ -33,7 +33,8 @@ def _run_config_block(ea_dir: Path, profile: str) -> subprocess.CompletedProcess
     block = _segment(SETUP, 'OWNER_IO="$SCRIPT_DIR/scripts/owner-io.sh"', "# Make scripts executable")
     script = ("set -euo pipefail\n"
               f"SCRIPT_DIR={shlex.quote(str(REPO))}\nEA_DIR={shlex.quote(str(ea_dir))}\n"
-              f"PROFILE={profile}\nHAS_SLACK=0\n" + block)
+              f"PROFILE={profile}\nPROFILE_ACTION=record\nPROFILE_DRAFTING=\nREPORTS=\n"
+              "HAS_SLACK=0\n" + block)
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=120,
                           env={**os.environ, "EA_DIR": str(ea_dir)})
 
@@ -41,7 +42,7 @@ def _run_config_block(ea_dir: Path, profile: str) -> subprocess.CompletedProcess
 def test_setup_copies_every_regular_template_and_skips_the_examples_dir(tmp_path):
     ea_dir = tmp_path / ".ea"
     (ea_dir / "config").mkdir(parents=True)
-    r = _run_config_block(ea_dir, "email")
+    r = _run_config_block(ea_dir, "reviewer")
     assert r.returncode == 0, r.stdout[-1500:] + r.stderr[-1500:]
     templates = sorted(p.name for p in (REPO / "config").iterdir() if p.is_file())
     assert templates, "config/ holds the templates"
@@ -53,20 +54,20 @@ def test_setup_copies_every_regular_template_and_skips_the_examples_dir(tmp_path
     # ea-config.json is the template plus the recorded profile
     cfg = json.loads((ea_dir / "config" / "ea-config.json").read_text())
     template = json.loads((REPO / "config" / "ea-config.json").read_text())
-    assert cfg == {**template, "profile": "email"}
-    assert "Profile recorded: email" in r.stdout
+    assert cfg == {**template, "profile": "reviewer", "profile_version": 2}
+    assert "Profile recorded: reviewer" in r.stdout
     # a second run rewrites nothing and says so
     before = {p.name: p.stat().st_mtime_ns for p in (ea_dir / "config").iterdir()}
-    r2 = _run_config_block(ea_dir, "email")
+    r2 = _run_config_block(ea_dir, "reviewer")
     assert r2.returncode == 0, r2.stderr[-800:]
-    assert "Profile already recorded: email" in r2.stdout
+    assert "Profile already recorded: reviewer" in r2.stdout
     assert {p.name: p.stat().st_mtime_ns for p in (ea_dir / "config").iterdir()} == before
     # a profile change rewrites only ea-config.json, keeping its other keys
-    (ea_dir / "config" / "ea-config.json").write_text(json.dumps({"profile": "email", "log_level": "DEBUG"}))
+    (ea_dir / "config" / "ea-config.json").write_text(json.dumps({"profile": "reviewer", "log_level": "DEBUG"}))
     r3 = _run_config_block(ea_dir, "assistant")
     assert r3.returncode == 0, r3.stderr[-800:]
     assert json.loads((ea_dir / "config" / "ea-config.json").read_text()) == {
-        "profile": "assistant", "log_level": "DEBUG"}
+        "profile": "assistant", "log_level": "DEBUG", "profile_version": 2}
 
 
 def test_setup_names_the_fix_when_the_config_dir_is_not_writable(tmp_path):
@@ -76,13 +77,13 @@ def test_setup_names_the_fix_when_the_config_dir_is_not_writable(tmp_path):
     (ea_dir / "config").mkdir(parents=True)
     os.chmod(ea_dir / "config", 0o500)
     try:
-        r = _run_config_block(ea_dir, "email")
+        r = _run_config_block(ea_dir, "reviewer")
     finally:
         os.chmod(ea_dir / "config", 0o700)
     assert r.returncode != 0
     assert "Traceback" not in r.stderr
     assert "scripts/install/setup.sh: cannot write" in r.stderr and "scripts/install/setup-ea-user.sh" in r.stderr
-    assert "./scripts/install/setup.sh --profile email" in r.stderr
+    assert "./scripts/install/setup.sh --profile reviewer" in r.stderr
 
 
 def test_setup_no_longer_links_the_code_into_ea_dir():
@@ -203,7 +204,7 @@ def test_the_literal_command_rule_is_opt_in():
     assert "mail_actions.py --provider" in rule and "never\n   retry it" in rule
     assert "${RULE_COUNT:-four} rules from CLAUDE.md" in RUN_AGENT and "${LITERAL_RULE:-}" in RUN_AGENT
 
-# ── the doctor on an email profile ───────────────────────────────────
+# ── the doctor in the reviewer mode ──────────────────────────────────
 
 def _doctor(ea_dir: Path, profile: str) -> dict:
     env = dict(os.environ, EA_DIR=str(ea_dir), EA_PRIVATE_DIR=tempfile.mkdtemp(prefix="ea-doctor-private-"))
@@ -215,10 +216,10 @@ def _doctor(ea_dir: Path, profile: str) -> dict:
 def test_doctor_warns_not_fails_on_the_calendar_when_the_profile_has_no_buttons(tmp_path):
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "scheduling-preferences.json").write_text(json.dumps({"ea_managed_calendar": {}}))
-    email = _doctor(tmp_path, "email")
+    reviewer = _doctor(tmp_path, "reviewer")
     full = _doctor(tmp_path, "assistant")
-    assert email["EA-Managed calendar"]["status"] == "WARN"
-    assert "optional on this profile" in email["EA-Managed calendar"]["detail"]
+    assert reviewer["EA-Managed calendar"]["status"] == "WARN"
+    assert "optional on this profile" in reviewer["EA-Managed calendar"]["detail"]
     assert full["EA-Managed calendar"]["status"] == "FAIL"
     assert "The EA-Managed calendar" in full["EA-Managed calendar"]["fix"]
 
@@ -250,14 +251,14 @@ def test_harden_skips_the_bot_unit_steps_when_there_is_no_unit():
     assert "no unit to restart" in harden
 
 
-def test_macos_runs_the_services_and_mediation_on_every_profile():
+def test_macos_runs_the_services_and_mediation_in_every_mode():
     """macOS has no harden-permissions.sh and scripts/install/setup-ea-user-macos.sh leaves
     mediation alone, so the skill runs install-services.sh (the mediator
-    always, the bot only with chat) and enable-mail-mediation.sh on every
-    profile, in section 8, not in the assistant-only section 6."""
+    always, the bot only with chat) and enable-mail-mediation.sh in every
+    mode, in section 8, not in the chat-only section 6."""
     skill = (REPO / ".claude" / "skills" / "setup" / "SKILL.md").read_text()
     sec8 = _segment(skill, "## 8. Acceptance", "## 9. First week")
-    assert "On macOS, on every profile" in sec8
+    assert "On macOS, in every mode" in sec8
     assert sec8.index("`sudo bash deploy/macos/install-services.sh`") \
         < sec8.index("`sudo bash deploy/enable-mail-mediation.sh`")
     assert "already did this" not in skill
@@ -267,14 +268,14 @@ def test_macos_runs_the_services_and_mediation_on_every_profile():
     assert "enable-mail-mediation.sh" in (REPO / "scripts/install/setup-ea-user-macos.sh").read_text()
 
 
-def test_the_email_profile_promises_no_holds():
+def test_the_reviewer_mode_promises_no_holds():
     """With no chat platform nothing reads pending-event.json (the no-chat
-    block in run-agent.sh forbids staging it), so no doc says the email
-    profile holds time on a calendar."""
+    block in run-agent.sh forbids staging it), so no doc says the reviewer
+    mode holds time on a calendar."""
     assert "Do not write pending-event.json" in RUN_AGENT
     for doc in ("README.md", "docs/SETUP.md"):
         text = (REPO / doc).read_text()
-        row = next(ln for ln in text.splitlines() if ln.startswith("| `email`"))
+        row = next(ln for ln in text.splitlines() if ln.startswith("| `reviewer`"))
         assert "no holds" in row and "EA holds on your Outlook calendar" not in row, doc
     skill = (REPO / ".claude" / "skills" / "setup" / "SKILL.md").read_text()
     assert "holds time on its own calendar" not in skill
@@ -322,9 +323,9 @@ def test_docs_put_setup_sh_before_the_service_account_and_name_the_report_file()
     assert "GRAPH_AUTH_METHOD=device_code" in setup_md and "scripts/install/user_init.py --phase auth" in setup_md
     assert "`scripts/install/setup.sh` writes these entries for you" not in setup_md
     assert "ALL=(ea-bot) NOPASSWD: ALL" in setup_md
-    assert "assistant` profile it also checks new mail every 10 minutes" in readme
+    assert "assistant and collaborator modes it also checks new mail every 10 minutes" in readme
     # the text this change added carries no em-dash
-    added = (sec5, _segment(skill, "## 0. Resume", "## 1. Profile"),
+    added = (sec5, _segment(skill, "## 0. Resume", "## 1. Mode"),
              _segment(setup_md, "## Cron schedule", "### The deferred-send signing key"),
              _segment(RUN_AGENT, 'SKILL_CONTENT=$(cat "$SKILL_FILE")', 'PROMPT="You are running'),
              _segment(SETUP, 'OWNER_IO="$SCRIPT_DIR/scripts/owner-io.sh"', "# Make scripts executable"))

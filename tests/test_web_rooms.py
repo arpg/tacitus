@@ -7,7 +7,9 @@ creates the room, registers it and posts its opening pack; the app gets
 the room's `channel` event; the owner's message in the room is routed to
 the room's project scope; the room's specialist session is minted; the
 briefing posts its room slice there; the hygiene pass archives the room of
-a dormant project. A session room (#tmp-<id8>), a room opened for a
+a dormant project. Rooms are the collaborator mode's: in the assistant
+mode every one of these paths answers without making a room. A session
+room (#tmp-<id8>), a room opened for a
 project created in a turn, the staged pending-channel.json and the
 picker's Open button take the same path, and a room made before its
 registration failed is taken back. A room the owner renames from the app
@@ -125,7 +127,7 @@ class _Thread:
 
 
 BOT_FNS = (
-    "_core_room_names", "_core_channel", "_owned_room", "_room_members_ok", "_channel_scope",
+    "_rooms_on", "_core_room_names", "_core_channel", "_owned_room", "_room_members_ok", "_channel_scope",
     "_owner_dm_channels", "_owner_destination", "_record_owner_room", "_untrusted_room_text",
     "_room_not_permitted_text", "_unregistered_own_room", "_post_room_intro",
     "_open_project_channel",
@@ -134,7 +136,13 @@ BOT_FNS = (
     "_colleague_command", "on_message",
 )
 REGEXES = ("_CONVERSATIONS_RE", "_VERSION_RE", "_ROUTING_RE", "_NAME_THREAD_RE", "_ROOM_VERB",
-           "_OPEN_CHANNEL_RE", "_RESUME_THREAD_RE")
+           "_OPEN_CHANNEL_RE", "_RESUME_THREAD_RE", "ROOMS_OFF_TEXT")
+
+
+def _mode(tmp_path, profile: str) -> None:
+    """The install's mode, in the ea-config.json the bot's room switch reads."""
+    (tmp_path / "config" / "ea-config.json").write_text(
+        json.dumps({"profile": profile, "profile_version": 2}))
 
 
 def _web(tmp_path):
@@ -161,6 +169,8 @@ def bot(tmp_path, monkeypatch):
     private.mkdir(mode=0o700)
     monkeypatch.setenv("EA_PRIVATE_DIR", str(private))
     (tmp_path / "config").mkdir()
+    monkeypatch.setattr(ea_config, "CONFIG_FILE", tmp_path / "config" / "ea-config.json")
+    _mode(tmp_path, "collaborator")
     registry = tmp_path / "config" / "ea-channels.json"
     for mod in (_ea_channels, bare_channels):
         monkeypatch.setattr(mod, "REGISTRY", registry)
@@ -431,6 +441,43 @@ def test_rooms_from_a_turn_a_staged_file_and_the_picker(bot):
     card = fe.post("main", "picker", thread_ts=asked["thread_key"])
     ns["_finish_room_pick"](card, "lumen", {"c": "main", "t": asked["thread_key"]})
     assert sorted(c["id"] for c in fe.store.channels() if c["kind"] == "room") == ["r1", "r2"]
+
+
+def test_the_assistant_mode_opens_no_room_on_any_path(bot, tmp_path):
+    """One chat, no rooms: the command, a session room, the staged file, a
+    project created in a turn, the picker and its Create button all answer
+    that rooms come with the collaborator mode, and no room is made. The
+    same command in the collaborator mode opens one."""
+    ns, fe, store, *_ = bot
+    _mode(tmp_path, "assistant")
+    off = ns["ROOMS_OFF_TEXT"]
+    assert "collaborator" in off and "set-profile collaborator" in off
+    asked, res = _command(ns, fe, "open a channel for atlas")
+    assert res == {"ok": True, "text": off}
+    _, res = _command(ns, fe, f"open a channel for session {SID}")
+    assert res["text"] == off
+    _, res = _command(ns, fe, "open a channel for this conversation")
+    assert res["text"] == off
+    assert ns["_open_project_channel"]("main", asked["thread_key"], "", "atlas")["rooms_off"]
+    assert ns["_open_session_channel"](SID)["rooms_off"]
+    # pending-channel.json: the thread hears why
+    ns["_open_channel_action"]("main", asked["thread_key"], {"project": "atlas"})
+    said = [m["text"] for m in fe.store.thread("main", asked["thread_key"])]
+    assert off in said, said
+    # add-project in a turn: registered, no room, no announcement
+    store.created = [{"id": "lumen", "name": "Lumen", "status": "active"}]
+    assert ns["_open_rooms_for_new_projects"]("main", asked["thread_key"], time.time(), "t") == 0
+    assert not any("is registered" in t for t in
+                   [m["text"] for m in fe.store.thread("main", asked["thread_key"])])
+    # the picker's Open button on an old card
+    card = fe.post("main", "picker", thread_ts=asked["thread_key"])
+    ns["_finish_room_pick"](card, "lumen", {"c": "main", "t": asked["thread_key"]})
+    assert not [c for c in fe.store.channels() if c["kind"] == "room"]
+    assert _ea_channels.load() == {}
+    # collaborator: the same command opens the room
+    _mode(tmp_path, "collaborator")
+    _, res = _command(ns, fe, "open a channel for atlas")
+    assert res["ok"] and res["room"] == "r1", res
 
 
 def test_a_room_made_before_its_registration_failed_is_taken_back(bot):

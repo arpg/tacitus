@@ -32,10 +32,10 @@ import setup_questions as Q  # noqa: E402
 import setup_web  # noqa: E402
 import user_init  # noqa: E402
 
-ANSWERS_FILE = ROOT / "tests" / "install" / "answers-email.json"
+ANSWERS_FILE = ROOT / "tests" / "install" / "answers-reviewer.json"
 TOKEN = "made-up-token-" + "x" * 30
 DOCTOR_CI = [sys.executable, str(ROOT / "scripts" / "ea-doctor.py"), "--json", "--ci"]
-PROFILE_ANSWERS = {"profile": "email", "acknowledged": True}
+PROFILE_ANSWERS = {"profile": "reviewer", "acknowledged": True}
 
 
 class Client:
@@ -205,15 +205,17 @@ def test_posted_answers_write_what_the_terminal_writes(start, monkeypatch, tmp_p
         assert stat.S_IMODE(got[name].stat().st_mode) == stat.S_IMODE(path.stat().st_mode), name
     assert stat.S_IMODE((web / "private").stat().st_mode) == 0o700
     cfg = json.loads((web / "config" / "ea-config.json").read_text())
-    assert cfg["profile"] == "email" and cfg["acknowledged"]["responsibility"]
+    assert cfg["profile"] == "reviewer" and cfg["acknowledged"]["responsibility"]
+    assert cfg["profile_version"] == 2 and cfg["reports"] == {"schedule": "weekdays"}
+    assert cfg.get("drafting") is not False, "drafts stay on by default"
     assert "mail_mediation" not in cfg and "quiet_hours" in cfg, "started from the template"
 
 
 def test_the_chat_screen_writes_what_the_terminal_writes(start, monkeypatch, tmp_path):
-    """On the assistant profile the page asks the chat platform, the web
+    """In the assistant mode the page asks the chat platform, the web
     chat first; the posted answers write the bytes the terminal's chat
     phase writes, the screens after it ask no Slack token, and the last
-    screen gives the `tailscale serve` line. An email install has no chat
+    screen gives the `tailscale serve` line. A reviewer install has no chat
     screen at all."""
     chosen = {"chat-platform": "web", "web-chat-host": "host.tail0000.ts.net",
               "web-chat-login": "owner@example.test"}
@@ -249,8 +251,8 @@ def test_the_chat_screen_writes_what_the_terminal_writes(start, monkeypatch, tmp
     # a bad host comes back under its key
     status, doc = c.post("chat", {"chat-platform": "web", "web-chat-host": "https://x"})
     assert status == 422 and list(doc["errors"]) == ["web-chat-host"]
-    # the email profile has no chat screen
-    assert c.post("profile", {"profile": "email"})[0] == 200
+    # the reviewer mode has no chat screen
+    assert c.post("profile", {"profile": "reviewer"})[0] == 200
     _s, doc, _ = c.call("GET", "/api/phases")
     assert "chat" not in [p["id"] for p in doc["phases"]]
 
@@ -299,7 +301,7 @@ def test_a_bad_answer_comes_back_under_its_key_and_writes_nothing(start, tmp_pat
     status, doc = c.post("autonomy", {"conservative-defaults": False,
                                       "tier-draft-email-response": "sometimes"})
     assert status == 422 and list(doc["errors"]) == ["tier-draft-email-response"]
-    status, doc = c.post("profile", {"profile": "email", "acknowledged": False})
+    status, doc = c.post("profile", {"profile": "reviewer", "acknowledged": False})
     assert status == 422 and "accept the notice" in doc["errors"]["acknowledged"]
     status, doc = c.post("auth", {"graph-auth-method": "confidential", "graph-client-id": "id"})
     assert status == 422 and list(doc["errors"]) == ["graph-client-secret"]
@@ -353,7 +355,7 @@ def test_the_answers_view_is_the_update_view(start, tmp_path):
     c, _srv, _ = start()
     values = c.call("GET", "/api/answers")[1]["values"]
     assert values["full-name"] == "" and values["university"] == ""
-    assert values["timezone"] == "America/Denver" and values["profile"] == "email"
+    assert values["timezone"] == "America/Denver" and values["profile"] == "assistant"
     # The first method is the default: the project's published app once it
     # is registered (docs/published-oauth-apps.md), else the confidential client.
     first = "published" if setup_web.Q.published_graph_client_id() else "confidential"
@@ -450,7 +452,7 @@ def test_the_doctor_route_returns_rows(start):
     assert status == 200, doc
     assert doc["pass"] >= 1 and doc["fail"] == 0
     assert all(set(row) == {"status", "name", "detail", "fix"} for row in doc["results"])
-    assert {"name": "profile", "status": "PASS", "detail": "email", "fix": ""} in doc["results"]
+    assert {"name": "profile", "status": "PASS", "detail": "reviewer", "fix": ""} in doc["results"]
 
 
 def test_a_doctor_that_says_nothing_useful_is_a_502(start):
@@ -476,7 +478,7 @@ def test_the_idle_limit_stops_the_server(start):
 # -- the steps left to the terminal ---------------------------------------
 
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
-@pytest.mark.parametrize("profile", ["email", "review-only", "assistant"])
+@pytest.mark.parametrize("profile", ["reviewer", "assistant", "collaborator"])
 def test_every_step_names_a_script_that_exists(platform, profile):
     steps = setup_web.next_steps({"profile": profile}, platform,
                                  env={"GRAPH_AUTH_METHOD": "device_code"})
@@ -561,8 +563,10 @@ def test_the_page_in_a_phone_browser(browser, start, tmp_path):
     page.on("console", lambda m: m.type == "error" and "status of 422" not in m.text
             and errors.append(m.text))
     page.goto(srv.url)
-    expect(page.locator("#title")).to_have_text("Profile")
+    expect(page.locator("#title")).to_have_text("Mode")
     assert "#t=" not in page.url, "the token leaves the address bar"
+    page.check("input[name=f-profile][value=reviewer]")
+    expect(page.locator('[data-key="reports"]')).to_be_visible()
     expect(page.locator(".notice")).to_contain_text("Tacitus is not an ordinary program.")
     page.click("#next")
     expect(page.locator("#f-acknowledged-err")).to_contain_text("accept the notice")
@@ -607,7 +611,7 @@ def test_the_page_in_a_phone_browser(browser, start, tmp_path):
     page.click("#next")
     expect(page.locator("#finish h1")).to_be_visible()
     expect(page.locator("#rows li.row.ok").first).to_be_visible(timeout=60000)
-    expect(page.locator("#steps")).to_contain_text("./scripts/install/setup.sh --profile email")
+    expect(page.locator("#steps")).to_contain_text("./scripts/install/setup.sh --profile reviewer")
     expect(page.locator("#steps")).to_contain_text("drive_client.py setup --email pat@uni.example")
     expect(page.locator("#steps li .why").first).to_contain_text("Why:")
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
@@ -645,7 +649,7 @@ def test_every_step_and_question_says_why_it_asks_and_how_it_helps():
         assert ph["why"], ph["id"]
         for row in ph["questions"]:
             assert row["why"], row["key"]
-    for profile in ("email", "review-only", "assistant"):
+    for profile in ("reviewer", "assistant", "collaborator"):
         for chat in ("web", "zulip"):
             for platform in ("linux", "darwin"):
                 for env in ({}, {"GRAPH_AUTH_METHOD": "confidential"},

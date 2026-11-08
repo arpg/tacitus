@@ -667,7 +667,7 @@ function renderChannels() {
   $('needs-count').hidden = !need;
   $('needs-count').textContent = String(need);
   $('needs-count').setAttribute('aria-label', `${need} ${need === 1 ? 'conversation needs' : 'conversations need'} you`);
-  $('new-room').hidden = !mainChannel();
+  $('new-room').hidden = !mainChannel() || Boolean(S.me && S.me.rooms === false);
 }
 
 // One thread's card: its title, its sticker and time, a Draft mark, its

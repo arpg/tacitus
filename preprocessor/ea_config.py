@@ -11,25 +11,59 @@ bot restart needed for log level).
 """
 
 import json
+import logging
 import os
+import sys
 from pathlib import Path
 
 EA_DIR = Path(os.environ.get("EA_DIR", Path.home() / ".ea"))
 CONFIG_FILE = EA_DIR / "config" / "ea-config.json"
 
-# Install profiles. "assistant" is the full system; "email" is the EA
-# without a chat platform (drafts and briefings in files; the user sends
-# from Outlook, and with no bot to read a staged event there are no
-# holds); "review-only" is "email" without drafting.
-PROFILES = ("email", "review-only", "assistant")
+# Install profiles: the three modes. "reviewer" has no chat: the EA reads
+# mail and calendars, writes drafts to the mailbox and its reports to files
+# on the schedule the user picks (with no bot to read a staged event there
+# are no holds). "assistant" is one chat: the EA channel, the DM for cards
+# and buttons, scheduling and digests in the same app, the resident and
+# plugins. "collaborator" is "assistant" plus project rooms. The `slack`
+# feature means a chat front end of any kind (`chat` is its CLI name).
+PROFILES = ("reviewer", "assistant", "collaborator")
+DEFAULT_PROFILE = "assistant"
 PROFILE_FEATURES = {
-    "email":       {"slack": False, "buttons": False, "drafting": True,  "resident": False, "rooms": False, "plugins": False},
-    "review-only": {"slack": False, "buttons": False, "drafting": False, "resident": False, "rooms": False, "plugins": False},
-    "assistant":   {"slack": True,  "buttons": True,  "drafting": True,  "resident": True,  "rooms": True,  "plugins": True},
+    "reviewer":     {"slack": False, "buttons": False, "drafting": True, "resident": False, "rooms": False, "plugins": False},
+    "assistant":    {"slack": True,  "buttons": True,  "drafting": True, "resident": True,  "rooms": False, "plugins": True},
+    "collaborator": {"slack": True,  "buttons": True,  "drafting": True, "resident": True,  "rooms": True,  "plugins": True},
 }
+# A config that names a mode writes "profile_version" beside it. A stored
+# profile without it is an old name: it reads as the mode it was, with the
+# switch it implied, until `normalize-profile` renames it. The old
+# "assistant" had project rooms, so there it reads as "collaborator".
+PROFILE_VERSION = 2
+LEGACY_PROFILES = {
+    "email": ("reviewer", {}),
+    "review-only": ("reviewer", {"drafting": False}),
+    "assistant": ("collaborator", {}),
+}
+# What a person reads when a mode is chosen: one plain line each.
+PROFILE_SUMMARY = {
+    "reviewer": "No chat. It reads your mail and calendar, leaves reply drafts in your "
+                "mailbox, and writes you a report when you want one.",
+    "assistant": "One chat on your phone. It drafts replies, finds meeting times and asks "
+                 "before anything goes out.",
+    "collaborator": "The assistant, plus a separate chat room for each big project.",
+}
+# reports.schedule: when the report agents run from cron. "none" means on
+# demand only (run-agent.sh morning-briefing --now).
+REPORT_SCHEDULES = ("weekdays", "daily", "none")
+_LOG = logging.getLogger("ea_config")
+_LEGACY_LOGGED: set = set()
 
 DEFAULTS = {
-    "profile": "assistant",
+    "profile": DEFAULT_PROFILE,
+    # On or off in every mode: false keeps the EA from writing drafts (the
+    # launchers add scripts/disallowed-tools.no-drafting.txt). Only a
+    # literal false turns it off.
+    "drafting": True,
+    "reports": {"schedule": "weekdays"},
     "ea_enabled": True,
     # The nightly full-mode evals and the weekly release tests are gated by
     # the owner (<EA_PRIVATE_DIR>/evals.json, tests/evals/eval_gates.py),
@@ -605,27 +639,206 @@ def get_update_channel(config_path: Path | None = None) -> str:
     return val if val in UPDATE_CHANNELS else ""
 
 
+def stored_config(config_path: Path | None = None) -> dict:
+    """The config file as written, without the defaults; {} when it is
+    missing or not a JSON object."""
+    path = config_path or CONFIG_FILE
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def resolve_profile(stored: dict) -> tuple[str, dict, bool]:
+    """(mode, the switches an old name implies, True when the stored value
+    is an old name) for a config as written. No profile, or an unknown one,
+    reads as the default mode."""
+    val = stored.get("profile")
+    if val in PROFILES and (val not in LEGACY_PROFILES
+                            or stored.get("profile_version") == PROFILE_VERSION):
+        return val, {}, False
+    if val in LEGACY_PROFILES:
+        mode, implied = LEGACY_PROFILES[val]
+        return mode, dict(implied), True
+    return DEFAULT_PROFILE, {}, False
+
+
+def profile_name(name: str) -> tuple[str, dict]:
+    """(mode, implied switches) for a name a person types (--profile): a
+    mode is itself, and "email" and "review-only" are their modes now."""
+    if name in PROFILES:
+        return name, {}
+    if name in LEGACY_PROFILES:
+        mode, implied = LEGACY_PROFILES[name]
+        return mode, dict(implied)
+    raise ValueError(f"unknown profile {name!r}: {', '.join(PROFILES)}")
+
+
+def _note_legacy(stored_name: str, mode: str) -> None:
+    if stored_name in _LEGACY_LOGGED:
+        return
+    _LEGACY_LOGGED.add(stored_name)
+    _LOG.warning("ea-config.json: profile %r is an old name and reads as %r; "
+                 "`python3 preprocessor/ea_config.py normalize-profile` renames it",
+                 stored_name, mode)
+
+
 def get_profile(config_path: Path | None = None) -> str:
-    """The install profile; an unknown value reads as the default."""
-    val = load(config_path).get("profile")
-    return val if val in PROFILES else DEFAULTS["profile"]
+    """The install's mode. An old name reads as its mode (one log line per
+    process); an unknown value reads as the default."""
+    stored = stored_config(config_path)
+    mode, _, legacy = resolve_profile(stored)
+    if legacy:
+        _note_legacy(stored.get("profile"), mode)
+    return mode
+
+
+def drafting_on(stored: dict, implied: dict | None = None) -> bool:
+    """False when the config, or the old name it holds, turns drafting off."""
+    return not (stored.get("drafting") is False or (implied or {}).get("drafting") is False)
 
 
 def profile_features(profile: str | None = None, config_path: Path | None = None) -> dict:
-    """What a profile turns on, with every key present."""
-    return dict(PROFILE_FEATURES[profile if profile in PROFILES else get_profile(config_path)])
+    """What a mode turns on, with every key present. `profile` names a mode
+    (an old name is mapped); without it, the install's own. The install's
+    drafting switch applies either way."""
+    stored = stored_config(config_path)
+    if profile:
+        try:
+            mode, implied = profile_name(profile)
+        except ValueError:
+            mode, implied, _ = resolve_profile(stored)
+    else:
+        mode, implied, legacy = resolve_profile(stored)
+        if legacy:
+            _note_legacy(stored.get("profile"), mode)
+    feats = dict(PROFILE_FEATURES[mode])
+    if feats["drafting"] and not drafting_on(stored, implied):
+        feats["drafting"] = False
+    return feats
+
+
+def get_report_schedule(config_path: Path | None = None) -> str:
+    """reports.schedule: weekdays, daily or none (on demand); anything else
+    reads as weekdays."""
+    block = load(config_path).get("reports")
+    val = block.get("schedule") if isinstance(block, dict) else None
+    return val if val in REPORT_SCHEDULES else DEFAULTS["reports"]["schedule"]
+
+
+def renamed_config(stored: dict) -> dict | None:
+    """The config with an old profile name replaced by its mode, the
+    version marker and the switch the old name implied; None when the
+    stored name is already a mode."""
+    mode, implied, legacy = resolve_profile(stored)
+    if not legacy:
+        return None
+    out = dict(stored)
+    out["profile"] = mode
+    out["profile_version"] = PROFILE_VERSION
+    if implied.get("drafting") is False:
+        out["drafting"] = False
+    return out
+
+
+def _write_config(path: Path, data: dict) -> None:
+    """Replace ea-config.json atomically. It is resident space, so the write
+    goes through resident_io: as the resident when the owner runs this,
+    in place when the resident does. Raises OSError when it fails."""
+    try:
+        import resident_io
+    except ModuleNotFoundError:  # imported as preprocessor.ea_config
+        from preprocessor import resident_io
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        mode = 0o664
+    text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    if not resident_io.replace_text(path, text, mode):
+        raise OSError(f"could not write {path}")
+
+
+def normalize_profile(config_path: Path | None = None, yes: bool = False,
+                      ask=None) -> int:
+    """Rename an old profile name in ea-config.json, with the user's yes:
+    `yes`, or `ask(question)` returning True. 0 when renamed or nothing to
+    rename, 3 when the rename was declined or could not be asked."""
+    path = config_path or CONFIG_FILE
+    stored = stored_config(path)
+    new = renamed_config(stored)
+    if new is None:
+        print(f"profile: {get_profile(path)} (nothing to rename)")
+        return 0
+    old, mode = stored.get("profile"), new["profile"]
+    lines = [f"This install's profile is stored under its old name `{old}`.",
+             f"It already works as `{mode}`: {PROFILE_SUMMARY[mode]}"]
+    if new.get("drafting") is False and stored.get("drafting") is not False:
+        lines.append("The rename also records `\"drafting\": false`, which `review-only` meant.")
+    print("\n".join(lines))
+    if not yes:
+        if ask is None:
+            if not sys.stdin.isatty():
+                print("Nothing changed. Run again with --yes to rename it.")
+                return 3
+            ask = lambda q: input(q).strip().lower() in ("y", "yes")  # noqa: E731
+        if not ask(f"Rename it to `{mode}` in {path}? [y/N] "):
+            print("Nothing changed.")
+            return 3
+    _write_config(path, new)
+    print(f"Renamed: profile `{mode}`.")
+    return 0
+
+
+def set_profile(name: str, config_path: Path | None = None) -> int:
+    """Record a mode (an old name maps to its mode) with the version
+    marker. Between the two chat modes this is the whole switch: the bot
+    reads the mode on each room request. A switch to or from reviewer also
+    changes the cron lines and the bot service, so it names setup.sh."""
+    path = config_path or CONFIG_FILE
+    try:
+        mode, implied = profile_name(name)
+    except ValueError as e:
+        print(f"ea_config.py: {e}", file=sys.stderr)
+        return 2
+    stored = stored_config(path)
+    before = resolve_profile(stored)[0]
+    out = dict(stored)
+    out["profile"] = mode
+    out["profile_version"] = PROFILE_VERSION
+    if implied.get("drafting") is False:
+        out["drafting"] = False
+    if out != stored:
+        _write_config(path, out)
+    print(f"profile: {mode}. {PROFILE_SUMMARY[mode]}")
+    if PROFILE_FEATURES[before]["slack"] != PROFILE_FEATURES[mode]["slack"]:
+        print(f"The chat comes or goes with this change: run "
+              f"./scripts/install/setup.sh --profile {mode} --install-cron, then "
+              f"python3 scripts/ea-doctor.py --profile {mode}.")
+    return 0
 
 
 def _main() -> int:
     import argparse
-    ap = argparse.ArgumentParser(description="operational config reader")
+    # allow_abbrev=False: a shortened flag is an error, not a silent match.
+    ap = argparse.ArgumentParser(description="operational config reader", allow_abbrev=False)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("profile", help="print the install profile")
-    p = sub.add_parser("features", help="print the profile's feature flags as JSON")
-    p.add_argument("--profile", default=None, choices=PROFILES)
-    p = sub.add_parser("feature", help="exit 0 when the named feature is on")
+    sub.add_parser("profile", allow_abbrev=False,
+                   help="print the install's mode (an old name reads as its mode)")
+    p = sub.add_parser("features", allow_abbrev=False,
+                       help="print the mode's feature flags as JSON")
+    p.add_argument("--profile", default=None, choices=[*PROFILES, *LEGACY_PROFILES])
+    p = sub.add_parser("feature", allow_abbrev=False, help="exit 0 when the named feature is on")
     # "chat" is the platform-neutral name for the "slack" feature.
-    p.add_argument("name", choices=sorted([*PROFILE_FEATURES["assistant"], "chat"]))
+    p.add_argument("name", choices=sorted([*PROFILE_FEATURES["collaborator"], "chat"]))
+    sub.add_parser("reports", allow_abbrev=False,
+                   help="print reports.schedule (weekdays, daily or none)")
+    p = sub.add_parser("normalize-profile", allow_abbrev=False,
+                       help="rename a profile name from before the three modes to its "
+                            "mode, after a yes")
+    p.add_argument("--yes", action="store_true", help="rename without asking")
+    p = sub.add_parser("set-profile", allow_abbrev=False, help="record a mode in ea-config.json")
+    p.add_argument("name", choices=[*PROFILES, *LEGACY_PROFILES])
     a = ap.parse_args()
     if a.cmd == "profile":
         print(get_profile())
@@ -633,6 +846,13 @@ def _main() -> int:
     if a.cmd == "features":
         print(json.dumps(profile_features(a.profile)))
         return 0
+    if a.cmd == "reports":
+        print(get_report_schedule())
+        return 0
+    if a.cmd == "normalize-profile":
+        return normalize_profile(yes=a.yes)
+    if a.cmd == "set-profile":
+        return set_profile(a.name)
     name = "slack" if a.name == "chat" else a.name
     return 0 if profile_features()[name] else 1
 

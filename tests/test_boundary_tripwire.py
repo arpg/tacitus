@@ -165,6 +165,8 @@ WRITERS = [
     W("remote_digests", lambda m, p: m._write_report("list-digest", "x"), attr="REPORT_DIR",
       name="reports/list-digest-latest.md"),
     W("install_overlay", lambda m, p: m.render(str(p)), name="config/CLAUDE.install.md"),
+    W("ea_config", lambda m, p: m._write_config(p, {"profile": "collaborator", "profile_version": 2}),
+      name="config/ea-config.json"),
     W("remote_briefing", lambda m, p: m.queue_escalations(
         [{"conversation_id": f"c-{uuid.uuid4().hex}", "queued_at": m._now().isoformat()}],
         agent="morning-briefing", now=m._now()), attr="ESCALATIONS"),

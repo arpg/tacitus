@@ -1,5 +1,5 @@
 {
-  "_doc": "The first-week question bank (preprocessor/onboarding.py). The morning briefing asks one a day on a chat profile; the email profile answers them in one sitting (onboarding.py ask, scripts/install/user_init.py --phase preferences). An answer becomes a rule in ~/.ea/config/preferences.json: kind and scope come from the question, text is `topic: <the answer>`, quote is the answer, source is onboarding. Order is the order asked. No institution or personal names here: the user supplies those in the answers.",
+  "_doc": "The first-week question bank (preprocessor/onboarding.py). The morning briefing asks one a day in a chat mode; the reviewer mode answers them in one sitting (onboarding.py ask, scripts/install/user_init.py --phase preferences). An answer becomes a rule in ~/.ea/config/preferences.json: kind and scope come from the question, text is `topic: <the answer>`, quote is the answer, source is onboarding. Order is the order asked. No institution or personal names here: the user supplies those in the answers.",
   "version": 1,
   "questions": [
     {

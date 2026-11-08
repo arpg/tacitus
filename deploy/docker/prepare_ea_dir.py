@@ -10,7 +10,8 @@ planted in that space then reaches only what ea-bot can reach already.
   - the config templates a new volume does not have yet;
   - config files another user put there (a `docker compose cp` lands as
     root): rewritten as ea-bot's own, mode 0640;
-  - the install profile, in an ea-config.json copied on this start;
+  - the mode (EA_PROFILE), in an ea-config.json copied on this start, with
+    its version marker; an old name is mapped by preprocessor/ea_config.py;
   - mail mediation on, unless it is switched off or the owner's rollback
     file is there;
   - ea-bot's Claude Code settings with the self-updater off, once.
@@ -27,8 +28,11 @@ import stat
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
+import ea_config  # noqa: E402
+
 RESIDENT_USER = "ea-bot"
-PROFILES = ("email", "review-only", "assistant")
+PROFILES = ea_config.PROFILES
 SHARED_DIRS = ("state", "logs", "receipts", "uploads", "letters", "templates", "exports",
                "plugins")
 CLAUDE_SETTINGS = {"env": {"DISABLE_AUTOUPDATER": "1"}}
@@ -129,8 +133,16 @@ def prepare(ea_dir: Path, claude_dir: Path, code_dir: Path, profile: str | None,
         profile_now = None
 
     if fresh and profile:
-        update_config(config / "ea-config.json", lambda c: c.__setitem__("profile", profile))
-        log(f"profile {profile} written to the new ea-config.json")
+        mode, implied = ea_config.profile_name(profile)
+
+        def record(cfg: dict) -> None:
+            cfg["profile"] = mode
+            cfg["profile_version"] = ea_config.PROFILE_VERSION
+            if implied.get("drafting") is False:
+                cfg["drafting"] = False
+        update_config(config / "ea-config.json", record)
+        log(f"profile {mode} written to the new ea-config.json"
+            + (f" ({profile!r} is an old name)" if profile != mode else ""))
     else:
         log(f"profile: {profile_now or '?'} (ea-config.json)")
 
@@ -162,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mediation", choices=("0", "1"), default="1")
     a = ap.parse_args(argv)
     profile = a.profile or None
-    if profile and profile not in PROFILES:
+    if profile and profile not in (*PROFILES, *ea_config.LEGACY_PROFILES):
         log(f"profile {profile!r} is not one of {', '.join(PROFILES)}; keeping the template's")
         profile = None
     os.umask(0o002)

@@ -148,13 +148,13 @@ def test_the_secrets_check_names_the_owner_private_file():
         assert res["~/.ea-private/secrets.env"]["status"] == "PASS", res["~/.ea-private/secrets.env"]
 
 
-def test_the_email_profile_asks_for_no_chat_key():
+def test_the_reviewer_mode_asks_for_no_chat_key():
     """No chat platform: no Slack or Zulip key, required or optional, and
     the ~/.ea/.env fix points at the Graph keys, not the Slack appendix."""
     with tempfile.TemporaryDirectory(prefix="ea-doctor-") as td:
         d, priv = Path(td) / "ea", Path(td) / "private"
         d.mkdir()
-        r = _run("--json", "--profile", "email", ea_dir=d, private_dir=priv)
+        r = _run("--json", "--profile", "reviewer", ea_dir=d, private_dir=priv)
         results = json.loads(r.stdout)["results"]
         names = [x["name"] for x in results]
         chat = [n for n in names if any(k in n.upper() for k in ("SLACK", "ZULIP", "EA_SCHED"))

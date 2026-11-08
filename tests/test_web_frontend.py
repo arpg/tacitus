@@ -1241,6 +1241,13 @@ def test_the_settings_routes_answer_the_owner_and_save_the_routing_table(fe, rou
     path = "/api/settings/routing"
     status, _h, body = owner(fe, "GET", "/api/me")
     assert status == 200 and json.loads(body)["settings"] == []
+    # rooms: yes unless the host says the install's mode has none
+    assert json.loads(body)["rooms"] is True
+    fe.rooms_enabled = lambda: False
+    assert json.loads(owner(fe, "GET", "/api/me")[2])["rooms"] is False
+    fe.rooms_enabled = lambda: 1 / 0
+    assert json.loads(owner(fe, "GET", "/api/me")[2])["rooms"] is True
+    fe.rooms_enabled = None
     assert owner(fe, "GET", path)[0] == 404  # no page until the host registers one
     fe.settings_pages["routing"] = page
     assert json.loads(owner(fe, "GET", "/api/me")[2])["settings"] == ["routing"]

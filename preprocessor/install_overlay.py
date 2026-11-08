@@ -125,26 +125,32 @@ def _chat_section(cfg: dict, profile: dict) -> list[str]:
     chat = cfg.get("chat") if isinstance(cfg.get("chat"), dict) else {}
     frontend = str(chat.get("frontend") or "slack")
     lines = ["## Chat", ""]
-    profile_name = cfg.get("profile") or "assistant"
-    if profile_name in ("email", "review-only"):
-        # No chat platform on these profiles: a report is a file, and the
-        # user works with the EA in the Claude Code shell.
+    profile_name, implied, _ = ea_config.resolve_profile(cfg)
+    features = dict(ea_config.PROFILE_FEATURES[profile_name])
+    drafting = ea_config.drafting_on(cfg, implied)
+    rooms = features["rooms"]
+    if not features["slack"]:
+        # No chat platform in the reviewer mode: a report is a file, and
+        # the user works with the EA in the Claude Code shell.
+        drafts = ("sends drafts from Outlook" if drafting else
+                  "gets no drafts (drafting is off: write none, put what a reply should "
+                  "say in the report)")
         lines.append(f"- Install profile: `{profile_name}`. There is no chat channel and no "
                      "buttons: reports land in `~/.ea/state/reports/<agent>-latest.md` and go "
                      "out by phone push when one is configured; the user works with the EA "
-                     "in the Claude Code shell and sends drafts from Outlook.")
+                     f"in the Claude Code shell and {drafts}.")
         return lines
+    room_note = ("project rooms are rooms in the web chat" if rooms else
+                 "there are no project rooms")
     if frontend == "web":
         web = _web_prompt_strings()
         if ea_config.web_sched_on(chat):
             channels = ("Channels: `ea` (the EA channel), `dm` (the DM) and `Scheduling` "
                         "(the scheduling channel, where each scheduling request found in "
-                        "mail opens a conversation); project rooms are rooms in the web "
-                        "chat.")
+                        f"mail opens a conversation); {room_note}.")
         else:
-            channels = ("Channels: `ea` (the EA channel) and `dm` (the DM); project rooms "
-                        "are rooms in the web chat. There is no scheduling channel: "
-                        "meeting requests come in `ea`.")
+            channels = (f"Channels: `ea` (the EA channel) and `dm` (the DM); {room_note}. "
+                        "There is no scheduling channel: meeting requests come in `ea`.")
         lines.append(f"- Platform: the {web['platform']}, which the bot serves itself. "
                      + channels)
         lines.append(f"- Each confirmation card goes to the DM with a one-line pointer in the "
@@ -155,7 +161,8 @@ def _chat_section(cfg: dict, profile: dict) -> list[str]:
                    (("stream", "the EA channel"), ("dm_stream", "the DM stream"),
                     ("sched_stream", "the scheduling channel")) if z.get(k)]
         lines.append(f"- Platform: Zulip. Streams: {_join(streams) or 'see the chat block'}; "
-                     "project rooms are `ea-<project>` streams.")
+                     + ("project rooms are `ea-<project>` streams." if rooms
+                        else "there are no project rooms."))
     else:
         channel = profile.get("slack_channel_name") or ""
         lines.append(f"- Platform: Slack. EA channel: `{channel or 'see user-profile.json'}`.")
@@ -163,6 +170,15 @@ def _chat_section(cfg: dict, profile: dict) -> list[str]:
         lines.append(f"- The {_web_prompt_strings()['platform']} mirrors every post (shadow "
                      "mode); the user may answer in either.")
     lines.append(f"- Install profile: `{profile_name}`.")
+    if not rooms:
+        lines.append("- No project rooms in this mode. Asked for a room, say that rooms come "
+                     "with the collaborator mode (`python3 preprocessor/ea_config.py "
+                     "set-profile collaborator` on the host) and keep the work in this "
+                     "conversation. Never write `pending-channel.json`; a project added with "
+                     "`add-project` gets no room.")
+    if not drafting:
+        lines.append("- Drafting is off (`\"drafting\": false`): write no draft; say in the "
+                     "reply what an answer should say.")
     return lines
 
 

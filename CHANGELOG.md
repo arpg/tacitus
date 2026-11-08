@@ -6,6 +6,40 @@ repository that preceded it.
 
 ## Unreleased
 
+- **Three install modes: reviewer, assistant, collaborator.** `profile`
+  in `ea-config.json` names one of three modes, and setup asks for it
+  first in one plain line each. `reviewer` has no chat: the EA reads
+  mail and calendars, leaves drafts in the mailbox and writes its
+  reports to files. `assistant` (the default) is one chat: the EA
+  channel, the DM with the Send and Create cards, scheduling and
+  digests, the resident and plugins, with no project rooms.
+  `collaborator` is `assistant` plus project rooms. The old names keep
+  working: `email` reads as `reviewer`, `review-only` as `reviewer`
+  with `"drafting": false`, and a stored `assistant` with no
+  `"profile_version": 2` as `collaborator`, since it had rooms. The
+  doctor warns on a stored old name, and
+  `ea_config.py normalize-profile` renames it after a yes;
+  `ea_config.py set-profile <mode>` records a mode. `scripts/install/
+  setup.sh` and `ea-doctor.py` take the new names on `--profile`, and
+  the old ones with a note. The Graph scope sets of
+  `published_apps.py` are `availability`, `read-only`, `reviewer`,
+  `assistant` and `collaborator`.
+- **Drafting is a switch, not a profile.** `"drafting": false` turns
+  drafting off in any mode: every launcher, the chat bot included, adds
+  `scripts/disallowed-tools.no-drafting.txt` (formerly the review-only
+  fragment) to its deny list.
+- **Reports when you want them.** `reports.schedule` (`weekdays`,
+  `daily` or `none`) decides the report agents' cron lines; `none`
+  leaves a report to `./run-agent.sh morning-briefing --now`. Setup
+  asks it for a reviewer, `setup.sh --reports` records it, and the
+  doctor names the schedule and the command.
+- **Rooms are the collaborator mode's.** In the assistant mode every
+  path that opens a room (the command, a staged `pending-channel.json`,
+  the picker, a new project's room, a session room) answers that rooms
+  come with the collaborator mode and how to switch; `add-project` says
+  whether a room follows, the install overlay tells the EA, the room
+  tip waits for the collaborator mode, and the web chat's `/api/me`
+  says `rooms`, so the app shows its New room button only with rooms.
 - **A tier promotion is a verb.** `autonomy_tiers.py promote --task
   <task> --tier <tier> [--contact <addr>] --quote "<words>"` replaces the
   edit of `autonomy-tiers.json` that CLAUDE.md rule 12 asked for, refuses

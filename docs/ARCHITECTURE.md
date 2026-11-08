@@ -65,6 +65,18 @@ release layout alone. Design: docs/updates.md.
 
 ## Rooms follow their project, and Slack decides what is archived
 
+Rooms are the collaborator mode's (the `rooms` feature of
+`preprocessor/ea_config.py`). In the assistant mode every path below
+that would open a room (the command, the staged `pending-channel.json`,
+the picker and its Create button, the room for a new project, a session
+room) answers `ROOMS_OFF_TEXT` in `ea-chat-bot.py` instead: rooms come
+with the collaborator mode, and `ea_config.py set-profile collaborator`
+turns them on. `_rooms_on()` reads the mode on each call, so the switch
+needs no restart. `add-project` says in its output whether a room
+follows, the install overlay tells the EA that the mode has none, and
+the web chat's `/api/me` carries `rooms` (the bot sets the front end's
+`rooms_enabled` to `_rooms_on`), so the app shows New room only with rooms.
+
 The room hygiene pass reads Slack's archived flag for every private
 channel each cycle and records who archived a room in the channel
 registry: "bot" when it did because the project went dormant or closed,
@@ -350,21 +362,32 @@ on, as do the outbox drain and the check that retires a block whose
 draft was sent or deleted in Outlook; with `resident_mode: false` the
 sweep is what gives a cron agent's or a shell's draft its Send block.
 
-## Install profiles
+## Install modes
 
 `profile` in `~/.ea/config/ea-config.json` (`ea_config.get_profile`,
-`profile_features`) names the loadout: `email` (Outlook, ledger,
-drafting, reports in `~/.ea/state/reports/`, no chat platform; with
-nothing to read `pending-event.json`, proposed holds and events stay
-text in the report), `review-only` (`email` minus drafting, enforced by
-`scripts/disallowed-tools.review-only.txt` in every launcher) and
-`assistant` (the full system). `scripts/install/setup.sh --profile` installs the cron
-lines for it (the bot's system unit comes from
-`deploy/harden-permissions.sh`), `run-agent.sh` writes every report to
-`~/.ea/state/reports/<agent>-latest.md` and posts to Slack only when the
-profile has it, and `scripts/ea-doctor.py --profile` checks only what
-the profile needs. The `/setup` skill (`.claude/skills/setup/SKILL.md`)
-asks for the profile first.
+`profile_features`) names the mode: `reviewer` (Outlook, ledger,
+drafting, reports in `~/.ea/state/reports/` on `reports.schedule`, no
+chat platform; with nothing to read `pending-event.json`, proposed holds
+and events stay text in the report), `assistant` (one chat: the EA
+channel, the DM with the cards, scheduling and digests, the resident,
+plugins; no rooms) and `collaborator` (`assistant` plus project and
+session rooms). `PROFILE_FEATURES` holds the flags; `slack` means any
+chat front end (`chat` on the CLI). A stored name without
+`"profile_version": 2` is an older name and reads through
+`LEGACY_PROFILES` (the older `assistant` had rooms, so it reads as
+`collaborator`), with one log line per process, until
+`ea_config.py normalize-profile` renames it after a yes; the doctor
+warns until then. `"drafting": false` turns drafting off in any mode:
+every launcher, the chat bot included, then adds
+`scripts/disallowed-tools.no-drafting.txt` to its deny list.
+`scripts/install/setup.sh --profile` installs the cron lines for the mode
+(the report agents follow `reports.schedule`: weekdays, daily or none;
+the bot's system unit comes from `deploy/harden-permissions.sh`),
+`run-agent.sh` writes every report to
+`~/.ea/state/reports/<agent>-latest.md` and posts to the chat only when
+the mode has one, and `scripts/ea-doctor.py --profile` checks only what
+the mode needs. The `/setup` skill (`.claude/skills/setup/SKILL.md`)
+asks for the mode first.
 
 ## Capability plugins
 
@@ -604,9 +627,8 @@ The cron lane (`run-agent.sh`) runs claude from ea-bot's home, where no
 itself: it reads `~/.ea/config/CLAUDE.install.md` as ea-bot through
 `scripts/owner-io.sh read`, drops the file's title line and appends the
 text to the skill under `## Install facts (CLAUDE.local.md)`. A missing
-overlay is a log line, not a failed run. When the profile has no chat
-platform (`ea_config.py feature chat` fails: the email and review-only
-profiles), it also appends a `## No chat channel` block, since the
+overlay is a log line, not a failed run. When the mode has no chat
+platform (`ea_config.py feature chat` fails: the reviewer mode), it also appends a `## No chat channel` block, since the
 skills are written for the chat case and only the bot reads a staged
 file or posts a button: stage no `pending-event*.json` or
 `pending-schedule-send.json`, leave a draft in Drafts for the user to
@@ -2364,11 +2386,11 @@ question in the briefing JSON as `onboarding_question`
 (`onboarding.next_questions(count=1)`, which records it as asked); it is
 null while a question asked today is still open, once the bank is done or
 `stop` ran, or when `onboarding.enabled` in ea-config.json is false. The
-morning briefing on a chat profile ends with it, and the turn that reads
+morning briefing in a chat mode ends with it, and the turn that reads
 the user's answer runs `onboarding.py answer`, which adds a rule through
 `preferences.py` (kind and scope from the question, the answer as the
 quote, source `onboarding`, id `onboarding-<question id>`). State is
-`~/.ea/state/onboarding.json`. The email profile answers the bank in one
+`~/.ea/state/onboarding.json`. The reviewer mode answers the bank in one
 sitting (`onboarding.py ask --count N`, `scripts/install/user_init.py --phase
 preferences`). The chat bot's and `run-agent.sh`'s tool lists allow
 `onboarding.py`.

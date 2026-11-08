@@ -205,13 +205,17 @@ def test_an_unset_channel_on_the_layout_follows_the_profile(env):
     env["live"].symlink_to("ea-system.releases/current")
     set_config(env["ea"], profile="assistant")
     assert us.effective_channel(env["live"], env["priv"], env["ea"]) == ("latest", "default")
-    set_config(env["ea"], profile="email")
+    set_config(env["ea"], profile="reviewer")
     assert us.effective_channel(env["live"], env["priv"], env["ea"]) == ("stable", "default")
+    # both chat modes follow latest
+    for mode in ("assistant", "collaborator"):
+        set_config(env["ea"], profile=mode, profile_version=2)
+        assert us.effective_channel(env["live"], env["priv"], env["ea"]) == ("latest", "default")
 
 
 def test_auto_and_explicit_channels_and_the_private_file_outranks_config(env):
     env["live"].mkdir()
-    set_config(env["ea"], profile="review-only", update={"channel": "auto"})
+    set_config(env["ea"], profile="reviewer", update={"channel": "auto"})
     assert us.effective_channel(env["live"], env["priv"], env["ea"]) == ("stable", "ea-config.json")
     assert us.misplaced_channel(env["priv"], env["ea"]) == ""
     set_config(env["ea"], profile="assistant", update={"channel": "nonsense"})
@@ -234,7 +238,7 @@ def test_only_the_private_file_turns_updates_off_or_pins_a_channel(env, capsys):
     rule (it asks `update.py channel`)."""
     env["live"].mkdir()
     (env["live"] / ".deployed-commit").write_text("abc1234\n")
-    for said, profile, want in (("off", "assistant", "latest"), ("latest", "review-only", "stable"),
+    for said, profile, want in (("off", "assistant", "latest"), ("latest", "reviewer", "stable"),
                                 ("stable", "assistant", "latest")):
         set_config(env["ea"], profile=profile, update={"channel": said})
         assert us.effective_channel(env["live"], env["priv"], env["ea"]) == (want, "ea-config.json")

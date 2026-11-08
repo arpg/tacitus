@@ -74,29 +74,30 @@ policy. Over SSH with device code blocked, `GRAPH_AUTH_METHOD=interactive`
 and B.
 
 **Delegated permissions, the least per feature.** The code asks for the
-set of the install's profile (`published_apps.GRAPH_SCOPES_BY_PROFILE`);
-setup writes it to `GRAPH_SCOPES`. The registration lists the union, so
-one tenant-wide consent covers every profile. The registered list must
+set of the install's mode (`published_apps.GRAPH_SCOPES_BY_PROFILE`; a
+reviewer with `"drafting": false` takes the `read-only` set); setup
+writes it to `GRAPH_SCOPES`. The registration lists the union, so one
+tenant-wide consent covers every mode. The registered list must
 contain everything the code requests, or a user is still blocked after
 the administrator consents [M6].
 
-| Feature | Graph call | Least privilege | Profiles |
+| Feature | Graph call | Least privilege | Scope sets |
 |---|---|---|---|
-| Read mail, threads, search | `/me/messages`, `/me/mailFolders` | `Mail.Read` | review-only (the others hold it through `Mail.ReadWrite`) |
-| Drafts, replies, filing, categories, a draft's attachments | `POST`/`PATCH` `/me/messages`, `/move` | `Mail.ReadWrite` (sends nothing) [M7] | email, assistant |
-| Send after the owner clicks Send | `/me/messages/{id}/send` | `Mail.Send` | assistant |
-| The owner's calendar and an event's details | `/me/calendarView`, `/me/events/{id}` | `Calendars.Read` (`ReadBasic` omits the body) [M7] | review-only, email |
-| Other people's free/busy | `/me/calendar/getSchedule` | `Calendars.ReadBasic` [M2] | every profile; the only one a native Mac needs |
-| Create, move and delete events, EA holds | `POST`/`PATCH`/`DELETE` `/me/events` | `Calendars.ReadWrite` | assistant |
-| Time zone and working hours | `/me/mailboxSettings` | `MailboxSettings.Read` | review-only, email, assistant |
+| Read mail, threads, search | `/me/messages`, `/me/mailFolders` | `Mail.Read` | read-only (the others hold it through `Mail.ReadWrite`) |
+| Drafts, replies, filing, categories, a draft's attachments | `POST`/`PATCH` `/me/messages`, `/move` | `Mail.ReadWrite` (sends nothing) [M7] | reviewer, assistant, collaborator |
+| Send after the owner clicks Send | `/me/messages/{id}/send` | `Mail.Send` | assistant, collaborator |
+| The owner's calendar and an event's details | `/me/calendarView`, `/me/events/{id}` | `Calendars.Read` (`ReadBasic` omits the body) [M7] | read-only, reviewer |
+| Other people's free/busy | `/me/calendar/getSchedule` | `Calendars.ReadBasic` [M2] | every set; the only one a native Mac needs |
+| Create, move and delete events, EA holds | `POST`/`PATCH`/`DELETE` `/me/events` | `Calendars.ReadWrite` | assistant, collaborator |
+| Time zone and working hours | `/me/mailboxSettings` | `MailboxSettings.Read` | read-only, reviewer, assistant, collaborator |
 | A refresh token; the account's name | (MSAL adds them) | `offline_access`, `openid`, `profile` | all |
 
-| Profile key | Scopes requested |
+| Scope set | Scopes requested |
 |---|---|
 | `availability` (a Mac with native mail and calendars) | `Calendars.ReadBasic` |
-| `review-only` | `Mail.Read Calendars.Read MailboxSettings.Read` |
-| `email` | `Mail.ReadWrite Calendars.Read MailboxSettings.Read` |
-| `assistant` (and the default) | `Mail.ReadWrite Mail.Send Calendars.ReadWrite MailboxSettings.Read` |
+| `read-only` (the reviewer mode with `"drafting": false`) | `Mail.Read Calendars.Read MailboxSettings.Read` |
+| `reviewer` | `Mail.ReadWrite Calendars.Read MailboxSettings.Read` |
+| `assistant`, `collaborator` (and the default) | `Mail.ReadWrite Mail.Send Calendars.ReadWrite MailboxSettings.Read` |
 
 Left out: `User.Read` (the ID token names the account), `Contacts.Read`,
 `People.Read` and `Files.Read` (the code calls none of them), and
@@ -115,15 +116,15 @@ reliable path is one administrator consent per tenant:
 
 1. The administrator opens the admin-consent link, which
    `python3 preprocessor/published_apps.py admin-consent-url` prints:
-   `https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=<id>&scope=<one profile's scopes>&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&state=tacitus`.
+   `https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=<id>&scope=<one set's scopes>&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&state=tacitus`.
    `organizations`, or the tenant's own id (`--tenant`), names the tenant
    [M9]. The prompt says "Accept for your organization" [M6]. Consent
    creates the app's service principal (an enterprise application) in
    the tenant and a tenant-wide grant [M1]. The link asks for the
-   sign-in scopes and the `email` profile's scopes (drafts, filing,
-   reading the calendar; no Send and no calendar writes) unless
-   `--profile` names another: `review-only` for less, `assistant` for
-   the Send and Create buttons, `all` for every scope the registration
+   sign-in scopes and the `reviewer` set (drafts, filing, reading the
+   calendar; no Send and no calendar writes) unless `--profile` names
+   another: `read-only` for less, `assistant` or `collaborator` for the
+   Send and Create buttons, `all` for every scope the registration
    lists. A tenant grants the least its users need.
 2. Or the administrator signs in to Tacitus once and ticks "Consent on
    behalf of your organization"; only a Privileged Role Administrator or
@@ -270,7 +271,7 @@ trusted in the Admin console in the meantime [G3].
   cannot borrow the badge (Maintainer steps).
 - **What a tenant does about it.** Assignment required, with the users
   who run the EA assigned [M10], limits who the app can reach; consent
-  to one profile's scopes limits what it can ask for; the sign-in logs
+  to one mode's scopes limits what it can ask for; the sign-in logs
   and the enterprise application's audit history show new sign-ins and
   changes; revoking the consent stops it for the tenant [M1].
 - **Nothing else moves.** The mediator, the buttons, the separate user
@@ -307,7 +308,7 @@ trusted in the Admin console in the meantime [G3].
   `~/.ea-private/secrets.env` (`owner_trust.PRIVATE_SETTING_KEYS`), so
   the resident cannot widen the scopes a sign-in asks for, move its
   redirect to a port it listens on, or pick its flow. Unset there, the
-  published defaults apply: the assistant profile's scopes, port 8400,
+  published defaults apply: the assistant mode's scopes, port 8400,
   the flow by browser. The flows of a registered app (Options A and B)
   still read them from `~/.ea/.env`, as before.
 - **The macOS native backend.** Mail and calendars stay native; the

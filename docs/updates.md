@@ -146,8 +146,8 @@ replaced the same way: the owner removes the leaked line.
 
 | Channel | Follows | Default for |
 |---|---|---|
-| `latest` | the newest signed `vX.Y.Z` tag | the `assistant` profile |
-| `stable` | the signed `vX.Y.Z` tag at the commit `channels/stable` points to | `email`, `review-only` |
+| `latest` | the newest signed `vX.Y.Z` tag | the `assistant` and `collaborator` modes |
+| `stable` | the signed `vX.Y.Z` tag at the commit `channels/stable` points to | the `reviewer` mode |
 | `off` | nothing; the install stays where it is | |
 
 `channels/stable` is an annotated tag the maintainer moves with
@@ -158,7 +158,7 @@ not signed: it can only choose among signed releases, and the updater
 never moves an install backwards (below).
 
 The channel is `channel` in the owner-private `~/.ea-private/update.json`
-(0600, the owner's): `auto` (the profile's default), `latest`, `stable`
+(0600, the owner's): `auto` (the mode's default), `latest`, `stable`
 or `off`, for example `{"channel": "off"}`. Only that file can turn
 updates off or pin a channel. `update.channel` in
 `~/.ea/config/ea-config.json` (the template carries `auto`) is in the EA

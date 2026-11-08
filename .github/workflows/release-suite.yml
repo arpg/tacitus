@@ -37,7 +37,7 @@ jobs:
       - name: Settings for compose
         run: |
           cp deploy/docker/env.example .env
-          sed -i 's/^EA_PROFILE=.*/EA_PROFILE=email/; s/^EA_WITH_BROWSER=.*/EA_WITH_BROWSER=0/' .env
+          sed -i 's/^EA_PROFILE=.*/EA_PROFILE=reviewer/; s/^EA_WITH_BROWSER=.*/EA_WITH_BROWSER=0/' .env
           echo "OWNER_UID=$(id -u)" >> .env
           echo "OWNER_GID=$(id -g)" >> .env
 
@@ -55,10 +55,10 @@ jobs:
         run: |
           set -eu
           mkdir -p scratch-config
-          if [ -f tests/install/answers-email.json ]; then
+          if [ -f tests/install/answers-reviewer.json ]; then
             python3 - <<'EOF'
           import json, pathlib
-          answers = json.loads(pathlib.Path("tests/install/answers-email.json").read_text())
+          answers = json.loads(pathlib.Path("tests/install/answers-reviewer.json").read_text())
           profile = json.loads(pathlib.Path("config/examples/cu-boulder/user-profile.json").read_text())
           for key in ("name", "email", "role_description", "department", "university", "timezone", "office"):
               if isinstance(answers.get(key), str) and answers[key].strip():

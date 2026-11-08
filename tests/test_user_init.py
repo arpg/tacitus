@@ -120,9 +120,9 @@ def test_the_chat_phase_from_an_answers_file(monkeypatch, tmp_path, capsys):
     _run_answers(monkeypatch, tmp_path, answers, "--phase", "chat")
     chat = json.loads((cfg / "ea-config.json").read_text())["chat"]
     assert chat["frontend"] == "zulip" and chat["web"]["public_url"] == WEB_URL
-    # an email install is asked nothing and writes nothing
+    # a reviewer install is asked nothing and writes nothing
     data = json.loads((cfg / "ea-config.json").read_text())
-    (cfg / "ea-config.json").write_text(json.dumps({**data, "profile": "email"}))
+    (cfg / "ea-config.json").write_text(json.dumps({**data, "profile": "reviewer"}))
     before = (cfg / "ea-config.json").read_bytes()
     answers.write_text(json.dumps({"chat-platform": "slack"}))
     _run_answers(monkeypatch, tmp_path, answers, "--phase", "chat")
@@ -170,10 +170,10 @@ def test_zulip_writes_chat_block(monkeypatch, tmp_path, capsys):
 def test_zulip_keeps_other_ea_config_keys(monkeypatch, tmp_path):
     cfg = tmp_path / "config"
     cfg.mkdir()
-    (cfg / "ea-config.json").write_text(json.dumps({"profile": "email"}))
+    (cfg / "ea-config.json").write_text(json.dumps({"profile": "reviewer"}))
     _run(monkeypatch, tmp_path, "--phase", "state", *ZULIP_ARGS)
     data = json.loads((cfg / "ea-config.json").read_text())
-    assert data["profile"] == "email"
+    assert data["profile"] == "reviewer"
     assert data["chat"]["frontend"] == "zulip"
 
 
@@ -229,7 +229,7 @@ def test_zulip_requires_server_args(monkeypatch, tmp_path):
 
 # ── --answers: every prompt from a file, never the terminal ──────────
 
-ANSWERS_FILE = ROOT / "tests" / "install" / "answers-email.json"
+ANSWERS_FILE = ROOT / "tests" / "install" / "answers-reviewer.json"
 
 
 def _run_answers(monkeypatch, ea_dir, answers_file=ANSWERS_FILE, *extra):
@@ -440,25 +440,66 @@ def test_the_profile_phase_records_the_profile_and_the_notice_once(monkeypatch, 
     records both the way setup.sh --acknowledged does, starting from the
     template when ea-config.json does not exist yet."""
     answers = tmp_path / "answers-profile.json"
-    answers.write_text(json.dumps({"profile": "review-only", "acknowledged": True}))
+    answers.write_text(json.dumps({"profile": "assistant", "acknowledged": True}))
     _run_answers(monkeypatch, tmp_path, answers, "--phase", "profile")
     cfg = json.loads((tmp_path / "config" / "ea-config.json").read_text())
-    assert cfg["profile"] == "review-only" and cfg["acknowledged"]["responsibility"]
+    assert cfg["profile"] == "assistant" and cfg["acknowledged"]["responsibility"]
+    assert cfg["profile_version"] == 2, "a mode name carries its marker"
     assert "quiet_hours" in cfg, "the template's keys come along"
     assert "Tacitus is not an ordinary program." in capsys.readouterr().out
+    assert {"drafting", "reports"}.isdisjoint(user_init.ANSWERS_USED), "asked of a reviewer only"
     # accepted once: a second run neither asks again nor moves the date
     cfg["acknowledged"]["responsibility"] = "2026-01-02"
     (tmp_path / "config" / "ea-config.json").write_text(json.dumps(cfg))
-    answers.write_text(json.dumps({"profile": "email"}))
+    answers.write_text(json.dumps({"profile": "reviewer"}))
     _run_answers(monkeypatch, tmp_path, answers, "--phase", "profile")
     cfg = json.loads((tmp_path / "config" / "ea-config.json").read_text())
-    assert cfg["profile"] == "email" and cfg["acknowledged"]["responsibility"] == "2026-01-02"
+    assert cfg["profile"] == "reviewer" and cfg["acknowledged"]["responsibility"] == "2026-01-02"
+    assert cfg.get("drafting") is not False and cfg["reports"] == {"schedule": "weekdays"}
     # a no stops the install
     fresh = tmp_path / "fresh"
-    answers.write_text(json.dumps({"profile": "email", "acknowledged": False}))
+    answers.write_text(json.dumps({"profile": "reviewer", "acknowledged": False}))
     with pytest.raises(SystemExit, match="accept the notice"):
         _run_answers(monkeypatch, fresh, answers, "--phase", "profile")
     assert not (fresh / "config" / "ea-config.json").exists()
+
+
+def test_a_reviewer_without_drafts_records_the_switch_and_the_schedule(monkeypatch, tmp_path):
+    """The reviewer's two questions: drafts off writes "drafting": false
+    (the launchers then deny every drafting verb) and the report schedule
+    goes in reports.schedule; the next run offers both back, and drafts on
+    again clears the switch."""
+    answers = tmp_path / "answers-profile.json"
+    answers.write_text(json.dumps({"profile": "reviewer", "acknowledged": True,
+                                   "drafting": False, "reports": "none"}))
+    _run_answers(monkeypatch, tmp_path, answers, "--phase", "profile")
+    path = tmp_path / "config" / "ea-config.json"
+    cfg = json.loads(path.read_text())
+    assert (cfg["profile"], cfg["profile_version"]) == ("reviewer", 2)
+    assert cfg["drafting"] is False and cfg["reports"] == {"schedule": "none"}
+    assert ea_config.profile_features(config_path=path)["drafting"] is False
+    assert ea_config.get_report_schedule(path) == "none"
+    ctx = user_init.context()
+    assert (ctx["recorded_drafting"], ctx["recorded_reports"]) == (False, "none")
+    answers.write_text(json.dumps({"profile": "reviewer", "drafting": True, "reports": "daily"}))
+    _run_answers(monkeypatch, tmp_path, answers, "--phase", "profile")
+    cfg = json.loads(path.read_text())
+    assert cfg["drafting"] is True and cfg["reports"] == {"schedule": "daily"}
+
+
+def test_an_old_profile_name_in_an_answers_file_is_mapped(monkeypatch, tmp_path, capsys):
+    """An answers file written for the old names still runs: the drafting-off
+    name becomes a reviewer with drafting off, and an install that stores an
+    old name reads as its mode."""
+    answers = tmp_path / "answers-profile.json"
+    answers.write_text(json.dumps({"profile": "review-only", "acknowledged": True}))
+    _run_answers(monkeypatch, tmp_path, answers, "--phase", "profile")
+    cfg = json.loads((tmp_path / "config" / "ea-config.json").read_text())
+    assert cfg["profile"] == "reviewer" and cfg["drafting"] is False
+    assert "is an old name" in capsys.readouterr().out
+    (tmp_path / "config" / "ea-config.json").write_text(json.dumps({"profile": "assistant"}))
+    ctx = user_init.context()
+    assert ctx["profile"] == "collaborator", "the old assistant had project rooms"
 
 
 def test_the_chat_platform_defaults_to_the_chat_block(monkeypatch, tmp_path, capsys):

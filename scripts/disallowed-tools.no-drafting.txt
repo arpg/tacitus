@@ -1,8 +1,9 @@
-# Extra deny list for the review-only profile: the EA reads, tracks and
-# briefs, and writes nothing to the mailbox. Every launcher appends this
-# to scripts/disallowed-tools.txt when ea-config.json says
-# "profile": "review-only" (run-agent.sh, run-plugin.sh, the ea-bot
-# shell, the resident pane). Same syntax as the main list.
+# Extra deny list for an install whose ea-config.json says
+# "drafting": false (in any mode; ea_config.py feature drafting fails):
+# the EA reads, tracks and reports, and writes nothing to the mailbox.
+# Every launcher appends it to scripts/disallowed-tools.txt then
+# (run-agent.sh, run-plugin.sh, the ea-bot shell, the resident pane, the
+# chat bot). Same syntax as the main list.
 Bash(python3 *graph_actions.py create-draft *)
 Bash(python3 *graph_actions.py create-reply *)
 Bash(python3 *graph_actions.py update-draft *)

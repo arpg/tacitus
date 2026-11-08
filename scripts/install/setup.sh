@@ -12,9 +12,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"   # the checkout root; this script lives in scripts/install/
 EA_DIR="${EA_DIR:-$HOME/.ea}"
 
-# --profile email|review-only|assistant. Default: what ea-config.json says,
-# else assistant. The profile decides the cron lines and whether the Slack
-# bot service is installed.
+# --profile reviewer|assistant|collaborator: the mode. Default: what
+# ea-config.json says, else assistant. The mode decides the cron lines and
+# whether the chat bot service is installed. An old name still works, with
+# a note: email is reviewer, review-only is reviewer with "drafting": false.
+# On an install whose ea-config.json still holds the old name assistant (it
+# had project rooms), --profile assistant keeps collaborator until
+# `ea_config.py normalize-profile` renames it.
+#
+# --reports weekdays|daily|none: when the report agents run from cron
+# (none: on demand, ./run-agent.sh morning-briefing --now). Recorded as
+# reports.schedule; without it the recorded value, else weekdays.
 #
 # --non-interactive (or EA_NONINTERACTIVE=1): nothing reads the terminal.
 # The two sign-ins (Graph, Google) are skipped, each with the one command
@@ -27,6 +35,7 @@ EA_DIR="${EA_DIR:-$HOME/.ea}"
 #
 # --install-cron: install the cron entries without asking.
 PROFILE=""
+REPORTS=""
 NONINTERACTIVE="${EA_NONINTERACTIVE:-0}"
 INSTALL_CRON=0
 ACKNOWLEDGED=0
@@ -34,10 +43,12 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --profile) PROFILE="$2"; shift 2 ;;
         --profile=*) PROFILE="${1#--profile=}"; shift ;;
+        --reports) REPORTS="$2"; shift 2 ;;
+        --reports=*) REPORTS="${1#--reports=}"; shift ;;
         --acknowledged) ACKNOWLEDGED=1; shift ;;
         --non-interactive) NONINTERACTIVE=1; shift ;;
         --install-cron) INSTALL_CRON=1; shift ;;
-        -h|--help) echo "usage: scripts/install/setup.sh [--profile email|review-only|assistant] [--acknowledged] [--non-interactive] [--install-cron]"; exit 0 ;;
+        -h|--help) echo "usage: scripts/install/setup.sh [--profile reviewer|assistant|collaborator] [--reports weekdays|daily|none] [--acknowledged] [--non-interactive] [--install-cron]"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -46,15 +57,59 @@ if [[ "$NONINTERACTIVE" != 1 && ! -t 0 ]]; then
     NONINTERACTIVE=1
     NONINTERACTIVE_WHY="standard input is not a terminal"
 fi
-if [[ -z "$PROFILE" ]]; then
-    PROFILE="$(EA_DIR="$EA_DIR" python3 "$SCRIPT_DIR/preprocessor/ea_config.py" profile 2>/dev/null || echo assistant)"
-fi
 case "$PROFILE" in
-    email|review-only|assistant) ;;
-    *) echo "unknown profile: $PROFILE (email|review-only|assistant)" >&2; exit 2 ;;
+    ""|reviewer|assistant|collaborator|email|review-only) ;;
+    *) echo "unknown profile: $PROFILE (reviewer|assistant|collaborator)" >&2; exit 2 ;;
+esac
+case "$REPORTS" in
+    ""|weekdays|daily|none) ;;
+    *) echo "unknown --reports value: $REPORTS (weekdays|daily|none)" >&2; exit 2 ;;
+esac
+# The mode this run installs (preprocessor/ea_config.py): the name given,
+# with an old name mapped, or the one ea-config.json records. Four lines
+# come back: the mode, whether to record it, "off" when the name turns
+# drafting off, and a note for the user.
+set +e
+PROFILE_RESOLVED=$("$SCRIPT_DIR/scripts/owner-io.sh" read "$EA_DIR/config/ea-config.json" 2>/dev/null | python3 -c '
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import ea_config
+asked = sys.argv[2]
+try:
+    stored = json.loads(sys.stdin.read() or "{}")
+except ValueError:
+    stored = {}
+stored = stored if isinstance(stored, dict) else {}
+current, stored_implied, legacy = ea_config.resolve_profile(stored)
+if not asked:
+    print(current, "keep", "", "", sep="\n")
+    sys.exit(0)
+mode, implied = ea_config.profile_name(asked)
+note = f"`{asked}` is an old name; it is `{mode}` now." if asked != mode else ""
+if asked == "assistant" and legacy and stored.get("profile") == "assistant":
+    # The old assistant had project rooms: keep them, and the stored name,
+    # until the rename (normalize-profile asks for the yes).
+    print("collaborator", "keep", "", "This install still stores the old name `assistant`, "
+          "which had project rooms: it stays `collaborator`. For one chat with no rooms, "
+          "run python3 preprocessor/ea_config.py normalize-profile, then this script with "
+          "--profile assistant.", sep="\n")
+    sys.exit(0)
+# A stored old name that means the same mode keeps the switch it implied.
+if legacy and current == mode and stored_implied.get("drafting") is False:
+    implied["drafting"] = False
+off = "off" if implied.get("drafting") is False else ""
+print(mode, "record", off, note, sep="\n")
+' "$SCRIPT_DIR/preprocessor" "$PROFILE")
+set -e
+{ read -r PROFILE; read -r PROFILE_ACTION; read -r PROFILE_DRAFTING; read -r PROFILE_NOTE; } <<< "$PROFILE_RESOLVED" || true
+case "$PROFILE" in
+    reviewer|assistant|collaborator) ;;
+    *) echo "scripts/install/setup.sh: could not work out the mode from ea-config.json" >&2; exit 1 ;;
 esac
 HAS_SLACK=0
-[[ "$PROFILE" == "assistant" ]] && HAS_SLACK=1
+case "$PROFILE" in
+    assistant|collaborator) HAS_SLACK=1 ;;
+esac
 
 # Load config and secrets as data, never as shell (scripts/owner-io.sh env):
 # once the ea-bot user exists, ~/.ea is its space and its .env supplies only
@@ -71,6 +126,7 @@ fi
 echo "=== EA System Setup ==="
 echo "Install location: $EA_DIR"
 echo "Profile: $PROFILE"
+[[ -n "$PROFILE_NOTE" ]] && echo "  Note: $PROFILE_NOTE"
 [[ "$NONINTERACTIVE" == 1 ]] && echo "Non-interactive run ($NONINTERACTIVE_WHY): nothing here reads the terminal."
 echo "For detailed instructions, see docs/SETUP.md"
 echo ""
@@ -140,32 +196,41 @@ for path in "$SCRIPT_DIR"/config/*; do
     fi
 done
 
-# The profile lives in ea-config.json; every lane reads it from there.
+# The mode lives in ea-config.json; every lane reads it from there. A
+# --profile records the mode with its version marker (and "drafting":
+# false for the old review-only); --reports records reports.schedule.
 # --acknowledged records, once, the date the user read the "Your
 # responsibility" paragraph of the README (the setup skill shows it and
 # passes the flag on a yes). The Python prints the updated file, or
-# exits 3 when the file already records both, so an unchanged config is
-# never rewritten.
+# exits 3 when nothing changes, so an unchanged config is never rewritten.
 set +e
 PROFILE_JSON=$("$OWNER_IO" read "$EA_DIR/config/ea-config.json" 2>/dev/null | python3 -c '
 import datetime, json, sys
-profile, acknowledged = sys.argv[1], sys.argv[2] == "1"
+profile, action, drafting, reports = sys.argv[1:5]
+acknowledged = sys.argv[5] == "1"
 try:
     d = json.loads(sys.stdin.read() or "{}")
     if not isinstance(d, dict):
         d = {}
 except Exception:
     d = {}
+before = json.dumps(d, sort_keys=True)
+if action == "record":
+    d["profile"] = profile
+    d["profile_version"] = 2
+    if drafting == "off":
+        d["drafting"] = False
+if reports:
+    block = d.get("reports") if isinstance(d.get("reports"), dict) else {}
+    d["reports"] = {**block, "schedule": reports}
 ack = d.get("acknowledged") if isinstance(d.get("acknowledged"), dict) else {}
-want_ack = acknowledged and not ack.get("responsibility")
-if d.get("profile") == profile and not want_ack:
-    sys.exit(3)
-d["profile"] = profile
-if want_ack:
+if acknowledged and not ack.get("responsibility"):
     ack["responsibility"] = datetime.date.today().isoformat()
     d["acknowledged"] = ack
+if json.dumps(d, sort_keys=True) == before:
+    sys.exit(3)
 print(json.dumps(d, indent=2, ensure_ascii=False))
-' "$PROFILE" "${ACKNOWLEDGED:-0}")
+' "$PROFILE" "${PROFILE_ACTION:-keep}" "${PROFILE_DRAFTING:-}" "${REPORTS:-}" "${ACKNOWLEDGED:-0}")
 PROFILE_RC=$?
 set -e
 if [[ "$PROFILE_RC" == 0 ]]; then
@@ -320,13 +385,37 @@ chmod 700 "$OWNER_PRIVATE_DIR" "$OWNER_LOG_DIR"
 echo "The following cron entries will be added:"
 echo ""
 
-# The lines a profile gets follow its features (preprocessor/ea_config.py):
+# The lines a mode gets follow its features (preprocessor/ea_config.py):
 # the chat checks, the intraday intake, deferred sends and the calendar
 # reconciler need the chat platform and its buttons; the style sync needs
-# drafting; the briefings, the ledger sync, the closure scrubber, the
-# quiet-hours flush and the persistence digest run on every profile.
+# drafting; the ledger sync, the closure scrubber, the quiet-hours flush
+# and the persistence digest run in every mode. The report agents (the
+# briefings and the weekly audit) follow reports.schedule: weekdays, daily,
+# or none, which leaves them to a run by hand.
 HAS_DRAFTING=$(EA_DIR="$EA_DIR" python3 "$SCRIPT_DIR/preprocessor/ea_config.py" features --profile "$PROFILE" 2>/dev/null \
     | python3 -c 'import json, sys; print(1 if json.load(sys.stdin).get("drafting") else 0)' 2>/dev/null || echo 1)
+REPORT_SCHEDULE=$(EA_DIR="$EA_DIR" python3 "$SCRIPT_DIR/preprocessor/ea_config.py" reports 2>/dev/null || echo weekdays)
+case "$REPORT_SCHEDULE" in
+    daily) REPORT_DAYS="*" ;;
+    none) REPORT_DAYS="" ;;
+    *) REPORT_SCHEDULE=weekdays; REPORT_DAYS="1-5" ;;
+esac
+if [[ -n "$REPORT_DAYS" ]]; then
+REPORT_ENTRIES="# Morning briefing: hourly ($REPORT_SCHEDULE); run-agent.sh runs it once, at 4 AM local
+# (quiet_hours.py local-due), on the briefing model (EA_MODEL, else opus).
+0 * * * $REPORT_DAYS        $CODE_DIR/run-agent.sh morning-briefing >> $OWNER_LOG_DIR/morning.log 2>&1
+
+# Afternoon catch-up: 3 PM ($REPORT_SCHEDULE), on the same model
+0 15 * * $REPORT_DAYS       $CODE_DIR/run-agent.sh afternoon-catchup >> $OWNER_LOG_DIR/afternoon.log 2>&1
+
+# Weekly deep audit: Sunday 8 PM (Opus)
+0 20 * * 0         $CODE_DIR/run-agent.sh weekly-audit --model opus >> $OWNER_LOG_DIR/weekly.log 2>&1
+"
+else
+REPORT_ENTRIES="# Reports on demand (reports.schedule none): no briefing runs from cron.
+# A briefing now: $CODE_DIR/run-agent.sh morning-briefing --now
+"
+fi
 
 SLACK_CHECK_ENTRIES=""
 SLACK_MAINTENANCE_ENTRIES=""
@@ -369,16 +458,7 @@ ${SLACK_CHECK_ENTRIES}
 # ======================================================
 # EA System -- Claude Code agents (Max subscription quota)
 # ======================================================
-# Morning briefing: hourly on weekdays; run-agent.sh runs it once, at 4 AM local
-# (quiet_hours.py local-due), on the briefing model (EA_MODEL, else opus).
-0 * * * 1-5        $CODE_DIR/run-agent.sh morning-briefing >> $OWNER_LOG_DIR/morning.log 2>&1
-
-# Afternoon catch-up: 3 PM weekdays, on the same model
-0 15 * * 1-5       $CODE_DIR/run-agent.sh afternoon-catchup >> $OWNER_LOG_DIR/afternoon.log 2>&1
-
-# Weekly deep audit: Sunday 8 PM (Opus)
-0 20 * * 0         $CODE_DIR/run-agent.sh weekly-audit --model opus >> $OWNER_LOG_DIR/weekly.log 2>&1
-
+${REPORT_ENTRIES}
 # ======================================================
 # EA System -- Background maintenance
 # ======================================================
@@ -592,7 +672,7 @@ else
     (umask 077 && echo "$CRONTAB_ENTRIES" > "$CRONTAB_TEMPLATE")
 fi
 
-# 8. The chat bot service (assistant profile)
+# 8. The chat bot service (assistant and collaborator modes)
 # The bot runs as a system unit (Linux) or a LaunchDaemon (macOS), both
 # written by a root step once the chat platform is configured; this script
 # runs as the owner and writes neither. docs/SETUP.md 'Services'.
@@ -610,7 +690,8 @@ else
 fi
 else
 echo ""
-echo "Profile $PROFILE has no chat platform: no bot service. Reports land in $EA_DIR/state/reports/<agent>-latest.md and go out by phone push when ~/.ea-private/push.json exists."
+echo "Mode $PROFILE has no chat platform: no bot service. Reports land in $EA_DIR/state/reports/<agent>-latest.md and go out by phone push when ~/.ea-private/push.json exists."
+echo "Reports run $REPORT_SCHEDULE (reports.schedule). A briefing now: $CODE_DIR/run-agent.sh morning-briefing --now"
 fi
 
 # 9. Next steps
@@ -625,7 +706,7 @@ echo "     Why: an event on a listed calendar makes you busy, so no time is offe
 echo "  3. Edit $EA_DIR/config/vip_senders.txt with your VIP contacts."
 echo "     Why: a VIP's mail is flagged at once and gets more meeting times."
 echo "  4. Add your projects: python3 $SCRIPT_DIR/preprocessor/project_store.py add --help"
-echo "     Why: the EA files mail and decisions by project, so each room knows its context."
+echo "     Why: the EA files mail and decisions by project, so it knows each one's context."
 echo "  5. Sign in Google Drive for the accounts your mail's Docs links belong to: say"
 echo "     'connect Google Drive <account>' in the EA chat, or in a terminal run"
 echo "     python3 $SCRIPT_DIR/preprocessor/drive_client.py setup --email <account>"

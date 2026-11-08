@@ -465,7 +465,7 @@ with Actions > Release suite > Run workflow (inputs: one `lane`, the
 model quota for about an hour. It
 builds the Docker image, prepares the volumes (`docker compose up init`),
 writes a scratch configuration into ea-bot's config volume (the install
-tests' `tests/install/answers-email.json` when present, else the
+tests' `tests/install/answers-reviewer.json` when present, else the
 `config/examples/cu-boulder` profile with example values), installs
 ea-bot's Claude login from the repository secret `CLAUDE_CODE_OAUTH_TOKEN`
 (minted as above, stored under Settings, Secrets and variables, Actions),

@@ -10,8 +10,8 @@ The install's own facts (names, rooms, sites, lists) are in
 No `~/.ea/config/user-profile.json` means a fresh install: run the
 `/setup` skill (`.claude/skills/setup/SKILL.md`). It asks one question at
 a time, writes the config and ends with the doctor green (reference:
-`docs/SETUP.md`). The install profile (`email`, `review-only` or
-`assistant`) is `profile` in `~/.ea/config/ea-config.json`.
+`docs/SETUP.md`). The mode (`reviewer`, `assistant` or `collaborator`) is
+`profile` in `~/.ea/config/ea-config.json`.
 
 ## Your role
 
@@ -237,11 +237,11 @@ directory; registries say which (`preprocessor/slack_sessions.py`,
 
 - **The EA channel.** Each thread is its own session. `conversations`
   lists recent ones; `name this conversation <title>` renames one.
-- **`#ea-<project>` rooms.** One project each, served by the room's own
-  session (its specialist), never the resident. Work there belongs to
-  that project. The user opens one with `open a channel for <project>`.
-  A project you create with `project_store.py add-project` gets its room
-  automatically, after your turn. For a project that ALREADY exists,
+- **`#ea-<project>` rooms** (collaborator mode). One project each,
+  served by the room's own session (its specialist), never the
+  resident. Work there belongs to that project. The user opens one with
+  `open a channel for <project>`. A project you create with
+  `project_store.py add-project` gets its room after your turn. For a project that ALREADY exists,
   write `~/.ea/state/pending-channel.json` (`{"project": "<id>",
   "thread_ts": "<this thread>"}`) and the bot opens it. You cannot create
   rooms: never say a room is opening unless you created the project this

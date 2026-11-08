@@ -179,6 +179,23 @@ def test_unknown_option_is_refused():
     assert "usage" in r.stderr
 
 
+def test_profile_hands_the_mode_to_the_setup_skill(copy_with_stubs):
+    """--profile names the mode the setup skill starts with; an old name
+    maps to its mode with a note, and anything else is refused."""
+    copy, path, log = copy_with_stubs
+    r = _run(["--no-launch", "--profile", "collaborator"], cwd=copy, path=path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert 'claude "/setup --profile collaborator"' in r.stdout
+    r = _run(["--profile=email", "--no-launch"], cwd=copy, path=path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "is an old name: it is reviewer now" in r.stdout
+    assert 'claude "/setup --profile reviewer"' in r.stdout
+    for bad in (["--profile", "everything"], ["--profile"]):
+        r = _run(bad, cwd=copy, path=path)
+        assert r.returncode == 2 and "usage" in r.stderr, bad
+    assert "/setup" not in (log.read_text() if log.exists() else "")
+
+
 def test_no_bash_4_only_constructs():
     """macOS ships bash 3.2."""
     bad = re.findall(r"mapfile|readarray|declare -A|\$\{[a-zA-Z_]+,,\}|\$\{[a-zA-Z_]+\^\^?\}|\|&|;;&", SCRIPT)

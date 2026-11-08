@@ -13,7 +13,7 @@ numbered, and the skill and the doctor's fix texts point into them by
 name.
 
 - [Prerequisites](#prerequisites)
-- [Choose a profile](#choose-a-profile)
+- [Choose a mode](#choose-a-mode)
 - [Setup in the browser](#setup-in-the-browser)
 - [Microsoft Graph app registration](#microsoft-graph-app-registration)
 - [Google OAuth app](#google-oauth-app)
@@ -40,9 +40,9 @@ name.
 - **A Microsoft 365 / Outlook account** and an app registration for the
   EA in that tenant ([Microsoft Graph app registration](#microsoft-graph-app-registration)).
 - **An always-on machine**: Linux (a server, a NUC) or macOS. WSL2 is
-  untested. The cron jobs and, on the `assistant` profile, the chat bot
-  run there.
-- **For `assistant`**: Tailscale on this machine and on your phone for
+  untested. The cron jobs and, in the `assistant` and `collaborator`
+  modes, the chat bot run there.
+- **For `assistant` and `collaborator`**: Tailscale on this machine and on your phone for
   the [web chat](#web-chat) (recommended); or Docker for a Zulip server,
   or a Slack workspace where you can install an app.
 - **Optional**: one or more Google accounts for calendar merging and the
@@ -54,31 +54,75 @@ name.
   libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1
   libasound2`.
 
-## Choose a profile
+## Choose a mode
 
-Three install profiles, set as `"profile"` in `~/.ea/config/ea-config.json`
-and asked first by `/setup`. Every lane reads it: `scripts/install/setup.sh` installs the
-cron lines and services for it, `run-agent.sh` delivers reports where it
-says, the launchers add its deny list, and `ea-doctor.py` checks only
-what it needs. `python3 preprocessor/ea_config.py features --profile
-<name>` prints what a profile turns on.
+Three modes, set as `"profile"` in `~/.ea/config/ea-config.json` and
+asked first by `/setup`. Every lane reads it: `scripts/install/setup.sh`
+installs the cron lines and services for it, `run-agent.sh` delivers
+reports where it says, the launchers add the drafting deny list when
+drafting is off, the bot opens rooms only where the mode has them, and
+`ea-doctor.py` checks only what it needs.
+`python3 preprocessor/ea_config.py features --profile <name>` prints what
+a mode turns on.
 
-**Start with `email`.** It needs no chat server and no buttons, and a
-first install takes about an hour once IT has given you the Outlook app.
-Move to `assistant` later: change `"profile"`, run
-`./scripts/install/setup.sh --profile assistant`, then do the chat platform and the
-services ([Hardening](#hardening) again, to write the bot's unit). The
-web chat needs no chat server; Zulip adds one to run.
-
-| profile | what you get |
+| mode | what you get |
 |---|---|
-| `email` | Outlook triage, the ledger, drafts in your voice, meeting times proposed as text in the report (no holds and no events: the bot that places a staged hold is part of the chat platform), briefings as files in `~/.ea/state/reports/<agent>-latest.md` sent by phone push when one is configured. You work with the EA in the Claude Code shell (`scripts/ea-bot-shell.sh`) and send every draft from Outlook yourself. |
-| `review-only` | `email` without drafting: the EA reads, tracks and briefs, and writes nothing to the mailbox. A deny list in every launcher enforces it. |
-| `assistant` (default) | everything, plus the chat platform (the web chat the bot serves, recommended; Zulip, self-hosted; or Slack): the EA channel, the direct message, project and session rooms, the scheduling channel, the Send and Create buttons, the resident session, plugins. |
+| `reviewer` | No chat. Outlook triage, the ledger, drafts in your voice left in your mailbox, meeting times proposed as text in the report (no holds and no events: the bot that places a staged hold is part of the chat platform), reports as files in `~/.ea/state/reports/<agent>-latest.md` on the schedule you pick, sent by phone push when one is configured. You work with the EA in the Claude Code shell (`scripts/ea-bot-shell.sh`) and send every draft from Outlook yourself. |
+| `assistant` (default) | One chat (the web chat the bot serves, recommended; Zulip, self-hosted; or Slack): the EA channel, the direct message with the Send and Create buttons, scheduling and digests in the same app, the resident session, plugins. No project rooms: a request for one gets an answer that rooms come with `collaborator`. |
+| `collaborator` | `assistant` plus project rooms (`#ea-<project>`, one specialist session each), session rooms (`#tmp-<id8>`), the room picker, and a room opened by itself for each project the EA registers. |
+
+The flags behind each mode (`PROFILE_FEATURES` in
+`preprocessor/ea_config.py`; `chat` is the CLI name of the `slack` flag,
+which means any chat front end):
+
+| mode | chat | buttons | drafting | resident | rooms | plugins |
+|---|---|---|---|---|---|---|
+| `reviewer` | no | no | yes | no | no | no |
+| `assistant` | yes | yes | yes | yes | no | yes |
+| `collaborator` | yes | yes | yes | yes | yes | yes |
 
 Without a chat platform there are no confirmation cards, and the send
-verbs need a card's token, so an `email` or `review-only` install cannot
-send mail or create a real calendar event by construction.
+verbs need a card's token, so a `reviewer` install cannot send mail or
+create a real calendar event by construction.
+
+**Drafting.** `"drafting": false` in `ea-config.json` turns drafting off
+in any mode: every launcher (`run-agent.sh`, `run-plugin.sh`, the ea-bot
+shell, the resident pane and the chat bot, which reads it when it
+starts) adds `scripts/disallowed-tools.no-drafting.txt` to its deny
+list, so the EA reads, tracks and reports and writes nothing to the
+mailbox. Only a literal `false` turns it off.
+
+**When reports come.** `"reports": {"schedule": ...}` sets the cron lines
+of the report agents (the morning briefing, the afternoon catch-up and
+the weekly audit): `weekdays` (the default), `daily`, or `none`, which
+leaves them to a run by hand. Setup asks it for a reviewer;
+`./scripts/install/setup.sh --reports <value> --install-cron` records it
+and writes the lines. A report at any time:
+`./run-agent.sh morning-briefing --now`. The doctor's `reports` row says
+which schedule the install has.
+
+**Changing modes.** Between `assistant` and `collaborator` only the
+rooms change, and the bot reads the mode on each room request:
+`python3 preprocessor/ea_config.py set-profile collaborator` (or
+`set-profile assistant`) is the whole switch. Rooms opened earlier stay
+where they are. To add or drop the chat, run
+`./scripts/install/setup.sh --profile <mode> --install-cron`; for a chat,
+then do the chat platform and the services ([Hardening](#hardening)
+again, to write the bot's unit). The web chat needs no chat server;
+Zulip adds one to run.
+
+**Older names.** An install set up before the three modes stores
+`email` (now `reviewer`), `review-only` (now `reviewer` with
+`"drafting": false`) or `assistant` with no `"profile_version": 2`. That
+older `assistant` had project rooms, so it reads as `collaborator`. Each
+old name keeps working as its mode; nothing changes until you rename it.
+`ea-doctor.py` shows a `profile name` warning with the rename, and
+`python3 preprocessor/ea_config.py normalize-profile` asks for a yes,
+then writes the mode and `"profile_version": 2` (with `"drafting":
+false` for `review-only`). `scripts/install/setup.sh` and `ea-doctor.py`
+take the old names on `--profile` too, with a note; on an install that
+still stores the older `assistant`, `--profile assistant` keeps
+`collaborator` until the rename.
 
 **The notice.** Before the installer runs, `/setup` shows the "Your
 responsibility" paragraph of the README and asks whether you accept it.
@@ -88,19 +132,19 @@ in `ea-config.json`, once. `ea-doctor.py` warns while that value is
 missing. An install made by hand records it the same way:
 `./scripts/install/setup.sh --profile <name> --acknowledged`.
 
-The defaults in the code are the full system's, not the recommended
-start: an `ea-config.json` with no `"profile"` (and `scripts/install/setup.sh` with no
-`--profile`) means `assistant`, and an absent `chat` block means Slack.
+The defaults in the code: an `ea-config.json` with no `"profile"` (and
+`scripts/install/setup.sh` with no `--profile`) means `assistant`, and
+an absent `chat` block means Slack.
 The `chat` phase of `scripts/install/user_init.py` (and `--chat web`,
 `zulip` or `slack`) offers the platform the install already chose, else
-the web chat. The `/setup` skill always records the profile and the chat
+the web chat. The `/setup` skill always records the mode and the chat
 platform you choose, and `scripts/zulip_bootstrap.py` prints a `chat`
-block with `"frontend": "zulip"`, so neither code default applies to an
-install it makes.
+block with `"frontend": "zulip"`, so the chat default does not apply to
+an install it makes.
 
 ### Phone push
 
-Optional, for `email` and `review-only`. With no chat channel, a report
+Optional, for `reviewer`. With no chat channel, a report
 is a file in `~/.ea/state/reports/`. To see it on your phone, install the
 ntfy app, choose a long random topic name, and write the owner-private
 `~/.ea-private/push.json` (mode 600; `scripts/install/user_init.py --phase push` writes
@@ -130,7 +174,7 @@ python3 scripts/install/setup_web.py --bind "$(tailscale ip -4)"   # your tailne
 
 Open the address it prints, with its `#t=` token (a new one each run).
 From a laptop over SSH, `ssh -L 8480:127.0.0.1:8480 <host>` and the
-default bind work too. The page asks the profile and the notice, then
+default bind work too. The page asks the mode and the notice, then
 every phase of `scripts/install/user_init.py` that writes config, one per
 screen, with the same checks and the same files as `user_init.py
 --answers`; the definitions are one list, `scripts/install/setup_questions.py`.
@@ -252,7 +296,7 @@ this option does not appear.
 2. `python3 scripts/install/user_init.py --phase auth`, choice 0
    (`published`, the default). It clears `GRAPH_CLIENT_ID`, `GRAPH_AUTH_METHOD`,
    `GRAPH_AUTHORITY` and `GRAPH_SCOPES` in `~/.ea/.env`, writes the least
-   `GRAPH_SCOPES` your profile needs into `~/.ea-private/secrets.env`
+   `GRAPH_SCOPES` your mode needs into `~/.ea-private/secrets.env`
    (the only place the published sign-in reads it, with
    `GRAPH_REDIRECT_URI` and `GRAPH_AUTH_METHOD`), and signs in. By hand:
    leave `GRAPH_CLIENT_ID` unset and run `python3 preprocessor/graph_client.py`.
@@ -377,8 +421,8 @@ The scheduler has no config-based working hours: every day and time rule
 is a tokened event on a dedicated Google calendar you can see and drag.
 Without this calendar and at least one `wh` event, `propose-meeting`
 returns an error rather than guessing hours. It is required on
-`assistant` (the Create button writes there) and optional on the other
-profiles, where the doctor warns instead.
+`assistant` and `collaborator` (the Create button writes there) and
+optional on `reviewer`, where the doctor warns instead.
 
 1. In Google Calendar (any authenticated account) create a secondary
    calendar named **EA-Managed**.
@@ -429,7 +473,7 @@ calendar, never a config file (`docs/SCHEDULING.md`,
 ## Web chat
 
 The chat the bot serves itself, and the recommended platform for
-`assistant`: a phone-first web app and a JSON API on a loopback port,
+`assistant` and `collaborator`: a phone-first web app and a JSON API on a loopback port,
 with no chat server and no Docker. You reach it over your tailnet. On a
 phone you add it to the Home Screen, where it runs as an app (a PWA). A
 phone off the tailnet can pair through a relay that sees only ciphertext
@@ -531,7 +575,7 @@ sign-in ([docs/docker.md](docker.md#web-chat), Web chat).
 
 The store is `<private dir>/webchat.sqlite`; files you upload from the
 app sit beside it. Standalone, the chat has the `ea` channel, your DM,
-Scheduling and the project rooms. When a scheduling request arrives by
+Scheduling and, on `collaborator`, the project rooms. When a scheduling request arrives by
 mail, the EA opens a conversation for it in Scheduling and proposes
 times there; you can also ask for a meeting in `ea`. `"sched": false`
 in the `web` block turns Scheduling off; requests then wait in `ea`.
@@ -603,7 +647,7 @@ the whole sequence. Run it with the Python the bot runs, which has the
 
 ## Zulip server
 
-The `assistant` profile talks to you through a chat platform, and
+The `assistant` and `collaborator` modes talk to you through a chat platform, and
 `chat.frontend` in `ea-config.json` names it (`"web"`, `"zulip"` or
 `"slack"`; an install with no `chat` block runs Slack). The web chat
 above is where new features land; Zulip keeps working as it is. Use it
@@ -616,7 +660,7 @@ Zulip and Slack is one config key and a restart
 ([docs/zulip-switch.md](zulip-switch.md), `scripts/zulip_switch.sh`).
 
 Three private streams stand in for the Slack channel, the DM and the
-scheduling channel, and each project room is a private stream of its own.
+scheduling channel, and on `collaborator` each project room is a private stream of its own.
 Topics are threads, and you never name one: post in a stream's general
 chat, and the EA moves the post into a topic of its own and answers
 there. Zulip has no buttons, so a confirmation card carries one reaction
@@ -793,7 +837,7 @@ mandatory on every host: the bot and `run-agent.sh` refuse to start
 without the user, and there is no opt-out variable.
 
 Run `./scripts/install/setup.sh --profile <name>` first, while `~/.ea` is still yours:
-it copies the config templates and records the profile. In a terminal it
+it copies the config templates and records the mode. In a terminal it
 also runs the Graph and Google sign-ins when their files are there and
 asks whether to install the cron lines. With no terminal on its standard
 input (Claude Code's Bash tool, a pipe) it is non-interactive by itself:
@@ -821,7 +865,7 @@ Both scripts are idempotent and do the same things, in this order:
    fixes in ea-bot's trees run as ea-bot, and a re-run hands ea-bot no
    file it does not already own.
    From then on `scripts/install/setup.sh` writes config as ea-bot through the sudoers
-   rule, so a later `./scripts/install/setup.sh` run (a profile change, or re-pointing
+   rule, so a later `./scripts/install/setup.sh` run (a mode change, or re-pointing
    the cron lines after hardening) needs nothing else.
 4. Close your home to other users (no `o+x`): ea-bot never enters it.
 5. Write ea-bot's Claude Code settings and install ea-bot's **own**
@@ -837,7 +881,7 @@ Both scripts are idempotent and do the same things, in this order:
    send or see a token. If the tokens are not signed in yet it arms
    mediation and says how to finish; re-run it with `sudo` after the
    sign-ins. On macOS the mediator is a LaunchDaemon, so the script does
-   not run here: on every profile, run
+   not run here: in every mode, run
    `sudo bash deploy/macos/install-services.sh` and then
    `sudo bash deploy/enable-mail-mediation.sh` ([launchd](#launchd)).
 8. Verify: the user and group exist, sudo works, the deployed source is
@@ -881,8 +925,8 @@ the less-privileged user. The Docker image writes the same rule.
 ## Services
 
 Two long-lived services run **as you**, never as ea-bot: the mail
-mediator (`preprocessor/mail_mediator.py`) on every profile, and the
-chat bot (`ea-chat-bot.py`) on `assistant`. On Linux each is a system
+mediator (`preprocessor/mail_mediator.py`) in every mode, and the
+chat bot (`ea-chat-bot.py`) on `assistant` and `collaborator`. On Linux each is a system
 unit: `deploy/enable-mail-mediation.sh` (which `scripts/install/setup-ea-user.sh` runs)
 writes the mediator's, and [Hardening](#hardening)
 (`deploy/harden-permissions.sh`) writes the bot's once the chat platform
@@ -896,7 +940,7 @@ never a user unit: a user unit runs in your `user@<uid>.service`, which
 keeps the supplementary groups it started with, so after the installer
 adds you to group `ea` the bot could not read the EA's group-`ea` files
 until every session ended. The system unit declares the group itself.
-`sudo bash deploy/harden-permissions.sh` writes it when the profile has a
+`sudo bash deploy/harden-permissions.sh` writes it when the mode has a
 chat platform and no unit exists yet:
 
 ```ini
@@ -941,21 +985,21 @@ the `ea` group) and makes `/opt/ea-system` the updater's release layout
 `journalctl -u ea-chat-bot -n 20 --no-pager` the startup line. Do not add
 `StandardOutput=append:` lines: the bot has its own `logging.FileHandler`,
 and the two together duplicate every line. The doctor lists
-`service: ea-chat-bot` (required on `assistant`) and
+`service: ea-chat-bot` (required on `assistant` and `collaborator`) and
 `service: ea-mail-mediator`, `service: ea-dashboard` (optional; see
 [Project dashboard](#project-dashboard) for its token).
 
 ### launchd
 
 macOS has neither systemd nor the hardening script.
-`sudo bash deploy/macos/install-services.sh` is both, on every profile:
+`sudo bash deploy/macos/install-services.sh` is both, in every mode:
 it seeds `/opt/ea-system` and the owner-private files and installs root
 LaunchDaemons that run as you from `/opt/ea-system`, with the environment
 loaded by a root-owned launcher from `~/.ea-private/bot.env` and
 `secrets.env`: the mail mediator always, and the chat bot only when the
-profile has a chat platform. `--status` reports and `--remove` undoes.
+mode has a chat platform. `--status` reports and `--remove` undoes.
 Then `sudo bash deploy/enable-mail-mediation.sh` turns mediation on (on
-Linux `scripts/install/setup-ea-user.sh` runs it). On `assistant`, run the services
+Linux `scripts/install/setup-ea-user.sh` runs it). On a chat mode, run the services
 script after the chat platform is configured: its third step seeds
 `~/.ea-private/chat.json` from the `chat` block only when that file is
 missing. The design, the
@@ -982,7 +1026,7 @@ the steps to turn it on for an existing install:
 ## Cron schedule
 
 The cron jobs are owner processes (`docs/SECURITY.md`, "Owner trust
-rules"). `scripts/install/setup.sh` prints the entries for the profile and installs them
+rules"). `scripts/install/setup.sh` prints the entries for the mode and installs them
 when you confirm, or with `--install-cron`; a non-interactive run
 (`EA_NONINTERACTIVE=1`, `--non-interactive`, or no terminal on standard
 input) without that flag saves them to
@@ -992,14 +1036,17 @@ deploy hook, or the updater, keeps in step), never the checkout. Output goes to 
 owner-private `~/.ea-private/logs` (mode 700). Times are the machine's
 local timezone.
 
-What `scripts/install/setup.sh` writes, by profile (`preprocessor/ea_config.py` features):
+What `scripts/install/setup.sh` writes, by mode (`preprocessor/ea_config.py` features):
 
 ```
-# ---- every profile ----
-# Morning briefing: hourly on weekdays; run-agent.sh runs it once, at 4 AM in
+# ---- every mode ----
+# The report agents follow reports.schedule: these lines for weekdays (the
+# default); "*" in place of 1-5 for daily; none of the three for none, where
+# a report runs only by hand (./run-agent.sh morning-briefing --now).
+# Morning briefing: hourly; run-agent.sh runs it once, at 4 AM in
 # the user's CURRENT timezone (home or travel, quiet_hours.due_local), then
 # quiet hours hold delivery until the local morning. The same hourly tick
-# posts the weekly usage tip on a chat profile (one new thing to try, after
+# posts the weekly usage tip in a chat mode (one new thing to try, after
 # the first week's onboarding questions; docs/ea/usage-tips.md).
 0 * * * 1-5        /opt/ea-system/run-agent.sh morning-briefing >> ~/.ea-private/logs/morning.log 2>&1
 0 15 * * 1-5       /opt/ea-system/run-agent.sh afternoon-catchup >> ~/.ea-private/logs/afternoon.log 2>&1
@@ -1016,14 +1063,14 @@ What `scripts/install/setup.sh` writes, by profile (`preprocessor/ea_config.py` 
 # without a completed run.
 40 6 * * *         python3 /opt/ea-system/scripts/persistence-digest.py >> ~/.ea-private/logs/persistence-digest.log 2>&1
 
-# ---- profiles that draft (email, assistant) ----
+# ---- with drafting on (every mode, unless "drafting": false) ----
 # Weekly: refresh per-contact style profiles from sent mail with real bodies.
 20 4 * * 1         python3 /opt/ea-system/preprocessor/style_profiles.py sync --days 21 >> ~/.ea-private/logs/style-profiles.log 2>&1
 
-# ---- assistant only (needs the chat platform and its buttons) ----
+# ---- assistant and collaborator (need the chat platform and its buttons) ----
 0 8-20 * * 1-5     /opt/ea-system/run-agent.sh scheduling-check >> ~/.ea-private/logs/scheduling-check.log 2>&1
 */30 8-18 * * 1-5  /opt/ea-system/run-agent.sh priority-check >> ~/.ea-private/logs/priority-check.log 2>&1
-# Intraday ledger capture. Silent: items surface on the desk and in the rooms.
+# Intraday ledger capture. Silent: items surface on the desk (and in the rooms on collaborator).
 */10 7-19 * * 1-5  /opt/ea-system/run-agent.sh intake-check >> ~/.ea-private/logs/intake-check.log 2>&1
 # Deferred sends (the Schedule button). Needs the signing key below.
 */5 * * * *        python3 /opt/ea-system/preprocessor/scheduled_sends.py check >> ~/.ea-private/logs/scheduled-sends.log 2>&1
@@ -1044,7 +1091,7 @@ the ones you want with `crontab -e`:
 # Nightly full-mode evals (Claude tokens); only if prompt-affecting files
 # changed. Runs from the checkout because it reads git history.
 0 2 * * *          $(pwd)/tests/evals/run_full_if_changed.sh >> ~/.ea-private/logs/eval-full.log 2>&1
-# Monthly: re-measure the writing-style corpus (assistant; see below).
+# Monthly: re-measure the writing-style corpus (a chat mode; see below).
 40 4 1 * *         python3 /opt/ea-system/preprocessor/style_analysis.py run --dispatch >> ~/.ea-private/logs/style-analysis.log 2>&1
 # The web chat's own data (the store, its uploads, the relay key, the pairing
 # token, the closure labels): a snapshot each night in
@@ -1119,8 +1166,8 @@ Drafts are calibrated against what you send, and two crons keep that
 true. `style_profiles.py sync` (weekly) answers "how does this person get
 written to": sign-off, length, question and hedge rates, real examples to
 mimic. Without it the profiles accumulate only 255-character previews
-from the briefing. `style_analysis.py run --dispatch` (monthly,
-`assistant`) measures the whole corpus, snapshots to
+from the briefing. `style_analysis.py run --dispatch` (monthly, in a
+chat mode) measures the whole corpus, snapshots to
 `~/.ea/state/style-analysis/<YYYY-MM>.json`, diffs against the previous
 month and hands what moved to the resident session (or posts the digest
 to chat when the session is down). The same run harvests draft-vs-sent
@@ -1159,8 +1206,8 @@ environment and run their code from ea-bot's home, which ea-bot can
 rewrite or rename. A prompt-injected EA is an ea-bot shell, so those
 paths are an escalation route to your account, which holds the mail
 tokens. One idempotent, owner-agnostic script closes it; on Linux run it
-once as root after the service account (and, on `assistant`, the chat
-platform) exists, on every profile:
+once as root after the service account (and, in a chat mode, the chat
+platform) exists, in every mode:
 
 ```bash
 sudo bash deploy/harden-permissions.sh   # services from /opt/ea-system, owner-private settings, the bot's unit
@@ -1174,12 +1221,12 @@ your private home, loads `EA_MODEL` from an owner-owned
 `~/.ea-private/bot.env` instead of ea-bot's `.env`, copies the chat block
 to the owner-private `chat.json` the bot trusts, and copies a legacy
 `.env.secrets` to `~/.ea-private/secrets.env` when that file is missing.
-It first says which bot unit it found. On a profile with a chat
+It first says which bot unit it found. On a mode with a chat
 platform and no unit it writes the bot's system unit
 ([systemd](#systemd)); a user unit left by an older `scripts/install/setup.sh` is
 reported with the step that retires it. It adds systemd drop-ins and
-verifies the services came back on the new path. On a profile with no
-chat platform there is no bot unit: the script says so, skips that
+verifies the services came back on the new path. On `reviewer`, with no
+chat platform, there is no bot unit: the script says so, skips that
 unit's drop-in and restart, and still seeds `/opt/ea-system`, the
 owner-private files and the mediator's drop-in when that unit exists.
 Revert by removing
@@ -1224,7 +1271,8 @@ example for one institution: its `user-profile.json` holds a complete
 block, and its README lists the features that need an adapter per
 institution.
 
-**`ea-config.json`**: `profile`; the `chat` block (frontend, server, bot,
+**`ea-config.json`**: `profile` (the mode) and `profile_version`;
+`drafting`; `reports.schedule` ([Choose a mode](#choose-a-mode)); the `chat` block (frontend, server, bot,
 owner id, streams, `notify` map; the web chat's `web` block counts only
 in the owner-private `chat.json`); the operational toggles `ea_enabled`
 (the master pause: cron agents exit at once and the bot answers "EA is
@@ -1307,7 +1355,7 @@ doctor reports where each secret comes from.
 ### The install overlay
 
 `CLAUDE.md` is the product core and names no person or institution. The
-install's own facts (the profile, the `institution` block, the chat
+install's own facts (the mode, the `institution` block, the chat
 streams, the sites in `github.json`, the digested lists) are rendered
 from the config into `~/.ea/config/CLAUDE.install.md`, and installed
 beside `CLAUDE.md` in ea-bot's deployed tree as `CLAUDE.local.md`, which
@@ -1422,7 +1470,7 @@ stops with one line naming it):
 
 ### Deck hosting
 
-`assistant` only, and optional. The core carries only the hosting
+`assistant` and `collaborator` only, and optional. The core carries only the hosting
 boundary for a deck plugin: `sudo bash deploy/enable-deck-builder.sh`
 (`--status`, `--rollback`) bind-mounts your presentations workspace
 read-only under `/srv/ea/` (`root:ea 0750`), copies your node for ea-bot
@@ -1489,7 +1537,7 @@ the two-user split inside the image: no `ea-bot` account, systemd unit
 or crontab on the host. [docs/docker.md](docker.md) is the whole
 procedure (the settings file, the volumes, the sign-ins through the
 `owner` and `signin` services, the overlay, what the doctor shows along
-the way). On `assistant` the bot container serves the web chat, so the
+the way). On `assistant` and `collaborator` the bot container serves the web chat, so the
 stack needs no Zulip: `WEBCHAT_PUBLIC_URL` in compose's `.env` names its
 address, a TLS proxy (the Caddy example in `deploy/docker/webchat-tls/`,
 or your own) serves it, and the pairing token on the `ea-private` volume
@@ -1517,9 +1565,9 @@ The install is the same on a Mac; these are the differences.
   (`docs/macos-claude-binary.md`). The doctor's `ea-bot: Claude login`
   check reads either place.
 - **Services**: launchd, through `deploy/macos/install-services.sh`,
-  which is also the hardening step ([launchd](#launchd)), on every
-  profile. Order: the service account, the chat platform and its secret
-  (on `assistant`), then the services, then
+  which is also the hardening step ([launchd](#launchd)), in every
+  mode. Order: the service account, the chat platform and its secret
+  (in a chat mode), then the services, then
   `sudo bash deploy/enable-mail-mediation.sh`.
 - **Google OAuth**: copy the config templates before
   `google_calendar_client.py --setup`, which reads
@@ -1532,11 +1580,11 @@ The install is the same on a Mac; these are the differences.
 
 `python3 scripts/ea-doctor.py` is the checklist as code: read-only, every
 prerequisite the running system depends on, with the fix printed next to
-each miss. `--profile <name>` checks what that profile needs, `--ci` only
+each miss. `--profile <mode>` checks what that mode needs, `--ci` only
 the templates (what the test wall runs), `--json` is machine-readable,
 and `--expect-missing NAME,NAME` exits 0 when every FAIL starts with one
 of the names (a prefix such as `config:` covers a family). An install is
-done when it reports `0 FAIL`; warnings about features the profile does
+done when it reports `0 FAIL`; warnings about features the mode does
 not use are expected. The install itself is tested: CI runs the unit wall
 and then the whole path, non-interactively, on a fresh runner with no
 accounts (`docs/install-testing.md`).
@@ -1546,7 +1594,8 @@ accounts (`docs/install-testing.md`).
 | `repo:`, `python`, `template: config/<name>` | the checkout; [Prerequisites](#prerequisites) |
 | `ea-bot user`, `owner in group ea`, `ea-bot: ea-system`, `ea-bot: .local/bin/claude`, `ea-bot: Claude login`, `resident trust` | [The service account](#the-service-account) |
 | `dir: ~/.ea/<name>`, `private dir`, `private store:`, `webhooks:` | the service account and [Hardening](#hardening) |
-| `profile`, `config: <name>`, `validate_config.py` | [Config files](#config-files) |
+| `profile`, `profile name`, `reports` | [Choose a mode](#choose-a-mode) |
+| `config: <name>`, `validate_config.py` | [Config files](#config-files) |
 | `~/.ea/.env`, `env: <KEY>`, `secret: <KEY>`, `~/.ea-private/secrets.env` | [Secrets](#secrets); [The Slack environment files](#the-slack-environment-files) |
 | `chat: frontend`, `web chat: *`, `zulip: *`, `slack: *` | [Web chat](#web-chat), [Zulip server](#zulip-server), [Slack](#slack) |
 | `auth: graph sign-in path`, `auth: msal_token_cache.json`, `auth: graph token source` | [Microsoft Graph app registration](#microsoft-graph-app-registration) |
@@ -1564,8 +1613,8 @@ accounts (`docs/install-testing.md`).
 `docs/install-testing.md` lists the names an install with no accounts
 produces, and the install smoke names them with `--expect-missing`:
 `ea-bot: Claude login` (no `/login` yet), `auth: msal_token_cache.json`
-(no Graph sign-in yet), and `EA-Managed calendar` (a FAIL on `assistant`,
-a WARN elsewhere). Other names a bare machine can print: `ea-bot:
+(no Graph sign-in yet), and `EA-Managed calendar` (a FAIL on `assistant`
+and `collaborator`, a WARN on `reviewer`). Other names a bare machine can print: `ea-bot:
 .local/bin/claude` (the download did not finish), `ea-bot user`, `owner
 in group ea`, `dir: ~/.ea/<name>`, `profile: name and email`,
 `~/.ea/.env`, `env: <KEY>`, `secret: <KEY>`, `service: <unit>`,

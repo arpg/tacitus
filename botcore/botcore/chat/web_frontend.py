@@ -99,7 +99,9 @@ routes it reaches (`owner_routes`). A new device is announced in the DM
 channel, and so is a handoff or an approval made through the relay;
 removing one drops its push subscriptions.
 
-Rooms: the owner renames a room (`PATCH /api/channels/<id>`), archives
+Rooms: the host's `rooms_enabled` says whether the install opens project
+rooms at all; `/api/me` carries the answer as `rooms`, and the app shows
+its New room button only when it is true. The owner renames a room (`PATCH /api/channels/<id>`), archives
 it and brings it back (`POST /api/channels/<id>/archive`, `/unarchive`)
 from the app; the fixed places (the EA channel, the DM, Scheduling, the
 digests) refuse. Standalone the store row changes, with its `channel`
@@ -2415,6 +2417,10 @@ class WebFrontend(ChatFrontend):
         # an object with get() -> dict and save(body) -> dict, whose
         # ValueError refuses the body.
         self.settings_pages: dict[str, Any] = {}
+        # Whether the host opens project rooms (a callable the host sets;
+        # None means it does). /api/me says so, and the app shows its New
+        # room button only then.
+        self.rooms_enabled: Any = None
         self.html_csp = self._html_csp()
         # The app's signed bundle (web_bundle.Bundle) once start() signed it.
         self._bundle: web_bundle.Bundle | None = None
@@ -2429,6 +2435,16 @@ class WebFrontend(ChatFrontend):
         # host enables it; start() runs it beside the server.
         self.thread_states: _ts.ThreadStates | None = None
         self._labels_lock = threading.Lock()
+
+    def rooms_on(self) -> bool:
+        """The host's answer to "does this install open project rooms";
+        True when the host set no rooms_enabled or its answer failed."""
+        if self.rooms_enabled is None:
+            return True
+        try:
+            return bool(self.rooms_enabled())
+        except Exception:
+            return True
 
     @classmethod
     def from_config(cls, cfg: dict | None, *, store_path: str | Path | None = None,
@@ -4403,6 +4419,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                  "card_actions": self._relay_cards_allowed(),
                                  **self._owner_routes(),
                                  "bundle": fe.bundle_hash(),
+                                 "rooms": fe.rooms_on(),
                                  "settings": sorted(fe.settings_pages)})
                 return None
             if segs == ["push", "vapid"]:

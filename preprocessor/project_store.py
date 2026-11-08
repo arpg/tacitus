@@ -210,7 +210,24 @@ def cmd_add_project(args) -> int:
          args.summary or "", args.next_actions or "", args.aliases or "",
          now, now, horizon))
     conn.commit()
-    return _out({"ok": True, "action": "added", "id": args.id})
+    return _out({"ok": True, "action": "added", "id": args.id, "room": _room_note()})
+
+
+def _room_note() -> str:
+    """What add-project says about the project's room: the bot opens one
+    after the turn in the collaborator mode; the other modes have none."""
+    try:
+        try:
+            import ea_config as _ea_config
+        except ModuleNotFoundError:  # imported as preprocessor.<mod>
+            from preprocessor import ea_config as _ea_config
+        rooms = _ea_config.profile_features()["rooms"]
+    except Exception:
+        rooms = False
+    if rooms:
+        return "the bot opens its room after this turn"
+    return ("none: project rooms come with the collaborator mode; this install has no "
+            "rooms, so the project lives in the main chat")
 
 
 def projects_created_since(since_epoch: float, conn=None) -> list[dict]:

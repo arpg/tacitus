@@ -28,7 +28,7 @@
 #                    the doctor (its exit status).
 #                    --answers takes every answer from a file, asks
 #                    nothing and skips the logins.
-#   bot              the chat bot (assistant profile)
+#   bot              the chat bot (assistant and collaborator modes)
 #   health           the bot container's health check: the web chat
 #                    answers on the container's loopback (compose.yaml)
 #   mediator         the mail mediator, the owner-side executor of the
@@ -73,7 +73,7 @@ prepare_volumes() {
     # only what ea-bot can reach already: the templates, copied-in config,
     # the profile, mail mediation and ea-bot's Claude settings.
     runuser -u ea-bot -- python3 "$CODE_DIR/deploy/docker/prepare_ea_dir.py" \
-        --code-dir "$CODE_DIR" --profile "${EA_PROFILE:-email}" \
+        --code-dir "$CODE_DIR" --profile "${EA_PROFILE:-reviewer}" \
         --mediation "${EA_MAIL_MEDIATION:-1}"
 
     prepare_private_volume
@@ -187,6 +187,10 @@ SETUP_SECRET_KEYS='["graph-client-secret", "slack-bot-token", "slack-app-token",
 # state runs after the chat questions, since it carries the chat block.
 SETUP_PHASES="identity scheduling inbox autonomy groups deadlines style reimbursement vip"
 SETUP_PROFILE=""
+# The two chat modes ask for the chat; the reviewer has none.
+setup_has_chat() {
+    [ "$SETUP_PROFILE" = assistant ] || [ "$SETUP_PROFILE" = collaborator ]
+}
 SETUP_GRAPH_METHOD=skip
 SETUP_GRAPH_SIGNED_IN=0
 SETUP_CLAUDE_LOGIN=0
@@ -350,8 +354,8 @@ setup_graph_env() {
 
 setup_chat_env() {
     local site bot_email owner_id pairs url
-    [ "$SETUP_PROFILE" = assistant ] || return 0
-    say "Chat platform (assistant profile; docs/docker.md, Web chat)"
+    setup_has_chat || return 0
+    say "Chat platform ($SETUP_PROFILE mode; docs/docker.md, Web chat)"
     echo "  The web chat is recommended: the bot serves it itself, with no chat server."
     echo "  Zulip runs as a server in this stack (--profile zulip); Slack keeps every"
     echo "  message on Slack's servers."
@@ -423,7 +427,7 @@ setup_state_phase() {
 }
 
 setup_push_phase() {
-    [ "$SETUP_PROFILE" != assistant ] || return 0
+    ! setup_has_chat || return 0
     say "scripts/install/user_init.py --phase push (as the owner: push.json is owner-private)"
     run_as_owner python3 "$CODE_DIR/scripts/install/user_init.py" "${SETUP_PHASE_ARGS[@]}" --phase push
 }
@@ -596,14 +600,20 @@ setup_role() {
     fi
     prepare_volumes
     setup_answers_copy
+    # The mode as the install reads it (preprocessor/ea_config.py): an old
+    # name counts as its mode.
     SETUP_PROFILE="$(run_as_ea_bot python3 -c '
 import json, sys
+sys.path.insert(0, sys.argv[2])
+import ea_config
 try:
-    print(json.load(open(sys.argv[1])).get("profile") or "email")
-except (OSError, ValueError, AttributeError):
-    print("email")
-' "$EA_DIR/config/ea-config.json")"
-    say "EA setup in the container: profile $SETUP_PROFILE (EA_PROFILE in compose's .env)"
+    stored = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    stored = {}
+stored = stored if isinstance(stored, dict) else {}
+print(ea_config.resolve_profile(stored)[0] if stored.get("profile") else "reviewer")
+' "$EA_DIR/config/ea-config.json" "$DEPLOY_DIR/preprocessor")"
+    say "EA setup in the container: mode $SETUP_PROFILE (EA_PROFILE in compose's .env)"
     setup_config_phases
     setup_graph_env
     setup_chat_env

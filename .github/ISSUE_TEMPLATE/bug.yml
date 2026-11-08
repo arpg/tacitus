@@ -30,11 +30,12 @@ body:
   - type: dropdown
     id: profile
     attributes:
-      label: Install profile
+      label: Install mode
+      description: "The mode setup asked for first (`profile` in ea-config.json). An older install's profile name maps: the two with no chat are reviewer, and assistant (with project rooms) is collaborator."
       options:
-        - email
-        - review-only
+        - reviewer
         - assistant
+        - collaborator
     validations:
       required: true
   - type: dropdown

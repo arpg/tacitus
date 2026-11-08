@@ -2,7 +2,7 @@
 """The container stack (Dockerfile, compose.yaml, deploy/docker/) keeps the
 host install's split and pins what it downloads.
 
-- crontab.py writes the jobs of each install profile, with the code in the
+- crontab.py writes the jobs of each mode, with the code in the
   image and the logs in the owner-private directory, takes a v1 plugin
   manifest's fields only when they have their plain shape, schedules a v2
   plugin from the owner's lock alone, prints the owner plugins' cron jobs
@@ -123,27 +123,49 @@ def test_every_profile_gets_the_briefings_and_maintenance():
             assert "/home/ea-bot" not in job and "/.ea/" not in job, job
 
 
-def test_chat_jobs_only_in_the_assistant_profile():
+def test_chat_jobs_only_in_the_chat_modes():
     chat = ("scheduling-check", "priority-check", "scheduled_sends.py", "quiet_hours.py",
             "style_analysis.py")
-    for profile in ("email", "review-only"):
-        text = _render(profile, _ea_dir({"profile": profile}))
-        for job in chat:
-            assert job not in text, (profile, job)
-    text = _render("assistant", _ea_dir({"profile": "assistant"}))
+    text = _render("reviewer", _ea_dir({"profile": "reviewer"}))
     for job in chat:
-        assert job in text, job
+        assert job not in text, job
+    for mode in ("assistant", "collaborator"):
+        text = _render(mode, _ea_dir({"profile": mode, "profile_version": 2}))
+        for job in chat:
+            assert job in text, (mode, job)
+
+
+def test_the_reports_follow_the_schedule_and_drafting_the_style_sync():
+    """reports.schedule decides the report agents' days, none leaves them
+    to a run by hand; drafting off (the switch, or the old name that meant
+    it) drops the style sync."""
+    reports = ("run-agent.sh morning-briefing", "run-agent.sh afternoon-catchup",
+               "run-agent.sh weekly-audit")
+    weekdays = _jobs(_render("reviewer", _ea_dir({"profile": "reviewer"})))
+    assert any(j.startswith("0 * * * 1-5 ") and reports[0] in j for j in weekdays)
+    daily = _jobs(_render("reviewer", _ea_dir({"profile": "reviewer",
+                                               "reports": {"schedule": "daily"}})))
+    assert any(j.startswith("0 * * * * ") and reports[0] in j for j in daily)
+    assert any(j.startswith("0 15 * * * ") and reports[1] in j for j in daily)
+    none = _render("reviewer", _ea_dir({"profile": "reviewer", "reports": {"schedule": "none"}}))
+    for job in reports:
+        assert job not in "\n".join(_jobs(none)), job
+    assert "run-agent.sh morning-briefing --now" in none and "ledger_sync.py check" in none
+    off = _render("reviewer", _ea_dir({"profile": "reviewer", "drafting": False}))
+    assert "style_profiles.py sync" not in off and "ledger_sync.py check" in off
+    legacy = _render(None, _ea_dir({"profile": "review-only"}))
+    assert "style_profiles.py sync" not in legacy and "for the reviewer mode" in legacy
 
 
 def test_admissions_jobs_follow_the_config_switch():
-    off = _render("email", _ea_dir({"profile": "email"}))
+    off = _render("reviewer", _ea_dir({"profile": "reviewer"}))
     assert "admissions_filter.py" not in off and "admissions-digest" not in off
-    on = _render("email", _ea_dir({"profile": "email", "admissions_filter": {"enabled": True}}))
+    on = _render("reviewer", _ea_dir({"profile": "reviewer", "admissions_filter": {"enabled": True}}))
     assert "admissions_filter.py sweep" in on and "run-agent.sh admissions-digest" in on
 
 
 def test_plugin_lines_take_only_plain_fields():
-    ea = _ea_dir({"profile": "email"})
+    ea = _ea_dir({"profile": "reviewer"})
     logs = Path(tempfile.mkdtemp(prefix="ea-test-docker-logs-"))
     plugins = ea / "plugins"
     manifests = {
@@ -160,7 +182,7 @@ def test_plugin_lines_take_only_plain_fields():
         (plugins / folder / "plugin.json").write_text(json.dumps(m))
     (plugins / "broken").mkdir()
     (plugins / "broken" / "plugin.json").write_text("{not json")
-    text = _render("email", ea, log_dir=logs)
+    text = _render("reviewer", ea, log_dir=logs)
     jobs = _jobs(text)
     plugin_jobs = [j for j in jobs if "run-plugin.sh" in j]
     assert plugin_jobs == [
@@ -174,12 +196,12 @@ def test_plugin_lines_take_only_plain_fields():
 
 
 def test_v1_manifest_schedules_from_its_own_fields():
-    ea = _ea_dir({"profile": "email"})
+    ea = _ea_dir({"profile": "reviewer"})
     logs = Path(tempfile.mkdtemp(prefix="ea-test-docker-logs-"))
     (ea / "plugins" / "plain").mkdir(parents=True)
     (ea / "plugins" / "plain" / "plugin.json").write_text(json.dumps(
         {"name": "plain", "enabled": True, "schedule": "30 6 * * *"}))
-    jobs = [j for j in _jobs(_render("email", ea, log_dir=logs)) if "run-plugin.sh" in j]
+    jobs = [j for j in _jobs(_render("reviewer", ea, log_dir=logs)) if "run-plugin.sh" in j]
     assert jobs == [f"30 6 * * *  {CODE}/run-plugin.sh plain >> {logs}/plugins/plain/plugin.log 2>&1"]
 
 
@@ -190,7 +212,7 @@ def _v2_agent_plugin(ea: Path) -> Path:
 
 
 def test_v2_manifest_with_an_accepted_lock_schedules_from_the_lock():
-    ea = _ea_dir({"profile": "email"})
+    ea = _ea_dir({"profile": "reviewer"})
     logs = Path(tempfile.mkdtemp(prefix="ea-test-docker-logs-"))
     dest = _v2_agent_plugin(ea)
     _write_lock(_private(ea), [_lock_entry(dest)])
@@ -198,7 +220,7 @@ def test_v2_manifest_with_an_accepted_lock_schedules_from_the_lock():
     live = json.loads((dest / "plugin.json").read_text())
     live["capabilities"]["schedules"].append({"label": "planted", "cron": "* * * * *"})
     (dest / "plugin.json").write_text(json.dumps(live))
-    text = _render("email", ea, log_dir=logs)
+    text = _render("reviewer", ea, log_dir=logs)
     jobs = [j for j in _jobs(text) if "run-plugin.sh" in j]
     log = f"{logs}/plugins/example-notes/plugin.log"
     assert jobs == [
@@ -210,30 +232,30 @@ def test_v2_manifest_with_an_accepted_lock_schedules_from_the_lock():
 
 
 def test_v2_manifest_without_a_lock_entry_schedules_nothing():
-    ea = _ea_dir({"profile": "email"})
+    ea = _ea_dir({"profile": "reviewer"})
     logs = Path(tempfile.mkdtemp(prefix="ea-test-docker-logs-"))
     dest = _v2_agent_plugin(ea)
-    text = _render("email", ea, log_dir=logs)
+    text = _render("reviewer", ea, log_dir=logs)
     assert "run-plugin.sh" not in text
     assert "no enabled, accepted entry" in text
     # A lock that holds the plugin disabled, or with capabilities accepted
     # for another manifest, schedules nothing either.
     _write_lock(_private(ea), [_lock_entry(dest, enabled=False)])
-    assert "run-plugin.sh" not in _render("email", ea, log_dir=logs)
+    assert "run-plugin.sh" not in _render("reviewer", ea, log_dir=logs)
     stale = _lock_entry(dest)
     stale["accepted"]["digest"] = "0" * 64
     _write_lock(_private(ea), [stale])
-    assert "run-plugin.sh" not in _render("email", ea, log_dir=logs)
+    assert "run-plugin.sh" not in _render("reviewer", ea, log_dir=logs)
 
 
 def test_owner_plugin_cron_jobs_come_from_ea_plugin():
-    ea = _ea_dir({"profile": "email"})
+    ea = _ea_dir({"profile": "reviewer"})
     logs = Path(tempfile.mkdtemp(prefix="ea-test-docker-logs-"))
     private = _private(ea)
     dest = private / "plugins" / "example-chat-reader"
     shutil.copytree(FIXTURE_PLUGINS / "example-chat-reader", dest)
     _write_lock(private, [_lock_entry(dest)])
-    text = _render("email", ea, log_dir=logs)
+    text = _render("reviewer", ea, log_dir=logs)
     jobs = [j for j in _jobs(text) if "run-owner" in j]
     assert jobs == [f"0 */12 * * *  {sys.executable} {CODE}/scripts/ea-plugin.py run-owner "
                     f"example-chat-reader refresh >> {logs}/plugin-example-chat-reader-refresh.log 2>&1"]
@@ -246,29 +268,36 @@ def test_owner_plugin_cron_jobs_come_from_ea_plugin():
     assert r.returncode == 0, r.stderr
     assert "run-owner example-chat-reader refresh" in r.stdout
     # Without a lock there is no owner section at all.
-    assert "Owner plugins" not in _render("email", _ea_dir({"profile": "email"}), log_dir=logs)
+    assert "Owner plugins" not in _render("reviewer", _ea_dir({"profile": "reviewer"}), log_dir=logs)
 
 
 def test_extra_lines_only_from_an_owner_only_file():
-    ea = _ea_dir({"profile": "email"})
+    ea = _ea_dir({"profile": "reviewer"})
     extra = ea / "crontab.extra"
     extra.write_text("*/2 * * * *  python3 /opt/ea-system/preprocessor/mail_tagger.py tick\n")
     extra.chmod(0o600)
-    assert "mail_tagger.py tick" in _render("email", ea, extra)
+    assert "mail_tagger.py tick" in _render("reviewer", ea, extra)
     extra.chmod(0o664)
-    text = _render("email", ea, extra)
+    text = _render("reviewer", ea, extra)
     assert "mail_tagger.py tick" not in text
     assert "# WARN" in text and "writable by no one else" in text
 
 
 def test_main_reads_the_profile_from_the_config():
-    ea = _ea_dir({"profile": "assistant"})
+    ea = _ea_dir({"profile": "assistant", "profile_version": 2})
     r = subprocess.run([sys.executable, str(DOCKER / "crontab.py"), "--ea-dir", str(ea),
                         "--private-dir", str(_private(ea)), "--log-dir", str(ea / "logs"),
                         "--extra", str(ea / "none")],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    assert "for the assistant profile" in r.stdout and "priority-check" in r.stdout
+    assert "for the assistant mode" in r.stdout and "priority-check" in r.stdout
+    # the old name without its marker had project rooms: it reads as collaborator
+    old = _ea_dir({"profile": "assistant"})
+    r = subprocess.run([sys.executable, str(DOCKER / "crontab.py"), "--ea-dir", str(old),
+                        "--private-dir", str(_private(old)), "--log-dir", str(old / "logs"),
+                        "--extra", str(old / "none")],
+                       capture_output=True, text=True)
+    assert r.returncode == 0 and "for the collaborator mode" in r.stdout, r.stderr
     bad = _ea_dir({"profile": "everything"})
     r = subprocess.run([sys.executable, str(DOCKER / "crontab.py"), "--ea-dir", str(bad),
                         "--private-dir", str(_private(bad))],
@@ -310,7 +339,7 @@ def test_compose_ports_images_and_profiles():
     services = doc["services"]
     always = sorted(n for n, s in services.items() if not s.get("profiles"))
     assert always == ["init", "mediator", "scheduler"], always
-    assert services["bot"]["profiles"] == ["assistant"]
+    assert services["bot"]["profiles"] == ["assistant", "collaborator"]
     for name in ("agent", "owner", "signin"):
         assert services[name]["profiles"] == ["tools"], name
     ea_image = services["init"]["image"]
@@ -494,9 +523,9 @@ def _volume_tree() -> tuple[Path, Path, Path]:
 def test_prepare_fills_a_new_volume():
     prep = _prepare_module()
     ea, claude, code = _volume_tree()
-    prep.prepare(ea, claude, code, "email", True)
+    prep.prepare(ea, claude, code, "reviewer", True)
     cfg = json.loads((ea / "config" / "ea-config.json").read_text())
-    assert cfg["profile"] == "email" and cfg["x"] == 1
+    assert cfg["profile"] == "reviewer" and cfg["profile_version"] == 2 and cfg["x"] == 1
     assert cfg["mail_mediation"] == {"enabled": True}
     assert (ea / "config" / "vip_senders.txt").read_text() == "# none\n"
     assert oct((ea / "config" / "vip_senders.txt").stat().st_mode & 0o777) == "0o640"
@@ -508,13 +537,21 @@ def test_prepare_fills_a_new_volume():
     assert oct((claude / "settings.json").stat().st_mode & 0o777) == "0o600"
 
 
+def test_prepare_maps_an_old_profile_name():
+    prep = _prepare_module()
+    ea, claude, code = _volume_tree()
+    prep.prepare(ea, claude, code, "review-only", False)
+    cfg = json.loads((ea / "config" / "ea-config.json").read_text())
+    assert (cfg["profile"], cfg["profile_version"], cfg["drafting"]) == ("reviewer", 2, False)
+
+
 def test_prepare_keeps_an_existing_config():
     prep = _prepare_module()
     ea, claude, code = _volume_tree()
     (ea / "config" / "ea-config.json").write_text(json.dumps({"profile": "assistant"}))
     (claude / "settings.json").write_text('{"model": "mine"}\n')
     (ea / "auth" / "mediation-disabled").write_text("")
-    prep.prepare(ea, claude, code, "email", True)
+    prep.prepare(ea, claude, code, "reviewer", True)
     cfg = json.loads((ea / "config" / "ea-config.json").read_text())
     assert cfg == {"profile": "assistant"}, "existing profile kept, rollback file respected"
     assert (claude / "settings.json").read_text() == '{"model": "mine"}\n'
@@ -626,7 +663,9 @@ def test_entrypoint_setup_role_writes_env_as_ea_bot_0640_and_secrets_as_owner_06
     copy = _shell_fn(text, "setup_answers_copy")
     assert "delpaths" in copy and "$SETUP_SECRET_KEYS" in copy
     chat = _shell_fn(text, "setup_chat_env")
-    assert '[ "$SETUP_PROFILE" = assistant ] || return 0' in chat, "chat values only with chat"
+    assert "setup_has_chat || return 0" in chat, "chat values only with chat"
+    has_chat = _shell_fn(text, "setup_has_chat")
+    assert "assistant" in has_chat and "collaborator" in has_chat
     for key in ("EA_SLACK_CHANNEL_ID", "EA_SLACK_CHANNEL_NAME", "EA_SLACK_OWNER_ID",
                 "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "ZULIP_API_KEY", "--chat zulip"):
         assert key in chat, key
@@ -679,7 +718,7 @@ def test_docker_smoke_runs_the_setup_role_with_the_answers_file():
     assert r.returncode == 0, r.stderr
     text = smoke.read_text()
     assert '"$IMAGE" setup --answers /answers.json' in text
-    assert "answers-email.json" in text
+    assert "answers-reviewer.json" in text
     for mount in (":/home/ea-bot/.ea", "/.ea-private", ":/home/ea-bot/.claude",
                   '"$ANSWERS:/answers.json:ro"'):
         assert mount in text, mount
@@ -1012,7 +1051,7 @@ def test_caddy_example_is_pinned_and_passes_the_request_as_sent():
     doc = yaml.safe_load((TLS / "compose.caddy.yaml").read_text())
     svc = doc["services"]["webchat-tls"]
     assert re.search(r"@sha256:[0-9a-f]{64}$", svc["image"]), svc["image"]
-    assert svc["profiles"] == ["assistant"] and "bot" in svc["depends_on"]
+    assert svc["profiles"] == ["assistant", "collaborator"] and "bot" in svc["depends_on"]
     assert svc["environment"]["WEBCHAT_HOST"].startswith("${WEBCHAT_HOST:?")
     mount = next(v for v in svc["volumes"] if "Caddyfile" in v)
     assert (ROOT / mount.split(":")[0]).resolve() == (TLS / "Caddyfile").resolve()

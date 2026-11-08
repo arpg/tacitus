@@ -118,6 +118,11 @@ def next_steps(ctx: dict, platform: str = sys.platform, env: dict | None = None)
     is needed and its commands as the user types them (the /setup skill's
     sections 1, 3 to 5, 6 and 8)."""
     profile = ctx.get("profile") or "assistant"
+    # The two chat modes (assistant, collaborator) have the chat and the
+    # buttons; the reviewer has neither. Drafting is on unless the reviewer
+    # turned it off (ctx recorded_drafting).
+    chat = profile != "reviewer"
+    drafting = ctx.get("recorded_drafting", True) is not False
     mac = platform == "darwin"
     home = "/Users/ea-bot" if mac else "/home/ea-bot"
     method = (env or {}).get("GRAPH_AUTH_METHOD", "")
@@ -172,7 +177,7 @@ def next_steps(ctx: dict, platform: str = sys.platform, env: dict | None = None)
         chat_way = (f"Once the chat runs, say there: connect Google Drive {drive[0]}. The bot "
                     "posts a link; sign in, then paste back the address your browser lands on. "
                     "No terminal is needed. Or run these in one: "
-                    if profile == "assistant" else "Each sign-in asks you to paste the address "
+                    if chat else "Each sign-in asks you to paste the address "
                                                    "your browser lands on. ")
         drive_step = {"title": "Google Drive sign-in",
                       "why": "A Google Docs link in your mail is private to your account, so the "
@@ -181,9 +186,9 @@ def next_steps(ctx: dict, platform: str = sys.platform, env: dict | None = None)
                               "first (docs/SETUP.md 'Google Drive'). " + chat_way.rstrip(),
                       "commands": [f"python3 preprocessor/drive_client.py setup --email {a}"
                                    for a in drive] + ["python3 preprocessor/drive_client.py test"]}
-        if profile != "assistant":
+        if not chat:
             steps.append(drive_step)
-    if profile != "review-only":
+    if drafting:
         steps.append({"title": "Your writing style",
                       "why": "A draft that matches your greetings, sign-offs and tone needs "
                              "fewer edits.",
@@ -216,7 +221,7 @@ def next_steps(ctx: dict, platform: str = sys.platform, env: dict | None = None)
                           "again after a change to user-profile.json.",
                   "commands": [f"sudo -u ea-bot {py} {home}/ea-system/preprocessor/install_overlay.py render",
                                f"python3 preprocessor/install_overlay.py install --tree {home}/ea-system"]})
-    if profile == "assistant" and ctx.get("chat") == "web":
+    if chat and ctx.get("chat") == "web":
         steps.append({"title": "The chat platform",
                       "why": "Your phone reaches the chat through this route, on your tailnet "
                              "only.",
@@ -225,7 +230,7 @@ def next_steps(ctx: dict, platform: str = sys.platform, env: dict | None = None)
                               "you to type its settings back, then starts the bot; open the "
                               "chat's address on your phone and add it to the Home Screen.",
                       "commands": [user_init.WEB_SERVE_LINE]})
-    elif profile == "assistant":
+    elif chat:
         steps.append({"title": "The chat platform",
                       "why": "The EA talks to you in this chat, and the bot needs its settings "
                              "to connect.",
@@ -251,7 +256,7 @@ def next_steps(ctx: dict, platform: str = sys.platform, env: dict | None = None)
                   "text": "Fix each FAIL with the fix printed beside it.",
                   "commands": [f"python3 scripts/ea-doctor.py --profile {profile}",
                                "./run-agent.sh morning-briefing --now"]})
-    if drive_step and profile == "assistant":
+    if drive_step and chat:
         steps.append(drive_step)  # the chat sign-in needs the bot running
     steps.append({"title": "The first-week questions",
                   "why": "The EA learns your preferences from your own words, not from guesses.",

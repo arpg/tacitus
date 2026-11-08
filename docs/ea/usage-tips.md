@@ -11,7 +11,7 @@ snooze an email; state a standing rule; turn on phone notifications;
 pair a phone for use away from the home network; ask for a meeting
 time; fill a poll from an email; attach a file to a request; mark
 things done from the Needs you list; give a project its own room (only
-after 20 conversations); choose which jobs run on the local model in
+in the collaborator mode, after 20 conversations); choose which jobs run on the local model in
 Settings (only when a local model is set up). The phone, Needs you and
 Settings tips need the web chat. `usage_tips.py list` prints the
 catalogue with each tip's state.

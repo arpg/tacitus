@@ -53,15 +53,18 @@ GRAPH_SIGN_IN_SCOPES = ("openid", "profile", "offline_access")
 # serves its features:
 #   availability  other people's free/busy only (getSchedule), for a Mac
 #                 whose mail and calendars are native
-#   review-only   read mail and the calendar; nothing is written
-#   email         drafts, filing and categories; reads the calendar
+#   read-only     the reviewer mode with drafting off: read mail and the
+#                 calendar; nothing is written
+#   reviewer      drafts, filing and categories; reads the calendar
 #   assistant     the above, plus the Send and Create buttons
+#   collaborator  the same as assistant (rooms need no Graph permission)
+_FULL_SCOPES = ("Mail.ReadWrite", "Mail.Send", "Calendars.ReadWrite", "MailboxSettings.Read")
 GRAPH_SCOPES_BY_PROFILE: dict[str, tuple[str, ...]] = {
     "availability": ("Calendars.ReadBasic",),
-    "review-only": ("Mail.Read", "Calendars.Read", "MailboxSettings.Read"),
-    "email": ("Mail.ReadWrite", "Calendars.Read", "MailboxSettings.Read"),
-    "assistant": ("Mail.ReadWrite", "Mail.Send", "Calendars.ReadWrite",
-                  "MailboxSettings.Read"),
+    "read-only": ("Mail.Read", "Calendars.Read", "MailboxSettings.Read"),
+    "reviewer": ("Mail.ReadWrite", "Calendars.Read", "MailboxSettings.Read"),
+    "assistant": _FULL_SCOPES,
+    "collaborator": _FULL_SCOPES,
 }
 
 # What the published app asks for when GRAPH_SCOPES does not narrow it.
@@ -78,10 +81,25 @@ def graph_registered_scopes() -> list[str]:
     return out
 
 
-def graph_scopes(profile: str | None) -> list[str]:
+def graph_scopes(profile: str | None, drafting: bool = True) -> list[str]:
     """The delegated Graph permissions an install of `profile` asks for
-    through the published app; the assistant's for an unknown profile."""
-    return list(GRAPH_SCOPES_BY_PROFILE.get(profile or "", PUBLISHED_GRAPH_SCOPES))
+    through the published app: a scope set or a mode (an old mode name
+    maps through ea_config); a reviewer with drafting off reads only. The
+    assistant's for an unknown name."""
+    name = profile or ""
+    if name not in GRAPH_SCOPES_BY_PROFILE:
+        try:
+            try:
+                import ea_config
+            except ModuleNotFoundError:  # imported as preprocessor.<mod>
+                from preprocessor import ea_config
+            name, implied = ea_config.profile_name(name)
+            drafting = drafting and implied.get("drafting") is not False
+        except (ImportError, ValueError):
+            pass
+    if name == "reviewer" and not drafting:
+        name = "read-only"
+    return list(GRAPH_SCOPES_BY_PROFILE.get(name, PUBLISHED_GRAPH_SCOPES))
 
 
 def graph_client_id(configured: str = "") -> tuple[str, str]:
@@ -95,16 +113,16 @@ def graph_client_id(configured: str = "") -> tuple[str, str]:
     return "", ""
 
 
-# The profile whose scopes the admin-consent link asks for when none is
-# named: drafts, filing and reading the calendar, no Send and no Create.
-CONSENT_DEFAULT_PROFILE = "email"
+# The scope set the admin-consent link asks for when none is named: the
+# reviewer's drafts, filing and calendar reads, no Send and no Create.
+CONSENT_DEFAULT_PROFILE = "reviewer"
 
 
 def admin_consent_url(profile: str | None = None, tenant: str = "organizations") -> str:
     """The link an institution's administrator opens once to consent to the
     published app for the whole tenant (Microsoft's v2 admin-consent
-    endpoint): the sign-in scopes and one profile's scopes, the email
-    profile's unless `profile` names another. "all" asks for every scope
+    endpoint): the sign-in scopes and one scope set's, the reviewer's
+    unless `profile` names another. "all" asks for every scope
     the registration lists. "" while the app is not registered."""
     if not PUBLISHED_GRAPH_CLIENT_ID:
         return ""
@@ -166,8 +184,9 @@ if __name__ == "__main__":
                          help="print the link an institution's administrator opens once")
     url.add_argument("--profile", choices=sorted(GRAPH_SCOPES_BY_PROFILE) + ["all"],
                      default=CONSENT_DEFAULT_PROFILE,
-                     help="ask for this profile's scopes (default: email; assistant adds Send "
-                          "and calendar writes; all: every scope the registration lists)")
+                     help="ask for this scope set (default: reviewer; assistant and "
+                          "collaborator add Send and calendar writes; read-only writes "
+                          "nothing; all: every scope the registration lists)")
     url.add_argument("--tenant", default="organizations",
                      help="the tenant id or domain (default: organizations)")
     args = ap.parse_args()

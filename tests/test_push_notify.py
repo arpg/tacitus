@@ -138,6 +138,6 @@ def test_title_for_agent_names():
 
 def test_run_agent_pushes_only_on_the_no_chat_branch():
     text = (Path(__file__).resolve().parents[1] / "run-agent.sh").read_text()
-    no_chat = text.split('log "Profile $PROFILE has no Slack; the report file is the delivery."', 1)[1]
+    no_chat = text.split('log "Mode $PROFILE has no chat; the report file is the delivery."', 1)[1]
     assert 'push_notify.py" report' in no_chat.split("\n    fi", 1)[0]
     assert text.count('push_notify.py" report') == 1

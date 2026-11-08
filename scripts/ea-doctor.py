@@ -10,7 +10,7 @@ miss.
     python3 scripts/ea-doctor.py            # the live install (~/.ea, services, Slack)
     python3 scripts/ea-doctor.py --ci       # templates only; no network, no system state
     python3 scripts/ea-doctor.py --json     # machine-readable
-    python3 scripts/ea-doctor.py --profile email \
+    python3 scripts/ea-doctor.py --profile reviewer \
         --expect-missing "ea-bot: Claude login,auth: msal_token_cache.json"
                                             # an install with no accounts yet: exit 0
                                             # when only the named checks FAIL
@@ -38,12 +38,14 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "preprocessor"))
 RESULTS: list[dict] = []
-# Slack-dependent checks are required only when the profile has Slack.
+# Chat-dependent checks are required only when the mode has a chat.
 NEEDS_SLACK = True
-# The EA-Managed calendar is required when the profile can create real
-# calendar events (the Create button); on the email and review-only
-# profiles Google Calendar is optional (docs/SETUP.md "Google OAuth app"), so its checks WARN.
+# The EA-Managed calendar is required when the mode can create real
+# calendar events (the Create button); in the reviewer mode Google
+# Calendar is optional (docs/SETUP.md "Google OAuth app"), so its checks WARN.
 NEEDS_CALENDAR = True
+# The install's drafting switch ("drafting": false turns it off in any mode).
+DRAFTING = True
 SLACK_CONFIG = ("slack_webhooks.json", "ea-channels.json")
 
 REQUIRED_CONFIG = (
@@ -1953,6 +1955,42 @@ def check_dashboard_bind():
          "(docs/SETUP.md 'Project dashboard')")
 
 
+def check_profile_name(ea_dir: Path, asked: str | None, ci: bool) -> None:
+    """An old name typed on the command line, or stored in ea-config.json:
+    one WARN each, with the rename. The doctor changes nothing; the rename
+    asks for a yes (ea_config.py normalize-profile)."""
+    try:
+        import ea_config
+    except Exception:
+        return
+    if asked in ea_config.LEGACY_PROFILES and asked not in ea_config.PROFILES:
+        mode = ea_config.profile_name(asked)[0]
+        warn("profile name", f"--profile {asked} is an old name; it means {mode} now",
+             f"pass --profile {mode}")
+    if ci:
+        return
+    stored = ea_config.stored_config(ea_dir / "config" / "ea-config.json")
+    mode, _, legacy = ea_config.resolve_profile(stored)
+    if legacy:
+        warn("profile name", f"ea-config.json stores the old name {stored.get('profile')!r}; "
+                             f"it works as {mode!r} and nothing is lost",
+             "rename it, after a yes: python3 preprocessor/ea_config.py normalize-profile")
+
+
+def check_reports(ea_dir: Path) -> None:
+    """Without a chat a report is a file: say when one comes and how to
+    ask for one now."""
+    try:
+        import ea_config
+        schedule = ea_config.get_report_schedule(ea_dir / "config" / "ea-config.json")
+    except Exception:
+        schedule = "weekdays"
+    when = {"weekdays": "each weekday at 4 AM", "daily": "each day at 4 AM",
+            "none": "only when you ask"}[schedule]
+    ok("reports", f"{when} (reports.schedule {schedule}), in {ea_dir}/state/reports/; "
+                  "a briefing now: ./run-agent.sh morning-briefing --now")
+
+
 def check_cron():
     # The owner's copy in the home directory, the file the sentinel compares
     # against (sentinel.CRONTAB_MASTER), not one in the repo.
@@ -1986,28 +2024,30 @@ _LISTS = (REQUIRED_CONFIG, OPTIONAL_CONFIG, REQUIRED_ENV, OPTIONAL_ENV, REQUIRED
 
 
 def configure(ea_dir: Path, profile: str | None = None, ci: bool = False) -> str:
-    """Set the globals the checks read for this install: the profile (the
-    argument, else ea-config.json, else assistant), the chat frontend (the
+    """Set the globals the checks read for this install: the mode (the
+    argument with an old name mapped, else ea-config.json, else assistant), the chat frontend (the
     owner-private chat.json when it passes the checks, else the ea-config.json
     block, which `ci` always uses) and the lists that follow from them.
     Starts from the module defaults each time. Returns the profile."""
-    global NEEDS_SLACK, NEEDS_CALENDAR, REQUIRED_CONFIG, OPTIONAL_CONFIG, REQUIRED_ENV, OPTIONAL_ENV, REQUIRED_SECRETS
+    global NEEDS_SLACK, NEEDS_CALENDAR, DRAFTING, REQUIRED_CONFIG, OPTIONAL_CONFIG, REQUIRED_ENV, OPTIONAL_ENV, REQUIRED_SECRETS
     global CHAT_FRONTEND, CHAT_CFG
     REQUIRED_CONFIG, OPTIONAL_CONFIG, REQUIRED_ENV, OPTIONAL_ENV, REQUIRED_SECRETS = _LISTS
-    if profile is None:
-        try:
-            import ea_config
-            profile = ea_config.get_profile(ea_dir / "config" / "ea-config.json")
-        except Exception:
-            profile = "assistant"
-    NEEDS_SLACK = profile == "assistant"
     try:
         import ea_config
-        # ea_config.py has no calendar feature of its own: the Create
-        # button is what makes a real event, so `buttons` decides.
-        NEEDS_CALENDAR = bool(ea_config.profile_features(profile)["buttons"])
+        path = ea_dir / "config" / "ea-config.json"
+        # A named mode, or the stored one with the switch an old name implies.
+        asked = profile
+        profile = (ea_config.profile_name(asked)[0] if asked
+                   else ea_config.resolve_profile(ea_config.stored_config(path))[0])
+        features = ea_config.profile_features(asked, path)
     except Exception:
-        NEEDS_CALENDAR = NEEDS_SLACK
+        profile = profile if profile in ("reviewer", "assistant", "collaborator") else "assistant"
+        features = {"slack": profile != "reviewer", "buttons": profile != "reviewer"}
+    NEEDS_SLACK = bool(features["slack"])
+    # ea_config.py has no calendar feature of its own: the Create button
+    # is what makes a real event, so `buttons` decides.
+    NEEDS_CALENDAR = bool(features["buttons"])
+    DRAFTING = bool(features.get("drafting", True))
     try:
         import ea_config
         # The owner's view: the private chat.json when it passes the checks
@@ -2044,8 +2084,10 @@ def main() -> int:
                     help="mask addresses, account names, hosts and ids in the output, for "
                          "pasting into a public issue")
     ap.add_argument("--ea-dir", default=os.environ.get("EA_DIR", str(Path.home() / ".ea")))
-    ap.add_argument("--profile", default=None, choices=("email", "review-only", "assistant"),
-                    help="install profile to check against (default: ea-config.json, else assistant)")
+    ap.add_argument("--profile", default=None,
+                    choices=("reviewer", "assistant", "collaborator", "email", "review-only"),
+                    help="mode to check against: reviewer, assistant or collaborator (default: "
+                         "ea-config.json, else assistant; an old name reads as its mode)")
     ap.add_argument("--probe-claude", action="store_true",
                     help="spend one Haiku call as ea-bot to prove claude -p still runs on the "
                          "subscription login")
@@ -2060,6 +2102,11 @@ def main() -> int:
     ea_dir = Path(a.ea_dir)
     profile = configure(ea_dir, a.profile, a.ci)
     ok("profile", profile)
+    check_profile_name(ea_dir, a.profile, a.ci)
+    if not DRAFTING:
+        ok("drafting", 'off ("drafting": false): the EA writes no drafts')
+    if not NEEDS_SLACK:
+        check_reports(ea_dir)
     if NEEDS_SLACK:
         ok("chat frontend", CHAT_FRONTEND)
     check_repo()
@@ -2096,7 +2143,7 @@ def main() -> int:
     warns = [r for r in RESULTS if r["status"] == "WARN"]
     # An expected miss is a FAIL whose name starts with one of the given
     # names; the exit code counts only the others. A name that matched no
-    # FAIL is reported, not an error: on the email profile the EA-Managed
+    # FAIL is reported, not an error: in the reviewer mode the EA-Managed
     # calendar is a WARN, and naming it still reads right.
     expected = [n.strip() for n in a.expect_missing.split(",") if n.strip()]
     unexpected = [r for r in fails if not any(r["name"].startswith(n) for n in expected)]

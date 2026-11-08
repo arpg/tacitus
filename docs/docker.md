@@ -12,10 +12,10 @@ Stage 2 is at the end of this page and is not built.
 
 | Service | User | What it does | Starts with |
 |---|---|---|---|
-| `init` | root, then ea-bot | Checks the volumes, prepares ea-bot's space as ea-bot (config templates, copied-in files, the profile, mail mediation), fixes the owner's private volume, renders the install overlay, then exits. | every `up` |
+| `init` | root, then ea-bot | Checks the volumes, prepares ea-bot's space as ea-bot (config templates, copied-in files, the mode, mail mediation), fixes the owner's private volume, renders the install overlay, then exits. | every `up` |
 | `mediator` | owner | The mail mediator. It holds the Graph and Gmail tokens and runs the agent's safe mail operations. | `up` |
-| `scheduler` | owner | supercronic with the cron jobs of your install profile. | `up` |
-| `bot` | owner | The chat bot, and the web chat on port 8470 of its container (published on the host's loopback). | `--profile assistant` |
+| `scheduler` | owner | supercronic with the cron jobs of your mode. | `up` |
+| `bot` | owner | The chat bot, and the web chat on port 8470 of its container (published on the host's loopback). | `--profile assistant` (or `collaborator`) |
 | `webchat-tls` | (its own) | Caddy, TLS in front of the web chat, from the example in `deploy/docker/webchat-tls/` ([Web chat](#web-chat)). | `--profile assistant`, once copied in |
 | `zulip` and its four helpers | (their own) | A self-hosted Zulip, HTTP on `127.0.0.1:8090`. | `--profile zulip` |
 | `setup` | root, then ea-bot and the owner in turn | The first configuration, once: the config questions as `ea-bot`, `~/.ea/.env` and the owner's secrets, the Claude login as `ea-bot`, the mail sign-in as the owner, the overlay, the doctor. | `run` only |
@@ -49,8 +49,9 @@ you to paste the address back and needs no redirect either.
 ## Quick start
 
 Copy the settings file and edit it: set `TZ` to your timezone (the cron
-schedules use it) and `EA_PROFILE` to `email`, `review-only` or
-`assistant`. `OWNER_UID` and `OWNER_GID` match your own (`id -u`,
+schedules use it) and `EA_PROFILE` to the mode: `reviewer` (no chat:
+reports as files, the default here), `assistant` (one chat) or
+`collaborator` (a chat plus a room for each big project). `OWNER_UID` and `OWNER_GID` match your own (`id -u`,
 `id -g`) when you want to read the volumes from the host.
 
 ```bash
@@ -70,7 +71,7 @@ doctor's checklist ([First run](#first-run-docker-compose-run---rm-setup)
 says what it does). Two of its steps need you in a browser: the Claude
 login for `ea-bot` and the Microsoft sign-in. Step 3 starts `init`, the
 mediator and the scheduler; `docker compose --profile assistant up -d`
-adds the chat bot. On `assistant` the chat is the web chat the bot
+adds the chat bot (the same for `collaborator`). In a chat mode the chat is the web chat the bot
 serves itself, so the stack needs no chat server: set
 `WEBCHAT_PUBLIC_URL` in `.env` before step 2 and put TLS in front
 ([Web chat](#web-chat)).
@@ -78,10 +79,10 @@ serves itself, so the stack needs no chat server: set
 To check the install again later:
 
 ```bash
-docker compose run --rm owner python3 /opt/ea-system/scripts/ea-doctor.py --profile email
+docker compose run --rm owner python3 /opt/ea-system/scripts/ea-doctor.py --profile reviewer
 ```
 
-Use your own profile name. In a container the doctor also warns that
+Use your own mode. In a container the doctor also warns that
 systemd is not available and that `crontab.master` is missing. Both
 warnings are expected: compose replaces systemd, and supercronic
 replaces the crontab.
@@ -123,7 +124,7 @@ In order:
    registration yet, answer `skip` and have IT fill `docs/it-request.md`;
    run `setup` again when they answer.
 
-3. **The chat values**, on the `assistant` profile only: the web chat
+3. **The chat values**, on `assistant` and `collaborator` only: the web chat
    (the default: its address, `WEBCHAT_PUBLIC_URL` unless you type
    another, into the owner-private `chat.json`; [Web chat](#web-chat)),
    Zulip (the server URL, the bot's email, your user id, the bot's API
@@ -132,7 +133,7 @@ In order:
    (the channel id and name and your member id into `.env`, the two
    tokens into `secrets.env`; SETUP.md, Slack).
 
-4. **The phone push**, on `email` and `review-only`, as the owner:
+4. **The phone push**, on `reviewer`, as the owner:
    `scripts/install/user_init.py --phase push` writes the owner-private `push.json`.
 
 5. **The Claude login for `ea-bot`**, interactive: `claude auth login`
@@ -170,7 +171,7 @@ In order:
    --expect-missing <names>`. The role's exit status is the doctor's. The
    expected misses are the EA-Managed calendar (SETUP.md, Google OAuth app: create
    it in Google Calendar and put its id in `scheduling-preferences.json`;
-   a warning on `email` and `review-only`) and whichever of the two
+   a warning on `reviewer`) and whichever of the two
    logins you skipped. Everything else the doctor prints as a warning
    (systemd, `crontab.master`, the optional `EA_*` settings, the Google
    tokens, the deck builder) is the container's normal state; a FAIL
@@ -195,7 +196,7 @@ docker compose run --rm -v ./answers.json:/answers.json:ro setup --answers /answ
 (`graph-client-secret`, the chat tokens); the owner's steps read the
 same copy and root writes the secrets. The install smoke runs the role
 this way (`tests/install/docker-smoke.sh setup`, with
-`tests/install/answers-email.json`).
+`tests/install/answers-reviewer.json`).
 
 ## Volumes
 
@@ -258,7 +259,8 @@ see [Upgrade](#upgrade).
 
 The `init` service copies the config templates into `ea-data` on the
 first start and writes `EA_PROFILE` into the new `ea-config.json`. Later
-changes to the profile go in `ea-config.json`.
+changes to the mode go in `ea-config.json`
+(`python3 preprocessor/ea_config.py set-profile <mode>`).
 
 To replace a config file, copy it in and start again:
 
@@ -394,16 +396,19 @@ the owner's own group), where the mediator reads them and `ea-bot` cannot. Sign 
 token files in from a host install: a copied file arrives as root, and
 `init` does not change files in the auth directory.
 
-## Profiles and cron jobs
+## Modes and cron jobs
 
 The scheduler writes its crontab at every start with
-`deploy/docker/crontab.py`, from the profile in `ea-config.json`:
+`deploy/docker/crontab.py`, from the mode in `ea-config.json`:
 
-- **Every profile:** the morning briefing, the afternoon update, the weekly
-  audit, intake, ledger sync, the closure scrubber, the calendar
-  reconciler and the weekly style sync.
-- **assistant:** also the scheduling and priority checks, deferred sends,
-  the quiet-hours flush and the monthly style analysis.
+- **Every mode:** intake, ledger sync, the closure scrubber, the calendar
+  reconciler, and the weekly style sync while drafting is on.
+- **The reports:** the morning briefing, the afternoon update and the
+  weekly audit, on `reports.schedule`: `weekdays` (the default), `daily`,
+  or `none`, which leaves them to a run by hand
+  (`run-agent.sh morning-briefing --now`).
+- **assistant and collaborator:** also the scheduling and priority checks,
+  deferred sends, the quiet-hours flush and the monthly style analysis.
 - **Admissions filter and digest:** when `ea-config.json` enables
   `admissions_filter`.
 - **Plugins:** one line per schedule of each plugin in `~/.ea/plugins/`.
@@ -424,7 +429,7 @@ browser token harvests of a host install.
 
 ## Web chat
 
-On the `assistant` profile the bot serves its own chat, a web app you
+In the `assistant` and `collaborator` modes the bot serves its own chat, a web app you
 add to your phone's home screen (SETUP.md, Web chat; the contract is
 docs/webchat.md). In Docker it needs no Zulip and no Tailscale: a TLS
 proxy you run puts it on an HTTPS address, and you sign in once per

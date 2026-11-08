@@ -8,7 +8,7 @@
 An optional, owner-side layer that runs some EA work on an outside
 OpenAI-compatible model instead of Claude. Its purpose is data
 sovereignty: less of the inbox and calendar going to Anthropic. It ships
-off and belongs to no install profile. The one part `/setup` offers is
+off and belongs to no install mode. The one part `/setup` offers is
 the email writer (`drafting`), as the last optional screen; the rest is
 switched on by the owner after reading `docs/llm-lanes.md`.
 

@@ -2216,6 +2216,19 @@ def test_an_example_fills_the_composer_in_the_ea_channel(app, size):
     assert not errors, errors
 
 
+def test_no_new_room_button_in_a_mode_without_rooms(app):
+    """The assistant mode has one chat and no project rooms: /api/me says
+    rooms false and the app shows no New room button."""
+    from playwright.sync_api import expect
+    page, _stub, errors = app(rooms=False)
+    page.wait_for_selector(".thread-item")
+    expect(page.locator("#new-room")).to_be_hidden()
+    page2, _stub2, _ = app(rooms=True)
+    page2.wait_for_selector(".thread-item")
+    expect(page2.locator("#new-room")).to_be_visible()
+    assert not errors, errors
+
+
 @SIZES
 def test_new_room_asks_the_bot_in_the_ea_channel_and_opens_the_conversation(app, size):
     from playwright.sync_api import expect
