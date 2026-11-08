@@ -28,6 +28,14 @@ Step 3:
     python3 mail_actions.py create-forward --provider outlook|gmail --message-id <id> --to <a,b> --body-file <f> [--cc <a>] [--ledger-id <id>]...
     python3 mail_actions.py preflight-check --provider outlook|gmail --draft-id <id>
 
+Images (an attachment or a picture shown in the body, the inline cid: kind):
+    python3 mail_actions.py describe-attachment --provider outlook|gmail --message-id <id> (--attachment-id <id> | --name <substring> | --all-images) [--question "<what to read off it>"] [--output <file>]
+The image is fetched and read in the owner's process by the local model
+that reads images (remote_llm.image_model), and the lane gets its text.
+With no such model the answer is {"need": "no image model"}, and outside
+sealed mail the one image picked is saved to --output for the lane to
+open (Read on Claude, view_image on Codex).
+
 Every verb runs the provider CLI's own verb in this process (DELEGATE):
 graph_actions on Outlook, gmail_client on Gmail. Its journaling
 (draft_events), its checks and search-mail's notes are the provider
@@ -392,10 +400,170 @@ def cmd_delegated(args) -> int:
         if isinstance(row, dict) and ("id" in row or row is result):
             row.setdefault("id", row.get("draft_id") or row.get("message_id") or "")
             row["provider"], row["account"] = args.provider, acct
+    if (args.command == "get-message" and args.provider == "gmail" and isinstance(result, dict)
+            and "error" not in result):
+        # graph_actions adds the Outlook line itself.
+        import mail_images
+        if mail_images.content_images([a for a in result.get("attachments") or []
+                                       if isinstance(a, dict)]):
+            result["images_hint"] = mail_images.hint("gmail", result.get("id") or "", acct or "")
     if isinstance(result, dict) and "error" in result and rc == 0:
         rc = 1
     print(json.dumps(result, indent=2))
     return rc
+
+
+# ── describe-attachment: an image read as text ───────────────────────
+# The verb runs where the mail token is (the mediator's child for the
+# resident): the image is fetched and read there, and the answer is text.
+# The model calls share one budget that ends before the mediator's own
+# limit (mail_mediator.EXEC_TIMEOUT_S, 120 s), so a cold model ends in an
+# answer, not a killed child.
+DESCRIBE_BUDGET_S = 90.0
+_ROW_KEYS = ("attachment_id", "name", "content_type", "size", "is_inline", "is_image", "small")
+
+
+def _attachment_source(provider: str, acct: str | None, message_id: str):
+    """(rows, fetch, error): every attachment of the message, inline images
+    included, in one shape (attachment_id, name, content_type, size,
+    is_inline, content_id, is_image, small), and fetch(row) -> bytes, or
+    {"error"} for a row that cannot be read."""
+    import mail_images
+    if provider == "gmail":
+        import gmail_client
+        return gmail_client.attachment_source(acct, message_id)
+    import graph_client
+    try:
+        atts = graph_client.get_attachment_list(message_id)
+    except Exception as e:
+        return [], None, f"Could not list the attachments: {str(e)[:200]}"
+    rows = [mail_images.shape({"attachment_id": a.get("id") or "", "name": a.get("name") or "",
+                               "content_type": a.get("contentType") or "",
+                               "size": a.get("size") or 0, "is_inline": bool(a.get("isInline")),
+                               "content_id": ""})
+            for a in atts if isinstance(a, dict)]
+
+    def fetch(row):
+        try:
+            return graph_client.download_attachment(message_id, row["attachment_id"])
+        except Exception as e:
+            return {"error": f"Could not fetch {row.get('name') or 'the attachment'}: {str(e)[:200]}"}
+    return rows, fetch, ""
+
+
+def _pick_images(rows: list[dict], args) -> tuple[list[dict], dict]:
+    """(the image rows the call names, an error answer or {})."""
+    import mail_images
+    listing = [{k: r[k] for k in _ROW_KEYS if k in r} for r in rows]
+    if args.all_images:
+        picked = mail_images.content_images(rows)
+        if not picked:
+            # Only small inline images (logos, spacers): read those rather
+            # than nothing.
+            picked = [r for r in rows if r.get("is_image")]
+        return picked[:mail_images.MAX_IMAGES], {}
+    if args.attachment_id:
+        hits = [r for r in rows if r.get("attachment_id") == args.attachment_id]
+    else:
+        pat = (args.name or "").lower()
+        hits = [r for r in rows if pat and pat in (r.get("name") or "").lower()]
+    if not hits:
+        return [], {"error": "No attachment matched", "attachments": listing}
+    if len(hits) > 1:
+        return [], {"error": "Several attachments matched; pass --attachment-id",
+                    "matches": [{k: r[k] for k in _ROW_KEYS if k in r} for r in hits]}
+    if not hits[0].get("is_image"):
+        return [], {"error": ("not an image: read a PDF with scan-attachments, or "
+                              "download-attachment and then doc_text.py"),
+                    "attachment": {k: hits[0][k] for k in _ROW_KEYS if k in hits[0]}}
+    return hits, {}
+
+
+def cmd_describe_attachment(args) -> int:
+    """An image on a message (a file, or one the body shows inline) read
+    as text by the local image model. With none, {"need": "no image
+    model"}; outside sealed mail the one image picked is saved to --output
+    for the lane to open. Exit 0 with an answer, 1 with an error."""
+    import time
+    import mail_images
+    acct = None
+    if args.provider == "gmail":
+        acct = _gmail_account(args.account)
+        if not acct:
+            return _fail("No Gmail account configured")
+    rows, fetch, err = _attachment_source(args.provider, acct, args.message_id)
+    if err:
+        return _fail(err, 1)
+    picked, problem = _pick_images(rows, args)
+    if problem:
+        print(json.dumps(problem, indent=2))
+        return 1
+    out = {"message_id": args.message_id, "provider": args.provider, "account": acct,
+           "images": [{k: r[k] for k in _ROW_KEYS if k in r} for r in picked]}
+    if not picked:
+        out["note"] = "this message carries no image, inline ones included"
+        print(json.dumps(out, indent=2))
+        return 0
+    model = mail_images.image_model()
+    sealed = mail_images.sealed()
+    datas: dict[int, bytes] = {}
+    if model:
+        deadline = time.monotonic() + DESCRIBE_BUDGET_S
+        read = 0
+        for i, (row, item) in enumerate(zip(picked, out["images"])):
+            left = deadline - time.monotonic()
+            if left < 5:
+                item["error"] = "not read: the time for this call ran out"
+                continue
+            data = fetch(row)
+            if isinstance(data, dict):
+                item["error"] = data.get("error") or "not fetched"
+                continue
+            datas[i] = data
+            ctype = mail_images.image_type(row.get("name") or "", row.get("content_type") or "")
+            try:
+                res = mail_images.describe(data, ctype, model=model, question=args.question or "",
+                                           timeout=min(75.0, left))
+            except Exception as e:  # RemoteLLMError, an image the model cannot take
+                item["error"] = f"the image model did not read it: {str(e)[:200]}"
+                continue
+            item["text"] = res["text"]
+            read += 1
+        if read:
+            out["read_by"] = "local image model"
+            out["_note"] = mail_images.DATA_NOTE
+        else:
+            out["need"] = "the image model did not answer"
+    else:
+        out["need"] = "no image model"
+    if "need" in out:
+        if sealed:
+            out["sealed"] = True
+            out["message"] = ("Mail is sealed: the image stays with the mail. Say that the "
+                              "image could not be read here, and what it is (name, size).")
+        elif not args.output:
+            out["message"] = ("Run again with --attachment-id <id> --output <a file in your "
+                              "EA state folder>, then open that file (the Read tool on "
+                              "Claude, view_image on Codex).")
+    # The lane may open the picture itself only outside sealed mail.
+    if args.output and not sealed:
+        if len(picked) != 1:
+            out["output_not_written"] = "--output takes one image: pass --attachment-id"
+        else:
+            data = datas.get(0)
+            if data is None:
+                data = fetch(picked[0])
+            if isinstance(data, dict):
+                out["output_not_written"] = data.get("error") or "not fetched"
+            else:
+                dest = Path(args.output).expanduser()
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+                # As given: the mediator reports its staging path back in
+                # the caller's own path name.
+                out["saved"] = args.output
+    print(json.dumps(out, indent=2))
+    return 0
 
 
 PROVIDERS = ("outlook", "gmail")
@@ -546,6 +714,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_pf.add_argument("--account", default=None, help=acct_help)
     p_pf.add_argument("--draft-id", required=True, dest="draft_id")
     p_pf.set_defaults(func=cmd_delegated)
+
+    p_desc = sub.add_parser("describe-attachment", allow_abbrev=False,
+                            help="Read an image on a message as text, inline images included")
+    p_desc.add_argument("--provider", required=True, choices=PROVIDERS)
+    p_desc.add_argument("--account", default=None, help=acct_help)
+    p_desc.add_argument("--message-id", required=True, dest="message_id")
+    which = p_desc.add_mutually_exclusive_group(required=True)
+    which.add_argument("--attachment-id", dest="attachment_id",
+                       help="Exact id from get-message, get-attachments or list-attachments")
+    which.add_argument("--name", default=None,
+                       help="Case-insensitive substring of the file name (image001 for a "
+                            "picture in the body)")
+    which.add_argument("--all-images", action="store_true", dest="all_images",
+                       help="Every image but the small inline ones (logos), up to six")
+    p_desc.add_argument("--question", default="",
+                        help="What to read off the image, answered after its text")
+    p_desc.add_argument("--output", default=None,
+                        help="Also save the one image picked here (not in sealed mail): a "
+                             "file under ~/.ea/state, uploads or docs. The way to open it "
+                             "when no model reads images.")
+    p_desc.set_defaults(func=cmd_describe_attachment)
 
     p_send = sub.add_parser("send-draft", allow_abbrev=False,
                             help="Send a draft the user approved (the bot's, with its token)")

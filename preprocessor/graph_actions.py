@@ -76,6 +76,7 @@ except ModuleNotFoundError:  # imported as preprocessor.<mod>
 import draft_capture as _draft_capture  # EA draft bodies, for style diffs
 import draft_fingerprint as _dfp  # what a send approval is bound to
 import mail_links as _mail_links  # the remote resources a Send card names
+import mail_images as _mail_images  # which attachments are images, inline ones too
 
 # ---------------------------------------------------------------------------
 # Confirmation gate: destructive actions (send, delete) require a one-time
@@ -692,7 +693,7 @@ def cmd_get_conversation(args):
     try:
         msgs, truncated = graph.get_conversation_messages(
             args.conversation_id, top=args.top,
-            include_drafts=args.include_drafts)
+            include_drafts=args.include_drafts, with_attachments=True)
     except Exception as e:
         print(json.dumps({
             "error": f"Could not fetch conversation: {e}",
@@ -712,6 +713,7 @@ def cmd_get_conversation(args):
 
     participants: list = []
     out_msgs = []
+    with_images = 0
     for m in msgs:
         text = _body_to_text(m.get("body", {}).get("content", ""),
                              m.get("body", {}).get("contentType", ""))
@@ -722,7 +724,7 @@ def cmd_get_conversation(args):
                   + _addrs(m, "toRecipients") + _addrs(m, "ccRecipients")):
             if a and a.lower() not in [p.lower() for p in participants]:
                 participants.append(a)
-        out_msgs.append({
+        row = {
             "id": m.get("id"),
             "subject": m.get("subject"),
             "from": sender,
@@ -732,7 +734,16 @@ def cmd_get_conversation(args):
             "is_draft": bool(m.get("isDraft")),
             "has_attachments": bool(m.get("hasAttachments")),
             "text": text[:args.max_chars],
-        })
+        }
+        # The expanded list holds inline images too (hasAttachments does not).
+        atts = [{k: v for k, v in attachment_row(a).items() if k != "content_id"}
+                for a in (m.get("attachments") or []) if isinstance(a, dict)]
+        if atts:
+            row["attachments"] = atts
+            if _mail_images.content_images(atts):
+                row["has_images"] = True
+                with_images += 1
+        out_msgs.append(row)
     output = {
         "conversation_id": args.conversation_id,
         "subject": msgs[-1].get("subject", ""),
@@ -740,6 +751,11 @@ def cmd_get_conversation(args):
         "participants": participants,
         "messages": out_msgs,
     }
+    if with_images:
+        output["images_hint"] = (
+            f"{with_images} message(s) here carry an image (has_images; inline ones "
+            f"included). Read one with mail_actions.py describe-attachment --provider "
+            f"outlook --message-id <its id> --all-images")
     if truncated:
         output["truncated"] = (
             f"More than {args.top} messages in this thread; raise --top.")
@@ -775,6 +791,15 @@ def cmd_get_message(args):
         "importance": msg.get("importance"),
         "conversation_id": msg.get("conversationId"),
     }
+    # Every attachment, inline images included (hasAttachments counts none
+    # of those), so a picture in the body is known to be there.
+    atts, att_err = message_attachments(msg)
+    if atts:
+        output["attachments"] = atts
+        if _mail_images.content_images(atts):
+            output["images_hint"] = _mail_images.hint("outlook", output["id"])
+    if att_err:
+        output["attachments_error"] = att_err
     # For HTML emails, extract clean text and drop the raw HTML.
     # The raw HTML (often 30-60KB for newsletters) massively inflates
     # LLM context for zero benefit. Use --raw-html when you need it.
@@ -1288,16 +1313,41 @@ def cmd_list_mail(args):
                          f"--top {args.top * 2} to see more.")
 
 
+def attachment_row(a: dict) -> dict:
+    """One Graph attachment as a listing row: id, name, content_type, size,
+    is_inline, content_id (a file attachment's; "" otherwise), is_image,
+    and small for a small inline image (mail_images.shape). An inline
+    image is one the body shows (`<img src="cid:...">`)."""
+    return _mail_images.shape({
+        "id": a.get("id"),
+        "name": a.get("name"),
+        "content_type": a.get("contentType"),
+        "size": a.get("size"),
+        "is_inline": bool(a.get("isInline")),
+        "content_id": a.get("contentId") or "",
+    })
+
+
+def message_attachments(msg: dict) -> tuple[list[dict], str]:
+    """(attachment rows, error) for a fetched message. Graph's hasAttachments
+    leaves inline images out, so the list is read when the flag is set or
+    the HTML body shows an image of its own (cid:); no call otherwise. A
+    failed read is the error, never an exception: the message itself was read."""
+    body = msg.get("body") or {}
+    html = body.get("content", "") if (body.get("contentType") or "").lower() == "html" else ""
+    if not msg.get("id") or not (msg.get("hasAttachments") or _mail_images.has_cid_images(html)):
+        return [], ""
+    try:
+        atts = graph.get_attachment_list(msg["id"])
+    except Exception as e:
+        return [], f"attachments not listed: {str(e)[:120]}"
+    return [{k: v for k, v in attachment_row(a).items() if k != "content_id"}
+            for a in atts], ""
+
+
 def cmd_get_attachments(args):
     attachments = graph.get_attachments(args.message_id)
-    output = []
-    for a in attachments:
-        output.append({
-            "id": a.get("id"),
-            "name": a.get("name"),
-            "content_type": a.get("contentType"),
-            "size": a.get("size"),
-        })
+    output = [attachment_row(a) for a in attachments]
     print(json.dumps(output, indent=2))
 
 

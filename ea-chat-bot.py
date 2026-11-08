@@ -2900,8 +2900,11 @@ def _tools_block(body_file: str, needed_modules: set[str] | None = None) -> str:
 - Bash(python3 {sd}/preprocessor/mail_actions.py <verb> --provider outlook|gmail)
   for mail on both providers: search, get-message, get-draft, create-draft,
   create-reply, update-draft, delete-draft, create-forward, preflight-check,
-  mark-read, mark-unread. Check a draft's recipients before sending with
-  preflight-check. Never search plus a get-message per hit -- search matches
+  mark-read, mark-unread, and describe-attachment --all-images (an image on a
+  message, a picture in the body included, read out as text; never tell the
+  user an image could not be read before you run it). Check a draft's
+  recipients before sending with preflight-check. Never search plus a
+  get-message per hit -- search matches
   loosely, so you pay for hits that are not in the thread.
   IMPORTANT for drafts: Write body text to {bf} first,
   then use --body-file {bf} (avoids shell escaping issues).

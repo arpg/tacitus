@@ -1878,6 +1878,20 @@ def get_attachments(message_id: str) -> list:
     return graph_get_all(f"/me/messages/{_id(message_id)}/attachments")
 
 
+# An attachment's listing fields without its bytes. contentId is a
+# fileAttachment property, so a $select on the attachment collection
+# cannot name it; isInline is on every attachment.
+ATTACHMENT_META_FIELDS = "id,name,contentType,size,isInline"
+
+
+def get_attachment_list(message_id: str) -> list:
+    """Every attachment of a message, inline images included, without
+    contentBytes. Graph's hasAttachments leaves inline attachments out, so
+    this is how a reader learns a message shows a picture in its body."""
+    return graph_get_all(f"/me/messages/{_id(message_id)}/attachments",
+                         {"$select": ATTACHMENT_META_FIELDS})
+
+
 def list_folder_messages(folder: str = "inbox", top: int = 25,
                          order_by: str = "receivedDateTime",
                          since: Optional[str] = None) -> tuple[list, bool]:
@@ -2318,13 +2332,16 @@ def get_conversation_messages(
     conversation_id: str,
     top: int = 50,
     include_drafts: bool = False,
+    with_attachments: bool = False,
 ) -> tuple[list, bool]:
     """Every message in one conversation, OLDEST-FIRST, with bodies.
 
     conversationId is the exact join key and the mailbox indexes it, so one
     GET replaces a search plus a get-message per hit. Reads /me/messages
     (the whole mailbox, not one folder), so a thread keeps reading correctly
-    after its earlier messages were archived.
+    after its earlier messages were archived. `with_attachments` adds each
+    message's attachment list, inline images included, in the same call
+    (no bytes: ATTACHMENT_META_FIELDS).
 
     Returns (messages, truncated).
     """
@@ -2333,6 +2350,8 @@ def get_conversation_messages(
         "$select": MAIL_FIELDS_FULL,
         "$top": max(1, min(int(top), 100)),
     }
+    if with_attachments:
+        params["$expand"] = f"attachments($select={ATTACHMENT_META_FIELDS})"
     data = graph_get("/me/messages", params)
     msgs = data.get("value", []) or []
     truncated = "@odata.nextLink" in data

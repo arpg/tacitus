@@ -58,6 +58,12 @@ over https (vLLM, llama.cpp, Ollama behind TLS, a hosted provider). The
 smallest useful setup is the writer alone: `init` with the endpoint and
 model, the key in secrets.env, then `set drafting remote`.
 
+Images in mail (`mail_actions.py describe-attachment`, mail_images.py) go
+to `image_model` on the same endpoint: a model name, or false to send no
+image. Without the key, the main model reads them when its name marks it
+multimodal (`-mm`, `-vl`, `vision`, `omni`), and no model reads them
+otherwise (image_model()).
+
 The remote endpoint receives every message; nothing gates it.
 `keep_from_anthropic` names the mail that should, in time, reach only the
 remote model and never Claude: a participant whose address or domain is
@@ -144,7 +150,7 @@ class NoSlotError(RemoteLLMError):
 # ── config ────────────────────────────────────────────────────────────
 
 def _off() -> dict:
-    return {"endpoint": "", "model": "", "shadow_until": "", "ghost": {},
+    return {"endpoint": "", "model": "", "image_model": "", "shadow_until": "", "ghost": {},
             "mail": "off", "scheduling": "off", "drafting": "off", "digests": "off",
             "briefings": "off", "audits": "off", "reconcile": "off",
             "qwen_share": 0.5,
@@ -183,6 +189,16 @@ def config() -> dict:
     if not endpoint.startswith("https://") or not model:
         return cfg
     cfg["endpoint"], cfg["model"] = endpoint, model
+    # The model that reads images: a name, "" when the file says false or
+    # "off", None when it says nothing (image_model() then looks at the
+    # main model's name).
+    named = raw.get("image_model")
+    if named is False or (isinstance(named, str) and named.strip().lower() in ("off", "false")):
+        cfg["image_model"] = ""
+    elif isinstance(named, str) and named.strip():
+        cfg["image_model"] = named.strip()
+    else:
+        cfg["image_model"] = None
     cfg["shadow_until"] = str(raw.get("shadow_until") or "").strip()
     if raw.get("max_parallel") is not None:
         cfg["max_parallel"] = raw.get("max_parallel")
@@ -252,6 +268,25 @@ def config() -> dict:
         doms = cfg["keep_from_anthropic"]["domains"]
         cfg["keep_from_anthropic"]["domains"] = doms + [d for d in extra if d not in doms]
     return cfg
+
+
+# A model name that marks a multimodal model: qwen3.8-mm, qwen2.5-vl-72b,
+# llama-3.2-11b-vision.
+_IMAGE_NAME = re.compile(r"(?:^|[-_.:/])(?:mm|vl|vision|omni)(?=$|[-_.:/0-9])", re.IGNORECASE)
+
+
+def image_model(cfg: dict | None = None) -> str:
+    """The model on the endpoint that reads images, '' when none does:
+    `image_model` in the config when it names one ("" when it is false or
+    "off"), else the main model when its name marks it multimodal. '' in
+    any non-owner process, where config() is all off."""
+    cfg = cfg if cfg is not None else config()
+    if not (cfg.get("endpoint") and cfg.get("model")):
+        return ""
+    named = cfg.get("image_model")
+    if isinstance(named, str):
+        return named
+    return cfg["model"] if _IMAGE_NAME.search(cfg["model"]) else ""
 
 
 def max_parallel(cfg: dict | None = None) -> int:
@@ -433,8 +468,11 @@ def _breaker(purpose: str = ""):
     # the chat bot's small jobs (`chat-*`: thread titles, the dash
     # rewrite, context export), whose short timeouts expire while the
     # server loads a cold model.
+    # An image read has its own: a model that times out on a large picture
+    # must not close the mail gate's breaker.
     name = ("remote-llm-tune" if purpose.startswith("mail-tune")
             else "remote-llm-gateway" if purpose == "tool-gateway"
+            else "remote-llm-image" if purpose == "mail-image"
             else "remote-llm-chat" if purpose.startswith("chat-") else "remote-llm")
     try:
         import retry_policy
@@ -499,6 +537,15 @@ def _acquire_slot(n: int, wait_s: float | None = None) -> int:
         time.sleep(SLOT_POLL_S)
 
 
+def _content_chars(content) -> int:
+    """The text length of one message's content: a string, or the text
+    parts of a content list (an image part counts nothing)."""
+    if isinstance(content, list):
+        return sum(len(str(p.get("text") or "")) for p in content
+                   if isinstance(p, dict) and p.get("type") == "text")
+    return len(str(content or ""))
+
+
 def chat(messages: list[dict], *, purpose: str, schema: dict | None = None,
          schema_name: str = "answer", max_tokens: int = 1500,
          timeout: float = TIMEOUT_S, cfg: dict | None = None, opener=None,
@@ -548,7 +595,7 @@ def chat(messages: list[dict], *, purpose: str, schema: dict | None = None,
         payload["response_format"] = {"type": "json_schema", "json_schema": {
             "name": schema_name, "schema": schema, "strict": True}}
 
-    prompt_chars = sum(len(str(m.get("content") or "")) for m in messages)
+    prompt_chars = sum(_content_chars(m.get("content")) for m in messages)
     rec = {"ts": datetime.now().astimezone().isoformat(timespec="seconds"),
            "purpose": purpose, "model": use_model, "prompt_chars": prompt_chars}
     waited = time.monotonic()

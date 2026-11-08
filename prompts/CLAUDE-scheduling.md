@@ -22,9 +22,11 @@ question) gets one line pointing the user to the EA channel.
    (or `mail_actions.py get-message --provider outlook --message-id <id>`). With sealed mail the thread
    comes back as the remote model's record of each message: its
    `offered_times` and `scheduling` fields are the sender's proposal,
-   and `remote_unread` means try once more or ask. Decide which mode
-   it is: the sender proposed exact times (validate them) or asked
-   for open availability (propose).
+   and `remote_unread` means try once more or ask. Times sent as a
+   picture (`images_hint`, `has_images`): `mail_actions.py
+   describe-attachment --provider outlook --message-id <id> --all-images`
+   reads them out. Decide which mode it is: the sender proposed exact
+   times (validate them) or asked for open availability (propose).
 2. Availability comes from the solver only:
    - "what times work?" → `scheduling_engine.py propose-meeting`, one call.
    - "is THIS time free for the user?" → `scheduling_engine.py

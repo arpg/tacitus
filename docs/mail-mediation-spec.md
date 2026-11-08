@@ -59,6 +59,14 @@ ea-bot has no route to any of these.
 - `gmail_client.py`: `search`, `get-message`, `get-thread`, `get-draft`, `create-draft`,
   `update-draft`, `delete-draft`, `list-attachments`, `download-attachment`, `list-drafts`
   (ids and times of the newest drafts; how the bot finds a draft the Gmail MCP created)
+- `mail_actions.py` (the unified CLI): the reads and draft verbs it runs on either provider,
+  and `describe-attachment`: one image on a message (an inline, `cid:` image included)
+  fetched owner-side and read as text by the owner's local image model
+  (`remote_llm.image_model`), so the picture itself stays with the owner. `--output`
+  is an OUTPUT_FLAGS path, staged and delivered like `download-attachment`'s; the
+  child writes it only outside sealed mail. The verb waits on a model, so the
+  mediator runs it on a thread of its own (`ASYNC_VERBS`), and a cron lane's call on
+  a kept thread is refused before it runs, as its `download-attachment` twin's is.
 - `drive_client.py`: `read`, `search`, `download`, `accounts`. The token holds only
   `drive.readonly`; `download --output` is staged and delivered like an attachment, and the
   owner side never parses a file's bytes (`read` returns Google's own text export). Its

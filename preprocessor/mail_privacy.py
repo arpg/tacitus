@@ -413,11 +413,16 @@ def _verbatim_times(times: list[str], text: str) -> list[str]:
     return out
 
 
-def attachments_of(msg: dict, graph) -> tuple[list[dict], str]:
-    """(attachment list, text) for a message with attachments: name, type
-    and size for each, and the text of up to two PDFs of 2 MB or less,
-    for the model to read beside the body."""
-    if not msg.get("hasAttachments") or not msg.get("id"):
+def attachments_of(msg: dict, graph, html: str = "") -> tuple[list[dict], str]:
+    """(attachment list, text) for a message with attachments: name, type,
+    size, inline (the body shows it) and image for each, and the text of up
+    to two PDFs of 2 MB or less, for the model to read beside the body.
+    Graph's hasAttachments leaves inline images out, so a body that shows
+    one of its own (`cid:` in `html`) is read for its attachments too: a
+    schedule pasted into the body is then on the record, and a lane knows
+    to read it (mail_actions.py describe-attachment)."""
+    import mail_images
+    if not msg.get("id") or not (msg.get("hasAttachments") or mail_images.has_cid_images(html)):
         return [], ""
     try:
         atts = graph.get_attachments(msg["id"])
@@ -430,7 +435,8 @@ def attachments_of(msg: dict, graph) -> tuple[list[dict], str]:
         name = str(a.get("name") or "attachment")[:120]
         ctype = str(a.get("contentType") or "")[:60]
         size = int(a.get("size") or 0)
-        item = {"name": name, "type": ctype, "size": size}
+        item = {"name": name, "type": ctype, "size": size, "inline": bool(a.get("isInline")),
+                "image": mail_images.is_image(name, ctype)}
         is_pdf = ctype.lower() == "application/pdf" or name.lower().endswith(".pdf")
         if is_pdf and pdfs < 2 and 0 < size <= ATTACH_PDF_MAX:
             try:
@@ -522,13 +528,17 @@ def process(msg: dict, *, graph, cfg: dict, chat=None, full: dict | None = None,
         rec["own"] = True
     try:
         import admissions_filter as af
-        body = af.body_text(full if full is not None else graph.get_message_full(msg["id"]))
+        fetched = full if full is not None else graph.get_message_full(msg["id"])
+        body = af.body_text(fetched)
     except Exception as e:
         rec.update(status="error", error=f"fetch failed: {str(e)[:200]}")
         return rec
     rec["keep_from_anthropic"] = keep_reason(msg, body, cfg)
     rec["body_chars"] = len(body)
-    attachments, att_text = attachments_of(msg, graph)
+    fb = (fetched or {}).get("body") if isinstance(fetched, dict) else None
+    html = (fb.get("content") or "") if isinstance(fb, dict) and \
+        str(fb.get("contentType") or "").lower() == "html" else ""
+    attachments, att_text = attachments_of(msg, graph, html=html)
     model_body = body + ("\n\n" + att_text if att_text else "")
     if own:
         model_body = OWN_NOTE + "\n\n" + model_body
@@ -1054,7 +1064,10 @@ RELEASE_VERBS = {"get-message", "get-conversation", "search-mail", "list-mail",
 # (an Outlook draft is read with get-message there). Its output carries
 # id, conversation_id and the header fields these checks read.
 UNIFIED_OUTLOOK_READS = {"search": "search-mail", "get-message": "get-message",
-                         "get-draft": "get-message"}
+                         "get-draft": "get-message",
+                         # an image read fetches an attachment: a cron lane
+                         # reads none of a kept thread's
+                         "describe-attachment": "download-attachment"}
 
 
 def as_graph_read(tool: str, verb: str, argv: list) -> tuple[str, str]:
@@ -1396,7 +1409,9 @@ def _graph_message(m: dict) -> dict:
                              for a in m.get("to") or []],
             "ccRecipients": [{"emailAddress": (a if isinstance(a, dict) else {"address": a})}
                              for a in m.get("cc") or []],
-            "hasAttachments": bool(m.get("has_attachments")),
+            # The read's attachment list holds inline images, which
+            # has_attachments (Graph's flag) leaves out.
+            "hasAttachments": bool(m.get("has_attachments") or m.get("attachments")),
             "body": {"contentType": "text", "content": str(text)}}
 
 
@@ -1471,7 +1486,14 @@ def thread_brief(conv_id: str, index: dict | None = None, *, user: set[str] | No
                 if res.get(k):
                     m[k] = list(res[k])
             if res.get("attachments"):
-                m["attachments"] = [a.get("name") for a in res["attachments"] if isinstance(a, dict)]
+                atts = [a for a in res["attachments"] if isinstance(a, dict)]
+                m["attachments"] = [a.get("name") for a in atts]
+                # A picture worth reading (not a small inline logo): the
+                # row's reader knows to run describe-attachment on it.
+                import mail_images
+                if any(a.get("image") and not mail_images.small(
+                        {"is_inline": a.get("inline"), "size": a.get("size")}) for a in atts):
+                    m["has_images"] = True
             if not own:
                 m.update({"state": res.get("state"), "ask": res.get("ask") or "",
                           "deadline": res.get("deadline") or "",

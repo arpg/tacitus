@@ -46,12 +46,14 @@ from googleapiclient.errors import HttpError
 try:
     import draft_fingerprint as _dfp
     import draft_lock as _draft_lock
+    import mail_images as _mail_images
     import mail_links as _mail_links
     import owner_trust as _owner_trust
     import published_apps as _published
 except ModuleNotFoundError:  # imported as preprocessor.<mod>
     from preprocessor import draft_fingerprint as _dfp
     from preprocessor import draft_lock as _draft_lock
+    from preprocessor import mail_images as _mail_images
     from preprocessor import mail_links as _mail_links
     from preprocessor import owner_trust as _owner_trust
     from preprocessor import published_apps as _published
@@ -840,12 +842,34 @@ def get_thread(email: str, thread_id: str) -> dict:
     return {"thread_id": thread_id, "messages": messages}
 
 
+def _part_header(part: dict, name: str) -> str:
+    """One MIME header of a payload part (`name` in lower case), or ''."""
+    for h in part.get("headers", []) or []:
+        if (h.get("name") or "").lower() == name:
+            return str(h.get("value") or "")
+    return ""
+
+
+def _inline_image_part(part: dict) -> bool:
+    """An image part the body shows (a Content-ID, or an inline
+    disposition) that names no file: some clients send a pasted picture
+    that way, and it is an attachment all the same."""
+    if part.get("parts") or not (part.get("mimeType") or "").lower().startswith("image/"):
+        return False
+    body = part.get("body", {}) or {}
+    if not (body.get("attachmentId") or body.get("data")):
+        return False
+    return bool(_part_header(part, "content-id")
+                or _part_header(part, "content-disposition").lower().startswith("inline"))
+
+
 def _attachment_parts(payload: dict) -> list[dict]:
     """Every part of a message payload that carries a filename, nested
-    multiparts included. Returns the raw part dicts: a real file has
-    body.attachmentId, a tiny one can inline body.data instead."""
+    multiparts included, and every inline image part without one.
+    Returns the raw part dicts: a real file has body.attachmentId, a tiny
+    one can inline body.data instead."""
     parts = []
-    if payload.get("filename"):
+    if payload.get("filename") or _inline_image_part(payload):
         parts.append(payload)
     for part in payload.get("parts", []) or []:
         parts.extend(_attachment_parts(part))
@@ -853,22 +877,88 @@ def _attachment_parts(payload: dict) -> list[dict]:
 
 
 def _attachment_meta(part: dict) -> dict:
+    """attachment_id, filename, mime_type, size, and the image flags:
+    is_inline (the body shows it: an inline disposition, or a Content-ID
+    with no disposition), content_id, is_image, and small for a small
+    inline image (mail_images.small)."""
     body = part.get("body", {})
-    return {
+    disp = _part_header(part, "content-disposition").lower()
+    cid = _part_header(part, "content-id").strip().strip("<>")
+    meta = {
         "attachment_id": body.get("attachmentId", ""),
         "filename": part.get("filename", ""),
         "mime_type": part.get("mimeType", ""),
         "size": body.get("size", 0),
+        "is_inline": disp.startswith("inline") or (bool(cid) and not disp),
+        "content_id": cid,
+        "is_image": _mail_images.is_image(part.get("filename", ""), part.get("mimeType", "")),
     }
+    if meta["is_image"] and _mail_images.small(meta):
+        meta["small"] = True
+    return meta
+
+
+def _part_bytes(service, message_id: str, part: dict):
+    """The bytes of one attachment part: its inline data, or one
+    attachments().get. Returns bytes, or {"error": ...}."""
+    body = part.get("body", {})
+    data = body.get("data", "")
+    if not data:
+        aid = body.get("attachmentId", "")
+        if not aid:
+            return {"error": "Attachment part has neither inline data nor "
+                             "an attachmentId",
+                    "attachment": _attachment_meta(part)}
+        try:
+            att = service.users().messages().attachments().get(
+                userId="me", messageId=message_id, id=aid
+            ).execute()
+        except HttpError as e:
+            return {"error": f"Gmail API error: {e}"}
+        data = att.get("data", "")
+    try:
+        return base64.urlsafe_b64decode(data)
+    except Exception as e:
+        return {"error": f"Could not decode attachment data: {e}"}
+
+
+def attachment_source(email: str, message_id: str):
+    """(rows, fetch, error) for one message: the attachment rows in the
+    unified shape mail_actions reads (attachment_id, name, content_type,
+    size, is_inline, content_id, is_image, small), and fetch(row) -> bytes
+    or {"error"} for a row of that list."""
+    service = _get_service(email)
+    if not service:
+        return [], None, f"No Gmail credentials for {email}"
+    try:
+        msg = service.users().messages().get(
+            userId="me", id=message_id, format="full"
+        ).execute()
+    except HttpError as e:
+        return [], None, f"Gmail API error: {e}"
+    parts = _attachment_parts(msg.get("payload", {}))
+    rows = []
+    for i, p in enumerate(parts):
+        m = _attachment_meta(p)
+        rows.append({"attachment_id": m["attachment_id"], "name": m["filename"],
+                     "content_type": m["mime_type"], "size": m["size"],
+                     "is_inline": m["is_inline"], "content_id": m["content_id"],
+                     "is_image": m["is_image"], **({"small": True} if m.get("small") else {}),
+                     "_part": i})
+
+    def fetch(row):
+        return _part_bytes(service, message_id, parts[row["_part"]])
+    return rows, fetch, ""
 
 
 def list_attachments(email: str, message_id: str) -> dict:
     """List the file attachments on a message.
 
     Returns {"message_id", "attachments": [{attachment_id, filename,
-    mime_type, size}, ...]} or {"error": ...}. Inline images with a
-    filename (signature logos) are listed too; mime_type and size are
-    there so the caller can tell them from real documents.
+    mime_type, size, is_inline, content_id, is_image, small?}, ...]} or
+    {"error": ...}. Inline images (a picture the body shows, a signature
+    logo) are listed too, with no filename when the part names none;
+    is_inline and small tell them from real documents.
     """
     service = _get_service(email)
     if not service:
@@ -928,25 +1018,9 @@ def download_attachment(email: str, message_id: str, output: str,
                 "matches": [_attachment_meta(p) for p in candidates]}
 
     part = candidates[0]
-    body = part.get("body", {})
-    data = body.get("data", "")
-    if not data:
-        aid = body.get("attachmentId", "")
-        if not aid:
-            return {"error": "Attachment part has neither inline data nor "
-                             "an attachmentId",
-                    "attachment": _attachment_meta(part)}
-        try:
-            att = service.users().messages().attachments().get(
-                userId="me", messageId=message_id, id=aid
-            ).execute()
-        except HttpError as e:
-            return {"error": f"Gmail API error: {e}"}
-        data = att.get("data", "")
-    try:
-        content = base64.urlsafe_b64decode(data)
-    except Exception as e:
-        return {"error": f"Could not decode attachment data: {e}"}
+    content = _part_bytes(service, message_id, part)
+    if isinstance(content, dict):
+        return content
 
     out_path = Path(output).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)

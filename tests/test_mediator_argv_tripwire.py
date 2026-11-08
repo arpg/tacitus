@@ -240,8 +240,10 @@ def _mediator(monkeypatch):
     monkeypatch.setattr(M, "CONFIG", EA_DIR / "config" / "ea-config.json")
     monkeypatch.setattr(MM, "AUDIT", EA_DIR / "logs" / "mail-mediator.log")
     monkeypatch.setattr(MM, "STAGING_ROOT", SANDBOX / "mediator-staging")
-    # One thread: the email writer's requests otherwise run on their own.
+    # One thread: the email writer's and the image reader's requests
+    # otherwise run on their own.
     monkeypatch.setattr(MM, "ASYNC_TOOLS", set())
+    monkeypatch.setattr(MM, "ASYNC_VERBS", set())
     monkeypatch.setattr(MM.pwd, "getpwnam", lambda name: types.SimpleNamespace(pw_dir="/home/ea-bot"))
     M.QUEUE.mkdir(parents=True, exist_ok=True)
     started: list[list[str]] = []
