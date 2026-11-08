@@ -750,7 +750,13 @@ shows its final line and no buttons. Files render as a link with the
 name and size, images inline.
 
 Live updates: `EventSource(base + "/api/events")`, replay from the last
-seen seq, reconnect handled by the browser. Composer: Enter sends,
+seen seq, reconnect handled by the browser. The dot in the header is on
+while the stream is open, pulses while it opens or opens again, and turns
+to "not connected" only once the stream has been down for ten seconds
+(`setLive.grace`): a routine re-open (a restart of the bot for a deploy,
+a stream the relay ended) is a reconnect, not an outage. Through the relay
+a page hidden for five minutes closes its stream and opens one again at
+once back in view (docs/webchat-relay.md, For the web app). Composer: Enter sends,
 Shift+Enter newline. Sign-in: on 401 show a field for the sign-in code
 (the pairing token) that posts to `/api/pair`.
 
@@ -803,8 +809,10 @@ under its name, in this order: Notifications, where `/api/me` says
 "Add a device" dialog follows, docs/webchat-relay.md); Models, where
 `/api/me` names the `routing` page and the copy is not relayed; and How
 Tacitus works, the welcome. Under the rows a line says how this browser
-reaches Tacitus now: on your own network, away from home through the
-relay's host, connecting, or not connected. Notifications and Models open
+reaches Tacitus now, with the dot: "Connected on your own network.", or
+away from home through the relay's host; "Connecting" or "Reconnecting"
+the same way while the stream opens; and, once it has been down past the
+grace, "Not connected since <time>. Trying again" and how. Notifications and Models open
 in the dialog as pages, with Back at the top left and Close at the top
 right of every page; Back, or Escape on a page, returns to the menu with
 the focus on the row it left, and Escape on the menu closes it. Devices
@@ -946,9 +954,14 @@ iOS Share, then Add to Home Screen; in Chrome an Install button for its
 time it was hidden, the thread filter, that the welcome was closed, the
 channel list's width, the connection notes for `/api/diag` and the
 drafts' words with their files' names (Drafts, above), and nothing else.
-A link to a route of this app
-(`<base>/#/...`, absolute or relative) opens in it; any other keeps
-`target="_blank"`, so the installed app hands it to the browser. On iOS
+A link into this app opens in it, in place, as its `#/`
+route: a link whose path is the base path of an address the app knows for
+itself (this page's, the bot's `public_url` from `/api/me`, which the
+bot's links carry, and the relay's copy of this browser's pairing),
+absolute or a path, with a `#/` route and no query (`ownRoute`). So the
+website's copy and a page on the bot's machine route the bot's links in
+place too. Any other keeps `target="_blank"`, so the installed app hands
+it to the browser. On iOS
 the keyboard shrinks only the visual viewport: the app sets its height
 from `visualViewport` (not while zoomed in) and keeps the thread at its
 newest message while the pane shrinks. The page does not overscroll, so
@@ -1377,8 +1390,10 @@ line and the Notifications page say so. The worker (`bundle.js`) shows each push
 body, icon, tag and `data.url`) and on a tap focuses the app's window last
 in front and navigates it to the url, else opens one; a window that
 `navigate()` cannot move gets `{open: url}` as a message and routes to it
-when it is one of the app's routes. A url outside the app's scope opens the
-app's start page.
+when it is one of the app's routes (`ownRoute`, as a link). A url outside
+the app's scope opens the app at the url's `#/` route (a push's url is a
+link on the bot's own address, and this copy may run at another), and one
+with none at the app's start page.
 
 ## Code integrity
 

@@ -501,7 +501,7 @@ cryptography.
 
 | Route | Who | Request | Answer |
 |---|---|---|---|
-| `POST /r/{install}/bot` | bot | `Authorization: Bearer <relay token>`; `{"frames": [...], "wait": s}` (at most 64 frames, wait at most 25 s) | `{"frames": [...]}`: the phone's frames, after at most `wait` seconds; 401 no token, 403 wrong token or not activated |
+| `POST /r/{install}/bot` | bot | `Authorization: Bearer <relay token>`; `{"frames": [...], "wait": s}` (at most 64 frames, wait at most 25 s), and `"fresh": true` until the first poll of a bot that starts goes through | `{"frames": [...]}`: the phone's frames, after at most `wait` seconds; 401 no token, 403 wrong token or not activated |
 | `POST /r/{install}/c` | phone | `X-Relay-Key: <client key>`; one `hello`, `req` or `ping` frame | the bot's `welcome`, `res` or `err` frame; 504 with `err` `timeout` after 30 s; 503 `{"error": "unavailable"}` for a bot offline and for a wrong key alike; 413 for a `hello` or `ping` over 4 KiB; 429 over the limits |
 | `POST /r/{install}/sse` | phone | `X-Relay-Key`; one `open` frame (at most 4 KiB) | `{"ticket": <32 hex>, "ttl": 30}`: the stream's ticket, good once, for 30 s; errors as `/c` |
 | `GET /r/{install}/sse?t=<ticket>` | phone | the ticket | `text/event-stream`, chunked: `data: <frame JSON>` per frame, `: ping` every 20 s, closed after `end` or `err`; 503 `unavailable` for an unknown, used or late ticket. The `open` frame reaches the bot when the ticket is spent |
@@ -530,6 +530,16 @@ The bot keeps one long-poll open and posts each answer at once on its own
 request with `wait` 0; it handles any frames the relay hands back on
 those too. On a failure it backs off from 1 s, doubling to 60 s, with
 jitter; a 401 or 403 waits at least 60 s.
+
+A bot that starts (a deploy restarts it) feeds none of the event streams
+the relay holds open, and the process before it ended with no word to the
+relay. So its polls say `"fresh": true` until one goes through (and again
+after a `rotate`): the relay ends each stream whose `open` frame a bot
+took before with `err` `session`, and the phone says hello again and opens
+a new one. A stream whose `open` still waits in the queue is the new
+bot's and stays. Such a stream otherwise stays open on the relay's
+keepalives with no event behind it, while the app reads "Connected". A
+relay from before takes no notice of the key.
 
 `EventSource` cannot send a body or set a header, and a query string
 lands in the TLS terminator's access log. So the phone posts the `open`
@@ -667,7 +677,7 @@ them.
 | Frame size | 16 MiB |
 | Phone frames queued for the bot | 64, and 32 MiB |
 | Phone requests waiting for an answer | 32 |
-| Open event streams | 4 (a fifth closes the oldest) |
+| Open event streams | 8 (a ninth closes the oldest); one per session: a stream whose `open` names the session of an open one replaces it, since a page holds one stream and has let the old one go |
 | Concurrent bot polls | 4 |
 | Phone frames per second | 20, burst 100 |
 | A `hello`, `ping` or `open` frame | 4 KiB |
@@ -698,7 +708,9 @@ The bot bounds what a relay hands it, since a compromised relay can hand
 it anything: at most 64 frames from one answer (48 MiB at most), at most
 64 frames waiting for its eight workers (the rest dropped), no error body
 read, a pause of a second after an empty answer that came early, one
-event stream per frame id and four in all, and four sessions per device.
+event stream per frame id and eight in all (the oldest gives way, and its
+phone hears `err` `busy`, so it opens again instead of holding a stream
+nothing feeds), and four sessions per device.
 The web front end's event stream notices a client that left within a
 second, so streams opened and dropped fast do not hold its 64
 connections.
@@ -1042,6 +1054,12 @@ adds nothing.
 - Open an answer only as the answer to its own request (kind `res`, the
   request's frame id) and an event only of its own stream (kind `sse`,
   the `open` frame's id).
+- The event stream counts as down only to reopen it: the live dot and the
+  Settings line read "Reconnecting" while it opens again, and "Not
+  connected" only once it has been down for ten seconds (docs/webchat.md,
+  The web app). A page hidden for five minutes closes its stream, one of
+  the eight the relay keeps for the install, and back in view opens one at
+  once from the last event it saw.
 - On `err` `session`, `replay` or `bad`, say hello again and retry a GET
   once. A POST or a PATCH is not sent again: an `err` frame is not sealed, and the
   relay can forge one after the bot ran the request. The app says

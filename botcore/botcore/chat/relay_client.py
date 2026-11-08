@@ -72,7 +72,7 @@ MAX_BODY = 10 * 1024 * 1024     # a request or response body (the chat's file ca
 MAX_EVENT = 1024 * 1024
 MAX_POLL_ANSWER = 48 * 1024 * 1024  # the relay hands back at most 32 MiB of frames
 MAX_ANSWER_FRAMES = 64          # frames taken from one answer; the rest are dropped
-MAX_STREAMS = 4
+MAX_STREAMS = 8
 MAX_SESSIONS = 32
 MAX_DEVICE_SESSIONS = 4
 SESSION_IDLE = 12 * 3600
@@ -908,6 +908,9 @@ class RelayClient:
         self.connected = False
         self.last_ok = 0.0
         self.last_error = ""
+        # Until a poll goes through, each says `fresh`: this client feeds no
+        # stream yet, so the relay ends those a bot before it fed.
+        self._fresh = True
 
     # lifecycle
 
@@ -1061,8 +1064,8 @@ class RelayClient:
 
     # the relay connection
 
-    def _exchange(self, frames: list, wait: float) -> list[dict]:
-        body = _json_bytes({"frames": frames, "wait": wait})
+    def _exchange(self, frames: list, wait: float, fresh: bool = False) -> list[dict]:
+        body = _json_bytes({"frames": frames, "wait": wait, **({"fresh": True} if fresh else {})})
         req = urllib.request.Request(self._bot_url, data=body, method="POST", headers={
             "Authorization": self._auth, "Content-Type": "application/json"})
         with self._relay_opener.open(req, timeout=wait + 10) as resp:
@@ -1121,7 +1124,7 @@ class RelayClient:
         if ident == self.identity:
             return False
         with self._mu:
-            old, self.connected = self.install_id, False
+            old, self.connected, self._fresh = self.install_id, False, True
             self.identity, self.install_id = ident, ident.install_id
             self._bot_url = f"{self.relay_url}/r/{self.install_id}/bot"
             self._auth = "Bearer " + rc.b64e(ident.token)
@@ -1140,7 +1143,7 @@ class RelayClient:
             self.reload()
             t0 = time.monotonic()
             try:
-                frames = self._exchange([], self.wait)
+                frames = self._exchange([], self.wait, fresh=self._fresh)
             except Exception as exc:  # the network, the relay, a proxy
                 floor = self._note_error(exc)
                 backoff = max(backoff, floor)
@@ -1150,6 +1153,7 @@ class RelayClient:
             if not self.connected:
                 self.log.info("relay: connected")
             backoff, self.connected, self.last_ok, self.last_error = 1.0, True, time.time(), ""
+            self._fresh = False
             self._dispatch(frames)
             # An empty answer well before the wait is up (a full or broken
             # relay) gets a pause, so no relay spins this loop.
@@ -1419,11 +1423,16 @@ class RelayClient:
         with self._mu:
             # One stream per frame id: a second `open` with the id ends the first.
             old = [self._streams.pop(fid)] if fid in self._streams else []
+            full = []
             while len(self._streams) >= MAX_STREAMS:
-                old.append(self._streams.pop(next(iter(self._streams))))
+                full.append(self._streams.pop(next(iter(self._streams))))
             self._streams[fid] = st
         for o in old:
             o.stop()
+        # The oldest gives way, and the relay hears so (`busy`): its phone
+        # opens again, instead of holding a stream nothing feeds.
+        for o in full:
+            o.stop("busy")
         args = (session, fid, since if isinstance(since, int) and since >= 0 else None, st)
         threading.Thread(target=self._stream, args=args, name=f"relay-sse-{fid[:8]}",
                          daemon=True).start()
@@ -1433,6 +1442,8 @@ class RelayClient:
         headers = self._headers(session.device, {"accept": "text/event-stream"})
         status, resp = 200, None
         if st.ev.is_set():  # replaced before it started: open nothing
+            if st.why and not self._stop.is_set():
+                self._send(rc.error_frame(fid, st.why))
             return
         try:
             resp = self._local_opener.open(urllib.request.Request(self.local + path, headers=headers),
