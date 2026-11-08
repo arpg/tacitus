@@ -445,10 +445,13 @@ def test_the_staged_preference_writes_are_applied_after_a_live_turn_as_the_resid
     monkeypatch.setattr(ct, "_apply_staged", lambda text, runner=None: seen.append(text) or {"applied": [1], "refused": []})
     run = _codex([{"output": "ok", "thread_id": "th"}])
     rec = ct.run_turn("P", thread_key="t-p", run_id="r", live=True, fresh_prompt="P", codex_run=run,
-                      user_text="just do them")
+                      user_text="just do them", scratch_runner=_scratch)
     assert seen == ["just do them"] and rec["preferences"] == {"applied": [1], "refused": []}
     ghost = _codex([{"output": "ok", "thread_id": "th"}])
-    ct.run_turn("P", thread_key="t-g", run_id="r", live=False, fresh_prompt="P", codex_run=ghost, persist=False)
+    # The ghost's scratch is made as the resident; the fake runner keeps the
+    # test off sudo on a host with no resident user.
+    ct.run_turn("P", thread_key="t-g", run_id="r", live=False, fresh_prompt="P", codex_run=ghost, persist=False,
+                scratch_runner=_scratch)
     assert seen == ["just do them"], "a ghost turn applies nothing"
 
 
