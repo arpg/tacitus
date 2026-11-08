@@ -765,8 +765,9 @@ def shown_refs(cands: dict[str, dict], plan: dict, drafts: list[dict], escalated
 
 
 def _looks_done(b: dict, audit: dict) -> list[str]:
-    """The rows that look done and wait on the user's confirm card: the
-    ledger's proposals, then the ones this run's pre-send audit added."""
+    """The rows that look done and wait on the user's confirm (its card, or
+    a reply to the briefing once the card expired): the ledger's
+    proposals, then the ones this run's pre-send audit added."""
     rows = [(p.get("id"), p.get("description"), p.get("why"))
             for p in b.get("close_proposals") or []]
     seen = {r[0] for r in rows}
@@ -808,8 +809,10 @@ def _looks_done_line(b: dict, audit: dict) -> list[str]:
     looks = _looks_done(b, audit)
     if not looks:
         return []
-    return ["", f":grey_question: *Looks done?* ({len(looks)}) Close or keep each on the "
-                f"card in your DM: " + "; ".join(looks[:8]) + "."]
+    # A card with no answer for a week expires (ea-chat-bot.py), and its
+    # rows stay here: the reply in this thread closes or keeps them too.
+    return ["", f":grey_question: *Looks done?* ({len(looks)}) Close or keep each one on its "
+                f"card in your DM, or tell me here: " + "; ".join(looks[:8]) + "."]
 
 
 def _morning_lists(cands: dict[str, dict], plan: dict, drafts: list[dict],

@@ -49,6 +49,11 @@ DEFAULTS = {
     # Outlook event with no attendees is created at once, with no Create
     # card. On unless the install turns it off; off, every event is carded.
     "guestless_events": {"enabled": True},
+    # The closure hill climb (preprocessor/closure_policy.py): a signal the
+    # owner keeps confirming closes at once (a note with a Reopen button),
+    # and one whose closes he reopens proposes again. On unless the install
+    # turns it off; off, every signal does what closure.py says.
+    "closure": {"hill_climb": True},
     # Mail tagger (preprocessor/mail_tagger.py): new inbox mail gets Outlook
     # categories (project or domain, state, topic) from one small model
     # call per batch, on a two-minute owner cron. Off unless turned on.
@@ -541,6 +546,13 @@ def guestless_events_enabled(config_path: Path | None = None) -> bool:
     literal false turns it off."""
     val = load(config_path).get("guestless_events")
     return not (isinstance(val, dict) and val.get("enabled") is False)
+
+
+def closure_hill_climb_enabled(config_path: Path | None = None) -> bool:
+    """Does the closure hill climb move signals? Only a literal false turns
+    it off."""
+    val = load(config_path).get("closure")
+    return not (isinstance(val, dict) and val.get("hill_climb") is False)
 
 
 def mail_tagger_enabled(config_path: Path | None = None) -> bool:

@@ -241,26 +241,35 @@ def _card(m: dict) -> dict:
 
 
 def _live(m: dict, now: float) -> bool:
-    """A card whose buttons still act: no outcome recorded (still a `card`
-    row), at least one action or a select, and younger than the card
-    registry keeps it."""
+    """A card whose buttons still act and wait on the owner: no outcome
+    recorded (still a `card` row), at least one action or a select, no
+    `undo` mark (a note whose button only undoes what is done), and
+    younger than the card registry keeps it."""
     if m.get("kind") != "card":
         return False
     c = _card(m)
-    if not (c.get("actions") or c.get("select")):
+    if not (c.get("actions") or c.get("select")) or c.get("undo"):
         return False
     return now - float(m.get("posted_at") or now) < CARD_LIVE_S
 
 
+# A status line that says the card expired with no answer: the question
+# moved elsewhere (the briefing), and nothing was done.
+EXPIRED_MARKS = (":zzz:", ":sleeping:")
+
+
 def outcome(text: str | None) -> str:
     """What a card's status line says: `busy` (the bot is acting on the
-    press), `failed` (it could not) or `acted`. The emoji names are the
-    core's, or Zulip's for a status line copied from Zulip."""
+    press), `failed` (it could not), `expired` (no answer came and the
+    card was retired) or `acted`. The emoji names are the core's, or
+    Zulip's for a status line copied from Zulip."""
     t = str(text or "").lstrip()
     if t.startswith((":hourglass", ":time_ticking:")):
         return "busy"
     if t.startswith((":x:", ":cross_mark:", ":warning:", ":no_entry:")):
         return "failed"
+    if t.startswith(EXPIRED_MARKS):
+        return "expired"
     return "acted"
 
 

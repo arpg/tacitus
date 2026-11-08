@@ -49,7 +49,8 @@ reads done and none as closed. FEATURE_KEYS lists the features.
     closure_labels.py stats [--labels PATH]
 
 `--report` then writes the evaluation and appends its numbers to the
-history beside the labels (closure_eval.py report, trend).
+history beside the labels (closure_eval.py report, trend), and runs the
+closure hill climb's nightly step (closure_policy.py update).
 """
 from __future__ import annotations
 
@@ -118,6 +119,7 @@ LIST_CAP = 16
 SETTLED = frozenset({"acted", "declined", "outside", "superseded", "kept_open"})
 _OUTCOME_RULES = (
     (re.compile(r"tap a reaction below|reply `|^code \*\*", re.I), "live"),
+    (re.compile(r"\bno answer in \d+ days\b", re.I), "expired"),
     (re.compile(r"\brevised\b|one by one", re.I), "superseded"),
     (re.compile(r"sent from|marked as sent|sent myself|already (?:handled|sent|scheduled|closed)"
                 r"|deleted in|draft was deleted|settled outside|was already handled", re.I),
@@ -506,12 +508,13 @@ def interaction_type(messages: list[dict], channel_kind: str | None, origin: str
 
 
 def outcome_class(text: Any) -> str:
-    """A card's status line as one word: busy, failed, live, superseded,
-    outside (settled outside chat), kept_open, declined or acted."""
+    """A card's status line as one word: busy, failed, live, expired (no
+    answer before it expired), superseded, outside (settled outside chat),
+    kept_open, declined or acted."""
     first = next((ln for ln in str(text or "").splitlines() if ln.strip()), "")
     base = _ts.outcome(first)
-    if base == "busy":
-        return "busy"
+    if base in ("busy", "expired"):
+        return base
     plain = _ts.plain_text(first)
     for rx, name in _OUTCOME_RULES:
         if rx.search(plain):
@@ -534,11 +537,12 @@ def card_kind(m: dict) -> str | None:
 
 def card_state(m: dict, now: float) -> str | None:
     """`live`, an outcome_class word, `expired` for a card whose buttons
-    no longer act, or None for a message that is no card."""
+    no longer act, or None for a message that is no card. A note whose
+    button only undoes what is done (`undo`) asks no decision: None."""
     v = _ts.card_view(m)
     if v.get("kind") == "card":
         card = v.get("card") if isinstance(v.get("card"), dict) else {}
-        if not (card.get("actions") or card.get("select")):
+        if not (card.get("actions") or card.get("select")) or card.get("undo"):
             return None
         return "live" if _ts._live(v, now) else "expired"
     if v.get("kind") == "status":
@@ -1101,7 +1105,7 @@ def ledger_records(db: Path, since: float | None, ea_dir: Path) -> list[dict]:
                 provenance=prov, signal=token(sig), closed_how=closed_how(
                     sig, prov, e.get("last_action") or "")))
         try:
-            evs = conn.execute("SELECT seq, ts, entry_id, kind, signal FROM ledger_events "
+            evs = conn.execute("SELECT seq, ts, entry_id, kind, signal, actor FROM ledger_events "
                                "WHERE kind IN ('reopen', 'reject', 'confirm') AND ts >= ? "
                                "ORDER BY seq", (cutoff,)).fetchall()
         except sqlite3.OperationalError:
@@ -1109,6 +1113,10 @@ def ledger_records(db: Path, since: float | None, ea_dir: Path) -> list[dict]:
         names = {"reopen": ("reopened", "open"), "reject": ("rejected", "open"),
                  "confirm": ("confirmed", "done")}
         for ev in evs:
+            if _closure.is_renewal(ev["kind"], ev["actor"]):
+                # A new message reopened the row (intake): a new ask, not
+                # the owner saying the close was wrong.
+                continue
             e = entries.get(ev["entry_id"]) or {"id": ev["entry_id"]}
             kind, label = names[ev["kind"]]
             sig = str(ev["signal"] or "")
@@ -1261,10 +1269,16 @@ def main(argv: list[str] | None = None) -> int:
     if a.report:
         try:
             import closure_eval
+            import closure_policy
         except ModuleNotFoundError:
-            from preprocessor import closure_eval
+            from preprocessor import closure_eval, closure_policy
         rep = closure_eval.write_report(labels=a.labels, history=True)
         out["summary"] = closure_eval.summary_line(rep)
+        # The hill climb reads the same night's decisions (closure_policy.py).
+        try:
+            out["policy"] = closure_policy.update()
+        except Exception as e:
+            out["errors"]["policy"] = f"{type(e).__name__}: {e}"[:200]
     print(json.dumps(out, sort_keys=True))
     return 1 if out["errors"] else 0
 

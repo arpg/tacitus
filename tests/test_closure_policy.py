@@ -465,16 +465,34 @@ def _bot_ns(calls: dict):
         def action(self, _name):
             return lambda fn: fn
     store = {}
+    posted = []
+
+    def post_card(ch, card, thread_ts=None):
+        calls.setdefault("cards", []).append(card)
+        calls.setdefault("threads", []).append(thread_ts)
+        n = len(calls["cards"])
+        posted.append((ch, f"m{n}"))
+        return types.SimpleNamespace(channel=ch, id=f"m{n}", thread_key=thread_ts or f"m{n}")
+
+    class Cards:
+        def by_ref(self, ch, mid):
+            return {"status": "retired" if (ch, mid) in calls.get("retired", []) else "live"} \
+                if (ch, mid) in posted else None
+
+    def replace(ch, ts, text):
+        calls.setdefault("status", []).append(text)
+        calls.setdefault("retired", []).append((ch, ts))
     ns = {"json": json, "time": __import__("time"), "datetime": datetime, "timezone": timezone,
           "uuid": __import__("uuid"), "_chat": _chat, "app": App(),
-          "SCRIPT_DIR": ROOT,
+          "SCRIPT_DIR": ROOT, "_CARDS": Cards(),
+          "_LEDGER_OPEN_STATUSES": ("open", "follow_up", "snoozed"),
           "_private_state": lambda name: Path("/nonexistent") / name,
           "_atomic": types.SimpleNamespace(write_json=lambda p, d, mode=0: store.update(d=d)),
           "log": types.SimpleNamespace(info=lambda *a: None, warning=lambda *a: None),
           "_verify_button_user": lambda ev: True,
           "_resolve_dm_channel": lambda: "dm",
-          "_post_card": lambda ch, card: calls.setdefault("cards", []).append(card),
-          "_replace_buttons_with_status": lambda ch, ts, text: calls.setdefault("status", []).append(text)}
+          "_post_card": post_card,
+          "_replace_buttons_with_status": replace}
     exec(compile(src[start:end], "bot[close-proposals]", "exec"), ns)
     ns["_load_close_batches"] = lambda: store.get("d", {})
     return ns
@@ -521,6 +539,123 @@ def test_a_fresh_proposal_waits_for_the_batch_to_settle():
                                                  "proposal": {"at": now}}]}
     ns["_LAST_PROPOSAL_CHECK"][0] = 0.0
     assert ns["_post_close_proposals"]() == 0 and "cards" not in calls
+
+
+def _ago(**kw) -> str:
+    return (datetime.now(timezone.utc) - timedelta(**kw)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_the_proposals_of_an_hour_make_one_card_and_never_a_single_one_first():
+    """A proposal waits until the oldest uncarded one is an hour old, so
+    the ones that come in that hour join its card; the card's buttons
+    name its rows, for the web chat's Mark done."""
+    calls: dict = {}
+    ns = _bot_ns(calls)
+    rows = [{"id": "t1", "description": "a", "proposal": {"first_at": _ago(minutes=50),
+                                                          "at": _ago(minutes=50)}}]
+    ns["_ledger_cli"] = lambda *a: {"entries": rows} if a[0] == "proposals" else {}
+    ns["_LAST_PROPOSAL_CHECK"][0] = 0.0
+    assert ns["_post_close_proposals"]() == 0          # 50 minutes: still gathering
+    rows.append({"id": "t2", "description": "b", "proposal": {"first_at": _ago(minutes=3),
+                                                            "at": _ago(minutes=3)}})
+    rows[0]["proposal"]["first_at"] = _ago(minutes=61)
+    ns["_LAST_PROPOSAL_CHECK"][0] = 0.0
+    assert ns["_post_close_proposals"]() == 2
+    (card,) = calls["cards"]
+    assert "2 items look done" in card.title
+    assert card.actions[0].value["ledger_ids"] == ["t1", "t2"]
+    batch = ns["_load_close_batches"]()[card.actions[0].value["batch"]]
+    assert (batch["channel"], batch["card"], batch["ids"]) == ("dm", "m1", ["t1", "t2"])
+
+
+def test_one_by_one_posts_the_row_cards_in_the_batch_thread_and_each_names_its_row():
+    calls: dict = {}
+    ns = _bot_ns(calls)
+    rows = [{"id": f"t{i}", "description": f"d{i}", "proposal": {"why": "w", "at": _ago(hours=2)}}
+            for i in (1, 2)]
+    ns["_ledger_cli"] = lambda *a: {"entries": rows} if a[0] == "proposals" else {}
+    ns["_post_close_proposals"](force=True)
+    value = calls["cards"][0].actions[1].value
+    ev = types.SimpleNamespace(value=value, card=types.SimpleNamespace(
+        channel="dm", id="m1", thread_key="dm-thread-1"))
+    ns["handle_review_proposed"](ev)
+    assert calls["threads"][1:] == ["dm-thread-1", "dm-thread-1"]
+    singles = calls["cards"][1:]
+    assert [c.actions[0].value["ledger_id"] for c in singles] == ["t1", "t2"]
+    batches = ns["_load_close_batches"]()
+    assert value["batch"] not in batches and len(batches) == 2
+    cli = []
+    ns["_ledger_cli"] = lambda *a: cli.append(a) or {"action": "closed"}
+    one = types.SimpleNamespace(value=singles[0].actions[0].value,
+                                card=types.SimpleNamespace(channel="dm", id="m2"))
+    ns["handle_close_proposed"](one)
+    assert cli == [("confirm", "--id", "t1")] and len(ns["_load_close_batches"]()) == 1
+
+
+def test_a_card_left_unanswered_a_week_expires_into_the_briefing_line():
+    calls: dict = {}
+    ns = _bot_ns(calls)
+    rows = [{"id": "t1", "description": "a", "proposal": {"at": _ago(hours=2)}},
+            {"id": "t2", "description": "b", "proposal": {"at": _ago(hours=2)}}]
+    ns["_ledger_cli"] = lambda *a: {"entries": rows} if a[0] == "proposals" else {}
+    ns["_post_close_proposals"](force=True)
+    assert ns["_expire_close_cards"](force=True) == 0       # a fresh card stays
+    for b in ns["_load_close_batches"]().values():
+        b["created"] -= ns["CLOSE_CARD_EXPIRE_S"] + 60
+    assert ns["_expire_close_cards"](force=True) == 1
+    assert calls["status"] == [ns["CLOSE_CARD_EXPIRED"]]
+    assert ns["_load_close_batches"]() == {}
+    import chat.thread_state as ts
+    assert ts.outcome(ns["CLOSE_CARD_EXPIRED"]) == "expired"
+    import closure_labels as cl
+    assert cl.outcome_class(ns["CLOSE_CARD_EXPIRED"]) == "expired"
+
+
+def test_an_answered_card_is_dropped_quietly_when_its_week_is_up():
+    calls: dict = {}
+    ns = _bot_ns(calls)
+    rows = [{"id": "t1", "description": "a", "proposal": {"at": _ago(hours=2)}}]
+    ns["_ledger_cli"] = lambda *a: {"entries": rows} if a[0] == "proposals" else {}
+    ns["_post_close_proposals"](force=True)
+    value = calls["cards"][0].actions[1].value                 # Still open, from an old card
+    ns["_ledger_cli"] = lambda *a: {"entries": []} if a[0] == "proposals" else {}
+    ns["handle_keep_open_proposed"](types.SimpleNamespace(
+        value=value["ledger_id"], card=types.SimpleNamespace(channel="dm", id="m1")))
+    for b in ns["_load_close_batches"]().values():
+        b["created"] -= ns["CLOSE_CARD_EXPIRE_S"] + 60
+    assert ns["_expire_close_cards"](force=True) == 0
+    assert ns["_load_close_batches"]() == {} and len(calls["status"]) == 1
+
+
+def test_a_promoted_close_gets_a_note_with_reopen_and_its_mail_archived_after():
+    calls: dict = {}
+    ns = _bot_ns(calls)
+    cli = []
+    rows = [{"id": "t1", "description": "Send the form", "why": "the portal confirmed it"},
+            {"id": "t2", "description": "Reply about the visit", "why": "you replied"}]
+
+    def ledger_cli(*a):
+        cli.append(a)
+        return {"entries": rows} if a == ("promoted",) else {}
+    ns["_ledger_cli"] = ledger_cli
+    assert ns["_note_promoted_closes"](force=True) == 2
+    first, second = calls["cards"]
+    assert calls["threads"] == [None, "m1"]                   # one thread a tick
+    assert first.undo and first.no_default and first.kind == "closed"
+    assert "Send the form" in first.title and "Tap Reopen" in first.title
+    assert [a.id for a in first.actions] == ["reopen_closed"]
+    assert first.actions[0].value == {"ledger_id": "t1"}
+    assert cli[-1] == ("promoted", "--noted", "t1", "t2")
+    assert "\u2014" not in first.title
+    ns["_ledger_cli"] = lambda *a: cli.append(a) or {"entry": {"status": "open"}}
+    ns["handle_reopen_closed"](types.SimpleNamespace(
+        value={"ledger_id": "t1"}, card=types.SimpleNamespace(channel="dm", id="m1")))
+    assert cli[-1][:5] == ("update", "--id", "t1", "--status", "open")
+    assert calls["status"][-1].startswith(":leftwards_arrow_with_hook: Reopened.")
+    import chat.thread_state as ts
+    note = {"kind": "card", "card": {"actions": [{"id": "reopen_closed"}], "undo": True},
+            "posted_at": __import__("time").time()}
+    assert not ts._live(note, __import__("time").time())
 
 
 # ── 6. a date that ends a row ─────────────────────────────────────────

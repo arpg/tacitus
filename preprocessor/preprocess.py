@@ -2037,8 +2037,9 @@ def _reopen_mail_row_if_newer(entry_id: str, item: dict, kind: dict) -> bool:
     """A thread's row is keyed by the conversation, so a second ask in a
     thread whose row was closed found the id taken and was dropped. When
     the new message arrived after the close, the row opens again on it:
-    the new source id, the new ask, and closure's reopen record (the
-    evidence that closed it does not close it again)."""
+    the new source id, the new ask, and closure's renew record (the close
+    stood; evidence from before the new message does not close it again,
+    and evidence after it proposes the close)."""
     row = _ledger_mod.get_entry(entry_id)
     if not row or row.get("status") not in ("completed", "closed"):
         return False
@@ -2055,7 +2056,7 @@ def _reopen_mail_row_if_newer(entry_id: str, item: dict, kind: dict) -> bool:
             prior = json.loads(sql_row["metadata"] or "{}")
         except (json.JSONDecodeError, TypeError):
             prior = {}
-        meta = closure.note_reopen(db, sql_row, actor="intake", meta=prior)
+        meta = closure.note_renew(db, sql_row, received=received, meta=prior)
         now = _ledger_mod._now()
         db.execute("""UPDATE ledger SET status = 'open', source_message_id = ?, description = ?,
                       notes = ?, last_action = ?, metadata = ?, closed_at = NULL, email_archived = 0,

@@ -86,6 +86,10 @@ class ConfirmationCard:
     # withheld its approval, so a thumbs up meant as Send does nothing
     # instead of picking whatever action now comes first (Edit).
     no_default: bool = False
+    # A note of something already done, whose buttons only undo it (a
+    # close made at once, with Reopen). It waits on nobody: the web chat's
+    # conversation states never read it as a card that needs the owner.
+    undo: bool = False
 
 
 # Reactions the owner can put on a card, by the role of the action they pick.

@@ -26,8 +26,10 @@ composes each thread into a brief, and Claude judges the briefs.
        what changed. Refs it invents are dropped. A kept thread (a
        keep_from_anthropic sender) reaches it as counts and dates only.
     4. Code writes: a `done`, `duplicate` or `lapsed` verdict is a close PROPOSAL
-       (closure.propose; the morning briefing's "Looks done?" line and
-       the DM card carry it, one click closes); a note is appended to
+       (closure.propose_or_promote; the morning briefing's "Looks done?"
+       line and the DM card carry it, one click closes; a signal the hill
+       climb promoted closes at once, with the bot's note and its Reopen
+       button); a note is appended to
        last_action with the date; a thread goes onto the row's
        `conversation_id` when the row's own reply cannot close it
        (ledger.closes_on_reply), else into metadata only; a row the
@@ -566,7 +568,7 @@ def apply(group: dict, items: list[dict], threads: dict[str, dict], verdicts: li
     by_ref = {it["ref"]: it for it in items}
     rows = {f"R{n}": r for n, r in enumerate(group["rows"], 1)}
     day = f"{now.astimezone():%Y-%m-%d}"
-    out = {"proposed": [], "noted": [], "threaded": [], "filed": 0, "skipped": []}
+    out = {"proposed": [], "closed": [], "noted": [], "threaded": [], "filed": 0, "skipped": []}
     for v in verdicts:
         row = rows.get(v["ref"])
         if row is None:
@@ -604,6 +606,8 @@ def apply(group: dict, items: list[dict], threads: dict[str, dict], verdicts: li
             rec["proposal"] = res.get("action")
             if res.get("action") in ("proposed", "dry-run"):
                 out["proposed"].append({"id": row["id"], "verdict": v["verdict"], "why": why})
+            elif res.get("action") == "closed":
+                out["closed"].append({"id": row["id"], "verdict": v["verdict"], "why": why})
             else:
                 out["skipped"].append({"id": row["id"], "why": res.get("why") or res.get("action")})
             touched = True
@@ -621,9 +625,11 @@ def apply(group: dict, items: list[dict], threads: dict[str, dict], verdicts: li
 
 
 def _propose(entry_id: str, **kw) -> dict:
+    """The proposal, or the close at once for a signal the hill climb
+    promoted (closure.propose_or_promote)."""
     conn = _ledger.guarded_connect(_ledger.DB_PATH)
     try:
-        res = closure.propose(conn, entry_id, actor=ACTOR, **kw)
+        res = closure.propose_or_promote(conn, entry_id, actor=ACTOR, **kw)
         conn.commit()
         return res
     finally:
@@ -665,7 +671,7 @@ def run(*, dry_run: bool = False, only: str = "", now: datetime | None = None,
     df = doc_freq(rows)
     table = thread_table(index, now=now, user=user)
     judge = judge or _hosted_judge
-    rec.update(rows=len(rows), groups=len(grp), linked=linked, proposed=[], noted=[],
+    rec.update(rows=len(rows), groups=len(grp), linked=linked, proposed=[], closed=[], noted=[],
                threaded=[], filed=0, skipped=[], failed=[], cost_usd=0.0)
     for g in grp:
         items, threads = items_for(g, index=index, df=df, user=user, now=now, brief_of=brief_of,
@@ -684,8 +690,8 @@ def run(*, dry_run: bool = False, only: str = "", now: datetime | None = None,
             rec["failed"].append({"group": g["label"], "error": "no verdicts parsed"})
             continue
         out = apply(g, items, threads, verdicts, now=now, dry_run=dry_run, store_conn=conn)
-        for k in ("proposed", "noted", "threaded", "skipped"):
-            rec[k].extend(out[k])
+        for k in ("proposed", "closed", "noted", "threaded", "skipped"):
+            rec[k].extend(out.get(k) or [])
         rec["filed"] += out["filed"]
     rec["seconds"] = round(time.monotonic() - t0, 1)
     remote_llm.append(RUNS, rec)
@@ -698,6 +704,8 @@ def summary_line(rec: dict) -> str:
     parts = [f"{rec.get('rows', 0)} rows in {rec.get('groups', 0)} groups"]
     n = len(rec.get("proposed") or [])
     parts.append(f"{n} look{'s' if n == 1 else ''} done (on the morning card)")
+    if rec.get("closed"):
+        parts.append(f"{len(rec['closed'])} closed at once (a note with Reopen in your DM)")
     parts.append(f"{len(rec.get('noted') or [])} notes")
     if rec.get("threaded"):
         parts.append(f"{len(rec['threaded'])} rows given their thread")

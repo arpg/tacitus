@@ -150,6 +150,8 @@ WRITERS = [
     W("quiet_hours", lambda m, p: m.defer("ea-assistant", "x"), attr="QUEUE_FILE"),
     W("quiet_hours", lambda m, p: m.set_hour_override("morning-briefing", "2026-09-29", 7), attr="HOUR_OVERRIDE_FILE"),
     W("ea_channels", lambda m, p: m._mutate(lambda rows: rows.update(C1={"a": 1}), p), name="config/ea-channels.json"),
+    W("closure_policy", lambda m, p: m._write(lambda cur: {**cur, "frozen": True}, p),
+      name="state/closure-policy.json"),
     # resident_io: replace
     W("draft_events", lambda m, p: m._write_cursor(7), attr="JOURNAL", name="draft-events.jsonl.cursor"),
     W("draft_capture", lambda m, p: m.capture("d1", BODY), attr="STORE", name=lambda m: f"draft-bodies/{m._key('d1')}.json"),

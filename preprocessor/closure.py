@@ -22,10 +22,24 @@ its thread, the scrubber as the user's Outlook reply and the mail tick as
 a message in the thread. After it only the user's word, a duplicate or a
 send that names the row closes the row; other evidence proposes.
 
-Every transition (close, reopen, propose, confirm, reject) appends a row
-to `ledger_events` with its signal, actor and evidence, so `report()`
-counts, per signal, the closes later reopened (false closes), the
-proposals confirmed and rejected, and the closes the user had to state.
+A new message on a closed row's thread opens the row again (intake,
+note_renew()). That is a new ask, not the user's judgment: the close
+stood, and no signal is refused for it. Evidence from before the new
+message is refused; evidence after it proposes, since a reply or an
+archive ends an active thread's work less often than a first ask's.
+
+The hill climb (closure_policy.py) moves whole signals between the two
+tiers by the user's record with them: a `promoted` signal's proposals
+close at once (do-and-tell: the bot archives the mail and posts one line
+with a Reopen button), a `demoted` signal's closes become proposals. Only
+an owner process's evidence is promoted, never a row the user kept open
+or one that waits on someone else.
+
+Every transition (close, reopen, renew, propose, confirm, reject)
+appends a row to `ledger_events` with its signal, actor and evidence, so
+`report()` counts, per signal, the closes later reopened (false closes),
+the closes a new message renewed, the proposals confirmed and rejected,
+and the closes the user had to state.
 
 The policy lives here and nowhere else: a closer names its signal and
 `settle()` decides what that signal may do to this row.
@@ -43,6 +57,10 @@ except ModuleNotFoundError:  # imported as preprocessor.<mod>
 
 DECISIVE = "decisive"
 PROPOSAL = "proposal"
+# The tiers a hill-climb move gives (closure_policy.py): a proposal that
+# closed at once, and decisive evidence that proposed instead.
+PROMOTED = "promoted"
+DEMOTED = "demoted"
 
 # The user acted on this row: a statement in chat, a click on a card or the
 # dashboard, a standing rule they wrote that says such mail is no work.
@@ -73,6 +91,13 @@ LLM_VETO_DAYS = 14
 # The close_vetoes key for "the user kept this whole row open at this
 # time", set by reject() and note_reopen() beside the per-signal keys.
 KEPT_OPEN = "*"
+# The close_vetoes key for "a new message reopened this row at this time"
+# (note_renew): evidence no newer than it answered the earlier ask, and
+# newer evidence proposes (tier()). It refuses no signal for good.
+NEW_ASK = "+"
+# The actor of intake's reopen on a new message. Its `reopen` events from
+# before note_renew existed read as renewals.
+RENEW_ACTOR = "intake"
 
 EVENTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ledger_events (
@@ -132,9 +157,12 @@ def tier(signal: str, entry: dict) -> str:
         return PROPOSAL
     if signal in LINKED_SIGNALS:
         return DECISIVE
-    if kept_open_at(entry):
+    if kept_open_at(entry) or renewed_at(entry):
         # The user judged this row open after evidence of this kind looked
-        # like an answer; their word or a send that names the row decides.
+        # like an answer, or a new message reopened it (an active thread,
+        # where a reply or an archive ends the work less often): their word
+        # or a send that names the row decides, other evidence proposes,
+        # and the hill climb may promote a signal the user confirms here.
         return PROPOSAL
     if signal in REPLY_SIGNALS:
         return DECISIVE if _ledger.closes_on_reply(entry) else PROPOSAL
@@ -190,6 +218,12 @@ def kept_open_at(entry: dict) -> str:
     return str(vetoes.get(KEPT_OPEN) or "") if isinstance(vetoes, dict) else ""
 
 
+def renewed_at(entry: dict) -> str:
+    """The clock of the last new message that reopened this row, or ""."""
+    vetoes = entry.get("close_vetoes")
+    return str(vetoes.get(NEW_ASK) or "") if isinstance(vetoes, dict) else ""
+
+
 def vetoed(entry: dict, signal: str, evidence_ts: str = "", now: datetime | None = None) -> bool:
     """True when the user has refused this evidence for this row: "Still
     open" on a proposal or a reopen after a close, with the evidence no
@@ -197,7 +231,8 @@ def vetoed(entry: dict, signal: str, evidence_ts: str = "", now: datetime | None
     through KEPT_OPEN, every other signal whose evidence is as old. Newer
     evidence (a later reply, a later archive) is new information and is
     heard. A model signal has no evidence clock; a refusal silences it for
-    LLM_VETO_DAYS."""
+    LLM_VETO_DAYS. A new ask (NEW_ASK) refuses evidence with a clock no
+    newer than the new message; evidence with no clock is heard."""
     vetoes = entry.get("close_vetoes") or {}
     if not isinstance(vetoes, dict):
         return False
@@ -206,6 +241,9 @@ def vetoed(entry: dict, signal: str, evidence_ts: str = "", now: datetime | None
     ev = _parse(evidence_ts)
     at = vetoes.get(signal) or (vetoes.get(family) if family == "llm" else None)
     if at and _refuses(at, family, ev, now, same_signal=True):
+        return True
+    renewed = _parse(vetoes.get(NEW_ASK))
+    if renewed is not None and ev is not None and ev <= renewed:
         return True
     kept = vetoes.get(KEPT_OPEN)
     return bool(kept) and _refuses(kept, family, ev, now, same_signal=False)
@@ -240,12 +278,16 @@ SWEEP_SIGNALS = USER_SIGNALS | REPLY_SIGNALS | {"user_confirmed"}
 
 
 def _close_row(conn, row, *, signal: str, actor: str, note: str, evidence,
-               evidence_ts: str, tier_: str, sweep: bool | None = None) -> list[str]:
+               evidence_ts: str, tier_: str, sweep: bool | None = None,
+               why: str = "") -> list[str]:
     """Write the close and its event; sweep the detector siblings the same
-    evidence answers. Returns the ids closed (the row first)."""
+    evidence answers. Returns the ids closed (the row first). A promoted
+    close keeps `why`, the line the bot's note gives the user."""
     now = _now()
     meta = _meta(row)
     meta["closed_by"] = {"signal": signal, "actor": actor, "tier": tier_, "at": now}
+    if tier_ == PROMOTED:
+        meta["closed_by"]["why"] = (why or note or "")[:300]
     meta.pop("close_proposal", None)
     conn.execute(
         "UPDATE ledger SET status = 'completed', closed_at = ?, last_action = ?, "
@@ -289,9 +331,12 @@ def _sweep_siblings(conn, row, *, note: str, actor: str, evidence_ts: str,
                              "tier": DECISIVE, "at": now, "with": row["id"]}
         meta.pop("close_proposal", None)
         sib_note = f"co-closed with {row['id']}: {note}"
+        # email_archived stays as it is: the close's archive step
+        # (ledger._archive_after_close) moves the sibling's own mail and
+        # sets it then.
         conn.execute(
             "UPDATE ledger SET status = 'completed', closed_at = ?, last_action = ?, "
-            "email_archived = 1, updated_at = ?, metadata = ? WHERE id = ?",
+            "updated_at = ?, metadata = ? WHERE id = ?",
             (now, sib_note, now, json.dumps(meta, sort_keys=True, default=str), sib["id"]))
         record_event(conn, sib["id"], "close", tier=DECISIVE, signal="detector_sibling",
                      actor=actor, evidence={"with": row["id"]}, note=sib_note, ts=now)
@@ -320,20 +365,80 @@ def settle(conn: sqlite3.Connection, entry_id: str, *, signal: str, actor: str,
             and vetoed(entry, signal, evidence_ts)):
         return {"action": "vetoed", "why": f"the user kept this row open against {signal}"}
     t = tier(signal, entry)
-    if t == DECISIVE:
+    move = hill_move(signal, entry, actor, t)
+    if move == DEMOTED:
+        return propose(conn, entry_id, signal=signal, actor=actor, note=why or note,
+                       evidence=evidence, evidence_ts=evidence_ts, _row=row, _tier=DEMOTED)
+    if t == DECISIVE or move == PROMOTED:
+        t = move or t
         return {"action": "closed", "tier": t, "signal": signal,
                 "ids": _close_row(conn, row, signal=signal, actor=actor, note=note,
                                   evidence=evidence, evidence_ts=evidence_ts, tier_=t,
-                                  sweep=sweep)}
+                                  sweep=sweep, why=why)}
     return propose(conn, entry_id, signal=signal, actor=actor, note=why or note,
                    evidence=evidence, evidence_ts=evidence_ts, _row=row)
 
 
+def resident_actor(actor: str) -> bool:
+    """True for a close or proposal a resident CLI asked for (`cli:<lane>`;
+    the owner's own shell is `cli:owner`): the hill climb never promotes
+    it."""
+    a = str(actor or "")
+    return a.startswith("cli:") and a != "cli:owner"
+
+
+def hill_move(signal: str, entry: dict, actor: str, base: str) -> str:
+    """The hill climb's move for this signal on this row (closure_policy.py):
+    PROMOTED when a proposal closes at once, DEMOTED when decisive evidence
+    proposes instead, else "". A plugin row, a resident's request, a row
+    that waits on someone else and a row the user kept open are never
+    promoted."""
+    if is_plugin_row(entry):
+        return ""
+    try:
+        import closure_policy as _policy
+    except ModuleNotFoundError:  # imported as preprocessor.<mod>
+        from preprocessor import closure_policy as _policy
+    try:
+        state = _policy.state(signal)
+    except Exception:
+        return ""
+    if base == DECISIVE and state == DEMOTED:
+        return DEMOTED
+    if (base == PROPOSAL and state == PROMOTED and not resident_actor(actor)
+            and not _ledger.is_waiting(entry) and not kept_open_at(entry)):
+        return PROMOTED
+    return ""
+
+
+def propose_or_promote(conn: sqlite3.Connection, entry_id: str, *, signal: str, actor: str,
+                       note: str, evidence=None, evidence_ts: str = "") -> dict:
+    """A proposer's entry point (the reconcile, the open-claims audit, the
+    bot's reply-in-thread): the proposal, or the close at once when the hill
+    climb promoted the signal for this row. Never a close on any other
+    ground: decisive evidence goes through settle()."""
+    ensure_schema(conn)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM ledger WHERE id = ?", (entry_id,)).fetchone()
+    if row is not None and row["status"] in _ledger.OPEN_STATUSES:
+        entry = _ledger._row_to_dict(row)
+        if (not vetoed(entry, signal, evidence_ts)
+                and hill_move(signal, entry, actor, PROPOSAL) == PROMOTED):
+            return {"action": "closed", "tier": PROMOTED, "signal": signal,
+                    "ids": _close_row(conn, row, signal=signal, actor=actor, note=note,
+                                      evidence=evidence, evidence_ts=evidence_ts,
+                                      tier_=PROMOTED, why=note)}
+    return propose(conn, entry_id, signal=signal, actor=actor, note=note, evidence=evidence,
+                   evidence_ts=evidence_ts, _row=row)
+
+
 def propose(conn: sqlite3.Connection, entry_id: str, *, signal: str, actor: str,
-            note: str, evidence=None, evidence_ts: str = "", _row=None) -> dict:
+            note: str, evidence=None, evidence_ts: str = "", _row=None,
+            _tier: str = PROPOSAL) -> dict:
     """Mark an open row as looking done. Its status does not change.
     Evidence the user already refused for this row (vetoed()) proposes
-    nothing."""
+    nothing. The event's tier is DEMOTED for decisive evidence the hill
+    climb holds back."""
     ensure_schema(conn)
     conn.row_factory = sqlite3.Row
     row = _row or conn.execute("SELECT * FROM ledger WHERE id = ?", (entry_id,)).fetchone()
@@ -355,7 +460,7 @@ def propose(conn: sqlite3.Connection, entry_id: str, *, signal: str, actor: str,
     }
     _write_meta(conn, row["id"], meta)
     if signal not in (current.get("signals") or []):
-        record_event(conn, row["id"], "propose", tier=PROPOSAL, signal=signal,
+        record_event(conn, row["id"], "propose", tier=_tier, signal=signal,
                      actor=actor, evidence=evidence, note=note)
     return {"action": "proposed", "tier": PROPOSAL, "signal": signal, "ids": [row["id"]]}
 
@@ -420,8 +525,10 @@ def infer_signal(note: str) -> str:
 def note_reopen(conn: sqlite3.Connection, row, *, actor: str = "", meta: dict | None = None) -> dict:
     """A closed row is open again: the evidence that closed it was wrong.
     Records the event and vetoes the closing signal, and any other evidence
-    no newer than now, for this row. Returns the metadata to write (the
-    caller owns the row update)."""
+    no newer than now, for this row. A close at once (decisive or
+    promoted) that the user reopens moves its signal back to proposing at
+    once (closure_policy.demote_now); the nightly run keeps the numbers.
+    Returns the metadata to write (the caller owns the row update)."""
     meta = dict(meta if meta is not None else _meta(row))
     closed_by = meta.get("closed_by") if isinstance(meta.get("closed_by"), dict) else {}
     signal = closed_by.get("signal") or infer_signal(row["last_action"] or "")
@@ -432,7 +539,48 @@ def note_reopen(conn: sqlite3.Connection, row, *, actor: str = "", meta: dict | 
     meta["reopened_at"] = now
     record_event(conn, row["id"], "reopen", signal=signal, actor=actor,
                  evidence={"closed_by": closed_by}, note=(row["last_action"] or "")[:400], ts=now)
+    how = closed_by.get("tier") or ""
+    if signal and how in (DECISIVE, PROMOTED) and not is_plugin_row(_ledger._row_to_dict(row)):
+        try:
+            import closure_policy as _policy
+        except ModuleNotFoundError:  # imported as preprocessor.<mod>
+            from preprocessor import closure_policy as _policy
+        try:
+            _policy.demote_now(signal, how, entry_id=row["id"])
+        except Exception:
+            pass
     return meta
+
+
+def note_renew(conn: sqlite3.Connection, row, *, received: str = "", actor: str = RENEW_ACTOR,
+               meta: dict | None = None) -> dict:
+    """A closed row opens again on a new message in its thread (intake): a
+    new ask, so the close stood. Records a `renew` event (no false close)
+    and refuses evidence no newer than the new message (NEW_ASK). It sets
+    no veto on the closing signal and no KEPT_OPEN: the user's archive of
+    the new mail, or a reply after it, proposes the close (tier()) instead
+    of being refused for good. Returns the metadata to write (the caller
+    owns the row update)."""
+    meta = dict(meta if meta is not None else _meta(row))
+    closed_by = meta.get("closed_by") if isinstance(meta.get("closed_by"), dict) else {}
+    signal = closed_by.get("signal") or infer_signal(row["last_action"] or "")
+    now = _now()
+    at = received if _parse(received) is not None else now
+    vetoes = meta.get("close_vetoes") if isinstance(meta.get("close_vetoes"), dict) else {}
+    # The new message is the clock: a reply or a statement newer than it
+    # answers the new ask.
+    vetoes[NEW_ASK] = (_parse(at) - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    meta["close_vetoes"] = vetoes
+    meta["renewed_at"] = now
+    record_event(conn, row["id"], "renew", signal=signal, actor=actor,
+                 evidence={"closed_by": closed_by, "received": received},
+                 note=(row["last_action"] or "")[:400], ts=now)
+    return meta
+
+
+def is_renewal(kind: str, actor: str) -> bool:
+    """A `renew` event, or intake's `reopen` from before note_renew."""
+    return kind == "renew" or (kind == "reopen" and str(actor or "") == RENEW_ACTOR)
 
 
 def pending_proposals(conn: sqlite3.Connection, *, include_plugins: bool = False) -> list[dict]:
@@ -466,29 +614,32 @@ def mark_carded(conn: sqlite3.Connection, entry_ids, at: str = "") -> None:
 
 def report(conn: sqlite3.Connection, since: str = "") -> dict:
     """Per signal since `since`: decisive closes, those later reopened
-    (false closes), proposals, confirmed, rejected and still pending; and
-    the closes the user had to state (missed by every signal)."""
+    (false closes) or renewed by a new message (not false), the closes the
+    hill climb promoted, proposals, confirmed, rejected and still pending;
+    and the closes the user had to state (missed by every signal)."""
     ensure_schema(conn)
     conn.row_factory = sqlite3.Row
     evs = conn.execute(
         "SELECT * FROM ledger_events WHERE ts >= ? ORDER BY seq", (since or "",)).fetchall()
     by: dict[str, dict] = {}
     last_close: dict[str, str] = {}
-    last_prop: dict[str, str] = {}
 
     def slot(sig: str) -> dict:
-        return by.setdefault(sig or "?", {"closed": 0, "reopened": 0, "proposed": 0,
+        return by.setdefault(sig or "?", {"closed": 0, "reopened": 0, "renewed": 0,
+                                          "promoted": 0, "proposed": 0,
                                           "confirmed": 0, "rejected": 0})
     for e in evs:
         k, sig, eid = e["kind"], e["signal"] or "", e["entry_id"]
         if k == "close" and sig != "user_confirmed":
             slot(sig)["closed"] += 1
+            if e["tier"] == PROMOTED:
+                slot(sig)["promoted"] += 1
             last_close[eid] = sig
-        elif k == "reopen" and eid in last_close:
-            slot(last_close.pop(eid))["reopened"] += 1
+        elif k in ("reopen", "renew") and eid in last_close:
+            key = "renewed" if is_renewal(k, e["actor"]) else "reopened"
+            slot(last_close.pop(eid))[key] += 1
         elif k == "propose":
             slot(sig)["proposed"] += 1
-            last_prop[eid] = sig
         elif k == "confirm":
             slot(sig)["confirmed"] += 1
         elif k == "reject":
@@ -499,4 +650,77 @@ def report(conn: sqlite3.Connection, since: str = "") -> dict:
     false_closes = sum(v["reopened"] for v in by.values())
     return {"since": since, "signals": by, "pending_proposals": pending,
             "user_stated_closes": stated, "evidence_closes": decisive_closes,
-            "false_closes": false_closes}
+            "false_closes": false_closes,
+            "renewed_closes": sum(v["renewed"] for v in by.values())}
+
+
+def repair_renewals(conn: sqlite3.Connection) -> list[str]:
+    """Rows intake reopened on a new message before note_renew existed carry
+    the vetoes of a user's reopen: KEPT_OPEN, and a veto on the closing
+    signal, which refuses an archive of the new mail for good, so the user
+    had to close the row in words. On a row with no judgment of the user's
+    (no reject, no other reopen), turn those into NEW_ASK, as note_renew
+    writes now. Returns the ids changed; the caller commits. Running it
+    twice changes nothing."""
+    ensure_schema(conn)
+    conn.row_factory = sqlite3.Row
+    evs: dict[str, list] = {}
+    for e in conn.execute("SELECT entry_id, kind, ts, signal, actor FROM ledger_events "
+                          "WHERE kind IN ('reopen', 'reject', 'renew') ORDER BY seq"):
+        evs.setdefault(e["entry_id"], []).append(e)
+    changed = []
+    # Closed rows too: a later renewal carries their vetoes forward.
+    for row in conn.execute("SELECT * FROM ledger WHERE metadata LIKE '%close_vetoes%'").fetchall():
+        history = evs.get(row["id"]) or []
+        intake = [e for e in history if e["kind"] == "reopen" and e["actor"] == RENEW_ACTOR]
+        if not intake or any(e["kind"] == "reject" or (e["kind"] == "reopen"
+                                                       and e["actor"] != RENEW_ACTOR)
+                             for e in history):
+            continue
+        meta = _meta(row)
+        vetoes = meta.get("close_vetoes") if isinstance(meta.get("close_vetoes"), dict) else {}
+        stamps = {str(e["ts"]) for e in intake}
+        sigs = {(str(e["signal"] or ""), str(e["ts"])) for e in intake}
+        drop = [k for k, v in vetoes.items()
+                if (k == KEPT_OPEN and str(v) in stamps)
+                or any(str(v) == t and (k == s or (k == "llm" and s.startswith("llm:")))
+                       for s, t in sigs)]
+        if not drop:
+            continue
+        for k in drop:
+            vetoes.pop(k, None)
+        vetoes[NEW_ASK] = max([str(vetoes.get(NEW_ASK) or "")] + sorted(stamps))
+        meta["close_vetoes"] = vetoes
+        _write_meta(conn, row["id"], meta)
+        changed.append(row["id"])
+    return changed
+
+
+def promoted_closes(conn: sqlite3.Connection) -> list[dict]:
+    """Rows the hill climb closed at once that the bot has not told the
+    user about yet (closed_by.noted unset), oldest first."""
+    conn.row_factory = sqlite3.Row
+    out = []
+    for r in conn.execute("SELECT * FROM ledger WHERE status = 'completed' "
+                          "AND metadata LIKE '%\"promoted\"%'").fetchall():
+        d = _ledger._row_to_dict(r)
+        cb = d.get("closed_by") if isinstance(d.get("closed_by"), dict) else {}
+        if cb.get("tier") == PROMOTED and not cb.get("noted"):
+            out.append(d)
+    out.sort(key=lambda d: d.get("closed_at") or "")
+    return out
+
+
+def mark_noted(conn: sqlite3.Connection, entry_id: str, at: str = "") -> bool:
+    """Note that the user was told of this promoted close."""
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM ledger WHERE id = ?", (entry_id,)).fetchone()
+    if row is None:
+        return False
+    meta = _meta(row)
+    cb = meta.get("closed_by") if isinstance(meta.get("closed_by"), dict) else None
+    if not cb or cb.get("tier") != PROMOTED:
+        return False
+    cb["noted"] = at or _now()
+    _write_meta(conn, entry_id, meta)
+    return True

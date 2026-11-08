@@ -50,22 +50,31 @@ web chat's store. This module gives it what only the EA has:
       label store (closure_labels.py, docs/ea/closure-signals.md). A tap
       also closes the loop on the ledger where it is safe:
 
-      - "Mark done" on a conversation whose linked rows are open closes
-        them on the owner's word (`ledger.py close --user-said "marked
-        done in the web chat" --skip-archive`: no mail moves) and logs
-        each close with log_missed_closure.py, since a closure the owner
-        had to state is a detector defect.
+      - "Mark done" on a "This looks done" card whose buttons still act
+        is the card's Close: `ledger.py confirm` for each row the card
+        names that still carries its proposal, and the card's buttons
+        give way to a status line (CARD_STATUS, the bot's), so one tap
+        settles the card, the row and the conversation.
+      - "Mark done" on any other conversation: a linked open row that
+        carries a close proposal is confirmed the same way; any other
+        linked open row closes on the owner's word (`ledger.py close
+        --user-said "marked done in the web chat"`), which archives its
+        mail as any close does, and is logged with log_missed_closure.py,
+        since a closure the owner had to state is a detector defect.
       - "Needs me" on a conversation whose row carries a close proposal
-        rejects it (`ledger.py reject`); on one whose row a signal closed
-        in the last REOPEN_DAYS days (not the owner's own word, nor a
-        duplicate fold) reopens it (`ledger.py update --status open`,
-        which vetoes the closing signal). Each then gets item_feedback's
-        `still_open`.
+        rejects it (`ledger.py reject`; on a live "This looks done" card
+        that is its Still open, and the card gives way to a status line);
+        on one whose row a signal closed in the last REOPEN_DAYS days (not
+        the owner's own word, nor a duplicate fold) reopens it (`ledger.py
+        update --status open`, which vetoes the closing signal). Each then
+        gets item_feedback's `still_open`.
 
       Nothing is written for an automated post (a briefing names many
       rows), for more than WRITEBACK_CAP rows, or for several open rows
-      on different mail threads. Every write goes through those CLIs, as
-      the bot's other ledger writes do; nothing writes the database here.
+      on different mail threads; a card names its own rows, so none of
+      those limits holds a card's Close. Every write goes through those
+      CLIs, as the bot's other ledger writes do; nothing writes the
+      database here.
 
 enable(frontend) hands them to a web front end (ea-chat-bot.py calls it
 for the web chat, alone or as a shadow).
@@ -283,13 +292,57 @@ def auto_closed(entry: dict) -> str:
     return prov if prov in ("scrubber", "briefing_llm", "inbox_archive") else ""
 
 
+def proposal_card(messages: list[dict], now: float) -> tuple[dict, list[str]] | None:
+    """The live "This looks done" card in a thread and the ledger ids its
+    buttons name (each action's `ledger_id` or `ledger_ids`), or None.
+    A card copied as text from Zulip's past names no ids."""
+    for m in reversed(messages or []):
+        card = m.get("card") if isinstance(m.get("card"), dict) else {}
+        if card.get("kind") != "close" or not _ts._live(m, now):
+            continue
+        ids: list[str] = []
+        for a in card.get("actions") or []:
+            v = a.get("value") if isinstance(a, dict) else None
+            if not isinstance(v, dict):
+                continue
+            for x in [v.get("ledger_id")] + list(v.get("ledger_ids") or []):
+                if isinstance(x, str) and x and x not in ids:
+                    ids.append(x)
+        if ids:
+            return m, ids
+    return None
+
+
+def _card_plan(ctx: dict, state: str, now: float, entries: list[dict] | None) -> dict | None:
+    """A tap on a live proposal card's own thread: Mark done is its Close
+    (confirm), Needs me its Still open (reject), for the rows the card
+    names that still carry a proposal. None when the thread holds no
+    such card."""
+    got = proposal_card(ctx.get("messages") or [], now)
+    if got is None:
+        return None
+    m, ids = got
+    found = entries if entries is not None else _entries(ids)
+    pending = [e["id"] for e in found if e.get("id") in ids and not _closure.is_plugin_row(e)
+               and str(e.get("status") or "") in OPEN_STATUSES
+               and isinstance(e.get("close_proposal"), dict)]
+    op = "confirm" if state == "done" else "reject"
+    return {"action": op if pending else "none", "ops": [(op, i) for i in pending],
+            "card": (str(m.get("channel") or ctx.get("channel") or ""), str(m.get("id") or ""))}
+
+
 def writeback_plan(ctx: dict, state: str, *, now: float,
                    entries: list[dict] | None = None) -> dict:
-    """What a tap writes back: {"action", "ops": [(op, ledger id), ...]}.
-    op is close, reject or reopen. The action says why nothing is written
-    when the ops are empty (none, automated, ambiguous)."""
+    """What a tap writes back: {"action", "ops": [(op, ledger id), ...]},
+    with "card": (channel, message id) for a proposal card the tap
+    answers. op is confirm, close, reject or reopen. The action says why
+    nothing is written when the ops are empty (none, automated,
+    ambiguous)."""
     if state not in ("done", "needs_you"):
         return {"action": "none", "ops": []}
+    card = _card_plan(ctx, state, now, entries)
+    if card is not None:
+        return card
     rows = ctx.get("ledger") or []
     if not rows:
         return {"action": "none", "ops": []}
@@ -306,7 +359,11 @@ def writeback_plan(ctx: dict, state: str, *, now: float,
         convs = {str(e.get("conversation_id") or "") for e in open_}
         if len(open_) > WRITEBACK_CAP or (len(open_) > 1 and (len(convs) > 1 or "" in convs)):
             return {"action": "ambiguous", "ops": []}
-        return {"action": "close", "ops": [("close", e["id"]) for e in open_]}
+        # A row that looked done was right: the tap confirms its proposal
+        # (no missed closure); any other row closes on the owner's word.
+        ops = [("confirm" if isinstance(e.get("close_proposal"), dict) else "close", e["id"])
+               for e in open_]
+        return {"action": "_".join(sorted({op for op, _ in ops})), "ops": ops}
     since = now - REOPEN_DAYS * 86400
     ops = [("reject", e["id"]) for e in found
            if str(e.get("status") or "") in OPEN_STATUSES
@@ -345,17 +402,28 @@ def _cli(script: str, *args: str) -> dict:
 
 # The CLI runner; tests put a fake ledger here.
 RUN = _cli
+# The bot's hook that replaces a card's buttons with a status line:
+# fn(channel, message id, text). The bot sets it (ea-chat-bot.py); None
+# leaves the card as it is.
+CARD_STATUS = None
+# The status line a proposal card takes when a tap on its thread answered it.
+CARD_DONE = {"confirm": ":white_check_mark: Closed. You marked it done.",
+             "reject": ":pushpin: Kept open. You marked it as needing you.",
+             "none": ":information_source: Already closed or changed."}
 
 
 def run_writeback(plan: dict) -> list[dict]:
-    """Carry out a plan's ops through the CLIs; one result per op."""
+    """Carry out a plan's ops through the CLIs; one result per op. A
+    proposal card the plan answers then gives way to its status line."""
     today = date.today().isoformat()
     done = []
     for op, lid in plan.get("ops") or []:
         try:
-            if op == "close":
+            if op == "confirm":
+                res = RUN("ledger.py", "confirm", "--id", lid, "--actor", WEB_SOURCE)
+            elif op == "close":
                 res = RUN("ledger.py", "close", "--id", lid, "--user-said", WEB_DONE_PHRASE,
-                          "--note", WEB_DONE_NOTE, "--skip-archive")
+                          "--note", WEB_DONE_NOTE)
                 if res.get("action") == "closed":
                     RUN("log_missed_closure.py", "--ledger-id", lid, "--user-message",
                         WEB_DONE_PHRASE, "--source", WEB_SOURCE, "--quiet")
@@ -376,6 +444,16 @@ def run_writeback(plan: dict) -> list[dict]:
         log.info("web chat: owner tap wrote back %s on ledger row %s: %s", op, lid,
                  res.get("action") or res.get("error") or res.get("_exit"))
         done.append({"op": op, "id": lid, "ok": bool(res.get("ok", res.get("_exit") == 0))})
+    card = plan.get("card")
+    ops = {op for op, _ in plan.get("ops") or []}
+    # A card whose rows were all settled elsewhere loses its dead buttons too.
+    word = ops.pop() if len(ops) == 1 and any(d["ok"] for d in done) else \
+        "none" if not ops else ""
+    if card and word and callable(CARD_STATUS):
+        try:
+            CARD_STATUS(card[0], card[1], CARD_DONE[word])
+        except Exception as e:
+            log.warning("web chat: the card a tap answered kept its buttons: %s", e)
     return done
 
 

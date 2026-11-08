@@ -2547,6 +2547,30 @@ scrubber moves past a refused signal to the next one, so stale evidence
 does not hide newer evidence of another kind. Plugin rows keep their own
 lifecycle: their closes are recorded, never second-guessed.
 
+The table is where each signal starts. The closure hill climb
+(`preprocessor/closure_policy.py`) moves whole signals by the owner's
+record with them, read nightly from `ledger_events`: a signal whose
+proposals he confirmed (15 decisions or more, precision 0.92 or more, none
+kept open in the last 10) is promoted and closes at once, do-and-tell (the
+bot archives the mail and posts a note with a Reopen button that waits on
+nobody); a signal whose at-once closes he reopened (one in the last 5, or
+precision under 0.85) is demoted and proposes. The owner's word and
+clicks, a duplicate, a standing rule and a send that names the row stay
+decisive and out of the loop. The state is in
+`~/.ea/state/closure-policy.json`; each move posts one line to the health
+channel; `closure.hill_climb` in `ea-config.json` turns it off. A new
+message on a closed row's thread reopens it as a `renew`: the close stood
+(no false close, no veto on its signal), older evidence is refused, and
+newer evidence proposes, since on the owner's record a reply or an
+archive ends an active thread's work less often.
+
+Proposals of one hour share one card; "One by one" posts the row cards in
+that card's thread; a card with no answer for 7 days gives way to an
+expiry line, and its rows stay on the briefing's "Looks done?" line. Each
+button names its rows, so the web chat's Mark done on the card's thread
+is its Close (`web_thread_state.py`). A send's close archives the mail it
+settles.
+
 A row says what finishes it when it is written: `ledger.py add
 --closes-on reply|submission|event|manual|lapse`. That is how a task whose
 deliverable is an email closes on the reply without a click, while a portal
@@ -2565,11 +2589,11 @@ handled", and the nightly reconcile can propose `lapsed` for a row the
 EA wrote whose thread shows the chance ended (the results came out, the
 event was held). Work still owed after its date never lapses.
 
-Every transition (close, reopen, propose, confirm, reject) is a row in
-`ledger_events` with its signal, actor and evidence, and `ledger.py
+Every transition (close, reopen, renew, propose, confirm, reject) is a
+row in `ledger_events` with its signal, actor and evidence, and `ledger.py
 closure-report` counts per signal the closes later reopened (false
-closes), the proposals confirmed and rejected, and the closes the user had
-to state. The detector-sibling sweep takes only the asks that came before
+closes) or renewed, the proposals confirmed and rejected, the closes the
+user had to state, and the hill climb's state for the signal. The detector-sibling sweep takes only the asks that came before
 the evidence; an archive closes one row per mail; a linked send on another
 thread closes its row alone. `graph_client` records every mail move the EA
 makes (`ea_moves.py`, owner-private), and `ledger_sync` never reads an EA

@@ -1345,9 +1345,15 @@ def test_the_override_posts_and_the_sticker_follows_the_event(app):
     expect(card).to_have_attribute("title", "A new message asks for you.")
     expect(btn).to_have_text("Mark done")
     expect(page.locator("#needs-count")).to_have_text("2")
-    # Needs me sends needs_you.
+    # Needs me sends needs_you, once its label has stood long enough to be
+    # the one aimed at: a tap right after a rule flipped it (a card's Close,
+    # then Mark done at once) was aimed at the old label and does nothing.
     stub.set_state(W.DM, tk, "done", reason="The card was acted on.")
     expect(btn).to_have_text("Needs me")
+    btn.click()
+    page.wait_for_timeout(400)
+    assert len(stub.state_posts) == 1
+    page.wait_for_timeout(1500)
     btn.click()
     wait_for(lambda: len(stub.state_posts) == 2)
     assert stub.state_posts[1]["state"] == "needs_you"

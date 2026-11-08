@@ -1052,8 +1052,9 @@ the ones you want with `crontab -e`:
 30 3 * * *         /opt/ea-system/scripts/webchat-backup.sh >> ~/.ea-private/logs/webchat-backup.log 2>&1
 # Nightly, after the 01:30 ledger reconcile: every Done marker (owner taps,
 # card outcomes, ledger closes and reopens, missed closures, model answers)
-# into the owner-private closure label store, then its evaluation
-# (docs/ea/closure-signals.md). Reads only; writes ~/.ea-private/evals.
+# into the owner-private closure label store, then its evaluation and the
+# closure hill climb's step (docs/ea/closure-signals.md). Writes
+# ~/.ea-private/evals and ~/.ea/state/closure-policy.json.
 45 1 * * *         python3 /opt/ea-system/preprocessor/closure_labels.py collect --report >> ~/.ea-private/logs/closure-labels.log 2>&1
 # Owner plugins' jobs: `python3 /opt/ea-system/scripts/ea-plugin.py cron-lines`
 # prints the lines for the plugins you installed (docs/plugins.md).

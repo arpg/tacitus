@@ -3395,7 +3395,10 @@ def _close_ledger_row(channel: str, thread_ts: str, entry: dict, note: str,
         cmd.append("--skip-archive")
     if not sweep:
         cmd.append("--no-sweep")
-    r = sp.run(cmd, capture_output=True, text=True, timeout=10, cwd=str(SCRIPT_DIR))
+    # The close archives the row's mail through Graph unless told not to,
+    # which takes longer than the close alone.
+    r = sp.run(cmd, capture_output=True, text=True, timeout=10 if skip_archive else 60,
+               cwd=str(SCRIPT_DIR))
     out = r.stdout or ""
     try:
         action = json.loads(out[out.find("{"):]).get("action", "") if "{" in out else ""
@@ -3559,11 +3562,14 @@ def _ledger_rows_for_draft(draft_id: str) -> list[dict]:
 
 # How a draft left the card, and what each says about the rows: (note,
 # skip_archive, signal for the rows the draft names, signal for the
-# thread's reply row, signal proposing the rows a send leaves open).
+# thread's reply row, signal proposing the rows a send leaves open). A
+# send's close archives the closed rows' own mail, and the thread once
+# nothing on it is open (ledger._archive_after_close), so the owner never
+# archives by hand what a send settled; Handled archives its thread itself.
 _DRAFT_OUTCOMES = {
-    "send": ("Email sent via EA Send button", True, "linked_send", "send_reply_row",
+    "send": ("Email sent via EA Send button", False, "linked_send", "send_reply_row",
              "reply_in_thread"),
-    "outlook_send": ("Sent from Outlook", True, "linked_send", "send_reply_row",
+    "outlook_send": ("Sent from Outlook", False, "linked_send", "send_reply_row",
                      "reply_in_thread"),
     "sent_myself": ("User sent from Outlook directly", False, "user_sent_myself",
                     "user_sent_myself", "reply_in_thread"),
@@ -4650,14 +4656,31 @@ def handle_approve_bulk_send(ev: "_chat.ActionEvent"):
 # Close proposals: rows that look done close on the user's click
 # ---------------------------------------------------------------------------
 # A signal that is not decisive (closure.py) leaves the row open with a
-# proposal on it. The router puts the new ones on one card in the owner's
-# DM: Close all, or one by one with Close / Still open per row. A row the
-# user keeps open has that signal vetoed for it.
+# proposal on it. The router gathers the new ones for CLOSE_CARD_WINDOW_S
+# from the oldest, then puts them all on one card in the owner's DM: Close
+# all, or one by one with Close / Still open per row, in the card's own
+# thread. A row the user keeps open has that signal vetoed for it. Every
+# button names its rows (`ledger_id`, `ledger_ids`), so the web chat's Mark
+# done on the card's thread is its Close (web_thread_state). A card with no
+# answer in CLOSE_CARD_EXPIRE_S gives way to a status line; its rows stay
+# on the briefing's "Looks done?" line.
+#
+# A signal the hill climb promoted (closure_policy.py) closes at once
+# instead. The router posts a note for each such close, all of one tick in
+# one thread, whose Reopen button opens the row again, and then archives
+# the row's mail as any close does (ledger.py promoted --noted). A note
+# waits on nobody (`undo`): it never enters Needs you.
 _CLOSE_BATCHES = _private_state("close-proposal-batches.json")
 CLOSE_PROPOSAL_CHECK_S = 300
-CLOSE_PROPOSAL_SETTLE_S = 120
+CLOSE_CARD_WINDOW_S = 3600
+CLOSE_CARD_EXPIRE_S = 7 * 86400
 CLOSE_CARD_MAX = 15
+PROMOTED_NOTE_MAX = 10
 _LAST_PROPOSAL_CHECK = [0.0]
+_LAST_EXPIRY_CHECK = [0.0]
+_LAST_PROMOTED_CHECK = [0.0]
+CLOSE_CARD_EXPIRED = (":zzz: No answer in 7 days. It is on the briefing's Looks done? line "
+                      "now. Tell me there to close it or keep it.")
 
 
 def _load_close_batches() -> dict:
@@ -4689,7 +4712,7 @@ def _ledger_cli(*argv) -> dict:
 
 
 def _proposal_line(n: int, row: dict) -> str:
-    why = ((row.get("proposal") or {}).get("why") or "").strip()
+    why = ((row.get("proposal") or {}).get("why") or row.get("why") or "").strip()
     desc = (row.get("description") or row.get("id") or "").strip()
     inert = _chat.card_text.inert
     return f"{n}. {inert(desc, 110)}" + (f" ({inert(why, 140)})" if why else "")
@@ -4701,29 +4724,61 @@ def _close_proposals_card(batch_id: str, rows: list[dict]) -> "_chat.Confirmatio
         rid = rows[0]["id"]
         title = (":white_check_mark: *This looks done.* Close it, or keep it open.\n"
                  + _proposal_line(1, rows[0])[3:])
+        value = {"ledger_id": rid, "batch": batch_id}
         return _chat.ConfirmationCard(
             kind="close", title=title,
-            actions=[_chat.CardAction("close_proposed", ":white_check_mark: Close", rid,
+            actions=[_chat.CardAction("close_proposed", ":white_check_mark: Close", value,
                                       "primary", "close"),
-                     _chat.CardAction("keep_open_proposed", "Still open", rid, "danger", "keep")],
+                     _chat.CardAction("keep_open_proposed", "Still open", value, "danger",
+                                      "keep")],
             block_id=f"close_proposed_{batch_id}", fallback_text=title)
     title = (f":white_check_mark: *{n} items look done.* Close them all, or go one "
              f"by one and keep any that are still open.")
     lines = [_proposal_line(i + 1, r) for i, r in enumerate(rows)]
+    value = {"batch": batch_id, "ledger_ids": [r["id"] for r in rows]}
     return _chat.ConfirmationCard(
         kind="close", title=title, lines=lines,
         actions=[_chat.CardAction("close_all_proposed", f":white_check_mark: Close all {n}",
-                                  batch_id, "primary", "close all"),
-                 _chat.CardAction("review_proposed", ":memo: One by one", batch_id, "",
+                                  value, "primary", "close all"),
+                 _chat.CardAction("review_proposed", ":memo: One by one", value, "",
                                   "one by one")],
         block_id=f"close_proposals_{batch_id}",
         fallback_text="\n".join([title] + lines))
 
 
+def _proposal_value(ev: "_chat.ActionEvent") -> tuple[str, str, list]:
+    """(ledger id, batch id, ledger ids) a close-proposal button names. A
+    card from before the buttons named their rows carries a bare string:
+    the row's id on a one-row card, the batch's id on a batch card."""
+    v = ev.value
+    if isinstance(v, dict):
+        ids = [x for x in v.get("ledger_ids") or [] if isinstance(x, str)]
+        return str(v.get("ledger_id") or ""), str(v.get("batch") or ""), ids
+    return (str(v) if isinstance(v, str) else ""), "", []
+
+
+def _epoch(ts) -> float:
+    try:
+        return datetime.strptime(str(ts)[:19], "%Y-%m-%dT%H:%M:%S") \
+            .replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _record_close_card(batch_id: str, rows: list[dict], ref, channel: str) -> None:
+    batches = _load_close_batches()
+    batches[batch_id] = {"ids": [r["id"] for r in rows], "created": time.time(),
+                         "descriptions": {r["id"]: r.get("description") or "" for r in rows},
+                         "channel": getattr(ref, "channel", "") or channel,
+                         "card": getattr(ref, "id", "") or ""}
+    _save_close_batches(batches)
+
+
 def _post_close_proposals(force: bool = False) -> int:
     """Router tick: put the proposals no card carries yet on one card, once
-    the newest is CLOSE_PROPOSAL_SETTLE_S old (a briefing or a send makes
-    several at once). Returns the count carded."""
+    the oldest of them is CLOSE_CARD_WINDOW_S old, so the proposals of an
+    hour (a briefing, a send, a night's reconcile) make one card and never
+    a card each. Returns the count carded."""
     now = time.time()
     if not force and now - _LAST_PROPOSAL_CHECK[0] < CLOSE_PROPOSAL_CHECK_S:
         return 0
@@ -4732,49 +4787,121 @@ def _post_close_proposals(force: bool = False) -> int:
             if not (r.get("proposal") or {}).get("carded")]
     if not rows:
         return 0
-    newest = max(str((r.get("proposal") or {}).get("at") or "") for r in rows)
-    try:
-        newest_ts = datetime.strptime(newest[:19], "%Y-%m-%dT%H:%M:%S") \
-            .replace(tzinfo=timezone.utc).timestamp()
-    except ValueError:
-        newest_ts = 0.0
-    if not force and now - newest_ts < CLOSE_PROPOSAL_SETTLE_S:
+    oldest = min(_epoch((r.get("proposal") or {}).get("first_at")
+                        or (r.get("proposal") or {}).get("at") or "") for r in rows)
+    if not force and now - oldest < CLOSE_CARD_WINDOW_S:
         return 0
     dm_channel = _resolve_dm_channel()
     if not dm_channel:
         return 0
     rows = rows[:CLOSE_CARD_MAX]
     batch_id = uuid.uuid4().hex[:12]
-    batches = _load_close_batches()
-    batches[batch_id] = {"ids": [r["id"] for r in rows], "created": now,
-                         "descriptions": {r["id"]: r.get("description") or "" for r in rows}}
-    _save_close_batches(batches)
     try:
-        _post_card(dm_channel, _close_proposals_card(batch_id, rows))
+        ref = _post_card(dm_channel, _close_proposals_card(batch_id, rows))
     except Exception as e:
         log.warning(f"close-proposal card failed: {e}")
         return 0
+    _record_close_card(batch_id, rows, ref, dm_channel)
     _ledger_cli("proposals", "--mark-carded", *[r["id"] for r in rows])
     log.info(f"Close-proposal card posted for {len(rows)} row(s) (batch {batch_id})")
     return len(rows)
 
 
-def _confirm_proposed(rid: str) -> bool:
-    return _ledger_cli("confirm", "--id", rid).get("action") == "closed"
+def _expire_close_cards(force: bool = False) -> int:
+    """Router tick: a close-proposal card with no answer in
+    CLOSE_CARD_EXPIRE_S gives way to a status line, so it leaves Needs you;
+    its rows keep their proposals, on the briefing's "Looks done?" line. A
+    card already answered (retired) is dropped from the store. Returns the
+    count retired."""
+    now = time.time()
+    if not force and now - _LAST_EXPIRY_CHECK[0] < CLOSE_PROPOSAL_CHECK_S:
+        return 0
+    _LAST_EXPIRY_CHECK[0] = now
+    batches = _load_close_batches()
+    due = {k: v for k, v in batches.items()
+           if now - float(v.get("created") or now) >= CLOSE_CARD_EXPIRE_S}
+    if not due:
+        return 0
+    pending = {r.get("id") for r in (_ledger_cli("proposals").get("entries") or [])}
+    retired = 0
+    for batch_id, b in due.items():
+        batches.pop(batch_id, None)
+        channel, card_id = b.get("channel") or "", b.get("card") or ""
+        row = _CARDS.by_ref(channel, card_id) if channel and card_id else None
+        if not row or row.get("status") != "live":
+            continue
+        open_ = any(i in pending for i in b.get("ids") or [])
+        try:
+            _replace_buttons_with_status(channel, card_id, CLOSE_CARD_EXPIRED if open_
+                                         else ":information_source: Already closed or changed.")
+            retired += 1
+        except Exception as e:
+            log.warning(f"close-proposal card expiry failed for batch {batch_id}: {e}")
+    _save_close_batches(batches)
+    if retired:
+        log.info(f"Close-proposal cards expired: {retired}")
+    return retired
+
+
+def _promoted_note_card(row: dict) -> "_chat.ConfirmationCard":
+    """The do-and-tell note for a row the hill climb closed at once."""
+    inert = _chat.card_text.inert
+    desc = inert((row.get("description") or row.get("id") or "").strip(), 110)
+    why = inert((row.get("why") or "").strip(), 140)
+    title = (f":white_check_mark: *Closed:* {desc}" + (f" ({why})" if why else "")
+             + "\nYou confirm closes like this one, so I closed it. Tap Reopen if it is still open.")
+    return _chat.ConfirmationCard(
+        kind="closed", title=title,
+        actions=[_chat.CardAction("reopen_closed", ":leftwards_arrow_with_hook: Reopen",
+                                  {"ledger_id": row["id"]}, "", "reopen")],
+        block_id=f"reopen_closed_{uuid.uuid4().hex[:12]}", fallback_text=title,
+        no_default=True, undo=True)
+
+
+def _note_promoted_closes(force: bool = False) -> int:
+    """Router tick: one note for each row the hill climb closed at once that
+    the user was not told of, the tick's notes in one thread (at most
+    PROMOTED_NOTE_MAX; the rest wait for the next tick); then the rows'
+    mail is archived and they are marked told. Returns the count."""
+    now = time.time()
+    if not force and now - _LAST_PROMOTED_CHECK[0] < CLOSE_PROPOSAL_CHECK_S:
+        return 0
+    _LAST_PROMOTED_CHECK[0] = now
+    rows = (_ledger_cli("promoted").get("entries") or [])[:PROMOTED_NOTE_MAX]
+    if not rows:
+        return 0
+    dm_channel = _resolve_dm_channel()
+    if not dm_channel:
+        return 0
+    thread, told = None, []
+    for row in rows:
+        try:
+            ref = _post_card(dm_channel, _promoted_note_card(row), thread_ts=thread)
+        except Exception as e:
+            log.warning(f"promoted-close note failed for {row.get('id')}: {e}")
+            break
+        thread = thread or getattr(ref, "thread_key", None) or getattr(ref, "id", None)
+        told.append(row["id"])
+    if told:
+        _ledger_cli("promoted", "--noted", *told)
+        log.info(f"Promoted closes noted: {len(told)}")
+    return len(told)
 
 
 @app.action("close_all_proposed")
 def handle_close_all_proposed(ev: "_chat.ActionEvent"):
     if not _verify_button_user(ev):
         return
-    batch_id = ev.value if isinstance(ev.value, str) else ""
+    _rid, batch_id, named = _proposal_value(ev)
+    batch_id = batch_id or _rid
     batch = _load_close_batches().get(batch_id)
-    if not batch:
+    ids = (batch or {}).get("ids") or named
+    if not ids:
         _replace_buttons_with_status(ev.card.channel, ev.card.id,
                                      ":x: This card has expired. The rows are still open.")
         return
-    closed = [rid for rid in batch.get("ids") or [] if _confirm_proposed(rid)]
-    skipped = len(batch.get("ids") or []) - len(closed)
+    closed = [rid for rid in ids if _confirm_proposed(rid)]
+    skipped = len(ids) - len(closed)
     note = f":white_check_mark: Closed {len(closed)}."
     if skipped:
         note += f" {skipped} were already closed or changed."
@@ -4784,45 +4911,89 @@ def handle_close_all_proposed(ev: "_chat.ActionEvent"):
     _save_close_batches(batches)
 
 
+def _confirm_proposed(rid: str) -> bool:
+    return _ledger_cli("confirm", "--id", rid).get("action") == "closed"
+
+
 @app.action("review_proposed")
 def handle_review_proposed(ev: "_chat.ActionEvent"):
+    """One by one: a card per row, in the batch card's own thread, so the
+    batch stays one conversation."""
     if not _verify_button_user(ev):
         return
-    batch_id = ev.value if isinstance(ev.value, str) else ""
-    batch = _load_close_batches().get(batch_id) or {}
+    _rid, batch_id, named = _proposal_value(ev)
+    batch_id = batch_id or _rid
+    batches = _load_close_batches()
+    batch = batches.pop(batch_id, None) or {}
+    _save_close_batches(batches)
     pending = {r["id"]: r for r in (_ledger_cli("proposals").get("entries") or [])}
     _replace_buttons_with_status(ev.card.channel, ev.card.id, ":ok_hand: One by one:")
-    for rid in batch.get("ids") or []:
+    thread = getattr(ev.card, "thread_key", "") or ev.card.id
+    for rid in batch.get("ids") or named:
         row = pending.get(rid)
         if row is None:
             continue
+        sub = f"{batch_id}-{rid[-8:]}"
         try:
-            _post_card(ev.card.channel, _close_proposals_card(f"{batch_id}-{rid[-8:]}", [row]))
+            ref = _post_card(ev.card.channel, _close_proposals_card(sub, [row]), thread_ts=thread)
         except Exception as e:
             log.warning(f"close-proposal row card failed for {rid}: {e}")
+            continue
+        _record_close_card(sub, [row], ref, ev.card.channel)
+
+
+def _close_batch_answered(batch_id: str) -> None:
+    if not batch_id:
+        return
+    batches = _load_close_batches()
+    if batches.pop(batch_id, None) is not None:
+        _save_close_batches(batches)
 
 
 @app.action("close_proposed")
 def handle_close_proposed(ev: "_chat.ActionEvent"):
     if not _verify_button_user(ev):
         return
-    rid = ev.value if isinstance(ev.value, str) else ""
+    rid, batch_id, _ids = _proposal_value(ev)
     ok = bool(rid) and _confirm_proposed(rid)
     _replace_buttons_with_status(ev.card.channel, ev.card.id,
                                  ":white_check_mark: Closed." if ok
                                  else ":information_source: Already closed or changed.")
+    _close_batch_answered(batch_id)
 
 
 @app.action("keep_open_proposed")
 def handle_keep_open_proposed(ev: "_chat.ActionEvent"):
     if not _verify_button_user(ev):
         return
-    rid = ev.value if isinstance(ev.value, str) else ""
+    rid, batch_id, _ids = _proposal_value(ev)
     if rid:
         _ledger_cli("reject", "--id", rid)
     _replace_buttons_with_status(ev.card.channel, ev.card.id,
                                  ":pushpin: Kept open. I will not suggest closing it on "
                                  "the same evidence again.")
+    _close_batch_answered(batch_id)
+
+
+@app.action("reopen_closed")
+def handle_reopen_closed(ev: "_chat.ActionEvent"):
+    """Reopen on a promoted close's note: the row opens again through the
+    ledger's reopen (which vetoes the signal for the row), and the hill
+    climb moves the signal back to proposing (closure.note_reopen)."""
+    if not _verify_button_user(ev):
+        return
+    v = ev.value if isinstance(ev.value, dict) else {}
+    rid = str(v.get("ledger_id") or "")
+    if not rid:
+        return
+    day = datetime.now().strftime("%Y-%m-%d")
+    out = _ledger_cli("update", "--id", rid, "--status", "open", "--last-action",
+                      f"{day}: reopened by the owner from the close note")
+    ok = (out.get("entry") or {}).get("status") in _LEDGER_OPEN_STATUSES and not out.get("warning")
+    _replace_buttons_with_status(ev.card.channel, ev.card.id,
+                                 ":leftwards_arrow_with_hook: Reopened. It is on your list again. "
+                                 "I will ask before I close this kind again." if ok
+                                 else ":information_source: It was open already, or it changed.")
 
 
 @app.action("dismiss_bulk_send")
@@ -4831,6 +5002,13 @@ def handle_dismiss_bulk_send(ev: "_chat.ActionEvent"):
         return
     _replace_buttons_with_status(ev.card.channel, ev.card.id,
                                  ":ok_hand: One by one it is.")
+
+
+# The web chat's Mark done or Needs me on a proposal card's thread answers
+# the card (web_thread_state.run_writeback): its buttons give way to a
+# status line here, as a click on them would.
+if "preprocessor.web_thread_state" in sys.modules:
+    sys.modules["preprocessor.web_thread_state"].CARD_STATUS = _replace_buttons_with_status
 
 
 def _toggle_quoted(ev: "_chat.ActionEvent", show: bool):
@@ -13279,6 +13457,14 @@ def resident_router_loop():
                 _post_close_proposals()
             except Exception as e:
                 log.warning(f"close-proposal card failed: {e}")
+            try:
+                _note_promoted_closes()
+            except Exception as e:
+                log.warning(f"promoted-close note failed: {e}")
+            try:
+                _expire_close_cards()
+            except Exception as e:
+                log.warning(f"close-proposal card expiry failed: {e}")
             if not (_resident.enabled() and _resident.pane_alive()):
                 continue
             for d in _resident.router_poll():

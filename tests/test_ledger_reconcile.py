@@ -263,6 +263,27 @@ def test_done_and_duplicate_propose_and_never_close(priv, db):
     conn.close()
 
 
+def test_a_verdict_the_hill_climb_promoted_closes_at_once(priv, db):
+    """A signal the owner keeps confirming (closure_policy.py) closes at
+    once: the bot's note with its Reopen tells him, and the run says so."""
+    import closure_policy as cp
+    path = cp.policy_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"signals": {lr.SIGNAL: {"state": cp.PROMOTED}}}))
+    cp.forget()
+    try:
+        _records()
+        judge = _judge({"site visit": {"verdict": "done", "why": "The user picked the week."}})
+        rec = _run(db, judge)
+    finally:
+        path.unlink()
+        cp.forget()
+    assert [p["id"] for p in rec["closed"]] == ["response-visit"] and rec["proposed"] == []
+    row = ledger_mod.get_entry("response-visit")
+    assert row["status"] == "completed" and row["closed_by"]["tier"] == cp.PROMOTED
+    assert "1 closed at once (a note with Reopen in your DM)" in lr.summary_line(rec)
+
+
 def test_a_chance_that_ended_is_a_lapsed_proposal_and_never_a_close(priv, db):
     """A row whose only work was a chance that ended (a vote, an RSVP, an
     event) and whose thread shows it ended: the judge says lapsed, with
