@@ -1133,8 +1133,8 @@ def test_stream_tickets_expire_and_are_capped():
     relay = rs.Relay(lim, log=lambda line: None, clock=lambda: now[0])
     install, key = _online_install(relay)
 
-    def opener(i):
-        return {"id": f"o{i}", "k": "open", "sid": "s" * 32, "n": i, "c": "AAAA"}
+    def opener(i):  # each from a session of its own: one session holds one stream
+        return {"id": f"o{i}", "k": "open", "sid": f"s{i}" * 16, "n": i, "c": "AAAA"}
     t1 = relay.stream_ticket(install, key, opener(1))[1]["ticket"]
     status, st = relay.open_stream(install, t1)
     assert status == 200 and st.id == "o1"
@@ -2178,6 +2178,132 @@ def test_one_frame_id_holds_one_stream(web):
             time.sleep(0.2)
     assert client.status()["streams"] == 1 and len(threads()) == 1
     client._on_close(fid)
+
+
+def _drain(st):
+    """The frames waiting in a relay stream's queue."""
+    out = []
+    while not st.q.empty():
+        out.append(st.q.get_nowait())
+    return out
+
+
+def test_a_session_holds_one_stream_and_an_install_eight():
+    """A page that opens its stream again (the same session) replaces its
+    old one, which the relay would notice only at a keepalive write; past
+    eight streams the oldest gives way. Each that goes ends with `busy`,
+    and the bot hears `close` for it."""
+    relay = rs.Relay(rs.Limits(), log=lambda line: None)
+    install, key = _online_install(relay)
+
+    def open_(fid, sid):
+        ticket = relay.stream_ticket(install, key, {"id": fid, "k": "open", "sid": sid, "n": 0,
+                                                    "c": "AAAA"})[1]["ticket"]
+        status, st = relay.open_stream(install, ticket)
+        assert status == 200
+        return st
+    first = open_("a1", "s" * 32)
+    again = open_("a2", "s" * 32)
+    assert first.closed and _drain(first) == [{"id": "a1", "k": "err", "e": "busy"}]
+    assert not again.closed
+    others = [open_(f"b{i}", f"t{i}" * 16) for i in range(7)]
+    assert relay.snapshot()["routes"][install]["streams"] == ["a2"] + [f"b{i}" for i in range(7)]
+    ninth = open_("c1", "u" * 32)
+    assert again.closed and not ninth.closed and not any(o.closed for o in others)
+    inbox = relay.snapshot()["routes"][install]["inbox"]
+    assert [f["id"] for f in inbox if f["k"] == "close"] == ["a1", "a2"]
+
+
+def test_a_starting_bot_ends_the_streams_the_bot_before_it_fed():
+    """A bot that starts (a deploy restarts it) feeds none of the streams
+    the relay holds open: its first poll says `fresh`, and each stream whose
+    `open` a bot took before ends with `session`, so its phone says hello
+    again and opens a new one. A stream whose `open` still waits is the new
+    bot's, and an ordinary poll ends nothing."""
+    relay = rs.Relay(rs.Limits(), log=lambda line: None)
+    token = os.urandom(32)
+    install, key, auth = rc.install_id_for(token), rc.client_key_for(token), _bot_auth(token)
+    assert relay.bot_exchange(install, auth, {"wait": 0})[0] == 200
+
+    def open_(fid):
+        ticket = relay.stream_ticket(install, key, {"id": fid, "k": "open", "sid": fid * 16, "n": 0,
+                                                    "c": "AAAA"})[1]["ticket"]
+        return relay.open_stream(install, ticket)[1]
+    fed = open_("f1")
+    assert [f["id"] for f in relay.bot_exchange(install, auth, {"wait": 0})[1]["frames"]] == ["f1"]
+    for not_fresh in ({}, {"fresh": False}, {"fresh": "yes"}, {"fresh": 1}):
+        assert relay.bot_exchange(install, auth, {"frames": [], "wait": 0, **not_fresh}) == (200, {"frames": []})
+    assert not fed.closed
+    waits = open_("w1")
+    status, out = relay.bot_exchange(install, auth, {"frames": [], "wait": 0, "fresh": True})
+    assert status == 200 and [f["id"] for f in out["frames"]] == ["w1"]
+    assert fed.closed and _drain(fed) == [{"id": "f1", "k": "err", "e": "session"}]
+    assert not waits.closed and waits.id in relay.snapshot()["routes"][install]["streams"]
+
+
+def test_a_restarted_bot_ends_the_phones_stream_and_it_opens_again(web):
+    """End to end: a phone's stream is open through the bot. The bot's
+    process ends with no word to the relay (a deploy's restart), and a new
+    relay client starts on the same key file: the phone's stream ends with
+    `session` at once instead of staying open with nothing behind it, and
+    a new hello and stream get the events again."""
+    f = web["fe"]
+    phone = _phone(web, f.relay.new_pairing())
+    fid = rc.new_id()
+    frames, _resp = _stream_reader(phone, fid)
+    deadline = time.time() + 10
+    while not frames and time.time() < deadline:
+        time.sleep(0.05)
+    assert frames and frames[0][1]["k"] == "sse"
+    old = f.relay
+    old.stop()  # the old process: it stops feeding the stream and tells the relay nothing
+    old._thread.join(5)  # and polls no more, as a process that ended
+    f.relay = None
+    f._start_relay()
+    deadline = time.time() + 10
+    while not any(fr["k"] == "err" for _, fr in frames) and time.time() < deadline:
+        time.sleep(0.05)
+    assert {"id": fid, "k": "err", "e": "session"} in [fr for _, fr in frames]  # and the relay closed it
+    status, welcome = phone.hello(pairing=False)
+    assert status == 200 and welcome["k"] == "welcome"
+    fid2 = rc.new_id()
+    frames2, _resp2 = _stream_reader(phone, fid2)
+    deadline = time.time() + 10
+    while not frames2 and time.time() < deadline:
+        time.sleep(0.05)
+    f.post("main", "after the restart")
+    deadline, seen, done = time.time() + 10, [], 0
+    while time.time() < deadline and not any("after the restart" in e.get("data", "") for e in seen):
+        new = frames2[done:]  # each frame opens once
+        done += len(new)
+        seen += [rc.unpack(phone.session.open(fr))[0] for _, fr in new if fr["k"] == "sse"]
+        time.sleep(0.05)
+    assert any("after the restart" in e.get("data", "") for e in seen), seen
+    f.relay._on_close(fid2)  # the bot ends it: `end`, and the relay closes it
+
+
+def test_a_bot_short_of_streams_tells_the_relay_which_gave_way(web):
+    """Past the bot's own cap the oldest stream gives way with `err busy`,
+    which the relay passes on, so that phone opens again instead of holding
+    a stream nothing feeds."""
+    f = web["fe"]
+    client = f.relay
+    phone = _phone(web, client.new_pairing())
+    sent: list = []
+    client._send = sent.append  # the relay's side swallows what the bot posts
+    fids = [rc.new_id() for _ in range(rcl.MAX_STREAMS + 1)]
+    for i, fid in enumerate(fids):  # one at a time, so the first is the oldest
+        client._dispatch([phone.session.seal("open", fid, rc.pack({}))])
+        wait_until = time.time() + 10
+        while client.status()["streams"] < min(i + 1, rcl.MAX_STREAMS) and time.time() < wait_until:
+            time.sleep(0.02)
+    deadline = time.time() + 10
+    while {"id": fids[0], "k": "err", "e": "busy"} not in sent and time.time() < deadline:
+        time.sleep(0.05)
+    assert {"id": fids[0], "k": "err", "e": "busy"} in sent
+    assert not [fr for fr in sent if fr["k"] == "err" and fr["id"] != fids[0]]
+    for fid in fids:
+        client._on_close(fid)
 
 
 def test_relay_origin_devices_are_off_unless_chat_json_opts_in(web, tmp_path):

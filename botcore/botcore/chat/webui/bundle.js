@@ -205,12 +205,15 @@
 
   // A tap opens the app at the push's url: in the app's window last in front
   // (on iOS the installed app's own), which gets the url as a message where
-  // navigate() fails, else in a new one. Anything outside the app opens the app.
+  // navigate() fails, else in a new one. Anything outside the app opens the app,
+  // at its #/ route: the bot's links name its own address, and this copy may
+  // run at another (the website's copy, the bot's machine).
   function appUrl(raw) {
     const scope = scopeUrl();
     try {
       const url = new URL(raw || '', scope);
       if (url.origin === scope.origin && url.pathname.startsWith(scope.pathname)) return url.href;
+      if (/^#\/[^#]+$/.test(url.hash)) return new URL(url.hash, scope).href;
     } catch { /* not a URL */ }
     return scope.href;
   }

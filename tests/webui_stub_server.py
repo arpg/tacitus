@@ -42,6 +42,10 @@ each subscription the app posts, `sweeps` each POST
 /api/push/unclosed, which answers the tags in `unclosed` once, and
 `revokes` each Remove (POST /api/push/revoke), which drops that row.
 
+`public_url` is the address /api/me names as the bot's own (none by
+default): its links point there, as a bot's on the tailnet do while the
+page runs at another address.
+
 `handoff=True` (with relay_pairing) lets "Add a device" offer A computer:
 /api/relay/status says `handoff` and names the website's copy of the app,
 and POST /api/relay/handoff answers a made-up code and the address to open,
@@ -163,8 +167,9 @@ class Stub:
     def __init__(self, tick: float = 0.0, pair_token: str | None = None, echo: bool = True,
                  sign: bool = False, relay_pairing: bool = False, settings: bool | list = False,
                  push: bool = False, handoff: bool = False, owner_routes: str | None = None,
-                 subscriptions: list | None = None):
+                 subscriptions: list | None = None, public_url: str | None = None):
         self.cond = threading.Condition()
+        self.public_url = public_url
         self.handoff = handoff
         self.owner_routes = owner_routes
         self.handoffs: list[dict] = []
@@ -578,7 +583,7 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(url.query)
         s = self.stub
         if parts == ["me"]:
-            return self._json(200, {"owner": "owner", "bot": "bot", "public_url": None,
+            return self._json(200, {"owner": "owner", "bot": "bot", "public_url": s.public_url,
                                     "bundle": s.bundle.hash if s.bundle else "",
                                     "settings": s.settings, "push": s.push,
                                     **({"relay": True} if s.relay_pairing else {}),

@@ -73,6 +73,7 @@ const S = {
   nodes: new Map(),     // message id -> element, for the open thread
   lastSeq: 0,
   es: null,
+  downAt: 0,            // when the event stream went down; 0 while it is open
   retry: 0,
   ready: false,
   queue: [],
@@ -242,12 +243,31 @@ const join = (names) => names.map((n) => INLINE[n].source).join('|');
 const MD_SRC = join(['inert', 'code', 'mdlink', 'angle', 'mention', 'bold', 'strike', 'star', 'emoji', 'url']);
 const CARD_SRC = join(['inert', 'code', 'angle', 'bold', 'strike', 'star', 'under', 'tilde', 'emoji', 'url']);
 
-// A permalink into this app (the base path and a #/ route) opens in it, also
-// installed; any other link opens in the browser, outside the app's window.
+// The addresses of this app, each with its base path and a slash: this page's,
+// the bot's own (public_url, which its links carry, and which the website's
+// copy or a page on the bot's machine does not share) and the relay's copy of
+// this browser's pairing.
+function appBases() {
+  const rec = T.rec || (RELAY && RELAY.rec);
+  return [location.origin + BASE, S.me && S.me.public_url, rec && rec.relay].filter(Boolean).flatMap((u) => {
+    try { const a = new URL(u); return [a.origin + a.pathname.replace(/\/+$/, '') + '/']; } catch { return []; }
+  });
+}
+
+// The #/ route of a link into this app at any of its addresses, else ''.
+function ownRoute(url) {
+  if (!/^(https?:\/\/|\/(?!\/))/i.test(url)) return '';
+  let u;
+  try { u = new URL(url, location.href); } catch { return ''; }
+  return /^#\/[^#]+$/.test(u.hash) && !u.search && !u.username && appBases().includes(u.origin + u.pathname) ? u.hash : '';
+}
+
+// A permalink into this app opens in it, in place, also installed; any other
+// link opens in the browser, outside the app's window.
 function link(url, label) {
-  const own = (url.startsWith(location.origin + '/') ? url.slice(location.origin.length) : url).startsWith(BASE + '/#/');
-  if (!own && !/^(https?:|mailto:)/i.test(url)) return null;
-  return h('a', own ? { href: url } : { href: url, target: '_blank', rel: 'noopener noreferrer' }, label || url);
+  const route = ownRoute(url);
+  if (!route && !/^(https?:|mailto:)/i.test(url)) return null;
+  return h('a', route ? { href: route } : { href: url, target: '_blank', rel: 'noopener noreferrer' }, label || url);
 }
 
 function emojiNode(name) {
@@ -984,26 +1004,41 @@ async function route() {
 
 /* -- Live events ---------------------------------------------------- */
 
+// The live dot: `on` while the stream is open, `wait` while it opens or opens
+// again, and `off` only once it has been down for setLive.grace (S.downAt, when
+// it went down). A routine re-open (the bot restarts for a deploy, the relay
+// ends a stream) reads "Reconnecting", never "Not connected".
 function setLive(state) {
   const el = $('live');
+  if (state === 'down') {
+    if (!S.downAt) {
+      S.downAt = Date.now();
+      setLive.off = setTimeout(() => setLive('off'), setLive.grace);
+    }
+    state = el.classList.contains('off') ? 'off' : 'wait';
+  } else if (state === 'on') {
+    clearTimeout(setLive.off);
+    S.downAt = 0;
+  }
   el.className = 'live ' + state;
-  el.title = { on: 'Live', off: 'Reconnecting', wait: 'Connecting' }[state];
+  el.title = { on: 'Live', off: 'Not connected', wait: S.downAt ? 'Reconnecting' : 'Connecting' }[state];
   if ($('settings').open) connLine();
 }
+setLive.grace = 10000;
 
 // The event stream on the transport in use; `ready` settles once it opens.
 // A stream that ends for good reconnects from here, with ?since= (or the
 // relay's `open` frame) naming the last event seen.
 function connect() {
   if (S.es) S.es.close();
-  setLive('wait');
+  if (!S.downAt) setLive('wait');
   let opened;
   const handle = { ready: new Promise((resolve) => { opened = resolve; }) };
   const es = T.events(S.lastSeq, {
     open: () => { S.retry = 0; setLive('on'); opened(); loadNeeds(); if (S.ready) resync(); },
     event: onEvent,
     down: (closed) => {
-      setLive('off');
+      setLive('down');
       if (closed) setTimeout(() => reconnect(handle), Math.min(30000, 1000 * 2 ** S.retry++));
     },
   });
@@ -1037,6 +1072,24 @@ async function reconnect(handle) {
     if ($('pair').hidden) setTimeout(() => reconnect(handle), Math.min(30000, 1000 * 2 ** S.retry++));
   }
 }
+
+// A stream through the relay holds one of the few the relay keeps for an
+// install: a page hidden for closeWhenHidden.ms closes it, and back in view
+// opens one again at once (reconnect), from the last event it saw.
+function closeWhenHidden() {
+  clearTimeout(closeWhenHidden.timer);
+  if (!document.hidden && S.es && S.es.asleep) {
+    setLive('down');
+    reconnect(S.es);
+  } else if (document.hidden) {
+    closeWhenHidden.timer = setTimeout(() => {
+      if (!document.hidden || !T.relay || !S.es || S.halted) return;
+      S.es.close();
+      S.es = { asleep: true, close() {} };
+    }, closeWhenHidden.ms);
+  }
+}
+closeWhenHidden.ms = 5 * 60000;
 
 function onEvent(type, id, raw) {
   const seq = Number(id) || 0;
@@ -2747,9 +2800,10 @@ async function settingsPage(page) {
 // The menu's last line: how this browser reaches Tacitus now, the live dot in words.
 function connLine() {
   const dot = $('live').classList;
-  $('settings-conn').textContent = dot.contains('off') ? 'Not connected right now. Trying again.'
-    : dot.contains('wait') ? 'Connecting...'
-    : T.relay ? `Connected away from home, through ${new URL(T.rec.relay).host}.` : 'Connected on your own network.';
+  const how = T.relay ? `away from home, through ${new URL(T.rec.relay).host}` : 'on your own network';
+  const since = new Date(S.downAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  $('settings-conn').textContent = dot.contains('off') ? `Not connected since ${since}. Trying again ${how}.`
+    : dot.contains('wait') ? `${S.downAt ? 'Reconnecting' : 'Connecting'} ${how}...` : `Connected ${how}.`;
 }
 
 function settingsMenu() {
@@ -3248,6 +3302,7 @@ async function boot() {
     // No bot behind this address and no pairing: the website's copy of the app, waiting for a code.
     const relays = !T.relay && e.status === 404 && !(await loadPairing()) && !S.pairingError ? await hostedRelays() : null;
     if (relays) return showSetup(relays);
+    setLive('down');
     if ($('pair').hidden) {
       const why = await unreachableNote(e);
       if (why) toast(why);
@@ -3366,6 +3421,7 @@ async function init() {
   ownerActions();
   $('relay-note').addEventListener('click', () => relayNote(''));
   $('app-update-go').addEventListener('click', () => location.reload());
+  document.addEventListener('visibilitychange', closeWhenHidden);
   // A phone back on the screen looks for a release made while it was away.
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible' || Date.now() - S.lookedAt < LOOK_MS) return;
@@ -3385,8 +3441,8 @@ async function init() {
     // sw.js names a tapped notification's url when it cannot navigate this window.
     navigator.serviceWorker.addEventListener('message', (e) => {
       if (e.data && e.data.refused) refuseApp(String(e.data.refused), true);
-      const url = String((e.data && e.data.open) || '');
-      if (url.startsWith(`${location.origin}${BASE}/#/`)) location.hash = url.slice(url.indexOf('#'));
+      const to = ownRoute(String((e.data && e.data.open) || ''));
+      if (to) location.hash = to;
     });
   }
   const pairing = /^#(tr[12])=([A-Za-z0-9_-]+)$/.exec(location.hash);

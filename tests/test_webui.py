@@ -452,10 +452,14 @@ def test_the_app_stays_small():
     #     has both, the line under a task with no choice) and its save.
     # 5,070: 5,050 plus the "?" beside a task's name on the Models page (its note under the row, the
     #     small circle in a finger's press area on a touch screen).
+    # 5,120: 5,070 plus links to the bot's own address routed in place on any copy of the app, the live
+    #     dot's grace before "not connected" with the Settings line that says how it reconnects, and a
+    #     relayed stream let go while the page is hidden for long.
     # 5,230: 5,070 plus a draft per conversation (kept per place in the browser, back after a reload,
     #     a Draft mark on its card) and the files that wait in the composer until Send (several at
     #     once, chosen, dropped or pasted, a chip each with its cross, one request with the words).
-    assert lines <= 5230, f"{lines} lines: the contract keeps the app near 5,230 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model per task and its help, the drafts and the files that wait for Send"
+    # 5,310: both together, drafts and files with links routed in place and the calm connection line.
+    assert lines <= 5310, f"{lines} lines: the contract keeps the app near 5,310 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model per task and its help, the drafts and the files that wait for Send, links routed in place and a calm connection line"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -798,6 +802,57 @@ def test_a_dropped_stream_resumes_from_the_last_event(app):
     expect(page.locator("#messages .msg:has-text('After a refusal')")).to_be_visible(timeout=10000)
     assert any(s["since"] == seen for s in stub.streams), stub.streams
     expect(page.locator("#messages .msg")).to_have_count(6)
+    assert not [e for e in errors if "EventSource" not in e and "503" not in e], errors
+
+
+# Records each class of the live dot and each text of the Settings line.
+WATCH_LIVE = """() => { window.__live = []; window.__line = [];
+    new MutationObserver(() => __live.push($('live').className)).observe($('live'), { attributes: true });
+    new MutationObserver(() => __line.push($('settings-conn').textContent))
+        .observe($('settings-conn'), { childList: true, characterData: true, subtree: true }); }"""
+# document.hidden and visibilityState as a test sets them; __hide(on) changes both and says so.
+FAKE_HIDDEN = """() => { window.__hidden = false;
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => window.__hidden });
+    Object.defineProperty(document, 'visibilityState', { configurable: true,
+        get: () => (window.__hidden ? 'hidden' : 'visible') });
+    window.__hide = (on) => { window.__hidden = on; document.dispatchEvent(new Event('visibilitychange')); }; }"""
+
+
+def test_a_routine_reopen_reads_reconnecting_and_only_a_long_drop_not_connected(app):
+    """A stream the host drops and that opens again within the grace (a
+    restart of the bot) reads "Reconnecting on your own network..." in the
+    Settings menu, and the dot never turns to "not connected"; a stream down
+    past the grace says since when, and both read "Connected" once it opens.
+    On the owner's own network a hidden page keeps its stream."""
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    expect(page.locator("#live.on")).to_be_attached()
+    page.click("#open-settings")
+    expect(page.locator("#settings-conn")).to_have_text("Connected on your own network.")
+    page.evaluate(WATCH_LIVE)
+    stub.drop_streams()
+    wait_for(lambda: "Reconnecting on your own network..." in page.evaluate("__line"))
+    expect(page.locator("#live.on")).to_be_attached(timeout=10000)
+    expect(page.locator("#settings-conn")).to_have_text("Connected on your own network.")
+    assert "live wait" in page.evaluate("__live") and "live off" not in page.evaluate("__live")
+    assert not [t for t in page.evaluate("__line") if t.startswith("Not connected")]
+
+    page.evaluate("setLive.grace = 300")
+    stub.drop_streams(refuse=2)
+    expect(page.locator("#live.off")).to_be_attached(timeout=5000)
+    expect(page.locator("#live")).to_have_attribute("title", "Not connected")
+    expect(page.locator("#settings-conn")).to_have_text(
+        re.compile(r"^Not connected since \d{1,2}:\d{2}\D{0,4}\. Trying again on your own network\.$"))
+    expect(page.locator("#live.on")).to_be_attached(timeout=15000)
+    expect(page.locator("#settings-conn")).to_have_text("Connected on your own network.")
+
+    page.evaluate(FAKE_HIDDEN)
+    page.evaluate("closeWhenHidden.ms = 50; __hide(true)")
+    page.wait_for_timeout(300)
+    assert page.evaluate("Boolean(S.es && !S.es.asleep)")
+    page.evaluate("__hide(false)")
+    expect(page.locator("#live.on")).to_be_attached()
     assert not [e for e in errors if "EventSource" not in e and "503" not in e], errors
 
 
@@ -2065,7 +2120,7 @@ def test_every_string_the_person_sees_is_plain():
     for name in ("app.js", "sw.js", "bundle.js"):
         strings = _js_strings(read(name))
         # The reader keeps its place: the file's first, middle and last words are found.
-        for sentinel in {"app.js": ("Hidden text", "Mark all done", "${}${}/#/"),
+        for sentinel in {"app.js": ("Hidden text", "Mark all done", "${}/sw.js"),
                          "sw.js": ("bundle.js", "notificationclick", "message"),
                          "bundle.js": ("not base64url", "Handled.", "${} is not a headers block")}[name]:
             assert sentinel in strings, (name, sentinel)
@@ -2346,7 +2401,7 @@ def test_permalinks_stay_in_the_app_and_other_links_open_outside(app):
             "(s) => { const d = document.createElement('div'); d.append(markdown(s)); return d.innerHTML; }", text)
 
     assert md(f"[weekly]({base}#/stream%3A9) and [room](/chat/#/r1)") == (
-        f'<p><a href="{base}#/stream%3A9">weekly</a> and <a href="/chat/#/r1">room</a></p>')
+        '<p><a href="#/stream%3A9">weekly</a> and <a href="#/r1">room</a></p>')
     # Another origin, and this origin's other paths (a stored file), open outside the app's window.
     out = md(f"[file]({base}api/files/f1) [away](https://e.example/chat/#/x) {base}")
     assert out.count('target="_blank" rel="noopener noreferrer"') == 3, out
@@ -2355,6 +2410,76 @@ def test_permalinks_stay_in_the_app_and_other_links_open_outside(app):
     expect(page.locator(".chan.active .c-name")).to_have_text("Ask Tacitus")
     assert len(page.context.pages) == 1
     assert not errors, errors
+
+
+BOT_URL = "https://host.example.test:8444/chat"  # the bot's own address, as its links carry it
+
+
+def test_a_link_to_the_bots_own_address_routes_in_place(app):
+    """The bot builds its links on its own address (public_url), and this
+    copy of the app may run at another: the website's copy, or a page on the
+    bot's machine. A link to any address the app knows for itself, with a
+    #/ route, routes in place and opens no window; an address it does not
+    know still opens outside the app."""
+    from urllib.parse import quote
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app(public_url=BOT_URL)
+    open_thread(page, "Draft a reply")
+    base = page.url.split("#")[0]
+    week = next(m for m in stub.messages if m["thread_key"] == W.WEEKLY)
+    route = "#/" + "/".join(quote(x, safe="") for x in (W.MAIN, W.WEEKLY, week["id"]))
+    stub.emit_bot(W.DM, f":lock: The Create button for this event is in your DM: [open it]({BOT_URL}/{route})",
+                  thread_key=stub.messages[0]["thread_key"])
+    opened = []
+    page.context.on("page", lambda p: opened.append(p))
+    link = page.locator("#messages a:has-text('open it')")
+    expect(link).to_have_attribute("href", route)
+    assert link.get_attribute("target") is None
+    link.click()
+    expect(page.locator(".chan.active .c-name")).to_have_text("Ask Tacitus")
+    expect(page.locator("#messages h3")).to_have_text("Monday")
+    assert page.url == base + route
+    page.wait_for_timeout(200)
+    assert not opened and len(page.context.pages) == 1
+
+    # The decision itself: the address with its base path, and a #/ route.
+    def own(url):
+        return page.evaluate("(u) => ownRoute(u)", url)
+    assert own(f"{BOT_URL}/#/stream%3A9") == "#/stream%3A9"
+    assert own("https://HOST.example.test:8444/chat/#/r1") == "#/r1"  # a host is any case
+    assert own(base + "#/r1") == own("/chat/#/r1") == "#/r1"  # this page's own address
+    for away in ("https://host.example.test/chat/#/r1",  # another port
+                 f"{BOT_URL}/api/files/f1#/r1", f"{BOT_URL}/?x=1#/r1", f"{BOT_URL}/#/", f"{BOT_URL}/",
+                 "https://user@host.example.test:8444/chat/#/r1", "//host.example.test:8444/chat/#/r1",
+                 "https://e.example/chat/#/r1", "javascript:alert(1)//#/r1", "#/r1"):
+        assert own(away) == "", away
+    # The relay's copy of this browser's pairing is the app too.
+    page.evaluate("RELAY = { rec: { relay: 'https://relay.example.test/relay' } }")
+    assert own("https://relay.example.test/relay/#/r1") == "#/r1"
+    page.evaluate("RELAY = null")
+    # A tapped notification on the bot's own address routes this window too.
+    page.evaluate("(u) => navigator.serviceWorker.dispatchEvent(new MessageEvent('message', { data: { open: u } }))",
+                  f"{BOT_URL}/#/stream%3A11")
+    expect(page.locator(".chan.active .c-name")).to_have_text("Scheduling")
+    assert not opened and not errors, errors
+
+
+def test_a_tapped_notification_keeps_its_route_on_another_copy(app):
+    """The worker opens a push's url when it is inside the app; a url on the
+    bot's own address, outside this copy, opens this copy at the url's #/
+    route; anything else opens the app's start page."""
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    src = _function(read("bundle.js"), "appUrl")
+    cases = {"https://copy.example.test/#/r1": "https://copy.example.test/#/r1",
+             f"{BOT_URL}/#/stream%3A6/t%3A1/w1": "https://copy.example.test/#/stream%3A6/t%3A1/w1",
+             f"{BOT_URL}/": "https://copy.example.test/",
+             "https://e.example/x#/a#b": "https://copy.example.test/",
+             "": "https://copy.example.test/"}
+    got = page.evaluate("(() => { const scopeUrl = () => new URL('https://copy.example.test/');\n"
+                        + src + "\nreturn " + json.dumps(list(cases)) + ".map(appUrl); })()")
+    assert got == list(cases.values())
 
 
 def test_a_tapped_notification_routes_the_open_window(app):
@@ -2970,6 +3095,34 @@ def test_a_phone_pairs_on_the_tailnet_and_chats_through_the_relay(browser, relay
         page.reload()
         expect(page.locator("#relay-note")).to_contain_text("did not accept this device", timeout=15000)
         assert page.evaluate("loadPairing().then((r) => Boolean(r && r.priv))")
+        assert not errors, errors
+    finally:
+        for c in contexts:
+            c.close()
+
+
+def test_a_page_hidden_for_long_lets_its_relayed_stream_go(browser, relay_bot):
+    """Through the relay a page hidden for long closes its event stream,
+    one of the few the relay keeps for an install; back in view it opens
+    one at once, reads "Reconnecting" meanwhile, and shows what came while
+    it was hidden."""
+    from playwright.sync_api import expect
+    fe = relay_bot["fe"]
+    contexts = []
+    try:
+        _tail, page, errors, _asked = _pair_and_approve(browser, relay_bot, contexts)
+        wait_for(lambda: fe.relay.status()["streams"] == 1, 10)
+        page.evaluate(FAKE_HIDDEN)
+        page.evaluate(WATCH_LIVE)
+        page.evaluate("closeWhenHidden.ms = 200; __hide(true)")
+        wait_for(lambda: fe.relay.status()["streams"] == 0, 10)  # the relay saw it go, and told the bot
+        assert page.evaluate("S.es.asleep") is True
+        fe.post("dm", "Posted while the page was hidden")
+        page.evaluate("__hide(false)")
+        expect(page.locator(".thread-item:has-text('Posted while the page was hidden')")).to_be_visible(timeout=15000)
+        expect(page.locator("#live.on")).to_be_attached(timeout=10000)
+        assert "live wait" in page.evaluate("__live") and "live off" not in page.evaluate("__live")
+        wait_for(lambda: fe.relay.status()["streams"] == 1, 10)
         assert not errors, errors
     finally:
         for c in contexts:

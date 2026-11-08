@@ -10,6 +10,8 @@ are sealed end to end between the phone and the bot.
 It keeps one in-memory route per online install (the connection, its
 queues, its counters), writes nothing to disk and logs no frame content.
 A restart drops every route; bots reconnect and phones say hello again.
+A bot that starts says so on its first poll (`fresh`): the streams the
+bot before it was feeding end, and their phones open them again.
 
 Routes:
   POST /r/{install}/bot   the bot: posts its frames, long-polls for the phone's
@@ -151,7 +153,7 @@ class Limits:
     max_inbox_frames: int = 64        # phone frames waiting for the bot
     max_inbox_bytes: int = 32 << 20
     max_waiting: int = 32             # phone requests waiting for an answer
-    max_streams: int = 4              # open event streams
+    max_streams: int = 8              # open event streams
     max_polls: int = 4                # concurrent bot long-polls
     rate: float = 20.0                # phone frames per second, refilled
     burst: int = 100
@@ -232,10 +234,15 @@ class Waiter:
 
 
 class Stream:
-    def __init__(self, sid: str, maxsize: int) -> None:
-        self.id = sid
+    """One phone event stream: its frame id, the session its `open` frame
+    names, and whether a bot took that frame (`taken`)."""
+
+    def __init__(self, fid: str, maxsize: int, session: str = "") -> None:
+        self.id = fid
+        self.session = session
         self.q: "queue.Queue[dict]" = queue.Queue(maxsize)
         self.closed = False
+        self.taken = False
 
 
 class Route:
@@ -362,6 +369,8 @@ class Relay:
             self.total_bytes -= size
             budget -= size
             out.append(frame)
+            if frame["k"] == "open" and frame["id"] in route.streams:
+                route.streams[frame["id"]].taken = True
         return out
 
     def _end_stream(self, route: Route, st: Stream, code: str) -> None:
@@ -462,7 +471,8 @@ class Relay:
     def bot_exchange(self, install: str, auth: str, body: Any,
                      source: str = "") -> tuple[int, dict]:
         """The bot posts its frames and long-polls for the phone's. `source`
-        is the bot's address, which only meters how fast it opens routes."""
+        is the bot's address, which only meters how fast it opens routes.
+        `"fresh": true` marks a bot's first poll after it starts."""
         status, err, token = self.check_bot(install, auth)
         if status != 200:
             return status, err
@@ -474,6 +484,7 @@ class Relay:
         except (TypeError, ValueError):
             return 400, {"error": "bad wait"}
         lim = self.limits
+        fresh = body.get("fresh") is True
         with self.lock:
             now = self.clock()
             route = self._online(install, now)
@@ -485,6 +496,12 @@ class Relay:
                 route = Route(install, client_key_for(token), self.lock, lim, now)
                 self.routes[install] = route
             route.last_poll = now
+            if fresh:
+                # A bot that starts holds no stream: each one a bot took
+                # before ends, and its phone says hello again and reopens it.
+                # A stream whose `open` waits in the inbox is this bot's.
+                for st in [s for s in route.streams.values() if s.taken]:
+                    self._end_stream(route, st, "session")
             for raw in body.get("frames", []):
                 frame = clean_frame(raw, BOT_KINDS)
                 if frame is not None and _size(frame) <= lim.max_frame + 160:
@@ -607,11 +624,14 @@ class Relay:
                 return 409, {"error": "frame id in use"}
             if not self._room(route, _size(frame)):
                 return 503, {"error": "queue full"}
-            while len(route.streams) >= self.limits.max_streams:
-                oldest = next(iter(route.streams.values()))
+            # A page keeps one stream per session: one that opens another has
+            # let its old one go, which a keepalive write would notice only later.
+            same = [s for s in route.streams.values() if frame.get("sid") and s.session == frame["sid"]]
+            while same or len(route.streams) >= self.limits.max_streams:
+                oldest = same.pop() if same else next(iter(route.streams.values()))
                 self._end_stream(route, oldest, "busy")
                 self._enqueue(route, {"id": oldest.id, "k": "close"})
-            st = Stream(frame["id"], self.limits.stream_queue)
+            st = Stream(frame["id"], self.limits.stream_queue, frame.get("sid", ""))
             route.streams[st.id] = st
             self._tap("c2b", frame)
             self._enqueue(route, frame)
