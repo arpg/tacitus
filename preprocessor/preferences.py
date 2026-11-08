@@ -514,6 +514,22 @@ def _said(words: str, user_text: str) -> bool:
     return bool(norm(words)) and norm(words) in norm(user_text)
 
 
+OUTPUT_TEXT_CAP = 300
+OUTPUT_JSON_CAP = 4000
+
+
+def _recorded_output(text: str) -> str:
+    """What an applied write's record keeps of the verb's stdout. A JSON
+    answer stays whole (the bot reads the pull request's url out of it),
+    up to OUTPUT_JSON_CAP; plain text is cut at OUTPUT_TEXT_CAP."""
+    text = text.strip()
+    try:
+        json.loads(text)
+    except ValueError:
+        return text[:OUTPUT_TEXT_CAP]
+    return text[:OUTPUT_JSON_CAP]
+
+
 def apply_staged(user_text: str | None, run_preferences=None, run_onboarding=None) -> dict:
     """Replay the staged writes (STAGED_FILE, then emptied) outside the
     sandbox. A rule, an onboarding answer or a tier promotion is applied only when the words
@@ -585,7 +601,7 @@ def apply_staged(user_text: str | None, run_preferences=None, run_onboarding=Non
                 if tool == "doc_review" and argv[0] == "update":
                     stale_prs.add(pr)
                 continue
-            applied = dict(rec, output=buf.getvalue().strip()[:300])
+            applied = dict(rec, output=_recorded_output(buf.getvalue()))
             if tool == "site_tools":
                 result = json.loads(buf.getvalue())
                 applied["result"] = {k: result[k] for k in ("status", "site", "commit", "publish_staged") if k in result}
