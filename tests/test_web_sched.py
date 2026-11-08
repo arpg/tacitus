@@ -296,3 +296,93 @@ def test_the_create_card_lands_in_the_dm_with_a_pointer_in_scheduling(bot):
     pointer = [m["text"] for m in fe.store.thread("sched", thread) if m["id"] != seed.id]
     assert len(pointer) == 1 and "The Create card is in your DM" in pointer[0], pointer
     assert "#/dm/" in pointer[0]
+
+
+# ── an accepted time: the invite staged by code ──
+
+EVENT = {"subject": "Lab visit", "start": "2026-11-30T14:15:00-07:00", "end": "2026-11-30T14:45:00-07:00",
+         "attendees": "dana.example77@example.org", "online": True, "timezone": "America/Denver",
+         "conversation_id": CONV, "ledger_id": "sched-m-acc", "source": "sched-acceptance"}
+
+
+@pytest.fixture
+def acc_bot(bot):
+    """The bot fixture with the acceptance path's functions and a stand-in
+    for the staged-action poster that records what it would post."""
+    ns, fe, queue = bot
+    for name in ("_proactive_acceptance_reply_prompt", "_sched_acceptance_line", "_sched_post_acceptance"):
+        exec(compile(_fn_body(name), f"ea-chat-bot.py[{name}]", "exec"), ns)
+    posted: list = []
+    ns["_post_staged_action"] = lambda channel, thread_ts, action: posted.append((channel, thread_ts, dict(action)))
+    return ns, fe, queue, posted
+
+
+def _acc_req(**kw):
+    received = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return {"conversation_id": CONV, "message_id": "m-acc", "source_message_id": "m-acc",
+            "from_name": "Dana Example", "subject": "Re: Lab visit", "kind": "confirmation",
+            "received": received, "offered_times": [EVENT["start"]], "staged_event": dict(EVENT),
+            "stage_when": "Mon Nov 30, 2:15-2:45 PM MT",
+            "stage_notes": ["That time now overlaps Office hours on your calendar."], **kw}
+
+
+def test_an_accepted_time_posts_its_create_card_and_a_reply_only_turn(acc_bot, monkeypatch):
+    ns, fe, queue, posted = acc_bot
+    assert _queue(monkeypatch, queue, _acc_req()) == 1
+    ns["_scheduling_proactive_tick"]()
+    thread = fe.store.threads("sched", 10)[0]["thread_key"]
+    seed = fe.store.thread("sched", thread)[0]["text"]
+    assert "Time accepted** by Dana Example" in seed and "I staged the invite for Mon Nov 30, 2:15-2:45 PM MT." in seed
+    assert ":warning: That time now overlaps Office hours on your calendar." in seed
+    # the card goes through the staged-action poster, in this thread, with no model turn
+    assert len(posted) == 1
+    channel, thread_ts, action = posted[0]
+    assert (channel, thread_ts, action["action"], action["_route"]) == ("sched", thread, "event_create", {})
+    assert {k: action[k] for k in EVENT} == EVENT
+    # one turn follows, and it only drafts the confirming reply
+    assert len(_Thread.started) == 1
+    channel, t2, _ts, prompt, user_id, is_reply = _Thread.started[0]
+    assert (channel, t2, user_id, is_reply) == ("sched", thread, "proactive-scheduler", False)
+    assert "already staged" in prompt and "Do not stage another event" in prompt and "create-reply" in prompt
+    assert json.loads(ns["SCHED_PROACTIVE_SEEN"].read_text())[CONV] == {"thread": thread, "messages": ["m-acc"]}
+
+
+def test_an_accepted_time_in_an_open_thread_posts_there_and_resumes(acc_bot, monkeypatch):
+    ns, fe, queue, posted = acc_bot
+    seed = fe.post("sched", ":calendar: New scheduling request")
+    ns["_sched_mark_seen"](CONV, "m-ask", seed.thread_key)
+    assert _queue(monkeypatch, queue, _acc_req()) == 1
+    ns["_scheduling_proactive_tick"]()
+    assert len(fe.store.threads("sched", 10)) == 1
+    said = [m["text"] for m in fe.store.thread("sched", seed.thread_key)]
+    assert any("I staged the invite" in t for t in said), said
+    assert posted[0][1] == seed.thread_key
+    assert _Thread.started[0][5] is True, "the thread's session resumes"
+
+
+def test_kept_mail_gets_its_card_and_no_turn(acc_bot, monkeypatch):
+    ns, fe, queue, posted = acc_bot
+    assert _queue(monkeypatch, queue, _acc_req(kept=True, stage_notes=[])) == 1
+    ns["_scheduling_proactive_tick"]()
+    thread = fe.store.threads("sched", 10)[0]["thread_key"]
+    said = [m["text"] for m in fe.store.thread("sched", thread)]
+    assert len(posted) == 1 and _Thread.started == []
+    assert any("kept from the assistant, so the reply to them is yours to write" in t for t in said), said
+    # kept mail with no staged invite opens nothing
+    queue.write_text("[]")
+    assert _queue(monkeypatch, queue, _acc_req(kept=True, staged_event=None, conversation_id="conv-kept-2")) == 1
+    ns["_scheduling_proactive_tick"]()
+    assert len(fe.store.threads("sched", 10)) == 1 and len(posted) == 1 and _Thread.started == []
+
+
+def test_an_acceptance_code_could_not_stage_says_why_first(acc_bot, monkeypatch):
+    ns, fe, queue, posted = acc_bot
+    why = "The offer went to 2 people, and one has answered."
+    assert _queue(monkeypatch, queue, _acc_req(staged_event=None, handoff=why)) == 1
+    ns["_scheduling_proactive_tick"]()
+    thread = fe.store.threads("sched", 10)[0]["thread_key"]
+    seed = fe.store.thread("sched", thread)[0]["text"]
+    assert seed.splitlines()[0].endswith(f"I did not stage the invite: {why} Checking the thread…"), seed
+    assert posted == [] and len(_Thread.started) == 1
+    prompt = _Thread.started[0][3]
+    assert f"Its reason: {json.dumps(why)}" in prompt and "pending-event.json" in prompt

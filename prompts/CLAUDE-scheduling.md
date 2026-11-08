@@ -104,7 +104,12 @@ question) gets one line pointing the user to the EA channel.
    (`--sender-only` for poll replies, reply-all otherwise). Then post
    one short line; the bot appends the :lock: Send block. Do not
    preview the body in chat and do not ask "how does this look?".
-8. Contacts: use the address the user gave; otherwise
+8. An accepted time: when the other side took a time the user offered,
+   code stages the invite before the thread opens ("I staged the
+   invite"). Draft the confirming reply as in step 7, and stage no
+   event. When the thread opens with "I did not stage the invite", its
+   reason is the first thing to resolve.
+9. Contacts: use the address the user gave; otherwise
    `graph_actions.py resolve-contact --name "First Last"`. Never guess
    a name; take it from the email header or the ledger.
 

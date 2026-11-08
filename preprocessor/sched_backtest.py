@@ -17,6 +17,12 @@ kind, and the misses: records that got no row, no thread and no card. Owner only
 the proactive seen file and the cards file, and the Sent folder through
 Graph (--no-mail skips that join; "answered" is then unknown).
 
+With mail, it also replays the accepted times: each conversation of those
+records is read whole, and sched_acceptance.from_thread says what code
+does with it today (the user's offer, a reply that takes one of its
+times, the invite or the reason it goes to a thread). The counts sit
+beside the invites code staged in the window (the acceptance log).
+
   python3 preprocessor/sched_backtest.py [--days 30] [--no-mail] [--json out.json]
 """
 from __future__ import annotations
@@ -113,6 +119,52 @@ def render(summary: dict, days: int, mail: bool) -> str:
     return "\n".join(lines)
 
 
+def replay_acceptances(threads: dict, ctx: dict, *, since: str) -> dict:
+    """What code does today with each accepted time in `threads`
+    ({conversation id: messages}) whose reply came after `since`:
+    {"accepted", "would_stage", "handoff", "reasons": {why: n}, "items"}."""
+    import sched_acceptance
+    out = {"accepted": 0, "would_stage": 0, "handoff": 0, "reasons": {}, "items": []}
+    reasons: Counter = Counter()
+    for conv, msgs in sorted(threads.items()):
+        try:
+            r = sched_acceptance.from_thread(msgs, ctx, conversation_id=conv)
+        except Exception as e:
+            r = {"state": "error", "why": str(e)[:120], "inbound_at": ""}
+        if r.get("state") != "accepted" or _iso(r.get("inbound_at") or "") < _iso(since):
+            continue
+        out["accepted"] += 1
+        ev = r.get("event")
+        if ev:
+            out["would_stage"] += 1
+        else:
+            out["handoff"] += 1
+            reasons[r.get("why") or "?"] += 1
+        out["items"].append({"conversation_id": conv, "received": r.get("inbound_at") or "",
+                             "when": r.get("when") or "", "staged": bool(ev), "why": r.get("why") or "",
+                             "subject": (ev or {}).get("subject") or "", "notes": r.get("notes") or []})
+    out["reasons"] = dict(reasons.most_common())
+    return out
+
+
+def logged_acceptances(records: list[dict], since: str) -> dict:
+    """The acceptance log's counts since `since`: {"staged", "handoff"}."""
+    out = {"staged": 0, "handoff": 0}
+    for r in records or []:
+        if _iso(str(r.get("ts") or "")) >= _iso(since) and r.get("status") in out:
+            out[r["status"]] += 1
+    return out
+
+
+def render_replay(replay: dict, logged: dict) -> str:
+    lines = [f"accepted times replayed: {replay['accepted']}; code would stage an invite for "
+             f"{replay['would_stage']}, hand {replay['handoff']} to a thread"]
+    for why, n in list(replay["reasons"].items())[:5]:
+        lines.append(f"  {n} x {why[:100]}")
+    lines.append(f"staged by code in the window (the log): {logged['staged']}, handed to a thread: {logged['handoff']}")
+    return "\n".join(lines)
+
+
 # ── the loaders (owner-side) ──────────────────────────────────────────
 
 def load_records():
@@ -169,6 +221,29 @@ def load_card_threads() -> set:
     return threads
 
 
+REPLAY_THREADS_MAX = 150
+
+
+def load_threads(conversation_ids: list[str]) -> dict:
+    """{conversation id: messages} read whole through Graph, capped."""
+    import graph_client as graph
+    out: dict = {}
+    for cid in conversation_ids[:REPLAY_THREADS_MAX]:
+        try:
+            got = graph.get_conversation_messages(cid, top=50)
+            msgs = got[0] if isinstance(got, tuple) else got
+            out[cid] = [m for m in (msgs or []) if isinstance(m, dict)]
+        except Exception as e:
+            print(f"  thread {cid[-10:]} not read: {e}", file=sys.stderr)
+    return out
+
+
+def load_acceptance_log() -> list[dict]:
+    import remote_llm
+    import sched_acceptance
+    return remote_llm.read(sched_acceptance.LOG)
+
+
 def load_sent_times(days: int) -> dict:
     import graph_client as graph
     out: dict = {}
@@ -201,9 +276,21 @@ def main(argv=None) -> int:
     for v in sorted(summary["misses"], key=lambda v: v["received"], reverse=True)[:args.misses]:
         ans = {None: "?", True: "answered", False: "UNANSWERED"}[v["answered"]]
         print(f"  {v['received'][:16]} {v['kind']:15} {ans:10} {v['from_domain'][:22]:22} {v['subject'][:48]}")
+    replay, logged = None, logged_acceptances(load_acceptance_log(), since)
+    if sent_times is not None:
+        import sched_acceptance
+        convs = sorted({v["conversation_id"] for v in verdicts if v.get("conversation_id")})
+        replay = replay_acceptances(load_threads(convs), sched_acceptance.context(EA_DIR), since=since)
+        print("\n" + render_replay(replay, logged))
+        for it in sorted(replay["items"], key=lambda i: i["received"], reverse=True)[:args.misses]:
+            what = f"stage {it['when']}" if it["staged"] else f"thread: {it['why'][:70]}"
+            print(f"  {it['received'][:16]} {what}")
+    else:
+        print(f"\nstaged by code in the window (the log): {logged['staged']}, handed to a thread: {logged['handoff']}")
     if args.json:
         Path(args.json).write_text(json.dumps({"since": since, "days": args.days, "summary": summary,
-                                               "verdicts": verdicts}, indent=1))
+                                               "verdicts": verdicts, "acceptance_replay": replay,
+                                               "acceptance_log": logged}, indent=1))
         print(f"\nwritten: {args.json}")
     return 0
 

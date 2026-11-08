@@ -2,7 +2,11 @@
 """invite_eval: the scheduling pipeline's invites, scored against the
 thread and the calendar, nightly.
 
-For each live `invite` turn the pipeline recorded in the window:
+Two sources: each live `invite` turn the pipeline recorded in the window,
+and each invite code staged from an accepted time (sched_acceptance, the
+owner store's sched-acceptances.jsonl). The line says how many came from
+acceptances and how many acceptances went to a thread instead. For each
+invite:
 
   time       the event's start is the time the thread accepted
              (sched_thread_state: the user's offer, the other side's pick)
@@ -34,6 +38,8 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 TURNS = "pipeline-turns.jsonl"
+ACCEPTANCES = "sched-acceptances.jsonl"
+ACCEPTANCE_SOURCE = "sched-acceptance"
 OUT_DIR = "invite-eval"
 CHECKS = ("time", "duration", "attendee", "mode", "zone", "created", "calendar")
 PHONE_WORDS = ("phone", "call me", "call you", "dial")
@@ -82,7 +88,7 @@ def score_invite(rec: dict, thread_state: dict, *, wants_phone: bool | None, cal
     intent = rec.get("intent") or {}
     out = {"run_id": rec.get("run_id"), "ts": rec.get("ts"), "thread_ts": rec.get("thread_ts"),
            "subject": ev.get("subject") or "", "start": ev.get("start") or "", "end": ev.get("end") or "",
-           "checks": {}, "notes": []}
+           "source": rec.get("source") or "pipeline", "checks": {}, "notes": []}
     c = out["checks"]
     start, end = _dt(ev.get("start")), _dt(ev.get("end"))
     accepted = (thread_state or {}).get("accepted") or {}
@@ -146,23 +152,52 @@ def score_invite(rec: dict, thread_state: dict, *, wants_phone: bool | None, cal
     return out
 
 
-def summarize(scores: list[dict]) -> dict:
+def acceptance_invites(records: list[dict], since: datetime) -> tuple[list[dict], int]:
+    """(invite records, hand-offs) from the acceptance log since `since`:
+    each staged acceptance in the shape score_invite reads, and the count
+    of acceptances code handed to a thread instead."""
+    invites, handoffs = [], 0
+    for r in records or []:
+        ts = _dt(r.get("ts"))
+        if ts is None or ts < since:
+            continue
+        if r.get("status") == "handoff":
+            handoffs += 1
+            continue
+        if r.get("status") != "staged" or not isinstance(r.get("event"), dict):
+            continue
+        mid = str(r.get("message_id") or "")
+        invites.append({"run_id": f"acc-{mid[-8:]}", "ts": r.get("ts"), "thread_ts": "", "live": True,
+                        "kind": "invite", "source": ACCEPTANCE_SOURCE,
+                        "conversation_id": r.get("conversation_id") or "", "event": r["event"],
+                        "intent": {"sender_email": r.get("sender") or "",
+                                   "duration_minutes": r.get("minutes") or None}})
+    return invites, handoffs
+
+
+def summarize(scores: list[dict], handoffs: int = 0) -> dict:
     counts = {k: {"true": 0, "false": 0, "none": 0} for k in CHECKS}
     for s in scores:
         for k in CHECKS:
             v = s["checks"].get(k)
             counts[k]["true" if v is True else "false" if v is False else "none"] += 1
-    return {"invites": len(scores), "failing": [s for s in scores if not s["ok"]], "counts": counts}
+    return {"invites": len(scores), "failing": [s for s in scores if not s["ok"]], "counts": counts,
+            "from_acceptances": sum(1 for s in scores if s.get("source") == ACCEPTANCE_SOURCE),
+            "acceptance_handoffs": handoffs}
 
 
 def render(summary: dict, day: str) -> str:
     n = summary["invites"]
+    acc, handoffs = summary.get("from_acceptances", 0), summary.get("acceptance_handoffs", 0)
+    tail = f"; {handoffs} accepted time{'s' if handoffs != 1 else ''} went to a thread" if handoffs else ""
     if not n:
-        return f":calendar: invite eval {day}: no invites"
+        return f":calendar: invite eval {day}: no invites{tail}"
     bad = len(summary["failing"])
     parts = [f"{k} {c['true']}/{c['true'] + c['false']}" for k, c in summary["counts"].items()
              if c["true"] + c["false"]]
-    line = f":calendar: invite eval {day}: {n} invite{'s' if n != 1 else ''}, {bad} with a failed check; " + ", ".join(parts)
+    line = (f":calendar: invite eval {day}: {n} invite{'s' if n != 1 else ''}"
+            + (f" ({acc} staged from accepted times)" if acc else "")
+            + f", {bad} with a failed check; " + ", ".join(parts) + tail)
     for s in summary["failing"][:5]:
         line += f"\n• {s['subject'][:50]} ({str(s['start'])[:16]}): " + "; ".join(s["notes"][:3])
     return line
@@ -188,6 +223,8 @@ def run(days: int, *, post: bool, json_path: str) -> dict:
     since = datetime.now(timezone.utc) - timedelta(days=days)
     recs = [r for r in remote_llm.read(TURNS)
             if r.get("kind") == "invite" and r.get("live") and (_dt(r.get("ts")) or since) >= since]
+    staged, handoffs = acceptance_invites(remote_llm.read(ACCEPTANCES), since)
+    recs += staged
     users = _user_addrs()
     scores = []
     for rec in recs:
@@ -211,7 +248,7 @@ def run(days: int, *, post: bool, json_path: str) -> dict:
             except Exception as e:
                 print(f"  calendar not read: {e}", file=sys.stderr)
         scores.append(score_invite(rec, state, wants_phone=phone, calendar=cal, user_tz=tz))
-    summary = summarize(scores)
+    summary = summarize(scores, handoffs)
     day = datetime.now(tz).strftime("%Y-%m-%d")
     out_path = Path(json_path) if json_path else (remote_llm.store_dir() / OUT_DIR / f"{day}.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)

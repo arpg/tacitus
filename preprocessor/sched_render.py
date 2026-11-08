@@ -27,6 +27,35 @@ ZONE_SHORT = {
     "America/Anchorage": "AKT", "Pacific/Honolulu": "HST",
 }
 
+# How a clock's zone label is read back (sched_agent.extract_times). A
+# regional label maps to the region's zone, daylight time included, since
+# mail writes "EST" in July as often as in January; inside the user's own
+# region it is the user's zone.
+REGION_ZONES = {
+    "eastern": ("America/New_York", ("America/New_York", "America/Detroit", "US/Eastern")),
+    "central": ("America/Chicago", ("America/Chicago", "US/Central")),
+    "mountain": ("America/Denver", ("America/Denver", "America/Boise", "America/Phoenix", "US/Mountain")),
+    "pacific": ("America/Los_Angeles", ("America/Los_Angeles", "US/Pacific")),
+    "alaska": ("America/Anchorage", ("America/Anchorage",)),
+    "hawaii": ("Pacific/Honolulu", ("Pacific/Honolulu",)),
+}
+ZONE_LABELS = {
+    "ET": "eastern", "EST": "eastern", "EDT": "eastern",
+    "CT": "central", "CST": "central", "CDT": "central",
+    "MT": "mountain", "MST": "mountain", "MDT": "mountain",
+    "PT": "pacific", "PST": "pacific", "PDT": "pacific",
+    "AKT": "alaska", "AKST": "alaska", "AKDT": "alaska",
+    "HT": "hawaii", "HST": "hawaii",
+    "UTC": "UTC", "GMT": "Europe/London", "BST": "Europe/London",
+    "WET": "Europe/Lisbon", "WEST": "Europe/Lisbon",
+    "CET": "Europe/Paris", "CEST": "Europe/Paris",
+    "EET": "Europe/Kyiv", "EEST": "Europe/Kyiv",
+    "IST": "Asia/Kolkata", "SGT": "Asia/Singapore", "HKT": "Asia/Hong_Kong",
+    "JST": "Asia/Tokyo", "KST": "Asia/Seoul",
+    "AEST": "Australia/Sydney", "AEDT": "Australia/Sydney",
+    "NZST": "Pacific/Auckland", "NZDT": "Pacific/Auckland",
+}
+
 _CLOCK_IN_TEXT = re.compile(r"\b\d{1,2}:\d{2}\s*(?:[ap]\.?m\.?)?\b|\b\d{1,2}\s*[ap]\.?m\.?\b", re.I)
 _EM_DASH = "—"
 

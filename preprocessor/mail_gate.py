@@ -265,6 +265,32 @@ class Gate:
                 self.held.add(it.get("message_id") or it.get("id") or "")
         return out
 
+    def acceptances(self, items: list[dict], passed: list[dict]) -> list[dict]:
+        """The grounded acceptances (an `acceptance` key, preprocess) that
+        `items` left out of `passed`: one whose record asks nothing ("see
+        you then" reads as FYI to the model), with the record's text; and
+        one kept from Anthropic whose invite code can stage, with no text
+        at all and `kept` set, so no model turn ever reads it."""
+        if not self.on:
+            return []
+        have = {i.get("message_id") for i in passed or []}
+        out = []
+        for it in items or []:
+            acc = it.get("acceptance")
+            if not isinstance(acc, dict) or it.get("message_id") in have:
+                continue
+            cls, rec = self.classify(it)
+            if cls == "fyi":
+                o = _swap_previews(it, remote_text(rec))
+                o["remote_record"] = _record_fields(rec)
+            elif cls == "kept" and acc.get("event"):
+                o = _swap_previews(it, "")
+                o.update(ask="", kept=True)
+            else:
+                continue
+            out.append(o)
+        return out
+
     def strip(self, items: list[dict]) -> list[dict]:
         """Items that stay whatever the class (counts, thread lists): kept
         threads go, the rest lose their message text."""

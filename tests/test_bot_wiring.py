@@ -759,7 +759,9 @@ def test_proactive_scheduling_runs_the_reschedule_brief():
     pre = (ROOT / "preprocessor" / "preprocess.py").read_text()
     assert "def write_proactive_queue(" in pre and "def register_new_scheduling_requests(" in pre
     intake = pre[pre.index("def run_intake_check("):pre.index("def run_priority_check(")]
-    assert "write_proactive_queue(new_scheduling)" in intake
+    assert "queue_scheduling(detect_scheduling_requests(inbox, sent, gate=gate), gate)" in intake
+    queue = pre[pre.index("def queue_scheduling("):pre.index("def write_proactive_queue(")]
+    assert "write_proactive_queue(new)" in queue and "_acc.stage(new)" in queue
     # the shell notifier no longer overwrites the queue the preprocessor merged
     assert "scheduling-proactive-queue.json" not in (ROOT / "run-agent.sh").read_text()
 
