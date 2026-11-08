@@ -177,7 +177,8 @@ def test_the_script_installs_the_updater_by_default():
 def test_the_new_flags_pass_the_argument_checks():
     if os.geteuid() == 0:
         return
-    for extra in (("--no-update-timer",), ("--without-app",), ("--with-app", "--no-update-timer")):
+    for extra in (("--no-update-timer",), ("--without-app",), ("--with-app", "--no-update-timer"),
+                  ("--no-nginx",), ("--nginx",)):
         r = _run("--commit", SHA, *extra)
         assert r.returncode != 0 and "run as root" in r.stderr, (extra, r.stderr)
 
@@ -196,7 +197,7 @@ def test_an_update_keeps_what_the_relay_serves_and_reports_its_health():
     # Every key line of the pin, not only the first.
     assert "head -n 1 \"$KEY\"" not in text
     assert "sed 's/^/tacitus-release namespaces=\"git\" /'" in text
-    assert text.rstrip().endswith("[ $HEALTHY = 1 ] || exit 1")
+    assert text.rstrip().endswith("[ $HEALTHY = 1 ] && [ $NGINX_OK = 1 ] || exit 1")
     assert "Releases are not signed yet" not in text
 
 
@@ -290,3 +291,307 @@ def test_the_nginx_snippet_warns_against_a_verbose_error_log():
     snippet keeps them there and says to leave error_log above it."""
     text = (RELAY / "snippets" / "nginx.conf").read_text()
     assert "limit_req_log_level info;" in text and "error_log above info" in text
+
+
+# ── the nginx snippets: files of their own, each change past nginx -t ─
+
+# nginx -t fails while a .conf file under the config holds BROKEN: it reads
+# what nginx would, so a staged .new or a kept .old never counts.
+FAKE_NGINX = r"""#!/bin/bash
+echo "nginx $*" >> "$CALLS"
+if f="$(grep -Rls --include='*.conf' BROKEN "$FAKE_CONF")"; then
+    echo "nginx: [emerg] unknown directive \"BROKEN\" in ${f%%$'\n'*}:1" >&2
+    echo "nginx: configuration file $FAKE_CONF/nginx.conf test failed" >&2
+    exit 1
+fi
+echo "nginx: configuration file $FAKE_CONF/nginx.conf test is successful" >&2
+"""
+FAKE_SYSTEMCTL = r"""#!/bin/bash
+echo "systemctl $*" >> "$CALLS"
+if [ "$1" = is-active ]; then [ "$NGINX_ACTIVE" = 1 ]; fi
+"""
+# The tools the function and the script's last part run; nothing else is on PATH.
+TOOLS = ("grep", "sed", "mkdir", "chmod", "install", "cmp", "mv", "cp", "rm", "cat")
+
+
+def _cut(name: str) -> str:
+    """A marked function of relay/install.sh, without its marker lines."""
+    body = SCRIPT.read_text().split(f"# >>> {name}", 1)[1].split("\n", 1)[1]
+    return body.split(f"# <<< {name}", 1)[0]
+
+
+class _Host:
+    """A relay host under tmp_path: the clone's snippets, nginx's config
+    directory with the vendored one inside, and a PATH of the tools alone,
+    with a fake nginx (absent when nginx=False) and a fake systemctl that
+    log their calls."""
+
+    def __init__(self, tmp_path: Path, nginx: bool = True):
+        self.tmp = tmp_path
+        self.clone = tmp_path / "src"
+        self.src = self.clone / "relay" / "snippets"
+        self.src.mkdir(parents=True)
+        for f in (RELAY / "snippets").iterdir():
+            shutil.copy(f, self.src / f.name)
+        self.conf = tmp_path / "etc-nginx"
+        self.conf.mkdir()
+        (self.conf / "nginx.conf").write_text("http {\n    include mime.types;\n}\n")
+        self.dir = self.conf / "tacitus-relay"
+        self.bin = tmp_path / "bin"
+        self.bin.mkdir()
+        for tool in TOOLS:
+            (self.bin / tool).symlink_to(shutil.which(tool))
+        self._shim("systemctl", FAKE_SYSTEMCTL)
+        if nginx:
+            self._shim("nginx", FAKE_NGINX)
+        self.calls_file = tmp_path / "calls"
+        self.calls_file.write_text("")
+        self.active = True
+
+    def _shim(self, name: str, text: str) -> None:
+        (self.bin / name).write_text(text)
+        (self.bin / name).chmod(0o755)
+
+    def env(self) -> dict:
+        return {"PATH": str(self.bin), "CALLS": str(self.calls_file), "FAKE_CONF": str(self.conf),
+                "NGINX_ACTIVE": "1" if self.active else "0", "LC_ALL": "C"}
+
+    def calls(self) -> list:
+        lines = self.calls_file.read_text().splitlines()
+        self.calls_file.write_text("")
+        return lines
+
+    def run(self, mode: str = "on") -> subprocess.CompletedProcess:
+        """nginx_snippets as the script calls it: in a || list, under
+        set -euo pipefail."""
+        code = "set -euo pipefail\n" + _cut("nginx_snippets") + '\nnginx_snippets "$@" || exit $?\n'
+        return subprocess.run([shutil.which("bash"), "-c", code, "nginx_snippets", str(self.src),
+                               str(self.dir), str(self.conf), mode],
+                              capture_output=True, text=True, env=self.env(), timeout=30)
+
+    def leftovers(self) -> list:
+        return sorted(p.name for p in self.dir.iterdir() if p.suffix in (".new", ".old"))
+
+
+def test_the_script_vendors_the_snippets_beside_nginx():
+    text = SCRIPT.read_text()
+    assert "NGINX_DIR=/etc/nginx/tacitus-relay" in text and "NGINX_CONF=/etc/nginx" in text
+    assert "BASE=/opt/tacitus-relay" in text and "CLONE=$BASE/src" in text
+    # The clone's snippets go in through the gate, after the relay's own unit.
+    call = "nginx_snippets $CLONE/relay/snippets $NGINX_DIR $NGINX_CONF $NGINX || NGINX_OK=0"
+    assert call in text
+    assert text.index("systemctl restart tacitus-relay.service") < text.index(call)
+    assert text.index("systemctl enable --now tacitus-relay-update.timer") < text.index(call)
+    # --no-nginx holds for the updater's later runs, which pass no such flag.
+    assert "--no-nginx) NGINX=off" in text and "--nginx) NGINX=on" in text
+    assert "if [ -e $ETC/no-nginx ]; then NGINX=off; else NGINX=on; fi" in text
+    assert "Now put relay/snippets" not in text, "no include from the clone"
+    for snippet, name in (("nginx-http.conf", "http.conf"), ("nginx.conf", "server.conf")):
+        head = (RELAY / "snippets" / snippet).read_text().split("\n\n", 1)[0]
+        assert f"/etc/nginx/tacitus-relay/{name}" in head and "never" in head, snippet
+
+
+def test_unchanged_snippets_are_not_rewritten(tmp_path):
+    host = _Host(tmp_path)
+    r = host.run()
+    assert r.returncode == 0, r.stderr
+    for name, snippet in (("http.conf", "nginx-http.conf"), ("server.conf", "nginx.conf")):
+        assert (host.dir / name).read_text() == (host.src / snippet).read_text()
+    assert host.calls() == ["nginx -t", "systemctl is-active --quiet nginx", "systemctl reload nginx"]
+    before = {}
+    for name in ("http.conf", "server.conf"):
+        os.utime(host.dir / name, (1_000_000_000, 1_000_000_000))
+        st = (host.dir / name).stat()
+        before[name] = (st.st_ino, st.st_mtime_ns)
+    r = host.run()
+    assert r.returncode == 0, r.stderr
+    assert "match this release; nginx left alone." in r.stdout
+    assert host.calls() == [], "no nginx -t and no reload for snippets that match"
+    for name, (ino, mtime) in before.items():
+        st = (host.dir / name).stat()
+        assert (st.st_ino, st.st_mtime_ns) == (ino, mtime), name
+    assert host.leftovers() == []
+
+
+def test_a_changed_snippet_passes_nginx_t_and_nginx_reloads(tmp_path):
+    host = _Host(tmp_path)
+    assert host.run().returncode == 0
+    host.calls()
+    os.utime(host.dir / "http.conf", (1_000_000_000, 1_000_000_000))
+    with open(host.src / "nginx.conf", "a") as f:
+        f.write("# a later release's line\n")
+    r = host.run()
+    assert r.returncode == 0, r.stderr
+    assert (host.dir / "server.conf").read_text() == (host.src / "nginx.conf").read_text()
+    assert (host.dir / "http.conf").stat().st_mtime_ns == 1_000_000_000 * 10**9, "only the changed file"
+    assert host.calls() == ["nginx -t", "systemctl is-active --quiet nginx", "systemctl reload nginx"]
+    assert r.stdout.splitlines()[0] == \
+        f"nginx: server.conf in {host.dir} changed, passed nginx -t, and nginx reloaded."
+    assert host.leftovers() == []
+    # A stopped nginx gets the gate and no reload.
+    host.active = False
+    with open(host.src / "nginx-http.conf", "a") as f:
+        f.write("# one more\n")
+    r = host.run()
+    assert r.returncode == 0, r.stderr
+    assert "nginx is not running, so no reload." in r.stdout
+    assert host.calls() == ["nginx -t", "systemctl is-active --quiet nginx"]
+
+
+def test_a_snippet_that_fails_nginx_t_is_held_back(tmp_path):
+    host = _Host(tmp_path)
+    assert host.run().returncode == 0
+    host.calls()
+    old = (host.dir / "server.conf").read_text()
+    with open(host.src / "nginx.conf", "a") as f:
+        f.write("BROKEN;\n")
+    r = host.run()
+    assert r.returncode == 1
+    assert (host.dir / "server.conf").read_text() == old, "the previous file is back"
+    assert host.calls() == ["nginx -t", "nginx -t"], "the old config is checked again; no reload"
+    assert f"nginx: nginx -t failed with this release's server.conf, so {host.dir} holds" in r.stderr
+    assert "and nginx -t passes with that. nginx keeps the config it runs." in r.stderr
+    assert f'  nginx: [emerg] unknown directive "BROKEN" in {host.dir}/server.conf:1' in r.stderr
+    assert host.leftovers() == []
+    # Run again: still held back, still the old file.
+    r = host.run()
+    assert r.returncode == 1 and (host.dir / "server.conf").read_text() == old
+
+
+def test_a_gate_that_fails_elsewhere_says_so(tmp_path):
+    """A fault outside the snippets: the first install holds nothing back
+    and leaves nothing behind, and the second nginx -t names the cause."""
+    host = _Host(tmp_path)
+    (host.conf / "site.conf").write_text("BROKEN;\n")
+    r = host.run()
+    assert r.returncode == 1
+    assert not (host.dir / "http.conf").exists() and not (host.dir / "server.conf").exists()
+    assert "nginx -t fails with that too: the fault is elsewhere in nginx's config" in r.stderr
+    assert host.leftovers() == []
+
+
+def test_a_gate_that_did_not_finish_puts_the_kept_file_back(tmp_path):
+    host = _Host(tmp_path)
+    assert host.run().returncode == 0
+    good = (host.dir / "server.conf").read_text()
+    # A run stopped between the staging and nginx -t.
+    (host.dir / "server.conf.old").write_text(good)
+    (host.dir / "server.conf").write_text("BROKEN;\n")
+    with open(host.src / "nginx.conf", "a") as f:
+        f.write("BROKEN;\n")
+    host.calls()
+    r = host.run()
+    assert r.returncode == 1 and (host.dir / "server.conf").read_text() == good
+
+
+def test_an_include_of_the_clone_gets_a_note_and_the_copies_still_go_in(tmp_path):
+    host = _Host(tmp_path)
+    sites = host.conf / "sites-enabled"
+    sites.mkdir()
+    site = f"server {{\n    listen 443 ssl;\n    include {host.src}/nginx.conf;\n}}\n"
+    (sites / "relay").write_text(site)
+    main = f"http {{\n    include mime.types;\n\tinclude {host.src}/nginx-http.conf;\n}}\n"
+    (host.conf / "nginx.conf").write_text(main)
+    r = host.run()
+    assert r.returncode == 0, r.stderr
+    assert "nginx: these include lines name the clone, which each update replaces" in r.stdout
+    assert f"  {sites}/relay:3:    include {host.src}/nginx.conf;" in r.stdout
+    assert f"  {host.conf}/nginx.conf:3:\tinclude {host.src}/nginx-http.conf;" in r.stdout
+    assert f"  include {host.dir}/http.conf;    # in the http block" in r.stdout
+    assert f"  include {host.dir}/server.conf;  # in the HTTPS server block" in r.stdout
+    # The operator's files are theirs; the copies go in all the same.
+    assert (sites / "relay").read_text() == site and (host.conf / "nginx.conf").read_text() == main
+    assert (host.dir / "server.conf").read_text() == (host.src / "nginx.conf").read_text()
+    # Once nginx includes the copies, the run says nothing more.
+    (sites / "relay").write_text(f"server {{\n    include {host.dir}/server.conf;\n}}\n")
+    (host.conf / "nginx.conf").write_text(f"http {{\n    include {host.dir}/http.conf;\n}}\n")
+    r = host.run()
+    assert r.returncode == 0 and r.stdout.splitlines() == \
+        [f"nginx: {host.dir}/http.conf and server.conf match this release; nginx left alone."]
+
+
+def test_a_first_install_says_which_include_lines_to_add(tmp_path):
+    host = _Host(tmp_path)
+    r = host.run()
+    assert r.returncode == 0, r.stderr
+    assert f"nginx: no include line names {host.dir} yet" in r.stdout
+    assert f"  include {host.dir}/http.conf;    # in the http block" in r.stdout
+
+
+def test_no_nginx_touches_nothing(tmp_path):
+    host = _Host(tmp_path)
+    r = host.run("off")
+    assert r.returncode == 0, r.stderr
+    assert not host.dir.exists(), "no file under nginx's config"
+    assert host.calls() == [], "no nginx -t, no systemctl"
+    assert "nginx: left alone (--no-nginx)." in r.stdout
+    assert f"{host.src}/nginx-http.conf" in r.stdout and f"{host.dir}/server.conf" in r.stdout
+    assert f"  include {host.dir}/server.conf;  # in the HTTPS server block" in r.stdout
+    # Copies from an earlier run stay as they were, though the release changed.
+    assert host.run().returncode == 0
+    host.calls()
+    os.utime(host.dir / "server.conf", (1_000_000_000, 1_000_000_000))
+    with open(host.src / "nginx.conf", "a") as f:
+        f.write("# a later release's line\n")
+    r = host.run("off")
+    assert r.returncode == 0 and host.calls() == []
+    assert (host.dir / "server.conf").stat().st_mtime_ns == 1_000_000_000 * 10**9
+    assert host.leftovers() == []
+
+
+def test_without_nginx_the_copies_go_in_untested(tmp_path):
+    host = _Host(tmp_path, nginx=False)
+    r = host.run()
+    assert r.returncode == 0, r.stderr
+    assert (host.dir / "http.conf").read_text() == (host.src / "nginx-http.conf").read_text()
+    assert host.calls() == [], "no nginx to test or reload"
+    assert f"nginx: not installed here; http.conf and server.conf written to {host.dir}" in r.stdout
+    assert f"  include {host.dir}/http.conf;    # in the http block" in r.stdout
+
+
+def test_a_failed_gate_exits_non_zero_after_the_relay_is_updated(tmp_path):
+    """The script's last part (the relay's unit, the updater, nginx, the
+    summary) on the fake host: a snippet that fails nginx -t keeps the
+    previous file and makes the exit non-zero, and the relay's unit was
+    written and restarted first."""
+    host = _Host(tmp_path)
+    host._shim("sleep", "#!/bin/bash\n")
+    host._shim("python3", '#!/bin/bash\necho \'{"ok": true}\'\n')
+    root = tmp_path / "root"
+    base, etc, systemd = root / "opt", root / "etc", root / "systemd"
+    for d in (base, etc, systemd):
+        d.mkdir(parents=True)
+    (etc / "installs.txt").write_text("a" * 26 + "\n")
+    text = SCRIPT.read_text()
+    tail = "# --- the unit: written here" + text.split("# --- the unit: written here", 1)[1]
+    head = "\n".join(["set -euo pipefail", f"BASE={base}", f"ETC={etc}", f"CLONE={host.clone}",
+                      f"UNIT={systemd}/tacitus-relay.service",
+                      f"UPDATER={systemd}/tacitus-relay-update", f"NGINX_DIR={host.dir}",
+                      f"NGINX_CONF={host.conf}", f"PY={host.bin}/python3", 'STATIC=""', "WITH_APP=0",
+                      "UPDATE_TIMER=1", "NGINX=on", f"COMMIT={SHA}"])
+    code = head + "\n" + _cut("nginx_snippets") + "\n" + tail
+
+    def run():
+        return subprocess.run([shutil.which("bash"), "-c", code], capture_output=True, text=True,
+                              env=host.env(), timeout=60)
+
+    r = run()
+    assert r.returncode == 0, r.stderr
+    assert f"Installed {SHA} under {base}." in r.stdout
+    assert "systemctl reload nginx" in host.calls()
+    old = (host.dir / "server.conf").read_text()
+    (systemd / "tacitus-relay.service").unlink()
+    with open(host.src / "nginx.conf", "a") as f:
+        f.write("BROKEN;\n")
+    r = run()
+    assert r.returncode == 1
+    calls = host.calls()
+    # The relay's unit was written and restarted before nginx -t ran.
+    unit = (systemd / "tacitus-relay.service").read_text()
+    assert f"ExecStart={host.bin}/python3 -I {base}/relay_server.py --bind 127.0.0.1" in unit
+    assert calls.index("systemctl restart tacitus-relay.service") < calls.index("nginx -t")
+    assert "systemctl enable --now tacitus-relay-update.timer" in calls
+    assert "systemctl reload nginx" not in calls
+    assert (host.dir / "server.conf").read_text() == old
+    assert "nginx -t failed with this release's server.conf" in r.stderr
+    assert f"Installed {SHA} under {base}." in r.stdout, "the summary still prints"

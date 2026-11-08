@@ -360,7 +360,7 @@ replaces: the first run copies the clone's `.release-key.pub` there, and
 a new key is the operator's to copy in (the same rules as an install's
 pin). For a newer signed release on `main` it exports that tag's tree to
 a scratch directory and runs **that tree's** `relay/install.sh --tag
-<vX.Y.Z>`. Then the clone must be at the verified
+<vX.Y.Z>`. Then the script must exit 0, the clone must be at the verified
 commit and `http://127.0.0.1:8471/healthz` must answer; otherwise it runs
 the previous release's `install.sh --tag <old>` and holds the version back.
 
@@ -383,6 +383,21 @@ The hook it needs from `relay/install.sh`:
 - `--expect-commit <sha>`, which the updater passes before `--tag` when
   the release's `install.sh` takes it: the commit the updater verified,
   which the tag must name when the script fetches it.
+- It installs the release's nginx snippets as
+  `/etc/nginx/tacitus-relay/http.conf` and
+  `/etc/nginx/tacitus-relay/server.conf`, the files nginx includes; nginx
+  never includes from the clone, which each update replaces. Every change
+  goes in only when `nginx -t` passes with it, and nginx then reloads. A
+  snippet that fails leaves the previous files in place, and the script
+  exits non-zero after it updates the relay's unit. The updater takes that
+  exit as a failed release: it runs the previous release's `install.sh`,
+  whose snippets are the files left in place, and holds the version back,
+  so the relay and its nginx config stay on one release. The operator
+  fixes what `nginx -t` named and runs the release's `relay/install.sh
+  --tag` again (docs/webchat-relay.md, "Running the relay", The nginx
+  rule).
+  `--no-nginx` leaves nginx alone, for this run and the updater's later
+  ones, until `--nginx`.
 
 An `install.sh` that takes no `--tag` (an older release) makes
 `update.py relay` say so and install nothing.
