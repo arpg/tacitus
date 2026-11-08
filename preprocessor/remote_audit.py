@@ -20,7 +20,7 @@ The run:
      and important lists with a short why, up to four pattern lines, and
      up to three items to hand to Claude (a whole-thread read, a report or
      proposal draft, a reply to a program officer). A ref the call invents
-     is dropped; a row kept from Claude is never handed to it.
+     is dropped; a row kept from hosted models is never handed to it.
   3. Code renders the skill's template. The pre-send audit runs with the
      remote model's verdicts (remote_briefing.audit_post); rows it closes
      or parks leave the post.
@@ -102,7 +102,7 @@ def candidates(rows: list[dict], b: dict, *, today: date) -> dict[str, dict]:
             "ask": (brief or {}).get("ask") or "",
             "conversation_id": o.get("conversation_id") or "",
             "message_id": o.get("source_message_id") or "",
-            "kept": bool(o.get("kept_from_claude")), "brief": brief}
+            "kept": bool(o.get("kept_from_frontier") or o.get("kept_from_claude")), "brief": brief}
     n = 0
     for t in b.get("new_dropped_threads") or []:
         conv = t.get("conversation_id") or ""
@@ -190,7 +190,7 @@ def ask_plan(cands: dict[str, dict], closed: list[dict], *, now: datetime, chat=
 
 def check_plan(obj: dict, cands: dict[str, dict]) -> dict:
     """Unknown refs dropped, caps applied, a ref in one list only, and no
-    hand-off without a thread or of a row kept from Claude."""
+    hand-off without a thread or of a row kept from hosted models."""
     def picks(key, cap, used):
         out = []
         for p in (obj or {}).get(key) or []:

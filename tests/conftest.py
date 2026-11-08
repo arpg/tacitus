@@ -210,3 +210,17 @@ def _no_resident_codex_dirs(monkeypatch):
             if hasattr(mod, fn):
                 monkeypatch.setattr(mod, fn, lambda runner=None, _m=mod, _c=const: getattr(_m, _c))
     yield
+
+
+@pytest.fixture(autouse=True)
+def _fresh_keep_rules():
+    """privacy_rules caches its decision context per process; each test
+    starts and ends without it, so one test's rules never reach another."""
+    def reset():
+        for name in ("privacy_rules", "preprocessor.privacy_rules"):
+            mod = _sys.modules.get(name)
+            if mod is not None and hasattr(mod, "reset"):
+                mod.reset()
+    reset()
+    yield
+    reset()

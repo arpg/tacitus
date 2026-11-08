@@ -175,14 +175,39 @@ def enabled(ea_dir=None) -> bool:
     return True
 
 
+def _local_model() -> bool:
+    """The user's own model is set up (the remote-LLM config names an
+    endpoint and a model). False outside an owner process, which cannot
+    read that config."""
+    try:
+        try:
+            import model_routing
+            import remote_llm
+        except ModuleNotFoundError:
+            from preprocessor import model_routing, remote_llm
+        return model_routing.local_ready(remote_llm.config())
+    except Exception:
+        return False
+
+
+def available(question: dict) -> bool:
+    """A question the install can use: one that `requires` the local model
+    (the keep rules for applicant mail) waits until it is set up."""
+    req = str(question.get("requires") or "").strip()
+    return not req or (req == "local-model" and _local_model())
+
+
 def remaining_questions(questions: list[dict] | None = None, state: dict | None = None,
                         scope: str | None = None, ea_dir=None) -> list[dict]:
-    """The questions not yet answered or skipped, in bank order."""
+    """The questions not yet answered or skipped, in bank order; a question
+    this install cannot use yet (available) is left for later."""
     questions = load_bank() if questions is None else questions
     state = load_state(ea_dir) if state is None else state
     out = []
     for q in questions:
         if q["id"] in state["answered"] or q["id"] in state["skipped"]:
+            continue
+        if not available(q):
             continue
         if scope and not any(
                 s == scope or (s != "*" and (_prefs.scope_matches(s, scope)
@@ -246,6 +271,22 @@ def rule_text(question: dict, answer: str) -> str:
     return f"{question['topic']}: {answer}"
 
 
+def privacy_answer(question: dict, answer: str) -> tuple[str, str]:
+    """(level, the rule's plain sentence) for the answer to a privacy
+    question: a number from its `answers`, or the words for a level.
+    ValueError when the answer names none."""
+    try:
+        import privacy_rules
+    except ModuleNotFoundError:
+        from preprocessor import privacy_rules
+    answers = question.get("answers") or {}
+    level = privacy_rules.parse_level(answer, answers)
+    if level not in answers.values():
+        options = "; ".join(f"{k} for {privacy_rules.plain(v).lower()}" for k, v in answers.items())
+        raise ValueError(f"the answer must pick one level: {options}")
+    return level, (question.get("rule_texts") or {}).get(level) or rule_text(question, answer)
+
+
 def record_answer(qid: str, text: str, ea_dir=None, now: datetime | None = None,
                   questions: list[dict] | None = None) -> dict:
     """Record the user's answer as a rule in the preferences store and mark
@@ -258,6 +299,12 @@ def record_answer(qid: str, text: str, ea_dir=None, now: datetime | None = None,
     if not answer:
         raise ValueError("--text is required: the answer in the user's words")
     q = bank[qid]
+    match = level = ""
+    text = rule_text(q, answer)
+    if isinstance(q.get("privacy"), dict):
+        # A keep rule: the level the answer picks, in a plain sentence.
+        level, text = privacy_answer(q, answer)
+        match = q["privacy"].get("match") or ""
     prior = load_state(ea_dir)["answered"].get(qid, {}).get("rule_id")
 
     def mutate(data: dict) -> dict:
@@ -267,8 +314,8 @@ def record_answer(qid: str, text: str, ea_dir=None, now: datetime | None = None,
             except KeyError:
                 pass
         rule = _prefs.add_rule(data, kind=q["kind"], scopes=[q["scope"]],
-                               text=rule_text(q, answer), quote=answer,
-                               source="chat", rule_id=RULE_PREFIX + qid)
+                               text=text, quote=answer, source="chat",
+                               rule_id=RULE_PREFIX + qid, match=match, level=level)
         # preferences.py validates against its own source list; the stored
         # source names where this rule came from.
         rule["source"] = SOURCE

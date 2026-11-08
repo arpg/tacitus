@@ -463,7 +463,9 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
     # Temp files go to the resident's own temp dir, never /tmp
     # (codex_cli.temp_flags): a live turn and a ghost alike.
     tmp_dir = codex_ghost.ensure_codex_tmp(runner=scratch_runner)
-    prefix = codex_ghost._bot_env({"EA_DIR": str(ea_dir), "EA_RUN_ID": run_id, "EA_BOT_HOME": str(BOT_HOME)})
+    # EA_TURN_MODEL names the model for the mail release log (data only).
+    prefix = codex_ghost._bot_env({"EA_DIR": str(ea_dir), "EA_RUN_ID": run_id, "EA_BOT_HOME": str(BOT_HOME),
+                                   "EA_TURN_MODEL": "codex"})
     runner = codex_run or codex_cli.run
     last_dir = root if not live else BOT_HOME / ".local" / "state" / "ea-lanes"
     text = fresh_prompt or prompt

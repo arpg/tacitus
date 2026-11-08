@@ -66,11 +66,11 @@ scheduling switches are separate decisions (`docs/llm-lanes.md`).
 
 The remote model reads everything its switches give it. With `mail` at
 `enforce` that is every new message. A hosted endpoint therefore moves
-your mail to that provider instead of to Anthropic. Choose it by its
-contract (no retention, no training on your data) and by where it runs.
-A model on a machine you control keeps the mail with you; that is the
-case this layer was built for. The `keep_from_anthropic` list limits
-Claude only, never the remote model.
+your mail to that provider instead of to Anthropic or OpenAI. Choose it
+by its contract (no retention, no training on your data) and by where it
+runs. A model on a machine you control keeps the mail with you; that is
+the case this layer was built for. The `keep_from_frontier` list limits
+the hosted models (Claude, Codex) only, never the remote model.
 
 ### The sizing cost of running without one
 
@@ -154,8 +154,8 @@ shadow` (and moves `shadow_until` for the latter).
  "model": "your-model-name",
  "mail": "shadow", "scheduling": "shadow",
  "shadow_until": "2026-10-26",
- "keep_from_anthropic": {"domains": ["mil", "contractor.example.com"],
-                         "addresses": [], "admissions": true}}
+ "keep_from_frontier": {"domains": ["mil", "contractor.example.com"],
+                        "addresses": [], "admissions": true}}
 ```
 
 - The key is the owner secret `REMOTE_LLM_API_KEY` in the private
@@ -175,16 +175,13 @@ shadow` (and moves `shadow_until` for the latter).
   saves the picture for the lane to open.
 - **The remote endpoint receives every message.** Nothing gates what goes
   to it.
-- **`keep_from_anthropic`** names the mail that should, in an enforce
-  mode, reach only the remote model and never Claude. A domain covers its
-  subdomains (`mil` covers `army.mil`). For mail, every participant (from,
-  to, cc) is checked; with `admissions` on, a message from outside the
-  institution that the admissions filter would move counts too. In shadow mode the list
-  only labels: each extraction record carries `keep_from_anthropic` with
-  the reason, the reduced briefing replaces such a thread with a stub (no
-  subject, no preview: only that it needs a reply and by when), the
-  release log counts each time Claude read one, and the scheduling agent
-  labels a turn whose task text or tool output names a listed address.
+- **`keep_from_frontier`** (read under its old name `keep_from_anthropic`
+  too, with a doctor warning to rename it) names the mail that stays on
+  your machine, away from every hosted model: Claude, Codex, or one added
+  later. A domain covers its subdomains (`mil` covers `army.mil`). Every
+  participant (from, to, cc) is checked; with `admissions` on (the
+  default), applicant mail counts too. How far each message is kept is
+  its keep level, below ("Keep from frontier models").
 - The scheduling agent's tools run **as ea-bot** through
   `sudo -n -u ea-bot`, so mail and calendar reads go through the mail
   mediator exactly as Claude's do. The agent has Claude's privileges and
@@ -200,6 +197,67 @@ shadow` (and moves `shadow_until` for the latter).
 - `<private_dir>/routing.json` (owner-only) is the routing table over
   these switches: per task `local`, `hosted` or `auto`, with the stakes
   and keep floors in code (`docs/llm-lanes.md` 1.1).
+
+## Keep from frontier models (`preprocessor/privacy_rules.py`)
+
+"Frontier" means every hosted model. Each check keys on the model's class
+(`model_routing.is_hosted`), never on its name, so a switch from Claude to
+Codex, or a third hosted model, changes nothing below.
+
+Each extraction record carries a keep level. The level is decided in code,
+again at every read, from the facts the extraction stored (`keep_facts`:
+the keep-list reason, the applicant score, the admissions exemption that
+fired, the participants), the rules in force and the user's engagement now.
+
+| Level | Plain words | The cron lanes | A chat turn | Ledger, threads, cards | Files |
+|---|---|---|---|---|---|
+| `local` | Kept on your machine | dropped; a cron read is refused | the local model's record, never the text | a `kept-` row with the record's summary (not for applicant mail, which the weekly admissions digest covers) | never read or described |
+| `facts` | Facts only | `FACT_FIELDS` alone: sender, subject, dates, offered and taken times, the kind of ask, the deadline, file names | the same | rows and cards from the facts; the brief has no gist | never |
+| `summary` | Summary | the record: summary, ask, deadline, times; no verbatim quote | the same | rows, threads and cards as sealed mail; the brief names the level | never |
+| `full` | Normal mail | as the mail mode gives | as the mail mode gives | as before | read; applicant files stay on the machine |
+
+The gate applies under `enforce`, `ghost` and `sealed`; under `shadow` the
+levels only label. `mail_privacy.FACT_FIELDS` is the one list a `facts`
+view keeps. The release log counts reads by level and by the model of the
+turn (`EA_TURN_MODEL`, a name kept as data: the request comes from the
+resident, so nothing gates on it). `mail_privacy.py report` shows the
+counts by level and by reason; the doctor shows the rules in force.
+
+**The rules** are the user's, in the preferences store under the scope
+`privacy`, in plain sentences. The built-in ones are seeded on first use:
+
+| Rule | Matcher | Level |
+|---|---|---|
+| `privacy-keep-list` | anyone on `keep_from_frontier` (owner-private; this rule only shows it and cannot be retired) | local |
+| `privacy-applicant-mail` | mail from outside the institution the admissions filter scores as applicant mail | local |
+| `privacy-engaged-applicants` | applicant mail where the user has written in the thread or to the sender (the engaged-person store, the style profiles, recent sent mail), keeps the sender in the project store, or an admissions exemption fires | summary |
+| `privacy-applicant-files` | the files on applicant mail | local at every level |
+
+A rule the user adds outranks them. A person rule names one address or a
+first and last name and may open that person's mail (`summary` or
+`full`); a domain rule only keeps mail closer (`local` or `facts`). Nothing
+in the store raises the keep list, which only the owner-private config
+changes. The first-week questions ask once about applicant mail
+(`applicant-mail`: 1 nothing, 2 facts only, 3 summary, the default).
+
+```
+preferences.py list --scope privacy
+preferences.py add --kind instruction --scope privacy \
+  --text "Treat Pat Doe as a normal correspondent." --quote "<the user's words>" \
+  --match person:pat@example.org --level full
+preferences.py retire --id privacy-applicant-mail
+```
+
+The engaged-person store (`<private_dir>/remote-llm/engaged.json`) holds
+each address the user has written to; the tick adds to it from the
+user's sent mail. A new thread from an applicant the user has answered
+starts at the engaged level, and the user's reply lifts that applicant's
+earlier mail too.
+
+The preferences store is resident space: a rule there is written by the
+EA on the user's word, and the daily preferences digest shows every rule
+added or retired. That is why no rule there can raise the keep list, and
+why a rule that opens mail names one person.
 
 ## The shadow run
 
@@ -235,9 +293,10 @@ Mail:
   remote model itself under `enforce`: then the measure is the record's
   per-message state against the tagger's, two prompts on one model);
 - confidential share and kinds;
-- how much mail the keep_from_anthropic list covers, by reason;
-- chat reads of a thread the shadow classed confidential or kept from
-  Anthropic (the reads an enforce mode would block or gate);
+- how much mail is kept from frontier models, by reason and by level;
+- chat reads of a thread the shadow classed confidential or kept, by
+  level and by the model that read it (the reads an enforce mode would
+  block or gate);
 - briefing size before and after, previews replaced;
 - latency, cold starts, errors, characters sent.
 
@@ -288,7 +347,7 @@ examples, the model, thinking and voting all evolve.
   raw message and the four thread messages before it, judging each
   message as of its arrival. Batches never hold two messages of one
   thread, so a label cannot lean on what happened later.
-- Mail labelled `keep_from_anthropic` never goes to Claude: no reference
+- Mail labelled `keep_from_frontier` (any level below full) never goes to Claude: no reference
   label, and never shown to the optimizer. It is scored on the outcome
   label alone (`nr_recall_outcome_kept`).
 
@@ -471,9 +530,11 @@ thread when a lane acts on it or the user asks in a room or thread.
   ledger, the scheduling queue or any lane's JSON sees it: actionable
   mail (needs a reply, a task, a decision, a meeting time) carries the
   remote model's summary, ask, due date and offered times in place of
-  the preview; FYI and awaiting-reply mail is left out; kept mail is
-  left out. Subjects, senders and ids stay. Each mode's JSON carries a
-  `mail_gate` block with the counts.
+  the preview; FYI and awaiting-reply mail is left out; mail kept on
+  your machine (level `local`) is left out, and mail kept at `facts` or
+  `summary` passes as its level's view, marked `kept_level`. Subjects,
+  senders and ids stay. Each mode's JSON carries a `mail_gate` block with
+  the counts.
 - **Held mail.** Mail the remote model has not read is read inline
   (four at a time, 60 to 120 seconds per run); what is still unread is
   held, out of the run's seen sets, so a later run surfaces it. Mail
@@ -490,14 +551,18 @@ thread when a lane acts on it or the user asks in a room or thread.
   posts nothing, says so and keeps its window for the next run; the EA
   channel is never the fall-back. Mail the list digest covers is not
   repeated.
-- **Cron lanes' reads.** A `cron-` run reads no kept thread through the
-  mediator: a read of one kept message or thread is refused before it
-  runs, and search and list results lose kept rows
-  (`mail_privacy.release_precheck` / `release_filter`). Bot runs (a
-  room, a thread, the DM) read as before. An error while checking a cron
-  lane's read refuses it.
+- **Cron lanes' reads.** A `cron-` run (a Codex ghost's `cron-ghost-codex-`
+  included) reads no `local` thread through the mediator: a read of one
+  such message or thread is refused before it runs, and search and list
+  results lose those rows (`mail_privacy.release_precheck` /
+  `release_filter`). Every lane, a cron lane or a bot run (a room, a
+  thread, the DM, on Claude or Codex), gets a kept message as its level's
+  view and is refused the files of a kept message. An error while
+  checking a cron lane's read refuses it.
 - **The tagger** (`mail_tagger.py`) calls the remote model instead of
-  Claude Haiku.
+  Claude Haiku. Under `off` or `shadow`, with a local model set up, the
+  hosted tagger still never gets kept mail: those messages go to the
+  local model in a batch of their own.
 - **The writer.** With `"drafting": "remote"`, lanes get email bodies
   from `email_writer.py write` (a mediated verb that runs on its own
   mediator thread), the `email-author` subagent only on a fallback;

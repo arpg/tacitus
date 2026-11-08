@@ -451,8 +451,27 @@ In shadow mode nothing reaches the Claude lanes: the bot hands each
 finished scheduling turn to the agent after posting, the mediator notes
 which threads each mail read released after answering, and the button
 executors note what the user created. The remote endpoint receives every
-message; the `keep_from_anthropic` list labels the mail an enforce mode
-would leave to the remote model alone. One part is live rather than shadow:
+message; the `keep_from_frontier` list (read under its old name
+`keep_from_anthropic` too) and the user's privacy rules give each record a
+keep level, which an enforce mode applies to every hosted model alike.
+
+Keep levels (`privacy_rules.py`). "Frontier" is every hosted model: Claude,
+Codex or one added later, and each check keys on the class
+(`model_routing.is_hosted`), never the name. A record is `local` (kept on
+the machine: no cron lane sees it, a chat turn gets the remote record, never
+the text), `facts` (`mail_privacy.FACT_FIELDS` alone), `summary` (the remote
+record, no text, no verbatim quote) or `full`. The level is decided in code at
+every read from the facts the extraction stored, the rules in the user's
+preferences store (scope `privacy`, the built-in ones seeded there) and the
+engagement now (the user wrote in the thread or to the person, the
+engaged-person store, the project store's people, the admissions filter's
+exemptions). The keep list in the owner-private config is a floor no stored
+rule raises. Applicant mail is `local` until the user writes back, then
+`summary`, the owner's ceiling, so the ledger, the scheduling sweep and the
+thread brief track it. The files of kept mail, and of applicant mail at every
+level, reach no lane. The mail gate, the mediator's reads, the tagger, the
+plugin mail triggers and the hosted admissions digest apply the level; the
+release log counts reads by level and by the turn's model. One part is live rather than shadow:
 drafting (`draft_ab.py`). For a new Outlook draft written by the
 email-author subagent in a bot run, the remote model's body (same context
 as the subagent) goes in the draft before `_surface_run_drafts` posts the

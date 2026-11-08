@@ -151,7 +151,7 @@ def test_listed_address_in_task_labels_the_turn_and_it_runs(store):
     chat = FakeChat([step("reply", {"text": "Which day suits you?"})])
     turn, _, _ = sa.run_agent(_job(task_block="From: someone@army.mil can we meet?"),
                               chat=chat, runner=FakeRunner())
-    assert turn["status"] == "ok" and turn["keep_from_anthropic"] == "listed domain mil"
+    assert turn["status"] == "ok" and turn["keep_from_frontier"] == "listed domain mil"
     assert len(chat.calls) == 1
 
 
@@ -160,10 +160,10 @@ def test_listed_address_in_tool_output_labels_the_turn_and_reaches_the_model(sto
     chat = FakeChat([step("get-conversation", {"conversation_id": "c1"}),
                      step("reply", {"text": "Which day suits you?"})])
     turn, _, msgs = sa.run_agent(_job(), chat=chat, runner=runner)
-    assert turn["status"] == "ok" and turn["keep_from_anthropic"] == "listed address"
+    assert turn["status"] == "ok" and turn["keep_from_frontier"] == "listed address"
     assert any("someone@x.edu" in m["content"] for m in msgs)
     assert not sa.run_agent(_job(), chat=FakeChat([step("reply", {"text": "ok"})]),
-                            runner=FakeRunner())[0]["keep_from_anthropic"]
+                            runner=FakeRunner())[0]["keep_from_frontier"]
 
 
 def test_reads_run_as_the_resident_with_a_shadow_run_id(store):

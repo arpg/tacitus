@@ -527,7 +527,8 @@ def untrusted_field(text, limit: int = 140) -> str:
 def thread_brief_line(brief: dict, cap: int = 240) -> str:
     """One line from a ledger row's thread brief (mail_privacy.thread_brief):
     the subject, the latest message date, the open ask, whether a reply is
-    owed and whether the user replied after the latest message. Empty when
+    owed, whether the user replied after the latest message, and the keep
+    level of a thread kept from hosted models. Empty when
     the brief carries none of these. The subject and the ask come from
     email (the ask is the remote model's reading of it), so both pass
     through untrusted_field and the ask is labelled as data."""
@@ -548,6 +549,11 @@ def thread_brief_line(brief: dict, cap: int = 240) -> str:
     deadline = str(brief.get("deadline") or "").strip()
     if deadline:
         parts.append(f"deadline {deadline}")
+    level = str(brief.get("kept_level") or "").strip()
+    if level in ("Kept on your machine", "Facts only", "Summary"):
+        # A thread kept from hosted models, in the words every surface uses
+        # (privacy_rules.PLAIN); any other value is not printed.
+        parts.append(f"kept: {level}")
     return "; ".join(parts)
 
 
@@ -602,7 +608,7 @@ def extract_relevant_briefing(msg: str, briefing: dict,
                     lines.append(f"   Outlook Message ID: {msg_id}")
                 if conv_id:
                     lines.append(f"   Conversation ID: {conv_id}")
-                if isinstance(brief, dict) and not ob.get("kept_from_claude"):
+                if isinstance(brief, dict) and not (ob.get("kept_from_frontier") or ob.get("kept_from_claude")):
                     brief_line = thread_brief_line(brief)
                     if brief_line:
                         lines.append(f"   Thread brief: {brief_line}")

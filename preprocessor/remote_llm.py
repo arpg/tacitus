@@ -50,8 +50,8 @@ Config, <private_dir>/remote-llm.json, written by `remote_llm.py init`:
      "mail": "shadow", "scheduling": "shadow",
      "drafting": "remote", "digests": "remote",
      "shadow_until": "2026-10-26",
-     "keep_from_anthropic": {"domains": ["mil", "contractor.example.com"], "addresses": [],
-                             "admissions": true}}
+     "keep_from_frontier": {"domains": ["mil", "contractor.example.com"], "addresses": [],
+                            "admissions": true}}
 
 The endpoint is any OpenAI-compatible chat-completions server reachable
 over https (vLLM, llama.cpp, Ollama behind TLS, a hosted provider). The
@@ -65,12 +65,15 @@ multimodal (`-mm`, `-vl`, `vision`, `omni`), and no model reads them
 otherwise (image_model()).
 
 The remote endpoint receives every message; nothing gates it.
-`keep_from_anthropic` names the mail that should, in time, reach only the
-remote model and never Claude: a participant whose address or domain is
-listed (a domain also covers its subdomains, so "mil" covers army.mil)
-and, with `admissions` on, a message the admissions filter would move.
-In shadow mode it only labels records, so the reduced briefing and the
-reports can show what an enforce mode would keep from Claude.
+`keep_from_frontier` (read under its old name `keep_from_anthropic` too)
+names the mail that stays on the owner's machine, away from every hosted
+model (Claude, Codex or any other): a participant whose address or domain
+is listed (a domain also covers its subdomains, so "mil" covers army.mil)
+and, with `admissions` on, mail the admissions filter scores as applicant
+mail. How much of such mail a hosted model may see is its keep level
+(privacy_rules.py: local, facts, summary or full), from rules the user
+owns. In shadow mode the levels only label records, so the reduced
+briefing and the reports can show what an enforce mode would keep.
 
 Store: <private_dir>/remote-llm/ (0700), JSONL files (0600). calls.jsonl
 holds one line per request with purpose, sizes, timings and errors; it
@@ -101,6 +104,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 import owner_trust as _owner_trust  # noqa: E402
 
 CONFIG_FILE = "remote-llm.json"
+# The keep list's key in CONFIG_FILE, and the name it had before: the mail
+# it names stays away from every hosted model, Claude and Codex alike.
+KEEP_KEY = "keep_from_frontier"
+LEGACY_KEEP_KEY = "keep_from_anthropic"
 STORE_DIRNAME = "remote-llm"
 SECRET_NAME = "REMOTE_LLM_API_KEY"
 PARTS = ("mail", "scheduling")
@@ -156,7 +163,7 @@ def _off() -> dict:
             "qwen_share": 0.5,
             "ab": {"share": 0.0, "lanes": [], "from": "", "until": "", "arm": "remote"},
             "sched_backstop": True,
-            "keep_from_anthropic": {"domains": [], "addresses": [], "admissions": True}}
+            KEEP_KEY: {"domains": [], "addresses": [], "admissions": True}}
 
 
 def _clean_list(values) -> list[str]:
@@ -247,9 +254,15 @@ def config() -> dict:
         w = ghost.get(part) if isinstance(ghost.get(part), dict) else {}
         cfg["ghost"][part] = {"from": str(w.get("from") or "").strip(),
                               "until": str(w.get("until") or "").strip()}
-    ns = raw.get("keep_from_anthropic")
+    ns = raw.get(KEEP_KEY)
+    if not isinstance(ns, dict) and isinstance(raw.get(LEGACY_KEEP_KEY), dict):
+        # The key's old name reads as the new one; the doctor asks the
+        # owner to rename it.
+        ns = raw[LEGACY_KEEP_KEY]
+        cfg["keep_legacy_key"] = True
+        _note_legacy_key()
     ns = ns if isinstance(ns, dict) else {}
-    cfg["keep_from_anthropic"] = {
+    cfg[KEEP_KEY] = {
         "domains": _clean_list(ns.get("domains")),
         "addresses": _clean_list(ns.get("addresses")),
         "admissions": ns.get("admissions") is not False,
@@ -261,13 +274,35 @@ def config() -> dict:
             import plugin_registry as _plugins
         except ModuleNotFoundError:
             from preprocessor import plugin_registry as _plugins
-        extra = _plugins.mail_rules().get("keep_from_anthropic_domains") or []
+        extra = _plugins.mail_rules().get("keep_from_frontier_domains") or []
     except Exception:
         extra = []
     if extra:
-        doms = cfg["keep_from_anthropic"]["domains"]
-        cfg["keep_from_anthropic"]["domains"] = doms + [d for d in extra if d not in doms]
+        doms = cfg[KEEP_KEY]["domains"]
+        cfg[KEEP_KEY]["domains"] = doms + [d for d in extra if d not in doms]
     return cfg
+
+
+_LEGACY_NOTED: list = []
+
+
+def _note_legacy_key() -> None:
+    """One stderr line per process for the key's old name."""
+    if not _LEGACY_NOTED:
+        _LEGACY_NOTED.append(True)
+        print(f"remote_llm: {CONFIG_FILE} names the keep list {LEGACY_KEEP_KEY}; it is read as "
+              f"{KEEP_KEY}. Rename the key in the file.", file=sys.stderr)
+
+
+def keep_list(cfg: dict | None = None) -> dict:
+    """The keep list of a config: {"domains", "addresses", "admissions"}.
+    A config dict built under the old name (a caller's own dict) is read
+    too."""
+    cfg = cfg if cfg is not None else config()
+    ks = cfg.get(KEEP_KEY)
+    if not isinstance(ks, dict):
+        ks = cfg.get(LEGACY_KEEP_KEY)
+    return ks if isinstance(ks, dict) else {}
 
 
 # A model name that marks a multimodal model: qwen3.8-mm, qwen2.5-vl-72b,
@@ -383,15 +418,15 @@ def reading(part: str = "mail", cfg: dict | None = None) -> bool:
 
 
 def keep_reason(addr: str, cfg: dict | None = None) -> str:
-    """Why mail with `addr` on it belongs to the remote model alone (an
-    enforce mode would keep it from Claude), or ''. Covers the address and
+    """Why mail with `addr` on it stays on the owner's machine (an enforce
+    mode keeps it from every hosted model), or ''. Covers the address and
     domain lists; the admissions rule needs the text, see
     mail_privacy.keep_reason()."""
     cfg = cfg if cfg is not None else config()
     a = (addr or "").strip().lower()
     if not a:
         return ""
-    ks = cfg.get("keep_from_anthropic") or {}
+    ks = keep_list(cfg)
     if a in ks.get("addresses", []):
         return "listed address"
     domain = a.rsplit("@", 1)[-1]
@@ -820,7 +855,10 @@ def init_config(endpoint: str, model: str, *, drafting: str | None = None) -> di
     raw["endpoint"], raw["model"] = endpoint, model
     for key in SWITCHES:
         raw.setdefault(key, "off")
-    raw.setdefault("keep_from_anthropic", {"domains": [], "addresses": [], "admissions": True})
+    if isinstance(raw.get(LEGACY_KEEP_KEY), dict) and KEEP_KEY not in raw:
+        # A rewrite of the file carries the keep list under its new name.
+        raw[KEEP_KEY] = raw.pop(LEGACY_KEEP_KEY)
+    raw.setdefault(KEEP_KEY, {"domains": [], "addresses": [], "admissions": True})
     if drafting is not None:
         raw["drafting"] = drafting
     _owner_trust.write_owner_file(path, (json.dumps(raw, indent=2) + "\n").encode(), mode=0o600)
@@ -844,7 +882,7 @@ def _status() -> dict:
         "mail": mode("mail", cfg), "scheduling": mode("scheduling", cfg),
         "drafting": cfg["drafting"], "digests": cfg["digests"], "briefings": cfg["briefings"],
         "audits": cfg["audits"], "reconcile": cfg["reconcile"],
-        "keep_from_anthropic": cfg["keep_from_anthropic"],
+        KEEP_KEY: cfg[KEEP_KEY],
         "key_present": bool(_owner() and api_key()),
         "store": files,
         "calls": len(calls),

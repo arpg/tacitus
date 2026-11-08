@@ -40,6 +40,25 @@ repository that preceded it.
   whether a room follows, the install overlay tells the EA, the room
   tip waits for the collaborator mode, and the web chat's `/api/me`
   says `rooms`, so the app shows its New room button only with rooms.
+- **Keep from frontier models, by level.** The keep list is
+  `keep_from_frontier` in `remote-llm.json` (the old name
+  `keep_from_anthropic` is read, with a doctor warning to rename it), and
+  it keeps mail from every hosted model, Claude and Codex alike: each
+  check keys on the model's class (`model_routing.is_hosted`). Each mail
+  record has a keep level (`local`, `facts`, `summary`, `full`), decided
+  in code at every read from rules the user owns in the preferences store
+  (scope `privacy`; the built-in ones are seeded there and shown by
+  `preferences.py list --scope privacy`). Applicant mail stays on the
+  machine until the user writes back, then reaches the lanes as the local
+  model's summary, so the ledger, the scheduling sweep and the thread
+  brief track it; its files stay on the machine at every level. A `facts`
+  item carries `mail_privacy.FACT_FIELDS` alone. A chat turn reads kept
+  mail as its record, never the text, under `enforce` too; no lane reads
+  the files of kept mail. The tagger, the plugin mail triggers and the
+  hosted admissions digest keep kept mail from their hosted model, and
+  the release log counts reads by level and by the turn's model. The
+  engaged-person store remembers whom the user wrote to. A first-week
+  question asks how much of an applicant's mail the EA may see.
 - **A tier promotion is a verb.** `autonomy_tiers.py promote --task
   <task> --tier <tier> [--contact <addr>] --quote "<words>"` replaces the
   edit of `autonomy-tiers.json` that CLAUDE.md rule 12 asked for, refuses

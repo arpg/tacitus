@@ -78,7 +78,7 @@ switched.
 | `audits` | `off` `remote` | `off` | `remote`: the Sunday audit is written by the remote model (remote_audit.py), with flagged items handed to one Claude session. `off`: the Claude lane on skills/weekly-audit.md. |
 | `reconcile` | `off` `nightly` | `nightly` | `nightly`: every open ledger row is judged against the remote model's thread records once a night, one tool-less Claude call per project (ledger_reconcile.py, section 2.19). It proposes closes, appends notes, gives id-less rows their thread and places rows in projects; it never closes a row. Needs `mail` at enforce. |
 | `scheduling` | `off` `shadow` `enforce` | `shadow` | The remote scheduling agent runs beside Claude and only records. It stops after `shadow_until` (2026-11-02). `enforce` makes it answer the scheduling channel and the proactive scheduler itself, with Claude as the fallback (section 2.11). |
-| `keep_from_anthropic` | domains, addresses, `admissions` | `mil` and the domains the owner lists, plus the domains enabled plugins add; admissions on | Mail that never reaches Claude in bulk. It never limits the remote model. |
+| `keep_from_frontier` (old name `keep_from_anthropic`, still read) | domains, addresses, `admissions` | `mil` and the domains the owner lists, plus the domains enabled plugins add; admissions on | Mail kept from every hosted model, Claude and Codex alike. How far is its keep level (local, facts, summary or full) from the user's rules (docs/remote-llm.md, "Keep from frontier models"). It never limits the remote model. |
 
 `shadow` changes nothing Claude sees or does, and it stops by itself at
 `shadow_until`. `enforce`, `sealed`, `ab` and `remote` take work from
@@ -160,10 +160,13 @@ backend, is in [model-routing.md](model-routing.md).
 a file that says otherwise reads `hosted`, and a save is refused. In chat
 and scheduling turns the stakes rule (`model_tiers.STAKES_RE`) sits over
 a `local` value as over any lane default, and the user's own `@local` tag
-stays the one exception. *Keep:* `mail` and `tagging` read every message
-in an owner process, so while `keep_from_anthropic` names a domain or an
-address, `hosted` there reads `auto` and a save is refused; the gate and
-the mediator's kept checks then keep that mail from every other task.
+stays the one exception. *Keep:* `mail`, `tagging` and `digests` read
+every message in an owner process, so while `keep_from_frontier` names a
+domain or an address, or its admissions rule is on, `hosted` there reads
+`auto` and a save is refused; the gate and the mediator's keep levels then
+keep that mail from every other task, on Claude and Codex alike. The
+floor keys on the model's class (`model_routing.is_hosted`), never on its
+name.
 
 **The hosted model.** Whenever a task runs hosted, by its value or by
 `auto`, the block's `hosted` map says which hosted model: `claude` or
@@ -343,7 +346,7 @@ text went:
 {
   "mail_gate": {
     "mode": "enforce",
-    "note": "Email text is not in this file. Actionable mail carries the remote model's summary; FYI mail and mail kept from Claude are left out and go to the remote digest. Pull a thread with get-conversation when you act on it.",
+    "note": "Email text is not in this file. Actionable mail carries the remote model's summary; FYI mail and mail kept on the user's machine are left out and go to the mail digest. An item marked kept_level is kept from hosted models at that level: 'Summary' carries the summary only, 'Facts only' carries sender, subject, dates and times only. Pull a thread with get-conversation when you act on it.",
     "messages_fetched": 8,
     "held_for_remote_read": 1,
     "items": {
@@ -378,9 +381,9 @@ The digest for the made-up morning:
 
 <!-- example: digest -->
 ```text
-*Mail the remote model held back from Claude since Mon 09:00* (2 FYI, 1 kept). Written by the remote model; Claude did not see these. Ask in #ea to act on one.
+*Mail your own model held back from the hosted models since Mon 09:00* (2 FYI, 1 kept). Written by your own model; no hosted model saw these. Ask in #ea to act on one.
 
-*Kept from Claude*
+*Kept on your machine*
 • *j.doe@contractor.example.com*, Follow-up on the sensing white paper: J. Doe asks Kit to confirm the scope paragraph of the white paper. Due 2026-10-16. *Needs your reply.*
 
 *Research*
@@ -399,13 +402,17 @@ read the goal allows.
 
 ### 2.3 Kept threads and the cron lanes
 
-A cron lane (run id `cron-...`) reads no kept thread through the mediator.
-A read of one kept message or thread is refused before it runs. A search or
-a list loses its kept rows and says how many. A room, a thread or the DM
-reads as before. When the check itself fails for a cron lane, the read is
-refused.
+Each message has a keep level (`local`, `facts`, `summary`, `full`;
+docs/remote-llm.md, "Keep from frontier models"). A cron lane (run id
+`cron-...`, a Codex ghost's included) reads no `local` thread through the
+mediator. A read of one such message or thread is refused before it runs.
+A search or a list loses those rows and says how many. Every lane, a room,
+a thread or the DM included and on any model, gets a message kept at any
+level as that level's view: the remote record in place of the text, or
+the facts alone; and no lane reads the files of a kept message. When the
+check itself fails for a cron lane, the read is refused.
 
-**A kept message that asks for something becomes a ledger row.** The
+**A message kept on the machine that asks for something becomes a ledger row.** The
 lanes would otherwise never hear of it: the digest is the only place a
 kept ask lands, and nothing reads the digest. The owner's tick
 (`mail_privacy.sync_kept_rows`, also the `sync-kept-rows` verb) writes a
@@ -413,7 +420,7 @@ row from the record alone: the subject as the description, the remote
 model's one-line summary, its ask and its deadline in the notes, the
 type from the record's state (`scheduling`, a dated ask `deadline`, a
 todo or decision `task`, else `response_needed`), the thread's ids for
-the closure signals, and `kept_from_claude` in the metadata. The message
+the closure signals, and `kept_from_frontier` in the metadata. The message
 text is not on the row. The row id is `kept-<conversation>`; it is not a
 detector row, so archiving the mail does not close it. The same sender
 nudging again under the same subject in a new conversation (one notice,
@@ -438,7 +445,7 @@ The same kept thread, read by the morning briefing and by a room:
 <!-- example: kept-refused -->
 ```json
 {
-  "cron lane": "This thread is kept from Claude (keep_from_anthropic). A cron lane does not read it; the remote digest covers it, and the user can ask for it in a room or thread.",
+  "cron lane": "This thread is kept on the user's machine (keep_from_frontier). A cron lane does not read it; the mail digest covers it, and the user can ask for it in a room or thread.",
   "room or thread": ""
 }
 ```
@@ -454,7 +461,7 @@ A cron lane's search that hits a kept message:
     "subject": "Slides for Thursday's review"
   },
   {
-    "_note": "1 result(s) kept from Claude were left out."
+    "_note": "1 result(s) kept on the user's machine were left out."
   }
 ]
 ```
@@ -1735,7 +1742,7 @@ row ids, never text. `run --dry-run` judges and writes nothing;
 | Tagger, every 2 minutes | Every message to Claude Haiku: subject, sender, 320 characters | The remote model |
 | List digest, twice a day | Claude read each list digest | The remote model; the post goes to `mail-digest` |
 | Admissions digest, weekly | Claude read a week of applicant mail | The remote model; the post goes to `mail-digest` |
-| Kept mail | Every lane | No bulk lane. A room or thread, when the user asks |
+| Kept mail | Every lane | By its keep level: `local` reaches no bulk lane and a room or thread gets the remote record; `summary` reaches every lane as the record; `facts` as sender, subject, dates and times. Its files reach no lane |
 | Email bodies | The `email-author` subagent (Claude) | The remote model. In the morning briefing, code writes the brief from the remote model's pick, and no Claude session takes part. In a Claude session you start, a hand-off, the scheduling channel or the Sunday audit, the session writes the brief |
 | A lane that acts on an item | Reads the thread | The briefings no longer act through Claude. The Sunday audit and the scheduling channel still read a thread when they act on it |
 | Rooms, threads, the DM | Pull a thread on request | Unchanged with `enforce`; with `sealed`, the remote record of each message, never the text |
@@ -1841,7 +1848,8 @@ Each row is independent. Turning back needs no code change and no restart.
 |---|---|
 | `preprocessor/remote_llm.py` | The switches (`switches`, `set_switch`, `switch_mode`, and `mode` with the routing table applied), the client, the request slots and breakers |
 | `preprocessor/model_routing.py` | The routing table: each task's value (`choice`, `local`, `mail_mode`, `scheduling_mode`, `lane_route`), the floors, the local model's state (`local_status`), the Settings screen's data and save (`payload`, `save`, `WebSettings`), the doctor's row, `show` and `set` |
-| `preprocessor/mail_privacy.py` | The remote model's read of each message (`tick`, `process`); the mediator's kept checks (`release_precheck`, `release_filter`); sealed reads (`seal_output`); the thread brief (`thread_brief`, `sync_briefs`) |
+| `preprocessor/mail_privacy.py` | The remote model's read of each message (`tick`, `process`); the keep levels of each record (`decision_of`, `level_of`, `FACT_FIELDS`, `facts_view`); the mediator's kept checks (`release_precheck`, `release_filter`); sealed reads (`seal_output`); the thread brief (`thread_brief`, `sync_briefs`) |
+| `preprocessor/privacy_rules.py` | The keep rules: the levels, the matchers and their order, the built-in rules seeded into the preferences store, the engaged-person store, the doctor's row |
 | `preprocessor/ledger.py` | `set_metadata`, the owner-side write of a row's `thread_brief` |
 | `preprocessor/sched_agent.py` | The scheduling agent: shadow turns (`enqueue_shadow`) and live turns (`run_live`, `live_write`, `thread_history`); the Claude backstop on live writes (`backstop_review`, `withdraw_writes`) |
 | `preprocessor/tool_gateway.py` | The tool gateway: tool calling for the on-prem model on loopback, the Anthropic face for Claude Code and the OpenAI face for opencode (`render_tools`, `parse_tool_calls`, `answer`, `serve`, `env`) |

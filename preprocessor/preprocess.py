@@ -3230,7 +3230,49 @@ def run_admissions_digest() -> dict:
     import admissions_filter
     if not admissions_filter.enabled():
         return {"mode": "admissions-digest", "digests": [], "disabled": True}
-    return admissions_filter.collect()
+    return keep_admissions_digest(admissions_filter.collect())
+
+
+def keep_admissions_digest(data: dict, cfg: dict | None = None, *, index: dict | None = None,
+                           ctx: dict | None = None) -> dict:
+    """The admissions digest's input as the hosted lane may read it: this
+    mode feeds the Claude or Codex lane (the local digest lane,
+    remote_digests.py, reads the folder itself). With a local model set
+    up, each message kept from hosted models (privacy_rules.py: applicant
+    mail is, by default) loses its text: a summary-level one carries the
+    local model's record instead, a local or facts one nothing but its
+    subject, date and flags. With no local model the input is as before."""
+    import remote_llm
+    import model_routing
+    cfg = cfg if cfg is not None else remote_llm.config()
+    if not model_routing.local_ready(cfg):
+        return data
+    import mail_gate
+    import mail_privacy
+    import privacy_rules
+    index = index if index is not None else mail_privacy.load_index()
+    ctx = ctx if ctx is not None else mail_privacy.keep_context(cfg)
+    kept = 0
+    for g in data.get("digests") or []:
+        for m in g.get("messages") or []:
+            rec = index["by_id"].get(m.get("message_id") or "")
+            if rec is not None:
+                dec = mail_privacy.decision_of(rec, index=index, ctx=ctx)
+            else:
+                msg = {"id": m.get("message_id") or "", "conversationId": m.get("conversation_id") or "",
+                       "subject": m.get("subject") or "",
+                       "from": {"emailAddress": {"address": g.get("from") or "", "name": g.get("name") or ""}}}
+                dec = privacy_rules.for_message(msg, m.get("text") or "", cfg, ctx=ctx)
+            if dec["level"] == "full":
+                continue
+            kept += 1
+            ok = rec is not None and rec.get("status") == "ok"
+            m["text"] = mail_gate.remote_text(rec) if dec["level"] == "summary" and ok else ""
+            m["kept_level"] = privacy_rules.plain(dec["level"])
+    if kept:
+        data["kept_note"] = (f"{kept} message(s) are kept from hosted models: each shows its "
+                             "subject and date, and a summary only where kept_level is Summary.")
+    return data
 
 
 # Modes that read the inbox for triage. Each first runs the admissions

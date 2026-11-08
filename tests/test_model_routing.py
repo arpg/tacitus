@@ -33,7 +33,7 @@ def remote(**over) -> dict:
     address, the admissions rule off) unless `over` says."""
     cfg = rl._off()
     cfg.update(endpoint="https://llm.example.test/v1", model="local-27b",
-               keep_from_anthropic=dict(EMPTY_KEEP))
+               keep_from_frontier=dict(EMPTY_KEEP))
     cfg.update(over)
     return cfg
 
@@ -117,7 +117,7 @@ def test_the_stakes_floor_holds_review_at_hosted_whatever_a_file_says(table):
 
 
 def test_the_keep_floor_holds_mail_and_tagging_off_hosted_while_the_list_has_entries(table):
-    kept = remote(mail="enforce", keep_from_anthropic=KEEP)
+    kept = remote(mail="enforce", keep_from_frontier=KEEP)
     table(mail="hosted", tagging="hosted")
     # hosted waits: the switches decide, so kept mail stays off Claude
     assert mr.choice("mail", cfg=kept) == "auto" and mr.choice("tagging", cfg=kept) == "auto"
@@ -143,9 +143,9 @@ def test_the_admissions_rule_alone_holds_the_floor_and_digests_are_floored(table
     """The admissions rule keeps mail too (it is on unless set false, as
     remote_llm.config reads it), and the digest lane reads list and
     admissions mail: hosted waits on every reader of new mail."""
-    assert rl._off()["keep_from_anthropic"]["admissions"] is True, "on by default"
+    assert rl._off()["keep_from_frontier"]["admissions"] is True, "on by default"
     admissions = remote(mail="enforce", digests="remote",
-                        keep_from_anthropic={"domains": [], "addresses": [], "admissions": True})
+                        keep_from_frontier={"domains": [], "addresses": [], "admissions": True})
     assert mr.keep_listed(admissions) and not mr.keep_listed(remote())
     table(mail="hosted", tagging="hosted", digests="hosted")
     for task in ("mail", "tagging", "digests"):
@@ -604,7 +604,7 @@ def test_the_doctor_row_names_each_task_s_model_and_the_local_model(owner, monke
 
 def test_the_screen_data_and_the_chat_lines(table):
     table(drafting="local")
-    data = mr.payload(cfg=remote(mail="enforce", keep_from_anthropic=KEEP),
+    data = mr.payload(cfg=remote(mail="enforce", keep_from_frontier=KEEP),
                       tiers=ea_config.tiers_from_block({"lanes": {"dm": "local"}}))
     assert data["values"] == ["local", "hosted", "auto"] and data["source"] == "routing.json"
     rows = {r["task"]: r for r in data["rows"]}
@@ -618,7 +618,7 @@ def test_the_screen_data_and_the_chat_lines(table):
     assert rows["briefing"] == {**rows["briefing"], "value": "auto", "effective": "hosted",
                                 "why": "Auto picked Claude", "locked": False}
     # the same rows in the code's terms, for `show --verbose` and the doctor
-    tech = {r["task"]: r for r in mr.payload(cfg=remote(mail="enforce", keep_from_anthropic=KEEP),
+    tech = {r["task"]: r for r in mr.payload(cfg=remote(mail="enforce", keep_from_frontier=KEEP),
                                              tiers=ea_config.tiers_from_block({"lanes": {"dm": "local"}}),
                                              verbose=True)["rows"]}
     assert tech["mail"]["why"] == "the mail switch is enforce" and "dm" in tech["chat"]["why"]
@@ -712,7 +712,7 @@ def test_every_string_the_settings_screen_can_show_is_plain(owner, monkeypatch):
     on = {"mail": "enforce", "drafting": "remote", "digests": "remote", "briefings": "remote",
           "audits": "remote", "scheduling": "enforce"}
     mixed = {"mail": "shadow", "shadow_until": "2099-01-01", "drafting": "ab"}
-    cfgs = [rl._off()] + [remote(keep_from_anthropic=keep, **sw)
+    cfgs = [rl._off()] + [remote(keep_from_frontier=keep, **sw)
                           for keep in (EMPTY_KEEP, KEEP) for sw in ({}, on, mixed)]
     lanes = [{}, {"dm": "local"}, {"main": "local", "room": "local"},
              {k: "local" for k in ("main", "dm", "room", "sched-channel", "proactive")},
@@ -759,7 +759,7 @@ def test_every_string_the_settings_screen_can_show_is_plain(owner, monkeypatch):
         tech += _said(mr.local_status(cfg, verbose=True))
     # every refusal a save answers, through the page the web chat calls
     page = mr.WebSettings()
-    monkeypatch.setattr(rl, "config", lambda: remote(keep_from_anthropic=KEEP))
+    monkeypatch.setattr(rl, "config", lambda: remote(keep_from_frontier=KEEP))
     bodies = [{}, {"tasks": {}}, {"tasks": []}, {"tasks": {"drafts": "local"}},
               {"tasks": {t: "qwen" for t in TASKS}}, {"tasks": {"review": "local"}},
               {"tasks": {t: "hosted" for t in TASKS}}, {"hosted": {"mail": "codex"}},

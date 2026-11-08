@@ -489,8 +489,12 @@ def test_a_cron_lane_reads_no_image_of_a_kept_thread(monkeypatch):
              "by_conv": {CONV: [{"id": MID, "keep_from_anthropic": "domain"}]}, "by_key": {}}
     monkeypatch.setattr(mp, "load_index", lambda: index)
     monkeypatch.setattr(mp.remote_llm, "enforcing", lambda part="mail", cfg=None: True)
-    assert mp.release_precheck("mail_actions", "describe-attachment", argv, "cron-brief-1") == mp.KEPT_REFUSAL
-    assert mp.release_precheck("mail_actions", "describe-attachment", argv, "room-run-1") == ""
+    # The files of a kept message stay on the machine for every lane, a
+    # room's turn too (keep levels: files are read only at full).
+    assert mp.release_precheck("mail_actions", "describe-attachment", argv, "cron-brief-1") == mp.FILES_REFUSAL
+    assert mp.release_precheck("mail_actions", "describe-attachment", argv, "room-run-1") == mp.FILES_REFUSAL
+    assert mp.release_precheck("mail_actions", "get-message", ["get-message", "--provider", "outlook",
+                                                               "--message-id", MID], "cron-brief-1") == mp.KEPT_REFUSAL
 
 
 # ── the sealed record names the image ─────────────────────────────────

@@ -43,6 +43,29 @@ admissions ...` or `preferences.py calibrate --scope admissions`; never
 edit the skill. If the user asks to answer one of these students, treat
 it as an ordinary drafting request on that message.
 
+#### Keep levels: what you may see of applicant mail
+
+Applicant mail stays on the user's machine. No hosted model reads it:
+you, Claude or Codex alike. Its files are never read. After the user
+writes to an applicant, that person's mail is kept at `summary`. You get
+the local model's record (summary, ask, deadline, offered times), never
+the text. An item, a read or a thread brief marked `kept_level` names the
+level: "Kept on your machine", "Facts only" or "Summary". Track the
+thread, draft through the writer and set up the meeting as usual. Do not
+ask for the text or the files. The user reads them in Outlook.
+
+When the user says how to treat a person or a domain, record a privacy
+rule in the same turn. Write the text as a plain sentence:
+
+```
+python3 /home/ea-bot/ea-system/preprocessor/preferences.py add --kind instruction --scope privacy --text "<plain sentence>" --quote "<their words>" --match person:<address> --level summary
+```
+
+`--level` is `local`, `facts`, `summary` or `full`. `--match` is
+`person:<address>`, `name:<first and last name>` or `domain:<domain>`. A
+domain rule only keeps mail closer (`local` or `facts`). `preferences.py
+list --scope privacy` shows the rules in force.
+
 To find a student's mail in a conversation, read the folder by its name:
 `graph_actions.py list-mail --folder admissions-inquiries` (newest
 first) or `mail_actions.py search --provider outlook --folder

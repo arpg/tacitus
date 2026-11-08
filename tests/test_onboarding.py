@@ -31,6 +31,9 @@ import preferences as prefs  # noqa: E402
 
 CLI = [sys.executable, str(REPO / "preprocessor" / "onboarding.py")]
 BANK = onboarding.load_bank()
+# The questions a test install can use: one that waits on a local model
+# (the keep rule for applicant mail) is not asked without one.
+OPEN = [q for q in BANK if not q.get("requires")]
 # Spelled by code point: the character itself stays out of the tree.
 EM_DASH = chr(0x2014)
 MORNING = (REPO / "skills" / "morning-briefing.md").read_text()
@@ -97,7 +100,7 @@ def test_validate_bank_names_each_problem():
 def test_next_answer_skip_status_and_the_rule_in_the_store(tmp_path):
     first = onboarding.next_questions(ea_dir=tmp_path)
     assert [q["id"] for q in first] == [BANK[0]["id"]]
-    assert first[0]["remaining"] == len(BANK) and first[0]["total"] == len(BANK)
+    assert first[0]["remaining"] == len(OPEN) and first[0]["total"] == len(BANK)
     assert first[0]["question"] and first[0]["why"] and first[0]["example"]
 
     res = onboarding.record_answer(BANK[0]["id"], "  My chair  and my students. ", ea_dir=tmp_path)
@@ -115,7 +118,7 @@ def test_next_answer_skip_status_and_the_rule_in_the_store(tmp_path):
     onboarding.skip_question(BANK[1]["id"], ea_dir=tmp_path)
     st = onboarding.status(ea_dir=tmp_path)
     assert st["answered"] == [BANK[0]["id"]] and st["skipped"] == [BANK[1]["id"]]
-    assert st["remaining"] == [q["id"] for q in BANK[2:]]
+    assert st["remaining"] == [q["id"] for q in OPEN[2:]]
     assert st["enabled"] and not st["done"] and not st["complete"]
 
     state = json.loads((tmp_path / "state" / "onboarding.json").read_text())
@@ -165,7 +168,7 @@ def test_scope_filter_and_count(tmp_path):
     assert len(sched) == sum(1 for q in BANK if q["scope"] == "scheduling")
     three = onboarding.next_questions(count=3, ea_dir=tmp_path, record=False)
     assert [q["id"] for q in three] == [q["id"] for q in BANK[:3]]
-    assert [q["remaining"] for q in three] == [len(BANK), len(BANK) - 1, len(BANK) - 2]
+    assert [q["remaining"] for q in three] == [len(OPEN), len(OPEN) - 1, len(OPEN) - 2]
 
 
 # ── one a day ────────────────────────────────────────────────────────
@@ -221,7 +224,7 @@ def test_cli_next_ask_answer_skip_stop_status(tmp_path):
     st = json.loads(_run(tmp_path, "status", "--json").stdout)
     assert st["answered"] == [BANK[0]["id"]] and st["skipped"] == [BANK[1]["id"]]
     text = _run(tmp_path, "status").stdout
-    assert f"{len(BANK) - 2} of {len(BANK)} questions remain" in text
+    assert f"{len(OPEN) - 2} of {len(BANK)} questions remain" in text
 
     assert json.loads(_run(tmp_path, "stop").stdout) == {"done": True}
     assert json.loads(_run(tmp_path, "next", "--force").stdout) == []

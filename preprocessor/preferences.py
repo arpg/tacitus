@@ -42,6 +42,11 @@ Usage:
     preferences.py list [--scope S ...] [--all] [--json]
     preferences.py add --kind avoid --scope funding --text "..." \
         [--quote "..."] [--date YYYY-MM-DD] [--source chat|edit|migration] [--id ID]
+    preferences.py add --kind instruction --scope privacy --text "<a plain sentence>" \
+        --quote "<the user's words>" --match person:<address> --level summary
+        (privacy rules: privacy_rules.py; --match person:<address>,
+        name:<first and last name>, domain:<domain>, topic or engaged;
+        --level local, facts, summary or full)
     preferences.py calibrate --scope newsletters:rio-bulletin --note "..." [--date D]
     preferences.py retire --id ID [--note "..."]
     preferences.py show --id ID
@@ -100,6 +105,8 @@ SCOPES = {
     "drafting": "email and document drafts in the user's voice",
     "manuscripts": "editorial and reviewing work",
     "admissions": "prospective-student inquiries (the weekly admissions digest)",
+    "privacy": "how much of your mail a hosted model (Claude, Codex) may see: keep levels "
+               "(privacy_rules.py); applied by code, never rendered into a prompt",
 }
 SCOPES_RE = re.compile(r"<!--\s*scopes:\s*(.*?)\s*-->", re.I)
 HEADER_LINES = 15
@@ -255,8 +262,40 @@ def _norm_scopes(scopes) -> list[str]:
     return out
 
 
+def _privacy_rules():
+    try:
+        import privacy_rules
+    except ModuleNotFoundError:
+        from preprocessor import privacy_rules
+    return privacy_rules
+
+
+def privacy_matcher(match: str = "", level: str = "", text: str = "") -> dict:
+    """The checked matcher of a privacy rule: from --match and --level
+    (`person:<address>`, `name:<name>`, `domain:<domain>`, `topic`,
+    `engaged`), else read from the rule's plain sentence. ValueError, in
+    plain words, when neither gives one."""
+    pr = _privacy_rules()
+    if match or level:
+        kind, _, value = str(match or "").partition(":")
+        priv = {"match": kind.strip().lower(), "level": str(level or "").strip().lower()}
+        if value.strip():
+            priv["value"] = value.strip()
+    else:
+        priv = pr.parse_rule(text)
+        if priv is None:
+            raise ValueError("a privacy rule needs --match and --level (or a sentence that names "
+                             "an address or a domain and a level: kept on my machine, facts "
+                             "only, summary, or normal)")
+    try:
+        return pr.check(priv)
+    except pr.RuleError as e:
+        raise ValueError(str(e)) from None
+
+
 def add_rule(data: dict, *, kind: str, scopes, text: str, quote: str = "",
-             date_str: str = "", source: str = "edit", rule_id: str = "") -> dict:
+             date_str: str = "", source: str = "edit", rule_id: str = "",
+             match: str = "", level: str = "") -> dict:
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {KINDS}, got {kind!r}")
     if source not in SOURCES:
@@ -268,6 +307,13 @@ def add_rule(data: dict, *, kind: str, scopes, text: str, quote: str = "",
         raise ValueError("at least one --scope is required")
     if not text:
         raise ValueError("--text is required")
+    priv = None
+    if "privacy" in scopes:
+        # A privacy rule is applied by code (privacy_rules.py), so it
+        # carries its matcher in a fixed shape beside the sentence.
+        priv = privacy_matcher(match, level, text)
+    elif match or level:
+        raise ValueError("--match and --level belong to a privacy rule (--scope privacy)")
     ids = {r.get("id") for r in data["rules"]}
     rid = _unique_id(rule_id.strip() or _slug(text), ids)
     rule = {
@@ -280,6 +326,8 @@ def add_rule(data: dict, *, kind: str, scopes, text: str, quote: str = "",
         "source": source,
         "status": "active",
     }
+    if priv is not None:
+        rule["privacy"] = priv
     data["rules"].append(rule)
     return rule
 
@@ -295,6 +343,9 @@ def add_calibration(data: dict, *, scope: str, note: str, date_str: str = "") ->
 
 
 def retire_rule(data: dict, rule_id: str, note: str = "") -> dict:
+    if rule_id in _privacy_rules().FIXED_IDS:
+        raise ValueError("this rule follows the keep list in your private settings "
+                         "(remote-llm.json); change the list there")
     for r in data["rules"]:
         if r.get("id") == rule_id:
             r["status"] = "retired"
@@ -443,6 +494,10 @@ def _cmd_render(args) -> int:
 
 
 def _cmd_list(args) -> int:
+    if any(scope_matches(s, "privacy") or scope_matches("privacy", s) for s in _norm_scopes(args.scope)):
+        # The built-in keep rules, seeded on first sight so the user sees
+        # (and can retire) what the code applies.
+        _privacy_rules().ensure_seeded(PREFS_FILE)
     data = load()
     rules = data["rules"]
     if args.scope:
@@ -657,7 +712,8 @@ def _cmd_add(args) -> int:
         rule = update(lambda d: add_rule(
             d, kind=args.kind, scopes=args.scope, text=args.text,
             quote=args.quote or "", date_str=args.date or "",
-            source=args.source, rule_id=args.id or ""))
+            source=args.source, rule_id=args.id or "",
+            match=args.match or "", level=args.level or ""))
     except ValueError as e:
         print(json.dumps({"error": str(e)}))
         return 2
@@ -679,7 +735,7 @@ def _cmd_calibrate(args) -> int:
 def _cmd_retire(args) -> int:
     try:
         rule = update(lambda d: retire_rule(d, args.id, args.note or ""))
-    except KeyError as e:
+    except (KeyError, ValueError) as e:
         print(json.dumps({"error": str(e)}))
         return 2
     print(json.dumps({"retired": rule}, ensure_ascii=False))
@@ -859,6 +915,9 @@ def main(argv=None) -> int:
     p.add_argument("--date")
     p.add_argument("--source", default="edit", choices=SOURCES)
     p.add_argument("--id")
+    p.add_argument("--match", help="privacy rules: person:<address>, name:<name>, domain:<domain>, "
+                                    "topic or engaged")
+    p.add_argument("--level", help="privacy rules: local, facts, summary or full")
     p = sub.add_parser("calibrate", help="record how a run landed / what the user said", allow_abbrev=False)
     p.add_argument("--scope", required=True)
     p.add_argument("--note", required=True)

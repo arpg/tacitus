@@ -33,7 +33,10 @@ def test_v2_normalizes_every_capability():
     card = caps["cards"][0]
     assert card["pending_file"] == "pending-example-notes.json"
     assert card["approve"]["user"] == "resident" and card["cancel"]["timeout_seconds"] == 30
-    assert caps["mail_rules"]["keep_from_anthropic_domains"] == ["notes.example.org"]
+    # The fixture names the keep domains under the old key on purpose: a
+    # manifest written before the rename parses into the new one.
+    assert caps["mail_rules"]["keep_from_frontier_domains"] == ["notes.example.org"]
+    assert "keep_from_anthropic_domains" not in caps["mail_rules"]
     assert caps["network"]["local"][0]["ports"] == "9411"
     assert caps["claude_plugin"] == "."
 

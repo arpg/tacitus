@@ -25,7 +25,8 @@ Splits are by date received: dev before VAL_FROM, val from VAL_FROM until
 the freeze, test after it. A reply label is mature three days after the
 message arrived.
 
-Mail labelled keep_from_anthropic never goes to Claude here: it gets no
+Mail labelled keep_from_frontier (kept at any level below full; the old
+name keep_from_anthropic is read too) never goes to Claude here: it gets no
 reference label and never appears among the failures Claude reflects on.
 Candidates are scored on it by the outcome label alone
 (nr_recall_outcome_kept), which needs no Claude.
@@ -288,7 +289,7 @@ def build_dataset(*, graph=None, since: str | None = None, refresh: bool = False
                              for x in conv
                              if (_parse(x.get("receivedDateTime") or x.get("sentDateTime")) or _now())
                              > (_parse(r.get("received")) or _now())],
-                   "keep_from_anthropic": r.get("keep_from_anthropic", "")}
+                   "keep_from_frontier": _kept(r)}
             remote_llm.append(MESSAGES, row)
             added += 1
         if i % 25 == 0:
@@ -440,7 +441,7 @@ def label(limit: int = 500, batch: int = 10, log=print) -> dict:
     none, dev and val messages first."""
     done = {r["key"] for r in remote_llm.read(LABELS)}
     rows = [r for r in messages().values()
-            if r["key"] not in done and not r.get("keep_from_anthropic")]
+            if r["key"] not in done and not _kept(r)]
     rows.sort(key=lambda r: r.get("received") or "")
     rows = rows[:limit]
     made = failed = 0
@@ -568,12 +569,17 @@ def sample(split: str, n: int | None = None, seed_: int = 11) -> list[dict]:
     return sorted(picked, key=lambda r: r["key"])
 
 
+def _kept(r: dict) -> str:
+    """The keep label of a row or an extraction record, under either name."""
+    return str(r.get("keep_from_frontier") or r.get("keep_from_anthropic") or "")
+
+
 def kept_sample(split: str) -> list[dict]:
-    """Kept-from-Anthropic messages of one split whose reply outcome is
-    known, scored by that outcome alone."""
+    """Messages kept from hosted models, of one split, whose reply outcome
+    is known, scored by that outcome alone."""
     frozen_at = _read_json(FROZEN, {}).get("frozen_at", "")
     outs = _read_json(OUTCOMES, {})
-    rows = [r for r in messages().values() if r.get("keep_from_anthropic")
+    rows = [r for r in messages().values() if _kept(r)
             and split_of(r, frozen_at) == split and outs.get(r["key"], {}).get("mature")]
     return sorted(rows, key=lambda r: r["key"])
 
@@ -585,7 +591,7 @@ def shot_pool(exclude: set[str]) -> list[dict]:
     pool = []
     for r in messages().values():
         if (r["key"] in exclude or split_of(r) != "dev" or r["key"] not in labs
-                or r.get("keep_from_anthropic")):
+                or _kept(r)):
             continue
         o = outs.get(r["key"], {})
         if o.get("mature") and bool(o.get("replied_direct")) != labs[r["key"]]["needs_reply"]:
