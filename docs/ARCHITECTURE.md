@@ -455,7 +455,11 @@ Two further values close the remaining reads. With the mail switch at
 `get-message`, `get-conversation`, `search-mail` and `list-mail` output
 through `mail_privacy.seal_output`: each message's text becomes the
 remote model's record, a message it has not read is extracted inside the
-mediator within a budget, and any failure refuses the read. At the end of
+mediator within a budget, and any failure refuses the read. The record
+lists the message's attachments with `inline` and `image` flags, inline
+images included (Graph's `hasAttachments` counts none of those), so a
+lane knows a picture is there; `describe-attachment` reads it as text and
+never hands a sealed lane the picture itself. At the end of
 each `mail_privacy.py tick`, `sync_briefs` composes a `thread_brief` for
 every open ledger row with a conversation id (one line per message, the
 user's own replies extracted too, the latest ask, deadline, offered
@@ -1949,6 +1953,12 @@ account holds `owner` on the calendar).
                         the :lock: Send button. download-attachment's
                         --output goes through the same OUTPUT_FLAGS staging
                         as the graph_actions twin)
+  mail_actions.py describe-attachment (an image on a message, inline ones
+                        included, fetched owner-side and read as text by
+                        the local image model, remote_llm.image_model; on a
+                        mediator thread of its own, ASYNC_VERBS. With no
+                        model it answers need and, outside sealed mail,
+                        saves the image to its staged --output)
   poll_filler.py (read-poll, fill-poll)
   booking_link.py (read, propose: cal.com/Calendly open slots over a public GET,
                         fed to propose-meeting; it has no booking verb)
