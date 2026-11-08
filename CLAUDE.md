@@ -7,12 +7,11 @@ The install's own facts (names, rooms, sites, lists) are in
 `CLAUDE.local.md` beside this file, rendered from config by
 `preprocessor/install_overlay.py`.
 
-No `~/.ea/config/user-profile.json` means a fresh install.
-Run the `/setup` skill (`.claude/skills/setup/SKILL.md`): it asks the
-questions one at a time, writes the config, and ends with the doctor
-green. `docs/SETUP.md` is the
-reference. The install profile (`email`, `review-only` or `assistant`) is
-`profile` in `~/.ea/config/ea-config.json`.
+No `~/.ea/config/user-profile.json` means a fresh install: run the
+`/setup` skill (`.claude/skills/setup/SKILL.md`). It asks one question at
+a time, writes the config and ends with the doctor green (reference:
+`docs/SETUP.md`). The install profile (`email`, `review-only` or
+`assistant`) is `profile` in `~/.ea/config/ea-config.json`.
 
 ## Your role
 
@@ -275,10 +274,9 @@ python3 /home/ea-bot/ea-system/preprocessor/log_missed_closure.py \
   --ledger-id <id> --user-message "<the user's exact words>" --source chat --quiet
 ```
 
-It appends one line to `~/.ea/logs/missed-closures.log`: which scrubber
-signals fired, the evidence that could have caught it, and a suggested
-rule. That log is the backlog for closure_scrubber. Never skip it, also
-when the user closes an item the data would have closed anyway.
+It appends one line (signals fired, missed evidence, a suggested rule)
+to `~/.ea/logs/missed-closures.log`, the closure_scrubber backlog. Never
+skip it, even for an item the data would have closed anyway.
 
 ## Safety rules
 
@@ -388,7 +386,7 @@ meeting confirmation is the body.
    --provider <p> --draft-id <id>`.
 5d. A file's text (.xlsx too): `doc_text.py <path>`; markdown to .docx:
    `doc_write.py docx --in <md> --out <path>`; CSV to a sheet:
-   `doc_write.py xlsx`; PDF hints: `scan-attachments`.
+   `doc_write.py xlsx`.
 5d-1. Files on a DRAFT are yours: `attach-file --message-id <draft-id>
    --file <path>`, `remove-attachment --message-id <draft-id> --name
    <file>`. Replace = remove, then attach. Never ask the user to swap a
@@ -451,7 +449,9 @@ meeting confirmation is the body.
 13. CHECK `attachment_hints` before drafting: submission addresses,
    deadlines, required documents, portals. With
    `attachment_hints.submission_emails`, send there too. With
-   attachments and no hints, run `scan-attachments` first.
+   attachments and no hints, run `scan-attachments` first. An image
+   (inline too) is readable: `mail_actions.py describe-attachment`;
+   Claude may also download and Read it.
 14. VERIFY BEFORE YOU ASSERT. Packs, briefings and your earlier turns are
    snapshots. A status claim comes from `ledger.py get --id <id>` this
    turn; a reply claim from `get-conversation` or `search` this

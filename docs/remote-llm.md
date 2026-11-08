@@ -164,6 +164,15 @@ shadow` (and moves `shadow_until` for the latter).
   stores it; no other name for the key is read.
 - The endpoint must be https. The client checks that each answer names
   the configured model.
+- **`image_model`** names the model on the same endpoint that reads an
+  image in mail (`mail_actions.py describe-attachment`, mail_images.py),
+  or `false` to send it none. Without the key the main `model` reads
+  images when its name marks it multimodal (`-mm`, `-vl`, `vision`,
+  `omni`, as in `qwen3.8-mm`), and none reads them otherwise. An image
+  read has its own circuit breaker (`remote-llm-image`), so a model that
+  fails on pictures never closes the mail gate's. With no image model the
+  verb answers `{"need": "no image model"}` and, outside sealed mail,
+  saves the picture for the lane to open.
 - **The remote endpoint receives every message.** Nothing gates what goes
   to it.
 - **`keep_from_anthropic`** names the mail that should, in an enforce

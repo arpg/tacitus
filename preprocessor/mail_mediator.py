@@ -56,6 +56,9 @@ MAX_AVAILABLE_BYTES = 256 * 1024
 # Tools whose calls take long (remote writing, browser rendering): each runs on
 # its own thread, so the queue keeps serving every other verb meanwhile.
 ASYNC_TOOLS = {"email_writer", *RESIDENT_BROWSER_TOOLS}
+# Single verbs of an otherwise quick tool that wait on a model: an image
+# read waits on the local model, up to mail_actions.DESCRIBE_BUDGET_S.
+ASYNC_VERBS = {("mail_actions", "describe-attachment")}
 ASYNC_MAX = 4
 _async_slots = threading.BoundedSemaphore(ASYNC_MAX)
 _browser_slots = threading.BoundedSemaphore(2)
@@ -609,7 +612,7 @@ def handle(req_path: str):
         return
 
     pool = _browser_slots if tool in RESIDENT_BROWSER_TOOLS else _async_slots
-    acquired = tool in ASYNC_TOOLS and pool.acquire(blocking=False)
+    acquired = (tool in ASYNC_TOOLS or (tool, verb) in ASYNC_VERBS) and pool.acquire(blocking=False)
     if tool in RESIDENT_BROWSER_TOOLS and tool in ASYNC_TOOLS and not acquired:
         _respond(rid, "", json.dumps({"status": "error", "message": "browser workers are busy; no action started"}), 3)
         _cleanup(req_path)

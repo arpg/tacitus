@@ -198,7 +198,7 @@ def test_the_reads_are_mediated_and_nothing_else_is():
     assert MM.SAFE["mail_actions"] == {"search", "get-message", "get-draft", "mark-read",
                                        "mark-unread", "create-draft", "create-reply",
                                        "update-draft", "delete-draft", "create-forward",
-                                       "preflight-check"}
+                                       "preflight-check", "describe-attachment"}
     # the send is the bot's alone: refused for the EA, never forwarded
     assert MM.GATED["mail_actions"] == {"send-draft"}
     assert MM.SAFE["mail_actions"].isdisjoint(MM.GATED["mail_actions"])

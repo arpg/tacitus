@@ -139,9 +139,14 @@ SAFE = {
     },
     # The unified mail CLI (issue #76): reads and draft writes on either
     # provider. Each write runs the provider verb's own code (DELEGATE).
+    # describe-attachment is a read: an image on a message, inline ones
+    # included, fetched and read as text by the owner's local image model
+    # (remote-llm.json). Its --attachment-id is an ID_FLAGS value and its
+    # --output an OUTPUT_FLAGS path (staged and delivered like
+    # download-attachment's), written only outside sealed mail.
     "mail_actions": {"search", "get-message", "get-draft", "mark-read", "mark-unread",
                      "create-draft", "create-reply", "update-draft", "delete-draft",
-                     "create-forward", "preflight-check"},
+                     "create-forward", "preflight-check", "describe-attachment"},
     # list-ea-managed is a READ of the EA's own rule calendar; it returns the
     # event ids a later move or delete has to name. It grants no write:
     # create-event stays GATED apart from the attendee-less auto-hold
@@ -267,10 +272,11 @@ FILE_FLAGS = {"--output", "--body-file", "--path", "--file", "--screenshot",
               "--available-file"}
 # The subset the CHILD WRITES (everything else it reads). The mediator stages
 # both directions through an owner-private directory rather than handing the child
-# an ea-bot-controlled path at all; see mail_mediator._stage_paths. Only
-# `--output` (download-attachment, graph_actions and gmail_client) exists on a
-# mediated CLI today; the rest are forward-looking, and an over-broad list is
-# inert.
+# an ea-bot-controlled path at all; see mail_mediator._stage_paths. `--output`
+# (download-attachment on graph_actions and gmail_client, describe-attachment
+# on mail_actions, drive_client download) and email_writer's `--out` exist on
+# a mediated CLI today; the rest are forward-looking, and an over-broad list
+# is inert.
 OUTPUT_FLAGS = {"--output", "--out", "--dest", "--screenshot"}
 
 # ---- the options each mediated verb's parser defines ------------------------

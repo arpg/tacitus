@@ -153,6 +153,17 @@ the staged files read back for the judge). The email-author subagent
 has no Codex twin yet: a turn that needs it uses `email_writer.py`
 (the remote writer) or writes the body itself.
 
+**Images in mail.** A turn reads an image on a message (a picture the
+body shows inline included) with `mail_actions.py describe-attachment`:
+the mediator fetches it and the owner's local image model reads it, so
+the turn needs no file and no network. When no model reads images, the
+same verb with `--output <EA_DIR>/state/<name>` saves the picture there
+(the mediator delivers it as the resident; outside sealed mail only), and
+Codex's `view_image` tool opens it: the sandbox confines writes, not
+reads. `view_image` is on in chat turns (run_turn passes no `--disable`;
+it is off only in the tool-less calls, hosted_text.CODEX_OFF), and the
+Codex suffix names both ways.
+
 **What Claude Code loads by itself.** A Claude run loads the instruction
 files on its path (CLAUDE.md, CLAUDE.local.md, .claude/CLAUDE.md from the
 root down, and the resident's ~/.claude/CLAUDE.md) and the first 200

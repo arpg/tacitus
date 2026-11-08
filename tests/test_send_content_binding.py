@@ -771,6 +771,7 @@ NOT_DRAFT_CHANGING = {
         "create-draft": "makes a new draft id, which gets its own card",
         "create-forward": "makes a new draft id, which gets its own card",
         "preflight-check": "read",
+        "describe-attachment": "read; an image as text, or saved to a local file",
     },
 }
 
