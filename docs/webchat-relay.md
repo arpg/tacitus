@@ -1161,14 +1161,57 @@ under the path `/relay/` of an existing HTTPS vhost, so the relay URL is
 `https://<host>/relay`; `relay/snippets/nginx-http.conf` holds the rate
 zones and the key check it names, for nginx's `http` block.
 
+**The nginx rule.** nginx includes the script's copies of the snippets in
+`/etc/nginx/tacitus-relay/`, never the files in the clone. The updater
+replaces the clone at any hour, and a config that changes under a
+running nginx fails only at its next reload or boot, with nobody there to
+see it. The script installs `nginx-http.conf` as
+`/etc/nginx/tacitus-relay/http.conf` and `nginx.conf` as
+`/etc/nginx/tacitus-relay/server.conf`, and gates every change with
+`nginx -t`:
+
+- A snippet that matches the installed copy is left alone: no
+  `nginx -t`, no reload.
+- A changed one goes in place, `nginx -t` runs, and when it passes nginx
+  reloads (if it runs).
+- When `nginx -t` fails, the previous files come back and `nginx -t` runs
+  again on them. The script prints both results and nginx's own lines,
+  and exits non-zero. It does so after it updates the relay's own unit:
+  run by hand, the relay runs the new release and nginx keeps the config
+  it had. Under the updater a non-zero exit is a failed release, so the
+  updater switches the relay back to the release before and holds the
+  new one back (docs/updates.md, "The relay host"): the relay and its
+  nginx config stay on one release.
+- The script reads `/etc/nginx` for `include` lines that name
+  `/opt/tacitus-relay/src/relay/snippets/` and prints them with the two
+  lines to put in their place. It edits no file of the operator's. When
+  no `include` names `/etc/nginx/tacitus-relay/` yet, it prints the two
+  lines to add.
+- With no nginx on the host the files go in untested. `--no-nginx` writes
+  nothing under `/etc/nginx`, runs no nginx command, and prints where the
+  release's snippets are; later runs keep it
+  (`/etc/tacitus-relay/no-nginx`) until `--nginx`.
+
+On a failed gate: read the lines it printed (`journalctl -u
+tacitus-relay-update` for a run of the updater), and fix what `nginx -t`
+names. That is a directive this nginx does not know, a zone that an
+older copy of a snippet (in `/etc/nginx/conf.d/`, say) defines a second
+time, or, when the second `nginx -t` fails too, a fault elsewhere in
+nginx's config. Then, as root, run the release's `relay/install.sh --tag
+<vX.Y.Z>` again from a checkout of it. The gate runs again, and nothing
+changes nginx until it passes.
+
 Operator steps (the maintainer, for the hosted relay):
 
 1. A VM with a public DNS name, and nginx (or Caddy) for TLS in front of
-   `127.0.0.1:8471`, on the same host. With nginx: put
-   `relay/snippets/nginx-http.conf` in the `http` block (most
-   distributions include `/etc/nginx/conf.d/*.conf` there) and
-   `relay/snippets/nginx.conf` in the HTTPS server block, then `nginx -t`
-   and reload. The block takes `/relay/` with `^~`, streams without
+   `127.0.0.1:8471`, on the same host. With nginx, after step 2: put
+   `include /etc/nginx/tacitus-relay/http.conf;` in the `http` block and
+   `include /etc/nginx/tacitus-relay/server.conf;` in the HTTPS server
+   block (the script prints both lines), then `nginx -t` and reload.
+   Never include the files in `/opt/tacitus-relay/src`, and remove any
+   copy of a snippet made before
+   (`/etc/nginx/conf.d/tacitus-relay-http.conf`, say): two copies define
+   each zone twice. The block takes `/relay/` with `^~`, streams without
    buffering, reads for 120 s (past the long-poll's wait), appends the
    client's address to `X-Forwarded-For` (the relay meters new installs
    per address), ignores the relay's `X-Accel-*` headers, hides its
@@ -1176,7 +1219,8 @@ Operator steps (the maintainer, for the hosted relay):
    with 404, refuses a bot poll without `Authorization` and a phone POST
    without `X-Relay-Key`, allows 16 MiB on the two frame routes and 8 KiB
    elsewhere, limits each address, and keeps no access log. Another
-   server must do the same; Caddy streams with `flush_interval -1`.
+   server must do the same (install with `--no-nginx`); Caddy streams
+   with `flush_interval -1`.
 2. As root, from a checkout of the release you mean to run:
    `relay/install.sh --commit <sha> --install-id <id>`. It makes the
    system user `tacitus-relay` (no login), clones that commit into
@@ -1191,8 +1235,9 @@ Operator steps (the maintainer, for the hosted relay):
    call filter, and is capped at 768 MiB, 2,200 tasks and 4,096 open
    files (`systemd-analyze security` scores it 0.9).
 4. A monitor on `http://127.0.0.1:8471/healthz` on the host.
-5. At each release the timer installs it. With `--no-update-timer`, run
-   the script again with the release's commit.
+5. At each release the timer installs it, nginx's part only past
+   `nginx -t` (The nginx rule, above). With `--no-update-timer`, run the
+   script again with the release's commit.
 6. For each subscription, add its install id to the allow file
    (`--install-id`, or one per line in `/etc/tacitus-relay/installs.txt`);
    remove it when the subscription ends. The relay reloads the file on

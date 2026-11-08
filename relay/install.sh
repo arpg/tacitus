@@ -3,7 +3,7 @@
 # Idempotent: run it again with the next release's commit to update.
 #
 # Usage: install.sh --commit SHA [--install-id ID]... [--with-app | --without-app]
-#                   [--no-update-timer] [--repo URL]
+#                   [--no-update-timer] [--no-nginx | --nginx] [--repo URL]
 #        install.sh --tag vX.Y.Z [--expect-commit SHA] [...]
 #   --commit SHA      the tacitus commit to install, all 40 hex characters; the
 #                     clone is checked against it. Never the tip of a branch: the
@@ -32,14 +32,22 @@
 #                     and tacitus-relay-update.timer (the text of the files in
 #                     relay/) and enables the timer: each hour it installs the
 #                     newest signed release (docs/updates.md, The relay host).
+#   --no-nginx        leave nginx alone: no file under /etc/nginx, no nginx -t,
+#                     no reload; the script prints where this release's
+#                     snippets are. Later runs keep it (/etc/tacitus-relay/no-nginx).
+#   --nginx           take nginx's part back after --no-nginx.
 #   --repo URL        the repository to clone (https; default the public one)
 #
 # The relay is one standard-library Python process on 127.0.0.1:8471, under a
 # unit this script writes (it never installs one from the clone). TLS stays
-# with the host's web server: put relay/snippets/nginx-http.conf in its http
-# block and relay/snippets/nginx.conf in the HTTPS server block, then
-# `nginx -t` and reload. The relay keeps no state worth backing up; the allow
-# file is the only input.
+# with the host's web server. For nginx the script installs the two snippets
+# as files of their own, /etc/nginx/tacitus-relay/http.conf (for the http
+# block) and /etc/nginx/tacitus-relay/server.conf (for the HTTPS server
+# block): nginx includes those, never the clone, which each update replaces.
+# A changed snippet goes in only when `nginx -t` passes with it, and nginx
+# then reloads; one that fails leaves the previous files in place and makes
+# the exit non-zero, after the relay itself is updated. The relay keeps no
+# state worth backing up; the allow file is the only input.
 set -euo pipefail
 
 REPO="https://github.com/arpg/tacitus.git"
@@ -51,11 +59,15 @@ KEY=$ETC/release-key.pub
 # The updater's pinned key (scripts/update.py relay), when $ETC holds none.
 PINNED_KEY=/var/lib/tacitus-relay/release-key.pub
 UPDATER=/etc/systemd/system/tacitus-relay-update
+# The snippets as nginx includes them, and the config read for includes of the clone.
+NGINX_DIR=/etc/nginx/tacitus-relay
+NGINX_CONF=/etc/nginx
 COMMIT=""
 TAG=""
 EXPECT=""
 WITH_APP=""
 UPDATE_TIMER=1
+NGINX=""
 IDS=()
 die() { echo "$*" >&2; exit 1; }
 while [ $# -gt 0 ]; do
@@ -67,6 +79,8 @@ while [ $# -gt 0 ]; do
         --with-app) WITH_APP=1; shift ;;
         --without-app) WITH_APP=0; shift ;;
         --no-update-timer) UPDATE_TIMER=0; shift ;;
+        --no-nginx) NGINX=off; shift ;;
+        --nginx) NGINX=on; shift ;;
         --repo) REPO="${2:-}"; shift 2 ;;
         *) die "unknown argument: $1" ;;
     esac
@@ -119,10 +133,111 @@ verify_tag() {
 }
 # <<< verify_tag
 
+# >>> nginx_snippets (tests/test_relay_install.py runs this function alone)
+# The release's nginx snippets in $1 (relay/snippets of the clone) as files
+# of their own in $2: http.conf for nginx's http block, server.conf for the
+# HTTPS server block. Each is written beside its place as .new and left alone
+# when it matches. A changed one goes in only when `nginx -t` passes with it,
+# and nginx then reloads when it runs. When nginx -t fails, $2 gets back what
+# it held, nginx -t checks that again, and the status is 1. With no nginx on
+# the host the files go in untested. $3 is nginx's config directory, read for
+# include lines that still name the clone. $4 "off" (--no-nginx) writes
+# nothing and runs no nginx command. One line on what happened, and the
+# include lines when nginx does not include $2 yet.
+nginx_snippets() {
+    local src="$1" dir="$2" conf="$3" mode="$4" pair name what out again incl stale rc=0 show=0
+    local -a changed=()
+    [ -n "$src" ] && [ -n "$dir" ] && [ -n "$conf" ] || { echo "nginx_snippets: a path is empty" >&2; return 1; }
+    incl="$(grep -RnsIE '^[[:space:]]*include[[:space:]]' "$conf" || true)"
+    stale="$(printf '%s\n' "$incl" | grep -F -- "$src/" || true)"
+    if [ "$mode" = off ]; then
+        echo "nginx: left alone (--no-nginx). This release's snippets are $src/nginx-http.conf" \
+            "and $src/nginx.conf; to use them, copy them to $dir/http.conf and $dir/server.conf" \
+            "at each release, include the copies with the two lines below, run nginx -t, then reload nginx."
+        show=1
+    else
+        mkdir -p "$dir" && chmod 755 "$dir" || return 1
+        # A .old beside a file is a gate that did not finish: the file it kept goes back.
+        for name in http.conf server.conf; do
+            [ ! -f "$dir/$name.old" ] || mv -f "$dir/$name.old" "$dir/$name" || return 1
+        done
+        for pair in http.conf:nginx-http.conf server.conf:nginx.conf; do
+            name="${pair%%:*}"
+            install -m 644 "$src/${pair#*:}" "$dir/$name.new" || return 1
+            if cmp -s "$dir/$name.new" "$dir/$name"; then
+                rm -f "$dir/$name.new"
+            else
+                changed+=("$name")
+            fi
+        done
+        what="${changed[*]:-}"
+        what="${what/ / and }"
+        if [ ${#changed[@]} = 0 ]; then
+            echo "nginx: $dir/http.conf and server.conf match this release; nginx left alone."
+        elif ! command -v nginx >/dev/null; then
+            for name in "${changed[@]}"; do mv -f "$dir/$name.new" "$dir/$name" || return 1; done
+            echo "nginx: not installed here; $what written to $dir with no nginx -t and no reload." \
+                "Once nginx runs here, it includes them with the two lines below."
+            show=1
+        else
+            # Each new file goes in place, the previous one kept as .old:
+            # nginx -t reads the files nginx would.
+            for name in "${changed[@]}"; do
+                if [ -f "$dir/$name" ]; then cp -p "$dir/$name" "$dir/$name.old" || return 1; fi
+                mv -f "$dir/$name.new" "$dir/$name" || return 1
+            done
+            if out="$(nginx -t 2>&1)"; then
+                for name in "${changed[@]}"; do rm -f "$dir/$name.old"; done
+                if ! systemctl is-active --quiet nginx; then
+                    echo "nginx: $what in $dir changed and passed nginx -t; nginx is not running, so no reload."
+                elif systemctl reload nginx; then
+                    echo "nginx: $what in $dir changed, passed nginx -t, and nginx reloaded."
+                else
+                    echo "nginx: $what in $dir changed and passed nginx -t, but systemctl reload nginx failed." >&2
+                    rc=1
+                fi
+            else
+                for name in "${changed[@]}"; do
+                    if [ -f "$dir/$name.old" ]; then mv -f "$dir/$name.old" "$dir/$name"; else rm -f "$dir/$name"; fi
+                done
+                if nginx -t >/dev/null 2>&1; then
+                    again="nginx -t passes with that"
+                else
+                    again="nginx -t fails with that too: the fault is elsewhere in nginx's config"
+                fi
+                echo "nginx: nginx -t failed with this release's $what, so $dir holds what it held" \
+                    "before, and $again. nginx keeps the config it runs. Fix what nginx -t names," \
+                    "then run this release's relay/install.sh again. nginx -t said:" >&2
+                printf '%s\n' "$out" | sed 's/^/  /' >&2
+                rc=1
+            fi
+        fi
+    fi
+    if [ -n "$stale" ]; then
+        echo "nginx: these include lines name the clone, which each update replaces with no nginx -t:"
+        printf '%s\n' "$stale" | sed 's/^/  /'
+        echo "  Replace them with the two lines below, then run nginx -t and reload nginx."
+        show=1
+    elif [ "$mode" != off ] && command -v nginx >/dev/null && [[ "$incl" != *"$dir/"* ]]; then
+        echo "nginx: no include line names $dir yet: add the two lines below, then run nginx -t and reload nginx."
+        show=1
+    fi
+    if [ $show = 1 ]; then
+        echo "  include $dir/http.conf;    # in the http block"
+        echo "  include $dir/server.conf;  # in the HTTPS server block"
+    fi
+    return $rc
+}
+# <<< nginx_snippets
+
 [ "$(id -u)" = 0 ] || die "run as root"
 # With neither --with-app nor --without-app, keep what the unit serves now.
 if [ -z "$WITH_APP" ]; then
     if grep -q -- " --static " "$UNIT" 2>/dev/null; then WITH_APP=1; else WITH_APP=0; fi
+fi
+# With neither --nginx nor --no-nginx, keep the choice of the last run.
+if [ -z "$NGINX" ]; then
+    if [ -e $ETC/no-nginx ]; then NGINX=off; else NGINX=on; fi
 fi
 command -v git >/dev/null || die "git is needed"
 PY="$(command -v python3 || true)"
@@ -136,6 +251,11 @@ id tacitus-relay >/dev/null 2>&1 \
 mkdir -p $BASE $ETC
 chown root:root $BASE $ETC
 chmod 755 $BASE $ETC
+if [ $NGINX = off ]; then
+    echo "relay/install.sh --no-nginx: the script leaves nginx alone until --nginx." > $ETC/no-nginx
+else
+    rm -f $ETC/no-nginx
+fi
 
 # --- the code: the named commit, or a tag the release key signed -------------
 [ -d $CLONE/.git ] || { rm -rf $CLONE; git init -q $CLONE; }
@@ -296,11 +416,15 @@ else
     UPDATES="off (--no-update-timer); run this script again at each release"
 fi
 
+# --- nginx: the snippets as files of its own, each change past nginx -t -------
+# After the relay's unit: a snippet that fails the gate holds back nginx's
+# part alone, and the exit says so.
+NGINX_OK=1
+nginx_snippets $CLONE/relay/snippets $NGINX_DIR $NGINX_CONF $NGINX || NGINX_OK=0
+
 echo
 echo "Installed $COMMIT under $BASE$([ $WITH_APP = 1 ] && echo ', with the web app' || true)."
 echo "Allowed installs: $(grep -c . $ETC/installs.txt || true)."
 echo "Updates: $UPDATES."
 echo "Monitor http://127.0.0.1:8471/healthz on this host; through the proxy it answers 404."
-echo "Now put relay/snippets/nginx-http.conf in the http block and relay/snippets/nginx.conf"
-echo "in the HTTPS server block, run nginx -t, and reload nginx."
-[ $HEALTHY = 1 ] || exit 1
+[ $HEALTHY = 1 ] && [ $NGINX_OK = 1 ] || exit 1
