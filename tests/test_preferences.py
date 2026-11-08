@@ -443,6 +443,19 @@ def test_a_read_or_an_unknown_verb_never_stages():
         assert [r["why"] for r in res["refused"]] == ["not a verb that stages"] * 2
 
 
+def test_an_applied_write_keeps_a_json_answer_whole_and_cuts_plain_text():
+    """The bot reads the pull request's url out of the record; a long path
+    (macOS temp dirs) once pushed it past the plain-text cut."""
+    import json
+    from preferences import _recorded_output, OUTPUT_TEXT_CAP, OUTPUT_JSON_CAP
+    answer = json.dumps({"status": "opened", "url": "https://example.test/pulls/1",
+                         "path": "/private/var/folders/" + "x" * 400})
+    assert len(answer) > OUTPUT_TEXT_CAP
+    assert json.loads(_recorded_output(answer + "\n"))["status"] == "opened"
+    assert _recorded_output("plain " * 100) == ("plain " * 100).strip()[:OUTPUT_TEXT_CAP]
+    assert len(_recorded_output(json.dumps({"big": "y" * OUTPUT_JSON_CAP}))) == OUTPUT_JSON_CAP
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0
@@ -457,16 +470,3 @@ if __name__ == "__main__":
             failed += 1
     print(f"\n  {passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
-
-
-def test_an_applied_write_keeps_a_json_answer_whole_and_cuts_plain_text():
-    """The bot reads the pull request's url out of the record; a long path
-    (macOS temp dirs) once pushed it past the plain-text cut."""
-    import json
-    from preferences import _recorded_output, OUTPUT_TEXT_CAP, OUTPUT_JSON_CAP
-    answer = json.dumps({"status": "opened", "url": "https://example.test/pulls/1",
-                         "path": "/private/var/folders/" + "x" * 400})
-    assert len(answer) > OUTPUT_TEXT_CAP
-    assert json.loads(_recorded_output(answer + "\n"))["status"] == "opened"
-    assert _recorded_output("plain " * 100) == ("plain " * 100).strip()[:OUTPUT_TEXT_CAP]
-    assert len(_recorded_output(json.dumps({"big": "y" * OUTPUT_JSON_CAP}))) == OUTPUT_JSON_CAP
