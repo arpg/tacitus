@@ -29,6 +29,7 @@ from preprocessor.prompt_logic import (
     extract_relevant_briefing,
     detect_skills,
     needs_mcp,
+    topic_text,
 )
 
 CASES_FILE = Path(__file__).resolve().parent / "test_cases.json"
@@ -315,10 +316,8 @@ def run_briefing_extract_tests(results: Results, functions: set[str] | None):
                    expected="harper entry WITHOUT poll URL",
                    actual=out[:200] if out else "(empty)")
 
-    # Test 4: Generic message (no name, no module) — minimal or empty extract.
-    # "What is on my calendar today?" is a scheduling question now and ranks
-    # the rescheduling rows, as any scheduling message does.
-    out = extract_relevant_briefing("anything I should know before lunch?", _MOCK_BRIEFING)
+    # Test 4: Generic message — minimal or empty extract
+    out = extract_relevant_briefing("What is on my calendar today?", _MOCK_BRIEFING)
     has_no_obligations = "RELEVANT OBLIGATIONS" not in out
     results.record("extract_relevant_briefing", "briefing-generic-minimal",
                    has_no_obligations,
@@ -484,19 +483,52 @@ def test_a_calendar_question_loads_the_scheduling_guide():
     """"Do you see my lab meeting on Thursday?" matched no scheduling
     phrase, so the turn ran without the guide, the only text that names
     the verbs that read a day's events; it tried verbs that do not exist
-    and answered that it could not list a day (2026-11-09). A question
-    about the calendar loads the guide. A calendar write, or a question
-    about something else, still does not."""
+    and answered that it could not list a day. A question about the
+    calendar is the `calendar` module, which loads that guide. A calendar
+    write, or a question about something else, still does not."""
     for msg in ("Do you see my lab meeting this Thursday 11/12?",
                 "Am I free at 11:30 AM on 10/29?",
                 "What is on my calendar tomorrow?",
                 "anything on my schedule Friday afternoon?",
                 "what's my day look like",
                 "can you see the dentist appointment next week"):
-        assert "scheduling" in detect_needed_modules(msg), msg
+        modules = detect_needed_modules(msg)
+        assert "calendar" in modules, msg
+        assert "<!-- topic guide: docs/ea/scheduling.md -->" in topic_text(modules), msg
     for msg in ("put it on my calendar for Monday", "what did Lior say?",
                 "file this under the minor project", "do you have the receipt?"):
-        assert "scheduling" not in detect_needed_modules(msg), msg
+        modules = detect_needed_modules(msg)
+        assert not modules & {"calendar", "scheduling"}, msg
+
+
+def test_a_calendar_question_is_not_a_scheduling_turn():
+    """The calendar patterns are loose: a question about mail that names a
+    meeting, a call or a schedule matches them too. A message whose only
+    module is `scheduling` runs on the scheduling prompt, which sends any
+    other request back to the EA channel, and `scheduling` also re-ranks
+    the briefing extract and turns the MCP servers off. So the patterns
+    are their own module: it adds the guide and leaves the turn as it
+    was. A scheduling message keeps the one-module set it has without
+    them, and a thread is about meeting times by the scheduling patterns
+    only."""
+    for msg in ("did you see the email about the faculty meeting?",
+                "do you have the notes from yesterday's call?",
+                "did you see the call for proposals from the program office?",
+                "what is my schedule for submitting the report",
+                "is there anything urgent on the schedule of deliverables",
+                "What is on my calendar tomorrow?",
+                "Am I free at 11:30 AM on 10/29?"):
+        modules = detect_needed_modules(msg)
+        assert "scheduling" not in modules, msg
+        assert needs_mcp(msg, modules) == needs_mcp(msg, modules - {"calendar"}), msg
+    for msg in ("am I free Friday at 2 to meet with Sam?",
+                "what's on my calendar Tuesday? find a time for a quick call with Ada"):
+        assert detect_needed_modules(msg) == {"scheduling"}, msg
+    plain = extract_relevant_briefing("anything I should know before lunch?", _MOCK_BRIEFING)
+    asked = extract_relevant_briefing("What is on my calendar today?", _MOCK_BRIEFING)
+    assert ("RELEVANT OBLIGATIONS" in asked) == ("RELEVANT OBLIGATIONS" in plain)
+    card = "[EA]: Am I free then? Here is what is on my calendar for the week."
+    assert "scheduling" not in detect_needed_modules("write a reply saying thanks", card)
 
 
 def test_a_meeting_yes_loads_the_scheduling_guide():

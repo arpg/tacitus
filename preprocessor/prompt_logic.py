@@ -62,6 +62,9 @@ TOPIC_DIR = Path(__file__).resolve().parent.parent / "docs" / "ea"
 TOPIC_FILES = {
     "drafting": ["drafting-voice.md"],
     "scheduling": ["scheduling.md"],
+    # A question about the calendar reads the same guide and nothing else
+    # of the scheduling module (see MODULE_PATTERNS["calendar"]).
+    "calendar": ["scheduling.md"],
     "lor": ["lor.md"],
     "polls": ["polls.md"],
     "reimbursement": ["reimbursement.md"],
@@ -238,11 +241,19 @@ MODULE_PATTERNS: dict[str, list[re.Pattern]] = {
         # "give Sol my full availability"; "the April 6 availability
         # paragraph" names no one's availability.
         re.compile(r"\b(?:my|our|your|his|her|their)\s+(?:\w+\s+){0,2}availability\b"),
-        # A question about the calendar: "do you see my lab meeting on
-        # Thursday?", "am I free at 11:30?", "what is on my calendar
-        # tomorrow?". The guide names the verbs that read events; without
-        # it a turn had no way to list a day (2026-11-09). "put it on my
-        # calendar" is a write and stays out.
+    ],
+    # A question about the calendar: "do you see my lab meeting on
+    # Thursday?", "am I free at 11:30?", "what is on my calendar
+    # tomorrow?". The scheduling guide names the verbs that read events;
+    # without it a turn has no way to list a day. "put it on my calendar"
+    # is a write and stays out.
+    #
+    # This is its own module, not `scheduling`, because the patterns are
+    # loose: "did you see the email about the faculty meeting?" matches
+    # too. `calendar` loads the guide and changes nothing else, so such a
+    # message keeps the full prompt, its briefing extract and its tools;
+    # `scheduling` alone would send it to the scheduling prompt.
+    "calendar": [
         re.compile(r"\b(?:do|can|did|does)\s+(?:you|it)\s+(?:see|show|have)\b.{0,40}"
                    r"\b(?:meeting|event|call|calendar|appointment)\b"),
         re.compile(r"\bam\s+i\s+(?:free|busy|available|booked)\b"),
@@ -356,6 +367,11 @@ def detect_needed_modules(msg: str, context: str = "") -> set[str]:
         ]
         if any(p.search(lower) for p in _SCHED_FP):
             needed.discard("scheduling")
+    # A scheduling message already has the guide. Dropping `calendar`
+    # there keeps a pure scheduling ask ("am I free Friday to meet with
+    # Sam?") the one-module set that the scheduling prompt takes.
+    if "scheduling" in needed:
+        needed.discard("calendar")
     return needed
 
 
