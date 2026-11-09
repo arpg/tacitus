@@ -638,14 +638,25 @@ def _propose(entry_id: str, **kw) -> dict:
 
 # ── the run ───────────────────────────────────────────────────────────
 
-def reader_up(cfg: dict | None = None, chat=None) -> bool:
-    """One tiny request: the remote model answers, or the night is skipped."""
-    try:
-        (chat or remote_llm.chat)([{"role": "user", "content": "Reply with the word ok."}],
-                                  purpose="reconcile-ping", max_tokens=5, cfg=cfg)
-        return True
-    except remote_llm.RemoteLLMError:
-        return False
+PING_TRIES = 3
+PING_WAIT_S = 30.0
+
+
+def reader_up(cfg: dict | None = None, chat=None, sleep=None) -> bool:
+    """A tiny request, up to PING_TRIES times PING_WAIT_S apart: the remote
+    model answers, or the night is skipped. The server answers 503 for a
+    moment now and then (a reload, a busy batch); one such answer must not
+    cost the whole pass."""
+    wait = sleep or time.sleep
+    for attempt in range(PING_TRIES):
+        try:
+            (chat or remote_llm.chat)([{"role": "user", "content": "Reply with the word ok."}],
+                                      purpose="reconcile-ping", max_tokens=5, cfg=cfg)
+            return True
+        except remote_llm.RemoteLLMError:
+            if attempt + 1 < PING_TRIES:
+                wait(PING_WAIT_S)
+    return False
 
 
 def run(*, dry_run: bool = False, only: str = "", now: datetime | None = None,
