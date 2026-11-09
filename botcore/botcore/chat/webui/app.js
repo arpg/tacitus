@@ -1272,6 +1272,11 @@ function swapDraft() {
   d.lost = null;
 }
 
+// A move to another place changes the hash and the composer in one step.
+// The route runs a task after the hash changes; words typed in between
+// would go to the old place's draft while Send posts to the new place.
+function goTo(hash) { location.hash = hash; swapDraft(); }
+
 // The files waiting for Send, a chip each: its name, its size, and a cross
 // that takes it off. An edit hides them: they wait for the draft's send.
 function renderPending() {
@@ -1381,7 +1386,7 @@ async function submit(build, text, files) {
     if (!tk && m && m.thread_key && ch === S.channel) {
       // The new conversation takes what was typed while it was sent.
       if (S.draftAt === place) { S.drafts.delete(place); keepDraft(place); S.draftAt = placeOf(ch, m.thread_key); saveDraft(); }
-      location.hash = hashFor(ch, m.thread_key);
+      goTo(hashFor(ch, m.thread_key));
     }
   } catch (e) {
     note(`Not sent: ${e.message}`);
@@ -3037,8 +3042,7 @@ function prefill(btn) {
   const text = btn.textContent;
   const slot = (btn.querySelector('b') || {}).textContent || '';
   const at = slot ? text.indexOf(slot) : text.length;
-  location.hash = hashFor(main.id, NEW_THREAD);
-  swapDraft(); // the composer is the new conversation's now, before its route runs
+  goTo(hashFor(main.id, NEW_THREAD)); // the composer is the new conversation's now, before its route runs
   document.body.dataset.view = 'thread';
   document.body.classList.remove('drawer');
   $('text').value = text;
@@ -3092,7 +3096,7 @@ async function openRoom(e) {
     const m = await call('POST', `/channels/${enc(main.id)}/messages`, { text: `open a room for ${name}` });
     $('room').close();
     if (m && m.id) ingest(m);
-    location.hash = hashFor(main.id, m && m.thread_key);
+    goTo(hashFor(main.id, m && m.thread_key));
   } catch (err) {
     roomError(`Not sent: ${err.message}`);
   } finally {
@@ -3404,10 +3408,15 @@ async function init() {
   $('channels').addEventListener('click', (e) => {
     if (e.target.closest('a.chan')) document.body.classList.remove('drawer');
   });
-  $('back').addEventListener('click', () => { location.hash = S.needsView ? hashFor(NEEDS) : hashFor(S.channel); });
+  $('back').addEventListener('click', () => goTo(S.needsView ? hashFor(NEEDS) : hashFor(S.channel)));
   $('thread-state').addEventListener('click', () => { if (Date.now() - shown.at >= FLIP_GUARD_MS) setState(S.channel, S.thread); });
   longPress($('thread-list'));
-  $('new-thread').addEventListener('click', () => { location.hash = hashFor(S.channel, NEW_THREAD); swapDraft(); $('text').focus(); });
+  $('new-thread').addEventListener('click', () => { goTo(hashFor(S.channel, NEW_THREAD)); $('text').focus(); });
+  // A link into the app goes through goTo, not the browser, so the composer moves with the hash.
+  document.addEventListener('click', (e) => {
+    const a = !e.defaultPrevented && !e.button && !(e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) && e.target.closest?.('a[href^="#/"]');
+    if (a) { e.preventDefault(); goTo(a.getAttribute('href')); }
+  });
   $('composer').addEventListener('submit', (e) => { e.preventDefault(); send(); });
   $('text').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
@@ -3493,7 +3502,7 @@ async function init() {
     navigator.serviceWorker.addEventListener('message', (e) => {
       if (e.data && e.data.refused) refuseApp(String(e.data.refused), true);
       const to = ownRoute(String((e.data && e.data.open) || ''));
-      if (to) location.hash = to;
+      if (to) goTo(to);
     });
   }
   const pairing = /^#(tr[12])=([A-Za-z0-9_-]+)$/.exec(location.hash);

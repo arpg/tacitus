@@ -767,7 +767,11 @@ place keeps what was typed and the files waiting there; coming back puts
 them back; a send takes out what it carried (the words, while they are
 still as sent, and its files), and what was typed meanwhile stays. A new
 conversation's draft moves with it to the conversation the send opens.
-The words of an edit are no draft: Edit puts the draft aside, and Cancel,
+The composer moves to the new place in the same step that changes the
+address (`goTo`: a link into the app, Back, New conversation, an
+example, a notification's tap), not in the route that runs a moment
+later, so words typed right after a tap belong to the place Send posts
+to. The words of an edit are no draft: Edit puts the draft aside, and Cancel,
 Escape or Send brings it back. A conversation with a draft has "Draft"
 on its card. The browser keeps each draft's words and its files' names in
 `localStorage` (`tacitus-draft:<channel>\n<thread key or +>`, the newest

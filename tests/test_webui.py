@@ -463,7 +463,8 @@ def test_the_app_stays_small():
     #     saying whether it follows the switch or is set apart, with Use default.
     # 5,350: 5,320 plus the presets on the Models page (a button each, sent alone on Save, and Save
     #     current as... with the browser's own name box) and each choice named by its model.
-    assert lines <= 5350, f"{lines} lines: the contract keeps the app near 5,350 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place and a calm connection line"
+    # 5,360: 5,350 plus the hash and the composer moved in one step (goTo, and a link into the app through it).
+    assert lines <= 5360, f"{lines} lines: the contract keeps the app near 5,360 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place and a calm connection line"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -1026,6 +1027,37 @@ def test_a_draft_stays_with_its_conversation_and_goes_with_the_send(app):
     expect(page).to_have_url(re.compile(re.escape(new_key) + "$"))
     expect(page.locator("#text")).to_have_value("")
     assert f"{W.DM}\n+" not in _drafts(page) and f"{W.DM}\n{new_key}" not in _drafts(page)
+    assert not errors, errors
+
+
+def test_words_typed_before_the_route_runs_go_to_the_conversation_clicked(app):
+    """A click on a conversation changes the hash at once and its route runs
+    a task later. Words typed in between stay in the composer, Send posts
+    them to the conversation clicked, and no other place keeps them as a
+    draft. Back moves the composer with the hash the same way."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    key = page.locator(".thread-item:has-text('Draft a reply')").get_attribute("data-thread")
+    # The click and the typing in one task, ahead of the route.
+    type_after_click = """([sel, words]) => {
+        document.querySelector(sel).click();
+        const t = $('text'); t.value = words; t.dispatchEvent(new Event('input'));
+    }"""
+    page.evaluate(type_after_click, [f".thread-item[data-thread={json.dumps(key)}]", "typed at once"])
+    expect(page.locator(".thread-item.active")).to_contain_text("Draft a reply")  # the route ran
+    expect(page.locator("#text")).to_have_value("typed at once")
+    page.press("#text", "Enter")
+    wait_for(lambda: stub.posts)
+    assert (stub.posts[-1]["text"], stub.posts[-1]["thread_key"]) == ("typed at once", key)
+    expect(page.locator("#text")).to_have_value("")
+    assert _drafts(page) == {}
+    # Back to the list, typing at once: the words are the channel's new conversation's.
+    page.evaluate(type_after_click, ["#back", "a new one"])
+    expect(page.locator("body")).to_have_attribute("data-view", "threads")
+    expect(page.locator("#text")).to_have_value("a new one")
+    assert {k: d["text"] for k, d in _drafts(page).items()} == {f"{W.DM}\n+": "a new one"}
     assert not errors, errors
 
 

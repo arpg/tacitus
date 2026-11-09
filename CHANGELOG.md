@@ -103,6 +103,13 @@ repository that preceded it.
   `tests/test_hosted_switch.py` fails on a new branch on a model's name
   outside its allowlist of harness and record files.
 
+- **Words typed right after a tap stay in the web chat's composer.** A
+  tap on a conversation changed the address at once, and the route that
+  moves the composer to that conversation's draft ran a moment later.
+  Words typed in between were saved as the draft of the place before,
+  and the composer then emptied, so Send sent nothing. A link into the
+  app, Back, New conversation and the other moves now change the address
+  and the composer in one step (`goTo` in `app.js`).
 - **A tier promotion is a verb.** `autonomy_tiers.py promote --task
   <task> --tier <tier> [--contact <addr>] --quote "<words>"` replaces the
   edit of `autonomy-tiers.json` that CLAUDE.md rule 12 asked for, refuses
