@@ -315,8 +315,10 @@ def run_briefing_extract_tests(results: Results, functions: set[str] | None):
                    expected="harper entry WITHOUT poll URL",
                    actual=out[:200] if out else "(empty)")
 
-    # Test 4: Generic message — minimal or empty extract
-    out = extract_relevant_briefing("What is on my calendar today?", _MOCK_BRIEFING)
+    # Test 4: Generic message (no name, no module) — minimal or empty extract.
+    # "What is on my calendar today?" is a scheduling question now and ranks
+    # the rescheduling rows, as any scheduling message does.
+    out = extract_relevant_briefing("anything I should know before lunch?", _MOCK_BRIEFING)
     has_no_obligations = "RELEVANT OBLIGATIONS" not in out
     results.record("extract_relevant_briefing", "briefing-generic-minimal",
                    has_no_obligations,
@@ -476,6 +478,25 @@ def main():
     # Exit code
     sys.exit(1 if results.failures else 0)
 
+
+
+def test_a_calendar_question_loads_the_scheduling_guide():
+    """"Do you see my lab meeting on Thursday?" matched no scheduling
+    phrase, so the turn ran without the guide, the only text that names
+    the verbs that read a day's events; it tried verbs that do not exist
+    and answered that it could not list a day (2026-11-09). A question
+    about the calendar loads the guide. A calendar write, or a question
+    about something else, still does not."""
+    for msg in ("Do you see my lab meeting this Thursday 11/12?",
+                "Am I free at 11:30 AM on 10/29?",
+                "What is on my calendar tomorrow?",
+                "anything on my schedule Friday afternoon?",
+                "what's my day look like",
+                "can you see the dentist appointment next week"):
+        assert "scheduling" in detect_needed_modules(msg), msg
+    for msg in ("put it on my calendar for Monday", "what did Lior say?",
+                "file this under the minor project", "do you have the receipt?"):
+        assert "scheduling" not in detect_needed_modules(msg), msg
 
 
 def test_a_meeting_yes_loads_the_scheduling_guide():
