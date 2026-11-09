@@ -41,6 +41,14 @@ def remote(**over) -> dict:
 KEEP = {"domains": ["contractor.example.com"], "addresses": [], "admissions": True}
 
 
+@pytest.fixture(autouse=True)
+def local_chat_ready(monkeypatch):
+    """These tests cover the local paths of the chat and scheduling lanes,
+    so the chat floor is lifted here; tests/test_routing_presets_floor.py
+    covers the floor."""
+    monkeypatch.setattr(ea_config, "local_chat_ready", lambda *a, **k: True)
+
+
 @pytest.fixture
 def table(monkeypatch):
     """set(**tasks) makes that the routing table every lane reads."""
@@ -94,7 +102,7 @@ def test_a_wrong_task_or_value_is_named_and_dropped():
     assert ea_config.routing_problems("x") == ["the routing block is not a JSON object"]
     # a flat block is named, not silently ignored
     assert ea_config.routing_problems({"chat": "local", "_doc": "x"}) == \
-        ["routing takes its values under tasks, hosted and hosted_default, not 'chat'"]
+        ["routing takes its values under tasks, hosted, hosted_default and presets, not 'chat'"]
 
 
 def test_the_stakes_floor_holds_review_at_hosted_whatever_a_file_says(table):
@@ -111,7 +119,7 @@ def test_the_stakes_floor_holds_review_at_hosted_whatever_a_file_says(table):
     tech = {r["task"]: r for r in mr.rows(cfg=remote(), tiers=ea_config.tiers_from_block({}),
                                            verbose=True)}["review"]
     assert tech["floor"].startswith("Stakes floor") and tech["why"] == "the stakes floor"
-    with pytest.raises(mr.RoutingRefused, match="always stays on Hosted") as e:
+    with pytest.raises(mr.RoutingRefused, match="always stays on Claude or Codex") as e:
         mr.save({"review": "local"}, cfg=remote())
     assert e.value.tech == "review is hosted only (the stakes floor)"
 
@@ -128,9 +136,9 @@ def test_the_keep_floor_holds_mail_and_tagging_off_hosted_while_the_list_has_ent
     for task in ("mail", "tagging"):
         assert rows[task]["allowed"] == ["local", "auto"] and rows[task]["floor"] == mr.KEEP_FLOOR[0]
         assert rows[task]["effective"] == "local"
-        assert rows[task]["why"].startswith("Hosted waits while you keep some mail away from hosted models; ")
+        assert rows[task]["why"].startswith("Claude waits while you keep some mail away from hosted models; ")
         assert tech[task]["floor"].startswith("Keep floor") and "keep floor" in tech[task]["why"]
-    with pytest.raises(mr.RoutingRefused, match="cannot be Hosted while you keep some mail") as e:
+    with pytest.raises(mr.RoutingRefused, match="cannot use Claude or Codex while you keep some mail") as e:
         mr.save({"mail": "hosted"}, cfg=kept)
     assert "keep floor" in e.value.tech
     # with an empty list, hosted is hosted
@@ -153,9 +161,9 @@ def test_the_admissions_rule_alone_holds_the_floor_and_digests_are_floored(table
     assert mr.local("digests", switch_local=True, cfg=admissions)
     rows = {r["task"]: r for r in mr.rows(cfg=admissions, tiers=ea_config.tiers_from_block({}))}
     assert rows["digests"]["allowed"] == ["local", "auto"] and "admissions" in rows["digests"]["floor"]
-    assert rows["digests"]["effective"] == "local" and "Hosted waits" in rows["digests"]["why"]
+    assert rows["digests"]["effective"] == "local" and "Claude waits" in rows["digests"]["why"]
     for task in ("mail", "tagging", "digests"):
-        with pytest.raises(mr.RoutingRefused, match=f'"{mr.TASKS[task][0]}" cannot be Hosted') as e:
+        with pytest.raises(mr.RoutingRefused, match=f'"{mr.TASKS[task][0]}" cannot use Claude or Codex') as e:
             mr.save({task: "hosted"}, cfg=admissions)
         assert e.value.tech.startswith(f"{task} cannot be hosted")
     # with the rule off and nothing listed, digests may be hosted
@@ -169,7 +177,7 @@ def test_local_with_no_local_model_reads_hosted(table):
     assert not mr.local("drafting", switch_local=True, cfg=off)
     row = {r["task"]: r for r in mr.rows(cfg=off)}["drafting"]
     assert row["effective"] == "hosted"
-    assert row["why"] == "set to Local, but your own model is not set up, so Claude does it"
+    assert row["why"] == "set to your own model, but your own model is not set up, so Claude does it"
     assert "no local model" in {r["task"]: r for r in mr.rows(cfg=off, verbose=True)}["drafting"]["why"]
     assert mr.local_status(off)["configured"] is False
 
@@ -372,7 +380,7 @@ def test_the_chat_and_scheduling_lanes_take_the_table_over_the_lane_default():
     local = {"tasks": {"chat": "local", "scheduling": "local"}}
     hosted = {"tasks": {"chat": "hosted", "scheduling": "hosted"}}
     pick = mt.resolve(lane="main", cfg={}, remote_cfg=rc, routing=local)
-    assert pick == {"tier": "local", "source": "routing", "explicit": True, "note": ""}
+    assert pick == {"tier": "local", "source": "routing", "explicit": True, "note": "", "floor": ""}
     assert mt.resolve(lane="sched-channel", cfg={}, remote_cfg=rc, routing=local)["tier"] == "local"
     assert mt.describe("local", "routing") == "This topic runs on the on-prem model (the routing table in Settings)."
     # the stakes rule sits over a local table value
@@ -443,7 +451,7 @@ def test_the_screen_rows_name_the_hosted_model_and_what_it_cannot_do(table):
     lanes = ea_config.tiers_from_block({"lanes": {k: "codex" for k in ("main", "dm", "room")}})
     rows = {r["task"]: r for r in mr.rows(cfg=remote(), tiers=lanes)}
     assert rows["chat"]["hosted"] == "codex" and rows["chat"]["hosted_allowed"] == ["claude", "codex"]
-    assert rows["chat"]["why"] == "set to Hosted" and rows["chat"]["runs_on"] == "Codex"
+    assert rows["chat"]["why"] == "set to Codex" and rows["chat"]["runs_on"] == "Codex"
     assert rows["chat"]["hosted_note"] == mr.CODEX_NOTE[0] and "@claude" in mr.CODEX_NOTE[0]
     assert rows["briefing"]["why"] == "Auto picked Claude" and rows["briefing"]["runs_on"] == "Claude"
     for task in ("mail", "drafting"):
@@ -451,7 +459,7 @@ def test_the_screen_rows_name_the_hosted_model_and_what_it_cannot_do(table):
         assert rows[task]["hosted_note"] == mr.HOSTED_NOTES[task][0], task
     for task in ("tagging", "thread_state", "review"):
         assert rows[task]["hosted_allowed"] == ["claude", "codex"] and not rows[task]["hosted_note"], task
-    assert rows["review"]["floor"] == "Always Hosted: these are judgment calls."
+    assert rows["review"]["floor"] == "Always Claude or Codex: these are judgment calls."
     assert rows["review"]["why"] == mr.JUDGMENT and rows["review"]["runs_on"] == "Claude"
     rows = {r["task"]: r for r in mr.rows(cfg=remote(), tiers=lanes,
                                           routing={"tasks": {}, "hosted": {"review": "codex"}})}
@@ -500,7 +508,7 @@ def test_the_chat_lanes_take_the_hosted_model_over_the_tiers_block():
     codex = {"tasks": {}, "hosted": {"chat": "codex", "scheduling": "codex"}}
     claude = {"tasks": {}, "hosted": {"chat": "claude"}}
     pick = mt.resolve(lane="dm", cfg={}, remote_cfg=rc, routing=codex)
-    assert pick == {"tier": "codex", "source": "routing", "explicit": True, "note": ""}
+    assert pick == {"tier": "codex", "source": "routing", "explicit": True, "note": "", "floor": ""}
     assert mt.resolve(lane="proactive", cfg={}, remote_cfg=rc, routing=codex)["tier"] == "codex"
     assert mt.resolve(lane="room", cfg={"lanes": {"room": "fable"}}, remote_cfg=rc, routing=codex)["tier"] == "codex"
     lanes = {"lanes": {"main": "codex", "dm": "codex"}}
@@ -640,7 +648,7 @@ def test_the_web_page_saves_through_save_and_answers_the_screen(owner, monkeypat
     assert [r["task"] for r in page.get()["rows"]] == list(TASKS)
     out = page.save({"tasks": {"briefing": "local"}})
     assert out["saved"] and {r["task"]: r for r in out["rows"]}["briefing"]["value"] == "local"
-    with pytest.raises(ValueError, match='"Checking its own work" always stays on Hosted'):
+    with pytest.raises(ValueError, match='"Checking its own work" always stays on Claude or Codex'):
         page.save({"tasks": {"review": "local"}})
     with pytest.raises(ValueError):
         page.save({})
@@ -669,7 +677,7 @@ def test_the_cli_sets_one_task_and_refuses_a_floor(owner, monkeypatch, capsys):
     assert mr.main(["set", "review", "local"]) == 2
     assert "stakes floor" in capsys.readouterr().err
     assert mr.main(["show"]) == 0
-    assert ("*The weekly check* (`audit`): local, hosted on Claude (default), now your own model (set to Local)"
+    assert ("*The weekly check* (`audit`): local, hosted on Claude (default), now your own model (set to your own model)"
             in capsys.readouterr().out)
     assert mr.main(["show", "--verbose"]) == 0
     out = capsys.readouterr().out
@@ -730,8 +738,8 @@ def test_every_string_the_settings_screen_can_show_is_plain(owner, monkeypatch):
                 tech += _said(mr.payload(**kw, verbose=True))
     # each branch of the why lines is reached
     for part in (*(a.format(hosted="Claude") for a in mr.AUTO_SAYS.values()), mr.JUDGMENT,
-                 mr.NOT_SET_UP.format(hosted="Claude"), "set to Local", "set to Hosted",
-                 "Hosted waits", "@local", "for Direct messages", "for Ask Tacitus and project rooms",
+                 mr.NOT_SET_UP.format(hosted="Claude"), "set to your own model", "set to Claude", "set to Codex",
+                 "Claude waits", "@local", "for Direct messages", "for Ask Tacitus and project rooms",
                  'Auto does what "Reading your mail" does', "takes what it leaves"):
         assert any(part in w for w in whys), part
     # the local model's state: no key, no call yet, a failure whose error

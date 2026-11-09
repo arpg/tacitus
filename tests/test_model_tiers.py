@@ -16,6 +16,13 @@ import ea_config  # noqa: E402
 import model_tiers as mt  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def local_chat_ready(monkeypatch):
+    """These tests cover the local tier on the chat lanes, so the chat floor
+    is lifted here; tests/test_routing_presets_floor.py covers the floor."""
+    monkeypatch.setattr(ea_config, "local_chat_ready", lambda *a, **k: True)
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     priv = tmp_path / "private"
@@ -38,7 +45,7 @@ def test_a_local_pick_runs_on_claude_when_no_remote_model_is_set_up():
     off = {"endpoint": ""}
     cfg = {"lanes": {"sched-channel": "local"}}
     tagged = mt.resolve(lane="dm", tag="local", remote_cfg=off)
-    assert tagged == {"tier": "opus", "source": "tag", "explicit": True, "note": "no-local"}
+    assert tagged == {"tier": "opus", "source": "tag", "explicit": True, "note": "no-local", "floor": ""}
     lane = mt.resolve(lane="sched-channel", user_msg="find 30 minutes next week", cfg=cfg, remote_cfg=off)
     assert lane["tier"] == "opus" and lane["note"] == "no-local"
     drawn = mt.resolve(lane="dm", arm="remote", cfg={}, remote_cfg=off)
@@ -105,30 +112,30 @@ def test_the_pick_is_tag_then_pin_then_topic_then_lane_then_the_knobs(monkeypatc
     cfg = {"lanes": {"dm": "fable", "sched-channel": "local"}}
     kw = dict(lane="dm", thread_ts="stream:4:topic:%5Blocal%5D%20x", session_meta={"tier": "opus"}, cfg=cfg)
     assert mt.resolve(tag="fable", **kw)["source"] == "tag"
-    assert mt.resolve(**kw) == {"tier": "opus", "source": "pinned", "explicit": True, "note": ""}
+    assert mt.resolve(**kw) == {"tier": "opus", "source": "pinned", "explicit": True, "note": "", "floor": ""}
     kw["session_meta"] = {}
     assert mt.resolve(**kw)["source"] == "topic name" and mt.resolve(**kw)["tier"] == "local"
     kw["thread_ts"] = "stream:4:topic:plain"
-    assert mt.resolve(**kw) == {"tier": "fable", "source": "dm default", "explicit": True, "note": ""}
+    assert mt.resolve(**kw) == {"tier": "fable", "source": "dm default", "explicit": True, "note": "", "floor": ""}
     # with none of the four, the pick only describes where the knobs put the turn
     none = dict(lane="main", thread_ts="stream:4:topic:plain", session_meta={}, cfg=cfg)
-    assert mt.resolve(**none) == {"tier": "opus", "source": "default", "explicit": False, "note": ""}
-    assert mt.resolve(arm="remote", **none) == {"tier": "local", "source": "draw", "explicit": False, "note": ""}
+    assert mt.resolve(**none) == {"tier": "opus", "source": "default", "explicit": False, "note": "", "floor": ""}
+    assert mt.resolve(arm="remote", **none) == {"tier": "local", "source": "draw", "explicit": False, "note": "", "floor": ""}
     assert mt.resolve(session_meta={"model": "claude-fable-5-1"}, lane="main", cfg=cfg) == {
-        "tier": "fable", "source": "session", "explicit": False, "note": ""}
+        "tier": "fable", "source": "session", "explicit": False, "note": "", "floor": ""}
     assert mt.resolve(session_meta={"model": "claude-opus-5-5[1m]"}, lane="room", cfg=cfg)["tier"] == "opus"
 
 
 def test_a_high_stakes_message_never_runs_on_local_unless_tagged():
     cfg = {"lanes": {"sched-channel": "local"}}
     pick = mt.resolve(lane="sched-channel", user_msg="set up a meeting with the dean about the budget", cfg=cfg)
-    assert pick == {"tier": "opus", "source": "sched-channel default", "explicit": True, "note": "stakes"}
+    assert pick == {"tier": "opus", "source": "sched-channel default", "explicit": True, "note": "stakes", "floor": ""}
     # the A/B's drawn arm is moved too, and recorded as such
     drawn = mt.resolve(lane="sched-channel", user_msg="decline the invitation politely", arm="remote", cfg=cfg)
     assert drawn["tier"] == "opus" and drawn["note"] == "stakes" and drawn["explicit"]
     # the user's own tag wins
     tagged = mt.resolve(lane="dm", user_msg="find a slot with the dean", tag="local", cfg=cfg)
-    assert tagged == {"tier": "local", "source": "tag", "explicit": True, "note": ""}
+    assert tagged == {"tier": "local", "source": "tag", "explicit": True, "note": "", "floor": ""}
     # an ordinary scheduling ask stays local
     assert mt.resolve(lane="sched-channel", user_msg="find 30 minutes with Wren next week", cfg=cfg)["tier"] == "local"
     assert mt.high_stakes("the contract renewal") and not mt.high_stakes("lunch on Tuesday")
@@ -138,7 +145,7 @@ def test_the_fable_budget_moves_a_pick_to_opus(store):
     cfg = {"fable_daily_turns": 2}
     assert mt.resolve(lane="dm", tag="fable", cfg=cfg, fable_turns_today=1)["tier"] == "fable"
     spent = mt.resolve(lane="dm", tag="fable", cfg=cfg, fable_turns_today=2)
-    assert spent == {"tier": "opus", "source": "tag", "explicit": True, "note": "budget"}
+    assert spent == {"tier": "opus", "source": "tag", "explicit": True, "note": "budget", "floor": ""}
     # the count comes from the record
     for _ in range(2):
         mt.note_turn(tier="fable", source="tag", lane="dm", model="claude-fable-5-1")

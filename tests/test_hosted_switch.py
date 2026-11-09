@@ -117,7 +117,8 @@ def test_flipping_the_switch_moves_every_unpinned_task_and_the_chat_default(monk
     # the owner's own picks in a topic outrank the switch
     for tag, tier in (("opus", "opus"), ("codex", "codex"), ("fable", "fable"), ("local", "local")):
         for routing in (codex, claude):
-            pick = model_tiers.resolve(lane="dm", tag=tag, cfg={}, remote_cfg=remote(), routing=routing)
+            pick = model_tiers.resolve(lane="dm", tag=tag, cfg={}, remote_cfg=remote(), routing=routing,
+                                       local_chat_ready=True)
             assert pick["tier"] == tier, (tag, routing)
     assert model_tiers.split_tag("@claude look at this")[0] == "opus"
     assert model_tiers.resolve(lane="main", session_meta={"tier": "opus"}, cfg={}, remote_cfg=remote(),

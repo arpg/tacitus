@@ -126,28 +126,34 @@ ROUTING = {
     "source": "routing.json", "values": ["local", "hosted", "auto"],
     "hosted_values": ["claude", "codex"], "hosted_names": {"claude": "Claude", "codex": "Codex"},
     "hosted_default": "codex", "hosted_default_set": True,
+    "presets": [{"name": "private", "label": "Private", "note": "Mail work on your own model.", "builtin": True},
+                {"name": "claude", "label": "All Claude", "note": "Claude does every task.", "builtin": True},
+                {"name": "codex", "label": "All Codex", "note": "Codex does every task.", "builtin": True}],
+    "preset_now": "",
     "rows": [
         {"task": "drafting", "label": "Writing replies", "what": "Writes email replies in your voice.",
          "value": "auto", "allowed": ["local", "hosted", "auto"], "locked": False, "floor": "",
          "hosted": "claude", "hosted_allowed": ["claude"], "hosted_source": "fixed",
-         "hosted_note": "Hosted: the model that asks for the reply writes it.",
+         "hosted_note": "On Claude or Codex: the model that asks for the reply writes it.",
          "help": "Writes the text of an email reply in your voice. Nothing goes out until you tap Send.",
          "effective": "local", "runs_on": "your own model", "why": "Auto picked your own model"},
         {"task": "mail", "label": "Reading your mail", "what": "Reads each new message and notes what it asks for.",
          "value": "auto", "allowed": ["local", "auto"], "locked": False,
-         "floor": "Hosted is off while you keep some mail away from hosted models (a domain, an address "
-                  "or admissions mail), so that mail never reaches Claude or Codex.",
+         "floor": "Claude and Codex are off here while you keep some mail away from hosted models (a domain, an address "
+                  "or admissions mail), so that mail never reaches them.",
          "hosted": "claude", "hosted_allowed": ["claude"], "hosted_source": "fixed", "hosted_note": "",
          "help": "When a new email comes in, Tacitus reads it once and writes a short note.",
          "effective": "local", "runs_on": "your own model", "why": "Auto picked your own model"},
         {"task": "review", "label": "Checking its own work", "what": "Checks that briefing items are still open.",
          "value": "hosted", "allowed": ["hosted"], "locked": True,
-         "floor": "Always Hosted: these are judgment calls.",
+         "floor": "Always Claude or Codex: these are judgment calls.",
          "hosted": "claude", "hosted_allowed": ["claude", "codex"], "hosted_source": "override",
          "hosted_note": "", "effective": "hosted", "runs_on": "Claude",
          "why": "these are judgment calls, so your own model never makes them"},
         {"task": "chat", "label": "Talking with you", "what": "Answers you in the chat.",
-         "value": "auto", "allowed": ["local", "hosted", "auto"], "locked": False, "floor": "",
+         "value": "auto", "allowed": ["hosted", "auto"], "locked": False, "not_yet": True,
+         "floor": "Your own model does not hold up in conversation yet. Talking with you and "
+                  "finding meeting times stay on Claude or Codex for now.",
          "hosted": "codex", "hosted_allowed": ["claude", "codex"], "hosted_source": "default",
          "hosted_note": "Codex cannot open web links, Drive, GitHub or Overleaf. "
                         "Start a message with @claude to send one to Claude.",
@@ -711,9 +717,26 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self._body() or b"{}")
             s.settings_posts.append(body)
             rows = {r["task"]: r for r in s.routing["rows"]}
+            # a preset: applied by its name (every row to its hosted model, on the
+            # preset's own), or the table in force kept under a new name
+            preset = body.get("preset")
+            if isinstance(preset, dict):
+                name = str(preset.get("save") or "")
+                s.routing["presets"].append({"name": name, "label": name, "note": "", "builtin": False})
+                s.routing["preset_now"] = name
+                return self._json(200, {**s.routing, "saved": True, "notes": []})
+            if isinstance(preset, str):
+                model = {"claude": "claude", "codex": "codex"}.get(preset, s.routing["hosted_default"])
+                s.routing.update(hosted_default=model, preset_now=preset)
+                for row in rows.values():
+                    if len(row["hosted_allowed"]) > 1:
+                        row.update(hosted=model, hosted_source="default", runs_on=STUB_NAMES[model])
+                return self._json(200, {**s.routing, "saved": True,
+                                        "notes": ["Reading your mail stays on Auto while you keep some mail "
+                                                  "away from hosted models."]})
             for task, value in (body.get("tasks") or {}).items():
                 if value not in rows[task]["allowed"]:
-                    return self._json(400, {"error": f'"{rows[task]["label"]}" always stays on Hosted: '
+                    return self._json(400, {"error": f'"{rows[task]["label"]}" always stays on Claude or Codex: '
                                                      "these are judgment calls, so your own model never makes them."})
             for task, model in (body.get("hosted") or {}).items():
                 if model not in rows[task]["hosted_allowed"] + ["default"]:
@@ -733,7 +756,8 @@ class Handler(BaseHTTPRequestHandler):
             for task, value in body["tasks"].items():
                 rows[task]["value"] = value
                 if value != "auto":
-                    rows[task].update(effective=value, why=f"set to {value.title()}",
+                    rows[task].update(effective=value, why="set to your own model" if value == "local"
+                                      else f"set to {STUB_NAMES[rows[task]['hosted']]}",
                                       runs_on="your own model" if value == "local"
                                       else STUB_NAMES[rows[task]["hosted"]])
             for task, model in moves.items():

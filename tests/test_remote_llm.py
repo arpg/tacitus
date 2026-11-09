@@ -15,6 +15,16 @@ import owner_trust  # noqa: E402
 import remote_llm as rl  # noqa: E402
 
 
+
+@pytest.fixture(autouse=True)
+def _local_chat_ready(monkeypatch):
+    """The scheduling agent's live mode is the local model answering a
+    scheduling turn, which the chat floor stops; these tests cover the
+    mode itself, so the floor is lifted (tests/test_routing_presets_floor.py
+    covers the floor)."""
+    import ea_config
+    monkeypatch.setattr(ea_config, "local_chat_ready", lambda *a, **k: True)
+
 @pytest.fixture
 def priv(tmp_path, monkeypatch):
     d = tmp_path / "private"

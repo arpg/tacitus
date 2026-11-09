@@ -461,7 +461,9 @@ def test_the_app_stays_small():
     # 5,310: both together, drafts and files with links routed in place and the calm connection line.
     # 5,320: 5,310 plus the one hosted-model switch at the top of the Models page, and each task's line
     #     saying whether it follows the switch or is set apart, with Use default.
-    assert lines <= 5320, f"{lines} lines: the contract keeps the app near 5,320 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch, per task and its help, the drafts and the files that wait for Send, links routed in place and a calm connection line"
+    # 5,350: 5,320 plus the presets on the Models page (a button each, sent alone on Save, and Save
+    #     current as... with the browser's own name box) and each choice named by its model.
+    assert lines <= 5350, f"{lines} lines: the contract keeps the app near 5,350 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place and a calm connection line"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -2762,7 +2764,7 @@ def test_the_settings_menu_is_in_the_drawer():
     assert dlg.index('id="notify-settings"') < dlg.index('id="routing-settings"')
     js = read("app.js")
     assert "call('GET', '/settings/routing')" in js
-    assert "renderSettings(await call('POST', '/settings/routing', body));" in js
+    assert "const out = await call('POST', '/settings/routing', presetPick ? { preset: presetPick } : body);" in js
     assert "if (pick && pick.value !== $('settings-default').dataset.was) body.hosted_default = pick.value;" in js
     assert "call('GET', '/settings/notify')" in js and "call('POST', '/settings/notify', {" in js
     assert "notify: pages.includes('notify') && Boolean(S.me.push), routing: pages.includes('routing')" in js
@@ -3687,8 +3689,13 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     page.click("#go-routing")
     expect(page.locator("#settings-title")).to_have_text("Models")
     expect(page.locator("#routing-settings .s-key").first).to_have_text(
-        "Local is your own model. Hosted is Claude or Codex: pick one for every task here, or set a task "
-        "that can use both apart under it. Auto lets Tacitus choose.")
+        "Each task runs on your own model, on Claude or Codex, or on Auto, which lets Tacitus choose. "
+        "Pick Claude or Codex for every task here, or set a task that can use both apart under it.")
+    # the presets head the page: a button each, and Save current as...
+    presets = page.locator("#settings-presets")
+    expect(presets.locator(".s-name")).to_have_text("Presets")
+    expect(presets.locator(".ways button")).to_have_text(["Private", "All Claude", "All Codex"])
+    expect(presets.locator(".ways button[aria-pressed=true]")).to_have_count(0)
     # the one switch heads the page: the hosted model of every task not set apart
     switch = page.locator("#settings-default")
     expect(switch.locator(".s-name")).to_have_text("Hosted model")
@@ -3703,18 +3710,20 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     expect(drafting.locator(".s-name")).to_contain_text("Writing replies")
     expect(drafting.locator("input[value=auto]")).to_be_checked()
     expect(drafting.locator(".s-now")).to_have_text("Now on your own model. Auto picked your own model.")
-    expect(drafting.locator(".s-note")).to_have_text("Hosted: the model that asks for the reply writes it.")
+    expect(drafting.locator(".s-note")).to_have_text("On Claude or Codex: the model that asks for the reply writes it.")
+    # each choice reads your own model, the task's hosted model by name, or Auto
+    expect(drafting.locator(".seg").first.locator("label")).to_have_text(["Your own model", "Claude", "Auto"])
     expect(drafting.locator(".s-hosted")).to_have_count(0)
     expect(drafting.locator(".s-floor")).to_have_count(0)
     expect(mail.locator("input[value=hosted]")).to_be_disabled()
     expect(mail.locator("input[value=local]")).to_be_enabled()
-    expect(mail.locator(".s-floor")).to_have_text("Hosted is off while you keep some mail away from hosted "
-                                                  "models (a domain, an address or admissions mail), so "
-                                                  "that mail never reaches Claude or Codex.")
+    expect(mail.locator(".s-floor")).to_have_text("Claude and Codex are off here while you keep some mail "
+                                                  "away from hosted models (a domain, an address or "
+                                                  "admissions mail), so that mail never reaches them.")
     expect(review.locator("input[value=hosted]")).to_be_checked()
     for v in ("local", "auto"):
         expect(review.locator(f"input[value={v}]")).to_be_disabled()
-    expect(review.locator(".s-floor")).to_have_text("Always Hosted: these are judgment calls.")
+    expect(review.locator(".s-floor")).to_have_text("Always Claude or Codex: these are judgment calls.")
     expect(review.locator(".s-now")).to_have_text(
         "Now on Claude. These are judgment calls, so your own model never makes them.")
     expect(chat.locator(".s-hosted .s-sub")).to_have_text("Hosted model")
@@ -3722,6 +3731,12 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     expect(chat.locator(".s-hosted label")).to_have_text(["Claude", "Codex"])
     expect(chat.locator(".s-now")).to_have_text("Now on Codex. Auto picked Codex.")
     expect(chat.locator(".s-note")).to_contain_text("@claude")
+    # the chat floor: your own model is not offered for talking with you yet, and the row says why
+    expect(chat.locator(".seg").first.locator("label")).to_have_text(["Your own model", "Codex", "Auto"])
+    expect(chat.locator("input[name=route-chat][value=local]")).to_be_disabled()
+    expect(chat.locator(".s-floor")).to_have_text(
+        "Your own model does not hold up in conversation yet. Talking with you and finding meeting times "
+        "stay on Claude or Codex for now.")
     # a task that can use both says whether it follows the switch or is set apart
     expect(chat.locator(".s-own")).to_have_text("Follows the hosted model at the top.")
     expect(review.locator(".s-own")).to_have_text("Set for this task. Use default")
@@ -3748,7 +3763,7 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     assert stub.settings_posts == [{"tasks": {"drafting": "hosted", "mail": "auto", "review": "hosted",
                                               "chat": "auto"}, "hosted": {"chat": "claude"}}]
     expect(drafting.locator("input[value=hosted]")).to_be_checked()
-    expect(drafting.locator(".s-now")).to_have_text("Now on Claude. Set to Hosted.")
+    expect(drafting.locator(".s-now")).to_have_text("Now on Claude. Set to Claude.")
     expect(chat.locator("input[name=hosted-chat][value=claude]")).to_be_checked()
     expect(chat.locator(".s-now")).to_have_text("Now on Claude. Auto picked Claude.")
     expect(chat.locator(".s-note")).to_have_count(0)
@@ -3775,9 +3790,25 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     review.locator("input[value=local]").check()
     page.click("#settings-save")
     expect(page.locator("#settings-note")).to_have_text(
-        'Not saved: "Checking its own work" always stays on Hosted: these are judgment calls, '
+        'Not saved: "Checking its own work" always stays on Claude or Codex: these are judgment calls, '
         'so your own model never makes them.')
     assert stub.routing["rows"][2]["value"] == "hosted"
+    # a preset: pressed, then sent alone on Save; the rows redraw from the answer
+    presets.locator(".ways button", has_text="All Claude").click()
+    expect(page.locator("#settings-note")).to_have_text("Save applies All Claude.")
+    page.click("#settings-save")
+    expect(page.locator("#settings-note")).to_have_text(
+        "Saved. Each task uses its model from its next run. Reading your mail stays on Auto while you keep "
+        "some mail away from hosted models.")
+    assert stub.settings_posts[-1] == {"preset": "claude"}
+    expect(presets.locator(".ways button[aria-pressed=true]")).to_have_text("All Claude")
+    expect(chat.locator("input[name=hosted-chat][value=claude]")).to_be_checked()
+    # Save current as...: a name typed in the browser's own box keeps the table in force
+    page.once("dialog", lambda d: d.accept("Travel week"))
+    presets.locator("button", has_text="Save current as...").click()
+    expect(page.locator("#settings-note")).to_have_text("Saved as Travel week.")
+    assert stub.settings_posts[-1] == {"preset": {"save": "Travel week"}}
+    expect(presets.locator(".ways button")).to_have_text(["Private", "All Claude", "All Codex", "Travel week"])
     page.click("#settings button[type=submit]")
     expect(page.locator("#settings")).not_to_be_visible()
     assert errors == ["Failed to load resource: the server responded with a status of 400 (Bad Request)"]

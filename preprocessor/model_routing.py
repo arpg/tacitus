@@ -91,8 +91,26 @@ CLI (as the owner):
     model_routing.py set <task> <value>         write one task (validated, 0600): local,
                                                 hosted or auto, or claude or codex for its
                                                 hosted model (an override)
+    model_routing.py preset list                the built-in presets and the saved ones
+    model_routing.py preset apply <name>        write the preset's tasks, switch and overrides
+    model_routing.py preset save <name> [--note <text>]
+                                                keep the table in force under a name
     model_routing.py harness --agent <agent>    claude or codex: where run-agent.sh runs
                                                 the agent's Claude lane
+
+The chat floor. While ea-config's `local_chat_ready` is false, `chat` and
+`scheduling` never run on the owner's own model: `set chat local` and a
+preset that names it are refused with LOCAL_CHAT_NOTE, the screen and
+`show` say "not yet" on those rows, and model_tiers.resolve moves any
+local pick on their lanes (the table, a lane default, an A/B draw, an
+`@local` tag, a `use local` pin) to the hosted model with `floor:
+"local_chat"`. The scheduling agent's `enforce` reads `shadow` under it.
+
+Presets, the owner's stash of settings: the built-ins (BUILTIN_PRESETS,
+defined here and never written) and the ones `preset save` keeps under
+`presets` in routing.json. `apply` writes a preset's task values and its
+switch (a preset without one leaves the switch as it is) and keeps the
+per-task overrides only where the preset names them.
 """
 from __future__ import annotations
 
@@ -168,19 +186,19 @@ TECH = {
 }
 assert tuple(TASKS) == tuple(TECH) == _ea_config.ROUTING_TASKS
 # The floors' lines under a row: (plain, technical).
-STAKES_FLOOR = ("Always Hosted: these are judgment calls.",
+STAKES_FLOOR = ("Always Claude or Codex: these are judgment calls.",
                 "Stakes floor: these are judgment calls, so only a hosted model does them.")
-KEEP_FLOOR = ("Hosted is off while you keep some mail away from hosted models (a domain, an "
-              "address or admissions mail), so that mail never reaches Claude or Codex.",
+KEEP_FLOOR = ("Claude and Codex are off here while you keep some mail away from hosted models "
+              "(a domain, an address or admissions mail), so that mail never reaches them.",
               "Keep floor: hosted is not available while the keep list keeps anything "
               "(a domain, an address or the admissions rule), because mail it keeps "
               "must not reach a hosted model.")
 # Under the row, what Hosted means for a task with no Claude-or-Codex
 # choice: (plain, technical).
 HOSTED_NOTES = {
-    "mail": ("Hosted: the model that does each task reads the whole message.",
+    "mail": ("On Claude or Codex: the model that does each task reads the whole message.",
              "Hosted turns the mail gate off: the lanes, on Claude or Codex, read the mail itself."),
-    "drafting": ("Hosted: the model that asks for the reply writes it.",
+    "drafting": ("On Claude or Codex: the model that asks for the reply writes it.",
                  "Hosted turns the writer off: the turn's own model (Claude or Codex) writes the body."),
 }
 # Behind the "?" beside a task's name on the Settings screen: what the
@@ -188,17 +206,17 @@ HOSTED_NOTES = {
 HELP = {
     "mail": ("When a new email comes in, Tacitus reads it once and writes a short note: what the "
              "sender wants from you, by when, and who is involved. Your briefing, your to-do list "
-             "and your replies work from these notes. On Local, your own model reads each email, "
-             "and the full text stays with it. On Hosted, the full email goes to Claude or Codex."),
+             "and your replies work from these notes. On your own model, the full text of each email "
+             "stays with your model. On Claude or Codex, the full email goes to that model."),
     "tagging": ("Puts colored labels (Outlook categories) on each new email: the project it belongs "
                 "to, and what it wants from you, such as needs a reply, to do or just for your "
                 "information. In Outlook you can search and filter by these labels. Sorting only "
                 "adds labels. It never moves, answers or deletes an email."),
     "drafting": ("Writes the text of an email reply in your voice, from a short note on what the "
                  "reply must say. The reply waits as a draft, and nothing goes out until you tap "
-                 "Send. On Local, your own model writes it. On Hosted, the model that asked for "
-                 "the reply (Claude or Codex) writes it. Letters, such as recommendations, always "
-                 "come from a hosted model."),
+                 "Send. On your own model, your model writes it. On Claude or Codex, the model that "
+                 "asked for the reply writes it. Letters, such as recommendations, always come "
+                 "from Claude or Codex."),
 }
 # Under a row set to Codex, what Codex cannot do there.
 CODEX_NOTE = ("Codex cannot open web links, Drive, GitHub or Overleaf. "
@@ -208,6 +226,39 @@ CODEX_NOTE = ("Codex cannot open web links, Drive, GitHub or Overleaf. "
 # What a harness cannot do in chat, by harness (HOSTED_MODELS[...]["harness"]):
 # the chat row shows it while chat runs on a model of that harness.
 HARNESS_LIMITS = {"codex": CODEX_NOTE}
+# The chat floor: the tasks that hold a conversation, which never run on
+# the owner's own model while ea-config's `local_chat_ready` is false
+# (chat_floor_holds). The note, (plain, technical), is what a refusal, a
+# row, a refused `@local` tag and a refused `use local` pin say; the
+# floor's name is what model_tiers.resolve carries as `floor`.
+CHAT_FLOORED = ("chat", "scheduling")
+LOCAL_CHAT_NOTE = ("Your own model does not hold up in conversation yet. Talking with you and "
+                   "finding meeting times stay on Claude or Codex for now.",
+                   "Chat floor: chat and scheduling never run on the local model while "
+                   "local_chat_ready is false in ea-config.json.")
+LOCAL_CHAT_FLOOR = "local_chat"
+# The built-in presets, defined here and never written: a label and a line
+# in plain words, the task values, and the switch (`hosted_default`; absent
+# leaves it as it is). A preset's `hosted` map is its overrides; absent, it
+# has none. `private` keeps mail work where the remote switches put it,
+# `auto`, and the conversations, the meeting times and the checks hosted.
+_ALL_HOSTED = {**{t: "hosted" for t in TASKS}, "thread_state": "local"}
+BUILTIN_PRESETS = {
+    "private": {"label": "Private",
+                "note": "Mail, replies, digests, your briefing and the weekly check go to your own "
+                        "model where it is set up for them. Claude or Codex talks with you, finds "
+                        "meeting times and checks the work.",
+                "tasks": {"mail": "auto", "tagging": "auto", "drafting": "auto", "digests": "auto",
+                          "briefing": "auto", "audit": "auto", "scheduling": "hosted",
+                          "chat": "hosted", "thread_state": "local", "review": "hosted"}},
+    "claude": {"label": "All Claude",
+               "note": "Claude does every task. Your own model notices what needs you.",
+               "tasks": dict(_ALL_HOSTED), "hosted_default": "claude"},
+    "codex": {"label": "All Codex",
+              "note": "Codex does every task. Your own model notices what needs you.",
+              "tasks": dict(_ALL_HOSTED), "hosted_default": "codex"},
+}
+assert all(set(p["tasks"]) == set(TASKS) for p in BUILTIN_PRESETS.values())
 # Where each chat lane's turns happen, as the web chat names them.
 PLACES = {"main": "Ask Tacitus", "dm": "Direct messages", "room": "project rooms"}
 # The chat lanes (ea-chat-bot.py _turn_lane) and the task each belongs to.
@@ -456,10 +507,25 @@ def keep_listed(cfg: dict) -> bool:
     return bool(ks.get("domains") or ks.get("addresses") or ks.get("admissions"))
 
 
+def chat_floor_holds(task: str = "") -> bool:
+    """The chat floor is in force (ea_config.local_chat_ready is false)
+    and, with `task`, holds that task (CHAT_FLOORED). A config that cannot
+    be read keeps the floor."""
+    if task and task not in CHAT_FLOORED:
+        return False
+    try:
+        return not _ea_config.local_chat_ready()
+    except Exception:
+        return True
+
+
 def choice(task: str, *, cfg: dict | None = None, routing: dict | None = None) -> str:
-    """What the table asks of the task once the endpoint and the keep
-    floor apply: `local`, `hosted` or `auto` (the switches decide)."""
+    """What the table asks of the task once the endpoint, the chat floor
+    and the keep floor apply: `local`, `hosted` or `auto` (the switches
+    decide)."""
     v = value(task, routing)
+    if v == "local" and chat_floor_holds(task):
+        return "hosted"
     if v == "local":
         return "local" if local_ready(_remote_cfg(cfg)) else "hosted"
     if v == "hosted" and task in KEEP_FLOORED and keep_listed(_remote_cfg(cfg)):
@@ -488,8 +554,12 @@ def mail_mode(raw: str, cfg: dict | None = None, routing: dict | None = None) ->
 
 def scheduling_mode(raw: str, cfg: dict | None = None, routing: dict | None = None) -> str:
     """The scheduling agent's mode after the table: `hosted` stops it;
-    `local` and `auto` keep the switch (enforce stays behind its gate)."""
-    return "off" if choice("scheduling", cfg=cfg, routing=routing) == "hosted" else raw
+    `local` and `auto` keep the switch (enforce stays behind its gate).
+    Under the chat floor `enforce` reads `shadow`: the agent runs beside
+    the hosted turn and answers none."""
+    if choice("scheduling", cfg=cfg, routing=routing) == "hosted":
+        return "off"
+    return "shadow" if raw == "enforce" and chat_floor_holds("scheduling") else raw
 
 
 def lane_route(lane: str, routing: dict | None = None) -> str:
@@ -711,24 +781,31 @@ def rows(*, cfg: dict | None = None, routing: dict | None = None,
             row.update(allowed=[FLOORS[task]], locked=True, floor=STAKES_FLOOR[pick])
         elif task in KEEP_FLOORED and kept:
             row.update(allowed=["local", "auto"], floor=KEEP_FLOOR[pick])
+        floored = chat_floor_holds(task)
+        row["not_yet"] = floored
+        if floored:
+            row.update(allowed=[a for a in row["allowed"] if a != "local"], floor=LOCAL_CHAT_NOTE[pick])
         c = choice(task, cfg=cfg, routing={"tasks": tab})
         judged = "the hosted model judges, one call a tick" if task == "thread_state" else ""
         if task in FLOORS:
             eff, why = FLOORS[task], (JUDGMENT, "the stakes floor")
         elif c == "local":
-            eff, why = "local", ("set to Local", "set to local")
+            eff, why = "local", ("set to your own model", "set to local")
+        elif floored and v != "hosted":
+            eff, why = "hosted", (f"{name} does it: your own model is not ready for conversation yet",
+                                  f"set to {v}, on {hm}: the chat floor holds")
         elif c == "hosted" and v == "local":
-            eff, why = "hosted", (f"set to Local, but {NOT_SET_UP.format(hosted=name)}",
+            eff, why = "hosted", (f"set to your own model, but {NOT_SET_UP.format(hosted=name)}",
                                   "set to local, but no local model is set up"
                                   + (f"; {judged}" if judged else ""))
         elif c == "hosted":
-            eff, why = "hosted", ("set to Hosted",
+            eff, why = "hosted", (f"set to {name}",
                                   f"set to hosted, on {hm}" + (f": {judged}" if judged else ""))
         else:
             eff, plain, tech = _switch_state(task, cfg, tiers, done, name)
             why = (plain, tech)
             if v == "hosted":
-                why = (f"Hosted waits while you keep some mail away from hosted models; {plain}",
+                why = (f"{name} waits while you keep some mail away from hosted models; {plain}",
                        f"hosted waits on the keep floor; {tech}")
         row.update(effective=eff, why=why[pick], runs_on=runs_on(eff, hm))
         done[task] = eff
@@ -746,6 +823,7 @@ def payload(*, cfg: dict | None = None, routing: dict | None = None,
     return {"local": local_status(cfg, verbose=verbose), "source": source, "values": list(VALUES),
             "hosted_values": list(HOSTED), "hosted_names": dict(MODEL_NAMES),
             "hosted_default": default or BASE, "hosted_default_set": bool(default),
+            "presets": preset_list(routing), "preset_now": preset_now(routing),
             "rows": rows(cfg=cfg, routing=routing, tiers=tiers, verbose=verbose)}
 
 
@@ -766,12 +844,19 @@ def lines(data: dict | None = None) -> list[str]:
         if mark == "fixed":
             mark = f"fixed: {r['hosted_why']}"
         out.append(f"- *{r['label']}* (`{r['task']}`): {r['value']}, hosted on "
-                   f"{MODEL_NAMES.get(r['hosted'], r['hosted'])} ({mark}), now {r['runs_on']} ({r['why']})")
+                   f"{MODEL_NAMES.get(r['hosted'], r['hosted'])} ({mark}), now {r['runs_on']} ({r['why']})"
+                   + ("; your own model: not yet" if r.get("not_yet") else ""))
+    if any(r.get("not_yet") for r in data["rows"]):
+        out.append(LOCAL_CHAT_NOTE[0])
+    if data.get("presets"):
+        out.append("Presets: " + ", ".join(f"{p['label']} (`{p['name']}`)" for p in data["presets"])
+                   + (f"; now {data['preset_now']}" if data.get("preset_now") else "") + ".")
     if str(data.get("source", "")).startswith("refused"):
         out.append(f"routing.json is {data['source']}; every task reads auto.")
     out.append("Change it in the web chat's Settings, or as the owner: "
                "`python3 preprocessor/model_routing.py set-hosted claude|codex [--task <task>]`, "
-               "`set-hosted --clear-task <task>`, or `set <task> local|hosted|auto`.")
+               "`set-hosted --clear-task <task>`, `set <task> local|hosted|auto`, or "
+               "`preset apply <name>`.")
     return out
 
 
@@ -812,11 +897,13 @@ def _refusals(tasks: dict, kept: bool, hosted: dict | None = None,
         if task not in TASKS:
             plain = f"Tacitus has no task named {task!r}."
         elif v not in VALUES:
-            plain = f"{name} takes Local, Hosted or Auto."
+            plain = f"{name} takes your own model, Claude or Codex, or Auto."
         elif tech:
-            plain = f"{name} always stays on Hosted: {JUDGMENT}."
+            plain = f"{name} always stays on Claude or Codex: {JUDGMENT}."
+        elif v == "local" and chat_floor_holds(task):
+            plain, tech = LOCAL_CHAT_NOTE[0], [f"{task}: {LOCAL_CHAT_NOTE[1]}"]
         elif v == "hosted" and task in KEEP_FLOORED and kept:
-            plain = f"{name} cannot be Hosted while you keep some mail away from hosted models."
+            plain = f"{name} cannot use Claude or Codex while you keep some mail away from hosted models."
             tech = [f"{task} cannot be hosted while the keep list has entries (the keep floor)"]
         else:
             continue
@@ -825,7 +912,8 @@ def _refusals(tasks: dict, kept: bool, hosted: dict | None = None,
 
 
 def save(tasks, *, hosted=None, hosted_default=None, cfg: dict | None = None, via: str = "cli",
-         who: dict | None = None) -> dict:
+         who: dict | None = None, replace_hosted: bool = False, presets: dict | None = None,
+         preset: str = "") -> dict:
     """Merge `tasks` ({task: value}), `hosted` ({task: claude | codex},
     or FOLLOW to drop the task's override) and the switch `hosted_default`
     (claude | codex) over the table in force and write
@@ -834,27 +922,33 @@ def save(tasks, *, hosted=None, hosted_default=None, cfg: dict | None = None, vi
     or value, a floored value, `hosted` on a keep-floored task while the
     keep list keeps anything, or a model for a task it cannot take. `who`
     ({"credential", "device"}, from the web front end) goes into the
-    change log line."""
+    change log line. `replace_hosted` makes `hosted` the whole override
+    map (a preset); `presets` ({name: snapshot}) is merged into the saved
+    presets; `preset` names the preset applied, for the log."""
     tasks = {} if tasks is None else tasks
     hosted = {} if hosted is None else hosted
-    if not isinstance(tasks, dict) or not isinstance(hosted, dict) or not (tasks or hosted or hosted_default):
-        raise RoutingRefused("Choose Local, Hosted or Auto, or a hosted model, for at least one task.",
+    if not isinstance(tasks, dict) or not isinstance(hosted, dict) or \
+            not (tasks or hosted or hosted_default or presets or replace_hosted):
+        raise RoutingRefused("Choose your own model, Claude or Codex, or Auto for at least one task.",
                              "tasks and hosted must be JSON objects that name at least one task, "
                              "or hosted_default a hosted model")
     problems = _refusals(tasks, keep_listed(_remote_cfg(cfg)), hosted, hosted_default)
     if problems:
-        raise RoutingRefused(" ".join(p for p, _t in problems), "; ".join(t for _p, t in problems))
+        raise RoutingRefused(" ".join(dict.fromkeys(p for p, _t in problems)),
+                             "; ".join(t for _p, t in problems))
     ot = _ea_config._owner_trust()
     if not ot.is_owner_process():
         raise RoutingRefused("Tacitus could not save: only the part of Tacitus that runs as you "
                              "may change these settings.",
                              "only the owner's processes write the routing table")
     current, _source = _ea_config.get_routing_source()
-    picked = {k: v for k, v in {**current.get("hosted", {}), **hosted}.items()
+    picked = {k: v for k, v in {**({} if replace_hosted else current.get("hosted", {})), **hosted}.items()
               if hosted.get(k) != FOLLOW}
     raw = {"tasks": {**current["tasks"], **tasks}, "hosted": picked}
     if hosted_default or current.get("hosted_default"):
         raw["hosted_default"] = hosted_default or current["hosted_default"]
+    if current.get("presets") or presets:
+        raw["presets"] = {**current.get("presets", {}), **(presets or {})}
     block = _ea_config.routing_from_block(raw)
     try:
         ot.write_owner_file(ot.private_dir() / ot.ROUTING_FILE,
@@ -872,8 +966,11 @@ def save(tasks, *, hosted=None, hosted_default=None, cfg: dict | None = None, vi
                         if was.get(k, "") != block["hosted"].get(k, "")})
         if current.get("hosted_default", "") != block.get("hosted_default", ""):
             changed["hosted_default"] = [current.get("hosted_default", ""), block["hosted_default"]]
+        changed.update({f"presets.{k}": ["", "saved"] for k in (presets or {})})
         line = {"ts": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "via": via, "changed": changed}
+        if preset:
+            line["preset"] = preset
         for key in ("credential", "device"):
             if (who or {}).get(key):
                 line[key] = str(who[key])[:80]
@@ -883,14 +980,96 @@ def save(tasks, *, hosted=None, hosted_default=None, cfg: dict | None = None, vi
     return block
 
 
+# ── presets ───────────────────────────────────────────────────────────
+
+def presets(routing: dict | None = None) -> dict[str, dict]:
+    """Every preset by name: the built-ins, then the owner's saved ones."""
+    return {**BUILTIN_PRESETS, **_block(routing).get("presets", {})}
+
+
+def preset_list(routing: dict | None = None) -> list[dict]:
+    """[{"name", "label", "note", "builtin"}] for the screen and `preset
+    list`, in plain words."""
+    return [{"name": k, "label": p.get("label") or k, "note": str(p.get("note") or ""),
+             "builtin": k in BUILTIN_PRESETS} for k, p in presets(routing).items()]
+
+
+def _preset_effect(p: dict, block: dict) -> tuple:
+    """What applying `p` over `block` leaves: (tasks, switch, overrides)."""
+    tasks = {**block["tasks"], **p.get("tasks", {}), **FLOORS}
+    return tasks, p.get("hosted_default") or block.get("hosted_default", ""), dict(p.get("hosted") or {})
+
+
+def preset_now(routing: dict | None = None) -> str:
+    """The name of the preset the table in force matches, '' for none; a
+    saved preset before a built-in that makes the same table."""
+    block = _block(routing)
+    now = (block["tasks"], block.get("hosted_default", ""), block["hosted"])
+    ordered = {**block.get("presets", {}), **BUILTIN_PRESETS}
+    return next((k for k, p in ordered.items() if _preset_effect(p, block) == now), "")
+
+
+def apply_preset(name: str, *, cfg: dict | None = None, via: str = "cli",
+                 who: dict | None = None) -> dict:
+    """Write the preset's task values and switch, and make its overrides
+    the whole override map. Under the keep floor a `hosted` value on a
+    keep-floored task is written as `auto`, and `notes` says so; a value
+    a floor refuses (the chat floor, the stakes floor) refuses the whole
+    preset. Returns {"block", "notes"}."""
+    p = presets().get(str(name or ""))
+    if p is None:
+        raise RoutingRefused(f"Tacitus has no preset named {name!r}.", f"no preset {name!r}")
+    tasks = dict(p.get("tasks") or {})
+    notes = []
+    held = [t for t in KEEP_FLOORED if tasks.get(t) == "hosted"] if keep_listed(_remote_cfg(cfg)) else []
+    if held:
+        tasks.update({t: "auto" for t in held})
+        notes.append(f"{_and([TASKS[t][0] for t in held])} stay on Auto while you keep some mail "
+                     "away from hosted models.")
+    block = save(tasks, hosted=dict(p.get("hosted") or {}), hosted_default=p.get("hosted_default") or None,
+                 replace_hosted=True, cfg=cfg, via=via, who=who, preset=name)
+    return {"block": block, "notes": notes}
+
+
+def save_preset(name: str, note: str = "", *, via: str = "cli", who: dict | None = None) -> dict:
+    """Keep the table in force (task values, switch, overrides) under
+    `name` in routing.json's `presets`; a name a built-in has is refused."""
+    name = str(name or "").strip()
+    if name.lower() in BUILTIN_PRESETS:
+        raise RoutingRefused("That name belongs to a preset Tacitus has. Pick another name.",
+                             f"{name!r} is a built-in preset")
+    current, _source = _ea_config.get_routing_source()
+    snap = {"label": name, "tasks": dict(current["tasks"]), "hosted": dict(current["hosted"]),
+            "note": str(note or "")[:200],
+            "saved": datetime.now().astimezone().isoformat(timespec="seconds")}
+    if current.get("hosted_default"):
+        snap["hosted_default"] = current["hosted_default"]
+    why = _ea_config.preset_problems(name, snap)
+    if why:
+        raise RoutingRefused("A preset's name is up to 40 letters, digits, spaces, dashes or underscores.",
+                             why)
+    return save({}, presets={name: snap}, via=via, who=who)
+
+
 class WebSettings:
     """The web chat's Settings screen: botcore's WebFrontend serves it at
-    /api/settings/routing (ea-chat-bot.py registers it)."""
+    /api/settings/routing (ea-chat-bot.py registers it). A body with
+    `preset` applies one (a name) or keeps the table in force as one
+    ({"save": name, "note": text}); any other body saves the values."""
 
     def get(self) -> dict:
         return payload()
 
     def save(self, body: dict, who: dict | None = None) -> dict:
+        p = body.get("preset")
+        if isinstance(p, str):
+            out = apply_preset(p, via="web", who=who)
+            return {**payload(), "saved": True, "notes": out["notes"]}
+        if isinstance(p, dict):
+            save_preset(p.get("save"), p.get("note") or "", via="web", who=who)
+            return {**payload(), "saved": True, "notes": []}
+        if p is not None:
+            raise RoutingRefused("Pick a preset by its name.", "preset takes a name or {save, note}")
         save(body.get("tasks"), hosted=body.get("hosted"), hosted_default=body.get("hosted_default"),
              via="web", who=who)
         return {**payload(), "saved": True}
@@ -952,6 +1131,10 @@ def main(argv=None) -> int:
     sh.add_argument("--task", choices=list(TASKS), help="set an override for this task only")
     sh.add_argument("--clear-task", action="append", default=[], choices=list(TASKS),
                     help="drop this task's override, so it follows the hosted model again (repeatable)")
+    pr = sub.add_parser("preset", help="list, apply or save a preset")
+    pr.add_argument("action", choices=["list", "apply", "save"])
+    pr.add_argument("name", nargs="?")
+    pr.add_argument("--note", default="", help="save: one line on what the preset is for")
     h = sub.add_parser("harness", help="claude or codex: where run-agent.sh runs the agent's Claude lane")
     h.add_argument("--agent", required=True)
     a = ap.parse_args(argv)
@@ -961,6 +1144,27 @@ def main(argv=None) -> int:
         except Exception as e:
             print(f"harness: the routing table is unread ({e}); {REGISTRY[BASE]['harness']}", file=sys.stderr)
             print(REGISTRY[BASE]["harness"])
+        return 0
+    if a.cmd == "preset":
+        if a.action == "list":
+            now = preset_now()
+            for p in preset_list():
+                print(f"{p['name']}{' (now)' if p['name'] == now else ''}: {p['label']}. {p['note']}".rstrip())
+            return 0
+        if not a.name:
+            ap.error(f"preset {a.action} needs a name")
+        try:
+            if a.action == "apply":
+                out = apply_preset(a.name)
+                block, notes = out["block"], out["notes"]
+            else:
+                block, notes = save_preset(a.name, a.note), []
+        except RoutingRefused as e:
+            print(f"preset {a.action} refused: {e.tech}", file=sys.stderr)
+            return 2
+        print(json.dumps({"preset": a.name, "tasks": block["tasks"],
+                          "hosted_default": block.get("hosted_default", ""),
+                          "overrides": block["hosted"], "notes": notes}))
         return 0
     if a.cmd == "set-hosted":
         if not a.model and not a.clear_task:

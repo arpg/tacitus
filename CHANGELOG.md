@@ -59,6 +59,21 @@ repository that preceded it.
   the release log counts reads by level and by the turn's model. The
   engaged-person store remembers whom the user wrote to. A first-week
   question asks how much of an applicant's mail the EA may see.
+- **Presets, and a chat floor for now.** `model_routing.py preset list
+  | apply <name> | save <name> [--note]`: the built-ins `private`,
+  `claude` and `codex` (defined in code, never written) and the owner's
+  saved tables under `presets` in routing.json. `apply` writes a
+  preset's task values and switch and keeps only the overrides it names;
+  `save` keeps the table in force. The Models page has a Presets row
+  with a button each and "Save current as...". While `local_chat_ready`
+  in ea-config.json is false, the default, talking with you (`chat`) and
+  finding meeting times (`scheduling`) never run on your own model: `set
+  chat local` and a preset naming it are refused with one plain line, an
+  `@local` tag or a `use local` pin there answers with that line and runs
+  on Claude or Codex, an A/B draw and a lane default go hosted too, the
+  scheduling agent's `enforce` reads `shadow`, and `model_tiers.resolve`
+  carries `floor: "local_chat"`. Each task's choice on the Models page
+  reads Your own model, Claude or Codex by name, or Auto.
 - **One switch moves every task between Claude and Codex.** The routing
   table takes `hosted_default` (`claude` or `codex`): every task without
   an override runs hosted on it, the chat and scheduling lanes' default

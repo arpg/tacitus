@@ -10939,7 +10939,12 @@ def _handle_bot_command(channel: str, thread_ts: str, msg_ts: str,
             from preprocessor import model_arms as _arms
             from preprocessor import slack_sessions as _sess
             lane = _turn_lane(channel, "")
-            if _cmd["cmd"] == "use":
+            floor_note = _tiers.chat_floor_note(lane) if _cmd.get("tier") == "local" else ""
+            if floor_note:
+                # The chat floor: no pin to the owner's own model on a chat
+                # or scheduling lane; the topic stays where it was.
+                text = f":label: {floor_note}"
+            elif _cmd["cmd"] == "use":
                 tier = _cmd["tier"]
                 _arms.pin(channel, thread_ts, _tiers.arm_of(tier), lane=lane, reason="user")
                 sid, _resuming, _meta = _sess.lookup(thread_ts)
@@ -12114,7 +12119,13 @@ actually want.
                 run_effort = tier_effort or (run_effort if _routing.is_base(arm) else "")
             if tier_pick["explicit"]:
                 log.info(f"tier: {tier_pick['tier']} ({tier_pick['source']}"
-                         f"{', ' + tier_pick['note'] if tier_pick['note'] else ''}) -> {run_model}")
+                         f"{', ' + tier_pick['note'] if tier_pick['note'] else ''}"
+                         f"{', floor ' + tier_pick['floor'] if tier_pick.get('floor') else ''}) -> {run_model}")
+            if tier_pick.get("floor") and turn_tag == "local":
+                # An `@local` tag the chat floor refuses: the note, then the
+                # turn on the hosted model.
+                FRONTEND.post(channel=channel, thread_ts=thread_ts,
+                              text=":label: " + _tiers.chat_floor_note(_turn_lane(channel, user_id)))
         except Exception as e:
             log.warning(f"tier pick failed, the turn stays on {run_model}: {e}")
 

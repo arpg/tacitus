@@ -104,7 +104,7 @@ def test_a_local_tier_runs_on_claude_without_an_endpoint(off, request):
     """`@local` is the user's own request, not a switch: it uses an endpoint
     when one is set up, and runs on Claude when none is."""
     import model_tiers
-    pick = model_tiers.resolve(lane="dm", tag="local")
+    pick = model_tiers.resolve(lane="dm", tag="local", local_chat_ready=True)
     if request.node.callspec.params["off"] == "no-file":
         assert pick["tier"] == "opus" and pick["note"] == "no-local"
     else:
