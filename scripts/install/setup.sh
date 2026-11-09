@@ -457,16 +457,34 @@ STYLE_ENTRIES="# Weekly: refresh the per-contact writing-style profiles from sen
 fi
 
 # The web chat's nightly backup runs where the web chat is the chat or runs
-# beside it (chat.frontend or chat.shadow is web). Elsewhere there is no
-# store, and the script would exit with an error each night.
-HAS_WEBCHAT=$("$OWNER_IO" read "$EA_DIR/config/ea-config.json" 2>/dev/null | python3 -c '
-import json, sys
+# beside it (frontend or shadow is web). Elsewhere there is no store, and
+# the script would exit with an error each night.
+#
+# The chat block is read where the bot and the backup script read it: the
+# owner-private chat.json once the owner seed step has written it, and the
+# chat block of ea-config.json before that. After the seed the copy in
+# ea-config.json need not name the web chat at all, so reading only that
+# copy would strip the backup line on a re-run and write none.
+RESIDENT_CONFIG=$("$OWNER_IO" read "$EA_DIR/config/ea-config.json" 2>/dev/null || true)
+HAS_WEBCHAT=$(printf '%s' "$RESIDENT_CONFIG" | python3 -c '
+import json, os, stat, sys
+block = None
 try:
-    chat = (json.loads(sys.stdin.read() or "{}") or {}).get("chat") or {}
-except Exception:
-    chat = {}
-print(1 if isinstance(chat, dict) and "web" in (chat.get("frontend"), chat.get("shadow")) else 0)
-' 2>/dev/null || echo 0)
+    st = os.lstat(sys.argv[1])
+    if stat.S_ISREG(st.st_mode) and st.st_uid == os.geteuid() and not st.st_mode & 0o022:
+        with open(sys.argv[1]) as f:
+            own = json.load(f)
+        if isinstance(own, dict):
+            block = own
+except (OSError, ValueError):
+    pass
+if block is None:
+    try:
+        block = (json.loads(sys.stdin.read() or "{}") or {}).get("chat")
+    except Exception:
+        block = None
+print(1 if isinstance(block, dict) and "web" in (block.get("frontend"), block.get("shadow")) else 0)
+' "${EA_PRIVATE_DIR:-$OWNER_PRIVATE_DIR}/chat.json" 2>/dev/null || echo 0)
 WEBCHAT_ENTRIES=""
 if [[ "$HAS_WEBCHAT" == 1 ]]; then
 WEBCHAT_ENTRIES="# The web chat's own data (the store, its uploads, the relay key, the pairing
