@@ -148,6 +148,7 @@ class Report:
     owner_rooms_moved: list = field(default_factory=list)
     sessions: int = 0
     cards: int = 0
+    failed: list = field(default_factory=list)   # registries the move could not write
     notify: dict = field(default_factory=dict)
 
 
@@ -785,6 +786,7 @@ def apply(install: Install, primary: Any, *, log: Callable[[str], None] = print)
     failed = move_registries(install, moves, report)
     for line in failed:
         log(f"  not moved: {line}")
+    report.failed = failed
     return report
 
 
@@ -805,8 +807,15 @@ def summary(report: Report) -> str:
              f"  channels: {len(report.moves)} folded ({rooms} room(s) now r<n>)",
              f"  registries: {len(report.rooms_moved)} room(s), {len(report.owner_rooms_moved)} "
              f"in the room record, {report.sessions} session row(s), {report.cards} card(s)",
-             "  chat.json: frontend web, no shadow" + _notify_note(report.notify),
-             "",
+             "  chat.json: frontend web, no shadow" + _notify_note(report.notify)]
+    if report.failed:
+        # A registry the move could not write keeps its Zulip ids. The
+        # store, chat.json and the other registries are moved; these need
+        # the owner's hand (2026-11-09: a sessions registry the owner's own
+        # processes had written, which the resident could not open).
+        lines.append("  NOT moved (fix the file, then move it by hand or run apply again):")
+        lines.extend(f"    {line}" for line in report.failed)
+    lines += ["",
              "Start the bot: sudo systemctl start ea-chat-bot (macOS: sudo launchctl kickstart -k "
              "system/org.ea-system.ea-chat-bot), then open the web chat and run "
              "python3 /opt/ea-system/scripts/ea-doctor.py.",
@@ -919,7 +928,7 @@ def main(argv: list[str] | None = None, *, primary_factory: Callable[[Install], 
         if up:
             print("\nThe bot was up during the move: restart it now "
                   "(sudo systemctl restart ea-chat-bot).")
-        return 0
+        return 1 if report.failed else 0
     except CutoverError as e:
         print(f"webchat-cutover: {e}", file=sys.stderr)
         return 1
