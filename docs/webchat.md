@@ -767,7 +767,11 @@ place keeps what was typed and the files waiting there; coming back puts
 them back; a send takes out what it carried (the words, while they are
 still as sent, and its files), and what was typed meanwhile stays. A new
 conversation's draft moves with it to the conversation the send opens.
-The words of an edit are no draft: Edit puts the draft aside, and Cancel,
+The composer moves to the new place in the same step that changes the
+address (`goTo`: a link into the app, Back, New conversation, an
+example, a notification's tap), not in the route that runs a moment
+later, so words typed right after a tap belong to the place Send posts
+to. The words of an edit are no draft: Edit puts the draft aside, and Cancel,
 Escape or Send brings it back. A conversation with a draft has "Draft"
 on its card. The browser keeps each draft's words and its files' names in
 `localStorage` (`tacitus-draft:<channel>\n<thread key or +>`, the newest
@@ -890,7 +894,12 @@ you, Waiting, Done) filter it; the choice is kept per browser. In the
 thread header "Mark done" (or "Needs me" on a done thread) posts the
 owner's state to `/api/threads/{ch}/{thread_key}/state`, as does a long
 press (600 ms, held still) on a card on a touch screen; the sticker
-changes at once and follows the bot's answer and its event.
+changes at once and follows the bot's answer and its event. A list read
+(the thread rows, `/api/needs`) sets a thread's state unless the page
+learned a state for that thread after the read was asked (an event, the
+owner's change, the bot's answer to it). The order the page learned
+them decides, not `state_at`: shelving a state keeps its `state_at`, so
+a read from before the shelving event would otherwise undo it.
 
 The app teaches itself, for a first-day owner on a phone who reads no
 docs. Its words (the welcome, New room, the empty lists and a new
