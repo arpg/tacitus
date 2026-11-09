@@ -894,7 +894,12 @@ you, Waiting, Done) filter it; the choice is kept per browser. In the
 thread header "Mark done" (or "Needs me" on a done thread) posts the
 owner's state to `/api/threads/{ch}/{thread_key}/state`, as does a long
 press (600 ms, held still) on a card on a touch screen; the sticker
-changes at once and follows the bot's answer and its event.
+changes at once and follows the bot's answer and its event. A list read
+(the thread rows, `/api/needs`) sets a thread's state unless the page
+learned a state for that thread after the read was asked (an event, the
+owner's change, the bot's answer to it). The order the page learned
+them decides, not `state_at`: shelving a state keeps its `state_at`, so
+a read from before the shelving event would otherwise undo it.
 
 The app teaches itself, for a first-day owner on a phone who reads no
 docs. Its words (the welcome, New room, the empty lists and a new

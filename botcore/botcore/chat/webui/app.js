@@ -749,14 +749,18 @@ const stateOf = (ch, tk) => (S.states.get(tkey(ch, tk)) || {}).state || 'none';
 const staleOf = (r) => Boolean((S.states.get(tkey(r.channel, threadOf(r))) || {}).stale);
 const ageDays = (at) => { const d = Math.max(1, Math.floor((Date.now() / 1000 - (at || 0)) / 86400)); return `${d} ${d === 1 ? 'day' : 'days'}`; };
 
-// A row read from the bot keeps its state unless the one held is newer
-// (an event the read did not see yet).
-function noteState(ch, r) {
+// A state the page learned on its own (an event, the owner's change, the
+// bot's answer to it) is stamped in the order it came. `at` cannot order
+// them: it is when the state was set, and shelving a state keeps it.
+Object.assign(S, { stateSeq: 0, stateMark: new Map() });
+function putState(key, s) { S.states.set(key, s); S.stateMark.set(key, ++S.stateSeq); }
+
+// A row read from the bot sets its thread's state unless the page learned
+// one after the read was asked (`asked`, S.stateSeq then): one the read did not see.
+function noteState(ch, r, asked) {
   if (!r || !r.state) return;
   const key = tkey(ch, threadOf(r));
-  const s = rowState(r);
-  const old = S.states.get(key);
-  if (!old || (s.at || 0) >= (old.at || 0)) S.states.set(key, s);
+  if ((S.stateMark.get(key) || 0) <= asked) S.states.set(key, rowState(r));
 }
 
 // The Needs you list as the bot gave it, less the threads whose state has
@@ -770,10 +774,11 @@ function needsRows() {
 // The list from the bot: on connect, on opening it, and after a state changes.
 async function loadNeeds() {
   clearTimeout(S.needsTimer);
+  const asked = S.stateSeq;
   try {
     const out = await call('GET', '/needs');
     S.needs = (out && out.threads) || [];
-    S.needs.forEach((r) => noteState(r.channel, r));
+    S.needs.forEach((r) => noteState(r.channel, r, asked));
   } catch { return; } // the entry keeps what it had
   if (S.ready) { renderChannels(); renderThreads(); }
 }
@@ -796,7 +801,7 @@ function stateShown() {
 // A `thread_state` event: the sticker, the filter and Needs you follow, and
 // the list is read again, since a thread may have joined it.
 function onState(d) {
-  S.states.set(tkey(d.channel, d.thread_key), rowState(d));
+  putState(tkey(d.channel, d.thread_key), rowState(d));
   const p = (S.threads.get(d.channel) || { list: [] }).list.find((x) => threadOf(x) === d.thread_key);
   if (p && !S.needs.some((r) => r.channel === d.channel && threadOf(r) === d.thread_key)) S.needs.push({ ...p, channel: d.channel });
   clearTimeout(S.needsTimer);
@@ -821,14 +826,14 @@ async function markAllDone(rows) {
   if (!n || !confirm(`Mark all ${n} older ${n === 1 ? 'item' : 'items'} done? They leave Needs you. Nothing is sent or deleted.`)) return;
   const before = rows.map((r) => [r, S.states.get(tkey(r.channel, threadOf(r)))]);
   // Stamped now, so a list read before the bot answers each one keeps them done.
-  for (const [r] of before) S.states.set(tkey(r.channel, threadOf(r)), { state: 'done', by: 'owner', at: Date.now() / 1000, reason: 'You marked it done.' });
+  for (const [r] of before) putState(tkey(r.channel, threadOf(r)), { state: 'done', by: 'owner', at: Date.now() / 1000, reason: 'You marked it done.' });
   stateShown();
   let failed = 0, why = '';
   for (const [r, old] of before) { // one at a time: the bot answers each in turn
     const key = tkey(r.channel, threadOf(r));
     try {
       const row = await call('POST', `/threads/${enc(r.channel)}/${enc(threadOf(r))}/state`, { state: 'done' });
-      if (row && row.state) S.states.set(key, rowState(row));
+      if (row && row.state) putState(key, rowState(row));
     } catch (e) {
       failed += 1; why = e.message;
       if (old) S.states.set(key, old); else S.states.delete(key);
@@ -844,12 +849,12 @@ async function setState(ch, tk) {
   const key = tkey(ch, tk);
   const old = S.states.get(key);
   const state = old && old.state === 'done' ? 'needs_you' : 'done';
-  S.states.set(key, { state, by: 'owner', at: old ? old.at : 0,
+  putState(key, { state, by: 'owner', at: old ? old.at : 0,
     reason: state === 'done' ? 'You marked it done.' : 'You marked it as needing you.' });
   stateShown();
   try {
     const row = await call('POST', `/threads/${enc(ch)}/${enc(tk)}/state`, { state });
-    if (row && row.state) S.states.set(key, rowState(row));
+    if (row && row.state) putState(key, rowState(row));
   } catch (e) {
     if (old) S.states.set(key, old); else S.states.delete(key);
     toast(`Not changed: ${e.message}`);
@@ -886,12 +891,13 @@ async function loadThreads(ch, older) {
   const oldest = older ? Math.min(...th.list.map((p) => p.seq || Infinity)) : 0;
   let q = `?limit=${PAGE}`;
   if (older && Number.isFinite(oldest)) q += `&before=${oldest}`;
+  const asked = S.stateSeq;
   try {
     const rows = await call('GET', `/channels/${enc(ch)}/threads${q}`);
     const list = older ? th.list : th.list.filter((p) => !rows.some((r) => threadOf(r) === threadOf(p)));
     for (const r of rows) {
       remember(r);
-      noteState(ch, r);
+      noteState(ch, r, asked);
       const i = list.findIndex((p) => threadOf(p) === threadOf(r));
       if (i >= 0) list[i] = r; else list.push(r);
     }

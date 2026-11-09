@@ -110,6 +110,14 @@ repository that preceded it.
   and the composer then emptied, so Send sent nothing. A link into the
   app, Back, New conversation and the other moves now change the address
   and the composer in one step (`goTo` in `app.js`).
+- **A list read from before a state change no longer undoes it.** The
+  web chat took a thread's state from a list read unless the state held
+  had a later `at`, but shelving a state keeps its `at`. A Needs you read
+  asked before a `thread_state` event and answered after it put the old
+  state back: a shelved thread showed as fresh and counted in Needs you.
+  The page now stamps each state it learns on its own (an event, the
+  owner's change, the bot's answer) in the order it came, and a read
+  sets a thread's state only when it was asked after that stamp.
 - **A tier promotion is a verb.** `autonomy_tiers.py promote --task
   <task> --tier <tier> [--contact <addr>] --quote "<words>"` replaces the
   edit of `autonomy-tiers.json` that CLAUDE.md rule 12 asked for, refuses

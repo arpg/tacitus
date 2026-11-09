@@ -464,7 +464,8 @@ def test_the_app_stays_small():
     # 5,350: 5,320 plus the presets on the Models page (a button each, sent alone on Save, and Save
     #     current as... with the browser's own name box) and each choice named by its model.
     # 5,360: 5,350 plus the hash and the composer moved in one step (goTo, and a link into the app through it).
-    assert lines <= 5360, f"{lines} lines: the contract keeps the app near 5,360 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place and a calm connection line"
+    # 5,370: 5,360 plus a thread's state kept by the order the page learned it, not by its `at`.
+    assert lines <= 5370, f"{lines} lines: the contract keeps the app near 5,370 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place and a calm connection line"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -1784,6 +1785,39 @@ def test_a_state_the_bot_shelves_leaves_the_count_and_shows_its_age(app):
     stub.set_state(W.DM, tk, "needs_you", "owner", "You set this.")
     expect(sticker).to_have_text("Needs you")
     expect(count).to_have_text("2")
+    assert not errors, errors
+
+
+def test_a_list_read_before_a_state_event_does_not_undo_it(app):
+    """A Needs you read the bot answered before a thread's state changed,
+    and that reaches the page after the change's event, leaves the event's
+    state. The read after the event brings the bot's state, though a shelved
+    state's time is in the past."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app()
+    count = page.locator("#needs-count")
+    expect(count).to_have_text("2")
+    expect(page.locator("#live.on")).to_be_attached()  # the stream is open: the event below reaches the page
+    page.evaluate("window.__reads = 0; const read = loadNeeds; loadNeeds = async () => { await read(); window.__reads++; }")
+    held = []
+
+    def hold(route):  # the first read: answered by the bot now, given to the page later
+        if held:
+            return route.continue_()
+        held.append((route, route.fetch()))
+    page.route(re.compile(r".*/api/needs$"), hold)
+    page.click("#needs-link")
+    wait_for(lambda: page.wait_for_timeout(20) or held)  # a Playwright call, so the handler runs
+    tk = stub.messages[0]["thread_key"]
+    stub.set_state(W.DM, tk, "needs_you", reason="The card still has its Send button.",
+                   at=time.time() - 8 * 86400 - 60, stale=True)
+    expect(count).to_have_text("1")
+    route, answer = held[0]
+    route.fulfill(response=answer)
+    wait_for(lambda: page.evaluate("window.__reads") >= 2)  # the held read, and the one the event asked for
+    expect(count).to_have_text("1")
+    expect(page.locator("#older-toggle")).to_have_text("Older (1)")
     assert not errors, errors
 
 
