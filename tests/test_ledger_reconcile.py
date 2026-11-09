@@ -346,6 +346,25 @@ def test_the_night_is_skipped_when_the_remote_model_is_down(priv, db):
     assert lr.summary_line(rec).startswith(":broom: Reconcile skipped")
 
 
+def test_the_ping_tries_again_before_the_night_is_skipped():
+    """The model server answers 503 for a moment now and then; one such
+    answer does not cost the pass. Three refusals in a row do."""
+    import remote_llm
+    answers = ["down", "down", "ok"]
+    waits = []
+
+    def chat(messages, **kw):
+        if answers.pop(0) == "down":
+            raise remote_llm.RemoteLLMError("HTTP 503")
+        return {"content": "ok"}
+    assert lr.reader_up(chat=chat, sleep=waits.append) is True
+    assert waits == [lr.PING_WAIT_S] * 2 and answers == []
+    answers[:] = ["down"] * lr.PING_TRIES
+    waits.clear()
+    assert lr.reader_up(chat=chat, sleep=waits.append) is False
+    assert len(waits) == lr.PING_TRIES - 1, "no wait after the last try"
+
+
 def test_the_lane_is_off_without_its_switch_or_without_the_gate(priv):
     assert lr.active()
     assert lr.active({"reconcile": "nightly", "mail": "off"}) is False
