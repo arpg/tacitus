@@ -397,6 +397,24 @@ def test_apply_moves_the_history_the_channels_and_the_registries(install, capsys
     assert "already runs the web chat alone" in capsys.readouterr().err
 
 
+def test_a_registry_the_move_cannot_write_is_reported_and_fails_the_run(install, monkeypatch, capsys):
+    """A sessions registry the move could not rewrite (the owner's own
+    processes had written it, so the resident could not open it,
+    2026-11-09) left its rows under the Zulip ids, and the run said
+    "0 session row(s)" and exited 0. The mover raises now; apply lists the
+    registry under what was not moved and exits 1, with the store,
+    chat.json and the other registries moved as before."""
+    def refuse(moves):
+        raise OSError("slack-sessions.json: 2 row(s) name a moved channel and the "
+                      "registry could not be rewritten")
+    monkeypatch.setattr(slack_sessions, "move_channels", refuse)
+    assert _main(install, "apply") == 1
+    out = capsys.readouterr().out
+    assert "not moved: " in out and "slack-sessions.json: 2 row(s)" in out
+    assert "NOT moved" in out and "run apply again" in out
+    assert "chat.json: frontend web, no shadow" in out
+
+
 def test_the_web_front_end_honours_the_redirect_map(install):
     assert _main(install, "apply") == 0
     fe = wf.WebFrontend({"public_url": PUBLIC, "port": 0},

@@ -267,6 +267,23 @@ def test_the_template_carries_the_web_chat_backup_and_the_monthly_style_run(tmp_
     assert sum("style_analysis.py run --dispatch" in j for j in jobs) == 1
 
 
+def test_a_rerun_keeps_the_seen_sets(tmp_path):
+    """Step 6 wrote `{}` over state/seen-messages.json and
+    seen-conversations.json on every run, so the re-run an upgrade asks
+    for made the next intake read every recent message as new
+    (2026-11-09). The files start empty once; a re-run keeps them."""
+    live = _live_tree(tmp_path)
+    _, home, _ = _run_setup(tmp_path, live)
+    state = home / ".ea" / "state"
+    assert json.loads((state / "seen-messages.json").read_text()) == {}
+    assert json.loads((state / "seen-conversations.json").read_text()) == {}
+    (state / "seen-messages.json").write_text('{"m1": 1}')
+    (state / "seen-conversations.json").write_text('{"c1": 1}')
+    _run_setup(tmp_path, live)
+    assert json.loads((state / "seen-messages.json").read_text()) == {"m1": 1}
+    assert json.loads((state / "seen-conversations.json").read_text()) == {"c1": 1}
+
+
 def test_a_rerun_replaces_the_maintenance_lines_instead_of_doubling_them(tmp_path):
     """The kept-entries filter strips every line scripts/install/setup.sh emits, the
     python3 maintenance lines included, so a second run (a profile change,

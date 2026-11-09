@@ -178,7 +178,12 @@ def fetch(ctx: Context, url: str, ref: str) -> tuple[Path, Path, str]:
     src = stage / "src"
     _git(["clone", "--quiet", "--no-tags", "--", url, str(src)])
     if ref:
-        _git(["checkout", "--quiet", "--detach", ref], cwd=src)
+        # The clone carries no tags, so the ref is fetched from the source by
+        # name, which resolves a tag, a branch or a commit alike, and the
+        # commit it names is checked out. A checkout of the bare name found
+        # no such tag in the clone and read it as a path (2026-11-09).
+        _git(["fetch", "--quiet", "--no-tags", "origin", "--", ref], cwd=src)
+        _git(["checkout", "--quiet", "--detach", "FETCH_HEAD"], cwd=src)
     commit = _git(["rev-parse", "HEAD"], cwd=src)
     return stage, src, commit
 

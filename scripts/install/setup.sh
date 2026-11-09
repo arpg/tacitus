@@ -353,8 +353,14 @@ fi
 if [[ ! -f "$EA_DIR/state/obligations-ledger.json" ]]; then
     echo "[]" > "$EA_DIR/state/obligations-ledger.json"
 fi
-echo '{}' > "$EA_DIR/state/seen-messages.json" 2>/dev/null || true
-echo '{}' > "$EA_DIR/state/seen-conversations.json" 2>/dev/null || true
+# The seen sets start empty once. A re-run (an upgrade, a profile change)
+# keeps them: emptied, the next intake read every recent message as new
+# (2026-11-09).
+for seen in seen-messages.json seen-conversations.json; do
+    if [[ ! -f "$EA_DIR/state/$seen" ]]; then
+        echo '{}' > "$EA_DIR/state/$seen" 2>/dev/null || true
+    fi
+done
 
 # 7. Install crontab
 echo ""

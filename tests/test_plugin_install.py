@@ -73,6 +73,33 @@ def test_parse_source():
         I.parse_source("npm:x")
 
 
+def _rev(repo, ref) -> str:
+    return subprocess.run(["git", "rev-parse", ref], cwd=repo, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def test_install_checks_out_the_ref_a_tag_a_branch_or_a_commit(tmp_path, ctx):
+    """`git:<url>@<ref>` installs that ref. The clone carries no tags, so
+    the ref is fetched from the source by name, a tag, a branch or a commit
+    alike; a checkout of the bare tag name found nothing in the clone and
+    read it as a path (2026-11-09)."""
+    repo = _repo(tmp_path, "example-notes")
+    _git(repo, "tag", "-a", "v1", "-m", "v1")
+    tagged = _rev(repo, "v1^{commit}")
+    with (repo / "skill.md").open("a") as f:
+        f.write("\nA later line, on main only.\n")
+    _commit(repo)
+    head = _rev(repo, "HEAD")
+    assert tagged != head
+
+    entry = I.install(ctx, f"git:{repo}@v1", accept=True, policy=NO_POLICY)
+    assert entry["source"] == {"url": str(repo), "ref": "v1", "commit": tagged}
+    entry = I.update(ctx, "example-notes", ref="main", accept=True, policy=NO_POLICY)
+    assert entry["source"]["commit"] == head
+    entry = I.update(ctx, "example-notes", ref=tagged, accept=True, policy=NO_POLICY)
+    assert entry["source"]["commit"] == tagged
+
+
 def test_install_asks_for_consent_then_records_everything(tmp_path, ctx):
     repo = _repo(tmp_path, "example-notes")
     with pytest.raises(I.PluginError) as e:
