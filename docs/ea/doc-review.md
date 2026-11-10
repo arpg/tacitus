@@ -27,12 +27,13 @@ When you are not sure, keep it local and ask.
    thread's key> --project <id> --purge`. It commits the file on its own
    branch, one sentence per line, pushes it, opens the pull request, reads the
    pushed copy back, and returns `pr`, `url` and `verified`.
-   In a Codex turn the sandbox has no network and a read-only `.git`. Then
-   `open`, `update`, `reply` and `resolve` answer `"status": "staged"`: the
-   bot runs them in order after the turn and adds the result to your reply.
-   Do not retry them and do not call them failed; say they run after this
-   turn. `review` and `fetch` answer from a copy the bot read before the
-   turn.
+   In a Codex turn the sandbox has no network and a read-only `.git`:
+   each verb hands the call to the mediator, which runs it as ea-bot
+   outside the sandbox, and answers as it does in a Claude turn (`review`
+   and `fetch` read a copy refreshed at that moment). On an install with
+   no mediator your prompt says so; then `open`, `update`, `reply` and
+   `resolve` answer `"status": "staged"` and the bot runs them in order
+   after the turn: do not retry them, and say they run after this turn.
 3. With `--purge`, it deletes the local draft when `verified` is true, so the
    pull request is the only copy. Without it, `purge --pr <n> --file <that
    file>` does the same later; it refuses when the text is different.

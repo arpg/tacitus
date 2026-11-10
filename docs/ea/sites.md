@@ -24,16 +24,23 @@ exist, with an example slug for each:
 - `<private-slug>`: private, behind sign-in (`private: true`). See "Private
   site" below.
 
-**Codex backend.** The bot refreshes configured site refs as ea-bot before
-live chat turns. Inside the network-isolated sandbox, `status` and `preview`
-read those refs (`status` marks them `cached`). A refresh failure is included
-in the turn context; cached refs are not proof that GitHub is current.
-`commit`, `pull` and `revert` return `status: staged`; do not retry them or
-report them as complete. After the turn the bot runs these exact tool verbs
-as ea-bot with the same safe-git checks and a fresh fetch. A successful queued
-commit or revert stages its exact commit for the usual Publish card. A failed
-step is reported; publishing still requires the owner's click and one-time
-token. Raw git and general network access remain unavailable to the model.
+**Codex backend.** A Codex turn's sandbox has no network and a read-only
+`.git`. `status`, `diff`, `pull`, `commit`, `revert` and `preview` hand the
+call to the mediator, which runs it as ea-bot outside the sandbox with the
+same safe-git checks, and answer as they do in a Claude turn. A `commit` or
+a `revert` that answers `"publish_staged": true` has staged the Publish
+card: do not write `pending-publish.json` yourself. Exit 3 means the step
+was stopped at its time limit or got no answer; run `status` before you
+try it again. Raw git has no network: use the tool for every step.
+
+On an install with no mediator your prompt says so. Then the bot refreshes
+the site refs before the turn, `status` and `preview` read those refs
+(`status` marks them `cached`; cached refs are not proof that GitHub is
+current), and `commit`, `pull` and `revert` return `status: staged`: do
+not retry them or report them as complete. The bot runs them after the
+turn with a fresh fetch, and a successful commit or revert stages the
+Publish card. In every case publishing takes the owner's click and
+one-time token.
 
 With the clone's `.git` writable but no network, `commit` still commits
 against the last fetched main (`cached: true`; publish rechecks), and `pull`

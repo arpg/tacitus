@@ -929,7 +929,9 @@ def test_cron_lane_read_of_a_kept_thread_never_runs():
 
 # --- option spellings: abbreviations, unknown options, real parsers ---------
 
-MEDIATED_TOOLS = sorted(set(M.SAFE) | set(M.GATED))
+# The resident-net tools too: the mediator reads their options the same way
+# before it runs one as the resident.
+MEDIATED_TOOLS = sorted(set(M.SAFE) | set(M.GATED) | set(M.RESIDENT_NET))
 
 # Abbreviated spellings of file flags, both argv forms. argparse with
 # allow_abbrev=True reads each one as the full file option, and FILE_FLAGS
@@ -1169,7 +1171,7 @@ def test_mediated_parsers_reject_abbreviations_and_match_the_scan():
     for tool in MEDIATED_TOOLS:
         r = real[tool]
         assert r["allow_abbrev"] is False, tool
-        verbs = M.SAFE.get(tool, set()) | M.GATED.get(tool, set())
+        verbs = M.SAFE.get(tool, set()) | M.GATED.get(tool, set()) | M.RESIDENT_NET.get(tool, set())
         assert verbs <= set(r["verbs"]), (tool, verbs - set(r["verbs"]))
         for verb, info in r["verbs"].items():
             assert info["allow_abbrev"] is False, (tool, verb)

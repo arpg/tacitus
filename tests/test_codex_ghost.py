@@ -20,6 +20,7 @@ import remote_llm  # noqa: E402
 
 # Taken before conftest's stand-in replaces it for every test.
 _REAL_ENSURE_LANE_CWD = cg.ensure_lane_cwd
+_REAL_MEDIATED = cg._mediated
 
 
 @pytest.fixture
@@ -561,6 +562,39 @@ def test_a_reply_that_claims_a_draft_without_a_write_is_a_mismatch_the_judge_see
     assert "only as rule 8 above allows" in brief and "never as a side effect of a reply" not in brief
     live = cg.codex_suffix(Path("/x"), "briefing", live=True)
     assert "recorded by the mediator" not in live and "waits for the user's button" in live
+
+
+def test_a_live_run_on_a_mediated_host_is_told_its_network_tools_work():
+    for kind in ("chat", "briefing"):
+        text = cg.codex_suffix(Path("/x"), kind, live=True, mediated=True)
+        for tool in ("fetch_url.py --url", "web_browser.py read --url", "drive_client.py", "booking_link.py",
+                     "site_tools.py", "overleaf_tools.py", "doc_review.py"):
+            assert tool in text, (kind, tool)
+        assert f"python3 {cg.BOT_TREE}/preprocessor/plugin_run.py <the script's full path>" in text
+        assert "exits 3" in text and "check its state before you run it again" in text
+        assert "curl, git, pip" in text and "says nothing about the site" in text
+        assert "no MCP connector" in text and "only after its script exited 0 in this run" in text
+        assert "no Google Drive" not in text and "refreshed before this turn" not in text
+        assert "{tree}" not in text
+    # A host with no mediator keeps the prefetch text, and a ghost replay
+    # never gets the mediated text: its writes are recorded, not run.
+    plain = cg.codex_suffix(Path("/x"), "chat", live=True)
+    assert "refreshed before this turn" in plain and "no Google Drive and no connector" in plain
+    assert "plugin_run.py" not in plain
+    ghost = cg.codex_suffix(Path("/x"), "chat", mediated=True)
+    assert "plugin_run.py" not in ghost and "no Google Drive and no connector" in ghost
+
+
+def test_the_live_lanes_ask_the_host_whether_it_runs_the_mediator(monkeypatch):
+    import mail_mediation
+    for state in (True, False):
+        monkeypatch.setattr(mail_mediation, "mediation_active_for_resident", lambda state=state: state)
+        assert _REAL_MEDIATED() is state
+    src = (REPO / "preprocessor" / "codex_ghost.py").read_text()
+    assert 'codex_suffix(real, "briefing", live=True, mediated=_mediated())' in src
+    turn = (REPO / "preprocessor" / "codex_turn.py").read_text()
+    assert 'codex_suffix(REAL_EA_DIR, "chat", live=True, mediated=codex_ghost._mediated())' in turn
+    assert "pages_note(pages, codex_ghost._mediated())" in turn
 
 
 # ── the wiring ───────────────────────────────────────────────────────

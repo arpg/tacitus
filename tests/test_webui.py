@@ -3796,7 +3796,7 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     expect(chat.locator("input[name=hosted-chat][value=codex]")).to_be_checked()
     expect(chat.locator(".s-hosted label")).to_have_text(["Claude", "Codex"])
     expect(chat.locator(".s-now")).to_have_text("Now on Codex. Auto picked Codex.")
-    expect(chat.locator(".s-note")).to_contain_text("@claude")
+    expect(chat.locator(".s-note")).to_contain_text("mail mediation is off")
     # the chat floor: your own model is not offered for talking with you yet, and the row says why
     expect(chat.locator(".seg").first.locator("label")).to_have_text(["Your own model", "Codex", "Auto"])
     expect(chat.locator("input[name=route-chat][value=local]")).to_be_disabled()

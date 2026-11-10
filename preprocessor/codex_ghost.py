@@ -769,7 +769,35 @@ LIVE_WRITES = ("Mail and calendar reads and writes go through the mediator as th
                "calendar change waits for the user's button as the rules above say.")
 
 
-def codex_suffix(scratch: Path, kind: str, *, live: bool = False) -> str:
+# What a live run is told about the network. The sandbox has none; on a
+# mediated host the tools below hand their call to the mediator, which runs
+# it as the resident outside the sandbox (mail_mediation's resident-net).
+NET_MEDIATED = (
+    " Your shell has no network, and these scripts need none of their own: each hands its call to the mediator, "
+    "which runs it outside the sandbox and answers as it does for Claude. A web page: `fetch_url.py --url <url>`, "
+    "or `web_browser.py read --url <url>` when the page needs a browser. A Google Doc, Sheet, Slides or Drive file: "
+    "`drive_client.py read`, `search` or `download`. A cal.com or Calendly link: `booking_link.py`. A site repository: `site_tools.py` for every step, never raw "
+    "git; a commit or a revert that answers `publish_staged` has staged the Publish card. An Overleaf project: "
+    "`overleaf_tools.py`. A document under review: `doc_review.py`. A plugin's own script runs as "
+    "`python3 {tree}/preprocessor/plugin_run.py <the script's full path> <its arguments>`, never by its own name. "
+    "Such a call can take minutes: wait for it. One that exits 3 was stopped at its time limit or got no answer; "
+    "check its state before you run it again. Every other command (curl, git, pip, a script of your own) has no "
+    "network: a DNS error from one says nothing about the site.")
+NET_SANDBOXED = (
+    " Site repositories are refreshed before this turn. Use site_tools.py for every repository step, never raw git. "
+    "Its status and preview use cached refs here; commit, pull and revert answer staged and run after this turn. "
+    "Do not retry a staged step or call it a DNS failure. The bot reports the result and stages successful commits "
+    "for the existing Publish button. Never claim a queued commit or card already exists.")
+CLAIM_NET_MEDIATED = (
+    "You have no MCP connector of any kind: never say you opened, connected or asked to connect one. Say a page, a "
+    "Drive file or a repository was read or changed only after its script exited 0 in this run.")
+CLAIM_NET_SANDBOXED = ("You have no browser, no Google Drive and no connector of any kind: never say you opened, "
+                       "connected or asked to connect one.")
+
+
+def codex_suffix(scratch: Path, kind: str, *, live: bool = False, mediated: bool = False) -> str:
+    """`mediated`: this host runs the mediator, so a live run's network
+    tools work (the caller asks mail_mediation); a ghost never gets it."""
     final = "the briefing, as you would post it" if kind == "briefing" else "the reply you would post"
     writes = LIVE_WRITES if live else GHOST_WRITES
     archive = ("You archive, snooze or close mail only when the user's message in this thread says to, never as a "
@@ -786,11 +814,12 @@ def codex_suffix(scratch: Path, kind: str, *, live: bool = False) -> str:
              "the user's words in this message, so quote the user exactly; `autonomy_tiers.py promote` "
              "(a tier promotion) is staged the same way."
              if live_chat else "Never write a file outside EA_DIR.")
-    if live_chat:
-        files += (" Site repositories are refreshed before this turn. Use site_tools.py for every repository step, never raw git. "
-                  "Its status and preview use cached refs here; commit, pull and revert answer staged and run after this turn. "
-                  "Do not retry a staged step or call it a DNS failure. The bot reports the result and stages successful commits "
-                  "for the existing Publish button. Never claim a queued commit or card already exists.")
+    net = live and mediated
+    if net:
+        files += NET_MEDIATED.format(tree=BOT_TREE)
+    elif live_chat:
+        files += NET_SANDBOXED
+    claim_net = CLAIM_NET_MEDIATED if net else CLAIM_NET_SANDBOXED
     asking = ("You cannot ask the user anything while you work: a question for the user goes in your final message."
               if live_chat else "Do not ask the user anything; this run is unattended.")
     return f"""
@@ -799,7 +828,7 @@ def codex_suffix(scratch: Path, kind: str, *, live: bool = False) -> str:
 
 The rules above about Claude Code tools (Read, Bash allow lists, MCP, subagents) mean the same for your shell. The code is at {BOT_TREE} (read-only): run its scripts as `python3 {BOT_TREE}/preprocessor/<script>.py ...`, never a `~` path. EA_DIR is {scratch}: the ledger and the briefing there are yours to read and update. {writes} There is no Agent tool and no email-author subagent here: an email body comes from `email_writer.py write` first, and when it exits 3 or 4 you write the body yourself by the guide at {BOT_TREE}/.claude/agents/email-author.md and docs/ea/drafting-voice.md, after `style_profiles.py get --contact <addr>`. {files} {asking} Your final message is {final}.
 
-Claims in your final message must match your command log. Every "done" names the command in this run that did it. Say a draft, a reply or a Send card exists only after a `create-reply`, `create-draft` or `update-draft` call in this run returned an id, and name that id. Say a document, a slide, a file or a ledger change is done only after the command that wrote it exited 0 in this run. Anything else is not done: say so, and say what blocked it. You have no browser, no Google Drive and no connector of any kind: never say you opened, connected or asked to connect one. You never send mail: a send waits for the user's button, so never report one as done. {archive} Times for a meeting come from `scheduling_engine.py propose-meeting` run on the real request (`--help` is not a run); print every time in the user's time zone. A blocked turn ends with the exact items you need from the user. An image in a mail, a picture shown in the body (inline) included, is readable: `mail_actions.py describe-attachment --provider <p> --message-id <id> --all-images` returns its text; when it answers `need`, run it again with `--attachment-id <id> --output {scratch}/state/<name>` and open that file with your view_image tool. When a real photo or file cannot be fetched, say so and stop; never put a generated image or an invented fact in its place. A mail verb's own exit status and JSON are the only signal of its outcome: never list or read `state/mail-queue`, and never infer an outage from a file there; call the verb. Never write an em-dash, in a title or header line too: write a colon or a comma. A briefing names every open ledger row that is due, overdue or waiting on the user, and prints every time as the user's local clock with am or pm, never UTC."""
+Claims in your final message must match your command log. Every "done" names the command in this run that did it. Say a draft, a reply or a Send card exists only after a `create-reply`, `create-draft` or `update-draft` call in this run returned an id, and name that id. Say a document, a slide, a file or a ledger change is done only after the command that wrote it exited 0 in this run. Anything else is not done: say so, and say what blocked it. {claim_net} You never send mail: a send waits for the user's button, so never report one as done. {archive} Times for a meeting come from `scheduling_engine.py propose-meeting` run on the real request (`--help` is not a run); print every time in the user's time zone. A blocked turn ends with the exact items you need from the user. An image in a mail, a picture shown in the body (inline) included, is readable: `mail_actions.py describe-attachment --provider <p> --message-id <id> --all-images` returns its text; when it answers `need`, run it again with `--attachment-id <id> --output {scratch}/state/<name>` and open that file with your view_image tool. When a real photo or file cannot be fetched, say so and stop; never put a generated image or an invented fact in its place. A mail verb's own exit status and JSON are the only signal of its outcome: never list or read `state/mail-queue`, and never infer an outage from a file there; call the verb. Never write an em-dash, in a title or header line too: write a colon or a comma. A briefing names every open ledger row that is due, overdue or waiting on the user, and prints every time as the user's local clock with am or pm, never UTC."""
 
 
 # Patterns in a Codex reply that claim a draft or a send, and the write
@@ -1034,6 +1063,13 @@ def network_blocked(calls: list[dict]) -> str:
     return ""
 
 
+def _mediated() -> bool:
+    """Does this host run the mediator? A live run's network tools go
+    through it."""
+    import mail_mediation
+    return mail_mediation.mediation_active_for_resident()
+
+
 def _staged_in(root: Path) -> dict:
     """The staged files a briefing ghost left in its scratch state."""
     out = {}
@@ -1061,7 +1097,7 @@ def run_lane_live(prompt: str, *, agent: str, run_id: str, codex_run=None) -> di
     cwd = ensure_lane_cwd()
     full = "# Operating instructions (CLAUDE.md)\n\n" + _core() + "\n\n# This run\n\n" + prompt.strip() \
         + f"\n\nThis Codex run starts in {cwd}, not in {BOT_HOME}: name every path in full." \
-        + codex_suffix(real, "briefing", live=True)
+        + codex_suffix(real, "briefing", live=True, mediated=_mediated())
     prefix = _bot_env({"EA_DIR": str(real), "EA_RUN_ID": run_id, "EA_BOT_HOME": str(BOT_HOME),
                        "EA_TURN_MODEL": "codex",
                        "EA_GRAPH_LANE": "background"})

@@ -127,7 +127,8 @@ def test_flipping_the_switch_moves_every_unpinned_task_and_the_chat_default(monk
                                remote_cfg=remote(), routing=claude)["tier"] == "codex"
 
 
-def test_the_switch_reaches_the_screen_the_chat_lines_and_the_doctor(owner):
+def test_the_switch_reaches_the_screen_the_chat_lines_and_the_doctor(owner, monkeypatch):
+    monkeypatch.setattr(mr, "_mediated", lambda: False)
     data = mr.payload(cfg=remote(), routing={"tasks": {}, "hosted_default": "codex"}, tiers={"lanes": {}})
     assert data["hosted_default"] == "codex" and data["hosted_default_set"] is True
     rows = {r["task"]: r for r in data["rows"]}

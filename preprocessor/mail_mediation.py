@@ -10,6 +10,12 @@ docs/mail-mediation-spec.md):
   * GATED verbs (send / calendar mutate) are refused for ea-bot outright; they
     run only owner-side after a Slack button.
 
+  * resident-net verbs (RESIDENT_NET: a page fetch, the site, Overleaf and
+    doc-review git steps, a plugin's own script) hold no owner credential.
+    The mediator runs one as the resident again, outside the sandbox of a
+    Codex turn, which has no network. Only such a turn forwards them
+    (``sandbox_forward``); everywhere else they run in place.
+
 Each client (graph_actions.py, gmail_client.py, google_calendar_client.py,
 drive_client.py) calls
 ``forward_or_none(...)`` as the first line of ``main()``. When mediation applies
@@ -221,6 +227,53 @@ GATED = {
     # EA-Managed carve-out below.
     "google_calendar_client": {"create-event", "update-event", "delete-event"},
 }
+
+# ---- resident-net: the network a Codex turn's sandbox cuts off --------------
+# A Codex turn runs its commands with the network off: the harness has no
+# command allow list, so the closed network is what keeps a turn from
+# sending data anywhere. The tools below need the network and hold no owner
+# credential: a page read, a booking link read, and the git steps of the
+# review, site and Overleaf clones, which use the resident's own keys. Inside that sandbox each one
+# forwards its call (sandbox_forward), and the mediator starts the same tool
+# again as the RESIDENT outside the sandbox: never as the owner, with no
+# owner environment, token or file access. The call then has what a Claude
+# turn's call of the same tool has, and nothing more.
+#
+# Kept apart from SAFE, whose verbs the mediator executes as the owner. A
+# verb is listed only when its tool confines every path it writes; no path
+# check runs here, since the sandbox's write roots are not the child's.
+# tests/test_resident_net.py names the confinement of each path option.
+# publish and push stay behind their button tokens. doc_review's `review`
+# and `fetch` are not listed: in the sandbox they forward `prefetch` and
+# then answer from the cache, so `fetch --out` is written by the sandboxed
+# process.
+RESIDENT_NET = {
+    "fetch_url": {"fetch"},
+    "booking_link": {"read", "propose"},
+    "site_tools": {"status", "diff", "pull", "commit", "revert", "preview"},
+    "overleaf_tools": {"clone", "status", "diff", "commit", "pull", "preview"},
+    "doc_review": {"open", "update", "reply", "resolve", "status", "purge", "prefetch"},
+}
+# A plugin's own script (plugin_run.py): the mediator runs it as the
+# resident when the script is one a Claude turn may run (the plugin tool
+# grants) and the call matches no denial.
+PLUGIN_RUN_TOOL = "plugin_run"
+PLUGIN_RUN_VERB = "run"
+# Set by Codex in every command of a turn whose sandbox has no network.
+SANDBOX_ENV = "CODEX_SANDBOX_NETWORK_DISABLED"
+# Set by the mediator in the resident child it starts, so the child runs
+# the verb and never forwards again.
+RESIDENT_DIRECT_ENV = "EA_RESIDENT_DIRECT"
+# What the mediator allows a resident child, and what the caller adds while
+# it waits for the answer.
+RESIDENT_NET_TIMEOUT_S = 300
+PLUGIN_RUN_TIMEOUT_S = 600
+RESIDENT_WAIT_MARGIN_S = 45
+# The run id prefix of a Codex ghost (codex_ghost.RUN_PREFIX), and the only
+# resident-net verbs a ghost forwards: a ghost reads, and its git steps
+# stay in its sandbox, where they stage or answer from the cache.
+GHOST_RUN_PREFIX = "cron-ghost-codex-"
+GHOST_RESIDENT_NET = {("fetch_url", "fetch")}
 
 # The SAFE verbs that change an existing draft, and the option that names
 # the draft. The mediator holds that draft's lock (draft_lock.py) while the
@@ -452,7 +505,7 @@ def _scan_parsers(source: str) -> dict:
 
 def _tool_scan(tool: str) -> tuple[dict, dict] | None:
     """The parser scan of a core tool's source, cached by file identity."""
-    if tool not in SAFE and tool not in GATED:
+    if tool not in SAFE and tool not in GATED and tool not in RESIDENT_NET:
         return None
     path = _TOOL_DIR / f"{tool}.py"
     try:
@@ -832,10 +885,20 @@ def is_ea_managed_autohold(tool: str, verb: str, argv: list[str], *,
     return True
 
 
+def is_resident_net(tool: str, verb: str) -> bool:
+    """True for a call the mediator runs as the resident outside a Codex
+    turn's sandbox: a RESIDENT_NET verb, or a plugin script run."""
+    if tool == PLUGIN_RUN_TOOL:
+        return verb == PLUGIN_RUN_VERB
+    return verb in RESIDENT_NET.get(tool, set())
+
+
 def is_allowed(tool: str, verb: str, argv: list[str], *, owner: bool = False) -> bool:
-    """The full un-gated allowlist: SAFE verbs plus the EA-Managed auto-hold.
+    """The full un-gated allowlist: SAFE verbs, the EA-Managed auto-hold and
+    the calls that run as the resident (RESIDENT_NET, a plugin script).
     The mediator passes `owner` (is_ea_managed_autohold)."""
-    return is_safe(tool, verb) or is_ea_managed_autohold(tool, verb, argv, owner=owner)
+    return (is_safe(tool, verb) or is_resident_net(tool, verb)
+            or is_ea_managed_autohold(tool, verb, argv, owner=owner))
 
 
 def _config_state() -> bool | None:
@@ -1068,13 +1131,46 @@ def sanitize(tool: str, verb: str, argv: list[str]) -> str | None:
     (the real boundary, which never trusts the client). Option spellings are
     checked first, since path confinement matches file flags by exact
     spelling."""
+    if tool == PLUGIN_RUN_TOOL:
+        return plugin_run_error(verb, argv)
     err = option_error(tool, verb, argv)
     if err:
         return err
+    if is_resident_net(tool, verb):
+        # The child is the resident: it opens only what the resident may,
+        # and each listed verb confines its own writes (RESIDENT_NET).
+        return None
     for flag, value in _file_args(argv):
         if not _within_allowed(value):
             return f"file path for {flag} ({value!r}) is outside ea-bot dirs"
     return id_error(argv)
+
+
+def plugin_run_error(verb: str, argv: list[str]) -> str | None:
+    """The shape of a plugin script run: `run <absolute script.py> [args]`.
+    Whether the script may run is the mediator's decision, from the plugin
+    tool grants and the deny list an owner process reads
+    (plugin_registry.script_call_error)."""
+    if verb != PLUGIN_RUN_VERB or not argv or argv[0] != PLUGIN_RUN_VERB:
+        return f"a plugin script run is the verb {PLUGIN_RUN_VERB!r}"
+    if len(argv) < 2 or not all(isinstance(a, str) for a in argv):
+        return "name the plugin script to run"
+    script = argv[1]
+    if (not script.startswith("/") or not script.endswith(".py")
+            or ".." in script.split("/") or "\x00" in "".join(argv)):
+        return f"{script!r} is not an absolute path of a .py script"
+    return None
+
+
+def cwd_error(cwd) -> str | None:
+    """The refusal for the working directory a resident-net request names,
+    else None. The mediator's child changes to it as the resident."""
+    if cwd in (None, ""):
+        return None
+    if (not isinstance(cwd, str) or not cwd.startswith("/") or len(cwd) > 1024
+            or ".." in cwd.split("/") or "\x00" in cwd or "\n" in cwd):
+        return "the working directory is not a plain absolute path"
+    return None
 
 
 def _refuse(msg: str, code: int = 2):
@@ -1100,7 +1196,16 @@ def forward_or_none(tool: str, argv: list[str], transform=None):
     err = sanitize(tool, verb, argv)
     if err:
         _refuse(f"BLOCKED: {err}")
+    _answer(_request(tool, verb, argv), transform)
 
+
+def _request(tool: str, verb: str, argv: list[str], *, wait_s: float = TIMEOUT_S,
+             extra: dict | None = None) -> dict | None:
+    """Queue one checked request and wait for the mediator's answer:
+    {"stdout", "stderr", "rc"}, or None when none came in `wait_s`. Only
+    the resident queues one; its callers have asked should_mediate."""
+    if not should_mediate():
+        return None
     QUEUE.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(QUEUE, 0o2770)  # group-writable so the owner-side mediator can reply
@@ -1110,27 +1215,29 @@ def forward_or_none(tool: str, argv: list[str], transform=None):
     req = QUEUE / f"req-{rid}.json"
     resp = QUEUE / f"resp-{rid}.json"
     tmp = QUEUE / f".req-{rid}.tmp"
-    tmp.write_text(json.dumps({"tool": tool, "verb": verb, "argv": list(argv),
-                               "ts": time.time(),
-                               # Dispatch identity for the draft-events journal.
-                               # The mediator's child runs as the owner with a fresh
-                               # env, so the run id must ride in the request or
-                               # every mediated record is unlabelled.
-                               "run_id": os.environ.get("EA_RUN_ID", ""),
-                               # The model of the turn (EA_TURN_MODEL), for the
-                               # release log's counts by model. Data only: the
-                               # resident writes it, so nothing gates on it.
-                               "model": os.environ.get("EA_TURN_MODEL", "")[:40],
-                               # The Graph breaker lane of the caller (a cron
-                               # lane sets background); none is the owner's own.
-                               "lane": os.environ.get(GRAPH_LANE_ENV, "")}))
+    body = {"tool": tool, "verb": verb, "argv": list(argv),
+            "ts": time.time(),
+            # Dispatch identity for the draft-events journal.
+            # The mediator's child runs as the owner with a fresh
+            # env, so the run id must ride in the request or
+            # every mediated record is unlabelled.
+            "run_id": os.environ.get("EA_RUN_ID", ""),
+            # The model of the turn (EA_TURN_MODEL), for the
+            # release log's counts by model. Data only: the
+            # resident writes it, so nothing gates on it.
+            "model": os.environ.get("EA_TURN_MODEL", "")[:40],
+            # The Graph breaker lane of the caller (a cron
+            # lane sets background); none is the owner's own.
+            "lane": os.environ.get(GRAPH_LANE_ENV, "")}
+    body.update(extra or {})
+    tmp.write_text(json.dumps(body))
     try:
         os.chmod(tmp, 0o640)
     except OSError:
         pass
     os.replace(tmp, req)
 
-    deadline = time.time() + TIMEOUT_S
+    deadline = time.time() + wait_s
     while time.time() < deadline:
         if resp.exists():
             try:
@@ -1142,15 +1249,79 @@ def forward_or_none(tool: str, argv: list[str], transform=None):
                 resp.unlink()
             except OSError:
                 pass
-            out = r.get("stdout", "")
-            if transform is not None and int(r.get("rc", 0)) == 0:
-                try:
-                    out = transform(out)
-                except Exception:
-                    pass
-            sys.stdout.write(out)
-            sys.stderr.write(r.get("stderr", ""))
-            sys.exit(int(r.get("rc", 0)))
+            return r if isinstance(r, dict) else {}
         time.sleep(POLL_S)
-    _refuse("mail mediator did not respond in time "
-            "(is ea-mail-mediator.service running?)", code=3)
+    return None
+
+
+def _answer(r: dict | None, transform=None):
+    """Print the mediator's answer as the tool's own and exit with its code."""
+    if r is None:
+        _refuse("mail mediator did not respond in time "
+                "(is ea-mail-mediator.service running?)", code=3)
+    out = r.get("stdout", "")
+    if transform is not None and int(r.get("rc", 0)) == 0:
+        try:
+            out = transform(out)
+        except Exception:
+            pass
+    sys.stdout.write(out)
+    sys.stderr.write(r.get("stderr", ""))
+    sys.exit(int(r.get("rc", 0)))
+
+
+def in_net_sandbox() -> bool:
+    """True in a command of a Codex turn whose sandbox has no network, and
+    never in the resident child the mediator starts for such a turn."""
+    return (os.environ.get(SANDBOX_ENV) == "1"
+            and os.environ.get(RESIDENT_DIRECT_ENV) != "1")
+
+
+def _is_ghost_run() -> bool:
+    return os.environ.get("EA_RUN_ID", "").startswith(GHOST_RUN_PREFIX)
+
+
+def resident_net_applies(tool: str, verb: str) -> bool:
+    """True when this process should hand `tool verb` to the mediator to run
+    as the resident with the network: a Codex turn's sandbox, a mediated
+    host, a RESIDENT_NET verb, and for a ghost run a read only."""
+    if not in_net_sandbox() or not is_resident_net(tool, verb):
+        return False
+    if _is_ghost_run() and (tool, verb) not in GHOST_RESIDENT_NET:
+        return False
+    return should_mediate()
+
+
+def sandbox_request(tool: str, argv: list[str]) -> dict | None:
+    """Run one resident-net call through the mediator and return its answer
+    ({"stdout", "stderr", "rc"}) to the caller. None when the call does not
+    forward (resident_net_applies); a refusal or a silent mediator comes
+    back as an answer with a nonzero rc."""
+    verb = argv[0] if argv else ""
+    if not resident_net_applies(tool, verb):
+        return None
+    err = sanitize(tool, verb, argv)
+    if err:
+        return {"stdout": "", "rc": 2,
+                "stderr": json.dumps({"status": "error", "message": f"BLOCKED: {err}"})}
+    limit = PLUGIN_RUN_TIMEOUT_S if tool == PLUGIN_RUN_TOOL else RESIDENT_NET_TIMEOUT_S
+    r = _request(tool, verb, argv, wait_s=limit + RESIDENT_WAIT_MARGIN_S,
+                 extra={"cwd": os.getcwd()})
+    if r is None:
+        return {"stdout": "", "rc": 3, "stderr": json.dumps({"status": "error", "message": (
+            "mail mediator did not respond in time "
+            "(is ea-mail-mediator.service running?)")})}
+    return r
+
+
+def sandbox_forward(tool: str, argv: list[str]):
+    """Call first in the main() of a RESIDENT_NET tool, before any import
+    the sandbox may lack. In a Codex turn's sandbox on a mediated host it
+    runs the call through the mediator (as the resident, outside the
+    sandbox), prints the answer and exits. Everywhere else it returns None
+    and the tool runs here: a Claude turn, the owner, the mediator's own
+    child, a host with no mediator."""
+    r = sandbox_request(tool, argv)
+    if r is not None:
+        _answer(r)
+    return None

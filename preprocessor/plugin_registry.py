@@ -936,6 +936,55 @@ def denied_tools(lock=None) -> list[str]:
     return out
 
 
+_BASH_RULE_RE = re.compile(r"Bash\((.*)\)", re.S)
+
+
+def bash_rule_matches(rule: str, command: str) -> bool:
+    """Whether one `Bash(<pattern>)` permission rule names `command`, as
+    the Claude lane reads the rule: `*` stands for any text, and a rule
+    that ends in ` *` takes the bare command too. A rule for another tool
+    names no command."""
+    m = _BASH_RULE_RE.fullmatch(str(rule).strip())
+    if not m:
+        return False
+    pattern = m.group(1)
+    forms = [pattern]
+    if pattern.endswith(" *"):
+        forms.append(pattern[:-2])
+    return any(re.fullmatch(".*".join(re.escape(part) for part in form.split("*")),
+                            command, re.S) for form in forms)
+
+
+def core_denied_tools() -> list[str]:
+    """The rules of the core deny lists (scripts/disallowed-tools*.txt),
+    with and without the drafting verbs: one rule per line, `#` comments."""
+    out = []
+    for path in sorted((CORE_DIR / "scripts").glob("disallowed-tools*.txt")):
+        try:
+            lines = path.read_text().splitlines()
+        except OSError:
+            continue
+        out += [ln.strip() for ln in lines if ln.strip() and not ln.lstrip().startswith("#")]
+    return out
+
+
+def script_call_error(script: str, args, lock=None) -> str | None:
+    """Why the resident may not run `python3 <script> <args>` outside a
+    Codex turn's sandbox (plugin_run.py), else None. The call is held to
+    what the permission rules give the same command line in a Claude turn:
+    it must match a plugin tool grant (plugin_tool_grants: a script of an
+    enabled plugin whose files match the lock) and no denial (the enabled
+    plugins' denied_tools and the core deny lists). Arguments are joined
+    with spaces, as the rules read a command line."""
+    command = " ".join(["python3", str(script), *[str(a) for a in args]])
+    if not any(bash_rule_matches(g, command) for g in plugin_tool_grants(lock=lock)):
+        return f"{str(script)[:200]!r} with these arguments is not a granted plugin script call"
+    for rule in list(denied_tools(lock=lock)) + core_denied_tools():
+        if bash_rule_matches(rule, command) or bash_rule_matches(rule, command + " "):
+            return f"the deny list forbids this call ({rule})"
+    return None
+
+
 def claude_plugin_dirs(lock=None) -> list[Path]:
     """The Claude Code plugin roots (each holds .claude-plugin/plugin.json)
     of enabled agent plugins, for `claude --plugin-dir` in agent sessions."""

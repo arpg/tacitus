@@ -47,9 +47,16 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 from zoneinfo import ZoneInfo
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+if __name__ == "__main__":
+    # Before requests, which a bare interpreter lacks: in a Codex turn's
+    # sandbox the mediator runs the read, and this process exits.
+    import mail_mediation
+    mail_mediation.sandbox_forward("booking_link", sys.argv[1:])
+
 import requests
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 import outbound_log  # noqa: E402
 
 EA_DIR = Path(os.environ.get("EA_DIR", Path.home() / ".ea"))
@@ -538,6 +545,11 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_propose)
 
     args = parser.parse_args(argv)
+    try:
+        import mail_mediation
+    except ModuleNotFoundError:  # imported as preprocessor.booking_link
+        from preprocessor import mail_mediation
+    mail_mediation.check_child_parse(parser, args)
     return args.func(args)
 
 

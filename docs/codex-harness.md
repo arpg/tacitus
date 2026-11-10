@@ -19,7 +19,8 @@ a production lane.
   `--add-dir` directories and the temp dir (see "Temp files" below). The
   eval sets the root to the run's throwaway EA_DIR, so the test ledger and
   a staged event land there and the code tree stays read-only. Network is
-  off inside the sandbox.
+  off inside the sandbox; a live turn's tools reach it through the
+  mediator (see "The network" below).
 - **Output.** The final agent message (`-o`) is the result; the JSONL
   event stream gives the commands it ran (`command_execution` items,
   reported as Bash tool calls), the files it changed, and the token usage.
@@ -72,9 +73,10 @@ grades it against Claude. Claude stays the workhorse throughout.
   turns, `--share`). Each job runs detached; the production turn never
   waits for it. A chat turn whose message names a deck, a link, a Google
   document, GitHub, Overleaf or a logo is not replayed (`DEFAULT_SKIP`,
-  read against the user's words, not a room's preamble): the sandbox has
-  no network. A replay whose commands still hit the missing network is
-  recorded as skipped.
+  read against the user's words, not a room's preamble): a ghost's
+  sandbox has no network and only its page reads go through the mediator
+  (see "The network" below). A replay whose commands still hit the
+  missing network is recorded as skipped.
 - **How a replay runs.** As the resident, never as the owner: Codex's
   sandbox confines writes, not reads, and a model shell started as the
   owner could read the owner's secrets. The working root is a scratch
@@ -240,16 +242,60 @@ carries the outcome (`preferences`). A tier promotion is a verb too,
 `autonomy_tiers.py promote --task <task> --tier <tier> [--contact <addr>]
 --quote "<words>"` (CLAUDE.md rule 12), staged and applied the same way.
 
-**Site repositories.** Live chat turns refresh the configured site clones
-through `site_tools.py prefetch` as the resident before entering the sandbox.
-This updates refs only, preserving local edits. The refresh results accompany
-the prompt, including errors. Sandboxed status and preview use those cached
-refs. Commit, pull and revert are the only site verbs accepted by the staged
-write replay. They run after the turn as the resident, fetch again and retain
-the normal conflict, content and safe-git checks. Successful commits stage
-`pending-publish.json`; the existing card preview, scan, approval and exact
-commit token checks remain in force. Neither the network policy nor the
-writable roots change, and ghost turns never prefetch or replay these writes.
+**The network.** The sandbox has none, and a live turn needs none of its
+own. Each tool that reaches the web hands its call to the mediator
+(`ea-mail-mediator.service`, step 7 of setup), which runs it outside the
+sandbox and answers with the tool's own output and exit status:
+
+| The turn runs | Where it runs | As |
+|---|---|---|
+| mail, calendar, `drive_client.py`, `scheduling_engine.py`, `email_writer.py` | the mediator | the owner, who holds the tokens |
+| `web_browser.py`, `poll_filler.py` | the mediator's browser worker | the resident |
+| `fetch_url.py`, `booking_link.py`, the `site_tools.py`, `overleaf_tools.py` and `doc_review.py` git steps | the mediator's resident worker | the resident |
+| a plugin's own script, through `plugin_run.py <script> <args>` | the mediator's resident worker | the resident |
+
+The last two rows are `mail_mediation.RESIDENT_NET` and `plugin_run.py`.
+They hold no owner credential, so the mediator starts them as the
+resident (`sudo -n -u ea-bot env -i ...`) with an environment it builds
+itself, in the turn's working directory: the child has the access a
+Claude turn's command has and the same egress policy
+(`resident_netpolicy.py` matches the user, not the process). Only a
+command inside the sandbox forwards (Codex sets
+`CODEX_SANDBOX_NETWORK_DISABLED=1` there); a Claude turn, the owner's
+shell and the mediator's own child run the tool in place. What holds:
+
+- The gated verbs stay gated. `site_tools.py publish` and
+  `overleaf_tools.py push` are not in the table and take the owner's
+  one-time token as before. A forwarded `site_tools.py commit` or `revert`
+  stages `pending-publish.json` itself and answers `publish_staged`, since
+  the turn cannot stage a card for a commit made outside it.
+- A plugin script runs only when a Claude turn may run the same command
+  line: it matches a plugin tool grant (an enabled plugin whose files
+  match the lock) and no denial of the plugins or the core deny lists
+  (`plugin_registry.script_call_error`). The sandbox cannot change a
+  plugin's code: of a plugin's folder only `state/` is a write root, and
+  no grant names a file there.
+- Four resident calls run at once; a fifth answers 3 with "busy; no action
+  started". A core call is stopped after 300 s and a plugin script after
+  600 s, with exit 3 and "its state is unknown", so the turn checks before
+  it tries again. The audit log has one line per call.
+- A ghost replay forwards a page read only. Every other resident call is
+  recorded for the judge and not run.
+
+A turn's own commands (`curl`, `git`, `pip`, a script it wrote) still
+have no network, and the Codex suffix says so. Codex's own `web_search`
+tool is on in a live turn.
+
+**With no mediator** (an install that skipped mail mediation) nothing
+forwards, and the earlier arrangement stands: the bot fetches the links
+of the message before the turn (`pages_note`), refreshes the site clones
+(`site_tools.py prefetch`) and the doc-review copy, the sandboxed status
+and preview read those cached refs, and `commit`, `pull` and `revert`
+stage for a replay after the turn, as the resident, with the normal
+conflict, content and safe-git checks; a successful commit stages
+`pending-publish.json`. Settings then shows the limit under the chat
+task (`model_routing.harness_limit`). On a mediated host the refresh
+before the turn still runs, and the note is absent.
 
 **No resume.** `codex exec resume` drops the writable roots: the resumed
 turn's sandbox policy has none, `-c sandbox_workspace_write.writable_roots`
@@ -286,7 +332,13 @@ call.
 
 ## Not covered
 
-The chat lanes in production (the ghost replays them), the scheduling and reply lanes, sessions (`--resume`),
-subagents, MCP tools and the plugin tool denials are Claude Code
-mechanisms with no Codex twin here. A Codex production lane would need
-the tools behind one MCP server first.
+Sessions (`--resume`), subagents and MCP connectors are Claude Code
+mechanisms with no Codex twin here: every Codex turn is a new thread, an
+email body comes from `email_writer.py` or the turn itself, and a
+connector's work goes through the script that does the same job
+(`drive_client.py` for Drive, `mail_actions.py` for mail). The plugin
+tool grants and denials hold for a script run through `plugin_run.py`;
+a script a turn runs by its own name stays inside the sandbox, with no
+network. The `mail` and `drafting` tasks have no hosted choice of
+their own: hosted there means the turn's own model
+(`model_routing.allowed`).

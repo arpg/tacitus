@@ -446,13 +446,20 @@ def test_the_hosted_model_is_claude_or_codex_and_codex_only_where_it_has_a_route
     assert mr.harness("list-digest", {"hosted": {"digests": "codex"}}) == "codex"
 
 
-def test_the_screen_rows_name_the_hosted_model_and_what_it_cannot_do(table):
+def test_the_screen_rows_name_the_hosted_model_and_what_it_cannot_do(table, monkeypatch):
     table(chat="hosted", review="hosted")
     lanes = ea_config.tiers_from_block({"lanes": {k: "codex" for k in ("main", "dm", "room")}})
+    # With the mediator, Codex's network tools run outside its sandbox: the row names no limit.
+    monkeypatch.setattr(mr, "_mediated", lambda: True)
+    assert mr.harness_limit("codex") == "" and mr.harness_limit("codex", 1) == ""
+    assert {r["task"]: r for r in mr.rows(cfg=remote(), tiers=lanes)}["chat"]["hosted_note"] == ""
+    monkeypatch.setattr(mr, "_mediated", lambda: False)
+    assert mr.harness_limit("codex", 1) == mr.CODEX_NOTE[1] and mr.harness_limit("claude") == ""
     rows = {r["task"]: r for r in mr.rows(cfg=remote(), tiers=lanes)}
     assert rows["chat"]["hosted"] == "codex" and rows["chat"]["hosted_allowed"] == ["claude", "codex"]
     assert rows["chat"]["why"] == "set to Codex" and rows["chat"]["runs_on"] == "Codex"
-    assert rows["chat"]["hosted_note"] == mr.CODEX_NOTE[0] and "@claude" in mr.CODEX_NOTE[0]
+    assert rows["chat"]["hosted_note"] == mr.CODEX_NOTE[0] and "mail mediation is off" in mr.CODEX_NOTE[0]
+    assert "@claude" not in " ".join(mr.CODEX_NOTE), "no row sends the owner to a second subscription"
     assert rows["briefing"]["why"] == "Auto picked Claude" and rows["briefing"]["runs_on"] == "Claude"
     for task in ("mail", "drafting"):
         assert rows[task]["hosted_allowed"] == ["claude"] and rows[task]["hosted"] == "claude", task

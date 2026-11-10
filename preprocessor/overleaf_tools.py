@@ -406,7 +406,9 @@ def cmd_list() -> dict:
             continue
         for dirpath, dirnames, _ in os.walk(root):
             here = Path(dirpath)
-            if ".git" in dirnames:
+            # A .git with no config is no clone: a Codex turn's sandbox
+            # keeps an empty folder of that name in each of its write roots.
+            if ".git" in dirnames and (here / ".git" / "config").exists():
                 dirnames[:] = []
                 try:
                     origin = dict(_config_entries(here)).get("remote.origin.url", "")
@@ -575,39 +577,56 @@ def cmd_push(d: str, commit: str, base: str, token: str | None = None,
 
 
 def _parser() -> argparse.ArgumentParser:
+    # One literal block per verb: the mediator reads a verb's options from
+    # these calls (mail_mediation's parser scan) before it runs one.
     ap = argparse.ArgumentParser(description="The EA's git work on Overleaf projects.", allow_abbrev=False)
     sub = ap.add_subparsers(dest="verb", required=True)
     sub.add_parser("list", allow_abbrev=False)
-    c = sub.add_parser("clone", allow_abbrev=False)
-    c.add_argument("--project", required=True)
-    c.add_argument("--dir", required=True)
-    for verb in ("status", "diff", "commit", "pull", "preview", "push"):
-        s = sub.add_parser(verb, allow_abbrev=False)
-        s.add_argument("--dir", required=True)
-        if verb == "diff":
-            s.add_argument("--overleaf", action="store_true",
-                           help="show what Overleaf has that the clone lacks")
-        if verb in ("diff", "preview"):
-            s.add_argument("--max-chars", type=int, default=20000)
-        if verb == "commit":
-            s.add_argument("--message", required=True)
-        if verb == "pull":
-            s.add_argument("--prefer", choices=("local", "overleaf"),
-                           help="which side keeps lines both sides changed")
-        if verb in ("preview", "push"):
-            s.add_argument("--commit", required=True)
-        if verb == "push":
-            s.add_argument("--base", required=True,
-                           help="Overleaf's branch head as the owner's card showed it")
-            s.add_argument("--project", required=True,
-                           help="the project id the owner's card showed")
-            s.add_argument("--confirm-token", default=None,
-                           help=f"the one-time token (default: ${_gate.TOKEN_ENV})")
+    s = sub.add_parser("clone", allow_abbrev=False)
+    s.add_argument("--project", required=True)
+    s.add_argument("--dir", required=True)
+    s = sub.add_parser("status", allow_abbrev=False)
+    s.add_argument("--dir", required=True)
+    s = sub.add_parser("diff", allow_abbrev=False)
+    s.add_argument("--dir", required=True)
+    s.add_argument("--overleaf", action="store_true",
+                   help="show what Overleaf has that the clone lacks")
+    s.add_argument("--max-chars", type=int, default=20000)
+    s = sub.add_parser("commit", allow_abbrev=False)
+    s.add_argument("--dir", required=True)
+    s.add_argument("--message", required=True)
+    s = sub.add_parser("pull", allow_abbrev=False)
+    s.add_argument("--dir", required=True)
+    s.add_argument("--prefer", choices=("local", "overleaf"),
+                   help="which side keeps lines both sides changed")
+    s = sub.add_parser("preview", allow_abbrev=False)
+    s.add_argument("--dir", required=True)
+    s.add_argument("--max-chars", type=int, default=20000)
+    s.add_argument("--commit", required=True)
+    s = sub.add_parser("push", allow_abbrev=False)
+    s.add_argument("--dir", required=True)
+    s.add_argument("--commit", required=True)
+    s.add_argument("--base", required=True,
+                   help="Overleaf's branch head as the owner's card showed it")
+    s.add_argument("--project", required=True,
+                   help="the project id the owner's card showed")
+    s.add_argument("--confirm-token", default=None,
+                   help=f"the one-time token (default: ${_gate.TOKEN_ENV})")
     return ap
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        import mail_mediation
+    except ModuleNotFoundError:  # imported as preprocessor.overleaf_tools
+        from preprocessor import mail_mediation
+    # A Codex turn's sandbox has no network and a read-only .git: on a
+    # mediated host the git verbs run as the resident outside it.
+    mail_mediation.sandbox_forward("overleaf_tools", argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    mail_mediation.check_child_parse(parser, args)
     try:
         if args.verb == "list":
             res = cmd_list()

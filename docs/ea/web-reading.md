@@ -25,13 +25,17 @@ saved. A photo page is not the image: read the page first and take the
 URL from its `images`. Note the source and its license or credit line as
 you save it; a deck slide carries the credit.
 
-A Codex turn's sandbox has no network, so `fetch_url.py` fails inside it
-(DNS error). The bot reads the links in the user's message before the turn
-(`codex_turn._prefetch_pages`, up to three, outside the sandbox, same address
-policy and log) and puts the pages in the prompt as data. For a link found
-in email, thread history, or later in a turn, use the on-demand browser
-below. Do not retry `fetch_url.py` inside the Codex sandbox or interpret its
-DNS error as a site outage. Hosted `web_search` is also available for search.
+A Codex turn's sandbox has no network, and `fetch_url.py` needs none
+there: it hands the call to the mediator, which runs it outside the
+sandbox with the same address policy and log, and prints the same JSON.
+The bot also reads the links in the user's message before the turn (up
+to three) and puts the pages in the prompt as data. Exit 3 means the
+mediator gave no answer or stopped the read at its time limit. Hosted
+`web_search` is also available for search.
+
+On an install with no mediator your prompt says so: `fetch_url.py` then
+fails in a Codex turn (a DNS error, which says nothing about the site),
+and a link not in the prompt is read with the on-demand browser below.
 
 ## On-demand browser and web forms (Claude and Codex)
 

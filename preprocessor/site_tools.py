@@ -781,36 +781,61 @@ def cmd_revert(slug: str, commit: str) -> dict:
 
 
 def _parser() -> argparse.ArgumentParser:
+    # One literal block per verb: the mediator reads a verb's options from
+    # these calls (mail_mediation's parser scan) before it runs one.
     ap = argparse.ArgumentParser(description="Edit and publish the EA's GitHub Pages sites.", allow_abbrev=False)
     sub = ap.add_subparsers(dest="verb", required=True)
     sub.add_parser("list", allow_abbrev=False)
     sub.add_parser("prefetch", allow_abbrev=False)
-    for verb in ("status", "diff", "pull", "add-file", "commit", "revert", "preview", "publish"):
-        s = sub.add_parser(verb, allow_abbrev=False)
-        s.add_argument("--site", required=True)
-        if verb in ("diff", "preview"):
-            s.add_argument("--max-chars", type=int, default=20000)
-        if verb == "add-file":
-            s.add_argument("--from", dest="src", required=True,
-                           help="a PDF or an image in a deck folder")
-            s.add_argument("--to", dest="dest", required=True,
-                           help="the path in the site, such as slides/L14-quantization.pdf")
-        if verb == "commit":
-            s.add_argument("--message", required=True)
-        if verb in ("revert", "preview", "publish"):
-            s.add_argument("--commit", required=True)
-        if verb == "publish":
-            s.add_argument("--base", required=True,
-                           help="GitHub's main as the owner's card showed it")
-            s.add_argument("--confirm-token", default=None,
-                           help=f"the one-time token (default: ${_gate.TOKEN_ENV})")
-            s.add_argument("--no-wait", action="store_true",
-                           help="return after the push, without waiting for the live site")
+    s = sub.add_parser("status", allow_abbrev=False)
+    s.add_argument("--site", required=True)
+    s = sub.add_parser("diff", allow_abbrev=False)
+    s.add_argument("--site", required=True)
+    s.add_argument("--max-chars", type=int, default=20000)
+    s = sub.add_parser("pull", allow_abbrev=False)
+    s.add_argument("--site", required=True)
+    s = sub.add_parser("add-file", allow_abbrev=False)
+    s.add_argument("--site", required=True)
+    s.add_argument("--from", dest="src", required=True,
+                   help="a PDF or an image in a deck folder")
+    s.add_argument("--to", dest="dest", required=True,
+                   help="the path in the site, such as slides/L14-quantization.pdf")
+    s = sub.add_parser("commit", allow_abbrev=False)
+    s.add_argument("--site", required=True)
+    s.add_argument("--message", required=True)
+    s = sub.add_parser("revert", allow_abbrev=False)
+    s.add_argument("--site", required=True)
+    s.add_argument("--commit", required=True)
+    s = sub.add_parser("preview", allow_abbrev=False)
+    s.add_argument("--site", required=True)
+    s.add_argument("--max-chars", type=int, default=20000)
+    s.add_argument("--commit", required=True)
+    s = sub.add_parser("publish", allow_abbrev=False)
+    s.add_argument("--site", required=True)
+    s.add_argument("--commit", required=True)
+    s.add_argument("--base", required=True,
+                   help="GitHub's main as the owner's card showed it")
+    s.add_argument("--confirm-token", default=None,
+                   help=f"the one-time token (default: ${_gate.TOKEN_ENV})")
+    s.add_argument("--no-wait", action="store_true",
+                   help="return after the push, without waiting for the live site")
     return ap
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        import mail_mediation
+    except ModuleNotFoundError:  # imported as preprocessor.site_tools
+        from preprocessor import mail_mediation
+    # A Codex turn's sandbox has no network and a read-only .git: on a
+    # mediated host the git verbs run as the resident outside it. With no
+    # mediator they stay here, on cached refs, and the writes stage.
+    mail_mediation.sandbox_forward("site_tools", argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    # The resident child the mediator started for such a turn.
+    for_turn = mail_mediation.check_child_parse(parser, args)
     try:
         if args.verb == "list":
             res = cmd_list()
@@ -819,7 +844,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             _site(args.site)
             if args.verb in ("commit", "pull", "revert"):
-                staged = _stage_write(list(sys.argv[1:] if argv is None else argv), args.site)
+                staged = _stage_write(argv, args.site)
                 if staged:
                     print(json.dumps(staged))
                     return 0
@@ -843,7 +868,9 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 res = cmd_revert(args.site, args.commit)
         import preferences
-        if preferences._APPLYING and args.verb in ("commit", "revert"):
+        if (preferences._APPLYING or for_turn) and args.verb in ("commit", "revert"):
+            # A Codex turn cannot stage the card itself with the commit
+            # made outside it in hand; the replay and the resident child do.
             _stage_publish(res)
             res["publish_staged"] = bool(res.get("stage"))
     except OfflineError as e:
@@ -851,7 +878,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.verb in ("pull", "revert") and not preferences._APPLYING:
             # No network in this turn: the bot replays the verb after it,
             # with network and the same checks.
-            preferences.stage("site_tools", list(sys.argv[1:] if argv is None else argv))
+            preferences.stage("site_tools", argv)
             print(json.dumps({"status": "staged", "site": args.site, "note":
                               "GitHub was not reachable. The bot runs this after the turn."}))
             return 0
