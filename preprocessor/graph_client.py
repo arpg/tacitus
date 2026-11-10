@@ -237,8 +237,9 @@ CACHE_FILE = EA_DIR / "auth" / "msal_token_cache.json"
 # and put its own in its place. An owner process (owner_trust.is_owner_process)
 # reads and writes a token file only after the owner checks on the directory
 # and the file, made on the open descriptors; a failed check raises
-# OwnerTrustError. Token files are 0660 in the owner's own group, which the
-# checks accept only while that group holds no other user. Other processes
+# OwnerTrustError. The owner writes token files with token_file_mode(), never
+# group write; the checks accept 0660 only while that group holds no other
+# user. Other processes
 # (ea-bot, which cannot read the tokens under mail mediation) keep plain path
 # reads and writes.
 def _checked_token_io() -> bool:
@@ -485,7 +486,10 @@ def _write_cache_file_owner(serialized: str) -> None:
                        0o660, dir_fd=dfd)
         try:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            _owner_trust.write_owner_file(CACHE_FILE, serialized, mode=0o660,
+            # Never group write: on macOS the file takes the auth dir's group
+            # (ea), so 0660 handed the token back to the resident.
+            mode, gid = _owner_trust.token_file_mode()
+            _owner_trust.write_owner_file(CACHE_FILE, serialized, mode=mode, gid=gid,
                                           allow_private_group=True)
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)

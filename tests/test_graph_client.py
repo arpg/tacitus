@@ -860,6 +860,23 @@ def cachetest_save_is_atomic_and_leaves_no_temp_files():
     assert (gc.CACHE_FILE.parent / "msal_token_cache.lock").exists()
 
 
+def cachetest_owner_save_leaves_no_group_access_on_disk():
+    """An owner process wrote the cache 0660. On macOS a new file takes its
+    directory's group (the auth dir is group ea), so under mediation the
+    resident could read the token again. Real write, real mode on disk."""
+    _cache_sandbox()
+    orig = (gc._checked_token_io, gc._owner_trust._resident_reads_tokens)
+    gc._checked_token_io = lambda: True
+    gc._owner_trust._resident_reads_tokens = lambda: False   # mediation on
+    try:
+        gc._write_cache_file(_json.dumps(_CACHE_DOC))
+    finally:
+        gc._checked_token_io, gc._owner_trust._resident_reads_tokens = orig
+    assert _json.loads(gc.CACHE_FILE.read_text())["RefreshToken"]
+    mode = gc.CACHE_FILE.stat().st_mode & 0o777
+    assert mode & 0o077 == 0, oct(mode)
+
+
 def cachetest_concurrent_saves_never_corrupt_the_file():
     """Twelve processes, each writing a cache of a different length,
     all at once: the file is always exactly one of them."""
