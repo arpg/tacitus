@@ -10316,6 +10316,7 @@ _LATE_DRAFTS_SEEN: set = set()
 
 ORPHAN_DRAFT_GRACE_S = 300
 _SWEEP_JOURNAL_START: list = []  # journal offset the sweep has scanned up to
+_SWEEP_LAST_PASS: list = []  # wall time of the sweep's last scan
 
 
 def _note_resident_completion(channel: str, thread_ts: str,
@@ -10464,14 +10465,36 @@ def _sweep_late_resident_drafts() -> int:
         return 0  # a live resident turn claims its own records
     if not _SWEEP_JOURNAL_START:
         _SWEEP_JOURNAL_START.append(_draft_events.offset())
+        _SWEEP_LAST_PASS.append(now)
         return 0  # never replay history into Slack
     start = min([c["journal_offset"] for c in _RECENT_RESIDENT_COMPLETIONS]
                 + [_SWEEP_JOURNAL_START[0]])
+    size = _draft_events.offset()
+    floor = None
+    if size < start:
+        # The journal pruned itself to its newest half (draft_events._prune)
+        # and every offset above points past its end; read_records would
+        # start over at 0 and post a Send block for each settled draft that
+        # survived. Read it by time instead: a record older than the last
+        # pass less the orphan grace was settled in that pass.
+        floor = _SWEEP_LAST_PASS[0] - ORPHAN_DRAFT_GRACE_S - 60
+        start = 0
+    _SWEEP_LAST_PASS[0] = now
+    rebase = size
     # records claimed by a dispatch never reach here: the journal cursor is
     # advanced by claim_since, and the confirmation registry filters the rest
     confirmed = _load_draft_confirms()
     posted = 0
-    for _pos, ev in _draft_events.read_records(start):
+    for pos, ev in _draft_events.read_records(start):
+        try:
+            ts = datetime.strptime(ev.get("ts", ""), "%Y-%m-%dT%H:%M:%SZ") \
+                .replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            ts = None
+        if floor is not None:
+            if ts is None or ts < floor:
+                continue
+            rebase = min(rebase, pos)
         run_id = (ev.get("run_id") or "").strip()
         cron = run_id.startswith("cron-")
         if ev.get("action") == "deleted" and not (run_id and not cron):
@@ -10482,10 +10505,7 @@ def _sweep_late_resident_drafts() -> int:
         draft_id = ev.get("draft_id") or ""
         if not draft_id or draft_id in _LATE_DRAFTS_SEEN or draft_id in confirmed:
             continue
-        try:
-            ts = datetime.strptime(ev.get("ts", ""), "%Y-%m-%dT%H:%M:%SZ") \
-                .replace(tzinfo=timezone.utc).timestamp()
-        except ValueError:
+        if ts is None:
             continue
         owner = None
         if cron:
@@ -10510,6 +10530,12 @@ def _sweep_late_resident_drafts() -> int:
         system, acct = _draft_events.system_of([ev], draft_id)
         if _post_new_draft(owner["channel"], owner["thread_ts"], draft_id, system, acct):
             posted += 1
+    if floor is not None:
+        # Offsets into the pruned layout: nothing before `rebase` needs
+        # another look.
+        _SWEEP_JOURNAL_START[0] = rebase
+        for c in _RECENT_RESIDENT_COMPLETIONS:
+            c["journal_offset"] = min(c["journal_offset"], rebase)
     _SWEEP_JOURNAL_START[0] = max(_SWEEP_JOURNAL_START[0],
                                   min(c["journal_offset"] for c in _RECENT_RESIDENT_COMPLETIONS)
                                   if _RECENT_RESIDENT_COMPLETIONS else _SWEEP_JOURNAL_START[0])

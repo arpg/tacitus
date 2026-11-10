@@ -529,6 +529,82 @@ def test_deleted_records_are_handled_in_both_lanes_and_the_sweep():
     assert 'batches[batch_id]["card_ts"] = card_ts' in _fn_src("_post_bulk_card")
 
 
+def test_a_journal_prune_never_replays_settled_drafts():
+    """The journal prunes itself to its newest half while the bot runs, and
+    the sweep's offset then points past its end. read_records started over
+    at 0 and every surviving cron or unlabelled draft, settled weeks ago,
+    got a Send block and a preflight 404 at the channel root. The sweep now
+    reads a shrunk journal by time: records from after its last pass still
+    get their button, an orphan inside its grace still gets one later, and
+    history stays history."""
+    import collections
+    import types
+    from datetime import datetime, timedelta, timezone
+    clock = [datetime.now(timezone.utc).timestamp()]
+    posted, retired = [], []
+    ns = {
+        "time": types.SimpleNamespace(time=lambda: clock[0]),
+        "datetime": datetime, "timezone": timezone, "re": re,
+        "_RECENT_RESIDENT_COMPLETIONS": collections.deque(maxlen=12),
+        "LATE_DRAFT_WINDOW_S": 900, "ORPHAN_DRAFT_GRACE_S": 300,
+        "_SWEEP_JOURNAL_START": [], "_SWEEP_LAST_PASS": [], "_LATE_DRAFTS_SEEN": set(),
+        "_resident_dispatch_live": lambda: False, "_load_draft_confirms": dict,
+        "_retire_deleted_drafts": lambda ids, label: retired.extend(ids),
+        "_anchor_owns": lambda c, ts: False,
+        "_post_new_draft": lambda ch, tts, did, system, acct: posted.append((ch, did)) or True,
+        "log": types.SimpleNamespace(info=lambda *a: None, warning=lambda *a: None),
+        "CHANNEL_ID": "EA",
+    }
+    exec(_fn_src("_sweep_late_resident_drafts"), ns)
+    sweep = ns["_sweep_late_resident_drafts"]
+    pkg = types.ModuleType("preprocessor")
+    pkg.draft_events = de
+    pkg.resident_bridge = types.SimpleNamespace(inflight_busy=lambda: False)
+    saved_pkg = sys.modules.get("preprocessor")
+    saved_run = os.environ.pop(de.RUN_ID_ENV, None)
+    sys.modules["preprocessor"] = pkg
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            de.JOURNAL = Path(td) / "draft-events.jsonl"
+            old = (datetime.now(timezone.utc) - timedelta(days=9)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            lines = []
+            for i in range(40):
+                run = f"cron-morning-briefing-{i}" if i % 3 else ""
+                action = "deleted" if i % 7 == 0 else "created"
+                lines.append(json.dumps({"ts": old, "action": action, "draft_id": f"AAMkOLD{i}=",
+                                         "verb": "create-reply", "run_id": run}))
+            de.JOURNAL.write_text("\n".join(lines) + "\n")
+            assert sweep() == 0, "the first pass only sets the baseline"
+            clock[0] += 5
+            os.environ[de.RUN_ID_ENV] = "cron-morning-briefing-today"
+            de.record("created", "AAMkFRESH=", verb="create-reply")
+            del os.environ[de.RUN_ID_ENV]
+            de.record("created", "AAMkORPHAN=", verb="create-draft")
+            before = de.offset()
+            de._prune()
+            assert de.offset() < before and de.offset() < ns["_SWEEP_JOURNAL_START"][0]
+            clock[0] += 5
+            assert sweep() == 1
+            assert posted == [("EA", "AAMkFRESH=")], "the fresh cron draft only, no history"
+            assert retired == [], "a settled delete is not retired again"
+            assert ns["_SWEEP_JOURNAL_START"][0] <= de.offset()
+            clock[0] += 400
+            assert sweep() == 1 and posted[-1] == ("EA", "AAMkORPHAN="), \
+                "an orphan inside its grace at the prune still gets its block"
+            assert sweep() == 0 and len(posted) == 2
+            de.record("created", "AAMkNEXT=", verb="create-draft")
+            clock[0] += 400
+            assert sweep() == 1 and posted[-1] == ("EA", "AAMkNEXT=")
+    finally:
+        if saved_pkg is None:
+            sys.modules.pop("preprocessor", None)
+        else:
+            sys.modules["preprocessor"] = saved_pkg
+        os.environ.pop(de.RUN_ID_ENV, None)
+        if saved_run is not None:
+            os.environ[de.RUN_ID_ENV] = saved_run
+
+
 
 def test_dm_pointer_never_unfurls_the_block_it_points_at():
     """The breadcrumb links to the :lock: block in the DM. Slack unfurls a
