@@ -294,7 +294,7 @@ def test_apply_moves_the_history_the_channels_and_the_registries(install, capsys
     priv, seqs = install["priv"], install["seqs"]
     assert _main(install, "apply") == 0
     out = capsys.readouterr().out
-    assert "Moved to the web chat alone." in out and "sudo tailscale serve --https=8443 off" in out
+    assert "Moved to the web chat alone." in out and "sudo tailscale serve --https=443 off" in out
 
     # the snapshot came first, with the registries beside it
     snap = priv / "backups" / "webchat" / f"{time.strftime('%Y-%m-%d')}-cutover"
@@ -473,13 +473,80 @@ def test_a_failed_export_leaves_everything_as_it_was(install, capsys):
     assert (priv / "backups" / "webchat" / f"{time.strftime('%Y-%m-%d')}-cutover").is_dir()
 
 
-def test_teardown_names_every_piece_of_zulip(capsys):
-    assert cut.main(["teardown"]) == 0
+def test_teardown_names_every_piece_of_zulip(install, capsys):
+    # SITE is a bare https URL: the server is published on 443, and the
+    # steps say so rather than naming the port the switch script uses.
+    assert cut.main(["teardown"], priv=install["priv"]) == 0
     out = capsys.readouterr().out
-    for step in ("deploy/zulip/backup.sh", "tailscale serve --https=8443 off",
-                 "tag:ea-host:8443", "deploy/zulip/compose.sh down -v", "docker image rm",
+    for step in ("deploy/zulip/backup.sh", "tailscale serve --https=443 off",
+                 "tag:ea-host:443", "deploy/zulip/compose.sh down -v", "docker image rm",
                  "crontab -e", "zulip.env", "ZULIP_API_KEY", "secrets.env"):
         assert step in out, step
+    assert "8443" not in out
+
+
+def test_the_printed_steps_name_this_hosts_service_and_zulips_own_port(install, monkeypatch, capsys):
+    """On a macOS install under the legacy label the steps name that label,
+    start an unloaded job with bootstrap (not kickstart), and take the Zulip
+    port from the zulip block's site; no systemctl line is printed. On the
+    old code every printed command named systemctl or the neutral label and
+    port 8443 (2026-11-09)."""
+    monkeypatch.setattr(cut, "_platform", lambda: "darwin")
+    monkeypatch.setattr(cut, "bot_label", lambda: "edu.example.ea-chat-bot")
+    chat = json.loads((install["priv"] / "chat.json").read_text())
+    chat["zulip"]["site"] = "https://host.example.test:8445"
+    (install["priv"] / "chat.json").write_text(json.dumps(chat))
+    # plan, with the bot up: the stop command is a bootout of this label
+    monkeypatch.setattr(cut, "bot_up", lambda inst: "the edu.example.ea-chat-bot service runs")
+    assert _main(install, "plan") == 0
+    out = capsys.readouterr().out
+    assert "stop it before apply (sudo launchctl bootout system/edu.example.ea-chat-bot)" in out
+    assert "systemctl" not in out
+    # apply refuses with the same command
+    assert _main(install, "apply") == 2
+    err = capsys.readouterr().err
+    assert "Stop it first (sudo launchctl bootout system/edu.example.ea-chat-bot)" in err
+    assert "systemctl" not in err
+    # the summary after the move: bootstrap of this label's plist, the
+    # zulip block's port, a kickstart only as the restart in step 7
+    monkeypatch.setattr(cut, "bot_up", lambda inst: "")
+    assert _main(install, "apply") == 0
+    out = capsys.readouterr().out
+    assert ("Start the bot: sudo launchctl bootstrap system "
+            "/Library/LaunchDaemons/edu.example.ea-chat-bot.plist, then open the web chat") in out
+    assert "org.ea-system" not in out and "systemctl" not in out
+    assert "(port 8445):\n      sudo tailscale serve --https=8445 off" in out
+    assert "tag:ea-host:8445" in out and "8443" not in out
+    assert "then sudo launchctl kickstart -k system/edu.example.ea-chat-bot." in out
+    # teardown after the move reads the block the move left in place
+    assert cut.main(["teardown"], priv=install["priv"]) == 0
+    out = capsys.readouterr().out
+    assert "--https=8445 off" in out and "8443" not in out
+    # Linux: the systemd verbs, and the port from the site all the same
+    monkeypatch.setattr(cut, "_platform", lambda: "linux")
+    assert cut.main(["teardown"], priv=install["priv"]) == 0
+    out = capsys.readouterr().out
+    assert "then sudo systemctl restart ea-chat-bot." in out and "--https=8445 off" in out
+    assert "launchctl" not in out
+
+
+def test_teardown_says_how_to_find_the_port_when_the_block_names_no_site(install, capsys):
+    chat = json.loads((install["priv"] / "chat.json").read_text())
+    del chat["zulip"]["site"]
+    (install["priv"] / "chat.json").write_text(json.dumps(chat))
+    assert cut.main(["teardown"], priv=install["priv"]) == 0
+    out = capsys.readouterr().out
+    assert "could not be\n    determined" in out and "tailscale serve status" in out
+    assert "http://127.0.0.1:8080 is Zulip's" in out
+    assert "--https=<that port> off" in out and "8443" not in out
+    # with no chat.json at all (an install that deleted the block) the same
+    assert cut.main(["teardown"], priv=install["priv"] / "nowhere") == 0
+    assert "could not be" in capsys.readouterr().out
+    assert cut.zulip_port({"site": "https://zulip.example.test"}) == 443
+    assert cut.zulip_port({"site": "http://zulip.example.test"}) == 80
+    assert cut.zulip_port({"site": "https://zulip.example.test:8443/"}) == 8443
+    assert cut.zulip_port({"site": "not a url"}) is None
+    assert cut.zulip_port({}) is None
 
 
 def test_zulip_channel_history_reads_forward_page_by_page(tmp_path):
