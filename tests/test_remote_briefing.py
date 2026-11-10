@@ -890,24 +890,27 @@ def _queue(*entries, total: int = 0) -> list[dict]:
 
 def _models(plan, replies):
     """The plan call answers `plan`; the reply-queue call answers
-    `replies`, {ref: (action, text)}, and records the refs it was asked."""
+    `replies`, {ref: (action, text, *choices)}, and records the refs it
+    was asked."""
     def chat(messages, **kw):
         chat.calls.append(kw.get("purpose"))
         if kw.get("purpose") == "briefing-backlog":
             chat.asked = [i["ref"] for i in json.loads(messages[1]["content"])["items"]]
-            return {"replies": [{"ref": r, "action": a, "text": t}
-                                for r, (a, t) in replies.items()]}, {"latency_ms": 5}
+            return {"replies": [{"ref": r, "action": a[0], "text": a[1], "choices": list(a[2:])}
+                                for r, a in replies.items()]}, {"latency_ms": 5}
         return json.loads(json.dumps(plan)), {"latency_ms": 5}
     chat.calls, chat.asked = [], []
     return chat
 
 
 def _marks():
-    def mark(ledger_id, inbound, outcome, *, now, draft_id="", note=""):
+    def mark(ledger_id, inbound, outcome, *, now, draft_id="", note="", choices=()):
         mark.seen.append((ledger_id, outcome, draft_id or note))
         mark.inbound[ledger_id] = inbound
+        if choices:
+            mark.choices[ledger_id] = list(choices)
         return True
-    mark.seen, mark.inbound = [], {}
+    mark.seen, mark.inbound, mark.choices = [], {}, {}
     return mark
 
 
@@ -926,7 +929,8 @@ def test_a_morning_run_works_the_reply_queue(mountain, priv):
         _owed("ed", 1, has_draft=None)))
     chat = _models(EMPTY, {"Q2": ("draft", "Yes, the date works."),
                            "Q4": ("leave", "The last message only says thanks."),
-                           "Q7": ("decide", "Renew for one year or for three?")})
+                           "Q7": ("decide", "Renew for one year or for three?",
+                                  "Renew for one year", "Renew for three years")})
     made, mark = [], _marks()
     drafter = lambda c, says, run_id: made.append((c["message_id"], c["ledger_id"], says)) or \
         {"ok": True, "draft_id": "draft-7"}
@@ -939,6 +943,7 @@ def test_a_morning_run_works_the_reply_queue(mountain, priv):
                          ("row-lee", "left", "The last message only says thanks."),
                          ("row-jo", "decision", "Renew for one year or for three?")]
     assert mark.inbound["row-kim"] == b["reply_backlog"][1]["since"]
+    assert mark.choices == {"row-jo": ["Renew for one year", "Renew for three years"]}
     assert "*Drafts ready* (1)" in text and "- *Reply to Kim* (Kim): Yes, the date works." in text
     assert "- *Reply to Jo* (Jo): Renew for one year or for three? (2d)" in text.split("*Needs you* (1)")[1]
     assert _queue_text(text) == (
@@ -998,7 +1003,8 @@ def test_a_queue_reply_passes_the_rails_or_becomes_a_decision(priv):
         _owed("young", 1, ask=plans), _owed("quiet", 1))})
     refs = rb.backlog_refs(cands, set())
     assert refs == ["Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q7"]
-    chat = _models({}, {"Q1": ("draft", "Yes, I will join."), "Q2": ("draft", "We will map the sites."),
+    chat = _models({}, {"Q1": ("draft", "Yes, I will join.", "Yes", "No"),
+                        "Q2": ("draft", "We will map the sites."),
                         "Q3": ("draft", "Yes, the room is fine."), "Q4": ("decide", "Join the panel?"),
                         "Q5": ("draft", "Thanks, received."), "Q6": ("draft", "We will map the sites."),
                         "Q9": ("draft", "An invented ref."), "Q1 ": ("leave", "Not a ref.")})
@@ -1020,7 +1026,21 @@ def test_a_queue_reply_passes_the_rails_or_becomes_a_decision(priv):
     assert [(rid, outcome) for rid, outcome, _n in mark.seen] == [
         ("row-dean", "decision"), ("row-old", "decision"), ("row-room", "decision"),
         ("row-young", "drafted")]                # the fourth decision and the failed draft wait
+    assert mark.choices == {}                    # a decision that code made offers no answers
     assert stats == {"asked": 7, "drafted": 1, "decisions": 3, "left": 0, "failed": 1, "deferred": 1}
+
+
+def test_the_answers_a_decision_offers_are_cleaned_and_fit_a_button():
+    """The model's `choices` reach the row only as two or three short
+    lines of plain text; the schema asks for the key on every reply."""
+    item = rb.BACKLOG_SCHEMA["properties"]["replies"]["items"]
+    assert "choices" in item["required"] and item["properties"]["choices"]["type"] == "array"
+    assert rb.backlog_choices(["`Yes`, I will  review it", "*No*, not this term"]) == [
+        "Yes, I will review it", "No, not this term"]
+    assert rb.backlog_choices(["Yes", "No", "Later", "Never"]) == ["Yes", "No", "Later"]
+    assert rb.backlog_choices(["Yes", "yes", {"text": "No"}, 3]) == []
+    assert rb.backlog_choices(["Yes", "No, and " + "x" * 60]) == []
+    assert rb.backlog_choices("Yes or no") == [] and rb.backlog_choices(None) == []
 
 
 def test_a_dry_run_makes_and_records_nothing_for_the_queue(priv):

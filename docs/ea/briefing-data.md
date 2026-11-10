@@ -51,8 +51,8 @@ The preprocessor (Python, no Claude tokens) produces a DELTA briefing JSON:
   and `from` name the message to answer. `has_draft` true means a reply
   waits in Drafts (null: the folder was not read). `queued` is what an
   earlier run recorded about this same message with `ledger.py
-  note-reply` (a draft, a decision asked, nothing to send); a newer
-  message clears it. `kept` marks mail whose text stays on the user's
+  note-reply` (a draft, a decision asked with the `choices` it offered,
+  nothing to send); a newer message clears it. `kept` marks mail whose text stays on the user's
   machine. Draft only an entry with `has_draft` false, `queued` empty
   and `kept` false.
 - `auto_merged`: sibling items folded into one group this run (shared

@@ -343,6 +343,10 @@ user's machine). Take the 8 oldest of the rest. For each one:
 - When a rail applies or only the user knows the answer, write ONE line
   under "Needs you": the decision, then the age as `(12d)`. Record it:
   `ledger.py note-reply --id <id> --outcome decision --note "<the line>"`.
+  When the decision has two or three short answers, add each one as
+  `--choice "<the answer, whole, 48 characters at most>"` ("Yes, I will
+  review it", "No, not this term"): the Replies card shows them as
+  buttons and the user's tap gets the reply written.
   At most 3 such lines a run; leave the others for the next run.
 - When the thread wants no reply (the other side closed it, or
   `create-reply` answers `skipped` because the user wrote last), record

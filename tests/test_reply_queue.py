@@ -202,6 +202,37 @@ def test_the_note_reply_verb(db, monkeypatch, capsys):
     assert ledger.main() == 1
 
 
+def test_a_decision_keeps_the_answers_it_offers(db, monkeypatch, capsys):
+    """Two or three short answers ride on a decision's record and come
+    back in `queued`; the Replies card shows each as a button, whole."""
+    assert ledger.reply_choices(["Yes, I  will\nreview it", "No, not this term"]) == [
+        "Yes, I will review it", "No, not this term"]
+    assert ledger.reply_choices(["Yes", "yes", "No", "", None, "Later", "Never"]) == ["Yes", "No", "Later"]
+    assert ledger.reply_choices(["Yes"]) == [] and ledger.reply_choices(None) == []
+    # An answer too long for a button is dropped, never cut; one answer left is no choice.
+    assert ledger.reply_choices(["Yes", "n" * (ledger.REPLY_CHOICE_CHARS + 1)]) == []
+    assert ledger.reply_choices(["Yes", "n" * ledger.REPLY_CHOICE_CHARS]) == ["Yes", "n" * 48]
+
+    brief = _row("pat", 3)["thread_brief"]
+    _insert(db, "row-1", metadata={"thread_brief": brief})
+    rec = ledger.note_reply("row-1", "decision", note="One year or three?",
+                            choices=["One year", "Three years"])
+    assert rec["choices"] == ["One year", "Three years"]
+    (e,) = ledger.reply_backlog([ledger.get_entry("row-1")], TODAY, zone=ZONE)
+    assert e["queued"]["choices"] == ["One year", "Three years"]
+    assert "choices" not in ledger.note_reply("row-1", "decision", note="Why?", choices=["Yes"])
+    assert "choices" not in ledger.note_reply("row-1", "drafted", draft_id="d-1",
+                                              choices=["One year", "Three years"])
+
+    monkeypatch.setattr(sys, "argv", ["ledger.py", "note-reply", "--id", "row-1", "--outcome", "decision",
+                                      "--note", "One year or three?", "--choice", "One year",
+                                      "--choice", "Three years"])
+    assert ledger.main() == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert out["reply_queue"]["choices"] == ["One year", "Three years"]
+    assert ledger.get_entry("row-1")["reply_queue"]["choices"] == ["One year", "Three years"]
+
+
 def test_the_reply_queue_verb_lists_the_live_queue_from_an_age(db, monkeypatch, capsys):
     """The bot's Replies card reads the queue with `--min-age 3`; `owed`
     counts every thread that waits, whatever its age."""

@@ -473,8 +473,10 @@ def _briefings() -> tuple[str, str]:
                       "pending": [{"ref": "L2", "line": "still not filed"}]}
 
     queue_plan = {"replies": [
-        {"ref": "Q1", "action": "decide", "text": "Renew the simulator license for one year or for three?"},
-        {"ref": "Q2", "action": "draft", "text": "Yes, both reviews will be in by October 23."}]}
+        {"ref": "Q1", "action": "decide", "text": "Renew the simulator license for one year or for three?",
+         "choices": ["Renew for one year", "Renew for three years"]},
+        {"ref": "Q2", "action": "draft", "text": "Yes, both reviews will be in by October 23.",
+         "choices": []}]}
 
     def model(plan):
         return lambda messages, **kw: (json.loads(json.dumps(

@@ -483,7 +483,8 @@ ACTIONS = {"approve_send", "cancel_send", "approve_schedule_send",
            "room_open_project", "room_pick_project", "room_create_project",
            "close_all_proposed", "review_proposed", "close_proposed",
            "keep_open_proposed", "reopen_closed", "approve_browser", "cancel_browser",
-           "review_replies", "reply_draft", "reply_skip", "reply_not_needed"}
+           "review_replies", "reply_draft", "reply_skip", "reply_not_needed",
+           "reply_choice_two"}
 VIEWS = {"edit_draft_modal", "home_ask_modal", "home_journal_modal"}
 
 
