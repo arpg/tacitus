@@ -61,6 +61,7 @@ for _py in "$REPO_DIR/.venv/bin/python3" "$OWNER_HOME/.local/share/ea-system/bin
 done
 [ -n "$VENV_PY" ] || { echo "ERROR: no python3 3.10+ for the services; run ./install.sh first." >&2; exit 1; }
 LAUNCHER=/usr/local/libexec/ea-service-run.sh
+RELOAD="$REPO_DIR/deploy/macos/launchd-reload.sh"   # bootout, wait, bootstrap
 SUDOERS=/etc/sudoers.d/ea-services
 # launchd labels: a new install uses the neutral prefix; an install
 # deployed under the legacy prefix keeps it (preprocessor/launchd_labels.py).
@@ -109,7 +110,7 @@ if [ "${1:-}" = --remove ]; then
 fi
 
 for p in "$VENV_PY" "$EABOT_HOME/ea-system/ea-chat-bot.py" \
-         "$REPO_DIR/preprocessor/owner_trust.py" "$REPO_DIR/deploy/macos/ea-service-run.sh"; do
+         "$REPO_DIR/preprocessor/owner_trust.py" "$REPO_DIR/deploy/macos/ea-service-run.sh" "$RELOAD"; do
     [ -e "$p" ] || { echo "ERROR: missing expected path: $p" >&2; exit 1; }
 done
 [ -d "$PRIV" ] && [ ! -L "$PRIV" ] && [ "$(stat -f %u "$PRIV")" = "$OWNER_UID" ] \
@@ -285,8 +286,7 @@ PLIST
     plutil -lint "$(plist_of "$UPD").tmp" >/dev/null
     chown root:wheel "$(plist_of "$UPD").tmp"; chmod 644 "$(plist_of "$UPD").tmp"
     mv -f "$(plist_of "$UPD").tmp" "$(plist_of "$UPD")"
-    launchctl bootout "system/$UPD" 2>/dev/null || true
-    launchctl bootstrap system "$(plist_of "$UPD")"
+    "$RELOAD" "$UPD" "$(plist_of "$UPD")" || exit 1
     echo "  $UPD: hourly; output in $PRIV/logs/update.log"
 else
     launchctl bootout "system/$UPD" 2>/dev/null || true
@@ -304,10 +304,14 @@ visudo -cf "$SUDOERS.tmp" >/dev/null || { rm -f "$SUDOERS.tmp"; echo "ERROR: sud
 mv -f "$SUDOERS.tmp" "$SUDOERS"
 
 echo "[services] 7/7  load and verify"
+# Each job is unloaded, then loaded again once launchd has forgotten it:
+# a bootstrap while the old instance is still draining (the bot takes up
+# to 80 s) fails with "Bootstrap failed: 5: Input/output error" and would
+# leave the job unloaded (2026-11-09). A job the helper cannot load is
+# reported and the other jobs are still loaded; the script exits 1 below.
 ok=1
 for j in $JOBS; do
-    launchctl bootout "system/$j" 2>/dev/null || true
-    launchctl bootstrap system "$(plist_of "$j")"
+    "$RELOAD" "$j" "$(plist_of "$j")" || ok=0
 done
 for j in $JOBS; do
     pid=""
@@ -335,5 +339,6 @@ if [ "$ok" = 1 ]; then
     echo "[services] confirm the chat values printed in step 3; then run: $VENV_PY $REPO_DIR/scripts/ea-doctor.py"
 else
     echo "[services] WARNING: a job is not running as expected. Logs: $PRIV/logs/*.launchd.log" >&2
+    echo "[services] a job reported NOT loaded above: run the bootstrap command it printed, then --status" >&2
     exit 1
 fi
