@@ -746,9 +746,18 @@ _prompt = input
 
 
 def _interactive() -> bool:
+    """True when a prompt on stdin can be answered: stdin is a terminal and
+    this process is that terminal's foreground job. Under two sudo hops
+    (the macOS installer's `sudo bash`, then its `sudo -u <owner>`), each
+    sudo allocates a pseudo-terminal, stdin is a terminal, and the typed
+    keys never reach a reader that is not the foreground job of its own
+    terminal: a prompt there waits forever (2026-11-09). Such a process
+    takes the non-interactive path and names the flags instead."""
     try:
-        return sys.stdin.isatty()
-    except (AttributeError, ValueError):
+        if not sys.stdin.isatty():
+            return False
+        return os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp()
+    except (AttributeError, ValueError, OSError):
         return False
 
 
@@ -842,7 +851,7 @@ def _confirm(what: str, shown: list[tuple[str, str]],
                   f"{' '.join(f for _, _, f in must)}", file=sys.stderr)
             return None
         try:
-            typed = _prompt(f"  type {key} to confirm it is yours ({val!r}): ").strip()
+            typed = _prompt(f"  type the value of {key} back to confirm it is yours: ").strip()
         except EOFError:
             typed = ""
         if not typed or typed != val:

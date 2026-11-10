@@ -34,6 +34,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+if __name__ == "__main__":
+    # Mediate/refuse HERE, before the google imports below, as graph_actions
+    # does before graph_client: the mediator runs the verb with the owner's
+    # interpreter, so ea-bot's needs none of these packages. A forward at the
+    # bottom of the file came after an ImportError on any interpreter without
+    # them ("No module named 'google'"), and the call never left.
+    import id_handles as _id_handles
+    sys.argv[1:] = _id_handles.resolve_argv(sys.argv[1:])
+    from mail_mediation import forward_or_none
+    forward_or_none("google_calendar_client", sys.argv[1:],  # ea-bot: mediate SAFE, refuse gated
+                    transform=_id_handles.annotate_output)
+
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -1337,12 +1349,6 @@ def build_parser():
 
 
 if __name__ == "__main__":
-    import id_handles as _id_handles
-    sys.argv[1:] = _id_handles.resolve_argv(sys.argv[1:])
-    from mail_mediation import forward_or_none
-    forward_or_none("google_calendar_client", sys.argv[1:],  # ea-bot: mediate SAFE, refuse gated
-                    transform=_id_handles.annotate_output)
-
     parser = build_parser()
     args = parser.parse_args()
     try:

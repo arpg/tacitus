@@ -376,7 +376,9 @@ steps, from your checkout; `webchat-cutover.py teardown` prints them too.
    ```bash
    deploy/zulip/backup.sh
    ```
-2. Stop publishing the server on your tailnet:
+2. Stop publishing the server on your tailnet (8443 is the port
+   `scripts/zulip_switch.sh` uses; `webchat-cutover.py teardown` prints
+   these steps with the port your `chat.json` names):
    ```bash
    sudo tailscale serve --https=8443 off
    ```

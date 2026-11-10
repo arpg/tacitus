@@ -33,6 +33,16 @@
 #   sudo bash deploy/macos/install-services.sh --status
 #   sudo bash deploy/macos/install-services.sh --remove   # leaves /opt and ~/.ea-private
 #
+# Step 3 cannot ask a question: it runs the seed two sudo hops down, where a
+# typed answer never arrives. A value the seed must confirm (a new owner-
+# trusted key on an upgrade, or a first seed) comes in as a flag, passed
+# through to `owner_trust.py seed`:
+#
+#   sudo bash deploy/macos/install-services.sh --calendar-account <addr> --profile-name "<name>"
+#
+# or the owner runs the seed at a terminal first (python3
+# preprocessor/owner_trust.py seed) and then the installer.
+#
 # Design and troubleshooting: docs/macos-services.md
 set -euo pipefail
 
@@ -79,6 +89,7 @@ if ! "$VENV_PY" -I -c 'import requests' 2>/dev/null; then
     exit 1
 fi
 LAUNCHER=/usr/local/libexec/ea-service-run.sh
+RELOAD="$REPO_DIR/deploy/macos/launchd-reload.sh"   # bootout, wait, bootstrap
 SUDOERS=/etc/sudoers.d/ea-services
 # launchd labels: a new install uses the neutral prefix; an install
 # deployed under the legacy prefix keeps it (preprocessor/launchd_labels.py).
@@ -114,6 +125,17 @@ status() {
     ls -l "$BOT_ENV" "$SECRETS" "$PRIV/chat.json" 2>&1 | sed 's/^/  /'
 }
 
+# Flags for the seed (step 3), passed through as given; see the header.
+SEED_ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --status|--remove) break ;;
+        --calendar-account|--calendar-id|--profile-name|--chat-*)
+            [ $# -ge 2 ] || { echo "ERROR: $1 needs a value." >&2; exit 2; }
+            SEED_ARGS+=("$1" "$2"); shift 2 ;;
+        *) echo "ERROR: unknown option $1 (see the header of $0)." >&2; exit 2 ;;
+    esac
+done
 if [ "${1:-}" = --status ]; then status; exit 0; fi
 if [ "${1:-}" = --remove ]; then
     for j in "$BOT" "$MED" "$UPD"; do
@@ -127,7 +149,7 @@ if [ "${1:-}" = --remove ]; then
 fi
 
 for p in "$VENV_PY" "$EABOT_HOME/ea-system/ea-chat-bot.py" \
-         "$REPO_DIR/preprocessor/owner_trust.py" "$REPO_DIR/deploy/macos/ea-service-run.sh"; do
+         "$REPO_DIR/preprocessor/owner_trust.py" "$REPO_DIR/deploy/macos/ea-service-run.sh" "$RELOAD"; do
     [ -e "$p" ] || { echo "ERROR: missing expected path: $p" >&2; exit 1; }
 done
 [ -d "$PRIV" ] && [ ! -L "$PRIV" ] && [ "$(stat -f %u "$PRIV")" = "$OWNER_UID" ] \
@@ -213,8 +235,20 @@ chown "$OWNER:$OWNER_GROUP" "$BOT_ENV.tmp"; chmod 600 "$BOT_ENV.tmp"
 mv -f "$BOT_ENV.tmp" "$BOT_ENV"
 
 echo "[services] 3/7  owner-private secrets and chat settings (seeded only when missing)"
-as_owner "$VENV_PY" "$REPO_DIR/preprocessor/owner_trust.py" seed --ea-dir "$EA_TREE" \
-    || { echo "ERROR: the owner-private seed failed; nothing after step 2 was changed" >&2; exit 1; }
+# stdin is /dev/null: the seed never prompts here (a prompt two sudo hops
+# down is never answered); a value it must confirm comes from SEED_ARGS.
+if ! as_owner "$VENV_PY" "$REPO_DIR/preprocessor/owner_trust.py" seed --ea-dir "$EA_TREE" \
+        ${SEED_ARGS[@]+"${SEED_ARGS[@]}"} </dev/null; then
+    cat >&2 <<EOF
+ERROR: the owner-private seed stopped: a value it must confirm was not given (see above).
+       This step cannot ask for it. Either run again with the value as a flag, for example
+         sudo bash $0 --calendar-account <addr> --profile-name "<name>"
+       or confirm it at a terminal as $OWNER, then run this installer again:
+         $VENV_PY $REPO_DIR/preprocessor/owner_trust.py seed --ea-dir $EA_TREE
+       Nothing after step 2 was changed.
+EOF
+    exit 1
+fi
 
 echo "[services] 4/7  harvested token file modes"
 as_owner "$VENV_PY" "$REPO_DIR/preprocessor/owner_trust.py" token-modes --ea-dir "$EA_TREE" \
@@ -310,8 +344,7 @@ PLIST
     plutil -lint "$(plist_of "$UPD").tmp" >/dev/null
     chown root:wheel "$(plist_of "$UPD").tmp"; chmod 644 "$(plist_of "$UPD").tmp"
     mv -f "$(plist_of "$UPD").tmp" "$(plist_of "$UPD")"
-    launchctl bootout "system/$UPD" 2>/dev/null || true
-    launchctl bootstrap system "$(plist_of "$UPD")"
+    "$RELOAD" "$UPD" "$(plist_of "$UPD")" || exit 1
     echo "  $UPD: hourly; output in $PRIV/logs/update.log"
 else
     launchctl bootout "system/$UPD" 2>/dev/null || true
@@ -329,10 +362,14 @@ visudo -cf "$SUDOERS.tmp" >/dev/null || { rm -f "$SUDOERS.tmp"; echo "ERROR: sud
 mv -f "$SUDOERS.tmp" "$SUDOERS"
 
 echo "[services] 7/7  load and verify"
+# Each job is unloaded, then loaded again once launchd has forgotten it:
+# a bootstrap while the old instance is still draining (the bot takes up
+# to 80 s) fails with "Bootstrap failed: 5: Input/output error" and would
+# leave the job unloaded (2026-11-09). A job the helper cannot load is
+# reported and the other jobs are still loaded; the script exits 1 below.
 ok=1
 for j in $JOBS; do
-    launchctl bootout "system/$j" 2>/dev/null || true
-    launchctl bootstrap system "$(plist_of "$j")"
+    "$RELOAD" "$j" "$(plist_of "$j")" || ok=0
 done
 for j in $JOBS; do
     pid=""
@@ -360,5 +397,6 @@ if [ "$ok" = 1 ]; then
     echo "[services] confirm the chat values printed in step 3; then run: $VENV_PY $REPO_DIR/scripts/ea-doctor.py"
 else
     echo "[services] WARNING: a job is not running as expected. Logs: $PRIV/logs/*.launchd.log" >&2
+    echo "[services] a job reported NOT loaded above: run the bootstrap command it printed, then --status" >&2
     exit 1
 fi

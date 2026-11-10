@@ -322,7 +322,12 @@ sudo bash /opt/ea-system/deploy/apply-host.sh  # run any root step the new code 
 python3 scripts/ea-doctor.py                   # check the result
 ```
 
-`apply-host.sh` is the one root step, after setup and after every update.
+On macOS the root step after an update is
+`sudo bash deploy/macos/install-services.sh` from your checkout, which
+rewrites the LaunchDaemons and the launcher; `apply-host.sh` there runs
+only mail mediation and prints the Linux-only steps as not available.
+
+`apply-host.sh` is the one root step on Linux, after setup and after every update.
 It runs the boundary audit, runs only the root scripts whose checks fail
 (hardening, mail mediation, the auth pin, the network policy, ssh, the
 process view), says in plain words what each one does and why, and checks

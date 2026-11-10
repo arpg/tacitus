@@ -239,6 +239,73 @@ def test_a_manifest_field_that_is_not_plain_never_becomes_a_cron_line(tmp_path):
     assert not (home / ".ea-private" / "bin").exists(), "a name never steers the log dir"
 
 
+def test_the_template_carries_the_web_chat_backup_and_the_monthly_style_run(tmp_path):
+    """docs/SETUP.md's schedule lists a nightly web chat backup and a monthly
+    style measurement; the template had neither, so an install that took
+    it lost both (2026-11-09). The backup line follows the chat block: the
+    web chat as the frontend or beside it. A Zulip or Slack install gets no
+    line, since the script exits with an error where there is no store.
+    The kept-entries filter strips both on a re-run, so neither doubles."""
+    live = _live_tree(tmp_path)
+    cfg = tmp_path / "home" / ".ea" / "config"
+    cfg.mkdir(parents=True)
+    (cfg / "ea-config.json").write_text(json.dumps({"chat": {"frontend": "zulip"}}))
+    _run_setup(tmp_path, live, profile="collaborator")
+    jobs = _jobs((tmp_path / "crontab").read_text())
+    assert sum("style_analysis.py run --dispatch" in j for j in jobs) == 1
+    assert not any("webchat-backup.sh" in j for j in jobs)
+
+    (cfg / "ea-config.json").write_text(json.dumps({"chat": {"frontend": "zulip", "shadow": "web"}}))
+    _run_setup(tmp_path, live, profile="collaborator")
+    jobs = _jobs((tmp_path / "crontab").read_text())
+    assert sum("scripts/webchat-backup.sh" in j for j in jobs) == 1
+    assert sum("style_analysis.py run --dispatch" in j for j in jobs) == 1
+
+    _run_setup(tmp_path, live, profile="collaborator")
+    jobs = _jobs((tmp_path / "crontab").read_text())
+    assert sum("scripts/webchat-backup.sh" in j for j in jobs) == 1
+    assert sum("style_analysis.py run --dispatch" in j for j in jobs) == 1
+
+
+def test_the_backup_line_follows_the_owners_chat_file_when_there_is_one(tmp_path):
+    """After the owner seed step an owner process takes the chat settings
+    from ~/.ea-private/chat.json, and the chat block left in ea-config.json
+    need not name the web chat. A check of ea-config.json alone found no
+    web chat there, and since the filter strips the backup line, a re-run
+    removed the line an install had and wrote none. The owner's file
+    decides when it is there: the line survives a re-run, and it goes when
+    that file says the web chat is off, whatever ea-config.json says. A
+    file someone else can write is not the owner's and is not read."""
+    live = _live_tree(tmp_path)
+    home = tmp_path / "home"
+    cfg = home / ".ea" / "config"
+    cfg.mkdir(parents=True)
+    priv = home / ".ea-private"
+    priv.mkdir(mode=0o700)
+    (cfg / "ea-config.json").write_text(json.dumps({"chat": {"frontend": "zulip"}}))
+    chat = priv / "chat.json"
+    chat.write_text(json.dumps({"frontend": "zulip", "shadow": "web", "web": {}}))
+    chat.chmod(0o600)
+    backup = "30 3 * * * /opt/ea-system/scripts/webchat-backup.sh >> /x/webchat-backup.log 2>&1\n"
+    (tmp_path / "crontab").write_text(EARLIER + backup)
+
+    for _ in range(2):
+        _run_setup(tmp_path, live, profile="collaborator")
+        jobs = _jobs((tmp_path / "crontab").read_text())
+        assert sum("scripts/webchat-backup.sh" in j for j in jobs) == 1, jobs
+
+    (cfg / "ea-config.json").write_text(json.dumps({"chat": {"frontend": "web"}}))
+    chat.write_text(json.dumps({"frontend": "zulip"}))
+    _run_setup(tmp_path, live, profile="collaborator")
+    assert "webchat-backup.sh" not in (tmp_path / "crontab").read_text()
+
+    chat.write_text(json.dumps({"frontend": "zulip"}))
+    chat.chmod(0o666)
+    _run_setup(tmp_path, live, profile="collaborator")
+    jobs = _jobs((tmp_path / "crontab").read_text())
+    assert sum("scripts/webchat-backup.sh" in j for j in jobs) == 1, jobs
+
+
 def test_a_rerun_keeps_the_seen_sets(tmp_path):
     """Step 6 wrote `{}` over state/seen-messages.json and
     seen-conversations.json on every run, so the re-run an upgrade asks

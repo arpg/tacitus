@@ -2413,6 +2413,127 @@
       ],
       "tier": "easy",
       "notes": "'fill in' terminology routes to fill-poll (polls + scheduling both fire from the existing when2meet keyword)"
+    },
+    {
+      "id": "calendar-question-001",
+      "message": "Do you see my lab meeting this Thursday 11/12?",
+      "is_thread_reply": false,
+      "expected": {
+        "modules": [
+          "calendar"
+        ],
+        "context": {
+          "needs_scheduling_engine": false
+        }
+      },
+      "tags": [
+        "calendar-question"
+      ],
+      "tier": "medium",
+      "notes": "a question about the calendar loads the scheduling guide as the calendar module; it is not a scheduling turn"
+    },
+    {
+      "id": "calendar-question-002",
+      "message": "What is on my calendar tomorrow?",
+      "is_thread_reply": false,
+      "expected": {
+        "modules": [
+          "calendar"
+        ],
+        "context": {
+          "needs_scheduling_engine": false
+        }
+      },
+      "tags": [
+        "calendar-question"
+      ],
+      "tier": "medium",
+      "notes": "listing a day needs the guide's read verbs, not the scheduling prompt"
+    },
+    {
+      "id": "calendar-question-003",
+      "message": "Am I free at 11:30 AM on 10/29?",
+      "is_thread_reply": false,
+      "expected": {
+        "modules": [
+          "calendar"
+        ],
+        "context": {
+          "needs_scheduling_engine": false
+        }
+      },
+      "tags": [
+        "calendar-question"
+      ],
+      "tier": "medium",
+      "notes": "a free/busy question with no one to meet is a calendar read"
+    },
+    {
+      "id": "calendar-question-mail-001",
+      "message": "did you see the email about the faculty meeting?",
+      "is_thread_reply": false,
+      "expected": {
+        "modules": [
+          "calendar"
+        ],
+        "context": {
+          "needs_scheduling_engine": false
+        }
+      },
+      "tags": [
+        "calendar-question"
+      ],
+      "tier": "medium",
+      "notes": "a mail question that names a meeting matches the loose calendar pattern; it must not become scheduling, which alone would move it to the scheduling prompt"
+    },
+    {
+      "id": "calendar-question-mail-002",
+      "message": "do you have the notes from yesterday's call?",
+      "is_thread_reply": false,
+      "expected": {
+        "modules": [
+          "calendar"
+        ],
+        "context": {
+          "needs_scheduling_engine": false
+        }
+      },
+      "tags": [
+        "calendar-question"
+      ],
+      "tier": "medium",
+      "notes": "same: the guide is extra text, the turn stays on the full prompt"
+    },
+    {
+      "id": "calendar-question-sched-001",
+      "message": "am I free Friday at 2 to meet with Sam?",
+      "is_thread_reply": false,
+      "expected": {
+        "modules": [
+          "scheduling"
+        ],
+        "context": {
+          "needs_scheduling_engine": true
+        }
+      },
+      "tags": [
+        "calendar-question"
+      ],
+      "tier": "medium",
+      "notes": "a scheduling ask that also asks about the calendar keeps the one-module scheduling set"
+    },
+    {
+      "id": "calendar-question-write-001",
+      "message": "put it on my calendar for Monday",
+      "is_thread_reply": false,
+      "expected": {
+        "modules": []
+      },
+      "tags": [
+        "calendar-question"
+      ],
+      "tier": "medium",
+      "notes": "a bare calendar write is neither module"
     }
   ],
   "build_claude_md_cases": [
@@ -2668,6 +2789,26 @@
         ]
       },
       "notes": "Webfetch keeps web reading section"
+    },
+    {
+      "id": "claude-md-011",
+      "needed_modules": [
+        "calendar"
+      ],
+      "assertions": {
+        "must_contain": [
+          "## Calendars and scheduling",
+          "## Your role"
+        ],
+        "must_not_contain": [
+          "## Web page reading",
+          "## Usage tracking"
+        ],
+        "must_contain_replacements": [
+          "*Web reading*"
+        ]
+      },
+      "notes": "The calendar module loads the scheduling guide"
     }
   ]
 }

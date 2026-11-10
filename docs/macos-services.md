@@ -70,6 +70,12 @@ evaluates them as shell.
    missing**. Run before step 2, it would freeze the template values, and the
    bot would keep reading them. To re-seed after a chat change: delete
    `~/.ea-private/chat.json` and re-run the installer.
+   Step 3 never asks a question (it runs two sudo hops down, where a typed
+   answer does not arrive): a value the seed must confirm comes as a flag
+   it passes through (`--calendar-account <addr>`, `--profile-name "<name>"`,
+   `--calendar-id`, the `--chat-*` flags of `owner_trust.py seed`), or you
+   run `python3 preprocessor/owner_trust.py seed` at a terminal first. A
+   missing value stops the installer before step 4 and prints both forms.
 4. `sudo bash deploy/enable-mail-mediation.sh` (macOS-aware): turns the flag
    on, self-tests the ea-bot → mediator path, then makes the tokens
    owner-only.
@@ -123,6 +129,13 @@ tail -30 ~/.ea-private/logs/org.ea-system.ea-chat-bot.launchd.log
 **Restart by hand:** `sudo launchctl kickstart -k system/org.ea-system.ea-chat-bot`
 **Stop until next boot:** `sudo launchctl bootout system/org.ea-system.ea-chat-bot`
 **Start again:** `sudo launchctl bootstrap system /Library/LaunchDaemons/org.ea-system.ea-chat-bot.plist`
+
+**`Bootstrap failed: 5: Input/output error`.** The old instance is still
+being torn down (the bot drains in-flight work for up to 80 s after its
+SIGTERM) and launchd refuses a second copy of the label until it is gone.
+Wait until `sudo launchctl print system/<label>` says the service could
+not be found, then run the `bootstrap` line again. The installer's step 7
+and `deploy/macos/launchd-reload.sh` do this wait for you.
 
 **The bot runs old code.** Compare `cat /opt/ea-system/.deployed-commit` with
 `git rev-parse --short HEAD`. If they differ, `bash deploy/macos/deploy.sh`. If
