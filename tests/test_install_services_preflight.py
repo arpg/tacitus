@@ -39,6 +39,7 @@ def _host(tmp_path: Path, *, git: bool, python_ok: bool, sudo_stderr: str = ""):
     (repo / "preprocessor").mkdir()
     shutil.copy(SCRIPT, repo / "deploy" / "macos" / "install-services.sh")
     (repo / "deploy" / "macos" / "ea-service-run.sh").write_text("#!/bin/bash\n")
+    (repo / "deploy" / "macos" / "launchd-reload.sh").write_text("#!/bin/bash\n")
     (repo / "preprocessor" / "owner_trust.py").write_text("")
     (repo / "preprocessor" / "ea_config.py").write_text("")
     if git:
