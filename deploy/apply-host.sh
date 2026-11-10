@@ -34,6 +34,15 @@ esac
 # The root scripts, in the order they run, each with what it does in plain
 # words. Only these run; any other fix is printed for you to do by hand.
 ORDER="harden-permissions enable-mail-mediation pin-auth-dir enable-resident-netpolicy ssh-deny-resident stage-proc-hidepid"
+
+# On macOS the services are LaunchDaemons that deploy/macos/install-services.sh
+# writes, and five of the six scripts have no macOS form: they call systemctl,
+# nft, bind mounts, the sshd drop-in directory or /proc, and stop part-way or
+# change the wrong thing. Here only mail mediation runs; the audit's findings
+# for the others are printed as not available, not as steps.
+OS="$(uname -s)"
+RUNNABLE="$ORDER"
+[ "$OS" = Darwin ] && RUNNABLE="enable-mail-mediation"
 what(){
   case "$1" in
     harden-permissions)        echo "runs your services from /opt with your private settings files, and denies cron to the EA user" ;;
@@ -76,8 +85,14 @@ if [ -z "$before" ]; then
 fi
 
 todo=""
+unavailable=""
 for s in $ORDER; do
-  if printf '%s\n' "$before" | awk -F'\t' -v s="$s" '$2 == s' | grep -q .; then todo="$todo $s"; fi
+  if printf '%s\n' "$before" | awk -F'\t' -v s="$s" '$2 == s' | grep -q .; then
+    case " $RUNNABLE " in
+      *" $s "*) todo="$todo $s" ;;
+      *) unavailable="$unavailable $s" ;;
+    esac
+  fi
 done
 
 if [ -n "$todo" ]; then
@@ -87,13 +102,27 @@ if [ -n "$todo" ]; then
     printf '%s\n' "$before" | awk -F'\t' -v s="$s" '$2 == s {print "      because: " $3}'
   done
 fi
+if [ -n "$unavailable" ]; then
+  bold "Not available on $OS (no macOS form of these scripts yet)"
+  for s in $unavailable; do
+    echo "  $s: $(what "$s")"
+    printf '%s\n' "$before" | awk -F'\t' -v s="$s" '$2 == s {print "      the audit says: " $3}'
+  done
+  echo "  The macOS root step is  sudo bash <your checkout>/deploy/macos/install-services.sh ;"
+  echo "  the audit's warnings for these are expected on macOS."
+fi
 manual="$(printf '%s\n' "$before" | awk -F'\t' '$2 == "-"')"
 if [ -n "$manual" ]; then
   bold "Not fixed by this command (do these by hand)"
   printf '%s\n' "$manual" | awk -F'\t' '{print "  " $1 ": " $3; if ($4 != "") print "      fix: " $4}'
 fi
 [ "$PLAN" = 1 ] && { echo; echo "  (--plan: nothing changed)"; exit 0; }
-[ -n "$todo" ] || exit 1
+if [ -z "$todo" ]; then
+  # Nothing this command can run here: every finding is by hand or not
+  # available on this OS. That is the expected state of a macOS install.
+  [ -z "$manual" ] && [ -n "$unavailable" ] && exit 0
+  exit 1
+fi
 
 failed=""
 for s in $todo; do
