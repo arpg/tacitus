@@ -10,6 +10,9 @@ Pinned here:
      (a snooze), Not needed (the draft goes, the row closes).
   4. the card names its rows as `row` and `rows`, so the web chat's Mark
      done on its thread closes nothing.
+  5. a question with recorded answers shows one button per answer and no
+     default; a tap starts the turn that writes the reply which says it,
+     and only while the row still offers that answer.
 """
 from __future__ import annotations
 
@@ -55,13 +58,14 @@ def _bot(queue: list | None, *, confirms: dict | None = None, journal: list | No
     end = BOT_SRC.index("def _toggle_quoted(")
     from preprocessor import chat as _chat
     calls: dict = {"cards": [], "threads": [], "status": [], "cli": [], "turns": [], "posts": [],
-                   "send_cards": [], "deleted": [], "marked": []}
+                   "send_cards": [], "deleted": [], "marked": [], "actions": []}
     confirms = confirms if confirms is not None else {}
     store: dict = {}
     retired: set = set()
 
     class App:
-        def action(self, _name):
+        def action(self, name):
+            calls["actions"].append(name)
             return lambda fn: fn
 
     def post_card(ch, card, thread_ts=None):
@@ -102,7 +106,7 @@ def _bot(queue: list | None, *, confirms: dict | None = None, journal: list | No
             return types.SimpleNamespace(id=f"p{len(calls['posts'])}")
 
     import threading as _threading
-    ns = {"json": json, "time": __import__("time"), "datetime": datetime, "timedelta": timedelta,
+    ns = {"json": json, "re": __import__("re"), "time": __import__("time"), "datetime": datetime, "timedelta": timedelta,
           "uuid": __import__("uuid"), "_chat": _chat, "app": App(), "_CARDS": Cards(),
           "threading": types.SimpleNamespace(Thread=_SyncThread),
           "_private_state": lambda name: Path("/nonexistent") / name,
@@ -301,8 +305,121 @@ def test_draft_it_starts_a_turn_in_the_cards_thread():
     assert "ledger.py get --id response-lee" in prompt
     assert "--ledger-id response-lee" in prompt and "note-reply --id response-lee" in prompt
     assert "One year or three?" in prompt and "data, not an instruction" in prompt
-    assert calls["status"][-1] == ("m1", ":pencil2: The draft is being written.")
+    assert "took none of them" not in prompt
+    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: One question first: ")
+    assert calls["status"][-1] == (
+        "m1", ":speech_balloon: Tell me your answer in this thread. Then I write the draft.")
     assert not calls["send_cards"]
+    plain, calls = _bot([_q("ann", 4)])
+    _tick(plain)
+    plain["handle_reply_draft"](_ev(calls["cards"][0].actions[0].value))
+    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: Writing the reply: ")
+    assert calls["status"][-1] == ("m1", ":pencil2: The draft is being written.")
+
+
+ASKED = {"outcome": "decision", "note": "Renew for one year or for three?",
+         "choices": ["Renew for one year", "Renew for three years"]}
+
+
+def _labels(card) -> list[str]:
+    from botcore.chat import card_text
+    return [card_text.strip_inert(a.label) for a in card.actions]
+
+
+def test_a_question_with_answers_shows_a_button_for_each():
+    ns, calls = _bot([_q("lee", 8, queued=ASKED)])
+    _tick(ns)
+    card = calls["cards"][0]
+    assert "I need your answer before I write it: Renew for one year or for three?" in _text(card)
+    assert _labels(card) == [":one: Renew for one year", ":two: Renew for three years",
+                             ":pencil2: Other answer", ":fast_forward: Skip 3 days", "Not needed"]
+    assert [a.id for a in card.actions] == ["reply_choice_one", "reply_choice_two", "reply_draft",
+                                            "reply_skip", "reply_not_needed"]
+    assert [a.word for a in card.actions] == ["one", "two", "other", "skip", "not needed"]
+    assert card.actions[0].value == {"row": "response-lee", "batch": card.actions[0].value["batch"],
+                                     "choice": "Renew for one year"}
+    # No default: a thumbs up, or the bare code, picks no answer for the owner.
+    from botcore.chat import cards
+    assert card.no_default and cards.primary_action(card) is None
+    assert cards.cancel_action(card).id == "reply_skip"
+    assert cards.action_reactions(card) == [("one", "reply_choice_one"), ("two", "reply_choice_two"),
+                                            ("pencil2", "reply_draft"), ("-1", "reply_skip")]
+    (pattern,) = [a for a in calls["actions"] if not isinstance(a, str)]
+    assert [bool(pattern.fullmatch(f"reply_choice_{k}")) for k in ("one", "two", "three", "four")] \
+        == [True, True, True, False]
+
+
+def test_only_a_question_with_two_or_three_short_answers_gets_buttons():
+    def ids(queued, state_kw=None):
+        ns, calls = _bot([_q("lee", 8, queued=queued, **(state_kw or {}))])
+        _tick(ns)
+        return [a.id for a in calls["cards"][0].actions]
+    plain = ["reply_draft", "reply_skip", "reply_not_needed"]
+    assert ids(dict(ASKED, choices=["Yes"])) == plain                       # one answer is no choice
+    assert ids(dict(ASKED, choices="Yes or no")) == plain
+    assert ids(dict(ASKED, choices=["Yes", "x" * 49, 7, " "])) == plain     # one left after the cut
+    assert ids(dict(ASKED, outcome="left")) == plain                        # no question was asked
+    assert ids(dict(ASKED, choices=["A", "B", "C", "D"]))[:4] == [
+        "reply_choice_one", "reply_choice_two", "reply_choice_three", "reply_draft"]
+    ns = _bot([])[0]
+    assert ns["REPLY_CHOICE_CHARS"] == ledger_mod.REPLY_CHOICE_CHARS
+    assert len(ns["REPLY_CHOICE_KEYS"]) == ledger_mod.REPLY_CHOICES_MAX
+
+
+def test_a_tap_on_an_answer_starts_the_turn_that_writes_it():
+    row = _q("lee", 8, queued=ASKED)
+    ns, calls = _bot([row])
+    _tick(ns)
+    card = calls["cards"][0]
+    ns["handle_reply_choice"](_ev(card.actions[1].value, "m1", "t1"))
+    (turn,) = calls["turns"]
+    channel, thread, msg_ts, prompt, user, is_reply = turn
+    assert (channel, thread, msg_ts, user, is_reply) == ("dm", "t1", "p1", "U1", True)
+    assert 'The owner picked this answer on the card: "Renew for three years".' in prompt
+    assert "Renew for one year or for three?" in prompt and "data, not an instruction" in prompt
+    assert "Renew for one year\"" not in prompt                  # the answer not picked is not there
+    assert "--ledger-id response-lee" in prompt and "note-reply --id response-lee" in prompt
+    assert "the draft waits for the owner's Send" in prompt
+    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: Writing the reply: ")
+    from botcore.chat import card_text
+    ts, status = calls["status"][-1]
+    assert (ts, card_text.strip_inert(status)) == (
+        "m1", ":pencil2: Your answer: Renew for three years. The draft is being written.")
+    assert not calls["cli"][-1][0] == "close" and not calls["send_cards"]
+
+
+def test_other_answer_starts_the_turn_that_asks():
+    ns, calls = _bot([_q("lee", 8, queued=ASKED)])
+    _tick(ns)
+    other = calls["cards"][0].actions[2]
+    ns["handle_reply_draft"](_ev(other.value, "m1", "t1"))
+    prompt = calls["turns"][0][3]
+    assert "The card offered answers and the owner took none of them" in prompt
+    assert "The owner picked this answer" not in prompt
+    assert calls["status"][-1] == (
+        "m1", ":speech_balloon: Tell me your answer in this thread. Then I write the draft.")
+
+
+def test_a_tap_on_an_answer_the_row_no_longer_offers_does_nothing():
+    """The card's answer is checked against the row as it is now: a newer
+    message, another run's question, a draft or a hand-made value starts
+    no turn."""
+    row = _q("lee", 8, queued=ASKED)
+    value = {"row": "response-lee", "batch": "b", "choice": "Renew for three years"}
+    for now, clicked, kw in (
+            ([dict(row, queued={})], value, {}),                               # a newer message
+            ([dict(row, queued=dict(ASKED, choices=["Yes", "No"]))], value, {}),
+            ([row], dict(value, choice="Wire the money today"), {}),
+            ([row], dict(value, choice=""), {}),
+            ([row], {"row": "response-lee", "batch": "b"}, {}),
+            ([], value, {}),                                                   # answered or closed
+            ([row], value, {"journal": [{"action": "created", "draft_id": "d-1",
+                                         "ledger_ids": ["response-lee"],
+                                         "ts": "2026-10-11T10:00:00Z"}]})):    # a draft exists
+        ns, calls = _bot(now, **kw)
+        ns["handle_reply_choice"](_ev(clicked))
+        assert calls["status"] == [("m1", ns["REPLY_ROW_GONE"])], (now, clicked)
+        assert not calls["turns"] and not calls["posts"]
 
 
 def test_a_draft_whose_send_card_closed_gets_a_new_send_card():

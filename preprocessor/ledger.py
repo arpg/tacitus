@@ -1203,7 +1203,8 @@ def cmd_note_reply(args) -> int:
     a decision asked of the user, or nothing to send), so the next run
     does not do it again. The record stands until the other side writes
     again."""
-    rec = note_reply(args.id, args.outcome, draft_id=args.draft_id or "", note=args.note or "")
+    rec = note_reply(args.id, args.outcome, draft_id=args.draft_id or "", note=args.note or "",
+                     choices=args.choice or ())
     if rec is None:
         _output({"error": f"Entry not found, or it names no message to answer: {args.id}"})
         return 1
@@ -2037,16 +2038,34 @@ def reply_backlog(rows: list[dict], today=None, *, draft_convs=(), zone=None,
 
 
 REPLY_OUTCOMES = ("drafted", "decision", "left", "escalated")
+REPLY_CHOICES_MAX, REPLY_CHOICE_CHARS = 3, 48
+
+
+def reply_choices(choices) -> list[str]:
+    """The answers a decision offers the user, as the row keeps them: each
+    on one line, no repeats, REPLY_CHOICES_MAX at most. An answer longer
+    than REPLY_CHOICE_CHARS is dropped, never cut: a button shows the whole
+    of what its click says. One answer alone is no choice: []."""
+    out: list[str] = []
+    for c in choices or ():
+        text = " ".join(str(c or "").split())
+        if text and len(text) <= REPLY_CHOICE_CHARS \
+                and text.lower() not in (o.lower() for o in out):
+            out.append(text)
+    return out[:REPLY_CHOICES_MAX] if len(out) > 1 else []
 
 
 def note_reply(entry_id: str, outcome: str, *, draft_id: str = "", note: str = "",
-               inbound: str = "", at: str = "", db_path: Path | None = None) -> dict | None:
+               choices=(), inbound: str = "", at: str = "",
+               db_path: Path | None = None) -> dict | None:
     """Record what a run did about the reply a row owes, as the row's
     `reply_queue`: the message it was about (`inbound`, when the other
     side's last message came; read from the row when not given), the
     outcome (REPLY_OUTCOMES), and the draft id or the line shown to the
-    user. reply_backlog hands the record back as `queued` until a newer
-    message comes. None when the row is missing or names no message."""
+    user. A decision may carry `choices`, the answers the user can pick
+    from (reply_choices). reply_backlog hands the record back as `queued`
+    until a newer message comes. None when the row is missing or names no
+    message."""
     if outcome not in REPLY_OUTCOMES:
         raise ValueError(f"outcome must be one of {', '.join(REPLY_OUTCOMES)}")
     if not inbound:
@@ -2059,6 +2078,9 @@ def note_reply(entry_id: str, outcome: str, *, draft_id: str = "", note: str = "
         rec["draft_id"] = draft_id
     if note:
         rec["note"] = " ".join(str(note).split())[:300]
+    picks = reply_choices(choices) if outcome == "decision" else []
+    if picks:
+        rec["choices"] = picks
     return rec if set_metadata(entry_id, db_path, reply_queue=rec) else None
 
 
@@ -2703,6 +2725,10 @@ def main():
                              "left: nothing to send; escalated: handed to another lane")
     p_note.add_argument("--draft-id", help="The draft, when the outcome is drafted")
     p_note.add_argument("--note", help="The line shown to the user, or why nothing was sent")
+    p_note.add_argument("--choice", action="append",
+                        help="With decision: one answer the user can pick, a few words "
+                             f"({REPLY_CHOICE_CHARS} characters at most). Repeat for 2 or "
+                             f"{REPLY_CHOICES_MAX}; the Replies card shows each as a button")
 
     p_rq = sub.add_parser("reply-queue", help="List the replies that wait, oldest first",
                           allow_abbrev=False)

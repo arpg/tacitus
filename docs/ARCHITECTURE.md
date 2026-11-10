@@ -528,7 +528,13 @@ threads with no live Send card, each with where its reply stands (a draft
 whose Send card closed, a question for the owner, a meeting to place, no
 draft). "One by one" posts a card per thread in that card's thread.
 "Draft it" starts a turn there that writes the reply for that one row; for
-a draft that exists it posts a new Send card instead. "Skip" snoozes the
+a draft that exists it posts a new Send card instead. A question that a
+run recorded with answers (`reply_queue.choices`: two or three, 48
+characters at most, from the remote call's `choices` or `note-reply
+--choice`) shows one button per answer in place of "Draft it", and the
+card has no default action. A tap starts the same turn with that answer as
+the owner's decision; "Other answer" starts the turn that asks. The click
+is refused when the row no longer offers that answer. "Skip" snoozes the
 row for 3 days. "Not needed" deletes the row's draft and closes the row
 as the owner's word. The next day's card retires the cards of the day
 before, so one Replies card is live at a time

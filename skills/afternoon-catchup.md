@@ -100,7 +100,8 @@ reply with `create-reply --message-id <message_id> --conversation-id
 <conversation_id> --ledger-id <id>`, or write one line under "Pending
 your response" when a rail applies or only the user knows the answer.
 Record each outcome with `ledger.py note-reply --id <id> --outcome
-drafted|decision|left`. Skip this step when the list is empty.
+drafted|decision|left` (a decision with two or three short answers takes
+a `--choice` for each). Skip this step when the list is empty.
 
 ### 5. Update state (do this BEFORE writing the update)
 

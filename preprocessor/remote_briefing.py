@@ -710,8 +710,9 @@ BACKLOG_SCHEMA = {"type": "object", "additionalProperties": False, "properties":
         "type": "object", "additionalProperties": False,
         "properties": {"ref": {"type": "string"},
                        "action": {"type": "string", "enum": ["draft", "decide", "leave"]},
-                       "text": {"type": "string"}},
-        "required": ["ref", "action", "text"]}}},
+                       "text": {"type": "string"},
+                       "choices": {"type": "array", "items": {"type": "string"}}},
+        "required": ["ref", "action", "text", "choices"]}}},
     "required": ["replies"]}
 
 BACKLOG_PROMPT = """You clear a professor's reply backlog for his assistant. Answer with JSON only, in the schema.
@@ -722,8 +723,9 @@ It is {now}.
 Each item is a mail thread where the other side wrote last and he has not answered; `waiting_days` says for how long. `thread` is its last messages, oldest first, and `own` marks his. Give every ref exactly one answer.
 
 - draft: a reply he would send that the thread already answers: a yes, a thanks, an answer he gave before, a link or a form, an intro, a meeting he already agreed. `text` is what the reply must say, in one or two sentences. Never answer a question only he can answer, and never repeat their own message back to them.
-- decide: he must choose first: money, a contract or a legal matter; a dean or a program officer; a decline; a question only he can answer; work that must be done before the reply. `text` is the question for him in one line, with the choices when the thread gives them.
+- decide: he must choose first: money, a contract or a legal matter; a dean or a program officer; a decline; a question only he can answer; work that must be done before the reply. `text` is the question for him in one line, with the choices when the thread gives them. `choices` is the two or three answers he could give when the question has that few, each one whole in a few words ("Yes, I will review it", "No, not this term"); his pick becomes the reply.
 - leave: the thread needs no reply from him: the notes or the last action show it is settled, or the last message only informs. `text` says why in a few words.
+`choices` is an empty list for a draft, for a leave and for an open question.
 Write short plain sentences. Never write an em-dash. Use only the items given.
 
 {rules}"""
@@ -784,9 +786,9 @@ def backlog_refs(cands: dict[str, dict], taken: set[str]) -> list[str]:
 
 def ask_backlog(cands: dict[str, dict], refs: list[str], *, rules: str, now: datetime,
                 chat=None) -> dict[str, dict]:
-    """{ref: {"action", "text"}} from one remote call; a ref it invents or
-    repeats is dropped. Raises remote_llm.RemoteLLMError when it cannot
-    answer."""
+    """{ref: {"action", "text", "choices"}} from one remote call; a ref it
+    invents or repeats is dropped. Raises remote_llm.RemoteLLMError when
+    it cannot answer."""
     chat = chat or remote_llm.chat_json
     local = now.astimezone(_tz())
     system = BACKLOG_PROMPT.format(profile=_profile(), now=f"{local:%A %Y-%m-%d %H:%M}",
@@ -806,18 +808,29 @@ def ask_backlog(cands: dict[str, dict], refs: list[str], *, rules: str, now: dat
     return out
 
 
+def backlog_choices(choices) -> list[str]:
+    """The answers the model offers for its question, as the row keeps
+    them (ledger.reply_choices): post-clean text, two or three, each short
+    enough for a button. [] for anything else."""
+    if not isinstance(choices, list):
+        return []
+    return _ledger.reply_choices(_clean(c, 200) for c in choices if isinstance(c, str))
+
+
 def mark_queued(ledger_id: str, inbound: str, outcome: str, *, now: datetime,
-                draft_id: str = "", note: str = "") -> bool:
+                draft_id: str = "", note: str = "", choices=()) -> bool:
     """Record on the row what a run did about the reply it owes:
     `reply_queue` = the message it was about (`inbound`, when that message
-    came), the outcome (drafted, decision, left, escalated) and the text.
-    ledger.reply_backlog hands it back as `queued` until a newer message
-    comes, and no run works the row again while it stands."""
+    came), the outcome (drafted, decision, left, escalated), the text and
+    a decision's `choices`. ledger.reply_backlog hands it back as `queued`
+    until a newer message comes, and no run works the row again while it
+    stands."""
     if not ledger_id or not inbound:
         return False
     try:
         return bool(_ledger.note_reply(ledger_id, outcome, draft_id=draft_id, note=_clean(note, 300),
-                                       inbound=inbound, at=now.isoformat(timespec="seconds")))
+                                       choices=choices, inbound=inbound,
+                                       at=now.isoformat(timespec="seconds")))
     except Exception as e:
         print(f"remote_briefing: reply_queue not recorded on {ledger_id}: {str(e)[:160]}",
               file=sys.stderr)
@@ -830,7 +843,10 @@ def clear_backlog(cands: dict[str, dict], refs: list[str], *, rules: str, now: d
     """Work the queue refs: (entries in the shape of the plan's drafts,
     counts). A draft that passes the rails is made and recorded. A
     decision is recorded and shown, MAX_BACKLOG_DECISIONS a run; the rest
-    wait for the next run, unrecorded. A writer failure is not recorded
+    wait for the next run, unrecorded. The answers the model offers for
+    its own question are recorded with it (the Replies card shows them as
+    buttons); a decision that code makes (a rail, the writer's question)
+    carries none. A writer failure is not recorded
     either, so the next run tries again. A dry run makes and records
     nothing. When the remote model cannot answer, nothing is worked."""
     stats = {"asked": len(refs), "drafted": 0, "decisions": 0, "left": 0, "failed": 0,
@@ -849,7 +865,7 @@ def clear_backlog(cands: dict[str, dict], refs: list[str], *, rules: str, now: d
         if not dry_run:
             mark(c["ledger_id"], c["since"], outcome, now=now, **kw)
 
-    def decide(ref: str, text: str) -> None:
+    def decide(ref: str, text: str, choices=()) -> None:
         c = cands[ref]
         if stats["decisions"] >= MAX_BACKLOG_DECISIONS:
             stats["deferred"] += 1
@@ -857,7 +873,8 @@ def clear_backlog(cands: dict[str, dict], refs: list[str], *, rules: str, now: d
         stats["decisions"] += 1
         out.append({"ref": ref, "ok": False, "backlog": True,
                     "decision": f"{_clean(text, 170)} ({c['age_days']}d)"})
-        record(c, "decision", note=text)
+        picks = backlog_choices(choices)
+        record(c, "decision", note=text, **({"choices": picks} if picks else {}))
 
     for ref in refs:
         p, c = picks.get(ref), cands[ref]
@@ -869,7 +886,7 @@ def clear_backlog(cands: dict[str, dict], refs: list[str], *, rules: str, now: d
             record(c, "left", note=text)
             continue
         if p["action"] == "decide":
-            decide(ref, text)
+            decide(ref, text, p.get("choices"))
             continue
         why = rail(c, text)
         if why:

@@ -742,9 +742,11 @@ line; it never falls back to a Claude run.
   (`briefing-backlog`) answers each of the 8 oldest with draft, decide or
   leave. A draft passes the same rails and the same writer as the plan's
   drafts. A decision goes under "Needs you" with its age, at most 3 new
-  ones a run. Each outcome is recorded on the row (`reply_queue`), so no
-  run works the same message twice; a newer message from the other side
-  clears the record. A thread with a draft in the folder, kept mail and
+  ones a run; the two or three answers the model offers for its own
+  question are kept on the row and become buttons on the Replies card.
+  Each outcome is recorded on the row (`reply_queue`), so no run works
+  the same message twice; a newer message from the other side clears the
+  record. A thread with a draft in the folder, kept mail and
   a meeting to place are never drafted here. The post gets one line:
   how many replies are owed, how many have a draft, and the names of
   those owed for 3 days or more with no draft. At 5 days the ranker adds
