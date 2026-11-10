@@ -47,8 +47,18 @@ OWNER_HOME="$(dscl . -read "/Users/$OWNER" NFSHomeDirectory | awk '{print $2}')"
 EABOT_HOME="$(dscl . -read /Users/ea-bot NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
 [ -n "$EABOT_HOME" ] || { echo "ERROR: no ea-bot user; run scripts/install/setup-ea-user-macos.sh first." >&2; exit 1; }
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-EA_TREE="$EABOT_HOME/.ea"
 LIVE=/opt/ea-system
+# The script takes the repository from its own location, so run from the
+# deployed copy it would take $LIVE: a plain export with no .git and no
+# venv. Refuse that before anything is touched (2026-11-09: run from
+# $LIVE it picked a bare Homebrew python3 and failed at step 1, after the
+# chat check had already run on that interpreter).
+if [ ! -e "$REPO_DIR/.git" ]; then
+    echo "ERROR: $REPO_DIR is not a git checkout (no .git); this is the deployed copy, not the owner's repository." >&2
+    echo "       Run the script from the checkout: sudo bash <checkout>/deploy/macos/install-services.sh" >&2
+    exit 1
+fi
+EA_TREE="$EABOT_HOME/.ea"
 PRIV="$OWNER_HOME/.ea-private"
 BOT_ENV="$PRIV/bot.env"
 SECRETS="$PRIV/secrets.env"
@@ -60,6 +70,14 @@ for _py in "$REPO_DIR/.venv/bin/python3" "$OWNER_HOME/.local/share/ea-system/bin
     if [ -x "$_py" ]; then VENV_PY="$_py"; break; fi
 done
 [ -n "$VENV_PY" ] || { echo "ERROR: no python3 3.10+ for the services; run ./install.sh first." >&2; exit 1; }
+# The services import the packages of requirements.txt; a python3 that
+# lacks them (a bare Homebrew install) would pass every step and fail at
+# the first import. Probe one such package before anything is touched.
+if ! "$VENV_PY" -I -c 'import requests' 2>/dev/null; then
+    echo "ERROR: $VENV_PY has no 'requests': not an interpreter with requirements.txt installed." >&2
+    echo "       The services run on the checkout's venv (docs/macos-services.md): python3.14 -m venv .venv && .venv/bin/pip install -r requirements.txt" >&2
+    exit 1
+fi
 LAUNCHER=/usr/local/libexec/ea-service-run.sh
 SUDOERS=/etc/sudoers.d/ea-services
 # launchd labels: a new install uses the neutral prefix; an install
@@ -126,10 +144,17 @@ as_owner() {
 
 # The jobs this profile runs: the mediator always, the bot only with a
 # chat platform. A bot job left from an earlier profile is removed.
+# `feature chat` exits 1 for "off" and says nothing; a check that could
+# not run (a traceback, a sudo refusal) is not "off", and must not cost
+# the bot its job.
 JOBS="$MED"
-if as_owner "$VENV_PY" "$REPO_DIR/preprocessor/ea_config.py" feature chat >/dev/null 2>&1; then
+if chat_err="$(as_owner "$VENV_PY" "$REPO_DIR/preprocessor/ea_config.py" feature chat 2>&1 >/dev/null)"; then
     JOBS="$MED $BOT"
     echo "[services] the profile has a chat platform: the bot and the mediator"
+elif [ -n "$chat_err" ]; then
+    echo "ERROR: the chat check (ea_config.py feature chat) failed, so nothing was changed:" >&2
+    printf '%s\n' "$chat_err" | sed 's/^/       /' >&2
+    exit 1
 else
     echo "[services] no chat platform on this profile: the mediator only, no bot job"
     launchctl bootout "system/$BOT" 2>/dev/null || true
