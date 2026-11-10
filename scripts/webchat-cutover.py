@@ -89,6 +89,72 @@ FIXED = {"main": (wf.MAIN_ID, wf.MAIN_NAME, "main"),
 # A link to a file Zulip holds, as a message's Markdown writes it.
 _UPLOAD_LINK_RE = re.compile(r"\((?P<site>https?://[^\s()/]+)?(?P<path>/user_uploads/[^\s()]+)\)")
 SERVICE = "ea-chat-bot"
+ZULIP_BACKEND = "http://127.0.0.1:8080"   # where deploy/zulip publishes the server, on loopback
+
+
+def _platform() -> str:
+    return sys.platform
+
+
+def bot_label() -> str:
+    """The chat bot's LaunchDaemon label on this host (the legacy prefix
+    where that is what is installed), as the macOS installers read it."""
+    try:
+        import launchd_labels
+        return launchd_labels.label(SERVICE)
+    except ImportError:
+        return f"org.ea-system.{SERVICE}"
+
+
+def service_cmd(verb: str) -> str:
+    """The owner's command that stops, starts or restarts the bot on this
+    host. On macOS a stopped job is booted out (KeepAlive would restart a
+    stopped one), so "start" is a bootstrap of its plist, not a kickstart,
+    which cannot start an unloaded job; and the label is this install's
+    (2026-11-09: the printed `org.ea-system` kickstart failed on an install
+    under the legacy prefix whose job the owner had booted out)."""
+    if _platform() == "darwin":
+        label = bot_label()
+        return {"stop": f"sudo launchctl bootout system/{label}",
+                "start": f"sudo launchctl bootstrap system /Library/LaunchDaemons/{label}.plist",
+                "restart": f"sudo launchctl kickstart -k system/{label}"}[verb]
+    return f"sudo systemctl {verb} {SERVICE}"
+
+
+def bot_python_hint() -> str:
+    """Where the owner reads which Python the bot runs."""
+    if _platform() == "darwin":
+        return f"ProgramArguments in /Library/LaunchDaemons/{bot_label()}.plist names it"
+    return f"systemctl show -p ExecStart {SERVICE} names it"
+
+
+def zulip_port(zulip: dict) -> int | None:
+    """The tailnet port the Zulip server is published on: the port of the
+    zulip block's `site`, the URL the bot reaches it by (443 for a bare
+    https URL). None when the block names no site."""
+    site = str((zulip or {}).get("site") or "").strip()
+    if not site:
+        return None
+    u = urllib.parse.urlsplit(site)
+    try:
+        port = u.port
+    except ValueError:
+        return None
+    if not u.hostname:
+        return None
+    return port or {"https": 443, "http": 80}.get(u.scheme)
+
+
+def _zulip_block(priv: Path | None) -> dict:
+    """The zulip block of chat.json, whatever mode the block is in (after
+    the move it runs the web chat alone and load_install refuses it)."""
+    path = Path(priv or owner_trust.private_dir()) / owner_trust.CHAT_FILE
+    try:
+        chat = json.loads(owner_trust.read_owner_file(path))
+    except (OSError, ValueError, owner_trust.OwnerTrustError):
+        return {}
+    zulip = chat.get("zulip") if isinstance(chat, dict) else None
+    return zulip if isinstance(zulip, dict) else {}
 
 
 class CutoverError(Exception):
@@ -150,6 +216,7 @@ class Report:
     cards: int = 0
     failed: list = field(default_factory=list)   # registries the move could not write
     notify: dict = field(default_factory=dict)
+    zulip: dict = field(default_factory=dict)    # the chat block's zulip settings, for the teardown steps
 
 
 # reading the install
@@ -745,7 +812,7 @@ def apply(install: Install, primary: Any, *, log: Callable[[str], None] = print)
     is down. Raises CutoverError before the store is replaced when a step
     fails, with the store as it was."""
     from botcore.chat.shadow_frontend import ShadowFrontend
-    report = Report()
+    report = Report(zulip=dict(install.zulip))
     journal = Path(str(install.store) + "-journal")
     if journal.exists() and journal.stat().st_size:
         raise CutoverError(f"{journal} is there: the store was left mid-write. Start the bot "
@@ -816,24 +883,37 @@ def summary(report: Report) -> str:
         lines.append("  NOT moved (fix the file, then move it by hand or run apply again):")
         lines.extend(f"    {line}" for line in report.failed)
     lines += ["",
-             "Start the bot: sudo systemctl start ea-chat-bot (macOS: sudo launchctl kickstart -k "
-             "system/org.ea-system.ea-chat-bot), then open the web chat and run "
+             f"Start the bot: {service_cmd('start')}, then open the web chat and run "
              "python3 /opt/ea-system/scripts/ea-doctor.py.",
              ""]
-    return "\n".join(lines) + "\n" + teardown_text()
+    return "\n".join(lines) + "\n" + teardown_text(report.zulip)
 
 
-def teardown_text() -> str:
+def teardown_text(zulip: dict | None = None) -> str:
     """The owner's steps that take the Zulip server down, once the web chat
-    alone works (docs/zulip-switch.md, Uninstall Zulip)."""
-    return """Take Zulip down, once the web chat alone works (docs/zulip-switch.md, Uninstall Zulip).
+    alone works (docs/zulip-switch.md, Uninstall Zulip). The tailnet port
+    is the one the zulip block's `site` names; with no site the step says
+    how to find it rather than guessing one (2026-11-09: the fixed 8443 was
+    another service's port on one install, and Zulip was on 443)."""
+    port = zulip_port(zulip or {})
+    if port is not None:
+        publish = f""" 2. Stop publishing the server on your tailnet (port {port}):
+      sudo tailscale serve --https={port} off
+ 3. In the Tailscale admin console (Access controls), delete the rule and the
+    two tests that name tag:ea-host:{port}; keep the tag if other rules use it."""
+    else:
+        publish = f""" 2. Stop publishing the server on your tailnet. Its port could not be
+    determined (chat.json names no Zulip site): `tailscale serve status` lists
+    the published ports; the one whose proxy is {ZULIP_BACKEND} is Zulip's:
+      sudo tailscale serve --https=<that port> off
+ 3. In the Tailscale admin console (Access controls), delete the rule and the
+    two tests that name tag:ea-host:<that port>; keep the tag if other rules
+    use it."""
+    return f"""Take Zulip down, once the web chat alone works (docs/zulip-switch.md, Uninstall Zulip).
 Run these yourself, from your checkout; each step says what it removes.
  1. A last backup of the realm, kept as long as you want Zulip's own copy:
       deploy/zulip/backup.sh
- 2. Stop publishing the server on your tailnet (port 8443):
-      sudo tailscale serve --https=8443 off
- 3. In the Tailscale admin console (Access controls), delete the rule and the
-    two tests that name tag:ea-host:8443; keep the tag if other rules use it.
+{publish}
  4. The containers, their network and the volumes (the realm, every message):
       deploy/zulip/compose.sh down -v
     then the images: docker image ls | grep -i zulip, and docker image rm each.
@@ -842,7 +922,7 @@ Run these yourself, from your checkout; each step says what it removes.
  6. The server's env file (database, queue and cache passwords):
       rm ~/.ea-private/zulip.env
  7. The bot's API key: delete the ZULIP_API_KEY line from
-    ~/.ea-private/secrets.env, then sudo systemctl restart ea-chat-bot.
+    ~/.ea-private/secrets.env, then {service_cmd('restart')}.
  8. Optional, the bot's Zulip state: rm ~/.ea-private/zulip-queue.json
     ~/.ea-private/zulip-moves.json. Keep chat-cards.json: the web chat uses it.
     The zulip block in chat.json is kept for a switch back; delete it when
@@ -867,8 +947,7 @@ def zulip_primary(install: Install) -> Any:
         fe = ZulipFrontend(cfg, api_key=key, private_dir=install.priv)
     except ModuleNotFoundError as e:
         raise CutoverError(f"this Python has no {e.name!r} package: run the script with the "
-                           "Python the bot runs (systemctl show -p ExecStart ea-chat-bot names "
-                           "it)") from None
+                           f"Python the bot runs ({bot_python_hint()})") from None
     prof = fe.client.get_profile()
     if not isinstance(prof, dict) or prof.get("result") != "success":
         raise CutoverError(f"Zulip did not answer as the bot: {prof}")
@@ -892,7 +971,7 @@ def main(argv: list[str] | None = None, *, primary_factory: Callable[[Install], 
     sub.add_parser("teardown", help="print the steps that take Zulip down")
     a = ap.parse_args(argv)
     if a.cmd == "teardown":
-        print(teardown_text())
+        print(teardown_text(_zulip_block(priv)))
         return 0
     try:
         install = load_install(priv)
@@ -903,12 +982,12 @@ def main(argv: list[str] | None = None, *, primary_factory: Callable[[Install], 
             up = bot_up(install)
             if up:
                 print(f"\nThe bot is up ({up}): stop it before apply "
-                      "(sudo systemctl stop ea-chat-bot).")
+                      f"({service_cmd('stop')}).")
             return 0
         up = bot_up(install)
         if up and not a.while_running:
             print(f"webchat-cutover: the bot is up ({up}). Stop it first "
-                  "(sudo systemctl stop ea-chat-bot): while it runs it keeps the old store "
+                  f"({service_cmd('stop')}): while it runs it keeps the old store "
                   "open and writes into it, and those writes are lost when the new store takes "
                   "its place; it keeps the card registry in memory and writes it back over the "
                   "moved one; and it serves Zulip until it starts again on the new chat.json. "
@@ -927,7 +1006,7 @@ def main(argv: list[str] | None = None, *, primary_factory: Callable[[Install], 
         print(summary(report))
         if up:
             print("\nThe bot was up during the move: restart it now "
-                  "(sudo systemctl restart ea-chat-bot).")
+                  f"({service_cmd('restart')}).")
         return 1 if report.failed else 0
     except CutoverError as e:
         print(f"webchat-cutover: {e}", file=sys.stderr)
