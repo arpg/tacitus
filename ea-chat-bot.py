@@ -464,11 +464,18 @@ def _sudo_claude_cmd(claude_args: list[str], run_id: str = "",
 
     TWOCAPTCHA_API_KEY is not passed: no granted verb reads it, and the
     resident's own copy sits in ~/.ea/.env (docs/ea/reimbursement.md).
+
+    PATH puts ea-bot's own venv first, as run-agent.sh and ea-bot-shell.sh
+    do. The service's PATH leads with the owner's venv, which ea-bot cannot
+    enter (a private home), so without this a bare `python3` in a tool call
+    was whatever system interpreter came next, with none of
+    requirements.txt: on macOS every Google, requests and bs4 import failed.
     """
     env_vars = [
         f"HOME={EA_BOT_HOME}",
         f"EA_DIR={EA_DIR}",
-        f"PATH={os.environ.get('PATH', '/usr/bin:/usr/local/bin')}",
+        f"PATH={EA_BOT_SCRIPT_DIR}/.venv/bin:{EA_BOT_HOME}/.local/bin:"
+        f"{os.environ.get('PATH', '/usr/bin:/usr/local/bin')}",
         f"PYTHONPATH={os.environ.get('PYTHONPATH', '')}",
     ]
     if run_id:
@@ -659,11 +666,9 @@ def _run_claude_streaming(
     _RETRYABLE = ("500", "api_error", "Internal server error",
                   "529", "overloaded", "ECONNRESET", "ETIMEDOUT")
 
-    # Ensure venv python is on PATH for Claude subprocesses (macOS)
+    # sudo's own environment. Claude's PATH is the `env PATH=` that
+    # _sudo_claude_cmd sets, which overrides anything put here.
     _env = os.environ.copy()
-    _venv_bin = str(EA_BOT_SCRIPT_DIR / ".venv" / "bin")
-    if _venv_bin not in _env.get("PATH", ""):
-        _env["PATH"] = f"{_venv_bin}:{_env.get('PATH', '')}"
 
     for attempt in range(1, _max_retries + 1):
         t0 = time.monotonic()

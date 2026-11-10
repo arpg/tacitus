@@ -93,6 +93,7 @@ def test_the_connector_switch_follows_strict_mcp_config():
 def _sudo_builder():
     """The bot's _sudo_claude_cmd, run with stand-ins for its globals."""
     ns = {"os": os, "EA_BOT_HOME": "/home/ea-bot", "EA_DIR": "/home/ea-bot/.ea",
+          "EA_BOT_SCRIPT_DIR": Path("/home/ea-bot/ea-system"),
           "EA_BOT_USER": "ea-bot", "CLAUDE_BIN": "/home/ea-bot/.local/bin/claude",
           "_claude_cli": claude_cli, "_mediation_enabled": lambda: True}
     exec(_bot_fn("_sudo_claude_cmd"), ns)
@@ -130,6 +131,17 @@ def test_the_bot_lanes_pass_strict_mcp_config_without_a_value():
     assert 'REMOTE_ARM_ARGS = ("--tools", "Bash,Read,Write", "--bare")' in BOT_SRC
     # Every claude run in the bot goes through the sudo builder.
     assert BOT_SRC.count("_claude_cli.apply(") == 1
+
+
+def test_every_lane_runs_python_from_ea_bots_own_venv(monkeypatch):
+    """A tool call's bare `python3` is ea-bot's venv, never the service's
+    first PATH entry: that is the owner's venv, behind a home ea-bot cannot
+    enter, so the next system python3 answered, without requirements.txt."""
+    monkeypatch.setenv("PATH", "/home/owner/ea-system/.venv/bin:/usr/bin:/bin")
+    cmd = _sudo_builder()(["-p", "x"])
+    path = next(c for c in cmd if c.startswith("PATH=")).split("=", 1)[1].split(":")
+    assert path[:2] == ["/home/ea-bot/ea-system/.venv/bin", "/home/ea-bot/.local/bin"]
+    assert path[2:] == ["/home/owner/ea-system/.venv/bin", "/usr/bin", "/bin"]
 
 
 def test_no_lane_receives_the_captcha_key(monkeypatch):
