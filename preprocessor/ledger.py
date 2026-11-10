@@ -11,6 +11,7 @@ Usage:
     python3 ledger.py close --id <id> [--note <reason>] [--user-said "<words>" | --duplicate-of <id>]
     python3 ledger.py propose --id <id> --why "<why it looks done>"
     python3 ledger.py note-reply --id <id> --outcome drafted|decision|left [--draft-id <id>] [--note "<line>"]
+    python3 ledger.py reply-queue [--min-age <days>]
     python3 ledger.py proposals | reject --id <id> | closure-report [--days 30]
     python3 ledger.py get --id <id>
     python3 ledger.py list [--status open] [--type response_needed] [--stale <days>] [--limit 20]
@@ -1207,6 +1208,24 @@ def cmd_note_reply(args) -> int:
         _output({"error": f"Entry not found, or it names no message to answer: {args.id}"})
         return 1
     _output({"ok": True, "id": args.id, "reply_queue": rec})
+    return 0
+
+
+def cmd_reply_queue(args) -> int:
+    """The replies that wait now (reply_backlog on the live rows), oldest
+    first: the rows `--min-age` days old or more, with `owed` counting the
+    whole queue. The bot's Replies card reads it; the briefing's own copy
+    is as old as the run that made it."""
+    try:
+        import user_tz
+        zone = user_tz.zone()
+    except Exception:
+        zone = None   # the system's zone
+    queue = reply_backlog(get_open_entries(), draft_convs=None, zone=zone,
+                          cap=REPLY_BACKLOG_CAP)
+    owed = queue[0]["total"] if queue else 0
+    entries = [e for e in queue if e["age_days"] >= args.min_age]
+    _output({"owed": owed, "count": len(entries), "entries": entries})
     return 0
 
 
@@ -2685,6 +2704,11 @@ def main():
     p_note.add_argument("--draft-id", help="The draft, when the outcome is drafted")
     p_note.add_argument("--note", help="The line shown to the user, or why nothing was sent")
 
+    p_rq = sub.add_parser("reply-queue", help="List the replies that wait, oldest first",
+                          allow_abbrev=False)
+    p_rq.add_argument("--min-age", type=int, default=REPLY_DRAFT_DAYS,
+                      help="Only the rows this many days old or more")
+
     p_conf = sub.add_parser("confirm", help="The user confirmed a proposed row is done", allow_abbrev=False)
     p_conf.add_argument("--id", required=True)
     p_conf.add_argument("--actor", default="user")
@@ -2789,6 +2813,7 @@ def main():
         "close": cmd_close,
         "propose": cmd_propose,
         "note-reply": cmd_note_reply,
+        "reply-queue": cmd_reply_queue,
         "confirm": cmd_confirm,
         "reject": cmd_reject,
         "proposals": cmd_proposals,

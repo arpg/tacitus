@@ -432,6 +432,7 @@ RENDERERS = {
     "browser": _render_browser,
     "bulk": _render_plain,
     "close": _render_plain,
+    "replies": _render_plain,
     "room_picker": _render_room_picker,
     "room": _render_room_picker,
 }
