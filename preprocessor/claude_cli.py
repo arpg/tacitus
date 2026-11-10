@@ -66,6 +66,7 @@ import argparse
 import json
 import os
 import pwd
+import re
 import subprocess
 import sys
 import time
@@ -281,6 +282,42 @@ def no_connector_env(args) -> dict[str, str]:
     (a run that loads no connector), else {}. The sudo env builders add
     it to the run's environment."""
     return dict(NO_CONNECTORS_ENV) if "--strict-mcp-config" in list(args or ()) else {}
+
+
+def _dist_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def resident_venv_missing(venv, requirements) -> list[str] | None:
+    """The packages of `requirements` that ea-bot's venv does not hold;
+    None when there is no venv or the requirements cannot be read.
+
+    Read from the names of the venv's *.dist-info directories. The venv
+    is in ea-bot's home, so the owner reads the listing and never runs
+    that interpreter; a false listing changes only ea-bot's own PATH."""
+    try:
+        wanted = [m.group(0) for ln in Path(requirements).read_text().splitlines()
+                  if (m := re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", ln.strip()))]
+        venv = Path(venv)
+        sites = list(venv.glob("lib/python*/site-packages"))
+        if not sites or not (venv / "bin" / "python3").exists():
+            return None
+        have = {_dist_name(d.name.split("-", 1)[0]) for s in sites for d in s.glob("*.dist-info")}
+    except OSError:
+        return None
+    return [n for n in wanted if _dist_name(n) not in have]
+
+
+def resident_path_dirs(venv, local_bin, requirements) -> list[str]:
+    """The directories that lead the PATH of ea-bot's tool calls: its
+    venv's bin and its ~/.local/bin, when that venv holds every package
+    of `requirements`. Else none, and the service's PATH stands: a venv
+    made before a requirement was added lacks a package that the python3
+    further along the PATH can carry, and leading with it would take that
+    package from the lane."""
+    if resident_venv_missing(venv, requirements) != []:
+        return []
+    return [str(Path(venv) / "bin"), str(local_bin)]
 
 
 def plugin_dir_flags() -> list[str]:
