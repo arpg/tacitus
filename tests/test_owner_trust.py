@@ -525,7 +525,9 @@ def test_graph_token_reads_and_cache_writes(owner, monkeypatch, tmp_path):
     monkeypatch.setattr(gc, "CACHE_FILE", cache)
     gc._write_cache_file('{"AccessToken": {}}')
     assert json.loads(cache.read_text()) == {"AccessToken": {}}
-    assert stat.S_IMODE(cache.stat().st_mode) == 0o660
+    # The token file rule, as for the Google tokens: never group write.
+    assert stat.S_IMODE(cache.stat().st_mode) == ot.token_file_mode()[0]
+    assert not stat.S_IMODE(cache.stat().st_mode) & stat.S_IWGRP
     assert gc._read_auth_text(cache) == '{"AccessToken": {}}'
     linked = owner.auth / "example_token.txt"
     planted = _write(tmp_path / "planted", "eyJ.x.y", 0o600)
