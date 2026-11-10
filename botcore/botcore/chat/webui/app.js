@@ -530,7 +530,7 @@ function cancelId(card) {
 }
 
 async function act(msg, body, box) {
-  const controls = [...box.querySelectorAll('.card-actions button, .card-actions select')];
+  const controls = [...box.querySelectorAll('.card-actions button, .card-actions select, .card-actions input')];
   const note = box.querySelector('.card-note');
   controls.forEach((c) => { c.disabled = true; });
   note.textContent = 'Sending...';
@@ -581,20 +581,28 @@ function renderCard(msg) {
     sel.addEventListener('change', () => act(msg, { action_id: s.id, selected: sel.value }, box));
     row.append(sel);
   }
+  // An action with `ask` takes one line of the owner's words: the field is
+  // above the buttons, and an empty one is a plain press.
+  const ask = (c.actions || []).find((a) => a.ask);
+  const words = ask && oneLine(ask.ask, 60).replace(/^./, (ch) => ch.toUpperCase());
+  const line = ask && h('input', { class: 'card-ask', maxlength: 300, autocomplete: 'off', enterkeyhint: 'send',
+    'aria-label': words, placeholder: `${words} (optional)` });
+  const press = (a) => act(msg, { action_id: a.id, value: a.value ?? '', ...(a.ask ? { text: line.value.trim() } : {}) }, box);
+  if (line) row.append(line), line.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) press(ask); });
   const prim = primaryId(c, !c.no_default);
   const canc = cancelId(c);
   for (const a of c.actions || []) {
     const cls = a.id === prim ? 'btn primary' : a.id === canc ? 'btn plain' : 'btn';
     const btn = h('button', { type: 'button', class: cls + (a.style === 'danger' ? ' danger' : ''), 'data-action': a.id });
     inline(oneLine(a.label || a.word || a.id, 80, true), true, btn);
-    btn.addEventListener('click', () => act(msg, { action_id: a.id, value: a.value ?? '' }, box));
+    btn.addEventListener('click', () => press(a));
     row.append(btn);
   }
   if (row.firstChild) box.append(row);
   // A phone the bot does not let confirm cards (paired on the relay's own
   // origin) sees the buttons but cannot press them.
   const locked = Boolean(row.firstChild && S.me && S.me.card_actions === false);
-  if (locked) row.querySelectorAll('button, select').forEach((c) => { c.disabled = true; });
+  if (locked) row.querySelectorAll('button, select, input').forEach((c) => { c.disabled = true; });
   box.append(h('div', { class: 'card-note', 'aria-live': 'polite' }, locked ? noCards() : null));
   if (c.footer) box.append(cardText(c.footer, 'card-footer'));
   return box;

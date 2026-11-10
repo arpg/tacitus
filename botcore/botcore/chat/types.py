@@ -109,7 +109,9 @@ class ActionEvent:
     """One owner decision on a card, however it arrived.
 
     source is "button", "select", "reaction" or "code"; the core handles
-    all four the same way.
+    all four the same way. `text` is the line the owner added to an action
+    that takes one (CardAction.ask), on one line and cut by the frontend;
+    it is "" for any other action and for a click with no words.
     """
     action_id: str
     user_id: str
@@ -120,6 +122,7 @@ class ActionEvent:
     block_id: str = ""
     trigger_id: str = ""
     raw: dict = field(default_factory=dict)
+    text: str = ""
 
 
 @dataclass

@@ -668,6 +668,63 @@ def test_card_buttons_post_to_the_actions_route(app):
     assert not errors, errors
 
 
+def _reply_card(stub, thread_key):
+    """A Replies row card in a thread, as the bot posts it."""
+    import webui_stub_server as W
+    value = {"row": "response-example"}
+    return stub.add(W.DM, "", kind="card", thread_key=thread_key, event="message", card={
+        "kind": "replies", "title": ":inbox_tray: *Reply to the example lab*", "fields": [],
+        "lines": [], "body": "", "quoted": "",
+        "actions": [{"id": "reply_draft", "label": ":pencil2: Draft it", "value": value,
+                     "style": "primary", "word": "draft", "ask": "what the reply must say"},
+                    {"id": "reply_skip", "label": "Skip 3 days", "value": value, "style": "",
+                     "word": "skip", "ask": ""},
+                    {"id": "reply_not_needed", "label": "Not needed", "value": value,
+                     "style": "danger", "word": "not needed", "ask": ""}],
+        "select": None, "block_id": "", "footer": "", "fallback_text": "A reply waits",
+        "thread_ts": thread_key, "ea_channel": W.DM, "content_fingerprint": "",
+        "no_default": False})
+
+
+def test_an_action_that_asks_takes_a_line_of_the_owners_words(app):
+    """A card whose action takes a line shows one field above its buttons.
+    Enter in it, or the button, sends the words with that action; an empty
+    field is a plain press, and no other action carries the words."""
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    open_thread(page, "Draft a reply")
+    assert page.locator(".card .card-ask").count() == 0          # the Send card asks for none
+    tk = stub.messages[0]["thread_key"]
+    first = _reply_card(stub, tk)
+    box = page.locator(".card[data-kind='replies']")
+    field = box.locator(".card-actions input.card-ask")
+    expect(field).to_have_attribute("placeholder", "What the reply must say (optional)")
+    assert field.get_attribute("maxlength") == "300"
+    field.fill("  Say yes, after the 20th.  ")
+    field.press("Enter")
+    wait_for(lambda: stub.clicks)
+    assert stub.clicks == [{"channel": first["channel"], "id": first["id"],
+                            "action_id": "reply_draft", "value": {"row": "response-example"},
+                            "text": "Say yes, after the 20th."}]
+    expect(page.locator(".card.status:has-text('Done: reply_draft')")).to_be_visible()
+    second = _reply_card(stub, tk)
+    expect(box).to_have_count(1)
+    box.locator("button.primary").click()                        # no words: a plain press
+    wait_for(lambda: len(stub.clicks) == 2)
+    assert stub.clicks[1] == {"channel": second["channel"], "id": second["id"],
+                              "action_id": "reply_draft", "value": {"row": "response-example"},
+                              "text": ""}
+    expect(page.locator(".card.status:has-text('Done: reply_draft')")).to_have_count(2)
+    third = _reply_card(stub, tk)
+    box.locator("input.card-ask").fill("words for another action")
+    box.locator("button:has-text('Not needed')").click()
+    wait_for(lambda: len(stub.clicks) == 3)
+    assert stub.clicks[2] == {"channel": third["channel"], "id": third["id"],
+                              "action_id": "reply_not_needed",
+                              "value": {"row": "response-example"}}
+    assert not errors, errors
+
+
 def test_a_select_posts_the_option_chosen(app):
     page, stub, errors = app()
     open_thread(page, "Open a room")

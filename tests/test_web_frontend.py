@@ -282,7 +282,7 @@ def test_cards_are_stored_as_json_and_settle_to_a_status(tmp_path):
         assert row["kind"] == "card" and row["card"]["title"] == c.title
         assert row["card"]["actions"][0] == {"id": "approve_send", "label": "Send",
                                              "value": {"token": "t-1"}, "style": "primary",
-                                             "word": "send"}
+                                             "word": "send", "ask": ""}
         assert row["card"]["select"]["options"] == [["A", "a"], ["B", "b"]]
         assert f.update_card(ref, card(title="Changed"))
         assert f.store.message("dm", ref.id)["card"]["title"] == "Changed"
@@ -796,6 +796,29 @@ def test_a_card_click_dispatches_an_action_with_the_stored_value(fe):
     assert owner(fe, "POST", "/api/cards/dm/w999/actions", {"action_id": "approve_send"})[0] == 404
     fe.replace_card_with_status(ref, "Sent")
     assert owner(fe, "POST", path, {"action_id": "approve_send"})[0] == 400
+
+
+def test_a_card_click_carries_the_owners_line_only_for_an_action_that_asks(fe):
+    got, ev = catcher(fe)
+    ref = fe.post_card("dm", card(
+        actions=[CardAction("approve_send", "Draft it", {"row": "r1"}, "primary", "draft",
+                            ask="what the reply must say"),
+                 CardAction("pick", "Skip", {"row": "r1"}, "", "skip")]))
+    path = f"/api/cards/dm/{ref.id}/actions"
+    shown = fe.store.message("dm", ref.id)["card"]              # what the page gets
+    assert [a.get("ask", "") for a in shown["actions"]] == ["what the reply must say", ""]
+    for body, want in [
+            ({"action_id": "approve_send", "text": "  Say yes,\n after the 20th. "},
+             "Say yes, after the 20th."),
+            ({"action_id": "approve_send", "text": "x" * 500}, "x" * 300),
+            ({"action_id": "approve_send"}, ""),
+            ({"action_id": "approve_send", "text": ["not", "a", "line"]}, ""),
+            ({"action_id": "pick", "text": "this action takes no line"}, "")]:
+        ev.clear()
+        assert owner(fe, "POST", path, body)[0] == 200
+        assert ev.wait(5)
+        assert (got[-1].action_id, got[-1].text, got[-1].value) == \
+            (body["action_id"], want, {"row": "r1"})
 
 
 def test_an_upload_stores_the_file_and_dispatches_a_file_ref(fe, tmp_path, monkeypatch):

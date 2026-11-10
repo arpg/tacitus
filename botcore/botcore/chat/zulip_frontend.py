@@ -107,6 +107,7 @@ from .cards import (
     action_reactions,
     ConfirmationCard,
     parse_code,
+    parse_code_text,
     resolve_code,
     resolve_reaction,
 )
@@ -420,17 +421,21 @@ def code_action(msg: InboundMessage, registry: CardRegistry, owner_id: str,
     None otherwise, and always None for anyone but the owner and for the
     bot's own messages, before the registry is read. A code counts only in
     the topic (or DM) its card was posted in: a code typed anywhere else is
-    an ordinary message."""
+    an ordinary message. A word, a code and words after them is an action
+    only for an action that takes the owner's line (CardAction.ask); for
+    any other it is an ordinary message."""
     if not owner_id or msg.user_id != str(owner_id) or msg.user_id == str(self_id):
         return None
     parsed = parse_code(msg.text)
-    if not parsed or not msg.thread_key:
+    if not (parsed or parse_code_text(msg.text)) or not msg.thread_key:
         return None
     ev = resolve_code(msg.text, registry, msg.user_id, str(owner_id),
                       thread_key=msg.thread_key)
     if ev is not None:
         ev.raw = msg.raw
         return ("action", ev)
+    if not parsed:
+        return None
     row = registry.by_code(parsed[1], thread_key=msg.thread_key)
     if row is not None:
         return ("unknown", row)
@@ -546,8 +551,9 @@ def _legend_label(label: str) -> str:
 
 def render_card_actions(card: ConfirmationCard, code: str) -> str:
     """The legend for the reaction chips the bot puts on the card, then the
-    typed fallback: each action's word with the code. Each label is one
-    line of card text, cut at 80 characters."""
+    typed fallback: each action's word with the code, and for an action
+    that takes the owner's line (CardAction.ask) the reply that carries
+    it. Each label is one line of card text, cut at 80 characters."""
     by_id = {a.id: a for a in card.actions}
     chips = action_reactions(card)
     words = [_ct.one_line(a.word, 30) for a in card.actions if a.word]
@@ -558,6 +564,10 @@ def render_card_actions(card: ConfirmationCard, code: str) -> str:
     if words:
         lead = "Or reply" if chips else "Reply"
         lines.append(f"{lead} `<word> {code}` in this topic: " + ", ".join(words) + ".")
+        said = [f"`{_ct.one_line(a.word, 30)} {code} <{_ct.one_line(a.ask, 60)}>`"
+                for a in card.actions if a.word and a.ask]
+        if said:
+            lines.append("With your words: " + ", ".join(said) + ".")
     return "\n".join(lines) or f"Code **{code}**, in this topic."
 
 

@@ -31,12 +31,19 @@ from .types import CODE_ALPHABET, ActionEvent, MessageRef
 @dataclass
 class CardAction:
     """One choice on a card. `word` is the verb the owner types with the
-    code on a frontend without buttons ("send", "cancel", "send all")."""
+    code on a frontend without buttons ("send", "cancel", "send all").
+
+    `ask` marks an action the owner may add one line to, and names that
+    line ("what the reply must say"). A frontend with buttons opens a
+    field for it on the click; a frontend with codes takes the words
+    after the code. The line is ActionEvent.text. It is never required: a
+    reaction or a click with an empty field selects the action with none."""
     id: str
     label: str
     value: dict | str
     style: str = ""
     word: str = ""
+    ask: str = ""
 
 
 @dataclass
@@ -102,6 +109,13 @@ CODE_RE = re.compile(
     r"^\s*(?:(?P<word>[a-z][a-z ]{0,24}?)\s+)?(?P<code>[A-HJ-NP-Z2-9]{4,6})\s*[.!]?\s*$",
     re.IGNORECASE,
 )
+
+# A code with the owner's words after it, for an action that takes a line
+# (CardAction.ask): the code as one token of the reply, after an action
+# word of CODE_TEXT_WORDS words at most.
+CODE_TOKEN_RE = re.compile(r"^([A-HJ-NP-Z2-9]{4,6})[:,.!]?$", re.IGNORECASE)
+CODE_TEXT_WORDS = 4
+ACTION_TEXT_CHARS = 300
 
 DEFAULT_MAX_AGE_S = 7 * 86400
 
@@ -195,6 +209,31 @@ def parse_code(text: str) -> tuple[str | None, str] | None:
     return (_norm_word(word) if word else None, m.group("code").upper())
 
 
+def action_text(text) -> str:
+    """The owner's line for an action as the core gets it: on one line,
+    ACTION_TEXT_CHARS at most."""
+    return " ".join(str(text or "").split())[:ACTION_TEXT_CHARS].rstrip()
+
+
+def parse_code_text(text: str) -> list[tuple[str, str, str]]:
+    """Each way to read text as an action word, a code and the owner's
+    line after them: (word, upper-case code, line), the shortest word
+    first. A code is made of letters, so "not needed ABCD it is done"
+    reads two ways, and the caller takes the one whose code is a card's.
+    The word is required: "<code> looks wrong" in a card's topic reads no
+    way and stays a message."""
+    tokens = str(text or "").split()
+    out = []
+    for i in range(1, min(len(tokens) - 1, CODE_TEXT_WORDS) + 1):
+        if not (tokens[i - 1].isascii() and tokens[i - 1].isalpha()):
+            break
+        m = CODE_TOKEN_RE.match(tokens[i])
+        line = action_text(" ".join(tokens[i + 1:]).lstrip(":, "))
+        if m and line:
+            out.append((_norm_word(" ".join(tokens[:i])), m.group(1).upper(), line))
+    return out
+
+
 def _ref_key(channel: str, msg_id: str) -> str:
     return f"{channel}|{msg_id}"
 
@@ -254,7 +293,8 @@ class CardRegistry:
             "posted_at": ref.posted_at,
             "code": code.upper() if code else None,
             "actions": {a.id: {"value": a.value, "word": a.word,
-                               "style": a.style, "label": a.label}
+                               "style": a.style, "label": a.label,
+                               **({"ask": a.ask} if a.ask else {})}
                         for a in card.actions},
             "thread_ts": card.thread_ts,
             "ea_channel": card.ea_channel,
@@ -394,14 +434,15 @@ class CardRegistry:
 
 
 def _event_for(row: dict, action_id: str | None, user_id: str,
-               source: str) -> ActionEvent | None:
+               source: str, text: str = "") -> ActionEvent | None:
     if not action_id:
         return None
     action = (row.get("actions") or {}).get(action_id) or {}
     card = MessageRef(row["channel"], row["msg_id"],
                       row.get("thread_ts") or row["msg_id"], row.get("posted_at"))
     return ActionEvent(action_id=action_id, user_id=user_id, card=card,
-                       value=action.get("value", ""), source=source)
+                       value=action.get("value", ""), source=source,
+                       text=text if action.get("ask") else "")
 
 
 def resolve_reaction(row: dict | None, emoji_name: str, user_id: str,
@@ -435,20 +476,28 @@ def resolve_code(text: str, registry: CardRegistry, user_id: str,
     A bare code selects the primary action (none on a `no_default` card);
     a word before the code selects the action with that word. An unknown
     word resolves to None; the caller can tell that case apart with
-    parse_code. The reply must be in the thread the card was posted in
-    (`thread_key`).
+    parse_code. Words after the code are the owner's line for an action
+    that takes one (CardAction.ask); for any other action, a reply with
+    words after the code selects nothing and stays a message. The reply
+    must be in the thread the card was posted in (`thread_key`).
     """
     if not owner_id or user_id != owner_id:
         return None
-    parsed = parse_code(text)
-    if not parsed:
-        return None
-    word, code = parsed
-    row = registry.by_code(code, thread_key=thread_key)
+    parsed, said, row = parse_code(text), "", None
+    if parsed:
+        word, code = parsed
+        row = registry.by_code(code, thread_key=thread_key)
+    else:
+        for word, code, said in parse_code_text(text):
+            row = registry.by_code(code, thread_key=thread_key)
+            if row:
+                break
     if not row:
         return None
     items = _row_items(row)
     if word is None:
         return _event_for(row, _pick_primary(items, not row.get("no_default")), user_id, "code")
     aid = next((a for a, _s, w in items if w and _norm_word(w) == word), None)
-    return _event_for(row, aid, user_id, "code")
+    if said and not ((row.get("actions") or {}).get(aid) or {}).get("ask"):
+        return None
+    return _event_for(row, aid, user_id, "code", said)

@@ -1043,6 +1043,44 @@ def test_code_reply_consumed(tmp_path):
     assert react["message_id"] == 500 and react["emoji_name"] == "white_check_mark"
 
 
+def _asking_card():
+    return ConfirmationCard(kind="replies", title="A reply waits", no_default=True, actions=[
+        CardAction("reply_draft", "Draft it", {"row": "r1"}, "", "draft",
+                   ask="what the reply must say"),
+        CardAction("reply_skip", "Skip", {"row": "r1"}, "", "skip")])
+
+
+def test_the_legend_shows_the_reply_that_carries_the_owners_words(tmp_path):
+    fe, c = make(tmp_path)
+    fe.post_card(f"stream:{DM}", _asking_card())
+    code = fe.last_card_row["code"]
+    content = c.named("send_message")[-1]["content"]
+    assert (f"reply `<word> {code}` in this topic: draft, skip.\n"
+            f"With your words: `draft {code} <what the reply must say>`.") in content
+    assert zf.card_text_state(content) == ("live", "")
+    fe.post_card(f"stream:{DM}", _card())                       # no action takes a line
+    assert "With your words" not in c.named("send_message")[-1]["content"]
+
+
+def test_words_after_a_code_are_the_owners_line(tmp_path):
+    fe, _ = make(tmp_path)
+    rec = Recorder(fe)
+    fe.post_card(f"stream:{DM}", _asking_card())
+    code = fe.last_card_row["code"]
+    fe.handle_event(_code_event(f"draft {code.lower()} Say yes, after the 20th.", fe=fe))
+    assert rec.messages == []
+    assert [(a.action_id, a.source, a.text, a.value) for a in rec.actions] == [
+        ("reply_draft", "code", "Say yes, after the 20th.", {"row": "r1"})]
+    # An action that takes no line, an unknown word, another card's code:
+    # the owner wrote a message, and the EA gets it as one.
+    for n, text in enumerate((f"skip {code} until the grant is in", f"bogus {code} say yes",
+                              "draft WXYZ say yes", "please draft that reply today")):
+        fe.handle_event(_code_event(text, mid=600 + n, fe=fe))
+    assert len(rec.actions) == 1 and [m.text for m in rec.messages][-4:] == [
+        f"skip {code} until the grant is in", f"bogus {code} say yes",
+        "draft WXYZ say yes", "please draft that reply today"]
+
+
 def test_bare_code_selects_primary(tmp_path):
     fe, _ = make(tmp_path)
     rec = Recorder(fe)

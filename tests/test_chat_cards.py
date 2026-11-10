@@ -20,8 +20,10 @@ from chat.cards import (  # noqa: E402
     CardRegistry,
     ConfirmationCard,
     action_reactions,
+    action_text,
     cancel_action,
     parse_code,
+    parse_code_text,
     primary_action,
     resolve_code,
     resolve_reaction,
@@ -238,6 +240,80 @@ def test_resolve_code(tmp_path):
     assert resolve_code("hello there", reg, OWNER, OWNER, thread_key="1700000000.000100") is None
     reg.retire(_ref())
     assert resolve_code("ABCD", reg, OWNER, OWNER, thread_key="1700000000.000100") is None
+
+
+@pytest.mark.parametrize("text,want", [
+    ("draft ABCD say yes", [("draft", "ABCD", "say yes")]),
+    ("  Draft abcd: Say yes,\n but after the 20th. ",
+     [("draft", "ABCD", "Say yes, but after the 20th.")]),
+    ("other ABC2Z9, two years", [("other", "ABC2Z9", "two years")]),
+    ("draft ABCD : two years", [("draft", "ABCD", "two years")]),
+    # a code is made of letters, so a word can look like one: both readings
+    ("not needed ABCD it is done", [("not", "NEEDED", "ABCD it is done"),
+                                    ("not needed", "ABCD", "it is done")]),
+    ("one by one ABCD say yes", [("one by one", "ABCD", "say yes")]),
+    ("a b c d e ABCD say yes", []),                      # four words at most before the code
+    ("ABCD looks wrong to me", []),                      # no word before the code
+    ("ABCD 2 many", []),
+    ("re: ABCD say yes", []),
+    ("draft ABCD", []),                                  # a plain code reply: parse_code
+    ("draft ABCD   ", []),
+    ("draft ABC say yes", []),
+    ("", []),
+])
+def test_parse_code_text(text, want):
+    assert parse_code_text(text) == want
+
+
+def test_the_owners_line_is_one_line_of_300_characters():
+    assert action_text("  say yes\n\tand thanks  ") == "say yes and thanks"
+    assert action_text("word " * 100) == ("word " * 60).rstrip()
+    assert action_text(None) == "" and action_text(7) == "7"
+
+
+def _asking_card():
+    return ConfirmationCard(kind="replies", title="A reply waits", actions=[
+        CardAction("reply_draft", "Draft it", {"row": "r1"}, "primary", "draft",
+                   ask="what the reply must say"),
+        CardAction("reply_skip", "Skip", {"row": "r1"}, "", "skip"),
+    ])
+
+
+def test_words_after_the_code_are_the_owners_line(tmp_path):
+    """Only an action that asks for a line takes one. For any other
+    action the reply selects nothing, so it stays a message."""
+    reg = _registry(tmp_path)
+    reg.add(_ref(), _asking_card(), code="ABCD")
+    here = "1700000000.000100"
+    row = reg.by_ref("D_OWNER", "m1")
+    assert row["actions"]["reply_draft"]["ask"] == "what the reply must say"
+    assert "ask" not in row["actions"]["reply_skip"]
+    ev = resolve_code("draft abcd: Say yes,\nafter the 20th", reg, OWNER, OWNER, thread_key=here)
+    assert (ev.action_id, ev.source, ev.value) == ("reply_draft", "code", {"row": "r1"})
+    assert ev.text == "Say yes, after the 20th"
+    assert resolve_code("draft ABCD", reg, OWNER, OWNER, thread_key=here).text == ""
+    assert resolve_code("ABCD", reg, OWNER, OWNER, thread_key=here).text == ""
+    assert resolve_code("skip ABCD", reg, OWNER, OWNER, thread_key=here).text == ""
+    for text in ("skip ABCD until the grant is in", "bogus ABCD say yes",
+                 "ABCD say yes", "draft WXYZ say yes", "the draft ABCD say yes"):
+        assert resolve_code(text, reg, OWNER, OWNER, thread_key=here) is None, text
+    assert resolve_code("draft ABCD say yes", reg, "U_OTHER", OWNER, thread_key=here) is None
+    assert resolve_code("draft ABCD say yes", reg, OWNER, OWNER, thread_key="elsewhere") is None
+    # a reaction selects the action with no line
+    assert resolve_reaction(row, "check", OWNER, OWNER).text == ""
+
+
+def test_a_memory_click_carries_the_owners_line(tmp_path):
+    fe = _memory(tmp_path)
+    seen = []
+    fe.registry.action("reply_draft")(lambda ev: seen.append((ev.source, ev.text)))
+    card = _asking_card()
+    ref = fe.post_card("D_OWNER", card, thread_ts="1700000000.000100")
+    fe.card_registry.add(ref, card, code="ABCD")
+    fe.click(ref, "reply_draft", OWNER, text="say yes")
+    fe.click(ref, "reply_draft", OWNER)
+    assert fe.type_code("draft abcd say no", OWNER, ref.thread_key).text == "say no"
+    assert seen == [("button", "say yes"), ("button", ""), ("code", "say no")]
 
 
 def test_a_code_counts_only_in_its_cards_thread(tmp_path):
