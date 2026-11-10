@@ -33,6 +33,16 @@
 #   sudo bash deploy/macos/install-services.sh --status
 #   sudo bash deploy/macos/install-services.sh --remove   # leaves /opt and ~/.ea-private
 #
+# Step 3 cannot ask a question: it runs the seed two sudo hops down, where a
+# typed answer never arrives. A value the seed must confirm (a new owner-
+# trusted key on an upgrade, or a first seed) comes in as a flag, passed
+# through to `owner_trust.py seed`:
+#
+#   sudo bash deploy/macos/install-services.sh --calendar-account <addr> --profile-name "<name>"
+#
+# or the owner runs the seed at a terminal first (python3
+# preprocessor/owner_trust.py seed) and then the installer.
+#
 # Design and troubleshooting: docs/macos-services.md
 set -euo pipefail
 
@@ -97,6 +107,17 @@ status() {
     ls -l "$BOT_ENV" "$SECRETS" "$PRIV/chat.json" 2>&1 | sed 's/^/  /'
 }
 
+# Flags for the seed (step 3), passed through as given; see the header.
+SEED_ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --status|--remove) break ;;
+        --calendar-account|--calendar-id|--profile-name|--chat-*)
+            [ $# -ge 2 ] || { echo "ERROR: $1 needs a value." >&2; exit 2; }
+            SEED_ARGS+=("$1" "$2"); shift 2 ;;
+        *) echo "ERROR: unknown option $1 (see the header of $0)." >&2; exit 2 ;;
+    esac
+done
 if [ "${1:-}" = --status ]; then status; exit 0; fi
 if [ "${1:-}" = --remove ]; then
     for j in "$BOT" "$MED" "$UPD"; do
@@ -189,8 +210,20 @@ chown "$OWNER:$OWNER_GROUP" "$BOT_ENV.tmp"; chmod 600 "$BOT_ENV.tmp"
 mv -f "$BOT_ENV.tmp" "$BOT_ENV"
 
 echo "[services] 3/7  owner-private secrets and chat settings (seeded only when missing)"
-as_owner "$VENV_PY" "$REPO_DIR/preprocessor/owner_trust.py" seed --ea-dir "$EA_TREE" \
-    || { echo "ERROR: the owner-private seed failed; nothing after step 2 was changed" >&2; exit 1; }
+# stdin is /dev/null: the seed never prompts here (a prompt two sudo hops
+# down is never answered); a value it must confirm comes from SEED_ARGS.
+if ! as_owner "$VENV_PY" "$REPO_DIR/preprocessor/owner_trust.py" seed --ea-dir "$EA_TREE" \
+        ${SEED_ARGS[@]+"${SEED_ARGS[@]}"} </dev/null; then
+    cat >&2 <<EOF
+ERROR: the owner-private seed stopped: a value it must confirm was not given (see above).
+       This step cannot ask for it. Either run again with the value as a flag, for example
+         sudo bash $0 --calendar-account <addr> --profile-name "<name>"
+       or confirm it at a terminal as $OWNER, then run this installer again:
+         $VENV_PY $REPO_DIR/preprocessor/owner_trust.py seed --ea-dir $EA_TREE
+       Nothing after step 2 was changed.
+EOF
+    exit 1
+fi
 
 echo "[services] 4/7  harvested token file modes"
 as_owner "$VENV_PY" "$REPO_DIR/preprocessor/owner_trust.py" token-modes --ea-dir "$EA_TREE" \
