@@ -74,6 +74,8 @@ def test_a_job_that_never_goes_away_is_reported_with_the_command_to_run(tmp_path
     r = _run(bindir, plist, "--poll", "0.05", "--wait", "1", "--tries", "2")
     assert r.returncode == 1
     assert "still being torn down" in r.stderr
+    # A wait that timed out must not also say the instance exited.
+    assert "has exited" not in r.stdout
     assert "NOT loaded" in r.stderr
     assert f"sudo launchctl bootstrap system {plist}" in r.stderr
     calls = log.read_text().splitlines()
