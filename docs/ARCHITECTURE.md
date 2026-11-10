@@ -518,7 +518,25 @@ records the outcome on the row (`reply_queue`, cleared by a newer message)
 and adds one queue line to the post. The ladder is a draft at one day, a
 name on that line at three and a place in `today_top` at five. The Claude
 lane's skills do the same and record with `ledger.py note-reply`. The
-preprocessor also sets a snoozed row back to `open` on its day. Each project room with items
+preprocessor also sets a snoozed row back to `open` on its day.
+
+The bot puts the same queue in front of the owner once a day
+(`_post_reply_queue`, a router tick that runs with or without the
+resident): from 08:00 local and outside quiet hours it reads `ledger.py
+reply-queue --min-age 3` and posts one Replies card in the DM for the
+threads with no live Send card, each with where its reply stands (a draft
+whose Send card closed, a question for the owner, a meeting to place, no
+draft). "One by one" posts a card per thread in that card's thread.
+"Draft it" starts a turn there that writes the reply for that one row; for
+a draft that exists it posts a new Send card instead. "Skip" snoozes the
+row for 3 days. "Not needed" deletes the row's draft and closes the row
+as the owner's word. The next day's card retires the cards of the day
+before, so one Replies card is live at a time
+(`reply-queue-cards.json` in the owner-private dir). The card's buttons name
+their rows as `row` and `rows`, never `ledger_id`, so the web chat's Mark
+done on the Replies thread closes nothing.
+
+Each project room with items
 in the post then gets its slice in a new topic (`briefing_rooms.py`,
 switch `briefing_rooms`), posted only to rooms the owner's record names. An
 item's project is its ledger link, its filed thread, or the mail tagger's

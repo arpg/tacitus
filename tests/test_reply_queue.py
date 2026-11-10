@@ -202,6 +202,36 @@ def test_the_note_reply_verb(db, monkeypatch, capsys):
     assert ledger.main() == 1
 
 
+def test_the_reply_queue_verb_lists_the_live_queue_from_an_age(db, monkeypatch, capsys):
+    """The bot's Replies card reads the queue with `--min-age 3`; `owed`
+    counts every thread that waits, whatever its age."""
+    now = datetime.now(timezone.utc)
+
+    def brief(days: float) -> dict:
+        at = (now - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return {"thread_brief": {"needs_reply": True, "state": "needs-reply", "last_inbound": at,
+                                 "messages": [{"id": "m-in", "from": "pat@example.edu", "own": False,
+                                               "received": at, "gist": "A question."}]}}
+    ages = (("row-old", 9.5), ("row-mid", 4.5), ("row-new", 1.5))
+    for rid, days in ages:
+        _insert(db, rid, metadata=brief(days))
+    conn = sqlite3.connect(str(db))
+    for rid, _days in ages:
+        conn.execute("UPDATE ledger SET conversation_id = ? WHERE id = ?", (f"c-{rid}", rid))
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(sys, "argv", ["ledger.py", "reply-queue", "--min-age", "3"])
+    assert ledger.main() == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert out["owed"] == 3 and out["count"] == 2
+    assert [e["id"] for e in out["entries"]] == ["row-old", "row-mid"]
+    assert all(e["age_days"] >= 3 and e["queued"] == {} for e in out["entries"])
+    monkeypatch.setattr(sys, "argv", ["ledger.py", "reply-queue"])
+    assert ledger.main() == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert [e["id"] for e in out["entries"]] == ["row-old", "row-mid", "row-new"]
+
+
 # ── a snooze that ends ────────────────────────────────────────────────
 
 def test_a_snoozed_row_is_open_again_on_its_day(db):
