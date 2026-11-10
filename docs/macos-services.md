@@ -24,7 +24,10 @@ The port keeps the hardened behaviour, not the mechanism:
 
 `sudo bash deploy/macos/install-services.sh` (after the chat platform is
 configured; see "Order" below). Re-runnable. `--status` reports, `--remove`
-undoes (it leaves `/opt/ea-system` and `~/.ea-private`).
+undoes (it leaves `/opt/ea-system` and `~/.ea-private`). Run it from the
+owner's checkout (`~/ea-system`), never from `/opt/ea-system`: the script
+takes the repository from its own location, and the deployed copy has no
+`.git` and no venv. It refuses to run from there.
 
 | Path | Owner, mode | Role |
 |---|---|---|
