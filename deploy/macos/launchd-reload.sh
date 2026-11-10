@@ -43,6 +43,7 @@ waited=0
 while job_known; do
     if [ "$(date +%s)" -ge "$deadline" ]; then
         echo "  $LABEL: the old instance is still being torn down after ${WAIT}s" >&2
+        waited=0   # it has not exited: the line below would be false
         break
     fi
     sleep "$POLL"; waited=1
