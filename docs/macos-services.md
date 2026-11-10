@@ -121,6 +121,13 @@ tail -30 ~/.ea-private/logs/org.ea-system.ea-chat-bot.launchd.log
 **Stop until next boot:** `sudo launchctl bootout system/org.ea-system.ea-chat-bot`
 **Start again:** `sudo launchctl bootstrap system /Library/LaunchDaemons/org.ea-system.ea-chat-bot.plist`
 
+**`Bootstrap failed: 5: Input/output error`.** The old instance is still
+being torn down (the bot drains in-flight work for up to 80 s after its
+SIGTERM) and launchd refuses a second copy of the label until it is gone.
+Wait until `sudo launchctl print system/<label>` says the service could
+not be found, then run the `bootstrap` line again. The installer's step 7
+and `deploy/macos/launchd-reload.sh` do this wait for you.
+
 **The bot runs old code.** Compare `cat /opt/ea-system/.deployed-commit` with
 `git rev-parse --short HEAD`. If they differ, `bash deploy/macos/deploy.sh`. If
 they match, restart the bot.
