@@ -735,8 +735,24 @@ line; it never falls back to a Claude run.
   (`chat.load_frontend`) posts it by channel id. The EA post ends with
   "Also in project rooms" and each room as a link in the frontend's
   own syntax (`mention`).
+- **The reply queue.** After the plan, both runs work the replies the
+  user has owed for a day or more (`reply_backlog`, from
+  `ledger.reply_backlog`: one entry per thread, oldest first, age counted
+  from the other side's last message). One more remote call
+  (`briefing-backlog`) answers each of the 8 oldest with draft, decide or
+  leave. A draft passes the same rails and the same writer as the plan's
+  drafts. A decision goes under "Needs you" with its age, at most 3 new
+  ones a run. Each outcome is recorded on the row (`reply_queue`), so no
+  run works the same message twice; a newer message from the other side
+  clears the record. A thread with a draft in the folder, kept mail and
+  a meeting to place are never drafted here. The post gets one line:
+  how many replies are owed, how many have a draft, and the names of
+  those owed for 3 days or more with no draft. At 5 days the ranker adds
+  the reply to today's queue. The pass does not run when the plan call
+  failed.
 - **The afternoon update** picks what is new since the morning and what is
-  still pending. It drafts and hands off nothing. Code checks the picks
+  still pending. It hands off nothing, and its only drafts are the reply
+  queue's. Code checks the picks
   against the sent folder and the channel before they post: an item whose
   sender the user has written to since their mail (`wrote_to_since`, set
   by `preprocess.split_replied_items` from the recipient index, whatever
@@ -763,18 +779,22 @@ one-click confirm (closure.py):
 
 :clipboard: 9:30-10:30 AM Lab meeting · 3:00-4:00 PM Thesis committee
 
-:white_check_mark: *Quietly handled*: 2 answered by your replies; 1 draft(s) staged.
+:white_check_mark: *Quietly handled*: 2 answered by your replies; 2 draft(s) staged.
 
 :grey_question: *Looks done?* (1) Close or keep each one on its card in your DM, or tell me here: NSF annual report (submitted Friday in Research.gov).
 
-:envelope: *Drafts ready* (1): Send, Edit or Handled on each block in your DM; one Send-all card when several are ready
+:envelope: *Drafts ready* (2): Send, Edit or Handled on each block in your DM; one Send-all card when several are ready
 - *Slides for Thursday's review* (Pat Rivera): Yes, the final slides go out tonight.
+- *Reviews for the robotics workshop* (Ana Diaz): Yes, both reviews will be in by October 23.
 
-:question: *Needs you* (1)
+:question: *Needs you* (2)
 - *Faculty meeting agenda* (Dean's Office): Reply needs you (a dean or a program officer): Two items: the lab move and the open hires.
+- *Simulator license renewal* (Robin Cho): Renew the simulator license for one year or for three? (9d)
 
 :arrow_up: *Sent to Claude* (1): one topic each in the EA channel
 - *Co-authoring the survey* (Lee Wong): a section of a paper to write
+
+:inbox_tray: *Reply queue*: 3 replies owed, the oldest for 9 days. 1 has a draft ready for Send. No draft yet: Lab visit in November (4d, a meeting to place).
 
 :calendar: 1 scheduling request(s): handling in the scheduling channel.
 
@@ -802,6 +822,8 @@ The afternoon update for the same day:
 
 *Pending your response:*
 - *Travel form for the Portland trip*: still not filed
+
+:inbox_tray: *Reply queue*: 3 replies owed, the oldest for 9 days. 1 has a draft ready for Send. No draft yet: Simulator license renewal (9d); Lab visit in November (4d, a meeting to place).
 
 _written by the remote model_
 ```

@@ -13,7 +13,8 @@ quick status update.
 ## Design principle
 
 The morning briefing is comprehensive. The afternoon catchup is fast.
-Target: 5-10K tokens max, often 0 tokens if nothing changed.
+Target: 5-10K tokens max, plus the reply-queue drafts (step 4.5).
+Often 0 tokens if nothing changed.
 
 ## Steps
 
@@ -88,6 +89,19 @@ If any of these are true, include a nudge in the update:
   ":sunrise: Early start tomorrow: [event] at [time]"
 - Friday afternoon: ":clipboard: Weekend preview: [Saturday/Sunday events]"
 
+### 4.5. Work the reply queue
+
+`reply_backlog` in the briefing JSON lists the threads that have waited
+a day or more for the user's reply, oldest first. Take the 3 oldest
+entries whose `has_draft` is false, whose `queued` is empty and whose
+`kept` is false, and handle each one as the morning briefing does
+(skills/morning-briefing.md, "Then work the reply queue"): draft the
+reply with `create-reply --message-id <message_id> --conversation-id
+<conversation_id> --ledger-id <id>`, or write one line under "Pending
+your response" when a rail applies or only the user knows the answer.
+Record each outcome with `ledger.py note-reply --id <id> --outcome
+drafted|decision|left`. Skip this step when the list is empty.
+
 ### 5. Update state (do this BEFORE writing the update)
 
 - Rows the user said are done: `python3 /home/ea-bot/ea-system/preprocessor/ledger.py close --id <id> --note "reason" --user-said "<their words>"`.
@@ -146,6 +160,12 @@ Format (use mrkdwn: `*bold*` single asterisks, `:emoji:` shortcodes):
 *Pending your response:*
 - [items from `pending_instructions` only — NOT handled_instructions]
 - [open ledger items with no recent action — cross-check ledger status]
+
+:envelope: *Drafts ready* ([N]): [one line for each draft this run made; leave the section out when it made none]
+
+:inbox_tray: *Reply queue*: [N] replies owed, the oldest for [N] days. [N] have a draft ready for Send. No draft yet: [who or subject] ([N]d).
+[ONE line from `reply_backlog`, as in the morning briefing; leave it out
+when no entry has a draft and none is 3 days old or more.]
 ```
 
 After writing the update text, STOP. Do NOT make any more tool calls.

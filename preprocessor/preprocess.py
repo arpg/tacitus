@@ -697,8 +697,18 @@ def build_today_top(needs_resp: list, dropped: list, deadlines: list,
         elif priority == "low":
             score -= 10
         stale = ob.get("days_stale", 0) or 0
+        # A reply's age runs from the other side's last message, not from
+        # the day the row was written. Past ledger.REPLY_ASK_DAYS it is
+        # today's work: the credit lifts it to the floor, under anything
+        # due or overdue.
+        owed = _ledger_mod.reply_age(ob, local_today, _user_zone()) \
+            if _ledger_mod.reply_owed(ob) else None
+        if owed is not None:
+            stale = owed
         score += min(stale * 2, 20)
-        if stale >= 5:
+        if owed is not None and owed >= _ledger_mod.REPLY_ASK_DAYS:
+            score += 15; reasons.append(f"reply owed for {owed}d")
+        elif stale >= 5:
             reasons.append(f"open {stale}d without action")
         if not reasons:
             reasons.append("open obligation")
@@ -2678,8 +2688,13 @@ def run_full_daily(force_full: bool = False) -> dict:
         scheduling_requests=scheduling_delta,
     )
 
-    # Resurrect follow-up items whose date has arrived
+    # Resurrect follow-up items whose date has arrived, and the snoozed
+    # rows whose snooze has ended: both are open work again from today.
     resurrected = _ledger_mod.resurrect_due_follow_ups()
+    try:
+        resurrected += _ledger_mod.resurrect_due_snoozed()
+    except Exception as e:
+        print(f"  Snooze wake skipped: {e}", file=sys.stderr)
 
     # Close the rows whose date passed and ended them: a vote, an RSVP or
     # an event that asked nothing of the user (ledger.close_lapsed).
@@ -2797,9 +2812,10 @@ def run_full_daily(force_full: bool = False) -> dict:
     # folder: fetch it, publish it as staged_drafts (the ONLY permissible
     # source for send instructions), and auto-annotate open items whose
     # staged claims no longer match a living draft.
-    staged_drafts = []
+    staged_drafts, drafts_read = [], False
     try:
         _draft_msgs = graph.get_messages("drafts", days_back=90)
+        drafts_read = True
         staged_drafts = [{
             "subject": m.get("subject", ""),
             "created": m.get("receivedDateTime", ""),
@@ -2893,6 +2909,14 @@ def run_full_daily(force_full: bool = False) -> dict:
         # The rows today_top ranks come first, so the queue's rows are
         # always in the slice the briefing lanes read.
         "open_obligations": briefing_rows(open_obligations, today_top),
+        # The rows that have owed a reply for a day or more
+        # (ledger.reply_backlog), oldest first, each with what a writer
+        # needs: most are cut from the slice above. `has_draft` is None
+        # when the Drafts folder could not be read.
+        "reply_backlog": _ledger_mod.reply_backlog(
+            open_obligations, datetime.now(_user_zone()).date(), zone=_user_zone(),
+            draft_convs=({d.get("conversation_id") for d in staged_drafts}
+                         if drafts_read else None)),
         # Rows closed this run because their date passed and their mail
         # asked nothing (ledger.close_lapsed): one "Quietly handled" line.
         "lapsed": [r for r in lapsed if r["action"] == "closed"][:20],

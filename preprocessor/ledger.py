@@ -10,6 +10,7 @@ Usage:
     python3 ledger.py update --id <id> [--status <s>] [--last-action <a>] [--notes <n>] ...
     python3 ledger.py close --id <id> [--note <reason>] [--user-said "<words>" | --duplicate-of <id>]
     python3 ledger.py propose --id <id> --why "<why it looks done>"
+    python3 ledger.py note-reply --id <id> --outcome drafted|decision|left [--draft-id <id>] [--note "<line>"]
     python3 ledger.py proposals | reject --id <id> | closure-report [--days 30]
     python3 ledger.py get --id <id>
     python3 ledger.py list [--status open] [--type response_needed] [--stale <days>] [--limit 20]
@@ -1196,6 +1197,19 @@ def cmd_propose(args) -> int:
     return 0
 
 
+def cmd_note_reply(args) -> int:
+    """Record what this run did about the reply a row owes (a draft made,
+    a decision asked of the user, or nothing to send), so the next run
+    does not do it again. The record stands until the other side writes
+    again."""
+    rec = note_reply(args.id, args.outcome, draft_id=args.draft_id or "", note=args.note or "")
+    if rec is None:
+        _output({"error": f"Entry not found, or it names no message to answer: {args.id}"})
+        return 1
+    _output({"ok": True, "id": args.id, "reply_queue": rec})
+    return 0
+
+
 def cmd_promoted(args) -> int:
     """The rows the hill climb closed at once that the user has not been
     told of. `--noted ID...` (the bot, after its note is up) archives each
@@ -1873,6 +1887,197 @@ def unanswered_since(entry: dict, today=None) -> str:
     return since.astimezone().date().isoformat()
 
 
+# The reply ladder: what a thread that owes the user's reply gets as it
+# ages, in whole local days since the other side's last message.
+REPLY_DRAFT_DAYS = 1    # a reply is drafted ahead, ready for Send
+REPLY_NAME_DAYS = 3     # the briefing's reply-queue line names it
+REPLY_ASK_DAYS = 5      # it ranks with today's work
+REPLY_BACKLOG_CAP = 40
+
+
+def _thread(entry: dict) -> dict:
+    brief = entry.get("thread_brief")
+    return brief if isinstance(brief, dict) and brief.get("messages") else {}
+
+
+def reply_owed(entry: dict) -> bool:
+    """The other side's last message wants the user's reply and he has
+    not written since. The thread brief decides; a row without one (an
+    install with no mail records) owes a reply when its type says so and
+    it came from a message."""
+    if is_waiting(entry):
+        return False
+    brief = _thread(entry)
+    if brief:
+        return bool(brief.get("needs_reply")) and not brief.get("user_replied_after_latest")
+    return canonical_type(entry.get("type")) == "response_needed" and bool(entry.get("source_message_id"))
+
+
+def reply_target(entry: dict) -> dict:
+    """{"message_id", "from", "since"}: the message a reply answers (the
+    other side's latest), its sender and when it came. The row's own
+    source message when the thread brief names none."""
+    brief = _thread(entry)
+    last = max((m for m in brief.get("messages") or []
+                if isinstance(m, dict) and not m.get("own") and m.get("id")),
+               key=lambda m: str(m.get("received") or ""), default=None)
+    if last:
+        return {"message_id": last["id"], "from": str(last.get("from") or entry.get("from_email") or ""),
+                "since": str(last.get("received") or brief.get("last_inbound") or "")}
+    return {"message_id": str(entry.get("source_message_id") or ""),
+            "from": str(entry.get("from_email") or ""),
+            "since": str(brief.get("last_inbound") or entry.get("kept_received")
+                         or entry.get("date_identified") or "")}
+
+
+def reply_age(entry: dict, today=None, zone=None) -> int | None:
+    """Whole days the reply has been owed: from the local day the other
+    side's last message came to `today` (a local date). None when the
+    row carries no usable time."""
+    try:
+        since = datetime.fromisoformat(reply_target(entry)["since"].replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    if today is None:
+        today = datetime.now(zone).date() if zone else datetime.now().astimezone().date()
+    return max((today - since.astimezone(zone).date()).days, 0)
+
+
+def reply_rung(age: int | None) -> str:
+    """'' | draft | name | ask: the ladder step a reply of this age is on."""
+    if age is None or age < REPLY_DRAFT_DAYS:
+        return ""
+    return "ask" if age >= REPLY_ASK_DAYS else "name" if age >= REPLY_NAME_DAYS else "draft"
+
+
+def reply_backlog(rows: list[dict], today=None, *, draft_convs=(), zone=None,
+                  cap: int = REPLY_BACKLOG_CAP) -> list[dict]:
+    """The open rows that have owed a reply for REPLY_DRAFT_DAYS or more,
+    one per thread, oldest first, `cap` at most; `total` on each entry
+    counts them all.
+
+    Pure. A row is out while it is parked, snoozed, in follow-up, waiting
+    on the other side or proposed for closing. `draft_convs` are the
+    conversations with a draft in the Drafts folder: `has_draft` says a
+    reply is already staged (None when the folder could not be read and
+    `draft_convs` is None). `queued` is the row's `reply_queue` record
+    when it is about this same message (a draft made or a decision asked
+    by an earlier run), so no run does that work twice; a newer message
+    from the other side clears it. `kept` marks a thread whose text stays
+    on the machine or at facts: there is nothing to write a reply from.
+    Each entry carries what a writer needs, since most of these rows are
+    cut from the briefing's slice."""
+    if today is None:
+        today = datetime.now(zone).date() if zone else datetime.now().astimezone().date()
+    drafts = None if draft_convs is None else {c for c in draft_convs if c}
+    out, threads = [], set()
+    # The row a reply closes stands for its thread when two rows share one.
+    for o in sorted(rows or [], key=lambda o: not closes_on_reply(o)):
+        if o.get("status", "open") != "open" or o.get("source") or not reply_owed(o):
+            continue
+        if parked_until(o, today) or isinstance(o.get("close_proposal"), dict) \
+                or waiting_on_reply(o, today):
+            continue
+        age = reply_age(o, today, zone)
+        if not reply_rung(age):
+            continue
+        brief, target = _thread(o), reply_target(o)
+        conv = str(o.get("conversation_id") or brief.get("conversation_id") or "")
+        if conv and conv in threads:
+            continue
+        threads.add(conv)
+        queued = o.get("reply_queue") if isinstance(o.get("reply_queue"), dict) else {}
+        if queued.get("inbound") != target["since"]:
+            queued = {}
+        kept = bool(o.get("kept_from_frontier") or o.get("kept_from_claude")
+                    or brief.get("kept_from_frontier") or brief.get("kept_from_claude")
+                    or brief.get("keep_level") in ("local", "facts"))
+        thread = [{"own": bool(m.get("own")), "received": str(m.get("received") or "")[:10],
+                   "gist": str(m.get("gist") or "")[:300]}
+                  for m in (brief.get("messages") or [])[-3:] if isinstance(m, dict)]
+        same_sender = target["from"].lower() == str(o.get("from_email") or "").lower()
+        out.append({
+            "id": o.get("id") or "", "description": o.get("description") or "",
+            "type": o.get("type") or "", "conversation_id": conv,
+            "message_id": target["message_id"], "from": target["from"],
+            "from_name": (o.get("from_name") or "") if same_sender else "",
+            "since": target["since"], "age_days": age, "rung": reply_rung(age),
+            "subject": brief.get("subject") or "", "ask": brief.get("ask") or "",
+            "state": brief.get("state") or "", "scheduling": brief.get("scheduling") or "none",
+            "people": list(brief.get("people") or [])[:6], "thread": thread,
+            "notes": str(o.get("notes") or "")[:300],
+            "last_action": str(o.get("last_action") or "")[:200],
+            "has_draft": None if drafts is None else bool(conv) and conv in drafts,
+            "queued": queued, "kept": kept})
+    out.sort(key=lambda e: (-e["age_days"], e["id"]))
+    for e in out:
+        e["total"] = len(out)
+    return out[:cap]
+
+
+REPLY_OUTCOMES = ("drafted", "decision", "left", "escalated")
+
+
+def note_reply(entry_id: str, outcome: str, *, draft_id: str = "", note: str = "",
+               inbound: str = "", at: str = "", db_path: Path | None = None) -> dict | None:
+    """Record what a run did about the reply a row owes, as the row's
+    `reply_queue`: the message it was about (`inbound`, when the other
+    side's last message came; read from the row when not given), the
+    outcome (REPLY_OUTCOMES), and the draft id or the line shown to the
+    user. reply_backlog hands the record back as `queued` until a newer
+    message comes. None when the row is missing or names no message."""
+    if outcome not in REPLY_OUTCOMES:
+        raise ValueError(f"outcome must be one of {', '.join(REPLY_OUTCOMES)}")
+    if not inbound:
+        entry = get_entry(entry_id, db_path) if entry_id else None
+        inbound = reply_target(entry)["since"] if entry else ""
+    if not entry_id or not inbound:
+        return None
+    rec = {"inbound": inbound, "at": at or _now(), "outcome": outcome}
+    if draft_id:
+        rec["draft_id"] = draft_id
+    if note:
+        rec["note"] = " ".join(str(note).split())[:300]
+    return rec if set_metadata(entry_id, db_path, reply_queue=rec) else None
+
+
+def resurrect_due_snoozed(db_path: Path | None = None,
+                          source: str | None = None,
+                          include_plugins: bool = False) -> list[dict]:
+    """Reopen snoozed rows whose date has arrived: `snooze_until`, or
+    `follow_up_after` on a row snoozed with that field (the later of the
+    two when both are set).
+
+    The mail comes back to the inbox on that day (graph_actions
+    wake_snoozed_emails); this puts its row back on the open list, which
+    every reader of open work filters on. The row keeps its last action
+    behind a note that the snooze ended. A row snoozed with no date stays
+    snoozed. Returns the rows it reopened. Called by the preprocessor
+    before the briefing is built, beside resurrect_due_follow_ups."""
+    path = db_path or DB_PATH
+    conn = guarded_connect(path)
+    conn.row_factory = sqlite3.Row
+    src_sql, src_params = _source_filter_sql(source, include_plugins)
+    today = datetime.now().astimezone().date().isoformat()
+    due = []
+    for r in conn.execute(f"SELECT * FROM ledger WHERE status = 'snoozed'{src_sql}",
+                          src_params).fetchall():
+        dates = [d for d in (str(r[f] or "").strip()[:10] for f in ("snooze_until", "follow_up_after"))
+                 if len(d) == 10]
+        if dates and max(dates) <= today:
+            due.append(r)
+    for r in due:
+        before = str(r["last_action"] or "").strip()
+        conn.execute("UPDATE ledger SET status = 'open', updated_at = ?, last_action = ? WHERE id = ?",
+                     (_now(), f"{today}: snooze ended, open again. {before}".strip(), r["id"]))
+    if due:
+        conn.commit()
+    conn.close()
+    return [dict(_row_to_dict(r), status="open") for r in due]
+
+
 def resurrect_due_follow_ups(db_path: Path | None = None,
                              source: str | None = None,
                              include_plugins: bool = False) -> list[dict]:
@@ -2470,6 +2675,16 @@ def main():
     p_prop.add_argument("--evidence-ts", help="When the evidence happened (UTC ISO); "
                         "evidence no newer than a 'Still open' on the row proposes nothing")
 
+    p_note = sub.add_parser("note-reply",
+                            help="Record what was done about the reply a row owes",
+                            allow_abbrev=False)
+    p_note.add_argument("--id", required=True)
+    p_note.add_argument("--outcome", required=True, choices=REPLY_OUTCOMES,
+                        help="drafted: a reply draft exists; decision: the user was asked; "
+                             "left: nothing to send; escalated: handed to another lane")
+    p_note.add_argument("--draft-id", help="The draft, when the outcome is drafted")
+    p_note.add_argument("--note", help="The line shown to the user, or why nothing was sent")
+
     p_conf = sub.add_parser("confirm", help="The user confirmed a proposed row is done", allow_abbrev=False)
     p_conf.add_argument("--id", required=True)
     p_conf.add_argument("--actor", default="user")
@@ -2573,6 +2788,7 @@ def main():
         "update": cmd_update,
         "close": cmd_close,
         "propose": cmd_propose,
+        "note-reply": cmd_note_reply,
         "confirm": cmd_confirm,
         "reject": cmd_reject,
         "proposals": cmd_proposals,

@@ -41,7 +41,8 @@ python3 /home/ea-bot/ea-system/preprocessor/graph_actions.py snooze-message \
 This archives the message and records a snooze in
 `~/.ea/state/snoozed-messages.json`. The morning briefing calls
 `wake-snoozed` to move due items back to inbox. Also update the ledger
-entry: set status to `"snoozed"` with `snooze_until` date.
+entry: set status to `"snoozed"` with `snooze_until` date. On that date
+the preprocessor sets the row back to `open`.
 
 ## Follow-up items
 

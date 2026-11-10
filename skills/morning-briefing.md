@@ -322,6 +322,36 @@ deans; declining an invitation or request; a first email to someone
 outside the institution's domains; or a decision only the user can make. Say what
 the decision is, not that a decision exists.
 
+**Then work the reply queue (`reply_backlog`):**
+
+New mail is surfaced once. `reply_backlog` is how an older thread gets
+its reply: the open rows whose thread has waited a day or more for the
+user, oldest first, one per thread. Each entry names the message to
+answer (`message_id`, `conversation_id`, `from`) and carries `age_days`,
+the `ask`, the last messages (`thread`) and the row's `notes`.
+
+Skip an entry when `has_draft` is true (a draft waits for Send), when
+`queued` is not empty (an earlier run drafted it or asked the user, and
+no newer message came) or when `kept` is true (its text stays on the
+user's machine). Take the 8 oldest of the rest. For each one:
+
+- Draft the reply, steps 1-3 above: `create-reply --message-id
+  <message_id> --conversation-id <conversation_id> --ledger-id <id>`.
+  An entry whose `scheduling` is not `none` carries times from
+  `scheduling_engine.py propose-meeting`. Then record it:
+  `ledger.py note-reply --id <id> --outcome drafted --draft-id <draft id>`.
+- When a rail applies or only the user knows the answer, write ONE line
+  under "Needs you": the decision, then the age as `(12d)`. Record it:
+  `ledger.py note-reply --id <id> --outcome decision --note "<the line>"`.
+  At most 3 such lines a run; leave the others for the next run.
+- When the thread wants no reply (the other side closed it, or
+  `create-reply` answers `skipped` because the user wrote last), record
+  `ledger.py note-reply --id <id> --outcome left --note "<why>"`, and
+  `ledger.py propose` when the row looks done.
+
+The record keeps the next run off the same message. A newer message
+from the other side clears it. Never draft twice for one thread.
+
 Note: items are surfaced once. After that, the obligations ledger tracks them.
 If items were missed, run the preprocessor with `--rerun` to re-surface all.
 
@@ -476,6 +506,12 @@ one this list is the only notice.]
 
 :question: *Needs you* ([N])
 - [item] — [the decision in one line, and what you will do once it is made]
+
+:inbox_tray: *Reply queue*: [N] replies owed, the oldest for [N] days. [N] have a draft ready for Send. No draft yet: [who or subject] ([N]d); [who or subject] ([N]d, kept mail).
+[ONE line from `reply_backlog`; leave it out when no entry has a draft
+and none is named. The first N is `total`. Name at most 5 entries that
+are 3 days old or more (`rung` is `name` or `ask`), have no draft and
+have no line above, oldest first.]
 
 Open obligations: [N] | Inbox: [N] messages
 ```

@@ -40,8 +40,16 @@ The morning run:
   7. Each project room with items in the post gets its slice, in a new
      topic (briefing_rooms); the EA post names those rooms in one line.
 The afternoon run picks what is new since the morning and what is still
-pending; it drafts and escalates nothing. When the remote model cannot
-answer, code renders the ranked queue alone and the post says so.
+pending; it escalates nothing. When the remote model cannot answer, code
+renders the ranked queue alone and the post says so.
+
+Both runs then work the reply queue (the briefing's `reply_backlog`: the
+threads where the other side wrote last, a day or more ago). One more
+remote call sorts the ones no run has handled into a draft, a decision
+for the user or nothing to do. The drafts pass the same rails and
+writer; the row records what the run did (`reply_queue`), so no run
+drafts or asks twice for the same message. The post has one line for the
+whole queue, which names the replies owed for three days or more.
 
 --dry-run does the reads and the remote call, then makes no draft, queues
 nothing, closes nothing and prints counts only; the post is in the run
@@ -81,6 +89,7 @@ ESCALATED = "escalated.jsonl"
 EXIT_OFF = 3
 AGENTS = ("morning-briefing", "afternoon-catchup")
 MAX_TOP, MAX_FLEX, MAX_DRAFTS, MAX_ESCALATE = 5, 4, 8, 3
+MAX_BACKLOG, MAX_BACKLOG_DECISIONS, MAX_QUEUE_NAMES = 8, 3, 5
 CAPS = {"R": 30, "D": 15, "V": 10, "L": 40}
 SOON_DAYS = 3
 ESCALATE_AGAIN = timedelta(days=7)
@@ -688,6 +697,289 @@ def _escalation(cand: dict, pick: dict, now: datetime) -> dict:
             "queued_at": now.isoformat(timespec="seconds")}
 
 
+# ── the reply queue ───────────────────────────────────────────────────
+
+# The replies the user owes, worked on every run (ledger.reply_backlog
+# picks them and sets the ladder: a draft at one day, a name on the queue
+# line at three, a place in today's ranking at five). A reply that sits
+# is most often one nobody wrote down, so the run writes it and the user
+# only presses Send.
+
+BACKLOG_SCHEMA = {"type": "object", "additionalProperties": False, "properties": {
+    "replies": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False,
+        "properties": {"ref": {"type": "string"},
+                       "action": {"type": "string", "enum": ["draft", "decide", "leave"]},
+                       "text": {"type": "string"}},
+        "required": ["ref", "action", "text"]}}},
+    "required": ["replies"]}
+
+BACKLOG_PROMPT = """You clear a professor's reply backlog for his assistant. Answer with JSON only, in the schema.
+
+{profile}
+It is {now}.
+
+Each item is a mail thread where the other side wrote last and he has not answered; `waiting_days` says for how long. `thread` is its last messages, oldest first, and `own` marks his. Give every ref exactly one answer.
+
+- draft: a reply he would send that the thread already answers: a yes, a thanks, an answer he gave before, a link or a form, an intro, a meeting he already agreed. `text` is what the reply must say, in one or two sentences. Never answer a question only he can answer, and never repeat their own message back to them.
+- decide: he must choose first: money, a contract or a legal matter; a dean or a program officer; a decline; a question only he can answer; work that must be done before the reply. `text` is the question for him in one line, with the choices when the thread gives them.
+- leave: the thread needs no reply from him: the notes or the last action show it is settled, or the last message only informs. `text` says why in a few words.
+Write short plain sentences. Never write an em-dash. Use only the items given.
+
+{rules}"""
+
+
+def _thread_keys(c: dict) -> set[str]:
+    """The row and the conversation an item is about: two refs that share
+    one are one item to the reader."""
+    return {f"{k}:{c[k]}" for k in ("ledger_id", "conversation_id") if c.get(k)}
+
+
+def backlog_candidates(b: dict) -> dict[str, dict]:
+    """{ref: item} for the briefing's `reply_backlog`, refs Q1.., oldest
+    first. An item has a candidate's keys, so the rails, the writer and
+    the post take it as they take any other."""
+    out: dict[str, dict] = {}
+    for e in b.get("reply_backlog") or []:
+        if not isinstance(e, dict) or not e.get("id"):
+            continue
+        thread = [m for m in e.get("thread") or [] if isinstance(m, dict)]
+        latest = next((m.get("gist") for m in reversed(thread)
+                       if not m.get("own") and m.get("gist")), "")
+        out[f"Q{len(out) + 1}"] = {
+            "kind": "backlog", "title": e.get("description") or e.get("subject") or "(no subject)",
+            "who": e.get("from_name") or e.get("from") or "", "from": e.get("from") or "",
+            "message_id": e.get("message_id") or "", "conversation_id": e.get("conversation_id") or "",
+            "ledger_id": e["id"], "summary": latest or e.get("notes") or "",
+            "ask": e.get("ask") or "", "people": e.get("people") or [],
+            "state": e.get("state") or "", "scheduling": e.get("scheduling") or "none",
+            "thread": thread, "notes": e.get("notes") or "", "last_action": e.get("last_action") or "",
+            "age_days": int(e.get("age_days") or 0), "since": e.get("since") or "",
+            "has_draft": e.get("has_draft"), "queued": e.get("queued") or {},
+            "kept": bool(e.get("kept")), "total": int(e.get("total") or 0),
+            "type": e.get("type") or "", "due": "", "tags": [], "brief": None}
+    return out
+
+
+def _meeting(c: dict) -> bool:
+    return (c.get("scheduling") or "none") not in ("", "none") or c.get("state") == "scheduling"
+
+
+def backlog_refs(cands: dict[str, dict], taken: set[str]) -> list[str]:
+    """The queue refs this run works, oldest first, MAX_BACKLOG at most. Out:
+    a thread with a draft in the folder (or a folder that could not be
+    read), one an earlier run recorded, kept mail, a meeting to place (the
+    scheduling lane has the solver), and a thread in `taken`, which this
+    run's plan already drafted, raised or handed off."""
+    out = []
+    for r, c in cands.items():
+        if c.get("kind") != "backlog" or c.get("kept") or c.get("queued") \
+                or c.get("has_draft") is not False or _meeting(c):
+            continue
+        if not c.get("message_id") or not c.get("from") or _thread_keys(c) & taken:
+            continue
+        out.append(r)
+    return out[:MAX_BACKLOG]
+
+
+def ask_backlog(cands: dict[str, dict], refs: list[str], *, rules: str, now: datetime,
+                chat=None) -> dict[str, dict]:
+    """{ref: {"action", "text"}} from one remote call; a ref it invents or
+    repeats is dropped. Raises remote_llm.RemoteLLMError when it cannot
+    answer."""
+    chat = chat or remote_llm.chat_json
+    local = now.astimezone(_tz())
+    system = BACKLOG_PROMPT.format(profile=_profile(), now=f"{local:%A %Y-%m-%d %H:%M}",
+                                   rules=rules or "")
+    keep = ("who", "ask", "thread", "notes", "last_action")
+    items = [{"ref": r, "title": _title(cands[r]), "waiting_days": cands[r]["age_days"],
+              **{k: cands[r][k] for k in keep if cands[r].get(k)}} for r in refs]
+    obj, _meta = chat([{"role": "system", "content": system},
+                       {"role": "user", "content": json.dumps({"items": items}, ensure_ascii=False)}],
+                      purpose="briefing-backlog", schema=BACKLOG_SCHEMA,
+                      schema_name="reply_backlog", max_tokens=2000)
+    out: dict[str, dict] = {}
+    for p in (obj or {}).get("replies") or []:
+        if isinstance(p, dict) and p.get("ref") in refs and p["ref"] not in out \
+                and p.get("action") in ("draft", "decide", "leave"):
+            out[p["ref"]] = p
+    return out
+
+
+def mark_queued(ledger_id: str, inbound: str, outcome: str, *, now: datetime,
+                draft_id: str = "", note: str = "") -> bool:
+    """Record on the row what a run did about the reply it owes:
+    `reply_queue` = the message it was about (`inbound`, when that message
+    came), the outcome (drafted, decision, left, escalated) and the text.
+    ledger.reply_backlog hands it back as `queued` until a newer message
+    comes, and no run works the row again while it stands."""
+    if not ledger_id or not inbound:
+        return False
+    try:
+        return bool(_ledger.note_reply(ledger_id, outcome, draft_id=draft_id, note=_clean(note, 300),
+                                       inbound=inbound, at=now.isoformat(timespec="seconds")))
+    except Exception as e:
+        print(f"remote_briefing: reply_queue not recorded on {ledger_id}: {str(e)[:160]}",
+              file=sys.stderr)
+        return False
+
+
+def clear_backlog(cands: dict[str, dict], refs: list[str], *, rules: str, now: datetime,
+                  run_id: str, dry_run: bool = False, chat=None, drafter=None,
+                  mark=None) -> tuple[list[dict], dict]:
+    """Work the queue refs: (entries in the shape of the plan's drafts,
+    counts). A draft that passes the rails is made and recorded. A
+    decision is recorded and shown, MAX_BACKLOG_DECISIONS a run; the rest
+    wait for the next run, unrecorded. A writer failure is not recorded
+    either, so the next run tries again. A dry run makes and records
+    nothing. When the remote model cannot answer, nothing is worked."""
+    stats = {"asked": len(refs), "drafted": 0, "decisions": 0, "left": 0, "failed": 0,
+             "deferred": 0}
+    if not refs:
+        return [], stats
+    try:
+        picks = ask_backlog(cands, refs, rules=rules, now=now, chat=chat)
+    except remote_llm.RemoteLLMError as e:
+        stats["error"] = str(e)[:200]
+        return [], stats
+    mark = mark or mark_queued
+    out: list[dict] = []
+
+    def record(c: dict, outcome: str, **kw) -> None:
+        if not dry_run:
+            mark(c["ledger_id"], c["since"], outcome, now=now, **kw)
+
+    def decide(ref: str, text: str) -> None:
+        c = cands[ref]
+        if stats["decisions"] >= MAX_BACKLOG_DECISIONS:
+            stats["deferred"] += 1
+            return
+        stats["decisions"] += 1
+        out.append({"ref": ref, "ok": False, "backlog": True,
+                    "decision": f"{_clean(text, 170)} ({c['age_days']}d)"})
+        record(c, "decision", note=text)
+
+    for ref in refs:
+        p, c = picks.get(ref), cands[ref]
+        if not p:
+            continue
+        text = p.get("text") or ""
+        if p["action"] == "leave":
+            stats["left"] += 1
+            record(c, "left", note=text)
+            continue
+        if p["action"] == "decide":
+            decide(ref, text)
+            continue
+        why = rail(c, text)
+        if why:
+            decide(ref, f"Reply needs you ({why}): {_clean(text, 120)}")
+            continue
+        says, ack = text, False
+        if asks_for_facts(c):
+            if c["age_days"] >= _ledger.REPLY_NAME_DAYS:
+                # "I will follow up", days late, answers nothing: the
+                # question itself goes to him.
+                decide(ref, f"They ask: {_clean(c.get('ask'), 140)}")
+                continue
+            says, ack = acknowledgement_brief(c, says), True
+        if dry_run:
+            stats["drafted"] += 1
+            out.append({"ref": ref, "ok": True, "backlog": True, "says": says, "ack": ack,
+                        "dry_run": True})
+            continue
+        res = (drafter or make_draft)(c, says, run_id=run_id)
+        if res.get("ok"):
+            stats["drafted"] += 1
+            out.append({"ref": ref, "ok": True, "backlog": True, "says": says, "ack": ack,
+                        "draft_id": res.get("draft_id")})
+            record(c, "drafted", draft_id=res.get("draft_id") or "", note=says)
+        elif res.get("need"):
+            decide(ref, f"The writer asks: {_clean(res['need'], 140)}")
+        else:
+            stats["failed"] += 1
+    return out, stats
+
+
+def note_plan(cands: dict[str, dict], plan: dict, drafts: list[dict], escalated: list[dict],
+              *, now: datetime, mark=None) -> set[str]:
+    """Record the plan's own work on the rows it touched (a draft, a
+    decision, a hand-off), so the queue does not work the same message
+    again on a later run, and return those threads' keys. A draft the
+    user cancels is then not made a second time. A draft that failed is
+    not recorded: the queue's next run tries it."""
+    mark = mark or mark_queued
+    queue = [c for c in cands.values() if c.get("kind") == "backlog"]
+    done = [(d["ref"], "" if d.get("failed") else "drafted" if d.get("ok") else "decision",
+             d.get("says") or d.get("decision") or "", d.get("draft_id") or "") for d in drafts]
+    done += [(p["ref"], "decision", p.get("decision") or "", "") for p in plan.get("needs_you") or []]
+    done += [(e["ref"], "escalated", e.get("why") or "", "") for e in escalated]
+    taken: set[str] = set()
+    for ref, outcome, note, draft_id in done:
+        c = cands[ref]
+        keys = _thread_keys(c)
+        taken |= keys
+        row = next((q for q in queue if _thread_keys(q) & keys), None)
+        if not outcome or (row and row.get("queued")):
+            continue
+        since = (row or {}).get("since") or (c.get("brief") or {}).get("last_inbound") or ""
+        mark((row or c).get("ledger_id") or "", since, outcome, now=now, draft_id=draft_id, note=note)
+    return taken
+
+
+def queue_view(cands: dict[str, dict], drafts: list[dict], lists: dict, gone=()) -> dict:
+    """The reply queue in numbers, {} when it is empty: `total` replies
+    owed, the `oldest` in days, how many have a draft `ready`, and
+    `named`, the refs the queue line names: owed for REPLY_NAME_DAYS or
+    more, with no draft, in no section of this post; oldest first. `more`
+    counts the rest that the post does not show."""
+    gone = set(gone)
+    every = [c for c in cands.values() if c.get("kind") == "backlog"]
+    queue = {r: c for r, c in cands.items()
+             if c.get("kind") == "backlog" and c.get("ledger_id") not in gone}
+    if not queue:
+        return {}
+    staged: set[str] = set()
+    for d in drafts:
+        if d.get("ok"):
+            staged |= _thread_keys(cands[d["ref"]])
+    shown: set[str] = set()
+    for sec, items in lists.items():
+        for ref, _line in items if sec != "draft" else []:
+            shown |= _thread_keys(cands[ref])
+    ready = [r for r, c in queue.items() if c.get("has_draft") or _thread_keys(c) & staged]
+    named = [r for r, c in queue.items() if r not in ready and not _thread_keys(c) & shown
+             and c["age_days"] >= _ledger.REPLY_NAME_DAYS]
+    named = sorted(named, key=lambda r: -queue[r]["age_days"])[:MAX_QUEUE_NAMES]
+    total = max([len(every)] + [c.get("total") or 0 for c in every]) - (len(every) - len(queue))
+    rest = [r for r, c in queue.items()
+            if r not in ready and r not in named and not _thread_keys(c) & shown]
+    return {"total": total, "oldest": max(c["age_days"] for c in queue.values()),
+            "ready": len(ready), "named": named, "more": len(rest) + total - len(queue)}
+
+
+def _queue_line(cands: dict[str, dict], drafts: list[dict], lists: dict, gone=()) -> list[str]:
+    """The post's one line for the reply queue. Silent while it has
+    neither a draft to send nor a reply to name."""
+    v = queue_view(cands, drafts, lists, gone)
+    if not v or not (v["ready"] or v["named"]):
+        return []
+    days = f"{v['oldest']} day{'' if v['oldest'] == 1 else 's'}"
+    line = (f":inbox_tray: *Reply queue*: 1 reply owed, for {days}." if v["total"] == 1
+            else f":inbox_tray: *Reply queue*: {v['total']} replies owed, the oldest for {days}.")
+    if v["ready"]:
+        line += f" {v['ready']} {'has' if v['ready'] == 1 else 'have'} a draft ready for Send."
+    if v["named"]:
+        names = []
+        for r in v["named"]:
+            c = cands[r]
+            tag = ", a meeting to place" if _meeting(c) else ", kept mail" if c.get("kept") else ""
+            names.append(f"{_words(_title(c), 60)} ({c['age_days']}d{tag})")
+        line += " No draft yet: " + "; ".join(names) \
+            + (f"; and {v['more']} more." if v["more"] > 0 else ".")
+    return ["", line]
+
+
 # ── the post ──────────────────────────────────────────────────────────
 
 # The ledger's own labels on a row's description ("Due 2026-11-04: ",
@@ -756,11 +1048,15 @@ def shown_refs(cands: dict[str, dict], plan: dict, drafts: list[dict], escalated
                   for p in plan.get(k) or []]
         listed += [d["ref"] for d in drafts] + [e["ref"] for e in escalated]
         listed += _soon_refs(cands, today, set(listed))
+        lists = _morning_lists(cands, plan, drafts, escalated, {}, today)
     else:
         listed = [p["ref"] for k in ("since_morning", "in_motion", "pending")
                   for p in plan.get(k) or []]
+        listed += [d["ref"] for d in drafts]
         tomorrow = today + timedelta(days=1)
         listed += [r for r, c in cands.items() if _date(c.get("due")) == tomorrow]
+        lists = _afternoon_lists(cands, plan, {}, drafts)
+    listed += queue_view(cands, drafts, lists).get("named") or []
     return [r for r in dict.fromkeys(listed) if r in cands]
 
 
@@ -815,6 +1111,12 @@ def _looks_done_line(b: dict, audit: dict) -> list[str]:
                 f"card in your DM, or tell me here: " + "; ".join(looks[:8]) + "."]
 
 
+def _draft_line(c: dict, d: dict) -> str:
+    """A staged draft in the post: the item and what the reply says."""
+    return f"{_line_of(c)}: " + (f"thanks only; they ask: {_clean(c.get('ask'), 140)}" if d.get("ack")
+                                 else _clean(d.get("says"), 140))
+
+
 def _morning_lists(cands: dict[str, dict], plan: dict, drafts: list[dict],
                    escalated: list[dict], audit: dict, today: date) -> dict:
     """The morning post's sections as {key: [(ref, line)]}, each item
@@ -848,10 +1150,7 @@ def _morning_lists(cands: dict[str, dict], plan: dict, drafts: list[dict],
         "top": [(p["ref"], _top_line(cands[p["ref"]], p, today) + mark(p["ref"])) for p in top],
         "flex": [(p["ref"], f"{_line_of(cands[p['ref']])}: {_clean(p.get('line'), 140)}{mark(p['ref'])}")
                  for p in flex],
-        "draft": [(d["ref"], f"{_line_of(cands[d['ref']])}: "
-                   + (f"thanks only; they ask: {_clean(cands[d['ref']].get('ask'), 140)}" if d.get("ack")
-                      else _clean(d.get("says"), 140)))
-                  for d in drafts if d.get("ok")],
+        "draft": [(d["ref"], _draft_line(cands[d["ref"]], d)) for d in drafts if d.get("ok")],
         "needs": [(p["ref"], f"{_line_of(cands[p['ref']])}: {_clean(p.get('decision'), 160)}")
                   for p in needs],
         "escalated": [(e["ref"], f"{_line_of(cands[e['ref']])}: {_clean(e.get('why'), 140)}")
@@ -875,8 +1174,7 @@ def _one_per_thread(cands: dict[str, dict], lists: dict) -> dict:
     for sec in _SECTION_ORDER:
         kept = []
         for ref, line in lists.get(sec) or []:
-            c = cands.get(ref) or {}
-            keys = {f"{k}:{c[k]}" for k in ("ledger_id", "conversation_id") if c.get(k)}
+            keys = _thread_keys(cands.get(ref) or {})
             if keys & seen:
                 continue
             kept.append((ref, line))
@@ -885,12 +1183,29 @@ def _one_per_thread(cands: dict[str, dict], lists: dict) -> dict:
     return out
 
 
-def _afternoon_lists(cands: dict[str, dict], plan: dict, audit: dict) -> dict:
+def _afternoon_lists(cands: dict[str, dict], plan: dict, audit: dict, drafts=()) -> dict:
+    """The afternoon post's sections as {key: [(ref, line)]}. `drafts` are
+    the reply queue's from this run: a staged one is a "draft" line, a
+    decision joins "pending" unless its thread is already in the post."""
     gone = set(audit.get("closed") or []) | set(audit.get("parked") or [])
     skip = {r for r, c in cands.items() if c.get("ledger_id") in gone}
-    return {k: [(p["ref"], f"{_line_of(cands[p['ref']])}: {_clean(p.get('line'), 140)}")
-                for p in plan.get(key) or [] if p["ref"] not in skip]
-            for k, key in (("since", "since_morning"), ("pending", "pending"))}
+    lists = {k: [(p["ref"], f"{_line_of(cands[p['ref']])}: {_clean(p.get('line'), 140)}")
+                 for p in plan.get(key) or [] if p["ref"] not in skip]
+             for k, key in (("since", "since_morning"), ("pending", "pending"))}
+    shown: set[str] = set()
+    for items in lists.values():
+        for ref, _line in items:
+            shown |= _thread_keys(cands[ref])
+    lists["draft"] = []
+    for d in drafts:
+        c = cands[d["ref"]]
+        if d["ref"] in skip:
+            continue
+        if d.get("ok"):
+            lists["draft"].append((d["ref"], _draft_line(c, d)))
+        elif not _thread_keys(c) & shown:
+            lists["pending"].append((d["ref"], f"{_line_of(c)}: {_clean(d.get('decision'), 180)}"))
+    return lists
 
 
 def room_entries(cands: dict[str, dict], lists: dict) -> list[dict]:
@@ -967,6 +1282,8 @@ def render_morning(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime
     if lists["escalated"]:
         out += ["", f":arrow_up: *Sent to Claude* ({len(lists['escalated'])}): one topic each in the EA channel"]
         out += [f"- {line}" for _r, line in lists["escalated"]]
+    out += _queue_line(cands, drafts, lists,
+                       set(audit.get("closed") or []) | set(audit.get("parked") or []))
     tail = []
     n_sched = len(b.get("new_scheduling_requests") or [])
     if n_sched and b.get("scheduling_channel_active"):
@@ -990,20 +1307,21 @@ def render_morning(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime
 
 
 def render_afternoon(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime,
-                     audit: dict | None = None, stale: bool = False, fallback: str = "") -> str:
+                     audit: dict | None = None, stale: bool = False, fallback: str = "",
+                     drafts=()) -> str:
     audit = audit or {}
+    drafts = list(drafts)
     gone = set(audit.get("closed") or []) | set(audit.get("parked") or [])
     skip = {r for r, c in cands.items() if c.get("ledger_id") in gone}
+    lists = _afternoon_lists(cands, plan, audit, drafts)
     local = now.astimezone(_tz())
     out = [f":coffee: *Afternoon Update, {local:%a %b} {local.day}*"]
     if stale:
         out.append(":warning: The mail sync failed this run; this update uses older data.")
     if fallback:
         out.append(f":warning: {fallback}")
-    since = [p for p in plan.get("since_morning") or [] if p["ref"] not in skip]
     out += ["", "*Since this morning:*"]
-    out += ([f"- {_line_of(cands[p['ref']])}: {_clean(p.get('line'), 140)}" for p in since]
-            or ["- Nothing new that needs you."])
+    out += [f"- {line}" for _r, line in lists["since"]] or ["- Nothing new that needs you."]
     motion = [p for p in plan.get("in_motion") or [] if p["ref"] not in skip]
     if motion:
         out += ["", "*Already in motion* (checked against your sent mail and the channel):"]
@@ -1025,10 +1343,14 @@ def render_afternoon(b: dict, cands: dict[str, dict], plan: dict, *, now: dateti
             if _date(c.get("due")) == tomorrow and r not in skip]
     if tom:
         out += ["", "*Tomorrow preview:*"] + tom[:10]
-    pend = [p for p in plan.get("pending") or [] if p["ref"] not in skip]
-    if pend:
+    if lists["pending"]:
         out += ["", "*Pending your response:*"]
-        out += [f"- {_line_of(cands[p['ref']])}: {_clean(p.get('line'), 140)}" for p in pend]
+        out += [f"- {line}" for _r, line in lists["pending"]]
+    if lists["draft"]:
+        out += ["", f":envelope: *Drafts ready* ({len(lists['draft'])}): Send, Edit or Handled on "
+                    "each block in your DM"]
+        out += [f"- {line}" for _r, line in lists["draft"]]
+    out += _queue_line(cands, drafts, lists, gone)
     out += _waiting_line(b, local.date())
     out += _looks_done_line(b, audit)
     out += ["", "_written by the remote model_"]
@@ -1173,7 +1495,7 @@ def room_slices(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dic
     morning = agent == "morning-briefing"
     local = now.astimezone(_tz())
     lists = (_morning_lists(cands, plan, drafts, escalated, audit, local.date()) if morning
-             else _afternoon_lists(cands, plan, audit))
+             else _afternoon_lists(cands, plan, audit, drafts))
     entries = room_entries(cands, lists)
     if not entries:
         return []
@@ -1201,7 +1523,7 @@ def room_slices(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dic
 
 def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run: bool = False,
         now: datetime | None = None, chat=None, audit=None, drafter=None,
-        queue=None, rooms=None) -> tuple[str, dict]:
+        queue=None, rooms=None, mark=None) -> tuple[str, dict]:
     """(the post, the run record)."""
     now = now or _now()
     morning = agent == "morning-briefing"
@@ -1210,8 +1532,9 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
     rec: dict = {"ts": now.isoformat(timespec="seconds"), "agent": agent, "run_id": run_id,
                  "dry_run": dry_run, "candidates": len(cands)}
     fallback = ""
+    rules = _rules()
     try:
-        plan = ask_plan(agent, briefing, cands, rules=_rules(), now=now, chat=chat)
+        plan = ask_plan(agent, briefing, cands, rules=rules, now=now, chat=chat)
     except remote_llm.RemoteLLMError as e:
         plan = fallback_plan(briefing, cands, morning=morning)
         fallback = ("The remote model did not answer; this is the ranked queue from code."
@@ -1219,8 +1542,8 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
         rec["fallback"] = str(e)[:200]
     drafts: list[dict] = []
     escalated: list[dict] = []
+    os.environ["EA_RUN_ID"] = run_id
     if morning:
-        os.environ["EA_RUN_ID"] = run_id
         for p in plan.get("drafts") or []:
             c = cands[p["ref"]]
             why = rail(c, p.get("reply_must_say") or "")
@@ -1245,7 +1568,7 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
                 decision = (f"The draft could not be made ({_clean(res.get('why'), 80)}). "
                             + (f"Question: {_clean(res.get('need'), 120)}" if res.get("need")
                                else _clean(p.get("reply_must_say"), 120)))
-                drafts.append({"ref": p["ref"], "ok": False, "decision": decision})
+                drafts.append({"ref": p["ref"], "ok": False, "decision": decision, "failed": True})
         handoffs = [(p, cands[p["ref"]]) for p in plan.get("escalate") or []
                     if cands[p["ref"]].get("conversation_id")]
         # An item with no thread cannot be handed off; it is the user's call.
@@ -1256,11 +1579,22 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
             (queue or queue_escalations)([_escalation(c, p, now) for p, c in handoffs],
                                          agent=agent, now=now)
         escalated = [{"ref": p["ref"], "why": p.get("why")} for p, _c in handoffs]
+    # The reply queue, after the plan's own work: its items join the
+    # candidates under their own refs, and the plan's threads are left out.
+    cands.update(backlog_candidates(briefing))
+    taken = note_plan(cands, plan, drafts, escalated, now=now,
+                      mark=(lambda *a, **k: False) if dry_run else mark)
+    backlog: dict = {}
+    if not fallback:
+        more, backlog = clear_backlog(cands, backlog_refs(cands, taken), rules=rules, now=now,
+                                      run_id=run_id, dry_run=dry_run, chat=chat, drafter=drafter,
+                                      mark=mark)
+        drafts += more
     render = (lambda a: render_morning(briefing, cands, plan, now=now, drafts=drafts,
                                        escalated=escalated, audit=a, stale=stale,
                                        fallback=fallback)) if morning else \
              (lambda a: render_afternoon(briefing, cands, plan, now=now, audit=a, stale=stale,
-                                         fallback=fallback))
+                                         fallback=fallback, drafts=drafts))
     text = render(None)
     shown = shown_refs(cands, plan, drafts, escalated, now=now, morning=morning)
     checked = (audit or audit_post)(agent, text, briefing, dry_run=dry_run, chat=None,
@@ -1284,9 +1618,11 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
                         for p in posts]
     rec.update(plan={k: len(v) for k, v in plan.items()},
                drafts=sum(1 for d in drafts if d.get("ok")),
-               decisions_from_rails=sum(1 for d in drafts if not d.get("ok")),
-               escalated=len(escalated), audit={k: (len(v) if isinstance(v, list) else v)
-                                                for k, v in (checked or {}).items()},
+               decisions_from_rails=sum(1 for d in drafts
+                                        if not d.get("ok") and not d.get("backlog")),
+               escalated=len(escalated), backlog=backlog,
+               audit={k: (len(v) if isinstance(v, list) else v)
+                      for k, v in (checked or {}).items()},
                seconds=round(time.monotonic() - t0, 1), post=text)
     return text, rec
 
