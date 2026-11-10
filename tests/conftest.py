@@ -213,6 +213,19 @@ def _no_resident_codex_dirs(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_host_mediator_in_prompts(monkeypatch):
+    """The Codex prompt text and the chat row's limit note ask whether this
+    host runs the mediator (codex_ghost._mediated, model_routing._mediated).
+    Every test gets "no", whatever the host it runs on; a test of the
+    mediated text says so itself."""
+    for name in ("codex_ghost", "preprocessor.codex_ghost", "model_routing", "preprocessor.model_routing"):
+        mod = _sys.modules.get(name)
+        if mod is not None and hasattr(mod, "_mediated"):
+            monkeypatch.setattr(mod, "_mediated", lambda: False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _fresh_keep_rules():
     """privacy_rules caches its decision context per process; each test
     starts and ends without it, so one test's rules never reach another."""

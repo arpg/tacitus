@@ -6,6 +6,10 @@ Usage:
   python fetch_url.py --url "https://example.com/program" [--max-chars 4000] [--js]
   python fetch_url.py --url "https://example.com/photo.jpg" --save-image <path>
 
+`fetch` is the one verb, and a call without it means it. A Codex turn's
+sandbox has no network: there the call goes to the mediator, which runs
+it as the resident outside the sandbox (mail_mediation.RESIDENT_NET).
+
 A page read returns the text, the action links and the page's images
 (og:image, then <img> sources with their alt text), so an image's own URL
 can be found from the page that shows it. --save-image saves one image:
@@ -38,9 +42,22 @@ import json
 import os
 import re
 import socket
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
+
+
+def _cli_argv(argv: list[str]) -> list[str]:
+    """The command line with its verb in front: `--url ...` means `fetch`."""
+    return list(argv) if argv[:1] == ["fetch"] else ["fetch", *argv]
+
+
+if __name__ == "__main__":
+    # Before requests and bs4, which a bare interpreter lacks: in a Codex
+    # turn's sandbox the mediator runs the fetch, and this process exits.
+    import mail_mediation
+    mail_mediation.sandbox_forward("fetch_url", _cli_argv(sys.argv[1:]))
 
 import requests
 from bs4 import BeautifulSoup
@@ -620,16 +637,29 @@ def run(url: str, max_chars: int, force_js: bool):
     return result
 
 
-if __name__ == "__main__":
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Fetch and extract web page content", allow_abbrev=False)
-    parser.add_argument("--url", required=True, help="URL to fetch")
-    parser.add_argument("--max-chars", type=int, default=4000,
-                        help="Max characters of extracted text (default 4000)")
-    parser.add_argument("--js", action="store_true",
-                        help="Force Playwright rendering for JS-heavy pages")
-    parser.add_argument("--save-image", metavar="PATH",
-                        help="save the image at --url to a new file (a deck's folder or ~/.ea/state)")
-    args = parser.parse_args()
+    sub = parser.add_subparsers(dest="command", required=True)
+    fetch = sub.add_parser("fetch", allow_abbrev=False,
+                           help="read a page or save an image (the verb a call without one means)")
+    fetch.add_argument("--url", required=True, help="URL to fetch")
+    fetch.add_argument("--max-chars", type=int, default=4000,
+                       help="Max characters of extracted text (default 4000)")
+    fetch.add_argument("--js", action="store_true",
+                       help="Force Playwright rendering for JS-heavy pages")
+    fetch.add_argument("--save-image", metavar="PATH",
+                       help="save the image at --url to a new file (a deck's folder or ~/.ea/state)")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        import mail_mediation
+    except ImportError:
+        from preprocessor import mail_mediation
+    parser = _parser()
+    args = parser.parse_args(_cli_argv(sys.argv[1:] if argv is None else argv))
+    mail_mediation.check_child_parse(parser, args)
 
     try:
         output = (save_image(args.url, args.save_image) if args.save_image
@@ -638,3 +668,8 @@ if __name__ == "__main__":
         output = {"url": args.url, "error": f"Unexpected error: {e}"}
 
     print(json.dumps(output, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

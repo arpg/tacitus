@@ -2975,8 +2975,8 @@ def _tools_block(body_file: str, needed_modules: set[str] | None = None) -> str:
   submit also needs --submit-selector and --success-text. Read web-reading.md
   for action shapes and submission verification. Fill and submit stage an
   owner confirmation card; no data entry or upload runs before the click.
-  Use this path
-  after a sandbox DNS failure; do not ask the user for screenshots first.
+  Use this path when fetch_url.py cannot read a page; do not ask the user
+  for screenshots first.
 - Bash(python3 {sd}/preprocessor/drive_client.py read --url <link>) for a Google
   Doc, Sheet, Slides or Drive file (private links answer 401 to fetch_url);
   search --query "<words>" finds one, download --output saves one for doc_text.py

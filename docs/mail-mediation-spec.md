@@ -271,6 +271,16 @@ Rollback at any step: `chmod g+r` the tokens → direct path restored.
   (raw queue injection bypassing the shim), `--body-file` path escapes + symlink→`/etc/passwd`
   rejected, SAFE reads/drafts still work via the mediator.
 
+**Resident-net calls.** One kind of request does not run as the owner. A Codex turn's commands run in
+a sandbox with no network, so the tools that need it and hold no owner credential
+(`mail_mediation.RESIDENT_NET`: a page fetch, a booking link read, the site, Overleaf and doc-review git
+steps) and a plugin's own script (`plugin_run.py`) hand the call to the mediator, which starts it as
+ea-bot again (`sudo -n -u ea-bot env -i ...`) outside that sandbox. The mediator re-checks the verb, the
+options against the tool's parser and, for a plugin script, the plugin tool grants and deny lists. It
+stages no file and passes no token: the child has the resident's access and the resident's egress
+policy. These tools are not in the owner table (`mail_mediator.TOOLS`), so no request can start one as
+the owner (`tests/test_resident_net.py`). docs/codex-harness.md ("The network") has the details.
+
 **Net result:** the resident (ea-bot) is now structurally unable to send mail or read the raw Graph/
 Google tokens. Read/draft/reversible-inbox ops are forwarded to the owner-side `ea-mail-mediator` service;
 send + calendar-mutate are refused for ea-bot and run only owner-side after a Slack button (unchanged).

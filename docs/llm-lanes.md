@@ -190,9 +190,11 @@ runs where it ran before the switch: the chat and scheduling lanes'
 `tiers.lanes`, Claude for the rest. A table from before the switch that
 names a model for every task with a choice reads as a switch (the one
 model they name, else the `chat` entry's) with an override for each task
-that differs. Codex has no network in its sandbox, so the chat
-row says so when chat is on Codex: links, Drive, GitHub and Overleaf
-turns fail there, and `@claude` sends one turn to Claude.
+that differs. Codex has no network in its sandbox. On a host with the
+mediator its network tools run outside the sandbox as the resident
+(docs/codex-harness.md, "The network"), and the chat row names no limit.
+With no mediator the row says so: links, Drive, GitHub and Overleaf
+turns work from prefetched pages and cached clones only.
 
 **Precedence in chat.** One table, in docs/model-routing.md ("The
 hosted model: one switch"): a message tag, a topic pin and a topic name

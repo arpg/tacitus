@@ -219,6 +219,16 @@ because the lanes may write there.
 `run-agent.sh`, `run-plugin.sh`). Use them for a plugin's own gated verbs,
 so no model reaches them except through a card.
 
+**A Codex turn** has no allow list: its commands run in a sandbox with no
+network, where a script that reads a site or an account fails. The turn
+runs a plugin script as `python3 <tree>/preprocessor/plugin_run.py
+<script> <args>`; the mediator then runs it as the resident outside the
+sandbox, and only when the grants above give a Claude turn the same
+command line and no denial matches it
+(`plugin_registry.script_call_error`). A script needs no change for
+this. It gets 600 s; a longer job belongs in a schedule. With no
+mediator on the host the script runs inside the sandbox.
+
 **cards.** Confirmation cards. A lane or a cron job stages items (a JSON
 object, or an array of them) in the card's `pending_file`; the bot claims
 the file with the same protocol as the core cards, posts one card per item
@@ -501,3 +511,4 @@ the owner consents to.
 | `preprocessor/plugin_llm.py` | schedule posts that Claude does not write |
 | `ea-chat-bot.py` | plugin cards in the claim protocol (`PLUGIN_ACTION_FILES`), the card handlers, plugin tool grants and denials |
 | `preprocessor/mail_mediation.py`, `mail_mediator.py` | `plugin:<name>` tools, classified and run from the lock |
+| `preprocessor/plugin_run.py` | a plugin's own script from a Codex turn, through the mediator as the resident |

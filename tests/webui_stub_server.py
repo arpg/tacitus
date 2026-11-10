@@ -155,8 +155,8 @@ ROUTING = {
          "floor": "Your own model does not hold up in conversation yet. Talking with you and "
                   "finding meeting times stay on Claude or Codex for now.",
          "hosted": "codex", "hosted_allowed": ["claude", "codex"], "hosted_source": "default",
-         "hosted_note": "Codex cannot open web links, Drive, GitHub or Overleaf. "
-                        "Start a message with @claude to send one to Claude.",
+         "hosted_note": "Codex cannot open web links, Drive, GitHub or Overleaf on this computer, "
+                        "because mail mediation is off. Setup turns it on.",
          "effective": "hosted", "runs_on": "Codex", "why": "Auto picked Codex"},
     ],
 }

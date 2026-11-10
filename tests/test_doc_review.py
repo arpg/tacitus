@@ -407,10 +407,18 @@ def test_threads_follow_a_renamed_topic(env):
 
 # the boundary
 
-def test_nothing_goes_through_the_mail_mediator():
+def test_the_owner_never_runs_a_doc_review_verb():
     import mail_mediator as mm
-    assert "doc_review" not in M.SAFE and "doc_review" not in mm.TOOLS
-    assert "mail_mediation" not in (ROOT / "preprocessor" / "doc_review.py").read_text()
+    # No owner credential is involved: the mediator has no entry that starts
+    # doc_review as the owner. A Codex turn's sandbox reaches GitHub through
+    # the resident-net table, whose child is the resident again.
+    assert "doc_review" not in M.SAFE and "doc_review" not in M.GATED
+    assert "doc_review" not in mm.TOOLS
+    assert "doc_review" in mm.RESIDENT_NET_TOOLS
+    assert M.RESIDENT_NET["doc_review"] == {
+        "open", "update", "reply", "resolve", "status", "purge", "prefetch"}
+    src = (ROOT / "preprocessor" / "doc_review.py").read_text()
+    assert "sandbox_forward(" in src and "forward_or_none" not in src
 
 
 def test_the_repo_and_owner_login_come_from_github_json(tmp_path, monkeypatch):

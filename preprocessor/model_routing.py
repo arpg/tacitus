@@ -218,14 +218,33 @@ HELP = {
                  "asked for the reply writes it. Letters, such as recommendations, always come "
                  "from Claude or Codex."),
 }
-# Under a row set to Codex, what Codex cannot do there.
-CODEX_NOTE = ("Codex cannot open web links, Drive, GitHub or Overleaf. "
-              "Start a message with @claude to send one to Claude.",
-              "Codex runs with no network: URL, Drive, GitHub, Overleaf and deck turns fail; "
-              "@claude sends one turn to Claude.")
+# Under a chat row set to Codex on a host with no mediator, what Codex
+# cannot do there. With the mediator its network tools run outside the
+# sandbox (mail_mediation's resident-net) and the row says nothing.
+CODEX_NOTE = ("Codex cannot open web links, Drive, GitHub or Overleaf on this computer, "
+              "because mail mediation is off. Setup turns it on.",
+              "No mediator on this host: Codex runs with no network, so URL, Drive, GitHub, "
+              "Overleaf and plugin turns work from prefetched pages and cached clones only; "
+              "deploy/enable-mail-mediation.sh installs it.")
+def _mediated() -> bool:
+    """Does this host run the mediator?"""
+    import mail_mediation
+    return mail_mediation.mediation_active_for_resident()
+
+
 # What a harness cannot do in chat, by harness (HOSTED_MODELS[...]["harness"]):
-# the chat row shows it while chat runs on a model of that harness.
-HARNESS_LIMITS = {"codex": CODEX_NOTE}
+# the note, and whether the limit holds on this host. The chat row shows the
+# note while chat runs on a model of that harness and the limit holds.
+HARNESS_LIMITS = {"codex": (CODEX_NOTE, lambda: not _mediated())}
+
+
+def harness_limit(harness: str, pick: int = 0) -> str:
+    """What `harness` cannot do in chat on this host, (plain,
+    technical)[pick]; '' for nothing."""
+    note, holds = HARNESS_LIMITS.get(harness, (None, None))
+    return note[pick] if note and holds() else ""
+
+
 # The chat floor: the tasks that hold a conversation, which never run on
 # the owner's own model while ea-config's `local_chat_ready` is false
 # (chat_floor_holds). The note, (plain, technical), is what a refusal, a
@@ -775,8 +794,8 @@ def rows(*, cfg: dict | None = None, routing: dict | None = None,
                "hosted_why": _fixed_why(task, asked, pick) if source == "fixed" else "",
                "hosted_note": HOSTED_NOTES[task][pick] if task in HOSTED_NOTES else "",
                "help": HELP.get(task, "")}
-        if task == "chat" and REGISTRY[hm]["harness"] in HARNESS_LIMITS:
-            row["hosted_note"] = HARNESS_LIMITS[REGISTRY[hm]["harness"]][pick]
+        if task == "chat":
+            row["hosted_note"] = harness_limit(REGISTRY[hm]["harness"], pick) or row["hosted_note"]
         if task in FLOORS:
             row.update(allowed=[FLOORS[task]], locked=True, floor=STAKES_FLOOR[pick])
         elif task in KEEP_FLOORED and kept:

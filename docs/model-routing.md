@@ -247,8 +247,10 @@ an arm or a recorded model id. A new hosted model is:
 2. **A harness, when it runs on a program that has none yet:** a turn
    runner in the bot's `_HARNESS_TURNS`, a tool-less call in
    `hosted_text.CALLS`, a lane runner in `run-agent.sh`, and a line in
-   `HARNESS_LIMITS` when the harness cannot do something in chat. A
-   model on the Codex CLI reuses Codex's harness and needs none of it.
+   `HARNESS_LIMITS` when the harness cannot do something in chat
+   (`harness_limit` decides whether the limit holds on this host: Codex's
+   holds only with no mediator). A model on the Codex CLI reuses Codex's
+   harness and needs none of it.
 
 `tests/test_hosted_switch.py` adds a made-up model with one entry and
 checks that each of those places takes it. It also scans the production

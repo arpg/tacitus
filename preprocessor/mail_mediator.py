@@ -11,6 +11,13 @@ real client tool as the owner and writes the captured result back.
 GATED verbs (send / calendar mutate) never reach here as SAFE, so they are
 refused. This process is the only side that can send; the resident cannot.
 
+One kind of request does not run as the owner. A Codex turn's sandbox has no
+network, so its page fetch, its site, Overleaf and doc-review git steps and a
+plugin's own script (mail_mediation.RESIDENT_NET, plugin_run.py) come here to
+run as the resident again, outside that sandbox (_handle_resident). Such a
+child holds the resident's access and nothing of the owner's: no token, no
+staged file, an environment built here.
+
 See docs/mail-mediation-spec.md.
 """
 from __future__ import annotations
@@ -52,6 +59,16 @@ TOOLS = {
 # Tools that run as the resident (ea-bot) outside Codex's network sandbox,
 # never as the owner, and the variable that tells each one it is that worker.
 RESIDENT_BROWSER_TOOLS = {"web_browser": "EA_BROWSER_DIRECT", "poll_filler": "EA_POLL_DIRECT"}
+# The tools a Codex turn forwards for the network its sandbox lacks
+# (mail_mediation.RESIDENT_NET). They run as the resident too. Kept out of
+# TOOLS, so no path of this file can start one as the owner.
+RESIDENT_NET_TOOLS = {name: REPO / "preprocessor" / f"{name}.py" for name in M.RESIDENT_NET}
+# Each resident-net call and plugin script runs on its own thread: such a
+# child may call a mediated tool itself, which the queue loop must serve.
+RESIDENT_NET_MAX = 4
+_resident_slots = threading.BoundedSemaphore(RESIDENT_NET_MAX)
+# How long a resident child gets to end after its time limit's SIGTERM.
+RESIDENT_TERM_GRACE_S = 10
 MAX_AVAILABLE_BYTES = 256 * 1024
 # Tools whose calls take long (remote writing, browser rendering): each runs on
 # its own thread, so the queue keeps serving every other verb meanwhile.
@@ -559,7 +576,10 @@ def handle(req_path: str):
     # is_allowed = SAFE verbs + the EA-Managed attendee-less auto-hold exception.
     # A plugin tool's verb is SAFE only when the owner's plugin lock says so.
     # The EA-Managed id comes from the owner-private calendars.json only.
-    known = tool in TOOLS or M.is_plugin_tool(tool)
+    # A resident-net call (a RESIDENT_NET verb, a plugin script) is allowed
+    # here and runs as the resident, never as the owner (_handle_resident).
+    resident_net = isinstance(tool, str) and M.is_resident_net(tool, verb)
+    known = tool in TOOLS or M.is_plugin_tool(tool) or resident_net
     if not known or not M.is_allowed(tool, verb, argv, owner=True):
         _respond(rid, "", json.dumps(
             {"status": "error", "message": f"mediator refused '{tool} {verb}'"}), 2)
@@ -579,6 +599,9 @@ def handle(req_path: str):
     # never a gate (the resident writes the request).
     model = "".join(c for c in str(req.get("model") or "")[:40] if c.isalnum() or c in "._:-")
     lane = M.child_graph_lane(req.get("lane"))
+    if resident_net:
+        _handle_resident(rid, tool, verb, argv, req.get("cwd"), run_id, model, req_path)
+        return
     # A Codex ghost run (codex_ghost.py) may read; every other verb is
     # recorded for the judge and answered as the real verb answers (a
     # synthetic draft id for a draft), never executed.
@@ -766,6 +789,116 @@ def _execute(rid, tool, verb, argv, run_id, child_argv, stage_dir, deliveries, r
         _cleanup(req_path)
         if stage_dir is not None:
             shutil.rmtree(stage_dir, ignore_errors=True)
+
+
+def _resident_path(home: str) -> str:
+    """PATH of a resident-net child: this tree's venv, then the venv of the
+    resident's own tree, which is the Python a Codex turn's commands run."""
+    return (f"{REPO}/.venv/bin:{home}/ea-system/.venv/bin:{home}/.local/bin:"
+            f"/usr/local/bin:/usr/bin:/bin")
+
+
+def _resident_net_cmd(tool, verb, target, child_args, cwd, run_id, model) -> list[str]:
+    """The command of one resident-net child: the resident's identity and a
+    clean environment built here. Nothing of the request reaches the
+    environment but the checked run id and model name, and nothing of the
+    owner's does at all."""
+    home = pwd.getpwnam(M.RESIDENT_USER).pw_dir
+    env = [f"HOME={home}", f"PATH={_resident_path(home)}",
+           f"EA_DIR={M.EA_DIR.resolve()}", f"EA_BOT_HOME={home}",
+           f"{M.RESIDENT_DIRECT_ENV}=1"]
+    if tool != M.PLUGIN_RUN_TOOL:
+        # A core tool's own parser confirms the verb checked here.
+        env.append(f"{M.MEDIATED_VERB_ENV}={verb}")
+    if run_id and all(c.isalnum() or c in "._-" for c in run_id):
+        env.append(f"EA_RUN_ID={run_id}")
+    if model:
+        env.append(f"EA_TURN_MODEL={model}")
+    command = ["python3", str(target), *child_args]
+    if cwd:
+        # The turn's own directory, entered as the resident, so a relative
+        # path in the call means what it meant to the caller.
+        command = ["sh", "-c", 'cd -- "$1" && shift && exec "$@"', "sh", cwd, *command]
+    return ["sudo", "-n", "-u", M.RESIDENT_USER, "env", "-i", *env, *command]
+
+
+def _handle_resident(rid, tool, verb, argv, cwd, run_id, model, req_path):
+    """Answer one resident-net request (mail_mediation.RESIDENT_NET, a
+    plugin script): the call runs as the resident outside the Codex
+    sandbox that sent it. No file is staged and no path is rewritten: the
+    child has the resident's access only, and each listed verb confines
+    its own writes. A ghost run's call is recorded, never executed, apart
+    from the reads a ghost may make."""
+    def refuse(message, mark, rc=2):
+        _respond(rid, "", json.dumps({"status": "error", "message": message}), rc)
+        _audit(tool, verb, mark)
+        _cleanup(req_path)
+
+    err = M.cwd_error(cwd)
+    if err:
+        return refuse(f"mediator refused: {err}", "REFUSED-PATH")
+    if str(run_id or "").startswith(_GHOST_PREFIX) and (tool, verb) not in M.GHOST_RESIDENT_NET:
+        try:
+            import codex_ghost
+            codex_ghost.record_write(run_id, tool, verb, list(argv))
+        except Exception:
+            pass
+        _respond(rid, json.dumps({"status": "recorded", "ghost": True, "message": (
+            f"ghost run: '{tool} {verb}' recorded, not executed")}), "", 0)
+        _audit(tool, verb, "GHOST-RECORDED")
+        _cleanup(req_path)
+        return
+    if tool == M.PLUGIN_RUN_TOOL:
+        target, child_args, timeout = argv[1], list(argv[2:]), M.PLUGIN_RUN_TIMEOUT_S
+        try:
+            import plugin_registry
+            err = plugin_registry.script_call_error(target, child_args)
+        except Exception as e:
+            err = f"the plugin grants could not be read ({str(e)[:80]})"
+        if err:
+            return refuse(f"mediator refused: {err}", "REFUSED-PLUGIN")
+    else:
+        target, child_args, timeout = RESIDENT_NET_TOOLS[tool], list(argv), M.RESIDENT_NET_TIMEOUT_S
+    if not _resident_slots.acquire(blocking=False):
+        return refuse("the resident workers are busy; no action started", "BUSY", rc=3)
+    # The request file goes now, so the loop does not pick it up again.
+    _cleanup(req_path)
+
+    def run():
+        try:
+            _execute_resident(rid, tool, verb, target, child_args, cwd, run_id, model, timeout)
+        except Exception as e:
+            _respond(rid, "", json.dumps({"status": "error", "message": (
+                f"mediator could not run '{tool} {verb}' ({str(e)[:120]})")}), 3)
+            _audit(tool, verb, "EXEC-ERR")
+        finally:
+            _resident_slots.release()
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _execute_resident(rid, tool, verb, target, child_args, cwd, run_id, model, timeout):
+    """Run one resident-net child and answer with its output and status."""
+    label = Path(str(target)).name[:60] if tool == M.PLUGIN_RUN_TOOL else verb
+    cmd = _resident_net_cmd(tool, verb, target, child_args, cwd, run_id, model)
+    p = subprocess.Popen(cmd, cwd=str(REPO), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, env={"PATH": "/usr/bin:/bin"})
+    try:
+        out, err_txt = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # sudo passes SIGTERM on to the child; SIGKILL would end sudo alone.
+        p.terminate()
+        try:
+            p.communicate(timeout=RESIDENT_TERM_GRACE_S)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.communicate()
+        _respond(rid, "", json.dumps({"status": "error", "message": (
+            f"'{tool} {label}' was stopped after {timeout} s. Its state is unknown: "
+            f"check before any retry.")}), 3)
+        _audit(tool, label, "EXEC-TIMEOUT")
+        return
+    _respond(rid, out, err_txt, p.returncode)
+    _audit(tool, label, f"rc={p.returncode}")
 
 
 _GHOST_PREFIX = "cron-ghost-codex-"

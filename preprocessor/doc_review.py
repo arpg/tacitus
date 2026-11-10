@@ -818,8 +818,30 @@ def _parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _refresh_cache(mail_mediation, pr: int) -> dict | None:
+    """In a Codex turn's sandbox on a mediated host: run `prefetch` as the
+    resident outside it, so `review` and `fetch` answer from a copy read a
+    moment ago. Returns the refusal to print, None when the cache is fresh
+    or this is no such sandbox (the copy the bot prefetched then stands)."""
+    r = mail_mediation.sandbox_request("doc_review", ["prefetch", "--pr", str(pr)])
+    if r is None or not int(r.get("rc", 0)):
+        return None
+    return r
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        import mail_mediation
+    except ModuleNotFoundError:  # imported as preprocessor.doc_review
+        from preprocessor import mail_mediation
+    # A Codex turn's sandbox has no network and a read-only .git: on a
+    # mediated host the verbs that reach GitHub run as the resident outside
+    # it. With no mediator they stage, and the reads answer from the cache.
+    mail_mediation.sandbox_forward("doc_review", argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    mail_mediation.check_child_parse(parser, args)
     try:
         if args.verb == "set-thread":
             res = set_thread(args.pr, args.thread)
@@ -831,10 +853,14 @@ def main(argv: list[str] | None = None) -> int:
             _repo()
             _owner_login()
             gh = GitHub()
-            if args.verb in STAGEABLE and (staged := _stage_write(
-                    [args.verb] + (sys.argv[2:] if argv is None else list(argv)[1:]))):
+            if args.verb in STAGEABLE and (staged := _stage_write([args.verb] + argv[1:])):
                 res = staged
             elif args.verb in ("review", "fetch") and not _clone_git_writable():
+                failed = _refresh_cache(mail_mediation, args.pr)
+                if failed:
+                    sys.stdout.write(failed.get("stdout", ""))
+                    sys.stderr.write(failed.get("stderr", ""))
+                    return int(failed.get("rc", 2))
                 res = _cached(args.verb, args.pr, getattr(args, "out", ""))
             elif args.verb == "prefetch":
                 res = cmd_prefetch(gh, args.pr)
