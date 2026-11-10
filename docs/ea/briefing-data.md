@@ -42,6 +42,19 @@ The preprocessor (Python, no Claude tokens) produces a DELTA briefing JSON:
 - `staged_drafts`: the Outlook Drafts folder, verbatim. This is the ONLY
   permissible source for a "click Send" instruction; ledger notes about
   drafts go stale the moment the user sends.
+- `reply_backlog`: the open rows whose thread has waited a day or more
+  for the user's reply, one per thread, oldest first (at most 40; `total`
+  counts them all). `age_days` runs from the other side's last message,
+  and `rung` is the step it is on: `draft` at 1 day (make the reply
+  ahead), `name` at 3 (the briefing's reply-queue line names it), `ask`
+  at 5 (it also ranks in `today_top`). `message_id`, `conversation_id`
+  and `from` name the message to answer. `has_draft` true means a reply
+  waits in Drafts (null: the folder was not read). `queued` is what an
+  earlier run recorded about this same message with `ledger.py
+  note-reply` (a draft, a decision asked, nothing to send); a newer
+  message clears it. `kept` marks mail whose text stays on the user's
+  machine. Draft only an entry with `has_draft` false, `queued` empty
+  and `kept` false.
 - `auto_merged`: sibling items folded into one group this run (shared
   ticket, manuscript or award id). Announce each in one line so a bad
   merge is caught.

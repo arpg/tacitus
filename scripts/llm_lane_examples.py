@@ -418,7 +418,40 @@ def _briefing_json() -> dict:
         "delta_summary": {"open_obligations": 3, "total_inbox": 41},
         "recently_closed": [], "new_scheduling_requests": [{"subject": "meeting"}],
         "scheduling_channel_active": True,
+        "reply_backlog": _reply_backlog(),
     }
+
+
+def _reply_backlog(*, afternoon: bool = False) -> list[dict]:
+    """Three older threads that wait for Kit's reply, as
+    ledger.reply_backlog lists them. In the afternoon the morning's work
+    shows: the first has its draft, the second its recorded decision."""
+    def entry(row, conv, who, name, title, ask, gist, since, age, **more):
+        return dict({"id": row, "description": title, "type": "response_needed",
+                     "conversation_id": conv, "message_id": f"msg-{conv[5:]}", "from": who,
+                     "from_name": name, "since": since, "age_days": age,
+                     "rung": "ask" if age >= 5 else "name" if age >= 3 else "draft",
+                     "subject": title, "ask": ask, "state": "needs-reply", "scheduling": "none",
+                     "people": [], "notes": "", "last_action": "", "has_draft": False,
+                     "queued": {}, "kept": False, "total": 3,
+                     "thread": [{"own": False, "received": since[:10], "gist": gist}]}, **more)
+    license_ask = "Renew the simulator license for one year or for three?"
+    return [
+        entry("row-license", "conv-license", "robin.cho@example.edu", "Robin Cho",
+              "Simulator license renewal", "Say which term to renew for.",
+              "Robin asks whether to renew the simulator license for one year or three.",
+              "2026-10-03T16:00:00Z", 9,
+              queued={"inbound": "2026-10-03T16:00:00Z", "outcome": "decision",
+                      "note": license_ask} if afternoon else {}),
+        entry("row-reviews", "conv-reviews", "ana.diaz@example.edu", "Ana Diaz",
+              "Reviews for the robotics workshop", "Confirm two reviews by Oct 23.",
+              "Ana asks Kit to confirm two workshop reviews by October 23; Kit agreed in person.",
+              "2026-10-06T17:00:00Z", 6, has_draft=afternoon),
+        entry("row-visit", "conv-visit", "jo.park@example.org", "Jo Park",
+              "Lab visit in November", "Pick a day for the visit.",
+              "Jo asks which day in November suits a lab visit.",
+              "2026-10-08T15:00:00Z", 4, state="scheduling", scheduling="asks-availability"),
+    ]
 
 
 def _briefings() -> tuple[str, str]:
@@ -439,19 +472,29 @@ def _briefings() -> tuple[str, str]:
     afternoon_plan = {"since_morning": [{"ref": "R3", "line": "Lee is waiting on the section"}],
                       "pending": [{"ref": "L2", "line": "still not filed"}]}
 
+    queue_plan = {"replies": [
+        {"ref": "Q1", "action": "decide", "text": "Renew the simulator license for one year or for three?"},
+        {"ref": "Q2", "action": "draft", "text": "Yes, both reviews will be in by October 23."}]}
+
     def model(plan):
-        return lambda messages, **kw: (json.loads(json.dumps(plan)), {"latency_ms": 10})
+        return lambda messages, **kw: (json.loads(json.dumps(
+            queue_plan if kw.get("purpose") == "briefing-backlog" else plan)), {"latency_ms": 10})
+
+    def mark(*a, **k):      # the rows' reply_queue records: no ledger here
+        return True
     when = datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc)
     morning, _ = rb.run("morning-briefing", _briefing_json(), run_id="cron-morning-briefing-20261012",
                         now=when, chat=model(morning_plan),
                         drafter=lambda c, says, run_id: {"ok": True, "draft_id": "draft-1"},
-                        queue=lambda items, agent, now: len(items),
+                        queue=lambda items, agent, now: len(items), mark=mark,
                         audit=lambda agent, text, b, dry_run, chat, rendered=None: {
                             "closed": ["row-nsf"], "parked": [], "unsure_rows": [],
                             "closed_rows": [{"id": "row-nsf", "why": "submitted Friday in Research.gov",
                                              "description": "NSF annual report"}]})
-    afternoon, _ = rb.run("afternoon-catchup", _briefing_json(), run_id="cron-afternoon-catchup-20261012",
-                          now=when.replace(hour=21), chat=model(afternoon_plan),
+    afternoon, _ = rb.run("afternoon-catchup",
+                          dict(_briefing_json(), reply_backlog=_reply_backlog(afternoon=True)),
+                          run_id="cron-afternoon-catchup-20261012",
+                          now=when.replace(hour=21), chat=model(afternoon_plan), mark=mark,
                           audit=lambda *a, **k: {})
     return morning, afternoon
 

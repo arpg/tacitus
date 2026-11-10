@@ -1,7 +1,7 @@
 """remote_briefing: the candidates and refs, the plan check, the rails, a
 full morning run on a stand-in model (drafts, decisions, hand-offs, the
 audit's closures), the code-only fallback, the afternoon update, the
-escalation queue and the switch. All mail here is made up; nothing
+reply queue, the escalation queue and the switch. All mail here is made up; nothing
 reaches the network, Graph, the ledger or the real private dir."""
 import json
 import os
@@ -863,3 +863,225 @@ def test_one_thread_with_two_refs_shows_once():
     out = rb._one_per_thread(cands, lists)
     assert out["needs"] == [("R1", "r1 line")]
     assert out["flex"] == [("L2", "l2 line")]
+
+
+# ── the reply queue ───────────────────────────────────────────────────
+
+EMPTY = {"get_done_today": [], "flexes": [], "drafts": [], "needs_you": [], "escalate": []}
+
+
+def _owed(rid: str, age: int, **over) -> dict:
+    """A `reply_backlog` entry: `rid` wrote `age` days ago and has no answer."""
+    since = (NOW - timedelta(days=age)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    e = {"id": f"row-{rid}", "description": f"Reply to {rid.title()}", "type": "response_needed",
+         "conversation_id": f"c-{rid}", "message_id": f"m-{rid}", "from": f"{rid}@example.edu",
+         "from_name": rid.title(), "since": since, "age_days": age, "subject": f"About {rid}",
+         "ask": "Confirm the date.", "state": "needs-reply", "scheduling": "none", "people": [],
+         "thread": [{"from": f"{rid}@example.edu", "own": False, "received": since,
+                     "gist": f"{rid.title()} asks to confirm the date."}],
+         "notes": "", "last_action": "", "has_draft": False, "queued": {}, "kept": False}
+    e.update(over)
+    return e
+
+
+def _queue(*entries, total: int = 0) -> list[dict]:
+    return [dict(e, total=total or len(entries)) for e in entries]
+
+
+def _models(plan, replies):
+    """The plan call answers `plan`; the reply-queue call answers
+    `replies`, {ref: (action, text)}, and records the refs it was asked."""
+    def chat(messages, **kw):
+        chat.calls.append(kw.get("purpose"))
+        if kw.get("purpose") == "briefing-backlog":
+            chat.asked = [i["ref"] for i in json.loads(messages[1]["content"])["items"]]
+            return {"replies": [{"ref": r, "action": a, "text": t}
+                                for r, (a, t) in replies.items()]}, {"latency_ms": 5}
+        return json.loads(json.dumps(plan)), {"latency_ms": 5}
+    chat.calls, chat.asked = [], []
+    return chat
+
+
+def _marks():
+    def mark(ledger_id, inbound, outcome, *, now, draft_id="", note=""):
+        mark.seen.append((ledger_id, outcome, draft_id or note))
+        mark.inbound[ledger_id] = inbound
+        return True
+    mark.seen, mark.inbound = [], {}
+    return mark
+
+
+def _queue_text(text: str) -> str:
+    return next((ln for ln in text.splitlines() if ln.startswith(":inbox_tray:")), "")
+
+
+def test_a_morning_run_works_the_reply_queue(mountain, priv):
+    """The run writes the replies nobody wrote down. It asks the model
+    only about threads it may draft for, records what it did on each
+    row, and names the rest in one line."""
+    b = dict(_briefing(), reply_backlog=_queue(
+        _owed("bo", 7, queued={"inbound": "x", "outcome": "decision", "note": "One year or three?"}),
+        _owed("kim", 6), _owed("ann", 5, has_draft=True), _owed("lee", 4),
+        _owed("di", 4, scheduling="open"), _owed("cy", 3, kept=True), _owed("jo", 2),
+        _owed("ed", 1, has_draft=None)))
+    chat = _models(EMPTY, {"Q2": ("draft", "Yes, the date works."),
+                           "Q4": ("leave", "The last message only says thanks."),
+                           "Q7": ("decide", "Renew for one year or for three?")})
+    made, mark = [], _marks()
+    drafter = lambda c, says, run_id: made.append((c["message_id"], c["ledger_id"], says)) or \
+        {"ok": True, "draft_id": "draft-7"}
+    text, rec = rb.run("morning-briefing", b, run_id="r", now=NOW, chat=chat, drafter=drafter,
+                       audit=lambda *a, **k: {}, mark=mark)
+    assert chat.calls == ["briefing-morning", "briefing-backlog"]
+    assert chat.asked == ["Q2", "Q4", "Q7"]
+    assert made == [("m-kim", "row-kim", "Yes, the date works.")]
+    assert mark.seen == [("row-kim", "drafted", "draft-7"),
+                         ("row-lee", "left", "The last message only says thanks."),
+                         ("row-jo", "decision", "Renew for one year or for three?")]
+    assert mark.inbound["row-kim"] == b["reply_backlog"][1]["since"]
+    assert "*Drafts ready* (1)" in text and "- *Reply to Kim* (Kim): Yes, the date works." in text
+    assert "- *Reply to Jo* (Jo): Renew for one year or for three? (2d)" in text.split("*Needs you* (1)")[1]
+    assert _queue_text(text) == (
+        ":inbox_tray: *Reply queue*: 8 replies owed, the oldest for 7 days. 2 have a draft ready for "
+        "Send. No draft yet: Reply to Bo (7d); Reply to Lee (4d); Reply to Di (4d, a meeting to place); "
+        "Reply to Cy (3d, kept mail); and 1 more.")
+    assert rec["backlog"] == {"asked": 3, "drafted": 1, "decisions": 1, "left": 1, "failed": 0,
+                              "deferred": 0}
+    assert rec["drafts"] == 1 and rec["decisions_from_rails"] == 0
+
+
+def test_the_plans_own_work_is_recorded_on_its_queue_row_and_not_done_twice(mountain, priv):
+    b = dict(_briefing(), reply_backlog=_queue(
+        _owed("paper", 4, queued={"inbound": "x", "outcome": "escalated"}),
+        _owed("dean", 3), _owed("slides", 2)))
+    chat, mark, made = _models(PLAN, {}), _marks(), []
+    drafter = lambda c, says, run_id: made.append(c["message_id"]) or {"ok": True, "draft_id": "draft-1"}
+    text, rec = rb.run("morning-briefing", b, run_id="r", now=NOW, chat=chat, drafter=drafter,
+                       queue=lambda items, agent, now: len(items), audit=lambda *a, **k: {}, mark=mark)
+    assert chat.calls == ["briefing-morning"] and made == ["m-slides"]     # the plan took all three
+    assert [(rid, outcome) for rid, outcome, _n in mark.seen] == [("row-slides", "drafted"),
+                                                                 ("row-dean", "decision")]
+    assert mark.seen[0][2] == "draft-1" and mark.inbound["row-dean"] == b["reply_backlog"][1]["since"]
+    assert _queue_text(text) == (":inbox_tray: *Reply queue*: 3 replies owed, the oldest for 4 days. "
+                                 "1 has a draft ready for Send.")
+    assert rec["backlog"]["asked"] == 0 and rec["decisions_from_rails"] == 1
+
+
+def test_the_afternoon_update_carries_the_queues_drafts(mountain, priv):
+    plan = {"since_morning": [{"ref": "R3", "line": "Lee wants a section"}], "pending": []}
+    b = dict(_briefing(), reply_backlog=_queue(_owed("jo", 3), _owed("kim", 2)))
+    chat = _models(plan, {"Q1": ("decide", "Renew for one year or for three?"),
+                          "Q2": ("draft", "Yes, the date works.")})
+    mark = _marks()
+    text, rec = rb.run("afternoon-catchup", b, run_id="r", now=NOW, chat=chat, mark=mark,
+                       drafter=lambda c, says, run_id: {"ok": True, "draft_id": "draft-2"},
+                       audit=lambda *a, **k: {})
+    assert chat.calls == ["briefing-afternoon", "briefing-backlog"]
+    assert ":envelope: *Drafts ready* (1)" in text and "- *Reply to Kim* (Kim): Yes, the date works." in text
+    assert "- *Reply to Jo* (Jo): Renew for one year or for three? (3d)" in \
+        text.split("*Pending your response:*")[1]
+    assert _queue_text(text) == (":inbox_tray: *Reply queue*: 2 replies owed, the oldest for 3 days. "
+                                 "1 has a draft ready for Send.")
+    assert mark.seen == [("row-jo", "decision", "Renew for one year or for three?"),
+                         ("row-kim", "drafted", "draft-2")]
+    assert rec["drafts"] == 1 and rec["backlog"]["decisions"] == 1
+
+
+def test_a_queue_reply_passes_the_rails_or_becomes_a_decision(priv):
+    """A drafted yes to a dean, an answer to a question only the user can
+    answer and a writer's question go to the user, three a run. A reply
+    the writer could not make is tried again on the next run."""
+    plans = "Let me know what you plan to do with the data."
+    cands = rb.backlog_candidates({"reply_backlog": _queue(
+        _owed("dean", 9, people=[{"name": "A. Lopez", "role": "Dean"}]),
+        _owed("old", 5, ask=plans), _owed("room", 4), _owed("extra", 3), _owed("slow", 2),
+        _owed("young", 1, ask=plans), _owed("quiet", 1))})
+    refs = rb.backlog_refs(cands, set())
+    assert refs == ["Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q7"]
+    chat = _models({}, {"Q1": ("draft", "Yes, I will join."), "Q2": ("draft", "We will map the sites."),
+                        "Q3": ("draft", "Yes, the room is fine."), "Q4": ("decide", "Join the panel?"),
+                        "Q5": ("draft", "Thanks, received."), "Q6": ("draft", "We will map the sites."),
+                        "Q9": ("draft", "An invented ref."), "Q1 ": ("leave", "Not a ref.")})
+    answers = {"m-room": {"ok": False, "need": "Which room does he mean?"},
+               "m-slow": {"ok": False, "why": "the writer timed out"}}
+    made, mark = [], _marks()
+    drafter = lambda c, says, run_id: made.append((c["message_id"], says)) or \
+        answers.get(c["message_id"], {"ok": True, "draft_id": "draft-" + c["ledger_id"]})
+    out, stats = rb.clear_backlog(cands, refs, rules="", now=NOW, run_id="r", chat=chat,
+                                  drafter=drafter, mark=mark)
+    assert [(d["ref"], d.get("decision")) for d in out if not d["ok"]] == [
+        ("Q1", "Reply needs you (a dean or a program officer): Yes, I will join. (9d)"),
+        ("Q2", f"They ask: {plans} (5d)"),
+        ("Q3", "The writer asks: Which room does he mean? (4d)")]
+    (young,) = [d for d in out if d["ok"]]
+    assert young["ref"] == "Q6" and young["ack"] is True and young["draft_id"] == "draft-row-young"
+    assert young["says"].startswith("Thank them for what they sent and say the user will follow up")
+    assert [m for m, _says in made] == ["m-room", "m-slow", "m-young"]
+    assert [(rid, outcome) for rid, outcome, _n in mark.seen] == [
+        ("row-dean", "decision"), ("row-old", "decision"), ("row-room", "decision"),
+        ("row-young", "drafted")]                # the fourth decision and the failed draft wait
+    assert stats == {"asked": 7, "drafted": 1, "decisions": 3, "left": 0, "failed": 1, "deferred": 1}
+
+
+def test_a_dry_run_makes_and_records_nothing_for_the_queue(priv):
+    b = dict(_briefing(), reply_backlog=_queue(_owed("kim", 2)))
+    text, rec = rb.run("morning-briefing", b, run_id="r", now=NOW, dry_run=True,
+                       chat=_models(PLAN, {"Q1": ("draft", "Yes, the date works.")}),
+                       drafter=lambda *a, **k: pytest.fail("drafted"),
+                       queue=lambda *a, **k: pytest.fail("queued"),
+                       mark=lambda *a, **k: pytest.fail("recorded"), audit=lambda *a, **k: {})
+    assert "*Drafts ready* (2)" in text and rec["backlog"]["drafted"] == 1
+
+
+def test_the_queue_waits_when_the_remote_model_is_down(priv):
+    b = dict(_briefing(), reply_backlog=_queue(_owed("kim", 4)))
+    calls = []
+
+    def down(messages, **kw):
+        calls.append(kw.get("purpose"))
+        raise rl.RemoteLLMError("endpoint down")
+    text, rec = rb.run("morning-briefing", b, run_id="r", now=NOW, chat=down,
+                       drafter=lambda *a, **k: pytest.fail("drafted"),
+                       mark=lambda *a, **k: pytest.fail("recorded"), audit=lambda *a, **k: {})
+    assert calls == ["briefing-morning"] and rec["backlog"] == {}
+    assert _queue_text(text).endswith("1 reply owed, for 4 days. No draft yet: Reply to Kim (4d).")
+
+    def half(messages, **kw):       # the plan answers; the queue's call does not
+        if kw.get("purpose") == "briefing-backlog":
+            raise rl.RemoteLLMError("timed out")
+        return json.loads(json.dumps(EMPTY)), {}
+    text, rec = rb.run("morning-briefing", b, run_id="r", now=NOW, chat=half,
+                       drafter=lambda *a, **k: pytest.fail("drafted"),
+                       mark=lambda *a, **k: pytest.fail("recorded"), audit=lambda *a, **k: {})
+    assert rec["backlog"]["error"] == "timed out" and rec["backlog"]["drafted"] == 0
+    assert "No draft yet: Reply to Kim (4d)." in text and "did not answer" not in text
+
+
+def test_the_queue_line_is_one_line_and_silent_with_nothing_to_send_or_name():
+    def line(entries, drafts=(), gone=()):
+        cands = rb.backlog_candidates({"reply_backlog": entries})
+        out = rb._queue_line(cands, list(drafts), {}, gone)
+        return out[1] if out else ""
+    assert line([]) == ""
+    assert line(_queue(_owed("kim", 2), _owed("jo", 1))) == ""      # nothing to send, none at three days
+    assert line(_queue(_owed("kim", 1, has_draft=True))) == \
+        ":inbox_tray: *Reply queue*: 1 reply owed, for 1 day. 1 has a draft ready for Send."
+    # A draft this run staged counts as ready.
+    assert line(_queue(_owed("kim", 2), _owed("jo", 1)), drafts=[{"ref": "Q1", "ok": True}]).endswith(
+        "2 replies owed, the oldest for 2 days. 1 has a draft ready for Send.")
+    # Five names at most; the count covers the rows the briefing's slice left out.
+    many = _queue(*[_owed(f"p{n}", n) for n in range(9, 2, -1)], total=10)
+    assert line(many) == (
+        ":inbox_tray: *Reply queue*: 10 replies owed, the oldest for 9 days. No draft yet: "
+        "Reply to P9 (9d); Reply to P8 (8d); Reply to P7 (7d); Reply to P6 (6d); Reply to P5 (5d); "
+        "and 5 more.")
+    # A row the audit closed or parked this run is out of the line and the count.
+    assert line(many, gone={"row-p9"}).startswith(
+        ":inbox_tray: *Reply queue*: 9 replies owed, the oldest for 8 days. No draft yet: Reply to P8 (8d);")
+
+
+def test_the_audit_is_asked_about_every_row_the_queue_line_names():
+    cands = rb.backlog_candidates({"reply_backlog": _queue(
+        _owed("kim", 6), _owed("ann", 5, has_draft=True), _owed("jo", 2))})
+    for morning in (True, False):
+        assert rb.shown_refs(cands, {}, [], [], now=NOW, morning=morning) == ["Q1"]
