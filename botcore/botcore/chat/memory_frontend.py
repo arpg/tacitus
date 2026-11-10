@@ -323,11 +323,12 @@ class MemoryFrontend(ChatFrontend):
         return ""
 
     def click(self, card_ref: MessageRef, action_id: str, user_id: str,
-              value: dict | str | None = None) -> ActionEvent:
-        """Press a card button and dispatch the resulting ActionEvent."""
+              value: dict | str | None = None, text: str = "") -> ActionEvent:
+        """Press a card button and dispatch the resulting ActionEvent;
+        `text` is the line the owner wrote with the press."""
         ev = ActionEvent(action_id=action_id, user_id=user_id, card=card_ref,
                          value=self._card_value(card_ref, action_id) if value is None else value,
-                         source="button")
+                         source="button", text=text)
         self.registry.dispatch_action(ev)
         return ev
 

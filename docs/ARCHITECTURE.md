@@ -174,7 +174,9 @@ Slack signature and checks the clicker against `EA_SLACK_OWNER_ID`. On
 Zulip the same card is a message in the `ea-dm` stream with a one-time
 code: the owner reacts with a check (or a cross to cancel) or replies
 with the code, led by the action's word for anything but the primary
-action (`handled <code>`, `cancel <code>`). A card that withholds its
+action (`handled <code>`, `cancel <code>`); words after the code go with
+an action that asks for them (`draft <code> <what the reply must say>`).
+A card that withholds its
 approval (more than one card shows) has no primary: a thumbs up or a
 bare code there selects nothing (`ConfirmationCard.no_default`). A draft
 outcome (Send, Sent myself, Handled, a send or delete found in Outlook)
@@ -528,7 +530,10 @@ threads with no live Send card, each with where its reply stands (a draft
 whose Send card closed, a question for the owner, a meeting to place, no
 draft). "One by one" posts a card per thread in that card's thread.
 "Draft it" starts a turn there that writes the reply for that one row; for
-a draft that exists it posts a new Send card instead. A question that a
+a draft that exists it posts a new Send card instead. "Draft it" takes one
+line of the owner's words (`CardAction.ask`): the turn writes the reply
+that says it, a decline too, and on a question that line is the answer. A
+question that a
 run recorded with answers (`reply_queue.choices`: two or three, 48
 characters at most, from the remote call's `choices` or `note-reply
 --choice`) shows one button per answer in place of "Draft it", and the
@@ -536,7 +541,11 @@ card has no default action. A tap starts the same turn with that answer as
 the owner's decision; "Other answer" starts the turn that asks. The click
 is refused when the row no longer offers that answer. "Skip" snoozes the
 row for 3 days. "Not needed" deletes the row's draft and closes the row
-as the owner's word. The next day's card retires the cards of the day
+as the owner's word, which archives its mail. When another open row holds
+the thread in the inbox, it closes each one that a reply would finish
+(`ledger.closes_on_reply`) the same way; a row that no reply finishes
+stays open, and the status line names it and says the thread stays in the
+inbox. The next day's card retires the cards of the day
 before, so one Replies card is live at a time
 (`reply-queue-cards.json` in the owner-private dir). The card's buttons name
 their rows as `row` and `rows`, never `ledger_id`, so the web chat's Mark
@@ -846,7 +855,12 @@ move or delete an event, a scheduled send, a plugin's card, the
 send-all card, the room picker) is a neutral `ConfirmationCard`
 (`chat/cards.py`): title, fields, body, actions, an optional select,
 footer. Each `CardAction` has an id, a label, a value, a style and a
-`word`, the verb the owner types on a platform without buttons. The
+`word`, the verb the owner types on a platform without buttons. An
+action with `ask` (a few words that name what to write) takes one line of
+the owner's words with the press, 300 characters at most, in
+`ActionEvent.text`: a field above the buttons in the web app, the words
+after the code on Zulip (`<word> <code> <words>`), nothing on Slack. A
+frontend drops the line for an action that does not ask. The
 frontend renders the card: Block Kit buttons on Slack; on Zulip a
 message in the `ea-dm` stream, under a topic of its own
 (`lock <code> <subject>`) that the bot reacts on once per action

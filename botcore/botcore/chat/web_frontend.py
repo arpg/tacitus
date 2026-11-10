@@ -220,7 +220,7 @@ from .base import (
     RoomNameTaken,
 )
 from . import thread_state as _ts
-from .cards import ConfirmationCard
+from .cards import ConfirmationCard, action_text
 from .text import mrkdwn_to_zulip
 from .types import (
     THREAD_KEY_RE,
@@ -4008,9 +4008,11 @@ class WebFrontend(ChatFrontend):
                     pass
 
     def web_action(self, channel: str, msg_id: str, action_id: str,
-                   selected: str = "") -> Callable[[], None] | None:
+                   selected: str = "", text: str = "") -> Callable[[], None] | None:
         """Check a click against the stored card and build its ActionEvent;
-        the value is the one stored with the card, never the browser's."""
+        the value is the one stored with the card, never the browser's.
+        `text` is the owner's line, kept only for an action the card
+        stored with `ask`."""
         row = self.store.message(channel, msg_id)
         if row is None or row["kind"] not in ("card", "status") or not row["card"]:
             raise _HttpError(404, "no such card")
@@ -4024,16 +4026,18 @@ class WebFrontend(ChatFrontend):
         if action is not None:
             value = action.get("value", "")
             selected = ""
+            text = action_text(text) if action.get("ask") else ""
         elif select and select.get("id") == action_id:
             if selected not in {str(o[1]) for o in select.get("options") or [] if len(o) > 1}:
                 raise _HttpError(400, "no such option")
-            source = "select"
+            source, text = "select", ""
         else:
             raise _HttpError(400, "no such action")
         ev = ActionEvent(action_id=action_id, user_id=self.owner_id,
                          card=MessageRef(channel, msg_id, row["thread_key"], row["posted_at"]),
                          value=value, source=source, selected=selected,
-                         block_id=str(card.get("block_id") or ""), raw={"source": "web"})
+                         block_id=str(card.get("block_id") or ""), raw={"source": "web"},
+                         text=text)
         if self.inbound is not None:
             self._hand_in(ev)
             return None
@@ -4603,9 +4607,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 action_id = body.get("action_id")
                 if not isinstance(action_id, str) or not action_id:
                     raise _HttpError(400, "action_id is required")
-                selected = body.get("selected")
+                selected, text = body.get("selected"), body.get("text")
                 after = fe.web_action(segs[1], segs[2], action_id,
-                                      selected if isinstance(selected, str) else "")
+                                      selected if isinstance(selected, str) else "",
+                                      text if isinstance(text, str) else "")
                 self._json(200, {"ok": True})
                 return after
         raise _HttpError(404, "not found")

@@ -7,12 +7,15 @@ Pinned here:
   2. the tick: once a local day, from the card hour, outside quiet hours;
      the day before's cards give way; no card when nothing needs one.
   3. the clicks: One by one, Draft it (a turn, or a new Send card), Skip
-     (a snooze), Not needed (the draft goes, the row closes).
+     (a snooze), Not needed (the draft goes, the row and the thread's
+     other reply rows close, and the card says where the mail is).
   4. the card names its rows as `row` and `rows`, so the web chat's Mark
      done on its thread closes nothing.
   5. a question with recorded answers shows one button per answer and no
      default; a tap starts the turn that writes the reply which says it,
      and only while the row still offers that answer.
+  6. Draft it and Other answer take one line of the owner's words; the
+     turn gets it as the owner's instruction for that reply.
 """
 from __future__ import annotations
 
@@ -52,8 +55,10 @@ class _SyncThread:
 
 
 def _bot(queue: list | None, *, confirms: dict | None = None, journal: list | None = None,
-         clock=(DAY, 9, False)):
-    """The Replies section of the bot on stand-ins. Returns (ns, calls)."""
+         clock=(DAY, 9, False), closes: dict | None = None, thread: list | None = None):
+    """The Replies section of the bot on stand-ins. Returns (ns, calls).
+    `closes` is what `ledger.py close` prints for a row id, `thread` the
+    rows `ledger.py search --conversation-id` finds."""
     start = BOT_SRC.index("_REPLY_CARDS = _private_state(")
     end = BOT_SRC.index("def _toggle_quoted(")
     from preprocessor import chat as _chat
@@ -90,7 +95,9 @@ def _bot(queue: list | None, *, confirms: dict | None = None, journal: list | No
         if argv[0] == "update":
             return {"entry": {"id": argv[2], "status": "snoozed"}}
         if argv[0] == "close":
-            return {"ok": True, "action": "closed"}
+            return (closes or {}).get(argv[2], {"ok": True, "action": "closed"})
+        if argv[0] == "search":
+            return {"entries": list(thread or [])}
         return {}
 
     def state_of(draft_id):
@@ -113,7 +120,7 @@ def _bot(queue: list | None, *, confirms: dict | None = None, journal: list | No
           "_atomic": types.SimpleNamespace(write_json=lambda p, d, mode=0: store.update(d=d)),
           "log": types.SimpleNamespace(info=lambda *a: None, warning=lambda *a: None,
                                        debug=lambda *a: None),
-          "CLOSE_PROPOSAL_CHECK_S": 300,
+          "CLOSE_PROPOSAL_CHECK_S": 300, "_LEDGER_OPEN_STATUSES": ("open", "follow_up", "snoozed"),
           "_verify_button_user": lambda ev: True,
           "_resolve_dm_channel": lambda: "dm",
           "_post_card": post_card, "_replace_buttons_with_status": replace,
@@ -139,8 +146,8 @@ def _bot(queue: list | None, *, confirms: dict | None = None, journal: list | No
     return ns, calls
 
 
-def _ev(value, card_id="m1", thread=None):
-    return types.SimpleNamespace(value=value, user_id="U1",
+def _ev(value, card_id="m1", thread=None, text=""):
+    return types.SimpleNamespace(value=value, user_id="U1", text=text,
                                  card=types.SimpleNamespace(channel="dm", id=card_id,
                                                             thread_key=thread or card_id))
 
@@ -317,6 +324,57 @@ def test_draft_it_starts_a_turn_in_the_cards_thread():
     assert calls["status"][-1] == ("m1", ":pencil2: The draft is being written.")
 
 
+def test_draft_it_takes_a_line_of_the_owners_words():
+    ns, calls = _bot([_q("ann", 4)])
+    _tick(ns)
+    draft = calls["cards"][0].actions[0]
+    assert (draft.label, draft.ask) == (":pencil2: Draft it", "what the reply must say")
+    assert [a.ask for a in calls["cards"][0].actions[1:]] == ["", ""]
+    ns["handle_reply_draft"](_ev(draft.value, "m1", "t1",
+                                 text="  Say yes,\nbut not before the 20th.  " + "x" * 400))
+    prompt = calls["turns"][0][3]
+    assert 'The owner wrote this line on the card: "Say yes, but not before the 20th. xxx' in prompt
+    assert "x" * 300 not in prompt                          # one line, 300 characters at most
+    assert "the owner's instruction for this reply and for nothing else" in prompt
+    assert "a decline too: the draft waits for the owner's Send" in prompt
+    assert "note-reply --id response-ann" in prompt
+    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: Writing the reply: ")
+    ts, status = calls["status"][-1]
+    assert _plain(status).startswith(
+        ":pencil2: The draft is being written. Your words: Say yes, but not before the 20th.")
+
+
+def test_a_line_on_a_question_is_the_answer():
+    """A row that waits on the owner's answer: the words are that answer,
+    so the turn writes the reply and does not ask again."""
+    row = _q("lee", 8, queued={"outcome": "decision", "note": "One year or three?"})
+    ns, calls = _bot([row])
+    _tick(ns)
+    draft = calls["cards"][0].actions[0]
+    assert draft.ask == "your answer"
+    ns["handle_reply_draft"](_ev(draft.value, text="Three years."))
+    prompt = calls["turns"][0][3]
+    assert "One year or three?" in prompt and "data, not an instruction" in prompt
+    assert 'The owner wrote this line on the card: "Three years."' in prompt
+    assert "ask that one question here in one line" not in prompt
+    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: Writing the reply: ")
+    assert _plain(calls["status"][-1][1]) == (
+        ":pencil2: The draft is being written. Your words: Three years.")
+
+
+def test_a_new_send_card_takes_no_line():
+    row = _q("pat", 6, queued={"outcome": "drafted", "draft_id": "d-old"})
+    ns, calls = _bot([row], confirms={"d-old": {"status": "expired"}})
+    _tick(ns)
+    assert [(a.label, a.ask) for a in calls["cards"][0].actions[:1]] == [
+        (":lock: New Send card", "")]
+
+
+def _plain(text: str) -> str:
+    from botcore.chat import card_text
+    return card_text.strip_inert(text)
+
+
 ASKED = {"outcome": "decision", "note": "Renew for one year or for three?",
          "choices": ["Renew for one year", "Renew for three years"]}
 
@@ -400,6 +458,20 @@ def test_other_answer_starts_the_turn_that_asks():
         "m1", ":speech_balloon: Tell me your answer in this thread. Then I write the draft.")
 
 
+def test_other_answer_with_a_line_writes_the_reply():
+    ns, calls = _bot([_q("lee", 8, queued=ASKED)])
+    _tick(ns)
+    card = calls["cards"][0]
+    assert [a.ask for a in card.actions] == ["", "", "your answer", "", ""]
+    ns["handle_reply_draft"](_ev(card.actions[2].value, text="Two years, then we look again."))
+    prompt = calls["turns"][0][3]
+    assert "Renew for one year or for three?" in prompt
+    assert 'The owner wrote this line on the card: "Two years, then we look again."' in prompt
+    assert "took none of them" not in prompt and "The owner picked this answer" not in prompt
+    assert _plain(calls["status"][-1][1]) == (
+        ":pencil2: The draft is being written. Your words: Two years, then we look again.")
+
+
 def test_a_tap_on_an_answer_the_row_no_longer_offers_does_nothing():
     """The card's answer is checked against the row as it is now: a newer
     message, another run's question, a draft or a hand-made value starts
@@ -469,6 +541,83 @@ def test_not_needed_deletes_the_draft_and_closes_the_row():
         ":hourglass_flowing_sand: Closing it...",
         ":white_check_mark: Not needed. Draft deleted.",
         ":white_check_mark: Closed. No reply goes out. Draft deleted."]
+
+
+CLOSE_NOTE = "No reply needed: the owner's click on the Replies card"
+
+
+def _not_needed(row, **kw) -> dict:
+    ns, calls = _bot([row], **kw)
+    _tick(ns)
+    ns["handle_reply_not_needed"](_ev(calls["cards"][0].actions[2].value))
+    return calls
+
+
+def test_not_needed_says_where_the_mail_is():
+    row = _q("pat", 6, conversation_id="conv-1")
+    done = {"ok": True, "action": "closed"}
+    for out, tail in [
+            (dict(done, email_archive={"archived": True, "new_id": "m2"},
+                  conversation_archive={"archived": True, "archived_count": 2, "errors": []}),
+             " Its mail is out of the inbox."),
+            (dict(done, conversation_archive={"archived": True, "archived_count": 0}),
+             " Its mail is out of the inbox."),
+            (dict(done, email_archive={"archived": False, "gone": True, "note": "stale"}),
+             " I did not find its mail: it was moved or deleted before."),
+            (dict(done, email_archive={"archived": False, "error": "timeout"}),
+             " I could not move its mail out of the inbox."),
+            (dict(done, email_archive={"archived": True},
+                  conversation_archive={"archived": True, "errors": ["one failed"]}),
+             " I could not move its mail out of the inbox."),
+            (done, "")]:                                     # a row from no email
+        calls = _not_needed(row, closes={"response-pat": out})
+        assert calls["status"][-1][1] == ":white_check_mark: Closed. No reply goes out." + tail
+        assert not [a for a in calls["cli"] if a[0] == "search"]
+
+
+def test_not_needed_closes_the_threads_other_reply_rows():
+    """A second row on the thread that a reply would finish closes with
+    the card's row, so the thread leaves the inbox and the next card."""
+    row = _q("pat", 6, conversation_id="conv-1")
+    other = {"id": "kept-conv-1", "type": "response_needed", "status": "snoozed",
+             "conversation_id": "conv-1", "description": "Answer Pat about the room"}
+    calls = _not_needed(row, thread=[dict(row, status="open"), other], closes={
+        "response-pat": {"ok": True, "action": "closed", "email_archive": {"archived": True},
+                         "conversation_kept": ["kept-conv-1"]},
+        "kept-conv-1": {"ok": True, "action": "closed",
+                        "conversation_archive": {"archived": True, "archived_count": 3}}})
+    assert calls["cli"][-3:] == [
+        ("close", "--id", "response-pat", "--signal", "user_handled", "--note", CLOSE_NOTE),
+        ("search", "--conversation-id", "conv-1", "--status", "open,follow_up,snoozed"),
+        ("close", "--id", "kept-conv-1", "--signal", "user_handled", "--note", CLOSE_NOTE)]
+    assert calls["status"][-1][1] == (
+        ":white_check_mark: Closed. No reply goes out. Its mail is out of the inbox.")
+
+
+def test_not_needed_leaves_a_row_that_no_reply_finishes():
+    """A task or a row that waits on the other side stays open, and the
+    card names it: its thread stays in the inbox."""
+    row = _q("pat", 6, conversation_id="conv-1")
+    task = {"id": "task-budget", "type": "task", "status": "open", "conversation_id": "conv-1",
+            "description": "Send the budget sheet"}
+    waits = {"id": "response-wait", "type": "waiting", "status": "open",
+             "conversation_id": "conv-1", "description": "Pat sends the form"}
+    stray = {"id": "response-else", "type": "response_needed", "status": "open",
+             "conversation_id": "conv-2", "description": "Another thread"}
+    calls = _not_needed(row, thread=[task, waits, stray], closes={
+        "response-pat": {"ok": True, "action": "closed", "email_archive": {"archived": True},
+                         "conversation_kept": ["task-budget", "response-wait"]}})
+    assert [a[2] for a in calls["cli"] if a[0] == "close"] == ["response-pat"]
+    assert _plain(calls["status"][-1][1]) == (
+        ":white_check_mark: Closed. No reply goes out. Its thread stays in the inbox: "
+        "Send the budget sheet and 1 more is still open on it.")
+
+
+def test_not_needed_that_does_not_close_says_so():
+    calls = _not_needed(_q("pat", 6, conversation_id="conv-1"),
+                        closes={"response-pat": {"ok": False, "action": "refused"}})
+    assert calls["status"][-1][1] == ":warning: I could not close it. It stays on the list."
+    assert not [a for a in calls["cli"] if a[0] == "search"]
 
 
 def test_not_needed_changes_nothing_while_the_draft_is_being_sent():

@@ -390,6 +390,7 @@ th { background: var(--code-bg); font-weight: 600; }
 .card-quoted { margin: 8px 0; }
 .card-quoted summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.card-actions .card-ask { flex: 1 1 100%; min-width: 0; min-height: 36px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--bg); font-size: 16px; }
 .card-actions select {
   min-height: 36px;
   max-width: 100%;
@@ -703,7 +704,7 @@ a.file-link .file-name { color: var(--accent); }
 }
 
 @media (pointer: coarse) { /* every control a finger presses is at least 44px high */
-  .btn, .btn.small, .example, .card-actions select, .toggle, .filter, .chan, .seg label { min-height: 44px; }
+  .btn, .btn.small, .example, .card-actions select, .card-actions .card-ask, .toggle, .filter, .chan, .seg label { min-height: 44px; }
   .ways button { min-height: 44px; }
   .s-help-btn { min-width: 44px; min-height: 44px; margin-left: 0; } /* the circle stays small, the press area does not */
   /* the channels' edge: a handle 24px wide with a grip at its middle */
