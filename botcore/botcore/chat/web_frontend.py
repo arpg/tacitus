@@ -558,6 +558,10 @@ def _write_private(path: Path, data: bytes) -> None:
 # who is on the other end of a loopback connection (Linux)
 
 PROC_NET = (Path("/proc/net/tcp"), Path("/proc/net/tcp6"))
+# The 401 body's hint when the owner's Tailscale login arrives on a host
+# without /proc, where the header can never be trusted.
+HEADER_OFF_HINT = ("the Tailscale sign-in header is trusted on Linux only (it needs /proc); "
+                   "on this host pair this browser once with the pairing token")
 TAILSCALED_SOCKETS = ("/run/tailscale/tailscaled.sock", "/var/run/tailscale/tailscaled.sock",
                       "/var/snap/tailscale/common/socket/tailscaled.sock")
 # Seconds between two lookups of tailscaled's uid after a mismatch.
@@ -2288,10 +2292,11 @@ class WebStore:
 
 
 class _HttpError(Exception):
-    def __init__(self, status: int, message: str) -> None:
+    def __init__(self, status: int, message: str, hint: str = "") -> None:
         super().__init__(message)
         self.status = status
         self.message = message
+        self.hint = hint   # a second key in the JSON body, when there is a way forward
 
 
 # The composite's hook: called with the owner's InboundMessage or
@@ -4371,7 +4376,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 raise _HttpError(404, "not found")
         except _HttpError as e:
             self._drain()
-            self._json(e.status, {"error": e.message})
+            self._json(e.status, {"error": e.message, **({"hint": e.hint} if e.hint else {})})
         except (BrokenPipeError, ConnectionResetError):
             return
         except Exception:
@@ -4403,7 +4408,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._pair()
             return None
         if not self._is_owner():
-            raise _HttpError(401, "not the owner")
+            raise _HttpError(401, "not the owner", self._denied_hint)
         fe, store = self.fe, self.fe.store
         n = len(segs)
         if n >= 2 and segs[0] in ("channels", "cards", "threads", "messages"):
@@ -4941,6 +4946,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         pairing cookie."""
         fe = self.fe
         self._credential = ""
+        self._denied_hint = ""
         if fe.tailscale_login and fe.trust_tailscale_header \
                 and self.client_address[0] in LOOPBACK:
             got = self.headers.get("Tailscale-User-Login") or ""
@@ -4953,6 +4959,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 if local is not None and fe.peer_is_tailscaled(self.client_address, local):
                     self._credential = "header"
                     return True
+                if not any(p.exists() for p in PROC_NET):
+                    # The owner's own login, forwarded by tailscale serve, on
+                    # a host with no /proc: the peer check cannot run, so the
+                    # header is never trusted here (macOS, 2026-11-09). The
+                    # 401 says what to do instead of "not the owner" alone.
+                    self._denied_hint = HEADER_OFF_HINT
         token = fe.pair_token()
         if token:
             cookie = self._cookie(COOKIE)

@@ -163,6 +163,15 @@ Interactivity:
 Without this, the bot connects but receives zero message events. Symptom: logs
 show "Bolt app is running" but no "RAW message event" lines appear.
 
+### G. Web chat: every browser pairs by token
+
+The web chat takes the `Tailscale-User-Login` header only when the
+connection's client end belongs to tailscaled, and that check reads
+`/proc/net/tcp`. macOS has no `/proc`, so the header is never taken and a
+tailnet device gets `401 {"error": "not the owner", "hint": ...}` until it
+is paired. Pair each browser once with `~/.ea-private/webchat-pair.token`
+(SETUP.md "Web chat", step 4); the `ea_web` cookie keeps it signed in.
+
 ---
 
 ## Setup checklist (macOS)

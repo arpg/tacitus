@@ -533,12 +533,16 @@ sign-in ([docs/docker.md](docker.md#web-chat), Web chat).
    the `--https` port. Tailscale adds your login as a request header,
    which is the sign-in; the bot takes it only on tailscaled's own
    connection (`"trust_tailscale_header": false` turns it off, and
-   pairing by token is then the only sign-in).
+   pairing by token is then the only sign-in). That check reads
+   `/proc/net/tcp`, so on macOS the header is never taken: there every
+   browser, your laptop's too, pairs by token once (step 4), and the 401
+   a tailnet device gets before that says so.
 3. **Start the bot.** On a new install the hardening step starts it. On
    a running install, `sudo systemctl restart ea-chat-bot` makes it read
    the new settings. Then open the `public_url` on your phone and add it
    to the Home Screen.
-4. Without Tailscale on the phone, pairing by token works: the bot
+4. Without Tailscale on the phone, and for every browser on a macOS
+   install, pairing by token works: the bot
    writes a token to `<private dir>/webchat-pair.token` (the
    `pair_token_file` key moves it; mode 0600, at least 16 characters)
    and you enter it once in the app. Replacing the token signs every

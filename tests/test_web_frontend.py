@@ -666,6 +666,48 @@ def test_pairing_sets_the_cookie(tmp_path):
         f.stop()
 
 
+def test_the_owners_header_on_a_host_without_proc_gets_a_401_that_says_to_pair(tmp_path, monkeypatch):
+    """peer_uid reads /proc/net/tcp*; a host without /proc (macOS) can never
+    take the Tailscale header, so the owner's own login from tailscale serve
+    was a bare 401 "not the owner" (2026-11-09). The body now carries a hint
+    to pair by token; a request with no header, or on a host with /proc,
+    gets the bare 401 as before, and pairing still signs the browser in."""
+    monkeypatch.setattr(wf, "PROC_NET", (tmp_path / "no" / "tcp", tmp_path / "no" / "tcp6"))
+    f = make(tmp_path, tailscaled=False)
+    f.start()
+    try:
+        status, _h, body = owner(f, "GET", "/api/me")
+        got = json.loads(body)
+        assert status == 401 and got["error"] == "not the owner"
+        assert "Linux only" in got.get("hint", "") and "pairing token" in got["hint"]
+        assert got["hint"] == wf.HEADER_OFF_HINT
+        # no header: no hint (nothing was refused that a pairing would fix differently)
+        status, _h, body = call(f, "GET", "/api/me")
+        assert status == 401 and json.loads(body) == {"error": "not the owner"}
+        # another login's header: no hint either
+        status, _h, body = call(f, "GET", "/api/me", headers={"Tailscale-User-Login": "x@example.test"})
+        assert status == 401 and json.loads(body) == {"error": "not the owner"}
+        # the token pairs the browser, and the cookie then signs it in
+        token = f.pair_token()
+        status, h, _b = call(f, "POST", "/api/pair", {"token": token})
+        assert status == 200
+        assert call(f, "GET", "/api/me", headers={"Cookie": f"ea_web={token}"})[0] == 200
+    finally:
+        f.stop()
+    # with /proc present the peer check ran and said no: a bare 401
+    (tmp_path / "proc").mkdir()
+    for name in ("tcp", "tcp6"):
+        (tmp_path / "proc" / name).write_text("  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n")
+    monkeypatch.setattr(wf, "PROC_NET", (tmp_path / "proc" / "tcp", tmp_path / "proc" / "tcp6"))
+    f = make(tmp_path / "second", tailscaled=False)
+    f.start()
+    try:
+        status, _h, body = owner(f, "GET", "/api/me")
+        assert status == 401 and json.loads(body) == {"error": "not the owner"}
+    finally:
+        f.stop()
+
+
 def test_a_send_with_a_nonce_is_taken_once_and_a_refused_hand_in_is_a_503(fe):
     """The browser retries a send the host did not answer, with the same
     nonce: the second post answers the first row and dispatches nothing.
