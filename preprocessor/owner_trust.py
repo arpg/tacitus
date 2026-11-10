@@ -34,9 +34,9 @@ moves the ctime too, so every writer would have to keep the fingerprint.
 
 `allow_private_group=True` also accepts group write when the group holds no
 user but the owner (no other member, and no other user with it as the primary
-group). The token files the owner's processes write are mode 0660 in the
+group). A token file from before token_file_mode() may be mode 0660 in the
 owner's own group, which only the owner can use; a group the resident is in
-never passes.
+never passes. The owner's processes write token files with token_file_mode().
 
 The secrets rule (`owner_secret`): the environment, then
 `<private_dir>/secrets.env` (owner processes only), then the legacy
