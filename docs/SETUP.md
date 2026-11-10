@@ -1202,8 +1202,10 @@ Europe/Lisbon --until 2026-05-20`; it reverts to the home timezone after
 
 `sudo bash /opt/ea-system/deploy/apply-host.sh` runs every step below that
 the boundary audit finds missing, in order, and checks again; run it
-after setup and after every update. The sections below say what each
-step does.
+after setup and after every update. On macOS it runs mail mediation only
+and prints the other steps as not available (they are Linux-only; the
+macOS root step is `deploy/macos/install-services.sh`). The sections below
+say what each step does.
 
 The bot and the mail mediator run as you, but by default they load their
 environment and run their code from ea-bot's home, which ea-bot can
