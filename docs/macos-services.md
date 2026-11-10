@@ -94,7 +94,7 @@ Three interpreters are in play, and each must have `requirements.txt`:
 | Who | Interpreter | Made by |
 |---|---|---|
 | the services (owner) | `~/ea-system/.venv` (Python 3.14; `ortools` has no 3.15 wheel yet) | `python3.14 -m venv .venv` in the repo |
-| ea-bot's Claude and its tool calls | `/Users/ea-bot/ea-system/.venv` (the bot puts it first on PATH, `ea-chat-bot.py:524`) | the owner, in the deployed clone, which the owner owns |
+| ea-bot's Claude and its tool calls | `/Users/ea-bot/ea-system/.venv` (the bot puts it first on PATH when it holds every package of `requirements.txt`) | the owner, in the deployed clone, which the owner owns |
 | cron (`/opt/ea-system/run-agent.sh` and bare `python3` lines) | the owner's venv, through a `PATH=` line at the top of the crontab | `scripts/install/setup.sh` / SETUP.md "The venv on the cron PATH" |
 
 `/opt/ea-system/.venv` never exists: every deploy mirrors git, and the venv is
@@ -138,6 +138,8 @@ one aside.
 **ea-bot's tool calls fail with `ModuleNotFoundError`.** ea-bot's venv is
 missing or stale: rebuild `/Users/ea-bot/ea-system/.venv` with
 `python3.14 -m venv` and `pip install -r requirements.txt`, as the owner.
+A venv that lacks a requirement does not lead the chat lane's PATH; the
+bot's log names the missing packages at start (`tool PATH:`).
 
 **After a macOS upgrade.** Plists in `/Library/LaunchDaemons` survive. If
 System Settings > General > Login Items & Extensions lists them under

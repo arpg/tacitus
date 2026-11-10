@@ -90,10 +90,12 @@ def test_the_connector_switch_follows_strict_mcp_config():
 
 # ── the chat bot ──────────────────────────────────────────────────────
 
-def _sudo_builder():
-    """The bot's _sudo_claude_cmd, run with stand-ins for its globals."""
-    ns = {"os": os, "EA_BOT_HOME": "/home/ea-bot", "EA_DIR": "/home/ea-bot/.ea",
-          "EA_BOT_SCRIPT_DIR": Path("/home/ea-bot/ea-system"),
+def _sudo_builder(tree="/home/ea-bot/ea-system"):
+    """The bot's _sudo_claude_cmd, run with stand-ins for its globals.
+    `tree` is ea-bot's copy of the code, where its venv is."""
+    ns = {"os": os, "Path": Path, "SCRIPT_DIR": ROOT,
+          "EA_BOT_HOME": "/home/ea-bot", "EA_DIR": "/home/ea-bot/.ea",
+          "EA_BOT_SCRIPT_DIR": Path(tree),
           "EA_BOT_USER": "ea-bot", "CLAUDE_BIN": "/home/ea-bot/.local/bin/claude",
           "_claude_cli": claude_cli, "_mediation_enabled": lambda: True}
     exec(_bot_fn("_sudo_claude_cmd"), ns)
@@ -133,15 +135,58 @@ def test_the_bot_lanes_pass_strict_mcp_config_without_a_value():
     assert BOT_SRC.count("_claude_cli.apply(") == 1
 
 
-def test_every_lane_runs_python_from_ea_bots_own_venv(monkeypatch):
+def _venv(tree: Path, dists) -> Path:
+    """A venv under `tree` whose site-packages lists `dists` (name-version)."""
+    (tree / ".venv" / "bin").mkdir(parents=True)
+    (tree / ".venv" / "bin" / "python3").write_text("")
+    site = tree / ".venv" / "lib" / "python3.14" / "site-packages"
+    site.mkdir(parents=True)
+    for d in dists:
+        (site / f"{d}.dist-info").mkdir()
+    return tree
+
+
+def _required() -> list[str]:
+    return [m.group(0) for ln in (ROOT / "requirements.txt").read_text().splitlines()
+            if (m := re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", ln.strip()))]
+
+
+def test_every_lane_runs_python_from_ea_bots_own_venv(monkeypatch, tmp_path):
     """A tool call's bare `python3` is ea-bot's venv, never the service's
     first PATH entry: that is the owner's venv, behind a home ea-bot cannot
     enter, so the next system python3 answered, without requirements.txt."""
+    tree = _venv(tmp_path / "ea-system", [f"{n.replace('-', '_')}-1.0" for n in _required()])
     monkeypatch.setenv("PATH", "/home/owner/ea-system/.venv/bin:/usr/bin:/bin")
-    cmd = _sudo_builder()(["-p", "x"])
+    cmd = _sudo_builder(tree)(["-p", "x"])
     path = next(c for c in cmd if c.startswith("PATH=")).split("=", 1)[1].split(":")
-    assert path[:2] == ["/home/ea-bot/ea-system/.venv/bin", "/home/ea-bot/.local/bin"]
+    assert path[:2] == [f"{tree}/.venv/bin", "/home/ea-bot/.local/bin"]
     assert path[2:] == ["/home/owner/ea-system/.venv/bin", "/usr/bin", "/bin"]
+
+
+def test_a_venv_that_lacks_a_requirement_does_not_lead_the_path(monkeypatch, tmp_path):
+    """ea-bot's venv made before a requirement was added has no openpyxl
+    or playwright, and the system python3 after it on the service's PATH
+    does. Leading with that venv would take the packages from the chat
+    lane, so the PATH stays the service's; the same with no venv at all."""
+    monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")
+    stale = _venv(tmp_path / "stale", [f"{n.replace('-', '_')}-1.0" for n in _required()
+                                       if n not in ("openpyxl", "playwright")])
+    for tree in (stale, tmp_path / "no-venv"):
+        cmd = _sudo_builder(tree)(["-p", "x"])
+        assert "PATH=/usr/local/bin:/usr/bin" in cmd, tree
+
+
+def test_the_venv_check_reads_names_as_pip_writes_them(tmp_path):
+    reqs = tmp_path / "requirements.txt"
+    reqs.write_text("# a comment\ngoogle-api-python-client>=2.0\nPyYAML>=6\n\nmsal\n")
+    tree = _venv(tmp_path / "t", ["google_api_python_client-2.201.0", "pyyaml-6.0.3"])
+    assert claude_cli.resident_venv_missing(tree / ".venv", reqs) == ["msal"]
+    assert claude_cli.resident_path_dirs(tree / ".venv", "/h/.local/bin", reqs) == []
+    (tree / ".venv" / "lib" / "python3.14" / "site-packages" / "msal-1.39.0.dist-info").mkdir()
+    assert claude_cli.resident_path_dirs(tree / ".venv", "/h/.local/bin", reqs) == \
+        [f"{tree}/.venv/bin", "/h/.local/bin"]
+    assert claude_cli.resident_venv_missing(tmp_path / "none", reqs) is None
+    assert claude_cli.resident_venv_missing(tree / ".venv", tmp_path / "no-file") is None
 
 
 def test_no_lane_receives_the_captcha_key(monkeypatch):

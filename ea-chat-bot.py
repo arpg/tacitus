@@ -466,16 +466,22 @@ def _sudo_claude_cmd(claude_args: list[str], run_id: str = "",
     resident's own copy sits in ~/.ea/.env (docs/ea/reimbursement.md).
 
     PATH puts ea-bot's own venv first, as run-agent.sh and ea-bot-shell.sh
-    do. The service's PATH leads with the owner's venv, which ea-bot cannot
-    enter (a private home), so without this a bare `python3` in a tool call
-    was whatever system interpreter came next, with none of
-    requirements.txt: on macOS every Google, requests and bs4 import failed.
+    do, when that venv holds requirements.txt
+    (claude_cli.resident_path_dirs). The service's PATH leads with the
+    owner's venv, which ea-bot cannot enter (a private home), so without
+    this a bare `python3` in a tool call was whatever system interpreter
+    came next, with none of requirements.txt: on macOS every Google,
+    requests and bs4 import failed. A venv that lacks a requirement does
+    not lead: the lane keeps the service's PATH and the packages its
+    python3 has.
     """
+    lead = _claude_cli.resident_path_dirs(
+        Path(EA_BOT_SCRIPT_DIR) / ".venv", Path(EA_BOT_HOME) / ".local" / "bin",
+        SCRIPT_DIR / "requirements.txt")
     env_vars = [
         f"HOME={EA_BOT_HOME}",
         f"EA_DIR={EA_DIR}",
-        f"PATH={EA_BOT_SCRIPT_DIR}/.venv/bin:{EA_BOT_HOME}/.local/bin:"
-        f"{os.environ.get('PATH', '/usr/bin:/usr/local/bin')}",
+        "PATH=" + ":".join(lead + [os.environ.get("PATH", "/usr/bin:/usr/local/bin")]),
         f"PYTHONPATH={os.environ.get('PYTHONPATH', '')}",
     ]
     if run_id:
@@ -949,6 +955,12 @@ log.info(
     "claude_bin=%s platform=%s",
     EA_BOT_USER, EA_BOT_HOME, EA_BOT_SCRIPT_DIR, CLAUDE_BIN, sys.platform,
 )
+_venv_missing = _claude_cli.resident_venv_missing(
+    EA_BOT_SCRIPT_DIR / ".venv", SCRIPT_DIR / "requirements.txt")
+if _venv_missing:
+    log.info("tool PATH: %s/.venv lacks %s, so chat tool calls keep the service's PATH; "
+             "pip install -r requirements.txt into that venv puts it first",
+             EA_BOT_SCRIPT_DIR, ", ".join(_venv_missing))
 
 # ---------------------------------------------------------------------------
 # Handlers
