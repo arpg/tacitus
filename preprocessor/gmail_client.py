@@ -37,6 +37,12 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Optional
 
+if __name__ == "__main__":
+    # Mediate/refuse HERE, before the google imports below (see
+    # google_calendar_client.py): from main() the forward came too late.
+    from mail_mediation import forward_or_none
+    forward_or_none("gmail_client", sys.argv[1:])  # ea-bot: mediate SAFE, refuse gated
+
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -1714,8 +1720,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main():
-    from mail_mediation import forward_or_none
-    forward_or_none("gmail_client", sys.argv[1:])  # ea-bot: mediate SAFE, refuse gated
     parser = build_parser()
     args = parser.parse_args()
     try:
