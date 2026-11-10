@@ -121,8 +121,11 @@ One owner, one bot. Standalone, `owner_id = "owner"` and
    (HttpOnly, SameSite=Strict, Secure when `public_url` is https). A
    token file shorter than 16 characters is refused with a log line.
 
-Anything else: 401 JSON `{"error": "not the owner"}`. Static files are
-served without auth; every `/api/` route needs it.
+Anything else: 401 JSON `{"error": "not the owner"}`. When the header
+named the owner's login but the host has no `/proc` (macOS), the body
+adds `"hint"`: the header is trusted on Linux only, pair this browser
+with the token. Static files are served without auth; every `/api/`
+route needs it.
 
 Before auth, every `/api/` request (the origin rule; one app per
 origin, so a deck on another port of the host is another origin):
