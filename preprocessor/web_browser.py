@@ -21,8 +21,14 @@ import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import fetch_url as F
 import mail_mediation as M
+# Forward before fetch_url, which imports requests: a forward from main()
+# came after an ImportError on an interpreter without it. The direct flag
+# conveys no authority: the worker still must be ea-bot, and setting it
+# inside Codex does not escape the network sandbox.
+if __name__ == "__main__" and os.environ.get("EA_BROWSER_DIRECT") != "1":
+    M.forward_or_none("web_browser", sys.argv[1:])
+import fetch_url as F
 import resident_io as R
 import browser_gate as G
 
@@ -351,10 +357,6 @@ def build_parser():
 
 
 def main():
-    # The direct flag conveys no authority: the worker still must be ea-bot,
-    # and setting it inside Codex does not escape the network sandbox.
-    if os.environ.get("EA_BROWSER_DIRECT") != "1":
-        M.forward_or_none("web_browser", sys.argv[1:])
     parser = build_parser()
     args = parser.parse_args()
     M.check_child_parse(parser, args)
