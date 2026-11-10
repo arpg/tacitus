@@ -11,6 +11,7 @@ Used by:
 
 import functools
 import json
+import pwd
 import re
 from pathlib import Path
 
@@ -395,6 +396,30 @@ def _append(text: str, part: str) -> str:
     return (text.rstrip() + "\n\n" + part) if text.strip() else part
 
 
+LINUX_HOME = "/home/ea-bot"
+
+
+def resident_home() -> str:
+    """The ea-bot account's home, read from the account: /home/ea-bot on
+    Linux, /Users/ea-bot on macOS. LINUX_HOME when there is no account."""
+    try:
+        return pwd.getpwnam("ea-bot").pw_dir.rstrip("/") or LINUX_HOME
+    except KeyError:
+        return LINUX_HOME
+
+
+def resident_paths(text: str, home: str | None = None) -> str:
+    """`text` with each `/home/ea-bot/` path naming the resident's real
+    home. CLAUDE.md, the skills and the topic guides write the Linux path;
+    a lane's allowlist matches the command line literally against the real
+    one, so on an install whose account lives elsewhere a command copied
+    from them is refused. Unchanged where the home is /home/ea-bot."""
+    home = (home or resident_home()).rstrip("/")
+    if not text or home == LINUX_HOME:
+        return text
+    return text.replace(LINUX_HOME + "/", home + "/")
+
+
 def build_claude_md(needed_modules: set[str], full_text: str,
                     topic_dir: Path | None = None,
                     overlay: str | None = None,
@@ -436,7 +461,7 @@ def build_claude_md(needed_modules: set[str], full_text: str,
     extra = topic_text(needed_modules, topic_dir)
     if extra:
         result = _append(result, extra)
-    return result
+    return resident_paths(result)
 
 
 _POLL_DOMAINS = ("when2meet.com", "whenisgood.net", "doodle.com",

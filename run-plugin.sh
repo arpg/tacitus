@@ -560,6 +560,14 @@ Use *single asterisks* for bold (Slack mrkdwn), NOT **double**.
 
 Begin now."
 
+# The skill, the install facts and the rules above name the resident's files
+# under /home/ea-bot, its home on Linux. Where the account lives elsewhere
+# (/Users/ea-bot on macOS) a command copied from them matches nothing in
+# this lane's literal allowlist, so the prompt names the real home.
+if [[ "$EA_BOT_HOME" != /home/ea-bot ]]; then
+    PROMPT=${PROMPT//\/home\/ea-bot\//${EA_BOT_HOME%/}/}
+fi
+
 # -------------------------------------------------------------------
 # Step 3: Build --allowedTools dynamically from manifest context grants
 # -------------------------------------------------------------------

@@ -248,6 +248,25 @@ def _lists_section(lists_cfg: dict) -> list[str]:
     return ["## Mailing-list digests", "", f"- The list-digest agent handles: {_join(named)}"]
 
 
+def _paths_section(home: str | None = None) -> list[str]:
+    """Where the resident's files are, on an install whose ea-bot account
+    does not live in /home/ea-bot (macOS: /Users/ea-bot). CLAUDE.md is
+    loaded from the deployed tree as written, with the Linux path; a
+    command's path must be the real one or the allowlist refuses it."""
+    if home is None:
+        try:
+            import pwd
+            home = pwd.getpwnam("ea-bot").pw_dir
+        except (ImportError, KeyError):
+            return []
+    home = home.rstrip("/")
+    if not home or home == "/home/ea-bot":
+        return []
+    return ["## Paths", "",
+            f"- The EA's home on this install is `{home}`. Where CLAUDE.md or a guide "
+            f"writes `/home/ea-bot`, the path is `{home}`: run every command with `{home}`."]
+
+
 def render_text() -> str:
     """The overlay for the install EA_DIR points at."""
     profile = institution.profile()
@@ -259,6 +278,7 @@ def render_text() -> str:
         _user_section(profile),
         _institution_section(),
         _chat_section(cfg, profile),
+        _paths_section(),
         _accounts_section(profile),
         _github_section(_json("github.json")),
         _lists_section(_json("list-digests.json")),

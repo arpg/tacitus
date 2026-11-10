@@ -644,7 +644,12 @@ step. It reads the rendered file with the resident's access, a link
 refused, and skips any tree outside resident space: the text is the
 resident's, so an owner's own checkout never loads it. `build_claude_md`
 appends the rendered copy only for a run that does not load
-`CLAUDE.local.md` itself. Institution values in
+`CLAUDE.local.md` itself. CLAUDE.md, the skills and the guides write the
+resident's paths under `/home/ea-bot`; where the account's home is
+another directory (macOS: `/Users/ea-bot`) `prompt_logic.resident_paths`
+and the cron launchers write the real home into the prompt, because a
+lane's allowlist matches the command line literally, and the overlay
+carries a Paths line for a run that loads CLAUDE.md itself. Institution values in
 code come from the profile's `institution` block through
 `preprocessor/institution.py`; the directory under `config/examples/` is
 the worked example for one institution. Dated evidence behind the rules lives in
