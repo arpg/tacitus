@@ -450,6 +450,47 @@ STYLE_ENTRIES=""
 if [[ "$HAS_DRAFTING" == 1 ]]; then
 STYLE_ENTRIES="# Weekly: refresh the per-contact writing-style profiles from sent mail
 20 4 * * 1         python3 $CODE_DIR/preprocessor/style_profiles.py sync --days 21 >> $OWNER_LOG_DIR/style-profiles.log 2>&1
+
+# Monthly: re-measure the writing-style corpus from sent mail (docs/SETUP.md, 'Cron schedule')
+40 4 1 * *         python3 $CODE_DIR/preprocessor/style_analysis.py run --dispatch >> $OWNER_LOG_DIR/style-analysis.log 2>&1
+"
+fi
+
+# The web chat's nightly backup runs where the web chat is the chat or runs
+# beside it (frontend or shadow is web). Elsewhere there is no store, and
+# the script would exit with an error each night.
+#
+# The chat block is read where the bot and the backup script read it: the
+# owner-private chat.json once the owner seed step has written it, and the
+# chat block of ea-config.json before that. After the seed the copy in
+# ea-config.json need not name the web chat at all, so reading only that
+# copy would strip the backup line on a re-run and write none.
+RESIDENT_CONFIG=$("$OWNER_IO" read "$EA_DIR/config/ea-config.json" 2>/dev/null || true)
+HAS_WEBCHAT=$(printf '%s' "$RESIDENT_CONFIG" | python3 -c '
+import json, os, stat, sys
+block = None
+try:
+    st = os.lstat(sys.argv[1])
+    if stat.S_ISREG(st.st_mode) and st.st_uid == os.geteuid() and not st.st_mode & 0o022:
+        with open(sys.argv[1]) as f:
+            own = json.load(f)
+        if isinstance(own, dict):
+            block = own
+except (OSError, ValueError):
+    pass
+if block is None:
+    try:
+        block = (json.loads(sys.stdin.read() or "{}") or {}).get("chat")
+    except Exception:
+        block = None
+print(1 if isinstance(block, dict) and "web" in (block.get("frontend"), block.get("shadow")) else 0)
+' "${EA_PRIVATE_DIR:-$OWNER_PRIVATE_DIR}/chat.json" 2>/dev/null || echo 0)
+WEBCHAT_ENTRIES=""
+if [[ "$HAS_WEBCHAT" == 1 ]]; then
+WEBCHAT_ENTRIES="# The web chat's own data (the store, its uploads, the relay key, the pairing
+# token, the closure labels): a snapshot each night in ~/.ea-private/backups/webchat,
+# seven days kept (docs/SETUP.md, 'Web chat', Backups)
+30 3 * * *         $CODE_DIR/scripts/webchat-backup.sh >> $OWNER_LOG_DIR/webchat-backup.log 2>&1
 "
 fi
 
@@ -487,7 +528,7 @@ ${REPORT_ENTRIES}
 
 # Outbound review: web requests and model web-tool calls that could carry mail out
 45 6 * * *         python3 $CODE_DIR/scripts/outbound-review.py >> $OWNER_LOG_DIR/outbound-review.log 2>&1
-${SLACK_MAINTENANCE_ENTRIES}${STYLE_ENTRIES}"
+${SLACK_MAINTENANCE_ENTRIES}${WEBCHAT_ENTRIES}${STYLE_ENTRIES}"
 
 # ======================================================
 # Personal plugins (scan ~/.ea/plugins/*/plugin.json for enabled entries)
@@ -665,6 +706,7 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
                   -e "preprocessor/ledger_sync.py" -e "preprocessor/closure_scrubber.py" \
                   -e "preprocessor/quiet_hours.py" -e "preprocessor/scheduled_sends.py" \
                   -e "preprocessor/calendar_reconciler.py" -e "preprocessor/style_profiles.py" \
+                  -e "preprocessor/style_analysis.py" -e "scripts/webchat-backup.sh" \
                   -e "scripts/persistence-digest.py" -e "scripts/preferences-digest.py" \
                   -e "scripts/outbound-review.py" || true)"
     printf '%s\n%s\n' "$KEPT_ENTRIES" "$CRONTAB_ENTRIES" | crontab -
