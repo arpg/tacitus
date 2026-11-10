@@ -940,3 +940,101 @@ def test_every_trusted_value_is_explained_before_it_is_asked(monkeypatch, capsys
     out = capsys.readouterr().out
     assert got == {"ea_managed_calendar_id": "cal-1"}
     assert "EA-Managed calendar" in out and "Why it matters" in out and "every 30 minutes" in out
+
+
+# ── a prompt nobody can answer ────────────────────────────────────────
+
+INSTALL_SERVICES = (ROOT / "deploy" / "macos" / "install-services.sh").read_text()
+
+
+def _calendar_tree(owner):
+    _write(owner.tree / "config" / "scheduling-preferences.json", json.dumps({
+        "ea_managed_calendar": {"calendar_id": "c4f3@group.calendar.example",
+                                "email": "hale.stavros17@example.com"}}), 0o644)
+
+
+def test_the_seed_prompts_only_as_the_foreground_job_of_its_terminal(owner, monkeypatch, capsys):
+    """Under two sudo hops (the macOS installer's `sudo bash`, then
+    `sudo -u <owner>`) stdin is a pseudo-terminal, but the seed is not the
+    foreground job of it and a typed answer never arrives: the prompt waited
+    forever (2026-11-09). Such a process takes the no-terminal path and
+    names the flags; the foreground job of a terminal still prompts."""
+    _calendar_tree(owner)
+    monkeypatch.setattr(ot.sys, "stdin", types.SimpleNamespace(isatty=lambda: True, fileno=lambda: 0))
+    monkeypatch.setattr(ot.os, "getpgrp", lambda: 4242)
+    monkeypatch.setattr(ot.os, "tcgetpgrp", lambda fd: 4241)        # another job holds the terminal
+    monkeypatch.setattr(ot, "_prompt", lambda q: pytest.fail(f"prompted: {q}"))
+    assert not ot._interactive()
+    assert _seed(owner, "--calendar") == 1
+    err = capsys.readouterr().err
+    assert "--calendar-id" in err and "--calendar-account" in err
+    assert not (owner.priv / "calendars.json").exists()
+
+    def enotty(fd):
+        raise OSError(25, "Inappropriate ioctl for device")           # a tty that is not ours
+    monkeypatch.setattr(ot.os, "tcgetpgrp", enotty)
+    assert not ot._interactive()
+
+    monkeypatch.setattr(ot.os, "tcgetpgrp", lambda fd: 4242)        # the foreground job: prompts
+    assert ot._interactive()
+    typed = iter(["c4f3@group.calendar.example", "hale.stavros17@example.com"])
+    monkeypatch.setattr(ot, "_prompt", lambda q: next(typed))
+    assert _seed(owner, "--calendar") == 0
+    doc = json.loads((owner.priv / "calendars.json").read_text())
+    assert doc == {"ea_managed_calendar_id": "c4f3@group.calendar.example",
+                   "ea_managed_account": "hale.stavros17@example.com"}
+
+
+def test_the_prompt_asks_for_the_value_not_the_key_name(owner, monkeypatch):
+    """`type ea_managed_account to confirm it is yours ('x')` read as: type
+    the word ea_managed_account. The prompt asks for the value shown."""
+    _write(owner.tree / "config" / "user-profile.json", json.dumps({"name": "Sol Teague"}), 0o644)
+    monkeypatch.setattr(ot, "_interactive", lambda: True)
+    asked = []
+
+    def prompt(q):
+        asked.append(q)
+        return "Sol Teague"
+    monkeypatch.setattr(ot, "_prompt", prompt)
+    assert _seed(owner, "--profile") == 0
+    assert len(asked) == 1
+    assert "type the value of name back" in asked[0]
+    assert "type name to confirm" not in asked[0]
+    assert json.loads((owner.priv / "profile.json").read_text()) == {"name": "Sol Teague"}
+
+
+def test_the_macos_installer_never_prompts_and_passes_the_values_through(owner, tmp_path):
+    """Step 3 of install-services.sh runs the seed with stdin from
+    /dev/null and forwards --calendar-account, --profile-name, --calendar-id
+    and the --chat-* flags, so a value the seed must confirm comes in as a
+    flag or stops the installer with both ways to supply it. The seed itself,
+    run as the installer runs it (no terminal, a value missing), exits 1
+    inside a bound and names the flags."""
+    step = INSTALL_SERVICES[INSTALL_SERVICES.index("[services] 3/7"):INSTALL_SERVICES.index("[services] 4/7")]
+    assert 'seed --ea-dir "$EA_TREE"' in step and "</dev/null" in step
+    assert '"${SEED_ARGS[@]}"' in step
+    for flag in ("--calendar-account", "--profile-name", "--calendar-id", "--chat-*"):
+        assert flag in INSTALL_SERVICES[:INSTALL_SERVICES.index("[services] 1/7")]
+    assert "--calendar-account <addr> --profile-name" in step            # the message names the flag form
+    assert "owner_trust.py seed --ea-dir" in step                         # and the terminal form
+    # the seed comes before any launchd change, and a failed seed stops the run
+    assert INSTALL_SERVICES.index("[services] 3/7") < INSTALL_SERVICES.index("[services] 6/7")
+    assert "exit 1" in step
+
+    _calendar_tree(owner)
+    env = {k: v for k, v in os.environ.items() if k not in ("EA_DIR", "EA_PRIVATE_DIR")}
+    env.update(EA_DIR=str(owner.tree), EA_PRIVATE_DIR=str(owner.priv), HOME=str(tmp_path))
+    import subprocess
+    cmd = [sys.executable, str(ROOT / "preprocessor" / "owner_trust.py"), "seed",
+           "--ea-dir", str(owner.tree), "--calendar"]
+    r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                       timeout=60, env=env)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "--calendar-account" in r.stderr and "--calendar-id" in r.stderr
+    assert not (owner.priv / "calendars.json").exists()
+    r = subprocess.run(cmd + ["--calendar-id", "c4f3@group.calendar.example",
+                              "--calendar-account", "hale.stavros17@example.com"],
+                       stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert json.loads((owner.priv / "calendars.json").read_text())["ea_managed_account"] \
+        == "hale.stavros17@example.com"
