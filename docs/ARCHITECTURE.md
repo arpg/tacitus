@@ -509,7 +509,16 @@ them by ref, code applies the rails (an afternoon pick the sent folder or
 the EA channel already shows the user on leaves "since this morning" for
 an "Already in motion" line), drafts through the writer and renders
 the post, and the open-claims audit asks Claude about every row the post
-shows (remote verdicts when Claude fails). Each project room with items
+shows (remote verdicts when Claude fails). Both runs then work the reply
+queue: the briefing JSON's `reply_backlog` (`ledger.reply_backlog`) holds
+the threads that have waited a day or more for the user's reply, aged from
+the other side's last message. A second remote call answers draft, decide
+or leave for the oldest ones with no draft; code applies the same rails,
+records the outcome on the row (`reply_queue`, cleared by a newer message)
+and adds one queue line to the post. The ladder is a draft at one day, a
+name on that line at three and a place in `today_top` at five. The Claude
+lane's skills do the same and record with `ledger.py note-reply`. The
+preprocessor also sets a snoozed row back to `open` on its day. Each project room with items
 in the post then gets its slice in a new topic (`briefing_rooms.py`,
 switch `briefing_rooms`), posted only to rooms the owner's record names. An
 item's project is its ledger link, its filed thread, or the mail tagger's
