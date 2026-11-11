@@ -710,6 +710,107 @@ def test_s3_routing_keys_do_not_leak_into_the_event():
         assert "thread_ts" not in seen.get("body", "")
 
 
+
+# Staging tokens: a per-thread turn stages state/<name>.<token>.json, so two
+# conversations staging at once never write over each other's file.
+
+TOK_A, TOK_B = "0a1b2c3d", "9f8e7d6c"
+
+
+def test_s3_a_turn_claims_its_own_token_and_no_other():
+    """Two conversations staged an invite in the same minute: each turn's
+    claim takes its own token's file and the bare names of its run, never
+    the other's. A claim keeps the bare name, so recovery still reads it."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        ns = _claim_ns(tmp)
+        assert ns["_staged_name"]("pending-event.json", TOK_A) == f"pending-event.{TOK_A}.json"
+        _stage(tmp, f"pending-event.{TOK_A}.json", {"subject": "A's invite"})
+        b = _stage(tmp, f"pending-event.{TOK_B}.json", {"subject": "B's invite"})
+        _stage(tmp, f"pending-schedule-send.{TOK_A}.json", {"draft_id": "d1", "send_after": "x"})
+        ns["_token_route"] = lambda tok: {}
+        mine = ns["_claim_event_actions"](newer_than=time.time() - 60, token=TOK_A)
+        assert sorted(a.get("subject") or a["action"] for a in mine) == [
+            "A's invite", "schedule_send"]
+        assert b.exists(), "the other conversation's file stays for its own turn"
+        claims = [c.name for c in (tmp / "private" / "event-claims").iterdir()] \
+            if (tmp / "private" / "event-claims").exists() else []
+        assert not claims, "claims are released after reading"
+        # its own token's file is the turn's at any age; a bare one is not
+        old = _stage(tmp, f"pending-event.{TOK_A}.json", {"subject": "left by an earlier turn"})
+        bare = _stage(tmp, "pending-event.json", {"subject": "somebody else's"})
+        past = time.time() - 3600
+        _os.utime(old, (past, past))
+        _os.utime(bare, (past, past))
+        got = ns["_claim_event_actions"](newer_than=time.time() - 60, token=TOK_A)
+        assert [a["subject"] for a in got] == ["left by an earlier turn"]
+        assert bare.exists() and b.exists()
+
+
+def test_s3_a_tokened_claim_keeps_the_bare_name_for_recovery():
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        ns = _claim_ns(tmp)
+        _stage(tmp, f"pending-event.{TOK_A}.json", {"subject": "mid-post crash"})
+        claim_path, _ = ns["_claim_staged_file"]("pending-event.json", token=TOK_A)
+        assert claim_path.name.startswith("pending-event.json.")
+        past = time.time() - 3600
+        _os.utime(claim_path, (past, past))
+        recovered = ns["_recover_abandoned_claims"](900)
+        assert [a["subject"] for a in recovered] == ["mid-post crash"]
+
+
+def test_s3_the_sweeper_takes_every_token_and_routes_by_it():
+    """A tokened file with no thread in its payload goes to the thread
+    whose session has the token; a payload's own thread_ts still wins.
+    A name that is not a token is not a staged copy."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        ns = _claim_ns(tmp)
+        routes = {TOK_A: {"thread_ts": "t40", "channel": "dm"}}
+        ns["_token_route"] = lambda tok: dict(routes.get(tok, {}))
+        _stage(tmp, f"pending-event.{TOK_A}.json", {"subject": "no thread named"})
+        _stage(tmp, f"pending-event.{TOK_B}.json", {"subject": "names one", "thread_ts": "t7"})
+        _stage(tmp, "pending-event.json", {"subject": "bare"})
+        for odd in ("pending-event.0A1B2C3D.json", "pending-event.0a1b2c3d4.json",
+                    "pending-event..json", "pending-event.nothex00.json"):
+            _stage(tmp, odd, {"subject": odd})
+        assert ns["_staged_tokens"]("pending-event.json") == [TOK_A, TOK_B]
+        assert ns["_staged_tokens"]("pending-event-update.json") == []
+        got = {a["subject"]: a["_route"] for a in ns["_claim_event_actions"](any_token=True)}
+        assert got == {"no thread named": {"thread_ts": "t40", "channel": "dm"},
+                       "names one": {"thread_ts": "t7"}, "bare": {}}
+        assert (tmp / "state" / "pending-event.0A1B2C3D.json").exists()
+        # without any_token or a token, a claim is the bare names only
+        _stage(tmp, f"pending-event.{TOK_A}.json", {"subject": "again"})
+        assert ns["_claim_event_actions"]() == []
+        assert ns["_staged_exists"]("pending-event.json", TOK_A)
+        assert not ns["_staged_exists"]("pending-event.json", TOK_B)
+        assert not ns["_staged_exists"]("pending-event.json")
+
+
+def test_s3_a_token_names_the_thread_of_its_session():
+    """_token_route reads the session registry: a side session's token
+    gives its thread's key, and a token two sessions share gives none."""
+    import importlib
+    sys.path.insert(0, str(HERE.parent))
+    ss = importlib.import_module("preprocessor.slack_sessions")   # what _token_route imports
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        saved = ss.REGISTRY
+        ss.REGISTRY = tmp / "slack-sessions.json"
+        try:
+            ns = _claim_ns(tmp)
+            sid, _, _ = ss.lookup(ss.side_key("t50", "reply-response-x"))
+            ss.remember(ss.side_key("t50", "reply-response-x"), channel="dm")
+            tok = ss.stage_token(sid)
+            assert tok == sid.replace("-", "")[:8]
+            assert ns["_token_route"](tok) == {"thread_ts": "t50", "channel": "dm"}
+            assert ns["_token_route"]("ffffffff") == {}
+            assert ss.stage_token("not-a-uuid") == ""
+        finally:
+            ss.REGISTRY = saved
+
 # ---------------------------------------------------------------------------
 # Stage 4: _reject_if_stale_confirmation (48h click window)
 # ---------------------------------------------------------------------------

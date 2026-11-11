@@ -1402,6 +1402,17 @@ claim protocol"): the dispatch calls `_claim_event_actions(newer_than=
 `state/event-claims/` before reading it. `newer_than` is what keeps a
 dispatch to the files ITS OWN turn staged; anything older belongs to
 whoever wrote it, and the out-of-band sweepers pick that up instead.
+A per-thread turn also has a staging token, the first 8 hex characters
+of its session id (`slack_sessions.stage_token`). Its prompt names the
+token (`STAGE_TOKEN_NOTE`), and the turn writes
+`pending-event.<token>.json` in place of `pending-event.json`, and the
+same for every other kind. Two turns that stage at the same time, such
+as the Replies card's side sessions, then never write over each other.
+The turn's claim (`token=`) takes its own token's files at any age and
+no other conversation's. The sweepers take every token
+(`any_token=True`), and a tokened payload with no `thread_ts` goes to
+the thread whose session has the token. The bare names stay valid for
+the lanes with no token: the resident, crons and plugins' own jobs.
 
 ### 3d. Full-prompt assembly (per-thread lane, first message)
 

@@ -602,7 +602,7 @@ def test_a_timeout_keeps_the_session_and_surfaces_its_drafts():
     handler = body.split('except subprocess.TimeoutExpired as e:\n')[1]
     handler = handler.split("\n    except Exception")[0]
     assert '_surface_run_drafts(channel, thread_ts, journal_offset, run_id, "mono-timeout")' in handler
-    assert "_claim_event_actions(newer_than=run_started)" in handler
+    assert "_claim_event_actions(newer_than=run_started,\n" in handler and "token=stage_tok)" in handler
     assert "`continue`" in handler and "smaller steps" not in handler
     surface = _fn_body("_surface_run_drafts")
     # a per-thread run claims only its own labelled records
@@ -764,6 +764,33 @@ def test_the_thread_session_knows_the_drafts_side_sessions_made():
     assert "- draft id AAMk-2: to (unknown), subject (unknown); its Send card is closed" in note
     assert "AAMk-3" not in note and "AAMk-4" not in note
     assert ns["_side_drafts_note"]("t7") == ""
+
+def test_a_turn_stages_and_claims_under_its_sessions_token():
+    """A per-thread turn's prompt names its session's staging token, in
+    the fresh prompt and the continuation, and every claim the turn makes
+    takes that token: the end of the turn, a stop, a timeout and the
+    remote arm's review, so no tokened file skips that review. The
+    sweepers take every token. The token is fixed once per turn."""
+    hm = _fn_body("handle_message_async")
+    assert hm.count("stage_tok = _sessions.stage_token(session_id)") == 1
+    assert hm.index("stage_tok = _sessions.stage_token(session_id)") < hm.index("full_prompt = prompt")
+    assert hm.count('STAGE_TOKEN_NOTE.format(token=stage_tok)') == 2
+    assert hm.index("STAGE_TOKEN_NOTE.format") < hm.index("full_prompt = prompt") \
+        < hm.rindex("STAGE_TOKEN_NOTE.format")
+    assert "_claim_event_actions(newer_than=run_started)" not in hm
+    assert "_claim_event_actions(newer_than=run_started, token=stage_tok)," in hm
+    assert hm.count("_claim_event_actions(newer_than=run_started,\n"
+                    "                                                           token=stage_tok)") == 2
+    assert "stage_token=stage_tok)" in hm
+    assert "_staged_exists(f, stage_tok)" in hm
+    bs = _fn_body("_backstop_remote_turn")
+    assert "staged = _claim_event_actions(newer_than=run_started, token=stage_token)" in bs
+    note = BOT_SRC[BOT_SRC.index("STAGE_TOKEN_NOTE = ("):BOT_SRC.index("def _side_drafts_note")]
+    for name in ("pending-event.{token}.json", "pending-event-update.{token}.json",
+                 "pending-event-delete.{token}.json", "pending-schedule-send.{token}.json"):
+        assert name in note, name
+    for sweeper in ("_pending_events_poller", "_plugin_cards_poller"):
+        assert "any_token=True" in _fn_body(sweeper), sweeper
 
 def test_proactive_scheduling_runs_the_reschedule_brief():
     """A queued reschedule request opens a thread whose seed runs the

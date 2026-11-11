@@ -66,7 +66,7 @@ def test_bot_opens_rooms_after_detection_in_both_lanes():
     assert "_room_back_link(channel, thread_ts, res)" in ann
     assert "FRONTEND.permalink(channel, thread_ts)" in _fn_src("_room_back_link")
     # both lanes call it after the staged-action claim, before the promise check
-    mono_claim = BOT_SRC.index('_claim_event_actions(newer_than=run_started),\n                "mono")')
+    mono_claim = BOT_SRC.index('_claim_event_actions(newer_than=run_started, token=stage_tok),\n                "mono")')
     mono_rooms = BOT_SRC.index('_open_rooms_for_new_projects(channel, thread_ts, run_started, "mono")')
     mono_warn = BOT_SRC.index('_warn_if_button_promised(channel, thread_ts, response, "mono")')
     assert mono_claim < mono_rooms < mono_warn
