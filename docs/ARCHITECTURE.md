@@ -532,7 +532,12 @@ files, so drafts started one after another are written at the same time
 and post in the thread. The turn that only asks the owner a question runs
 on the thread's own session, which reads the owner's typed answer; a
 resumed thread session with side sessions in its thread reads the thread
-so far. A question that a
+so far, and every thread session there gets the ids of the drafts made in
+the thread (`_side_drafts_note`), so a change asked for there revises the
+right draft. On the web chat, which has no modal, Edit on a Send card asks
+for the change in the conversation that the card's value names, with a
+link under the card. A draft from no conversation is asked about under
+its card. A question that a
 run recorded with answers (`reply_queue.choices`: two or three, 48
 characters at most, from the remote call's `choices` or `note-reply
 --choice`) shows one button per answer in place of "Draft it", and the

@@ -2023,6 +2023,26 @@ SIDE_HISTORY_NOTE = (
     "message last:\n\n")
 
 
+def _side_drafts_note(thread_ts: str) -> str:
+    """The drafts made in this thread whose Send card is up or closed
+    without a send, from the draft-confirmation registry: one line each
+    with its id, recipients and subject. '' when there are none."""
+    lines = []
+    for draft_id, row in _load_draft_confirms().items():
+        if row.get("thread_ts") != thread_ts or row.get("status") not in ("live", "retired"):
+            continue
+        summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
+        to = _chat.card_text.one_line(str(summary.get("To") or ""), 120)
+        subject = _chat.card_text.one_line(str(summary.get("Subject") or ""), 120)
+        card = "up" if row["status"] == "live" else "closed"
+        lines.append(f"- draft id {draft_id}: to {to or '(unknown)'}, subject "
+                     f"{subject or '(unknown)'}; its Send card is {card}")
+    if not lines:
+        return ""
+    return ("Drafts made in this thread, some by turns this conversation has not seen. "
+            "To change one, run update-draft with its id:\n" + "\n".join(lines))
+
+
 def _session_lock(session_id: str) -> threading.Lock:
     with _SESSION_LOCKS_GUARD:
         lock = _SESSION_LOCKS.get(session_id)
@@ -5723,14 +5743,15 @@ def handle_edit_draft(ev: "_chat.ActionEvent"):
     if not _verify_button_user(ev):
         return
     if not FRONTEND.supports("modals"):
-        # Ask in the conversation that asked for the draft (the web chat's
-        # store names its channel), so the reply lands where its context is.
-        # The owner tapped Edit on the card, so the card also answers: a
-        # line under it points at that conversation, or the tap looks like
-        # it did nothing.
-        key = ev.card.thread_key or ""
-        channel = _delivery_channel(key) if key and not key.isdigit() else ev.card.channel
+        # Ask in the conversation that asked for the draft, so the reply
+        # lands where its context is. The card sits at the top of the
+        # owner's DM in a thread of its own; that conversation is the one
+        # its value names (the web chat's store names its channel). The
+        # owner tapped Edit on the card, so the card also answers: a line
+        # under it points at that conversation, or the tap looks like it
+        # did nothing.
         value = _card_value(ev)
+        key = str(value.get("thread_ts") or "")
         subject = ""
         if value.get("draft_id") and value.get("email_system", "outlook") == "outlook":
             try:
@@ -5738,23 +5759,32 @@ def handle_edit_draft(ev: "_chat.ActionEvent"):
             except Exception as e:
                 log.debug(f"edit tap: draft subject unread: {e}")
         about = f" to *{subject}*" if subject else ""
-        # A draft from no conversation (a cron run) is asked about under its
-        # card, where the card's own text gives the next turn its context.
-        asked = FRONTEND.post(channel=channel, thread_ts=key or ev.card.id,
-                              text=f":pencil2: What should I change in the draft{about}? "
-                                   "Tell me here and I will revise it and post a new Send "
-                                   "card. You can also edit it in your mail client.")
-        if channel != ev.card.channel or (key and key != ev.card.id):
-            link = ""
+        question = (f":pencil2: What should I change in the draft{about}? Tell me here and I "
+                    "will revise it and post a new Send card. You can also edit it in your "
+                    "mail client.")
+        asked = None
+        if key:
+            channel = _delivery_channel(key)
             try:
-                link = FRONTEND.permalink(channel, asked.id) if asked is not None else ""
+                asked = FRONTEND.post(channel=channel, thread_ts=key, text=question)
             except Exception as e:
-                log.debug(f"edit pointer permalink failed: {e}")
-            where = f"<{link}|in the conversation>" if link else "in the conversation"
-            FRONTEND.post(channel=ev.card.channel, thread_ts=ev.card.id,
-                          text=f":pencil2: Tell me the change {where}. This card stays "
-                               "live until the revised draft gets its new card.",
-                          unfurl=False)
+                log.warning(f"edit tap: the conversation of the draft refused the question: {e}")
+        if asked is None:
+            # A draft from no conversation (a cron run), or one whose
+            # conversation is gone, is asked about under its card, where the
+            # card's own text gives the next turn its context.
+            FRONTEND.post(channel=ev.card.channel, thread_ts=ev.card.id, text=question)
+            return
+        link = ""
+        try:
+            link = FRONTEND.permalink(channel, asked.id)
+        except Exception as e:
+            log.debug(f"edit pointer permalink failed: {e}")
+        where = f"<{link}|in the conversation>" if link else "in the conversation"
+        FRONTEND.post(channel=ev.card.channel, thread_ts=ev.card.id,
+                      text=f":pencil2: Tell me the change {where}. This card stays "
+                           "live until the revised draft gets its new card.",
+                      unfurl=False)
         return
     value = _card_value(ev)
     if "draft_id" not in value:
@@ -13020,6 +13050,13 @@ This auto-archives the email from the inbox. One command does everything."""
         conv_block = "" if sched_lane else _conversation_index_for(user_msg, session_id, is_new=not resuming)
         if conv_block:
             prompt = prompt + "\n\n" + conv_block
+        # Side sessions post in this thread too (slack_sessions.side_key),
+        # and this conversation did not make their drafts: their ids, so a
+        # change the owner asks for here revises the right one.
+        side_drafts = (_side_drafts_note(thread_ts)
+                       if not session_key and _sessions.sides(thread_ts) else "")
+        if side_drafts:
+            prompt = prompt + "\n\n" + side_drafts
         if not resuming and session_meta.get("rotated_from"):
             prompt = prompt + "\n\n" + ROOM_ROTATION_NOTE
         full_prompt = prompt
@@ -13068,6 +13105,8 @@ Reminders:
             # what the owner may be answering here.
             if history and not session_key and _sessions.sides(thread_ts):
                 prompt = prompt + "\n\n" + SIDE_HISTORY_NOTE + history
+            if side_drafts:
+                prompt = prompt + "\n\n" + side_drafts
             if conv_block:
                 prompt = prompt + "\n\n" + conv_block
 
