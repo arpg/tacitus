@@ -259,7 +259,9 @@ if [[ -n "$PREPROCESS_MODE" ]]; then
         # For always-run agents, continue with stale briefing if one exists
         if echo "$ALWAYS_RUN_AGENTS" | grep -qw "$AGENT" && [[ -f "$BRIEFING_FILE" ]]; then
             log "Continuing with stale briefing for always-run agent: $AGENT"
-            BRIEFING_AGE=$(( ($(date +%s) - $(stat -c %Y "$BRIEFING_FILE")) / 60 ))
+            # GNU stat, then BSD stat (macOS), whose -c is another option.
+            BRIEFING_MTIME=$(stat -c %Y "$BRIEFING_FILE" 2>/dev/null || stat -f %m "$BRIEFING_FILE")
+            BRIEFING_AGE=$(( ($(date +%s) - BRIEFING_MTIME) / 60 ))
             PREPROCESS_WARNING="WARNING: The preprocessor FAILED this run. The briefing data is STALE (${BRIEFING_AGE} minutes old). You MUST tell the user that email sync failed and the briefing may be incomplete. Do NOT say 'no new emails' — say the sync failed and you are working from stale data."
         else
             log "FATAL: Preprocessor failed and no stale briefing available. Aborting."
