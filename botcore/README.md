@@ -6,16 +6,16 @@ storage. The EA's chat layer (`preprocessor/chat`) runs on it.
 
 ## What is in it
 
-`botcore.chat` is one interface in front of Slack, Zulip or an in-memory
-fake:
+`botcore.chat` is one interface in front of Slack, the Tacitus web chat or
+an in-memory fake:
 
 - `ChatFrontend` (`base.py`): every call a bot makes to a chat platform,
   plus a registry for message, button and event handlers.
-- `SlackFrontend`, `ZulipFrontend`, `MemoryFrontend`: the implementations.
-  Import the one you use from its module; a Slack bot never imports the
-  Zulip client.
+- `SlackFrontend`, `WebFrontend`, `MemoryFrontend`: the implementations.
+  Import the one you use from its module; a bot on the web chat never
+  imports the Slack client.
 - `ConfirmationCard` (`cards.py`): approval buttons that render natively on
-  each platform (Slack buttons, Zulip reactions or reply codes).
+  each platform (Slack buttons, the web chat's own buttons).
 - `files.use(make_dir, replace_bytes)`: install your own writers for files
   the bot downloads. The default writes atomically to plain paths.
 
@@ -25,7 +25,6 @@ From a checkout:
 
     pip install ./botcore            # core
     pip install "./botcore[slack]"   # plus the Slack client
-    pip install "./botcore[zulip]"   # plus the Zulip client
 
 From GitHub:
 

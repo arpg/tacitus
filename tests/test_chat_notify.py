@@ -4,8 +4,8 @@
 These pin: the Slack webhook payloads are the same bytes the old
 slack_notifier sent (the old function is executed from git and both
 paths record requests.post); the quiet-hours gate defers before any
-routing; Zulip routing maps a channel key to its stream, opens a new
-topic per post (or the pinned one) and converts mrkdwn; post_as_bot on Slack sends the fields scheduled_sends
+routing; the web chat maps a channel key to its channel and opens a new
+thread per post; post_as_bot on Slack sends the fields scheduled_sends
 always sent; the LLM grants name tools, never a wildcard.
 """
 import ast
@@ -206,84 +206,26 @@ def test_quiet_hours_flush_calls_through_the_shim_name():
     assert qh.slack_notifier.SPLIT_MARKER == chat_notify.SPLIT_MARKER
 
 
-class _FakeZulipClient:
-    instances = []
-    topics = {"ea": ["alert"], "mine": []}
-
-    def __init__(self, email, api_key, site):
-        self.email, self.api_key, self.site = email, api_key, site
-        self.sent = []
-        _FakeZulipClient.instances.append(self)
-
-    def get_stream_id(self, name):
-        return {"result": "success", "stream_id": sorted(self.topics).index(name) + 1}
-
-    def get_stream_topics(self, stream_id):
-        name = sorted(self.topics)[stream_id - 1]
-        return {"result": "success", "topics": [{"name": n} for n in self.topics[name]]}
-
-    def send_message(self, request):
-        self.sent.append(request)
-        return {"result": "success", "id": len(self.sent)}
-
-
-@pytest.fixture
-def zulip_env(env, monkeypatch):
-    _FakeZulipClient.instances = []
-    monkeypatch.setitem(sys.modules, "zulip", types.SimpleNamespace(Client=_FakeZulipClient))
-    monkeypatch.setenv("ZULIP_API_KEY", "zkey")
-    _set_chat(env, {"frontend": "zulip",
-                    "zulip": {"site": "https://zulip.example", "bot_email": "wynn.rasmussen47@example.com",
-                              "notify": {"personal": {"stream": "mine"},
-                                         "pinned": {"stream": "ea", "topic": "alerts"}}}})
-    return env
-
-
-def test_zulip_post_opens_its_own_topic(zulip_env, monkeypatch):
-    rec = _PostRecorder()
-    monkeypatch.setattr(requests, "post", rec)
-    text = "*New* <https://x.example|link>" + chat_notify.SPLIT_MARKER + "second"
-    assert chat_notify.post("personal", text, blocks=[{"type": "divider"}])
-    assert rec.calls == []                                  # no webhook
-    (client,) = _FakeZulipClient.instances
-    assert (client.email, client.api_key, client.site) == \
-        ("wynn.rasmussen47@example.com", "zkey", "https://zulip.example")
-    assert client.sent == [
-        {"type": "stream", "to": "mine", "topic": "New link",
-         "content": "**New** [link](https://x.example)"},
-        {"type": "stream", "to": "mine", "topic": "New link", "content": "second"},
-    ]
-    assert chat_notify.post("ea-assistant", "b")
-    assert _FakeZulipClient.instances[-1].sent[0] == {"type": "stream", "to": "ea",
-                                                      "topic": "b", "content": "b"}
-    assert chat_notify.post("pinned", "c")
-    assert _FakeZulipClient.instances[-1].sent[0]["topic"] == "alerts"
-
-
-def test_zulip_unknown_key_warns_and_fails(zulip_env):
-    out = io.StringIO()
-    with redirect_stdout(out):
-        assert chat_notify.post("nope", "x") is False
-    assert "No Zulip notify target configured for 'nope'" in out.getvalue()
-    assert _FakeZulipClient.instances == []
-
-
-def test_zulip_missing_key_fails(zulip_env, monkeypatch, tmp_path):
-    monkeypatch.delenv("ZULIP_API_KEY")
-    monkeypatch.setattr(chat_notify, "EA_DIR", tmp_path / "noea")
-    assert chat_notify.post("personal", "x") is False
-
-
 def test_scheduling_channel_key(env):
     assert chat_notify.scheduling_channel_key() == "ea-assistant"
     env.hooks.write_text(json.dumps({"scheduling": "https://hooks.example/S"}))
     assert chat_notify.scheduling_channel_key() == "scheduling"
     assert slack_notifier.scheduling_channel_key() == "scheduling"
-    _set_chat(env, {"frontend": "zulip"})
-    assert chat_notify.scheduling_channel_key() == "scheduling"
+
+
+def test_a_block_that_names_zulip_posts_nothing(env, monkeypatch, capsys):
+    """Zulip is no chat front end any more: a block that still names it
+    posts nowhere, says so, and its notify map routes nothing."""
+    rec = _PostRecorder()
+    monkeypatch.setattr(requests, "post", rec)
     _set_chat(env, {"frontend": "zulip",
-                    "zulip": {"notify": {"scheduling": {"stream": ""}}}})
+                    "zulip": {"notify": {"scheduling": {"stream": "ea"}}}})
+    assert chat_notify.post("ea-assistant", "x") is False
+    assert "unknown chat frontend 'zulip'" in capsys.readouterr().out
+    assert chat_notify.post_digest("mail-digest", "x") is None
+    assert chat_notify.post_as_bot("C1", "x") is False
     assert chat_notify.scheduling_channel_key() == "ea-assistant"
+    assert rec.calls == [] and "zulip" not in ea_config.get_chat(env.cfg)
 
 
 def test_llm_grants_per_frontend(env):
@@ -292,7 +234,7 @@ def test_llm_grants_per_frontend(env):
                                  "mcp__claude_ai_Slack__slack_read_thread",
                                  "mcp__claude_ai_Slack__slack_read_user_profile"]
     assert "*" not in grants
-    for name in ("zulip", "memory"):
+    for name in ("web", "memory"):
         _set_chat(env, {"frontend": name})
         assert chat_notify.llm_tool_grants() == ""
 
@@ -346,24 +288,17 @@ def test_post_as_bot_slack_no_token_posts_nothing(env, monkeypatch):
     assert rec.calls == [] and reasons
 
 
-def test_post_as_bot_zulip_uses_ea_assistant_target(zulip_env):
-    assert chat_notify.post_as_bot("C_IGNORED", "*alert*")
-    (client,) = _FakeZulipClient.instances
-    assert client.sent == [{"type": "stream", "to": "ea", "topic": "alert (2)",
-                            "content": "**alert**"}]
-
-
 def test_health_key_uses_the_health_channel_when_configured(monkeypatch):
-    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "zulip")
+    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "web")
     monkeypatch.setattr(chat_notify, "_chat_cfg",
-                        lambda: {"zulip": {"notify": {"health": {"stream": "ea-health"}}}})
+                        lambda: {"web": {"notify": {"health": {"channel": "r9"}}}})
     assert chat_notify.health_channel_key() == "health"
     assert slack_notifier.health_channel_key() == "health"
 
 
 def test_health_key_falls_back_to_the_main_channel(monkeypatch):
-    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "zulip")
-    monkeypatch.setattr(chat_notify, "_chat_cfg", lambda: {"zulip": {"notify": {}}})
+    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "web")
+    monkeypatch.setattr(chat_notify, "_chat_cfg", lambda: {"web": {"notify": {}}})
     assert chat_notify.health_channel_key() == "ea-assistant"
     monkeypatch.setattr(chat_notify, "frontend_name", lambda: "slack")
     monkeypatch.setattr(chat_notify, "_load_webhooks", lambda: {})
@@ -373,15 +308,16 @@ def test_health_key_falls_back_to_the_main_channel(monkeypatch):
 
 
 def test_calendar_key_prefers_calendar_then_scheduling_then_main(monkeypatch):
-    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "zulip")
-    cfg = {"zulip": {"notify": {"calendar": {"stream": "ea-scheduling"},
-                                "scheduling": {"stream": "ea"}}}}
+    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "web")
+    # No `"frontend": "web"` in the block, so no Scheduling channel of its own.
+    cfg = {"web": {"notify": {"calendar": {"channel": "sched"},
+                              "scheduling": {"channel": "main"}}}}
     monkeypatch.setattr(chat_notify, "_chat_cfg", lambda: cfg)
     assert chat_notify.calendar_channel_key() == "calendar"
     assert slack_notifier.calendar_channel_key() == "calendar"
-    del cfg["zulip"]["notify"]["calendar"]
+    del cfg["web"]["notify"]["calendar"]
     assert chat_notify.calendar_channel_key() == "scheduling"
-    cfg["zulip"]["notify"] = {}
+    cfg["web"]["notify"] = {}
     assert chat_notify.calendar_channel_key() == "ea-assistant"
     monkeypatch.setattr(chat_notify, "frontend_name", lambda: "slack")
     monkeypatch.setattr(chat_notify, "_load_webhooks", lambda: {})
@@ -520,7 +456,7 @@ def test_a_web_post_returns_its_thread_and_a_push_can_open_it(web_env, monkeypat
     store = web_env.wf.WebStore(web_env.store)
     (row,) = store.threads("main")
     assert isinstance(key, str) and key == row["thread_key"]
-    digest = chat_notify.post_digest("mail-digest", "kept mail", topic="t")
+    digest = chat_notify.post_digest("mail-digest", "kept mail")
     assert digest == store.threads(chat_notify.WEB_DIGEST_ID)[0]["thread_key"]
     assert chat_notify.post("list-digest", "list items")    # through post(): the key, truthy
     assert chat_notify.web_direct("a note") is True         # its own contract stays a bool
@@ -588,26 +524,19 @@ def test_a_digest_on_slack_needs_its_own_webhook_and_skips_quiet_hours(env, monk
     rec = _PostRecorder()
     monkeypatch.setattr(requests, "post", rec)
     # no `mail-digest` webhook: no place for it, and nothing goes to ea-assistant
-    assert chat_notify.post_digest("mail-digest", "kept mail", topic="t") is None
+    assert chat_notify.post_digest("mail-digest", "kept mail") is None
     assert rec.calls == []
     env.hooks.write_text(json.dumps({"ea-assistant": "https://hooks.example/A",
                                      "mail-digest": "https://hooks.example/D"}))
-    assert chat_notify.post_digest("list-digest", "list items", topic="t") is True
+    assert chat_notify.post_digest("list-digest", "list items") is True
     assert [a[0] for a, _k in rec.calls] == ["https://hooks.example/D"]
     assert chat_notify.post("admissions-digest", "a week") is True
     assert len(rec.calls) == 2
 
 
-def test_a_digest_on_zulip_goes_to_the_mail_digest_stream_in_its_topic(zulip_env):
-    assert chat_notify.post_digest("mail-digest", "kept mail", topic="Mail digest Fri Oct 9")
-    (client,) = _FakeZulipClient.instances
-    assert client.sent == [{"type": "stream", "to": chat_notify.DIGEST_STREAM,
-                            "topic": "Mail digest Fri Oct 9", "content": "kept mail"}]
-
-
 def test_a_digest_on_memory_is_recorded_and_elsewhere_has_no_place(env):
     _set_chat(env, {"frontend": "memory"})
-    assert chat_notify.post_digest("briefing-preview", "preview", topic="t") is True
+    assert chat_notify.post_digest("briefing-preview", "preview") is True
     assert chat_notify.MEMORY_POSTS == [("briefing-preview", "preview", None)]
     _set_chat(env, {"frontend": "carrier-pigeon"})
-    assert chat_notify.post_digest("mail-digest", "x", topic="t") is None
+    assert chat_notify.post_digest("mail-digest", "x") is None

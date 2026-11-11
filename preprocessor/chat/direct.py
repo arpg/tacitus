@@ -1,34 +1,30 @@
 """Direct messages to the owner: the loud channel.
 
-A stream post is read when the owner opens the stream. A direct message
-notifies the owner's devices (Zulip pushes direct messages by default),
-so it is the channel for a moment that must not be missed: a ticket
-on-sale, a registration window, a deadline with a clock time.
-
-Zulip also schedules a direct message for later delivery on the server,
-so an alert set in the morning fires on time whatever the bot is doing.
-On a Slack install there is no server-side schedule; `send_direct`
-falls back to an urgent post in the personal channel with a mention, and
-`schedule_direct` raises.
+A channel post is read when the owner opens the channel. A direct
+message notifies the owner's devices, so it is the channel for a moment
+that must not be missed: a ticket on-sale, a registration window, a
+deadline with a clock time.
 
 On the web chat alone (`"frontend": "web"`) the store is the chat:
 `send_direct` posts in the owner's DM channel, or in the channel
 `web.notify` names for `personal`; `schedule_direct` queues the post in
-the store (`scheduled_posts`), and
-the bot posts it in the owner's DM channel when it is due
-(`WebFrontend.post_due`, on its tail thread). `cancel_scheduled` drops a
-queued one and `list_scheduled` lists them, as on Zulip. The bot must be
-up to post it; one it was down for goes out when it is back. Only an
-owner process opens that store: in any other `frontend()` raises, so
-alert.py stages the alert for the owner's flush.
+the store (`scheduled_posts`), and the bot posts it in the owner's DM
+channel when it is due (`WebFrontend.post_due`, on its tail thread).
+`cancel_scheduled` drops a queued one and `list_scheduled` lists them.
+The bot must be up to post it; one it was down for goes out when it is
+back. Only an owner process opens that store: in any other `frontend()`
+raises, so alert.py stages the alert for the owner's flush.
 
-Requires the owner's chat credential (owner_trust), so these run in owner
-lanes: the owner's shell, cron as the owner, and `alert.py flush`.
+On a Slack install there is no schedule; `send_direct` falls back to an
+urgent post in the personal channel with a mention, and
+`schedule_direct` raises.
+
+Requires the owner's chat credential or the owner's store (owner_trust),
+so these run in owner lanes: the owner's shell, cron as the owner, and
+`alert.py flush`.
 
 With the web chat as a shadow, `frontend()` is the composite
-(docs/webchat.md, CLI senders); its client is the primary's. A Zulip
-direct message is not mirrored into the web chat: it lives outside the
-streams the web chat holds.
+(docs/webchat.md, CLI senders); its client is the primary's.
 
 `web_notify` also pushes the message to the browsers that turned on
 notifications in the web chat (docs/webchat.md, Notifications), now or,
@@ -40,7 +36,6 @@ ten seconds (web_push_policy), so the owner gets one, at high urgency.
 """
 from __future__ import annotations
 
-import json
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,10 +53,6 @@ def frontend():
         raise PermissionError("the web chat's store is the owner's, and this process is not "
                               "(docs/webchat.md, CLI senders)")
     return fe
-
-
-def is_zulip(fe) -> bool:
-    return hasattr(fe, "client") and hasattr(fe, "owner_id") and hasattr(fe, "_call")
 
 
 def is_web(fe) -> bool:
@@ -85,15 +76,9 @@ def owner_mention(fe) -> str:
 
 
 def send_direct(text: str, fe=None) -> dict:
-    """Send `text` to the owner now. Returns {"id": message id} on Zulip,
-    or {"posted": True} on the web chat and on the fallback path."""
+    """Send `text` to the owner now. Returns {"posted": True} on the web
+    chat and on the fallback path."""
     fe = fe or frontend()
-    if is_zulip(fe):
-        req = {"type": "private", "to": [int(fe.owner_id)], "content": text}
-        res = fe.client.send_message(req)
-        if res.get("result") != "success":
-            raise RuntimeError(f"direct message failed: {res.get('msg')}")
-        return {"id": int(res["id"])}
     import chat_notify  # type: ignore
     if is_web(fe):
         if not chat_notify.web_direct(text):
@@ -107,21 +92,12 @@ def send_direct(text: str, fe=None) -> dict:
 
 def schedule_direct(text: str, when: datetime, fe=None) -> int:
     """Schedule `text` as a direct message to the owner at `when` (an
-    aware datetime). Returns the server's scheduled_message_id; on the web
-    chat alone, the id of the post queued in its store."""
+    aware datetime), on the web chat alone. Returns the id of the post
+    queued in its store."""
     fe = fe or frontend()
-    if is_web(fe):
-        return _schedule_web(text, when, fe)
-    if not is_zulip(fe):
-        raise RuntimeError("scheduled direct messages need the Zulip or the web frontend")
-    if when.tzinfo is None:
-        raise ValueError("`when` must be timezone-aware")
-    res = fe._call("scheduled_messages", "POST", {
-        "type": "direct", "to": json.dumps([int(fe.owner_id)]),
-        "content": text, "scheduled_delivery_timestamp": int(when.timestamp())})
-    if res.get("result") != "success":
-        raise RuntimeError(f"schedule failed: {res.get('msg')}")
-    return int(res["scheduled_message_id"])
+    if not is_web(fe):
+        raise RuntimeError("scheduled direct messages need the web frontend")
+    return _schedule_web(text, when, fe)
 
 
 def _schedule_web(text: str, when: datetime, fe) -> int:
@@ -137,31 +113,18 @@ def _schedule_web(text: str, when: datetime, fe) -> int:
 def list_scheduled(fe=None) -> list[dict]:
     """The bot's pending scheduled messages, direct ones only."""
     fe = fe or frontend()
-    if is_web(fe):
-        dm = fe.dm_channel(fe.owner_id)
-        return [{"id": int(r["id"]), "at": datetime.fromtimestamp(r["due_at"], timezone.utc),
-                 "content": r["text"] or ""} for r in fe.scheduled_posts() if r["channel"] == dm]
-    if not is_zulip(fe):
+    if not is_web(fe):
         return []
-    res = fe._call("scheduled_messages")
-    out = []
-    for m in res.get("scheduled_messages", []):
-        if m.get("type") not in ("private", "direct"):
-            continue
-        out.append({"id": m["scheduled_message_id"],
-                    "at": datetime.fromtimestamp(m["scheduled_delivery_timestamp"], timezone.utc),
-                    "content": m.get("content", "")})
-    return out
+    dm = fe.dm_channel(fe.owner_id)
+    return [{"id": int(r["id"]), "at": datetime.fromtimestamp(r["due_at"], timezone.utc),
+             "content": r["text"] or ""} for r in fe.scheduled_posts() if r["channel"] == dm]
 
 
 def cancel_scheduled(sid: int, fe=None) -> bool:
     fe = fe or frontend()
-    if is_web(fe):
-        return fe.cancel_scheduled_post(int(sid))
-    if not is_zulip(fe):
+    if not is_web(fe):
         return False
-    res = fe._call(f"scheduled_messages/{int(sid)}", "DELETE")
-    return res.get("result") == "success"
+    return fe.cancel_scheduled_post(int(sid))
 
 
 def web_notify(text: str, *, tag: str = "", when: datetime | None = None,

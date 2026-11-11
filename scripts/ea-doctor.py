@@ -62,8 +62,11 @@ OPTIONAL_ENV = ("EA_SCHED_CHANNEL_ID", "EA_MODEL", "EA_RESIDENT_MODEL", "EA_BRIE
                 "EA_DASH_TOKEN", "EA_DASH_BIND", "EA_DASH_PORT")
 REQUIRED_SECRETS = ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN")
 # The secrets each chat frontend needs (chat.frontend in ea-config.json).
-FRONTEND_SECRETS = {"slack": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
-                    "zulip": ("ZULIP_API_KEY",), "memory": ()}
+# The bot's own web chat needs none.
+FRONTEND_SECRETS = {"slack": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"), "web": (), "memory": ()}
+# The chat frontends the bot runs: the web chat (self-hosted) and Slack;
+# `memory` is the test adapter (check_chat warns on it).
+CHAT_FRONTENDS = ("web", "slack", "memory")
 CHAT_FRONTEND = "slack"
 CHAT_CFG: dict = {}
 # What the bot actually calls; the app must grant every one of these.
@@ -591,8 +594,7 @@ def check_env(ea_dir: Path) -> dict:
                                          f"docs/SETUP.md 'The Slack app' and 'The app-level token'; put the token in "
                                          f"{SECRETS_NAME} (mode 600)"
                                          if k.startswith("SLACK_") else
-                                         f"put {k}=... in {SECRETS_NAME} (mode 600; "
-                                         f"scripts/zulip_bootstrap.py prints it)")
+                                         f"put {k}=... in {SECRETS_NAME} (mode 600)")
     env.update(secrets)
     return env
 
@@ -724,23 +726,20 @@ def check_owner_trust(ea_dir: Path):
         except (OSError, ValueError, ot.OwnerTrustError) as e:
             fail("owner trust: chat settings", str(e)[:200], f"fix or recreate {chat} (mode 600)")
         else:
-            z = block.get("zulip") if isinstance(block.get("zulip"), dict) else {}
             w = block.get("web") if isinstance(block.get("web"), dict) else {}
+            sl = block.get("slack") if isinstance(block.get("slack"), dict) else {}
             ok("owner trust: chat settings",
                f"{chat}: frontend web, public_url {w.get('public_url', '')}, "
                f"login {w.get('tailscale_login', '')}" if block.get("frontend") == "web" else
-               f"{chat}: frontend {block.get('frontend', 'slack')}, site {z.get('site', '')}, "
-               f"bot {z.get('bot_email', '')}, owner {z.get('owner_user_id', '')}")
-            shared = _read_config_chat(ea_dir)
-            sz = shared.get("zulip") if isinstance(shared.get("zulip"), dict) else {}
-            differ = [k for k in ("site", "bot_email", "owner_user_id") if z.get(k, "") != sz.get(k, "")]
-            if block.get("frontend", "slack") != shared.get("frontend", "slack"):
-                differ.insert(0, "frontend")
+               f"{chat}: frontend {block.get('frontend', 'slack')}, "
+               f"owner {sl.get('owner_user_id', '')}")
+            differ = _chat_copy_differs(block, _read_config_chat(ea_dir))
             if differ:
                 warn("owner trust: chat settings copy",
                      f"ea-config.json differs from chat.json in {', '.join(differ)} "
                      "(the owner uses chat.json; the resident's copy shapes wording only)",
-                     "scripts/zulip_switch.sh writes both copies; or edit ea-config.json to match")
+                     f"edit the chat block of {ea_dir / 'config' / 'ea-config.json'} to match "
+                     f"{chat}")
 
     auth = ea_dir / "auth"
     if not auth.exists():
@@ -821,6 +820,14 @@ def _read_config_chat(ea_dir: Path) -> dict:
         return {}
     chat = doc.get("chat") if isinstance(doc, dict) else None
     return chat if isinstance(chat, dict) else {}
+
+
+def _chat_copy_differs(owner: dict, shared: dict) -> list[str]:
+    """The keys that shape the resident's wording on which the owner's
+    chat.json and the ea-config.json copy disagree: the frontend and the
+    shadow, each read with its default."""
+    return [k for k, default in (("frontend", "slack"), ("shadow", ""))
+            if (owner.get(k) or default) != (shared.get(k) or default)]
 
 
 def _mediation_on(ea_dir: Path) -> bool:
@@ -1108,71 +1115,18 @@ def check_slack(env: dict):
             warn("slack: EA channel", str(e)[:100])
 
 
-def check_zulip(env: dict, zcfg: dict):
-    key = env.get("ZULIP_API_KEY", "")
-    if not key:
+def check_frontend(ci: bool = False) -> None:
+    """The chat frontend the bot runs: the web chat or Slack passes. Any
+    other value FAILs (a WARN under --ci, which never fails on the
+    install's state); the bot does not start on it."""
+    if CHAT_FRONTEND in CHAT_FRONTENDS:
+        ok("chat frontend", CHAT_FRONTEND)
         return
-    site, email = zcfg.get("site", ""), zcfg.get("bot_email", "")
-    if not site or not email:
-        fail("zulip: config", "chat.zulip.site or chat.zulip.bot_email unset",
-             "paste the chat block scripts/zulip_bootstrap.py prints into ~/.ea/config/ea-config.json")
-        return
-    try:
-        import zulip
-    except ImportError:
-        # The bot runs from the repo venv; this interpreter may be the
-        # system python3. A package that is in the venv is not missing.
-        venv_py = REPO / ".venv" / "bin" / "python3"
-        if venv_py.exists() and subprocess.run([str(venv_py), "-c", "import zulip"],
-                                                capture_output=True).returncode == 0:
-            warn("zulip: client", f"package 'zulip' is in {venv_py.parent.parent}, not in "
-                 f"{sys.executable}; the live check needs the venv interpreter",
-                 f"rerun as {venv_py} scripts/ea-doctor.py")
-            return
-        fail("zulip: client", "python package 'zulip' missing", f"{REPO}/.venv/bin/pip install zulip")
-        return
-    try:
-        client = zulip.Client(email=email, api_key=key, site=site)
-        prof = client.get_profile()
-    except Exception as e:
-        fail("zulip: get_profile", str(e)[:120], "check the network, chat.zulip.site and ZULIP_API_KEY")
-        return
-    if prof.get("result") != "success":
-        fail("zulip: get_profile", prof.get("msg", "?"), "regenerate the bot's API key and update ZULIP_API_KEY")
-        return
-    ok("zulip: get_profile", f"bot {prof.get('email')} id {prof.get('user_id')}")
-    try:
-        subs = client.get_subscriptions()
-    except Exception as e:
-        warn("zulip: subscriptions", str(e)[:100])
-        return
-    if subs.get("result") != "success":
-        fail("zulip: subscriptions", subs.get("msg", "?"), "check the bot's permissions")
-        return
-    by_name = {s.get("name"): s for s in subs.get("subscriptions", [])}
-    for label, name, required in (("EA stream", zcfg.get("stream", ""), True),
-                                  ("scheduling stream", zcfg.get("sched_stream", ""), False),
-                                  ("DM stream", zcfg.get("dm_stream", ""), True)):
-        check = f"zulip: {label}"
-        if not name:
-            (fail if required else ok)(check, "unset" if required else "not configured",
-                                       "set it in chat.zulip of ea-config.json")
-            continue
-        sub = by_name.get(name)
-        if sub is None:
-            try:
-                found = client.get_stream_id(name).get("result") == "success"
-            except Exception:
-                found = False
-            if found:
-                fail(check, f"bot is not subscribed to #{name}", "subscribe the bot to the stream (scripts/zulip_bootstrap.py)")
-            else:
-                fail(check, f"#{name} does not exist or is hidden from the bot",
-                     "create it invite-only with the bot subscribed (scripts/zulip_bootstrap.py)")
-        elif not sub.get("invite_only"):
-            fail(check, f"#{name} is PUBLIC", "the stream must be private (invite-only)")
-        else:
-            ok(check, f"#{name} private, bot is subscribed")
+    (warn if ci else fail)(
+        "chat frontend", f"{CHAT_FRONTEND!r} is not web or slack; the bot does not start on it",
+        f'set "frontend" to web (the self-hosted web chat, docs/webchat.md) or slack in '
+        f"{_private_dir() / 'chat.json'} and in the chat block of ~/.ea/config/ea-config.json, "
+        f"then restart the bot")
 
 
 def check_chat(env: dict):
@@ -1180,16 +1134,11 @@ def check_chat(env: dict):
     chat's when it runs alone or as the shadow (both are reported)."""
     if CHAT_FRONTEND == "slack":
         check_slack(env)
-    elif CHAT_FRONTEND == "zulip":
-        check_zulip(env, CHAT_CFG.get("zulip") or {})
     elif CHAT_FRONTEND == "memory":
         if not NEEDS_SLACK:
             return
         warn("chat: memory frontend", "checks skipped; the memory frontend is for tests",
-             "set chat.frontend to web, zulip or slack in ~/.ea/config/ea-config.json")
-    elif CHAT_FRONTEND != "web":
-        fail("chat: frontend", f"unknown frontend {CHAT_FRONTEND!r}",
-             "set chat.frontend to web, zulip or slack in ~/.ea/config/ea-config.json")
+             "set chat.frontend to web or slack in ~/.ea/config/ea-config.json")
     if NEEDS_SLACK and "web" in (CHAT_FRONTEND, CHAT_CFG.get("shadow")):
         check_web(CHAT_CFG.get("web") if isinstance(CHAT_CFG.get("web"), dict) else {})
 
@@ -2130,7 +2079,7 @@ def main() -> int:
     if not NEEDS_SLACK:
         check_reports(ea_dir)
     if NEEDS_SLACK:
-        ok("chat frontend", CHAT_FRONTEND)
+        check_frontend(a.ci)
     check_repo()
     check_templates()
     if not a.ci:

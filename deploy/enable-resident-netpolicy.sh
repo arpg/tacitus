@@ -5,7 +5,7 @@
 #
 # The resident (ea-bot) runs the prompt-injectable LLM. On this host an
 # injected turn would otherwise meet every service that trusts "anything
-# local": the owner's dev servers, the board, Ollama, Zulip's web login,
+# local": the owner's dev servers, the board, Ollama, the web chat,
 # Samba, CUPS, the Docker bridges and the tailnet peers. This loads an
 # nftables table (inet ea_resident) whose output chain matches the resident's
 # sockets (meta skuid) and refuses their connections to this host and to

@@ -15,7 +15,7 @@ read and revise: outlines, plans, memos, proposal sections, talk scripts,
 reports. A short answer in the conversation does not.
 
 **What never goes there.** GitHub is a third-party service. Keep confidential
-material as a local file and in the Zulip loop: reviews of manuscripts or
+material as a local file and in the chat with the user: reviews of manuscripts or
 proposals, panel material, letters of recommendation, tenure and personnel
 letters, student records, and anything under a confidentiality rule or an NDA.
 When you are not sure, keep it local and ask.
@@ -49,7 +49,7 @@ user can also edit it on GitHub. Before every change: `fetch --pr <n> --out
 <n> --file <copy> --message "<what changed>"`. Never edit from an old local
 copy. `update` never forces a push: when the branch moved after your fetch, it
 stops, and you fetch again and redo the change. A change that the user asks
-for in Zulip goes the same way.
+for in chat goes the same way.
 
 **Working through a review.** The bot tells you when the user submits a
 review.
@@ -65,7 +65,7 @@ review.
    <comment_id> --body "<one line: what changed>"`, then `resolve --pr <n>
    --thread-id <thread_id>`. When you cannot tell what the user wants, reply
    with your question and leave the thread open.
-5. Reply in the Zulip thread: what changed, and which threads are still open.
+5. Reply in the chat thread: what changed, and which threads are still open.
 
 **Rules.**
 - Never merge, never push to `main`, and never force a push. Merging is

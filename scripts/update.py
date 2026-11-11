@@ -83,7 +83,7 @@ GATE_STABLE_S = 10
 KEEP_RELEASES = 3
 # Health markers in the bot's log (ea-chat-bot.py, botcore/botcore/chat/).
 START_RE = re.compile(r"EA chat bot starting")
-FRONTEND_RE = re.compile(r"frontend=\w+ stream=|Bot user ID: \S|web chat serving on ")
+FRONTEND_RE = re.compile(r"Bot user ID: \S|web chat serving on ")
 WEB_RE = re.compile(r"web chat serving on ")
 BAD_RE = re.compile(r"Traceback \(most recent call last\)|chat frontend refused to start|"
                     r"chat frontend did not start|\bCRITICAL\b")

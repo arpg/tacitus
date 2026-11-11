@@ -37,12 +37,11 @@ def install(tmp_path):
     auth.mkdir()
     auth.chmod(0o750)
     priv.mkdir(mode=0o700)
-    chat = {"frontend": "memory", "zulip": {"site": "https://z.mine", "bot_email": "hale.stavros17@example.com",
-                                            "owner_user_id": "8"}}
+    chat = {"frontend": "memory", "shadow": ""}
     _write(tree / "config" / "ea-config.json", json.dumps(
         {"profile": "assistant", "chat": chat, "mail_mediation": {"enabled": True}}), 0o644)
     _write(priv / "chat.json", json.dumps(chat))
-    _write(priv / "secrets.env", "ZULIP_API_KEY=k\n")
+    _write(priv / "secrets.env", "SLACK_BOT_TOKEN=k\n")
     _write(auth / "scheduled-send-hmac.key", "x" * 48)
     _write(auth / "msal_token_cache.json", "{}")
     _write(auth / "google_token_a_at_b_c.json", "{}")
@@ -91,7 +90,7 @@ def test_a_browser_profile_left_in_the_auth_dir_warns(install):
 def test_secrets_only_in_ea_bot_space_warn_and_an_unsafe_legacy_file_fails(install):
     tree, priv = install
     (priv / "secrets.env").unlink()
-    legacy = _write(tree / ".env.secrets", "ZULIP_API_KEY=k\n")
+    legacy = _write(tree / ".env.secrets", "SLACK_BOT_TOKEN=k\n")
     res = _results(tree, priv)
     assert _status(res, "owner trust: secrets") == "WARN"
     assert "harden-permissions" in res["owner trust: secrets"]["fix"]
@@ -104,12 +103,13 @@ def test_secrets_only_in_ea_bot_space_warn_and_an_unsafe_legacy_file_fails(insta
 def test_chat_settings_missing_or_diverged(install):
     tree, priv = install
     doc = json.loads((tree / "config" / "ea-config.json").read_text())
-    doc["chat"]["zulip"]["site"] = "https://attacker.example"
+    doc["chat"].update(frontend="slack", shadow="web")
     _write(tree / "config" / "ea-config.json", json.dumps(doc), 0o644)
     res = _results(tree, priv)
     assert _status(res, "owner trust: chat settings") == "PASS"
-    assert _status(res, "owner trust: chat settings copy") == "WARN"
-    assert "site" in res["owner trust: chat settings copy"]["detail"]
+    copy = res["owner trust: chat settings copy"]
+    assert copy["status"] == "WARN"
+    assert "frontend, shadow" in copy["detail"] and "chat.json" in copy["fix"]
     (priv / "chat.json").unlink()
     # without chat.json the bot refuses to start: a failure, naming the seed
     res = _results(tree, priv)

@@ -502,28 +502,28 @@ def test_a_thread_the_owner_never_wrote_in_is_none_and_never_reaches_the_model(s
     """An ops notice with an ask in its words, copied with no origin and
     matching no title pattern, gets no sticker; the model reads it only once
     the owner writes in it."""
-    store.upsert_channel("stream:12", "ea-health", "room")
+    store.upsert_channel("r12", "ea-health", "room")
     at = time.time() - 3 * 3600
-    post = store.add_message("stream:12", mid=None, thread_key=None, author="bot",
+    post = store.add_message("r12", mid=None, thread_key=None, author="bot",
                              kind="message", text="3 messages were held back; review them",
                              posted_at=at)
     key = post["thread_key"]
     model, hosted = FakeModel('{"state": "needs_you", "reason": "Review them.", '
                               '"confidence": 0.9}'), FakeHosted()
     out = engine(store, model).tick()
-    row = store.thread_state("stream:12", key)
+    row = store.thread_state("r12", key)
     assert (row["state"], row["by"]) == ("none", "rule")
     assert row["reason"] == "A post from Tacitus: " + ts.QUIET_TAIL
     assert out["model_calls"] == 0 and model.prompts == []
     assert hosted_engine(store, hosted).tick()["hosted_calls"] == 0 and hosted.prompts == []
     # the owner writes in it and the bot answers: now the model reads it
-    store.add_message("stream:12", mid=None, thread_key=key, author="owner", kind="message",
+    store.add_message("r12", mid=None, thread_key=key, author="owner", kind="message",
                       text="Which ones?", posted_at=at + 60)
-    store.add_message("stream:12", mid=None, thread_key=key, author="bot", kind="message",
+    store.add_message("r12", mid=None, thread_key=key, author="bot", kind="message",
                       text="Two from a list and one from a vendor.", posted_at=at + 120)
     assert engine(store, model).tick()["model_calls"] == 1
     assert "held back" in model.prompts[0]
-    row = store.thread_state("stream:12", key)
+    row = store.thread_state("r12", key)
     assert (row["state"], row["by"]) == ("needs_you", "model")
 
 
@@ -662,237 +662,6 @@ def test_the_engine_reads_which_messages_were_copied_from_the_past(store):
     assert verdict == "open"
 
 
-def test_a_moved_thread_keeps_its_state(store):
-    key = chat_thread(store)
-    seq = store.newest_seq("main", key)
-    store.set_thread_state("main", key, "waiting", "owner", "You marked this as waiting on "
-                           "someone else.", judged_seq=seq)
-    store.note_origin("main", key, "ea-assistant")
-    store.upsert_channel("r1", "ea-room", "room")
-    store.move_thread("main", key, "r1", "r1:moved")
-    assert store.thread_state("r1", "r1:moved")["state"] == "waiting"
-    assert store.thread_origin("r1", "r1:moved") == "ea-assistant"
-    assert store.thread_state("main", key) is None
-
-
-# ── shadow mode: cards copied as text from Zulip's past ───────────────
-
-ZHEAD = ":locked: **Confirm send**\n**To:** `x@example.test`"
-ZRULE = "\n\n----\n"
-CHIPS = ("Tap a reaction below: :+1: Send · :-1: Cancel\n"
-         "Or reply `<word> ABCD` in this topic: send, cancel.")
-ZBODY = "**Body:**\n> A draft body the model never sees."
-
-
-def zcard(middle=CHIPS, *, seq=1, at=None, head=ZHEAD, channel="stream:6", primary=None):
-    """A card as the history copy stores it: Zulip's raw text, no card JSON."""
-    row = {**m(seq, text=head + ZRULE + middle + ZRULE + ZBODY, at=at), "channel": channel,
-           "history": True}
-    if primary is not None:
-        row["primary"] = primary
-    return row
-
-
-MIRROR_CASES = [
-    # (name, messages, expected (state, reason) or None for the model)
-    ("the chips legend still has its buttons", [zcard()],
-     ("needs_you", 'The card "Confirm send" still has its buttons.')),
-    ("the typed legend still has its buttons",
-     [zcard("Reply `<word> ABCD` in this topic: keep.")],
-     ("needs_you", 'The card "Confirm send" still has its buttons.')),
-    ("the bare code still has its buttons", [zcard("Code **ABCD**, in this topic.")],
-     ("needs_you", 'The card "Confirm send" still has its buttons.')),
-    ("the owner's mention before the lock",
-     [zcard(head="@**Avery Owner|9** :locked: **Confirm send**")],
-     ("needs_you", 'The card "Confirm send" still has its buttons.')),
-    ("the Slack spelling of the lock", [zcard(head=":lock: *Confirm send*")],
-     ("needs_you", 'The card "Confirm send" still has its buttons.')),
-    ("a legend past the registry's age acts no more", [zcard(at=NOW - 8 * DAY)], ("none", "A card from Tacitus: " + ts.QUIET_TAIL)),
-    ("sent with the button", [zcard(":check: **Sent**")],
-     ("done", "The card was answered: Sent")),
-    ("sent from Outlook", [zcard(":mail_received: Sent from Outlook.")],
-     ("done", "The card was answered: Sent from Outlook.")),
-    ("handled", [zcard(":check: Handled. Draft deleted, thread archived.")],
-     ("done", "The card was answered: Handled. Draft deleted, thread archived.")),
-    ("cancelled", [zcard(":prohibited: Send cancelled. Draft kept in Outlook.")],
-     ("done", "The card was answered: Send cancelled. Draft kept in Outlook.")),
-    ("revised", [zcard(":pencil: Revised. The new Send card for this draft is below.")],
-     ("done", "The card was answered: Revised. The new Send card for this draft is below.")),
-    ("deleted in Outlook", [zcard(":wastebasket: Deleted in Outlook; not sent.")],
-     ("done", "The card was answered: Deleted in Outlook; not sent.")),
-    ("a status of two lines reads its first",
-     [zcard(":check: Sent.\n:check: Closed: `response-a1`")],
-     ("done", "The card was answered: Sent.")),
-    ("a failed press is not settled",
-     [zcard(":cross_mark: Could not authorize this card: expired")], ("none", "A card from Tacitus: " + ts.QUIET_TAIL)),
-    ("a warning is not settled", [zcard(":warning: This send confirmation is stale")], ("none", "A card from Tacitus: " + ts.QUIET_TAIL)),
-    ("a refusal is not settled", [zcard(":no_entry: The draft is gone.")], ("none", "A card from Tacitus: " + ts.QUIET_TAIL)),
-    ("a press under way that Zulip edited a moment ago",
-     [zcard(":time_ticking: Sending...",
-            primary={"text": ZHEAD + ZRULE + ":time_ticking: Sending...", "filed": False,
-                     "edited_at": NOW - MIN})],
-     ("working", "Tacitus is acting on the button you pressed.")),
-    ("a press under way with no time but the copy's", [zcard(":time_ticking: Sending...")],
-     ("none", "A card from Tacitus: " + ts.QUIET_TAIL)),
-    ("Zulip's text wins over the stored copy",
-     [zcard(primary={"text": ZHEAD + ZRULE + ":mail_received: Sent from Outlook.",
-                     "filed": False, "edited_at": NOW - 600})],
-     ("done", "The card was answered: Sent from Outlook.")),
-    ("Zulip says the card is still live",
-     [zcard(primary={"text": ZHEAD + ZRULE + CHIPS, "filed": False, "edited_at": None})],
-     ("needs_you", 'The card "Confirm send" still has its buttons.')),
-    ("filed in the done stream with its status",
-     [zcard(primary={"text": ZHEAD + ZRULE + ":check: Handled.", "filed": True,
-                     "edited_at": NOW - 600})],
-     ("done", "The card was answered: Handled.")),
-    ("filed in the done stream with no status that acted",
-     [zcard(primary={"text": ZHEAD + ZRULE + CHIPS, "filed": True, "edited_at": None})],
-     ("done", "The card was answered: Settled outside chat.")),
-    ("settled, then the owner asks something", [
-        zcard(":check: **Sent**"),
-        {**m(2, "owner", "And the other one?", at=NOW - 30 * MIN), "history": True}], None),
-    ("an owner message after the card counts the same when Zulip answered", [
-        zcard(primary={"text": ZHEAD + ZRULE + ":check: **Sent**", "filed": False,
-                       "edited_at": NOW - MIN}),
-        {**m(2, "owner", "send ABCD", at=NOW - 30 * MIN), "history": True}], None),
-    ("settled, then the bot's note", [
-        zcard(":check: **Sent**"),
-        {**m(2, text=":check: Calendar event created.", at=NOW - 30 * MIN), "history": True}],
-     ("done", "The card was answered: Sent")),
-]
-
-
-@pytest.mark.parametrize("name,msgs,want", MIRROR_CASES, ids=[c[0] for c in MIRROR_CASES])
-def test_a_mirrored_card_reads_its_outcome(name, msgs, want):
-    got = decide(msgs)
-    assert (None if got is None else (got[0], got[2])) == want
-    if got is not None:
-        assert got[1] == "rule"
-
-
-def test_only_a_card_copied_from_zulip_is_read_as_one():
-    pointer = {**m(1, text=":locked: The Send button for this draft is in your DM: "
-                         "[open it](https://chat.example.org/#narrow)"),
-               "channel": "stream:6", "history": True}
-    for row in (pointer,
-                {**zcard(), "history": False},             # a live row
-                zcard(channel="C_SLACK"),                  # not a Zulip stream
-                {**zcard(), "card": live_card()},          # it has its card JSON
-                {**m(1, text="**Morning briefing**" + ZRULE + "one"), "channel": "stream:6",
-                 "history": True}):
-        assert not ts.mirrored_card(row)
-        assert ts.card_view(row) is row
-    assert ts.mirrored_card(zcard())
-    assert ts.card_pending(zcard()["text"]) and ts.card_pending(
-        zcard(":time_ticking: Sending...")["text"])
-    assert not ts.card_pending(zcard(":check: **Sent**")["text"])
-    assert not ts.card_pending(zcard(":cross_mark: Could not send")["text"])
-
-
-def test_the_prompt_reads_a_mirrored_card_as_a_card():
-    p = ts.judge_prompt([zcard(":cross_mark: Could not send"),
-                         {**m(2, "owner", "Why?"), "history": True}], now=NOW)
-    assert 'card "Confirm send": Could not send' in p
-    assert "model never sees" not in p and "x@example.test" not in p
-    p = ts.judge_prompt([zcard(at=NOW - 8 * DAY)], now=NOW)
-    assert 'card "Confirm send": no live buttons' in p
-
-
-ZKEY = "stream:6:topic:lock%20ABCD%20x"
-
-
-class FakeCards:
-    """The primary's card read: an answer per message id, every call kept."""
-
-    def __init__(self, answers=None):
-        self.answers = answers or {}
-        self.calls: list[tuple[str, str, str]] = []
-
-    def __call__(self, channel, thread_key, msg_id):
-        self.calls.append((channel, thread_key, msg_id))
-        got = self.answers.get(msg_id)
-        if isinstance(got, Exception):
-            raise got
-        return got
-
-
-def mirrored(store, n, middle=CHIPS, at=None):
-    """`n` cards copied as text into the DM stream, one thread each,
-    newest last; their thread keys."""
-    store.upsert_channel("stream:6", "ea-dm", "dm")
-    at = time.time() - 3 * 3600 if at is None else at
-    keys = []
-    for i in range(n):
-        key = f"{ZKEY}{i}"
-        store.add_message("stream:6", mid=str(700 + i), thread_key=key, author="bot",
-                          kind="message", text=ZHEAD + ZRULE + middle + ZRULE + ZBODY,
-                          posted_at=at + i, history=True)
-        keys.append(key)
-    return keys
-
-
-def test_a_mirrored_card_is_read_from_the_primary_and_never_asked_of_the_model(store):
-    live, settled = mirrored(store, 2)
-    store.add_message("stream:6", mid="799", thread_key=f"{ZKEY}s", author="bot",
-                      kind="message", text=ZHEAD + ZRULE + ":check: **Sent**",
-                      posted_at=time.time() - 3 * 3600, history=True)
-    cards = FakeCards({"700": {"text": ZHEAD + ZRULE + CHIPS, "filed": False, "edited_at": None},
-                       "701": {"text": ZHEAD + ZRULE + ":mail_received: Sent from Outlook.",
-                               "filed": True, "edited_at": time.time() - 600}})
-    model = FakeModel()
-    out = engine(store, model, cards=cards).tick()
-    assert model.prompts == [] and out["model_calls"] == 0
-    assert sorted(c[2] for c in cards.calls) == ["700", "701"]       # a settled copy is final
-    assert ("stream:6", live, "700") in cards.calls
-    assert store.thread_state("stream:6", live)["state"] == "needs_you"
-    assert (store.thread_state("stream:6", settled)["state"],
-            store.thread_state("stream:6", settled)["reason"]) == (
-        "done", "The card was answered: Sent from Outlook.")
-    assert store.thread_state("stream:6", f"{ZKEY}s")["state"] == "done"
-
-
-def test_the_primary_s_card_reads_are_capped_and_kept_for_a_tick(store):
-    keys = mirrored(store, 35)
-    cards = FakeCards()                            # no answer: the stored text stands
-    clock = [time.time()]
-    e = engine(store, FakeModel(), cards=cards, clock=lambda: clock[0])
-    assert e.tick()["card_reads"] == ts.CARD_CAP == 30
-    assert len(cards.calls) == 30
-    # past the cap a card keeps its stored legend: needs you, by rule
-    assert {store.thread_state("stream:6", k)["by"] for k in keys} == {"rule"}
-    assert e.tick()["card_reads"] == 5             # the rest; the 30 answers are kept
-    assert len({c[2] for c in cards.calls}) == 35
-    assert e.tick()["card_reads"] == 0
-    clock[0] += ts.TICK_S                          # one tick interval later they are read again
-    assert e.tick()["card_reads"] == 30
-    # a change between ticks draws on the tick's allowance, spent here
-    e.changed()
-    store.add_message("stream:6", mid=None, thread_key=keys[0], author="bot", kind="message",
-                      text="Still waiting.", posted_at=time.time())
-    before = len(cards.calls)
-    assert e.changed() == 1 and len(cards.calls) == before
-
-
-def test_no_primary_means_no_read(store, tmp_path):
-    keys = mirrored(store, 3)
-    e = engine(store, FakeModel())
-    assert e.cards is None
-    assert e.tick()["card_reads"] == 0
-    assert {store.thread_state("stream:6", k)["state"] for k in keys} == {"needs_you"}
-    # a failing read is logged once and the stored text stands
-    e = engine(store, FakeModel(), cards=FakeCards({"700": RuntimeError("down")}))
-    e.tick()
-    assert store.thread_state("stream:6", keys[0])["state"] == "needs_you"
-    # the web chat alone has no read; one set later reaches the running states
-    f = WebFrontend({"port": 0}, store_path=tmp_path / "w" / "webchat.sqlite",
-                    webui_dir=tmp_path / "webui")
-    states = f.enable_thread_state()
-    assert f.card_lookup is None and states.cards is None
-    read = FakeCards()
-    f.card_lookup = read
-    assert states.cards is read
-
-
 # ── a conversation's cards in Direct messages (rule 2b) ───────────────
 
 def dm_card(card_id="w9", *, kind="card", text="", at=None, updated=None, history=False,
@@ -949,29 +718,6 @@ LINK_CASES = [
       {"kind": "missing", "id": "5522", "card": None}], [], None),
     ("a linked message that is no card decides nothing",
      [{**m(9, text="Just a note."), "channel": "dm", "id": "w9"}], [], None),
-    ("a card copied from Zulip, settled there",
-     [{**zcard(":check: **Sent**", at=NOW - 2 * 3600 - 30), "id": "5522"}], [],
-     ("done", "Its card was handled: Sent")),
-    ("a card copied from Zulip, still with its legend",
-     [{**zcard(at=NOW - 2 * 3600), "id": "5522"}], [],
-     ("needs_you", "Its card in Direct messages waits for you.")),
-    ("a card the copy never took, read from Zulip: sent",
-     [ts.fetched_card({"channel": "", "id": "5522"},
-                      {"text": ZHEAD + ZRULE + ":check: **Sent**", "filed": False,
-                       "edited_at": NOW - 600, "posted_at": NOW - 3 * 3600 + 90})], [],
-     ("done", "Its card was handled: Sent")),
-    ("a card the copy never took, settled after the owner's change",
-     [ts.fetched_card({"channel": "", "id": "5522"},
-                      {"text": ZHEAD + ZRULE + ":check: **Sent**", "filed": False,
-                       "edited_at": NOW - 600, "posted_at": NOW - 3 * 3600 + 90})],
-     [m(4, "owner", "Make it formal.", reactions=["white_check_mark"], at=NOW - 2 * 3600),
-      m(5, text="Revised.", at=NOW - 2 * 3600 + 60)],
-     ("done", "Its card was handled: Sent")),
-    ("a card the copy never took, read from Zulip: live",
-     [ts.fetched_card({"channel": "", "id": "5522"},
-                      {"text": ZHEAD + ZRULE + CHIPS, "filed": False, "edited_at": None,
-                       "posted_at": NOW - 3 * 3600 + 90})], [],
-     ("needs_you", "Its card in Direct messages waits for you.")),
 ]
 
 
@@ -1042,7 +788,7 @@ def test_once_the_bot_answers_the_change_the_card_rule_decides_again():
     # a message from the bot
     assert decide(asked + [m(4, text="Shorter now: three lines.", at=NOW - MIN)]) == \
         ("needs_you", "rule", CARD_HERE)
-    # a finished turn with no words, and a change copied from Zulip's past,
+    # a finished turn with no words, and a change copied from the primary's past,
     # are not decisive: the card's buttons are
     assert decide(CARD_ASK + [change(3, reactions=["white_check_mark"])]) == \
         ("needs_you", "rule", CARD_HERE)
@@ -1145,14 +891,16 @@ def test_the_engine_follows_the_owner_s_change_and_the_bot_s_answer(store):
 def test_pointers_name_their_card_on_each_platform():
     web = (":lock: The Create button for this event is in your DM: "
            "[open it](https://h.example.test/chat/#/dm/t5/w5)")
-    zulip = (":locked: The Publish button for this change is in your DM: [open it]"
-             "(https://chat.example.org/#narrow/channel/6-ea-dm/topic/lock.20W7KL/near/5664)")
     slack = (":lock: The Send button for this draft is in your DM: "
              "[open it](https://x.slack.com/archives/D0123ABC/p1700000000123456)")
+    # the lock under Zulip's name, as history imported from Zulip writes it
+    imported = (":locked: The Publish button for this change is in your DM: "
+                "[open it](https://h.example.test/chat/#/dm/stream%3A6%3Atopic%3Ax/5664)")
     assert ts.pointer_targets(web) == [("dm", "w5")]
-    assert ts.pointer_targets(zulip) == [("", "5664")]
     assert ts.pointer_targets(slack) == [("D0123ABC", "1700000000.123456")]
-    assert ts.pointer_targets(web + "\n" + zulip) == [("dm", "w5"), ("", "5664")]
+    assert ts.pointer_targets(imported) == [("dm", "5664")]
+    assert ts.pointer_targets(web + "\n" + slack) == [("dm", "w5"),
+                                                      ("D0123ABC", "1700000000.123456")]
     for text in (":lock: The Send button for this draft is in your DM.",  # no link
                  "I made a reply draft. The Send button is in your DM.",
                  ":sunny: **Morning briefing**: 3 drafts are waiting as a card in your DM: one.",
@@ -1197,20 +945,21 @@ def test_a_card_posted_for_a_conversation_moves_its_state(store):
 
 
 def test_links_made_before_the_table_are_found_once_at_start(store):
-    """Rows stored before card_link: a web pointer, a Zulip pointer to a card
-    copied as text, and a card whose JSON names its conversation."""
-    store.upsert_channel("stream:6", "ea-dm", "dm")
-    store.upsert_channel("stream:4", "ea", "main")
+    """Rows stored before card_link: a web pointer, a Slack pointer to a card
+    a shadow copied, and a card whose JSON names its conversation."""
+    store.upsert_channel("D0DM", "dm", "dm")
+    store.upsert_channel("C0EA", "ea", "main")
     old = time.time() - 30 * DAY
-    zask = store.add_message("stream:4", mid="100", thread_key="stream:4:topic:Avery", author="owner",
-                             kind="message", text="Draft a reply.", posted_at=old, history=True)
-    zcard_row = store.add_message("stream:6", mid="101", thread_key=ZKEY, author="bot",
-                                  kind="message", text=ZHEAD + ZRULE + ":check: **Sent**",
-                                  posted_at=old + 60, history=True)
-    store.add_message("stream:4", mid="102", thread_key=zask["thread_key"], author="bot",
-                      kind="message", history=True, posted_at=old + 61,
-                      text=":locked: The Send button for this draft is in your DM: [open it]"
-                           "(https://chat.example.org/#narrow/channel/6-ea-dm/topic/x/near/101)")
+    sask = store.add_message("C0EA", mid="1700000000.000100", thread_key="1700000000.000100",
+                             author="owner", kind="message", text="Draft a reply.",
+                             posted_at=old, history=True)
+    store.add_message("D0DM", mid="1700000060.000200", thread_key="1700000060.000200",
+                      author="bot", kind="status", text=":white_check_mark: Sent.",
+                      card=live_card(), posted_at=old + 60)
+    store.add_message("C0EA", mid="1700000061.000300", thread_key=sask["thread_key"],
+                      author="bot", kind="message", history=True, posted_at=old + 61,
+                      text=":lock: The Send button for this draft is in your DM: [open it]"
+                           "(https://x.slack.com/archives/D0DM/p1700000060000200)")
     wask = store.add_message("main", mid=None, thread_key=None, author="owner", kind="message",
                              text="Make the invite.", posted_at=old)
     wcard = store.add_message("dm", mid=None, thread_key=None, author="bot", kind="status",
@@ -1224,8 +973,7 @@ def test_links_made_before_the_table_are_found_once_at_start(store):
     store.add_message("dm", mid=None, thread_key=None, author="bot", kind="status",
                       text=":white_check_mark: Sent.", card=_send_card("main", jask),
                       posted_at=old + 300)
-    for key in (zask["thread_key"], wask["thread_key"], jask):
-        ch = "stream:4" if key.startswith("stream:") else "main"
+    for ch, key in (("C0EA", sask["thread_key"]), ("main", wask["thread_key"]), ("main", jask)):
         store.set_thread_state(ch, key, "needs_you", "model", "Old.",
                                judged_seq=store.newest_seq(ch, key))
     # as a store from before the table holds them: no links, and no mark
@@ -1234,19 +982,35 @@ def test_links_made_before_the_table_are_found_once_at_start(store):
     store._conn.commit()
     e = engine(store, FakeModel())
     assert e.link_cards() == 3
-    assert [r["id"] for r in store.linked_cards("stream:4", zask["thread_key"])] == ["101"]
+    assert [r["id"] for r in store.linked_cards("C0EA", sask["thread_key"])] == \
+        ["1700000060.000200"]
     assert [r["id"] for r in store.linked_cards("main", wask["thread_key"])] == [wcard["id"]]
-    for ch, key, what in (("stream:4", zask["thread_key"], "Sent"),
+    for ch, key, what in (("C0EA", sask["thread_key"], "Sent."),
                           ("main", wask["thread_key"], "Created."), ("main", jask, "Sent.")):
         st = store.thread_state(ch, key)
         assert (st["state"], st["reason"]) == ("done", f"Its card was handled: {what}"), key
-    # once per store; and a card that moves channel stays linked
+    # once per store
     assert store.backfill_card_links() == 0
-    store.upsert_channel("stream:49", "ea-dm-done", "room")
-    store.move_thread("stream:6", ZKEY, "stream:49", ZKEY)
-    assert [r["channel"] for r in store.linked_cards("stream:4", zask["thread_key"])] == ["stream:49"]
-    store.move_thread("stream:4", zask["thread_key"], "stream:4", "stream:4:topic:Avery2")
-    assert [r["id"] for r in store.linked_cards("stream:4", "stream:4:topic:Avery2")] == ["101"]
+
+
+def test_a_link_imported_from_zulip_names_its_card_by_id_alone(store):
+    """History imported from Zulip holds card links with no card channel: a
+    Zulip message id is unique, so the store finds the card by its id alone
+    in whichever channel holds it."""
+    old = time.time() - 30 * DAY
+    ask = store.add_message("main", mid="100", thread_key="stream:4:topic:Avery",
+                            author="owner", kind="message", text="Draft a reply.",
+                            posted_at=old, history=True)
+    store.add_message("dm", mid="101", thread_key="stream:6:topic:lock%20ABCD", author="bot",
+                      kind="status", text=":white_check_mark: Sent.", card=live_card(),
+                      posted_at=old + 60, history=True)
+    store._transaction(lambda: store._conn.execute(
+        "INSERT INTO card_link(channel, thread_key, card_channel, card_id, at) "
+        "VALUES (?,?,?,?,?)", ("main", ask["thread_key"], "", "101", old + 61)))
+    assert [r["id"] for r in store.linked_cards("main", ask["thread_key"])] == ["101"]
+    assert store.card_origins([("dm", "101")]) == [("main", ask["thread_key"])]
+    (row,) = store.linked_cards("main", ask["thread_key"])
+    assert ts.linked_state([row], [], time.time()) == ("done", "Its card was handled: Sent.")
 
 
 # ── linked cards in the model's prompt ────────────────────────────────
@@ -1277,12 +1041,9 @@ def test_the_prompt_gives_each_linked_card_one_line_by_its_time():
     # the hosted part carries the same lines
     part = ts.batch_part("c1", msgs, linked=linked, now=NOW)
     assert all(line in part for line in (expired, failed, sent))
-    # a card in Direct messages still live, or one read from Zulip, reads the same way
-    p = ts.judge_prompt(ASK, linked=[dm_card(at=NOW - 3 * 3600 + 90),
-                                     {**zcard(":check: **Sent**", at=NOW - 2 * 3600), "id": "57"}],
-                        now=NOW)
+    # a card in Direct messages still live reads the same way
+    p = ts.judge_prompt(ASK, linked=[dm_card(at=NOW - 3 * 3600 + 90)], now=NOW)
     assert 'card "Confirm send" in Direct messages: waiting for a button' in p
-    assert 'card "Confirm send" in Direct messages: Sent' in p
 
 
 def _failed_link(store):
@@ -1311,128 +1072,26 @@ def test_the_model_reads_a_linked_card_that_decides_nothing(store):
     assert 'card "Confirm send" in Direct messages: failed' in hosted.prompts[0]
 
 
-# ── a linked card the copy never took, read from Zulip ────────────────
+# ── a linked card the store never took ────────────────────────────────
 
-ZPOINTER = (":locked: The Send button for this draft is in your DM: [open it]"
-            "(https://chat.example.org/#narrow/channel/6-ea-dm/topic/x/near/{id})")
-
-
-def pointed(store, card_id="5522", at=None):
-    """A conversation copied from Zulip that asked for a card: the owner's
-    ask and the bot's pointer to card `card_id`, which the copy never took.
-    Its thread key."""
-    store.upsert_channel("stream:4", "ea", "main")
-    at = time.time() - 3 * 3600 if at is None else at
-    key = f"stream:4:topic:ask{card_id}"
-    store.add_message("stream:4", mid=f"{card_id}0", thread_key=key, author="owner",
-                      kind="message", text="Draft a reply to Avery.", posted_at=at, history=True)
-    store.add_message("stream:4", mid=f"{card_id}1", thread_key=key, author="bot",
-                      kind="message", text=ZPOINTER.format(id=card_id), posted_at=at + 60,
-                      history=True)
-    return key
-
-
-def zanswer(middle, at, edited=None, filed=False):
-    return {"text": ZHEAD + ZRULE + middle + ZRULE + ZBODY, "filed": filed,
-            "edited_at": edited, "posted_at": at + 90}
-
-
-def test_fetched_card_reads_zulip_s_answer_as_a_mirrored_card():
-    link = {"kind": "missing", "channel": "", "id": "5522", "card": None}
-    live = ts.fetched_card(link, zanswer(CHIPS, NOW - 3600))
-    assert (live["kind"], live["card"]["title"], live["posted_at"]) == (
-        "card", ":locked: **Confirm send**", NOW - 3600 + 90)
-    sent = ts.fetched_card(link, zanswer(":check: **Sent**", NOW - 3600, edited=NOW - 60))
-    assert (sent["kind"], sent["text"], sent["updated_at"]) == ("status", ":check: **Sent**",
-                                                                 NOW - 60)
-    # no edit time known: the posting counts
-    assert ts.fetched_card(link, zanswer(":check: **Sent**", NOW - 3600))["updated_at"] == \
-        NOW - 3600 + 90
-    filed = ts.fetched_card(link, zanswer(CHIPS, NOW - 3600, filed=True))
-    assert (filed["kind"], filed["text"]) == ("status", ts.SETTLED_OUTSIDE)
-    failed = ts.fetched_card(link, zanswer(":cross_mark: Could not send", NOW - 3600))
-    assert ts.outcome(failed["text"]) == "failed"
-    for got in (None, {"text": "Just a note.", "filed": False}, {"text": ""}):
-        assert ts.fetched_card(link, got) is None
-
-
-def test_a_linked_card_the_store_never_took_is_read_from_the_primary(store):
-    clock = [time.time()]
-    key = pointed(store, at=clock[0] - 3 * 3600)
-    (link,) = store.linked_cards("stream:4", key)
-    assert link == {"kind": "missing", "channel": "", "id": "5522", "card": None}
-    # with no primary to ask it stays missing: the model reads the thread
+def test_a_linked_card_the_store_never_took_stays_missing(store):
+    """A shadow's copy that took the pointer and not its card: the link is a
+    `missing` row, which decides nothing, so the model reads the thread."""
+    store.upsert_channel("C0EA", "ea", "main")
+    at = time.time() - 3 * 3600
+    key = "1700000000.000100"
+    store.add_message("C0EA", mid=key, thread_key=key, author="owner", kind="message",
+                      text="Draft a reply to Avery.", posted_at=at, history=True)
+    store.add_message("C0EA", mid="1700000060.000200", thread_key=key, author="bot",
+                      kind="message", posted_at=at + 60, history=True,
+                      text=":lock: The Send button for this draft is in your DM: [open it]"
+                           "(https://x.slack.com/archives/D0DM/p1700000090000300)")
+    (link,) = store.linked_cards("C0EA", key)
+    assert link == {"kind": "missing", "channel": "D0DM", "id": "1700000090.000300",
+                    "card": None}
     model = FakeModel()
-    engine(store, model, clock=lambda: clock[0]).tick()
+    engine(store, model).tick()
     assert len(model.prompts) == 1 and "in Direct messages:" not in model.prompts[0]
-    # the primary has it: settled there, so the conversation is done by rule
-    cards = FakeCards({"5522": zanswer(":check: **Sent**", clock[0] - 3 * 3600,
-                                       edited=clock[0] - 600)})
-    model = FakeModel()
-    e = engine(store, model, cards=cards, clock=lambda: clock[0])
-    out = e.tick()
-    st = store.thread_state("stream:4", key)
-    assert (st["state"], st["by"], st["reason"]) == ("done", "rule", "Its card was handled: Sent")
-    assert model.prompts == [] and cards.calls == [("", "", "5522")] and out["card_reads"] == 1
-    # nothing went into the store: it still holds no such card
-    assert store.linked_cards("stream:4", key)[0]["kind"] == "missing"
-    # a settled answer is final: no read again, whatever the tick
-    clock[0] += 3 * ts.TICK_S
-    assert e.tick()["card_reads"] == 0 and len(cards.calls) == 1
-    assert store.thread_state("stream:4", key)["state"] == "done"
-
-
-def test_a_live_card_the_store_never_took_is_read_each_tick_within_the_cap(store):
-    clock = [time.time()]
-    key = pointed(store, at=clock[0] - 30 * 3600)
-    cards = FakeCards({"5522": zanswer(CHIPS, clock[0] - 30 * 3600)})
-    nudge = Nudges(store)
-    e = engine(store, FakeModel(), cards=cards, clock=lambda: clock[0], nudge=nudge)
-    out = e.tick()
-    st = store.thread_state("stream:4", key)
-    assert (st["state"], st["reason"]) == ("needs_you", ts.CARD_WAITS)
-    assert out["nudges"] == 0 and nudge.calls == []        # its button is the nudge
-    # still live: read again a tick later
-    clock[0] += ts.TICK_S
-    e.tick()
-    assert len(cards.calls) == 2
-    # past the cap, or with no answer, the last answer stands
-    e.card_cap = 0
-    clock[0] += ts.TICK_S
-    assert e.tick()["card_reads"] == 0
-    assert store.thread_state("stream:4", key)["state"] == "needs_you"
-    e.card_cap = ts.CARD_CAP
-    cards.answers["5522"] = None
-    clock[0] += ts.TICK_S
-    e.tick()
-    assert len(cards.calls) == 3 and store.thread_state("stream:4", key)["state"] == "needs_you"
-    # then the owner presses it in Zulip: the next read settles the conversation
-    cards.answers["5522"] = zanswer(":check: **Sent**", clock[0] - 30 * 3600, edited=clock[0])
-    clock[0] += ts.TICK_S
-    e.tick()
-    assert store.thread_state("stream:4", key)["state"] == "done"
-    # a card filed in the done stream is final too: read once
-    other = pointed(store, "5533", at=clock[0] - 3 * 3600)
-    cards.answers["5533"] = zanswer(CHIPS, clock[0] - 3 * 3600, filed=True)
-    before = len(cards.calls)
-    for _ in range(3):
-        clock[0] += ts.TICK_S
-        e.tick()
-    assert [c[2] for c in cards.calls[before:]] == ["5533"]
-    assert store.thread_state("stream:4", other)["reason"] == \
-        f"Its card was handled: {ts.SETTLED_OUTSIDE}"
-
-
-def test_reads_of_cards_the_store_never_took_share_the_tick_s_cap(store):
-    keys = [pointed(store, str(6000 + i)) for i in range(35)]
-    cards = FakeCards({str(6000 + i): zanswer(":check: **Sent**", time.time() - 3 * 3600,
-                                              edited=time.time() - 600) for i in range(35)})
-    e = engine(store, FakeModel(), cards=cards)
-    assert e.tick()["card_reads"] == ts.CARD_CAP
-    assert sum(store.thread_state("stream:4", k)["state"] == "done" for k in keys) == ts.CARD_CAP
-    assert e.tick()["card_reads"] == 5
-    assert {store.thread_state("stream:4", k)["state"] for k in keys} == {"done"}
-    assert e.tick()["card_reads"] == 0
 
 
 # ── the hosted step: one call a tick over a batch of threads ─────────

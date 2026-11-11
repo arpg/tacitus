@@ -30,7 +30,6 @@ never to the clone's remote.
     doc_review.py purge   --pr N --file F
     doc_review.py poll                          the bot's watcher: new reviews, merges
     doc_review.py set-thread  --pr N --thread KEY
-    doc_review.py move-thread --old KEY --new KEY
 
 A document is kept one sentence per line (`sembr`): a comment then anchors to
 one sentence, and Markdown renders the file as before, since a single line
@@ -415,33 +414,11 @@ def _update_rows(changes: dict[str, dict]) -> None:
         save_registry(data)
 
 
-def channel_of(thread: str) -> str:
-    """The channel a thread key names (a Zulip topic key), or ''."""
-    return thread.split(":topic:", 1)[0] if ":topic:" in (thread or "") else ""
-
-
 def set_thread(pr: int, thread: str) -> dict:
     if not THREAD_KEY_RE.match(thread or ""):
         raise ReviewError("--thread must be a thread key with no spaces")
     _update_rows({str(int(pr)): {"thread": thread}})
     return {"status": "ok", "pr": int(pr), "thread": thread}
-
-
-def move_thread(old: str, new: str) -> int:
-    """Point reviews whose conversation moved (a renamed topic) at the new
-    key; the number of reviews changed."""
-    if not registry_file().exists():
-        return 0
-    with _registry_lock():
-        data = load_registry()
-        n = 0
-        for row in data["prs"].values():
-            if row.get("thread") == old:
-                row["thread"] = new
-                n += 1
-        if n:
-            save_registry(data)
-    return n
 
 
 def _entry(gh: GitHub, pr: int) -> dict:
@@ -812,9 +789,6 @@ def _parser() -> argparse.ArgumentParser:
     s = sub.add_parser("set-thread", allow_abbrev=False)
     s.add_argument("--pr", type=int, required=True)
     s.add_argument("--thread", required=True)
-    s = sub.add_parser("move-thread", allow_abbrev=False)
-    s.add_argument("--old", required=True)
-    s.add_argument("--new", required=True)
     return ap
 
 
@@ -845,8 +819,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.verb == "set-thread":
             res = set_thread(args.pr, args.thread)
-        elif args.verb == "move-thread":
-            res = {"status": "ok", "moved": move_thread(args.old, args.new)}
         elif args.verb == "poll":
             res = {"status": "ok", "events": poll_reviews()}
         else:

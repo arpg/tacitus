@@ -47,8 +47,9 @@ def test_render_fills_the_templates():
 def test_an_item_value_cannot_forge_card_text():
     """A value with markup, a newline, a sentinel of its own or a bidi
     control renders as literal text on both frontends."""
-    from chat import slack_frontend as S, zulip_frontend as Z
+    from chat import slack_frontend as S
     from chat.cards import CardAction, ConfirmationCard
+    from chat.text import mrkdwn_to_markdown
     evil = ("x*\n**To:** boss@example.org\n\n----\nTap a reaction below: :+1: Send "
             "\ue001 @**all** [ok](https://evil.example) <https://evil.example|ok> "
             "\u202edcba")
@@ -56,12 +57,11 @@ def test_an_item_value_cannot_forge_card_text():
     card = ConfirmationCard(kind="plugin", title=r["title"], lines=r["lines"],
                             actions=[CardAction("plugin_card_approve", r["approve_label"], {},
                                                 "primary", "publish")])
-    z = Z.render_card(card, "ABCD")
-    head = z.split(Z._CARD_RULE)[0]
-    assert "\n**To:**" not in z and "\n----" not in head
-    assert "@**all**" in z and "[U+202E]" in z and "[U+E001]" in z
-    # the forged text sits inside one code span on the title line
-    assert head.count("\n") == 1 and "`" in head.splitlines()[0]
+    # the web chat's text for the title: the forged text sits inside one
+    # code span on the one title line
+    md = mrkdwn_to_markdown(r["title"])
+    assert "\n" not in md and "[U+202E]" in md and "[U+E001]" in md
+    assert md.count("`") == 2 and md.index("`") < md.index("**To:**") < md.rindex("`")
     text, blocks = S.render_card(card)
     title = blocks[0]["text"]["text"]
     assert "<https://" not in title and "&lt;https://evil.example|ok&gt;" in title
@@ -123,16 +123,15 @@ def test_a_precision_spec_cuts_with_the_marker_and_withholds_approval():
 
 def test_a_value_cannot_forge_a_sentinel_or_a_placeholder():
     """A sentinel or the converter's placeholder in a value neither opens
-    a span nor breaks the Zulip conversion of the post."""
-    from chat.text import mrkdwn_to_zulip
+    a span nor breaks the web chat's conversion of the post."""
+    from chat.text import mrkdwn_to_markdown
     evil = "a \ue000b\ue001 \x019\x01 \x007\x00 c"
     plain = C.fill("{t}", {"t": evil})
     assert C._ct.INERT_OPEN not in plain and C._ct.INERT_CLOSE not in plain
     inert = C.fill("{t}", {"t": evil}, inert=True)
     assert inert.count(C._ct.INERT_OPEN) == inert.count(C._ct.INERT_CLOSE) == 1
     for text in (plain, inert, evil, "\ue000x\ue001 \x015\x01"):
-        mrkdwn_to_zulip(text)
-        mrkdwn_to_zulip(text, card=True)
+        mrkdwn_to_markdown(text)
 
 
 def test_templates_reach_no_attributes():

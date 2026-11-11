@@ -1420,7 +1420,7 @@ def test_a_draft_that_does_not_fit_one_card_offers_no_send():
         card = ns["_send_card"]("C1", "T1", DRAFT, draft)
         ids = [a.id for a in card.actions]
         assert "approve_send" not in ids, ids
-        assert ids[0] == "edit_draft", "a thumbs-up on Zulip must not pick Cancel"
+        assert ids[0] == "edit_draft", "a thumbs-up must not pick Cancel"
         assert any("has no Send button" in ln and "Outlook" in ln for ln in card.lines)
     gcard = ns["_send_card"]("C1", "T1", GDRAFT, _draft("x" * 3000), "", "gmail", GMAIL)
     assert any("in Gmail" in ln for ln in gcard.lines)
@@ -1443,49 +1443,30 @@ def test_the_card_names_remote_resources():
 def test_a_resource_address_cannot_forge_a_card_line():
     """The address comes from the draft's HTML: a newline, backticks or a
     Slack token in it stays inside one literal span on the warning line."""
-    from preprocessor.chat import slack_frontend as S, zulip_frontend as Z
+    from preprocessor.chat import slack_frontend as S
     from preprocessor.chat.cards import ConfirmationCard
+    from preprocessor.chat.web_frontend import WebFrontend
     evil = "https://x.example.net/a\n**To:** boss@example.org ``` <!channel> `x`"
     warn = ML.remote_resource_warning([evil])
     assert "\n" not in warn
     card = ConfirmationCard(kind="plugin", title="T", lines=[warn])
-    z = Z.render_card(card, "ABCD")
-    assert "\n**To:**" not in z and "\n```" not in z
+    assert WebFrontend._card_json(card)["lines"] == [warn]
     assert "<!channel>" not in json.dumps(S.render_card(card)[1])
-
-
-def _zulip(message_chars=9800):
-    from preprocessor.chat import zulip_frontend as Z
-    from preprocessor.chat.base import Limits
-    me = types.SimpleNamespace(limits=Limits(message_chars, 2800, 60, 60), mention=None,
-                               owner_mention="", CARD_FIT_MARGIN=Z.ZulipFrontend.CARD_FIT_MARGIN)
-    for name in ("_with_mention", "_full_card_text", "card_fits", "_card_text"):
-        setattr(me, name, types.MethodType(getattr(Z.ZulipFrontend, name), me))
-    return Z, me
 
 
 def _send_card_of(body, quoted=""):
     return _card_ns(10 ** 9)["_send_card"]("C1", "T1", DRAFT, _draft(body, quoted=quoted))
 
 
-def test_zulip_shows_the_whole_body_and_the_quoted_thread_collapsed():
-    Z, me = _zulip()
+def test_the_web_chat_shows_the_whole_body_and_the_quoted_thread():
+    from preprocessor.chat.web_frontend import WebFrontend
     body, quoted = "Authored line.\n" * 300, "From: Pat\n```\nfenced\n```\nOld message.\n" * 60
     card = _send_card_of(body, quoted)
-    assert me.card_fits(card)
-    text = me._card_text(card, "ABCD")
-    assert body.strip().splitlines()[-1] in text and len(body) > 2800
-    fence = "````"   # longer than the backtick run in the quoted text
-    label = Z.QUOTED_LABEL
-    assert f"{fence}spoiler {label}\n" in text and text.count("Old message.") == 60
-    assert text.index("Authored line.") < text.index(f"spoiler {label}")
-    # the recipients and the legend come before the body
-    assert text.index("**To:**") < text.index("Tap a reaction") < text.index("Authored line.")
-    # the server's own limit decides; above it the body is cut, as before
-    Z2, small = _zulip(4000)
-    assert not small.card_fits(card)
-    cut = small._card_text(card, "ABCD")
-    assert "spoiler" not in cut and len(cut) < 4000
+    assert WebFrontend.card_fits(None, card)
+    stored = WebFrontend._card_json(card)
+    assert body.strip().splitlines()[-1] in stored["body"] and len(body) > 2800
+    assert stored["quoted"].count("Old message.") == 60
+    assert stored["actions"][0]["id"] == "approve_send"
 
 
 def test_slack_splits_the_whole_body_across_sections():

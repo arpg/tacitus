@@ -480,7 +480,7 @@ def test_a_failed_post_rolls_the_batch_back(tmp_path):
 
     def post(**k):
         if outcome["fail"]:
-            raise RuntimeError("zulip down")
+            raise RuntimeError("chat down")
         return types.SimpleNamespace(id="m1", thread_key="topic-1")
     ns, seen_file, turns = _tick_ns(tmp_path, post, write)
     ns["_remote_escalation_tick"]()
@@ -773,12 +773,12 @@ def test_the_footer_split_is_off_unless_the_install_turns_it_on(tmp_path):
 def test_the_preview_goes_where_the_mail_digests_go(monkeypatch):
     import chat_notify
     sent = []
-    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "zulip")
-    monkeypatch.setattr(chat_notify, "_chat_cfg", lambda: {"zulip": {"site": "s"}})
-    monkeypatch.setattr(chat_notify, "_zulip_post_parts",
-                        lambda zcfg, target, parts: sent.append((target, parts)) or True)
+    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "web")
+    monkeypatch.setattr(chat_notify, "_send_web",
+                        lambda key, parts, *, channel="", direct=False:
+                        sent.append((key, parts, channel)) or "t-1")
     assert rb._preview("Morning briefing") is True
-    assert sent == [({"stream": "mail-digest", "topic": "Briefing preview"}, ["Morning briefing"])]
+    assert sent == [("briefing-preview", ["Morning briefing"], chat_notify.WEB_DIGEST_ID)]
     # Slack with no `mail-digest` webhook has no such place: nothing goes to ea-assistant
     monkeypatch.setattr(chat_notify, "frontend_name", lambda: "slack")
     monkeypatch.setattr(chat_notify, "_load_webhooks",

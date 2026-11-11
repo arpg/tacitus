@@ -36,7 +36,7 @@ CLI = [sys.executable, str(REPO / "preprocessor" / "usage_tips.py")]
 TZ = ZoneInfo("America/Denver")
 BANNED = re.compile(r"\b(channel|thread|session|context|ledger|lane)s?\b", re.I)
 EM_DASH = chr(0x2014)
-WEB_ON = {"frontend": "zulip", "shadow": "web", "web": {"relay": {"url": "https://relay.example"}}}
+WEB_ON = {"frontend": "slack", "shadow": "web", "web": {"relay": {"url": "https://relay.example"}}}
 # Facts for a weekday morning after the briefing, nothing in the way.
 CLEAR = {"enabled": True, "chat": True, "briefing_today": True, "onboarding_today": False,
          "quiet": False}
@@ -236,9 +236,9 @@ def test_a_paired_phone_and_a_saved_routing_table_show_use(ea):
 
 def test_tips_wait_until_they_fit(ea):
     path = web_store(ea)
-    zulip_only = {"frontend": "zulip", "shadow": "", "web": {}}
+    slack_only = {"frontend": "slack", "shadow": "", "web": {}}
     for tip_id in ("phone-alerts", "away-from-home", "needs-you", "model-settings"):
-        assert ut.BY_ID[tip_id].ready(usage(ea, chat=zulip_only)) is False, tip_id
+        assert ut.BY_ID[tip_id].ready(usage(ea, chat=slack_only)) is False, tip_id
     assert ut.BY_ID["model-settings"].ready(usage(ea, local=False)) is False
     assert ut.BY_ID["model-settings"].ready(usage(ea)) is True
     room = ut.BY_ID["project-room"]
@@ -390,9 +390,9 @@ def test_the_tip_words(text, word):
 
 def test_a_thread_is_a_tips_only_when_the_bot_opened_it_with_one():
     tip = ut.post_text(ut.BY_ID["snooze"])
-    zulip_text = tip.replace("*", "**")
+    markdown_text = tip.replace("*", "**")
     assert ut.tip_in_thread([(tip, True), ("never", False)]) == "snooze"
-    assert ut.tip_in_thread([(zulip_text, True), ("more", False)]) == "snooze"
+    assert ut.tip_in_thread([(markdown_text, True), ("more", False)]) == "snooze"
     assert ut.tip_in_thread([(tip, False), ("never", False)]) is None       # not the bot's
     assert ut.tip_in_thread([("Draft ready.", True), (tip, True)]) is None  # not the first
     nxt = ut.post_text(ut.BY_ID["poll"])

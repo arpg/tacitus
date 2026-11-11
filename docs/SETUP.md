@@ -18,7 +18,6 @@ name.
 - [Microsoft Graph app registration](#microsoft-graph-app-registration)
 - [Google OAuth app](#google-oauth-app)
 - [Web chat](#web-chat)
-- [Zulip server](#zulip-server)
 - [Slack](#slack)
 - [The service account](#the-service-account)
 - [Services](#services)
@@ -43,8 +42,8 @@ name.
   untested. The cron jobs and, in the `assistant` and `collaborator`
   modes, the chat bot run there.
 - **For `assistant` and `collaborator`**: Tailscale on this machine and on your phone for
-  the [web chat](#web-chat) (recommended); or Docker for a Zulip server,
-  or a Slack workspace where you can install an app.
+  the [web chat](#web-chat) (recommended); or a Slack workspace where
+  you can install an app.
 - **Optional**: one or more Google accounts for calendar merging and the
   EA-Managed rules calendar; a Gmail account the EA may draft from.
 - **pip packages**: `pip install -r requirements.txt`. Playwright
@@ -68,7 +67,7 @@ a mode turns on.
 | mode | what you get |
 |---|---|
 | `reviewer` | No chat. Outlook triage, the ledger, drafts in your voice left in your mailbox, meeting times proposed as text in the report (no holds and no events: the bot that places a staged hold is part of the chat platform), reports as files in `~/.ea/state/reports/<agent>-latest.md` on the schedule you pick, sent by phone push when one is configured. You work with the EA in the Claude Code shell (`scripts/ea-bot-shell.sh`) and send every draft from Outlook yourself. |
-| `assistant` (default) | One chat (the web chat the bot serves, recommended; Zulip, self-hosted; or Slack): the EA channel, the direct message with the Send and Create buttons, scheduling and digests in the same app, the resident session, plugins. No project rooms: a request for one gets an answer that rooms come with `collaborator`. |
+| `assistant` (default) | One chat (the web chat the bot serves, recommended and self-hosted; or Slack): the EA channel, the direct message with the Send and Create buttons, scheduling and digests in the same app, the resident session, plugins. No project rooms: a request for one gets an answer that rooms come with `collaborator`. |
 | `collaborator` | `assistant` plus project rooms (`#ea-<project>`, one specialist session each), session rooms (`#tmp-<id8>`), the room picker, and a room opened by itself for each project the EA registers. |
 
 The flags behind each mode (`PROFILE_FEATURES` in
@@ -108,8 +107,7 @@ rooms change, and the bot reads the mode on each room request:
 where they are. To add or drop the chat, run
 `./scripts/install/setup.sh --profile <mode> --install-cron`; for a chat,
 then do the chat platform and the services ([Hardening](#hardening)
-again, to write the bot's unit). The web chat needs no chat server;
-Zulip adds one to run.
+again, to write the bot's unit). The web chat needs no chat server.
 
 **Older names.** An install set up before the three modes stores
 `email` (now `reviewer`), `review-only` (now `reviewer` with
@@ -135,12 +133,10 @@ missing. An install made by hand records it the same way:
 The defaults in the code: an `ea-config.json` with no `"profile"` (and
 `scripts/install/setup.sh` with no `--profile`) means `assistant`, and
 an absent `chat` block means Slack.
-The `chat` phase of `scripts/install/user_init.py` (and `--chat web`,
-`zulip` or `slack`) offers the platform the install already chose, else
-the web chat. The `/setup` skill always records the mode and the chat
-platform you choose, and `scripts/zulip_bootstrap.py` prints a `chat`
-block with `"frontend": "zulip"`, so the chat default does not apply to
-an install it makes.
+The `chat` phase of `scripts/install/user_init.py` (and `--chat web` or
+`slack`) offers the platform the install already chose, else the web
+chat. The `/setup` skill always records the mode and the chat platform
+you choose, so the chat default does not apply to an install it makes.
 
 ### Phone push
 
@@ -480,8 +476,8 @@ phone off the tailnet can pair through a relay that sees only ciphertext
 ([docs/webchat-relay.md](webchat-relay.md)). The contract and the API
 are in [docs/webchat.md](webchat.md), the security rules in
 docs/SECURITY.md "Web chat". The table in
-[INSTALL.md](INSTALL.md#choosing-a-chat-platform) compares it with Zulip
-and Slack.
+[INSTALL.md](INSTALL.md#choosing-a-chat-platform) compares it with
+Slack.
 
 You need Tailscale on this machine and on your phone. If HTTPS is off
 for your tailnet, the first `tailscale serve` says how to turn it on.
@@ -604,7 +600,7 @@ comes out whole), the uploads beside it, your state overrides
 pairing token, `chat.json`, the room record, the card registry and the
 closure labels (`evals/`) into `~/.ea-private/backups/webchat/<date>/`,
 mode 0700. It keeps seven days; a snapshot taken with `--label <word>`
-(the move from Zulip takes `--label cutover`) stays until you delete it.
+stays until you delete it.
 The cron line is in [Cron schedule](#cron-schedule). `--list` lists the
 snapshots, and `--restore <name>` prints the steps that put one back (stop
 the bot, move the current files aside, copy the snapshot in, start the
@@ -614,11 +610,11 @@ warns when the newest snapshot is more than two days old. The daily
 the relay key and the pairing token, so keep them as private as the
 directory they sit in.
 
-### Beside Zulip (shadow mode)
+### Beside Slack (shadow mode)
 
-With Zulip already running, the web chat can mirror it: the bot posts to
+With Slack already running, the web chat can mirror it: the bot posts to
 both, and you can read and answer in either. The web side never blocks
-the Zulip side. Keep `"frontend": "zulip"` in `~/.ea-private/chat.json`
+the Slack side. Keep `"frontend": "slack"` in `~/.ea-private/chat.json`
 and add `"shadow": "web"` and the `web` block of step 1 to it:
 
 ```json
@@ -631,134 +627,16 @@ and add `"shadow": "web"` and the `web` block of step 1 to it:
 
 Then publish the port (step 2) and restart the bot
 (`sudo systemctl restart ea-chat-bot`). Each start copies the last week
-of Zulip history into the web chat's store (`"backfill_days"` in the
+of Slack history into the web chat's store (`"backfill_days"` in the
 `web` block; 0 turns the copy off), so the app opens with your recent
-threads. The scheduled reports reach the web chat in this mode, since
-they post to Zulip and are mirrored.
-
-**Leaving Zulip.** When the web chat does all you need,
-`scripts/webchat-cutover.py` moves the install to the web chat alone:
-`plan` prints each change and writes nothing (`plan --zulip` also counts
-what Zulip holds); `apply`, with the bot stopped, takes a snapshot,
-brings the whole Zulip history and its files into the store, folds the
-mirrored streams into the web chat's own channels and rooms (thread keys
-kept, old links redirected), moves the room, session and card
-registries, and rewrites `chat.json` to `"frontend": "web"`. It then
-prints the steps that take the Zulip server down.
-[docs/zulip-switch.md](zulip-switch.md#leave-zulip-for-the-web-chat) has
-the whole sequence. Run it with the Python the bot runs, which has the
-`zulip` package.
-
-## Zulip server
-
-The `assistant` and `collaborator` modes talk to you through a chat platform, and
-`chat.frontend` in `ea-config.json` names it (`"web"`, `"zulip"` or
-`"slack"`; an install with no `chat` block runs Slack). The web chat
-above is where new features land; Zulip keeps working as it is. Use it
-if you already run it: it runs on the EA's machine in Docker and is
-reached over your tailnet, so every message, file and confirmation card
-stays on that machine, and the [web chat](#web-chat) can run beside it. The comparison is the
-"Choosing a chat platform" table in
-[INSTALL.md](INSTALL.md#choosing-a-chat-platform); the switch between
-Zulip and Slack is one config key and a restart
-([docs/zulip-switch.md](zulip-switch.md), `scripts/zulip_switch.sh`).
-
-Three private streams stand in for the Slack channel, the DM and the
-scheduling channel, and on `collaborator` each project room is a private stream of its own.
-Topics are threads, and you never name one: post in a stream's general
-chat, and the EA moves the post into a topic of its own and answers
-there. Zulip has no buttons, so a confirmation card carries one reaction
-chip per action, added by the bot, and a one-time code: tap the thumbs-up
-to send, the thumbs-down to cancel, or reply with the code. App Home and
-its modals exist only on Slack.
-
-```mermaid
-flowchart LR
-    subgraph realm["Your Zulip realm: private streams, you and the bot only"]
-        ea["ea<br/>conversations, one topic each<br/>briefings and plugin posts open their own"]
-        dm["ea-dm<br/>every confirmation card, one topic each,<br/>reaction chips to approve"]
-        sched["ea-scheduling<br/>one topic per scheduling request"]
-        rooms["ea-(project)<br/>one private stream per project room"]
-    end
-    phone["Zulip app on your phone and laptop<br/>over your tailnet"] <--> realm
-    bot["EA bot<br/>its own event queue, its own API key"] <--> realm
-```
-
-1. **Run the server.** [deploy/zulip/README.md](../deploy/zulip/README.md):
-   secrets in `~/.ea-private/zulip.env` (mode 600, outside the checkout),
-   `deploy/zulip/compose.sh up -d`, two-factor sign-in on, the realm and owner created headless with
-   `manage.py create_realm`, and your owner API key. The stack listens on
-   `127.0.0.1:8080` as `http://zulip.localhost:8080`; the README's last
-   section moves it onto your tailnet name.
-2. **Bootstrap the realm.**
-   ```bash
-   python3 scripts/zulip_bootstrap.py --site http://zulip.localhost:8080 \
-     --owner-email <you> --owner-key "$OWNER_KEY"   # makes the bot and the streams; prints the chat block
-   ```
-   It creates the generic bot `EA` with the portrait in
-   `assets/tacitus-avatar.png` as its avatar, the private streams `ea`,
-   `ea-scheduling` and `ea-dm` with you and the bot subscribed, named
-   topics and general chat both allowed, and lifts the realm's
-   message-edit limit. It prints the `chat` block and the line
-   `ZULIP_API_KEY=<bot key>`; it writes no file. `--check` verifies the
-   realm without changing it; `--avatar` gives a bot that already exists
-   the portrait.
-3. **Config.** Paste the `chat` block into `~/.ea/config/ea-config.json`:
-   ```json
-   "chat": {
-     "frontend": "zulip",
-     "zulip": {
-       "site": "http://zulip.localhost:8080",
-       "bot_email": "ea-bot@zulip.localhost",
-       "owner_user_id": "<your Zulip user id>",
-       "stream": "ea",
-       "sched_stream": "ea-scheduling",
-       "dm_stream": "ea-dm",
-       "notify": {
-         "ea-assistant": {"stream": "ea"},
-         "scheduling":   {"stream": "ea"},
-         "personal":     {"stream": "ea"}
-       }
-     }
-   }
-   ```
-   `owner_user_id` is the only user whose reactions and codes confirm a
-   card; the bot refuses to start without it. Leave `sched_stream` empty
-   to run without a scheduling stream. A card settled outside chat (a
-   draft sent or deleted in Outlook) moves, with its topic, to a private
-   stream the bot makes on first use, `<dm_stream>-done` (`dm_done_stream`
-   names another), so a card you never opened leaves your Inbox. To read
-   those cards, subscribe to that stream and mute it: a subscriber who
-   does not mute it gets the unread ones back.
-4. **Secret.** Add the `ZULIP_API_KEY=` line to `~/.ea-private/secrets.env`
-   (owner, mode 600, in a 0700 `~/.ea-private`; never `~/.ea/.env`). It is
-   the only new secret; nothing goes in `~/.ea/.env` for Zulip.
-5. **Python.** `requirements.txt` includes `zulip`; install it in the venv
-   the bot runs from.
-6. **Restart** the bot (`sudo systemctl restart ea-chat-bot.service`) and
-   read `journalctl -u ea-chat-bot -n 40 --no-pager`. Expect
-   `frontend=zulip stream=ea (private, subscribed) owner=<id>`. If a
-   stream is public, missing or lacks the bot, startup stops with the
-   stream's name instead.
-7. **Try it.** Post `usage` in `ea` with no topic, and again in `ea-dm`.
-   Each moves into a topic of its own, gets the eyes, then the check
-   reaction, and a reply in that topic.
-
-**Notifier and plugins.** Cron agents and plugins call
-`slack_notifier.post_to_slack`, a shim over `preprocessor/chat_notify.py`,
-which posts with the bot key to the stream that `chat.zulip.notify` maps
-each channel key to (`ea-assistant`, `scheduling`, `personal`, and any
-key a plugin names in `output.channel_key`). Each post opens a new topic
-named from its first line unless the entry pins a `topic`. `run-agent.sh`
-and `run-plugin.sh` load `ZULIP_API_KEY` from the owner-private secrets
-file, as data. A plugin whose channel key has no `notify` entry needs one
-added there.
+threads. The scheduled reports post to Slack through its webhooks and
+stay there: the web chat does not mirror them.
 
 ## Slack
 
-Slack is acceptable when you would rather not run a chat server and you
-accept that everything the EA shows you, drafts and quoted mail included,
-is stored by Slack under Slack's terms. Create a free workspace of your
+Slack is the third-party option. Take it when you already live in Slack
+and accept that everything the EA shows you, drafts and quoted mail
+included, is stored by Slack under Slack's terms. Create a free workspace of your
 own at [slack.com/get-started](https://slack.com/get-started): one channel
 and one bot app are all it needs, and your EA conversations, mail data
 and approval buttons stay inside it. A shared lab workspace works too
@@ -1345,9 +1223,8 @@ Two environment files, and the split is the security model:
   (`scripts/owner-io.sh env`) takes only config keys from it and skips a
   secret put here with a warning.
 - `~/.ea-private/secrets.env`: mode 600, yours, in a 0700 directory. The
-  chat credential (`SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`, or
-  `ZULIP_API_KEY`; the web chat needs none, and the bot writes its
-  pairing token beside its store), `GRAPH_CLIENT_SECRET`,
+  chat credential (`SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`; the web chat
+  needs none, and the bot writes its pairing token beside its store), `GRAPH_CLIENT_SECRET`,
   `REMOTE_LLM_API_KEY`, `NTFY_TOKEN`. The ea-bot subprocess must not be able to read it; a read
   error there is correct, never a reason to loosen the mode.
 
@@ -1543,9 +1420,8 @@ the two-user split inside the image: no `ea-bot` account, systemd unit
 or crontab on the host. [docs/docker.md](docker.md) is the whole
 procedure (the settings file, the volumes, the sign-ins through the
 `owner` and `signin` services, the overlay, what the doctor shows along
-the way). On `assistant` and `collaborator` the bot container serves the web chat, so the
-stack needs no Zulip: `WEBCHAT_PUBLIC_URL` in compose's `.env` names its
-address, a TLS proxy (the Caddy example in `deploy/docker/webchat-tls/`,
+the way). On `assistant` and `collaborator` the bot container serves the web
+chat: `WEBCHAT_PUBLIC_URL` in compose's `.env` names its address, a TLS proxy (the Caddy example in `deploy/docker/webchat-tls/`,
 or your own) serves it, and the pairing token on the `ea-private` volume
 is the sign-in (docs/docker.md, Web chat). `tests/install/docker-smoke.sh`
 runs the fresh-install path in a container.
@@ -1603,7 +1479,7 @@ accounts (`docs/install-testing.md`).
 | `profile`, `profile name`, `reports` | [Choose a mode](#choose-a-mode) |
 | `config: <name>`, `validate_config.py` | [Config files](#config-files) |
 | `~/.ea/.env`, `env: <KEY>`, `secret: <KEY>`, `~/.ea-private/secrets.env` | [Secrets](#secrets); [The Slack environment files](#the-slack-environment-files) |
-| `chat: frontend`, `web chat: *`, `zulip: *`, `slack: *` | [Web chat](#web-chat), [Zulip server](#zulip-server), [Slack](#slack) |
+| `chat: frontend`, `web chat: *`, `slack: *` | [Web chat](#web-chat), [Slack](#slack) |
 | `auth: graph sign-in path`, `auth: msal_token_cache.json`, `auth: graph token source` | [Microsoft Graph app registration](#microsoft-graph-app-registration) |
 | `auth: google client`, `auth: google tokens`, `auth: google drive`, `EA-Managed calendar`, `EA-Managed calendar (owner copy)` | [Google OAuth app](#google-oauth-app), [Google Drive](#google-drive), [The EA-Managed calendar](#the-ea-managed-calendar) |
 | `auth: scheduled-send-hmac.key`, `owner trust: scheduled-send key` | [The deferred-send signing key](#the-deferred-send-signing-key) |

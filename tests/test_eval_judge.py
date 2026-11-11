@@ -114,8 +114,9 @@ def test_poll_reply_all_that_is_proposed_fails():
 
 
 def test_double_asterisk_bold_is_not_a_format_failure():
-    """Zulip renders **double** and *single* bold alike (mrkdwn_to_zulip),
-    and production posts either, so only real format breaches fail."""
+    """The web chat renders **double** and *single* bold alike
+    (mrkdwn_to_markdown), and production posts either, so only real format
+    breaches fail."""
     out = (":sunny: *Morning Briefing \u2014 September 24, 2026*\n\n"
            ":question: *Needs you*\n- Say **rerun** once fresh data is in.")
     r = judge.briefing_format_valid(out, {})

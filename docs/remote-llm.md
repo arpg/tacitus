@@ -496,8 +496,7 @@ these lanes read goes to Anthropic.
   to `~/.ea/state/reports/`. The admissions header uses a colon where the
   skill's template has an em-dash.
 - **Where it goes.** Where the enforce-mode digest goes
-  (`chat_notify.post_digest`): on Zulip the private `mail-digest` stream;
-  on the web chat the digest channel, "Mail digests" (kind `digest`,
+  (`chat_notify.post_digest`): on the web chat the digest channel, "Mail digests" (kind `digest`,
   made with the first digest); on Slack the `mail-digest` webhook when
   one is mapped, else `ea-assistant` as before. The Claude lanes' chat
   reader reads only the EA channel and never a channel of kind `digest`,
@@ -542,8 +541,8 @@ thread when a lane acts on it or the user asks in a room or thread.
   (`remote_unread`), so an endpoint outage loses nothing.
 - **The remote digest.** `mail_gate.py digest` (cron, three times a
   weekday and once a day at weekends) posts the left-out mail to the
-  Zulip stream `mail-digest`, to the web chat's digest channel ("Mail
-  digests", kind `digest`), or on Slack to the `mail-digest` webhook:
+  web chat's digest channel ("Mail digests", kind `digest`), or on Slack
+  to the `mail-digest` webhook:
   kept mail first (flagged when it needs a reply), then FYI mail by
   domain. Code renders it from the remote model's records; no Claude
   model sees it, and the briefing's chat reader reads none of those

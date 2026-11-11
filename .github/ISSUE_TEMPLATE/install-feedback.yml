@@ -53,7 +53,7 @@ body:
       options:
         - Outlook (Microsoft 365)
         - Gmail or Google Calendar
-        - Zulip
+        - Web chat
         - Slack
         - No chat platform
   - type: dropdown

@@ -4,7 +4,7 @@
 Fetches recent messages from the user's EA channel so the morning
 briefing can see overnight replies, approvals, and instructions. Reads
 through the configured chat frontend (`chat.load_frontend(for_cli=True)`),
-so the same code serves Slack and Zulip. Zero Claude tokens.
+so the same code serves Slack and the web chat. Zero Claude tokens.
 
 The dicts it returns keep the shape slack_reader always produced; see
 fetch_recent_messages and summarize_for_briefing.

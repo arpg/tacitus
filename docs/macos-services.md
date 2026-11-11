@@ -37,7 +37,7 @@ takes the repository from its own location, and the deployed copy has no
 | `/opt/ea-system/` | owner:ea 750 | the code both services run; `.deployed-commit` names its commit |
 | `~/.ea-private/bot.env` | owner 600 | `CLAUDE_BIN=/Users/ea-bot/.local/bin/claude`, `EA_MODEL` |
 | `~/.ea-private/secrets.env` | owner 600 | chat token, API secrets (you write it) |
-| `~/.ea-private/chat.json` | owner 600 | the chat server, bot and owner id the bot trusts (seeded once) |
+| `~/.ea-private/chat.json` | owner 600 | the chat block the bot trusts: the frontend, the web chat's settings or Slack's owner id (seeded once) |
 | `~/.ea-private/logs/<label>.launchd.log` | owner 600 | each service's stdout and stderr |
 | `/etc/sudoers.d/ea-services` | root 440 | owner may run `launchctl kickstart -k` for these two labels only |
 | `/Library/LaunchDaemons/org.ea-system.tacitus-update.plist` | root:wheel 644 | with an update channel on: runs `/opt/ea-system/scripts/update.py run --jitter 900` as the owner every hour; output in `~/.ea-private/logs/update.log` ([updates.md](updates.md)) |
@@ -59,9 +59,9 @@ evaluates them as shell.
 
 1. `sudo bash scripts/install/setup-ea-user-macos.sh` (the service account and its own
    Claude Code).
-2. On `assistant` and `collaborator`, the chat platform (SETUP.md "Zulip server", or "Slack")
-   and its secret in `~/.ea-private/secrets.env`. On `reviewer` there is
-   none.
+2. On `assistant` and `collaborator`, the chat platform (SETUP.md "Web
+   chat", or "Slack" with its tokens in `~/.ea-private/secrets.env`). On
+   `reviewer` there is none.
 3. `sudo bash deploy/macos/install-services.sh`, in every mode. It
    installs the mediator job always and the bot job only when the mode
    has a chat platform (a bot job from an earlier mode is removed).
@@ -161,22 +161,15 @@ bot's log names the missing packages at start (`tool PATH:`).
 System Settings > General > Login Items & Extensions lists them under
 "Allow in the Background" as off, turn them on.
 
-## Restarts, FileVault and the Zulip server
+## Restarts and FileVault
 
 With FileVault on, after an unplanned reboot (power loss, crash) the Mac
 waits at the FileVault password screen and **nothing runs**: no
-LaunchDaemon, no cron, no Colima. That is FileVault working; keep it on, since
+LaunchDaemon and no cron. That is FileVault working; keep it on, since
 this machine holds the mail tokens.
 
 - Planned restarts (macOS updates): `sudo fdesetup authrestart` unlocks once
   and comes back unattended.
-- Unlocking FileVault logs the owner in, which starts Colima through the
-  Homebrew login item `sh.brew.colima` (`RunAtLoad`; `brew services list`
-  shows it "stopped" because `colima start` exits once the VM is up). The
-  five Zulip containers use `restart: unless-stopped`, so they follow Docker.
-- The chat bot's `KeepAlive` retries until Zulip answers.
-
-Zulip recovery is the owner's `~/zulip-ctl.sh`, outside this repo:
-`check` (diagnose only), `heal` (default: repair Tailscale, Colima, Docker,
-the containers, the `tailscale serve` route), `restart`, `backup` (to
-`~/zulip-backups`; copy off the machine too) and `update [TAG]`.
+- Once the Mac is unlocked, the LaunchDaemons start the mediator and the
+  chat bot, and the bot serves the web chat again. The `tailscale serve`
+  route is Tailscale's own setting and survives the restart.

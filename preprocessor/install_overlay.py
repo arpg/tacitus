@@ -155,18 +155,10 @@ def _chat_section(cfg: dict, profile: dict) -> list[str]:
                      + channels)
         lines.append(f"- Each confirmation card goes to the DM with a one-line pointer in the "
                      f"thread: say \"{web['confirm_location']}\", never \"above\".")
-    elif frontend == "zulip":
-        z = chat.get("zulip") if isinstance(chat.get("zulip"), dict) else {}
-        streams = [f"`{z[k]}` ({label})" for k, label in
-                   (("stream", "the EA channel"), ("dm_stream", "the DM stream"),
-                    ("sched_stream", "the scheduling channel")) if z.get(k)]
-        lines.append(f"- Platform: Zulip. Streams: {_join(streams) or 'see the chat block'}; "
-                     + ("project rooms are `ea-<project>` streams." if rooms
-                        else "there are no project rooms."))
     else:
         channel = profile.get("slack_channel_name") or ""
         lines.append(f"- Platform: Slack. EA channel: `{channel or 'see user-profile.json'}`.")
-    if frontend != "web" and chat.get("shadow") == "web":
+    if frontend == "slack" and chat.get("shadow") == "web":
         lines.append(f"- The {_web_prompt_strings()['platform']} mirrors every post (shadow "
                      "mode); the user may answer in either.")
     lines.append(f"- Install profile: `{profile_name}`.")

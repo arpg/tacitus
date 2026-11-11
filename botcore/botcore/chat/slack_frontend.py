@@ -260,7 +260,7 @@ def _full_draft_blocks(card: ConfirmationCard) -> list[dict]:
     """The draft card with the whole body, split across sections of 2800.
     The quoted thread (thousands of characters on a long one) is one line
     under its label and a Show thread button that posts it under the card,
-    as Zulip folds it into a spoiler."""
+    as the web chat folds it into a block."""
     body = [_section(c) for c in _chunks(_body_mrkdwn(card.body), BODY_CHARS)] or \
         [_section("_(empty body)_")]
     quoted, extra = [], []

@@ -61,8 +61,7 @@ out turns that feature off; nothing else breaks.
   from Claude completely.
 - **The chat interface.** I talk to the EA in a web chat that the EA's
   own service serves from the same machine over my private network
-  (Tailscale), or in a chat server on that machine (Zulip), or in Slack
-  if I choose it.
+  (Tailscale), or in Slack if I choose it.
 - **No vendor server.** There is no service in the middle. The code runs
   on my machine, and nothing goes to the software's authors.
 

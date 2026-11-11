@@ -17,7 +17,7 @@ The morning run:
   1. Code gives every candidate item a ref: today's ranked queue, new mail
      that needs a reply, dropped threads, RSVPs, and the open ledger rows
      (deadlines, follow-ups, stale rows). Mail kept from hosted models is not a
-     candidate: the post lands in the EA stream, which Claude lanes read.
+     candidate: the post lands in the EA channel, which Claude lanes read.
   2. One remote call, under a strict schema, picks by ref: the ordered
      "get done today" list with when and why, the flexes, the replies to
      draft and what each must say, the decisions for the user, and the
@@ -54,8 +54,8 @@ whole queue, which names the replies owed for three days or more.
 --dry-run does the reads and the remote call, then makes no draft, queues
 nothing, closes nothing and prints counts only; the post is in the run
 record. --preview (with --dry-run) also posts it for the user where the
-mail digests go: the private mail-digest stream on Zulip, the digest
-channel on the web chat (chat_notify.post_digest).
+mail digests go: the digest channel on the web chat, the `mail-digest`
+webhook on Slack (chat_notify.post_digest).
 
 Store: <private_dir>/remote-llm/briefings.jsonl, one record per run, and
 escalated.jsonl, the threads handed to Claude (one hand-off per thread a
@@ -1485,18 +1485,16 @@ def _load(path: str) -> dict:
 
 
 PREVIEW_KEY = "briefing-preview"
-PREVIEW_TOPIC = "Briefing preview"
 
 
 def _preview(text: str) -> bool:
     """Post a dry run's briefing where the digests go
-    (chat_notify.post_digest): on Zulip the mail-digest stream, topic
-    "Briefing preview"; on the web chat a thread of its own in the digest
-    channel; on Slack the `mail-digest` webhook. The briefing's chat
+    (chat_notify.post_digest): on the web chat a thread of its own in the
+    digest channel; on Slack the `mail-digest` webhook. The briefing's chat
     reader reads none of them, so a preview never reads as a briefing that
     went out. False when there is no such place or the post failed."""
     import chat_notify
-    return bool(chat_notify.post_digest(PREVIEW_KEY, text, topic=PREVIEW_TOPIC))
+    return bool(chat_notify.post_digest(PREVIEW_KEY, text))
 
 
 def room_slices(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dict],

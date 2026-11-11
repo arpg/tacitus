@@ -2,9 +2,9 @@
 
 ShadowFrontend(primary, shadow) is the ChatFrontend the core runs on while
 the owner tries a new front end (the web chat) against live traffic. The
-primary (Zulip or Slack) stays the source of truth: every id, thread key,
-card ref and file the core sees is the primary's, and every read goes to
-the primary. The shadow holds a copy keyed by the primary's ids, and is a
+primary (Slack) stays the source of truth: every id, thread key, card ref
+and file the core sees is the primary's, and every read goes to the
+primary. The shadow holds a copy keyed by the primary's ids, and is a
 second place where the owner can type and click.
 
 A shadow that refuses to serve (the web front end's `refused`: its chat
@@ -13,10 +13,10 @@ why, and the composite writes nothing to it and copies no history; the
 bot runs on the primary alone.
 
 Attributes. `registry`, `card_registry`, `capabilities`, `limits`, the
-channel ids, `owner_id`, `bot_user_id` and `thread_namer` are the
-primary's (the core's writes to `card_registry` and `thread_namer` land on
-the primary); `name` is "<primary>+<shadow>". Any other attribute the core
-reads (Zulip's `cfg`, Slack's `client`) comes from the primary.
+channel ids, `owner_id` and `bot_user_id` are the primary's (the core's
+writes to `card_registry` land on the primary); `name` is
+"<primary>+<shadow>". Any other attribute the core reads (Slack's
+`client`) comes from the primary.
 
 Outbound. post, update, react, unreact, post_card, update_card,
 replace_card_with_status and upload call the primary, then copy the result
@@ -52,21 +52,7 @@ history goes in before the replies the bot posts on waking.
 Inbound from the primary. The composite wraps the dispatch_message of the
 primary's registry, so an owner's message is copied into the shadow
 (author "owner") before the core handles it, and a channel_rename renames
-the row. It wraps dispatch_event too: a "thread_moved" event re-keys the
-thread's rows (mirror_move) when its new channel is one the shadow
-holds. Actions pass through.
-
-The primary's own writes. The composite sets `primary.on_outbound`
-(base.ChatFrontend); a frontend calls it after a write it makes outside
-the verbs above (Zulip's card codes, an edit past the edit window, a
-stream change), with a verb and keywords:
-
-    post(ref, text)                 update(ref, text)
-    card(ref, card)                 card_status(ref, text)
-    reaction(channel, msg_id, status, on)
-    owner_message(msg)              an owner's message the frontend handled
-                                    itself, never dispatched as a message
-    channel(channel[, name=, archived=, description=])
+the row. Actions and other events pass through.
 
 Inbound from the shadow. The composite sets `shadow.inbound` to a
 callable; the shadow calls it with the owner's input instead of
@@ -88,15 +74,6 @@ dispatching that input itself, in either of two shapes:
         the primary, then the row; a rename also reaches the core as a
         channel_rename from the primary's owner. The primary's refusal
         raises to the caller (NotSupported where it has no rename).
-
-A card copied from the primary's past is plain text in the shadow, so
-the shadow cannot see it settle. The composite sets `shadow.card_lookup`
-to a callable (channel, thread_key, msg_id) -> the primary's card_now
-answer ({"text", "filed", "edited_at", "posted_at"}, or None) when the
-primary has that read (Zulip), else to None. It also writes the card's
-current text into the shadow row through mirror_update, which writes
-nothing for an unchanged text. A card the shadow never took (a pointer's
-card, asked for with no thread key) is read and not written.
 
 A message is posted into the primary as the bot, after WEB_PREFIX and in
 the Slack mrkdwn that post() takes, so it has a primary id, sits in the
@@ -120,16 +97,15 @@ to a shadow whose method takes it:
 
     mirror_channel(id, name, kind, archived[, description=])
                                                kind: main, sched, dm, room
-    mirror_post(ref, text, author[, quiet=, markdown=])
+    mirror_post(ref, text, author[, quiet=])
                                                author: "bot" or "owner"
     mirror_update(ref, text)
     mirror_card(ref, card)                     the ConfirmationCard itself
     mirror_card_status(ref, text)
     mirror_reaction(channel, msg_id, status, on)   status: a Status value
-    mirror_file(ref, file, author[, path=, text=, quiet=, markdown=])
+    mirror_file(ref, file, author[, path=, text=, quiet=])
                                                file: a FileRef
     mirror_backfilled(channel)                 optional
-    mirror_move(old_channel, old_key, new_channel, new_key)   optional
 
 The history copy needs `quiet` on mirror_post and mirror_file; a shadow
 without it gets none. With quiet the shadow returns None for a row it
@@ -137,12 +113,9 @@ did not take.
 
 The text is as the primary got it: the core's Slack mrkdwn on the bot's
 rows (the shadow converts it as its own post() would) and the owner's text
-as typed. History from a primary whose `history_markdown` is True (Zulip)
-goes with markdown=True: the bot's rows are Markdown already and the
-shadow keeps them as they are. When the shadow's mirror_file takes
-`path` and `text`, a file row gets the local bytes and its text in that
-one call; otherwise the text goes first through mirror_post on the same
-ref. A file row without
+as typed. When the shadow's mirror_file takes `path` and `text`, a file
+row gets the local bytes and its text in that one call; otherwise the
+text goes first through mirror_post on the same ref. A file row without
 local bytes gets the primary's FileRef with an empty id, so the shadow
 links to the primary's absolute url. A file the core uploads has no
 primary message id (upload returns a FileRef), so its row id is
@@ -159,7 +132,7 @@ import shutil
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -252,14 +225,12 @@ class ShadowFrontend(ChatFrontend):
 
     capabilities = _from_primary("capabilities")
     card_registry = _from_primary("card_registry")
-    history_markdown = _from_primary("history_markdown")
     limits = _from_primary("limits")
     main_channel = _from_primary("main_channel")
     main_channel_name = _from_primary("main_channel_name")
     sched_channel = _from_primary("sched_channel")
     owner_id = _from_primary("owner_id")
     bot_user_id = _from_primary("bot_user_id")
-    thread_namer = _from_primary("thread_namer")
 
     def __init__(self, primary: ChatFrontend, shadow: ChatFrontend, *,
                  backfill_days: float = 0.0, backfill_cap: int = BACKFILL_CAP) -> None:
@@ -289,19 +260,12 @@ class ShadowFrontend(ChatFrontend):
         registry = primary.registry
         self._dispatch_message = registry.dispatch_message
         registry.dispatch_message = self._primary_message
-        self._dispatch_event = registry.dispatch_event
-        registry.dispatch_event = self._primary_event
-        primary.on_outbound = self._primary_outbound
         shadow.inbound = self._from_shadow
         shadow.notice = self._notice_owner
-        # The read back of a card the shadow holds as text; None for a
-        # primary with no such read (anything but Zulip).
-        shadow.card_lookup = (self._primary_card if callable(getattr(primary, "card_now", None))
-                              else None)
 
     def __getattr__(self, name: str) -> Any:
         # Runs only for a name the composite lacks: a platform's own
-        # attribute (Zulip's cfg, Slack's client) comes from the primary.
+        # attribute (Slack's client) comes from the primary.
         primary = self.__dict__.get("primary")
         if primary is None or name.startswith("__"):
             raise AttributeError(name)
@@ -623,11 +587,7 @@ class ShadowFrontend(ChatFrontend):
                 channels = list(self._channels)
         until = time.time()
         since = until - days * 86400
-        markdown = bool(getattr(self.primary, "history_markdown", False))
-        opts = {
-            verb: {"quiet": True, **({"markdown": True} if markdown and
-                                     "markdown" in self._takes(verb, "markdown") else {})}
-            for verb in ("mirror_post", "mirror_file")}
+        opts = {verb: {"quiet": True} for verb in ("mirror_post", "mirror_file")}
         files_take = self._file_options()
         report: dict = {"copied": 0, "channels": {}, "failed": [], "capped": False}
         for cid in channels:
@@ -740,51 +700,6 @@ class ShadowFrontend(ChatFrontend):
             except Exception:
                 log.warning("shadow: the history event for %s failed", channel, exc_info=True)
 
-    def export_history(self, channels: list[str] | None = None, *, roots: int = 100000,
-                       thread_limit: int = 5000
-                       ) -> Iterator[tuple[MessageRef, str, str, list[FileRef]]]:
-        """Every message the primary holds in each channel (by default every
-        channel the shadow holds), for the move to the shadow alone
-        (scripts/webchat-cutover.py): one (ref, author, text, files) per
-        message, oldest first in each channel. Unlike backfill there is no
-        window and no cap: a primary with `channel_history` (Zulip) is read
-        whole, page by page; another gives its threads through
-        recent_messages with no time floor (at most `roots`) and
-        thread_replies (at most `thread_limit` each). The author and the
-        text are the history copy's (_history_author); a card is the text
-        the primary shows, with its status line once it was answered;
-        `files` are the primary's FileRefs as they are, for the caller to
-        fetch. It writes nothing. A read the primary fails raises, so an
-        export never ends short without saying so."""
-        if channels is None:
-            with self._lock:
-                channels = list(self._channels)
-        whole = getattr(self.primary, "channel_history", None)
-
-        def threads(cid: str) -> Iterator[InboundMessage]:
-            listed = self.primary.recent_messages(cid, 0.0, roots)
-            self._pace()
-            done: set[str] = set()
-            for root in listed:
-                key = root.thread_key or root.msg_id
-                if not key or key in done:
-                    continue
-                done.add(key)
-                msgs = self.primary.thread_replies(cid, key, thread_limit) or [root]
-                self._pace()
-                yield from msgs
-
-        for cid in channels:
-            for msg in (whole(cid) if callable(whole) else threads(cid)):
-                sub = msg.subtype or ""
-                if not msg.msg_id or (msg.channel and msg.channel != cid) \
-                        or sub == "channel_rename" \
-                        or (sub.startswith("other:") and sub != "other:bot_message"):
-                    continue
-                author, text = self._history_author(cid, msg)
-                ref = MessageRef(cid, msg.msg_id, msg.thread_key or msg.msg_id, msg.posted_at)
-                yield ref, author, text, list(msg.files or [])
-
     # messages
 
     def post(self, channel: str, text: str, *, thread_ts: str | None = None,
@@ -849,31 +764,6 @@ class ShadowFrontend(ChatFrontend):
 
     def file_card(self, ref: MessageRef) -> bool:
         return self.primary.file_card(ref)
-
-    def _primary_card(self, channel: str, thread_key: str, msg_id: str) -> dict | None:
-        """The shadow's `card_lookup`: a card the shadow holds as text from
-        the primary's past, as the primary holds it now (its card_now, a
-        read). Its current text goes into the shadow row through
-        mirror_update, as Markdown when the primary's history is Markdown;
-        an unchanged text writes nothing. A card the shadow does not hold
-        (a pointer's card the copy never took: no thread key) is read and
-        nothing is written. None while the shadow is off or when the
-        primary has no answer."""
-        if self.shadow_off:
-            return None
-        got = self.primary.card_now(channel, thread_key, msg_id)
-        if not isinstance(got, dict):
-            return None
-        text = got.get("text")
-        if isinstance(text, str) and text.strip() and channel and thread_key:
-            ref = MessageRef(channel, msg_id, thread_key, None)
-            extra: dict[str, Any] = {}
-            if getattr(self.primary, "history_markdown", False) and \
-                    self._takes("mirror_update", "markdown"):
-                extra["markdown"] = True
-            self._mirror("card text", channel,
-                         lambda: self.shadow.mirror_update(ref, text, **extra), hold=False)
-        return got
 
     # conversations and rooms: reads go to the primary
 
@@ -1001,61 +891,6 @@ class ShadowFrontend(ChatFrontend):
         files = list(msg.files or [])
         self._mirror("owner message", msg.channel,
                      lambda: self._mirror_rows(ref, msg.text or "", files, "owner"))
-
-    def _primary_event(self, name: str, payload: Any) -> bool:
-        """The primary registry's dispatch_event: a whole thread move re-keys
-        the thread's rows in the shadow, then the core gets the event."""
-        if name == "thread_moved" and isinstance(payload, dict):
-            self._mirror_move(payload)
-        return self._dispatch_event(name, payload)
-
-    def _mirror_move(self, payload: dict) -> None:
-        old, new = str(payload.get("old") or ""), str(payload.get("new") or "")
-        channel = str(payload.get("channel") or "")
-        old_channel = str(payload.get("old_channel") or "") or channel
-        move = getattr(self.shadow, "mirror_move", None)
-        if not (old and new and channel) or old == new or not callable(move):
-            return
-        if not self._serves(channel):
-            # A card filed out of the owner's view, for one: the shadow has
-            # no such place, and the rows stay where the owner saw them.
-            log.info("shadow: thread %s moved to %s, which the shadow does not hold; "
-                     "its rows stay", old, channel)
-            return
-        self._mirror("thread move", channel, lambda: move(old_channel, old, channel, new))
-
-    def _primary_outbound(self, verb: str, **args: Any) -> None:
-        """The primary's on_outbound: a write the primary made on its own
-        (the verbs are in the module docstring), copied into the shadow."""
-        sh = self.shadow
-        what = f"the primary's {verb}"
-        if verb in ("post", "update", "card_status"):
-            ref: MessageRef = args["ref"]
-            text = str(args.get("text") or "")
-            mirror = {"post": lambda: sh.mirror_post(ref, text, "bot"),
-                      "update": lambda: sh.mirror_update(ref, text),
-                      "card_status": lambda: sh.mirror_card_status(ref, text)}[verb]
-            self._mirror(what, ref.channel, mirror)
-        elif verb == "card":
-            ref, card = args["ref"], args["card"]
-            self._mirror(what, ref.channel, lambda: sh.mirror_card(ref, card))
-        elif verb == "reaction":
-            channel, msg_id = str(args["channel"]), str(args["msg_id"])
-            name, on = _status_name(args["status"]), bool(args.get("on", True))
-            self._mirror("the primary's reaction", channel,
-                         lambda: sh.mirror_reaction(channel, msg_id, name, on))
-        elif verb == "owner_message":
-            msg = args["msg"]
-            if isinstance(msg, InboundMessage) and self._is_owner_input(msg):
-                self._mirror_owner(msg)
-        elif verb == "channel":
-            channel = str(args.get("channel") or "")
-            if channel and self._serves(channel):
-                self._mirror_channel(channel, name=args.get("name"),
-                                     archived=args.get("archived"),
-                                     description=args.get("description"))
-        else:
-            log.debug("shadow: no mirror for the primary's %s", verb)
 
     # inbound from the shadow
 

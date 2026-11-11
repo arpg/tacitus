@@ -234,11 +234,10 @@ def next_steps(ctx: dict, platform: str = sys.platform, env: dict | None = None)
         steps.append({"title": "The chat platform",
                       "why": "The EA talks to you in this chat, and the bot needs its settings "
                              "to connect.",
-                      "text": "docs/SETUP.md 'Zulip server', or "
-                              "docs/SETUP.md 'Slack'. For Zulip, this prints the chat block "
-                              "and the key line.",
-                      "commands": ["python3 scripts/zulip_bootstrap.py --site <site> "
-                                   "--owner-email <you> --owner-key <key>"]})
+                      "text": "docs/SETUP.md 'Slack': the app, its scopes, Socket Mode and the "
+                              "private channel. The tokens and ids you gave above are saved; "
+                              "the hardening step below starts the bot.",
+                      "commands": []})
     steps.append({"title": "Hardening and services",
                   "why": "The services then run from a code tree the EA cannot change, so a "
                          "tricked EA cannot change what runs as you.",

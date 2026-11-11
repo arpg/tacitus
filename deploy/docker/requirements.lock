@@ -9,9 +9,7 @@ beautifulsoup4==4.14.3
 certifi==2026.7.22
 cffi==2.1.1
 charset-normalizer==3.5.2
-click==8.5.0
 cryptography==47.0.0
-distro==1.9.0
 et_xmlfile==2.0.0
 google-api-core==2.42.0
 google-api-python-client==2.194.0
@@ -53,4 +51,3 @@ soupsieve==3.0.3
 typing_extensions==4.16.0
 uritemplate==4.2.0
 urllib3==2.8.0
-zulip==0.9.1

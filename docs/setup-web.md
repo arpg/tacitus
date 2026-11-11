@@ -98,13 +98,12 @@ The page lists these at the end, with the commands:
   pasted address), and the writing-style scan, which reads sent mail;
 - the service account, ea-bot's Claude login, the install overlay, the
   chat platform's own step on `assistant` and `collaborator` (the `tailscale serve` line for
-  the web chat, the Zulip bootstrap or the Slack app), the hardening and
+  the web chat, or the Slack app), the hardening and
   services, the cron install, the doctor, the first briefing, the
   first-week questions.
 
-Also terminal only: `--chat zulip` and its server values (the chat
-block), more than one group list or deadline domain per run, and
-`--style-only`.
+Also terminal only: more than one group list or deadline domain per
+run, and `--style-only`.
 
 ## API
 

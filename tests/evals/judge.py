@@ -493,8 +493,8 @@ def briefing_format_valid(output: str, context: dict) -> dict:
       - skills/morning-briefing.md  same header, same template
 
     NO DOUBLE-ASTERISK CHECK. The prompt still asks for "*single*" bold,
-    the mrkdwn every lane writes, but the only chat frontend is Zulip:
-    chat.text.mrkdwn_to_zulip turns *single* into **double** and leaves
+    the mrkdwn every lane writes, but the web chat renders both alike:
+    chat.text.mrkdwn_to_markdown turns *single* into **double** and leaves
     **double** as it is, so both render as bold, and run-agent.sh's
     validate_output does not refuse it. It was a Slack defect (stray
     asterisks), and failing on it scored most nightly failures.

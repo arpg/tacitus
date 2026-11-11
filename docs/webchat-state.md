@@ -44,7 +44,7 @@ thread: the colleague has not replied yet").
      answer this. Ask again." (a stuck turn, as in rule 3).
    Once the bot answers (a new card, a card revised in place, or a
    message), rules 2 and 2b decide again. A finished turn with no words
-   and a message copied from Zulip's past are no answer and no change:
+   and a message the history copy took in are no answer and no change:
    rules 2 and 2b decide. The rule runs where rule 2 finds a live card in
    the thread and where rule 2b finds a live linked card, so it outranks
    only those two, and rule 2a keeps its place.
@@ -69,13 +69,12 @@ thread: the colleague has not replied yet").
    `card_link`). One linked card still live (rule 2's test, and no rule
    1a): `needs_you`, "Its card in Direct messages waits for you." A press
    under way within 20 minutes: `working`. Every linked card acted on
-   (rule 4's status line, or a mirrored card's) and no owner message in
+   (rule 4's status line, or a text card's) and no owner message in
    the conversation after the last of them: `done`, "Its card was
    handled: <its status line in plain words>" ("Its cards were handled:
    ..." for several). A failed or expired card, a press stuck past 20
-   minutes, or a link to a card the store does not hold (one never
-   copied from Zulip) that Zulip does not give either (shadow mode,
-   below) decides nothing, and the later rules run; the model then reads
+   minutes, or a link to a card the store does not hold decides
+   nothing, and the later rules run; the model then reads
    each linked card as one line (The model). A bot line after the
    outcome does not reopen it; an owner message does.
 3. The owner wrote last, and the bot has posted nothing since but
@@ -89,8 +88,8 @@ thread: the colleague has not replied yet").
    - past 20 minutes: `needs_you`, "Tacitus did not answer this. Ask
      again." (a stuck turn).
    The bot's check on the owner's message (a finished turn with no words)
-   and a message copied from Zulip's past (its reactions are not copied)
-   are not decisive here.
+   and a message the history copy took in (its reactions are not
+   copied) are not decisive here.
 3c. A card whose status line shows the bot acting on the press
    (`:hourglass...`, "Sending...") within the last 20 minutes: `working`.
 4. A card acted on (its status line as the bot records it: Sent, Created,
@@ -134,53 +133,6 @@ thread: the colleague has not replied yet").
 8. Otherwise: ask the model. The owner has written in every thread that
    gets here.
 
-**Shadow mode: mirrored cards read their outcome from Zulip.** A card
-the history copy took from Zulip is a plain text row (no card JSON,
-`history` 1, in a `stream:<n>` channel, its text opening with the lock
-title and holding the card's `----` rule). Rules 2, 3c and 4 read that
-text the way the Zulip frontend writes it
-(`zulip_frontend.card_text_state`). The action legend after the rule
-(`Tap a reaction below:`, `` Reply `<word> ...` ``, `Code **...**`) makes
-it a live card: `needs_you`, `The card "Confirm send" still has its
-buttons.` A status line in the legend's place makes it a card acted on:
-`done`, with that line in plain words ("The card was answered: Sent from
-Outlook."), unless a message after the card asks something (rule 4; any
-message posted after the card counts, since the time of the edit is not
-always known). A busy line (`:time_ticking:`) is `working` within 20
-minutes of Zulip's last edit. A failed line (`:cross_mark:`, `:warning:`,
-`:no_entry:`) is not settled. A card that Zulip filed in the
-`<dm_stream>-done` stream was settled outside chat. While the stored text
-still shows the legend or a busy line, the tick asks Zulip for the card
-as it is now (`card_now`: a read by message id, else the first message
-of the topic by stream and topic name; and the stream it sits in now).
-It makes 30 reads per tick at most and keeps each answer for one tick
-interval; a card past the cap keeps its stored text until the next tick.
-A changed text goes into the row (`mirror_update`, one `update` event; an
-unchanged text writes nothing), so the app shows the status line too.
-With no Zulip (the web chat alone) the stored text is all there is. The
-one-line pointer to a card ("The Send button for this draft is in your
-DM") is not a card: rule 2b reads the card it links to.
-
-**Shadow mode: a linked card the copy never took.** The history copy
-took many pointers without their cards, so the store holds a link
-(`card_link`, a Zulip id from the pointer's `.../near/<id>`) and no
-message (`linked_cards` gives a row of kind `missing` with the link's
-card channel and id). The tick asks Zulip for that card by its id
-(`card_now`, as for a mirrored card, with no thread key: the composite
-reads it and writes nothing into the store) and reads its text the way
-it reads a mirrored card (`thread_state.fetched_card`): the legend is a
-live card, a status line a card acted on, a filed card one settled
-outside chat. Its age counts from Zulip's posting time (`card_now`'s
-`posted_at`) and its outcome from Zulip's last edit, the edit that wrote
-the status line, so rule 2b's "no owner message after the last of them"
-counts from the press, as for a card the store holds. The reads share the
-30 a tick and the one-tick cache of the mirrored cards; a final answer (a
-status line that acted or failed, a card filed in the done stream, or a
-message that is no card) is kept while the engine runs (1000 at most),
-and one that can still change is read again each tick, the last answer
-standing past the cap or when Zulip does not answer. A link Zulip does
-not give stays `missing`.
-
 ## The stale shelf
 
 A `needs_you` or `waiting` state is stale when its conversation has been
@@ -211,8 +163,7 @@ conversation (the `nudges` table). Never on a state the owner set
 (Needs me: the owner just said so), never on a conversation that opens
 with an automated post (rule 7's test: a notifier key, or the title
 patterns) or with a card, and never while a card in it or linked to it
-is live (its button is the nudge; a linked card the copy never took
-counts as Zulip gives it). At most 10 a tick, the longest
+is live (its button is the nudge). At most 10 a tick, the longest
 waiting first, in channels that are not archived; none while the owner's
 quiet hours hold (the EA's `quiet_hours.should_defer("normal")`; a check
 that fails counts as quiet).
@@ -220,7 +171,7 @@ that fails counts as quiet).
 The nudge is a bot message in the web store alone (`post_nudge`: the
 message and its `nudges` row in one transaction): it shows in the thread
 and counts as unread like any bot message, sends no push, and in shadow
-mode the Zulip topic is left alone. The rules and the model never read
+mode nothing reaches the primary. The rules and the model never read
 it: the engine drops the ids in `nudges` from the thread it judges, so
 `judged_seq` stays where it was, no rule moves and the model is not
 asked again. Through the relay it is one more message.
@@ -251,7 +202,7 @@ messages, placed by the time it last changed, in the shape of a card in
 the thread (`[bot, <time>] card "Confirm send" in Direct messages: Sent.`;
 `: failed` for a failed press, without its words; `: expired` past the
 card registry's 7 days; `: waiting for a button` while live; a link to
-no card the store or Zulip holds gives no line), the channel's kind and
+no card the store holds gives no line), the channel's kind and
 name, the linked ledger rows' type, status, deadline and last action,
 today's date. The prompt is
 `thread_state.PROMPT`. Output, JSON only: `{"state": one of the five,
@@ -345,7 +296,7 @@ owner set it on the same message or a newer one. `stale` is the stale
 shelf's mark (a store from before gets the column at 0). `thread_origin`
 holds the notifier key (`chat_notify`'s channel key, `notifier` for its
 other posts) of an automated post that opened the thread; rule 7 reads
-it. A moved thread (a renamed Zulip topic) takes both rows with it.
+it. A moved thread takes both rows with it.
 
 ```
 card_link(channel TEXT, thread_key TEXT, card_channel TEXT, card_id TEXT, at REAL,
@@ -359,9 +310,7 @@ and `thread_ts`, as the card registry keeps them): the store links it
 when the card is stored or changed, through post_card and mirror_card
 alike. A bot message that holds a pointer links the conversation it sits
 in to the card its link names: the web chat's hash route
-(`#/<channel>/<thread>/<message>`), Zulip's narrow (`.../near/<id>`,
-`card_channel` "": a Zulip id is unique on the server) or Slack's
-permalink. A card in the conversation's own thread is no link. The rows
+(`#/<channel>/<thread>/<message>`) or Slack's permalink. A card in the conversation's own thread is no link. The rows
 the store held before the table are linked once, when the states start
 (the meta key `card_link_backfill`), and the rules then run on every
 linked conversation in a channel that is not archived, whatever its age
@@ -431,7 +380,7 @@ A needs row is the same with `"channel_name": "dm"`.
 
 ## Out of scope for v0
 
-Zulip gets no stickers; in shadow mode the state lives in the web store
+Slack gets no stickers; in shadow mode the state lives in the web store
 only.
 
 ## Changes from v0
@@ -459,7 +408,7 @@ bot side changed it here:
   stale at once. The nudge's 24 hours count from the owner's last message
   (or tap), and it never goes to a conversation on the shelf.
 - **Rule 7 covers every thread the owner never wrote in** (a notice
-  copied from Zulip with no notifier key, matching no title pattern, got
+  the history copy took in with no notifier key, matching no title pattern, got
   "Needs you" because the model read "held back, review" as an ask). A
   thread Tacitus started that the owner never wrote in is `none` unless
   an earlier rule fired; the model reads only threads the owner wrote
@@ -483,7 +432,7 @@ bot side changed it here:
   rule id is `1a-reply-over-card`; its stuck turn is `3-stuck`, as rule
   3's is.
 
-- **From the closure analysis** (the owner's past Zulip conversations,
+- **From the closure analysis** (the owner's past conversations,
   cards and ledger rows): rule 5 (the bot's check => done) is dropped;
   rule 3 has a second half (no answer past 20 minutes, or a failed turn,
   is `needs_you`: "Tacitus did not answer this. Ask again."); rule 6
@@ -518,14 +467,6 @@ bot side changed it here:
 - **The store** writes never go back (a stale model answer or a rule
   never replaces a newer judgment or the owner's override), and a moved
   thread takes its state.
-- **Mirrored cards** (shadow mode): a card copied as text from Zulip's
-  past is read by rules 2, 3c and 4 from its Zulip text, and re-read from
-  Zulip while it can still change (30 reads a tick, each answer kept one
-  tick), so the model is not asked about a card that is live or settled
-  there. A failed or expired one goes on to the later rules and the
-  model, which sees it as a card. Its row takes Zulip's current text.
-  The status-line rules also know Zulip's emoji names (`:time_ticking:`
-  busy, `:cross_mark:` failed).
 - **Linked cards reach the model** (a failed or expired card in the DM
   left rule 2b undecided, and the model's prompt did not say the card
   existed): each linked card is one line in the prompt's messages, local
@@ -534,9 +475,3 @@ bot side changed it here:
 - **No nudge after Needs me** (the nudge asked "Still need this?" a day
   after the owner tapped Needs me): a state the owner set is never
   nudged, and the nudge's clock is the owner's last message alone.
-- **A linked card the copy never took is read from Zulip** (in shadow
-  mode, conversations linked to a card stayed open because the copy held
-  the pointer and not the card: 20 of 86 links had no card in the
-  store): the tick reads it by the pointer's Zulip id, within the
-  mirrored cards' cap, and rule 2b settles on it; `card_now` also gives
-  the card's posting time.

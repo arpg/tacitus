@@ -30,7 +30,7 @@ from chat import (  # noqa: E402
 )
 from chat.memory_frontend import MemoryFrontend  # noqa: E402
 from chat.shadow_frontend import WEB_PREFIX, ShadowFrontend, _to_mrkdwn  # noqa: E402
-from chat.text import mrkdwn_to_zulip  # noqa: E402
+from chat.text import mrkdwn_to_markdown  # noqa: E402
 
 MIRRORS = ("mirror_channel", "mirror_post", "mirror_update", "mirror_card",
            "mirror_card_status", "mirror_reaction", "mirror_file")
@@ -70,9 +70,6 @@ class WebShadow(MemoryFrontend):
         self.channels[cid] = {"name": name, "kind": kind, "archived": archived}
         if description is not None:
             self.descriptions[cid] = description
-
-    def mirror_move(self, old_channel, old_key, new_channel, new_key):
-        self._call("mirror_move", old_channel, old_key, new_channel, new_key)
 
     def mirror_post(self, ref, text, author):
         self._call("mirror_post", ref, text, author)
@@ -263,12 +260,9 @@ def test_attributes_and_reads_are_the_primarys(tmp_path):
     assert fe.channel_top("C_MAIN") is None
     assert fe.posts is primary.posts             # a platform's own attribute
 
-    def namer(text, channel):
-        return "title"
-    fe.thread_namer = namer
     reg = CardRegistry(tmp_path / "cards.json")
     fe.card_registry = reg
-    assert primary.thread_namer is namer and primary.card_registry is reg
+    assert primary.card_registry is reg
     fe.run_forever()                             # both loops return at once here
 
 
@@ -353,7 +347,7 @@ def test_a_web_file_goes_up_through_the_primary(tmp_path):
     own = FileRef("scan.pdf", "/chat/api/files/f1", "f1", "application/pdf")
     ref = shadow.inbound("message", channel="D_OWNER", text="", thread_key=None,
                          files=[{"path": str(stored), "name": "scan.pdf", "file": own}])
-    assert mrkdwn_to_zulip(primary.posts[-1]["text"]) == WEB_PREFIX + "scan.pdf"
+    assert mrkdwn_to_markdown(primary.posts[-1]["text"]) == WEB_PREFIX + "scan.pdf"
     up = primary.uploads[-1]
     assert (up["path"], up["filename"], up["thread_ts"]) == (str(stored), "scan.pdf",
                                                              ref.thread_key)
@@ -441,7 +435,7 @@ def test_the_web_frontends_own_inbound_shape_is_taken(tmp_path):
 def test_the_owners_markdown_reaches_the_primary_as_typed():
     for text in ("**bold** and *italic* and ~~gone~~", "see [the page](https://example.org/a_b)",
                  "keep `*code*` and\n```\n**fence**\n```", "snake_case_name * 2", "plain"):
-        assert mrkdwn_to_zulip(_to_mrkdwn(text)) == text, text
+        assert mrkdwn_to_markdown(_to_mrkdwn(text)) == text, text
     assert _to_mrkdwn(WEB_PREFIX + "*now*") == "*You (web):* _now_"
 
 
@@ -537,101 +531,13 @@ def test_a_shadow_that_does_not_build_leaves_the_primary_running(tmp_path, monke
 def test_the_owners_bot_keeps_the_web_files_in_the_private_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(chat.owner_trust, "is_owner_process", lambda: True)
     monkeypatch.setenv("EA_PRIVATE_DIR", str(tmp_path / "priv"))
-    cfg = chat._with_web_store({"frontend": "zulip", "shadow": "web", "web": {"port": 1}}, None)
+    cfg = chat._with_web_store({"frontend": "slack", "shadow": "web", "web": {"port": 1}}, None)
     assert cfg["web"] == {"port": 1, "store_path": str(tmp_path / "priv" / "webchat.sqlite")}
-    given = {"frontend": "zulip", "web": {"store_path": "/srv/given.sqlite"}}
+    given = {"frontend": "slack", "web": {"store_path": "/srv/given.sqlite"}}
     assert chat._with_web_store(given, None)["web"]["store_path"] == "/srv/given.sqlite"
 
 
-# ── a Zulip primary (the fake client of test_zulip_frontend) ──
-
-def test_a_zulip_primary_mirrors_the_owner_and_takes_web_input(tmp_path):
-    zt = pytest.importorskip("test_zulip_frontend")
-    primary, client = zt.make(tmp_path, start=False)
-    shadow = WebShadow()
-    fe = ShadowFrontend(primary, shadow)
-    fe.start()
-    assert fe.name == "zulip+web"
-    main, dm = f"stream:{zt.EA}", f"stream:{zt.DM}"
-    assert shadow.channels[main]["kind"] == "main" and shadow.channels[dm]["kind"] == "dm"
-    seen = []
-    fe.registry.event("message")(seen.append)
-    client.messages = {**zt.OK, "messages": [], "found_oldest": True}
-
-    primary.handle_event(zt.fx("event_stream_message"))      # the owner, in the EA stream
-    msg = seen[-1]
-    row = shadow.rows[(main, msg.msg_id)]
-    assert (row["author"], row["text"], row["thread_key"]) == ("owner", msg.text, msg.thread_key)
-    primary.handle_event(zt.fx("event_bot_self_message"))    # the bot's own echo
-    assert len(seen) == 2 and (dm, seen[-1].msg_id) not in shadow.rows
-
-    ref = shadow.inbound("message", channel=dm, text="what is *next*?", thread_key=None)
-    sent = client.named("send_message")[-1]
-    assert sent["content"] == WEB_PREFIX + "what is *next*?"
-    got = seen[-1]
-    assert (got.user_id, got.msg_id, got.thread_key) == (str(zt.OWNER), ref.id, ref.thread_key)
-    assert got.is_dm and not got.is_self
-    assert shadow.rows[(dm, ref.id)]["author"] == "owner"
-
-    assert fe.react(dm, ref.id, Status.EYES)
-    assert client.named("add_reaction")[-1]["message_id"] == int(ref.id)
-    assert shadow.rows[(dm, ref.id)]["reactions"] == {"eyes"}
-
-
-# ── the primary's own writes, renames and thread moves ──
-
-def test_the_primarys_own_writes_reach_the_shadow_through_its_hook(caplog):
-    fe, primary, shadow = _pair()
-    assert primary.on_outbound == fe._primary_outbound
-    ref = primary.post("C_MAIN", "*posted* on its own")
-    primary._outbound("post", ref=ref, text="*posted* on its own")
-    assert shadow.rows[("C_MAIN", ref.id)]["text"] == "*posted* on its own"
-    primary._outbound("update", ref=ref, text="edited")
-    assert shadow.rows[("C_MAIN", ref.id)]["text"] == "edited"
-    primary._outbound("reaction", channel="C_MAIN", msg_id=ref.id, status=Status.DONE, on=True)
-    assert shadow.rows[("C_MAIN", ref.id)]["reactions"] == {"white_check_mark"}
-
-    card = _card()
-    cref = primary.post_card("D_OWNER", card)
-    primary._outbound("card", ref=cref, card=card)
-    assert shadow.rows[("D_OWNER", cref.id)]["card"] is card
-    primary._outbound("card_status", ref=cref, text="Sent")
-    assert shadow.rows[("D_OWNER", cref.id)]["kind"] == "status"
-
-    code = InboundMessage(channel="D_OWNER", msg_id="m90", text="send ABC123",
-                          user_id="U_OWNER", posted_at=time.time(), thread_key=cref.thread_key)
-    primary._outbound("owner_message", msg=code)
-    row = shadow.rows[("D_OWNER", "m90")]
-    assert (row["author"], row["text"], row["thread_key"]) == ("owner", "send ABC123",
-                                                               cref.thread_key)
-    primary._outbound("owner_message", msg=dataclasses.replace(code, msg_id="m91",
-                                                              user_id="U_OTHER"))
-    assert ("D_OWNER", "m91") not in shadow.rows
-
-    room = primary.create_private_room("ea-elsewhere")
-    primary._outbound("channel", channel=room.id, archived=True)
-    assert room.id not in shadow.channels          # a room the shadow does not hold
-    primary._outbound("channel", channel="C_MAIN", description="the EA channel")
-    assert shadow.descriptions["C_MAIN"] == "the EA channel"
-    primary._outbound("typing", channel="C_MAIN")  # a verb the composite does not know
-
-    shadow.down = {"mirror_post"}
-    caplog.set_level(logging.WARNING, logger="chat.shadow")
-    primary._outbound("post", ref=ref, text="lost")
-    assert "not mirrored" in caplog.text
-
-
-def test_a_failing_outbound_hook_never_reaches_the_frontend(caplog):
-    primary = MemoryFrontend()
-    primary._outbound("post", text="no hook set")
-
-    def boom(verb, **args):
-        raise RuntimeError("the shadow is gone")
-    primary.on_outbound = boom
-    caplog.set_level(logging.WARNING, logger="chat")
-    primary._outbound("post", text="x")
-    assert "outbound hook failed on post" in caplog.text
-
+# ── renames on the primary ──
 
 def test_a_rename_on_the_primary_renames_the_shadow_row():
     fe, primary, shadow = _pair()
@@ -644,63 +550,6 @@ def test_a_rename_on_the_primary_renames_the_shadow_row():
     primary.inject_message(channel="C_ELSEWHERE", user_id="", subtype="channel_rename",
                            new_name="not ours")
     assert "C_ELSEWHERE" not in shadow.channels and len(seen) == 2
-
-
-def test_a_thread_move_rekeys_the_shadow_rows(tmp_path):
-    primary, web = MemoryFrontend(), _web(tmp_path)
-    fe = ShadowFrontend(primary, web)
-    fe.mirror_channels()
-    seen = []
-    fe.registry.event("thread_moved")(seen.append)
-    top = fe.post("C_MAIN", "a thread")
-    reply = fe.post("C_MAIN", "a reply", thread_ts=top.thread_key)
-    payload = {"type": "thread_moved", "old": top.thread_key, "new": "T_NEW",
-               "channel": "C_MAIN", "old_channel": "C_MAIN", "message_ids": [],
-               "whole": True, "user_id": "U_OWNER"}
-    before = web.store.max_event_seq()
-    assert primary.registry.dispatch_event("thread_moved", payload)
-    assert seen == [payload]
-    assert [m["id"] for m in web.store.thread("C_MAIN", "T_NEW")] == [top.id, reply.id]
-    assert web.store.thread("C_MAIN", top.thread_key) == []
-    assert [t for _, t, _ in web.store.events_since(before)] == ["update", "update"]
-    # a move to a channel the shadow does not hold (a card filed away) leaves the rows
-    primary.registry.dispatch_event("thread_moved", dict(payload, old="T_NEW", new="T_DONE",
-                                                         channel="C_DONE"))
-    assert len(web.store.thread("C_MAIN", "T_NEW")) == 2 and len(seen) == 2
-
-
-class CardReader(MemoryFrontend):
-    """A primary that reads a posted card back, as Zulip's card_now does."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.cards: dict[str, dict | None] = {}
-        self.reads: list[tuple[str, str, str]] = []
-
-    def card_now(self, channel, thread_key, msg_id):
-        self.reads.append((channel, thread_key, msg_id))
-        return self.cards.get(msg_id)
-
-
-def test_a_card_lookup_comes_only_from_a_primary_that_reads_cards_back(tmp_path):
-    _fe, _primary, shadow = _pair()
-    assert shadow.card_lookup is None                 # no card_now: nothing to read
-    primary, shadow = CardReader(), WebShadow()
-    fe = ShadowFrontend(primary, shadow)
-    fe.start()
-    assert shadow.card_lookup == fe._primary_card
-    primary.cards["9"] = {"text": "Card\n\n----\n*Sent*", "filed": False, "edited_at": None}
-    assert fe._primary_card("C_MAIN", "t9", "9") == primary.cards["9"]
-    verb, ref, text = shadow.calls[-1]                # a shadow that takes no markdown
-    assert (verb, ref.id, ref.thread_key, text) == ("mirror_update", "9", "t9",
-                                                    "Card\n\n----\n*Sent*")
-    calls = len(shadow.calls)
-    assert fe._primary_card("C_MAIN", "t8", "8") is None and len(shadow.calls) == calls
-    # a card the shadow never took (a pointer's card: no thread key) is read, never written
-    assert fe._primary_card("", "", "9") == primary.cards["9"] and len(shadow.calls) == calls
-    assert primary.reads[-1] == ("", "", "9")
-    fe.shadow_off = "refused"
-    assert fe._primary_card("C_MAIN", "t9", "9") is None and len(primary.reads) == 3
 
 
 def test_the_room_filter_picks_the_rooms_start_copies(caplog):
@@ -916,23 +765,6 @@ def test_history_authors_and_files(tmp_path):
     assert (row["kind"], row["author"], row["text"]) == ("file", "owner", "the scan")
     assert row["file"]["id"] == "" and row["file"]["url"] == "memory://files/up1"
     assert web.store.message("C_MAIN", "j1") is None
-
-
-def test_history_from_a_markdown_primary_is_kept_as_written(tmp_path):
-    primary, web = MemoryFrontend(), _web(tmp_path)
-    primary.history_markdown = True          # as Zulip's history reads
-    fe = ShadowFrontend(primary, web, backfill_days=7)
-    now = time.time()
-    _said(primary, "C_MAIN", "z1", "Three **meetings**, the *first* at nine.", now - 100,
-          by="bot")
-    _said(primary, "C_MAIN", "z2", WEB_PREFIX + "and *tomorrow*?", now - 50, by="bot",
-          thread="z1")
-    web.note_owner_post("C_MAIN", "z2")
-    fe.mirror_channels()
-    fe.backfill()
-    assert web.store.message("C_MAIN", "z1")["text"] == "Three **meetings**, the *first* at nine."
-    z2 = web.store.message("C_MAIN", "z2")
-    assert (z2["author"], z2["text"]) == ("owner", "and *tomorrow*?")
 
 
 def test_history_older_than_a_live_row_stays_out_of_its_thread(tmp_path):

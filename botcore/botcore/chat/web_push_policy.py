@@ -72,7 +72,8 @@ REPORTS = (
     (re.compile(r"^\W*morning briefing\b", re.I), "Your morning briefing is ready"),
     (re.compile(r"^\W*afternoon update\b", re.I), "Afternoon update"),
 )
-# A progress line: the bot's own name for "at work", or Zulip's for it.
+# A progress line: the bot's own name for "at work", or Zulip's for it in
+# history imported from Zulip.
 _PROGRESS_RE = re.compile(r"^\s*:(?:hourglass(?:_flowing_sand)?|time_ticking):")
 # Rows of the bot that count as its answer in a conversation.
 _ANSWER_KINDS = frozenset({"message", "file", "card", "status"})

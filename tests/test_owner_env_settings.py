@@ -29,11 +29,11 @@ def test_load_owner_env_keeps_only_setting_keys(tmp_path, monkeypatch):
         "GRAPH_CLIENT_ID=abc\n"
         "PATH=/tmp/x\nPYTHONPATH=/tmp/x\nLD_PRELOAD=/tmp/x.so\n"
         "EA_PRIVATE_DIR=/tmp/p\nEA_DIR=/tmp/e\n"
-        "ZULIP_API_KEY=from-dotenv\n"
+        "SLACK_BOT_TOKEN=from-dotenv\n"
         "GRAPH_SCOPES=$(id)\n")
     monkeypatch.setenv("EA_DIR", str(ea))
     monkeypatch.setenv("EA_PRIVATE_DIR", str(tmp_path / "no-private"))
-    _clear(monkeypatch, "GRAPH_CLIENT_ID", "GRAPH_SCOPES", "ZULIP_API_KEY", "LD_PRELOAD",
+    _clear(monkeypatch, "GRAPH_CLIENT_ID", "GRAPH_SCOPES", "SLACK_BOT_TOKEN", "LD_PRELOAD",
            "PYTHONPATH")
     path_before = os.environ.get("PATH")
     owner_trust.load_owner_env()
@@ -42,7 +42,7 @@ def test_load_owner_env_keeps_only_setting_keys(tmp_path, monkeypatch):
     assert os.environ.get("PATH") == path_before
     assert "LD_PRELOAD" not in os.environ and "PYTHONPATH" not in os.environ
     assert os.environ["EA_DIR"] == str(ea)
-    assert "ZULIP_API_KEY" not in os.environ              # never a secret from .env
+    assert "SLACK_BOT_TOKEN" not in os.environ            # never a secret from .env
 
 
 def test_load_owner_env_does_not_override(tmp_path, monkeypatch):

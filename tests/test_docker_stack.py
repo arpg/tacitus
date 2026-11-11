@@ -11,10 +11,10 @@ host install's split and pins what it downloads.
 - The Dockerfile pins the base image by digest and Claude Code and
   supercronic by checksum, loads no floating frontend, and gives the
   image's interpreter the /usr/bin/python3 name the host tools use.
-- compose.yaml publishes no port except Zulip's and the web chat's, both
-  on loopback, pins every outside image by digest, starts only init, the
-  mediator and the scheduler without a profile, and derives the owner's
-  home from one OWNER_USER value.
+- compose.yaml publishes no port except the web chat's, on loopback,
+  runs no chat server, pins every outside image by digest, starts only
+  init, the mediator and the scheduler without a profile, and derives the
+  owner's home from one OWNER_USER value.
 - The web chat: the bot publishes port 8470 on loopback as WEBCHAT_PORT
   and checks its health through the entrypoint; the chat seed writes a
   web block that binds the container's interfaces with the identity
@@ -348,7 +348,7 @@ def test_compose_ports_images_and_profiles():
         if image != ea_image:
             assert re.search(r"@sha256:[0-9a-f]{64}$", image), (name, image)
         for port in s.get("ports") or []:
-            assert name in ("zulip", "bot") and str(port).startswith("127.0.0.1:"), (name, port)
+            assert name == "bot" and str(port).startswith("127.0.0.1:"), (name, port)
     mounts = services["mediator"]["volumes"]
     assert "ea-data:/home/ea-bot/.ea" in mounts
     # One OWNER_USER value names the owner in the image and its home, so
@@ -632,7 +632,7 @@ def test_entrypoint_setup_role_runs_the_phases_as_ea_bot_in_order():
     assert "for phase in $SETUP_PHASES; do" in phases
     state = _shell_fn(text, "setup_state_phase")
     assert 'run_as_ea_bot python3 "$DEPLOY_DIR/scripts/install/user_init.py"' in state and "--phase state" in state
-    assert '"${SETUP_CHAT_ARGS[@]}"' in state, "the Zulip chat block rides on the state phase"
+    assert '"${SETUP_CHAT_ARGS[@]}"' in state, "the web chat block rides on the state phase"
     push = _shell_fn(text, "setup_push_phase")
     assert 'run_as_owner python3 "$CODE_DIR/scripts/install/user_init.py"' in push and "--phase push" in push
     assert "ea_bot" not in push and "ea-bot" not in push
@@ -658,7 +658,7 @@ def test_entrypoint_setup_role_writes_env_as_ea_bot_0640_and_secrets_as_owner_06
     m = re.search(r"^SETUP_SECRET_KEYS='(\[.*\])'$", text, re.M)
     assert m, "SETUP_SECRET_KEYS names the answer keys ea-bot never reads"
     keys = json.loads(m.group(1))
-    for key in ("graph-client-secret", "slack-bot-token", "slack-app-token", "zulip-api-key"):
+    for key in ("graph-client-secret", "slack-bot-token", "slack-app-token"):
         assert key in keys, key
     copy = _shell_fn(text, "setup_answers_copy")
     assert "delpaths" in copy and "$SETUP_SECRET_KEYS" in copy
@@ -667,7 +667,7 @@ def test_entrypoint_setup_role_writes_env_as_ea_bot_0640_and_secrets_as_owner_06
     has_chat = _shell_fn(text, "setup_has_chat")
     assert "assistant" in has_chat and "collaborator" in has_chat
     for key in ("EA_SLACK_CHANNEL_ID", "EA_SLACK_CHANNEL_NAME", "EA_SLACK_OWNER_ID",
-                "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "ZULIP_API_KEY", "--chat zulip"):
+                "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "--chat web"):
         assert key in chat, key
 
 
@@ -895,18 +895,18 @@ def test_chat_seed_writes_the_web_block_with_the_header_off():
     path.unlink()
     r = seed("web", env=dict(env, EA_PRIVATE_DIR=str(target)))
     assert r.returncode != 0 and "run it as the owner" in r.stderr
-    # the whole block from stdin, for Zulip or Slack
-    r = seed("write", stdin=json.dumps({"frontend": "zulip", "zulip": {"site": "https://z.test"}}))
+    # the whole block from stdin, for Slack
+    r = seed("write", stdin=json.dumps({"frontend": "slack"}))
     assert r.returncode == 0, r.stderr
-    assert json.loads(path.read_text())["frontend"] == "zulip" and _mode(path) == 0o600
+    assert json.loads(path.read_text())["frontend"] == "slack" and _mode(path) == 0o600
 
 
 def test_chat_seed_shadow_keeps_the_primary():
     seed = _docker_module("chat_seed")
-    zulip = {"frontend": "zulip", "zulip": {"site": "https://z.example.test"}}
-    block = seed.chat_block(zulip, "https://chat.example.test/chat", shadow=True)
-    assert block["frontend"] == "zulip" and block["shadow"] == "web"
-    assert block["zulip"] == zulip["zulip"] and block["web"]["trust_tailscale_header"] is False
+    slack = {"frontend": "slack", "kept": {"any": "key"}}
+    block = seed.chat_block(slack, "https://chat.example.test/chat", shadow=True)
+    assert block["frontend"] == "slack" and block["shadow"] == "web"
+    assert block["kept"] == slack["kept"] and block["web"]["trust_tailscale_header"] is False
     with pytest.raises(ValueError):
         seed.chat_block({}, "https://chat.example.test/chat", shadow=True)
     assert seed.check_public_url("https://h.example.test") == ("https://h.example.test/chat",
@@ -919,15 +919,13 @@ def test_entrypoint_seeds_the_web_chat_as_the_owner():
     through the seed; ea-bot's copy only names the platform."""
     text = (DOCKER / "entrypoint.sh").read_text()
     chat = _shell_fn(text, "setup_chat_env")
-    assert 'ask chat-frontend "Chat platform: web, zulip or slack" web' in chat
+    assert 'ask chat-frontend "Chat platform: web or slack" web' in chat
     assert "ask webchat-public-url" in chat and '"${WEBCHAT_PUBLIC_URL:-}"' in chat
     assert 'write_owner_web_chat "$url"' in chat and "SETUP_CHAT_ARGS=(--chat web)" in chat
     assert "webchat-pair.token" in chat, "the role says how to read the token"
     web = _shell_fn(text, "write_owner_web_chat")
     assert 'run_as_owner python3 "$CODE_DIR/deploy/docker/chat_seed.py" web --public-url "$1"' in web
     assert "ea_bot" not in web
-    whole = _shell_fn(text, "write_owner_chat")
-    assert 'run_as_owner python3 "$CODE_DIR/deploy/docker/chat_seed.py" write' in whole
     health = _role(text, "health")
     assert 'as_owner python3 "$CODE_DIR/deploy/docker/healthcheck.py"' in health
 
@@ -1033,7 +1031,7 @@ def test_healthcheck_passes_a_block_without_the_web_chat():
     (ea / "config").mkdir(parents=True)
     env = dict(os.environ, EA_DIR=str(ea), EA_PRIVATE_DIR=str(base / "none"))
     cfg = ea / "config" / "ea-config.json"
-    for block, rc, words in (({"frontend": "zulip"}, 0, "no web chat"),
+    for block, rc, words in (({"frontend": "slack"}, 0, "no web chat"),
                              ({"frontend": "web"}, 1, "owner-private chat.json")):
         cfg.write_text(json.dumps({"chat": block}))
         r = subprocess.run([sys.executable, str(DOCKER / "healthcheck.py")], env=env,

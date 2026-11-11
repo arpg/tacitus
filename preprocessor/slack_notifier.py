@@ -5,7 +5,7 @@ chat_notify.
 Posts scheduling requests and priority alerts WITHOUT invoking Claude.
 post_to_slack and scheduling_channel_key delegate to chat_notify, which
 holds the quiet-hours gate and routes by the configured chat frontend
-(Slack incoming webhooks today, Zulip when configured). Callers in
+(Slack incoming webhooks, or the web chat when configured). Callers in
 run-agent.sh, run-plugin.sh, quiet_hours, sentinel, calendar_reconciler
 and the plugins keep importing this module unchanged.
 

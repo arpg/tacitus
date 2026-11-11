@@ -24,9 +24,6 @@ Usage:
     python3 scripts/install/user_init.py --ea-dir /tmp/test  # Override EA directory
     python3 scripts/install/user_init.py --chat web --web-host host.tailnet.ts.net \
         --web-login you@example.edu         # Talk to the EA in the web chat
-    python3 scripts/install/user_init.py --chat zulip --zulip-site https://chat.example.edu \
-        --zulip-bot-email ea-bot@chat.example.edu --zulip-owner-id 8
-                                             # Talk to the EA over Zulip
     python3 scripts/install/user_init.py --answers tests/install/answers-reviewer.json
                                              # Every answer from a file; no prompt
                                              # reads the terminal (install tests)
@@ -291,30 +288,13 @@ def has_chat(ctx: dict) -> bool:
     return ctx.get("profile") != "reviewer"
 
 
-def chat_block(frontend: str, site: str = "", bot_email: str = "",
-               owner_id: str = "", web_host: str = "", web_login: str = "") -> dict | None:
+def chat_block(frontend: str, web_host: str = "", web_login: str = "") -> dict | None:
     """The `chat` block for ea-config.json, or None for Slack (the default
     block in ea_config already means Slack, so nothing is written)."""
     if frontend == "web":
         return web_chat_block(web_host, web_login,
                               load_existing("ea-config.json").get("chat"))
-    if frontend != "zulip":
-        return None
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "preprocessor"))
-    import ea_config
-    notify = ea_config.DEFAULTS["chat"]["zulip"]["notify"]
-    return {
-        "frontend": "zulip",
-        "zulip": {
-            "site": site.rstrip("/"),
-            "bot_email": bot_email,
-            "owner_user_id": str(owner_id),
-            "stream": "ea",
-            "sched_stream": "ea-scheduling",
-            "dm_stream": "ea-dm",
-            "notify": {k: dict(v) for k, v in notify.items()},
-        },
-    }
+    return None
 
 
 def write_chat_config(block: dict):
@@ -328,13 +308,13 @@ def write_chat_config(block: dict):
 
 def _recorded_chat(block: dict, chosen: str | None = None) -> str | None:
     """The chat platform this install already chose, offered as the
-    default: `chosen` (--chat), a web or Zulip block, or a Slack block
+    default: `chosen` (--chat), a web block, or a Slack block
     that the Slack ids in ~/.ea/.env back (the template's block says
     Slack with no choice behind it). None when nothing was chosen."""
     if chosen:
         return chosen
     frontend = block.get("frontend") if isinstance(block, dict) else None
-    if frontend in ("web", "zulip"):
+    if frontend == "web":
         return frontend
     if frontend == "slack":
         try:
@@ -941,8 +921,8 @@ WEB_SERVE_LINE = (f"sudo tailscale serve --bg --https={Q.WEB_SERVE_PORT} --set-p
 
 def write_chat(values: dict, ctx: dict | None = None) -> dict | None:
     """The chat platform into ea-config.json's chat block: the web block
-    for `web` (web_chat_block), the frontend for zulip or slack when the
-    block names another. The hardening step copies the block into the
+    for `web` (web_chat_block), the frontend for slack when the block
+    names another. The hardening step copies the block into the
     owner-private chat.json, where the bot reads it, after each trusted
     value is typed back. Nothing in the reviewer mode, which has no chat (not asked)."""
     platform = values.get("chat-platform")
@@ -967,9 +947,6 @@ def write_chat(values: dict, ctx: dict | None = None) -> dict | None:
         print(f"    {WEB_SERVE_LINE}")
         print("  The hardening step copies these settings into the owner-private chat.json")
         print("  once you type each one back (docs/SETUP.md 'Web chat').")
-    elif platform == "zulip":
-        print("  Zulip: scripts/zulip_bootstrap.py prints the chat block (server, bot, owner,")
-        print("  streams) for ea-config.json (docs/SETUP.md 'Zulip server').")
     else:
         print("  Slack: the tokens and ids come in the next phase (docs/SETUP.md 'Slack').")
     return block
@@ -1034,13 +1011,6 @@ def write_auth(values: dict, ctx: dict, sign_in: bool = False) -> None:
         print("\n  --- Web chat ---\n")
         print("  The web chat needs no token: the bot serves it and writes its own pairing")
         print("  token beside its store in the owner-private directory.")
-        return
-    if ctx.get("chat") == "zulip":
-        print("\n  --- Zulip ---\n")
-        print("  The EA talks to you in private Zulip streams (chat block in")
-        print("  ea-config.json). Put the bot's API key in the owner-private")
-        print(f"  {private_dir() / 'secrets.env'} (mode 600) as ZULIP_API_KEY=...")
-        print("  scripts/zulip_bootstrap.py prints that line for you.")
         return
     # The tokens go in the owner-private secrets.env; the ids in ~/.ea/.env
     # (mode 640, non-secret), as docs/SETUP.md 'The Slack environment files' says.
@@ -1678,9 +1648,9 @@ def main():
              "(tests/install/answers-reviewer.json is a complete example)",
     )
     parser.add_argument(
-        "--chat", choices=["web", "zulip", "slack"], default=None,
+        "--chat", choices=["web", "slack"], default=None,
         help="Chat platform the EA talks to you on: web (the chat the bot serves "
-             "itself, recommended), zulip or slack (default: the chat block in "
+             "itself, recommended) or slack (default: the chat block in "
              "ea-config.json, else the chat phase asks)",
     )
     parser.add_argument("--web-host", default="",
@@ -1688,12 +1658,6 @@ def main():
                              "(with --chat web)")
     parser.add_argument("--web-login", default="",
                         help="Your Tailscale login, the web chat's owner (with --chat web)")
-    parser.add_argument("--zulip-site", default="",
-                        help="Zulip server URL (required with --chat zulip)")
-    parser.add_argument("--zulip-bot-email", default="",
-                        help="EA bot's Zulip email (required with --chat zulip)")
-    parser.add_argument("--zulip-owner-id", default="",
-                        help="Your Zulip user id (required with --chat zulip)")
     args = parser.parse_args()
     ANSWERS = None
     if args.answers:
@@ -1705,11 +1669,6 @@ def main():
             parser.error(f"--answers {args.answers}: not a JSON object")
         ANSWERS = old_profile_answers(loaded)
         ANSWERS_USED.clear()
-    if args.chat == "zulip":
-        missing = [f"--{n}" for n in ("zulip-site", "zulip-bot-email", "zulip-owner-id")
-                   if not getattr(args, n.replace("-", "_"))]
-        if missing:
-            parser.error(f"--chat zulip requires {', '.join(missing)}")
     if (args.web_host or args.web_login) and args.chat != "web":
         parser.error("--web-host and --web-login go with --chat web")
     host_q, login_q = (next(q for q in Q.phase("chat")["questions"] if q["key"] == k)
@@ -1734,8 +1693,7 @@ def main():
         print(f"    EA_DIR=/path/to/new/.ea python3 scripts/install/user_init.py")
         sys.exit(1)
 
-    block = chat_block(args.chat, args.zulip_site, args.zulip_bot_email,
-                       args.zulip_owner_id, args.web_host, args.web_login)
+    block = chat_block(args.chat, args.web_host, args.web_login)
     if block:
         write_chat_config(block)
 

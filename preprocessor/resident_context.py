@@ -103,9 +103,8 @@ GUARDRAIL = ("[Reminders: NEVER send-draft (bot handles Send buttons); "
 
 def _tracker_shape(data) -> dict:
     """The tracker fields and types this module writes, and nothing else:
-    session_id, primer_injected, threads (thread key to a list of injected
-    keys) and renamed (new thread key to old). ValueError when `data` is
-    not a JSON object."""
+    session_id, primer_injected and threads (thread key to a list of
+    injected keys). ValueError when `data` is not a JSON object."""
     if not isinstance(data, dict):
         raise ValueError(f"{STATE_FILE}: expected a JSON object")
     sid = data.get("session_id")
@@ -117,10 +116,6 @@ def _tracker_shape(data) -> dict:
                     for k, v in (threads.items() if isinstance(threads, dict) else ())
                     if isinstance(k, str) and isinstance(v, list)},
     }
-    renamed = data.get("renamed")
-    if isinstance(renamed, dict):
-        state["renamed"] = {k: v for k, v in renamed.items()
-                            if isinstance(k, str) and isinstance(v, str)}
     return state
 
 
@@ -219,14 +214,6 @@ def build_dispatch(*, user_msg: str, thread_ts: str, msg_ts: str,
     marker = _bridge.make_marker(thread_ts, msg_ts)
     parts.append(f"{marker} The user says:\n{user_msg}")
 
-    # A thread whose topic was renamed or moved: name its old key once,
-    # so the pane joins this message to the conversation it already holds.
-    prev = (state.get("renamed") or {}).get(thread_ts)
-    if prev:
-        parts.append(f"This thread was {prev} until its topic was renamed or moved. "
-                     f"It is the same conversation; reply under the new thread.")
-        injected.append("renamed")
-
     # Briefing extract, always when present (entity-matched, fresh).
     if briefing_blurb and briefing_blurb.strip():
         parts.append(briefing_blurb.strip())
@@ -271,10 +258,8 @@ def note_dispatched(session_id: str | None, thread_ts: str,
             state["primer_injected"] = True
         threads = state.setdefault("threads", {})
         existing = set(threads.get(thread_ts, []))
-        existing.update(k for k in injected if k not in ("primer", "renamed"))
+        existing.update(k for k in injected if k != "primer")
         threads[thread_ts] = sorted(existing)
-        if "renamed" in injected:
-            (state.get("renamed") or {}).pop(thread_ts, None)
         _write_state(state)
     except Exception:
         # Tracker is best-effort; a write failure only costs re-injection.
@@ -283,24 +268,3 @@ def note_dispatched(session_id: str | None, thread_ts: str,
 
 def _write_state(state: dict) -> None:
     _atomic.write_json(STATE_FILE, state)
-
-
-def move_thread(old: str, new: str) -> bool:
-    """Re-key a thread whose conversation moved, so a follow-up under the
-    new key still routes to the pane as the resident's own thread and
-    skips what was already injected. The next dispatch there names the
-    old key once. False when the tracker has no such thread, or could not
-    be read."""
-    try:
-        state = _read_tracker()
-        if state is None:
-            return False
-        threads = state["threads"]
-        if old not in threads:
-            return False
-        threads[new] = sorted(set(threads.pop(old)) | set(threads.get(new, [])))
-        state.setdefault("renamed", {})[new] = old
-        _write_state(state)
-        return True
-    except Exception:
-        return False

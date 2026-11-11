@@ -61,7 +61,7 @@ def owner(tmp_path, monkeypatch):
     monkeypatch.setenv("EA_DIR", str(tree))
     monkeypatch.setenv("EA_PRIVATE_DIR", str(priv))
     monkeypatch.setattr(ot, "install_ea_dir", lambda: tree)
-    for name in ("ZULIP_API_KEY", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "GRAPH_CLIENT_SECRET"):
+    for name in ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "GRAPH_CLIENT_SECRET"):
         monkeypatch.delenv(name, raising=False)
     ot._WARNED.clear()
     assert ot.is_owner_process()
@@ -170,11 +170,11 @@ def test_set_owner_file_mode_changes_the_checked_file_only(tmp_path):
 
 
 def test_parse_env_is_data_only_with_an_allowlist():
-    text = ("# c\nexport ZULIP_API_KEY='k1'\nSLACK_BOT_TOKEN=$(touch /tmp/owned)\n"
+    text = ("# c\nexport SLACK_APP_TOKEN='k1'\nSLACK_BOT_TOKEN=$(touch /tmp/owned)\n"
             "EA_PRIVATE_DIR=/home/ea-bot/fake\nPATH=/evil\nnot a line\n"
             'GRAPH_CLIENT_SECRET="s p"\n')
     got = ot.parse_env(text)
-    assert got == {"ZULIP_API_KEY": "k1", "SLACK_BOT_TOKEN": "$(touch /tmp/owned)",
+    assert got == {"SLACK_APP_TOKEN": "k1", "SLACK_BOT_TOKEN": "$(touch /tmp/owned)",
                    "GRAPH_CLIENT_SECRET": "s p"}
     assert "EA_PRIVATE_DIR" not in got and "PATH" not in got
 
@@ -224,14 +224,14 @@ def test_is_owner_process(owner, monkeypatch, tmp_path):
 # ── the secrets rule ──────────────────────────────────────────────────
 
 def test_owner_secret_order_env_private_legacy(owner, monkeypatch):
-    legacy = _write(owner.tree / ".env.secrets", "ZULIP_API_KEY=legacy\nSLACK_BOT_TOKEN=lslack\n")
-    assert ot.owner_secret("ZULIP_API_KEY") == "legacy"
-    _write(owner.priv / "secrets.env", "ZULIP_API_KEY=private\n")
-    assert ot.owner_secret("ZULIP_API_KEY") == "private"
+    legacy = _write(owner.tree / ".env.secrets", "SLACK_APP_TOKEN=legacy\nSLACK_BOT_TOKEN=lslack\n")
+    assert ot.owner_secret("SLACK_APP_TOKEN") == "legacy"
+    _write(owner.priv / "secrets.env", "SLACK_APP_TOKEN=private\n")
+    assert ot.owner_secret("SLACK_APP_TOKEN") == "private"
     assert ot.owner_secret("SLACK_BOT_TOKEN") == "lslack"          # per key
-    monkeypatch.setenv("ZULIP_API_KEY", "env")
-    assert ot.owner_secret("ZULIP_API_KEY") == "env"
-    assert ot.owner_secret("ZULIP_API_KEY", env={}) == "private"
+    monkeypatch.setenv("SLACK_APP_TOKEN", "env")
+    assert ot.owner_secret("SLACK_APP_TOKEN") == "env"
+    assert ot.owner_secret("SLACK_APP_TOKEN", env={}) == "private"
     assert legacy.exists()
     with pytest.raises(ValueError):
         ot.owner_secret("EA_DIR")
@@ -239,55 +239,56 @@ def test_owner_secret_order_env_private_legacy(owner, monkeypatch):
 
 def test_legacy_secrets_must_pass_the_contract(owner, tmp_path):
     legacy = owner.tree / ".env.secrets"
-    _write(legacy, "ZULIP_API_KEY=legacy\n", 0o660)                 # group-writable
-    assert ot.owner_secret("ZULIP_API_KEY") == ""
+    _write(legacy, "SLACK_APP_TOKEN=legacy\n", 0o660)               # group-writable
+    assert ot.owner_secret("SLACK_APP_TOKEN") == ""
     legacy.unlink()
-    elsewhere = _write(tmp_path / "planted", "ZULIP_API_KEY=planted\n", 0o600)
+    elsewhere = _write(tmp_path / "planted", "SLACK_APP_TOKEN=planted\n", 0o600)
     legacy.symlink_to(elsewhere)                                     # a symlink
-    assert ot.owner_secret("ZULIP_API_KEY") == ""
+    assert ot.owner_secret("SLACK_APP_TOKEN") == ""
     legacy.unlink()
-    _write(legacy, "ZULIP_API_KEY=legacy\n", 0o600)
-    assert ot.owner_secret("ZULIP_API_KEY") == "legacy"
+    _write(legacy, "SLACK_APP_TOKEN=legacy\n", 0o600)
+    assert ot.owner_secret("SLACK_APP_TOKEN") == "legacy"
 
 
 def test_dotenv_is_never_a_source_of_secrets(owner, monkeypatch):
-    _write(owner.tree / ".env", "ZULIP_API_KEY=from-dotenv\nSLACK_BOT_TOKEN=xoxb-dotenv\n", 0o640)
-    assert ot.owner_secret("ZULIP_API_KEY") == ""
+    _write(owner.tree / ".env", "SLACK_APP_TOKEN=from-dotenv\nSLACK_BOT_TOKEN=xoxb-dotenv\n", 0o640)
+    assert ot.owner_secret("SLACK_APP_TOKEN") == ""
     monkeypatch.setattr(chat_notify, "EA_DIR", owner.tree)
-    assert chat_notify._secret("ZULIP_API_KEY") == ""
+    assert chat_notify._secret("SLACK_APP_TOKEN") == ""
     assert chat_notify._secret("SLACK_BOT_TOKEN") == ""
 
 
 def test_chat_notify_secret_takes_the_private_file(owner, monkeypatch):
     monkeypatch.setattr(chat_notify, "EA_DIR", owner.tree)
-    _write(owner.tree / ".env.secrets", "ZULIP_API_KEY=legacy\n", 0o664)   # refused
-    assert chat_notify._secret("ZULIP_API_KEY") == ""
-    _write(owner.priv / "secrets.env", "ZULIP_API_KEY=private\n")
-    assert chat_notify._secret("ZULIP_API_KEY") == "private"
+    _write(owner.tree / ".env.secrets", "SLACK_BOT_TOKEN=legacy\n", 0o664)  # refused
+    assert chat_notify._secret("SLACK_BOT_TOKEN") == ""
+    _write(owner.priv / "secrets.env", "SLACK_BOT_TOKEN=private\n")
+    assert chat_notify._secret("SLACK_BOT_TOKEN") == "private"
 
 
 def test_a_group_writable_private_secrets_file_is_refused(owner):
-    _write(owner.priv / "secrets.env", "ZULIP_API_KEY=private\n", 0o620)
-    assert ot.owner_secret("ZULIP_API_KEY") == ""
+    _write(owner.priv / "secrets.env", "SLACK_BOT_TOKEN=private\n", 0o620)
+    assert ot.owner_secret("SLACK_BOT_TOKEN") == ""
 
 
-def test_load_frontend_gets_the_zulip_key_by_the_rule(owner, monkeypatch):
-    _write(owner.tree / "config" / "ea-config.json", json.dumps({"chat": {"frontend": "zulip"}}), 0o644)
+def test_load_frontend_gets_the_slack_tokens_by_the_rule(owner, monkeypatch):
+    _write(owner.tree / "config" / "ea-config.json", json.dumps({"chat": {"frontend": "slack"}}), 0o644)
     made = {}
 
-    class FakeZulip:
-        def __init__(self, cfg, *, api_key, private_dir):
-            made.update(cfg=cfg, api_key=api_key)
+    class FakeSlack:
+        @classmethod
+        def from_env(cls, env, *, for_cli=False):
+            made.update(token=env.get("SLACK_BOT_TOKEN"))
 
-    monkeypatch.setattr(chat, "_platform_module", lambda name: types.SimpleNamespace(ZulipFrontend=FakeZulip))
-    _write(owner.tree / ".env", "ZULIP_API_KEY=from-dotenv\n", 0o640)
-    with pytest.raises(KeyError, match="ZULIP_API_KEY"):
-        chat.load_frontend(ea_dir=owner.tree, env={})
-    _write(owner.priv / "secrets.env", "ZULIP_API_KEY=private\n")
+    monkeypatch.setattr(chat, "_platform_module", lambda name: types.SimpleNamespace(SlackFrontend=FakeSlack))
+    _write(owner.tree / ".env", "SLACK_BOT_TOKEN=from-dotenv\n", 0o640)
     chat.load_frontend(ea_dir=owner.tree, env={})
-    assert made["api_key"] == "private"
-    chat.load_frontend(ea_dir=owner.tree, env={"ZULIP_API_KEY": "env"})
-    assert made["api_key"] == "env"
+    assert made["token"] is None                         # never from .env
+    _write(owner.priv / "secrets.env", "SLACK_BOT_TOKEN=private\n")
+    chat.load_frontend(ea_dir=owner.tree, env={})
+    assert made["token"] == "private"
+    chat.load_frontend(ea_dir=owner.tree, env={"SLACK_BOT_TOKEN": "env"})
+    assert made["token"] == "env"
 
 
 # ── the chat trust settings ───────────────────────────────────────────
@@ -298,24 +299,24 @@ def _shared_chat(owner, monkeypatch, block):
 
 
 def test_owner_takes_the_chat_block_from_the_private_copy(owner, monkeypatch, capsys):
-    _shared_chat(owner, monkeypatch, {"frontend": "zulip", "zulip": {
-        "site": "https://attacker.example", "bot_email": "blake.kestrel40@example.com",
-        "owner_user_id": "666"}})
+    _shared_chat(owner, monkeypatch, {"frontend": "web", "web": {
+        "public_url": "https://attacker.example/chat", "tailscale_login": "blake.kestrel40@example.com"}})
     # no chat.json yet: the owner refuses, naming the seed step, and never
     # runs on ea-bot's copy
     with pytest.raises(ot.OwnerTrustError, match="seed --chat"):
         ea_config.get_chat()
     with pytest.raises(ot.OwnerTrustError, match="chat.json is missing"):
         chat.load_frontend()
-    _write(owner.priv / "chat.json", json.dumps({"frontend": "zulip", "zulip": {
-        "site": "https://zulip.mine", "bot_email": "hollis.ashcombe67@example.com", "owner_user_id": "8"}}))
+    _write(owner.priv / "chat.json", json.dumps({"frontend": "web", "web": {
+        "public_url": "https://host.tail0000.ts.net:8444/chat",
+        "tailscale_login": "hollis.ashcombe67@example.com"}}))
     got = ea_config.get_chat()
-    assert (got["zulip"]["site"], got["zulip"]["bot_email"], got["zulip"]["owner_user_id"]) == \
-        ("https://zulip.mine", "hollis.ashcombe67@example.com", "8")
-    assert got["zulip"]["dm_stream"] == "ea-dm"          # defaults still merge
+    assert (got["web"]["public_url"], got["web"]["tailscale_login"]) == \
+        ("https://host.tail0000.ts.net:8444/chat", "hollis.ashcombe67@example.com")
+    assert got["web"]["base_path"] == "/chat"            # defaults still merge
     # an explicit path is read as given (tests, the doctor)
-    assert ea_config.get_chat(owner.tree / "config" / "ea-config.json")["zulip"]["site"] == \
-        "https://attacker.example"
+    assert ea_config.get_chat(owner.tree / "config" / "ea-config.json")["web"]["public_url"] == \
+        "https://attacker.example/chat"
 
 
 def test_the_bot_takes_the_slack_owner_id_only_from_the_private_copy(owner, monkeypatch):
@@ -349,7 +350,7 @@ def test_the_chat_seed_confirms_the_slack_owner_id(owner, monkeypatch):
     assert not (owner.priv / "chat.json").exists()
     assert _seed(owner, "--chat", "--chat-frontend", "slack", "--chat-owner-id", "U_MINE") == 0
     block = json.loads((owner.priv / "chat.json").read_text())
-    assert block["slack"] == {"owner_user_id": "U_MINE"} and "zulip" not in block
+    assert block == {"frontend": "slack", "slack": {"owner_user_id": "U_MINE"}}
     # a chat.json written before the owner id moved here gets it added
     _write(owner.priv / "chat.json", json.dumps({"frontend": "slack"}))
     assert _seed(owner, "--chat") == 1
@@ -359,7 +360,7 @@ def test_the_chat_seed_confirms_the_slack_owner_id(owner, monkeypatch):
 
 def test_an_untrusted_private_chat_file_fails_closed(owner, monkeypatch):
     _shared_chat(owner, monkeypatch, {"frontend": "slack"})
-    _write(owner.priv / "chat.json", json.dumps({"frontend": "zulip"}), 0o620)
+    _write(owner.priv / "chat.json", json.dumps({"frontend": "web"}), 0o620)
     with pytest.raises(ot.OwnerTrustError):
         ea_config.get_chat()
     _write(owner.priv / "chat.json", "[1, 2]", 0o600)
@@ -369,8 +370,8 @@ def test_an_untrusted_private_chat_file_fails_closed(owner, monkeypatch):
 
 def test_a_non_owner_process_reads_the_shared_config(owner, monkeypatch, tmp_path):
     _shared_chat(owner, monkeypatch, {"frontend": "memory"})
-    _write(owner.priv / "chat.json", json.dumps({"frontend": "zulip"}))
-    assert ea_config.get_chat()["frontend"] == "zulip"
+    _write(owner.priv / "chat.json", json.dumps({"frontend": "web"}))
+    assert ea_config.get_chat()["frontend"] == "web"
     monkeypatch.setenv("EA_PRIVATE_DIR", str(tmp_path / "unreachable"))
     assert ea_config.get_chat()["frontend"] == "memory"
 
@@ -589,32 +590,30 @@ def _seed(owner, *args):
 
 
 def test_seed_copies_a_checked_legacy_file_and_the_chat_block(owner, capsys):
-    legacy = _write(owner.tree / ".env.secrets", "ZULIP_API_KEY=k\nGRAPH_CLIENT_SECRET=s\n")
+    legacy = _write(owner.tree / ".env.secrets", "SLACK_BOT_TOKEN=k\nGRAPH_CLIENT_SECRET=s\n")
+    _write(owner.tree / ".env", "EA_SLACK_OWNER_ID=U_MINE\n", 0o640)
     _write(owner.tree / "config" / "ea-config.json", json.dumps({"profile": "assistant", "chat": {
-        "frontend": "zulip", "zulip": {"site": "https://z.mine", "bot_email": "hale.stavros17@example.com",
-                                       "owner_user_id": "8"}}}), 0o644)
-    assert _seed(owner, "--chat-frontend", "zulip", "--chat-site", "https://z.mine",
-                 "--chat-bot-email", "hale.stavros17@example.com", "--chat-owner-id", "8") == 0
+        "frontend": "slack"}}), 0o644)
+    assert _seed(owner, "--chat-frontend", "slack", "--chat-owner-id", "U_MINE") == 0
     out = capsys.readouterr().out
     sec, chat_file = owner.priv / "secrets.env", owner.priv / "chat.json"
     assert sec.read_bytes() == legacy.read_bytes()
     assert stat.S_IMODE(sec.stat().st_mode) == 0o600
-    assert json.loads(chat_file.read_text())["zulip"]["site"] == "https://z.mine"
+    assert json.loads(chat_file.read_text())["slack"]["owner_user_id"] == "U_MINE"
     assert stat.S_IMODE(chat_file.stat().st_mode) == 0o600
-    for line in ("site          = https://z.mine", "bot_email     = hale.stavros17@example.com", "owner_user_id = 8"):
+    for line in ("frontend      = slack", "slack.owner_user_id = U_MINE"):
         assert line in out
     assert "=k" not in out and "=s" not in out                  # values never printed
     # idempotent: existing files are kept, even when the sources change
-    _write(legacy, "ZULIP_API_KEY=other\n")
+    _write(legacy, "SLACK_BOT_TOKEN=other\n")
     assert _seed(owner) == 0
-    assert "ZULIP_API_KEY=k" in sec.read_text()
+    assert "SLACK_BOT_TOKEN=k" in sec.read_text()
 
 
-def _chat_tree(owner, **zulip):
-    z = {"site": "https://z.mine", "bot_email": "hale.stavros17@example.com",
-         "owner_user_id": "8", "stream": "ea", **zulip}
-    _write(owner.tree / "config" / "ea-config.json",
-           json.dumps({"chat": {"frontend": "zulip", "zulip": z}}), 0o644)
+def _chat_tree(owner, dotenv_owner="U_MINE", **chat):
+    block = {"frontend": "slack", "slack": {"owner_user_id": "U_PLANTED"}, **chat}
+    _write(owner.tree / "config" / "ea-config.json", json.dumps({"chat": block}), 0o644)
+    _write(owner.tree / ".env", f"EA_SLACK_OWNER_ID={dotenv_owner}\n", 0o640)
 
 
 def test_the_chat_seed_writes_nothing_unconfirmed(owner, monkeypatch, capsys):
@@ -624,65 +623,54 @@ def test_the_chat_seed_writes_nothing_unconfirmed(owner, monkeypatch, capsys):
     monkeypatch.setattr(ot, "_interactive", lambda: False)
     assert _seed(owner, "--chat") == 1                     # no terminal, no flags
     captured = capsys.readouterr()
-    assert "zulip.stream = ea" in captured.out and "zulip.owner_user_id = 8" in captured.out
-    assert "--chat-owner-id" in captured.err and "--chat-stream" in captured.err
+    assert "frontend = slack" in captured.out and "slack.owner_user_id = U_PLANTED" in captured.out
+    assert "--chat-frontend" in captured.err and "--chat-owner-id" in captured.err
     assert not (owner.priv / "chat.json").exists()
-    typed = iter(["zulip", "https://z.mine", "hale.stavros17@example.com", "9", "ea"])
+    typed = iter(["slack", "U_OTHER"])
     monkeypatch.setattr(ot, "_interactive", lambda: True)
     monkeypatch.setattr(ot, "_prompt", lambda q: next(typed))
     assert _seed(owner, "--chat") == 1                     # one value typed differently
     assert not (owner.priv / "chat.json").exists()
-    typed = iter(["zulip", "https://z.mine", "hale.stavros17@example.com", "8", "ea"])
+    typed = iter(["slack", "U_MINE"])
     assert _seed(owner, "--chat") == 0
     block = json.loads((owner.priv / "chat.json").read_text())
-    assert block["zulip"]["owner_user_id"] == "8" and block["zulip"]["stream"] == "ea"
+    assert block == {"frontend": "slack", "slack": {"owner_user_id": "U_MINE"}}
 
 
 def test_a_flag_supplies_the_trusted_value(owner, monkeypatch):
-    _chat_tree(owner, owner_user_id="666", site="https://attacker.example")
+    _chat_tree(owner, dotenv_owner="U_PLANTED")
     monkeypatch.setattr(ot, "_interactive", lambda: False)
-    assert _seed(owner, "--chat", "--chat-frontend", "zulip", "--chat-site", "https://z.mine",
-                 "--chat-bot-email", "hale.stavros17@example.com", "--chat-owner-id", "8",
-                 "--chat-stream", "ea") == 0
-    z = json.loads((owner.priv / "chat.json").read_text())["zulip"]
-    assert (z["site"], z["owner_user_id"]) == ("https://z.mine", "8")
+    assert _seed(owner, "--chat", "--chat-frontend", "slack", "--chat-owner-id", "U_MINE") == 0
+    block = json.loads((owner.priv / "chat.json").read_text())
+    assert (block["frontend"], block["slack"]["owner_user_id"]) == ("slack", "U_MINE")
 
 
-def test_the_chat_seed_confirms_every_stream_the_bot_posts_to(owner, monkeypatch, capsys):
-    """The DM stream gets every card with its full draft body, and each
-    stream key routes posts; ea-bot can write its copy, so a routing value
-    is confirmed like the server and the owner id."""
-    _chat_tree(owner, sched_stream="ea-scheduling", dm_stream="leak-dm",
-               notify={"health": {"stream": "ea-health", "topic": "alerts"},
-                       "personal": {"stream": "public-feed"}})
+def test_the_chat_seed_copies_only_a_web_or_slack_block(owner, monkeypatch, capsys):
+    """The bot runs the web chat or Slack. A block for another platform is
+    refused before anything is asked, and a section for one is never
+    copied."""
     monkeypatch.setattr(ot, "_interactive", lambda: False)
-    trusted = ["--chat-frontend", "zulip", "--chat-site", "https://z.mine",
-               "--chat-bot-email", "hale.stavros17@example.com", "--chat-owner-id", "8",
-               "--chat-stream", "ea", "--chat-sched-stream", "ea-scheduling"]
-    # the DM stream and the notify streams are not confirmed: nothing is written
-    assert _seed(owner, "--chat", *trusted) == 1
-    err = capsys.readouterr().err
-    assert "--chat-dm-stream" in err and "--chat-notify health=<stream>" in err
-    assert not (owner.priv / "chat.json").exists()
-    # flags put the owner's own streams in place of ea-bot's
-    assert _seed(owner, "--chat", *trusted, "--chat-dm-stream", "ea-dm",
-                 "--chat-notify", "health=ea-health", "--chat-notify", "personal=ea") == 0
-    z = json.loads((owner.priv / "chat.json").read_text())["zulip"]
-    assert (z["stream"], z["sched_stream"], z["dm_stream"]) == ("ea", "ea-scheduling", "ea-dm")
-    assert z["notify"] == {"health": {"stream": "ea-health", "topic": "alerts"},
-                           "personal": {"stream": "ea"}}
-    out = capsys.readouterr().out
-    assert "dm_stream     = ea-dm" in out and "notify.personal.stream = ea" in out
-
-
-def test_the_chat_seed_types_back_a_notify_stream(owner, monkeypatch):
-    _chat_tree(owner, notify={"health": {"stream": "ea-health"}})
-    typed = iter(["zulip", "https://z.mine", "hale.stavros17@example.com", "8", "ea",
-                  "other-stream"])
-    monkeypatch.setattr(ot, "_interactive", lambda: True)
-    monkeypatch.setattr(ot, "_prompt", lambda q: next(typed))
+    _write(owner.tree / "config" / "ea-config.json", json.dumps({"chat": {
+        "frontend": "zulip", "zulip": {"site": "https://chat.example"}}}), 0o644)
     assert _seed(owner, "--chat") == 1
+    err = capsys.readouterr().err
+    assert "NOT written: chat.frontend 'zulip' is not web or slack" in err
+    assert "--chat-frontend web" in err and "--chat-frontend slack" in err
     assert not (owner.priv / "chat.json").exists()
+    assert _seed(owner, "--chat", "--chat-frontend", "irc") == 1
+    assert "'irc' is not web or slack" in capsys.readouterr().err
+    assert not (owner.priv / "chat.json").exists()
+    # a flag names the platform; the old section stays behind
+    assert _seed(owner, "--chat", *WEB_FLAGS) == 0
+    block = json.loads((owner.priv / "chat.json").read_text())
+    assert block["frontend"] == "web" and "zulip" not in block
+    assert "chat.example" not in capsys.readouterr().out
+    # a chat.json the seed keeps is named when the bot cannot run on it
+    _write(owner.priv / "chat.json", json.dumps({"frontend": "zulip"}))
+    assert _seed(owner, "--chat") == 0
+    out = capsys.readouterr().out
+    assert "exists, kept" in out
+    assert "WARNING: the bot does not start: chat.frontend 'zulip' is not web or slack" in out
 
 
 WEB_URL = "https://host.tail0000.ts.net:8444/chat"
@@ -765,9 +753,9 @@ def test_the_chat_seed_refuses_a_web_store_or_token_in_the_residents_tree(owner,
     assert _seed(owner, "--chat", *WEB_FLAGS,
                  "--chat-pair-token-file", str(owner.tree / "token")) == 1
     assert "inside" in capsys.readouterr().err
-    # beside a Zulip primary the web shadow takes the same rule
+    # beside a Slack primary the web shadow takes the same rule
     _write(owner.tree / "config" / "ea-config.json", json.dumps({"chat": {
-        "frontend": "zulip", "shadow": "web", "zulip": {"site": "https://z.mine"},
+        "frontend": "slack", "shadow": "web",
         "web": {**base, "store_path": str(owner.tree / "w.sqlite")}}}), 0o644)
     assert _seed(owner, "--chat") == 1
     assert "web.store_path" in capsys.readouterr().err
@@ -784,12 +772,6 @@ def test_the_seed_and_the_web_chat_name_the_same_resident_tree(owner):
     assert ot.inside_roots(owner.tree / "state" / "x", ot.resident_roots()) == \
         owner.tree.resolve()
     assert ot.inside_roots(owner.priv / "x", ot.resident_roots()) is None
-
-
-def test_a_notify_flag_needs_a_key():
-    with pytest.raises(ValueError):
-        ot.parse_notify_flags(["ea-health"])
-    assert ot.parse_notify_flags(["health=ea-health"]) == {"notify.health.stream": "ea-health"}
 
 
 def test_the_calendar_seed_needs_the_id_typed_back(owner, monkeypatch, capsys):
@@ -818,27 +800,26 @@ def test_an_owner_reads_webhooks_only_from_the_private_copy(owner, monkeypatch):
 
 
 def test_seed_refuses_a_legacy_file_that_fails_the_contract(owner, tmp_path, capsys):
-    planted = _write(tmp_path / "planted", "ZULIP_API_KEY=planted\n", 0o600)
+    planted = _write(tmp_path / "planted", "SLACK_BOT_TOKEN=planted\n", 0o600)
     (owner.tree / ".env.secrets").symlink_to(planted)
     assert _seed(owner, "--secrets") == 1
     assert not (owner.priv / "secrets.env").exists()
     (owner.tree / ".env.secrets").unlink()
-    _write(owner.tree / ".env.secrets", "ZULIP_API_KEY=x\n", 0o660)
+    _write(owner.tree / ".env.secrets", "SLACK_BOT_TOKEN=x\n", 0o660)
     assert _seed(owner, "--secrets") == 1
     assert not (owner.priv / "secrets.env").exists()
 
 
 def test_seed_does_not_follow_a_symlinked_config(owner, tmp_path):
-    other = _write(tmp_path / "other.json", json.dumps({"chat": {"frontend": "zulip"}}), 0o600)
+    other = _write(tmp_path / "other.json", json.dumps({"chat": {"frontend": "web"}}), 0o600)
     (owner.tree / "config" / "ea-config.json").symlink_to(other)
-    assert _seed(owner, "--chat") == 1
+    assert _seed(owner, "--chat", "--chat-frontend", "web") == 1
     assert not (owner.priv / "chat.json").exists()
 
 
-# ── the root step and the switch script, read as text ─────────────────
+# ── the root step, read as text ───────────────────────────────────────
 
 HARDEN = (ROOT / "deploy" / "harden-permissions.sh").read_text()
-SWITCH = (ROOT / "scripts" / "zulip_switch.sh").read_text()
 
 
 def _dropin(unit: str) -> str:
@@ -865,17 +846,6 @@ def test_harden_seeds_and_fixes_modes_as_the_owner():
     # the seed comes before any unit is changed, and a failed seed stops the run
     assert HARDEN.index("owner_trust.py\" seed") < HARDEN.index("ea-chat-bot.service.d/harden.conf <<EOF")
     assert "the owner-private seed failed" in HARDEN
-
-
-def test_zulip_switch_writes_both_copies_and_reads_the_key_by_the_rule():
-    assert "grep '^ZULIP_API_KEY=' \"$SECRETS\"" not in SWITCH
-    assert '>> "$SECRETS"' not in SWITCH
-    assert 'bot_key() { $PY "$OWNER_TRUST" secret ZULIP_API_KEY; }' in SWITCH
-    body = SWITCH[SWITCH.index("set_chat() {"):SWITCH.index("count_key()")]
-    assert "/home/ea-bot/.ea/config/ea-config.json" in body and "$OWNER_CHAT" in body
-    for call in ("set_chat frontend slack", "set_chat zulip.site \"$SITE\"", "set_chat frontend zulip"):
-        assert call in SWITCH
-    assert SWITCH.count('d["chat"]["frontend"] = ') == 0            # no one-copy flip left
 
 
 def test_seed_copies_the_display_name_once_and_the_owner_reads_it(owner, capsys):
@@ -930,8 +900,7 @@ def test_a_resident_process_has_no_owner_profile_name(owner, monkeypatch):
 
 def test_every_trusted_value_is_explained_before_it_is_asked(monkeypatch, capsys):
     """The operator is told what each value is and what a wrong one does."""
-    keys = [k for k, _, _ in ot.CHAT_TRUSTED] + [
-        "stream", "sched_stream", "dm_stream", "notify.health.stream",
+    keys = [k for k, _, _ in ot.CHAT_TRUSTED] + [k for k, _, _ in ot.CHAT_WEB] + [
         "ea_managed_calendar_id", "ea_managed_account", "name"]
     for k in keys:
         assert ot._help(k), k

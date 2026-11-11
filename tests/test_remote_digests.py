@@ -483,16 +483,15 @@ def test_unreadable_mail_posts_nothing(priv, capsys):
     assert "the mail could not be read" in capsys.readouterr().err
 
 
-def test_on_zulip_the_post_goes_to_the_mail_digest_stream(monkeypatch):
+def test_on_the_web_chat_the_post_goes_to_the_digest_channel(monkeypatch):
     import chat_notify
     sent = []
-    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "zulip")
-    monkeypatch.setattr(chat_notify, "_chat_cfg", lambda: {"zulip": {"site": "s"}})
-    monkeypatch.setattr(chat_notify, "_zulip_post_parts",
-                        lambda zcfg, target, parts: sent.append((target, parts)) or True)
+    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "web")
+    monkeypatch.setattr(chat_notify, "_send_web",
+                        lambda key, parts, *, channel="", direct=False:
+                        sent.append((key, parts, channel)) or "t-1")
     assert rd._post("list-digest", "digest text")
-    assert sent == [({"stream": chat_notify.DIGEST_STREAM, "topic": rd.DIGEST_TOPIC},
-                     ["digest text"])]
+    assert sent == [("list-digest", ["digest text"], chat_notify.WEB_DIGEST_ID)]
 
 
 def test_on_slack_the_post_takes_the_digest_webhook_else_the_ea_channel(monkeypatch):

@@ -468,6 +468,6 @@ if [ "$ok" = 1 ]; then
     echo "[harden] revert: rm the two .d/harden.conf files, systemctl daemon-reload, restart."
     [ "$BOT_RETIRE" = 0 ] || echo "[harden] the bot is not hardened yet: retire its user unit (above) and run this script again."
 else
-    echo "[harden] WARNING: a service is not active on the new path (its log lines are above). The bot needs its chat settings: docs/SETUP.md \"Zulip server\" or \"Slack\"." >&2
+    echo "[harden] WARNING: a service is not active on the new path (its log lines are above). The bot needs its chat settings: docs/SETUP.md \"Web chat\" or \"Slack\"." >&2
     exit 1
 fi

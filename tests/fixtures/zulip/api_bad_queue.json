@@ -1,6 +1,0 @@
-{
- "code": "BAD_EVENT_QUEUE_ID",
- "msg": "Bad event queue ID: q-1",
- "queue_id": "q-1",
- "result": "error"
-}

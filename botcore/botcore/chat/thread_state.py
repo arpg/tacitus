@@ -46,19 +46,6 @@ answer and the owner's override each write the store's `thread_state`
 row, which appends a `thread_state` event when the state, `by` or the
 reason changed.
 
-Shadow mode. A card copied as text from Zulip's past (mirrored_card) has
-no card JSON, so card_view() reads its text the way Zulip writes it
-(zulip_frontend.card_text_state): the legend makes it a live card, a
-status line a card acted on, and both decide() and judge_prompt() read
-that view. While its stored text can still change (card_pending) the
-engine asks the primary for the card as it stands now (`cards`, the
-web front end's card_lookup): at most `card_cap` reads a tick, each
-answer kept for one tick interval. A linked card the store does not
-hold at all (the copy took the pointer, not the card) is read the same
-way by its message id and read as fetched_card gives it; its final
-answer is kept while the engine runs. With no primary to ask (the web
-chat alone) the stored text is all there is.
-
 A conversation's cards in Direct messages. A card the owner asked for in
 another conversation lives in the DM, with a one-line pointer where it
 was asked. The store links the two (its `card_link` table: from the
@@ -116,7 +103,6 @@ from datetime import datetime
 from typing import Any
 
 from .cards import DEFAULT_MAX_AGE_S
-from .zulip_frontend import card_text_state
 
 log = logging.getLogger("chat.web.state")
 
@@ -140,10 +126,6 @@ HOSTED_CAP = 20
 HOSTED_PROMPT_BYTES = 100_000
 ROUTES = ("local", "hosted", "auto", "off")
 RULE_CAP = 500
-# Reads of a mirrored card on the primary that one tick makes at most.
-CARD_CAP = 30
-# Final answers for linked cards the store does not hold, kept at most.
-FETCHED_KEEP = 1000
 # Threads whose linked ledger rows one read fetches.
 BATCH = 50
 MIN_CONFIDENCE = 0.6
@@ -261,12 +243,11 @@ EXPIRED_MARKS = (":zzz:", ":sleeping:")
 def outcome(text: str | None) -> str:
     """What a card's status line says: `busy` (the bot is acting on the
     press), `failed` (it could not), `expired` (no answer came and the
-    card was retired) or `acted`. The emoji names are the core's, or
-    Zulip's for a status line copied from Zulip."""
+    card was retired) or `acted`."""
     t = str(text or "").lstrip()
-    if t.startswith((":hourglass", ":time_ticking:")):
+    if t.startswith(":hourglass"):
         return "busy"
-    if t.startswith((":x:", ":cross_mark:", ":warning:", ":no_entry:")):
+    if t.startswith((":x:", ":warning:", ":no_entry:")):
         return "failed"
     if t.startswith(EXPIRED_MARKS):
         return "expired"
@@ -275,99 +256,6 @@ def outcome(text: str | None) -> str:
 
 def _card_title(m: dict) -> str:
     return plain(_card(m).get("title") or m.get("text"), 80)
-
-
-# A card copied from Zulip's past opens with its lock title, after the
-# owner's mention when the card carried one.
-_MIRRORED_CARD_RE = re.compile(r"^\s*(?:@\*\*[^*\n]+\*\*\s*)?:lock(?:ed)?:")
-_MENTION_RE = re.compile(r"^\s*@\*\*[^*\n]+\*\*\s*")
-# The status of a card filed in Zulip's done stream with no status line
-# that says it acted.
-SETTLED_OUTSIDE = "Settled outside chat."
-
-
-def mirrored_card(m: dict) -> bool:
-    """True for a card copied as text from Zulip's past into a mirrored
-    stream channel (`stream:<n>`): a history row with no card JSON whose
-    text opens with the lock title and holds the card's rule. The one-line
-    pointer to a card ("The Send button ... is in your DM") has no rule
-    and is no card."""
-    text = str(m.get("text") or "")
-    return (bool(m.get("history")) and m.get("kind") == "message" and not m.get("card")
-            and str(m.get("channel") or "").startswith("stream:")
-            and bool(_MIRRORED_CARD_RE.match(text)) and card_text_state(text)[0] != "")
-
-
-def card_pending(text: str | None) -> bool:
-    """True while a mirrored card's text can still change on Zulip: its
-    legend shows or a press is under way. A status line that acted or
-    failed is final."""
-    state, status = card_text_state(str(text or ""))
-    return state == "live" or (state == "status" and outcome(status) == "busy")
-
-
-def card_view(m: dict) -> dict:
-    """A mirrored card as the card rules (2, 3c, 4) and the prompt read a
-    card; any other message as it is. The text read is Zulip's answer (the
-    `primary` the engine attaches: {"text", "filed", "edited_at"}), else
-    the stored copy. While the legend shows, it is a `card` row with a live
-    action (rule 2 still weighs its age). Once a status line holds the
-    legend's place, it is a `status` row with that line. A card filed in
-    the done stream with no status that acted was settled outside chat.
-
-    The status counts from the card's own time, so every message after
-    the card is later for rule 4, whether or not Zulip answered this
-    time; a press under way counts from Zulip's last edit when known, for
-    rule 3c's window."""
-    if not mirrored_card(m):
-        return m
-    got = m.get("primary") if isinstance(m.get("primary"), dict) else {}
-    return _text_view(m, str(got.get("text") or m.get("text") or ""), got, m.get("posted_at"))
-
-
-def _text_view(m: dict, text: str, got: dict, done_at: Any) -> dict:
-    """A card known only by its Zulip text, as the card rules read a card:
-    the legend makes it a `card` row with a live action, a status line a
-    `status` row with that line from `done_at` (a press under way from
-    Zulip's last edit when known), and a card filed in the done stream
-    with no status that acted was settled outside chat. Any other text
-    leaves `m` as it is."""
-    state, status = card_text_state(text)
-    if got.get("filed") and not (state == "status" and outcome(status) == "acted"):
-        state, status = "status", SETTLED_OUTSIDE
-    title = next((ln for ln in _MENTION_RE.sub("", text, count=1).splitlines() if ln.strip()),
-                 "")
-    if state == "live":
-        return {**m, "kind": "card", "card": {"title": title, "actions": [{"id": "primary"}]}}
-    if state == "status":
-        at = done_at
-        if outcome(status) == "busy":
-            at = got.get("edited_at") or m.get("updated_at") or at
-        return {**m, "kind": "status", "text": status, "card": {"title": title},
-                "updated_at": float(at or 0)}
-    return m
-
-
-def fetched_card(link: dict, got: dict | None) -> dict | None:
-    """A linked card the store does not hold (a `missing` link: the copy
-    took the pointer, not the card), read from the primary's answer
-    ({"text", "filed", "edited_at", "posted_at"}) as card_view reads a
-    card copied as text. Its age counts from Zulip's posting; its outcome
-    from Zulip's last edit, the edit that wrote the status line (else the
-    posting). None when there is no answer or the message is no card."""
-    if not isinstance(got, dict):
-        return None
-    text = str(got.get("text") or "")
-    if not _MIRRORED_CARD_RE.match(text) or card_text_state(text)[0] == "":
-        return None
-    posted = float(got.get("posted_at") or 0)
-    edited = float(got.get("edited_at") or 0) or posted
-    row = {"kind": "message", "author": "bot", "channel": str(link.get("channel") or ""),
-           "id": str(link.get("id") or ""), "thread_key": "", "text": text, "card": None,
-           "file": None, "reactions": [], "posted_at": posted, "updated_at": edited,
-           "history": True, "fetched": True}
-    view = _text_view(row, text, got, edited)
-    return view if view is not row else None
 
 
 def _walk(obj: Any, keys: dict[str, list], depth: int = 0) -> None:
@@ -427,26 +315,20 @@ LINKED_PLACE = "Direct messages"
 # The pointer the bot leaves where a card was asked for
 # (ea-chat-bot._post_dm_breadcrumb: ":lock: <What> is in your DM: <link|open
 # it>"), as the web chat stores it: a Markdown link after the words, the
-# lock under its core name or Zulip's.
+# lock under its core name, or Zulip's in history imported from Zulip.
 POINTER_RE = re.compile(r":lock(?:ed)?:[^\n]{0,160}? (?:is|are) in your DM:? *"
                         r"\[[^\]\n]{1,40}\]\((\S+?)\)")
 # The card a pointer's link names: the web chat's own hash route
-# (#/<channel>/<thread>/<message>), Zulip's narrow (.../near/<id>; an id
-# is unique on the server) or Slack's permalink (/archives/<C>/p<ts>).
+# (#/<channel>/<thread>/<message>) or Slack's permalink (/archives/<C>/p<ts>).
 _WEB_LINK_RE = re.compile(r"#/([^/\s?#]+)/([^/\s?#]+)/([^/\s?#]+)$")
-_ZULIP_LINK_RE = re.compile(r"/near/(\d+)$")
 _SLACK_LINK_RE = re.compile(r"/archives/([A-Z0-9]+)/p(\d{10})(\d{6})(?:\?|$)")
 
 
 def link_target(url: str) -> tuple[str, str] | None:
-    """(channel, message id) a message link names, or None; the channel is
-    "" when the link names only the id (Zulip)."""
+    """(channel, message id) a message link names, or None."""
     m = _WEB_LINK_RE.search(url)
     if m:
         return urllib.parse.unquote(m.group(1)), urllib.parse.unquote(m.group(3))
-    z = _ZULIP_LINK_RE.search(url)
-    if z:
-        return "", z.group(1)
     s = _SLACK_LINK_RE.search(url)
     if s:
         return s.group(1), f"{s.group(2)}.{s.group(3)}"
@@ -455,7 +337,7 @@ def link_target(url: str) -> tuple[str, str] | None:
 
 def pointer_targets(text: str | None) -> list[tuple[str, str]]:
     """(card channel, card message id) for each pointer to a card in a bot
-    message; the channel is "" when the link names only the id (Zulip)."""
+    message."""
     out: list[tuple[str, str]] = []
     for url in POINTER_RE.findall(str(text or "")):
         got = link_target(url)
@@ -476,16 +358,13 @@ def card_origin(card: Any) -> tuple[str, str] | None:
 def linked_state(linked: list[dict], messages: list[dict],
                  now: float) -> tuple[str, str] | None:
     """Rule 2b over the cards the conversation links to in another thread
-    (`linked`, store rows; a card copied from Zulip's past reads as
-    card_view gives it, and one the store does not hold as fetched_card
-    gives it once the primary answered): one live is needs_you; a press
-    under way within WORKING_WINDOW_S is working; all acted on, with no
-    owner message in the conversation after the last of them, is done. A
-    failed, expired or busy-too-long card, a link to a card the store does
-    not hold and the primary did not give (kind `missing`), or no card at
-    all, decides nothing."""
+    (`linked`, store rows): one live is needs_you; a press under way within
+    WORKING_WINDOW_S is working; all acted on, with no owner message in
+    the conversation after the last of them, is done. A failed, expired or
+    busy-too-long card, a link to a card the store does not hold (kind
+    `missing`), or no card at all, decides nothing."""
     linked = linked or []
-    cards = [c for c in (card_view(x) for x in linked)
+    cards = [c for c in linked
              if c.get("kind") in ("card", "status") and isinstance(c.get("card"), dict)]
     if not cards:
         return None
@@ -551,8 +430,7 @@ def nudge_due(ctx: dict, now: float) -> bool:
     linked to it is live (its button is the nudge). Once per conversation
     is the store's to keep."""
     prev = ctx.get("prev") or {}
-    raw = ctx.get("messages") or []
-    msgs = [card_view(m) for m in raw]
+    raw = msgs = ctx.get("messages") or []
     if prev.get("state") != "needs_you" or prev.get("by") == "owner" or not msgs:
         return False
     since = nudge_since(raw)
@@ -564,7 +442,7 @@ def nudge_due(ctx: dict, now: float) -> bool:
             and (ctx.get("origin") or AUTOMATED_TITLE_RE.search(plain(first.get("text"), 200)))):
         return False
     return not (any(_live(m, now) for m in msgs) or any(
-        _live(card_view(c), now) for c in ctx.get("linked") or []))
+        _live(c, now) for c in ctx.get("linked") or []))
 
 
 # ── the rules ─────────────────────────────────────────────────────────
@@ -669,13 +547,12 @@ def reply_over_card(messages: list[dict], linked: list[dict] | None,
     so the bot is working on it: working with CHANGE_WORKING within
     WORKING_WINDOW_S, needs_you with NOT_ANSWERED after it or on a failed
     turn. None once Tacitus answers (a new card, a revised card or a
-    message): the card rules decide. `messages` are read as card_view
-    gives them."""
+    message): the card rules decide."""
     got = unanswered(messages, now)
     if got is None:
         return None
     state, reason, wrote = got
-    cards = [*messages, *(card_view(x) for x in linked or [])]
+    cards = [*messages, *(linked or [])]
     last = max((_changed_at(c) for c in cards if c.get("kind") in ("card", "status")),
                default=0.0)
     if wrote <= last:
@@ -695,12 +572,10 @@ def decide(messages: list[dict], *, channel: dict | None = None,
     None; `origin` the notifier key that opened the thread, "" when none
     was recorded; `devices` the relay's device rows, None when no relay
     runs; `linked` the cards in other threads the conversation links to
-    (rule 2b). A card copied as text from Zulip's past is read as
-    card_view gives it."""
+    (rule 2b)."""
     if not messages:
         return None
     now = time.time() if now is None else float(now)
-    messages = [card_view(m) for m in messages]
     newest = max(int(m.get("seq") or 0) for m in messages)
     first = messages[0]
 
@@ -863,12 +738,10 @@ def _line(m: dict, now: float) -> str:
 
 
 def _linked_line(c: dict, now: float) -> tuple[float, str] | None:
-    """A card the conversation links to (read as card_view or fetched_card
-    gives it) as one prompt line in the shape of a card in the thread,
-    with the time it last changed: `card "Title" in Direct messages:` and
-    its outcome (its status line, `failed`, `expired`, or waiting for a
-    button). None for a link to no card (a card the store does not hold
-    and the primary did not give)."""
+    """A card the conversation links to as one prompt line in the shape of a card in the thread, with the time it
+    last changed: `card "Title" in Direct messages:` and its outcome (its
+    status line, `failed`, `expired`, or waiting for a button). None for a
+    link to no card (a card the store does not hold)."""
     if c.get("kind") not in ("card", "status") or not isinstance(c.get("card"), dict):
         return None
     title = plain(_card(c).get("title") or (c.get("text") if c.get("kind") == "card" else ""), 80)
@@ -890,14 +763,13 @@ def _message_lines(messages: list[dict], now: float, linked: list[dict] | None =
     conversation links to in another thread, placed by the time it last
     changed: the first message stays; past the caps the oldest of the
     rest go, and a line says how many."""
-    views = [card_view(m) for m in messages]
-    lines = [_line(v, now) for v in views]
-    extra = sorted((got for got in (_linked_line(card_view(c), now) for c in linked or [])
+    lines = [_line(m, now) for m in messages]
+    extra = sorted((got for got in (_linked_line(c, now) for c in linked or [])
                     if got is not None), key=lambda got: got[0])
     if extra and lines:
         merged, j = lines[:1], 1
         for at, line in extra:
-            while j < len(lines) and float(views[j].get("posted_at") or 0) <= at:
+            while j < len(lines) and float(messages[j].get("posted_at") or 0) <= at:
                 merged.append(lines[j])
                 j += 1
             merged.append(line)
@@ -945,8 +817,7 @@ def judge_prompt(messages: list[dict], *, channel: dict | None = None,
     outcome, as a card in the thread shows), the channel's kind and name,
     the linked ledger rows' type, status, deadline and last action, and
     today's date. The first message stays; past the caps the oldest of
-    the rest go. A card copied as text from Zulip's past shows as
-    card_view reads it."""
+    the rest go."""
     now = time.time() if now is None else float(now)
     name, kind = _channel_words(channel)
     return PROMPT.format(today=_today(now), name=name, kind=kind, ledger=_ledger_text(ledger),
@@ -1071,7 +942,6 @@ Model = Callable[[str], "str | None"]
 Hosted = Callable[[str], "str | None"]
 # route(): one of ROUTES, read at each tick.
 Route = Callable[[], str]
-CardRead = Callable[[str, str, str], "dict | None"]
 # observer(event, ctx, *, now, store, **info): event "owner" (info: row,
 # the state row the tap wrote, and before, the row it replaced) or "model"
 # (info: answer, the parsed answer or None, row, the row written, and via,
@@ -1094,14 +964,8 @@ class ThreadStates:
     `hosted(prompt)` returns the hosted model's text for a batch of
     threads (batch_prompt), or None when it gave none; `route()` says each
     tick which model judges (ROUTES: local, hosted, auto or off). With no
-    route, `model` judges when set, else `hosted`.
-    `cards(channel, thread_key, msg_id)` returns a mirrored card as the
-    primary holds it now ({"text", "filed", "edited_at", "posted_at"}, or
-    None), and may write its current text into the store; card_cap reads
-    a tick at most, each answer kept for tick_s. A linked card the store
-    does not hold is asked for with an empty thread key, and the host
-    writes nothing for it. Each may be None: the rules alone
-    set the state, and a mirrored card is read from its stored text.
+    route, `model` judges when set, else `hosted`. Each may be None: the
+    rules alone set the state.
     `nudge(channel, thread_key, text)` posts the bot's "Still need this?"
     line into the store alone and records it (a falsy answer: not posted);
     `quiet()` is True while the owner's quiet hours hold. With no nudge
@@ -1109,11 +973,11 @@ class ThreadStates:
 
     def __init__(self, store: Callable[[], Any], *, ledger: Ledger | None = None,
                  model: Model | None = None, devices: Callable[[], Any] | None = None,
-                 cards: CardRead | None = None, hosted: Hosted | None = None,
+                 hosted: Hosted | None = None,
                  route: Route | None = None, hosted_cap: int = HOSTED_CAP,
                  tick_s: float = TICK_S, soon_s: float = SOON_S,
                  poll_s: float = POLL_S, model_cap: int = MODEL_CAP, rule_cap: int = RULE_CAP,
-                 card_cap: int = CARD_CAP, clock: Callable[[], float] = time.time,
+                 clock: Callable[[], float] = time.time,
                  nudge: Callable[[str, str, str], Any] | None = None,
                  quiet: Callable[[], bool] | None = None, nudge_cap: int = NUDGE_CAP) -> None:
         self._store = store
@@ -1128,13 +992,11 @@ class ThreadStates:
         self._hosted_worker: threading.Thread | None = None
         self._hosted_logged: dict[str, float] = {}
         self.devices = devices
-        self.cards = cards
         self.tick_s = float(tick_s)
         self.soon_s = float(soon_s)
         self.poll_s = float(poll_s)
         self.model_cap = int(model_cap)
         self.rule_cap = int(rule_cap)
-        self.card_cap = int(card_cap)
         self.clock = clock
         self._seen: int | None = None
         self._due = False
@@ -1142,13 +1004,6 @@ class ThreadStates:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._warned: set = set()
-        # (channel, message id) -> (when read, the primary's answer or None).
-        self._card_cache: dict[tuple[str, str], tuple[float, dict | None]] = {}
-        # Reads of the primary since the tick began.
-        self._card_reads = 0
-        # (card channel, message id) -> the primary's last answer for a linked
-        # card the store does not hold (fetched_card), oldest first.
-        self._fetched: dict[tuple[str, str], dict] = {}
         self.nudge = nudge
         self.quiet = quiet
         self.nudge_cap = int(nudge_cap)
@@ -1237,82 +1092,6 @@ class ThreadStates:
             self._warn("ledger", "web chat: the ledger could not be read for thread states: %s", e)
             return []
 
-    def _read_card(self, m: dict) -> dict | None:
-        """The primary's answer for one mirrored card, kept for tick_s
-        seconds. Past card_cap reads in this tick it waits for the next
-        tick, and its stored text stands. None with no answer."""
-        key = (str(m.get("channel") or ""), str(m.get("id") or ""))
-        now = self.clock()
-        hit = self._card_cache.get(key)
-        if hit is not None and now - hit[0] < self.tick_s:
-            return hit[1]
-        read = self.cards
-        if read is None or self._card_reads >= self.card_cap:
-            return None
-        self._card_reads += 1
-        try:
-            got = read(key[0], str(m.get("thread_key") or ""), key[1])
-        except Exception as e:
-            self._warn("cards", "web chat: a card could not be read from the primary for "
-                                "thread states: %s", e)
-            got = None
-        got = got if isinstance(got, dict) else None
-        self._card_cache[key] = (now, got)
-        return got
-
-    def _with_cards(self, msgs: list[dict]) -> list[dict]:
-        """The thread with the primary's answer (`primary`) on each mirrored
-        card whose stored text can still change; as it is with no primary
-        to ask."""
-        if self.cards is None:
-            return msgs
-        out = []
-        for m in msgs:
-            if mirrored_card(m) and card_pending(m.get("text")):
-                got = self._read_card(m)
-                if got is not None:
-                    m = {**m, "primary": got}
-            out.append(m)
-        return out
-
-    def _read_missing(self, link: dict) -> dict | None:
-        """The primary's answer for a linked card the store does not hold
-        (a `missing` link), read by its message id as a mirrored card is,
-        within the same card_cap and tick cache. A final answer (a status
-        line that acted or failed, a card filed in the done stream, or a
-        message that is no card) is kept while the engine runs, FETCHED_KEEP
-        at most; one that can still change is read again each tick, and the
-        last answer stands past the cap or when the primary does not answer.
-        None before any answer."""
-        key = (str(link.get("channel") or ""), str(link.get("id") or ""))
-        last = self._fetched.get(key)
-        if last is not None and (last.get("filed") or not card_pending(last.get("text"))):
-            return last
-        got = self._read_card({"channel": key[0], "id": key[1], "thread_key": ""})
-        if got is None:
-            return last
-        self._fetched.pop(key, None)
-        self._fetched[key] = got
-        while len(self._fetched) > FETCHED_KEEP:
-            self._fetched.pop(next(iter(self._fetched)))
-        return got
-
-    def _linked(self, store: Any, channel: str, key: str) -> list[dict]:
-        """The cards the conversation links to in other threads (rule 2b):
-        each mirrored card that can still change with the primary's answer
-        (_with_cards), and each link to a card the store does not hold read
-        from the primary (fetched_card). A link the primary does not give
-        stays `missing`. As the store holds them with no primary to ask."""
-        rows = self._with_cards(store.linked_cards(channel, key))
-        if self.cards is None:
-            return rows
-        out = []
-        for r in rows:
-            if r.get("kind") == "missing" and r.get("id"):
-                r = fetched_card(r, self._read_missing(r)) or r
-            out.append(r)
-        return out
-
     def contexts(self, keys: list[tuple[str, str]]) -> list[dict]:
         """What the rules read for each thread (its messages, channel row,
         linked ledger rows, previous row and origin), with one ledger read
@@ -1321,7 +1100,7 @@ class ThreadStates:
         chans: dict[str, Any] = {}
         out: list[dict] = []
         for channel, key in keys:
-            msgs = self._with_cards(self._messages(store, channel, key))
+            msgs = self._messages(store, channel, key)
             if not msgs:
                 continue
             if channel not in chans:
@@ -1331,7 +1110,7 @@ class ThreadStates:
                         "channel_row": chans[channel], "ids": ids, "convs": convs,
                         "ledger": [], "prev": store.thread_state(channel, key),
                         "origin": store.thread_origin(channel, key),
-                        "linked": self._linked(store, channel, key),
+                        "linked": store.linked_cards(channel, key),
                         "newest": max(int(m["seq"]) for m in msgs)})
         all_ids = sorted({i for c in out for i in c["ids"]})
         all_convs = sorted({v for c in out for v in c["convs"]})
@@ -1532,13 +1311,10 @@ class ThreadStates:
         calls and none after a call no model could answer; hosted makes one
         call over up to hosted_cap threads (judge_hosted); auto asks the
         local model and, when it does not answer, hands the threads left to
-        the hosted call. The primary's card reads start again at none, and
-        an answer older than tick_s is dropped."""
+        the hosted call."""
         store = self._store()
         now = self.clock()
         route = self._route_now = self._route()
-        self._card_reads = 0
-        self._card_cache = {k: v for k, v in self._card_cache.items() if now - v[0] < self.tick_s}
         since = now - ACTIVE_DAYS * 86400
         rows = store.active_threads(since, self.rule_cap)
         keys = [(r["channel"], r["thread_key"]) for r in rows]
@@ -1585,8 +1361,8 @@ class ThreadStates:
         hosted = self.judge_hosted(left) if left else {"calls": 0, "asked": 0}
         return {"threads": len(keys), "rules": decided, "open": len(open_), "model_calls": calls,
                 "stopped": stopped, "route": route, "hosted_calls": hosted["calls"],
-                "hosted_threads": hosted["asked"], "card_reads": self._card_reads,
-                "stale": self.shelve(now), "nudges": self.nudges(now)}
+                "hosted_threads": hosted["asked"], "stale": self.shelve(now),
+                "nudges": self.nudges(now)}
 
     # a conversation's cards in Direct messages, the stale shelf, the nudge
 
@@ -1655,7 +1431,7 @@ class ThreadStates:
             msgs = self._messages(store, channel, key)
             ctx = {"messages": msgs, "prev": store.thread_state(channel, key),
                    "origin": store.thread_origin(channel, key),
-                   "linked": self._linked(store, channel, key)}
+                   "linked": store.linked_cards(channel, key)}
             if not nudge_due(ctx, now):
                 continue
             try:

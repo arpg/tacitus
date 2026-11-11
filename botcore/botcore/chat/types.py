@@ -1,16 +1,17 @@
 """Neutral chat types shared by the core and every frontend.
 
-The core speaks in these types; each frontend (Slack, Zulip, the
+The core speaks in these types; each frontend (Slack, the web chat, the
 in-memory fake) translates its platform's events and ids into them.
 
 Identity is opaque: `channel`, `id` and `thread_key` are strings whose
 shape belongs to the frontend. Slack values are the platform's own
 bytes (channel ids, message ts), so every state file keyed by them
-stays valid. Zulip values look like `stream:<id>` for a channel and
-`stream:<id>:topic:<urlquoted topic>` for a thread. THREAD_KEY_RE is the
-one validation every key must pass: no whitespace and no `]`, so a key
-survives inside the bracketed markers the bridge writes. The 400-character
-cap leaves room for a percent-encoded non-ASCII Zulip topic.
+stays valid. History imported from Zulip keeps Zulip's thread keys,
+`stream:<id>:topic:<urlquoted topic>`. THREAD_KEY_RE is the one
+validation every key must pass: no whitespace and no `]`, so a key
+survives inside the bracketed markers the bridge writes. The
+400-character cap leaves room for such a key with a percent-encoded
+non-ASCII topic.
 """
 from __future__ import annotations
 

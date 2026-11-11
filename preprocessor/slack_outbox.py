@@ -3,10 +3,9 @@
 every chat front end.
 
 The resident Claude runs as the ``ea-bot`` user and, by design, holds no
-chat credential (``SLACK_BOT_TOKEN``, ``ZULIP_API_KEY``) and cannot open the
-web chat's store, which is the owner's (the security model keeps all of
-them out of its reach, so a prompt-injected resident cannot exfiltrate or
-forge them). It therefore cannot post files to the chat directly. This
+chat credential (``SLACK_BOT_TOKEN``) and cannot open the web chat's
+store, which is the owner's (the security model keeps both out of its
+reach, so a prompt-injected resident cannot exfiltrate or forge them). It therefore cannot post files to the chat directly. This
 module is the bridge:
 
   * the resident STAGES a file into a shared outbox  -> ``stage()``

@@ -155,7 +155,7 @@ setup page reads too. The keys, by phase:
 | groups | `groups-configure`, `group-name`, `group-addresses`, `group-add-another` |
 | deadlines | `deadlines-configure`, `deadline-domain`, `deadline-category`, `deadline-add-another` |
 | style | `style-default`, `style-internal`, `style-external-academic`, `style-student` |
-| chat | `chat-platform` (`web`, `zulip`, `slack`, or `1`-`3`; only on `assistant` and `collaborator`; the web chat is the default), `web-chat-host` (this machine's tailnet name; `public_url` becomes `https://<host>:8444/chat`), `web-chat-login` (the owner's Tailscale login); the two web keys only with `web` |
+| chat | `chat-platform` (`web`, `slack`, or `1`-`2`; only on `assistant` and `collaborator`; the web chat is the default), `web-chat-host` (this machine's tailnet name; `public_url` becomes `https://<host>:8444/chat`), `web-chat-login` (the owner's Tailscale login); the two web keys only with `web` |
 | auth | `graph-auth-method` (`1`-`4`, or `confidential`, `device_code`, `interactive`, `skip`), `graph-client-id`, `graph-tenant-id`, `graph-redirect-uri`, `graph-client-secret`, `graph-sign-in-now`, `google-calendar-now`, `slack-bot-token`, `slack-app-token`, `slack-channel-id`, `slack-channel-name-env`, `slack-owner-id` (the Slack keys only in a chat mode with Slack as the chat; the secrets go to `~/.ea-private/secrets.env`) |
 | drive | `drive-accounts` (the Google accounts the Drive reader signs in; `drive_accounts` in `user-profile.json`), `google-drive-now` (the sign-in, terminal only, asked when accounts are listed) |
 | tone | `style-analysis-now` |

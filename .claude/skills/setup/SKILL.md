@@ -135,7 +135,7 @@ say which and go on. Offer these three word for word; recommend `assistant`:
 `reviewer` has no chat, buttons, holds or events: the user works in the Claude
 Code shell, sends drafts from Outlook and reads reports in
 `~/.ea/state/reports/<agent>-latest.md` (a phone push when set up). A chat
-mode adds the chat (web chat, Zulip or Slack): the EA channel, the DM with the
+mode adds the chat (the web chat or Slack): the EA channel, the DM with the
 Send and Create buttons, scheduling and digests in the same app, the resident
 and plugins; `collaborator` adds project and session rooms. For `reviewer` ask
 two more: leave reply drafts in the mailbox (default yes; no means it only
@@ -335,12 +335,11 @@ to `user-profile.json`.
 stores them. Ask once which chat platform they want, and recommend the web chat:
 the bot serves it itself, as an app on their phone over their tailnet,
 with no chat server, and every message, file and card stays on this
-machine. Zulip suits someone who already runs it. Slack is acceptable
-when they accept that everything the EA shows them, drafts and quoted
-mail included, is stored by Slack. The comparison is the "Choosing a
-chat platform" table in docs/INSTALL.md. The answer goes in
-`answers-chat.json` as `"chat-platform"` (`web`, `zulip` or `slack`),
-and the `chat` phase records it in the chat block.
+machine. Slack is acceptable when they accept that everything the EA
+shows them, drafts and quoted mail included, is stored by Slack. The
+comparison is the "Choosing a chat platform" table in docs/INSTALL.md.
+The answer goes in `answers-chat.json` as `"chat-platform"` (`web` or
+`slack`), and the `chat` phase records it in the chat block.
 
 For the web chat, docs/SETUP.md "Web chat": Tailscale on this machine
 and their phone. Offer this machine's tailnet name (`Self.DNSName` in
@@ -355,19 +354,10 @@ Check: `tailscale serve status` lists `/chat`. The hardening step in
 section 8 has them type each web value back as it copies the block to
 `~/.ea-private/chat.json`; the doctor's `web chat:` rows then pass.
 
-For Zulip or Slack, run the phase first. For Zulip, docs/SETUP.md
-"Zulip server": the docker-zulip stack in `deploy/zulip/README.md`; then
-`python3 scripts/zulip_bootstrap.py --site <site> --owner-email <you> --owner-key <key>`,
-which prints the `chat` block (with `"frontend": "zulip"`) to paste into
-`ea-config.json` and the `ZULIP_API_KEY=` line for
-`~/.ea-private/secrets.env` (0600, in a 0700 `~/.ea-private`). Ask for
-the owner's Zulip user id if the printed block lacks it. The bot starts
-in section 8; confirm its startup line
-`frontend=zulip stream=ea (private, subscribed) owner=<id>` there.
-
-For Slack, docs/SETUP.md "Slack" end to end: the app and its scopes, its
-icon (`assets/tacitus-avatar.png`, uploaded by hand), Socket Mode, the
-event subscriptions, the app-level token, the private channel.
+For Slack, run the phase first, then docs/SETUP.md "Slack" end to end:
+the app and its scopes, its icon (`assets/tacitus-avatar.png`, uploaded
+by hand), Socket Mode, the event subscriptions, the app-level token, the
+private channel.
 Ask for the bot token, the app token, the channel id, the channel name
 and the user's member id, and write `EA_SLACK_CHANNEL_ID`,
 `EA_SLACK_CHANNEL_NAME` and `EA_SLACK_OWNER_ID` to `~/.ea/.env` (0640)

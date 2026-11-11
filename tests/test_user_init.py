@@ -1,5 +1,6 @@
-"""scripts/install/user_init.py --chat: the Slack path writes no ea-config.json, the Zulip
-path writes a chat block that ea_config.get_chat reads back."""
+"""scripts/install/user_init.py --chat: the Slack path writes no ea-config.json, the web
+path writes a chat block that ea_config.get_chat reads back, and no other platform is
+offered."""
 import builtins
 import json
 import sys
@@ -36,11 +37,6 @@ def _run(monkeypatch, ea_dir, *extra):
     monkeypatch.setattr(sys, "argv",
                         ["scripts/install/user_init.py", "--ea-dir", str(ea_dir), *extra])
     user_init.main()
-
-
-ZULIP_ARGS = ("--chat", "zulip", "--zulip-site", "http://zulip.test:8080/",
-              "--zulip-bot-email", "ea-bot@zulip.test",
-              "--zulip-owner-id", "8")
 
 
 def test_slack_writes_no_chat_config(monkeypatch, tmp_path):
@@ -85,7 +81,7 @@ def test_chat_web_flags_write_the_address_and_the_login(monkeypatch, tmp_path, c
         with pytest.raises(SystemExit):
             _run(monkeypatch, tmp_path / "bad", "--chat", "web", *bad)
     with pytest.raises(SystemExit):
-        _run(monkeypatch, tmp_path / "bad", "--chat", "zulip", "--web-host", WEB_HOST)
+        _run(monkeypatch, tmp_path / "bad", "--chat", "slack", "--web-host", WEB_HOST)
     assert not (tmp_path / "bad").exists()
 
 
@@ -93,19 +89,20 @@ def test_the_chat_phase_from_an_answers_file(monkeypatch, tmp_path, capsys):
     """/setup writes answers-chat.json and runs the chat phase: the web
     block is written into the chat block ea-config.json has, keeping its
     other keys, and the auth phase then asks no Slack token. Choosing
-    Zulip or Slack later sets the frontend and keeps the rest."""
+    Slack later sets the frontend and keeps the rest; no third platform
+    is a choice."""
     cfg = tmp_path / "config"
     cfg.mkdir()
     (cfg / "ea-config.json").write_text(json.dumps({"profile": "assistant", "quiet_hours": {},
                                                     "chat": {"frontend": "slack",
-                                                             "zulip": {"stream": "ea"}}}))
+                                                             "kept": {"any": "key"}}}))
     answers = tmp_path / "answers-chat.json"
     answers.write_text(json.dumps({"chat-platform": "web", "web-chat-host": WEB_HOST,
                                    "web-chat-login": WEB_LOGIN}))
     _run_answers(monkeypatch, tmp_path, answers, "--phase", "chat")
     data = json.loads((cfg / "ea-config.json").read_text())
     assert data["profile"] == "assistant" and "quiet_hours" in data
-    assert data["chat"]["zulip"] == {"stream": "ea"}
+    assert data["chat"]["kept"] == {"any": "key"}
     assert data["chat"]["web"] == {"port": 8470, "base_path": "/chat", "public_url": WEB_URL,
                                    "tailscale_login": WEB_LOGIN}
     auth = tmp_path / "answers-auth.json"
@@ -117,9 +114,13 @@ def test_the_chat_phase_from_an_answers_file(monkeypatch, tmp_path, capsys):
     ctx = user_init.context()
     assert (ctx["chat_choice"], ctx["web_host"], ctx["web_login"]) == ("web", WEB_HOST, WEB_LOGIN)
     answers.write_text(json.dumps({"chat-platform": "zulip"}))
+    with pytest.raises(SystemExit, match="chat-platform"):
+        _run_answers(monkeypatch, tmp_path, answers, "--phase", "chat")
+    assert _web_of(tmp_path)["frontend"] == "web"
+    answers.write_text(json.dumps({"chat-platform": "slack"}))
     _run_answers(monkeypatch, tmp_path, answers, "--phase", "chat")
     chat = json.loads((cfg / "ea-config.json").read_text())["chat"]
-    assert chat["frontend"] == "zulip" and chat["web"]["public_url"] == WEB_URL
+    assert chat["frontend"] == "slack" and chat["web"]["public_url"] == WEB_URL
     # a reviewer install is asked nothing and writes nothing
     data = json.loads((cfg / "ea-config.json").read_text())
     (cfg / "ea-config.json").write_text(json.dumps({**data, "profile": "reviewer"}))
@@ -146,35 +147,22 @@ def test_a_slack_install_is_offered_slack_again(monkeypatch, tmp_path):
     assert user_init.context()["chat_choice"] is None
     (tmp_path / ".env").write_text("EA_SLACK_CHANNEL_ID=C0EXAMPLE\n")
     assert user_init.context()["chat_choice"] == "slack"
-    assert user_init.context("zulip")["chat_choice"] == "zulip"
+    assert user_init.context("web")["chat_choice"] == "web"
+    # a block that names a platform setup no longer offers is no choice
+    (cfg / "ea-config.json").write_text(json.dumps({"chat": {"frontend": "zulip"}}))
+    assert user_init.context()["chat_choice"] is None
 
 
-def test_zulip_writes_chat_block(monkeypatch, tmp_path, capsys):
-    _run(monkeypatch, tmp_path, *ZULIP_ARGS)
-    path = tmp_path / "config" / "ea-config.json"
-    json.loads(path.read_text())
-    chat = ea_config.get_chat(path)
-    assert chat["frontend"] == "zulip"
-    z = chat["zulip"]
-    assert z["site"] == "http://zulip.test:8080"
-    assert z["bot_email"] == "ea-bot@zulip.test"
-    assert z["owner_user_id"] == "8"
-    assert (z["stream"], z["sched_stream"], z["dm_stream"]) == (
-        "ea", "ea-scheduling", "ea-dm")
-    assert z["notify"] == ea_config.DEFAULTS["chat"]["zulip"]["notify"]
-    out = capsys.readouterr().out
-    assert "--- Zulip ---" in out
-    assert "Slack Bot Token" not in out
-
-
-def test_zulip_keeps_other_ea_config_keys(monkeypatch, tmp_path):
+def test_the_state_phase_keeps_other_ea_config_keys(monkeypatch, tmp_path):
+    """--chat web on a single phase (the container's state phase) writes
+    the chat block and keeps every other key."""
     cfg = tmp_path / "config"
     cfg.mkdir()
     (cfg / "ea-config.json").write_text(json.dumps({"profile": "reviewer"}))
-    _run(monkeypatch, tmp_path, "--phase", "state", *ZULIP_ARGS)
+    _run(monkeypatch, tmp_path, "--phase", "state", "--chat", "web")
     data = json.loads((cfg / "ea-config.json").read_text())
     assert data["profile"] == "reviewer"
-    assert data["chat"]["frontend"] == "zulip"
+    assert data["chat"]["frontend"] == "web"
 
 
 def test_preferences_phase_records_each_answer_as_a_rule(monkeypatch, tmp_path, capsys):
@@ -221,11 +209,13 @@ def test_full_setup_offers_the_preferences_phase_and_skips_it_by_default(monkeyp
     assert not (tmp_path / "config" / "preferences.json").exists()
 
 
-def test_zulip_requires_server_args(monkeypatch, tmp_path):
-    with pytest.raises(SystemExit):
-        _run(monkeypatch, tmp_path, "--chat", "zulip",
-             "--zulip-site", "http://zulip.test")
-    assert not (tmp_path / "config" / "ea-config.json").exists()
+def test_only_web_and_slack_are_chat_flags(monkeypatch, tmp_path):
+    """--chat takes web or slack; any other name stops before a file is
+    written."""
+    for argv in (("--chat", "zulip"), ("--chat", "web", "--zulip-site", "https://z.example")):
+        with pytest.raises(SystemExit):
+            _run(monkeypatch, tmp_path, *argv)
+    assert not (tmp_path / "config").exists()
 
 
 # ── --answers: every prompt from a file, never the terminal ──────────
@@ -504,17 +494,17 @@ def test_an_old_profile_name_in_an_answers_file_is_mapped(monkeypatch, tmp_path,
 
 
 def test_the_chat_platform_defaults_to_the_chat_block(monkeypatch, tmp_path, capsys):
-    """With a Zulip chat block in ea-config.json and no --chat, the auth
+    """With a web chat block in ea-config.json and no --chat, the auth
     phase asks no Slack token."""
     cfg = tmp_path / "config"
     cfg.mkdir()
     (cfg / "ea-config.json").write_text(json.dumps({"profile": "assistant",
-                                                    "chat": {"frontend": "zulip"}}))
+                                                    "chat": {"frontend": "web"}}))
     answers = tmp_path / "answers-auth.json"
     answers.write_text(json.dumps({"graph-auth-method": "skip", "google-calendar-now": False}))
     _run_answers(monkeypatch, tmp_path, answers, "--phase", "auth")
     assert "slack-bot-token" not in user_init.ANSWERS_USED
-    assert "--- Zulip ---" in capsys.readouterr().out
+    assert "--- Web chat ---" in capsys.readouterr().out
 
 
 def test_a_bad_scripted_answer_names_its_key(monkeypatch, tmp_path):

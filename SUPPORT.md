@@ -23,5 +23,5 @@ and can be reopened. Pull requests with tests move faster than issues.
 
 What is out of scope today: Windows and WSL2, a Gmail-only install
 (Outlook is required), a hosted service, and chat platforms other than
-Zulip and Slack. Ideas for these are welcome in Discussions, but they
+the web chat and Slack. Ideas for these are welcome in Discussions, but they
 need a contributor.

@@ -24,8 +24,7 @@ def ea(tmp_path, monkeypatch):
         "gmail_accounts": ["ana@example.com"]}))
     (cfg / "ea-config.json").write_text(json.dumps({
         "profile": "assistant",
-        "chat": {"frontend": "zulip", "zulip": {"stream": "ea", "dm_stream": "ea-dm",
-                                               "sched_stream": "ea-scheduling"}}}))
+        "chat": {"frontend": "web"}}))
     (cfg / "github.json").write_text(json.dumps({
         "bot_login": "ana-bot", "doc_review": {"repo": "ana/doc-review", "owner_login": "ana"},
         "sites": {"lab": {"title": "The lab site", "url": "https://lab.example.org/"}}}))
@@ -152,16 +151,16 @@ def test_a_reviewer_install_renders_one_line_saying_there_is_no_chat(ea):
 def test_the_assistant_mode_tells_the_ea_there_are_no_rooms(ea):
     cfg = ea / "config" / "ea-config.json"
     chat = _chat(cfg, {"profile": "assistant", "profile_version": 2,
-                       "chat": {"frontend": "zulip", "zulip": {"stream": "ea"}}})
+                       "chat": {"frontend": "web"}})
     assert "Install profile: `assistant`" in chat
-    assert "there are no project rooms" in chat and "`ea-<project>` streams" not in chat
+    assert "there are no project rooms" in chat and "rooms in the web chat" not in chat
     assert "set-profile collaborator" in chat and "pending-channel.json" in chat
     chat = _chat(cfg, {"profile": "collaborator", "profile_version": 2,
-                       "chat": {"frontend": "zulip", "zulip": {"stream": "ea"}}})
-    assert "Install profile: `collaborator`" in chat and "`ea-<project>` streams" in chat
+                       "chat": {"frontend": "web"}})
+    assert "Install profile: `collaborator`" in chat and "rooms in the web chat" in chat
     assert "No project rooms" not in chat
     # the old assistant had rooms: without the version marker it reads as collaborator
-    chat = _chat(cfg, {"profile": "assistant", "chat": {"frontend": "zulip"}})
+    chat = _chat(cfg, {"profile": "assistant", "chat": {"frontend": "slack"}})
     assert "Install profile: `collaborator`" in chat
 
 
@@ -169,7 +168,7 @@ def test_a_web_chat_install_names_the_web_chat_and_where_the_send_button_is(ea):
     """The web case uses the web front end's own wording (its prompt
     strings): the platform, the Send button on the card in the DM thread
     and the Scheduling channel, unless the web block turns it off. Not
-    Slack, not Zulip."""
+    Slack."""
     from chat.web_frontend import WebFrontend
     cfg = ea / "config" / "ea-config.json"
     cfg.write_text(json.dumps({"profile": "collaborator", "profile_version": 2,
@@ -182,7 +181,7 @@ def test_a_web_chat_install_names_the_web_chat_and_where_the_send_button_is(ea):
     assert "`Scheduling` (the scheduling channel" in chat
     assert "no scheduling channel" not in chat and "Install profile: `collaborator`" in chat
     assert "project rooms are rooms in the web chat" in chat
-    for other in ("Slack", "Zulip", "stream", "reaction"):
+    for other in ("Slack", "stream", "reaction"):
         assert other not in chat, other
     assert chr(0x2014) not in text and chr(0x2013) not in text
     # with Scheduling turned off, meeting requests come in the EA channel
@@ -192,12 +191,12 @@ def test_a_web_chat_install_names_the_web_chat_and_where_the_send_button_is(ea):
     chat = chat[chat.index("## Chat"):chat.index("## Accounts")]
     assert "no scheduling channel: meeting requests come in `ea`" in chat
     assert "`Scheduling`" not in chat and "there are no project rooms" in chat
-    # beside Zulip, the Zulip line stands and the mirror is named
+    # beside Slack, the Slack line stands and the mirror is named
     cfg.write_text(json.dumps({"profile": "assistant", "chat": {
-        "frontend": "zulip", "shadow": "web", "zulip": {"stream": "ea", "dm_stream": "ea-dm"}}}))
+        "frontend": "slack", "shadow": "web"}}))
     chat = io_.render_text()
     chat = chat[chat.index("## Chat"):chat.index("## Accounts")]
-    assert "Platform: Zulip" in chat and "mirrors every post (shadow mode)" in chat
+    assert "Platform: Slack" in chat and "mirrors every post (shadow mode)" in chat
 
 
 def test_no_rendered_overlay_leaves_the_core_alone(ea):

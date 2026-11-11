@@ -111,16 +111,16 @@ the API gives no bytes). One module computes it for Outlook and Gmail.
   shows Bcc and Reply-To when there is one.
 - **The card shows all of it, or offers no Send.** The fingerprint covers
   the whole body, so the card carries the whole body text: the authored
-  part first, in full, then the rest of the body, collapsed in a Zulip
-  spoiler block or split across Slack sections. The quote boundary is text
+  part first, in full, then the rest of the body, collapsed in a block
+  the web app opens on a tap, or split across Slack sections. The quote boundary is text
   the model can write, so the collapsed part is only text that ends an
   earlier sent or received message of the thread, as the owner-side read
   finds it (`mail_links.verified_quote_start`, run by `draft-snapshot` and
   `get_draft`); with no such match, or no thread to read, nothing is
   collapsed. Its label says only that it matches an earlier message. A Gmail draft with more than one plain or HTML text part shows
-  every part. When the whole text cannot fit in one card (on Zulip the
-  server's message limit, `max_message_length` from the register, less a
-  margin; on Slack 50 blocks), the body is cut as before, and the card
+  every part. When the whole text cannot fit in one card (on Slack, 50
+  blocks; the web app shows a body of any length), the body is cut as
+  before, and the card
   says so plainly and has no Send or Schedule button: the owner opens the
   draft in Outlook or Gmail and sends it from there. A click on an older
   card for such a draft, and the Send-all card, send nothing. A field
@@ -165,22 +165,20 @@ the API gives no bytes). One module computes it for Outlook and Gmail.
   item's fields, a commit subject and the body come from the model or from
   mail, and a frontend renders card text as markup. `botcore/botcore/chat/card_text.py`
   is the one place that makes such text inert: every field value renders on
-  one line as literal text (a Zulip code span; on Slack with `&`, `<` and
-  `>` escaped), invisible and reordering characters (bidi controls,
+  one line as literal text (a code element in the web app; on Slack with
+  `&`, `<` and `>` escaped), invisible and reordering characters (bidi controls,
   zero-width and other format or control characters) show as `[U+202E]`
   marks, and a builder wraps each model or mail value it writes into card
-  text in `card_text.inert`. On Zulip the title, fields and lines come
-  first, then a rule, the action legend, a second rule, and the body last,
-  as a quote in which Zulip's own link, mention and widget syntax is
-  broken; no body can push the recipients or the legend out of view, close
-  its quote or open a block that hides what follows, and a status line
-  keeps the header before the card's own first rule. A labelled link in
+  text in `card_text.inert`. In the web app the title, the fields and the
+  lines come first and the body last, as plain preformatted text, so no
+  body can push the recipients out of view or hide what follows. A
+  labelled link in
   card text shows its target, and on Slack a special token (`<!channel>`,
   `<@U1>`, `<#C1>`) outside a span shows as typed. A plugin template
   fills each value as a span; a precision spec (`{x:.20}`) cuts the value
   before it is wrapped, with the visible marker, and that card has no
-  approve button. On Slack the buttons are real elements, so
-  the body cannot imitate them.
+  approve button. In the web app and on Slack the buttons are real
+  elements, so the body cannot imitate them.
 - **Send all.** The Send-all card lists each draft's recipients and
   subject, from the same read as that draft's own card, and binds the
   fingerprint each draft had when it was listed: a draft changed since is
@@ -220,8 +218,8 @@ other people.
   with a status line and a new card shows the event as it is now.
 - **Shown in full, or no button.** Link markup (`<url|label>`,
   `[label](url)`) shows its target. A card that cannot show all of it in
-  one message (Zulip's message limit, or Slack's 50 blocks and section and
-  field sizes) is posted short, says so, and has only Cancel or Keep. So
+  one message (on Slack, its 50 blocks and its section and field sizes)
+  is posted short, says so, and has only Cancel or Keep. So
   is a card with a field value longer than the frontends show
   (`card_text.field_limit`, the limit they cut at): a cut Subject,
   Location, Repeats, Rename or Organizer withholds the button. Each
@@ -234,52 +232,48 @@ other people.
   `graph_client` converts any time that still carries an offset the same
   way, since Graph reads `dateTime` in the `timeZone` sent with it.
 
-**On Zulip** there are no buttons. The confirmation card posts in the
-owner's private `ea-dm` stream, under a topic of its own, with a
-one-time code and one reaction chip per action, which the bot adds
-itself. The owner confirms by tapping a chip (the bot's own reactions
-never count) or by replying with the code in the card's own topic (a bare code picks the
-primary action; any other action needs its word first, for example
-`cancel <code>`). A code typed anywhere else, another card's topic
-included, is an ordinary message. The
-reaction or code reaches the bot through the bot's own event queue,
-which it registered with its API key (`ZULIP_API_KEY`). The bot drops
-every message and reaction that is not the owner's
-(`chat.zulip.owner_user_id`) before it looks up a code, and it never
-counts its own messages or reactions. It refuses to start when the owner
-id is its own user id (on Slack, `EA_SLACK_OWNER_ID` equal to the bot's),
-and a card action by the bot's own id is refused whatever the setting. A code works once, and the same
-48-hour stale-card guard as on Slack refuses an old card. After that
-the flow is identical: one-time token, gated verb, status line.
+**On the web chat** the confirmation card posts in the owner's DM in
+the bot's own web app, with a real button for each action. A click is a
+request to the bot's own API, which serves only the owner's signed-in
+devices (Web chat, below); a device paired through the relay presses a
+card button only when the owner allowed it there. The value the core
+receives is the one stored with the card, never one from the browser.
+On Slack the bot refuses to start when `EA_SLACK_OWNER_ID` is the bot's
+own id, and a card action by the bot's own id is refused whatever the
+setting. The same 48-hour stale-card guard refuses an old card on both.
+After that the flow is identical: one-time token, gated verb, status
+line.
 
 **What leaves the machine.** The gate is the same on both platforms;
-the custody of the conversation is not. On Zulip the server runs in
-Docker on the EA's machine and is reached over the owner's tailnet, so
-every message, file and card body (draft email text, quoted mail) stays
-on that machine, and the only chat traffic that leaves is the push
-relay's "a message arrived" notice with the content redacted. On Slack
-all of it is stored by Slack. That is why Zulip is the recommended
-platform and Slack is the alternative for an owner who would rather not
-run a server and accepts that custody.
+the custody of the conversation is not. The web chat keeps every
+message, file and card body (draft email text, quoted mail) in a store
+in the owner-private directory on the EA's machine, reached over the
+owner's tailnet. The chat traffic that leaves is the Web Push
+notifications, encrypted to the owner's browser, and, off the tailnet,
+relay frames sealed end to end (Web chat, below). On Slack all of it is
+stored by Slack. That is why the web chat is the recommended platform
+and Slack is the alternative for an owner who accepts that custody.
 
 ```mermaid
 flowchart LR
     subgraph box["This machine, reached over your tailnet"]
         bot["EA bot and Claude sessions"]
-        zulip["Zulip in Docker<br/>every message, file and card stays here"]
+        web["Web chat store<br/>every message, file and card stays here"]
         med["Mail mediator<br/>holds the mail tokens"]
-        bot <--> zulip
+        bot <--> web
         bot --> med
     end
     subgraph outside["Outside the machine"]
         anth["Anthropic API<br/>the prompts and replies of every Claude turn"]
         mail["Microsoft 365 and Google<br/>your mail and calendars"]
-        push["Zulip push relay<br/>only that a message arrived, content redacted"]
+        push["Browser push services<br/>notifications encrypted to your browser"]
+        relay["Relay, off the tailnet only<br/>sealed frames, ciphertext only"]
         slack["Slack cloud (Slack install only)<br/>every message, file and card,<br/>drafts and quoted mail included"]
     end
     bot --> anth
     med --> mail
-    zulip -.-> push
+    bot -.-> push
+    bot -.-> relay
     bot -.-> slack
 ```
 
@@ -604,9 +598,8 @@ make a token lookup fail; it cannot make a send happen.
 The bot's own confirmation bookkeeping lives out of ea-bot's reach, in
 the private directory `/home/<you>/.ea-private/` (`EA_PRIVATE_DIR`,
 owner-only `0700`; `/home/<you>` itself is closed to ea-bot). It holds the
-card registry (`chat-cards.json`: each live card, its code and its
-action values), the Zulip event-queue position (`zulip-queue.json`),
-the two button stores (`button-payloads.json`, `draft-confirmations.json`)
+card registry (`chat-cards.json`: each live card and its action
+values), the two button stores (`button-payloads.json`, `draft-confirmations.json`)
 and the Slack webhook file. A reader of either button store falls back
 once to the old path under `~/.ea/state` and migrates the file.
 
@@ -729,13 +722,12 @@ payload on that socket, only a user in the workspace can click, and
 only the owner's click passes. The LLM cannot reach the socket, because
 it cannot read `SLACK_APP_TOKEN` (`~/.ea-private/secrets.env`, owner `0600`).
 
-On Zulip, the anchor is the bot's event queue, registered with the
-bot's API key, plus the same owner check on the sender of each reaction
-or code, and a reaction or code by the bot's own id never counts. Codes
-are single-use, count only in the card's own topic, and the 48-hour guard
-bounds a card's life. The LLM cannot read `ZULIP_API_KEY`, cannot post as the owner, and
-its own messages (which the bot posts for it) are dropped before the
-code lookup.
+On the web chat, the anchor is the bot's own HTTP API on loopback,
+which takes a request as the owner's only with the owner's credential
+(the Tailscale login header on tailscaled's own connection, or the
+pairing cookie; Web chat, below). The 48-hour guard bounds a card's
+life. The LLM cannot open the store, read the pairing token or post as
+the owner.
 
 The real barrier under both is Layer 1: the LLM runs as `ea-bot`, holds
 no chat credential, cannot mint confirmation tokens and cannot run the
@@ -957,13 +949,10 @@ Even if a malicious email convinces the LLM to act:
 - **Cannot click the Send button**: button payloads reach the bot only
   on the Socket Mode websocket it opened with `SLACK_APP_TOKEN`, which
   ea-bot cannot read, and the bot accepts only the owner's user id
-- **Cannot confirm a Zulip card by code or reaction**: it cannot post or
-  react as the owner, and the bot drops its own messages before the code
-  lookup
-- **Cannot read or replace `ZULIP_API_KEY`**: it lives in the
-  owner-private `~/.ea-private/secrets.env`; the legacy
-  `~/.ea/.env.secrets` counts only while it passes the ownership checks
-  in "Owner trust rules"
+- **Cannot press a button in the web chat**: the bot takes a click only
+  with the owner's credential (the Tailscale login on tailscaled's own
+  connection, or the pairing token, which lives in the owner-private
+  directory)
 - **Cannot delete email or events**: delete operations are
   button-required and token-gated
 - **Cannot modify source code**: OS permission denied (`ea-bot` user
@@ -1190,14 +1179,13 @@ rules, and where each is enforced:
   chat frontend, with an error naming the seed step, and `ea-doctor`
   reports it. The seed (`owner_trust.py seed`) copies chat.json and
   calendars.json from ea-bot's files once: it shows every value and writes
-  the file only after the operator types back each trusted one (frontend,
-  site, bot email, owner id; on Zulip every stream the bot posts to:
-  `stream`, `sched_stream`, `dm_stream` and each `notify.<key>.stream`;
-  on the web chat, alone or as the shadow, `web.public_url`, `web.port`,
-  `web.tailscale_login` and `web.pair_token_file`; the EA-Managed
-  calendar id) or passes it with its flag (`--chat-site`,
-  `--chat-owner-id`, `--chat-dm-stream`, `--chat-notify KEY=STREAM`,
-  `--chat-public-url`, `--chat-tailscale-login`, `--calendar-id`, ...).
+  the file only after the operator types back each trusted one (the
+  frontend; on Slack the owner id; on the web chat, alone or as the
+  shadow, `web.public_url`, `web.port`, `web.tailscale_login` and
+  `web.pair_token_file`; the EA-Managed calendar id) or passes it with
+  its flag (`--chat-frontend`, `--chat-owner-id`, `--chat-public-url`,
+  `--chat-port`, `--chat-tailscale-login`, `--chat-pair-token-file`,
+  `--calendar-id`, ...).
   It refuses a web `store_path` or `pair_token_file` that is relative or
   lies in ea-bot's tree, the rule the bot itself serves by. profile.json (the one name the EA may put on an
   outside poll) is written the same way (`--profile-name`).
@@ -1209,7 +1197,7 @@ rules, and where each is enforced:
   registered room; anything else falls back to the EA channel. It serves a
   registered room only when the owner-private record
   `~/.ea-private/owner-rooms.json` names it as a room the bot created for
-  the owner, it is not one of the bot's own streams (EA, scheduling, DM,
+  the owner, it is not one of the bot's own channels (EA, scheduling, DM,
   a notify target), it is private, and the chat API lists no member but
   the owner and the bot (checked owner side, again after five minutes).
   The same check gates every room path: the opening and reopening pack,
@@ -1220,9 +1208,7 @@ rules, and where each is enforced:
   leaves out. A confirmation card goes only to the owner's DM; with no
   DM, one line in the thread names the setting. In every channel, a message
   is an instruction only when its user id is the owner's (live and in the
-  restart catch-up); a sender's address or bot flag proves nothing. A
-  Zulip topic move re-keys the thread's session, cards and replies only
-  when the owner or the bot made it.
+  restart catch-up); a sender's address or bot flag proves nothing.
 - **Owner code never comes from ea-bot's tree.** `scripts/ea-bot-shell.sh`
   refuses to run from a tree under ea-bot's home (run
   `/opt/ea-system/scripts/ea-bot-shell.sh`). `install_overlay.py install`
@@ -1270,7 +1256,7 @@ saved in the checkout but not committed never runs in production.
 live install from metadata only, and `scripts/boundary-audit.py` checks them
 daily from cron, posting to the health channel only when a result changes.
 Sentinel's alerts, the daily outbound-web, preference-rule and persistence
-reviews, and plugin integrity failures post there too: the chat key `health` (the `ea-health` stream on Zulip), with the
+reviews, and plugin integrity failures post there too: the chat key `health`, with the
 main EA channel as the fallback when no health channel is configured.
 
 sshd refuses logins for the resident, which controls its own
@@ -1364,9 +1350,9 @@ tools, and the install and diagnostic steps run at a terminal).
 
 Calendar events follow the same pattern: Claude writes a pending JSON
 file, the bot detects it and posts a confirmation block, the user
-clicks to approve, and the bot executes with a one-time token. On Zulip
-the column on the right is the `ea-dm` stream, and the click is one tap
-on the card's reaction chip or a typed code; every other step is the
+clicks to approve, and the bot executes with a one-time token. On the
+web chat the column on the right is the DM in the web app, and the
+click is a press of the card's button there; every other step is the
 same.
 
 ---
@@ -1646,17 +1632,16 @@ OAuth layer with zero risk of cross-user data leakage. See
 ### Code-Level Hardening (applies to all deployments)
 
 **Secrets isolation:** the chat credential and API secrets
-(`ZULIP_API_KEY`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`,
-`GRAPH_CLIENT_SECRET`) are stored in `~/.ea-private/secrets.env`
+(`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `GRAPH_CLIENT_SECRET`) are stored in `~/.ea-private/secrets.env`
 (`chmod 600`, in the owner's `0700` private directory). The `ea-bot`
 subprocess user cannot reach it. Non-sensitive config (channel ID, model,
 Graph client ID) stays in `~/.ea/.env`, which owner processes read as
 data for an allowlist of keys and never for a secret.
 
-**Secrets on Zulip:** the Zulip frontend's only secret, `ZULIP_API_KEY`,
-sits in the same `~/.ea-private/secrets.env`. The bot and the owner-side
-jobs (cron agents, `run-plugin.sh`) read it from there; nothing passes it
-to the Claude subprocess.
+**Secrets on the web chat:** the web chat has no API key. Its
+credential is the pairing token, which the bot writes beside its store
+in the owner-private directory; nothing passes it to the Claude
+subprocess.
 
 **Notifier webhooks:** the Slack incoming-webhook file
 (`slack_webhooks.json`) used to sit in `~/.ea/config`, readable by
@@ -1665,8 +1650,8 @@ thread replies and never confirmation cards). It now lives in the
 private directory, owner-only, and an owner process reads only that copy
 (with the owner checks); a process that is not the owner's falls back to
 the config copy.
-On Zulip the notifier posts with the owner-only API key, so there is no
-equivalent file.
+On the web chat the notifier writes the owner-private store from an
+owner process, so there is no equivalent file.
 
 **Dashboard marker:** the phone dashboard's chat bar posts the owner's
 text as the bot with a marker, and the bot dispatches that text as if
@@ -1685,13 +1670,9 @@ Broad search tools (`slack_search_public_and_private`,
 allowed tools list.
 
 **Channel privacy validation:** The bot validates on startup that the
-EA channel is private. It refuses to start on a public channel. On
-Zulip, startup refuses a stream (`ea`, `ea-dm`, and `ea-scheduling` when
-configured) that is public, missing, or lacks the bot's subscription, and
-one whose subscribers, read from the chat API, include anyone besides the
-owner and the bot (the DM stream carries every card with its full draft
-body); a public or shared stream stops the bot at once, with no retry. A
-registered project or session room is served only when the owner room
+EA channel is private. It refuses to start on a public channel. The
+web chat has no other members: its only users are the owner and the
+bot. A registered project or session room is served only when the owner room
 record names it, it is private, and its members are the owner and the bot.
 
 **Explicit owner verification:** Button clicks are verified against
@@ -1699,9 +1680,8 @@ record names it, it is private, and its members are the owner and the bot.
 error at startup and refuses every button click; there is no
 first-click owner assignment. A refused click also gets a visible reply
 in the conversation that holds the card (at most one a minute there),
-which names the setting to fix. On Zulip the owner is
-`chat.zulip.owner_user_id` in `ea-config.json`, and the frontend refuses
-to start without it.
+which names the setting to fix. On the web chat a request is the
+owner's only when it carries the owner's credential (Web chat, below).
 
 ---
 
@@ -1711,9 +1691,9 @@ to start without it.
 |------|-------------|
 | `scripts/install/setup-ea-user.sh` | Creates `ea-bot` user, `ea` group, file permissions |
 | `ea-chat-bot.py` | Button handlers, token issuance, user verification |
-| `preprocessor/chat/` | Chat frontends; owner check and code/reaction capture on Zulip; the card registry |
+| `preprocessor/chat/` | Chat frontends; the owner check on Slack; the card registry |
 | `botcore/botcore/chat/web_frontend.py` | Web chat: serves only the owner-private block and files; Host, Sec-Fetch-Site and Origin checks; the login header only on tailscaled's connection (Web chat, above) |
-| `/home/<you>/.ea-private/` | owner-only `0700`: card registry, Zulip queue position, button stores, Slack webhook file |
+| `/home/<you>/.ea-private/` | owner-only `0700`: card registry, the web chat's store, button stores, Slack webhook file |
 | `preprocessor/graph_actions.py` | CLI-level token validation (defense layer 1) |
 | `preprocessor/graph_client.py` | Library-level token validation (defense layer 2) |
 | `preprocessor/mail_mediation.py` | ea-bot shim: forward SAFE verbs, refuse GATED (Layer 5) |

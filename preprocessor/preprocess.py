@@ -1419,9 +1419,8 @@ def queue_scheduling(found: list, gate) -> tuple[list, int]:
 
 def sched_channel_configured(chat: dict | None = None) -> bool:
     """Is a dedicated scheduling channel configured for the chat frontend?
-    On Zulip it is chat.zulip.sched_stream; on the web chat alone, its
-    Scheduling channel unless the web block says `"sched": false`
-    (ea_config.web_sched_on); on Slack, EA_SCHED_CHANNEL_ID."""
+    On the web chat alone, its Scheduling channel unless the web block says
+    `"sched": false` (ea_config.web_sched_on); on Slack, EA_SCHED_CHANNEL_ID."""
     if chat is None:
         try:
             import ea_config
@@ -1429,8 +1428,6 @@ def sched_channel_configured(chat: dict | None = None) -> bool:
         except Exception:
             chat = {}
     frontend = chat.get("frontend") or "slack"
-    if frontend == "zulip":
-        return bool(str((chat.get("zulip") or {}).get("sched_stream") or "").strip())
     if frontend == "web":
         return _ea_config.web_sched_on(chat)
     return bool(os.environ.get("EA_SCHED_CHANNEL_ID", "").strip())

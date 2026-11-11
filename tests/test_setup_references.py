@@ -89,7 +89,7 @@ def _text(p: Path) -> str:
 def test_setup_md_has_the_named_appendices():
     names, _ = headings()
     for must in ("Prerequisites", "Choose a mode", "Microsoft Graph app registration",
-                 "Google OAuth app", "The EA-Managed calendar", "Zulip server", "Slack",
+                 "Google OAuth app", "The EA-Managed calendar", "Web chat", "Slack",
                  "The service account", "Services", "Cron schedule", "Hardening", "Config files",
                  "Docker", "macOS notes", "Troubleshooting and the doctor's checks",
                  "The install overlay", "The deferred-send signing key", "Phone push"):

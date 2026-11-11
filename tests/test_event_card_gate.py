@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "preprocessor"))
 import chat  # noqa: E402
 from chat import slack_frontend as slack  # noqa: E402
-from chat import zulip_frontend as zulip  # noqa: E402
+from chat.web_frontend import WebFrontend  # noqa: E402
 
 BOT_SRC = (ROOT / "ea-chat-bot.py").read_text()
 VALUE = json.dumps({"thread_ts": "T", "ea_channel": "C", "payload_ref": "k"})
@@ -41,9 +41,10 @@ def _fn_src(name: str) -> str:
     return BOT_SRC[start:min(ends)]
 
 
-def _zulip_fits(card) -> bool:
-    """ZulipFrontend.card_fits at the default limit: the whole card text."""
-    return len(zulip.render_card(card, "X" * 6, None, 0)) + 100 <= 9800
+def _web_fits(card) -> bool:
+    """WebFrontend.card_fits: the web app shows a card's whole body and
+    quoted thread, so the bot's own ceilings decide alone."""
+    return WebFrontend.card_fits(None, card)
 
 
 def cards(fits=None) -> dict:
@@ -57,10 +58,17 @@ def cards(fits=None) -> dict:
     return ns
 
 
+def _web_lines(card) -> list:
+    """The card's lines as the web chat stores them, split at newlines: a
+    line of its own is what could read as a field."""
+    return [ln for line in WebFrontend._card_json(card)["lines"] for ln in line.split("\n")]
+
+
 def rendered(card) -> str:
-    """Everything the owner sees, on both frontends."""
+    """Everything the owner sees, on both frontends: Slack's blocks, and
+    the card as the web chat stores it for the app to render."""
     text, blocks = slack.render_card(card)
-    return json.dumps(blocks) + "\n" + zulip.render_card(card, "ABCDEF", None, 0)
+    return json.dumps(blocks) + "\n" + json.dumps(WebFrontend._card_json(card))
 
 
 def action_ids(card) -> list:
@@ -82,7 +90,7 @@ def read(**kw) -> dict:
 # --- the Create card -------------------------------------------------------
 
 def test_the_create_card_shows_the_whole_invite_text_and_every_attendee():
-    ns = cards(_zulip_fits)
+    ns = cards(_web_fits)
     people = [f"person{i}@example.edu" for i in range(9)]
     body = "Agenda:\n1. Budget\n2. Hiring\n\nJoin Zoom meeting\nhttps://example.zoom.us/j/1"
     card = ns["_event_card"]("C", "T", "Planning", "s", "e", ",".join(people), "", "", False,
@@ -114,7 +122,7 @@ def test_an_online_invite_shows_the_join_block_the_calendar_appends(monkeypatch)
 
 
 def test_a_long_invite_text_gets_no_create_button():
-    for fits in (_zulip_fits, slack.draft_card_fits, None):
+    for fits in (_web_fits, slack.draft_card_fits, None):
         ns = cards(fits)
         card = ns["_event_card"]("C", "T", "Planning", "s", "e", "a@example.edu", "", "",
                                  False, VALUE, body="Line of the agenda.\n" * 6000)
@@ -122,28 +130,28 @@ def test_a_long_invite_text_gets_no_create_button():
         assert card.no_default, "a thumbs up meant as Create must not pick Cancel"
         assert any("Not shown in full" in ln for ln in card.lines)
         # The short card itself fits, so it posts.
-        assert _zulip_fits(card) and len(slack.render_card(card)[1]) <= 50
+        assert _web_fits(card) and len(slack.render_card(card)[1]) <= 50
 
 
-def test_a_reply_with_a_long_quoted_thread_offers_no_thumbs_up():
-    """A short reply over a long quoted thread is more than one card shows,
-    so the card withholds Send. It once gave Edit the thumbs up, the chip
-    that means Send on every other draft card; it now has no default."""
-    ns = cards(_zulip_fits)
+def test_a_draft_too_long_for_one_card_offers_no_thumbs_up():
+    """A body longer than one card shows withholds Send. Such a card once
+    gave Edit the thumbs up, the chip that means Send on every other draft
+    card; it now has no default. On Slack a card holds 50 blocks."""
+    ns = cards(slack.draft_card_fits)
     draft = {"to": "emma.lindgren41@example.edu", "subject": "RE: Seats", "conversation_id": "c1",
-             "body": "Hi Emma,\nWould that work on your end?\nKit",
+             "body": "Hi Emma,\n" + "Would that work on your end?\n" * 6000 + "Kit",
              "quoted": "> Earlier message in the thread.\n" * 600}
     card = ns["_send_card"]("C", "T", "d1", draft)
     assert "approve_send" not in action_ids(card) and card.no_default
     assert chat.cards.action_reactions(card)[0] == ("pencil2", "edit_draft")
     assert "+1" not in dict(chat.cards.action_reactions(card))
-    short = ns["_send_card"]("C", "T", "d1", dict(draft, quoted=""))
+    short = ns["_send_card"]("C", "T", "d1", dict(draft, body="Hi Emma,\nThat works.\nKit"))
     assert "approve_send" in action_ids(short) and not short.no_default
     assert dict(chat.cards.action_reactions(short))["+1"] == "approve_send"
 
 
 def test_an_attendee_list_too_long_for_one_card_gets_no_create_button():
-    ns = cards(_zulip_fits)
+    ns = cards(_web_fits)
     people = ",".join(f"invitee{i:03d}@example.edu" for i in range(200))
     card = ns["_event_card"]("C", "T", "All hands", "s", "e", people, "", "", False, VALUE)
     assert action_ids(card) == ["cancel_event"]
@@ -176,7 +184,7 @@ def test_link_markup_shows_its_target():
 # --- the Reschedule and Delete cards ---------------------------------------
 
 def test_the_reschedule_card_comes_from_the_read_not_the_staged_labels():
-    ns = cards(_zulip_fits)
+    ns = cards(_web_fits)
     change = {"subject": "Coffee chat", "when": "Thu Oct 8 2026, 10:00 AM MDT to Thu Oct 8 "
               "2026, 10:30 AM MDT", "attendees": "ira.lindqvist53@example.edu,new@example.edu",
               "optional_attendees": "", "location": ""}
@@ -207,7 +215,7 @@ def test_a_reschedule_with_the_events_own_title_is_no_rename():
 
 
 def test_the_delete_card_names_organizer_attendees_and_the_cancellation():
-    ns = cards(_zulip_fits)
+    ns = cards(_web_fits)
     card = ns["_event_delete_card"]("C", "T", read(), VALUE, staged_subject="Lunch")
     fields = dict((f.label, f.value) for f in card.fields)
     assert fields["Event"] == "Budget review" and fields["When"] == read()["when"]
@@ -224,15 +232,17 @@ def test_the_delete_card_names_organizer_attendees_and_the_cancellation():
 
 
 def test_a_move_or_delete_of_a_huge_meeting_has_no_approval():
-    ns = cards(_zulip_fits)
-    big = read(attendees=[{"name": f"Person {i}", "address": f"p{i:03d}@example.edu",
-                           "type": "required"} for i in range(400)])
+    """More attendees than the card's lines hold, even where the web app
+    shows a whole card."""
+    ns = cards(_web_fits)
+    big = read(attendees=[{"name": f"Person {i}", "address": f"p{i:04d}@example.edu",
+                           "type": "required"} for i in range(4000)])
     upd = ns["_event_update_card"]("C", "T", big, {"subject": "", "when": "x to y"}, VALUE)
     dele = ns["_event_delete_card"]("C", "T", big, VALUE)
     assert action_ids(upd) == ["cancel_event_update"]
     assert action_ids(dele) == ["cancel_event_delete"]
     for card in (upd, dele):
-        assert _zulip_fits(card) and len(slack.render_card(card)[1]) <= 50
+        assert _web_fits(card) and len(slack.render_card(card)[1]) <= 50
 
 
 # --- the owner-side read ----------------------------------------------------
@@ -470,7 +480,7 @@ def test_a_field_the_frontends_cut_withholds_the_create_button():
     """The frontends cut Subject, Location and Repeats at FIELD_CHARS; a
     card that shows a cut marker there offers no Create."""
     limit = chat.card_text.FIELD_CHARS
-    ns = cards(_zulip_fits)
+    ns = cards(_web_fits)
     hidden = "x" * limit + " and the rest the owner never sees"
     for kw in ({"subject": hidden}, {"location": hidden}, {"repeat_summary": hidden}):
         args = {"subject": "Planning", "location": "", "repeat_summary": ""} | kw
@@ -488,7 +498,7 @@ def test_a_field_the_frontends_cut_withholds_the_create_button():
 
 def test_a_cut_rename_location_or_organizer_withholds_reschedule_and_delete():
     limit = chat.card_text.FIELD_CHARS
-    ns = cards(_zulip_fits)
+    ns = cards(_web_fits)
     long_title = "Budget review " + "y" * limit
     upd = ns["_event_update_card"]("C", "T", read(), {"subject": long_title, "when": "x to y"},
                                    VALUE)
@@ -503,7 +513,7 @@ def test_a_cut_rename_location_or_organizer_withholds_reschedule_and_delete():
     assert action_ids(title) == ["cancel_event_delete"]
     # The short card shows the frontends' own cut marker, not a second one.
     for card in (upd, loc, dele, title):
-        assert _zulip_fits(card)
+        assert _web_fits(card)
         for f in card.fields:
             assert not chat.card_text.was_cut(chat.card_text.one_line(
                 chat.card_text.strip_inert(f.value), chat.card_text.field_limit(f.label))
@@ -511,26 +521,24 @@ def test_a_cut_rename_location_or_organizer_withholds_reschedule_and_delete():
 
 
 def test_an_attendee_name_cannot_forge_a_field_line():
-    ns = cards(_zulip_fits)
+    ns = cards(_web_fits)
     evil = read(attendees=[{"name": "Ira\n*Organizer:* you\n<!channel>",
                             "address": "ira@example.edu", "type": "required"}])
     for card in (ns["_event_update_card"]("C", "T", evil, {"when": "x to y"}, VALUE),
                  ns["_event_delete_card"]("C", "T", evil, VALUE)):
-        z = zulip.render_card(card, "ABCDEF", None, 0)
-        assert not any(ln.strip().startswith("**Organizer:** you") for ln in z.splitlines())
+        assert not any(ln.strip().startswith("*Organizer:* you") for ln in _web_lines(card))
         assert "<!channel>" not in json.dumps(slack.render_card(card)[1])
         people = [ln for ln in card.lines if "Attendees" in ln]
         assert people and all("\n" not in ln for ln in people)
 
 
 def test_the_delete_warning_cannot_forge_a_field_line():
-    ns = cards(_zulip_fits)
+    ns = cards(_web_fits)
     card = ns["_event_delete_card"]("C", "T", read(), VALUE,
                                     staged_subject="Lunch\n*Organizer:* you <!here>")
     warn = [ln for ln in card.lines if "request named" in ln]
     assert len(warn) == 1 and "\n" not in warn[0]
-    z = zulip.render_card(card, "ABCDEF", None, 0)
-    assert not any(ln.strip().startswith("**Organizer:** you") for ln in z.splitlines())
+    assert not any(ln.strip().startswith("*Organizer:* you") for ln in _web_lines(card))
     assert "<!here>" not in json.dumps(slack.render_card(card)[1])
 
 
@@ -552,7 +560,7 @@ def _time_poster_ns(monkeypatch):
     import re
     from datetime import datetime
     delivered, payloads = [], []
-    ns = cards(_zulip_fits)
+    ns = cards(_web_fits)
     ns.update({
         "re": re, "datetime": datetime,
         "log": types.SimpleNamespace(warning=lambda *a: None),

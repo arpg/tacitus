@@ -188,7 +188,8 @@ def test_extract_deliveries():
     assert ds[0]["text"].startswith("Research report:")
 
 
-def test_extract_deliveries_accepts_zulip_thread_key():
+def test_extract_deliveries_accepts_an_imported_thread_key():
+    """A thread the web chat imported from Zulip keeps its old key."""
     key = "stream:12:topic:Hello%20there"
     raw = _assistant_u([{"type": "text", "text": f"[deliver:{key}] Report done."}],
                        "z1")

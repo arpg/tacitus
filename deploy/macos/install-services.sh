@@ -23,7 +23,7 @@
 # root-owned launcher /usr/local/libexec/ea-service-run.sh. Every file here is
 # root- or owner-owned; ea-bot can rewrite none of it.
 #
-# Run AFTER the chat platform is configured (docs/SETUP.md "Zulip server" or "Slack"): step 3 below
+# Run AFTER the chat platform is configured (docs/SETUP.md "Web chat" or "Slack"): step 3 below
 # seeds ~/.ea-private/chat.json from ea-config.json's chat block only when the
 # file is missing, so running earlier would freeze the template values.
 # On a mode with no chat platform (reviewer) it installs the

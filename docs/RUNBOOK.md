@@ -68,11 +68,10 @@ system unit's process (it keyed MainPID off the wrong unit). Fixed
 sudoers grant (`/etc/sudoers.d/ea-chat-bot`, restart-only).
 
 **Unit name:** the bot is `ea-chat-bot.service` (it was `ea-slack-bot`
-before the chat front end became Zulip or Slack). On a host whose unit
-still carries the old name, `sudo bash deploy/rename-chat-bot.sh` moves
-the unit, its drop-in and the sudoers grant over in one restart; until
-then the deploy hook, the sentinel and `zulip_switch.sh` fall back to
-the old unit. The tree no longer carries an `ea-slack-bot.py` shim: a
+when Slack was the only chat front end). On a host whose unit still
+carries the old name, `sudo bash deploy/rename-chat-bot.sh` moves the
+unit, its drop-in and the sudoers grant over in one restart; until then
+the deploy hook and the sentinel fall back to the old unit. The tree no longer carries an `ea-slack-bot.py` shim: a
 unit whose ExecStart still names it needs the rename first.
 
 ---
@@ -245,61 +244,55 @@ an overnight change surfaces with the morning digest.
 
 ## 9. Chat frontend switch and rollback
 
-The chat platform is `chat.frontend` in `~/.ea/config/ea-config.json`:
-`"zulip"` (recommended) or `"slack"`; an install with no `chat` block
-runs Slack. The full procedure, with what carries
-over, is [zulip-switch.md](zulip-switch.md); the short form:
+The chat platform is `chat.frontend` in the chat block, which the bot
+reads from the owner-private `~/.ea-private/chat.json`: `"web"` (the web
+chat, self-hosted and recommended) or `"slack"`. An install with no
+`chat` block runs Slack. Any other value stops the bot at start
+(`unknown chat frontend ...; expected one of slack, memory, web`), and
+the doctor's `chat: frontend` row fails until the block names `web` or
+`slack`.
 
-**Switch to Zulip:** `ZULIP_API_KEY=<bot key>` in `~/.ea-private/secrets.env`;
-the bootstrap's `chat` block (`"frontend": "zulip"`) in `ea-config.json` and
-its owner copy `~/.ea-private/chat.json` (`scripts/zulip_switch.sh` writes both);
-`sudo systemctl restart ea-chat-bot` (the unit name stays); the log
-shows `frontend=zulip stream=ea (private, subscribed) owner=<id>`; post
-`usage` in `ea` with no topic and in `ea-dm`.
+**Switch to the web chat:** `"frontend": "web"` and the `web` block of
+SETUP.md "Web chat" (step 1) in `~/.ea-private/chat.json`; the
+`tailscale serve` line of step 2; `sudo systemctl restart ea-chat-bot`
+(the unit name stays). The log shows `web chat serving on
+127.0.0.1:8470/chat/`. To try it beside Slack first, keep
+`"frontend": "slack"` and add `"shadow": "web"` (SETUP.md "Beside Slack
+(shadow mode)").
 
 **Rollback:** set `"frontend": "slack"` and restart. The Slack tokens
 and `EA_SLACK_*` lines are untouched by a switch, so this is the whole
-rollback. Code rollback is separate (`git revert <sha>`, the hook
-redeploys). New state (`chat-cards.json`, `zulip-queue.json` in
-`/home/<you>/.ea-private/`) is additive; nothing needs restoring.
+rollback. The web chat's store stays in the private directory for a
+later switch back. Code rollback is separate (`git revert <sha>`, the
+hook redeploys).
 
 **Symptom: no bot reply after a switch.** The service is active but a
-message in Zulip gets no reaction and no reply. Check in this order:
+message in the web chat gets no reaction and no reply. Check in this
+order:
 
 1. **Startup line.**
    ```bash
-   journalctl -u ea-chat-bot -n 60 --no-pager | grep -E 'frontend=|Error|Traceback'
+   journalctl -u ea-chat-bot -n 60 --no-pager | grep -E 'web chat|Error|Traceback'
    ```
-   No `frontend=zulip ...` line means startup failed. A `ChatError`
-   names the cause (`ZULIP_API_KEY is not set`, a stream not found,
-   `chat.zulip.owner_user_id is not set`). A `frontend=slack` line means
-   the config edit did not land (check the JSON parses:
-   `python3 -m json.tool ~/.ea/config/ea-config.json`).
-2. **Stream subscription.** The bot must be subscribed to `ea`, `ea-dm`
-   and the scheduling stream when one is configured. The startup error
-   `the bot is not subscribed to zulip stream '<name>'` says which.
-   `scripts/zulip_bootstrap.py --check` prints OK or FAIL per stream;
-   rerunning the bootstrap without `--check` subscribes it.
-3. **Private stream.** Startup refuses a public stream
-   (`zulip stream '<name>' is public`). Make it invite-only in the
-   stream settings, or rerun the bootstrap, which does so.
-4. **Owner id.** Project and session rooms dispatch only the owner's
-   messages, and cards accept reactions and codes only from the owner,
-   both judged by `chat.zulip.owner_user_id`. A wrong id looks like
-   silence there: the bot drops the message or the code with no reply. Compare it with
-   the owner's id in the Zulip web app (profile, "User ID") or the
-   bootstrap's `--check` output, then restart.
-
-Two more causes: the message went into a topic in a stream the bot does
-not listen on (only `ea`, `ea-dm`, the scheduling stream and registered
-`#ea-`/`#tmp-` rooms dispatch), or the event queue expired while the bot
-was down. The second heals itself: the bot registers a new queue and the
-restart catch-up replays the gap from the last message id it saved.
+   No `web chat serving on ...` line means the web chat did not start.
+   `web chat: not serving: <why>` names the cause: a chat block read
+   from `ea-config.json` instead of `chat.json`, or a store or pairing
+   token in the resident's tree. A `ChatError` names any other cause.
+   Check that the JSON parses:
+   `python3 -m json.tool ~/.ea-private/chat.json`.
+2. **The address.** The `--https` port of `tailscale serve` must be the
+   port in `public_url` (SETUP.md "Web chat", step 2). `tailscale serve
+   status` lists what is published.
+3. **The sign-in.** A 401 means the request carried neither your
+   Tailscale login (`tailscale_login` must match `tailscale whois`) nor
+   the pairing cookie. Pair the browser with the token once (SETUP.md
+   "Web chat", step 4).
 
 **Detection:** the in-bot watchdog calls the frontend's `ping()` every
 5 minutes and exits on failure; systemd restarts it. `ea-doctor.py`
-checks the secrets for the configured frontend (the two Slack tokens, or
-`ZULIP_API_KEY`).
+checks the secrets for the configured frontend (the two Slack tokens)
+and the web chat's settings, sign-in, store and backup (its `web chat:`
+rows).
 
 ---
 

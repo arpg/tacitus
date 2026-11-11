@@ -57,7 +57,6 @@ import slack_outbox  # noqa: E402
 import resident_bridge as rb  # noqa: E402
 import context_export as cx  # noqa: E402
 from chat import slack_frontend as sf  # noqa: E402
-from chat import zulip_frontend as zf  # noqa: E402
 from chat.types import FileRef  # noqa: E402
 
 import pytest
@@ -478,26 +477,6 @@ class _Resp:
         return None
 
 
-def test_zulip_download_replaces_a_link_instead_of_writing_through_it():
-    dest = EA_DIR / "uploads"
-    victim = _victim(Path(tempfile.mkdtemp()))
-    target = dest / "report.pdf"
-    target.symlink_to(victim)
-    me = types.SimpleNamespace(site="https://chat.example", bot_email="b@x", _api_key="K")
-    saved = sys.modules.get("requests")
-    sys.modules["requests"] = types.SimpleNamespace(get=lambda url, **kw: _Resp())
-    try:
-        with _as_owner() as calls:
-            got = zf.ZulipFrontend.download(
-                me, FileRef("report.pdf", id="/user_uploads/1/report.pdf"), dest)
-    finally:
-        sys.modules["requests"] = saved
-    assert got == str(target)
-    assert victim.read_text() == VICTIM_TEXT
-    assert target.read_bytes() == b"uploaded bytes" and not target.is_symlink()
-    assert ("replace", str(target)) in _ops(calls)
-
-
 def test_slack_download_replaces_a_link_instead_of_writing_through_it():
     dest = EA_DIR / "uploads"
     victim = _victim(Path(tempfile.mkdtemp()))
@@ -509,14 +488,15 @@ def test_slack_download_replaces_a_link_instead_of_writing_through_it():
     sys.modules["requests"] = types.SimpleNamespace(get=lambda url, **kw: _Resp())
     sf.datetime = fixed
     try:
-        with _as_owner():
+        with _as_owner() as calls:
             got = sf.SlackFrontend.download(
                 types.SimpleNamespace(_bot_token="xoxb"), FileRef("a.pdf", "https://f/1"), dest)
     finally:
         sys.modules["requests"], sf.datetime = saved
     assert got == str(target)
     assert victim.read_text() == VICTIM_TEXT
-    assert target.read_bytes() == b"uploaded bytes"
+    assert target.read_bytes() == b"uploaded bytes" and not target.is_symlink()
+    assert ("replace", str(target)) in _ops(calls)
 
 
 # ── the bot ───────────────────────────────────────────────────────────

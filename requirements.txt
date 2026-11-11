@@ -7,7 +7,6 @@ google-auth-httplib2>=0.4.4
 google-auth-oauthlib>=1.5.0
 slack-bolt>=1.30.0
 slack-sdk>=3.45.0
-zulip>=0.9.1
 ortools>=9.15.6755
 python-docx>=1.2.0
 # doc_text reads and doc_write writes .xlsx sheets for the chat lane.

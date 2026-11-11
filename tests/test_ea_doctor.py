@@ -108,23 +108,49 @@ def test_private_dir_stores_and_webhooks_are_checked():
         assert res["config: slack_webhooks.json"]["status"] == "PASS"
 
 
-def test_a_zulip_install_is_not_asked_for_anything_slack():
-    """With chat.frontend zulip the doctor names no Slack env, secret,
-    scheduling channel or webhook file, required or optional."""
+def test_a_web_chat_install_is_not_asked_for_anything_slack():
+    """With chat.frontend web the doctor names no Slack env, secret,
+    scheduling channel or webhook file, required or optional, and asks for
+    no secret at all: the bot serves the web chat itself."""
     with tempfile.TemporaryDirectory(prefix="ea-doctor-") as td:
         d, priv = Path(td) / "ea", Path(td) / "private"
         (d / "config").mkdir(parents=True)
         priv.mkdir(mode=0o700)
         (d / "config" / "ea-config.json").write_text(json.dumps(
-            {"profile": "assistant", "chat": {"frontend": "zulip"}}))
+            {"profile": "assistant", "chat": {"frontend": "web"}}))
         (d / ".env").write_text("EA_MODEL=x\n")
         r = _run("--json", "--profile", "assistant", ea_dir=d, private_dir=priv)
-        names = [x["name"] for x in json.loads(r.stdout)["results"]]
+        res = {x["name"]: x for x in json.loads(r.stdout)["results"]}
         # the bot's unit keeps its name on every frontend
-        slack = [n for n in names if ("SLACK" in n.upper() or "EA_SCHED_CHANNEL_ID" in n)
+        slack = [n for n in res if ("SLACK" in n.upper() or "EA_SCHED_CHANNEL_ID" in n)
                  and n != "service: ea-chat-bot"]
         assert slack == [], slack
-        assert "secret: ZULIP_API_KEY" in names
+        assert [n for n in res if n.startswith("secret: ")] == []
+        assert res["chat frontend"]["status"] == "PASS" and res["chat frontend"]["detail"] == "web"
+
+
+def test_a_frontend_that_is_not_web_or_slack_fails():
+    """The bot runs the web chat or Slack. Another frontend in the chat
+    block FAILs, and the fix names both, with the self-hosted web chat
+    first; --ci, which never fails on the install's state, warns."""
+    for frontend in ("zulip", "irc"):
+        _check_unknown_frontend(frontend)
+
+
+def _check_unknown_frontend(frontend: str) -> None:
+    with tempfile.TemporaryDirectory(prefix="ea-doctor-") as td:
+        d, priv = Path(td) / "ea", Path(td) / "private"
+        (d / "config").mkdir(parents=True)
+        priv.mkdir(mode=0o700)
+        (d / "config" / "ea-config.json").write_text(json.dumps(
+            {"profile": "assistant", "chat": {"frontend": frontend}}))
+        for args, status in ((("--json",), "FAIL"), (("--json", "--ci"), "WARN")):
+            r = _run(*args, "--profile", "assistant", "--ea-dir", str(d), private_dir=priv)
+            row = {x["name"]: x for x in json.loads(r.stdout)["results"]}["chat frontend"]
+            assert row["status"] == status, (args, row)
+            assert f"{frontend!r} is not web or slack" in row["detail"]
+            assert "to web (the self-hosted web chat" in row["fix"] and "or slack" in row["fix"]
+            assert "chat.json" in row["fix"] and "ea-config.json" in row["fix"]
 
 
 def test_the_secrets_check_names_the_owner_private_file():
@@ -149,7 +175,7 @@ def test_the_secrets_check_names_the_owner_private_file():
 
 
 def test_the_reviewer_mode_asks_for_no_chat_key():
-    """No chat platform: no Slack or Zulip key, required or optional, and
+    """No chat platform: no Slack key, required or optional, and
     the ~/.ea/.env fix points at the Graph keys, not the Slack appendix."""
     with tempfile.TemporaryDirectory(prefix="ea-doctor-") as td:
         d, priv = Path(td) / "ea", Path(td) / "private"
@@ -157,7 +183,7 @@ def test_the_reviewer_mode_asks_for_no_chat_key():
         r = _run("--json", "--profile", "reviewer", ea_dir=d, private_dir=priv)
         results = json.loads(r.stdout)["results"]
         names = [x["name"] for x in results]
-        chat = [n for n in names if any(k in n.upper() for k in ("SLACK", "ZULIP", "EA_SCHED"))
+        chat = [n for n in names if any(k in n.upper() for k in ("SLACK", "EA_SCHED"))
                 and not n.startswith(("config", "service"))]
         assert chat == [], chat
         env = next(x for x in results if x["name"] == "~/.ea/.env")
@@ -292,14 +318,14 @@ def test_share_masks_identities_and_keeps_the_report_shape():
     spec = importlib.util.spec_from_file_location("ea_doctor", DOCTOR)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    text = ("[  ok  ] zulip: get_profile  (bot ea-bot@zulip.example id 9)\n"
+    text = ("[  ok  ] slack: auth.test  (bot ea-bot@chat.example id 9)\n"
             "[ FAIL ] profile: name and email  (pat.lee@example.edu)\n"
             "           fix: edit /home/patlee/.ea/config/user-profile.json\n"
             "[  ok  ] deploy tree  (/home/ea-bot/ea-system at 903f647)\n"
             "[ warn ] chat site  (https://eps.tail1234.ts.net:8443, host eps.tail1234.ts.net)\n"
             "[  ok  ] calendar  (id 0123456789abcdef0123456789abcdef)\n")
     masked = mod.share_mask(text)
-    for gone in ("pat.lee@example.edu", "ea-bot@zulip.example", "/home/patlee", "eps.tail1234",
+    for gone in ("pat.lee@example.edu", "ea-bot@chat.example", "/home/patlee", "eps.tail1234",
                  "0123456789abcdef0123456789abcdef", "https://"):
         assert gone not in masked, gone
     for kept in ("[ FAIL ] profile: name and email", "/home/ea-bot/ea-system", "903f647",

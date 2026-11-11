@@ -3,9 +3,10 @@ resolvers that turn an owner's reaction or typed code into an action.
 
 A ConfirmationCard is what the core asks the owner to approve (send a
 draft, create an event, pick a room). Each frontend renders it its own
-way: Slack as Block Kit buttons, Zulip as text with a one-time code.
-Whatever the owner does (click, react, type the code) reaches the core
-as one ActionEvent.
+way: Slack as Block Kit buttons, the web chat as buttons it draws, and a
+frontend without buttons (the in-memory fake) as text with a one-time
+code. Whatever the owner does (click, react, type the code) reaches the
+core as one ActionEvent.
 
 The CardRegistry records every live card: where it was posted, when,
 its code, and each action's value, word and style. The reaction and
@@ -73,7 +74,8 @@ class ConfirmationCard:
 
     `quoted` is, on a send or schedule card, the quoted thread of the draft
     (everything from the quote boundary on). A frontend shows it after the
-    body in a block the owner can expand (a Zulip spoiler; Slack sections)."""
+    body in a block the owner can expand (a folded block in the web chat;
+    Slack sections)."""
     kind: str
     title: str
     fields: list[CardField] = field(default_factory=list)
@@ -244,8 +246,8 @@ class CardRegistry:
     Rows: {kind, channel, msg_id, card_thread, posted_at, code, actions:
     {id: {value, word, style, label}}, thread_ts, ea_channel, status,
     created}; status is "live" or "retired"; created is epoch seconds.
-    card_thread is the thread the card itself was posted in (its own Zulip
-    topic, or the DM); a typed code counts only there. thread_ts is the
+    card_thread is the thread the card itself was posted in (its own
+    thread, or the DM); a typed code counts only there. thread_ts is the
     conversation the card reports back to.
     """
 
@@ -348,68 +350,6 @@ class CardRegistry:
             row["status"] = "retired"
             self._save()
         return True
-
-    def move_thread(self, old: str, new: str, channel: str = "") -> int:
-        """Point every row, and every action value, that names thread `old`
-        at `new` (and its ea_channel at `channel` when the thread changed
-        channel); the number of rows changed."""
-        def follow(d: dict) -> bool:
-            if d.get("thread_ts") != old:
-                return False
-            d["thread_ts"] = new
-            if channel and d.get("ea_channel"):
-                d["ea_channel"] = channel
-            return True
-
-        changed = 0
-        with self._lock:
-            for row in self._rows.values():
-                hit = follow(row)
-                if row.get("card_thread") == old:
-                    row["card_thread"] = new
-                    hit = True
-                for act in (row.get("actions") or {}).values():
-                    val = act.get("value")
-                    if isinstance(val, dict):
-                        hit = follow(val) or hit
-                changed += hit
-            if changed:
-                self._save()
-        return changed
-
-    def move_channels(self, moves: dict[str, str]) -> int:
-        """Re-key every row posted in a channel of `moves` to that channel's
-        new id, and point every value that names such a channel (the row's
-        `channel` and `ea_channel`, an action value's) at the new id: the
-        move from shadow mode to the web chat alone
-        (scripts/webchat-cutover.py). Thread keys and message ids stay. The
-        number of rows changed."""
-        def follow(value: object) -> tuple[object, bool]:
-            if isinstance(value, str):
-                return (moves[value], True) if value in moves else (value, False)
-            hit = False
-            if isinstance(value, dict):
-                for k, v in value.items():
-                    value[k], h = follow(v)
-                    hit = hit or h
-            elif isinstance(value, list):
-                for i, v in enumerate(value):
-                    value[i], h = follow(v)
-                    hit = hit or h
-            return value, hit
-
-        changed = 0
-        with self._lock:
-            rows: dict[str, dict] = {}
-            for key, row in self._rows.items():
-                if follow(row)[1]:
-                    key = _ref_key(str(row.get("channel") or ""), str(row.get("msg_id") or ""))
-                    changed += 1
-                rows[key] = row
-            if changed:
-                self._rows = rows
-                self._save()
-        return changed
 
     def new_code(self) -> str:
         """A fresh 4-character code, unique among live rows."""

@@ -17,13 +17,10 @@ import ea_config  # noqa: E402
 from chat import ChatError, load_frontend, private_dir, prompt_strings_for_config  # noqa: E402
 from chat.memory_frontend import MemoryFrontend  # noqa: E402
 from chat.text import (  # noqa: E402
-    EMOJI_ALIASES,
     is_ported,
-    mrkdwn_to_zulip,
+    mrkdwn_to_markdown,
     ported_header,
     smart_chunk,
-    topic_from_text,
-    unique_topic,
 )
 from chat.types import THREAD_KEY_RE, Status  # noqa: E402
 
@@ -83,7 +80,7 @@ def test_smart_chunk_respects_limit():
     ("hi <@U123ABC>", "hi @**U123ABC**"),
     ("a &amp; b &lt;c&gt;", "a & b <c>"),
     ("&amp;lt;", "&lt;"),
-    ("done :white_check_mark: :x: :tada:", "done :check: :cross_mark: :tada:"),
+    ("done :white_check_mark: :x: :tada:", "done :white_check_mark: :x: :tada:"),
     ("run `*not bold*` now", "run `*not bold*` now"),
     ("```\n*keep* _this_ <https://a|b>\n```\n*x*", "```\n*keep* _this_ <https://a|b>\n```\n**x**"),
     ("snake_case_name stays", "snake_case_name stays"),
@@ -91,57 +88,26 @@ def test_smart_chunk_respects_limit():
     ("**already**", "**already**"),
     ("", ""),
 ])
-def test_mrkdwn_to_zulip(src, want):
-    assert mrkdwn_to_zulip(src) == want
+def test_mrkdwn_to_markdown(src, want):
+    assert mrkdwn_to_markdown(src) == want
 
 
 def test_mrkdwn_channel_mention_function():
-    out = mrkdwn_to_zulip("go to <#C1> and <#C2|two>", mention=lambda c: f"#**room-{c}**")
-    assert out == "go to #**room-C1** and #**room-C2**"
+    out = mrkdwn_to_markdown("go to <#C1> and <#C2|two>", mention=lambda c: f"[#room-{c}](u)")
+    assert out == "go to [#room-C1](u) and [#room-C2](u)"
 
 
-def test_emoji_aliases_known():
-    assert EMOJI_ALIASES["white_check_mark"] == "check"
-    assert EMOJI_ALIASES["mailbox_with_no_mail"] == "inbox_zero"
-    assert EMOJI_ALIASES["ballot_box_with_check"] == "checkbox"
-    assert EMOJI_ALIASES["clock3"] == "clock"
+def test_mrkdwn_keeps_slack_emoji_names():
+    # The web chat draws Slack's names, the names reactions use.
+    text = ":mailbox_with_no_mail: :pushpin: :ok_hand: :clock3:"
+    assert mrkdwn_to_markdown(text) == text
 
 
-def test_emoji_aliases_convert_once():
-    # No target is also a key, so converting a converted message is a no-op.
-    # The exception is x: Slack's x is set to cross_mark, and x is the only
-    # Zulip name for the boxed cross negative_squared_cross_mark maps to.
-    assert set(EMOJI_ALIASES.values()) & set(EMOJI_ALIASES) == {"x"}
-    once = mrkdwn_to_zulip(":mailbox_with_no_mail: :pushpin: :ok_hand:")
-    assert once == ":inbox_zero: :push_pin: :ok:"
-    assert mrkdwn_to_zulip(once) == once
-
-
-@pytest.mark.parametrize("text,limit,want", [
-    ("Hello there", 60, "Hello there"),
-    ("\n\n  *Draft* reply to _Maria_ :email:\nsecond line", 60, "Draft reply to Maria"),
-    ("see <https://x.org|the page> now", 60, "see the page now"),
-    ("one two three four five", 12, "one two"),
-    ("abcdefghijklmnop", 5, "abcde"),
-    ("", 60, "chat"),
-    (":lock: *", 60, "chat"),
-    ("keep snake_case words", 60, "keep snake_case words"),
-    ("[receipt.pdf](/user_uploads/2/ab/x/receipt.pdf)", 60, "receipt.pdf"),
-    ("@**Hale Okonkwo|12** can you check **this**", 60, "Hale Okonkwo can you check this"),
-    ("> quoted opening\nmore", 60, "quoted opening"),
-    ("Stage the items for this trip, which should be two PDFs", 32, "Stage the items for this trip"),
-])
-def test_topic_from_text(text, limit, want):
-    assert topic_from_text(text, limit) == want
-
-
-def test_unique_topic_suffixes_a_name_in_use():
-    assert unique_topic("usage", []) == "usage"
-    assert unique_topic("usage", ["Usage"]) == "usage (2)"
-    assert unique_topic("usage", ["usage", "usage (2)"]) == "usage (3)"
-    long = "x" * 60
-    got = unique_topic(long, [long], 60)
-    assert len(got) == 60 and got.endswith(" (2)")
+def test_mrkdwn_inert_span_becomes_a_code_span():
+    assert mrkdwn_to_markdown("a \ue000*x* <@U1>\ue001 b") == "a `*x* <@U1>` b"
+    assert mrkdwn_to_markdown("a `\ue000x`y\ue001` b") == "a ``x`y`` b"
+    # The converter's own placeholders cannot come from the text.
+    assert mrkdwn_to_markdown("\x010\x01 \x000\x00 *b*") == "0 0 **b**"
 
 
 def test_ported_header_marks_only_its_own_first_line():
@@ -164,28 +130,25 @@ def test_get_chat_defaults_missing_file(tmp_path):
     cfg = ea_config.get_chat(tmp_path / "none.json")
     assert cfg == ea_config.DEFAULTS["chat"]
     assert cfg["frontend"] == "slack"
-    assert cfg["zulip"]["dm_stream"] == "ea-dm"
-    cfg["zulip"]["notify"]["personal"]["stream"] = "mutated"
-    assert ea_config.DEFAULTS["chat"]["zulip"]["notify"]["personal"]["stream"] == "ea"
+    assert "zulip" not in cfg
+    cfg["web"]["port"] = 1
+    assert ea_config.DEFAULTS["chat"]["web"]["port"] != 1
 
 
 def test_get_chat_deep_merge(tmp_path):
     path = tmp_path / "ea-config.json"
     path.write_text(json.dumps({"chat": {
-        "frontend": "zulip",
-        "zulip": {"site": "https://z.example", "stream": "ea2",
-                  "notify": {"personal": {"stream": "mine"},
-                             "extra": {"stream": "s"}}}}}))
+        "frontend": "web",
+        "web": {"port": 9001, "public_url": "https://chat.example"},
+        "zulip": {"site": "https://z.example"}}}))
     cfg = ea_config.get_chat(path)
-    assert cfg["frontend"] == "zulip"
-    z = cfg["zulip"]
-    assert z["site"] == "https://z.example"
-    assert z["stream"] == "ea2"
-    assert z["dm_stream"] == "ea-dm"
-    assert z["bot_email"] == ""
-    assert z["notify"]["personal"] == {"stream": "mine"}
-    assert z["notify"]["scheduling"] == {"stream": "ea"}
-    assert z["notify"]["extra"] == {"stream": "s"}
+    assert cfg["frontend"] == "web"
+    w = cfg["web"]
+    assert w["port"] == 9001
+    assert w["public_url"] == "https://chat.example"
+    assert w["base_path"] == ea_config.DEFAULTS["chat"]["web"]["base_path"]
+    assert w["sched"] is True
+    assert "zulip" not in cfg          # a zulip key in the file is ignored
 
 
 def test_template_has_chat_block():

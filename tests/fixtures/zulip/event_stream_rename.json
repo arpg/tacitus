@@ -1,9 +1,0 @@
-{
- "id": 13,
- "name": "ea-old-name",
- "op": "update",
- "property": "name",
- "stream_id": 21,
- "type": "stream",
- "value": "ea-new-name"
-}

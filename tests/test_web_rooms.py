@@ -15,7 +15,7 @@ picker's Open button take the same path, and a room made before its
 registration failed is taken back. A room the owner renames from the app
 keeps its project (the registry and the owner record follow); one the owner
 archives there stays archived, and one brought back stays open. Shadow mode
-(a Zulip primary, the web chat as its mirror) keeps the primary's room ids,
+(a Slack primary, the web chat as its mirror) keeps the primary's room ids,
 and a rename from the app reaches the primary and the registry.
 
 The bot is hyphenated and heavy, so its functions are exec'd from its
@@ -520,60 +520,61 @@ def test_a_refused_room_names_the_platform_that_refused(bot):
 
 
 def test_shadow_mode_keeps_the_primarys_room_ids(bot, tmp_path):
-    """Zulip primary, web mirror: the room is the primary's stream, and the
+    """Slack primary, web mirror: the room is the primary's channel, and the
     web store holds it under that id."""
     from preprocessor.chat.memory_frontend import MemoryFrontend
     from preprocessor.chat.shadow_frontend import ShadowFrontend
     from preprocessor.chat.types import RoomRef
     ns, _, *_ = bot
 
-    class ZulipLike(MemoryFrontend):
-        name = "zulip"
+    class SlackLike(MemoryFrontend):
+        name = "slack"
 
         def create_private_room(self, name, description=""):
             room = super().create_private_room(name, description)
-            cid = f"stream:{40 + len(self.created_rooms)}"
+            cid = f"C0ROOM{40 + len(self.created_rooms)}"
             self.rooms[cid] = self.rooms.pop(room.id)
             self.rooms[cid].id = cid
-            return RoomRef(cid, name, f"https://zulip.example.test/#narrow/channel/{cid[7:]}")
+            return RoomRef(cid, name, f"https://x.slack.com/archives/{cid}")
 
     web = _web(tmp_path / "shadow")
-    composite = ShadowFrontend(ZulipLike(), web)
+    composite = ShadowFrontend(SlackLike(), web)
     ns.update({"FRONTEND": composite, "CHANNEL_ID": composite.main_channel,
                "OWNER_SLACK_USER_ID": composite.owner_id, "BOT_USER_ID": composite.bot_user_id,
                "_resolve_dm_channel": lambda: "D_OWNER"})
     res = ns["_open_project_channel"]("C_MAIN", "", "", "atlas")
-    assert res["ok"] and res["room"] == "stream:41", res
-    assert _ea_channels.scope_of("stream:41")["project"] == "atlas"
-    assert web.store.channel("stream:41")["name"] == "ea-atlas"
-    assert web.store.channel("stream:41")["kind"] == "room"
+    assert res["ok"] and res["room"] == "C0ROOM41", res
+    assert _ea_channels.scope_of("C0ROOM41")["project"] == "atlas"
+    assert web.store.channel("C0ROOM41")["name"] == "ea-atlas"
+    assert web.store.channel("C0ROOM41")["kind"] == "room"
     assert not [c for c in web.store.channels() if re.fullmatch(r"r\d+", c["id"])]
     web.stop()
 
 
 def test_shadow_mode_renames_the_primarys_room_and_the_registry_follows(bot, tmp_path):
-    """Zulip primary, web mirror: Rename room in the app renames the stream
+    """Slack primary, web mirror: Rename room in the app renames the channel
     on the primary, and the core hears it from the owner, so the registry
-    and the owner record follow (Zulip's own rename event names no one)."""
+    and the owner record follow (a platform's own rename event may name no
+    one)."""
     from preprocessor.chat.memory_frontend import MemoryFrontend
     from preprocessor.chat.shadow_frontend import ShadowFrontend
     from preprocessor.chat.types import RoomRef
     ns, _, *_ = bot
 
-    class ZulipLike(MemoryFrontend):
-        name = "zulip"
+    class SlackLike(MemoryFrontend):
+        name = "slack"
 
         def create_private_room(self, name, description=""):
             room = super().create_private_room(name, description)
-            cid = f"stream:{40 + len(self.created_rooms)}"
+            cid = f"C0ROOM{40 + len(self.created_rooms)}"
             self.rooms[cid] = self.rooms.pop(room.id)
             self.rooms[cid].id = cid
-            return RoomRef(cid, name, f"https://zulip.example.test/#narrow/channel/{cid[7:]}")
+            return RoomRef(cid, name, f"https://x.slack.com/archives/{cid}")
 
         def rename(self, channel, name):
             self._room(channel).name = name
 
-    primary = ZulipLike()
+    primary = SlackLike()
     web = _web(tmp_path / "shadow")
     composite = ShadowFrontend(primary, web)
     ns.update({"FRONTEND": composite, "CHANNEL_ID": composite.main_channel,

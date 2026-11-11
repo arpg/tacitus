@@ -19,8 +19,7 @@ Sources:
               the hook missed from the store (`reconstructed`).
   card        a card's outcome as its status line records it (Sent,
               Created, Closed, Cancelled, Sent from Outlook, Kept open...),
-              from the web store: a `status` row, or a card copied from
-              Zulip's past read as thread_state.card_view reads it.
+              from the web store's `status` rows.
   ledger      rows that reached completed, with their provenance
               (closure_metrics) and closing signal (closure.py); reopens,
               rejected and confirmed close proposals (ledger_events); and
@@ -487,7 +486,7 @@ def interaction_type(messages: list[dict], channel_kind: str | None, origin: str
     answered) or bot_post."""
     if not messages:
         return "bot_post"
-    first = _ts.card_view(messages[0])
+    first = messages[0]
     if first.get("author") == "owner":
         if channel_kind == "sched":
             return "scheduling"
@@ -532,21 +531,20 @@ def card_kind(m: dict) -> str | None:
     for needle, name in _CARD_TITLE_KINDS:
         if needle in title:
             return name
-    return "other" if card or _ts.mirrored_card(m) else None
+    return "other" if card else None
 
 
 def card_state(m: dict, now: float) -> str | None:
     """`live`, an outcome_class word, `expired` for a card whose buttons
     no longer act, or None for a message that is no card. A note whose
     button only undoes what is done (`undo`) asks no decision: None."""
-    v = _ts.card_view(m)
-    if v.get("kind") == "card":
-        card = v.get("card") if isinstance(v.get("card"), dict) else {}
+    if m.get("kind") == "card":
+        card = m.get("card") if isinstance(m.get("card"), dict) else {}
         if not (card.get("actions") or card.get("select")) or card.get("undo"):
             return None
-        return "live" if _ts._live(v, now) else "expired"
-    if v.get("kind") == "status":
-        return outcome_class(v.get("text"))
+        return "live" if _ts._live(m, now) else "expired"
+    if m.get("kind") == "status":
+        return outcome_class(m.get("text"))
     return None
 
 
@@ -602,14 +600,13 @@ def thread_features(messages: list[dict], *, channel: dict | None = None,
     channel_kind and origin. No text leaves."""
     ch = channel or {}
     kind = token(ch.get("kind"), "other")
-    views = [_ts.card_view(m) for m in messages]
+    views = messages
     owner_at = [float(m.get("posted_at") or 0) for m in views if m.get("author") == "owner"]
     bot_at = [float(m.get("posted_at") or 0) for m in views if m.get("author") != "owner"]
     all_at = owner_at + bot_at
     last = views[-1] if views else {}
     cards = [v for v in views if _is_card(v)]
     newest_card = cards[-1] if cards else None
-    newest_card_raw = next((m for m in reversed(messages) if _is_card(_ts.card_view(m))), None)
     pointers = [t for v in views if v.get("author") != "owner"
                 and _POINTER_RE.search(str(v.get("text") or ""))
                 for t in _pointer_targets(str(v.get("text") or ""))]
@@ -645,7 +642,7 @@ def thread_features(messages: list[dict], *, channel: dict | None = None,
         and last.get("kind") == "message" and _ts.asks(last.get("text")),
         "has_live_card": any(_ts._live(v, now) for v in views),
         "card_kind": card_kind(newest_card) if newest_card else None,
-        "card_outcome": card_state(newest_card_raw, now) if newest_card_raw else None,
+        "card_outcome": card_state(newest_card, now) if newest_card else None,
         "has_card_pointer": has_pointer or bool(linked),
         "pointer_card_outcome": pointer_outcome,
         "stuck_turn": bool(got) and got[2] == _ts.NOT_ANSWERED,
@@ -846,11 +843,10 @@ class StoreReader:
         return out
 
     def card_rows(self, since: float | None) -> list[dict]:
-        """Status rows, and the text rows a card copied from Zulip's past
-        may be."""
+        """Status rows."""
         rows = self.conn.execute(
-            "SELECT * FROM messages WHERE (kind='status' OR (history=1 AND kind='message' AND "
-            "text LIKE '%:lock%')) AND (? IS NULL OR COALESCE(updated_at, posted_at) >= ?) "
+            "SELECT * FROM messages WHERE kind='status' "
+            "AND (? IS NULL OR COALESCE(updated_at, posted_at) >= ?) "
             "ORDER BY seq", (since, since)).fetchall()
         return [self._msg(r) for r in rows]
 
@@ -960,7 +956,7 @@ def card_records(reader: StoreReader, since: float | None, ledger_fn: Callable) 
         feats, head = thread_features(ctx["messages"], channel=ctx["channel_row"],
                                       ledger=ctx["ledger"], origin=ctx["origin"], now=at,
                                       store=reader, linked=ctx.get("linked"))
-        feats["card_kind"] = card_kind(_ts.card_view(m))
+        feats["card_kind"] = card_kind(m)
         feats["card_outcome"] = state
         feats["reconstructed"] = True
         card = m.get("card") if isinstance(m.get("card"), dict) else {}

@@ -178,7 +178,7 @@ SETUP_ANSWERS=""
 # The copy of the answers ea-bot and the owner read: the secret keys are
 # removed, so ea-bot never sees a client secret or a chat token.
 SETUP_SHARED_ANSWERS=/run/ea-setup/answers.json
-SETUP_SECRET_KEYS='["graph-client-secret", "slack-bot-token", "slack-app-token", "zulip-api-key", "claude-token"]'
+SETUP_SECRET_KEYS='["graph-client-secret", "slack-bot-token", "slack-app-token", "claude-token"]'
 # The config phases ea-bot runs first, in the setup skill's order. Not
 # here: auth (the .env step below keeps the secret and the sign-in with
 # the owner), tone (it reads sent mail with the owner's token and writes
@@ -267,17 +267,13 @@ write_owner_secret() {
             --path "$PRIV_DIR/secrets.env" --mode 0600
 }
 
-# A JSON object into the owner-private chat.json, mode 0600: the chat
+# The web chat into the owner-private chat.json, mode 0600: the chat
 # settings the bot trusts (preprocessor/owner_trust.py CHAT_FILE), written
-# as the owner through the owner checks (deploy/docker/chat_seed.py).
-write_owner_chat() {
-    printf '%s' "$1" | run_as_owner python3 "$CODE_DIR/deploy/docker/chat_seed.py" write
-}
-
-# The web chat into the owner-private chat.json (docs/docker.md, Web chat):
-# the container's bind and port, the identity header off, public_url the
-# argument (empty keeps the one there). The owner runs the same command
-# later through the owner service.
+# as the owner through the owner checks (deploy/docker/chat_seed.py;
+# docs/docker.md, Web chat). The block carries the container's bind and
+# port, the identity header off, and public_url the argument (empty keeps
+# the one there). The owner runs the same command later through the
+# owner service.
 write_owner_web_chat() {
     run_as_owner python3 "$CODE_DIR/deploy/docker/chat_seed.py" web --public-url "$1"
 }
@@ -353,13 +349,12 @@ setup_graph_env() {
 }
 
 setup_chat_env() {
-    local site bot_email owner_id pairs url
+    local pairs url
     setup_has_chat || return 0
     say "Chat platform ($SETUP_PROFILE mode; docs/docker.md, Web chat)"
     echo "  The web chat is recommended: the bot serves it itself, with no chat server."
-    echo "  Zulip runs as a server in this stack (--profile zulip); Slack keeps every"
-    echo "  message on Slack's servers."
-    ask chat-frontend "Chat platform: web, zulip or slack" web
+    echo "  Slack keeps every message on Slack's servers."
+    ask chat-frontend "Chat platform: web or slack" web
     case "${REPLY,,}" in
         web)
             echo "  The address you open the chat at, behind your TLS proxy: https://<host>/chat."
@@ -374,31 +369,6 @@ setup_chat_env() {
             SETUP_CHAT_ARGS=(--chat web)
             echo "  Once the stack runs, the bot writes the pairing token; read it with"
             echo "    docker compose run --rm owner sh -c 'cat \"\$HOME/.ea-private/webchat-pair.token\"'"
-            ;;
-        zulip)
-            echo "  deploy/zulip/README.md and scripts/zulip_bootstrap.py give these values;"
-            echo "  inside compose the bot reaches the zulip profile at http://zulip.localhost."
-            ask zulip-site "Zulip server URL" "http://zulip.localhost"
-            site="$REPLY"
-            ask zulip-bot-email "The EA bot's Zulip email" ""
-            bot_email="$REPLY"
-            ask zulip-owner-id "Your Zulip user id" ""
-            owner_id="$REPLY"
-            if [ -n "$bot_email" ] && [ -n "$owner_id" ]; then
-                SETUP_CHAT_ARGS=(--chat zulip --zulip-site "$site" --zulip-bot-email "$bot_email"
-                                 --zulip-owner-id "$owner_id")
-                write_owner_chat "$(jq -n --arg s "${site%/}" --arg b "$bot_email" --arg o "$owner_id" \
-                    '{frontend: "zulip", zulip: {site: $s, bot_email: $b, owner_user_id: $o}}')"
-            else
-                echo "  Bot email or user id missing: the chat block stays as the template has it."
-                echo "  scripts/zulip_bootstrap.py prints it when the server is up."
-            fi
-            ask_secret zulip-api-key "The bot's Zulip API key (ZULIP_API_KEY; not echoed)"
-            if [ -n "$REPLY" ]; then
-                write_owner_secret ZULIP_API_KEY "$REPLY"
-            else
-                echo "  No key given: put ZULIP_API_KEY=... in $PRIV_DIR/secrets.env later."
-            fi
             ;;
         slack)
             echo "  docs/SETUP.md, Slack: the app, its tokens, the private channel and your member id."
@@ -415,7 +385,7 @@ setup_chat_env() {
             [ -z "$REPLY" ] || write_owner_secret SLACK_APP_TOKEN "$REPLY"
             ;;
         *)
-            log "chat platform '$REPLY' is not web, zulip or slack"
+            log "chat platform '$REPLY' is not web or slack"
             exit 2 ;;
     esac
 }

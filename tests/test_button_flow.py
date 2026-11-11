@@ -174,8 +174,8 @@ def test_promised_reads_button_talk_and_ignores_reports_of_earlier_blocks():
         "Click Schedule when you are ready.",
         "Review the Send/Cancel block and approve.",
         "The confirmation block shows the body that goes out.",
-        # the card and code frontends (Zulip)
-        "The confirmation card is in your ea-dm stream.",
+        # card and code wording
+        "The confirmation card is in your DM.",
         "React with :check: on the card to send it.",
         "The confirmation code is in your DM.",
         "Your code is in your DM; reply with it to confirm.",
@@ -372,7 +372,7 @@ def test_approve_send_claims_before_spawning():
 
 def test_a_threadless_send_reports_on_its_card_alone():
     """A briefing card's draft has no thread. Its Sent line goes on the
-    card; a second top-level post would open a "Sent." topic on Zulip."""
+    card; a second top-level post would open a "Sent." thread."""
     ex = _fn_src("_execute_send")
     start = ex.index('if send_data.get("status") == "sent":')
     ok = ex[start:ex.index("return True", start)]

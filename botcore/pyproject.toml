@@ -5,13 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "botcore"
 version = "0.1.0"
-description = "Shared plumbing for Claude-driven chat bots: a Slack/Zulip chat layer with confirmation cards."
+description = "Shared plumbing for Claude-driven chat bots: a Slack and web chat layer with confirmation cards."
 requires-python = ">=3.9"
 dependencies = []
 
 [project.optional-dependencies]
 slack = ["slack_bolt", "slack_sdk", "requests"]
-zulip = ["zulip", "requests"]
 # The web chat relay's end-to-end layer (chat/relay_crypto.py).
 relay = ["cryptography"]
 # The web chat's Web Push notifications (chat/web_push.py).

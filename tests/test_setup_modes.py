@@ -49,7 +49,7 @@ def test_each_line_is_short_and_plain():
     words, no jargon from the code."""
     for mode, line in ea_config.PROFILE_SUMMARY.items():
         assert len(line.split()) <= 25 and line.endswith("."), mode
-        for word in ("profile", "feature", "resident", "plugin", "cron", "Slack", "Zulip"):
+        for word in ("profile", "feature", "resident", "plugin", "cron", "Slack"):
             assert word not in line, (mode, word)
         assert chr(0x2014) not in line
 

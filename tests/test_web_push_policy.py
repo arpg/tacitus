@@ -49,7 +49,7 @@ BRIEFING = ":sunny: *Morning Briefing — Sun Nov 1*\n1. Answer the review reque
 UPDATE = ":coffee: *Afternoon Update — Sun Nov 1*\nNothing new since the morning."
 PROGRESS = (":hourglass_flowing_sand: Still working... (3m)",
             ":hourglass_flowing_sand: 4 min in. So far: read the mail.",
-            ":time_ticking: Still working...")
+            ":time_ticking: Still working...")        # Zulip's name, in imported history
 POINTER = (":lock: The draft to the committee is in your DM: "
            "[open it](https://host.example.test:8444/chat/#/dm/t9/w9)")
 FCM = "https://fcm.googleapis.com/fcm/send/made-up-subscription"
@@ -401,7 +401,7 @@ def test_an_alert_after_its_direct_message_pushes_once_across_front_ends(tmp_pat
         ea = tmp_path / "ea"
         (ea / "config").mkdir(parents=True)
         (ea / "config" / "ea-config.json").write_text(json.dumps({"chat": {
-            "frontend": "zulip", "shadow": "web",
+            "frontend": "slack", "shadow": "web",
             "web": {"store_path": str(store), "public_url": "https://host.example.test/chat"}}}))
         f.store.push_subscribe(f"{svc.origin}/push/a", browser()[2])
         monkeypatch.setattr(wp, "endpoint_allowed", lambda url: True)
@@ -968,7 +968,7 @@ def test_the_chat_package_gives_the_web_chat_the_owners_quiet_hours(tmp_path, mo
     assert chat_pkg.quiet_until() is None                  # unread: the push goes now
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "ea-config.json").write_text(json.dumps({"chat": {
-        "frontend": "zulip", "shadow": "web",
+        "frontend": "slack", "shadow": "web",
         "web": {"store_path": str(tmp_path / "priv" / "webchat.sqlite")}}}))
     fe = chat_pkg.load_web_frontend(ea_dir=tmp_path)
     assert fe.quiet_until is chat_pkg.quiet_until

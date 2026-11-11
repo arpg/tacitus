@@ -27,7 +27,7 @@ ALLOWED = (
     "https://github.com/arpg/tacitus/discussions",
     "https://fonts.googleapis.com",
 )
-PLATFORMS = re.compile(r"zulip|slack", re.I)
+PLATFORMS = re.compile(r"slack", re.I)
 DASHES = ("—", "&mdash;", "&#8212;", "&#x2014;")
 
 
@@ -162,4 +162,4 @@ def test_the_checks_catch_a_bad_page(tmp_path):
         "https://example.org/", "gone.png"]
     assert [i["src"] for i in page.imgs if not i.get("alt")] == ["gone.png"]
     assert [bool(s["title"]) for s in page.svgs] == [True, False]
-    assert PLATFORMS.search("Runs beside Zulip") and not PLATFORMS.search("Runs on your phone")
+    assert PLATFORMS.search("Runs beside Slack") and not PLATFORMS.search("Runs on your phone")

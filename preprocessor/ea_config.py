@@ -209,31 +209,13 @@ DEFAULTS = {
     "calendar": {"backend": "graph"},
     "availability": {"provider": "graph"},
     # Chat platform the bot and the notifier talk to: "slack" (the
-    # default), "zulip", "web" (the bot's own web chat) or "memory"
-    # (tests). The zulip block names the server, the bot, the owner and
-    # the private streams; notify maps each notifier channel key to a
-    # stream; each post opens its own topic unless the entry pins one with
-    # "topic". The Zulip API key is a secret (ZULIP_API_KEY,
-    # owner_trust.owner_secret), never config. Owner processes read this
-    # block from <private_dir>/chat.json (see get_chat); this file's copy
-    # shapes the resident's wording.
+    # default), "web" (the bot's own web chat) or "memory" (tests). Owner
+    # processes read this block from <private_dir>/chat.json (see
+    # get_chat); this file's copy shapes the resident's wording.
     "chat": {
         "frontend": "slack",
         # A second front end that mirrors the first ("web"), or "" for none.
         "shadow": "",
-        "zulip": {
-            "site": "",
-            "bot_email": "",
-            "owner_user_id": "",
-            "stream": "ea",
-            "sched_stream": "",
-            "dm_stream": "ea-dm",
-            "notify": {
-                "ea-assistant": {"stream": "ea"},
-                "scheduling": {"stream": "ea"},
-                "personal": {"stream": "ea"},
-            },
-        },
         # The bot's own web chat (docs/webchat.md). Empty pair_token_file and
         # store_path mean the defaults beside the store (chat.load_frontend).
         # backfill_days: the days of the primary's history a shadow web chat
@@ -241,7 +223,9 @@ DEFAULTS = {
         # false turns the Tailscale sign-in off (the pairing cookie only).
         # sched false drops the Scheduling channel the web chat makes when it
         # runs alone (web_sched_on); scheduling requests then wait in the EA
-        # channel as on Zulip with no scheduling stream.
+        # channel. notify maps a notifier channel key to a web channel
+        # ({"health": {"channel": "<id>"}}); a key it does not name goes to
+        # the EA channel (chat_notify).
         "web": {
             "bind": "127.0.0.1",
             "port": 8470,
@@ -308,9 +292,9 @@ def _owner_trust():
 
 
 def get_chat(config_path: Path | None = None) -> dict:
-    """Chat frontend config with every key defaulted: the top level, the
-    zulip block, each notify entry and the web block (a partial block in
-    the file keeps the defaults it does not name).
+    """Chat frontend config with every key defaulted: the top level and
+    the web block (a partial block in the file keeps the defaults it does
+    not name). A `zulip` key in the file is ignored.
 
     The block says which server the bot talks to and whose actions count
     as the owner's, and ea-config.json is ea-bot-owned. So with no
@@ -343,26 +327,13 @@ def get_chat_source(config_path: Path | None = None) -> tuple[dict, bool]:
 def chat_from_block(val) -> dict:
     """A chat block merged over DEFAULTS["chat"] (see get_chat)."""
     base = DEFAULTS["chat"]
-    zbase = base["zulip"]
-    cfg = {k: v for k, v in base.items() if k not in ("zulip", "web")}
-    zulip = {k: v for k, v in zbase.items() if k != "notify"}
-    notify = {k: dict(v) for k, v in zbase["notify"].items()}
+    cfg = {k: v for k, v in base.items() if k != "web"}
     web = dict(base["web"])
     if isinstance(val, dict):
         cfg.update({k: v for k, v in val.items() if k not in ("zulip", "web")})
         wval = val.get("web")
         if isinstance(wval, dict):
             web.update(wval)
-        zval = val.get("zulip")
-        if isinstance(zval, dict):
-            zulip.update({k: v for k, v in zval.items() if k != "notify"})
-            nval = zval.get("notify")
-            if isinstance(nval, dict):
-                for key, entry in nval.items():
-                    if isinstance(entry, dict):
-                        notify[key] = {**notify.get(key, {}), **entry}
-    zulip["notify"] = notify
-    cfg["zulip"] = zulip
     cfg["web"] = web
     return cfg
 

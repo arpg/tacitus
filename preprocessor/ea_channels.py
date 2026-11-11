@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Project channels: which private rooms the EA answers in (Slack
-channels, Zulip streams or web chat rooms), and which project or session
-each one is about.
+channels or web chat rooms), and which project or session each one is
+about.
 
 The bot answers in the channels listed here (ea-chat-bot._channel_scope
 reads this file). This module owns the file, so a channel can be
@@ -60,10 +60,10 @@ SESSION_PREFIX = "tmp-"
 MAX_NAME = 80  # Slack's limit; a frontend with a shorter one passes max_len
 KINDS = ("project", "session")
 # A room id as the chat frontend that made it writes it: a Slack channel id
-# (C… or G…), a Zulip stream as stream:<id>, or a web chat room as r<n>
-# (WebFrontend.create_private_room numbers its rooms from 1). The web chat's
-# own fixed channels (main, dm) and its reserved ids (needs) are never rooms.
-CHANNEL_ID_RE = re.compile(r"^(?:[CG][A-Z0-9]{6,}|stream:\d+|r[1-9]\d*)$")
+# (C… or G…) or a web chat room as r<n> (WebFrontend.create_private_room
+# numbers its rooms from 1). The web chat's own fixed channels (main, dm)
+# and its reserved ids (needs) are never rooms.
+CHANNEL_ID_RE = re.compile(r"^(?:[CG][A-Z0-9]{6,}|r[1-9]\d*)$")
 SESSION_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
@@ -255,33 +255,6 @@ def rename(channel_id: str, name: str, path: Path | None = None) -> bool:
 
     _mutate(_apply, path)
     return done["ok"]
-
-
-def move_channels(moves: dict, urls: dict | None = None,
-                  path: Path | None = None) -> list[str]:
-    """Re-key each row registered under an old id in `moves` to its new id,
-    with its project, session and settings, and its `url` from `urls` (new
-    id -> deep link) when given: the move from shadow mode to the web chat
-    alone (scripts/webchat-cutover.py). A new id that is registered already
-    keeps its own row and the old one stays. The old ids moved."""
-    for new in moves.values():
-        if not CHANNEL_ID_RE.match(str(new)):
-            raise ValueError(f"not a chat channel id: {new!r}")
-    moved: list[str] = []
-
-    def _apply(rows: dict) -> None:
-        moved.clear()
-        for old, new in moves.items():
-            if old not in rows or new in rows or old == new:
-                continue
-            row = rows.pop(old)
-            if urls and urls.get(new):
-                row["url"] = urls[new]
-            rows[new] = row
-            moved.append(old)
-
-    _mutate(_apply, path)
-    return moved
 
 
 def unregister(channel_id: str, path: Path | None = None) -> bool:

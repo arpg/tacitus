@@ -117,11 +117,11 @@ def test_chat_web_reads_the_public_port(monkeypatch=None):
         for url, want in (("https://host.example.ts.net:8444/chat", (8444, 8470)),
                           ("https://host.example.ts.net/chat", (443, 8470)),
                           ("", (None, 8470)), ("http://127.0.0.1:8470/chat", (None, 8470))):
-            ea_config.get_chat = lambda url=url: {"frontend": "zulip", "shadow": "web",
+            ea_config.get_chat = lambda url=url: {"frontend": "slack", "shadow": "web",
                                                   "web": {"public_url": url, "port": 8470}}
             assert D.chat_web() == want, url
         # a block that runs no web chat
-        ea_config.get_chat = lambda: {"frontend": "zulip", "web": {
+        ea_config.get_chat = lambda: {"frontend": "slack", "web": {
             "public_url": "https://host.example.ts.net/chat", "port": 8471}}
         assert D.chat_web() == (None, 8471)
 

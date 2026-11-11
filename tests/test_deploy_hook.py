@@ -38,7 +38,7 @@ def test_runtime_code_restarts():
     assert _restarts(["scripts/disallowed-tools.no-drafting.txt"])
     assert _restarts(["requirements.txt"])
     # The chat layer the bot holds in memory lives in the botcore package.
-    assert _restarts(["botcore/botcore/chat/zulip_frontend.py"])
+    assert _restarts(["botcore/botcore/chat/web_frontend.py"])
     assert not _restarts(["botcore/README.md", "botcore/tests/test_standalone.py"])
 
 

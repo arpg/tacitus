@@ -71,7 +71,7 @@
 #   root services with CAP_SYS_PTRACE (journald, udevd, cron, sshd, dockerd,
 #       containerd, snapd, tailscaled, gdm, udisks2, accounts-daemon): the
 #       capability passes the hidepid check.
-#   containers (the Zulip stack): each one mounts its own /proc instance.
+#   containers (Docker): each one mounts its own /proc instance.
 #
 # Still visible to ea-bot: the process IDs in /sys/fs/cgroup/*/cgroup.procs,
 # and each unit's configured command line, which PID 1 answers over D-Bus
