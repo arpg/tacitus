@@ -8,18 +8,8 @@ ea-config.json):
   * slack: one incoming-webhook POST per part, the same payloads
     slack_notifier always sent. Webhook URLs come from
     slack_webhooks.json in the private dir; only a process that is not
-    the owner's falls back to ~/.ea/config.
-  * zulip: one message per part to the stream that
-    `chat.zulip.notify[<channel_key>]` names, all parts in one new topic
-    named from the post's text (each post starts its own thread, as a
-    top-level Slack message does) unless the entry pins a `topic`; sent
-    with the bot's API key
-    (ZULIP_API_KEY, found by owner_trust.owner_secret). Text passes
-    through mrkdwn_to_zulip; blocks are ignored. An owner process takes
-    the server and streams from the owner-private chat.json
-    (ea_config.get_chat). With `chat.shadow` "web", an owner process
-    also mirrors each part into the web chat's store under the ids the
-    bot's Zulip frontend gives it (docs/webchat.md, CLI senders).
+    the owner's falls back to ~/.ea/config. A webhook returns no message
+    id, so beside a web chat shadow the post is not mirrored into it.
   * web: the parts go into the web chat's store as the bot, all in one
     new thread, through the writer-only web front end
     (chat.load_frontend(for_cli=True)); the bot's tail thread pushes
@@ -32,13 +22,13 @@ ea-config.json):
   * memory: parts are recorded in MEMORY_POSTS (tests).
 
 post_digest() posts a mail digest where no Claude lane reads it: the
-`mail-digest` stream on Zulip, the digest channel on the web chat, the
-`mail-digest` webhook on Slack (Mail digests, below).
+digest channel on the web chat, the `mail-digest` webhook on Slack
+(Mail digests, below).
 
-On the web chat, and beside Zulip when the web chat's copy took the
-post, post() and post_digest() return the key of the thread the post
-opened (a non-empty str) where they would return True, so a caller can
-link to it (usage_tips: the push of a weekly tip opens its thread).
+On the web chat, post() and post_digest() return the key of the thread
+the post opened (a non-empty str) where they would return True, so a
+caller can link to it (usage_tips: the push of a weekly tip opens its
+thread).
 
 post_as_bot() is the direct post with bot credentials that owner-side
 jobs (scheduled_sends, owner plugins) use for alerts into the EA
@@ -52,11 +42,9 @@ CLI:
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 import os
 import sys
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -84,10 +72,8 @@ MEMORY_POSTS: list[tuple] = []
 def _chat_pkg():
     try:
         import chat
-        import chat.text  # noqa: F401
     except ImportError:
         from preprocessor import chat
-        import preprocessor.chat.text  # noqa: F401
     return chat
 
 
@@ -196,95 +182,7 @@ def _send_slack(channel_key: str, parts: list[str], blocks: Optional[list]) -> b
     return all_ok
 
 
-# ── Zulip ─────────────────────────────────────────────────────────────
-
-def _zulip_client(zcfg: dict):
-    """A zulip.Client from ZULIP_API_KEY and the configured site and bot
-    email. The zulip package is imported only here."""
-    key = _secret("ZULIP_API_KEY")
-    if not key:
-        raise RuntimeError("ZULIP_API_KEY is not set")
-    if not zcfg.get("site") or not zcfg.get("bot_email"):
-        raise RuntimeError("chat.zulip.site and chat.zulip.bot_email must be set")
-    import zulip
-    return zulip.Client(email=zcfg["bot_email"], api_key=key, site=zcfg["site"])
-
-
-def _zulip_new_topic(client, stream: str, text: str) -> str:
-    """A topic named from the text that the stream does not use yet."""
-    text_mod = _chat_pkg().text
-    taken: list[str] = []
-    try:
-        sid = client.get_stream_id(stream)
-        if isinstance(sid, dict) and sid.get("result") == "success":
-            res = client.get_stream_topics(int(sid["stream_id"]))
-            if isinstance(res, dict) and res.get("result") == "success":
-                taken = [str(t.get("name") or "") for t in res.get("topics") or []]
-    except Exception:
-        pass
-    return text_mod.unique_topic(text_mod.topic_from_text(text), taken)
-
-
-def _zulip_post_parts(zcfg: dict, target: dict, parts: list[str],
-                      origin: str = "notifier") -> bool | str:
-    """Post the parts in one topic. `origin` (the channel key) is what the
-    web chat's copy records as the post's notifier (_note_origin). True
-    when every part posted, or the thread key of the web chat's copy when
-    it took them; False on a failure."""
-    text_mod = _chat_pkg().text
-    try:
-        client = _zulip_client(zcfg)
-    except Exception as e:
-        print(f"Zulip post failed (client): {e}")
-        return False
-    stream = target.get("stream", "")
-    topic = target.get("topic") or _zulip_new_topic(client, stream, parts[0] if parts else "")
-    all_ok = True
-    sent: list[tuple[int, str]] = []
-    for part in parts:
-        request = {"type": "stream", "to": stream, "topic": topic,
-                   "content": text_mod.mrkdwn_to_zulip(part)}
-        try:
-            resp = client.send_message(request)
-        except Exception as e:
-            print(f"Zulip post failed (network error): {e}")
-            all_ok = False
-            continue
-        if not isinstance(resp, dict) or resp.get("result") != "success":
-            detail = resp.get("msg", resp) if isinstance(resp, dict) else resp
-            print(f"Zulip post failed: {detail}")
-            all_ok = False
-            continue
-        if resp.get("id") is not None:
-            sent.append((int(resp["id"]), part))
-    key = _mirror_zulip(zcfg, client, stream, topic, sent, origin)
-    return (key or True) if all_ok else False
-
-
-# ── The web chat's copy ───────────────────────────────────────────────
-# With `chat.shadow` "web" the bot mirrors its own posts into its web
-# chat. A Zulip post from here goes out on the raw client, so it is
-# mirrored here: into the store the bot serves, under the ids the bot's
-# Zulip frontend gives the same post, and the bot's tail thread pushes it
-# to the open streams. Only an owner process writes the store
-# (chat.web_writer). A Slack webhook returns no message id, so a Slack
-# post is not mirrored.
-
-_WEB: list = []
-
-
-def _web_writer():
-    """The web chat's store opened writer-only, once per process; None
-    when the chat block names no web shadow or this process may not write
-    it."""
-    if not _WEB:
-        try:
-            _WEB.append(_chat_pkg().web_writer())
-        except Exception as e:
-            print(f"Web chat mirror unavailable: {e}")
-            _WEB.append(None)
-    return _WEB[0]
-
+# ── The web chat's origin note ────────────────────────────────────────
 
 def _note_origin(fe, channel: str, thread_key: str, channel_key: str) -> None:
     """Record in the web chat's store that this notifier post opened the
@@ -302,68 +200,13 @@ def _note_origin(fe, channel: str, thread_key: str, channel_key: str) -> None:
             return
 
 
-def _zulip_kind(zcfg: dict, stream: str) -> str:
-    """The web chat's kind for a stream: the EA, scheduling or DM stream
-    the zulip block names, else a room."""
-    if stream == (zcfg.get("stream") or "ea"):
-        return "main"
-    if zcfg.get("sched_stream") and stream == zcfg["sched_stream"]:
-        return "sched"
-    if stream == (zcfg.get("dm_stream") or "ea-dm"):
-        return "dm"
-    return "room"
-
-
-def _mirror_zulip(zcfg: dict, client, stream: str, topic: str,
-                  sent: list[tuple[int, str]], channel_key: str = "notifier") -> str:
-    """Copy the parts Zulip took, (message id, mrkdwn text) in one topic,
-    into the web chat; the copy's thread key, or "" when nothing was
-    copied. The channel row is written only when the store lacks it: the
-    bot's own row (name, archived) wins. A failure is printed and the post
-    stands."""
-    if not sent:
-        return ""
-    web = _web_writer()
-    if web is None:
-        return ""
-    chat = _chat_pkg()
-    try:
-        res = client.get_stream_id(stream)
-        if not isinstance(res, dict) or res.get("result") != "success":
-            raise RuntimeError(f"no stream id for {stream!r}")
-        sid = int(res["stream_id"])
-        channel = f"stream:{sid}"
-        key = importlib.import_module(f"{chat.__name__}.zulip_frontend").thread_key_for(sid, topic)
-        if web.store.channel(channel) is None:
-            web.mirror_channel(channel, stream, _zulip_kind(zcfg, stream))
-        if channel_key:
-            _note_origin(web, channel, key, channel_key)
-        for mid, part in sent:
-            web.mirror_post(chat.MessageRef(channel, str(mid), key, time.time()), part, "bot")
-        return key
-    except Exception as e:
-        print(f"Web chat mirror failed: {e}")
-        return ""
-
-
-def _send_zulip(channel_key: str, parts: list[str], blocks: Optional[list]) -> bool | str:
-    zcfg = _chat_cfg()["zulip"]
-    target = (zcfg.get("notify") or {}).get(channel_key)
-    if not isinstance(target, dict) or not target.get("stream"):
-        print(f"WARNING: No Zulip notify target configured for '{channel_key}'")
-        print("  Configure chat.zulip.notify in ea-config.json")
-        print(f"  Message was: {(parts[0] if parts else '')[:100]}...")
-        return False
-    return _zulip_post_parts(zcfg, target, parts, channel_key)
-
-
 # ── Project rooms ─────────────────────────────────────────────────────
 # A room is addressed by its channel id, on every frontend, through the
 # chat abstraction (chat.load_frontend): `post(channel, text)` with no
-# thread opens a new top-level post (a new topic on Zulip). The owner's own
-# record (owner_rooms) is the authority on which rooms exist; the registry
-# in ea-bot space is never consulted here, and a process that cannot read
-# the owner record posts nowhere.
+# thread opens a new top-level post. The owner's own record (owner_rooms)
+# is the authority on which rooms exist; the registry in ea-bot space is
+# never consulted here, and a process that cannot read the owner record
+# posts nowhere.
 
 ROOM_KEY_PREFIX = "room:"
 _ROOM_FE: list = []
@@ -409,8 +252,8 @@ def room_mention(channel_id: str) -> str:
 # ── The web chat alone ────────────────────────────────────────────────
 # With `"frontend": "web"` the store is the chat: a post goes into it as
 # the bot, and the bot's tail thread pushes it to the open streams
-# (docs/webchat.md, CLI senders). The `web.notify` map takes the Zulip
-# map's channel keys, each naming a web channel id
+# (docs/webchat.md, CLI senders). The `web.notify` map takes the
+# notifier's channel keys, each naming a web channel id
 # ({"ea-assistant": {"channel": "main"}}); a key it does not name goes to
 # the EA channel, and `scheduling` to the Scheduling channel while the
 # store holds it. A digest key goes to the digest channel whatever the
@@ -534,24 +377,17 @@ def _send_room(channel_key: str, parts: list[str]) -> bool | str:
 # mail the gate leaves out of the Claude lanes (mail_gate digest), the
 # list and admissions digests (remote_digests) and the briefing preview
 # (remote_briefing --preview). It goes where no Claude lane reads: the
-# `mail-digest` stream on Zulip, the digest channel on the web chat, the
-# `mail-digest` webhook on Slack. A digest key never waits in the
+# digest channel on the web chat, the `mail-digest` webhook on Slack. A digest key never waits in the
 # quiet-hours queue, which sits in the resident's space.
 
 DIGEST_STREAM = "mail-digest"
 DIGEST_KEYS = ("mail-digest", "list-digest", "admissions-digest", "briefing-preview")
 
 
-def _send_digest(key: str, parts: list[str], topic: str = "") -> bool | str | None:
+def _send_digest(key: str, parts: list[str]) -> bool | str | None:
     """The parts of one digest in one thread at the digest place; None
     when the frontend has none (post_digest)."""
     name = frontend_name()
-    if name == "zulip":
-        zcfg = _chat_cfg().get("zulip") or {}
-        if not zcfg:
-            return None
-        target = {"stream": DIGEST_STREAM, **({"topic": topic} if topic else {})}
-        return _zulip_post_parts(zcfg, target, parts)
     if name == "web":
         return _send_web(key, parts, channel=WEB_DIGEST_ID)
     if name == "slack":
@@ -564,18 +400,16 @@ def _send_digest(key: str, parts: list[str], topic: str = "") -> bool | str | No
     return None
 
 
-def post_digest(key: str, text: str, *, topic: str = "") -> bool | str | None:
+def post_digest(key: str, text: str) -> bool | str | None:
     """Post one digest. `key` names it (DIGEST_KEYS; the web chat records
-    it as the thread's notifier key) and `topic` is its Zulip topic (a new
-    one named from the text when empty). Zulip: the `mail-digest` stream.
-    Web chat: a new thread in the digest channel, made when it is missing.
-    Slack: the `mail-digest` webhook. True when it posted (the thread's
-    key on the web chat, or beside Zulip when the web chat's copy took
-    it), False when the post failed, None when the frontend has no such
-    place (Slack without that webhook, or no chat): the caller decides,
-    and nothing goes to a channel a Claude lane reads. post() routes a
-    digest key here too."""
-    return _send_digest(key, [text], topic)
+    it as the thread's notifier key). Web chat: a new thread in the digest
+    channel, made when it is missing. Slack: the `mail-digest`
+    webhook. True when it posted (the thread's key on the web chat), False
+    when the post failed, None when the frontend has no such place (Slack
+    without that webhook, or no chat): the caller decides, and nothing
+    goes to a channel a Claude lane reads. post() routes a digest key here
+    too."""
+    return _send_digest(key, [text])
 
 
 def web_direct(text: str) -> bool:
@@ -605,9 +439,8 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
     Returns True if every part posted successfully OR if the post was
     deferred (so cron jobs / plugin-state commits treat a deferral as a
     successful handoff). Returns False on a real send failure. A post
-    that went out on the web chat, or beside Zulip into the web chat's
-    copy, returns the key of the thread it opened instead of True (a
-    non-empty str): truthy wherever True is.
+    that went out on the web chat returns the key of the thread it opened
+    instead of True (a non-empty str): truthy wherever True is.
     """
     if not _bypass_quiet and channel_key not in DIGEST_KEYS:
         try:
@@ -638,8 +471,6 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
         return _send_room(channel_key, parts)
     if name == "slack":
         return _send_slack(channel_key, parts, blocks)
-    if name == "zulip":
-        return _send_zulip(channel_key, parts, blocks)
     if name == "web":
         return _send_web(channel_key, parts)
     if name == "memory":
@@ -658,9 +489,6 @@ def scheduling_channel_key() -> str:
     name = frontend_name()
     if name == "slack":
         return "scheduling" if _load_webhooks().get("scheduling") else "ea-assistant"
-    if name == "zulip":
-        target = (_chat_cfg()["zulip"].get("notify") or {}).get("scheduling")
-        return "scheduling" if isinstance(target, dict) and target.get("stream") else "ea-assistant"
     if name == "web":
         on = _web_target("scheduling") or _ea_config().web_sched_on(_chat_cfg())
         return "scheduling" if on else "ea-assistant"
@@ -669,16 +497,11 @@ def scheduling_channel_key() -> str:
 
 def calendar_channel_key() -> str:
     """The channel key for calendar-protection warnings: "calendar" when
-    that target is configured (on Zulip, the scheduling stream), else the
-    scheduling key, which itself falls back to the main EA channel."""
+    that target is configured, else the scheduling key, which itself falls
+    back to the main EA channel."""
     name = frontend_name()
     if name == "slack":
         return "calendar" if _load_webhooks().get("calendar") else scheduling_channel_key()
-    if name == "zulip":
-        target = (_chat_cfg()["zulip"].get("notify") or {}).get("calendar")
-        if isinstance(target, dict) and target.get("stream"):
-            return "calendar"
-        return scheduling_channel_key()
     if name == "web":
         return "calendar" if _web_target("calendar") else scheduling_channel_key()
     return "ea-assistant"
@@ -691,9 +514,6 @@ def health_channel_key() -> str:
     name = frontend_name()
     if name == "slack":
         return "health" if _load_webhooks().get("health") else "ea-assistant"
-    if name == "zulip":
-        target = (_chat_cfg()["zulip"].get("notify") or {}).get("health")
-        return "health" if isinstance(target, dict) and target.get("stream") else "ea-assistant"
     if name == "web":
         return "health" if _web_target("health") else "ea-assistant"
     return "ea-assistant"
@@ -705,9 +525,9 @@ def post_as_bot(channel: str, text: str, *, token: Optional[str] = None,
 
     Slack: a bearer POST to chat.postMessage with {"channel", "text"};
     `token` defaults to SLACK_BOT_TOKEN in the environment, and a missing
-    token or channel posts nothing. Zulip and the web chat: `channel` is
-    ignored and the text goes to the "ea-assistant" notify target (on the
-    web chat, the EA channel unless `web.notify` names another). `log`,
+    token or channel posts nothing. The web chat: `channel` is ignored
+    and the text goes to the EA channel unless `web.notify` names another
+    for "ea-assistant". `log`,
     when given, is called with a one-line reason on failure. Returns True when the
     platform accepted the message.
     """
@@ -735,12 +555,6 @@ def post_as_bot(channel: str, text: str, *, token: Optional[str] = None,
         except Exception:
             accepted = False
         return True if accepted else _fail(str(getattr(resp, "text", ""))[:120])
-    if name == "zulip":
-        zcfg = _chat_cfg()["zulip"]
-        target = (zcfg.get("notify") or {}).get("ea-assistant")
-        if not isinstance(target, dict) or not target.get("stream"):
-            return _fail("no Zulip notify target for 'ea-assistant'")
-        return True if _zulip_post_parts(zcfg, target, [text]) else _fail("Zulip post failed")
     if name == "web":
         return True if _send_web("ea-assistant", [text]) else _fail("web chat post failed")
     if name == "memory":

@@ -9,7 +9,7 @@ user and writable by no one else. Each file is checked on the descriptor it
 is read from, so the file checked is the file read. ~/.ea/.env belongs to
 the resident and never supplies the credential; it supplies only the Slack
 channel settings in SETTING_KEYS, read as data. On Slack the credential is
-SLACK_BOT_TOKEN; on Zulip, ZULIP_API_KEY. The caller never sees it. With a
+SLACK_BOT_TOKEN. The caller never sees it. With a
 credential the job goes through the configured chat frontend
 (`chat.load_frontend(for_cli=True)`); with the web chat as a shadow, an
 owner process's job is mirrored into it too (docs/webchat.md, CLI senders).
@@ -37,8 +37,8 @@ requires --thread-ts: posting to the channel already works from anywhere via
 the notifier (chat_notify), and threading is the thing the notifier cannot
 do.
 
---thread-ts is a thread key: a Slack message ts, or a Zulip
-`stream:<id>:topic:<topic>` key. It holds no whitespace.
+--thread-ts is a thread key: a Slack message ts, or a web chat thread
+key. It holds no whitespace.
 
 Output: one JSON object per job on stdout (newline-delimited). For a direct
 upload each has {"file_id", "permalink", "filename"}; a direct text post has
@@ -68,7 +68,7 @@ SETTING_KEYS = frozenset({"EA_SLACK_CHANNEL_ID", "EA_SLACK_CHANNEL_NAME",
                           "EA_SLACK_OWNER_ID"})
 
 # The credential each frontend needs; memory needs none.
-CREDENTIAL_NAMES = {"slack": "SLACK_BOT_TOKEN", "zulip": "ZULIP_API_KEY"}
+CREDENTIAL_NAMES = {"slack": "SLACK_BOT_TOKEN"}
 # Front ends whose store only an owner process writes; another process
 # (the resident) stages its job for the bot.
 OWNER_STORE_FRONTENDS = frozenset({"web"})

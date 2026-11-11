@@ -1,15 +1,15 @@
 """The Scheduling channel of the web chat alone (`"frontend": "web"`).
 
 The web chat makes a fixed `sched` channel named "Scheduling" when it runs
-alone, so the proactive scheduler works as on Zulip: the queue writer
+alone, so the proactive scheduler works as on Slack: the queue writer
 (preprocess.write_proactive_queue) takes a scheduling request found in
 mail, the bot's proactive tick opens a conversation for it in Scheduling
 on the proactive lane, the owner's reply there takes the scheduling lane,
 a later message in the same mail conversation (an acceptance) posts into
 that thread, and the Create card a turn there stages lands in the DM with
 a pointer in the Scheduling thread. `"sched": false` in the web block
-turns the channel off. Shadow mode (a Zulip primary, the web chat as its
-mirror) keeps the primary's scheduling stream as the sched channel.
+turns the channel off. Shadow mode (a Slack primary, the web chat as its
+mirror) keeps the primary's scheduling channel as the sched channel.
 
 The bot is hyphenated and heavy, so its functions are exec'd from its
 source into a namespace of stubs, as tests/test_web_rooms.py does."""
@@ -118,7 +118,7 @@ def test_sched_false_leaves_it_out_and_archives_the_one_made_before(tmp_path):
         again.stop()
 
 
-def test_the_switch_reads_alike_in_the_config_and_the_frontend():
+def test_the_switch_reads_alike_in_the_config_and_the_frontend(monkeypatch):
     import ea_config
     from preprocessor.chat import web_frontend as wf
     from preprocessor.preprocess import sched_channel_configured
@@ -132,28 +132,28 @@ def test_the_switch_reads_alike_in_the_config_and_the_frontend():
     # the defaults: a web-only install gets it
     chat = ea_config.chat_from_block({"frontend": "web"})
     assert chat["web"]["sched"] is True and sched_channel_configured(chat)
-    # Zulip with the web chat as its shadow: the scheduling stream decides, as before
-    for sched_stream, on in (("", False), ("ea-scheduling", True)):
-        block = ea_config.chat_from_block({"frontend": "zulip", "shadow": "web",
-                                           "zulip": {"sched_stream": sched_stream}})
+    # Slack with the web chat as its shadow: the Slack scheduling channel decides, as before
+    for sched_id, on in (("", False), ("C0SCHED01", True)):
+        monkeypatch.setenv("EA_SCHED_CHANNEL_ID", sched_id)
+        block = ea_config.chat_from_block({"frontend": "slack", "shadow": "web"})
         assert sched_channel_configured(block) is on
         assert not ea_config.web_sched_on(block)
 
 
-def test_shadow_mode_keeps_the_primary_scheduling_stream(tmp_path):
+def test_shadow_mode_keeps_the_primary_scheduling_channel(tmp_path):
     from preprocessor.chat.memory_frontend import MemoryFrontend
     from preprocessor.chat.shadow_frontend import ShadowFrontend
     primary = MemoryFrontend()
-    primary.sched_channel = "stream:7"
+    primary.sched_channel = "C0SCHED01"
     web = _web(tmp_path)
     fe = ShadowFrontend(primary, web)
-    assert fe.sched_channel == "stream:7" and web.sched_channel == ""
+    assert fe.sched_channel == "C0SCHED01" and web.sched_channel == ""
     fe.start()
     try:
         assert web.refused is None
-        assert web.store.channel("stream:7")["kind"] == "sched"
+        assert web.store.channel("C0SCHED01")["kind"] == "sched"
         assert web.store.channel("sched") is None
-        assert [c["id"] for c in web.store.channels() if c["kind"] == "sched"] == ["stream:7"]
+        assert [c["id"] for c in web.store.channels() if c["kind"] == "sched"] == ["C0SCHED01"]
     finally:
         fe.stop()
 

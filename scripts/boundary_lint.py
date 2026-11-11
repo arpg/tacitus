@@ -136,7 +136,7 @@ TERMINAL_TOOLS = frozenset({
     "scripts/install/setup.sh", "scripts/install/setup-ea-user.sh", "scripts/install/setup-ea-user-macos.sh", "scripts/install/user_init.py",
     "deploy/enable-mail-mediation.sh", "deploy/enable-deck-builder.sh",
     "deploy/harden-permissions.sh", "deploy/stage-proc-hidepid.sh",
-    "scripts/zulip_switch.sh", "scripts/ea-doctor.py", "scripts/build_closure_corpus.py",
+    "scripts/ea-doctor.py", "scripts/build_closure_corpus.py",
 })
 TERMINAL_RULES = frozenset({"unit-envfile", "cron-log", "sh-source", "sh-git", "py-env-exec",
                             "py-git"})

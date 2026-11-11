@@ -69,7 +69,7 @@ def _texts(store: WebStore, channel: str) -> list[str]:
 # ── the digest channel ──
 
 def test_a_digest_opens_the_digest_channel_and_never_touches_the_ea_channel(web):
-    assert chat_notify.post_digest("mail-digest", "*Kept* mail", topic="Mail digest Fri Oct 9")
+    assert chat_notify.post_digest("mail-digest", "*Kept* mail")
     store = web.store()
     row = store.channel(DIGESTS)
     assert (row["name"], row["kind"]) == ("Mail digests", "digest")
@@ -97,7 +97,7 @@ def test_a_digest_key_goes_to_the_digest_channel_whatever_the_notify_map_says(we
 def test_the_bots_digest_channel_row_stands(web):
     store = web.store()
     store.upsert_channel(DIGESTS, "Digests (renamed)", "digest", True)
-    assert chat_notify.post_digest("admissions-digest", "a week of inquiries", topic="t")
+    assert chat_notify.post_digest("admissions-digest", "a week of inquiries")
     row = web.store().channel(DIGESTS)
     assert (row["name"], row["archived"]) == ("Digests (renamed)", True)
 
@@ -162,7 +162,7 @@ def test_the_briefing_preview_posts_in_the_digest_channel(web):
 # ── the briefing's chat reader ──
 
 def test_the_briefing_reader_never_reads_a_digest_channel(web, capsys):
-    assert chat_notify.post_digest("mail-digest", "kept mail summary", topic="t")
+    assert chat_notify.post_digest("mail-digest", "kept mail summary")
     web.held.clear()
     assert chat_notify.post("ea-assistant", "the morning briefing", _bypass_quiet=True)
     got = chat_read.fetch_recent_messages(hours_back=24)

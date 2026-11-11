@@ -183,26 +183,6 @@ def test_note_dispatched_reset_across_sessions():
 
 
 
-def test_moved_thread_stays_the_residents_and_is_named_once():
-    """A renamed topic keeps its routing to the pane and its injected
-    context; the next dispatch names the old key once."""
-    with tempfile.TemporaryDirectory() as td:
-        _setup(Path(td))
-        _, d = _new_thread(session_id="s-1", thread_ts="t1")
-        rc.note_dispatched("s-1", "t1", d["injected"])
-        assert rc.move_thread("t1", "t1b") is True
-        assert rc.thread_seen("s-1", "t1b") is True
-        assert rc.thread_seen("s-1", "t1") is False
-        text, d2 = _new_thread(session_id="s-1", thread_ts="t1b")
-        assert "This thread was t1 until its topic was renamed or moved" in text
-        assert "Skill: reply" not in text and d2["injected"] == ["renamed"]
-        rc.note_dispatched("s-1", "t1b", d2["injected"])
-        text3, _ = _new_thread(session_id="s-1", thread_ts="t1b")
-        assert "This thread was t1" not in text3
-        assert "renamed" not in json.loads(rc.STATE_FILE.read_text())["threads"]["t1b"]
-        assert rc.move_thread("nope", "x") is False
-
-
 # ── the tracker read follows the owner trust rules ────────────────────
 
 def _decoy(home: Path, mark: str) -> Path:
@@ -248,7 +228,6 @@ def _link_case(kind: str):
         text, debug = _new_thread(session_id="s-1", thread_ts="t1")
         assert rc.PRIMER[:40] in text and "primer" in debug["injected"]
         rc.note_dispatched("s-1", "t2", debug["injected"])
-        assert rc.move_thread("t1", "t9") is False
         assert (decoy.read_bytes(), os.stat(decoy).st_mtime_ns) == before
         assert _files_holding(Path(td), mark, decoy) == []
         assert os.path.lexists(rc.STATE_FILE)   # an unreadable tracker is kept
@@ -278,10 +257,9 @@ def test_every_tracker_read_goes_through_resident_io():
             assert rc.thread_seen("s-1", "t1") is True
             _new_thread(session_id="s-1", thread_ts="t1")
             rc.note_dispatched("s-1", "t1", [])
-            assert rc.move_thread("t1", "t2") is True
         finally:
             rc._rio.read_bytes = real
-        assert seen == [rc.STATE_FILE] * 4
+        assert seen == [rc.STATE_FILE] * 3
 
 
 def test_only_the_tracker_shape_is_kept():
@@ -294,8 +272,7 @@ def test_only_the_tracker_shape_is_kept():
             "extra": "carried-field"}))
         state = rc._load_state("s-1")
         assert state == {"session_id": "s-1", "primer_injected": False,
-                         "threads": {"t1": ["scheduling"], "t3": []},
-                         "renamed": {"t3": "t0"}}
+                         "threads": {"t1": ["scheduling"], "t3": []}}
         rc.note_dispatched("s-1", "t1", ["primer"])
         stored = json.loads(rc.STATE_FILE.read_text())
         assert "extra" not in stored and "carried-field" not in rc.STATE_FILE.read_text()
@@ -313,7 +290,6 @@ def test_a_tracker_that_could_not_be_read_is_kept():
         try:
             assert rc.thread_seen("s-1", "t1") is False    # reads as fresh
             rc.note_dispatched("s-1", "t2", ["scheduling"])
-            assert rc.move_thread("t1", "t9") is False
         finally:
             rc._rio.read_bytes = real
         assert rc.STATE_FILE.read_bytes() == before        # records kept
@@ -326,7 +302,6 @@ def test_content_that_is_not_a_tracker_is_replaced():
         for junk in ("[1, 2]", "{not json", "\xff\xfe"):
             rc.STATE_FILE.write_bytes(junk.encode("latin-1"))
             assert rc.thread_seen("s-1", "t1") is False
-            assert rc.move_thread("t1", "t2") is False
             rc.note_dispatched("s-1", "t1", ["scheduling"])
             assert rc.thread_seen("s-1", "t1") is True
 

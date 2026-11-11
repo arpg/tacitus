@@ -48,8 +48,8 @@ def _matcher(scores):
         or []
 
 
-TARGETS = {"kestrel": {"channel": "stream:7", "room": "ea-kestrel"},
-           "lumen": {"channel": "stream:8", "room": "ea-lumen"}}
+TARGETS = {"kestrel": {"channel": "r7", "room": "ea-kestrel"},
+           "lumen": {"channel": "r8", "room": "ea-lumen"}}
 
 
 def test_a_link_beats_a_filed_thread_beats_the_matcher(conn):
@@ -92,16 +92,16 @@ def test_the_taggers_call_places_an_item_when_its_words_echo_it(conn):
 
 
 def test_only_rooms_the_owner_record_names_get_a_post():
-    registry = {"stream:7": {"kind": "project", "project": "kestrel", "name": "ea-kestrel"},
-                "stream:8": {"kind": "project", "project": "lumen", "name": "ea-lumen"},
-                "stream:9": {"kind": "project", "project": "arch", "name": "ea-arch", "archived": True},
-                "stream:10": {"kind": "session", "session_id": "x", "name": "tmp-1"},
-                "stream:11": {"kind": "project", "project": "swap", "name": "ea-kestrel"}}
-    owner = {"stream:7": {"name": "ea-kestrel"}, "stream:9": {"name": "ea-arch"},
-             "stream:10": {"name": "tmp-1"}, "stream:11": {"name": "ea-other"}}
+    registry = {"r7": {"kind": "project", "project": "kestrel", "name": "ea-kestrel"},
+                "r8": {"kind": "project", "project": "lumen", "name": "ea-lumen"},
+                "r9": {"kind": "project", "project": "arch", "name": "ea-arch", "archived": True},
+                "r10": {"kind": "session", "session_id": "x", "name": "tmp-1"},
+                "r11": {"kind": "project", "project": "swap", "name": "ea-kestrel"}}
+    owner = {"r7": {"name": "ea-kestrel"}, "r9": {"name": "ea-arch"},
+             "r10": {"name": "tmp-1"}, "r11": {"name": "ea-other"}}
     assert br.rooms(registry=registry, owner=owner) == {
-        "kestrel": {"channel": "stream:7", "room": "ea-kestrel"}}
-    owner["stream:7"]["archived_by_bot"] = True
+        "kestrel": {"channel": "r7", "room": "ea-kestrel"}}
+    owner["r7"]["archived_by_bot"] = True
     assert br.rooms(registry=registry, owner=owner) == {}
 
 
@@ -118,7 +118,7 @@ class _FE:
         return f"<#{channel}>"
 
 
-@pytest.mark.parametrize("frontend", ["slack", "zulip"])
+@pytest.mark.parametrize("frontend", ["slack", "web"])
 def test_a_room_key_posts_through_the_frontend_to_owner_rooms_only(monkeypatch, frontend):
     import owner_rooms
     monkeypatch.setattr(owner_rooms, "get", lambda cid: {"name": "ea-kestrel"} if cid == "C7" else None)
@@ -126,7 +126,7 @@ def test_a_room_key_posts_through_the_frontend_to_owner_rooms_only(monkeypatch, 
     monkeypatch.setattr(chat_notify, "_ROOM_FE", [fe])
     monkeypatch.setattr(chat_notify, "frontend_name", lambda: frontend)
     monkeypatch.setattr(chat_notify, "_send_slack", lambda *a: pytest.fail("webhook path"))
-    monkeypatch.setattr(chat_notify, "_send_zulip", lambda *a: pytest.fail("notify path"))
+    monkeypatch.setattr(chat_notify, "_send_web", lambda *a, **k: pytest.fail("notify path"))
     text = f"part one{chat_notify.SPLIT_MARKER}part two"
     assert chat_notify.post(chat_notify.room_key("C7"), text, _bypass_quiet=True)
     assert fe.posts == [("C7", "part one", None), ("C7", "part two", "C7:t1")]
@@ -165,8 +165,8 @@ def test_each_room_gets_one_post_with_its_items_and_its_other_open_rows(conn):
     assert "Also open here (1): Kestrel field test plan" in k and "Lunch" not in k
     assert "—" not in k
     assert br.pointer_line(posts, mention=lambda cid: f"<#{cid}>") == [
-        "", ":house: Also in project rooms: <#stream:7> (1), <#stream:8> (1)"]
-    sent = br.send(posts, poster=lambda key, text: key == "room:stream:7")
+        "", ":house: Also in project rooms: <#r7> (1), <#r8> (1)"]
+    sent = br.send(posts, poster=lambda key, text: key == "room:r7")
     assert sent == [{"room": "ea-kestrel", "ok": True}, {"room": "ea-lumen", "ok": False}]
 
 
@@ -184,7 +184,7 @@ def test_the_morning_run_posts_slices_and_names_the_rooms(monkeypatch, conn, tmp
     kw = {"conn": conn, "targets": TARGETS, "open_rows": [], "matcher": _matcher({})}
     posts = rb.room_slices("morning-briefing", cands, plan, [], [], {}, b, now=NOW, dry_run=False,
                            poster=lambda key, text: got.append((key, text)) or True, **kw)
-    assert [k for k, _t in got] == ["room:stream:7"] and posts[0]["ok"] is True
+    assert [k for k, _t in got] == ["room:r7"] and posts[0]["ok"] is True
     assert "the quote expires" in got[0][1]
     # a row the audit closed is in no slice
     assert rb.room_slices("morning-briefing", cands, plan, [], [], {"closed": ["row-k"]}, b, now=NOW,

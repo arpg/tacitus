@@ -5,7 +5,7 @@ cards, updates, reactions, uploads, room_ops, home_views, modals) and
 hands out ids "m1", "m2", ... It has no network. Tests drive it inward
 with inject_message, click, react_confirm and type_code, which dispatch
 through the same HandlerRegistry the real frontends use; react_confirm
-and type_code go through the same pure resolvers as the Zulip frontend.
+and type_code go through the pure resolvers in chat.cards.
 """
 from __future__ import annotations
 

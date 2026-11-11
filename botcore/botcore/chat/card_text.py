@@ -19,10 +19,10 @@ place that makes such text inert.
 - `inert` wraps `one_line`'s result in two private-use sentinels. A card
   builder puts it around each model or mail value it writes into card
   markup (a plugin template, a proposal line, a commit subject). The
-  frontends render the span between the sentinels as literal text: Zulip
-  as a code span, Slack with its markup characters escaped. `clean` marks
-  any sentinel already in the value, so a value cannot open or close a
-  span of its own.
+  frontends render the span between the sentinels as literal text: the
+  web chat as a code span, Slack with its markup characters escaped.
+  `clean` marks any sentinel already in the value, so a value cannot open
+  or close a span of its own.
 
 Field values (To, Subject, Location and the rest) are always rendered as
 inert text by the frontends themselves; the builder need not wrap them.
@@ -144,10 +144,10 @@ def strip_inert(text: str) -> str:
     return (text or "").replace(INERT_OPEN, "").replace(INERT_CLOSE, "")
 
 
-# ── Zulip ────────────────────────────────────────────────────────────
+# ── Markdown ─────────────────────────────────────────────────────────
 
-def zulip_code_span(text: str) -> str:
-    """`text` as a Zulip code span: no markup, link, mention or emoji
+def code_span(text: str) -> str:
+    """`text` as a Markdown code span: no markup, link, mention or emoji
     inside it renders. The delimiter is longer than any backtick run in
     the text, so the text cannot close it."""
     if not text:
@@ -156,41 +156,6 @@ def zulip_code_span(text: str) -> str:
     tick = "`" * (run + 1)
     pad = " " if text.startswith("`") or text.endswith("`") else ""
     return f"{tick}{pad}{text}{pad}{tick}"
-
-
-# Zulip syntax that a bot-written card line never means: Zulip links,
-# mentions, stream links, math, time and avatar widgets. In card text each
-# is broken with a word joiner, which shows as nothing, so it reads as
-# typed and does nothing.
-_WJ = "\u2060"
-_ZULIP_INLINE_RE = re.compile(r"\]\(|@_?\*|#\*\*|\$\$|<time:|!(?:avatar|gravatar)\(",
-                              re.IGNORECASE)
-# A line that Zulip reads as a fence, a rule or a heading.
-_ZULIP_BLOCK_LINE_RE = re.compile(r"^(\s*)(?=`{3,}|~{3,}|(?:[-*_]\s*){3,}$|#{1,6}(?:\s|$)|/me\b)",
-                                  re.MULTILINE)
-
-
-def zulip_defang_inline(text: str) -> str:
-    """Zulip-only inline syntax in `text` broken so it renders as typed."""
-    def brk(m: re.Match) -> str:
-        s = m.group(0)
-        return s[0] + _WJ + s[1:]
-    return _ZULIP_INLINE_RE.sub(brk, text or "")
-
-
-def zulip_defang_lines(text: str) -> str:
-    """Every line of `text` that Zulip would read as a fence, a rule, a
-    heading or a /me opens with a word joiner instead, so it is text."""
-    return _ZULIP_BLOCK_LINE_RE.sub(lambda m: m.group(1) + _WJ, text or "")
-
-
-def zulip_body(text: str) -> str:
-    """A draft body for a Zulip card: cleaned, every Zulip-only inline
-    syntax broken, every line quoted. A quoted line never starts a fence,
-    so nothing in the body can close the quote or open a block that would
-    swallow what follows it."""
-    lines = zulip_defang_inline(clean(text)).splitlines() or [""]
-    return "\n".join(f"> {zulip_defang_lines(ln)}" if ln.strip() else ">" for ln in lines)
 
 
 # ── Slack ────────────────────────────────────────────────────────────

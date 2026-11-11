@@ -421,19 +421,20 @@ def test_proactive_queue_merges_and_expires():
                 os.environ["EA_SCHED_CHANNEL_ID"] = old_env
 
 def test_scheduling_channel_follows_the_chat_frontend():
-    """On Zulip the scheduling stream in the chat config is the channel; the
-    Slack channel id in .env counts only on Slack."""
+    """On the web chat alone its Scheduling channel is the channel unless
+    the web block turns it off; the Slack channel id in .env counts only on
+    Slack."""
     from preprocessor.preprocess import sched_channel_configured
     old_env = os.environ.get("EA_SCHED_CHANNEL_ID")
     os.environ["EA_SCHED_CHANNEL_ID"] = "C123"
     try:
-        zulip = {"frontend": "zulip", "zulip": {"sched_stream": "ea-scheduling"}}
-        assert sched_channel_configured(zulip)
-        assert not sched_channel_configured({"frontend": "zulip", "zulip": {"sched_stream": ""}})
+        web = {"frontend": "web"}
+        assert sched_channel_configured(web)
+        assert not sched_channel_configured({"frontend": "web", "web": {"sched": False}})
         assert sched_channel_configured({"frontend": "slack"})
         os.environ["EA_SCHED_CHANNEL_ID"] = ""
         assert not sched_channel_configured({"frontend": "slack"})
-        assert sched_channel_configured(zulip)
+        assert sched_channel_configured(web)
     finally:
         if old_env is None:
             os.environ.pop("EA_SCHED_CHANNEL_ID", None)

@@ -66,15 +66,12 @@ gets a room of its own.
 | "never show me DOE PAMS notices" | Records the rule in your words; every later briefing obeys it |
 
 Off the tailnet, a phone reaches the web chat through a relay that sees
-only ciphertext ([docs/webchat-relay.md](docs/webchat-relay.md)). If you
-already run Zulip, the EA can live there instead, or the web chat can
-run beside it: each post appears in both, and you answer in either.
-Slack also works if you accept that Slack stores the conversation. New
-chat features land in the web chat; Zulip and Slack keep working as they
-are, and Zulip stays in the tree for a later setup with more than one
-person in the room.
-[docs/INSTALL.md](docs/INSTALL.md#choosing-a-chat-platform) compares the
-three.
+only ciphertext ([docs/webchat-relay.md](docs/webchat-relay.md)). Slack
+also works if you accept that Slack stores the conversation, and the web
+chat can run beside it: each post appears in both, and you answer in
+either. New chat features land in the web chat; Slack keeps working as
+it is. [docs/INSTALL.md](docs/INSTALL.md#choosing-a-chat-platform)
+compares the two.
 
 ## Install
 
@@ -95,7 +92,7 @@ an hour once IT has registered the app. You can change the mode later.
 | Mode | What you get |
 |---|---|
 | `reviewer` | No chat. Triage, the ledger, drafts in your voice left in your mailbox, meeting times proposed in the report (no holds or events: nothing places one without the chat buttons). Reports land in `~/.ea/state/reports/<agent>-latest.md` on the schedule you pick (weekdays, every day, or only when you run one), with a phone push if you want one. You send drafts from Outlook yourself. `"drafting": false` in `ea-config.json` turns the drafts off. |
-| `assistant` (default) | One chat on your phone: the web chat (or Zulip or Slack) with the EA channel, your DM with the Send and Create cards, scheduling and digests, plugins. No project rooms. |
+| `assistant` (default) | One chat on your phone: the web chat (or Slack) with the EA channel, your DM with the Send and Create cards, scheduling and digests, plugins. No project rooms. |
 | `collaborator` | The assistant, plus a room for each big project. |
 
 ## What stays on your machine
@@ -172,7 +169,7 @@ human assistant.
 sequenceDiagram
     autonumber
     participant You
-    participant Chat as Chat (web chat, Zulip or Slack)
+    participant Chat as Chat (web chat or Slack)
     participant Bot as Bot (runs as you)
     participant LLM as Claude/Codex (ea-bot user)
     participant Mail as Mail mediator (runs as you)
@@ -203,7 +200,7 @@ tagged and without attendees.
 | The review card | Stable | One card per draft with Send, Edit, Handled, Sent myself and Cancel. The text you approve is the text that goes out. Outlook and Gmail share the flow. |
 | Scheduling | Stable | An OR-tools solver over Outlook and your Google calendars. Your rules live as recurring events on a calendar you edit in your calendar app. Detects reschedule requests within minutes. Fills When2Meet, Doodle and similar polls after you see the conflicts. |
 | Rooms and memory | Stable | One session per conversation and, in the collaborator mode, one specialist per project room. A project store holds people, filed mail and a decision journal. Rules you state in chat are stored in your words and applied wherever they fit. |
-| Web chat | Stable | The bot's own chat, installed on your phone as an app, with notifications and a relay for off the tailnet. Runs alone or beside Zulip. The chat that new features land in first. See [docs/webchat.md](docs/webchat.md). |
+| Web chat | Stable | The bot's own chat, installed on your phone as an app, with notifications and a relay for off the tailnet. Runs alone or beside Slack. The chat that new features land in first. See [docs/webchat.md](docs/webchat.md). |
 | Your other devices | Beta | With Tailscale, open the chat's address on the device. Without it, open Settings, then Devices, and tap A computer: type the code it shows at the hosted app on the computer, and approve the computer from your phone. See [docs/INSTALL.md](docs/INSTALL.md#use-tacitus-on-your-other-devices). |
 | Plugins | Stable | Personal and institution features live in plugins with declared capabilities, outside the core. See [docs/plugins.md](docs/plugins.md). |
 | Local model for mail | Beta | Reads and summarizes mail, writes drafts, and posts digests on a model you host. See [docs/remote-llm.md](docs/remote-llm.md). |
@@ -214,7 +211,7 @@ tagged and without attendees.
 
 ```mermaid
 flowchart TB
-    subgraph chat["Your chat: the web chat the bot serves, or Zulip or Slack"]
+    subgraph chat["Your chat: the web chat the bot serves, or Slack"]
         direction LR
         ea["ea<br/>one thread per conversation"]
         rooms["ea-(project) rooms<br/>one specialist per room"]
@@ -249,7 +246,6 @@ covers prompt construction, data flow and the approval gates.
 - [docs/webchat.md](docs/webchat.md): the web chat, its API and its notifications
 - [docs/webchat-relay.md](docs/webchat-relay.md): the relay for a phone off the tailnet
 - [docs/SCHEDULING.md](docs/SCHEDULING.md): the solver and your scheduling rules
-- [docs/zulip-switch.md](docs/zulip-switch.md): Zulip or Slack, and moving between them
 - [docs/remote-llm.md](docs/remote-llm.md): running mail through a model you host
 - [docs/RUNBOOK.md](docs/RUNBOOK.md): day-to-day operation and recovery
 

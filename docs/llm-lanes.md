@@ -27,7 +27,7 @@ between the two decides what Claude receives. No model decides it.
 
 *Figure 1. The remote model reads every message first. The mail gate hands
 the Claude lanes the remote model's summary of actionable mail only. FYI and
-kept mail go to a private Zulip stream. A room or thread still pulls one
+kept mail go to a private digest channel. A room or thread still pulls one
 thread when it needs to.*
 
 ## 0. State of play (2026-10-09, evening)
@@ -381,11 +381,10 @@ text went:
 
 ### 2.2 The remote digest
 
-`mail_gate.py digest` posts the mail the gate left out to the private Zulip
-stream `mail-digest`. Only the user and the bot are members. On the web
-chat alone it posts to the digest channel, "Mail digests" (kind
-`digest`), made with the first digest; on Slack to a `mail-digest`
-webhook, and with none it posts nothing. Code writes the post from the
+`mail_gate.py digest` posts the mail the gate left out to the web
+chat's digest channel, "Mail digests" (kind `digest`), made with the
+first digest; only the user and the bot see it. On Slack it posts to a
+`mail-digest` webhook, and with none it posts nothing. Code writes the post from the
 remote model's records. The briefing's chat reader reads only the `#ea`
 channel and never a channel of kind `digest`, so the digest never reaches
 a Claude lane. Kept mail
@@ -726,7 +725,7 @@ line; it never falls back to a Claude run.
   An item belongs to a project by its ledger link, then by its filed
   thread, then by the strict project matcher (score 3 or more; a tie
   goes to both projects, at most two). Each room with items gets one
-  post as a new thread (a new topic on Zulip): the items under their
+  post as a new thread: the items under their
   section, then up to five other open rows of the project. A reply in
   that thread is a room turn with the post as thread history. A post
   goes only to a room the owner's record (`owner_rooms`) names, through
@@ -1519,9 +1518,9 @@ is built, and the topic's tier does not change. (2) A pin on the topic:
 work); `escalate` is `use fable` and `hand back` is `use opus`. The pin
 is `tier` on the topic's session row and, for `local`, the on-prem arm
 in `model_arms`; `which model` answers with the tier and why. (3) The
-topic's name: `[fable] budget plan`. A Zulip rename is one click,
-and the bot follows renames, so a conversation known to be hard is
-named so before it starts. (4) A lane default in ea-config:
+topic's name: `[fable] budget plan`, read from a thread key that
+carries a name (an imported thread's key). (4) A lane default in
+ea-config:
 
 ```json
 "tiers": {"default": "opus", "models": {"opus": "", "fable": "claude-fable-5-1"},
@@ -1843,8 +1842,7 @@ python3 /opt/ea-system/preprocessor/ghost_week.py final --part mail   # the verd
 python3 /opt/ea-system/preprocessor/ghost_backtest.py run --days 30 --max 40 --replay 8
 ```
 
-A dry run prints counts, never mail text. The Zulip client needs the
-repo's virtualenv Python, which the crontab's `PATH` puts first.
+A dry run prints counts, never mail text.
 
 | Cron (crontab.master) | When |
 |---|---|

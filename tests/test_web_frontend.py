@@ -233,8 +233,8 @@ def test_updated_at_starts_at_posted_at_and_rises_on_a_change(tmp_path):
     f.inbound = lambda ev: None
     f.start()
     try:
-        f.mirror_channel("stream:7", "ea", "main")
-        row = f.mirror_post(MessageRef("stream:7", "1", "stream:7:topic:x", 1000.0), "x")
+        f.mirror_channel("C0EA", "ea", "main")
+        row = f.mirror_post(MessageRef("C0EA", "1", "t-x", 1000.0), "x")
         assert row["posted_at"] == row["updated_at"] == 1000.0
     finally:
         f.stop()
@@ -410,31 +410,31 @@ def test_mirrors_store_under_the_primary_ids_and_are_idempotent(tmp_path):
     f.start()
     try:
         assert f.store.channels() == []
-        f.mirror_channel("stream:7", "ea", "main")
-        f.mirror_channel("stream:7", "ea", "main")
-        ref = MessageRef("stream:7", "1001", "stream:7:topic:hello", 1000.0)
+        f.mirror_channel("C0EA", "ea", "main")
+        f.mirror_channel("C0EA", "ea", "main")
+        ref = MessageRef("C0EA", "1001", "t-hello", 1000.0)
         start = f.store.max_event_seq()
         f.mirror_post(ref, "*hi*")
         f.mirror_post(ref, "*hi*")
-        row = f.store.message("stream:7", "1001")
-        assert row["text"] == "**hi**" and row["thread_key"] == "stream:7:topic:hello"
+        row = f.store.message("C0EA", "1001")
+        assert row["text"] == "**hi**" and row["thread_key"] == "t-hello"
         assert row["posted_at"] == 1000.0 and row["author"] == "bot"
         f.mirror_update(ref, "*edited*")
-        f.mirror_reaction("stream:7", "1001", Status.EYES, True)
-        f.mirror_reaction("stream:7", "1001", Status.EYES, True)
+        f.mirror_reaction("C0EA", "1001", Status.EYES, True)
+        f.mirror_reaction("C0EA", "1001", Status.EYES, True)
         types = [t for _s, t, _p in f.store.events_since(start)]
         assert types == ["message", "update", "reaction"]
-        cref = MessageRef("stream:8", "1002", "stream:8:topic:lock", 1001.0)
+        cref = MessageRef("D0DM", "1002", "t-lock", 1001.0)
         f.mirror_card(cref, card())
         f.mirror_card(cref, card())
         f.mirror_card_status(cref, "Sent")
-        assert f.store.message("stream:8", "1002")["kind"] == "status"
-        assert f.store.channel("stream:8")["kind"] == "room"   # a placeholder row
-        f.mirror_channel("stream:8", "ea-dm", "dm")
-        assert f.store.channel("stream:8")["kind"] == "dm"
-        f.mirror_post(MessageRef("stream:7", "1003", "stream:7:topic:hello"), "typed", "owner")
-        assert f.store.message("stream:7", "1003")["author"] == "owner"
-        assert [m["id"] for m in f.store.thread("stream:7", "stream:7:topic:hello")] == \
+        assert f.store.message("D0DM", "1002")["kind"] == "status"
+        assert f.store.channel("D0DM")["kind"] == "room"   # a placeholder row
+        f.mirror_channel("D0DM", "ea-dm", "dm")
+        assert f.store.channel("D0DM")["kind"] == "dm"
+        f.mirror_post(MessageRef("C0EA", "1003", "t-hello"), "typed", "owner")
+        assert f.store.message("C0EA", "1003")["author"] == "owner"
+        assert [m["id"] for m in f.store.thread("C0EA", "t-hello")] == \
             ["1001", "1003"]
     finally:
         f.stop()
@@ -447,13 +447,13 @@ def test_mirror_file_keeps_the_bytes_when_given_a_path(tmp_path):
     try:
         src = tmp_path / "pic.png"
         src.write_bytes(b"\x89PNG data")
-        ref = MessageRef("stream:7", "1100", "stream:7:topic:files")
+        ref = MessageRef("C0EA", "1100", "t-files")
         row = f.mirror_file(ref, FileRef("pic.png", url="https://chat.example.test/user_uploads/1/pic.png",
                                          id="/user_uploads/1/pic.png"), path=src)
         assert row["file"]["url"] == "/chat/api/files/%2Fuser_uploads%2F1%2Fpic.png"
         status, headers, body = owner(f, "GET", "/api/files/%2Fuser_uploads%2F1%2Fpic.png")
         assert status == 200 and body == b"\x89PNG data"
-        ref2 = MessageRef("stream:7", "1101", "stream:7:topic:files")
+        ref2 = MessageRef("C0EA", "1101", "t-files")
         row2 = f.mirror_file(ref2, FileRef("b.txt", url="https://chat.example.test/u/b.txt",
                                            id="/u/b.txt"))
         # no bytes here: no id, and the primary's absolute url
@@ -464,101 +464,87 @@ def test_mirror_file_keeps_the_bytes_when_given_a_path(tmp_path):
 
 def test_quiet_history_rows_have_no_event_and_are_never_unread(tmp_path):
     f = make(tmp_path)
-    f.mirror_channel("stream:7", "ea", "main")
-    key = "stream:7:topic:plans"
+    f.mirror_channel("C0EA", "ea", "main")
+    key = "t-plans"
     start = f.store.max_event_seq()
-    row = f.mirror_post(MessageRef("stream:7", "10", key, 1000.0), "*the plan*", quiet=True)
+    row = f.mirror_post(MessageRef("C0EA", "10", key, 1000.0), "*the plan*", quiet=True)
     assert row["text"] == "**the plan**" and row["posted_at"] == row["updated_at"] == 1000.0
-    f.mirror_post(MessageRef("stream:7", "11", key, 1010.0), "fine", "owner", quiet=True)
-    f.mirror_post(MessageRef("stream:7", "12", key, 1020.0), "Done, *at nine*.",
-                  quiet=True, markdown=True)
-    assert f.store.message("stream:7", "12")["text"] == "Done, *at nine*."   # kept as written
-    f.mirror_file(MessageRef("stream:7", "13", key, 1030.0),
+    f.mirror_post(MessageRef("C0EA", "11", key, 1010.0), "fine", "owner", quiet=True)
+    f.mirror_post(MessageRef("C0EA", "12", key, 1020.0), "Done, *at nine*.", quiet=True)
+    assert f.store.message("C0EA", "12")["text"] == "Done, **at nine**."
+    f.mirror_file(MessageRef("C0EA", "13", key, 1030.0),
                   FileRef("a.pdf", url="https://chat.example.test/u/a.pdf"), quiet=True,
                   text="the file")
     assert f.store.events_since(start) == []
-    assert f.store.channel("stream:7")["unread"] == 0
-    assert [m["id"] for m in f.store.thread("stream:7", key)] == ["10", "11", "12", "13"]
+    assert f.store.channel("C0EA")["unread"] == 0
+    assert [m["id"] for m in f.store.thread("C0EA", key)] == ["10", "11", "12", "13"]
     # a row it holds is left as it is
-    assert f.mirror_post(MessageRef("stream:7", "10", key, 1000.0), "changed", quiet=True) is None
-    assert f.mirror_file(MessageRef("stream:7", "13", key, 1030.0), FileRef("b.pdf"),
+    assert f.mirror_post(MessageRef("C0EA", "10", key, 1000.0), "changed", quiet=True) is None
+    assert f.mirror_file(MessageRef("C0EA", "13", key, 1030.0), FileRef("b.pdf"),
                          quiet=True) is None
-    assert f.store.message("stream:7", "10")["text"] == "**the plan**"
+    assert f.store.message("C0EA", "10")["text"] == "**the plan**"
     # an older message never goes in after a newer one of its thread
-    assert f.mirror_post(MessageRef("stream:7", "9", key, 990.0), "older", quiet=True) is None
+    assert f.mirror_post(MessageRef("C0EA", "9", key, 990.0), "older", quiet=True) is None
     # a live post still counts, and a history row from the owner does not reset it
-    f.mirror_post(MessageRef("stream:7", "20", key, 2000.0), "live")
-    f.mirror_post(MessageRef("stream:7", "21", "stream:7:topic:other", 2100.0), "old ask",
+    f.mirror_post(MessageRef("C0EA", "20", key, 2000.0), "live")
+    f.mirror_post(MessageRef("C0EA", "21", "t-other", 2100.0), "old ask",
                   "owner", quiet=True)
-    assert f.store.channel("stream:7")["unread"] == 1
+    assert f.store.channel("C0EA")["unread"] == 1
 
 
 def test_mirror_backfilled_sends_one_channel_event(tmp_path):
     f = make(tmp_path)
-    f.mirror_channel("stream:7", "ea", "main", description="the EA stream")
-    f.mirror_post(MessageRef("stream:7", "10", "k", 1000.0), "old", quiet=True)
+    f.mirror_channel("C0EA", "ea", "main", description="the EA channel")
+    f.mirror_post(MessageRef("C0EA", "10", "k", 1000.0), "old", quiet=True)
     start = f.store.max_event_seq()
-    row = f.mirror_backfilled("stream:7")
+    row = f.mirror_backfilled("C0EA")
     assert row["last_at"] == 1000.0 and row["unread"] == 0
     assert [t for _s, t, _p in f.store.events_since(start)] == ["channel"]
-    assert f.mirror_backfilled("stream:404") is None
+    assert f.mirror_backfilled("C0NONE") is None
 
 
 def test_a_pointer_to_the_primarys_card_opens_the_card_here(tmp_path):
     """In shadow mode the core builds the pointer "... is in your DM: <link|open
-    it>" with the primary's permalink, and the web app opened Zulip. A link to
-    a message the store holds points at its copy here: as the pointer is
-    mirrored, and, for a pointer stored ahead of its card, once the card's
-    history is copied. The owner's own text keeps its links."""
+    it>" with the primary's permalink, which would open Slack from the web
+    app. A link to a message the store holds points at its copy here: as the
+    pointer is mirrored, and, for a pointer stored ahead of its card, once the
+    card's history is copied. The owner's own text keeps its links."""
     f = make(tmp_path)
-    f.mirror_channel("stream:7", "ea", "main")
-    f.mirror_channel("stream:6", "ea-dm", "dm")
-    zulip = "https://chat.example.test/#narrow/channel/6-ea-dm/topic/lock.20W7KL/near/{}"
-    f.mirror_card(MessageRef("stream:6", "6232", "stream:6:topic:lock W7KL", 1000.0), card())
-    f.mirror_post(MessageRef("stream:7", "6233", "stream:7:topic:reply", 1001.0),
-                  f":lock: The Send button for this draft is in your DM: <{zulip.format(6232)}|open it>")
-    text = f.store.message("stream:7", "6233")["text"]
-    assert text.endswith(f"[open it]({f.permalink('stream:6', '6232')})"), text
-    assert [r["id"] for r in f.store.linked_cards("stream:7", "stream:7:topic:reply")] == ["6232"]
+    f.mirror_channel("C0EA", "ea", "main")
+    f.mirror_channel("D0DM", "ea-dm", "dm")
+    slack = "https://x.slack.com/archives/D0DM/p{}"
+    f.mirror_card(MessageRef("D0DM", "1700000000.006232", "1700000000.006232", 1000.0), card())
+    f.mirror_post(MessageRef("C0EA", "1700000000.006233", "t-reply", 1001.0),
+                  ":lock: The Send button for this draft is in your DM: "
+                  f"<{slack.format('1700000000006232')}|open it>")
+    text = f.store.message("C0EA", "1700000000.006233")["text"]
+    assert text.endswith(f"[open it]({f.permalink('D0DM', '1700000000.006232')})"), text
+    assert [r["id"] for r in f.store.linked_cards("C0EA", "t-reply")] == ["1700000000.006232"]
     # a pointer copied before its card keeps the primary's link until the card is here
-    f.mirror_post(MessageRef("stream:7", "6301", "stream:7:topic:later", 1002.0),
-                  f":lock: The Create button for this event is in your DM: [open it]({zulip.format(6300)})",
-                  quiet=True, markdown=True)
-    assert f.store.message("stream:7", "6301")["text"].endswith(f"({zulip.format(6300)})")
-    f.mirror_card(MessageRef("stream:6", "6300", "stream:6:topic:lock X9", 1003.0), card())
-    f.mirror_backfilled("stream:6")
-    assert f.store.message("stream:7", "6301")["text"].endswith(f"({f.permalink('stream:6', '6300')})")
+    f.mirror_post(MessageRef("C0EA", "1700000000.006301", "t-later", 1002.0),
+                  ":lock: The Create button for this event is in your DM: "
+                  f"<{slack.format('1700000000006300')}|open it>", quiet=True)
+    assert f.store.message("C0EA", "1700000000.006301")["text"].endswith(
+        f"({slack.format('1700000000006300')})")
+    f.mirror_card(MessageRef("D0DM", "1700000000.006300", "1700000000.006300", 1003.0), card())
+    f.mirror_backfilled("D0DM")
+    assert f.store.message("C0EA", "1700000000.006301")["text"].endswith(
+        f"({f.permalink('D0DM', '1700000000.006300')})")
     assert f.relink() == 0, "nothing left to point here"
-    f.mirror_post(MessageRef("stream:7", "6302", "stream:7:topic:later"),
-                  f"see [this]({zulip.format(6232)})", "owner")
-    assert f.store.message("stream:7", "6302")["text"] == f"see [this]({zulip.format(6232)})"
+    f.mirror_post(MessageRef("C0EA", "1700000000.006302", "t-later"),
+                  f"see [this]({slack.format('1700000000006232')})", "owner")
+    assert f.store.message("C0EA", "1700000000.006302")["text"] == \
+        f"see [this]({slack.format('1700000000006232')})"
 
 
 def test_mirror_channel_keeps_a_description_not_given(tmp_path):
     f = make(tmp_path)
-    f.mirror_channel("stream:9", "ea-atlas", "room", description="the atlas project")
-    f.mirror_channel("stream:9", "ea-atlas", "room", True)
-    row = f.store.channel("stream:9")
+    f.mirror_channel("C0ATLAS", "ea-atlas", "room", description="the atlas project")
+    f.mirror_channel("C0ATLAS", "ea-atlas", "room", True)
+    row = f.store.channel("C0ATLAS")
     assert row["description"] == "the atlas project" and row["archived"] is True
-    f.mirror_channel("stream:9", "ea-atlas", "room", True, description="")
-    assert f.store.channel("stream:9")["description"] == ""
-
-
-def test_mirror_move_rekeys_a_thread(tmp_path):
-    f = make(tmp_path)
-    old, new = "stream:7:topic:draft", "stream:7:topic:draft%20v2"
-    for i in range(2):
-        f.mirror_post(MessageRef("stream:7", f"3{i}", old, 1000.0 + i), f"m{i}")
-    start = f.store.max_event_seq()
-    assert f.mirror_move("stream:7", old, "stream:7", new) == 2
-    assert [m["id"] for m in f.store.thread("stream:7", new)] == ["30", "31"]
-    assert f.store.thread("stream:7", old) == []
-    assert [t for _s, t, _p in f.store.events_since(start)] == ["update", "update"]
-    # to another stream, where one of the messages is held already
-    f.mirror_post(MessageRef("stream:8", "31", "stream:8:topic:x", 1001.0), "m1")
-    assert f.mirror_move("stream:7", new, "stream:8", "stream:8:topic:x") == 1
-    assert [m["id"] for m in f.store.thread("stream:8", "stream:8:topic:x")] == ["30", "31"]
-    assert f.store.message("stream:7", "31") is None
+    f.mirror_channel("C0ATLAS", "ea-atlas", "room", True, description="")
+    assert f.store.channel("C0ATLAS")["description"] == ""
 
 
 def test_a_store_from_before_history_rows_takes_the_column(tmp_path):
@@ -929,6 +915,7 @@ def test_encoded_channel_and_thread_ids_route(tmp_path):
     f.inbound = lambda ev: None
     f.start()
     try:
+        # ids as history imported from Zulip names them: a colon, percent escapes
         f.mirror_channel("stream:7", "ea", "main")
         key = "stream:7:topic:a%2Fb%20c"
         f.mirror_post(MessageRef("stream:7", "1", key), "x")
@@ -1082,20 +1069,20 @@ def test_the_tail_hands_on_only_what_another_process_wrote(tmp_path):
 
 
 def test_a_writer_only_copy_reaches_the_served_stream(fe):
-    fe.mirror_channel("stream:7", "ea", "main")
+    fe.mirror_channel("C0EA", "ea", "main")
     s = Stream(fe)
     try:
         s.lines(lambda seen: "retry: 3000" in seen)
         w = writer(fe)
         t0 = time.monotonic()
-        w.mirror_post(MessageRef("stream:7", "501", "stream:7:topic:brief", 1000.0),
+        w.mirror_post(MessageRef("C0EA", "501", "t-brief", 1000.0),
                       "*morning*")
         ev = s.events(1)[0]
         assert time.monotonic() - t0 < 2.5            # one tail_s read away
         row = json.loads(ev["data"])
         assert ev["event"] == "message" and int(ev["id"]) == w.store.max_event_seq()
         assert (row["id"], row["thread_key"], row["text"]) == \
-            ("501", "stream:7:topic:brief", "**morning**")
+            ("501", "t-brief", "**morning**")
     finally:
         s.close()
 
@@ -1181,7 +1168,7 @@ def test_shadow_mode_hands_web_input_to_the_composite(tmp_path):
         handed.append(ev)
         if isinstance(ev, InboundMessage):
             ref = MessageRef(ev.channel, str(9000 + len(handed)),
-                             ev.thread_key or "stream:7:topic:new", 5.0)
+                             ev.thread_key or "t-new", 5.0)
             if ev.files:
                 assert Path(ev.raw["path"]).read_bytes() == b"bytes"
                 f.mirror_file(ref, FileRef(ev.files[0].name, id="/user_uploads/9.txt"),
@@ -1194,24 +1181,24 @@ def test_shadow_mode_hands_web_input_to_the_composite(tmp_path):
     got, _ev = catcher(f)
     f.start()
     try:
-        f.mirror_channel("stream:7", "ea", "main")
-        status, _h, body = owner(f, "POST", "/api/channels/stream%3A7/messages", {"text": "hi"})
+        f.mirror_channel("C0EA", "ea", "main")
+        status, _h, body = owner(f, "POST", "/api/channels/C0EA/messages", {"text": "hi"})
         row = json.loads(body)
         assert status == 200 and row["id"] == "9001" and row["author"] == "owner"
         assert isinstance(handed[0], InboundMessage) and handed[0].msg_id == ""
         assert handed[0].user_id == "owner" and handed[0].raw == {"source": "web"}
         body, ctype = multipart({"file": ("n.txt", "text/plain", b"bytes")})
-        status, _h, out = owner(f, "POST", "/api/channels/stream%3A7/files", raw=body,
+        status, _h, out = owner(f, "POST", "/api/channels/C0EA/files", raw=body,
                                 headers={"Content-Type": ctype})
         row = json.loads(out)
-        assert status == 200 and row["file"]["id"] == "stream:7:9002"
-        assert row["file"]["url"] == "/chat/api/files/stream%3A7%3A9002"
+        assert status == 200 and row["file"]["id"] == "C0EA:9002"
+        assert row["file"]["url"] == "/chat/api/files/C0EA%3A9002"
         # the composite kept no bytes; the frontend stored them under the row
-        assert owner(f, "GET", "/api/files/stream%3A7%3A9002")[2] == b"bytes"
+        assert owner(f, "GET", "/api/files/C0EA%3A9002")[2] == b"bytes"
         assert not list((tmp_path / "priv" / "webchat-files" / "incoming").iterdir())
-        cref = MessageRef("stream:7", "9100", "stream:7:topic:lock", 6.0)
+        cref = MessageRef("C0EA", "9100", "t-lock", 6.0)
         f.mirror_card(cref, card())
-        assert owner(f, "POST", "/api/cards/stream%3A7/9100/actions",
+        assert owner(f, "POST", "/api/cards/C0EA/9100/actions",
                      {"action_id": "approve_send"})[0] == 200
         click = handed[-1]
         assert isinstance(click, ActionEvent) and click.card.id == "9100"
@@ -1680,9 +1667,6 @@ def test_the_nudge_posts_as_the_bot_in_the_web_store_alone(tmp_path):
     assert web.store.nudge_ids("C_MAIN", top.thread_key) == {row["id"]}
     assert states.nudge("C_MAIN", top.thread_key, "again") is None
     assert web.store.post_nudge("C_MAIN", "no-such-thread", "x") is None
-    # a moved thread takes its nudge along
-    web.store.move_thread("C_MAIN", top.thread_key, "C_MAIN", "T_NEW")
-    assert web.store.nudge_ids("C_MAIN", "T_NEW") == {row["id"]}
 
 
 def test_needs_is_a_reserved_channel_id(fe):
@@ -1743,7 +1727,7 @@ def test_the_owner_renames_a_room_and_the_core_hears_it(fe):
     assert fe.store.channel("r1")["name"] == "atlas 2027"
     assert fe.store.channel("r1")["description"] == "the atlas project"
     assert [(t, e["name"]) for t, e in _new_events(fe, since)] == [("channel", "atlas 2027")]
-    # the core hears it as Slack's and Zulip's renames: a channel_rename from the owner
+    # the core hears it as a Slack rename: a channel_rename from the owner
     assert ev.wait(2)
     msg = got[-1]
     assert isinstance(msg, InboundMessage)
@@ -1830,7 +1814,7 @@ def test_shadow_mode_renames_and_archives_the_room_on_the_primary(tmp_path):
     from chat.memory_frontend import MemoryFrontend
 
     class Renames(MemoryFrontend):
-        name = "zulip"
+        name = "renamer"
 
         def rename(self, channel, name):
             if any(i.name == name for c, i in self.rooms.items() if c != channel):
@@ -2026,7 +2010,7 @@ def test_the_owner_reacts_apart_from_the_bot_s_marks(fe):
     row = fe.store.message("main", ref.id)
     # The bot's marks, which the thread states read, and the edit time stay as they were.
     assert row["reactions"] == before["reactions"] and row["updated_at"] == before["updated_at"]
-    # A link from before the move off the primary names the channel's old id.
+    # A link made before history was imported from Zulip names the channel's old id.
     fe.store.redirects["stream:9"] = "main"
     assert owner(fe, "POST", f"/api/messages/stream%3A9/{ref.id}/react", {"emoji": "joy"})[0] == 200
     assert fe.store.message("main", ref.id)["owner_reactions"] == ["+1", "heart", "joy"]
@@ -2106,18 +2090,18 @@ def test_shadow_mode_keeps_the_owner_s_changes_in_the_web_store(tmp_path):
 
     def composite(ev):
         handed.append(ev)
-        ref = MessageRef(ev.channel, "9001", ev.thread_key or "stream:7:topic:new", time.time())
+        ref = MessageRef(ev.channel, "9001", ev.thread_key or "t-new", time.time())
         f.mirror_post(ref, ev.text, "owner")
         return ref
     f.inbound = composite
     f.start()
     try:
-        f.mirror_channel("stream:7", "ea", "main")
-        owner(f, "POST", "/api/channels/stream%3A7/messages", {"text": "hi"})
-        assert owner(f, "PATCH", "/api/messages/stream%3A7/9001", {"text": "hello"})[0] == 200
-        assert owner(f, "POST", "/api/messages/stream%3A7/9001/react", {"emoji": "joy"})[0] == 200
-        assert owner(f, "DELETE", "/api/messages/stream%3A7/9001")[0] == 200
-        assert len(handed) == 1 and f.store.message("stream:7", "9001")["deleted"]
+        f.mirror_channel("C0EA", "ea", "main")
+        owner(f, "POST", "/api/channels/C0EA/messages", {"text": "hi"})
+        assert owner(f, "PATCH", "/api/messages/C0EA/9001", {"text": "hello"})[0] == 200
+        assert owner(f, "POST", "/api/messages/C0EA/9001/react", {"emoji": "joy"})[0] == 200
+        assert owner(f, "DELETE", "/api/messages/C0EA/9001")[0] == 200
+        assert len(handed) == 1 and f.store.message("C0EA", "9001")["deleted"]
     finally:
         f.stop()
 

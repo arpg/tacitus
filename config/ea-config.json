@@ -1,7 +1,7 @@
 {
   "profile": "assistant",
   "profile_version": 2,
-  "profile_note": "reviewer | assistant | collaborator. reviewer: no chat; the EA reads mail and calendars, leaves drafts in the mailbox and writes its reports to ~/.ea/state/reports/ on reports.schedule. assistant: one chat (the web chat, Zulip or Slack): the EA channel, the DM with the Send and Create buttons, scheduling and digests in the same app, the resident and plugins; no project rooms. collaborator: assistant plus project rooms. profile_version 2 marks a mode name; a profile without it is a name from before the three modes and reads as its mode (docs/SETUP.md, Choose a mode) until `python3 preprocessor/ea_config.py normalize-profile` renames it. Set by /setup; read by scripts/install/setup.sh, run-agent.sh, the shells, the bot and ea-doctor.",
+  "profile_note": "reviewer | assistant | collaborator. reviewer: no chat; the EA reads mail and calendars, leaves drafts in the mailbox and writes its reports to ~/.ea/state/reports/ on reports.schedule. assistant: one chat (the web chat or Slack): the EA channel, the DM with the Send and Create buttons, scheduling and digests in the same app, the resident and plugins; no project rooms. collaborator: assistant plus project rooms. profile_version 2 marks a mode name; a profile without it is a name from before the three modes and reads as its mode (docs/SETUP.md, Choose a mode) until `python3 preprocessor/ea_config.py normalize-profile` renames it. Set by /setup; read by scripts/install/setup.sh, run-agent.sh, the shells, the bot and ea-doctor.",
   "drafting": true,
   "drafting_note": "false keeps the EA from writing drafts in any mode: every launcher adds scripts/disallowed-tools.no-drafting.txt to its deny list, and the bot reads it when it starts. Only a literal false turns drafting off.",
   "reports": {"schedule": "weekdays"},
@@ -79,25 +79,6 @@
   "chat": {
     "frontend": "slack",
     "shadow": "",
-    "zulip": {
-      "site": "",
-      "bot_email": "",
-      "owner_user_id": "",
-      "stream": "ea",
-      "sched_stream": "",
-      "dm_stream": "ea-dm",
-      "notify": {
-        "ea-assistant": {
-          "stream": "ea"
-        },
-        "scheduling": {
-          "stream": "ea"
-        },
-        "personal": {
-          "stream": "ea"
-        }
-      }
-    },
     "web": {
       "bind": "127.0.0.1",
       "port": 8470,
@@ -111,5 +92,5 @@
       "sched": true
     }
   },
-  "chat_note": "Chat platform (ea_config.get_chat()): frontend is slack, zulip, web or memory (tests only). The web block configures the bot's own web chat (docs/webchat.md): the loopback bind and port, the path under which it serves, the public URL the owner opens, the Tailscale login that counts as the owner (trust_tailscale_header false turns that sign-in off), the pairing token file and store (empty: beside the store, in the owner-private directory), backfill_days, the days of history a shadow web chat copies in when the bot starts (0: none), and sched, the Scheduling channel the web chat makes when it runs alone (false: none; scheduling requests then wait in the EA channel). The zulip block names the server site, the bot's email, the owner's Zulip user id and the private streams (stream for the EA channel, sched_stream optional, dm_stream standing in for the DM); notify maps each notifier channel key to a stream and topic. The Zulip API key is ZULIP_API_KEY in .env.secrets, never here. get_chat() re-defaults every missing subkey, so a partial block is safe."
+  "chat_note": "Chat platform (ea_config.get_chat()): frontend is web (the bot's own web chat, self-hosted), slack or memory (tests only); shadow \"web\" runs the web chat beside Slack. The web block configures the bot's own web chat (docs/webchat.md): the loopback bind and port, the path under which it serves, the public URL the owner opens, the Tailscale login that counts as the owner (trust_tailscale_header false turns that sign-in off), the pairing token file and store (empty: beside the store, in the owner-private directory), backfill_days, the days of history a shadow web chat copies in when the bot starts (0: none), and sched, the Scheduling channel the web chat makes when it runs alone (false: none; scheduling requests then wait in the EA channel). A notify map in the web block sends a notifier channel key to a web channel ({\"health\": {\"channel\": \"<id>\"}}); a key it does not name goes to the EA channel. Slack takes its tokens and channel ids from the environment and its notifier webhooks from slack_webhooks.json; the owner-private chat.json names slack.owner_user_id. get_chat() re-defaults every missing subkey, so a partial block is safe."
 }

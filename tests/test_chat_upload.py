@@ -149,7 +149,9 @@ def test_bad_thread_key_rejected(sandbox, monkeypatch):
     assert e.value.code == 2
 
 
-def test_zulip_thread_key_stages(sandbox, monkeypatch):
+def test_an_imported_thread_key_stages(sandbox, monkeypatch):
+    """A thread the web chat's store imported from Zulip keeps its old key
+    (a colon and percent-escapes in it); a reply there stages as any other."""
     key = "stream:12:topic:Hello%20there"
     rc, out = _run(chat_upload.main, ["--channel", "stream:12", "--thread-ts", key,
                                       "--text", "hi"], monkeypatch)
@@ -258,32 +260,26 @@ def test_private_file_is_checked_on_the_descriptor(sandbox, monkeypatch, capsys)
     assert rc == 1 and "owner process sends directly" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("frontend,channel", [("slack", "C9"), ("zulip", "stream:1")])
-def test_dotenv_never_supplies_a_secret(sandbox, monkeypatch, frontend, channel):
+def test_dotenv_never_supplies_a_secret(sandbox, monkeypatch):
     """~/.ea/.env passes every ownership check here (this user's file, mode
     600) and still supplies no credential: the job is staged."""
-    sandbox.cfg.write_text(json.dumps({"chat": {"frontend": frontend}}))
-    _write(sandbox.ea / ".env", "SLACK_BOT_TOKEN=xoxb-dotenv\nZULIP_API_KEY=zkey-dotenv\n"
-                                "EA_SLACK_CHANNEL_ID=C0F\n")
+    sandbox.cfg.write_text(json.dumps({"chat": {"frontend": "slack"}}))
+    _write(sandbox.ea / ".env", "SLACK_BOT_TOKEN=xoxb-dotenv\nEA_SLACK_CHANNEL_ID=C0F\n")
     fe, _ = _memory(monkeypatch)
-    rc, out = _run(_fresh().main, ["--channel", channel, "--thread-ts", "1.2",
+    rc, out = _run(_fresh().main, ["--channel", "C9", "--thread-ts", "1.2",
                                    "--text", "x"], monkeypatch)
     assert rc == 0 and out[0]["status"] == "queued" and not fe.posts
     _drain_outbox()
 
 
-def test_zulip_credential_probe(sandbox, monkeypatch):
+def test_a_block_that_names_zulip_finds_no_frontend(sandbox, monkeypatch, capsys):
+    """Zulip is no chat front end: the job finds none and fails, and no
+    credential is looked up for it."""
     sandbox.cfg.write_text(json.dumps({"chat": {"frontend": "zulip"}}))
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-ignored")
-    fe, seen = _memory(monkeypatch)
-    rc, out = _run(chat_upload.main, ["--channel", "stream:1", "--thread-ts", "1.2",
-                                      "--text", "x"], monkeypatch)
-    assert rc == 0 and out[0]["status"] == "queued" and not fe.posts   # staged
-    _drain_outbox()
-    monkeypatch.setenv("ZULIP_API_KEY", "zkey")
-    rc, out = _run(chat_upload.main, ["--channel", "stream:1", "--thread-ts", "1.2",
-                                      "--text", "x"], monkeypatch)
-    assert rc == 0 and fe.posts and seen["env"]["ZULIP_API_KEY"] == "zkey"
+    monkeypatch.setattr(sys, "argv", ["chat_upload.py", "--channel", "C1",
+                                      "--thread-ts", "1.2", "--text", "x"])
+    assert chat_upload.main() == 1
+    assert "unknown chat frontend 'zulip'" in capsys.readouterr().err
 
 
 def test_frontend_error_is_reported(sandbox, monkeypatch, capsys):

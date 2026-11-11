@@ -66,7 +66,7 @@ def _private(tmp_path: Path, chat: dict | None = None) -> Path:
     _write(priv / "webchat-vapid.json", '{"private": "made-up"}')
     _write(priv / "webchat-relay.json", '{"v": 1}')
     _write(priv / "webchat-pair.token", "t" * 43 + "\n")
-    _write(priv / "chat.json", json.dumps(chat or {"frontend": "zulip", "shadow": "web"}))
+    _write(priv / "chat.json", json.dumps(chat or {"frontend": "slack", "shadow": "web"}))
     _write(priv / "owner-rooms.json", '{"rooms": {}}')
     _write(priv / "chat-cards.json", "{}")
     _write(priv / "evals" / "closure-labels.jsonl", "{}\n")

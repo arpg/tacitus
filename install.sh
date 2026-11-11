@@ -325,7 +325,7 @@ find_or_clone_src() {
 # call. The import probe names the load-bearing packages, so a second
 # run skips pip.
 install_python_packages() {
-    if "$PY" -c 'import msal, requests, bs4, googleapiclient, google_auth_oauthlib, slack_bolt, zulip, ortools, docx' >/dev/null 2>&1; then
+    if "$PY" -c 'import msal, requests, bs4, googleapiclient, google_auth_oauthlib, slack_bolt, ortools, docx' >/dev/null 2>&1; then
         say "Python packages: already installed"
         return 0
     fi

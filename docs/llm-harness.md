@@ -6,7 +6,7 @@ context-aware, and structurally-constrained executive assistant.
 This document covers two things the rest of the docs only sketch:
 
 1. **The resident session** -- one long-lived interactive Claude
-   conversation that every chat message (Zulip or Slack) is dispatched
+   conversation that every chat message (web chat or Slack) is dispatched
    into, and how it
    is spawned, addressed, and recycled.
 2. **Context handling** -- how each dispatch carries only the context that
@@ -58,20 +58,19 @@ A chat message can be handled in one of two ways. The bot
 
 The bot reaches its chat platform through a front-end layer
 (`preprocessor/chat/`). `FRONTEND` is the platform `chat.frontend` in
-`ea-config.json` names: Zulip, the recommended self-hosted platform, or
-Slack (an install with no `chat` block runs Slack). Each frontend turns its
+`ea-config.json` names: the web chat, the recommended self-hosted
+platform, or Slack (an install with no `chat` block runs Slack). Each frontend turns its
 platform's events into neutral `InboundMessage` and `ActionEvent`
 values and dispatches them through one handler registry, which the bot
 binds as `app`, so the lanes above never see which platform a message
-came from. A thread key is an opaque string: a Slack ts, or a Zulip
-`stream:<id>:topic:<topic>` key. It is the key `slack_sessions.py` and
+came from. A thread key is an opaque string: a Slack ts, or a web chat
+`t<seq>` key. It is the key `slack_sessions.py` and
 the bridge's `[slack-dispatch thread=...]` marker already carry. The
 dispatch text the resident receives and the prompt wording come from the
 frontend's `prompt_strings()`; on Slack they are the sentences they have
-always been. A confirmation is a card the frontend renders: Slack
-buttons, or on Zulip a message with one reaction chip per action and a
-one-time code, which the owner confirms with one tap or by replying
-with the code. See
+always been. A confirmation is a card the frontend renders with
+its buttons, in Slack or in the web app, which the owner confirms with
+one tap. See
 [docs/ARCHITECTURE.md](ARCHITECTURE.md) ("Chat front-end layer").
 
 A third, unrelated lane exists for **scheduled agents** (morning briefing,

@@ -505,7 +505,7 @@ def test_every_handler_is_in_the_registry_and_none_on_bolt():
     assert src.count("\n" + "@app.action(") == len(ACTIONS)
     assert src.count("\n" + "@app.view(") == len(VIEWS)
     assert registry._message_handlers == [_bot.on_message]
-    for key in ("home_opened", "queue_reset"):
+    for key in ("home_opened",):
         assert registry._find(key, registry._events, registry._event_patterns), key
     assert registry._find("anything_else", registry._events,
                           registry._event_patterns) is _bot.catch_all_events

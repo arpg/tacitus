@@ -391,13 +391,13 @@ def test_crontab_drift_names_the_lines_and_both_fixes():
         orig = sentinel.subprocess.run
         sentinel.subprocess.run = _fake_systemctl({"crontab -l": (
             f"0 20 * * 0 {root}/run-agent.sh weekly-audit --model claude-opus-5-5\n"
-            f"30 3 * * * TOKEN=s3cret {root}/deploy/zulip/backup.sh\n")})
+            f"30 3 * * * TOKEN=s3cret {root}/deploy/mirror/backup.sh\n")})
         try:
             ok, detail = sentinel.check_crontab_drift()
         finally:
             sentinel.subprocess.run = orig
         assert not ok and "2 line(s) only installed, 1 only in master" in detail
-        assert "+ installed: 30 3 * * * TOKEN=… …/deploy/zulip/backup.sh" in detail
+        assert "+ installed: 30 3 * * * TOKEN=… …/deploy/mirror/backup.sh" in detail
         assert "- master: 0 20 * * 0 …/run-agent.sh weekly-audit --model opus" in detail
         assert "s3cret" not in detail
         assert "crontab -l >" in detail and "if master is" in detail

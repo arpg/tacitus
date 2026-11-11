@@ -1,12 +1,12 @@
 # Tacitus web chat: the contract (v0, 2026-10-30)
 
-Tacitus ships its own chat interface so an install needs no Zulip or
-Slack. The bot process serves a small web app (a PWA) over HTTP on
+Tacitus ships its own chat interface so an install needs no
+third-party chat service. The bot process serves a small web app (a PWA) over HTTP on
 loopback; the owner reaches it over their tailnet (`tailscale serve`
 proxies a path on an HTTPS port of the chat's own to the port and adds
 identity headers) or, off the tailnet, through a Tacitus relay that sees
 only ciphertext (`docs/webchat-relay.md`). In **shadow mode**
-the bot keeps its primary front end (Zulip today) and mirrors every
+the bot keeps its primary front end (Slack) and mirrors every
 post, update, card and reaction into the web front end, and accepts
 input from either side, so the owner can try the new interface against
 live traffic. The security rules (who is the owner, the origin rule,
@@ -42,7 +42,7 @@ start() refuses (Identity and auth):
 
 ```json
 "chat": {
-  "frontend": "zulip",
+  "frontend": "slack",
   "shadow": "web",
   "web": {
     "bind": "127.0.0.1",
@@ -184,11 +184,11 @@ under a ShadowFrontend the composite switches the shadow off
 
 Standalone ids: messages `w<seq>`, threads `t<seq of the parent>`,
 rooms `r<n>`, files `f<n>`. In shadow mode every id is the primary's
-(see Shadow mode); the web store never mints one. After the move to the
-web chat alone the store keeps the primary's thread keys and message ids
+(see Shadow mode); the web store never mints one. A store that took in
+history kept under other ids keeps those thread keys and message ids
 under the web chat's channel ids, and the `meta` row `channel_redirects`
-maps each old channel id to its new one (The move to the web chat
-alone).
+maps each old channel id to its new one (Implementation notes,
+Redirects).
 
 The store and the files beside it (the uploads, `thread-state-labels.jsonl`,
 `webchat-owner-ids.json`, `webchat-vapid.json`, the relay key file and the
@@ -217,9 +217,10 @@ selects and the rest as they are). `file` is `{"id","name","url","mimetype","siz
 Slack names (`eyes`, `hourglass_flowing_sand`, `white_check_mark`, `x`,
 `warning`, `double_vertical_bar`, `question`).
 
-Text is the markdown the core already writes for Zulip (`**bold**`,
-`*italic*`, `` `code` ``, fenced code, `- ` lists, `> ` quotes, `#`
-headings, `[text](url)`, `:emoji_name:` shortcodes). The UI renders that
+Text is Markdown, as `chat.text.mrkdwn_to_markdown` makes it from the
+core's Slack mrkdwn (`**bold**`, `*italic*`, `` `code` ``, fenced code,
+`- ` lists, `> ` quotes, `#` headings, `[text](url)`, `:emoji_name:`
+shortcodes). The UI renders that
 subset and escapes everything else; it never injects HTML from text.
 
 ## HTTP API (every path under `base_path`)
@@ -282,11 +283,11 @@ is the other way round: it takes only a request the relay client marks
 as one that may not confirm a card (`docs/webchat-relay.md`, Where the
 app's code comes from).
 
-Channel ids in URLs are URL-encoded (Zulip ids carry characters). A
-thread_key is likewise encoded. After the move to the web chat alone, a
-route that names a channel (`/api/channels/{ch}/...`, `/api/cards/{ch}/...`,
-`/api/threads/{ch}/...`) takes a mirrored channel's old id as its new one,
-so a link from before the move still opens its conversation.
+Channel ids in URLs are URL-encoded, and a thread_key likewise. A route
+that names a channel (`/api/channels/{ch}/...`, `/api/cards/{ch}/...`,
+`/api/threads/{ch}/...`) takes an old id that `channel_redirects` names
+as its new one, so an older link still opens its conversation
+(Implementation notes, Redirects).
 
 Errors: JSON `{"error": "..."}` with 400/401/403/404/409/421/429, and
 502 when the primary refuses a room change in shadow mode (Rooms). The server
@@ -299,8 +300,8 @@ by the store's event fan-out.
 
 ## The owner's own actions
 
-Four things the owner had in Zulip: search, reactions, and editing or
-removing their own message. Each is a chat action, as a message is: a
+Four things the owner does to messages: search, reactions, and editing
+or removing their own message. Each is a chat action, as a message is: a
 device the relay lets chat may take it, and a device that only reads may
 search (a GET). The relay client forwards PATCH and DELETE for that
 (`relay_client.METHODS`).
@@ -340,9 +341,10 @@ is now (`thread_replies`, the rules and the model step).
 owner's messages, clicks and room changes (its `inbound` knows no edit,
 removal or reaction), `ChatFrontend` has no verb that removes a message,
 and a reaction on the
-primary would be the bot's, among its status marks. So Zulip keeps the
-message as it was sent, and the bot's turns there read Zulip's copy: an
-edit or a removal on the web changes what the web chat shows.
+primary would be the bot's, among its status marks. So the primary
+keeps the message as it was sent, and the bot's turns there read the
+primary's copy: an edit or a removal on the web changes what the web
+chat shows.
 
 ## State
 
@@ -357,7 +359,8 @@ a state past 7 days is marked stale, and a `needs_you` state a rule or
 the model set, past a day, gets one "Still need this?" line from the bot
 (the `nudges` table), which no rule and no model reads. It lives in this store alone (those tables,
 `thread_state` and `thread_origin`, and `thread_state` events on the
-stream): in shadow mode nothing reaches Zulip, the nudge included. The
+stream): in shadow mode nothing reaches the primary, the nudge
+included. The
 rules, the model step, the tables and the routes are in
 [webchat-state.md](webchat-state.md).
 
@@ -378,10 +381,8 @@ Mirror entry points for shadow mode, all idempotent on `(channel, id)`:
 `mirror_channel(id, name, kind, archived)`, `mirror_post(ref, text, author)`,
 `mirror_update(ref, text)`, `mirror_card(ref, card)`, `mirror_card_status(ref, text)`,
 `mirror_reaction(channel, msg_id, status, on: bool)`, `mirror_file(ref, file: FileRef, author)`.
-Each writes the row and appends the event. Two more serve the history
-copy and moved threads: `mirror_backfilled(channel)` appends one
-`channel` event, and `mirror_move(old_channel, old_key, new_channel,
-new_key)` re-keys a thread's rows, with an `update` event each.
+Each writes the row and appends the event. One more serves the history
+copy: `mirror_backfilled(channel)` appends one `channel` event.
 
 Inbound dispatch from the HTTP layer goes through `self.registry`
 (`dispatch_message`, `dispatch_action`) with `user_id = self.owner_id`.
@@ -400,7 +401,7 @@ turn creates a project; the row's `channel` event puts the room in an
 open app at once. The bot then names it in the owner room record
 (`owner_rooms`), registers it under `r<n>` in
 `~/.ea/config/ea-channels.json` (`ea_channels.CHANNEL_ID_RE` takes
-Slack's `C…`/`G…`, Zulip's `stream:<id>` and the web chat's `r<n>`), and
+Slack's `C…`/`G…` and the web chat's `r<n>`), and
 posts the room's opening context as a thread of its own. A room the
 bot made whose registration failed (the owner record names it, the
 registry does not) is registered when the owner asks for it again. From then on
@@ -410,7 +411,7 @@ the room's slice there (`chat_notify` key `room:r<n>`), and the hygiene
 pass archives the room of a dormant or closed project and reopens it
 when the project is active again. An archived room takes no new
 message from the app. In shadow mode a room is the
-primary's (`stream:<id>` on Zulip) and the store keeps a copy under that
+primary's (a Slack channel id) and the store keeps a copy under that
 id.
 
 The owner renames, archives and brings back a room from the app's room
@@ -432,12 +433,11 @@ In shadow mode the room lives on the primary, so the web front end hands
 the change to the composite (`inbound("rename", channel=, name=)`,
 `inbound("archive", channel=, archived=)`), which makes it on the primary
 (`rename`, `archive`, `unarchive`), writes the row and, for a rename,
-hands the core the `channel_rename` from the primary's owner (Zulip's own
-rename event names no one). `ChatFrontend.rename` raises `NotSupported`
+hands the core the `channel_rename` from the primary's owner.
+`ChatFrontend.rename` raises `NotSupported`
 by default, in words the app shows ("Tacitus cannot rename a room in
 Slack. Rename it in Slack itself."), and the route answers 400 with them;
-the web front end and Zulip (`PATCH /streams/{id}` with `new_name`)
-implement it. A name the primary holds is a 409, and any other refusal a
+the web front end implements it. A name the primary holds is a 409, and any other refusal a
 502 that leaves the room as it was. Archiving needs no new verb: every
 frontend archives.
 
@@ -446,12 +446,12 @@ frontend archives.
 `ShadowFrontend(primary, shadow)`:
 
 - Attributes (`name`, `capabilities`, `limits`, `main_channel`, ids,
-  `card_registry`, `registry`, `thread_namer`) come from the primary;
+  `card_registry`, `registry`) come from the primary;
   `name` is `"<primary>+<shadow>"`.
 - `start()` starts both; on start it mirrors the channel list it knows
   (main, sched, DM and the rooms from `archived_map()` that
   `room_filter` keeps; the bot keeps the rooms it made for the owner, so
-  no other private stream reaches the web), then starts the history copy.
+  no other private channel reaches the web), then starts the history copy.
   `run_forever()` runs the shadow's server thread and the primary's loop.
 - History copy (`backfill_days`, from `web.backfill_days`): on a daemon
   thread, for each mirrored channel, `recent_messages` over the window,
@@ -483,16 +483,7 @@ frontend archives.
 - Inbound from the primary: the composite wraps the primary's registry
   dispatch so an owner `InboundMessage` is mirrored into the shadow
   (`author = "owner"`) before the core handles it and a `channel_rename`
-  renames the row; a `thread_moved` event (a whole Zulip topic move)
-  re-keys the thread's rows when its new channel is mirrored; an
-  `ActionEvent` is passed through.
-- The primary's own writes: the composite sets `primary.on_outbound`
-  (an optional `ChatFrontend` attribute, None elsewhere). Zulip calls it
-  for the owner's card code (never dispatched as a message), its done
-  reaction and the reply to an unknown word; for an edit past the edit
-  window (the web row is updated in place); and for a stream's
-  description or archive change. The chips on a Zulip card are not
-  mirrored: the web card has its buttons.
+  renames the row; an `ActionEvent` and any other event pass through.
 - Inbound from the shadow (the owner typed or clicked on the web): a
   message is first posted into the primary **as the bot** with the
   prefix `**You (web):** ` so it has a primary id and sits in the
@@ -515,59 +506,6 @@ frontend archives.
 `shadow`; `"frontend": "web"` returns a bare `WebFrontend`. A
 command-line sender in an owner process gets the composite too, with a
 writer-only web side (see CLI senders).
-
-## The move to the web chat alone
-
-`scripts/webchat-cutover.py` takes an install from shadow mode to the web
-chat alone (the owner's steps are in docs/zulip-switch.md, Leave Zulip for
-the web chat). `plan` prints each change and writes nothing; `apply` runs
-with the bot stopped:
-
-- A snapshot first (`webchat-backup.sh --label cutover`), with the room and
-  session registries beside it. The work happens on a copy of the store,
-  which replaces it only once every step passed.
-- The export: `ShadowFrontend.export_history` reads every message the
-  primary holds in each mirrored channel, with no window and no cap (Zulip
-  through `ZulipFrontend.channel_history`, forward from the oldest message,
-  a thousand at a time; another primary through `recent_messages` and
-  `thread_replies`), the author and text as the history copy decides them.
-  A message the store holds already stays as it is; the others go in as
-  history rows. A card is the text the primary shows, with its status line
-  once answered.
-- The files: each file Zulip holds that a row names (its `file`, or a
-  `/user_uploads/` link in its text) is downloaded and kept under its Zulip
-  path as its id, the row's `file` and the links in its text point at
-  `<base_path>/api/files/<id>`. A file that does not download keeps its
-  link and is named in the summary.
-- The fold: the channel of kind `main` becomes `main`, `dm` and the done
-  stream (`<dm stream>-done`) become `dm`, `sched` becomes `sched`, the
-  `mail-digest` stream becomes `digests` (kind `digest`), and every other
-  mirrored channel becomes a room `r<n>` with its name, archived as it was.
-  Every table's `channel` and `card_channel`, and each push tag
-  (`<channel>/<thread key>`), take the new id; a message both folded
-  channels hold stays once. Thread keys and message ids do not change, so
-  the session registry, the card registry and the app's thread links keep
-  working.
-- The order: the messages are numbered again by `posted_at`, so history
-  copied in now sits before the rows mirrored live in the same thread;
-  the read marks, a queued push's message and a thread's `judged_seq`
-  follow their message. The event log is emptied (its payloads carry the
-  old ids) and each new channel gets one `channel` event.
-- The redirect map: `meta` `channel_redirects` (old id to new id).
-  `WebStore.canonical` reads it; the API routes above and the front end's
-  verbs (`post`, `post_card`, `upload`, `react`, `update`,
-  `replace_card_with_status`, `thread_replies`, `room_url`, `archive` and
-  the rest) take an old id as its new one, so a reference the core kept
-  from before the move (a card's `ea_channel`, a session row) still lands.
-- Then `chat.json` (`"frontend": "web"`, no `shadow`; the `zulip` block
-  stays; a notifier key whose stream became a web channel other than
-  `main` gets a `notify` entry), the store, the room registry
-  (`ea_channels.move_channels`, each room's `url` its web link), the
-  owner's room record (`owner_rooms.move`), the session rows
-  (`slack_sessions.move_channels`) and the card registry
-  (`CardRegistry.move_channels`), and the Zulip teardown steps.
-
-A switch back is the snapshot (`webchat-backup.sh --restore <name>`).
 
 ## CLI senders
 
@@ -605,14 +543,6 @@ open (`<ea_dir>/state/webchat.sqlite`) is one the bot never reads.
   pairing token, no channels made), and load_frontend calls it. The
   mirrors run as in the bot, under the primary's ids. A store that does
   not open is logged and the sender runs the primary alone.
-- `chat_notify.post` and `post_as_bot` on Zulip send with a bare Zulip
-  client, so they mirror each part themselves through
-  `chat.web_writer()`: channel `stream:<id>`, the Zulip message id, the
-  thread key `stream:<id>:topic:<topic>` (what the Zulip frontend's
-  `post` returns for the same post) and the core's mrkdwn, which the web
-  side converts as its `post` would. The channel row is written only
-  when the store lacks it, so the bot's row (name, archived) stands. A
-  mirror failure is printed and the post stands.
 - Standalone (`"frontend": "web"`), `chat_notify.post` and `post_as_bot`
   post each part into the store as the bot through the writer-only web
   front end, all parts of a post in one new thread, in the channel the
@@ -638,17 +568,14 @@ open (`<ea_dir>/state/webchat.sqlite`) is one the bot never reads.
   due (`WebFrontend.post_due`), and the event goes to the open streams.
   The id it returns is the row's, which the ledger row keeps as
   `alert_scheduled_id`: `cancel_scheduled` deletes the row (False once
-  it went out, as on Zulip), and `list_scheduled` reads the DM's rows. The
+  it went out), and `list_scheduled` reads the DM's rows. The
   post carries no push of its own: alert.py queues the alert's push for
   the same moment (`web_notify`). The bot must be up to post it; one it
   was down for goes out when it is back. In a process that is not the
   owner's, `direct.frontend()` raises, so alert.py stages the alert for
   the owner's `alert.py flush`. `send_direct` posts as `chat_notify.post`
   does to the `personal` key.
-- Not mirrored: a Slack webhook post (no message id comes back), and a
-  Zulip direct message or scheduled direct message from
-  `chat/direct.py` (they live outside the streams the web chat holds; the
-  Zulip server delivers a scheduled one later).
+- Not mirrored: a Slack webhook post (no message id comes back).
 
 **The bot's side.** The serving `WebFrontend` runs a tail thread that
 reads `SELECT MAX(seq) FROM events` every `tail_s` seconds (1) and hands
@@ -1000,7 +927,7 @@ leaves a choice. Additive only: no field, route or key above changes.
 **Channels and ids.** Standalone, the EA channel is `main` (name `ea`),
 the DM is `dm` (name `dm`) and the scheduling channel is `sched` (name
 `Scheduling`), made on start like the other two. `sched_channel` names
-it, so the core runs it as the Zulip scheduling stream: the proactive
+it, so the core runs it as its scheduling channel: the proactive
 scheduler opens a conversation there for each scheduling request found
 in mail (`preprocess.write_proactive_queue`, which writes the queue
 when `ea_config.web_sched_on` says the channel is on), each thread is
@@ -1010,7 +937,7 @@ card a turn there stages goes to the DM with a pointer in the thread.
 "", a row made before is archived with its threads, and scheduling
 requests wait in the EA channel. In shadow mode the web front end makes
 none of these channels and its own `sched_channel` is ""; the
-composite gives the primary's, and the mirrored scheduling stream is
+composite gives the primary's, and the mirrored scheduling channel is
 the store's channel of kind `sched`. Rooms
 are `r<n>`, files `f<n>`, messages `w<seq>`, threads `t<seq>`. A channel
 row also carries `description`. `unread` counts the bot's messages after
@@ -1019,6 +946,16 @@ the owner's last message in the channel or the channel's read mark;
 newest message. `thread_channel(key)` names the one channel that holds a
 thread key or message id (None for none or several), for a caller that
 has the key alone (the bot delivering a staged job).
+
+**Redirects.** A store that took in history kept under other channel
+ids holds it under the web chat's own ids, with the thread keys and
+message ids as they were. The `meta` row `channel_redirects` maps each
+old channel id to its new one. `WebStore.canonical` reads it; the API
+routes and the front end's verbs (`post`, `post_card`, `upload`,
+`react`, `update`, `replace_card_with_status`, `thread_replies`,
+`room_url`, `archive` and the rest) take an old id as its new one, so a
+reference the core kept (a card's `ea_channel`, a session row) still
+lands.
 
 **The digest channel.** Standalone, the mail digests have a channel of
 their own: id `digests`, name "Mail digests", kind `digest`. The
@@ -1029,8 +966,8 @@ reader (`chat_read.py`) never reads a channel of kind `digest`, so what
 the remote model read for the owner alone never reaches a Claude lane.
 The bot answers no message there: it is not the EA channel, the DM or
 a registered room, and the app shows no composer in it (The web app). In
-shadow mode the Zulip `mail-digest` stream is mirrored as a room, as
-every other stream.
+shadow mode the digests go to the primary (on Slack, the `mail-digest`
+webhook), and the web chat does not mirror them.
 
 **Thread list.** Threads come newest first by their first message. Each
 item is that message with `reply_count` and `last_at` (the thread's
@@ -1046,9 +983,9 @@ times differ by 2 seconds or more as an edit, not as new.
 
 **Text.** The bot's text (`post`, `update`, `mirror_post`,
 `mirror_update`, an upload's comment) is converted with
-`chat.text.mrkdwn_to_zulip`, as on Zulip, except that emoji shortcodes
-keep their Slack names, the vocabulary reactions use; the app knows both
-names. The owner's text is stored as typed. A `status` row's text is the
+`chat.text.mrkdwn_to_markdown`. Emoji shortcodes keep their Slack
+names, the vocabulary reactions use; the app also reads the other common
+names for the same emoji. The owner's text is stored as typed. A `status` row's text is the
 core's status line as written (Slack mrkdwn), which the app renders as
 card text. A card is stored as it is: its strings come from the model
 and from mail, may hold the inert-span sentinels U+E000 and U+E001
@@ -1152,9 +1089,8 @@ the prompts use it as an adjective ("a real-time {platform} message").
   `room`, name the id) that `mirror_channel` corrects.
 - Keywords for the history copy: `mirror_post` and `mirror_file` take
   `quiet=True` (a history row: no event, `history` 1, None returned for
-  a row stored already or older than its thread's newest) and
-  `markdown=True` (the bot's text is Markdown already, as Zulip's
-  history is, and is stored as given). `mirror_channel` takes
+  a row stored already or older than its thread's newest).
+  `mirror_channel` takes
   `description=`; None keeps the stored one. A store from before the
   `history` column gains it on open, its rows all live ones.
 - `stop()` stops the server and the tail thread and closes the open
@@ -1393,9 +1329,8 @@ the TTL late. `wait=True` sends before returning: alert.py's process
 builds the web front end (`chat.load_web_frontend`, not started) and
 sends or queues through it, and does nothing when the chat block runs no
 web front end or its store does not exist. A queued alert therefore goes
-out while the bot runs; the Zulip direct message, held by the Zulip
-server, does not need the bot. On the web chat alone the alert's post
-waits in the store as well (`scheduled_posts`, CLI senders), so both go
+out while the bot runs. On the web chat the alert's post waits in the
+store as well (`scheduled_posts`, CLI senders), so both go
 out from the bot. A writer-only copy (a command-line sender, which exits
 next) sends a message's or a card's push before `post` returns, so it is
 out before the process ends.

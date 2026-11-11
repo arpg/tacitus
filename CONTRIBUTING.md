@@ -68,19 +68,19 @@ first; the operating file is read on every turn of every install.
 ## Where things are
 
 There are three entry points: `run-agent.sh` (the scheduled agents),
-`ea-chat-bot.py` (the chat listener; the name predates Zulip) and
+`ea-chat-bot.py` (the chat listener) and
 `run-plugin.sh` (plugins). Each one runs Claude Code as a subprocess
 under the `ea-bot` user.
 
 ```
 ea-system/                     # this repository
-├── ea-chat-bot.py             # chat listener (Zulip or Slack): rooms, cards, the review flow
+├── ea-chat-bot.py             # chat listener (web chat or Slack): rooms, cards, the review flow
 ├── run-agent.sh               # scheduled agents: briefings, audits, intake, list digests
 ├── run-plugin.sh              # scheduled plugins, run as ea-bot
 ├── CLAUDE.md                  # the operating core every lane reads; topic guides in docs/ea/
 ├── prompts/                   # the scheduling channel's operating files
 ├── preprocessor/              # Python that spends no model tokens
-│   ├── chat/                  # chat front end: the interface, the Slack and Zulip adapters, cards
+│   ├── chat/                  # chat front end: the interface, the web and Slack adapters, cards
 │   ├── preprocess.py          # mail and calendar delta engine, request detection
 │   ├── closure_scrubber.py    # closes ledger items from evidence before each briefing
 │   ├── ledger.py              # the obligations ledger (SQLite)
@@ -103,8 +103,8 @@ ea-system/                     # this repository
 ├── .claude/agents/            # the email-author subagent
 ├── .claude/skills/setup/      # the /setup install skill
 ├── config/                    # templates, copied to ~/.ea/config/ at install
-├── deploy/                    # root steps: mail mediation, hardening, deck builder; zulip/ runs the chat server
-├── scripts/                   # ea-bot shell, doctor, deny lists, Zulip bootstrap and switch
+├── deploy/                    # root steps: mail mediation, hardening, deck builder
+├── scripts/                   # ea-bot shell, doctor, deny lists, web chat backup and relay keys
 │   └── install/               # setup.sh, the service-account installers, user_init.py
 └── tests/                     # the test wall, prompt evals, smoke test, lints
 

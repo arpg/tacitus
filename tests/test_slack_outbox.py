@@ -326,7 +326,9 @@ def test_drain_text_sidecar_with_empty_body_dropped():
         assert list(outbox.glob("*" + SC)) == []
 
 
-def test_stage_accepts_zulip_thread_key():
+def test_stage_accepts_an_imported_thread_key():
+    """A thread the web chat imported from Zulip keeps its old key, and the
+    bot posts there under the old channel id, which the web chat redirects."""
     key = "stream:12:topic:Hello%20there"
     with tempfile.TemporaryDirectory() as td:
         base = Path(td)

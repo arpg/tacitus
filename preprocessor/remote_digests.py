@@ -31,10 +31,9 @@ profile and the rules the entry carries (preferences.py scopes
 Code writes the post in the skill's shape. Links are chosen by index and
 copied from the item, never typed by the model; the tally counts every
 item, job posts dropped in code included. The post goes where the Claude
-lanes' chat reader does not read (chat_notify.post_digest): the private
-`mail-digest` stream on Zulip, the digest channel on the web chat, the
-`mail-digest` webhook on Slack, or on Slack without that webhook
-`ea-assistant`, as before. Only then does list_digest.archive() move the
+lanes' chat reader does not read (chat_notify.post_digest): the digest
+channel on the web chat, the `mail-digest` webhook on Slack, or on Slack
+without that webhook `ea-assistant`, as before. Only then does list_digest.archive() move the
 mail to Archive (`posted`, or `silent` with no post when nothing was
 worth posting). An endpoint failure or a failed post archives nothing:
 the mail stays for the next run.
@@ -806,17 +805,14 @@ def _has_chat() -> bool:
         return True
 
 
-DIGEST_TOPIC = "List and admissions digests"
-
-
 def _post(key: str, text: str) -> bool:
     """The digest place (chat_notify.post_digest), under the lane's key:
-    the mail-digest stream on Zulip, the digest channel on the web chat,
-    the `mail-digest` webhook on Slack. The briefing's chat reader reads
+    the digest channel on the web chat, the `mail-digest` webhook on
+    Slack. The briefing's chat reader reads
     none of them, so the post's text never reaches a Claude lane. On Slack
     without that webhook, the `ea-assistant` channel."""
     import chat_notify
-    got = chat_notify.post_digest(key, text, topic=DIGEST_TOPIC)
+    got = chat_notify.post_digest(key, text)
     if got is None and chat_notify.frontend_name() == "slack":
         import slack_notifier
         return bool(slack_notifier.post_to_slack(CHANNEL, text))

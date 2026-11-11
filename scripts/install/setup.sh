@@ -251,8 +251,8 @@ if [[ ! -f "$EA_DIR/.env" ]]; then
     echo ""
     echo "=== Environment file ==="
     if [[ "$HAS_SLACK" == 1 ]]; then
-        echo "You need to create $EA_DIR/.env with your Slack channel ids."
-        echo "See .env.example in this repo and docs/SETUP.md, 'Zulip server' or 'Slack', for details."
+        echo "No $EA_DIR/.env yet. The web chat needs none; a Slack install puts its"
+        echo "channel ids there (.env.example in this repo, docs/SETUP.md 'Slack')."
     else
         echo "No $EA_DIR/.env yet. Graph device-code sign-in needs GRAPH_CLIENT_ID and"
         echo "GRAPH_AUTH_METHOD=device_code there; python3 scripts/install/user_init.py --phase auth writes them."

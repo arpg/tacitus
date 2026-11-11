@@ -87,7 +87,7 @@ def _world(mode: str = "refuse") -> dict:
     env = _git_free_env(root)
     env.update(EA_PRIVATE_DIR=str(private), SUDO_LOG=str(sudo_log),
                SUDO_MODE=mode, PATH=f"{stub_dir}:{env.get('PATH', '/usr/bin:/bin')}")
-    for k in ("EA_DIR", "EA_MODEL", "ZULIP_API_KEY", "SLACK_BOT_TOKEN"):
+    for k in ("EA_DIR", "EA_MODEL", "SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"):
         env.pop(k, None)
     return {"root": root, "private": private, "shared": shared,
             "sudo_log": sudo_log, "env": env}
@@ -155,15 +155,15 @@ def test_secrets_come_from_the_private_file_first():
     ea = w["root"] / "ea"
     ea.mkdir(mode=0o700)
     legacy = ea / ".env.secrets"
-    legacy.write_text("ZULIP_API_KEY=legacy-key\nSLACK_BOT_TOKEN=xoxb-legacy\n")
+    legacy.write_text("SLACK_APP_TOKEN=legacy-key\nSLACK_BOT_TOKEN=xoxb-legacy\n")
     legacy.chmod(0o600)
     private = w["private"] / "secrets.env"
-    private.write_text("ZULIP_API_KEY=private-key\n")
+    private.write_text("SLACK_APP_TOKEN=private-key\n")
     private.chmod(0o600)
     r = _io(w, "env", str(ea), str(w["private"]))
     assert r.returncode == 0, r.stderr
     got = _env_pairs(r.stdout)
-    assert got["ZULIP_API_KEY"] == "private-key"
+    assert got["SLACK_APP_TOKEN"] == "private-key"
     assert got["SLACK_BOT_TOKEN"] == "xoxb-legacy"
     assert r.stderr == ""
 
@@ -173,12 +173,12 @@ def test_legacy_secrets_symlink_is_ignored():
     ea = w["root"] / "ea"
     ea.mkdir(mode=0o700)
     real = w["private"] / "elsewhere.env"
-    real.write_text("ZULIP_API_KEY=through-a-link\n")
+    real.write_text("SLACK_APP_TOKEN=through-a-link\n")
     real.chmod(0o600)
     (ea / ".env.secrets").symlink_to(real)
     r = _io(w, "env", str(ea), str(w["private"]))
     assert r.returncode == 0, r.stderr
-    assert "ZULIP_API_KEY" not in _env_pairs(r.stdout)
+    assert "SLACK_APP_TOKEN" not in _env_pairs(r.stdout)
     assert r.stderr.count("\n") == 1 and "(a symlink)" in r.stderr, r.stderr
 
 
@@ -187,10 +187,10 @@ def test_legacy_secrets_writable_by_others_is_ignored():
     ea = w["root"] / "ea"
     ea.mkdir(mode=0o700)
     legacy = ea / ".env.secrets"
-    legacy.write_text("ZULIP_API_KEY=group-writable\n")
+    legacy.write_text("SLACK_APP_TOKEN=group-writable\n")
     legacy.chmod(0o660)
     r = _io(w, "env", str(ea), str(w["private"]))
-    assert "ZULIP_API_KEY" not in _env_pairs(r.stdout)
+    assert "SLACK_APP_TOKEN" not in _env_pairs(r.stdout)
     assert "writable by group or others" in r.stderr, r.stderr
 
 
@@ -200,12 +200,12 @@ def test_legacy_secrets_owned_by_another_user_is_ignored():
     ns = _owner_io_python()
     d = Path(tempfile.mkdtemp(prefix="owner-boundary-uid-"))
     f = d / ".env.secrets"
-    f.write_text("ZULIP_API_KEY=someone-elses\n")
+    f.write_text("SLACK_APP_TOKEN=someone-elses\n")
     f.chmod(0o600)
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         assert ns["read_owner_file"](str(f), uid=os.getuid() + 1) is None
-        assert ns["read_owner_file"](str(f)) == "ZULIP_API_KEY=someone-elses\n"
+        assert ns["read_owner_file"](str(f)) == "SLACK_APP_TOKEN=someone-elses\n"
     assert "not owned by the running user" in err.getvalue()
 
 
@@ -222,9 +222,9 @@ def test_private_secrets_in_a_shared_dir_are_skipped():
     w = _world()
     ea = w["root"] / "ea"
     ea.mkdir(mode=0o700)
-    (w["shared"] / "secrets.env").write_text("ZULIP_API_KEY=planted\n")
+    (w["shared"] / "secrets.env").write_text("SLACK_APP_TOKEN=planted\n")
     r = _io(w, "env", str(ea), str(w["shared"]))
-    assert "ZULIP_API_KEY" not in _env_pairs(r.stdout)
+    assert "SLACK_APP_TOKEN" not in _env_pairs(r.stdout)
     assert "other users can change its directory" in r.stderr
 
 
@@ -242,7 +242,7 @@ def test_run_agent_never_runs_env_file_content():
     (ea / ".env").write_text(f"EA_MODEL=$(touch {marks[0]})\n"
                              f"EA_SLACK_CHANNEL_ID=`touch {marks[1]}`\n")
     target = w["private"] / "secrets-elsewhere.env"
-    target.write_text(f"ZULIP_API_KEY=$(touch {marks[2]})\n")
+    target.write_text(f"SLACK_APP_TOKEN=$(touch {marks[2]})\n")
     target.chmod(0o600)
     (ea / ".env.secrets").symlink_to(target)
     ran = lambda: [m.name for m in marks if m.exists()]
@@ -254,12 +254,12 @@ def test_run_agent_never_runs_env_file_content():
     # a legacy file the owner controls is still loaded, still only as data
     (ea / ".env.secrets").unlink()
     legacy = ea / ".env.secrets"
-    legacy.write_text(f"ZULIP_API_KEY=$(touch {marks[3]})\n")
+    legacy.write_text(f"SLACK_APP_TOKEN=$(touch {marks[3]})\n")
     legacy.chmod(0o600)
     r = _run_script(w, RUN_AGENT, "no-such-agent", ea=ea)
     assert not ran(), f"run-agent.sh ran secrets file content: {ran()}"
     assert r.returncode == 1 and "Unknown agent" in r.stdout, r.stderr[-600:]
-    assert "ZULIP_API_KEY" in r.stderr  # refused as not plain data, never run
+    assert "SLACK_APP_TOKEN" in r.stderr  # refused as not plain data, never run
     assert w["sudo_log"].read_text() == ""
 
 

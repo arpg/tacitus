@@ -111,7 +111,7 @@ MODE_LINES = {
                  "before anything goes out.",
     "collaborator": "The assistant, plus a separate chat room for each big project.",
 }
-_CHAT_ASKED = [_CHAT_PROFILE, {"ctx": "chat", "not_in": ["zulip", "web"]}]
+_CHAT_ASKED = [_CHAT_PROFILE, {"ctx": "chat", "not_in": ["web"]}]
 _WEB_CHOSEN = [_CHAT_PROFILE, {"key": "chat-platform", "is": "web"}]
 # The web chat's defaults (docs/webchat.md, Config) and the HTTPS port
 # docs/SETUP.md "Web chat" publishes it on with `tailscale serve`.
@@ -481,20 +481,18 @@ PHASES: list[dict] = [
         "intro": [
             "  The assistant and collaborator modes talk to you in a chat. The",
             "  web chat is the bot's own: an app on your phone over your tailnet,",
-            "  with no chat server and nothing stored outside this machine. Zulip",
-            "  is a chat server you run here; Slack keeps every message, draft and",
-            "  card on Slack's servers. docs/INSTALL.md 'Choosing a chat platform'",
-            "  compares them.\n",
+            "  with no chat server and nothing stored outside this machine. Slack",
+            "  keeps every message, draft and card on Slack's servers.",
+            "  docs/INSTALL.md 'Choosing a chat platform' compares them.\n",
         ],
         "questions": [
-            _q("chat-platform", "Chat platform (web, zulip or slack)", "choice",
+            _q("chat-platform", "Chat platform (web or slack)", "choice",
                web_label="Chat platform",
                choices=[
                    ["web", "web (recommended): the chat the bot serves itself, as an app on "
                            "your phone over your tailnet; no chat server", "1"],
-                   ["zulip", "zulip: a Zulip server you run on this machine in Docker", "2"],
                    ["slack", "slack: a Slack workspace; Slack keeps every message, draft "
-                             "and card", "3"],
+                             "and card", "2"],
                ],
                default=[["ctx", "chat_choice"], _lit("web")], when=_CHAT_PROFILE),
             _q("web-chat-host", "This machine's tailnet name (empty: add it later)",
@@ -755,7 +753,7 @@ WHY = {
     "style-student": "Students get this style. It keeps your replies to them kind and short.",
     # chat
     "chat-platform": "The chat is where the EA shows you drafts and buttons. The platform decides "
-                     "who stores that content: this machine only, your Zulip server, or Slack.",
+                     "who stores that content: this machine only, or Slack.",
     "web-chat-host": "Your phone opens the web chat at this name over your tailnet. Without it "
                      "the chat has no address yet.",
     "web-chat-login": "A request from this login is you, so the chat needs no password. Left "

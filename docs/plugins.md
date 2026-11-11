@@ -432,8 +432,9 @@ declares the alias.
   mail mediation the resident has no token. `from ea_plugins import mail`
   gives mediated reads (`messages_from`, `search`, `get_message`), and
   `mail.delivered()` the copies a v2 plugin's `mail_triggers` were handed.
-- `output.channel_key`: the chat route (on Zulip, `chat.zulip.notify` in
-  `ea-config.json` maps it to a stream and topic).
+- `output.channel_key`: the chat route (on the web chat, `chat.web.notify`
+  maps it to a channel, else the EA channel; on Slack, the webhook of
+  that key in `slack_webhooks.json`).
   `output.format_anchors`: the shortcodes a post may open with.
 - `chat` (or `slack`): the interactive trigger, as in v2.
 

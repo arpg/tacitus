@@ -38,8 +38,8 @@ words itself, with no model call (ea-chat-bot.py, _handle_usage_tip_reply):
             this code; retiring the rule turns the tips back on
 Any other message in the thread is a normal turn.
 
-The post goes through chat_notify (the EA channel key, so Zulip, Slack and
-the web chat all work), each tip its own thread, and on the web chat a
+The post goes through chat_notify (the EA channel key, so Slack and the
+web chat both work), each tip its own thread, and on the web chat a
 push notification at normal urgency (chat.direct.web_notify): a post in the
 EA channel is not pushed on its own. A tap on the push opens the tip's
 own thread when the web chat holds it (chat_notify.post returns its key;
@@ -207,7 +207,7 @@ class Usage:
 
     @property
     def web_on(self) -> bool:
-        """The web chat runs, alone or beside Zulip."""
+        """The web chat runs, alone or beside Slack."""
         return "web" in (self.chat.get("frontend"), self.chat.get("shadow"))
 
     @property
@@ -393,7 +393,7 @@ class Usage:
 
     def uploads(self) -> int:
         """Files the owner attached to a message: the web chat's file
-        messages, and the downloads the bot keeps for Zulip and Slack."""
+        messages, and the downloads the bot keeps for Slack."""
         n = self.web()["files"]
         rows = _rio.list_dir(self.ea_dir / "uploads") or []
         return n + sum(1 for kind, _name in rows if kind == "f")

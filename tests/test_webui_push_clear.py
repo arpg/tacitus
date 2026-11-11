@@ -347,7 +347,7 @@ def test_the_owners_message_clears_its_threads_unread_count(app):
     new = stub.emit_bot(W.DM, "A brand new thread")
     item = page.locator(".thread-item:has-text('A brand new thread')")
     expect(item.locator(".badge")).to_have_text("1")
-    # the owner answers elsewhere (Zulip, mirrored), the thread still closed here
+    # the owner answers elsewhere (Slack, mirrored), the thread still closed here
     stub.add(W.DM, "On it from my phone", author="owner", thread_key=new["thread_key"],
              event="message")
     expect(item.locator(".badge")).to_have_count(0)

@@ -247,7 +247,8 @@ def test_the_chat_screen_writes_what_the_terminal_writes(start, monkeypatch, tmp
     assert "slack-bot-token" not in keys and "web-chat-host" in keys
     commands = [cmd for step in doc["finish"] for cmd in step["commands"]]
     assert user_init.WEB_SERVE_LINE in commands
-    assert not any("zulip_bootstrap.py" in cmd for cmd in commands)
+    (step,) = [s for s in doc["finish"] if s["title"] == "The chat platform"]
+    assert "'Slack'" not in step["text"]
     # a bad host comes back under its key
     status, doc = c.post("chat", {"chat-platform": "web", "web-chat-host": "https://x"})
     assert status == 422 and list(doc["errors"]) == ["web-chat-host"]
@@ -341,7 +342,8 @@ def test_secrets_go_owner_private_and_are_never_sent_back(start, tmp_path):
     _s, phases, _ = c.call("GET", "/api/phases")
     commands = [cmd for step in phases["finish"] for cmd in step["commands"]]
     assert "python3 preprocessor/graph_client.py --align --write" in commands
-    assert any("zulip_bootstrap.py" in cmd for cmd in commands), "assistant: the chat step"
+    (step,) = [s for s in phases["finish"] if s["title"] == "The chat platform"]
+    assert "docs/SETUP.md 'Slack'" in step["text"], "assistant on Slack: the chat step"
 
 
 def test_the_answers_view_is_the_update_view(start, tmp_path):
@@ -650,7 +652,7 @@ def test_every_step_and_question_says_why_it_asks_and_how_it_helps():
         for row in ph["questions"]:
             assert row["why"], row["key"]
     for profile in ("reviewer", "assistant", "collaborator"):
-        for chat in ("web", "zulip"):
+        for chat in ("web", "slack"):
             for platform in ("linux", "darwin"):
                 for env in ({}, {"GRAPH_AUTH_METHOD": "confidential"},
                             {"GRAPH_AUTH_METHOD": "device_code"}):

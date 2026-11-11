@@ -228,41 +228,6 @@ def test_other_purposes_wait_for_a_slot(priv, monkeypatch):
     assert got["r"]["content"] == "ok"
 
 
-def test_thread_title_is_none_when_no_slot_frees(priv, monkeypatch):
-    """The bot's title helper turns a full queue into None, so the frontend
-    names the topic from the message's first words."""
-    import re as _re
-    import types
-    root = Path(__file__).resolve().parents[1]
-    src = (root / "ea-chat-bot.py").read_text()
-
-    def fn(name):
-        start = src.index(f"\ndef {name}(")
-        return src[start:src.index("\ndef ", start + 1)]
-
-    start = src.index("THREAD_TITLE_TIMEOUT_S = ")
-    consts = src[start:src.index("\ndef ", start)]
-    quiet = types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)
-    ns = {"re": _re, "time": __import__("time"), "log": quiet}
-    exec(consts + fn("_remote_text") + fn("_thread_title"), ns)
-    monkeypatch.syspath_prepend(str(root))
-    import preprocessor
-    monkeypatch.setitem(sys.modules, "preprocessor.remote_llm", rl)
-    monkeypatch.setattr(preprocessor, "remote_llm", rl, raising=False)
-    monkeypatch.setitem(sys.modules, "preprocessor.ea_channels",
-                        types.SimpleNamespace(scope_of=lambda c: {}))
-    monkeypatch.setattr(preprocessor, "ea_channels",
-                        sys.modules["preprocessor.ea_channels"], raising=False)
-    _write_cfg(priv, max_parallel=1)
-    monkeypatch.setattr(rl, "CHAT_SLOT_WAIT_S", 0.2)
-    fds = _hold_every_slot(1)
-    try:
-        assert ns["_thread_title"]("Book the lab tour", "chan-1") is None
-    finally:
-        _release(fds)
-    assert '"no free request slot' in (priv / rl.STORE_DIRNAME / "calls.jsonl").read_text()
-
-
 def test_n_answers_in_one_request(priv):
     _write_cfg(priv)
     seen = []

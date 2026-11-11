@@ -71,7 +71,7 @@ PYTHON3="$(command -v python3)"
 # reviewer mode) every report is a file under ~/.ea/state/reports/ and
 # nothing is posted.
 PROFILE="$(EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/ea_config.py" profile 2>/dev/null || echo assistant)"
-# `chat` is the platform-neutral name of the feature (the web chat, Zulip or Slack).
+# `chat` is the platform-neutral name of the feature (the web chat or Slack).
 HAS_SLACK=1
 EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/ea_config.py" feature chat >/dev/null 2>&1 || HAS_SLACK=0
 # "drafting": false in ea-config.json, in any mode; a failed read counts as off.
@@ -650,8 +650,8 @@ MCP_GCAL+=",mcp__claude_ai_Google_Calendar__search_events"
 #   mcp__claude_ai_Slack__slack_read_channel
 #   mcp__claude_ai_Slack__slack_read_thread
 #   mcp__claude_ai_Slack__slack_read_user_profile
-# and on Zulip nothing (no MCP connector). The orchestrator posts the
-# agent's text output.
+# and on the web chat nothing (no MCP connector). The orchestrator posts
+# the agent's text output.
 MCP_CHAT=$("$PYTHON3" "$SCRIPT_DIR/preprocessor/chat_notify.py" llm-grants 2>/dev/null) || MCP_CHAT=""
 
 ALLOWED_TOOLS="${MCP_GMAIL},${MCP_GCAL}"

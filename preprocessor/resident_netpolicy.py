@@ -3,7 +3,7 @@
 
 The resident (`ea-bot`) runs the prompt-injectable LLM. On this host it
 would otherwise meet every service that trusts "anything local": the
-owner's dev servers, the board, Ollama, Zulip's web login, Samba, CUPS, the
+owner's dev servers, the board, Ollama, Samba, CUPS, the
 Docker bridges and the tailnet peers. deploy/enable-resident-netpolicy.sh
 loads the ruleset this module renders; scripts/boundary-audit.py checks every
 day, with the probes below run as the resident, that it holds.

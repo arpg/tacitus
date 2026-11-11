@@ -114,13 +114,13 @@ python3 /home/ea-bot/ea-system/preprocessor/google_calendar_client.py \
 This works for BOTH Google accounts and auto-refreshes tokens. Do NOT
 use gcal MCP tools — they are unreliable in subprocess environments.
 
-The chat is Zulip (on a Slack install the same rules hold, and the Slack
-read tool a lane may grant is for when you have no briefing). You have
-no chat read tool on Zulip: `recent_slack_messages` in
-the briefing (the name predates Zulip) carries the recent EA-stream
-messages, and a dispatch carries its own thread. You hold no chat
-credential either: the bot's Zulip API key lives in the owner's private
-directory, which you cannot reach; do not look for a key in any env file. Posting still
+The chat is the web chat (on a Slack install the same rules hold, and
+the Slack read tool a lane may grant is for when you have no briefing).
+You have no chat read tool on the web chat: `recent_slack_messages` in
+the briefing (the name predates the web chat) carries the recent
+EA-channel messages, and a dispatch carries its own thread. You hold no
+chat credential either: the bot's credentials live in the owner's
+private directory, which you cannot reach; do not look for a key in any env file. Posting still
 works, and the path depends on how you were invoked:
 
 - **Resident or room dispatch** (a chat message routed to you): write your
@@ -132,11 +132,11 @@ works, and the path depends on how you were invoked:
 - **Posting text or a file into a THREAD**, from any invocation, including
   one where nothing captures your stdout: `chat_upload.py` (full command
   below). It stages the job for the bot to deliver. You have no path that
-  posts to a stream outside a thread.
+  posts to a channel outside a thread.
 
 Use emoji shortcodes (`:sunny:`, `:email:`) not unicode, and
 `*single asterisks*` for bold (Slack mrkdwn), not `**double**`; the bot
-converts both for Zulip.
+converts both for the web chat.
 
 A file this turn wrote needs no upload: write its full path in the reply
 and the bot attaches it after the turn (the rule is in CLAUDE.md, under
@@ -146,16 +146,15 @@ made, or one from a run whose reply the bot does not post, shell out to
 
 ```bash
 python3 /home/ea-bot/ea-system/preprocessor/chat_upload.py \
-  --channel <the stream in the thread key, e.g. stream:4> \
+  --channel <the channel of your dispatch, e.g. main> \
   --thread-ts <the thread key from your dispatch> \
   --file <path> [--file <path> ...] \
   [--comment "initial comment"]
 ```
 
 The thread key is the `thread=` value of your `[slack-dispatch ...]`
-marker (or the thread your prompt names), for example
-`stream:4:topic:Event%20details%20for%20RSVPs`; the file lands in that
-stream's topic. Swap `--file` for `--text "..."` to post a message with no
+marker (or the thread your prompt names), for example `t1234`; the file
+lands in that thread. Swap `--file` for `--text "..."` to post a message with no
 attachment into that thread.
 
 You run as `ea-bot` and, by design, hold no chat credential, so this helper

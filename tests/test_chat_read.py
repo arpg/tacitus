@@ -166,8 +166,9 @@ def test_frontend_failure_is_empty_not_fatal(monkeypatch, capsys):
 
 
 def test_ported_slack_history_is_not_recent_chat(monkeypatch):
-    """Messages the porter carried over from Slack carry today's Zulip time;
-    the briefing must not read them as recent instructions."""
+    """Messages the porter carried over from Slack carry the time of the
+    port, not the time they were written; the briefing must not read them
+    as recent instructions."""
     now = time.time()
     header = chat.text.ported_header("Kit", "2026-06-12 09:30")
     _memory(monkeypatch, [

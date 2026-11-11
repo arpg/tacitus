@@ -78,7 +78,7 @@ try:
 except KeyError as _missing:
     sys.exit(f"ea-chat-bot: the chat setting {_missing.args[0]} is not set. Secrets go in "
              f"~/.ea-private/secrets.env, the channel settings in ~/.ea/.env "
-             f"(docs/SETUP.md \"Zulip server\" or \"Slack\").")
+             f"(docs/SETUP.md \"Web chat\" or \"Slack\").")
 except _owner_trust.OwnerTrustError as _untrusted:
     # The chat block (server, bot, owner id) comes only from the owner-private
     # chat.json; the bot does not start on ea-bot's copy.
@@ -163,10 +163,10 @@ CHANNEL_NAME = FRONTEND.main_channel_name
 CHANNEL_ID = FRONTEND.main_channel
 # The main channel as a prompt names it.
 EA_CHANNEL_LABEL = f"#{CHANNEL_NAME}" if CHANNEL_NAME else "the EA channel"
-# Optional dedicated scheduling channel: the Slack channel id, the Zulip
-# scheduling stream, or the web chat's Scheduling channel. When set, the bot
-# also listens here and treats messages as scheduling-assistant work.
-# Inert (single-channel behavior) when unset.
+# Optional dedicated scheduling channel: the Slack channel id or the web
+# chat's Scheduling channel. When set, the bot also listens here and treats
+# messages as scheduling-assistant work. Inert (single-channel behavior)
+# when unset.
 SCHED_CHANNEL_ID = FRONTEND.sched_channel
 MODEL = os.environ.get("EA_MODEL", "claude-opus-5-5[1m]")
 BOT_USER_ID = None  # Resolved at startup
@@ -1221,7 +1221,7 @@ def _event_values(channel: str, thread_ts: str, approve_value: str) -> tuple:
 # owner's own read of the calendar has it. A card that cannot show all of
 # that in one message offers no approval. The ceilings are Slack's
 # per-message limits less a margin; a frontend whose message is smaller
-# (Zulip's max_message_length) says so through card_fits as well.
+# says so through card_fits as well.
 _EVENT_LINE_CHARS = 2800     # one card line (a Slack section holds 3000)
 _EVENT_FIELD_CHARS = 1900    # one card field (a Slack field holds 2000)
 _EVENT_MAX_FIELDS = 10       # a Slack fields section holds 10, the headline aside
@@ -3878,8 +3878,8 @@ def _execute_send(channel: str, thread_ts: str, confirm_msg_ts: str | None,
                 _replace_buttons_with_status(confirm_channel, confirm_msg_ts, msg)
             # Also confirm in the conversation the draft came from. A draft
             # with no thread (a briefing card) has its result on the card
-            # alone: on Zulip a thread-less post would open a "Sent." topic.
-            # With no card either, the channel post is the only report.
+            # alone: a thread-less post would open a "Sent." thread. With no
+            # card either, the channel post is the only report.
             if thread_ts or not confirm_msg_ts:
                 FRONTEND.post(channel=channel, thread_ts=thread_ts,
                               text=msg)
@@ -4195,7 +4195,7 @@ def _verify_button_user(ev: "_chat.ActionEvent") -> bool:
     user_id = ev.user_id
     if not OWNER_SLACK_USER_ID:
         log.error(f"Refused a button click by {user_id}: no owner id is set. Set "
-                  f"slack.owner_user_id (Slack) or zulip.owner_user_id (Zulip) in ~/.ea-private/chat.json.")
+                  f"slack.owner_user_id in ~/.ea-private/chat.json.")
         _post_ownerless_refusal(ev)
         return False
     if user_id and user_id == str(getattr(FRONTEND, "bot_user_id", "") or ""):
@@ -4211,8 +4211,8 @@ _OWNERLESS_NOTICE_S = 60.0
 _ownerless_notice_at: dict = {}
 _OWNERLESS_NOTICE = (":no_entry: That click was refused, and nothing was done. No owner "
                      "id is set, so the bot cannot tell that the click is yours. Set "
-                     "slack.owner_user_id (Slack) or zulip.owner_user_id (Zulip) in "
-                     "~/.ea-private/chat.json, then restart the bot.")
+                     "slack.owner_user_id in ~/.ea-private/chat.json, then restart "
+                     "the bot.")
 
 
 def _post_ownerless_refusal(ev: "_chat.ActionEvent") -> None:
@@ -5705,8 +5705,8 @@ def handle_edit_draft(ev: "_chat.ActionEvent"):
     if not _verify_button_user(ev):
         return
     if not FRONTEND.supports("modals"):
-        # Ask in the conversation that asked for the draft (its key names
-        # its own stream on Zulip), so the reply lands where its context is.
+        # Ask in the conversation that asked for the draft (the web chat's
+        # store names its channel), so the reply lands where its context is.
         # The owner tapped Edit on the card, so the card also answers: a
         # line under it points at that conversation, or the tap looks like
         # it did nothing.
@@ -6351,23 +6351,15 @@ def _room_members_ok(channel_id: str) -> bool:
 
 
 def _core_room_names() -> set:
-    """The names of the bot's own fixed streams (the EA, scheduling and DM
-    streams and every notify target, such as the health stream), from the
-    owner's chat settings. None of them is ever a room."""
-    cfg = getattr(FRONTEND, "cfg", None)
-    cfg = cfg if isinstance(cfg, dict) else {}
-    names = {cfg.get("stream"), cfg.get("sched_stream"), cfg.get("dm_stream"),
-             getattr(FRONTEND, "main_channel_name", "")}
-    notify = cfg.get("notify")
-    for target in (notify.values() if isinstance(notify, dict) else ()):
-        if isinstance(target, dict):
-            names.add(target.get("stream"))
-    return {str(n) for n in names if n}
+    """The names of the bot's own fixed channels (the EA channel), from the
+    frontend. None of them is ever a room."""
+    name = getattr(FRONTEND, "main_channel_name", "")
+    return {str(name)} if name else set()
 
 
 def _core_channel(channel_id: str, name: str = "") -> bool:
     """True for one of the bot's own fixed channels: the EA channel, the
-    scheduling channel, the owner's DM, or a stream named like one of them
+    scheduling channel, the owner's DM, or a channel named like one of them
     (_core_room_names). A registry row that names one is refused, so room
     hygiene can never archive it."""
     cid = str(channel_id or "")
@@ -6396,7 +6388,7 @@ def _owned_room(channel_id: str) -> bool:
 def _channel_scope(channel_id: str):
     """The registry row of a project or session room the bot serves: a
     registered room the owner-private record names as the bot's own
-    (_owned_room), that is private and not one of the bot's fixed streams
+    (_owned_room), that is private and not one of the bot's fixed channels
     (checked once, cached), and whose members are the owner and the bot
     (_room_members_ok, checked again after ROOM_MEMBERS_TTL_S). None for
     any other channel."""
@@ -6415,7 +6407,7 @@ def _channel_scope(channel_id: str):
             elif not info.exists:
                 log.warning(f"channel scope lookup failed for {channel_id}: channel_not_found")
             elif _core_channel(channel_id, info.name):
-                log.warning(f"ea-channels: {channel_id} is one of the bot's own streams "
+                log.warning(f"ea-channels: {channel_id} is one of the bot's own channels "
                             f"({info.name}), not a room; refusing to scope it")
             elif info.is_private:
                 scope = dict(entry)
@@ -6431,7 +6423,7 @@ def _channel_scope(channel_id: str):
 def _adopt_registered_rooms() -> list:
     """Begin the owner-private room record (owner_rooms) once, on the first
     start that has none: each registered room that exists, is private, is
-    not one of the bot's fixed streams, and whose members are exactly the
+    not one of the bot's fixed channels, and whose members are exactly the
     owner and the bot is taken over; every other row is left out and named
     in the log. Once the record exists, only a room the bot creates joins
     it. Returns the ids taken over."""
@@ -6460,7 +6452,7 @@ def _adopt_registered_rooms() -> list:
         elif not info.exists:
             why = "not found"
         elif _core_channel(cid, info.name):
-            why = f"one of the bot's own streams ({info.name})"
+            why = f"one of the bot's own channels ({info.name})"
         elif not info.is_private:
             why = "public"
         elif members is None:
@@ -6780,7 +6772,7 @@ def _room_hygiene_pass() -> list[str]:
     except Exception as e:
         log.warning(f"room hygiene: store unavailable: {e}")
         return changed
-    # The chat (Slack, Zulip or the web chat's store) is the truth about
+    # The chat (Slack or the web chat's store) is the truth about
     # what is archived; the owner archives rooms by hand too (the web app's
     # room menu among the ways), and a room he archived stays archived.
     slack_archived = FRONTEND.archived_map()
@@ -6788,7 +6780,7 @@ def _room_hygiene_pass() -> list[str]:
         if e.get("kind", "project") != "project" or not e.get("project"):
             continue
         if not _owned_room(cid):
-            # The registry is ea-bot space: a row naming a stream the bot
+            # The registry is ea-bot space: a row naming a room the bot
             # did not create for the owner never gets it archived.
             log.debug(f"room hygiene: {cid} is not in the owner room record; left alone")
             continue
@@ -8412,8 +8404,8 @@ def _owner_card_channel(channel: str, thread_ts: str | None, what: str) -> str |
     try:
         FRONTEND.post(channel=channel, thread_ts=thread_ts or None,
                       text=f":warning: {what} was not posted: the bot has no DM with the "
-                           f"owner. Set EA_SLACK_OWNER_ID (Slack) or "
-                           f"chat.zulip.owner_user_id (Zulip) and restart the bot.")
+                           f"owner. Set slack.owner_user_id in "
+                           f"~/.ea-private/chat.json and restart the bot.")
     except Exception as e:
         log.warning(f"no-DM notice failed: {e}")
     return None
@@ -9587,26 +9579,22 @@ def _remote_llm_note(fn_name: str, *args) -> None:
 
 
 def _thread_channel(thread_ts: str) -> str | None:
-    """The channel a thread key names: a Zulip stream topic's stream, a
-    Zulip DM key itself, or the web chat channel that holds a web key. None
-    for a key that names no channel (a Slack ts)."""
-    key = str(thread_ts or "")
-    head, sep, _ = key.partition(":topic:")
-    if sep and head.startswith("stream:"):
-        return head
-    if key.startswith("dm:"):
-        return key
-    return _web_thread_channel(key)
+    """The channel a thread key names: the web chat channel that holds it
+    (_web_thread_channel). None for a key that names no channel (a Slack
+    ts)."""
+    return _web_thread_channel(thread_ts)
 
 
 def _web_thread_channel(thread_ts: str) -> str | None:
-    """The web chat channel that holds thread `thread_ts`, a web key
-    (`t<seq>`, or a message's `w<seq>`), from the web front end's store
-    (`thread_channel`). None for any other key (a Slack ts, a Zulip key),
-    on any other front end, a composite included (its keys are the
-    primary's), and for a key the store does not hold."""
+    """The web chat channel that holds thread `thread_ts`, from the web
+    front end's store (`thread_channel`): a web key (`t<seq>`, or a
+    message's `w<seq>`), or the `stream:<id>:topic:<topic>` key a thread
+    imported from Zulip kept. The store gives the channel's id now. None
+    for any other key (a Slack ts), on any other front end, a composite
+    included (its keys are the primary's), and for a key the store does
+    not hold."""
     key = str(thread_ts or "")
-    if not re.fullmatch(r"[tw]\d+", key):
+    if not re.fullmatch(r"[tw]\d+|stream:\d+:topic:.+", key):
         return None
     find = getattr(FRONTEND, "thread_channel", None)
     if not callable(find):
@@ -9622,9 +9610,10 @@ def _staged_route(route: dict, channel: str, thread_ts: str | None) -> tuple:
     """(channel, thread_ts) a staged action posts in. A staged file is
     ea-bot space, so its routing keys are a request: a channel is taken only
     when it is one of the owner's own destinations (_owner_destination), and
-    a thread only when it lies in the channel the post goes to (a Zulip key
-    that names an owner destination moves the post there). Anything else is
-    dropped with a warning, and the caller's channel and thread stand."""
+    a thread only when it lies in the channel the post goes to (a key the
+    web store holds in an owner destination moves the post there).
+    Anything else is dropped with a warning, and the caller's channel and
+    thread stand."""
     route = route if isinstance(route, dict) else {}
     r_ch = str(route.get("channel") or "")
     r_ts = str(route.get("thread_ts") or "")
@@ -9758,7 +9747,7 @@ def _post_claimed_actions(channel: str, thread_ts: str | None,
 # its context window, with room for the skill text and the briefing.
 CONTEXT_EXPORT_MANIFEST_CHARS = 200_000
 # A context export is one long remote call on demand; it can queue for a
-# request slot far longer than a thread title can.
+# request slot far longer than the bot's other short remote calls can.
 CONTEXT_EXPORT_SLOT_WAIT_S = 45.0
 
 
@@ -11034,10 +11023,10 @@ def _project_opening_post(project_id: str) -> str:
 
 def _open_project_channel(channel: str, thread_ts: str, name: str,
                           project_query: str) -> dict:
-    """Create a private room for a project (a Slack channel, a Zulip
-    stream or a web chat room, through the chat frontend), invite the
-    owner, register it, and post the project's opening context. A server
-    that refuses the room gets _room_not_permitted_text."""
+    """Create a private room for a project (a Slack channel or a web chat
+    room, through the chat frontend), invite the owner, register it, and
+    post the project's opening context. A server that refuses the room
+    gets _room_not_permitted_text."""
     if not _rooms_on():
         return {"ok": False, "rooms_off": True, "text": ROOMS_OFF_TEXT}
     from preprocessor import ea_channels as _ea_channels
@@ -11063,7 +11052,7 @@ def _open_project_channel(channel: str, thread_ts: str, name: str,
         cid = existing[0]
         row = _ea_channels.scope_of(cid) or {}
         if not _owned_room(cid):
-            # The registry (ea-bot space) names a stream the bot did not
+            # The registry (ea-bot space) names a room the bot did not
             # create for the owner: never unarchive it or post there.
             log.warning(f"room request for {pid}: registry room {cid} is not in the owner "
                         f"room record; refused")
@@ -13865,7 +13854,7 @@ def on_message(msg: "_chat.InboundMessage"):
 
     # A thread reply answers in its thread; a top-level message starts one:
     # at its own id on Slack (no thread key yet), under the key it already
-    # has on Zulip (its topic). One key for the whole conversation is what
+    # has on the web chat. One key for the whole conversation is what
     # lets a follow-up find the session, the resident's "seen this thread"
     # check and the room binding of the turn that opened it.
     is_thread_reply = msg.is_reply
@@ -13895,90 +13884,6 @@ def on_message(msg: "_chat.InboundMessage"):
         daemon=True,
     )
     thread.start()
-
-
-@app.event("queue_reset")
-def on_queue_reset(payload: dict):
-    """The frontend lost its event queue and registered a new one: sweep
-    the channel for messages that arrived in the gap, as the restart
-    catch-up does."""
-    def _run():
-        try:
-            hist = FRONTEND.recent_messages(
-                CHANNEL_ID, time.time() - 30 * 60, 40,
-                since_id=(payload or {}).get("last_message_id"))
-            _catchup_walk(hist)
-        except Exception as e:
-            log.warning(f"queue-reset catch-up failed: {e}")
-    threading.Thread(target=_run, daemon=True).start()
-
-
-@app.event("thread_moved")
-def on_thread_moved(payload: dict):
-    """A conversation's topic was renamed or moved (Zulip): the thread keeps
-    its session, its pending cards and drafts, its scheduling request and
-    its place in the resident's routing. Only the owner's move, or the
-    bot's own, re-keys anything: a move by anyone else is logged and left."""
-    payload = payload or {}
-    who = str(payload.get("user_id") or "")
-    if not who or who not in {str(x) for x in (OWNER_SLACK_USER_ID, BOT_USER_ID,
-                                                FRONTEND.bot_user_id) if x}:
-        log.warning(f"thread move by user {who or 'unknown'} ignored: only the owner's "
-                    f"or the bot's own moves re-key a thread")
-        return
-    old, new = str(payload.get("old") or ""), str(payload.get("new") or "")
-    if old and new and old != new:
-        _follow_thread_move(old, new, str(payload.get("channel") or ""),
-                            str(payload.get("old_channel") or ""))
-
-
-def _follow_thread_move(old: str, new: str, channel: str = "",
-                        old_channel: str = "") -> dict:
-    """Re-key every store that names thread `old` to `new`. A thread that
-    changed channel also moves the ea_channel beside its key. Returns
-    what each store did, for the log."""
-    from preprocessor import resident_context as _rctx
-    from preprocessor import slack_sessions as _sessions_mod
-    moved_channel = channel if channel and channel != old_channel else ""
-    done: dict = {}
-    try:
-        done["session"] = _sessions_mod.move(old, new, channel=moved_channel)
-    except Exception as e:
-        log.warning(f"thread move: session registry failed: {e}")
-    reg = getattr(FRONTEND, "card_registry", None)
-    if reg is not None:
-        try:
-            done["cards"] = reg.move_thread(old, new, moved_channel)
-        except Exception as e:
-            log.warning(f"thread move: card registry failed: {e}")
-    with _draft_confirm_lock:
-        confirms = _load_draft_confirms()
-        n = 0
-        for row in confirms.values():
-            if row.get("thread_ts") == old:
-                row["thread_ts"] = new
-                if moved_channel and row.get("ea_channel"):
-                    row["ea_channel"] = moved_channel
-                n += 1
-        if n:
-            _save_draft_confirms(confirms)
-        done["drafts"] = n
-    seen = _sched_seen()
-    n = 0
-    for row in seen.values():
-        if isinstance(row, dict) and row.get("thread") == old:
-            row["thread"] = new
-            n += 1
-    if n:
-        _sched_save_seen(seen)
-    done["scheduling"] = n
-    done["resident"] = _rctx.move_thread(old, new)
-    try:
-        done["doc_reviews"] = _doc_review_cli("move-thread", "--old", old, "--new", new).get("moved")
-    except Exception as e:
-        log.warning(f"thread move: doc review registry failed: {e}")
-    log.info(f"thread moved {old} -> {new}: {done}")
-    return done
 
 
 @app.event("delete_message")
@@ -14012,24 +13917,20 @@ ROUTER_POLL_S = 5
 def _delivery_channel(thread_ts: str) -> str:
     """The channel a staged job or background delivery posts in.
 
-    A Zulip thread key names its stream, and the frontend refuses a thread
-    outside the channel it is given; the key's stream is used when it is
-    one of the EA's own (the main, scheduling or DM stream, or a
-    registered room). A web chat key names its channel only in the web
-    store, which says which holds the thread, under the same rule. A
-    Slack ts names no channel: the EA channel."""
-    head, sep, _ = str(thread_ts or "").partition(":topic:")
-    if not (sep and head.startswith("stream:")):
-        head = _web_thread_channel(thread_ts)
-        if not head:
-            return CHANNEL_ID
+    The frontend refuses a thread outside the channel it is given. A web
+    chat key names its channel only in the web store, which says which
+    channel holds the thread; that channel is used when it is one of the
+    EA's own (the main, scheduling or DM channel, or a registered room).
+    A Slack ts names no channel: the EA channel."""
+    head = _web_thread_channel(thread_ts)
+    if not head:
+        return CHANNEL_ID
     return head if _owner_destination(head) else CHANNEL_ID
 
 
 def _owner_dm_channels() -> set:
     """The owner's own DM destinations: the DM the frontend opens for the
-    owner (the DM stream on Zulip) and, on Zulip, the direct message with
-    the owner's user id."""
+    owner."""
     out = set()
     try:
         dm = _resolve_dm_channel()
@@ -14037,9 +13938,6 @@ def _owner_dm_channels() -> set:
             out.add(dm)
     except Exception as e:
         log.warning(f"owner DM lookup failed: {e}")
-    # A shadowed frontend is named "<primary>+<shadow>" (ShadowFrontend).
-    if OWNER_SLACK_USER_ID and FRONTEND.name.split("+", 1)[0] == "zulip":
-        out.add(f"dm:{OWNER_SLACK_USER_ID}")
     return out
 
 
@@ -14054,53 +13952,13 @@ def _owner_destination(channel: str) -> bool:
         return False
     if channel == CHANNEL_ID or (SCHED_CHANNEL_ID and channel == SCHED_CHANNEL_ID):
         return True
-    if FRONTEND.is_dm(channel) or channel.startswith("dm:"):
+    if FRONTEND.is_dm(channel):
         return channel in _owner_dm_channels()
     try:
         return _channel_scope(channel) is not None
     except Exception as e:
         log.warning(f"room lookup for {channel} failed: {e}")
         return False
-
-
-THREAD_TITLE_TIMEOUT_S = 20
-THREAD_TITLE_PROMPT = (
-    "Name a chat thread. It starts with the message below, which the owner "
-    "sent to their executive assistant.{room}\n"
-    "Write a title of 2 to 6 words that names the concrete subject: the task, "
-    "and the person, project, document or event it concerns.\n"
-    "Use sentence case: capitalize only the first word and proper nouns. Use "
-    "only facts in the message and the room.\n"
-    'No quotes, no trailing period, no emoji, no dashes, no "Re:". Output '
-    "only the title.\n\nMessage:\n")
-
-
-def _thread_title(text: str, channel: str) -> str | None:
-    """A short title for a thread the owner starts, from its opening
-    message: one call to the remote model (_remote_text), never Claude. A
-    project room's name goes in as context. None when no remote model is
-    configured, no request slot frees within remote_llm.CHAT_SLOT_WAIT_S
-    (a `chat-*` purpose never queues behind long calls), or the call fails
-    or runs past THREAD_TITLE_TIMEOUT_S; the frontend then names the
-    thread from the message's first words."""
-    room = ""
-    try:
-        from preprocessor import ea_channels as _ea_channels
-        project = (_ea_channels.scope_of(channel) or {}).get("project")
-        if project:
-            room = f' The thread is in the room for the project "{project}".'
-    except Exception:
-        pass
-    prompt = THREAD_TITLE_PROMPT.format(room=room) + (text or "")[:1500]
-    started = time.time()
-    title = _remote_text(prompt, purpose="chat-thread-title", max_tokens=60,
-                         timeout=THREAD_TITLE_TIMEOUT_S)
-    if not title:
-        return None
-    title = next((ln.strip() for ln in title.splitlines() if ln.strip()), "")
-    title = re.sub(r"\s*[—–]\s*", ": ", title.strip(" \"'`*")).rstrip(" .!?:;,")
-    log.info(f"thread title for {channel}: {title!r} ({time.time() - started:.1f}s)")
-    return title[:120] or None
 
 
 def resident_router_loop():
@@ -14731,10 +14589,9 @@ def _scheduling_proactive_tick():
                       (f":calendar: *New scheduling request* from {name_shown}: _{subject_shown}_. "
                        + (f"{why} " if why else "") + "Working out options…")))
             seed_ts = seed.id
-            # The conversation's key: the seed's own id on Slack, the topic
-            # it opened on Zulip, the thread it opened on the web chat: the
-            # key the owner's replies there carry, so they resume this run's
-            # session.
+            # The conversation's key: the seed's own id on Slack, the thread
+            # it opened on the web chat: the key the owner's replies there
+            # carry, so they resume this run's session.
             seed_thread = seed.thread_key or seed.id
         except Exception as e:
             log.warning(f"proactive scheduling seed post failed: {e}")
@@ -14966,7 +14823,7 @@ def _doc_review_event(ev: dict) -> dict | None:
     over a registry ea-bot writes, so its fields are untrusted: the PR is a
     number, the URL is this repo's, the title is quoted data, and the
     thread must lie in the main channel or a registered room (else the
-    event gets a new topic in the main channel)."""
+    event gets a new thread in the main channel)."""
     try:
         pr = int(ev.get("pr"))
     except (TypeError, ValueError):
@@ -14975,7 +14832,7 @@ def _doc_review_event(ev: dict) -> dict | None:
         return None
     url = str(ev.get("url") or "")
     thread = str(ev.get("thread") or "")
-    channel = thread.split(":topic:", 1)[0] if ":topic:" in thread else ""
+    channel = _thread_channel(thread) or ""
     if channel and channel != CHANNEL_ID and _channel_scope(channel) is None:
         thread, channel = "", ""
     return {**ev, "pr": pr, "url": url if _DOC_REVIEW_URL_RE.match(url) else "",
@@ -15095,21 +14952,20 @@ if __name__ == "__main__":
     log.info(f"Channel: #{CHANNEL_NAME} ({CHANNEL_ID}) | Model: {MODEL}")
 
     _validate_channel_privacy()
-    FRONTEND.thread_namer = _thread_title
     if getattr(FRONTEND, "shadow", None) is not None:
         # A shadow web chat copies, and fills with history, only the rooms
-        # the bot made for the owner, never every private stream it is in.
+        # the bot made for the owner, never every private channel it is in.
         FRONTEND.room_filter = _owned_room
     # start() identifies the bot and registers the frontend's listeners;
     # every handler above is already in the registry.
-    # The chat server may still be coming up after a reboot (Zulip runs in
-    # containers), so wait for it rather than exit and churn the unit.
+    # The chat server, or the network to it, may still be coming up after
+    # a reboot, so wait for it rather than exit and churn the unit.
     for attempt in range(1, 41):
         try:
             FRONTEND.start()
             break
         except _chat.ChannelNotPrivate as e:
-            # A public stream, or one with someone besides the owner and the
+            # A public channel, or one with someone besides the owner and the
             # bot in it, is not a passing fault: the bot does not start.
             log.critical(f"chat frontend refused to start: {e}")
             sys.exit(f"ea-chat-bot: {e}")

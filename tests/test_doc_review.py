@@ -395,14 +395,13 @@ def test_poll_reports_each_review_once_and_the_merge(env):
     assert dr.poll_reviews(gh) == []
 
 
-def test_threads_follow_a_renamed_topic(env):
-    dr.cmd_open(FakeGitHub(), str(_draft(env, "A.\n")), "Doc", thread="stream:36:topic:old")
-    assert dr.move_thread("stream:36:topic:old", "stream:36:topic:new") == 1
-    assert dr.load_registry()["prs"]["1"]["thread"] == "stream:36:topic:new"
-    assert dr.set_thread(1, "stream:36:topic:later")["thread"] == "stream:36:topic:later"
+def test_a_review_takes_the_thread_it_is_set_to(env):
+    dr.cmd_open(FakeGitHub(), str(_draft(env, "A.\n")), "Doc", thread="t36")
+    assert dr.load_registry()["prs"]["1"]["thread"] == "t36"
+    assert dr.set_thread(1, "t40")["thread"] == "t40"
+    assert dr.load_registry()["prs"]["1"]["thread"] == "t40"
     with pytest.raises(dr.ReviewError):
         dr.set_thread(1, "has space")
-    assert dr.channel_of("stream:36:topic:new") == "stream:36"
 
 
 # the boundary

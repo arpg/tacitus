@@ -522,13 +522,12 @@ def render_digest(rows: list[tuple[str, dict]], since: datetime,
 
 
 def _post_digest(text: str, now: datetime) -> bool:
-    """On Zulip the `mail-digest` stream, a topic a day; on the web chat a
-    new thread in the digest channel; on Slack the `mail-digest` webhook.
-    With none of them (Slack without that webhook, or no chat) it posts
-    nothing and says so: the EA channel is never the fallback."""
+    """On the web chat a new thread in the digest channel; on Slack the
+    `mail-digest` webhook. With neither (Slack without that webhook, or no
+    chat) it posts nothing and says so: the EA channel is never the
+    fallback."""
     import chat_notify
-    topic = f"Mail digest {now.astimezone():%a %b %-d}"
-    got = chat_notify.post_digest(DIGEST_KEY, text, topic=topic)
+    got = chat_notify.post_digest(DIGEST_KEY, text)
     if got is None:
         print(f"mail_gate digest: no digest channel on the {chat_notify.frontend_name()} "
               "chat (on Slack, map a `mail-digest` webhook); nothing posted", file=sys.stderr)

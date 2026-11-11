@@ -16,6 +16,7 @@ import sys
 import textwrap
 import time
 import types
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -26,14 +27,11 @@ sys.path.insert(0, str(ROOT / "preprocessor"))
 import chat  # noqa: E402
 import chat_notify  # noqa: E402
 import chat_upload  # noqa: E402
-import ea_config  # noqa: E402
 from chat import direct  # noqa: E402
 from chat.memory_frontend import MemoryFrontend  # noqa: E402
 from chat.shadow_frontend import ShadowFrontend  # noqa: E402
-from chat.types import MessageRef  # noqa: E402
 from chat import web_frontend as wf  # noqa: E402
 from chat.web_frontend import WebFrontend, WebStore  # noqa: E402
-from chat.zulip_frontend import thread_key_for  # noqa: E402
 
 LOGIN = "owner@example.test"
 
@@ -123,7 +121,6 @@ def test_a_cli_that_is_not_the_owners_posts_to_the_primary_alone(tmp_path, monke
     ea = _ea_dir(tmp_path, {"frontend": "memory", "shadow": "web"})
     assert type(chat.load_frontend(ea_dir=ea, env={}, for_cli=True)) is MemoryFrontend
     assert type(chat.load_frontend(ea_dir=ea, env={}, for_cli=True)) is MemoryFrontend
-    assert chat.web_writer(ea_dir=ea) is None
     assert caplog.text.count("not the owner's") == 1
     assert not (tmp_path / "state" / "webchat.sqlite").exists()
 
@@ -134,15 +131,7 @@ def test_a_store_that_does_not_open_leaves_the_cli_on_the_primary(tmp_path, monk
     ea = _ea_dir(tmp_path, {"frontend": "memory", "shadow": "web",
                             "web": {"store_path": str(tmp_path / "blocked" / "w.sqlite")}})
     assert type(chat.load_frontend(ea_dir=ea, env={}, for_cli=True)) is MemoryFrontend
-    assert chat.web_writer(ea_dir=ea) is None
-    assert "did not build" in caplog.text and "did not open" in caplog.text
-
-
-def test_web_writer_needs_the_web_shadow(tmp_path, monkeypatch):
-    _owner(monkeypatch)
-    assert chat.web_writer(ea_dir=_ea_dir(tmp_path, {"frontend": "memory"})) is None
-    w = chat.web_writer(ea_dir=_ea_dir(tmp_path, {"frontend": "memory", "shadow": "web"}))
-    assert isinstance(w, WebFrontend) and w.writer_only and w.store_path.exists()
+    assert "did not build" in caplog.text
 
 
 # ── from the sender to the bot's open stream ──
@@ -181,7 +170,7 @@ def test_a_writer_in_another_process_reaches_the_stream(tmp_path):
                                   trusted_config=True)
     bot.start()
     try:
-        bot.mirror_channel("stream:7", "ea", "main")
+        bot.mirror_channel("C_MAIN", "ea", "main")
         s = Stream(bot)
         try:
             script = textwrap.dedent("""
@@ -191,7 +180,7 @@ def test_a_writer_in_another_process_reaches_the_stream(tmp_path):
                 from botcore.chat.web_frontend import WebFrontend
                 w = WebFrontend.from_config({}, store_path=sys.argv[2], writer_only=True)
                 w.start()
-                w.mirror_post(MessageRef("stream:7", "777", "stream:7:topic:cron", 1.0),
+                w.mirror_post(MessageRef("C_MAIN", "777", "700.000001", 1.0),
                               "from a cron lane")
             """)
             subprocess.run([sys.executable, "-c", script, str(ROOT / "botcore"), str(path)],
@@ -206,104 +195,22 @@ def test_a_writer_in_another_process_reaches_the_stream(tmp_path):
         bot.stop()
 
 
-# ── chat_notify: the briefing's Zulip post ──
+# ── chat_notify beside Slack ──
 
-class FakeZulip:
-    streams = ["ea", "ea-dm", "lab"]
-
-    def __init__(self, email, api_key, site):
-        self.sent: list = []
-
-    def get_stream_id(self, name):
-        return {"result": "success", "stream_id": self.streams.index(name) + 10}
-
-    def get_stream_topics(self, stream_id):
-        return {"result": "success", "topics": []}
-
-    def send_message(self, request):
-        self.sent.append(request)
-        return {"result": "success", "id": 900 + len(self.sent)}
-
-
-ZULIP_BLOCK = {"frontend": "zulip", "shadow": "web",
-               "zulip": {"site": "https://zulip.example.test", "bot_email": "bot@example.test",
-                         "stream": "ea", "dm_stream": "ea-dm",
-                         "notify": {"ea-assistant": {"stream": "ea"},
-                                    "lab": {"stream": "lab", "topic": "pinned"}}}}
-
-
-@pytest.fixture
-def notify_env(tmp_path, monkeypatch):
-    monkeypatch.setitem(sys.modules, "zulip", types.SimpleNamespace(Client=FakeZulip))
-    monkeypatch.setenv("ZULIP_API_KEY", "zkey")
-    monkeypatch.setattr(chat_notify, "_WEB", [])
-    return tmp_path
-
-
-def test_an_owner_notify_post_is_mirrored_under_the_zulip_ids(notify_env, monkeypatch):
+def test_a_slack_notify_post_is_not_mirrored_into_the_web_chat(tmp_path, monkeypatch):
+    """A Slack webhook answers with no message id, so the notifier's post
+    beside the web chat goes to Slack alone and opens no store."""
     _owner(monkeypatch)
-    priv = _private_chat(notify_env, monkeypatch, ZULIP_BLOCK)
-    text = "*Morning* briefing" + chat_notify.SPLIT_MARKER + "second part"
-    # each post answers with the web chat's thread, as the web chat alone does
-    assert chat_notify.post("ea-assistant", text, _bypass_quiet=True) == \
-        thread_key_for(10, "Morning briefing")
-    assert chat_notify.post("lab", "a pinned note", _bypass_quiet=True) == \
-        thread_key_for(12, "pinned")
-    store = WebStore(priv / "webchat.sqlite")
-    main = store.channel("stream:10")
-    assert (main["name"], main["kind"]) == ("ea", "main")
-    assert store.channel("stream:12")["kind"] == "room"
-    key = thread_key_for(10, "Morning briefing")
-    assert [(m["id"], m["text"]) for m in store.thread("stream:10", key)] == \
-        [("901", "**Morning** briefing"), ("902", "second part")]
-    (lab,) = store.thread("stream:12", thread_key_for(12, "pinned"))
-    assert (lab["id"], lab["author"]) == ("901", "bot")
-    # each thread is known as a notifier post, under its channel key
-    assert store.thread_origin("stream:10", key) == "ea-assistant"
-    assert store.thread_origin("stream:12", thread_key_for(12, "pinned")) == "lab"
-    assert [t for _s, t, _p in store.events_since(0)] == \
-        ["channel", "message", "message", "channel", "message"]
-
-
-def test_a_digest_beside_zulip_mirrors_into_the_mail_digest_room(notify_env, monkeypatch):
-    _owner(monkeypatch)
-    monkeypatch.setattr(FakeZulip, "streams", FakeZulip.streams + ["mail-digest"])
-    priv = _private_chat(notify_env, monkeypatch, ZULIP_BLOCK)
-    assert chat_notify.post_digest("mail-digest", "kept mail", topic="Mail digest Fri Oct 9")
-    store = WebStore(priv / "webchat.sqlite")
-    room = store.channel("stream:13")
-    assert (room["name"], room["kind"]) == ("mail-digest", "room")
-    (row,) = store.thread("stream:13", thread_key_for(13, "Mail digest Fri Oct 9"))
-    assert (row["id"], row["text"]) == ("901", "kept mail")
-    assert store.channel(chat_notify.WEB_DIGEST_ID) is None
-    assert store.channel("stream:10") is None              # nothing in the EA stream
-
-
-def test_the_bots_channel_row_wins_over_the_notifiers(notify_env, monkeypatch):
-    _owner(monkeypatch)
-    priv = _private_chat(notify_env, monkeypatch, ZULIP_BLOCK)
-    WebStore(priv / "webchat.sqlite").upsert_channel("stream:12", "lab-renamed", "room", True)
-    assert chat_notify.post("lab", "x", _bypass_quiet=True)
-    row = WebStore(priv / "webchat.sqlite").channel("stream:12")
-    assert (row["name"], row["archived"]) == ("lab-renamed", True)
-
-
-def test_a_notify_post_that_is_not_the_owners_is_not_mirrored(notify_env, monkeypatch):
-    _owner(monkeypatch, False)
-    cfg = notify_env / "ea-config.json"
-    cfg.write_text(json.dumps({"chat": {**ZULIP_BLOCK, "web": {
-        "store_path": str(notify_env / "w.sqlite")}}}))
-    monkeypatch.setattr(ea_config, "CONFIG_FILE", cfg)
-    assert chat_notify.post("ea-assistant", "x", _bypass_quiet=True) is True   # no copy, no key
-    assert chat_notify._WEB == [None] and not (notify_env / "w.sqlite").exists()
-
-
-def test_a_failed_mirror_leaves_the_post_standing(notify_env, monkeypatch, capsys):
-    _owner(monkeypatch)
-    _private_chat(notify_env, monkeypatch, ZULIP_BLOCK)
-    monkeypatch.setattr(FakeZulip, "get_stream_id", lambda self, name: {"result": "error"})
-    assert chat_notify.post("lab", "x", _bypass_quiet=True)
-    assert "Web chat mirror failed" in capsys.readouterr().out
+    priv = _private_chat(tmp_path, monkeypatch, {"frontend": "slack", "shadow": "web"})
+    (priv / "slack_webhooks.json").write_text(json.dumps({"ea-assistant": "https://hooks.example/A"}))
+    (priv / "slack_webhooks.json").chmod(0o600)
+    sent = []
+    monkeypatch.setattr(chat_notify.requests, "post",
+                        lambda url, json=None: sent.append((url, json)) or
+                        types.SimpleNamespace(status_code=200, text="ok"))
+    assert chat_notify.post("ea-assistant", "*Morning* briefing", _bypass_quiet=True) is True
+    assert sent == [("https://hooks.example/A", {"text": "*Morning* briefing"})]
+    assert not (priv / "webchat.sqlite").exists()
 
 
 # ── chat_upload and the direct-message helpers ──
@@ -323,14 +230,17 @@ def test_an_owner_upload_lands_in_the_web_store_with_its_bytes(tmp_path, monkeyp
     assert Path(store.file("F1")["path"]).read_bytes() == b"%PDF-1.4 bytes"
 
 
-def test_the_direct_helpers_still_see_zulip_through_the_composite(tmp_path):
-    primary = MemoryFrontend()
-    primary.client = types.SimpleNamespace(send_message=lambda req: {"result": "success",
-                                                                    "id": 5})
-    primary._call = lambda *a: {"result": "success"}
-    primary.owner_id = "42"
+def test_the_direct_helpers_take_the_primarys_path_through_the_composite(tmp_path, monkeypatch):
+    """Beside Slack the composite is no web chat alone: a direct message is
+    the urgent personal post, nothing is scheduled, and the store stays
+    shut."""
     web = WebFrontend.from_config({}, store_path=tmp_path / "w.sqlite", writer_only=True)
-    fe = ShadowFrontend(primary, web)
-    assert direct.is_zulip(fe)
-    assert direct.send_direct("now", fe) == {"id": 5}
-    assert not (tmp_path / "w.sqlite").exists()        # a direct message is not mirrored
+    fe = ShadowFrontend(MemoryFrontend(), web)
+    posts = []
+    monkeypatch.setattr(chat_notify, "post", lambda key, text, **kw: posts.append((key, kw)) or True)
+    assert direct.send_direct("now", fe) == {"posted": True}
+    assert posts == [("personal", {"priority": "urgent", "_bypass_quiet": True})]
+    with pytest.raises(RuntimeError, match="need the web frontend"):
+        direct.schedule_direct("later", datetime.now(timezone.utc) + timedelta(hours=1), fe)
+    assert direct.list_scheduled(fe) == [] and direct.cancel_scheduled(1, fe) is False
+    assert not (tmp_path / "w.sqlite").exists()

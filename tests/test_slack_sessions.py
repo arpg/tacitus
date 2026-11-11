@@ -41,33 +41,6 @@ def test_new_thread_mints_uuid_session():
         assert reg["1781000000.000100"]["session_id"] == sid
 
 
-def test_move_channels_reports_a_registry_it_cannot_rewrite():
-    """The move from shadow mode to the web chat alone points each row at
-    its channel's new id. A registry the write could not open (a file the
-    owner's own processes had written, 2026-11-09) left every row where it
-    was, and the count of zero read like nothing to move. It raises now, so
-    the move lists the registry under what failed. A registry with no such
-    row still moves nothing, quietly."""
-    import pytest
-    with tempfile.TemporaryDirectory() as td:
-        _setup(Path(td))
-        row = {"session_id": "11111111-2222-4333-8444-555555555555",
-               "meta": {"channel": "stream:4"}}
-        ss.REGISTRY.write_text(json.dumps({"1781000000.000100": row}))
-        real = ss._rio.update_text
-        ss._rio.update_text = lambda *a, **k: False   # refused, as for another user's file
-        try:
-            with pytest.raises(OSError):
-                ss.move_channels({"stream:4": "main"})
-        finally:
-            ss._rio.update_text = real
-        reg = json.loads(ss.REGISTRY.read_text())
-        assert reg["1781000000.000100"]["meta"]["channel"] == "stream:4"
-        assert ss.move_channels({"stream:9": "r1"}) == 0
-        assert ss.move_channels({"stream:4": "main"}) == 1
-        assert json.loads(ss.REGISTRY.read_text())["1781000000.000100"]["meta"]["channel"] == "main"
-
-
 def test_second_lookup_resumes_same_session():
     with tempfile.TemporaryDirectory() as td:
         _setup(Path(td))
@@ -283,25 +256,6 @@ def test_registry_cli_round_trip():
                             "--session", "nope"], capture_output=True, text=True, env=env)
         assert r.returncode == 1 and not json.loads(r.stdout)["ok"]
 
-
-
-def test_move_rekeys_a_renamed_thread():
-    """A Zulip topic renamed or moved keeps its session under the new key;
-    a merge into a topic that has one keeps the destination's."""
-    with tempfile.TemporaryDirectory() as td:
-        _setup(Path(td))
-        sid, _, _ = ss.lookup("stream:7:topic:old")
-        ss.remember("stream:7:topic:old", channel="stream:7", title="Old")
-        assert ss.move("stream:7:topic:old", "stream:9:topic:new", channel="stream:9") == "moved"
-        assert ss.describe("stream:7:topic:old") is None
-        row = ss.describe("stream:9:topic:new")
-        assert row["session_id"] == sid and row["meta"]["channel"] == "stream:9"
-        assert ss.lookup("stream:9:topic:new")[:2] == (sid, True)
-        assert ss.move("stream:7:topic:none", "stream:7:topic:x") == ""
-        other, _, _ = ss.lookup("stream:7:topic:b")
-        assert ss.move("stream:9:topic:new", "stream:7:topic:b") == "kept"
-        assert ss.describe("stream:7:topic:b")["session_id"] == other
-        assert ss.describe("stream:9:topic:new") is None
 
 
 def test_project_dir_name_is_the_cli_folder_name():

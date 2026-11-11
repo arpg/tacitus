@@ -56,27 +56,26 @@ at a scratch tree fails the last, so it never reads the live private files.
 CLI (run as the owner):
     owner_trust.py secret NAME          print one secret for capture, exit 1 if none
     owner_trust.py seed [--secrets] [--chat] [--calendar] [--profile] [--ea-dir DIR]
-                        [--chat-frontend F --chat-site URL --chat-bot-email E
-                         --chat-owner-id ID] [--chat-stream S
-                         --chat-sched-stream S --chat-dm-stream S
-                         --chat-notify KEY=STREAM ...] [--chat-public-url URL
-                         --chat-port N --chat-tailscale-login L
-                         --chat-pair-token-file PATH] [--calendar-id ID]
-                        [--calendar-account ADDR] [--profile-name NAME]
+                        [--chat-frontend F --chat-owner-id ID]
+                        [--chat-public-url URL --chat-port N
+                         --chat-tailscale-login L --chat-pair-token-file PATH]
+                        [--calendar-id ID] [--calendar-account ADDR]
+                        [--profile-name NAME]
                                         create secrets.env, chat.json,
                                         calendars.json and profile.json in the
                                         private dir when missing (the root step
                                         deploy/harden-permissions.sh runs this).
                                         They are copied from ea-bot space, so
                                         every value is shown and each trusted
-                                        one (the chat server, bot and owner,
-                                        every stream the bot posts to, the web
-                                        chat's address, port, login and token
-                                        file, the calendar, the name) is typed
-                                        back at the terminal or passed with its
-                                        flag; otherwise nothing is written. A
-                                        web chat store or token file in the
-                                        resident's tree is refused
+                                        one (the chat front end, the Slack
+                                        owner id, the web chat's address, port,
+                                        login and token file, the calendar, the
+                                        name) is typed back at the terminal or
+                                        passed with its flag; otherwise nothing
+                                        is written. Only a web or slack chat
+                                        block is copied. A web chat store or
+                                        token file in the resident's tree is
+                                        refused
     owner_trust.py token-modes [--ea-dir DIR]
                                         set every harvested token file in the
                                         auth directory to token_file_mode()
@@ -110,8 +109,7 @@ PROFILE_FILE = "profile.json"
 # no secrets file can steer where an owner process looks next. Each secret
 # has one name; scripts/set-secret.sh offers exactly these.
 SECRET_KEYS = frozenset({
-    "ZULIP_API_KEY", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN",
-    "GRAPH_CLIENT_SECRET", "EA_DASH_TOKEN", "TWOCAPTCHA_API_KEY",
+    "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "GRAPH_CLIENT_SECRET", "EA_DASH_TOKEN", "TWOCAPTCHA_API_KEY",
     "REMOTE_LLM_API_KEY", "NTFY_TOKEN",
 })
 
@@ -648,8 +646,9 @@ def owner_chat_block() -> dict | None:
         data = read_owner_file(p)
     except FileNotFoundError:
         raise OwnerTrustError(
-            f"{p} is missing. An owner process takes the chat settings (server, bot, "
-            f"owner id) only from it, never from ea-config.json in ea-bot space. Create "
+            f"{p} is missing. An owner process takes the chat settings (frontend, owner "
+            f"id, web chat address) only from it, never from ea-config.json in ea-bot "
+            f"space. Create "
             f"it as the owner: python3 preprocessor/owner_trust.py seed --chat (the root "
             f"step deploy/harden-permissions.sh runs the seed)") from None
     try:
@@ -773,26 +772,13 @@ def _flat(block, prefix: str = "") -> list[tuple[str, str]]:
 
 
 # What each trusted value is and what a wrong one would do, shown before the
-# operator is asked to type it back. A notify.<key>.stream key uses "notify".
+# operator is asked to type it back.
 CONFIRM_HELP = {
-    "frontend": ("the chat platform the bot uses (web, zulip or slack)",
+    "frontend": ("the chat platform the bot uses (web or slack)",
                  "a wrong one points the bot at another platform"),
-    "site": ("the address of your chat server",
-             "the bot sends its chat API key there, so a wrong one hands the key to that server"),
-    "bot_email": ("the bot's own account on the chat server",
-                  "the bot signs in as this account; a wrong one is another account's identity"),
-    "owner_user_id": ("your own user id on the chat server",
+    "owner_user_id": ("your own Slack member id",
                       "only this id can approve a Send, Create or Publish card; a wrong one "
                       "lets that account approve"),
-    "stream": ("the EA channel where you talk to the EA",
-               "the bot takes instructions and posts replies there"),
-    "sched_stream": ("the scheduling channel",
-                     "scheduling replies and proposals are posted there"),
-    "dm_stream": ("your private stream for confirmation cards",
-                  "every card, with the full draft text, is posted there; a wrong one shows "
-                  "your drafts to whoever reads that stream"),
-    "notify": ("a channel the owner-side jobs post notices to",
-               "health and digest notices go there"),
     "web.public_url": ("the address you open the web chat at: your tailnet host and the "
                        "chat's own HTTPS port",
                        "the bot answers only requests made to this address, so a wrong one "
@@ -818,7 +804,7 @@ CONFIRM_HELP = {
 
 
 def _help(key: str) -> tuple[str, str] | None:
-    return CONFIRM_HELP.get("notify" if key.startswith("notify.") else key)
+    return CONFIRM_HELP.get(key)
 
 
 def _confirm(what: str, shown: list[tuple[str, str]],
@@ -934,26 +920,21 @@ def _seed_calendar(priv: Path, tree: Path, *, required: bool = True,
     return 0
 
 
-# The chat keys the owner side trusts: (key in the confirm step, path in the
-# block, command-line flag). The zulip ones apply only to a zulip frontend.
-CHAT_TRUSTED = (("frontend", ("frontend",), "--chat-frontend"),
-                ("site", ("zulip", "site"), "--chat-site"),
-                ("bot_email", ("zulip", "bot_email"), "--chat-bot-email"),
-                ("owner_user_id", ("zulip", "owner_user_id"), "--chat-owner-id"))
+# The chat front ends the seed copies: the bot's own web chat (self-hosted)
+# and Slack. A block that names another one is refused.
+SEED_FRONTENDS = ("web", "slack")
 
-# The zulip routing keys: where the bot posts briefings, drafts and every
-# confirmation card (the DM stream gets each card with its full body). A
-# set one is confirmed like a trusted key; each notify target's stream is
-# confirmed as `notify.<key>.stream`, passed as --chat-notify <key>=<stream>.
-CHAT_ROUTING = (("stream", "--chat-stream"),
-                ("sched_stream", "--chat-sched-stream"),
-                ("dm_stream", "--chat-dm-stream"))
+# The chat keys the owner side trusts: (key in the confirm step, path in the
+# block, command-line flag). The owner id applies only to a slack frontend;
+# its value comes from EA_SLACK_OWNER_ID in ~/.ea/.env.
+CHAT_TRUSTED = (("frontend", ("frontend",), "--chat-frontend"),
+                ("owner_user_id", ("slack", "owner_user_id"), "--chat-owner-id"))
 
 
 # The web chat keys (docs/webchat.md, Config): (key in the confirm step,
 # key in the `web` block, flag). They decide which address the bot answers
 # to, who signs in and where the pairing token lives, so each one set in
-# ea-bot's copy or passed with its flag is confirmed like the server; the
+# ea-bot's copy or passed with its flag is confirmed like the frontend; the
 # store and the token file must lie outside the resident's tree.
 CHAT_WEB = (("web.public_url", "public_url", "--chat-public-url"),
             ("web.port", "port", "--chat-port"),
@@ -1002,38 +983,13 @@ def web_block_refusal(web: dict, tree=None) -> str | None:
     return None
 
 
-def _notify_flag(nkey: str) -> str:
-    return f"--chat-notify {nkey}=<stream>"
-
-
-def parse_notify_flags(values) -> dict:
-    """--chat-notify <key>=<stream> values as {"notify.<key>.stream": stream}.
-    Raises ValueError for a value without a key."""
-    out = {}
-    for raw in values or ():
-        nkey, sep, stream = str(raw).partition("=")
-        if not sep or not nkey.strip():
-            raise ValueError(f"--chat-notify takes <key>=<stream>, not {raw!r}")
-        out[f"notify.{nkey.strip()}.stream"] = stream.strip()
-    return out
-
-
-def _routing_must(z: dict, given: dict) -> list[tuple[str, str, str]]:
-    """The routing values to confirm: each routing key and notify stream
-    that is set in ea-bot's copy or passed on the command line."""
-    must = []
-    for key, flag in CHAT_ROUTING:
-        val = str(z.get(key) or "")
-        if val or given.get(key) is not None:
-            must.append((key, val, flag))
-    notify = z.get("notify") if isinstance(z.get("notify"), dict) else {}
-    keys = {k for k, t in notify.items() if isinstance(t, dict) and t.get("stream")}
-    keys |= {k[len("notify."):-len(".stream")] for k in given
-             if k.startswith("notify.") and k.endswith(".stream") and given[k] is not None}
-    for nkey in sorted(keys, key=str):
-        t = notify.get(nkey) if isinstance(notify.get(nkey), dict) else {}
-        must.append((f"notify.{nkey}.stream", str(t.get("stream") or ""), _notify_flag(nkey)))
-    return must
+def frontend_refusal(frontend: str) -> str | None:
+    """Why the owner side does not take a chat block for this frontend, or
+    None."""
+    if frontend in SEED_FRONTENDS:
+        return None
+    return (f"chat.frontend {frontend!r} is not web or slack. Set it to web (the "
+            f"self-hosted web chat) or slack")
 
 
 def _seed_chat(priv: Path, tree: Path, given: dict | None = None) -> int:
@@ -1064,18 +1020,19 @@ def _seed_chat(priv: Path, tree: Path, given: dict | None = None) -> int:
         block = doc.get("chat") if isinstance(doc, dict) else None
         if not isinstance(block, dict):
             block = {}
-        z = block.get("zulip") if isinstance(block.get("zulip"), dict) else {}
+        # Of the sections, only web and slack are copied: a section for any
+        # other platform is dropped, never trusted.
+        block = {k: v for k, v in block.items()
+                 if not isinstance(v, dict) or k in SEED_FRONTENDS}
         frontend = str(given.get("frontend") or block.get("frontend") or "slack")
-        must = []
-        for key, path, flag in CHAT_TRUSTED:
-            if path[0] == "zulip" and frontend != "zulip":
-                continue
-            src = block if len(path) == 1 else z
-            must.append((key, str(src.get(path[-1], "slack" if key == "frontend" else "")), flag))
+        why = frontend_refusal(frontend)
+        if why:
+            print(f"  chat: NOT written: {why} in {conf}, or pass --chat-frontend web or "
+                  f"--chat-frontend slack", file=sys.stderr)
+            return 1
+        must = [("frontend", str(block.get("frontend", "slack")), "--chat-frontend")]
         if frontend == "slack":
             must.append(("owner_user_id", slack_owner, "--chat-owner-id"))
-        if frontend == "zulip":
-            must += _routing_must(z, given)
         web = block.get("web") if isinstance(block.get("web"), dict) else {}
         if runs_web(block, frontend):
             # The values that would be written: ea-bot's copy, or the flag.
@@ -1096,19 +1053,9 @@ def _seed_chat(priv: Path, tree: Path, given: dict | None = None) -> int:
             if len(path) == 1:
                 block[path[0]] = ok[key]
             else:
-                section = "slack" if frontend == "slack" else path[0]
-                if not isinstance(block.get(section), dict):
-                    block[section] = {}
-                block[section][path[1]] = ok[key]
-        for key, val in ok.items():
-            if key in dict(CHAT_ROUTING):
-                block.setdefault("zulip", {})[key] = val
-            elif key.startswith("notify.") and key.endswith(".stream"):
-                nkey = key[len("notify."):-len(".stream")]
-                notify = block.setdefault("zulip", {}).setdefault("notify", {})
-                if not isinstance(notify.get(nkey), dict):
-                    notify[nkey] = {}
-                notify[nkey]["stream"] = val
+                if not isinstance(block.get(path[0]), dict):
+                    block[path[0]] = {}
+                block[path[0]][path[1]] = ok[key]
         for key, wkey, _ in CHAT_WEB:
             if key in ok:
                 if not isinstance(block.get("web"), dict):
@@ -1117,20 +1064,12 @@ def _seed_chat(priv: Path, tree: Path, given: dict | None = None) -> int:
                 block["web"][wkey] = int(val) if wkey == "port" and val.isdigit() else val
         write_owner_file(target, json.dumps(block, indent=2) + "\n", mode=0o600)
         print(f"  chat: {target} created from the confirmed values")
-    z = block.get("zulip") if isinstance(block.get("zulip"), dict) else {}
+    frontend = str(block.get("frontend", "slack"))
     print("  CONFIRM these are yours (the owner bot now trusts only this file):")
-    print(f"    frontend      = {block.get('frontend', 'slack')}")
-    print(f"    site          = {z.get('site', '')}")
-    print(f"    bot_email     = {z.get('bot_email', '')}")
-    print(f"    owner_user_id = {z.get('owner_user_id', '')}")
-    s = block.get("slack") if isinstance(block.get("slack"), dict) else {}
-    print(f"    slack.owner_user_id = {s.get('owner_user_id', '')}")
-    for key, _ in CHAT_ROUTING:
-        print(f"    {key:<13} = {z.get(key, '')}")
-    notify = z.get("notify") if isinstance(z.get("notify"), dict) else {}
-    for nkey in sorted(notify, key=str):
-        t = notify[nkey] if isinstance(notify[nkey], dict) else {}
-        print(f"    notify.{nkey}.stream = {t.get('stream', '')}")
+    print(f"    frontend      = {frontend}")
+    if frontend == "slack":
+        s = block.get("slack") if isinstance(block.get("slack"), dict) else {}
+        print(f"    slack.owner_user_id = {s.get('owner_user_id', '')}")
     if runs_web(block):
         w = block.get("web") if isinstance(block.get("web"), dict) else {}
         print(f"    shadow        = {block.get('shadow', '')}")
@@ -1142,6 +1081,9 @@ def _seed_chat(priv: Path, tree: Path, given: dict | None = None) -> int:
         why = web_block_refusal(w, tree)
         if why:
             print(f"  WARNING: {why}")
+    why = frontend_refusal(frontend)
+    if why:
+        print(f"  WARNING: the bot does not start: {why} in {target}")
     print(f"  If any value is not yours, fix {target} and restart the bot.")
     return 0
 
@@ -1200,13 +1142,6 @@ def main(argv=None) -> int:
     for key, _, flag in CHAT_TRUSTED:
         p.add_argument(flag, dest=f"chat_{key}", default=None,
                        help=f"the chat {key} to write, confirmed without a prompt")
-    for key, flag in CHAT_ROUTING:
-        p.add_argument(flag, dest=f"chat_{key}", default=None,
-                       help=f"the zulip {key} to write, confirmed without a prompt")
-    p.add_argument("--chat-notify", dest="chat_notify", action="append", default=[],
-                   metavar="KEY=STREAM",
-                   help="a zulip notify target's stream to write, confirmed without a "
-                        "prompt (repeat for each key)")
     for key, wkey, flag in CHAT_WEB:
         p.add_argument(flag, dest=f"chat_web_{wkey}", default=None,
                        help=f"the web chat's {wkey} to write, confirmed without a prompt")
@@ -1252,8 +1187,6 @@ def main(argv=None) -> int:
             rc |= _seed_secrets(priv, tree)
         if a.chat or every:
             given = {key: getattr(a, f"chat_{key}") for key, _, _ in CHAT_TRUSTED}
-            given.update({key: getattr(a, f"chat_{key}") for key, _ in CHAT_ROUTING})
-            given.update(parse_notify_flags(a.chat_notify))
             given.update({key: getattr(a, f"chat_web_{wkey}") for key, wkey, _ in CHAT_WEB})
             rc |= _seed_chat(priv, tree, given)
         if a.calendar or every:

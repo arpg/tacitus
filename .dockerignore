@@ -21,7 +21,6 @@ venv
 CLAUDE.local.md
 # A container install's own compose additions.
 compose.override.yaml
-deploy/zulip/.env
 **/*.log
 node_modules
 # Local-only notes and secrets a checkout may hold (gitignored, and the

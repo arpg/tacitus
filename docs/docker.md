@@ -17,7 +17,6 @@ Stage 2 is at the end of this page and is not built.
 | `scheduler` | owner | supercronic with the cron jobs of your mode. | `up` |
 | `bot` | owner | The chat bot, and the web chat on port 8470 of its container (published on the host's loopback). | `--profile assistant` (or `collaborator`) |
 | `webchat-tls` | (its own) | Caddy, TLS in front of the web chat, from the example in `deploy/docker/webchat-tls/` ([Web chat](#web-chat)). | `--profile assistant`, once copied in |
-| `zulip` and its four helpers | (their own) | A self-hosted Zulip, HTTP on `127.0.0.1:8090`. | `--profile zulip` |
 | `setup` | root, then ea-bot and the owner in turn | The first configuration, once: the config questions as `ea-bot`, `~/.ea/.env` and the owner's secrets, the Claude login as `ea-bot`, the mail sign-in as the owner, the overlay, the doctor. | `run` only |
 | `agent` | ea-bot | A shell or a command as `ea-bot`, in its deployed tree. | `run` only |
 | `owner` | owner | A shell or a command as the owner, with the EA environment loaded. | `run` only |
@@ -126,12 +125,9 @@ In order:
 
 3. **The chat values**, on `assistant` and `collaborator` only: the web chat
    (the default: its address, `WEBCHAT_PUBLIC_URL` unless you type
-   another, into the owner-private `chat.json`; [Web chat](#web-chat)),
-   Zulip (the server URL, the bot's email, your user id, the bot's API
-   key into `secrets.env`; `scripts/zulip_bootstrap.py` prints them once
-   the server runs, see [Self-hosted Zulip](#self-hosted-zulip)) or Slack
-   (the channel id and name and your member id into `.env`, the two
-   tokens into `secrets.env`; SETUP.md, Slack).
+   another, into the owner-private `chat.json`; [Web chat](#web-chat))
+   or Slack (the channel id and name and your member id into `.env`, the
+   two tokens into `secrets.env`; SETUP.md, Slack).
 
 4. **The phone push**, on `reviewer`, as the owner:
    `scripts/install/user_init.py --phase push` writes the owner-private `push.json`.
@@ -183,9 +179,8 @@ kept. Finish with `docker compose up -d`.
 
 **Without prompts.** `--answers FILE` takes every answer from a JSON
 file by key (`scripts/install/user_init.py --answers`; `docs/install-testing.md` lists
-the keys, and the role adds `chat-frontend` (`web`, `zulip` or `slack`),
-`webchat-public-url`, `zulip-site`, `zulip-bot-email`, `zulip-owner-id`,
-`zulip-api-key`, `slack-owner-id` and `claude-login`), asks nothing and
+the keys, and the role adds `chat-frontend` (`web` or `slack`),
+`webchat-public-url`, `slack-owner-id` and `claude-login`), asks nothing and
 skips the two logins, which need a terminal. Mount the file where the argument names it:
 
 ```bash
@@ -324,8 +319,7 @@ each runs as is the one who owns the file, the split
   from this file; a secret put here is skipped with a warning.
 
 - **`secrets.env`**, the owner-private secrets (`GRAPH_CLIENT_SECRET`,
-  `ZULIP_API_KEY`, the Slack tokens), written as the owner with mode
-  0600:
+  the Slack tokens), written as the owner with mode 0600:
 
   ```bash
   docker compose run --rm -T owner sh -c 'umask 077; cat > "$HOME/.ea-private/secrets.env"' < ./secrets.env
@@ -431,9 +425,9 @@ browser token harvests of a host install.
 
 In the `assistant` and `collaborator` modes the bot serves its own chat, a web app you
 add to your phone's home screen (SETUP.md, Web chat; the contract is
-docs/webchat.md). In Docker it needs no Zulip and no Tailscale: a TLS
-proxy you run puts it on an HTTPS address, and you sign in once per
-browser with the pairing token.
+docs/webchat.md). In Docker it needs no Tailscale: a TLS proxy you run
+puts it on an HTTPS address, and you sign in once per browser with the
+pairing token.
 
 **Where it listens.** The bot binds port 8470 on every interface of its
 own container. A proxy on the compose network reaches it as `bot:8470`;
@@ -474,9 +468,9 @@ The path of the address is the chat's base path (`/chat` when the
 address has none); the proxy passes it unchanged. The identity header is
 off: no tailscaled runs in the stack, so the pairing token is the
 sign-in. To change the address later, or to add the web chat to an
-install that runs on Zulip or Slack (`--shadow` keeps that front end and
-mirrors it, as SETUP.md, Beside Zulip describes), run the same seed as
-the owner and restart the bot:
+install that runs on Slack (`--shadow` keeps Slack and mirrors it, as
+webchat.md, Shadow mode describes), run the same seed as the owner and
+restart the bot:
 
 ```bash
 docker compose run --rm owner python3 /opt/ea-system/deploy/docker/chat_seed.py web --public-url https://tacitus.example.edu/chat
@@ -629,21 +623,6 @@ computer from "Add a device" in the web chat at its public address
 from step 6; the commands there run through `docker compose run --rm
 owner`). `chat_seed.py relay --off`
 removes the block.
-
-## Self-hosted Zulip
-
-Set the five `ZULIP__*` secrets in `.env` (`openssl rand -hex 32` makes
-each one), then:
-
-```bash
-docker compose --profile zulip --profile assistant up -d
-```
-
-The browser on this machine reaches Zulip at
-`http://zulip.localhost:8090`. The bot reaches it at
-`http://zulip.localhost`, a network alias inside compose. Point the bot's
-Zulip config at that address. `deploy/zulip/README.md` covers creating the
-realm, the bot and the streams.
 
 ## Upgrade
 

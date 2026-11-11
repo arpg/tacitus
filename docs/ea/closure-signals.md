@@ -15,7 +15,7 @@ against them.
 | source | where it comes from | label | gold? |
 |---|---|---|---|
 | `owner-tap` | the owner's "Mark done" or "Needs me" in the web chat (`thread-state-labels.jsonl` beside the web store) | the state the owner set | yes |
-| `card` | a card's status line in the web store: Sent, Created, Closed, Cancelled, Sent from Outlook, Revised, Kept open, a failure; a card copied from Zulip's past is read the way `thread_state.card_view` reads it | `done` when settled, `open` when it failed | no (the bot records it) |
+| `card` | a card's status line in the web store: Sent, Created, Closed, Cancelled, Sent from Outlook, Revised, Kept open, a failure | `done` when settled, `open` when it failed | no (the bot records it) |
 | `ledger` | rows that reached `completed`, with the provenance `closure_metrics.py` gives and the closing signal `closure.py` recorded; reopens, rejected and confirmed close proposals (`ledger_events`); `item_feedback.py` dispositions | `done`, `open` or `waiting` | the owner's reopens, rejections, confirmations, dispositions and own-word closes |
 | `owner-said` | `missed-closures.log`: a closure the owner had to state, with the log's autopsy (the signals present, fired and not evaluated) | `done` | yes: the detector missed it |
 | `model` | the thread-state model's answers: its state, confidence and which model answered (`model_via`: `local` or `hosted`) at the time (the engine's observer), or its state alone from the store's event log for the days before the observer ran | the model's state | no: scored against later gold |

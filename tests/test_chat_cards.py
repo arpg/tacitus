@@ -330,11 +330,6 @@ def test_a_code_counts_only_in_its_cards_thread(tmp_path):
     # a row from before card_thread was recorded resolves by no code
     reg._rows["D_OWNER|m1"].pop("card_thread")
     assert resolve_code("ABCD", reg, OWNER, OWNER, thread_key=here) is None
-    # a moved topic takes its card's code along
-    reg.add(_ref("m2", thread="stream:9:topic:a"), _card(), code="WXYZ")
-    assert reg.move_thread("stream:9:topic:a", "stream:9:topic:b") >= 1
-    assert reg.by_code("WXYZ", thread_key="stream:9:topic:b") is not None
-    assert reg.by_code("WXYZ", thread_key="stream:9:topic:a") is None
 
 
 def test_the_bots_own_reaction_never_resolves(tmp_path):
@@ -580,23 +575,3 @@ def test_cross_reaction_never_picks_the_primary_on_a_delete_card(tmp_path):
         CardAction("go", "Go", "v", style="danger", word="go")])
     row2 = reg.add(MessageRef("D_OWNER", "m10", "m10", 1.0), solo, code="EFGH")
     assert resolve_reaction(row2, "cross_mark", "U_OWNER", "U_OWNER") is None
-
-
-def test_move_thread_repoints_rows_and_action_values(tmp_path):
-    reg = _registry(tmp_path)
-    old, new = "stream:7:topic:old", "stream:9:topic:new"
-    card = ConfirmationCard(kind="send", title="Send?", thread_ts=old, ea_channel="stream:7",
-                            actions=[CardAction("approve_send", "Send",
-                                                {"draft_id": "d1", "thread_ts": old,
-                                                 "ea_channel": "stream:7"}, style="primary"),
-                                     CardAction("cancel_send", "Cancel", "d1", style="danger")])
-    reg.add(_ref("m1"), card, code="AB12")
-    reg.add(_ref("m2"), _card(), code="CD34")
-    assert reg.move_thread(old, new, "stream:9") == 1
-    row = CardRegistry(tmp_path / "priv" / "chat-cards.json").by_ref("D_OWNER", "m1")
-    assert row["thread_ts"] == new and row["ea_channel"] == "stream:9"
-    val = row["actions"]["approve_send"]["value"]
-    assert val["thread_ts"] == new and val["ea_channel"] == "stream:9"
-    assert row["actions"]["cancel_send"]["value"] == "d1"
-    assert reg.by_ref("D_OWNER", "m2")["thread_ts"] == _card().thread_ts
-    assert reg.move_thread("stream:7:topic:none", new) == 0

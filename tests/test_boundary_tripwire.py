@@ -222,7 +222,6 @@ UNLISTED = {
     "ea-chat-bot.py": "its writers run inside the bot's event handlers "
                        "(tests/test_owner_writes_resident_space.py pins them)",
     "botcore/botcore/chat/slack_frontend.py": "downloads, written through chat.files (resident_io in the EA)",
-    "botcore/botcore/chat/zulip_frontend.py": "downloads, written through chat.files (resident_io in the EA)",
     "preprocessor/graph_client.py": "the --align --write path of its CLI, after a Graph sign-in",
     "preprocessor/resident_io.py": "the mechanism itself (tests/test_resident_io.py)",
     "scripts/boundary-audit.py": "its one write is its own state file, in the owner's home",

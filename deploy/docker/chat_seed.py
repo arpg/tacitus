@@ -10,8 +10,8 @@ change later (docs/docker.md, Web chat):
   chat_seed.py write < block.json         the whole block, from stdin
   chat_seed.py web [--public-url URL] [--shadow]
                                           the web chat, alone, or with
-                                          --shadow beside the front end
-                                          chat.json names (Zulip, Slack)
+                                          --shadow beside the Slack front
+                                          end chat.json names
   chat_seed.py relay --url URL [--install-id ID]
   chat_seed.py relay --off                the relay block in the web block
   chat_seed.py show                       the file as it stands
@@ -111,7 +111,7 @@ def chat_block(current: dict | None, public_url: str = "", *, shadow: bool = Fal
     if shadow:
         primary = str(block.get("frontend") or "")
         if primary in ("", "web"):
-            raise ValueError("--shadow mirrors the front end chat.json names (zulip or slack); "
+            raise ValueError("--shadow mirrors the Slack front end chat.json names; "
                              "it names none")
         block["shadow"] = "web"
     else:

@@ -6,6 +6,19 @@ repository that preceded it.
 
 ## Unreleased
 
+- **Zulip support is removed.** The chat front ends are the web chat,
+  which the bot serves itself on your machine (setup recommends it), and
+  Slack. A Slack install can still run the web chat beside it
+  (`"shadow": "web"`). A chat block that names `zulip` is refused: the
+  bot does not start, and the doctor's `chat frontend` row fails with a
+  fix that says to set `web` or `slack`. There is no migration path. A
+  web chat store that holds history imported from Zulip still shows it.
+  Removed: the Zulip adapter (`chat/zulip_frontend.py` and its emoji
+  table), `deploy/zulip/`, the `scripts/zulip_*` scripts and
+  `zulip_switch.sh`, `scripts/webchat-cutover.py`, the `zulip` Python
+  dependency, the Docker stack's Zulip services, and
+  `docs/zulip-switch.md`. `chat.text.mrkdwn_to_zulip` is now
+  `mrkdwn_to_markdown`, and the web chat keeps Slack's emoji names.
 - **Three install modes: reviewer, assistant, collaborator.** `profile`
   in `ea-config.json` names one of three modes, and setup asks for it
   first in one plain line each. `reviewer` has no chat: the EA reads

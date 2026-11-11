@@ -22,8 +22,8 @@ Four ways to pick one, strongest first:
   2. a sticky pin on the topic: `use fable` / `use opus` / `use local`
      (`escalate` is `use fable`, `hand back` is `use opus`), kept on the
      topic's session row as `tier`;
-  3. the topic's name: `[fable] budget plan` (a Zulip topic rename
-     is one click, and the bot follows renames);
+  3. the topic's name: `[fable] budget plan`, read from a thread key
+     that carries it (a thread the web chat's store imported from Zulip);
   4. the lane's default: the owner's routing table (model_routing.py)
      when the lane's task (`chat` for main, dm and room; `scheduling` for
      sched-channel and proactive) is `local` or `hosted`, else ea-config
@@ -147,8 +147,8 @@ def parse_command(text: str) -> dict | None:
 
 
 def topic_name(thread_ts: str) -> str:
-    """The Zulip topic behind a thread key (`stream:<id>:topic:<quoted>`),
-    or '' for any other key."""
+    """The topic name in a thread key imported from Zulip
+    (`stream:<id>:topic:<quoted>`), or '' for any other key."""
     key = str(thread_ts or "")
     if ":topic:" not in key:
         return ""

@@ -243,19 +243,19 @@ def test_the_template_carries_the_web_chat_backup_and_the_monthly_style_run(tmp_
     """docs/SETUP.md's schedule lists a nightly web chat backup and a monthly
     style measurement; the template had neither, so an install that took
     it lost both (2026-11-09). The backup line follows the chat block: the
-    web chat as the frontend or beside it. A Zulip or Slack install gets no
-    line, since the script exits with an error where there is no store.
+    web chat as the frontend or beside it. A Slack install gets no line,
+    since the script exits with an error where there is no store.
     The kept-entries filter strips both on a re-run, so neither doubles."""
     live = _live_tree(tmp_path)
     cfg = tmp_path / "home" / ".ea" / "config"
     cfg.mkdir(parents=True)
-    (cfg / "ea-config.json").write_text(json.dumps({"chat": {"frontend": "zulip"}}))
+    (cfg / "ea-config.json").write_text(json.dumps({"chat": {"frontend": "slack"}}))
     _run_setup(tmp_path, live, profile="collaborator")
     jobs = _jobs((tmp_path / "crontab").read_text())
     assert sum("style_analysis.py run --dispatch" in j for j in jobs) == 1
     assert not any("webchat-backup.sh" in j for j in jobs)
 
-    (cfg / "ea-config.json").write_text(json.dumps({"chat": {"frontend": "zulip", "shadow": "web"}}))
+    (cfg / "ea-config.json").write_text(json.dumps({"chat": {"frontend": "slack", "shadow": "web"}}))
     _run_setup(tmp_path, live, profile="collaborator")
     jobs = _jobs((tmp_path / "crontab").read_text())
     assert sum("scripts/webchat-backup.sh" in j for j in jobs) == 1
@@ -282,9 +282,9 @@ def test_the_backup_line_follows_the_owners_chat_file_when_there_is_one(tmp_path
     cfg.mkdir(parents=True)
     priv = home / ".ea-private"
     priv.mkdir(mode=0o700)
-    (cfg / "ea-config.json").write_text(json.dumps({"chat": {"frontend": "zulip"}}))
+    (cfg / "ea-config.json").write_text(json.dumps({"chat": {"frontend": "slack"}}))
     chat = priv / "chat.json"
-    chat.write_text(json.dumps({"frontend": "zulip", "shadow": "web", "web": {}}))
+    chat.write_text(json.dumps({"frontend": "slack", "shadow": "web", "web": {}}))
     chat.chmod(0o600)
     backup = "30 3 * * * /opt/ea-system/scripts/webchat-backup.sh >> /x/webchat-backup.log 2>&1\n"
     (tmp_path / "crontab").write_text(EARLIER + backup)
@@ -295,11 +295,11 @@ def test_the_backup_line_follows_the_owners_chat_file_when_there_is_one(tmp_path
         assert sum("scripts/webchat-backup.sh" in j for j in jobs) == 1, jobs
 
     (cfg / "ea-config.json").write_text(json.dumps({"chat": {"frontend": "web"}}))
-    chat.write_text(json.dumps({"frontend": "zulip"}))
+    chat.write_text(json.dumps({"frontend": "slack"}))
     _run_setup(tmp_path, live, profile="collaborator")
     assert "webchat-backup.sh" not in (tmp_path / "crontab").read_text()
 
-    chat.write_text(json.dumps({"frontend": "zulip"}))
+    chat.write_text(json.dumps({"frontend": "slack"}))
     chat.chmod(0o666)
     _run_setup(tmp_path, live, profile="collaborator")
     jobs = _jobs((tmp_path / "crontab").read_text())

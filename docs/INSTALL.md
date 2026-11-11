@@ -28,7 +28,7 @@ Start the IT request first. Everything else fits in one sitting.
 | A Google Cloud OAuth app | Google Calendar or Gmail | 15 minutes | SETUP.md "Google OAuth app". Google shows an "unverified app" screen at sign-in; continue through "Advanced". You are the only user. Publish the app, or Google ends the sign-in every 7 days. |
 | An `EA-Managed` Google calendar | `assistant` and `collaborator` (optional on `reviewer`) | 2 minutes | A secondary calendar where your scheduling rules live as recurring events. Setup tells you when to create it. |
 | Tailscale on the machine and on your phone | `assistant` and `collaborator` with the web chat | minutes | The bot serves the web chat on your tailnet. See [Choosing a chat platform](#choosing-a-chat-platform). In Docker, a TLS proxy and a host name take its place ([docs/docker.md](docker.md#web-chat)). |
-| Docker, or a Slack workspace | `assistant` and `collaborator` on Zulip or Slack instead | minutes | Docker runs the Zulip chat server. A Docker install on the web chat needs no Zulip. |
+| A Slack workspace | `assistant` and `collaborator` on Slack instead | minutes | One private channel and one bot app (SETUP.md "Slack"). |
 | A model you host | optional | varies | Any OpenAI-compatible endpoint (vLLM, Ollama). It reads mail and writes drafts in place of Claude. See [docs/remote-llm.md](remote-llm.md). |
 
 Python 3.10 to 3.14 must be on the machine. On macOS use Homebrew's
@@ -42,7 +42,7 @@ Setup asks this first. `assistant` is the default.
 | Mode | What you get | Time to install |
 |---|---|---|
 | `reviewer` | No chat. Triage, the ledger, drafts in your voice left in your mailbox, meeting times proposed in the report (no holds or events: nothing places one without the chat buttons). Reports land in `~/.ea/state/reports/<agent>-latest.md` on the schedule you pick: weekdays, every day, or only when you run `./run-agent.sh morning-briefing --now`. A phone push if you want one. You work with the EA in the Claude Code shell and send drafts from Outlook yourself. | About an hour |
-| `assistant` | One chat on your phone: the web chat (or Zulip or Slack) with the EA channel, your DM with the Send and Create cards, scheduling and digests in the same app, plugins. No project rooms. | Longer: the twelve steps below. Zulip adds its chat server. |
+| `assistant` | One chat on your phone: the web chat (or Slack) with the EA channel, your DM with the Send and Create cards, scheduling and digests in the same app, plugins. No project rooms. | Longer: the twelve steps below. |
 | `collaborator` | The assistant, plus a room for each big project. | The same as `assistant`. |
 
 Without a chat there are no cards, and sending needs a card's token. So
@@ -118,7 +118,7 @@ question at a time.
 5. **The service account.** Creates the `ea-bot` user that Claude runs
    as, and turns on the mail mediator.
 6. **Chat** (`assistant` and `collaborator`). Setup asks which: the web chat
-   (recommended), Zulip or Slack. For the web chat it asks this
+   (recommended, self-hosted) or Slack. For the web chat it asks this
    machine's tailnet name and your Tailscale login, writes the settings
    and gives you the `tailscale serve` line (step 8 below).
 7. **Extras** (optional). Claude Code connectors, and the model you host.
@@ -213,22 +213,19 @@ The platform decides who holds that text.
 | Platform | Where the conversation lives | What leaves your machine | History | Approvals | Phone | Setup |
 |---|---|---|---|---|---|---|
 | The web chat (recommended) | A file in your owner-private directory, inside your backups | Notifications, encrypted to your browser; off the tailnet, sealed relay frames | Unlimited and yours | Buttons on each card | The installed web app over your tailnet, or through the relay | SETUP.md "Web chat": a settings block and one `tailscale serve` line |
-| Zulip on your machine | A Docker volume on your machine, inside your backups | Push notices with the content removed | Unlimited and yours | One reaction chip per action, or a typed code | The Zulip app over your tailnet | SETUP.md "Zulip server": a Docker stack, a realm and a bot |
 | Slack | Slack's servers, under Slack's terms and retention | Every message, file and card, with drafts and quoted mail | 90 days visible on the free tier | Buttons, and an Edit dialog | The Slack app | SETUP.md "Slack" |
 
-The EA behaves the same on all three. Use Zulip if you already run it.
-The web chat can also run beside Zulip (shadow mode): each post appears
-in both, and you answer in either. Moving between Zulip and Slack is one
-config key and a restart ([docs/zulip-switch.md](zulip-switch.md)); from
-shadow mode to the web chat alone, `scripts/webchat-cutover.py` brings
-the whole Zulip history over ([Leave Zulip for the web
-chat](zulip-switch.md#leave-zulip-for-the-web-chat)).
+The EA behaves the same on both. The web chat is self-hosted: the bot
+serves it, and no chat server or third party holds the conversation.
+Use Slack if you already live there and accept its terms. A Slack
+install can also run the web chat beside it (shadow mode, SETUP.md
+"Beside Slack (shadow mode)"): each post appears in both, and you answer
+in either.
 
-New chat features land in the web chat. Zulip and Slack keep working as
-they are and get fixes, not new features; Zulip stays in the tree for a
-later setup with more than one person in the room. On its own the web
-chat carries the same traffic: the briefings, the digests and the
-plugins' posts land in the `ea` channel, scheduling requests from mail
+New chat features land in the web chat. Slack keeps working as it is
+and gets fixes, not new features. On its own, the web chat carries every
+post: the briefings and the plugins' posts land in the `ea` channel, the
+mail digests in a channel of their own, scheduling requests from mail
 open as conversations in its Scheduling channel, and the doctor checks
 its settings.
 
@@ -284,10 +281,9 @@ What you can change later, by asking the EA or by editing the file:
 **Docker.** The EA runs as containers on one host, with no account,
 unit or crontab on the host. On `assistant` and `collaborator` the bot container serves the
 web chat behind a TLS proxy you run (a Caddy example ships beside
-`compose.yaml`), so no chat server is needed; Zulip is a compose profile
-for an install that wants it. [docs/docker.md](docker.md) covers the
-first run, the volumes, the web chat and the differences from a host
-install.
+`compose.yaml`), so no chat server is needed.
+[docs/docker.md](docker.md) covers the first run, the volumes, the web
+chat and the differences from a host install.
 
 **Without Claude Code.** The `scripts/install/user_init.py` wizard writes your
 preferences and config files interactively. It does not create the
@@ -395,8 +391,8 @@ settings, the web chat's history and its nightly snapshots in
 (`~/.local/bin/claude`), and the Python packages with the
 `~/.local/share/ea-system` shim. Also revoke the EA's access where you
 granted it: the Microsoft app's consent (or ask IT to remove the
-registration), the Google OAuth client, the claude.ai connectors, and on
-`assistant` and `collaborator` the Slack app or the Zulip bot. A Docker install is
+registration), the Google OAuth client, the claude.ai connectors, and
+the Slack app if you used Slack. A Docker install is
 `docker compose down -v` (the `-v` deletes the volumes and every token
 in them).
 
@@ -405,26 +401,6 @@ want its history: `scripts/webchat-backup.sh --label final` writes one
 snapshot to `~/.ea-private/backups/webchat/<date>-final/` (the store, its
 uploads, the relay key, the pairing token); copy that folder somewhere
 private.
-
-### Zulip
-
-An install that ran Zulip also has the server to take down: once with a
-whole uninstall, or on its own after a move to the web chat alone
-([docs/zulip-switch.md](zulip-switch.md#uninstall-zulip) has each step
-and why). From your checkout:
-
-```bash
-deploy/zulip/backup.sh                      # a last backup of the realm, if you want its history
-sudo tailscale serve --https=8443 off       # stop publishing the server on your tailnet
-deploy/zulip/compose.sh down -v             # the containers, their network and the volumes (every message)
-docker image ls | grep -i zulip             # then docker image rm each image it lists
-crontab -e                                  # delete the deploy/zulip/backup.sh line (and from crontab.master)
-rm ~/.ea-private/zulip.env                  # the server's database, queue and cache passwords
-```
-
-Then delete the `ZULIP_API_KEY` line from `~/.ea-private/secrets.env`,
-and in the Tailscale admin console (Access controls) delete the rule and
-the tests for `tag:ea-host:8443`.
 
 ## If something fails
 

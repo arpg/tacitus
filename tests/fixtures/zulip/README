@@ -1,8 +1,0 @@
-Zulip API shapes for tests/test_zulip_frontend.py.
-
-event_*.json are single entries of the `events` list that GET
-/api/v1/events returns; api_*.json are whole responses of the REST calls.
-Field sets follow the Zulip API documentation pages get-events,
-get-messages, send-message, add-reaction, register-queue, get-stream-id,
-update-message, get-streams and upload-file. Ids: bot 50, owner 9, a
-colleague 12, another bot 51; stream `ea` is 7, `ea-dm` is 8.

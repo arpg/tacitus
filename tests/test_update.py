@@ -113,7 +113,7 @@ class FakeHost:
         self.pid = 100
         self.log = ""
         self.before = log_lines if log_lines is not None else (
-            "x EA chat bot starting... (commit old)\nx frontend=zulip stream=ea (private) owner=9\n")
+            "x EA chat bot starting... (commit old)\nx Bot user ID: U0EXAMPLE\n")
 
     def service(self, role):
         return {"bot": "ea-chat-bot", "mediator": "ea-mail-mediator"}[role] if role in self.services else None
@@ -122,7 +122,7 @@ class FakeHost:
         self.restarts.append(name)
         self.pid += 1
         if self.healthy if not callable(self.healthy) else self.healthy(len(self.restarts)):
-            self.log = "EA chat bot starting... (commit new)\nfrontend=zulip stream=ea (private)\n"
+            self.log = "EA chat bot starting... (commit new)\nBot user ID: U0EXAMPLE\n"
         else:
             self.log = "EA chat bot starting...\nTraceback (most recent call last):\n  boom\n"
         return True, "restarted"
@@ -591,19 +591,19 @@ class GateHost:
 
 
 START = "EA chat bot starting... (commit n)\n"
-ZULIP = "frontend=zulip stream=ea (private, subscribed) owner=9\n"
+SLACK = "Bot user ID: U0EXAMPLE\n"
 WEB = "web chat serving on 127.0.0.1:8470/chat/\n"
 
 
 def run_gate(frames, markers=None, **kw):
     c = Clock()
     return update.gate(GateHost(frames), "ea-chat-bot", {}, markers if markers is not None
-                       else update.expected_markers(START + ZULIP),
+                       else update.expected_markers(START + SLACK),
                        sleep=c.sleep, clock=c, **kw)
 
 
 def test_the_gate_passes_a_connected_stable_bot():
-    ok, why = run_gate([(True, "7", START), (True, "7", START + ZULIP)])
+    ok, why = run_gate([(True, "7", START), (True, "7", START + SLACK)])
     assert ok, why
 
 
@@ -621,15 +621,15 @@ def test_the_gate_fails_on_a_traceback_a_restart_loop_or_no_connection():
 
 
 def test_the_web_chat_is_required_only_when_the_old_instance_served_it():
-    old = START + ZULIP + WEB + "later lines\n"
+    old = START + SLACK + WEB + "later lines\n"
     markers = update.expected_markers("older\n" + old)
     assert [n for n, _ in markers] == ["the chat frontend connected", "the web chat serving"]
-    ok, why = run_gate([(True, "7", START + ZULIP)], markers=markers, timeout=30)
+    ok, why = run_gate([(True, "7", START + SLACK)], markers=markers, timeout=30)
     assert not ok and "web chat" in why
-    ok, _ = run_gate([(True, "7", START + ZULIP + WEB)], markers=markers)
+    ok, _ = run_gate([(True, "7", START + SLACK + WEB)], markers=markers)
     assert ok
     # a web chat served before the last restart does not count
-    assert len(update.expected_markers(START + WEB + START + ZULIP)) == 1
+    assert len(update.expected_markers(START + WEB + START + SLACK)) == 1
 
 
 def test_with_no_readable_log_the_gate_falls_back_to_process_stability():

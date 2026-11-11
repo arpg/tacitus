@@ -80,8 +80,8 @@ the web chat's `/api/me` carries `rooms` (the bot sets the front end's
 The room hygiene pass reads Slack's archived flag for every private
 channel each cycle and records who archived a room in the channel
 registry: "bot" when it did because the project went dormant or closed,
-"user" when the owner did it in Slack (or in Zulip, or from the web
-app's room menu). A room the owner archived stays archived and its
+"user" when the owner did it in Slack (or from the web app's room
+menu). A room the owner archived stays archived and its
 project journal says so; only a room the bot archived reopens when the
 project is active again. A room the owner brings back while its project
 is dormant or closed stays open until the project's status changes.
@@ -170,21 +170,15 @@ pointers posted before the change still resolve correctly.
 
 A click reaches the bot as an interaction payload on its own Socket
 Mode websocket, opened with the app-level token; the bot verifies no
-Slack signature and checks the clicker against `EA_SLACK_OWNER_ID`. On
-Zulip the same card is a message in the `ea-dm` stream with a one-time
-code: the owner reacts with a check (or a cross to cancel) or replies
-with the code, led by the action's word for anything but the primary
-action (`handled <code>`, `cancel <code>`); words after the code go with
-an action that asks for them (`draft <code> <what the reply must say>`).
-A card that withholds its
-approval (more than one card shows) has no primary: a thumbs up or a
-bare code there selects nothing (`ConfirmationCard.no_default`). A draft
+Slack signature and checks the clicker against `EA_SLACK_OWNER_ID`. In
+the web chat the same card is a message in the DM with the same buttons;
+a click reaches the bot through the app's own API, which serves only
+the owner (docs/webchat.md, Identity and auth). A card that withholds
+its approval (more than one card shows) has no primary action, so no
+button is the default (`ConfirmationCard.no_default`). A draft
 outcome (Send, Sent myself, Handled, a send or delete found in Outlook)
 names the ledger rows it closed on its one status line, never in a post
-per row; a card settled outside chat is filed (`ChatFrontend.file_card`):
-on Zulip it moves to the private `ea-dm-done` stream, where the owner is
-not subscribed, so an edit no longer leaves it unread in the Inbox. See
-the Chat front-end layer section.
+per row. See the Chat front-end layer section.
 
 ## Reschedule requests: detected in minutes, answered by the solver
 
@@ -304,12 +298,10 @@ closes at 5 pm) needs a notification that reaches a device, so it has a
 channel of its own:
 
 - `preprocessor/chat/direct.py` is the one place that sends or schedules
-  a direct message to the owner. On Zulip a direct message is pushed to
-  the owner's devices, and a scheduled one is held and delivered by the
-  Zulip server, so it fires whatever the bot is doing. On Slack there is
-  no server-side schedule: `send_direct` falls back to an urgent post in
-  the personal channel and `schedule_direct` raises. On the web chat
-  alone, `schedule_direct` queues the post in the web chat's store
+  a direct message to the owner. On Slack there is no server-side
+  schedule: `send_direct` falls back to an urgent post in the personal
+  channel and `schedule_direct` raises. On the web chat,
+  `schedule_direct` queues the post in the web chat's store
   (`scheduled_posts`) and the bot's tail thread posts it in the DM channel
   at its moment; `cancel_scheduled` drops it (docs/webchat.md, CLI
   senders).
@@ -487,8 +479,9 @@ preprocessor builds a `mail_gate.Gate` over the mail each run fetched:
 the detectors still read the raw inbox, but what they return reaches the
 ledger, the scheduling queue and the lanes' JSON as the remote model's
 records, with FYI and kept mail left out and unread mail held for a later
-run. `mail_gate.py digest` posts the left-out mail to its own Zulip
-stream from code. The mediator refuses a `cron-` run's read of a kept
+run. `mail_gate.py digest` posts the left-out mail to the digest
+channel from code (the web chat's Mail digests, Slack's `mail-digest`
+webhook). The mediator refuses a `cron-` run's read of a kept
 thread (`mail_privacy.release_precheck` / `release_filter`), and the
 tagger calls the remote model. Two things keep an ask from falling
 through that gate. A needs-response item that carries a remote record
@@ -721,20 +714,18 @@ calendar, in the staged files and in its own thread.
 The bot core talks to its chat platform through one interface,
 `ChatFrontend` (`botcore/botcore/chat/base.py`, aliased as
 `preprocessor/chat/base.py`). The web chat, which the bot serves
-itself, is the recommended platform; Zulip, self-hosted, suits an
-install that runs it already, and the web chat can mirror it (shadow
-mode); Slack is the alternative and behaves exactly as it did before the
-layer existed (an install with no `chat` block runs Slack); an
-in-memory frontend serves the tests. The platform is `chat.frontend`
-(and `chat.shadow`) in the chat block, which owner processes read from
+itself, is the recommended platform. Slack is the third-party
+alternative and behaves exactly as it did before the layer existed (an
+install with no `chat` block runs Slack); the web chat can mirror it
+(shadow mode). An in-memory frontend serves the tests. The platform is
+`chat.frontend` (and `chat.shadow`) in the chat block, which owner processes read from
 `~/.ea-private/chat.json`, and `chat.load_frontend()` builds it at
 startup. The bot binds the result to the module name `FRONTEND`.
 
 The senders outside the bot follow the same block. `chat_notify` (the
 briefings, the digests, the plugins' posts, the quiet-hours flush) runs
-in owner processes: on Slack a webhook, on Zulip the bot's key, on the
-web chat a writer-only web front end that adds each post to the store
-the bot serves, whose tail thread pushes it to the open streams. The
+in owner processes: on Slack a webhook, on the web chat a writer-only
+web front end that adds each post to the store the bot serves, whose tail thread pushes it to the open streams. The
 resident holds no credential and may not open that store, so
 `chat_upload` run as ea-bot stages its file or thread text in the outbox
 (`slack_outbox`), and the bot posts it through its own front end, in the
@@ -747,21 +738,18 @@ flowchart LR
     core --> abc
     abc --> web["WebFrontend<br/>the bot's own web app and API,<br/>SQLite store, SSE, card buttons"]
     abc --> slack["SlackFrontend<br/>bolt Socket Mode, Block Kit buttons"]
-    abc --> zulip["ZulipFrontend<br/>event queue, topics as threads,<br/>reaction chips and codes"]
     abc --> mem["MemoryFrontend<br/>the tests"]
     web --> W[("Store in the owner-private dir")]
     slack --> S[("Slack cloud")]
-    zulip --> Z[("Zulip, self-hosted")]
     cli["chat_notify, chat_read, chat_upload<br/>cron agents, the briefing reader, owner uploads"]
     cli -. "routed by chat.frontend" .-> W
     cli -.-> S
-    cli -.-> Z
     res["chat_upload as ea-bot"] -. "outbox, drained by the bot" .-> core
 ```
 
 The core never names a platform: it asks `supports()` for a capability,
-posts a `ConfirmationCard`, and receives one `ActionEvent` whether the
-owner clicked a button, tapped a reaction chip or typed a code.
+posts a `ConfirmationCard`, and receives one `ActionEvent` when the
+owner presses one of its buttons.
 
 **The interface.** Every call the core makes to a chat platform is a
 method: `start`, `run_forever`, `ping`, `supports(cap)`; `post`,
@@ -772,9 +760,9 @@ method: `start`, `run_forever`, `ping`, `supports(cap)`; `post`,
 `archive`, `unarchive`, `archived_map`; `upload`, `download`; and, for
 the LLM, `prompt_strings` and `llm_tool_grants`. `publish_home` and
 `open_modal` are Slack-only and return False elsewhere. Each frontend
-declares `capabilities` (`buttons`, `modals`, `home_tab`, `codes`,
-`registers_cards`, ...) and `limits` (message, card body, room name and
-topic lengths); the core asks `supports()` instead of naming a platform.
+declares `capabilities` (`buttons`, `modals`, `home_tab`, ...) and
+`limits` (message, card body, room name and topic lengths); the core
+asks `supports()` instead of naming a platform.
 Neutral types live in `chat/types.py`: `InboundMessage`, `ActionEvent`,
 `ViewEvent`, `MessageRef`, `RoomRef`, `FileRef`, `ChannelInfo`, and the
 `Status` enum whose values are today's reaction names (eyes, hourglass,
@@ -790,21 +778,9 @@ check, cross, ...).
   layer existed; `tests/fixtures/slack_cards` holds those blocks as
   goldens. Slack error strings map to the typed `ChatError` family
   (`RoomNameTaken`, `NotPermitted`, `AlreadyArchived`, `NotSupported`).
-- `ZulipFrontend` (`chat/zulip_frontend.py`) uses the bot's API key and
-  long-polls the bot's own event queue. Nothing reaches it by an inbound
-  webhook. At start it reads the realm limits, resolves the private
-  streams `ea`, `ea-dm` and (when set) the scheduling stream, and
-  refuses to start when one is public, missing or lacks the bot. The
-  queue id and the last event and message ids persist in the private
-  directory, so a restart resumes the same queue; after a
-  `BAD_EVENT_QUEUE_ID` it registers anew and the restart catch-up fills
-  the gap from `recent_messages`. Outbound text passes through
-  `chat/text.py:mrkdwn_to_zulip`, so the LLM writes Slack mrkdwn on every
-  platform. A stream rename arrives as an `InboundMessage` with subtype
-  `channel_rename`, so the core's room-rename branch runs unchanged.
 - `MemoryFrontend` (`chat/memory_frontend.py`) records every outbound
-  call and lets tests inject messages, clicks, reactions and typed codes
-  through the same registry and resolvers the real frontends use.
+  call and lets tests inject messages and clicks through the same
+  registry the real frontends use.
 - `WebFrontend` (`chat/web_frontend.py`) is Tacitus's own chat: the bot
   process serves a phone-first web app (`chat/webui/`, static files, no
   build step) and a JSON API over loopback HTTP, stdlib only. Messages,
@@ -820,9 +796,13 @@ check, cross, ...).
   VAPID and `aes128gcm` with the `cryptography` package, to the
   browser vendors' push services only). Alone it makes the EA channel,
   the DM and Scheduling (`sched_channel`, off with `"sched": false` in
-  the web block), where the proactive scheduler opens its threads as
-  on the Zulip scheduling stream. The contract is `docs/webchat.md`.
-- `ShadowFrontend` (`chat/shadow_frontend.py`) drives a primary (Zulip)
+  the web block), where the proactive scheduler opens a thread for each
+  scheduling request. Outbound text passes through
+  `chat/text.py:mrkdwn_to_markdown`, so the LLM writes Slack mrkdwn on
+  every platform. A room rename from the app reaches the core as an
+  `InboundMessage` with subtype `channel_rename`, so the core's
+  room-rename branch runs unchanged. The contract is `docs/webchat.md`.
+- `ShadowFrontend` (`chat/shadow_frontend.py`) drives a primary (Slack)
   and mirrors every post, update, card, status line, reaction and file
   into a shadow (the web front end) under the primary's ids, and takes
   the owner's input from either side: a web message is posted into the
@@ -833,17 +813,15 @@ check, cross, ...).
   the core. `chat.shadow` in the chat block names it. At start it copies
   the last `web.backfill_days` of the primary's history on a daemon
   thread, as quiet rows (no event, never unread), and only the rooms the
-  bot made for the owner (`room_filter`). Writes the primary makes on
-  its own (Zulip's card codes, edit-window reposts, stream changes) reach
-  it through the primary's optional `on_outbound` hook.
+  bot made for the owner (`room_filter`).
 
 **The handler registry, and why the name `app` survives.** Each frontend
 carries a `HandlerRegistry` with `action`, `view` and `event`
 decorators. The bot binds `app = FRONTEND.registry`, so the decorator
 text `@app.action("approve_send")` that tests pin stays byte-identical
-while the handlers take neutral events. A frontend translates a click,
-a reaction or a typed code into one `ActionEvent` (its `source` says
-which) and dispatches it; the handler does not know the difference.
+while the handlers take neutral events. A frontend translates a click
+into one `ActionEvent` (its `source` says where it came from) and
+dispatches it; the handler does not know the difference.
 Messages arrive as `InboundMessage` through `dispatch_message`, and
 `on_message` keeps its gate order (EA channel, scheduling channel, DM,
 project and session rooms, owner-only in rooms, dashboard marker,
@@ -855,70 +833,39 @@ move or delete an event, a scheduled send, a plugin's card, the
 send-all card, the room picker) is a neutral `ConfirmationCard`
 (`chat/cards.py`): title, fields, body, actions, an optional select,
 footer. Each `CardAction` has an id, a label, a value, a style and a
-`word`, the verb the owner types on a platform without buttons. An
-action with `ask` (a few words that name what to write) takes one line of
-the owner's words with the press, 300 characters at most, in
-`ActionEvent.text`: a field above the buttons in the web app, the words
-after the code on Zulip (`<word> <code> <words>`), nothing on Slack. A
-frontend drops the line for an action that does not ask. The
-frontend renders the card: Block Kit buttons on Slack; on Zulip a
-message in the `ea-dm` stream, under a topic of its own
-(`lock <code> <subject>`) that the bot reacts on once per action
-(`cards.action_reactions`: thumbs up for the primary, thumbs down for
-cancel, the label's emoji for the rest), so one tap on a chip picks that
-action; the text names each chip and the typed fallback (`<word> <code>`).
-The row keeps the chip map (`reactions`), read before the generic roles,
-and the chips come off when the card is answered. `CardRegistry` is a JSON file
+short `word`. An action with `ask` (a few words that name what to write)
+takes one line of the owner's words with the press, 300 characters at
+most, in `ActionEvent.text`: a field above the buttons in the web app,
+nothing on Slack. A frontend drops the line for an action that does not
+ask. The frontend renders the card: Block Kit buttons on Slack, a card
+with its buttons in the web app's DM. `CardRegistry` is a JSON file
 (`chat-cards.json`, atomic replace, a 7-day sweep) with one row per live
-card: kind, channel, message id, posted time, code, the actions with
-their values and words, the thread and the EA channel, and status. The
-core writes the row after `post_card`, except on a frontend with the
-`registers_cards` capability (Zulip), which writes it itself because the
-code must appear in the rendered text. Codes are four characters from
-an alphabet without 0, O, 1 or I, unique among live rows and single
-use. The pure resolvers `resolve_reaction` and `resolve_code` read only
-the row, so a card survives a restart; both reject any user other than
-the owner before the lookup. The 48-hour stale guard reads the card's
-posted time from the registry first, then from the frontend.
+card: kind, channel, message id, posted time, the actions with their
+values and words, the thread and the EA channel, and status. The core
+writes the row after `post_card`. A click is read against the row, so a
+card survives a restart, and a click from any user other than the owner
+is refused. The 48-hour stale guard reads the card's posted time from
+the registry first, then from the frontend.
 
 **The private directory.** `~/.ea/state` is ea-bot-owned and setgid
 group-writable, so anything there can be replaced by the LLM user.
 State the bot must trust lives in `EA_PRIVATE_DIR`, default
-`/home/<you>/.ea-private/` (owner-only `0700`): the card registry, the Zulip
-queue file (`zulip-queue.json`), the button stores
+`/home/<you>/.ea-private/` (owner-only `0700`): the card registry, the
+web chat's store, the button stores
 (`button-payloads.json`, `draft-confirmations.json`) and the Slack
 webhook file. See [SECURITY.md](SECURITY.md) Layer 3.
 
 **Thread identity.** `channel` and `thread_ts` keep their names through
 the core and are opaque strings whose shape belongs to the frontend.
 Slack values are Slack's own bytes (channel ids, message ts), so every
-state file keyed by them stays valid. Zulip values are `stream:<id>` for
-a channel, `stream:<id>:topic:<percent-encoded topic>` for a thread, and
-`str(int)` for a message id; the `ea-dm` stream stands in for the
-owner's DM, so a topic there is a conversation too, and a real 1:1 DM to
-the bot is `dm:<user_id>` with one rolling thread. Threads behave as on
-Slack without the owner naming a topic: the frontend moves the owner's
-post in a stream's general chat into a new topic and dispatches it as
-that thread's first message. The name comes from `thread_namer`, the
-core's `_thread_title` (one call to the remote model, never Claude,
-20 s timeout), or from the post's first line when that returns None (no
-remote model configured, or the call failed), then `unique_topic` against the stream's topics; the naming, the
-move and the dispatch run on a worker thread so the event loop keeps
-serving reactions and codes. Everything the bot starts (a post with no
-thread, a card, a notifier post) opens a topic not in use, named from
-its first line. A room's own context posts at `channel_top(channel)`,
-general chat on Zulip (None on Slack), through `_post_room_intro`. A
-topic renamed, moved or merged so that the old topic is empty reaches
-the core as a `thread_moved` event {old, new}; `_follow_thread_move`
-re-keys the session registry, the card registry, the draft
-confirmations, the scheduling seen file and the resident tracker, and
-the frontend's `zulip-moves.json` redirects any later post, card,
-upload or read aimed at the old key. A card
-code typed in general chat is consumed before any move. Every key passes
+state file keyed by them stays valid. Web chat values are the store's
+own: the channels `main`, `dm`, `sched` and `digests`, rooms `r<n>`,
+messages `w<seq>` and threads `t<seq>` (docs/webchat.md, Implementation
+notes). Every key passes
 `THREAD_KEY_RE` (no whitespace, no `]`), so it survives inside the
 bridge's `[slack-dispatch thread=... id=...]` and `[deliver:...]`
-markers, whose literals are unchanged. `ea_channels` accepts
-`stream:<id>` and the web chat's room ids `r<n>` beside Slack ids, and
+markers, whose literals are unchanged. `ea_channels` accepts the web
+chat's room ids `r<n>` beside Slack ids, and
 room slugs take their length from `FRONTEND.limits.room_name_chars`.
 
 **Notifier, reader and upload CLIs.** Three modules carry chat traffic
@@ -927,9 +874,10 @@ outside the bot process, each routed by the same `chat` config:
 - `preprocessor/chat_notify.py`: the zero-token notifier for cron
   agents, plugins and the preprocessor. `post()` holds the quiet-hours
   gate and the `SPLIT_MARKER` split, then sends Slack webhook payloads
-  byte for byte, or on Zulip one bot-key message per part to the stream
-  `chat.zulip.notify[<channel_key>]` names, all parts in one new topic
-  named from the post's first line unless the entry pins a `topic`. `post_as_bot()`
+  byte for byte, or on the web chat writes each part into the store as
+  the bot, all parts in one new thread, in the channel that
+  `chat.web.notify[<channel_key>]` names, else the EA channel
+  (docs/webchat.md, CLI senders). `post_as_bot()`
   is the direct bot post that `scheduled_sends` and owner plugins use
   for alerts. `chat_notify.py llm-grants` prints the chat tools the LLM
   gets on the configured platform. `slack_notifier.post_to_slack` is a
@@ -949,27 +897,28 @@ platform wording from `prompt_strings()` (the frontend) or
 `chat.prompt_strings_for_config()` (no client built). On Slack the
 strings are the sentences the prompts always had, so assembled Slack
 prompts are byte-identical. `llm_tool_grants()` is the three Slack MCP
-read verbs on Slack and empty on Zulip; `_MCP_TOOLS` holds only the
+read verbs on Slack and empty on the web chat; `_MCP_TOOLS` holds only the
 Gmail grants and the chat grant is appended per frontend.
 
 **Config.** `ea_config.DEFAULTS["chat"]` is
-`{"frontend": "slack", "zulip": {"site", "bot_email", "owner_user_id",
-"stream": "ea", "sched_stream": "", "dm_stream": "ea-dm", "notify":
-{...}}}`; `ea_config.get_chat()` fills every missing key. The default
-means a Slack install needs no config change. The only new secret is
-`ZULIP_API_KEY` in the owner-private `~/.ea-private/secrets.env` (`0600`),
-and owner processes take the chat block from `~/.ea-private/chat.json`
-(docs/SECURITY.md, "Owner trust rules"). Slack keeps its
+`{"frontend": "slack", "shadow": "", "web": {...}}` (the `web` keys and
+their defaults are in docs/webchat.md, Config); `ea_config.get_chat()`
+fills every missing key. The default means a Slack install needs no
+config change. `chat.frontend` takes `web` or `slack` (`memory` in the
+tests); any other value stops the bot at start, and the doctor fails it.
+The web chat needs no secret, and owner processes take the chat block
+from `~/.ea-private/chat.json` (docs/SECURITY.md, "Owner trust
+rules"). Slack keeps its
 `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and the `EA_SLACK_*` lines in
 `.env`. `ea_config feature chat` is an alias of `feature slack`. The
 unit name stays `ea-chat-bot.service` on every frontend.
 
 ```
-  Slack (Socket Mode)          Zulip (bot event queue)       tests
+  Slack (Socket Mode)          web chat (HTTP and SSE)       tests
         |                            |                          |
-  SlackFrontend               ZulipFrontend               MemoryFrontend
-  _inbound / _action_event    inbound_from_message,       inject_message,
-  Block Kit renderers         reaction_action, code_action click, type_code
+  SlackFrontend               WebFrontend                 MemoryFrontend
+  _inbound / _action_event    the JSON API, the store,    inject_message,
+  Block Kit renderers         card buttons                click
         \___________________________|__________________________/
                                     |
                      InboundMessage / ActionEvent / ViewEvent
@@ -984,7 +933,7 @@ unit name stays `ea-chat-bot.service` on every frontend.
                                     |
                        back out through the same frontend
 
-  cron agents, plugins -> slack_notifier shim -> chat_notify -> webhook | Zulip bot key
+  cron agents, plugins -> slack_notifier shim -> chat_notify -> webhook | web chat store
   briefing             -> slack_reader shim   -> chat_read   -> frontend (read only)
   LLM (ea-bot)         -> chat_upload         -> frontend, or slack_outbox -> bot
 ```
@@ -1683,10 +1632,10 @@ How button-required actions move from Claude's intent to actual execution.
                               [Send] [Cancel]               full email text
                                                                  |
                               handle_approve_send()  <-----------+
-                              (ActionEvent from the        (clicks Send;
-                               frontend: Socket Mode        on Zulip: check
-                               click, or a Zulip            reaction or code)
-                               reaction or code)
+                              (ActionEvent from the        (clicks Send)
+                               frontend: Socket Mode
+                               click, or a click in
+                               the web chat)
                               _verify_button_user()
                                     |
                                     v
@@ -2252,8 +2201,8 @@ rationale: docs/SECURITY.md, "Owner services off the ea-bot tree".
     - Generate confirmation tokens -- only bot code can
     - Click Slack buttons -- clicks arrive only on the bot's own
       Socket Mode socket (app token, owner-only) and must carry the
-      owner's user id; on Zulip it cannot react or type a code as the
-      owner, and its own messages never count as codes
+      owner's user id; the web chat serves its buttons only to the
+      owner's signed-in devices
     - Access owner's home directory -- chmod o-x
     - Run arbitrary Python -- allowedTools whitelist
     - Read the mail tokens or send mail: owner-only 0600; read/draft
@@ -2543,12 +2492,12 @@ Files that participate in prompt construction and action execution:
 | `preprocessor/calendar_reconciler.py` | Protection reconciler: mirrors standing attendee-less commitments onto EA-Managed as `p0 [auto]` holds; source-anchored lifecycle incl. per-occurrence release; user deletion = logged permanent release; cron `7,37 * * * *`, dry-run by default; posts only protection-reducing or failed actions, to `calendar_channel_key()` (the scheduling stream), never routine creates |
 | `preprocessor/poll_filler.py` | Scheduling poll automation (Playwright + Timeful API) |
 | `preprocessor/ledger.py` | SQLite obligations ledger CLI. One word per meaning: a main-EA row's `type` is one of `TYPES` (response_needed, follow_up, scheduling, task, deadline, waiting, reimbursement, dispute, draft_pending; `ledger.py types`), other spellings fold in through `TYPE_ALIASES` and any other word is refused; plugin rows keep their own types. `status` is open, follow_up, snoozed or completed (readers still accept the old `closed`). `--set` keys fold hyphens and old names onto their columns, so a misspelt column never lands in metadata; `date_identified` is stored as `YYYY-MM-DDTHH:MM:SSZ`. `normalize [--apply]` folds existing rows the same way |
-| `preprocessor/chat/` | Chat front-end layer: `ChatFrontend` interface and `HandlerRegistry` (`base.py`), neutral types, `ConfirmationCard` and `CardRegistry` (`cards.py`), text conversion, the Slack, Zulip, web, shadow and memory frontends; each of these modules is the same object as its namesake in `botcore/botcore/chat/`, and `__init__.py` (`load_frontend`) builds the frontend the chat block names |
-| `preprocessor/chat_notify.py` | Zero-token notifier routed by the chat frontend (Slack webhooks or Zulip bot key); `post_as_bot`; `llm-grants` |
+| `preprocessor/chat/` | Chat front-end layer: `ChatFrontend` interface and `HandlerRegistry` (`base.py`), neutral types, `ConfirmationCard` and `CardRegistry` (`cards.py`), text conversion, the Slack, web, shadow and memory frontends; each of these modules is the same object as its namesake in `botcore/botcore/chat/`, and `__init__.py` (`load_frontend`) builds the frontend the chat block names |
+| `preprocessor/chat_notify.py` | Zero-token notifier routed by the chat frontend (Slack webhooks or the web chat's store); `post_as_bot`; `llm-grants` |
 | `preprocessor/chat_read.py` | Recent EA-channel messages for the briefing, through the configured frontend |
 | `preprocessor/chat_upload.py` | LLM-runnable upload and thread post; stages through `slack_outbox` when no credential is readable |
 | `botcore/botcore/chat/web_frontend.py` | `WebFrontend`, the bot's own web chat: serves the static app (`chat/webui/`, no build step) and a JSON API over loopback HTTP, stdlib only; keeps messages, cards, reactions and files in a SQLite store in the owner-private directory; one server-sent event stream with replay from the last seen sequence. The owner signs in by the Tailscale login header on tailscaled's own connection, or by the pairing cookie; it serves only the owner-private chat block, and refuses another origin before auth; at most 64 connections, 8 from one address other than loopback (`peer_connections`) (docs/webchat.md, docs/SECURITY.md "Web chat") |
-| `botcore/botcore/chat/shadow_frontend.py` | `ShadowFrontend`: drives a primary (Zulip or Slack) and mirrors every post, update, card, status line, reaction and file into the web front end under the primary's ids; takes the owner's input from either side (a web message goes into the primary as the bot, its id kept in the owner-private list); copies the last `web.backfill_days` of history at start; a shadow failure is logged and never reaches the core |
+| `botcore/botcore/chat/shadow_frontend.py` | `ShadowFrontend`: drives a primary (Slack) and mirrors every post, update, card, status line, reaction and file into the web front end under the primary's ids; takes the owner's input from either side (a web message goes into the primary as the bot, its id kept in the owner-private list); copies the last `web.backfill_days` of history at start; a shadow failure is logged and never reaches the core |
 | `botcore/botcore/chat/web_push.py` | Web Push for the web chat: a VAPID key pair made on first use, each payload encrypted to the subscription (RFC 8291, `aes128gcm`, the `cryptography` package) and padded, sent only to the browser vendors' push hosts with no redirect; a card shows only its title, a DM message its first line; one push per thread in two minutes |
 | `botcore/botcore/chat/web_push_policy.py` | Which bot posts in the web chat push (docs/webchat.md, Notifications): the DM, the opening of a morning briefing or an afternoon update, the bot's answer in a conversation the owner wrote in; never a digest, a nudge, a progress line or a notice the owner never wrote in; the `notify_push` switches; the text fingerprint that lets one text push once; no answer push within two minutes of a card the conversation asked for in the DM; the alerts whose text a conversation carries, which the owner's reply there clears |
 | `preprocessor/web_notify_settings.py` | The web chat's Notifications settings (`/api/settings/notify`): the `notify_push` switches read from the running front end and written into the owner-private `chat.json` through `owner_trust.write_owner_file`, in force at once |
@@ -2560,7 +2509,6 @@ Files that participate in prompt construction and action execution:
 | `relay/install.sh`, `relay/snippets/` | The operator's install of the relay: a named commit (or a tag the release key signed), a confined unit the script writes, no app unless `--with-app`; the nginx blocks for the `http` block and the HTTPS server block |
 | `scripts/webchat-relay.py` | Owner CLI for the relay's key file: `init` (the key file, the install id, the `relay` block), `show`, `pair` (a one-time pairing as a QR code on the terminal, or `--print-link`), `approve`, `revoke`, `rotate` (a new relay token, so a new install id and client key; `--devices keep` or `drop`) |
 | `scripts/webchat-backup.sh` | Owner cron job: a nightly snapshot of the web chat's own data (the store through SQLite's backup API, the uploads, the state labels, the push key, the relay key, the pairing token, `chat.json`, the room record, the card registry, the closure labels) into `<private dir>/backups/webchat/<date>/`, mode 0700, seven days kept (a `--label` snapshot stays); `--restore <name>` prints the steps and changes nothing (docs/SETUP.md, Web chat, Backups) |
-| `scripts/webchat-cutover.py` | Owner CLI for the move from shadow mode to the web chat alone: `plan` (writes nothing), `apply` (a snapshot, the whole Zulip history and its files into a copy of the store, the mirrored streams folded into `main`, `dm`, `sched`, `digests` and rooms `r<n>` with thread keys kept and a redirect map, the registries and `chat.json` moved), `teardown` (the Zulip uninstall steps); refuses while the bot is up (docs/webchat.md, The move to the web chat alone) |
 | `scripts/install/setup_web.py` | The first-run setup page: the install questions in a browser, on loopback or a Tailscale address, behind a per-run token in the URL fragment; each posted phase is checked by `user_init.py`'s walk and written by its writers; the last screen runs the doctor and lists the commands left; signs in to nothing and runs no root step (docs/setup-web.md) |
 | `scripts/install/setup_questions.py` | Every install question as data (answer key, kind, label, default sources, condition, notes), read by `user_init.py` and `setup_web.py`; the README's "Your responsibility" notice for the profile phase |
 | `preprocessor/mail_links.py` | Redirect links in an email body (google.com/url?q=, SafeLinks) and where its quoted history starts; the Send card warning and gmail_client's quoting use it |

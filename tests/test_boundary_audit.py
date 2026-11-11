@@ -315,7 +315,7 @@ def test_the_auth_check_runs_daily():
 def test_the_private_dir_must_be_out_of_reach(base):
     home = _dir(base / "home", 0o750)
     priv = _dir(home / ".ea-private", 0o700)
-    _file(priv / "secrets.env", 0o600, "ZULIP_API_KEY=k\n")
+    _file(priv / "secrets.env", 0o600, "SLACK_BOT_TOKEN=k\n")
     ctx = _ctx(base / "ea", priv, home)
     assert audit.check_private_reach(ctx)[0]["status"] == "PASS"
     home.chmod(0o755)
@@ -335,9 +335,9 @@ def test_an_owner_secret_in_the_shared_env_fails_and_names_only_the_key(base):
     assert audit.check_env_secrets(ctx)[0]["status"] == "PASS"
     _file(tree / ".env", 0o644, "EA_MODEL=opus\nTWOCAPTCHA_API_KEY=resident-value\n")
     assert audit.check_env_secrets(ctx)[0]["status"] == "PASS"
-    _file(tree / ".env", 0o644, "EA_MODEL=opus\nZULIP_API_KEY=very-secret-value\n")
+    _file(tree / ".env", 0o644, "EA_MODEL=opus\nSLACK_BOT_TOKEN=very-secret-value\n")
     got = audit.check_env_secrets(ctx)[0]
-    assert got["status"] == "FAIL" and "ZULIP_API_KEY" in got["detail"]
+    assert got["status"] == "FAIL" and "SLACK_BOT_TOKEN" in got["detail"]
     assert "very-secret-value" not in json.dumps(got)
 
 

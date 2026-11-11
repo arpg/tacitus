@@ -1,4 +1,4 @@
-"""Where a frontend saves a file it downloads (a Slack or Zulip upload).
+"""Where a frontend saves a file it downloads (a Slack or web chat upload).
 
 The default writes plainly: the directory is created as needed and the
 file is replaced atomically (temp file in the same directory, then

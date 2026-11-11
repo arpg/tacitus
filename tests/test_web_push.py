@@ -598,11 +598,11 @@ def _ea_dir(tmp_path, chat: dict) -> Path:
 
 
 def test_direct_web_notify_does_nothing_without_a_web_front_end(tmp_path):
-    ea = _ea_dir(tmp_path / "a", {"frontend": "zulip"})
+    ea = _ea_dir(tmp_path / "a", {"frontend": "slack"})
     assert direct.web_notify("hi", tag="alert:x", ea_dir=ea) == {"web": "off"}
     assert direct.web_cancel("alert:x", ea_dir=ea) is False
     store = tmp_path / "b" / "webchat.sqlite"
-    ea = _ea_dir(tmp_path / "b", {"frontend": "zulip", "shadow": "web",
+    ea = _ea_dir(tmp_path / "b", {"frontend": "slack", "shadow": "web",
                                   "web": {"store_path": str(store)}})
     assert direct.web_notify("hi", ea_dir=ea)["web"] == "off"     # no store: never made here
     assert not store.exists()
@@ -610,7 +610,7 @@ def test_direct_web_notify_does_nothing_without_a_web_front_end(tmp_path):
 
 def test_direct_web_notify_queues_an_alert_for_its_moment(tmp_path, svc, monkeypatch):
     store = tmp_path / "priv" / "webchat.sqlite"
-    ea = _ea_dir(tmp_path, {"frontend": "zulip", "shadow": "web",
+    ea = _ea_dir(tmp_path, {"frontend": "slack", "shadow": "web",
                             "web": {"store_path": str(store),
                                     "public_url": "https://host.example.test/chat"}})
     WebStore(store).close()

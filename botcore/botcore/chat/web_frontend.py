@@ -41,9 +41,9 @@ The history the composite copies in when it starts goes in quietly
 (`quiet=True`): a history row has no event of its own, never counts as
 unread, and never goes before a newer row of its thread.
 
-Outbound text is the LLM's Slack mrkdwn, converted the way the Zulip
-frontend converts it (chat.text.mrkdwn_to_zulip), so the web app renders
-one Markdown subset. A card is stored as `dataclasses.asdict` JSON and
+Outbound text is the LLM's Slack mrkdwn, converted to Markdown
+(chat.text.mrkdwn_to_markdown), so the web app renders one Markdown
+subset. A card is stored as `dataclasses.asdict` JSON and
 the web app draws it; a click carries only the action id, and the value
 the core receives is the one stored with the card.
 
@@ -106,7 +106,7 @@ it and brings it back (`POST /api/channels/<id>/archive`, `/unarchive`)
 from the app; the fixed places (the EA channel, the DM, Scheduling, the
 digests) refuse. Standalone the store row changes, with its `channel`
 event, and a rename reaches the core as a `channel_rename` message, as a
-Slack or Zulip rename does, so the room registry keeps the name. In
+Slack rename does, so the room registry keeps the name. In
 shadow mode the composite makes the change on the primary
 (`inbound("rename" | "archive", channel=..., ...)`) and writes the row
 here; a primary that cannot rename refuses in words the app shows.
@@ -136,9 +136,7 @@ that calls enable_thread_state() before start() gets the rules at once on
 every change and the tick, on a thread of their own. `thread_origin`
 records the notifier key of an automated post (chat_notify), which the
 rules read. The states live in this store alone: nothing reaches the
-primary in shadow mode. There a card copied as text from the primary's
-past is read back from the primary (`card_lookup`, which the composite
-sets) so the rules see it settle, and its row takes the current text.
+primary in shadow mode.
 
 The owner's own actions (docs/webchat.md): `/api/search` reads the
 FTS5 index `messages_fts` when this SQLite has FTS5, else the messages
@@ -166,12 +164,12 @@ press card buttons. The bot logs a warning when a
 file on disk no longer matches what it signed; `refresh_bundle()` signs
 again.
 
-After the move from shadow mode to the web chat alone
-(scripts/webchat-cutover.py) the mirrored channels have new ids (`main`,
-`dm`, `sched`, `digests`, `r<n>`) and keep their thread keys. The store's
-`meta` row `channel_redirects` maps each old id (`stream:<n>`) to its new
+A store that holds history imported from Zulip keeps it under the web
+chat's own channel ids (`main`, `dm`, `sched`, `digests`, `r<n>`), with
+the thread keys and message ids Zulip gave it. The store's `meta` row
+`channel_redirects` maps each old channel id (`stream:<n>`) to its new
 one; the API routes and the verbs take an old id as the new one
-(`WebStore.canonical`), so a link or a reference made before the move
+(`WebStore.canonical`), so a link or a reference made before the import
 still reaches its conversation.
 """
 from __future__ import annotations
@@ -221,7 +219,7 @@ from .base import (
 )
 from . import thread_state as _ts
 from .cards import ConfirmationCard, action_text
-from .text import mrkdwn_to_zulip
+from .text import mrkdwn_to_markdown
 from .types import (
     THREAD_KEY_RE,
     ActionEvent,
@@ -256,8 +254,8 @@ RELAY_KEY_FILE = "webchat-relay.json"
 # The owner's overrides of a thread's state, one JSON line each, beside the
 # store: labelled examples for scoring the model step (docs/webchat-state.md).
 LABELS_FILE = "thread-state-labels.jsonl"
-# The meta row that maps a mirrored channel's id from before the move to
-# the web chat alone to its id now (scripts/webchat-cutover.py).
+# The meta row that maps a channel's id in history imported from Zulip
+# (`stream:<n>`) to its id now.
 REDIRECTS_KEY = "channel_redirects"
 COOKIE = "ea_web"
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
@@ -336,8 +334,8 @@ KINDS = ("main", "sched", "dm", "room", "digest")
 # Channel ids the app's routes take for their own (`#/needs`, the Needs you
 # view): no channel may have one.
 RESERVED_CHANNEL_IDS = frozenset({"needs"})
-# The longest room name the owner may give a room from the app: Zulip's
-# limit, the shortest of the platforms a room may live on.
+# The longest room name the owner may give a room from the app; a room
+# that lives on Slack in shadow mode takes it too.
 ROOM_NAME_MAX = 60
 EVENT_TYPES = ("message", "update", "reaction", "card", "status", "file", "channel",
                "thread_state", "release")
@@ -347,9 +345,6 @@ LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
 LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
 _CHUNK_SIZE_RE = re.compile(rb"[0-9A-Fa-f]{1,8}")
 _LENGTH_RE = re.compile(r"[0-9]{1,12}")
-# Emoji shortcodes, held aside while text converts (WebFrontend._out).
-_SHORTCODE_RE = re.compile(r":[a-z0-9_+-]+:")
-_HELD_RE = re.compile("\x02(\\d+)\x02")
 # A Markdown link in the bot's text (WebFrontend._local_links).
 _MD_LINK_RE = re.compile(r"\[([^\]\n]{1,200})\]\((\S+?)\)")
 
@@ -975,8 +970,8 @@ class WebStore:
             return False
 
     def _read_redirects(self) -> dict[str, str]:
-        """The cutover's map of old channel ids to new ones (REDIRECTS_KEY);
-        empty when there is none or it is not a map of strings."""
+        """The map of old channel ids to new ones (REDIRECTS_KEY); empty
+        when there is none or it is not a map of strings."""
         row = self._one("SELECT value FROM meta WHERE key=?", (REDIRECTS_KEY,))
         try:
             data = json.loads(row["value"]) if row else {}
@@ -987,9 +982,8 @@ class WebStore:
         return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
 
     def canonical(self, cid: str) -> str:
-        """The id a channel id names now: a mirrored channel's id from before
-        the move to the web chat alone gives its new id (`redirects`); any
-        other id is itself."""
+        """The id a channel id names now: a channel's id in history imported
+        from Zulip gives its new id (`redirects`); any other id is itself."""
         return self.redirects.get(cid, cid) if cid else cid
 
     def channel(self, cid: str) -> dict | None:
@@ -1026,7 +1020,8 @@ class WebStore:
     def locate(self, channel: str, mid: str) -> dict | None:
         """{"channel", "thread_key", "id"} of the message a link names: by
         channel and id, or by the id alone when the link names no channel
-        (a Zulip id is unique on its server) and one channel holds it."""
+        (a link in history imported from Zulip, whose ids are unique) and
+        one channel holds it."""
         if channel:
             rows = self._all("SELECT channel, thread_key, id FROM messages WHERE channel=? AND id=?",
                              (channel, mid))
@@ -1036,10 +1031,10 @@ class WebStore:
 
     def primary_links(self) -> list[dict]:
         """The bot's messages whose text links to the primary's messages (a
-        Zulip narrow, a Slack permalink): {"channel", "id", "text"}."""
+        Slack permalink): {"channel", "id", "text"}."""
         return [dict(r) for r in self._all(
             "SELECT channel, id, text FROM messages WHERE author=? AND deleted_at IS NULL "
-            "AND (text LIKE '%/near/%' OR text LIKE '%/archives/%')", (BOT,))]
+            "AND text LIKE '%/archives/%'", (BOT,))]
 
     def _msg_json(self, row: sqlite3.Row, reply_count: int | None = None) -> dict:
         if reply_count is None:
@@ -1324,7 +1319,9 @@ class WebStore:
         A link the store holds no message for (a card never copied here) is
         a row of kind `missing` with the link's card channel and message id
         ({"kind", "channel", "id", "card": None}), so no rule takes the cards
-        it can see for all of them until the primary gives the card."""
+        it can see for all of them. A link with no card channel (one from
+        history imported from Zulip, whose message ids are unique) matches
+        the message by its id alone."""
         rows = self._all(
             "SELECT m.*, l.card_id AS link_id, l.card_channel AS link_channel FROM card_link l "
             "LEFT JOIN messages m ON "
@@ -1702,44 +1699,6 @@ class WebStore:
         """Append a `release` event naming the bundle the bot signs now, so
         an open app looks for the new release at once; its seq."""
         return self._transaction(lambda: self._emit("release", "", bundle, {"bundle": bundle}))
-
-    def move_thread(self, old_channel: str, old_key: str, new_channel: str,
-                    new_key: str) -> int:
-        """Re-key every message of a thread to its new channel and key, with
-        an `update` event each; a message the new channel holds already is
-        dropped from the old one. The number of messages moved."""
-        def run() -> int:
-            rows = self._conn.execute("SELECT * FROM messages WHERE channel=? AND thread_key=? "
-                                      "ORDER BY seq", (old_channel, old_key)).fetchall()
-            moved = 0
-            for row in rows:
-                if new_channel != old_channel and self._conn.execute(
-                        "SELECT 1 FROM messages WHERE channel=? AND id=?",
-                        (new_channel, row["id"])).fetchone():
-                    self._conn.execute("DELETE FROM messages WHERE seq=?", (row["seq"],))
-                    self._index(row["seq"], None)
-                    continue
-                self._conn.execute("UPDATE messages SET channel=?, thread_key=? WHERE seq=?",
-                                   (new_channel, new_key, row["seq"]))
-                if new_channel != old_channel:
-                    # A card filed in another channel stays linked to its
-                    # conversation.
-                    self._conn.execute("UPDATE OR REPLACE card_link SET card_channel=? WHERE "
-                                       "card_channel=? AND card_id=?",
-                                       (new_channel, old_channel, row["id"]))
-                out = self._msg_json(self._conn.execute("SELECT * FROM messages WHERE seq=?",
-                                                        (row["seq"],)).fetchone())
-                self._emit("update", new_channel, row["id"], out)
-                moved += 1
-            if (old_channel, old_key) != (new_channel, new_key):
-                # The thread's state, origin, card links and nudge go with
-                # it; the rules judge it again on the `update` events.
-                for table in ("thread_state", "thread_origin", "card_link", "nudges"):
-                    self._conn.execute(f"UPDATE OR REPLACE {table} SET channel=?, thread_key=? "
-                                       "WHERE channel=? AND thread_key=?",
-                                       (new_channel, new_key, old_channel, old_key))
-            return moved
-        return self._transaction(run)
 
     def change_message(self, channel: str, mid: str, event: str,
                        **fields: Any) -> dict | None:
@@ -2433,9 +2392,6 @@ class WebFrontend(ChatFrontend):
         self._bundle_warned: set = set()
         self._own_sign_key: bytes | None = None
         self.bundle_check_s = BUNDLE_CHECK_S
-        # The read back of a card copied from the primary's past (shadow
-        # mode: the composite sets it); None on the web chat alone.
-        self._card_lookup: _ts.CardRead | None = None
         # The state of each conversation (thread_state.ThreadStates), once the
         # host enables it; start() runs it beside the server.
         self.thread_states: _ts.ThreadStates | None = None
@@ -2477,8 +2433,7 @@ class WebFrontend(ChatFrontend):
         Call it before start()."""
         kw.setdefault("nudge", self._post_nudge)
         self.thread_states = _ts.ThreadStates(lambda: self.store, ledger=ledger, model=model,
-                                              devices=self._relay_devices,
-                                              cards=self._card_lookup, **kw)
+                                              devices=self._relay_devices, **kw)
         return self.thread_states
 
     def _post_nudge(self, channel: str, thread_key: str, text: str) -> dict | None:
@@ -2486,20 +2441,6 @@ class WebFrontend(ChatFrontend):
         shadow mode the primary's thread is left as it is. No push: the
         line waits for the owner's next look."""
         return self.store.post_nudge(channel, thread_key, self._out(text))
-
-    @property
-    def card_lookup(self) -> _ts.CardRead | None:
-        """The primary's read of a card the store holds as text from its
-        past (ShadowFrontend sets it), which the thread states use; None on
-        the web chat alone, and the states then read the stored text."""
-        return self._card_lookup
-
-    @card_lookup.setter
-    def card_lookup(self, read: _ts.CardRead | None) -> None:
-        self._card_lookup = read
-        states = getattr(self, "thread_states", None)
-        if states is not None:
-            states.cards = read
 
     def _relay_devices(self) -> list[dict] | None:
         """The relay's device rows for the new-device rule; None when no
@@ -3130,25 +3071,17 @@ class WebFrontend(ChatFrontend):
 
     def _out(self, text: str) -> str:
         """The bot's text as the web app renders it: Slack marks become
-        Markdown as on Zulip, but emoji shortcodes keep their Slack names,
-        the names reactions use, instead of taking Zulip's."""
-        held: list[str] = []
-
-        def hold(m: re.Match) -> str:
-            held.append(m.group(0))
-            return f"\x02{len(held) - 1}\x02"
-        text = _SHORTCODE_RE.sub(hold, (text or "").replace("\x02", ""))
-        out = mrkdwn_to_zulip(text, self.mention)
-        return _HELD_RE.sub(lambda m: held[int(m.group(1))] if int(m.group(1)) < len(held)
-                            else "", out)
+        Markdown, and emoji shortcodes keep their Slack names, the names
+        reactions use."""
+        return mrkdwn_to_markdown(text, self.mention)
 
     def _local_links(self, text: str) -> str:
         """The bot's Markdown with each link to one of the primary's
-        messages (a Zulip narrow, a Slack permalink) pointing at that
-        message here, when the store holds it. In shadow mode the core
-        builds its links with the primary's permalink, so the pointer "...
-        is in your DM: [open it](...)" opened Zulip from the web app."""
-        if "/near/" not in text and "/archives/" not in text:
+        messages (a Slack permalink) pointing at that message here, when the
+        store holds it. In shadow mode the core builds its links with the
+        primary's permalink, so the pointer "... is in your DM: [open it](...)"
+        would open Slack from the web app."""
+        if "/archives/" not in text:
             return text
 
         def swap(m: re.Match) -> str:
@@ -3193,7 +3126,7 @@ class WebFrontend(ChatFrontend):
 
     def _canon(self, channel: str) -> str:
         """The channel's id now (WebStore.canonical): a reference the core
-        kept from before the move to the web chat alone names the old id.
+        kept from before the import of Zulip's history names the old id.
         A front end whose store is not open yet (one built only to notify)
         takes the id as given, and opens nothing."""
         store = self._store
@@ -3717,13 +3650,6 @@ class WebFrontend(ChatFrontend):
             log.warning("web chat: links to the primary not rewritten: %s", e)
         return self.store.touch_channel(channel)
 
-    def mirror_move(self, old_channel: str, old_key: str, new_channel: str,
-                    new_key: str) -> int:
-        """A thread the primary moved (a renamed or moved Zulip topic): its
-        messages take the new channel and key. The number moved."""
-        self._ensure_channel(new_channel)
-        return self.store.move_thread(old_channel, old_key, new_channel, new_key)
-
     def _history_row(self, ref: MessageRef, *, author: str, kind: str, text: str,
                      file: dict | None = None) -> dict | None:
         """Store a message from the primary's past as a history row (no
@@ -3778,14 +3704,13 @@ class WebFrontend(ChatFrontend):
         return self.store.change_message(ref.channel, ref.id, event, **fields) or row
 
     def mirror_post(self, ref: MessageRef, text: str, author: str = BOT, *,
-                    quiet: bool = False, markdown: bool = False) -> dict | None:
+                    quiet: bool = False) -> dict | None:
         """Store a message the primary posted, under its ref. The bot's text
-        is converted as post() converts it, unless `markdown` says it is
-        Markdown already (Zulip's history); the owner's is kept as typed.
+        is converted as post() converts it; the owner's is kept as typed.
         `quiet` copies history: no event, never unread, a stored row left as
         it is and None returned for it."""
         author = OWNER if author == OWNER else BOT
-        out = self._out(text) if author == BOT and not markdown else (text or "")
+        out = self._out(text) if author == BOT else (text or "")
         out = self._local_links(out) if author == BOT else out
         new = self.store.message(ref.channel, ref.id) is None
         row = self._mirror_upsert(ref, "update", author=author, kind="message", text=out,
@@ -3794,13 +3719,12 @@ class WebFrontend(ChatFrontend):
             self._push_message(row)
         return row
 
-    def mirror_update(self, ref: MessageRef, text: str, *, markdown: bool = False) -> dict:
+    def mirror_update(self, ref: MessageRef, text: str) -> dict:
         """Replace a stored message's text (a missing one is stored); an
-        unchanged text writes nothing. `markdown` is mirror_post's: the
-        bot's text is Markdown already (Zulip's) and is kept as it is."""
+        unchanged text writes nothing."""
         row = self.store.message(ref.channel, ref.id)
         author = row["author"] if row else BOT
-        out = self._out(text) if author == BOT and not markdown else (text or "")
+        out = self._out(text) if author == BOT else (text or "")
         out = self._local_links(out) if author == BOT else out
         return self._mirror_upsert(ref, "update", author=author, kind="message", text=out,
                                    set_kind=False)
@@ -3830,13 +3754,12 @@ class WebFrontend(ChatFrontend):
         return self.store.message(channel, msg_id) is not None
 
     def mirror_file(self, ref: MessageRef, file: FileRef, author: str = BOT, *,
-                    path: str | Path | None = None, text: str = "", quiet: bool = False,
-                    markdown: bool = False) -> dict | None:
+                    path: str | Path | None = None, text: str = "",
+                    quiet: bool = False) -> dict | None:
         """Store a file message the primary posted. With `path` the bytes are
         kept too, under the primary's file id, and the web app downloads
         them from this server; without it the file has no id here and its
-        link is the primary's absolute `file.url`. `quiet` and `markdown`
-        are mirror_post's."""
+        link is the primary's absolute `file.url`. `quiet` is mirror_post's."""
         author = OWNER if author == OWNER else BOT
         if quiet and self.store.message(ref.channel, ref.id) is not None:
             return None
@@ -3852,7 +3775,7 @@ class WebFrontend(ChatFrontend):
             fj = self._file_json(fid, name, mimetype, int(kept["size"] or 0))
         else:
             fj = self._file_json("", name, mimetype, 0, file.url)
-        out = self._out(text) if author == BOT and not markdown else (text or "")
+        out = self._out(text) if author == BOT else (text or "")
         return self._mirror_upsert(ref, "file", author=author, kind="file", text=out, file=fj,
                                    quiet=quiet)
 
@@ -4089,7 +4012,7 @@ class WebFrontend(ChatFrontend):
     def web_rename(self, channel: str, name: Any) -> tuple[dict, Callable[[], None] | None]:
         """Rename a room the owner names: (its row, a call to run once the
         answer is sent). The call hands the core a `channel_rename`, as Slack
-        and Zulip do, so the room registry and the owner's record follow.
+        does, so the room registry and the owner's record follow.
         In shadow mode the composite renames it on the primary and tells the
         core itself."""
         ch = self._room_of(channel)
@@ -4416,7 +4339,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         fe, store = self.fe, self.fe.store
         n = len(segs)
         if n >= 2 and segs[0] in ("channels", "cards", "threads", "messages"):
-            # A link from before the move to the web chat alone names its
+            # A link from before the import of Zulip's history names its
             # channel by the old id.
             segs[1] = store.canonical(segs[1])
         if method == "GET":

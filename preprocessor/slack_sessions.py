@@ -330,32 +330,6 @@ def invalidate(thread_ts: str) -> None:
     _mutate(lambda rows: rows.pop(thread_ts, None) is not None)
 
 
-def move(old: str, new: str, *, channel: str = "") -> str:
-    """Re-key a thread whose conversation moved (a Zulip topic renamed,
-    moved to another stream, or merged into another topic). "moved" when
-    the row now sits under `new`; "kept" when `new` already had a row (a
-    merge: the destination's session continues and the old row goes);
-    "" when `old` had no row."""
-    outcome = [""]
-
-    def fn(rows: dict) -> bool:
-        row = rows.pop(old, None)
-        if row is None:
-            return False
-        if new in rows:
-            outcome[0] = "kept"
-            return True
-        meta = row.get("meta") or {}
-        if channel and meta.get("channel"):
-            meta["channel"] = channel
-        rows[new] = row
-        outcome[0] = "moved"
-        return True
-
-    _mutate(fn)
-    return outcome[0]
-
-
 def session_file(session_id: str) -> Path:
     """The session's transcript: in the tree's project folder, or in the
     folder of the lane directory it began in (session_cwd)."""
@@ -439,32 +413,6 @@ def set_session_effort(session_id: str, effort: str) -> int:
         return count[0] > 0
 
     _mutate(fn)
-    return count[0]
-
-
-def move_channels(moves: dict) -> int:
-    """Point each row whose meta names a channel in `moves` at that
-    channel's new id (the move from shadow mode to the web chat alone,
-    scripts/webchat-cutover.py). The rows stay under their thread keys,
-    which the move keeps. Returns how many rows changed. A registry that
-    names a moved channel but could not be rewritten (a file the resident
-    cannot write, for one: the owner's own processes wrote it, 2026-11-09)
-    raises OSError, so the move reports it instead of counting zero rows."""
-    due = sum(1 for r in _load().values()
-              if isinstance(r.get("meta"), dict) and r["meta"].get("channel") in moves)
-    count = [0]
-
-    def fn(rows: dict) -> bool:
-        for entry in rows.values():
-            meta = entry.get("meta")
-            if isinstance(meta, dict) and meta.get("channel") in moves:
-                meta["channel"] = moves[meta["channel"]]
-                count[0] += 1
-        return count[0] > 0
-
-    if not _mutate(fn) and due:
-        raise OSError(f"{REGISTRY}: {due} row(s) name a moved channel and the registry "
-                      f"could not be rewritten")
     return count[0]
 
 

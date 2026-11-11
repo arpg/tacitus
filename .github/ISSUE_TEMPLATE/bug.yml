@@ -46,7 +46,7 @@ body:
         - Briefings and the ledger
         - Drafts and the review card
         - Scheduling (solver, invites, reschedules, polls)
-        - Chat (Zulip or Slack, rooms, buttons)
+        - Chat (web chat or Slack, rooms, buttons)
         - Mail access (Outlook, Gmail, the mediator)
         - Calendar access (Outlook, Google)
         - Remote model (mail gate, writer, digests)

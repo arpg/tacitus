@@ -124,7 +124,7 @@ def _ns(monkeypatch, *, registry=None, owner="U_OWNER", dm="D_OWNER", owned=None
 def test_a_staged_route_to_someone_elses_room_falls_back(monkeypatch):
     ns, _, log = _ns(monkeypatch)
     route = ns["_staged_route"]
-    for ch in (STRANGER_ROOM, "D_STRANGER", "dm:999", "stream:77"):
+    for ch in (STRANGER_ROOM, "D_STRANGER", "r77"):
         assert route({"channel": ch, "thread_ts": "1.2"}, "C_MAIN", "9.9") == ("C_MAIN", "9.9"), ch
     assert any("not one of the owner's" in m for _, m in log.lines)
 
@@ -139,25 +139,21 @@ def test_a_staged_route_to_the_owners_own_destinations_is_kept(monkeypatch):
     assert route({}, "C_MAIN", "9.9") == ("C_MAIN", "9.9")
 
 
-def test_a_zulip_thread_key_cannot_carry_the_post_to_another_stream(monkeypatch):
-    ns, fe, _ = _ns(monkeypatch, registry={"stream:36": {"project": "atlas"}})
-    fe.rooms["stream:36"] = _chat.ChannelInfo("stream:36", "ea-atlas", is_private=True,
-                                              is_member=True)
-    fe.name = "zulip"
-    ns["CHANNEL_ID"] = "stream:4"
+def test_a_web_thread_key_cannot_carry_the_post_to_another_channel(monkeypatch):
+    ns, fe, _ = _ns(monkeypatch, dm="D_OWNER")
+    held = {"t6": ROOM, "t7": STRANGER_ROOM}
+    fe.thread_channel = lambda key: held.get(key)
+    ns["CHANNEL_ID"] = "C_MAIN"
     route = ns["_staged_route"]
-    # a key in a stream that is not the owner's is dropped
-    assert route({"thread_ts": "stream:66:topic:x"}, "stream:4", "stream:4:topic:a") == \
-        ("stream:4", "stream:4:topic:a")
+    # a key in a channel that is not the owner's is dropped
+    assert route({"thread_ts": "t7"}, "C_MAIN", "t1") == ("C_MAIN", "t1")
     # a key in the owner's room moves the post to that room
-    assert route({"thread_ts": "stream:36:topic:y"}, "stream:4", None) == \
-        ("stream:36", "stream:36:topic:y")
+    assert route({"thread_ts": "t6"}, "C_MAIN", None) == (ROOM, "t6")
     # a channel and a key that disagree: the key is dropped
-    assert route({"channel": "stream:36", "thread_ts": "stream:66:topic:x"},
-                 "stream:4", None) == ("stream:36", None)
+    assert route({"channel": ROOM, "thread_ts": "t7"}, "C_MAIN", None) == (ROOM, None)
     # a DM with anyone but the owner is refused; the owner's DM is fine
-    assert route({"channel": "dm:999"}, "stream:4", None) == ("stream:4", None)
-    assert route({"channel": "dm:U_OWNER"}, "stream:4", None) == ("dm:U_OWNER", None)
+    assert route({"channel": "D_OTHER"}, "C_MAIN", None) == ("C_MAIN", None)
+    assert route({"channel": "D_OWNER"}, "C_MAIN", None) == ("D_OWNER", None)
 
 
 def test_the_staged_poster_routes_through_the_check():
@@ -167,16 +163,16 @@ def test_the_staged_poster_routes_through_the_check():
 
 
 def test_background_delivery_uses_the_same_check(monkeypatch):
-    ns, fe, _ = _ns(monkeypatch, registry={"stream:36": {"project": "atlas"}})
-    fe.rooms["stream:36"] = _chat.ChannelInfo("stream:36", "ea-atlas", is_private=True,
-                                              is_member=True)
+    ns, fe, _ = _ns(monkeypatch)
+    held = {"t6": ROOM, "t7": STRANGER_ROOM}
+    fe.thread_channel = lambda key: held.get(key)
     ns["CHANNEL_ID"] = "C_MAIN"
     deliver = ns["_delivery_channel"]
-    assert deliver("stream:36:topic:a") == "stream:36"
-    assert deliver("stream:66:topic:a") == "C_MAIN"
-    fe.members["stream:36"] = {"U_OWNER", "U_BOT", "U_GUEST"}
+    assert deliver("t6") == ROOM
+    assert deliver("t7") == "C_MAIN"
+    fe.members[ROOM] = {"U_OWNER", "U_BOT", "U_GUEST"}
     ns["_ROOM_MEMBERS_CACHE"].clear()
-    assert deliver("stream:36:topic:a") == "C_MAIN"
+    assert deliver("t6") == "C_MAIN"
 
 
 def test_a_web_thread_key_finds_its_channel_through_the_store(monkeypatch):
@@ -192,7 +188,7 @@ def test_a_web_thread_key_finds_its_channel_through_the_store(monkeypatch):
         ("D_OWNER", ROOM, "C_MAIN", "C_MAIN")
     assert route({"thread_ts": "t6"}, "C_MAIN", None) == (ROOM, "t6")
     assert route({"thread_ts": "t7"}, "C_MAIN", "9.9") == ("C_MAIN", "9.9")
-    # a front end without the lookup (Slack, Zulip, a composite) is as before
+    # a front end without the lookup (Slack, a composite) is as before
     del fe.thread_channel
     assert deliver("t5") == "C_MAIN" and ns["_thread_channel"]("1.2") is None
 
@@ -220,34 +216,13 @@ def test_a_room_whose_members_cannot_be_read_is_not_served(monkeypatch):
 
 
 def test_a_registry_row_alone_does_not_make_a_room_the_owners(monkeypatch):
-    # ea-bot registers a public stream, or a room it does not share with the owner
+    # ea-bot registers a public room, or a room it does not share with the owner
     ns, fe, _ = _ns(monkeypatch, registry={STRANGER_ROOM: {"project": "x"}})
     fe.rooms[STRANGER_ROOM].is_private = False
     assert ns["_channel_scope"](STRANGER_ROOM) is None
     ns2, fe2, _ = _ns(monkeypatch, registry={STRANGER_ROOM: {"project": "x"}})
     fe2.members[STRANGER_ROOM] = {"U_BOT", "U_PARTNER"}
     assert ns2["_channel_scope"](STRANGER_ROOM) is None
-
-
-def test_the_zulip_frontend_reads_stream_members(tmp_path):
-    from preprocessor.chat.zulip_frontend import ZulipFrontend
-
-    class Client:
-        def __init__(self, res):
-            self.res = res
-
-        def get_stream_id(self, name):
-            return {"result": "error"}
-
-        def call_endpoint(self, url, method, request):
-            assert url == "streams/36/members"
-            return self.res
-
-    fe = ZulipFrontend({"site": "https://z.example"}, api_key="k", private_dir=tmp_path,
-                       client=Client({"result": "success", "subscribers": [8, 9]}))
-    assert fe.channel_members("stream:36") == {"8", "9"}
-    fe.client = Client({"result": "error", "msg": "no"})
-    assert fe.channel_members("stream:36") is None
 
 
 # ── finding: room paths acted on any registry row ─────────────────────
@@ -261,24 +236,24 @@ def test_a_registry_row_for_a_room_the_bot_did_not_create_is_not_served(monkeypa
     assert any("not a room the bot created" in m for _, m in log.lines)
 
 
-def test_the_bots_own_streams_are_never_rooms(monkeypatch):
-    # ea-bot registers the EA channel, the DM, or the health stream as a room
-    health = "stream:90"
+def test_the_bots_own_channels_are_never_rooms(monkeypatch):
+    # ea-bot registers the EA channel, the DM, the scheduling channel, or a
+    # room named like the EA channel as a room
+    lookalike = "r90"
     reg = {"C_MAIN": {"project": "x"}, "D_OWNER": {"project": "x"}, SCHED: {"project": "x"},
-           health: {"project": "x"}}
+           lookalike: {"project": "x"}}
     ns, fe, _ = _ns(monkeypatch, registry=reg)
-    fe.cfg = {"stream": "ea", "dm_stream": "ea-dm",
-              "notify": {"health": {"stream": "ea-health"}}}
-    fe.rooms[health] = _chat.ChannelInfo(health, "ea-health", is_private=True, is_member=True)
+    fe.rooms[lookalike] = _chat.ChannelInfo(lookalike, fe.main_channel_name, is_private=True,
+                                            is_member=True)
     for cid in reg:
         assert ns["_channel_scope"](cid) is None, cid
-        assert not ns["_owned_room"](cid) or cid == health, cid
-    assert "ea-health" in ns["_core_room_names"]()
+        assert not ns["_owned_room"](cid) or cid == lookalike, cid
+    assert fe.main_channel_name in ns["_core_room_names"]()
 
 
 ROOM_FNS = ("_untrusted_room_text", "_post_room_intro", "_record_owner_room",
             "_open_project_channel", "_open_session_channel", "_room_back_link",
-            "_room_hygiene_pass", "_adopt_registered_rooms", "on_thread_moved")
+            "_room_hygiene_pass", "_adopt_registered_rooms")
 
 
 class _Store(types.ModuleType):
@@ -328,8 +303,7 @@ def _room_ns(monkeypatch, *, registry, owned=None, status=None):
                       _project_opening_post=lambda pid: f"PACK {pid}",
                       _publish_home=lambda: None, dataclasses=__import__("dataclasses"),
                       _room_picker=lambda *a: {"ok": True, "picker": True, "text": "picker"},
-                      _rooms_on=lambda: True, ROOMS_OFF_TEXT="rooms are off",
-                      _follow_thread_move=lambda *a: notes.append(("moved", a)))
+                      _rooms_on=lambda: True, ROOMS_OFF_TEXT="rooms are off")
     monkeypatch.setattr(_ea_channels, "scope_of", lambda c, path=None: reg.get(c))
     for name in ROOM_FNS:
         exec(compile(_fn_body(name), f"ea-chat-bot.py[{name}]", "exec"), ns)
@@ -340,8 +314,8 @@ def _room_posts(fe, cid):
     return [p for p in fe.posts if p["channel"] == cid]
 
 
-def test_a_staged_reopen_of_a_stream_the_bot_did_not_create_is_refused(monkeypatch):
-    # the resident registers someone else's archived stream for an active
+def test_a_staged_reopen_of_a_room_the_bot_did_not_create_is_refused(monkeypatch):
+    # the resident registers someone else's archived room for an active
     # project and stages pending-channel.json: no unarchive, no pack posted
     ns, fe, log, reg, _ = _room_ns(
         monkeypatch, owned=[],
@@ -403,7 +377,7 @@ def test_a_new_room_is_recorded_owner_side_and_served(monkeypatch):
     assert [p["text"] for p in _room_posts(fe, cid)] == ["PACK borealis"]
 
 
-def test_room_hygiene_leaves_a_stream_the_bot_did_not_create(monkeypatch):
+def test_room_hygiene_leaves_a_room_the_bot_did_not_create(monkeypatch):
     # a dormant project whose registry row names the EA channel, or a room
     # not in the owner record: neither is archived
     reg = {"C_MAIN": {"project": "atlas", "name": "ea"},
@@ -458,35 +432,22 @@ def test_the_record_begins_with_the_rooms_that_hold_only_the_owner_and_the_bot(m
     assert not ns["_owner_rooms"].has(extra)
 
 
-def test_only_the_owners_or_the_bots_move_rekeys_a_thread(monkeypatch):
-    ns, fe, log, _, notes = _room_ns(monkeypatch, registry={})
-    ns["BOT_USER_ID"] = "U_BOT"
-    mv = {"old": "stream:4:topic:a", "new": "stream:9:topic:a", "channel": "stream:9",
-          "old_channel": "stream:4"}
-    for who in ("U_STRANGER", "", None):
-        ns["on_thread_moved"]({**mv, "user_id": who} if who is not None else dict(mv))
-    assert not notes and any("ignored" in m for _, m in log.lines)
-    ns["on_thread_moved"]({**mv, "user_id": "U_OWNER"})
-    ns["on_thread_moved"]({**mv, "user_id": "U_BOT"})
-    assert len(notes) == 2
-
-
 def test_the_owner_room_record_is_owner_private(tmp_path, monkeypatch):
     from preprocessor import owner_rooms
     priv = tmp_path / "priv"
     priv.mkdir(mode=0o700)
     monkeypatch.setenv("EA_PRIVATE_DIR", str(priv))
-    assert owner_rooms.load() is None and not owner_rooms.has("stream:5")
-    assert owner_rooms.start({"stream:5": {"name": "ea-atlas"}}) == ["stream:5"]
-    assert owner_rooms.start({"stream:6": {}}) is None
-    owner_rooms.record("stream:7", name="tmp-1", kind="session")
-    assert owner_rooms.has("stream:7") and owner_rooms.get("stream:5")["how"] == "adopted"
-    assert owner_rooms.update("stream:5", archived_by_bot=True)
-    assert not owner_rooms.update("stream:6", archived_by_bot=True)
+    assert owner_rooms.load() is None and not owner_rooms.has("r5")
+    assert owner_rooms.start({"r5": {"name": "ea-atlas"}}) == ["r5"]
+    assert owner_rooms.start({"r6": {}}) is None
+    owner_rooms.record("r7", name="tmp-1", kind="session")
+    assert owner_rooms.has("r7") and owner_rooms.get("r5")["how"] == "adopted"
+    assert owner_rooms.update("r5", archived_by_bot=True)
+    assert not owner_rooms.update("r6", archived_by_bot=True)
     assert (priv / owner_rooms.FILE).stat().st_mode & 0o077 == 0
     # a record anyone else can write counts as no record
     (priv / owner_rooms.FILE).chmod(0o666)
-    assert not owner_rooms.has("stream:5")
+    assert not owner_rooms.has("r5")
 
 
 def test_every_room_path_goes_through_the_check():
@@ -577,15 +538,6 @@ def test_the_catchup_dispatches_only_the_owners_messages(monkeypatch):
     fe.thread_replies = lambda ch, ts, n: [parent, reply]
     ns["_catchup_walk"]([parent])
     assert spawned == []
-
-
-def test_a_zulip_owner_with_a_bot_like_address_is_still_the_owner():
-    from preprocessor.chat.zulip_frontend import inbound_from_message
-    m = {"id": 5, "sender_id": 8, "sender_email": "ana-bot@z.example", "type": "stream",
-         "stream_id": 4, "subject": "t", "content": "hi"}
-    assert not inbound_from_message(m, 1, 8, None, lambda k, i: False).is_bot
-    other = dict(m, sender_id=9)
-    assert inbound_from_message(other, 1, 8, None, lambda k, i: False).is_bot
 
 
 def test_the_on_message_gate_checks_the_owner_by_id():

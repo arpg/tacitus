@@ -294,8 +294,7 @@ def auto_closed(entry: dict) -> str:
 
 def proposal_card(messages: list[dict], now: float) -> tuple[dict, list[str]] | None:
     """The live "This looks done" card in a thread and the ledger ids its
-    buttons name (each action's `ledger_id` or `ledger_ids`), or None.
-    A card copied as text from Zulip's past names no ids."""
+    buttons name (each action's `ledger_id` or `ledger_ids`), or None."""
     for m in reversed(messages or []):
         card = m.get("card") if isinstance(m.get("card"), dict) else {}
         if card.get("kind") != "close" or not _ts._live(m, now):

@@ -127,7 +127,6 @@ def test_a_link_at_the_registry_name_hands_over_nothing(mode, kind, monkeypatch)
     ss.remember(DECOY_TS, channel="C0MAIN")
     ss.set_title(DECOY_TS, "renamed")
     ss.mark_used(DECOY_TS)
-    ss.move(DECOY_TS, "1788000000.000002")
     ss.invalidate(DECOY_TS)
     ss.prune(max_age_days=0)
 
@@ -166,7 +165,6 @@ def test_a_registry_that_cannot_be_read_is_not_written_over(monkeypatch):
     ss.remember("t1", channel="C0MAIN")
     ss.set_title("t1", "renamed")
     ss.mark_used("t1")
-    ss.move("t1", "t5")
     ss.invalidate("t2")
     ss.prune(max_age_days=0)
 

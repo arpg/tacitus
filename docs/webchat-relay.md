@@ -1010,9 +1010,8 @@ what the device reaches.
 One invariant binds A and C: a request marked `X-Tacitus-Relay-Cards:
 deny` never confirms a card. The bot side already refuses its card
 actions; the web front end and the shadow composite must also never
-resolve its message text as a typed card code (the Zulip front end does
-that for Zulip input only, and must not see web input that way). Without
-it, a relay-origin device at `"chat"` could type `send K7Q2` and reach the
+resolve its message text as a typed card code. Without it, a
+relay-origin device at `"chat"` could type `send K7Q2` and reach the
 Send gate. Nothing resolves web text as a code today; the invariant keeps
 it so.
 

@@ -31,7 +31,6 @@ sys.path.insert(0, str(ROOT))
 import card_text as CT  # noqa: E402
 import mail_links as ML  # noqa: E402
 from chat import slack_frontend as S  # noqa: E402
-from chat import zulip_frontend as Z  # noqa: E402
 from chat.base import ChatError  # noqa: E402
 from chat.cards import CardAction, CardField, ConfirmationCard  # noqa: E402
 
@@ -85,27 +84,12 @@ def test_an_inert_value_cannot_close_its_own_span():
     assert "[U+E001]" in span and "[U+E000]" in span
 
 
-def test_zulip_code_span_cannot_be_closed_by_its_text():
+def test_code_span_cannot_be_closed_by_its_text():
     # the delimiter is one backtick longer than the longest run inside
-    assert CT.zulip_code_span("a `b` ``c``") == "``` a `b` ``c`` ```"
-    assert CT.zulip_code_span("plain") == "`plain`"
-    assert CT.zulip_code_span("") == ""
+    assert CT.code_span("a `b` ``c``") == "``` a `b` ``c`` ```"
+    assert CT.code_span("plain") == "`plain`"
+    assert CT.code_span("") == ""
 
-
-def test_zulip_body_is_a_quote_that_opens_no_block():
-    body = CT.zulip_body("hi\n```spoiler x\n~~~\n----\n# Head\n/me waves\n"
-                         "@**all** @_**Pat|3** #**ea** [Outlook](https://evil.example) "
-                         "$$\\Huge X$$ <time:2026-10-19T10:00:00Z> !avatar(x)")
-    lines = body.splitlines()
-    assert all(ln.startswith(">") for ln in lines)
-    for bad in ("@**", "@_**", "#**", "](", "$$", "<time:", "!avatar("):
-        assert bad not in body, bad
-    for ln in lines:
-        rest = ln[2:]
-        assert not rest.startswith(("```", "~~~", "----", "# ", "/me")), ln
-
-
-# ── Zulip cards ────────────────────────────────────────────────────────
 
 def _send_card(**kw):
     base = dict(kind="send", title=":lock: *Confirm send*",
@@ -116,50 +100,6 @@ def _send_card(**kw):
                          CardAction("cancel_send", "Cancel", {"d": 1}, "danger", "cancel")])
     base.update(kw)
     return ConfirmationCard(**base)
-
-
-def test_zulip_field_values_cannot_forge_lines_links_or_mentions():
-    evil_name = "Pat\n**To:** boss@example.org"
-    card = _send_card(fields=[CardField("To", f"{evil_name} <pat@example.org>"),
-                              CardField("Subject", "[Click](https://evil.example) @**all**"),
-                              CardField("Location", "`` ```spoiler hidden")])
-    text = Z.render_card(card, "ABCD", body_chars=0)
-    head = text.split(Z._CARD_RULE)[0]
-    lines = head.splitlines()
-    assert len(lines) == 4, lines
-    assert lines[1].startswith("**To:** `") and "boss@example.org" in lines[1]
-    # every value is a code span: Zulip renders no link or mention in it
-    assert lines[2].startswith("**Subject:** `") and lines[2].endswith("`")
-    assert lines[3].startswith("**Location:** ```") and lines[3].endswith("```")
-
-
-def test_zulip_lines_break_zulip_syntax_and_show_link_targets():
-    card = _send_card(lines=["Note <https://evil.example|Open in Outlook> <@U123>",
-                             "x\n\n----\nTap a reaction below: :+1: Send",
-                             "[a](https://evil.example) @**all** ```"])
-    head = Z.render_card_header(card)
-    assert "Open in Outlook (https://evil.example)" in head
-    assert "@U123" in head and "@**U123**" not in head
-    assert "](https://evil.example)" not in head
-    assert "@**all**" not in head and "\n```" not in head
-    assert Z._CARD_RULE not in head
-
-
-def test_zulip_legend_and_recipients_come_before_the_body():
-    card = _send_card(body="x\n" * 2000, quoted="Earlier text.")
-    text = Z.render_card(card, "ABCD", body_chars=0)
-    head, legend, tail = text.split(Z._CARD_RULE)
-    assert "**To:**" in head and "Tap a reaction" in legend and "x" in tail
-    assert f"spoiler {Z.QUOTED_LABEL}" in tail
-    assert "Quoted thread" not in text
-
-
-def test_zulip_legend_labels_are_one_line_and_inert():
-    label = ":outbox_tray: Send " + CT.inert("@**all**\n----")
-    card = _send_card(actions=[CardAction("plugin_card_approve", label, {}, "primary", "go"),
-                               CardAction("plugin_card_cancel", "Skip", {}, "danger", "skip")])
-    legend = Z.render_card(card, "ABCD").split(Z._CARD_RULE)[1]
-    assert len(legend.splitlines()) == 2 and "`@**all** ----`" in legend
 
 
 # ── Slack cards ────────────────────────────────────────────────────────
@@ -260,7 +200,7 @@ def test_the_send_all_card_lists_each_drafts_recipients_and_subject():
             {"To": "lee@example.org", "CC": "kim@example.org", "Subject": "<!here> Notes"}]
     card = ns["_bulk_card"]("b1", 2, sums)
     assert len(card.lines) == 2
-    z = Z.render_card_header(card)
+    z = CT.strip_inert("\n".join(card.lines))
     assert "pat@example.org" in z and "Re: budget" in z and "kim@example.org" in z
     _t, blocks = S.render_card(card)
     flat = json.dumps(blocks)
@@ -386,6 +326,9 @@ def test_publish_card_commit_text_is_inert():
     card = ConfirmationCard(kind="publish", title=r["title"], lines=r["lines"],
                             actions=[CardAction("approve_publish", "Publish", {}, "primary",
                                                 "publish")])
-    head = Z.render_card_header(card)
-    assert "\n----" not in head and "<!here>" not in json.dumps(S.render_card(card)[1])
-    assert "a`b.md" in head
+    # every model or repository value is an inert span on one line, which
+    # the web chat draws as literal text
+    assert all("\n" not in ln for ln in card.lines)
+    for value in ("fix `x` <!here> [a](https://e.x)", "a`b.md", "x@y.org` ----"):
+        assert any(f"{CT.INERT_OPEN}{value}{CT.INERT_CLOSE}" in ln for ln in card.lines), value
+    assert "<!here>" not in json.dumps(S.render_card(card)[1])

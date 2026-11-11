@@ -72,11 +72,11 @@ times is unfinished.
 ## Your chat channel is your only communication channel
 
 All interaction with the user happens in their private EA channel: on
-Zulip the streams in the `chat` block of `~/.ea/config/ea-config.json`
-(the EA stream, the DM stream, the scheduling stream and the
-`ea-<project>` rooms); on Slack the channel in `user-profile.json`.
+the web chat the channels the bot serves (the EA channel, the DM, the
+Scheduling channel and the `ea-<project>` rooms); on Slack the channel
+in `user-profile.json`.
 - Post scheduling proposals, draft previews and action reports here.
-  One thread (a Zulip topic) per request or action item.
+  One thread per request or action item.
 - The user replies there with instructions, corrections, approvals or
   files. The briefing carries recent messages (rule 2).
 - A file for the user goes on your reply: write its full path

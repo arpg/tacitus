@@ -1,13 +1,14 @@
-"""The chat frontend layer: one interface in front of Slack, Zulip or an
-in-memory fake. The platform code lives in the shared botcore package
-(botcore/botcore/chat); this package is the EA's side of it: config
-loading, secrets, and the writer for downloaded files. Its submodules
-(chat.base, chat.slack_frontend, ...) are the botcore modules themselves.
+"""The chat frontend layer: one interface in front of Slack, the bot's
+own web chat or an in-memory fake. The platform code lives in the shared
+botcore package (botcore/botcore/chat); this package is the EA's side of
+it: config loading, secrets, and the writer for downloaded files. Its
+submodules (chat.base, chat.slack_frontend, ...) are the botcore modules
+themselves.
 
 `load_frontend()` builds the frontend named by `chat.frontend` in
 ea-config.json ("slack" by default; "web" is the bot's own web chat,
 docs/webchat.md). The platform modules are imported only when chosen, so
-a Slack deployment never imports the Zulip client and the reverse.
+a web chat deployment never imports the Slack client and the reverse.
 `prompt_strings_for_config()` gives the platform's prompt wording without
 constructing a client, for code that assembles prompts outside the bot.
 """
@@ -101,10 +102,10 @@ __all__ = [
     "parse_code_text", "primary_action", "resolve_code", "resolve_reaction",
     "CODE_ALPHABET", "THREAD_KEY_RE", "ActionEvent", "ChannelInfo", "FileRef",
     "InboundMessage", "MessageRef", "RoomRef", "Status", "ViewEvent",
-    "load_frontend", "load_web_frontend", "prompt_strings_for_config", "private_dir", "web_writer",
+    "load_frontend", "load_web_frontend", "prompt_strings_for_config", "private_dir",
 ]
 
-FRONTENDS = ("slack", "zulip", "memory", "web")
+FRONTENDS = ("slack", "memory", "web")
 
 
 def private_dir() -> Path:
@@ -209,27 +210,6 @@ def _cli_may_write_web(cfg: Mapping) -> bool:
     return False
 
 
-def web_writer(*, ea_dir: str | Path | None = None) -> ChatFrontend | None:
-    """The web chat's store opened writer-only, for a command-line sender
-    that posts to the primary without a frontend (chat_notify's Zulip
-    client) and mirrors the post itself. None unless the chat block names
-    the `web` shadow and this is an owner process (as load_frontend), and
-    None when the store does not open (logged)."""
-    cfg, trusted = ea_config.get_chat_source(_config_path(ea_dir))
-    if str(cfg.get("shadow") or "") != "web" or cfg.get("frontend") == "web":
-        return None
-    if not _cli_may_write_web(cfg):
-        return None
-    try:
-        web = _build_web(_with_web_store(cfg, ea_dir), writer_only=True, trusted=trusted)
-        web.start()
-    except Exception:
-        logging.getLogger("chat").exception(
-            "the web chat's store did not open; posts reach %s only", cfg.get("frontend"))
-        return None
-    return web
-
-
 def load_web_frontend(*, ea_dir: str | Path | None = None) -> ChatFrontend | None:
     """The web chat front end the chat block runs (as `frontend` or as
     `shadow`), built and not started, for a process outside the bot that
@@ -314,13 +294,6 @@ def _load_primary(cfg: dict, *, for_cli: bool, ea_dir: str | Path | None,
         if ea_dir is None and owner_trust.is_owner_process():
             env = _trusted_slack_owner(env, cfg, for_cli)
         return mod.SlackFrontend.from_env(env, for_cli=for_cli)
-    if name == "zulip":
-        mod = _platform_module("zulip")
-        api_key = owner_trust.owner_secret("ZULIP_API_KEY", env=env, legacy=legacy)
-        if not api_key:
-            raise KeyError("ZULIP_API_KEY")
-        return mod.ZulipFrontend(cfg["zulip"], api_key=api_key,
-                                 private_dir=private_dir())
     if name == "memory":
         from .memory_frontend import MemoryFrontend
         return MemoryFrontend.from_config(cfg.get("memory", {}))
@@ -383,9 +356,6 @@ def prompt_strings_for_config(ea_dir: str | Path | None = None) -> dict[str, str
     The memory frontend uses the Slack wording."""
     cfg = ea_config.get_chat(_config_path(ea_dir))
     name = cfg.get("frontend")
-    if name == "zulip":
-        return _platform_module("zulip").ZulipFrontend.prompt_strings_for(
-            str((cfg.get("zulip") or {}).get("dm_stream") or ""))
     if name == "slack":
         return dict(_platform_module("slack").SlackFrontend.PROMPT_STRINGS)
     if name == "memory":

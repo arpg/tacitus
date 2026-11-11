@@ -35,7 +35,7 @@ hours. One tip is open at a time. The post goes through `chat_notify` to
 the EA channel, its own thread, with a push to the web chat's phones at
 normal urgency. A tap on the push opens the tip's own conversation when
 the web chat holds it (`chat_notify.post` returns the thread's key on
-the web chat and beside Zulip; `chat.direct.web_thread_url` makes its
+the web chat; `chat.direct.web_thread_url` makes its
 address), else the app's start page.
 
 **A tip with no answer.** A tip that got no answer 7 days after it

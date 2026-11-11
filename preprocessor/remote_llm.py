@@ -500,8 +500,8 @@ def _breaker(purpose: str = ""):
     failing experiment never blocks the live tick or the scheduling agent."""
     # The tool gateway's turns have their own too: a harness that
     # overruns the context must not close the mail gate's breaker. So do
-    # the chat bot's small jobs (`chat-*`: thread titles, the dash
-    # rewrite, context export), whose short timeouts expire while the
+    # the chat bot's small jobs (`chat-*`: the dash rewrite, context
+    # export), whose short timeouts expire while the
     # server loads a cold model.
     # An image read has its own: a model that times out on a large picture
     # must not close the mail gate's breaker.

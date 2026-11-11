@@ -31,9 +31,6 @@ DAY = 86400.0
 SECRET = "Avery Quill"
 SUBJECT = "the travel budget for the spring visit"
 
-ZHEAD = ":locked: **Confirm send**\n**To:** `avery@example.test`"
-ZRULE = "\n\n----\n"
-ZBODY = f"**Body:**\n> Dear {SECRET}, about {SUBJECT}."
 
 
 def _iso(t: float) -> str:
@@ -83,8 +80,6 @@ def _web_store(path: Path) -> SimpleNamespace:
     s = WebStore(path)
     s.upsert_channel("main", "ea", "main")
     s.upsert_channel("dm", "dm", "dm")
-    s.upsert_channel("stream:4", "ea", "main")
-    s.upsert_channel("stream:6", "ea-dm", "dm")
     # Thread A: the owner asks for a draft; the bot points at the Send card
     # in the DM, which the owner pressed.
     a = s.add_message("main", mid=None, thread_key=None, author="owner", kind="message",
@@ -108,19 +103,8 @@ def _web_store(path: Path) -> SimpleNamespace:
     seq = s.newest_seq("main", a["thread_key"])
     s.set_thread_state("main", a["thread_key"], "needs_you", "model",
                        "The draft waits for you.", judged_seq=seq)
-    # Zulip's past: the owner's ask, the pointer and the card it names.
-    zkey = "stream:4:topic:Budget%20reply%20to%20Avery"
-    s.add_message("stream:4", mid="8000", thread_key=zkey, author="owner", kind="message",
-                  text=f"Reply to {SECRET} and say yes.", posted_at=T0, history=True)
-    s.add_message("stream:4", mid="8001", thread_key=zkey, author="bot", kind="message",
-                  text=(":locked: The Send button for this draft is in your DM: [open it]"
-                        "(https://zulip.example.test/#narrow/channel/6-ea-dm/topic/x/near/9001)"),
-                  posted_at=T0 + 30, history=True)
-    s.add_message("stream:6", mid="9001", thread_key="stream:6:topic:lock ABCD", author="bot",
-                  kind="message", posted_at=T0 + 20, history=True,
-                  text=ZHEAD + ZRULE + ":mail_received: Sent from Outlook." + ZRULE + ZBODY)
     s.close()
-    return SimpleNamespace(a=a["thread_key"], b=b["thread_key"], zkey=zkey, card=card["id"])
+    return SimpleNamespace(a=a["thread_key"], b=b["thread_key"], card=card["id"])
 
 
 @pytest.fixture
@@ -174,9 +158,9 @@ def _by(recs, source):
 def test_collect_reads_every_source(tree):
     out = cl.collect()
     assert out["errors"] == {}
-    assert out["added"] == {"owner-tap": 2, "card": 2, "model": 1, "ledger": 6, "owner-said": 1}
+    assert out["added"] == {"owner-tap": 2, "card": 1, "model": 1, "ledger": 6, "owner-said": 1}
     recs = cl.load(tree.labels)
-    assert len(recs) == 12 and Path(out["path"]) == tree.labels
+    assert len(recs) == 11 and Path(out["path"]) == tree.labels
 
 
 def test_an_owner_tap_carries_the_thread_as_it_stood(tree):
@@ -203,17 +187,12 @@ def test_an_owner_tap_carries_the_thread_as_it_stood(tree):
 def test_a_card_outcome_joins_the_conversation_that_asked_for_it(tree):
     cl.collect()
     cards = {r["kind"]: r for r in _by(cl.load(tree.labels), "card")}
-    assert set(cards) == {"acted", "outside"}
+    assert set(cards) == {"acted"}
     web = cards["acted"]
     assert web["label"] == "done" and web["features"]["card_kind"] == "send"
     # the pointer in thread A names it: the card belongs to that conversation
     assert web["thread_ref"] == cl.thread_ref("main", tree.keys.a)
     assert web["features"]["interaction_type"] == "owner_ask" and web["origin"] == "card"
-    zulip = cards["outside"]
-    assert zulip["features"]["card_outcome"] == "outside"
-    assert zulip["thread_ref"] == cl.thread_ref("stream:4", tree.keys.zkey)
-    assert zulip["subject_type"] == "drafting_email"
-    assert zulip["features"]["interaction_type"] == "owner_ask"
 
 
 def test_the_ledger_rows_events_and_dispositions(tree):
@@ -395,9 +374,8 @@ def test_the_store_is_owner_only(tree):
     (":prohibited: Send cancelled. Draft kept in Outlook.", "declined"),
     (":no_entry_sign: Not published", "declined"),
     (":x: Send failed", "failed"),
-    (":cross_mark: Could not authorize this card: expired", "failed"),
+    (":x: Could not authorize this card: expired", "failed"),
     (":hourglass_flowing_sand: Sending...", "busy"),
-    (":time_ticking: Sending...", "busy"),
 ])
 def test_a_status_line_is_one_outcome_word(line, want):
     assert cl.outcome_class(line) == want

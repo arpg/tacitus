@@ -23,7 +23,7 @@ const QUOTED_LABEL = 'Rest of the body: the earlier messages it quotes';
 const CANCEL_WORDS = ['cancel', 'keep', 'skip', 'dismiss', 'one by one'];
 const RECIPIENT_LABELS = new Set(['to', 'cc', 'bcc', 'reply-to', 'from', 'attendees', 'optional']);
 
-// Shortcode -> glyph, under the Slack name and the Zulip name of each emoji.
+// Shortcode -> glyph, under the Slack name and the Zulip name (imported history).
 const EMOJI = Object.fromEntries(Object.entries({
   '🔒': 'lock locked', '🔓': 'unlock unlocked', '📧': 'email e-mail', '✉️': 'envelope',
   '📨': 'incoming_envelope mail_received', '📩': 'envelope_with_arrow mail_sent',
@@ -227,7 +227,7 @@ const INLINE = {
   code: /(?<tick>`+)(?<code>[^\n]+?)\k<tick>(?!`)/,
   mdlink: /\[(?<label>[^\]\n]+)\]\((?<href>[^()\s]+)\)/,
   angle: /<(?<aurl>(?:https?|mailto):[^|>\s]+)(?:\|(?<alabel>[^>\n]*))?>/,
-  // A Zulip mention or stream link, @**Name|id** or #**stream**, shows its name.
+  // A mention shows its name: @**Name**, and @**Name|id** or #**stream** in imported history.
   mention: /(?<sigil>[@#])_?\*\*(?<mention>[^*|\n]+?)(?:\|\d+)?\*\*/,
   bold: /\*\*(?=\S)(?<bold>[^\n]*?\S)\*\*/,
   strike: /~~(?=\S)(?<strike>[^\n]*?\S)~~/,
@@ -238,8 +238,8 @@ const INLINE = {
   url: /(?<url>\bhttps?:\/\/[^\s<>]*[^\s<>.,;:!?'")\]*_~])/,
 };
 const join = (names) => names.map((n) => INLINE[n].source).join('|');
-// Markdown is the text the core writes for Zulip; card text is Slack
-// mrkdwn as the card builders write it (*bold*, _italic_, <url|label>).
+// Markdown is the text the store holds, history imported from Zulip too; card
+// text is Slack mrkdwn as the card builders write it (*bold*, _italic_, <url|label>).
 const MD_SRC = join(['inert', 'code', 'mdlink', 'angle', 'mention', 'bold', 'strike', 'star', 'emoji', 'url']);
 const CARD_SRC = join(['inert', 'code', 'angle', 'bold', 'strike', 'star', 'under', 'tilde', 'emoji', 'url']);
 
@@ -276,7 +276,7 @@ function emojiNode(name) {
 }
 
 // Appends `text` to `out` with inline markup; card mode reads Slack mrkdwn
-// and shows a labelled link's target, as the Zulip card renderer does.
+// and shows a labelled link's target, so a label cannot hide where it goes.
 function inline(text, card, out) {
   const re = new RegExp(card ? CARD_SRC : MD_SRC, 'g');
   const wrap = (tag, inner) => inline(inner, card, h(tag));
@@ -355,8 +355,8 @@ function table(lines, i, out) {
   return i;
 }
 
-// Zulip-flavoured markdown to a fragment: fences (and spoiler and quote
-// fences), headings, rules, quotes, lists, pipe tables and paragraphs.
+// The stored Markdown to a fragment: fences (and imported history's spoiler and
+// quote fences), headings, rules, quotes, lists, pipe tables and paragraphs.
 function markdown(text) {
   const out = document.createDocumentFragment();
   const lines = String(text ?? '').replace(/\r\n?/g, '\n').split('\n');

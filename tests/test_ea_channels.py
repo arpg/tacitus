@@ -108,25 +108,24 @@ def test_registration_refuses_bad_input():
 
 
 def test_room_ids_of_every_frontend_register():
-    """A room is keyed by the id its frontend gives: a Slack channel, a
-    Zulip stream, a web chat room. Nothing else is a room id, the web
-    chat's own channels and reserved ids included."""
+    """A room is keyed by the id its frontend gives: a Slack channel or a
+    web chat room. Nothing else is a room id, the web chat's own channels
+    and reserved ids included."""
     _fresh()
-    for cid in ("C0PROJ0001", "G0SESS0001", "stream:42", "r1", "r27", "r1000"):
+    for cid in ("C0PROJ0001", "G0SESS0001", "r1", "r27", "r1000"):
         assert ch.register(cid, "atlas", "ea-atlas")["project"] == "atlas", cid
         assert ch.scope_of(cid)["kind"] == "project", cid
     assert ch.register("r3", name="tmp-d488ed1f", session_id=SID)["kind"] == "session"
     assert ch.for_session(SID) == ["r3"]
     for cid in ("main", "dm", "needs", "r", "r0", "r01", "R1", "r1x", "rr1", "r1 x",
-                "stream:", "stream:x", "dm:7", "D0DIRECT01", "c0lower001", "C0SHRT",
+                "stream:42", "stream:", "dm:7", "D0DIRECT01", "c0lower001", "C0SHRT",
                 "t1", "w1", "r-1"):
         try:
             ch.register(cid, "atlas", "ea-atlas")
         except ValueError:
             continue
         raise AssertionError(f"accepted {cid!r}")
-    assert set(ch.load()) == {"C0PROJ0001", "G0SESS0001", "stream:42", "r1", "r27", "r1000",
-                              "r3"}
+    assert set(ch.load()) == {"C0PROJ0001", "G0SESS0001", "r1", "r27", "r1000", "r3"}
 
 
 def test_writes_are_in_place_and_keep_doc_keys():

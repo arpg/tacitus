@@ -10,8 +10,8 @@ tree, and once it exists its size, message count and newest message).
 Then the nightly snapshot (warns past two days), the push subscriptions
 (warns on a browser that keeps failing) and the relay as the running bot
 reports it (warns when it has not been connected for ten minutes, and
-while a device waits for approval). Beside Zulip (shadow mode) it reports
-the Zulip checks and these.
+while a device waits for approval). Beside Slack (shadow mode) it reports
+the Slack checks and these.
 In a container (EA_CONTAINER=docker, set by compose.yaml) the chat sits
 behind a TLS proxy on a host name of its own: a public_url without a
 port passes, a loopback bind warns, and the fixes name docker compose.
@@ -64,7 +64,7 @@ def test_a_coherent_web_block_passes(tmp_path):
         assert rows[name]["status"] == "PASS", rows[name]
     assert "127.0.0.1:8470/chat" in rows["web chat: settings"]["detail"]
     assert LOGIN in rows["web chat: sign-in"]["detail"]
-    assert "chat: frontend" not in rows                       # web is a known frontend
+    assert rows["chat frontend"]["status"] == "PASS"           # web is a known frontend
     assert rows["chat frontend"]["detail"] == "web"
     assert not [n for n in rows if n.startswith(("slack:", "secret:", "env: EA_SLACK"))]
     assert URL in rows["owner trust: chat settings"]["detail"]
@@ -142,13 +142,13 @@ def test_a_web_block_only_in_ea_config_warns_that_the_bot_will_not_serve_it(tmp_
     assert rows["owner trust: chat settings"]["status"] == "FAIL"
 
 
-def test_shadow_mode_reports_zulip_and_the_web_chat(tmp_path):
-    ea, priv = _install(tmp_path, {"frontend": "zulip", "shadow": "web",
-                                "zulip": {"site": "https://zulip.example.test"},
+def test_shadow_mode_reports_slack_and_the_web_chat(tmp_path):
+    ea, priv = _install(tmp_path, {"frontend": "slack", "shadow": "web",
+                                "slack": {"owner_user_id": "U0OWNER01"},
                                 "web": {"public_url": URL, "tailscale_login": LOGIN}})
     rows = _rows(ea, priv)
-    assert rows["chat frontend"]["detail"] == "zulip"
-    assert "secret: ZULIP_API_KEY" in rows
+    assert rows["chat frontend"]["detail"] == "slack"
+    assert "secret: SLACK_BOT_TOKEN" in rows and "env: EA_SLACK_OWNER_ID" in rows
     assert rows["web chat: settings"]["status"] == "PASS"
     assert rows["web chat: store"]["status"] == "PASS"
 

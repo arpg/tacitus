@@ -3,8 +3,8 @@
 
 The morning briefing and the afternoon update post whole to the EA
 channel. An item that belongs to a project with a room (#ea-<project>) is
-also posted in that room: one message per room per run, as a new thread
-(a new topic on Zulip), so the user can act on it there with the room's specialist and the
+also posted in that room: one message per room per run, as a new thread,
+so the user can act on it there with the room's specialist and the
 project pack. A room with no item gets no post.
 
 Which project an item belongs to, strongest first:
@@ -24,8 +24,8 @@ A room gets a post only when the registry binds it to the project, it is
 not archived, and the owner's own record (owner_rooms) names it. The
 post goes through chat_notify.post with the key `room:<channel id>`:
 quiet hours hold it like the EA post, the owner record is checked again,
-and the configured chat frontend posts it (a new topic on Zulip, a new
-message on Slack).
+and the configured chat frontend posts it (a new thread on the web chat,
+a new message on Slack).
 
 Switch: `"briefing_rooms": false` in remote-llm.json turns the slices off.
 """
@@ -196,7 +196,7 @@ def render(heading: str, project_name: str, entries: list[dict], others: list[st
     if others:
         lines += ["", f"Also open here ({len(others)}): "
                   + "; ".join(_cut(o, 90, clean) for o in others)]
-    lines += ["", "_From the briefing in the EA channel. Reply in this topic to act on it here._"]
+    lines += ["", "_From the briefing in the EA channel. Reply in this thread to act on it here._"]
     return "\n".join(lines)
 
 

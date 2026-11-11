@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Timed alerts for ledger rows: a direct message to the owner, scheduled
-on the chat server, before a window opens or closes.
+in the web chat's store, before a window opens or closes.
 
 A row whose moment is a clock time (tickets on sale at 10:00, a
 registration that opens at noon, a submission portal that closes at
 5 pm) is not served by the morning briefing alone: the briefing is one
-stream post at 04:00. The alert is a direct message, scheduled in
-advance for `--lead` minutes before the moment, delivered by the Zulip
-server whether or not the bot is up. Each alert is recorded on the row
-(`alert_at`, `alert_scheduled_id`, `alert_lead_min`) so it is not set
-twice and can be cancelled.
+channel post at 04:00. The alert is a direct message, scheduled in
+advance for `--lead` minutes before the moment; the bot posts it in the
+owner's DM when it is due (chat.direct.schedule_direct). Each alert is
+recorded on the row (`alert_at`, `alert_scheduled_id`, `alert_lead_min`)
+so it is not set twice and can be cancelled.
 
   alert.py schedule --id <ledger id> --at 2026-10-06T10:00 [--lead 15] [--text ...]
   alert.py list
