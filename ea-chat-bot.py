@@ -2023,6 +2023,17 @@ SIDE_HISTORY_NOTE = (
     "message last:\n\n")
 
 
+# What a per-thread turn's prompt says about staged files: the session's
+# staging token (slack_sessions.stage_token) and the names it gives them.
+STAGE_TOKEN_NOTE = (
+    "Button files: this conversation stages them under its own token, {token}, because "
+    "other conversations stage theirs at the same time. Wherever your instructions name a "
+    "staged file in ~/.ea/state, put the token before .json: pending-event.{token}.json, "
+    "pending-event-update.{token}.json, pending-event-delete.{token}.json, "
+    "pending-schedule-send.{token}.json, and the same for every other pending-*.json file. "
+    "The content of the file stays the same.")
+
+
 def _side_drafts_note(thread_ts: str) -> str:
     """The drafts made in this thread whose Send card is up or closed
     without a send, from the draft-confirmation registry: one line each
@@ -7919,7 +7930,8 @@ def _plugin_cards_poller():
         try:
             busy = _dispatches_active() > 0
             min_age = EVENT_SWEEP_BUSY_AGE_S if busy else EVENT_SWEEP_IDLE_AGE_S
-            pending = _claim_event_actions(min_age_s=min_age, files=PLUGIN_ACTION_FILES)
+            pending = _claim_event_actions(min_age_s=min_age, files=PLUGIN_ACTION_FILES,
+                                           any_token=True)
             pending += _recover_abandoned_claims(EVENT_SWEEP_BUSY_AGE_S,
                                                  files=PLUGIN_ACTION_FILES)
             for action in pending:
@@ -8126,10 +8138,12 @@ def _pending_events_poller():
     one owner per staged write. `_plugin_cards_poller` keeps the plugin card
     files, so the two sweepers never contend.
 
-    Attribution: a payload that carries thread_ts/channel is posted there.
-    Failing that, if exactly one dispatch was already running when the file
-    was written, the confirmation goes into THAT conversation. Only a
-    genuinely orphaned file lands at the channel root."""
+    Attribution: a payload that carries thread_ts/channel is posted there,
+    and a tokened file with neither goes to the thread whose session has
+    its token. Failing that, if exactly one dispatch was already running
+    when the file was written, the confirmation goes into THAT
+    conversation. Only a genuinely orphaned file lands at the channel
+    root."""
     swept = (CALENDAR_ACTION_FILES + SCHEDULE_ACTION_FILES + CHANNEL_ACTION_FILES
              + PUBLISH_ACTION_FILES + GOOGLE_SIGNIN_ACTION_FILES + BROWSER_ACTION_FILES)
     while True:
@@ -8137,7 +8151,7 @@ def _pending_events_poller():
             busy = _dispatches_active() > 0
             min_age = EVENT_SWEEP_BUSY_AGE_S if busy else EVENT_SWEEP_IDLE_AGE_S
             actions = _claim_event_actions(min_age_s=min_age,
-                                           files=swept)
+                                           files=swept, any_token=True)
             actions += _recover_abandoned_claims(EVENT_SWEEP_BUSY_AGE_S,
                                                  files=swept)
             for action in actions:
@@ -9333,6 +9347,17 @@ def _recard_event_change(kind: str, channel: str, thread_ts: str, event_data: di
 # documented path. Two OPTIONAL keys are honoured, "thread_ts" and
 # "channel", which pin the confirmation to the conversation that asked
 # for it.
+#
+# Staging tokens. A per-thread turn's prompt names its session's token
+# (slack_sessions.stage_token), and the turn writes
+# state/<name>.<token>.json in place of state/<name>.json. Two turns that
+# stage at the same time then never write over each other, and a turn's
+# claim takes its own token's files and the bare names staged during the
+# run, never another conversation's tokened file. The sweepers take every
+# token; a payload with no routing keys goes to the thread whose session
+# has the token. A claim keeps the bare name, so recovery reads it the
+# same way. The bare name stays valid for the lanes with no token (the
+# resident, a cron, a plugin's own job).
 
 STAGED_ACTION_FILES = (
     ("event_create", "pending-event.json"),
@@ -9451,8 +9476,48 @@ def _claim_across_devices(src, claim) -> bool:
             pass
 
 
+def _staged_name(filename: str, token: str) -> str:
+    """The name a staging token gives a staged file: pending-event.json
+    under token 0a1b2c3d is pending-event.0a1b2c3d.json."""
+    stem, _, ext = filename.rpartition(".")
+    return f"{stem}.{token}.{ext}"
+
+
+def _staged_tokens(filename: str) -> list[str]:
+    """The tokens of the staged copies of `filename` in state/."""
+    stem, _, ext = filename.rpartition(".")
+    pattern = re.compile(re.escape(stem) + r"\.([0-9a-f]{8})\." + re.escape(ext))
+    try:
+        names = os.listdir(EA_DIR / "state")
+    except OSError:
+        return []
+    return sorted(m.group(1) for m in map(pattern.fullmatch, names) if m)
+
+
+def _staged_exists(filename: str, token: str = "") -> bool:
+    """A staged copy of `filename` is on disk: the bare name, or the one
+    under `token`."""
+    state = EA_DIR / "state"
+    return (state / filename).exists() or bool(
+        token and (state / _staged_name(filename, token)).exists())
+
+
+def _token_route(token: str) -> dict:
+    """The route of a staged file that names none: the thread of the
+    session whose staging token it carries, and that thread's channel."""
+    try:
+        from preprocessor import slack_sessions as _sessions
+        thread, meta = _sessions.by_stage_token(token)
+    except Exception as e:
+        log.warning(f"staging token {token} has no thread: {e}")
+        return {}
+    if not thread:
+        return {}
+    return {k: v for k, v in (("thread_ts", thread), ("channel", meta.get("channel"))) if v}
+
+
 def _claim_staged_file(filename: str, min_age_s: float = 0.0,
-                       newer_than: float = 0.0):
+                       newer_than: float = 0.0, token: str = ""):
     """Atomically take ownership of one staged pending-*.json.
 
     Returns (claim_path, mtime) or None. The rename is the claim: two
@@ -9463,8 +9528,10 @@ def _claim_staged_file(filename: str, min_age_s: float = 0.0,
                    live dispatch may still be finishing).
     newer_than  -- refuse a file whose mtime predates this wall time (a
                    dispatch claims only what was staged during its own run).
+    token       -- claim the copy staged under this token
+                   (_staged_name); the claim keeps the bare name.
     """
-    src = EA_DIR / "state" / filename
+    src = EA_DIR / "state" / (_staged_name(filename, token) if token else filename)
     try:
         st = src.stat()
     except OSError:
@@ -9531,36 +9598,58 @@ def _route_from(data) -> dict:
 
 
 def _claim_event_actions(min_age_s: float = 0.0, newer_than: float = 0.0,
-                         files=None) -> list[dict]:
+                         files=None, token: str = "",
+                         any_token: bool = False) -> list[dict]:
     """Claim every eligible staged file and return the actions in them.
 
     Each action carries `_route` = {"thread_ts", "channel"} taken from the
-    payload when the writer supplied it, plus `_mtime` so a caller can ask
-    which dispatch could have written it.
+    payload when the writer supplied it (else, for a tokened file, the
+    thread of the session with that token), plus `_mtime` so a caller can
+    ask which dispatch could have written it.
+
+    The bare names always; with `token`, that token's copies too, at any
+    age (they are the run's own conversation's); with `any_token` (the
+    sweepers), every token's copies.
 
     All the staged files are collected in ONE pass, so a scan cannot leave
     the rest of them for a racing poller."""
     actions: list[dict] = []
     for action_type, filename in (files if files is not None
                                   else STAGED_ACTION_FILES):
-        claimed = _claim_staged_file(filename, min_age_s=min_age_s,
-                                     newer_than=newer_than)
-        if not claimed:
-            continue
-        claim_path, mtime = claimed
+        copies = [("", newer_than)]
+        if any_token:
+            copies += [(t, newer_than) for t in _staged_tokens(filename)]
+        elif token:
+            copies.append((token, 0.0))
+        for tok, since in copies:
+            actions += _claim_staged_copy(action_type, filename, tok,
+                                          min_age_s=min_age_s, newer_than=since)
+    return actions
+
+
+def _claim_staged_copy(action_type: str, filename: str, token: str, *,
+                       min_age_s: float, newer_than: float) -> list[dict]:
+    """The actions in one staged copy of `filename`, claimed; [] when
+    there is none to claim."""
+    claimed = _claim_staged_file(filename, min_age_s=min_age_s,
+                                 newer_than=newer_than, token=token)
+    if not claimed:
+        return []
+    claim_path, mtime = claimed
+    actions: list[dict] = []
+    try:
         try:
-            try:
-                data = json.loads(_read_claim(claim_path))
-            except Exception as e:
-                log.warning(f"staged {filename} is unparseable, discarded: {e}")
-                continue
-            route = _route_from(data)
-            for action in _staged_actions_from(action_type, data):
-                action["_route"] = route
-                action["_mtime"] = mtime
-                actions.append(action)
-        finally:
-            _release_claim(claim_path)
+            data = json.loads(_read_claim(claim_path))
+        except Exception as e:
+            log.warning(f"staged {filename} is unparseable, discarded: {e}")
+            return []
+        route = _route_from(data) or (_token_route(token) if token else {})
+        for action in _staged_actions_from(action_type, data):
+            action["_route"] = route
+            action["_mtime"] = mtime
+            actions.append(action)
+    finally:
+        _release_claim(claim_path)
     return actions
 
 
@@ -12396,18 +12485,19 @@ def _withdraw_remote_turn(run_id: str, journal_offset: int | None) -> list[str]:
 
 def _backstop_remote_turn(cr: "ClaudeResult", *, run_id: str, journal_offset: int | None,
                           run_started: float, thread_ts: str, channel: str, user_msg: str,
-                          task_block: str) -> tuple[dict | None, list[dict]]:
+                          task_block: str, stage_token: str = "") -> tuple[dict | None, list[dict]]:
     """Claude's review of a remote-arm scheduling turn's writes before any
     button is posted (sched_agent.backstop_review, the same reviewer the
     scheduling agent's live turns get). Returns (review, staged actions
     claimed): None when the turn wrote nothing, so there is nothing to
-    review. The staged files are claimed here, so the caller posts them
-    on `ok` and drops them on `withhold`."""
+    review. The staged files are claimed here, the turn's tokened ones
+    with them (`stage_token`), so the caller posts them on `ok` and drops
+    them on `withhold`."""
     from preprocessor import draft_events as _draft_events
     from preprocessor import sched_agent as _sa
     events = _draft_events.read_since(journal_offset or 0)
     created = sorted(_draft_events.effective_drafts(events, run_id, accept_unlabeled=False)["created"])
-    staged = _claim_event_actions(newer_than=run_started)
+    staged = _claim_event_actions(newer_than=run_started, token=stage_token)
     if not created and not staged and not (cr.output or "").strip():
         return None, []
     # A turn with no write is reviewed on its reply alone: times it names
@@ -12460,6 +12550,7 @@ def handle_message_async(
     wait for the thread's other turns; its posts still go to the thread."""
     skey = session_key or thread_ts
     run_id = ""          # set once the mono lane actually spawns Claude
+    stage_tok = ""       # the session's staging token, once the session is known
     keep_inflight = False  # a run a restart cut short stays registered for the next instance
     run_started = 0.0
     run_timeout = timeout_s or TIMEOUT_SECONDS
@@ -12687,6 +12778,9 @@ actually want.
         if ack == "hourglass_flowing_sand":
             _swap_reaction(channel, msg_ts, "hourglass_flowing_sand", "eyes")
             ack = "eyes"
+        # One token for the whole turn: the prompt names it and the claims
+        # below take it, even if a failed resume mints a new session.
+        stage_tok = _sessions.stage_token(session_id)
         if resuming and not _sessions.session_file(session_id).exists():
             # a room's first message: the session is registered but has
             # no transcript yet, so it starts with the full prompt
@@ -13057,6 +13151,8 @@ This auto-archives the email from the inbox. One command does everything."""
                        if not session_key and _sessions.sides(thread_ts) else "")
         if side_drafts:
             prompt = prompt + "\n\n" + side_drafts
+        if stage_tok:
+            prompt = prompt + "\n\n" + STAGE_TOKEN_NOTE.format(token=stage_tok)
         if not resuming and session_meta.get("rotated_from"):
             prompt = prompt + "\n\n" + ROOM_ROTATION_NOTE
         full_prompt = prompt
@@ -13107,6 +13203,8 @@ Reminders:
                 prompt = prompt + "\n\n" + SIDE_HISTORY_NOTE + history
             if side_drafts:
                 prompt = prompt + "\n\n" + side_drafts
+            if stage_tok:
+                prompt = prompt + "\n\n" + STAGE_TOKEN_NOTE.format(token=stage_tok)
             if conv_block:
                 prompt = prompt + "\n\n" + conv_block
 
@@ -13337,7 +13435,8 @@ Reminders:
             try:
                 arm_backstop, staged = _backstop_remote_turn(
                     cr, run_id=run_id, journal_offset=journal_offset, run_started=run_started,
-                    thread_ts=thread_ts, channel=channel, user_msg=user_msg, task_block=task_block)
+                    thread_ts=thread_ts, channel=channel, user_msg=user_msg, task_block=task_block,
+                    stage_token=stage_tok)
             except Exception as e:
                 log.warning(f"remote backstop failed, withholding the turn: {e}")
                 arm_backstop, staged = {"verdict": "withhold", "note": "the review failed; fail closed",
@@ -13519,11 +13618,9 @@ Reminders:
                 produced_draft=bool(
                     re.search(r"create-(?:draft|reply)", " ".join(t[2] for t in cr.tool_calls if len(t) > 2))
                 ),
-                produced_event=bool(
-                    (EA_DIR / "state" / "pending-event.json").exists() or
-                    (EA_DIR / "state" / "pending-event-update.json").exists() or
-                    (EA_DIR / "state" / "pending-event-delete.json").exists()
-                ),
+                produced_event=any(
+                    _staged_exists(f, stage_tok) for f in
+                    ("pending-event.json", "pending-event-update.json", "pending-event-delete.json")),
                 produced_ledger_op=bool(
                     re.search(r"ledger\.py\s+(?:add|update|close)", " ".join(t[2] for t in cr.tool_calls if len(t) > 2))
                 ),
@@ -13572,7 +13669,7 @@ Reminders:
                         cost_usd=(cr.cost_usd if _routing.is_base(arm) else None),
                         tools=len(cr.tool_calls), drafts=_run_draft_bodies(journal_offset, run_id),
                         events_staged=sum(1 for _t, f in STAGED_ACTION_FILES
-                                          if (EA_DIR / "state" / f).exists()),
+                                          if _staged_exists(f, stage_tok)),
                         fallback="" if remote_turn is not None else arm_fallback,
                         backstop=None if remote_turn is not None else arm_backstop,
                         bounced=bounced, redo=arm_fallback if remote_turn is not None else "")
@@ -13676,7 +13773,7 @@ Reminders:
         try:
             _post_claimed_actions(
                 channel, thread_ts,
-                _claim_event_actions(newer_than=run_started),
+                _claim_event_actions(newer_than=run_started, token=stage_tok),
                 "mono")
         except Exception as e:
             log.warning(f"Event action detection failed: {e}")
@@ -13738,7 +13835,8 @@ Reminders:
                 log.warning(f"Draft detection after a stop failed: {e}")
             try:
                 _post_claimed_actions(channel, thread_ts,
-                                      _claim_event_actions(newer_than=run_started),
+                                      _claim_event_actions(newer_than=run_started,
+                                                           token=stage_tok),
                                       "mono-stopped")
             except Exception as e:
                 log.warning(f"Event action detection after a stop failed: {e}")
@@ -13757,7 +13855,8 @@ Reminders:
                 log.warning(f"Draft detection after timeout failed: {e}")
             try:
                 _post_claimed_actions(channel, thread_ts,
-                                      _claim_event_actions(newer_than=run_started),
+                                      _claim_event_actions(newer_than=run_started,
+                                                           token=stage_tok),
                                       "mono-timeout")
             except Exception as e:
                 log.warning(f"Event action detection after timeout failed: {e}")

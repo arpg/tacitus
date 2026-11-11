@@ -269,7 +269,7 @@ def test_promise_check_runs_in_both_lanes_after_detection():
     i = resident.index("_resident_post_run_detection(channel, thread_ts, journal_offset,")
     j = resident.index("_warn_if_button_promised(channel, thread_ts, reply")
     assert i < j, "the resident lane must detect before it judges the reply"
-    mono_i = BOT_SRC.index('_claim_event_actions(newer_than=run_started),\n                "mono")')
+    mono_i = BOT_SRC.index('_claim_event_actions(newer_than=run_started, token=stage_tok),\n                "mono")')
     mono_j = BOT_SRC.index('_warn_if_button_promised(channel, thread_ts, response, "mono")')
     assert mono_i < mono_j
     # A ContextVar, so parallel dispatches keep separate tallies.

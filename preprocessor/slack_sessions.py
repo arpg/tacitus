@@ -316,6 +316,33 @@ def sides(thread_ts: str) -> list[str]:
     return [k for k in _load() if k.startswith(prefix)]
 
 
+# A staging token: a session stages its button files (pending-event.json
+# and the rest) under a token of its own, the first 8 hex characters of its
+# id, so two conversations staging at the same time never write over each
+# other's file.
+STAGE_TOKEN_RE = re.compile(r"[0-9a-f]{8}")
+
+
+def stage_token(session_id: str) -> str:
+    """The session's staging token, or '' for an id that gives none."""
+    token = (session_id or "").replace("-", "").lower()[:8]
+    return token if STAGE_TOKEN_RE.fullmatch(token) else ""
+
+
+def by_stage_token(token: str) -> tuple[str, dict]:
+    """(thread key, meta) of the one session whose staging token is
+    `token`; a side session gives its thread's key. ('', {}) when no
+    session has it, or more than one does."""
+    if not STAGE_TOKEN_RE.fullmatch(token or ""):
+        return "", {}
+    hits = [(key, row) for key, row in _load().items()
+            if stage_token(row.get("session_id") or "") == token]
+    if len(hits) != 1:
+        return "", {}
+    key, row = hits[0]
+    return key.split(SIDE_SEP, 1)[0], dict(row.get("meta") or {})
+
+
 def has(thread_ts: str) -> bool:
     """Read-only: does this thread already live on the per-thread session
     path (fresh entry exists)? Unlike lookup(), never mints a session;

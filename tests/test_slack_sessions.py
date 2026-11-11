@@ -225,6 +225,30 @@ def test_side_sessions_sit_beside_their_thread():
         assert ss.sides("1788000004.000100") == []
         assert {r["thread_ts"] for r in ss.recent()} == {thread, "1788000004.000100"}
 
+def test_a_session_stages_under_its_own_token():
+    """The staging token is the first 8 hex characters of the session id.
+    by_stage_token finds the one session that has it, a side session by
+    its thread; a token two sessions share, or a malformed one, finds
+    none."""
+    with tempfile.TemporaryDirectory() as td:
+        _setup(Path(td))
+        sid, _, _ = ss.lookup("1788000005.000100")
+        ss.remember("1788000005.000100", channel="C0MAIN")
+        side, _, _ = ss.lookup(ss.side_key("t60", "reply-response-a"))
+        tok = ss.stage_token(sid)
+        assert tok == sid.replace("-", "")[:8] and len(tok) == 8
+        assert ss.stage_token(sid.upper()) == tok
+        assert ss.stage_token("") == "" and ss.stage_token("zzzzzzzz-1") == ""
+        assert ss.by_stage_token(tok) == ("1788000005.000100", {"channel": "C0MAIN"})
+        assert ss.by_stage_token(ss.stage_token(side))[0] == "t60"
+        assert ss.by_stage_token("ffffffff") == ("", {})
+        assert ss.by_stage_token("../etc") == ("", {})
+        # two threads bound to one session (a room): no single thread
+        reg = json.loads(ss.REGISTRY.read_text())
+        reg["1788000006.000100"] = dict(reg["1788000005.000100"])
+        ss.REGISTRY.write_text(json.dumps(reg))
+        assert ss.by_stage_token(tok) == ("", {})
+
 def test_aged_out_thread_keeps_its_old_session_for_resume():
     """A thread past MAX_AGE_DAYS gets a fresh session on its next
     message, and the old id, title and model ride along on the new row so
