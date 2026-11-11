@@ -207,6 +207,24 @@ def test_conversation_index_titles_and_recent():
     assert ss.title_from_message("short one") == "short one"
 
 
+def test_side_sessions_sit_beside_their_thread():
+    """A side session has its own registry row and session, keyed by the
+    thread; its thread lists it, and the conversation index leaves it out:
+    it is part of its thread's conversation."""
+    with tempfile.TemporaryDirectory() as td:
+        _setup(Path(td))
+        thread = "1788000003.000100"
+        own, _, _ = ss.lookup(thread)
+        a, _, _ = ss.lookup(ss.side_key(thread, "reply-response-a"))
+        b, _, _ = ss.lookup(ss.side_key(thread, "reply-response-b"))
+        ss.lookup("1788000004.000100")
+        assert len({own, a, b}) == 3
+        assert ss.lookup(ss.side_key(thread, "reply-response-a")) == (a, True, {})
+        assert sorted(ss.sides(thread)) == [f"{thread}~reply-response-a",
+                                            f"{thread}~reply-response-b"]
+        assert ss.sides("1788000004.000100") == []
+        assert {r["thread_ts"] for r in ss.recent()} == {thread, "1788000004.000100"}
+
 def test_aged_out_thread_keeps_its_old_session_for_resume():
     """A thread past MAX_AGE_DAYS gets a fresh session on its next
     message, and the old id, title and model ride along on the new row so

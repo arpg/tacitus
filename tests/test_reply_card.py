@@ -16,6 +16,10 @@ Pinned here:
      and only while the row still offers that answer.
   6. Draft it and Other answer take one line of the owner's words; the
      turn gets it as the owner's instruction for that reply.
+  7. each row's drafting turn runs in a side session of the card's thread,
+     with files of its own, so the drafts are written at the same time;
+     the question first stays on the thread's session, which reads the
+     owner's answer.
 """
 from __future__ import annotations
 
@@ -47,11 +51,11 @@ def _q(rid: str, age: int, **over) -> dict:
 
 class _SyncThread:
     """threading.Thread that runs its target at start()."""
-    def __init__(self, target=None, args=(), daemon=None):
-        self._target, self._args = target, args
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+        self._target, self._args, self._kwargs = target, args, kwargs or {}
 
     def start(self):
-        self._target(*self._args)
+        self._target(*self._args, **self._kwargs)
 
 
 def _bot(queue: list | None, *, confirms: dict | None = None, journal: list | None = None,
@@ -63,7 +67,7 @@ def _bot(queue: list | None, *, confirms: dict | None = None, journal: list | No
     end = BOT_SRC.index("def _toggle_quoted(")
     from preprocessor import chat as _chat
     calls: dict = {"cards": [], "threads": [], "status": [], "cli": [], "turns": [], "posts": [],
-                   "send_cards": [], "deleted": [], "marked": [], "actions": []}
+                   "send_cards": [], "deleted": [], "marked": [], "actions": [], "sessions": []}
     confirms = confirms if confirms is not None else {}
     store: dict = {}
     retired: set = set()
@@ -137,7 +141,10 @@ def _bot(queue: list | None, *, confirms: dict | None = None, journal: list | No
               (object(), None) if not did.startswith("gone") else (None, "not found"),
           "_post_send_confirmation": post_send,
           "_GMAIL_ACCOUNT": "", "FRONTEND": Frontend(),
-          "handle_message_async": lambda *a: calls["turns"].append(a),
+          "handle_message_async": lambda *a, session_key="": (
+              calls["turns"].append(a), calls["sessions"].append(session_key)),
+          "_body_file_path": lambda ts, step=None:
+              f"/state/reply-body-{ts}{'.' + step if step else ''}.txt",
           "_active_threads": set(), "_active_lock": _threading.Lock(),
           "_item_context": lambda rid: f"Ledger item {rid}: made up"}
     exec(compile(BOT_SRC[start:end], "bot[replies]", "exec"), ns)
@@ -361,6 +368,43 @@ def test_a_line_on_a_question_is_the_answer():
     assert _plain(calls["status"][-1][1]) == (
         ":pencil2: The draft is being written. Your words: Three years.")
 
+
+def test_each_rows_draft_runs_beside_the_others():
+    """Draft it on two rows, one after the other: each turn has a side
+    session of the thread, keyed by its row, and files named by its own
+    status line, so neither waits for the other or writes over its body."""
+    from preprocessor import slack_sessions as ss
+    ns, calls = _bot([_q("ann", 4), _q("bo", 5)])
+    _tick(ns)
+    ns["handle_review_replies"](_ev(calls["cards"][0].actions[0].value, "m1", "t1"))
+    ann, bo = calls["cards"][1:3]
+    ns["handle_reply_draft"](_ev(ann.actions[0].value, "m2", "t1", text="Yes to the 20th."))
+    ns["handle_reply_draft"](_ev(bo.actions[0].value, "m3", "t1"))
+    assert [t[1] for t in calls["turns"]] == ["t1", "t1"]          # both post in the thread
+    assert calls["sessions"] == [ss.side_key("t1", "reply-response-ann"),
+                                 ss.side_key("t1", "reply-response-bo")]
+    (_, _, ts_ann, prompt_ann, _, _), (_, _, ts_bo, prompt_bo, _, _) = calls["turns"]
+    assert ts_ann != ts_bo
+    assert (f"the brief goes to `/state/reply-body-{ts_ann}.brief.txt` and the body to "
+            f"`/state/reply-body-{ts_ann}.txt`") in prompt_ann
+    assert f"/state/reply-body-{ts_bo}.txt" in prompt_bo and ts_ann not in prompt_bo
+
+
+def test_the_question_first_is_the_threads_own_turn():
+    """A row that waits on the owner's answer, Draft it with no line: the
+    turn asks, and the owner answers with a message in the thread, so it
+    runs on the thread's session. An answer, picked or written, drafts in
+    the row's side session."""
+    from preprocessor import slack_sessions as ss
+    ns, calls = _bot([_q("lee", 8, queued=ASKED)])
+    _tick(ns)
+    card = calls["cards"][0]
+    ns["handle_reply_draft"](_ev(card.actions[2].value, "m1", "t1"))
+    ns, calls2 = _bot([_q("lee", 8, queued=ASKED)])
+    _tick(ns)
+    ns["handle_reply_choice"](_ev(calls2["cards"][0].actions[0].value, "m1", "t1"))
+    assert calls["sessions"] == [""]
+    assert calls2["sessions"] == [ss.side_key("t1", "reply-response-lee")]
 
 def test_a_new_send_card_takes_no_line():
     row = _q("pat", 6, queued={"outcome": "drafted", "draft_id": "d-old"})

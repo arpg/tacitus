@@ -298,6 +298,24 @@ def lookup(thread_ts: str) -> tuple[str, bool, dict]:
     return result["session_id"], result["resumable"], result["meta"]
 
 
+# A side session: a turn a card starts in a thread runs in a session of its
+# own beside the thread's, so the turns of several cards run at the same
+# time (the Replies card's Draft it, one session per ledger row). Its row
+# is keyed by the thread's key, SIDE_SEP and a name; its posts go to the
+# thread. A thread key never holds SIDE_SEP.
+SIDE_SEP = "~"
+
+
+def side_key(thread_ts: str, name: str) -> str:
+    return f"{thread_ts}{SIDE_SEP}{name}"
+
+
+def sides(thread_ts: str) -> list[str]:
+    """The keys of the side sessions in a thread."""
+    prefix = side_key(thread_ts, "")
+    return [k for k in _load() if k.startswith(prefix)]
+
+
 def has(thread_ts: str) -> bool:
     """Read-only: does this thread already live on the per-thread session
     path (fresh entry exists)? Unlike lookup(), never mints a session;
@@ -460,10 +478,13 @@ def title_from_message(text: str, limit: int = 72) -> str:
 
 def recent(limit: int = 12, days: int = 14) -> list[dict]:
     """The conversation index: registry rows, newest first, with their
-    titles, channels and ages. Rows older than `days` are left out."""
+    titles, channels and ages. Rows older than `days` are left out, and
+    so are side sessions: each is part of its thread's conversation."""
     cutoff = _now() - timedelta(days=days)
     rows = []
     for ts, entry in _load().items():
+        if SIDE_SEP in ts:
+            continue
         try:
             last = datetime.fromisoformat(entry.get("last_used")
                                           or entry.get("created"))

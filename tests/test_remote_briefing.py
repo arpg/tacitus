@@ -550,7 +550,7 @@ def test_the_live_scheduling_branch_runs_before_claude_and_falls_back():
     assert "live_cr = _remote_scheduling_live(" in handler
     assert handler.index("live_cr = _remote_scheduling_live(") < handler.index("if live_cr is not None:\n            cr = live_cr")
     assert "elif resuming:" in handler
-    assert "if live_cr is None:\n            try:\n                _sessions.mark_used(thread_ts)" in handler
+    assert "if live_cr is None:\n            try:\n                _sessions.mark_used(skey)" in handler
     assert "if live_cr is None and _routing.is_base(arm) and remote_turn is None and (\n                scheduling_only" in handler
     assert "if scheduling_only and (sched_lane or user_id == \"proactive-scheduler\")" in handler
 

@@ -312,7 +312,7 @@ def test_the_rotation_holds_the_old_session_lock_and_journals():
     assert "old_lock.release()" in body
     assert "_journal_room_rotation(room, old, new, size)" in body
     assert "project_store.py" in body
-    i = BOT_SRC.index("with _room_rotate_lock(channel):\n            if not sched_lane:")
+    i = BOT_SRC.index("with _room_rotate_lock(channel):\n            if not sched_lane and not session_key:")
     j = BOT_SRC.index("got_session_lock = session_lock.acquire(blocking=False)", i)
     assert j - i < 900
 
