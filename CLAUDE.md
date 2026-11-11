@@ -170,9 +170,9 @@ before acting on its topic.
 - *Drafting voice* (`drafting-voice.md`): style, edits, pre-send checklist.
 - *Pre-send review*: that guide's last section (`preflight-check`, then
   the name, content, tone, attachment and meeting checks).
-- *Calendars & scheduling* (`scheduling.md`): `scheduling_engine.py` is
-  the only source of free slots; cal.com and Calendly links are read with
-  `booking_link.py`, never booked; staged-event shapes.
+- *Calendars & scheduling* (`scheduling.md`): events: `graph_actions.py
+  calendar-view` and `google_calendar_client.py get-events` per Google
+  account; check both. Free slots: `scheduling_engine.py` only.
 - *LoR uploads* (`lor.md`): do-and-tell.
 - *Poll filling* (`polls.md`, When2Meet, Doodle): ask-first.
 - *Reimbursement & receipts* (`reimbursement.md`): ask-first; receipts
