@@ -2014,6 +2014,13 @@ _active_threads: set[str] = set()
 _SESSION_LOCKS: dict[str, threading.Lock] = {}
 _SESSION_LOCKS_GUARD = threading.Lock()
 SESSION_WAIT_MAX_S = 20 * 60
+# What a resumed thread session reads before the thread so far, when side
+# sessions (slack_sessions.side_key) have posted in its thread.
+SIDE_HISTORY_NOTE = (
+    "Turns started from the cards in this thread ran in sessions of their own, so "
+    "this conversation has not seen all of the thread. A question one of them asked "
+    "may be what the user answers now. The thread so far, the user's latest "
+    "message last:\n\n")
 
 
 def _session_lock(session_id: str) -> threading.Lock:
@@ -2112,13 +2119,13 @@ def _persist_inflight_locked() -> None:
 def _register_dispatch(run_id: str, channel: str, thread_ts: str | None,
                        ttl_s: float = DISPATCH_TTL_S, *, lane: str = "mono",
                        msg_ts: str = "", user_msg: str = "", user_id: str = "",
-                       is_thread_reply: bool = False) -> None:
+                       is_thread_reply: bool = False, session_key: str = "") -> None:
     with _dispatch_lock:
         _prune_dispatches_locked()
         _active_dispatches[run_id] = {
             "channel": channel, "thread_ts": thread_ts, "lane": lane,
             "msg_ts": msg_ts, "user_msg": user_msg[:6000], "user_id": user_id,
-            "is_thread_reply": is_thread_reply,
+            "is_thread_reply": is_thread_reply, "session_key": session_key,
             "started_at": time.time(), "expires_at": time.time() + ttl_s,
         }
         _persist_inflight_locked()
@@ -5063,12 +5070,13 @@ if "preprocessor.web_thread_state" in sys.modules:
 # each thread with where its reply stands: a draft whose Send card closed,
 # a question for the owner, a meeting to place, no draft. One by one puts
 # a card per thread in the card's own thread: Draft it starts a turn there
-# that writes the reply (New Send card when the draft exists), Skip snoozes
-# the row for REPLY_SKIP_DAYS, Not needed closes it. On a front end with
-# no buttons a thumbs up drafts and a thumbs down skips. A thread whose Send
-# card is live is counted in the title and gets no card of its own. The
-# next day's tick retires the cards of the day before, so one Replies card
-# is live at a time.
+# that writes the reply (New Send card when the draft exists), in a side
+# session of the row's own so several drafts are written at the same time
+# (_dispatch_reply_draft), Skip snoozes the row for REPLY_SKIP_DAYS, Not
+# needed closes it. On a front end with no buttons a thumbs up drafts and
+# a thumbs down skips. A thread whose Send card is live is counted in the
+# title and gets no card of its own. The next day's tick retires the cards
+# of the day before, so one Replies card is live at a time.
 #
 # A question a run asked the owner may carry two or three answers
 # (`queued.choices`, ledger.reply_choices). Its card shows one button per
@@ -5512,11 +5520,13 @@ def _reply_new_send_card(draft_id: str, channel: str, thread_ts: str | None) -> 
     return _draft_confirmation_state(draft_id) == "live"
 
 
-def _reply_draft_prompt(row: dict, answer: str = "", words: str = "") -> str:
+def _reply_draft_prompt(row: dict, answer: str = "", words: str = "",
+                        files: tuple[str, str] | None = None) -> str:
     """The turn a Draft it click starts: one row, one reply draft. With
     `answer`, the owner picked that answer to the row's question on the
     card, and the reply says it. With `words`, the owner wrote on the
-    card what the reply must say."""
+    card what the reply must say. `files` names the turn's own brief and
+    body files: other rows' turns run at the same time."""
     rid = row["id"]
     one_line = _chat.card_text.one_line
     queued = row.get("queued") if isinstance(row.get("queued"), dict) else {}
@@ -5561,6 +5571,8 @@ def _reply_draft_prompt(row: dict, answer: str = "", words: str = "") -> str:
         f"Read the row (`{ledger_py} get --id {rid}`), then the thread. Write the reply and "
         f"create it as a draft on that thread now, with `--ledger-id {rid}`; the Send card "
         "goes to the owner's DM. A reply about a meeting carries times from the solver. "
+        + (f"Other replies are written at the same time, so this turn's files are its own: "
+           f"the brief goes to `{files[0]}` and the body to `{files[1]}`. " if files else "")
         + how
         + f"When the draft exists, record it: `{ledger_py} note-reply --id {rid} "
         "--outcome drafted --draft-id <the draft id>`.")
@@ -5571,7 +5583,10 @@ def _dispatch_reply_draft(row: dict, channel: str, thread_ts: str, user_id: str,
     """Draft it: one line in the Replies thread, then a turn there that
     writes the reply for the row (the reply that says `answer`, when the
     owner picked one, or `words`, when the owner wrote a line). The click
-    is the trigger."""
+    is the trigger. Each row's turn runs in a side session of the thread,
+    so replies started one after another are written at the same time.
+    The question first is the thread's own turn: the owner answers it with
+    a message in the thread, and the thread's session reads that."""
     desc = _chat.card_text.inert((row.get("description") or row["id"]).strip(), 110)
     queued = row.get("queued") if isinstance(row.get("queued"), dict) else {}
     asks = not answer and not words and queued.get("outcome") == "decision"
@@ -5589,10 +5604,13 @@ def _dispatch_reply_draft(row: dict, channel: str, thread_ts: str, user_id: str,
         if ts in _active_threads:
             return True
         _active_threads.add(ts)
+    from preprocessor import slack_sessions as _sessions
+    key = "" if asks else _sessions.side_key(thread_ts or ts, f"reply-{row['id']}")
+    files = (_body_file_path(ts, "brief"), _body_file_path(ts))
     threading.Thread(target=handle_message_async,
                      args=(channel, thread_ts or ts, ts,
-                           _reply_draft_prompt(row, answer, words), user_id, True),
-                     daemon=True).start()
+                           _reply_draft_prompt(row, answer, words, files), user_id, True),
+                     kwargs={"session_key": key}, daemon=True).start()
     return True
 
 
@@ -12403,9 +12421,14 @@ def handle_message_async(
     user_id: str,
     is_thread_reply: bool,
     timeout_s: int | None = None,
+    session_key: str = "",
 ):
     """Run Claude in a background thread and post the response.
-    `timeout_s` replaces the mono limit for this turn (a batched hand-off)."""
+    `timeout_s` replaces the mono limit for this turn (a batched hand-off).
+    `session_key` runs the turn in a side session of the thread
+    (slack_sessions.side_key) in place of the thread's own, so it does not
+    wait for the thread's other turns; its posts still go to the thread."""
+    skey = session_key or thread_ts
     run_id = ""          # set once the mono lane actually spawns Claude
     keep_inflight = False  # a run a restart cut short stays registered for the next instance
     run_started = 0.0
@@ -12416,7 +12439,7 @@ def handle_message_async(
         # instead of starting a run the restart would kill.
         _register_dispatch(f"deferred-{msg_ts}", channel, thread_ts, lane="deferred",
                            msg_ts=msg_ts, user_msg=user_msg, user_id=user_id,
-                           is_thread_reply=is_thread_reply)
+                           is_thread_reply=is_thread_reply, session_key=session_key)
         try:
             FRONTEND.post(channel=channel, thread_ts=thread_ts,
                           text=":recycle: Restarting for an update; I will pick this up in a minute.")
@@ -12437,9 +12460,11 @@ def handle_message_async(
         pass
 
     held_session_lock = None
-    ack = "hourglass_flowing_sand" if _thread_busy(channel, thread_ts) else "eyes"
+    ack = ("hourglass_flowing_sand" if not session_key and _thread_busy(channel, thread_ts)
+           else "eyes")
     # Eyes: the session is reading this now. Hourglass: it is still on
-    # the message before, and this one waits its turn.
+    # the message before, and this one waits its turn. A side session does
+    # not wait for its thread; a busy one swaps to the hourglass below.
     if not FRONTEND.react(channel, msg_ts, ack):
         log.warning(f"Failed to add reaction: {ack}")
 
@@ -12514,7 +12539,7 @@ def handle_message_async(
                 log.info(f"Correction signal detected in thread reply: {user_msg[:60]!r}")
 
         # Build thread context for follow-up messages
-        thread_context = ""
+        thread_context = history = ""
         if is_thread_reply:
             history = fetch_thread_history(channel, thread_ts)
             if history:
@@ -12599,14 +12624,16 @@ actually want.
         # the session lock happen under the room's lock, so a rotation
         # cannot move the room between this thread's lookup and its lock.
         # The wait for a busy session happens outside it.
+        # A side session is never bound to the room's: that would put it
+        # back in line behind the thread.
         with _room_rotate_lock(channel):
-            if not sched_lane:
+            if not sched_lane and not session_key:
                 try:
                     _maybe_rotate_room_session(channel, thread_ts, is_thread_reply)
                 except Exception as e:
                     log.warning(f"room rotation check failed: {e}")
                 _bind_room_session(channel, thread_ts)
-            session_id, resuming, session_meta = _sessions.lookup(thread_ts)
+            session_id, resuming, session_meta = _sessions.lookup(skey)
             session_lock = _session_lock(session_id)
             got_session_lock = session_lock.acquire(blocking=False)
         if not got_session_lock:
@@ -12622,7 +12649,7 @@ actually want.
                 _swap_reaction(channel, msg_ts, "hourglass_flowing_sand", "x")
                 return
             # the turn before may have minted or replaced the session
-            session_id, resuming, session_meta = _sessions.lookup(thread_ts)
+            session_id, resuming, session_meta = _sessions.lookup(skey)
         held_session_lock = session_lock
         if _WITHDRAWN.has(msg_ts):
             log.info(f"message {msg_ts} was deleted while it waited; not starting it")
@@ -12655,14 +12682,14 @@ actually want.
             run_model = _ea_config.get_models().get("scheduler") or MODEL
             run_effort = _ea_config.get_efforts().get("scheduler") or ""
             try:
-                _sessions.remember(thread_ts, model=run_model, effort=run_effort)
+                _sessions.remember(skey, model=run_model, effort=run_effort)
             except Exception as e:
                 log.warning(f"scheduler model pin failed: {e}")
         if not resuming:
             # The conversation index: a new thread is titled by its first
             # message and remembers which channel it lives in.
             try:
-                _sessions.remember(thread_ts, channel=channel,
+                _sessions.remember(skey, channel=channel,
                                    title=_sessions.title_from_message(user_msg))
             except Exception as e:
                 log.warning(f"session title failed: {e}")
@@ -13036,6 +13063,11 @@ Reminders:
 - Do NOT call send-draft. {_PS['confirm_sentence']} For calendar changes, write the pending-event JSON files — the bot posts the :lock: buttons automatically. Include "thread_ts": "{thread_ts}" in them so the pointer and the result land in this thread.
 - To send a draft at a future time, write {EA_DIR}/state/pending-schedule-send.json with "draft_id", "send_after" (ISO), "description" and "thread_ts": "{thread_ts}". The bot posts a :lock: Schedule button. Do NOT call schedule-send yourself.
 - Fresh data beats memory: if calendar/inbox state may have changed since earlier in this conversation, re-check with tools."""
+            # Side sessions post in this thread too, and this conversation
+            # has not seen their turns: a question one of them asked is
+            # what the owner may be answering here.
+            if history and not session_key and _sessions.sides(thread_ts):
+                prompt = prompt + "\n\n" + SIDE_HISTORY_NOTE + history
             if conv_block:
                 prompt = prompt + "\n\n" + conv_block
 
@@ -13054,7 +13086,8 @@ Reminders:
             run_timeout = ROOM_TIMEOUT_SECONDS
         _begin_run_tally()
         _register_dispatch(run_id, channel, thread_ts, msg_ts=msg_ts, user_msg=user_msg,
-                           user_id=user_id, is_thread_reply=is_thread_reply)
+                           user_id=user_id, is_thread_reply=is_thread_reply,
+                           session_key=session_key)
 
         t0 = time.monotonic()
         # The scheduling channel and the proactive scheduler on the remote
@@ -13206,8 +13239,8 @@ Reminders:
                     f"output={'empty' if not cr.output else 'present'}, "
                     f"stderr tail: {(cr.stderr or '')[-300:]!r}) — "
                     f"falling back to fresh session")
-                _sessions.invalidate(thread_ts)
-                session_id, resuming, session_meta = _sessions.lookup(thread_ts)
+                _sessions.invalidate(skey)
+                session_id, resuming, session_meta = _sessions.lookup(skey)
                 prompt = full_prompt
                 cr = _run_claude_streaming(
                     _claude_args_for(prompt, ["--session-id", session_id]),
@@ -13240,8 +13273,8 @@ Reminders:
             run_model = (_ea_config.get_models().get("scheduler") or MODEL) if sched_lane else MODEL
             run_effort = (_ea_config.get_efforts().get("scheduler") or "") if sched_lane else ""
             log.warning(f"model arm: remote turn {reason}; Claude takes the turn on {run_model}")
-            _sessions.invalidate(thread_ts)
-            session_id, resuming, session_meta = _sessions.lookup(thread_ts)
+            _sessions.invalidate(skey)
+            session_id, resuming, session_meta = _sessions.lookup(skey)
             r = _run_claude_streaming(
                 _claude_args_for(claude_prompt, ["--session-id", session_id]),
                 timeout=run_timeout, label="mono", run_id=run_id, cwd=prompt_cwd, progress=progress)
@@ -13296,8 +13329,8 @@ Reminders:
         # A turn the remote agent answered has no Claude session to keep.
         if live_cr is None:
             try:
-                _sessions.mark_used(thread_ts)
-                _sessions.remember(thread_ts, use_mcp=use_mcp)
+                _sessions.mark_used(skey)
+                _sessions.remember(skey, use_mcp=use_mcp)
                 _sessions.prune()  # registry hygiene: drop entries idle > 14d
             except Exception as e:
                 log.warning(f"session registry update failed: {e}")
@@ -15081,6 +15114,7 @@ if __name__ == "__main__":
                 target=handle_message_async,
                 args=(d["channel"], d.get("thread_ts") or ts, ts,
                       d["user_msg"], d.get("user_id") or "", bool(d.get("is_thread_reply"))),
+                kwargs={"session_key": d.get("session_key") or ""},
                 daemon=True).start()
         try:
             _catchup_walk(FRONTEND.recent_messages(CHANNEL_ID, time.time() - 30 * 60, 40))

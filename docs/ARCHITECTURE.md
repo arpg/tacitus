@@ -525,8 +525,14 @@ draft). "One by one" posts a card per thread in that card's thread.
 "Draft it" starts a turn there that writes the reply for that one row; for
 a draft that exists it posts a new Send card instead. "Draft it" takes one
 line of the owner's words (`CardAction.ask`): the turn writes the reply
-that says it, a decline too, and on a question that line is the answer. A
-question that a
+that says it, a decline too, and on a question that line is the answer.
+Each row's turn runs in a side session of the thread
+(`slack_sessions.side_key`, one per row) with its own brief and body
+files, so drafts started one after another are written at the same time
+and post in the thread. The turn that only asks the owner a question runs
+on the thread's own session, which reads the owner's typed answer; a
+resumed thread session with side sessions in its thread reads the thread
+so far. A question that a
 run recorded with answers (`reply_queue.choices`: two or three, 48
 characters at most, from the remote call's `choices` or `note-reply
 --choice`) shows one button per answer in place of "Draft it", and the

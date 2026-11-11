@@ -230,7 +230,7 @@ def test_adopt_session_command_binds_the_thread_before_claude_runs():
     i = BOT_SRC.index("_adopt = re.match(")
     assert "_sessions_mod.adopt(thread_ts, sid, source=\"chat\"" in BOT_SRC[i:i + 1500]
     assert BOT_SRC.index("Check master EA switch") > i, "adopt must be answered before the EA switch check"
-    assert BOT_SRC.index("_sessions.lookup(thread_ts)") > i, "adopt must run before a session is minted"
+    assert BOT_SRC.index("_sessions.lookup(skey)") > i, "adopt must run before a session is minted"
     assert 'session_meta.get("model") if pinned else ""' in BOT_SRC
     shell = (ROOT / "scripts" / "ea-bot-shell.sh").read_text()
     assert "--resume" in shell and "--thread" in shell and "adopt session $SESSION_ID" in shell
@@ -325,7 +325,7 @@ def test_colleague_rooms_are_wired_owner_only_and_marked():
     # a #tmp- room to the mirrored conversation, a #ea- room to its own
     # specialist, minted on first use and kept on the channel row
     j = BOT_SRC.index("_bind_room_session(channel, thread_ts)\n")
-    assert BOT_SRC.index("_sessions.lookup(thread_ts)", j) > j
+    assert BOT_SRC.index("_sessions.lookup(skey)", j) > j
     body = _fn_body("_bind_room_session")
     assert "_ea_channels.set_session(channel, room_sid," in body
     assert 'source=f"{room.get(\'kind\')}-room"' in body
@@ -530,11 +530,11 @@ def test_scheduling_lane_is_one_session_per_thread():
     hm = _fn_body("handle_message_async")
     assert "sched_lane = bool(SCHED_CHANNEL_ID) and channel == SCHED_CHANNEL_ID" in hm
     assert "if _resident_cfg.enabled() and not sched_lane and not per_topic:" in hm
-    i = hm.index("        with _room_rotate_lock(channel):\n            if not sched_lane:\n"
+    i = hm.index("        with _room_rotate_lock(channel):\n            if not sched_lane and not session_key:\n"
                  "                try:\n"
                  "                    _maybe_rotate_room_session(channel, thread_ts, is_thread_reply)")
     assert "\n                _bind_room_session(channel, thread_ts)" in hm[i:i + 500]
-    assert "session_id, resuming, session_meta = _sessions.lookup(thread_ts)" in hm
+    assert "session_id, resuming, session_meta = _sessions.lookup(skey)" in hm
     assert 'SCRIPT_DIR / "prompts/CLAUDE-scheduling.md"' in hm and "{task_block}" in hm
     assert "scheduling_only = sched_lane or" in hm
     assert 'conv_block = "" if sched_lane else' in hm
@@ -697,7 +697,8 @@ def test_queued_messages_wait_under_an_hourglass():
     no text; leaving eyes also clears a leftover hourglass."""
     assert "_SESSION_LOCKS: dict[str, threading.Lock] = {}" in BOT_SRC
     hm = _fn_body("handle_message_async")
-    assert 'ack = "hourglass_flowing_sand" if _thread_busy(channel, thread_ts) else "eyes"' in hm
+    assert ('ack = ("hourglass_flowing_sand" if not session_key and _thread_busy(channel, thread_ts)\n'
+            '           else "eyes")') in hm
     assert "session_lock = _session_lock(session_id)" in hm
     assert "session_lock.acquire(blocking=False)" in hm and "session_lock.acquire(timeout=SESSION_WAIT_MAX_S)" in hm
     assert '_swap_reaction(channel, msg_ts, "hourglass_flowing_sand", "eyes")' in hm
@@ -714,6 +715,27 @@ def test_queued_messages_wait_under_an_hourglass():
     assert 'd.get("lane") != "deferred"' in tb and "_channel_scope(channel) is not None" in tb
 
 
+
+def test_a_side_session_runs_beside_its_thread():
+    """A turn with a session key runs on that side session: the registry
+    calls take the key, a room never binds it, and the restart replay
+    keeps it. Its posts stay the thread's. A resumed thread session whose
+    thread has side sessions reads the thread so far."""
+    hm = _fn_body("handle_message_async")
+    assert "    session_key: str = \"\",\n):" in hm and "skey = session_key or thread_ts" in hm
+    for verb in ("lookup", "remember", "invalidate", "mark_used"):
+        assert f"_sessions.{verb}(thread_ts" not in hm, verb
+    assert "if not sched_lane and not session_key:" in hm
+    assert hm.count("session_key=session_key)") == 2, "the deferred and the live registration"
+    assert '"session_key": session_key' in _fn_body("_register_dispatch")
+    catchup = BOT_SRC[BOT_SRC.index("def _restart_catchup"):
+                      BOT_SRC.index("threading.Thread(target=_restart_catchup")]
+    assert 'kwargs={"session_key": d.get("session_key") or ""}' in catchup
+    assert "if history and not session_key and _sessions.sides(thread_ts):" in hm
+    assert hm.index("SIDE_HISTORY_NOTE + history") > hm.index("The user replied:")
+    dr = _fn_body("_dispatch_reply_draft")
+    assert 'key = "" if asks else _sessions.side_key(thread_ts or ts, f"reply-{row[\'id\']}")' in dr
+    assert 'kwargs={"session_key": key}' in dr
 
 def test_proactive_scheduling_runs_the_reschedule_brief():
     """A queued reschedule request opens a thread whose seed runs the
