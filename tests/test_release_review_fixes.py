@@ -435,13 +435,15 @@ def _bot_function(name: str, ns: dict):
 
 
 class _NoModalFrontend:
-    def __init__(self):
-        self.posts = []
+    def __init__(self, refuse=()):
+        self.posts, self.refuse = [], set(refuse)
 
     def supports(self, what):
         return False
 
     def post(self, channel, text, *, thread_ts=None, unfurl=True):
+        if channel in self.refuse:
+            raise RuntimeError(f"no thread {thread_ts} in {channel}")
         self.posts.append((channel, thread_ts, text))
         return types.SimpleNamespace(id=f"m{len(self.posts)}")
 
@@ -449,39 +451,48 @@ class _NoModalFrontend:
         return f"https://chat.example/{channel}/{msg_id}"
 
 
-def test_an_edit_tap_on_a_chip_card_answers_under_the_card():
-    """With no modal, the question goes to the conversation that owns the
-    draft, and a line under the card links there, so the tap is answered
-    where the owner made it."""
-    fe = _NoModalFrontend()
+def _edit_tap(fe, value, subject="Lab visit"):
+    """An Edit tap on a Send card at the top of the owner's DM: the card
+    is the first message of a thread of its own (w200 opens t200)."""
     ns = {"FRONTEND": fe, "_verify_button_user": lambda ev: True,
-          "_delivery_channel": lambda key: "stream:1",
-          "_card_value": lambda ev: {"draft_id": "d1"},
-          "_fetch_draft_body": lambda did: {"subject": "Lab visit", "body": "x"},
-          "log": types.SimpleNamespace(debug=lambda *a, **k: None)}
+          "_delivery_channel": lambda key: {"t100": "main", "t300": "dm"}.get(key, "main"),
+          "_card_value": lambda ev: value,
+          "_fetch_draft_body": lambda did: {"subject": subject, "body": "x"} if subject
+          else {"error": "offline"},
+          "log": types.SimpleNamespace(debug=lambda *a, **k: None, warning=lambda *a, **k: None)}
     handle = _bot_function("handle_edit_draft", ns)
-    card = types.SimpleNamespace(thread_key="stream:1:topic:lab", channel="stream:9", id="77")
+    card = types.SimpleNamespace(thread_key="t200", channel="dm", id="w200")
     handle(types.SimpleNamespace(card=card))
+
+
+def test_an_edit_tap_asks_in_the_conversation_that_made_the_draft():
+    """With no modal, the question goes to the conversation the card's
+    value names, never the card's own thread, and a line under the card
+    links to the question there."""
+    fe = _NoModalFrontend()
+    _edit_tap(fe, {"draft_id": "d1", "thread_ts": "t100", "ea_channel": "main"})
     (ch1, key1, ask), (ch2, key2, pointer) = fe.posts
-    assert (ch1, key1) == ("stream:1", "stream:1:topic:lab")
+    assert (ch1, key1) == ("main", "t100")
     assert "What should I change in the draft to *Lab visit*?" in ask and "new Send" in ask
-    assert (ch2, key2) == ("stream:9", "77")
-    assert "https://chat.example/stream:1/m1" in pointer
-
-
-def test_an_edit_tap_in_the_conversation_itself_posts_once():
+    assert (ch2, key2) == ("dm", "w200")
+    assert "https://chat.example/main/m1" in pointer and "in the conversation" in pointer
+    # a conversation in the DM, as the Replies thread is, is still not the card
     fe = _NoModalFrontend()
-    ns = {"FRONTEND": fe, "_verify_button_user": lambda ev: True,
-          "_delivery_channel": lambda key: "stream:9",
-          "_card_value": lambda ev: {"draft_id": "d1"},
-          "_fetch_draft_body": lambda did: {"error": "offline"},
-          "log": types.SimpleNamespace(debug=lambda *a, **k: None)}
-    handle = _bot_function("handle_edit_draft", ns)
-    card = types.SimpleNamespace(thread_key="", channel="stream:9", id="77")
-    handle(types.SimpleNamespace(card=card))
-    assert len(fe.posts) == 1 and "What should I change in the draft?" in fe.posts[0][2]
-    assert fe.posts[0][:2] == ("stream:9", "77"), "asked under the card"
+    _edit_tap(fe, {"draft_id": "d1", "thread_ts": "t300", "ea_channel": "dm"})
+    assert [p[:2] for p in fe.posts] == [("dm", "t300"), ("dm", "w200")]
+    assert "https://chat.example/dm/m1" in fe.posts[1][2]
 
+
+def test_a_draft_from_no_conversation_is_asked_about_under_its_card():
+    fe = _NoModalFrontend()
+    _edit_tap(fe, {"draft_id": "d1"}, subject="")
+    assert len(fe.posts) == 1 and "What should I change in the draft?" in fe.posts[0][2]
+    assert fe.posts[0][:2] == ("dm", "w200"), "asked under the card"
+    # a conversation that is gone refuses the question: it goes under the card
+    fe = _NoModalFrontend(refuse={"main"})
+    _edit_tap(fe, {"draft_id": "d1", "thread_ts": "t100"})
+    assert len(fe.posts) == 1 and fe.posts[0][:2] == ("dm", "w200")
+    assert "*Lab visit*" in fe.posts[0][2]
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

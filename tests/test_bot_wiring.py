@@ -733,9 +733,37 @@ def test_a_side_session_runs_beside_its_thread():
     assert 'kwargs={"session_key": d.get("session_key") or ""}' in catchup
     assert "if history and not session_key and _sessions.sides(thread_ts):" in hm
     assert hm.index("SIDE_HISTORY_NOTE + history") > hm.index("The user replied:")
+    # the thread's drafts, in the fresh prompt and in the continuation
+    assert "if not session_key and _sessions.sides(thread_ts) else \"\")" in hm
+    assert hm.count('prompt = prompt + "\\n\\n" + side_drafts') == 2
+    assert hm.index("side_drafts = (_side_drafts_note(thread_ts)") < hm.index("full_prompt = prompt")
     dr = _fn_body("_dispatch_reply_draft")
     assert 'key = "" if asks else _sessions.side_key(thread_ts or ts, f"reply-{row[\'id\']}")' in dr
     assert 'kwargs={"session_key": key}' in dr
+
+def test_the_thread_session_knows_the_drafts_side_sessions_made():
+    """A change the owner asks for in a thread with side sessions reaches
+    the thread's own session, which did not make those drafts: it gets
+    each one's id, recipients and subject. A sent draft, or one from
+    another thread, is not listed."""
+    import types
+    sys.path.insert(0, str(ROOT))
+    from preprocessor import chat as _chat
+    confirms = {
+        "AAMk-1": {"status": "live", "thread_ts": "t9", "summary": {"To": "a@example.edu",
+                                                                   "Subject": "RE: Lab visit"}},
+        "AAMk-2": {"status": "retired", "thread_ts": "t9", "summary": {}},
+        "AAMk-3": {"status": "consumed", "thread_ts": "t9", "summary": {}},
+        "AAMk-4": {"status": "live", "thread_ts": "t8", "summary": {}},
+    }
+    ns = {"_load_draft_confirms": lambda: confirms, "_chat": _chat}
+    exec(compile(_fn_body("_side_drafts_note"), "bot", "exec"), ns)
+    note = ns["_side_drafts_note"]("t9")
+    assert "run update-draft with its id" in note
+    assert "- draft id AAMk-1: to a@example.edu, subject RE: Lab visit; its Send card is up" in note
+    assert "- draft id AAMk-2: to (unknown), subject (unknown); its Send card is closed" in note
+    assert "AAMk-3" not in note and "AAMk-4" not in note
+    assert ns["_side_drafts_note"]("t7") == ""
 
 def test_proactive_scheduling_runs_the_reschedule_brief():
     """A queued reschedule request opens a thread whose seed runs the
