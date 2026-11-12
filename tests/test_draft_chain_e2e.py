@@ -772,7 +772,9 @@ def test_s3_the_sweeper_takes_every_token_and_routes_by_it():
         _stage(tmp, f"pending-event.{TOK_A}.json", {"subject": "no thread named"})
         _stage(tmp, f"pending-event.{TOK_B}.json", {"subject": "names one", "thread_ts": "t7"})
         _stage(tmp, "pending-event.json", {"subject": "bare"})
-        for odd in ("pending-event.0A1B2C3D.json", "pending-event.0a1b2c3d4.json",
+        # The uppercase name must not fold to a test token: a case-insensitive
+        # filesystem (the macOS runner) would write it over that token's file.
+        for odd in ("pending-event.ABCDEF01.json", "pending-event.0a1b2c3d4.json",
                     "pending-event..json", "pending-event.nothex00.json"):
             _stage(tmp, odd, {"subject": odd})
         assert ns["_staged_tokens"]("pending-event.json") == [TOK_A, TOK_B]
@@ -780,7 +782,7 @@ def test_s3_the_sweeper_takes_every_token_and_routes_by_it():
         got = {a["subject"]: a["_route"] for a in ns["_claim_event_actions"](any_token=True)}
         assert got == {"no thread named": {"thread_ts": "t40", "channel": "dm"},
                        "names one": {"thread_ts": "t7"}, "bare": {}}
-        assert (tmp / "state" / "pending-event.0A1B2C3D.json").exists()
+        assert (tmp / "state" / "pending-event.ABCDEF01.json").exists()
         # without any_token or a token, a claim is the bare names only
         _stage(tmp, f"pending-event.{TOK_A}.json", {"subject": "again"})
         assert ns["_claim_event_actions"]() == []
