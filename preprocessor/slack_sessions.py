@@ -369,6 +369,18 @@ def remember(thread_ts: str, **meta) -> None:
     _mutate(fn)
 
 
+def forget_meta(thread_ts: str, *keys: str) -> None:
+    """Remove metadata keys from the session entry; a key it does not
+    hold is left alone."""
+    def fn(rows: dict) -> bool:
+        meta = (rows.get(thread_ts) or {}).get("meta") or {}
+        gone = [k for k in keys if k in meta]
+        for k in gone:
+            meta.pop(k)
+        return bool(gone)
+    _mutate(fn)
+
+
 def invalidate(thread_ts: str) -> None:
     """Drop the mapping (resume failed / session corrupt). The next
     lookup() mints a fresh session."""

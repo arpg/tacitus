@@ -80,7 +80,7 @@ def test_the_bot_drops_a_deleted_message_that_waited():
 
 def test_the_stop_notice_names_the_users_words():
     i = BOT.index("def _cancel_thread_runs(")
-    assert "_turn_cancel.own_words(" in BOT[i:i + 1200]
+    assert "_turn_cancel.own_words(" in BOT[i:BOT.index("\ndef ", i + 1)]
 
 
 class _Proc:
@@ -117,3 +117,70 @@ def test_the_bot_wires_the_cancel():
     block = BOT[i:i + 1200]
     assert "_surface_run_drafts(" in block, "a stopped turn's drafts still get their cards"
     assert "not cr.cancelled" in BOT or "if cr.cancelled:\n            raise _TurnCancelled()" in BOT
+
+
+# --- a stopped request is withdrawn on the thread's next turn --------------
+
+import slack_sessions as ss  # noqa: E402
+
+
+@pytest.fixture
+def registry(tmp_path, monkeypatch):
+    monkeypatch.setattr(ss, "REGISTRY", tmp_path / "slack-sessions.json")
+    return ss
+
+
+def test_the_note_quotes_the_stopped_words_and_points_at_the_latest_message():
+    assert tc.withdrawn_note("") == "" and tc.withdrawn_note("   ") == ""
+    note = tc.withdrawn_note("draft a reply to the  committee\nabout Friday")
+    assert "> draft a reply to the committee about Friday" in note
+    assert "withdrawn" in note and "Do not finish it" in note
+    assert "latest message" in note
+
+
+def test_the_stopped_words_drop_the_header_and_keep_a_bounded_length():
+    assert tc.stopped_words("[From your direct message, 10:02]\n\nfind a time with Kit") == \
+        "find a time with Kit"
+    long = tc.stopped_words("word " * 400)
+    assert len(long) == tc.STOPPED_MAX_CHARS and long.endswith("…")
+
+
+def test_a_side_session_stop_is_written_on_the_thread_too():
+    assert tc.stopped_session_keys({"thread_ts": "t1"}) == ["t1"]
+    assert tc.stopped_session_keys({"thread_ts": "t1", "session_key": "t1~row9"}) == ["t1~row9", "t1"]
+    assert tc.stopped_session_keys({}) == []
+
+
+def test_a_stop_is_read_by_the_next_turn_only(registry):
+    registry.lookup("t1")
+    assert tc.record_stop(registry, ["t1"], "send Kit the slides") == []
+    _, resumable, meta = registry.lookup("t1")
+    assert resumable and meta[tc.STOPPED_KEY] == "send Kit the slides"
+    note = tc.take_stop_note(registry, "t1", meta)
+    assert "> send Kit the slides" in note
+    _, _, meta = registry.lookup("t1")
+    assert tc.STOPPED_KEY not in meta, "the next turn takes the request off the row"
+    assert tc.take_stop_note(registry, "t1", meta) == "", "a later turn adds no note"
+
+
+def test_forget_meta_leaves_the_other_keys(registry):
+    registry.lookup("t1")
+    registry.remember("t1", use_mcp=True, **{tc.STOPPED_KEY: "x"})
+    registry.forget_meta("t1", tc.STOPPED_KEY, "absent")
+    _, _, meta = registry.lookup("t1")
+    assert meta == {"use_mcp": True}
+    registry.forget_meta("no-such-thread", tc.STOPPED_KEY)   # no row: nothing happens
+
+
+def test_the_bot_withdraws_the_stopped_request():
+    i = BOT.index("def _cancel_thread_runs(")
+    body = BOT[i:BOT.index("\ndef ", i + 1)]
+    assert body.index("_turn_cancel.record_stop(") < body.index("_LIVE_RUNS.stop("), \
+        "the request is written before the stop, so a waiting message reads it"
+    assert "_turn_cancel.forget_stop(" in body, "a run that was not live leaves no note"
+    j = BOT.index("held_session_lock = session_lock")
+    k = BOT.index("stopped_note = _turn_cancel.take_stop_note(_sessions, skey, session_meta)")
+    assert j < k, "the note is taken after the wait, from the meta the last lookup read"
+    assert "task_block = task_block + \"\\n\\n\" + stopped_note" in BOT, "a fresh prompt carries it"
+    r = BOT.index("{stopped_block}The user replied:")
+    assert k < r, "a resumed session reads the note before the reply"

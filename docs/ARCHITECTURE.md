@@ -2617,7 +2617,12 @@ A `stop` or `cancel` in a thread whose turn is running ends that
 turn's Claude process (`preprocessor/turn_cancel.py`, `_cancel_thread_runs`):
 no reply is posted, and the drafts the run made before the stop keep
 their cards. The check reads the user's words after the room or DM
-header the bot puts before them. A message deleted while it waits
+header the bot puts before them. The stopped request stays in the
+session's transcript with no answer, so the stop writes its words on
+the session's row (`stopped_request`) and the thread's next turn takes
+them off and says in its prompt that the request is withdrawn
+(`turn_cancel.take_stop_note`); without that note the resumed session
+did the stopped request and then the new one. A message deleted while it waits
 behind a running turn never starts (`on_delete_message`, `_WITHDRAWN`).
 The clock does not cut a turn that is working
 (`preprocessor/turn_watch.py`): a run stops when its stream has been
