@@ -243,6 +243,113 @@ def test_short_or_recipientless_skipped():
         assert r["processed"] == 0 and r["skipped"] == 2
 
 
+# ---------------------------------------------------------------------------
+# sync from the resident: mediated, structured, idempotent
+# ---------------------------------------------------------------------------
+
+import contextlib  # noqa: E402
+import io  # noqa: E402
+import json  # noqa: E402
+
+import mail_mediation as M  # noqa: E402
+
+
+def _run_main(argv):
+    """main(argv) -> (exit code, stdout)."""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        try:
+            rc = sp.main(argv)
+        except SystemExit as e:
+            rc = e.code
+    return rc, out.getvalue()
+
+
+def _sync_with(sent, db):
+    """`sync --days 1` with Sent Items stubbed to `sent` (a list, or an
+    exception to raise), writing to `db`."""
+    real_fetch, real_db = sp._fetch_sent, sp.DB_PATH
+
+    def fetch(days):
+        if isinstance(sent, Exception):
+            raise sent
+        return list(sent)
+    sp._fetch_sent, sp.DB_PATH = fetch, Path(db)
+    try:
+        return _run_main(["sync", "--days", "1"])
+    finally:
+        sp._fetch_sent, sp.DB_PATH = real_fetch, real_db
+
+
+def test_the_mediator_runs_sync_as_the_owner_and_nothing_else():
+    import mail_mediator
+    assert M.SAFE["style_profiles"] == {"sync"}
+    assert "style_profiles" not in M.GATED
+    for verb in ("get", "stats"):
+        assert not M.is_safe("style_profiles", verb)
+    assert mail_mediator.TOOLS["style_profiles"].name == "style_profiles.py"
+    assert M.parser_options("style_profiles", "sync") is not None
+    assert M.sanitize("style_profiles", "sync", ["sync", "--days", "21"]) is None
+
+
+def test_sync_goes_to_the_mediator_and_get_stays_local():
+    calls = []
+
+    def forward(tool, argv, transform=None):
+        calls.append((tool, list(argv)))
+        print(json.dumps({"status": "ok", "fetched": 0}))
+        raise SystemExit(0)
+
+    real = M.forward_or_none
+    M.forward_or_none = forward
+    try:
+        rc, out = _run_main(["sync", "--days", "1"])
+        assert rc == 0 and json.loads(out)["status"] == "ok"
+        assert calls == [("style_profiles", ["sync", "--days", "1"])]
+        with tempfile.TemporaryDirectory() as td:
+            real_db = sp.DB_PATH
+            sp.DB_PATH = Path(td) / "p.db"
+            try:
+                rc, out = _run_main(["get", "--contact", "alice@x.edu"])
+            finally:
+                sp.DB_PATH = real_db
+        assert rc == 0 and json.loads(out)["found"] is False
+        assert len(calls) == 1                       # get never forwards
+    finally:
+        M.forward_or_none = real
+
+
+def test_a_failed_read_is_one_json_error_and_keeps_the_profiles():
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "p.db"
+        sp.update_from_messages(
+            [_msg("alice@x.edu", "2026-06-01T10:00:00Z", BODY)], db_path=db)
+        rc, out = _sync_with(PermissionError(13, "Permission denied",
+                                             "msal_token_cache.json"), db)
+        res = json.loads(out)
+        assert rc == 1 and res["status"] == "error"
+        assert "Sent Items" in res["message"] and res["profiles"] == "unchanged"
+        assert sp.get_profile("alice@x.edu", db_path=db)["samples"] == 1
+
+
+def test_sync_reports_counts_and_contacts_and_repeats_without_double_counting():
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "p.db"
+        sent = [_msg("alice@x.edu", "2026-06-01T10:00:00Z", BODY),
+                _msg("kit.bancroft59@example.edu", "2026-06-02T10:00:00Z",
+                     "Hi Kit,\n\nThe draft looks right to me.\n\nThanks")]
+        rc, out = _sync_with(sent, db)
+        res = json.loads(out)
+        assert rc == 0 and res["status"] == "ok"
+        assert res["fetched"] == 2 and res["processed"] == 2
+        assert res["contacts_updated"] == 2
+        assert res["contacts"] == ["alice@x.edu", "kit.bancroft59@example.edu"]
+        rc, out = _sync_with(sent, db)               # the same week again
+        assert rc == 0 and json.loads(out)["status"] == "ok"
+        p = sp.get_profile("alice@x.edu", db_path=db)
+        assert p["messages"] == 1 and p["samples"] == 1
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0

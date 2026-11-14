@@ -90,6 +90,11 @@ ea-bot has no route to any of these.
   LISTEN socket owned by ea-bot per /proc/net/tcp, no takeover of another user's path, no
   Funnel enabled on the node). There is no funnel verb, so a mediated route is tailnet-only
   by construction. See SECURITY.md Layer 5, "Deck hosting rides the same boundary".
+- `style_profiles.py`: `sync`. The style refresh reads Sent Items with the owner's token and
+  folds the messages into `state/style-profiles.db`, the file the owner's weekly cron writes
+  too. The answer carries counts and the touched addresses, never a message; a failed read is
+  one JSON error and leaves the profiles as they were. `get` and `stats` read the local
+  database and are not mediated.
 
 **GATED (owner-only, button; NEVER mediated):**
 - `graph_actions`: `send-draft`, `send-gmail-draft`, `schedule-send`, `request-confirm`

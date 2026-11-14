@@ -17,6 +17,11 @@ CLI (allowlisted for the drafting lanes):
     python3 style_profiles.py get --contact alice@host.edu   # profile+samples
     python3 style_profiles.py sync [--days 180]              # backfill/cron
     python3 style_profiles.py stats
+
+`sync` reads Sent Items, which needs the mail token. The resident holds
+no token under mail mediation, so its `sync` goes to the mediator, which
+runs it as the owner (mail_mediation.SAFE). `get` and `stats` read the
+local database only and run in place everywhere.
 """
 from __future__ import annotations
 
@@ -225,7 +230,8 @@ def update_from_messages(sent: list, db_path: Path | None = None,
     `reprocess` ignores the watermark so a full-body sync can revisit
     messages the briefing already recorded from a 255-char preview.
     Per-message rows are keyed and updated in place, so the totals stay
-    correct across the overlap.
+    correct across the overlap. `contacts` lists the addresses whose
+    profile the batch touched.
     """
     global DB_PATH
     if db_path:
@@ -237,6 +243,7 @@ def update_from_messages(sent: list, db_path: Path | None = None,
         watermark = row["value"] if row else ""
         processed = skipped = 0
         new_watermark = watermark
+        touched: set[str] = set()
 
         for m in sorted(sent or [], key=lambda x: x.get("sentDateTime") or ""):
             sent_at = m.get("sentDateTime") or ""
@@ -270,6 +277,7 @@ def update_from_messages(sent: list, db_path: Path | None = None,
                 continue
 
             f = _extract_features(text)
+            touched.update(addr for addr, _ in people)
             for addr, name in people:
                 # The briefing folds in previews (255 chars) while the
                 # cron sync fetches real bodies; whichever runs first
@@ -344,7 +352,7 @@ def update_from_messages(sent: list, db_path: Path | None = None,
                 "VALUES ('watermark', ?)", (new_watermark,))
         con.commit()
         return {"processed": processed, "skipped": skipped,
-                "watermark": new_watermark}
+                "watermark": new_watermark, "contacts": sorted(touched)}
     finally:
         con.close()
 
@@ -421,19 +429,32 @@ def _reduce_msgs(con: sqlite3.Connection, contact: str) -> dict:
     }
 
 
-def cmd_sync(args):
-    """Backfill from sent mail, with real bodies.
+# How many touched addresses a sync result names; the count is always whole.
+MAX_LISTED_CONTACTS = 50
+
+
+def _sync_error(message: str) -> int:
+    """Print a sync failure as one JSON object and return the exit code.
+    Nothing was written: the fetch comes before the one transaction."""
+    print(json.dumps({"status": "error", "message": message,
+                      "profiles": "unchanged"}))
+    return 1
+
+
+def _fetch_sent(days: int) -> list:
+    """Sent mail of the last `days` days, with real bodies.
 
     `get_sent` selects bodyPreview, which Outlook caps at 255 chars, so
     a profile built from it stores openings and never an ending. Ask for
-    `body` explicitly and fall back if the folder query is unavailable.
+    `body` explicitly and fall back to previews if the folder query is
+    unavailable. Raises when neither read works.
     """
     import graph_client as graph
     from datetime import timedelta
     cutoff = (datetime.now(timezone.utc)
-              - timedelta(days=args.days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+              - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        sent = graph.graph_get_all("/me/mailfolders/sentitems/messages", {
+        return graph.graph_get_all("/me/mailfolders/sentitems/messages", {
             "$select": graph.MAIL_FIELDS_FULL,
             "$filter": f"sentDateTime ge {cutoff}",
             "$orderby": "sentDateTime desc",
@@ -443,10 +464,25 @@ def cmd_sync(args):
         print(json.dumps({"warning": f"full-body fetch failed ({exc}); "
                                      "falling back to previews"}),
               file=sys.stderr)
-        sent = graph.get_sent(days_back=args.days)
-    result = update_from_messages(sent, reprocess=True)
-    result["fetched"] = len(sent)
-    print(json.dumps(result))
+        return graph.get_sent(days_back=days)
+
+
+def cmd_sync(args) -> int:
+    """Backfill from sent mail, with real bodies. A failed read prints a
+    JSON error and leaves every profile as it was."""
+    try:
+        sent = _fetch_sent(args.days)
+    except Exception as exc:
+        return _sync_error(f"could not read Sent Items: {exc}")
+    try:
+        result = update_from_messages(sent, reprocess=True)
+    except Exception as exc:
+        return _sync_error(f"could not update the profiles: {exc}")
+    contacts = result.pop("contacts", [])
+    print(json.dumps({"status": "ok", "fetched": len(sent), **result,
+                      "contacts_updated": len(contacts),
+                      "contacts": contacts[:MAX_LISTED_CONTACTS]}))
+    return 0
 
 
 def cmd_get(args):
@@ -473,7 +509,7 @@ def cmd_stats(args):
         con.close()
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Per-contact style profiles", allow_abbrev=False)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("sync", allow_abbrev=False)
@@ -484,9 +520,26 @@ def main() -> int:
     p.set_defaults(fn=cmd_get)
     p = sub.add_parser("stats", allow_abbrev=False)
     p.set_defaults(fn=cmd_stats)
-    args = ap.parse_args()
-    args.fn(args)
-    return 0
+    return ap
+
+
+# The verbs that read the local database only, and run in place everywhere.
+LOCAL_VERBS = ("get", "stats")
+
+
+def main(argv: list[str] | None = None) -> int:
+    import mail_mediation
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if not argv or argv[0] not in LOCAL_VERBS:
+        # The resident has no mail token: under mail mediation the owner's
+        # mediator runs `sync` and this process prints its answer and exits;
+        # any other verb is refused there. Elsewhere (the owner, a host with
+        # no mediator) it returns.
+        mail_mediation.forward_or_none("style_profiles", argv)
+    ap = build_parser()
+    args = ap.parse_args(argv)
+    mail_mediation.check_child_parse(ap, args)  # the verb the mediator checked
+    return args.fn(args) or 0
 
 
 if __name__ == "__main__":
