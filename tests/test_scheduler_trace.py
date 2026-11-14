@@ -169,6 +169,47 @@ def test_a_help_call_is_not_a_solver_run():
     assert HELPERS["_identify_scheduler_call"](_production_shape_tc(cmd)) is None
 
 
+# A Codex turn's command is wrapped in `bash -c '...'` or `bash -c "..."`.
+CODEX_HELP = ("/usr/bin/bash -c 'python3 /home/ea-bot/ea-system/preprocessor/scheduling_engine.py "
+              "propose-meeting --help'")
+CODEX_PROPOSE = ('/usr/bin/bash -c "python3 /home/ea-bot/ea-system/preprocessor/scheduling_engine.py '
+                 'propose-meeting --duration 30 --num-options 8 --attendees '
+                 '\'[{\\"email\\":\\"a@example.edu\\"},{\\"email\\":\\"b@example.edu\\"}]\'"')
+
+
+def test_a_help_call_in_codexs_quoted_wrapper_is_not_a_solver_run():
+    assert HELPERS["_identify_scheduler_call"](_production_shape_tc(CODEX_HELP)) is None
+    assert HELPERS["_scheduler_trace_summary"](CODEX_HELP, "usage: ...") is None
+
+
+def test_codexs_escaped_attendees_are_counted():
+    label, kv = HELPERS["_identify_scheduler_call"](_production_shape_tc(CODEX_PROPOSE))
+    assert label == "propose-meeting"
+    assert kv == {"duration": "30", "num-options": "8", "attendees": "2"}, kv
+
+
+def test_the_codex_summary_reads_the_whole_output_with_stderr_after_it():
+    """codex_cli hands the summary hook the whole output, stdout and
+    stderr together; the runner then keeps only its end."""
+    full = (json.dumps({"status": "ok", "options": [{"rank": i, "notes": "x" * 400} for i in range(1, 9)]})
+            + "\n  EA-Managed calendar: 191 holds\n")
+    assert HELPERS["_scheduler_trace_summary"](CODEX_PROPOSE, full) == "8 options"
+    assert HELPERS["_scheduler_trace_summary"]("python3 x/ledger.py list", full) is None
+
+
+def test_a_graph_failure_line_names_the_failure_not_unknown_options():
+    out = ("  Graph API HTTP 504 (attempt 1/6), retrying in 5s...\n"
+           "Outlook did not answer (Microsoft returned HTTP 504). Run the same command again in a minute.\n")
+    assert HELPERS["_summarize_scheduler_result"]("propose-meeting", out) == "Outlook did not answer"
+    assert HELPERS["_summarize_scheduler_result"]("validate-draft", out) == "Outlook did not answer"
+    throttled = "Microsoft is limiting mail access right now. Try again in a few minutes."
+    assert HELPERS["_summarize_scheduler_result"]("propose-meeting", throttled) == "Outlook throttled"
+    tc = _production_shape_tc(CODEX_PROPOSE, out[-300:], elapsed=66.2) \
+        + (HELPERS["_scheduler_trace_summary"](CODEX_PROPOSE, out),)
+    trace = HELPERS["_format_scheduler_trace"]([tc])
+    assert "→ Outlook did not answer /66.2s" in trace, trace
+
+
 def test_booking_link_propose_is_traced():
     cmd = ("python3 /home/ea-bot/ea-system/preprocessor/booking_link.py propose "
            "--attendees '[{\"email\":\"a@example.edu\",\"booking_link\":\"https://calendly.com/a/30min\"}]'")

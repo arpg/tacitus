@@ -349,6 +349,13 @@ whenever `cr.tool_calls` contains a call to `scheduling_engine.py`,
 `update-event`/`delete-event`. Replies that didn't touch any of those
 get no footer (so the `:calendar:` marker stays meaningful).
 
+The summary reads the call's whole output, not the stored snippet. A
+verb that Graph failed reads `→ Outlook did not answer` or
+`→ Outlook throttled`. On the Codex arm the time comes from the
+command's start and end events (`codex_cli.clock_command`) and the
+summary from `codex_cli.parse_events`' `summarize` hook, which the bot
+sets to `_scheduler_trace_summary`.
+
 If the trace would push the last reply chunk past 3000 chars (Slack's
 practical message-size limit), it's posted as a separate follow-up
 message instead.

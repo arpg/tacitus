@@ -464,6 +464,63 @@ def test_the_throttle_line_names_a_reopen_time_when_one_is_known():
     assert gc.throttle_line(not_found) is None
 
 
+def _graph_response(status, url=gc.GRAPH_URL + "/me/calendarView"):
+    """A real requests.Response from `url`: raise_for_status gives the
+    HTTPError a Graph call raises, its request attached."""
+    r = requests.Response()
+    r.status_code = status
+    r.url = url
+    r.request = requests.Request("GET", url).prepare()
+    return r
+
+
+def _raised(resp):
+    try:
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        return e
+    raise AssertionError("no error raised")
+
+
+def test_the_unavailable_line_names_a_graph_outage_and_nothing_else():
+    for status in (502, 503, 504):
+        line = gc.unavailable_line(_raised(_graph_response(status)))
+        assert line == f"Outlook did not answer (Microsoft returned HTTP {status}). " \
+                       "Run the same command again in a minute.", line
+        assert gc.failure_line(_raised(_graph_response(status))) == line
+    assert gc.unavailable_line(_raised(_graph_response(500))) is None, "a 500 is terminal"
+    assert gc.unavailable_line(_raised(_graph_response(404))) is None
+    assert gc.unavailable_line(_raised(_graph_response(504, "https://oauth2.googleapis.com/token"))) is None, \
+        "another service's outage is not Outlook's"
+    req = requests.Request("GET", gc.GRAPH_URL + "/me/messages").prepare()
+    assert "the request timed out" in gc.unavailable_line(requests.exceptions.ReadTimeout("t", request=req))
+    assert "no connection to Microsoft" in gc.unavailable_line(requests.exceptions.ConnectionError("c", request=req))
+    assert gc.unavailable_line(requests.exceptions.ConnectionError("c")) is None, "no request, no claim"
+    try:
+        try:
+            raise _raised(_graph_response(504))
+        except requests.exceptions.HTTPError as inner:
+            raise RuntimeError("solver failed") from inner
+    except RuntimeError as wrapped:
+        assert "HTTP 504" in gc.unavailable_line(wrapped), "a wrapped Graph error is found"
+    assert gc.unavailable_line(ValueError("no")) is None
+    assert gc.failure_line(ValueError("no")) is None
+    plain_429 = requests.exceptions.HTTPError("429")
+    plain_429.response = _FakeResp(429)
+    assert gc.failure_line(plain_429) == gc.THROTTLED_TEXT
+
+
+def test_an_interactive_call_that_meets_504s_past_its_budget_ends_on_the_unavailable_line():
+    """The failure on the morning it happened: three 504s on a calendar
+    read, the 45 s budget spent, and the error the verb ends with names it."""
+    with _fresh_breakers():
+        result, state = _lane_get([_graph_response(504)] * 6, "interactive")
+    assert isinstance(result, requests.exceptions.HTTPError), result
+    assert state["waits"] == [5, 15], "the next wait would pass the 45 s budget"
+    assert gc.failure_line(result) == ("Outlook did not answer (Microsoft returned HTTP 504). "
+                                       "Run the same command again in a minute.")
+
+
 # --------------------------------------------------------------------------
 # update_draft — quoted thread survives a revision
 #

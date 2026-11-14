@@ -130,6 +130,60 @@ def test_run_returns_the_last_message_and_the_tool_calls(tmp_path, monkeypatch):
     assert res["tool_calls"] and res["num_turns"] == 1 and res["exit_code"] == 0
 
 
+def _command_event(kind: str, output: str = "") -> str:
+    item = {"id": "item_7", "type": "command_execution", "command": "python3 x/scheduling_engine.py propose-meeting",
+            "aggregated_output": output, "exit_code": None if kind == "item.started" else 0}
+    return json.dumps({"type": kind, "item": item})
+
+
+def test_clock_command_measures_a_command_from_its_start_to_its_end():
+    started, elapsed = {}, {}
+    X.clock_command(json.loads(_command_event("item.started")), started, elapsed, 100.0)
+    X.clock_command({"type": "item.completed", "item": {"id": "m", "type": "agent_message"}}, started, elapsed, 101.0)
+    X.clock_command(json.loads(_command_event("item.completed")), started, elapsed, 166.5)
+    assert elapsed == {"item_7": 66.5} and started == {}
+    X.clock_command({"type": "item.completed", "item": {"id": "x", "type": "command_execution"}},
+                    started, elapsed, 200.0)
+    X.clock_command("not an event", started, elapsed, 201.0)
+    assert elapsed == {"item_7": 66.5}, "an end with no start is not timed"
+
+
+def test_parse_events_keeps_the_time_and_a_summary_of_the_whole_output():
+    """The output is cut to its end, which drops a solver answer's JSON;
+    the caller's summary reads the whole of it first."""
+    whole = "{" + "x" * 5000 + "}"
+    seen = []
+
+    def summarize(command, output):
+        seen.append((command, output))
+        return "8 options"
+    p = X.parse_events(_command_event("item.completed", whole), elapsed={"item_7": 66.456}, summarize=summarize)
+    call = p["tool_calls"][0]
+    assert call["elapsed_s"] == 66.46 and call["summary"] == "8 options"
+    assert seen == [("python3 x/scheduling_engine.py propose-meeting", whole)]
+    assert len(call["output"]) == 2000
+    plain = X.parse_events(_command_event("item.completed", "ok"))["tool_calls"][0]
+    assert "elapsed_s" not in plain and "summary" not in plain
+    for bad in (lambda c, o: None, lambda c, o: 1 / 0):
+        assert "summary" not in X.parse_events(_command_event("item.completed", "ok"),
+                                               summarize=bad)["tool_calls"][0]
+
+
+def test_a_streamed_run_times_each_command_and_a_whole_read_does_not(tmp_path, monkeypatch):
+    script = ('for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done\n'
+              'cat > /dev/null\n'
+              f"printf '%s\\n' '{_command_event('item.started')}'\n"
+              'sleep 1\n'
+              f"printf '%s\\n' '{_command_event('item.completed', 'done')}'\n"
+              'printf "answer" > "$out"\n')
+    monkeypatch.setattr(X, "CODEX_BIN", str(_fake_codex(tmp_path, script)))
+    res = X.run("hello", cwd=tmp_path, sandbox="read-only", timeout=30, on_event=lambda ev: None)
+    assert res["harness_error"] == "", res
+    assert 0.9 <= res["tool_calls"][0]["elapsed_s"] < 10, res["tool_calls"]
+    whole = X.run("hello", cwd=tmp_path, sandbox="read-only", timeout=30)
+    assert whole["tool_calls"] and "elapsed_s" not in whole["tool_calls"][0]
+
+
 def test_an_advisory_error_item_does_not_fail_a_run_that_answered(tmp_path, monkeypatch):
     events = "\n".join([
         json.dumps({"type": "item.completed", "item": {"id": "e", "type": "error",
