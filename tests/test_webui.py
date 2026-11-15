@@ -7,6 +7,8 @@ themes. Where Playwright and a browser are installed, the app runs against
 the stub server (tests/webui_stub_server.py):
 a thread renders, markup in text stays text, a card's buttons and select
 post to the actions route, an event appends a message and marks unread,
+a thread read in one browser clears its count in another (a read in the
+background clears nothing, and the return to the screen counts again),
 the composer posts, keeps a draft per conversation (through a reload)
 and holds the files chosen, dropped or pasted until Send posts them with
 the words in one request, pairing answers a 401, on a phone
@@ -465,7 +467,9 @@ def test_the_app_stays_small():
     #     current as... with the browser's own name box) and each choice named by its model.
     # 5,360: 5,350 plus the hash and the composer moved in one step (goTo, and a link into the app through it).
     # 5,370: 5,360 plus a thread's state kept by the order the page learned it, not by its `at`.
-    assert lines <= 5370, f"{lines} lines: the contract keeps the app near 5,370 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place and a calm connection line"
+    # 5,407: 5,370 plus the bot's read state (the counts per conversation from the bot and its `read` event, kept
+    #     over an older answer, the read of the conversation on screen, and the counts taken again on the return).
+    assert lines <= 5407, f"{lines} lines: the contract keeps the app near 5,407 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place and a calm connection line"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -823,9 +827,12 @@ def test_an_event_appends_a_message_and_marks_unread(app):
     open_thread(page, "Draft a reply")
     expect(page.locator("#live.on")).to_be_attached()
     tk = stub.messages[0]["thread_key"]
-    stub.emit_bot(W.DM, "Live **hello**", thread_key=tk)
+    hello = stub.emit_bot(W.DM, "Live **hello**", thread_key=tk)
     expect(page.locator("#messages .msg strong:has-text('hello')")).to_be_visible()
     expect(page.locator("#messages .msg")).to_have_count(4)
+    # The message on screen is read: the bot hears it, up to that message.
+    wait_for(lambda: {"channel": W.DM, "thread_key": tk, "upto": hello["seq"]} in stub.read_posts)
+    assert stub.counts(W.DM)["unread"] == 0
 
     main = page.locator('a.chan[href="#/stream%3A9"] .badge')
     expect(main).to_have_text("2")
@@ -841,6 +848,80 @@ def test_an_event_appends_a_message_and_marks_unread(app):
     item.click()
     expect(page.locator("#messages .msg")).to_have_count(1)
     expect(item.locator(".badge")).to_have_count(0)
+    assert not errors, errors
+
+
+def test_a_thread_read_on_one_device_clears_its_count_on_the_other(browser, stub_factory):
+    """Read state is the bot's: two browsers on one bot (a phone and a
+    computer). Reading a thread on one clears its count on the other, on
+    the thread's card, the channel's row, the menu's dot and the page's
+    title, without a reload."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    url, stub = stub_factory()
+    pages, errors = [], []
+    for _ in range(2):
+        ctx = browser.new_context(viewport={"width": 1280, "height": 800})
+        page = ctx.new_page()
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(url)
+        page.wait_for_selector(".thread-item")
+        pages.append(page)
+    here, there = pages
+    try:
+        main = 'a.chan[href="#/stream%3A9"] .badge'
+        weekly = there.locator(".thread-item:has-text('Weekly plan') .badge")
+        there.click('a.chan[href="#/stream%3A9"]')
+        expect(weekly).to_have_text("2")
+        expect(there.locator(main)).to_have_text("2")
+        expect(there).to_have_title("(2) Tacitus")
+        here.click('a.chan[href="#/stream%3A9"]')
+        open_thread(here, "Weekly plan")
+        expect(weekly).to_have_count(0)
+        expect(there.locator(main)).to_have_count(0)
+        expect(there).to_have_title("Tacitus")
+        assert [p["thread_key"] for p in stub.read_posts] == [W.WEEKLY]
+        # A message in a room: the other place's dot on the menu, until it is read here.
+        room = next(m for m in stub.messages if m["channel"] == W.ROOM)["thread_key"]
+        stub.emit_bot(W.ROOM, "The budget table is in.", thread_key=room)
+        expect(there.locator("#menu")).to_have_attribute("data-unread", "1")
+        expect(there).to_have_title("(1) Tacitus")
+        here.click('a.chan[href="#/r1"]')
+        open_thread(here, "Project notes")
+        expect(there.locator("#menu")).to_have_attribute("data-unread", "")
+        expect(there).to_have_title("Tacitus")
+        assert not errors, errors
+    finally:
+        for page in pages:
+            page.context.close()
+
+
+def test_a_read_in_the_background_clears_nothing_and_coming_back_counts_again(app):
+    """A thread the app reads only to name a card (a message in a thread
+    the list does not hold) stays unread here and at the bot, through a
+    reload. Back on the screen the page takes every count from the bot
+    again: an iPhone's home-screen app loses its stream while it is away."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    new = stub.emit_bot(W.DM, "A conversation the list does not hold")
+    item = page.locator(".thread-item:has-text('A conversation the list does not hold')")
+    expect(item.locator(".badge")).to_have_text("1")
+    wait_for(lambda: (W.DM, new["thread_key"]) in stub.thread_gets)
+    page.wait_for_timeout(600)
+    expect(item.locator(".badge")).to_have_text("1")
+    expect(page.locator('a.chan[href="#/stream%3A7"] .badge')).to_have_text("1")
+    assert stub.read_posts == [] and stub.counts(W.DM)["unread_threads"] == {new["thread_key"]: 1}
+    page.reload()
+    expect(item.locator(".badge")).to_have_text("1")
+    # read elsewhere while this page's stream heard nothing: back on the screen, it asks the bot
+    page.evaluate(FAKE_HIDDEN)
+    page.evaluate("__hide(true)")
+    stub.reads[(W.DM, new["thread_key"])] = new["seq"]
+    page.evaluate("__hide(false)")
+    expect(item.locator(".badge")).to_have_count(0)
+    expect(page).to_have_title("(2) Tacitus")
     assert not errors, errors
 
 

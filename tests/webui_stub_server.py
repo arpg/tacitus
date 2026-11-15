@@ -67,6 +67,17 @@ PATCH and DELETE /api/messages/<ch>/<id> edit and remove the owner's own
 text message in its first 15 minutes, as the bot does. Each is recorded in
 `owner_actions` and sent as a `reaction` or `update` event.
 
+Read state is the stub's, as it is the bot's: a thread's unread count is
+the bot's live messages after the latest of the channel's floor
+(`floors`), the thread's read mark (`reads`) and the owner's last message
+in the thread; the channel rows and each `channel` event carry the counts
+per thread (`unread_threads`), their sum and `as_of`, the last event they
+take in. Every channel starts read but the main one, whose weekly plan has
+two unread replies. POST /api/channels/<ch>/threads/<key>/read moves the
+thread's mark (never back, never past `upto`), with a `read` event when
+the counts change, and is recorded in `read_posts`; `thread_gets` records
+each GET of one thread.
+
 Each thread can have a state (`states`, seeded with made-up ones in three
 channels): the thread rows carry it, GET /api/needs lists the threads
 that need the owner or wait, and POST /api/threads/<ch>/<key>/state sets
@@ -225,6 +236,11 @@ class Stub:
         self.states: dict[tuple[str, str], dict] = {}
         self.state_posts: list[dict] = []
         self.room_changes: list[dict] = []
+        self.old: set[int] = set()  # the seqs of history rows
+        self.floors: dict[str, int] = {}  # channel -> the seq every message up to is read
+        self.reads: dict[tuple[str, str], int] = {}  # (channel, thread key) -> its read mark
+        self.read_posts: list[dict] = []  # each POST .../read: channel, thread key and body
+        self.thread_gets: list[tuple[str, str]] = []  # each GET of one thread
         # Each stream request: its Last-Event-ID header and its ?since=.
         self.streams: list[dict] = []
         self.refuse_streams = 0
@@ -233,13 +249,13 @@ class Stub:
         self.post_nonces: list = []   # one per post, the browser's nonce or None
         self.generation = 0
         self.channels = {
-            DM: {"id": DM, "name": "", "kind": "dm", "archived": False, "unread": 0},
-            MAIN: {"id": MAIN, "name": "ea", "kind": "main", "archived": False, "unread": 2},
-            SCHED: {"id": SCHED, "name": "ea-scheduling", "kind": "sched", "archived": False, "unread": 0},
+            DM: {"id": DM, "name": "", "kind": "dm", "archived": False},
+            MAIN: {"id": MAIN, "name": "ea", "kind": "main", "archived": False},
+            SCHED: {"id": SCHED, "name": "ea-scheduling", "kind": "sched", "archived": False},
             ROOM: {"id": ROOM, "name": "ea-example-project", "kind": "room", "archived": False,
-                   "unread": 0, "description": "A made-up project room"},
-            OLD: {"id": OLD, "name": "ea-old-project", "kind": "room", "archived": True, "unread": 0},
-            DIGEST: {"id": DIGEST, "name": "Mail digests", "kind": "digest", "archived": False, "unread": 0},
+                   "description": "A made-up project room"},
+            OLD: {"id": OLD, "name": "ea-old-project", "kind": "room", "archived": True},
+            DIGEST: {"id": DIGEST, "name": "Mail digests", "kind": "digest", "archived": False},
         }
         self._seed()
         if tick > 0:
@@ -253,7 +269,10 @@ class Stub:
 
     def add(self, channel: str, text: str = "", *, author: str = "bot", kind: str = "message",
             thread_key: str | None = None, card: dict | None = None, file: dict | None = None,
-            reactions: list | None = None, at: float | None = None, event: str | None = None) -> dict:
+            reactions: list | None = None, at: float | None = None, event: str | None = None,
+            history: bool = False) -> dict:
+        """A message; `history` makes it a row copied from the past, which
+        never counts as unread."""
         with self.cond:
             self.seq += 1
             now = at or time.time()
@@ -262,9 +281,51 @@ class Stub:
                  "text": text, "card": card, "file": file, "reactions": list(reactions or []),
                  "owner_reactions": [], "deleted": False, "posted_at": now, "updated_at": now}
             self.messages.append(m)
+            if history:
+                self.old.add(m["seq"])
             if event:
                 self._event(event, m)
             return m
+
+    def counts(self, channel: str) -> dict:
+        """The channel's read state as the bot's rows and `read` events
+        carry it: the unread count of each thread that has one, their sum,
+        and `as_of`, the last event they take in."""
+        out: dict[str, int] = {}
+        with self.cond:
+            for m in self.messages:
+                if m["channel"] != channel or m["author"] != "bot" or m["seq"] in self.old:
+                    continue
+                tk = m["thread_key"]
+                mine = [x["seq"] for x in self.thread(channel, tk)
+                        if x["author"] == "owner" and x["seq"] not in self.old]
+                if m["seq"] > max([self.floors.get(channel, 0), self.reads.get((channel, tk), 0), *mine]):
+                    out[tk] = out.get(tk, 0) + 1
+            return {"as_of": self.eseq, "unread": sum(out.values()), "unread_threads": out}
+
+    def channel_row(self, cid: str) -> dict:
+        """A channel's row as /api/channels and a `channel` event give it."""
+        last = max((m["posted_at"] for m in self.messages if m["channel"] == cid), default=None)
+        return {**self.channels[cid], "last_at": last, **self.counts(cid)}
+
+    def mark_read(self, channel: str, key: str, upto: int | None = None) -> dict | None:
+        """The owner read a thread: its mark moves to its newest message (or
+        `upto`, when older), never back, with a `read` event when that
+        changes the channel's counts."""
+        with self.cond:
+            rows = self.thread(channel, key)
+            if not rows:
+                return None
+            to = rows[-1]["seq"] if upto is None else min(upto, rows[-1]["seq"])
+            before = self.counts(channel)["unread_threads"]
+            if to > max(self.reads.get((channel, key), 0), self.floors.get(channel, 0)):
+                self.reads[(channel, key)] = to
+            out = {"channel": channel, "thread_key": key, **self.counts(channel)}
+            if out["unread_threads"] != before:
+                self.eseq += 1
+                self.events.append((self.eseq, "read", out))
+                self.cond.notify_all()
+            return out
 
     def _event(self, typ: str, m: dict) -> None:
         self.eseq += 1
@@ -336,8 +397,9 @@ class Stub:
         out = []
         for channel, text, state, days in items:
             at = time.time() - days * 86400
-            m = self.add(channel, text, author="owner", at=at - 60)
-            self.add(channel, "Done. One question is left for you.", thread_key=m["thread_key"], at=at)
+            m = self.add(channel, text, author="owner", at=at - 60, history=True)
+            self.add(channel, "Done. One question is left for you.", thread_key=m["thread_key"], at=at,
+                     history=True)
             self.states[(channel, m["thread_key"])] = {
                 "state": state, "by": "model", "reason": "A question waits for you.", "at": at + 2 * 86400,
                 "stale": True}
@@ -357,10 +419,11 @@ class Stub:
         with self.cond:
             slug = re.sub(r"[^a-z0-9]+", "-", project.lower()).strip("-")
             row = {"id": f"r{len(self.channels) + 1}", "name": f"ea-{slug}", "kind": "room",
-                   "archived": False, "unread": 0}
+                   "archived": False}
             self.channels[row["id"]] = row
+            out = self.channel_row(row["id"])
             self.eseq += 1
-            self.events.append((self.eseq, "channel", dict(row)))
+            self.events.append((self.eseq, "channel", out))
             self.cond.notify_all()
             return row
 
@@ -380,10 +443,11 @@ class Stub:
             self.room_changes.append({"id": cid, **fields})
             if any(row.get(k) != v for k, v in fields.items()):
                 row.update(fields)
+                out = self.channel_row(cid)
                 self.eseq += 1
-                self.events.append((self.eseq, "channel", dict(row)))
+                self.events.append((self.eseq, "channel", out))
                 self.cond.notify_all()
-            return 200, dict(row)
+            return 200, self.channel_row(cid)
 
     def drop_streams(self, refuse: int = 0) -> None:
         """Close every open event stream; the next `refuse` stream
@@ -456,6 +520,10 @@ class Stub:
         sched = self.add(SCHED, ":hourglass_flowing_sand: Finding a time for the review.", at=t0 + 400)
         room = self.add(ROOM, "Project notes live here.", at=t0 + 500)
         self.add(OLD, "This room is archived.", at=t0 - 86400)
+        # Every channel starts read, but the weekly plan's two replies in the main one.
+        for cid in self.channels:
+            self.floors[cid] = max((m["seq"] for m in self.messages if m["channel"] == cid), default=0)
+        self.floors[MAIN] = self.thread(MAIN, WEEKLY)[0]["seq"]
         for m, state, reason in (
                 (ask, "needs_you", "The card still has its Send button."),
                 (odd, "done", "The card was acted on and nothing asks anything since."),
@@ -617,16 +685,13 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["relay", "devices"] and s.relay_pairing:
             return self._json(200, s.devices)
         if parts == ["channels"]:
-            rows = []
-            for c in s.channels.values():
-                last = max((m["posted_at"] for m in s.messages if m["channel"] == c["id"]), default=None)
-                rows.append({**c, "last_at": last})
-            return self._json(200, rows)
+            return self._json(200, [s.channel_row(cid) for cid in list(s.channels)])
         if len(parts) == 3 and parts[0] == "channels" and parts[2] == "threads":
             before = q.get("before", [None])[0]
             return self._json(200, s.parents(parts[1], int(q.get("limit", ["50"])[0]),
                                              int(before) if before else None))
         if len(parts) == 4 and parts[0] == "channels" and parts[2] == "threads":
+            s.thread_gets.append((parts[1], parts[3]))
             rows = [s.view(m) for m in s.thread(parts[1], parts[3])]
             return self._json(200 if rows else 404, rows if rows else {"error": "no such thread"})
         if len(parts) == 2 and parts[0] == "files" and parts[1] in s.files:
@@ -814,6 +879,14 @@ class Handler(BaseHTTPRequestHandler):
                 "x": int(time.time()) + 600, "b": s.bundle_hash(), "a": "https://relay.example.net/"}))
             return self._json(200, {"link": link, "qr": link, "expires": int(time.time()) + 600,
                                     "origin": "relay", "bundle": s.bundle_hash(), "access": "chat"})
+        if len(parts) == 5 and parts[0] == "channels" and parts[2] == "threads" and parts[4] == "read":
+            body = json.loads(self._body() or b"{}")
+            s.read_posts.append({"channel": parts[1], "thread_key": parts[3], **body})
+            upto = body.get("upto")
+            if upto is not None and (isinstance(upto, bool) or not isinstance(upto, int) or upto < 0):
+                return self._json(400, {"error": "upto is the seq of a message"})
+            out = s.mark_read(parts[1], parts[3], upto)
+            return self._json(200, out) if out else self._json(404, {"error": "no such thread"})
         if len(parts) == 4 and parts[0] == "threads" and parts[3] == "state":
             body = json.loads(self._body() or b"{}")
             s.state_posts.append({"channel": parts[1], "thread_key": parts[2], **body})

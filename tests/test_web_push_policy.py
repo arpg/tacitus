@@ -3,7 +3,8 @@ docs/webchat.md, Notifications): which of the bot's posts notify the
 owner's devices, the collapse of a thread's pushes, the check that lets
 one text push once (a direct message and its alert), the quiet a card's
 push gives the answer in the conversation that asked for it, the queue
-during quiet hours, the owner's `notify_push` switches, and the wiring
+during quiet hours (a thread read on any device drops the push queued for
+what it showed), the owner's `notify_push` switches, and the wiring
 through the chat package and the notifier. Digests, nudges and progress
 lines never push. The owner's reply, in the web app or mirrored from the
 primary, drops the thread's queued push, sends one clear to each browser
@@ -453,6 +454,27 @@ def test_a_later_owner_message_drops_a_queued_reply(pushing):
     f.post("r1", "With the coauthors.", thread_ts=key)
     owner_says(f, "r1", "Thanks.", key)
     assert f.store.push_claim_due(time.time() + 7200) == []
+
+
+@needs_push
+def test_a_thread_read_on_any_device_drops_its_queued_push(pushing):
+    """The read marks are the server's: a thread read on any device drops
+    the queued push of a message it showed, never of one after the newest
+    message the app showed, and the owner's message in another conversation
+    of the channel drops nothing, as `unread` counts."""
+    f = pushing
+    f.quiet_until = lambda: time.time() + 3600
+    key = owner_says(f, "main", "Anything for tomorrow?")
+    answer = f.post("main", "Nothing booked.", thread_ts=key)
+    owner_says(f, "main", "A conversation of its own.")
+    rkey = owner_says(f, "r1", "Status of the draft?")
+    f.post("r1", "With the coauthors.", thread_ts=rkey)
+    assert {q["tag"] for q in f.store.push_queued()} == {f"main/{key}", f"r1/{rkey}"}
+    f.store.mark_thread_read("main", key, upto=f.store.message("main", answer.id)["seq"] - 1)
+    f.store.mark_thread_read("r1", rkey)
+    assert [q["tag"] for q in f.store.push_claim_due(time.time() + 7200)] == [f"main/{key}"]
+    time.sleep(0.2)
+    assert f.sent == []                                  # a read sends no clear
 
 
 @needs_push

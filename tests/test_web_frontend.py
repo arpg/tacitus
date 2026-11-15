@@ -567,6 +567,103 @@ def test_a_store_from_before_history_rows_takes_the_column(tmp_path):
     store.close()
 
 
+# read state (docs/webchat.md, Unread)
+
+
+def said(store, author, text, thread=None, *, history=False) -> dict:
+    """A message in `main`, as the store keeps it."""
+    return store.add_message("main", mid=None, thread_key=thread, author=author, kind="message",
+                             text=text, history=history)
+
+
+def test_each_thread_counts_its_own_and_the_owners_message_reads_only_its_thread(tmp_path):
+    store = wf.WebStore(tmp_path / "w.sqlite")
+    store.upsert_channel("main", "ea", "main")
+    a = said(store, "bot", "a")
+    said(store, "bot", "a2", a["thread_key"])
+    b = said(store, "bot", "b")
+    row = store.channel("main")
+    # the counts take in every event so far, and an app counts each later one itself
+    assert (row["unread"], row["unread_threads"], row["as_of"]) == \
+        (3, {a["thread_key"]: 2, b["thread_key"]: 1}, store.max_event_seq())
+    said(store, "owner", "Thanks.", a["thread_key"])
+    assert store.channel("main")["unread_threads"] == {b["thread_key"]: 1}
+    said(store, "bot", "a3", a["thread_key"])
+    assert store.channel("main")["unread_threads"] == {a["thread_key"]: 1, b["thread_key"]: 1}
+    # a history row counts neither as unread nor as the owner's last message
+    said(store, "bot", "an old answer", b["thread_key"], history=True)
+    said(store, "owner", "an old question", b["thread_key"], history=True)
+    said(store, "bot", "an old thread", history=True)
+    row = store.channel("main")
+    assert (row["unread"], row["unread_threads"]) == (2, {a["thread_key"]: 1, b["thread_key"]: 1})
+    store.close()
+
+
+def test_a_thread_mark_moves_forward_to_what_was_shown_and_lifts_the_floor(tmp_path):
+    store = wf.WebStore(tmp_path / "w.sqlite")
+    store.upsert_channel("main", "ea", "main")
+    a = said(store, "bot", "a")
+    a2 = said(store, "bot", "a2", a["thread_key"])
+    b = said(store, "bot", "b")
+    start = store.max_event_seq()
+    # the app showed `a` alone: `a2` stays unread
+    out = store.mark_thread_read("main", a["thread_key"], upto=a["seq"])
+    assert (out["channel"], out["thread_key"], out["unread"], out["as_of"]) == \
+        ("main", a["thread_key"], 2, start)
+    assert out["unread_threads"] == {a["thread_key"]: 1, b["thread_key"]: 1}
+    (ev,) = store.events_since(start)
+    assert ev[1] == "read" and json.loads(ev[2]) == out
+    # never back, and a mark that does not move tells no one
+    for older in (0, a["seq"]):
+        assert store.mark_thread_read("main", a["thread_key"], upto=older) == {**out, "as_of": ev[0]}
+    assert store.events_since(ev[0]) == []
+    # the whole thread: the floor rises to just under the oldest unread message
+    assert store.mark_thread_read("main", a["thread_key"])["unread_threads"] == {b["thread_key"]: 1}
+    assert store._one("SELECT seq FROM reads WHERE channel='main'")["seq"] == b["seq"] - 1 == a2["seq"]
+    assert store._all("SELECT * FROM thread_reads") == []
+    assert store.mark_thread_read("main", b["thread_key"])["unread"] == 0
+    assert store._one("SELECT seq FROM reads WHERE channel='main'")["seq"] == b["seq"]
+    # a new message after the floor counts as before
+    said(store, "bot", "a3", a["thread_key"])
+    assert store.channel("main")["unread_threads"] == {a["thread_key"]: 1}
+    # a move that changes no count (the owner wrote last there) tells no one either
+    mine = said(store, "owner", "A question of mine.")
+    start = store.max_event_seq()
+    assert store.mark_thread_read("main", mine["thread_key"])["unread_threads"] == {a["thread_key"]: 1}
+    assert store.events_since(start) == []
+    assert store.mark_thread_read("main", "t999") is None
+    # the whole channel at once: the floor, with a `read` event of its own
+    start = store.max_event_seq()
+    assert store.mark_read("main")["unread"] == 0
+    assert [(t, json.loads(p)["thread_key"]) for _s, t, p in store.events_since(start)] == [("read", "")]
+    store.close()
+
+
+def test_a_store_from_before_thread_marks_keeps_its_channel_floor(tmp_path):
+    """The channel's read mark from before is the floor: nothing it covers
+    turns unread when the store takes the thread marks."""
+    import sqlite3
+    path = tmp_path / "old" / "webchat.sqlite"
+    path.parent.mkdir()
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE messages(seq INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, id TEXT, "
+        "thread_key TEXT, author TEXT, kind TEXT, text TEXT, card TEXT, file TEXT, "
+        "reactions TEXT, posted_at REAL, updated_at REAL, history INT DEFAULT 0, UNIQUE(channel, id));"
+        "CREATE TABLE reads(channel TEXT PRIMARY KEY, seq INT);"
+        "INSERT INTO messages(channel, id, thread_key, author, kind, text, reactions, posted_at, "
+        "updated_at) VALUES ('main', 'w1', 't1', 'bot', 'message', 'read', '[]', 1.0, 1.0), "
+        "('main', 'w2', 't2', 'bot', 'message', 'read too', '[]', 2.0, 2.0), "
+        "('main', 'w3', 't1', 'bot', 'message', 'new since', '[]', 3.0, 3.0);"
+        "INSERT INTO reads(channel, seq) VALUES ('main', 2);")
+    conn.commit()
+    conn.close()
+    store = wf.WebStore(path)
+    store.upsert_channel("main", "ea", "main")
+    assert store.channel("main")["unread_threads"] == {"t1": 1}
+    store.close()
+
+
 # HTTP
 
 
@@ -903,11 +1000,13 @@ def test_threads_list_newest_first_and_a_thread_oldest_first(fe):
     assert owner(fe, "GET", "/api/channels/main/threads/t999")[0] == 404
     assert owner(fe, "GET", "/api/channels/nope/threads")[0] == 404
     assert owner(fe, "GET", "/api/channels/main/threads?limit=x")[0] == 400
+    # a list or a thread read by the app is not the owner reading: no mark moves
     chans = {c["id"]: c for c in json.loads(owner(fe, "GET", "/api/channels")[2])}
-    assert chans["main"]["unread"] == 0 and chans["main"]["kind"] == "main"
+    assert chans["main"]["unread"] == 3 and chans["main"]["kind"] == "main"
+    assert chans["main"]["unread_threads"] == {a.thread_key: 2, b.thread_key: 1}
     fe.post("main", "c")
     chans = {c["id"]: c for c in json.loads(owner(fe, "GET", "/api/channels")[2])}
-    assert chans["main"]["unread"] == 1
+    assert chans["main"]["unread"] == 4 and chans["main"]["as_of"] == fe.store.max_event_seq()
 
 
 def test_encoded_channel_and_thread_ids_route(tmp_path):
@@ -925,6 +1024,51 @@ def test_encoded_channel_and_thread_ids_route(tmp_path):
         assert status == 200 and json.loads(body)[0]["thread_key"] == key
     finally:
         f.stop()
+
+
+def test_reading_a_thread_is_a_post_and_the_stream_tells_every_app(fe):
+    a = fe.post("main", "a")
+    fe.post("main", "a2", thread_ts=a.thread_key)
+    b = fe.post("main", "b")
+    first = fe.store.message("main", a.id)["seq"]
+    path = f"/api/channels/main/threads/{a.thread_key}/read"
+    s = Stream(fe)
+    try:
+        s.lines(lambda seen: "retry: 3000" in seen)
+        status, _h, body = owner(fe, "POST", path, {"upto": first})
+        out = json.loads(body)
+        assert status == 200 and (out["channel"], out["thread_key"], out["unread"]) == \
+            ("main", a.thread_key, 2)
+        assert out["unread_threads"] == {a.thread_key: 1, b.thread_key: 1}
+        (ev,) = s.events(1)
+        assert ev["event"] == "read" and json.loads(ev["data"]) == out
+    finally:
+        s.close()
+    # no bound: the thread's newest message; a message's id names its thread
+    out = json.loads(owner(fe, "POST", f"/api/channels/main/threads/{a.id}/read", {})[2])
+    assert out["unread_threads"] == {b.thread_key: 1}
+    chans = {c["id"]: c for c in json.loads(owner(fe, "GET", "/api/channels")[2])}
+    assert (chans["main"]["unread"], chans["main"]["unread_threads"]) == (1, {b.thread_key: 1})
+    for bad in ("x", True, -1, 1.5, None):
+        assert owner(fe, "POST", path, {"upto": bad})[0] == (200 if bad is None else 400), bad
+    assert owner(fe, "POST", "/api/channels/main/threads/t999/read", {})[0] == 404
+    assert owner(fe, "POST", "/api/channels/nope/threads/t1/read", {})[0] == 404
+    assert owner(fe, "GET", path)[0] == 404
+    assert call(fe, "POST", path, {})[0] == 401
+    assert owner(fe, "POST", path, {}, {"Origin": "https://evil.example.test"})[0] == 403
+
+
+def test_a_relayed_device_that_may_chat_may_mark_a_thread_read(fe):
+    """Reading a thread sends nothing: a chat action, which the relay client
+    forwards from a device at "chat", as it does a message."""
+    a = fe.post("main", "a")
+    relay = {"X-Tacitus-Relay": "0123456789abcdef", "X-Tacitus-Relay-Cards": "deny"}
+    path = f"/api/channels/main/threads/{a.thread_key}/read"
+    status, _h, body = owner(fe, "POST", path, {}, relay)
+    assert status == 200 and json.loads(body)["unread"] == 0
+    from botcore.chat import relay_client
+    assert relay_client.path_allowed(path)
+    assert relay_client.access_allows("chat", "POST", path)
 
 
 def test_events_replay_from_a_seq_and_deliver_new_ones(fe):

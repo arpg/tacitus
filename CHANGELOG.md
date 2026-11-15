@@ -6,6 +6,10 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The web chat's unread counts are the same on every device.** The bot
+  keeps a read mark per conversation; a conversation you read on your
+  phone clears its badge on your computer at once, and the reverse. A
+  list or a message the app only fetches no longer marks anything read.
 - **Zulip support is removed.** The chat front ends are the web chat,
   which the bot serves itself on your machine (setup recommends it), and
   Slack. A Slack install can still run the web chat beside it

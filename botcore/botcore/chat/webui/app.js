@@ -14,7 +14,7 @@
 
 const BASE = location.pathname.replace(/\/index\.html$/, '').replace(/\/+$/, '');
 const enc = encodeURIComponent;
-const EVENT_TYPES = ['message', 'update', 'reaction', 'card', 'status', 'file', 'channel', 'thread_state', 'release'];
+const EVENT_TYPES = ['message', 'update', 'reaction', 'card', 'status', 'file', 'channel', 'thread_state', 'release', 'read'];
 const CREATED = new Set(['message', 'card', 'file']); // the event types that post a message
 const KIND_ORDER = { dm: 0, main: 1, sched: 2, digest: 3, room: 4 };
 const NEW_THREAD = '+'; // never a thread key: every key opens with a letter or digit
@@ -68,8 +68,10 @@ const S = {
   threads: new Map(),   // channel id -> {list: [parent messages], more}
   msgs: new Map(),      // channel + thread key -> [messages], oldest first
   known: new Set(),     // channel + message id, for every message seen
-  baseline: new Map(),  // channel id -> the server's unread count, until opened
-  threadUnread: new Map(),
+  unread: new Map(),    // channel + thread key -> unread messages, as the server counts them
+  counted: new Map(),   // channel id -> the seq of the last event those counts take in
+  tallied: new Set(),   // channel + message id, for every message counted or found in the counts
+  readTo: new Map(),    // channel + thread key -> the newest message this page marked read
   nodes: new Map(),     // message id -> element, for the open thread
   lastSeq: 0,
   es: null,
@@ -635,10 +637,42 @@ const KIND_NAMES = { main: 'Ask Tacitus', dm: 'Direct messages', sched: 'Schedul
 const channelName = (c) => (c ? KIND_NAMES[c.kind] || String(c.name || c.id).replace(/^ea-(?=.)/, '') : '');
 const hashFor = (ch, tk) => '#/' + enc(ch) + (tk ? '/' + enc(tk) : '');
 
-function unreadFor(ch) {
-  let n = S.baseline.get(ch) || 0;
-  for (const [k, v] of S.threadUnread) if (k.startsWith(ch + '\n')) n += v;
-  return n;
+// The thread on screen shows no count while the page is in view: the owner is reading it (readSoon).
+const countOf = (k) => (k === tkey(S.channel, S.thread) && tagInView() ? 0 : S.unread.get(k) || 0);
+const unreadFor = (ch) => [...S.unread.keys()].reduce((n, k) => n + (k.startsWith(ch + '\n') ? countOf(k) : 0), 0);
+
+// The bot's counts for a channel (its row, a `channel` or `read` event, a read's answer) take in every event up to
+// their `as_of`: they replace this page's unless the page has taken in a later event of the channel already.
+function takeCounts(ch, row) {
+  if (!row || !row.unread_threads || (row.as_of || 0) < (S.counted.get(ch) || 0)) return;
+  for (const k of [...S.unread.keys()]) if (k.startsWith(ch + '\n')) S.unread.delete(k);
+  for (const [tk, n] of Object.entries(row.unread_threads)) S.unread.set(tkey(ch, tk), Number(n) || 0);
+  S.counted.set(ch, row.as_of || 0);
+}
+// The stream brings events in order: the page's counts of a channel take in this event and each one before it.
+const passed = (ch, seq) => { if (seq > (S.counted.get(ch) || 0)) S.counted.set(ch, seq); };
+
+// The menu and every count from the bot: at the start, back on the screen, and when the stream opens again
+// (an iPhone's home-screen app loses its stream while it is away).
+async function loadChannels() {
+  S.channels = (await call('GET', '/channels')) || [];
+  S.channels.forEach((c) => takeCounts(c.id, c));
+}
+const redraw = () => { renderChannels(); renderThreads(); };
+const recount = () => loadChannels().then(redraw, () => {});
+
+// The owner reads the thread on screen: the bot marks it read up to the newest message shown here, and its `read`
+// event clears the count on every device. Once, a moment after the last cue, while it has a count or a message
+// newer than the last mark this page sent.
+function readSoon() {
+  clearTimeout(readSoon.timer);
+  readSoon.timer = setTimeout(() => {
+    const ch = S.channel, tk = S.thread, key = tkey(ch, tk);
+    const upto = Math.max(0, ...(S.msgs.get(key) || []).map((m) => m.seq || 0));
+    if (!tagInView() || !upto || (!S.unread.get(key) && upto <= (S.readTo.get(key) || 0))) return;
+    call('POST', `/channels/${enc(ch)}/threads/${enc(tk)}/read`, { upto }) // a failure keeps the count for the next look
+      .then((out) => { S.readTo.set(key, upto); takeCounts(ch, out); redraw(); }, () => {});
+  }, 400);
 }
 
 function renderChannels() {
@@ -682,7 +716,7 @@ function renderChannels() {
 // channel (in the Needs you list) and replies, and its unread count.
 function threadCard(p, ch, withChannel) {
   const tk = threadOf(p);
-  const n = S.threadUnread.get(tkey(ch, tk)) || 0;
+  const n = countOf(tkey(ch, tk));
   const st = S.states.get(tkey(ch, tk)) || {};
   // An old one is muted with its age as the bot counts it (from the owner's tap, else the last message): "Needs you · 9 days".
   const word = STICKERS[st.state] && (st.stale ? `${STICKERS[st.state]} · ${ageDays(st.by === 'owner' ? st.at : p.last_at || p.posted_at)}` : STICKERS[st.state]);
@@ -927,6 +961,7 @@ function renderThread() {
     return el;
   }));
   $('thread-title').textContent = threadTitle(list[0]) || 'Conversation';
+  readSoon();
 }
 
 const nearBottom = () => {
@@ -1002,8 +1037,6 @@ async function route() {
   if (!needs) S.channel = ch;
   else if (!chan(S.channel)) S.channel = (defaultChannel() || {}).id || '';
   S.thread = needs ? '' : tk;
-  if (!needs) S.baseline.delete(ch);
-  if (S.thread) S.threadUnread.delete(tkey(ch, tk));
   document.body.classList.remove('drawer');
   document.body.dataset.view = S.thread ? 'thread' : 'threads';
   $('channel-name').textContent = S.needsView ? 'Needs you' : channelName(chan(ch));
@@ -1049,7 +1082,7 @@ function connect() {
   let opened;
   const handle = { ready: new Promise((resolve) => { opened = resolve; }) };
   const es = T.events(S.lastSeq, {
-    open: () => { S.retry = 0; setLive('on'); opened(); loadNeeds(); if (S.ready) resync(); },
+    open: () => { S.retry = 0; setLive('on'); opened(); loadNeeds(); if (S.ready) { resync(); recount(); } },
     event: onEvent,
     down: (closed) => {
       setLive('down');
@@ -1112,10 +1145,10 @@ function onEvent(type, id, raw) {
   let data;
   try { data = JSON.parse(raw); } catch { return; }
   if (!data || typeof data !== 'object') return;
-  if (S.ready) apply(type, data); else S.queue.push([type, data]);
+  if (S.ready) apply(type, data, seq); else S.queue.push([type, data, seq]);
 }
 
-function apply(type, data) {
+function apply(type, data, seq = 0) {
   if (type === 'thread_state') {
     if (data.channel && data.thread_key) onState(data);
     return;
@@ -1124,9 +1157,13 @@ function apply(type, data) {
     if (data.bundle && S.me && data.bundle !== S.me.bundle) lookAgain().catch(() => {});
     return;
   }
+  // A thread read on some device: the channel's counts as the bot keeps them.
+  if (type === 'read') { takeCounts(data.channel, data); passed(data.channel, seq); redraw(); return; }
   if (type === 'channel') {
     const i = S.channels.findIndex((c) => c.id === data.id);
     if (i >= 0) S.channels[i] = { ...S.channels[i], ...data }; else S.channels.push(data);
+    takeCounts(data.id, data);
+    passed(data.id, seq);
     renderChannels();
     // A channel event can follow rows stored with no event of their own (the
     // history the bot copies in when it starts): the open channel reads its
@@ -1137,7 +1174,7 @@ function apply(type, data) {
     }
     return;
   }
-  if (data.channel && data.id) ingest(data, CREATED.has(type));
+  if (data.channel && data.id) { ingest(data, CREATED.has(type), seq); passed(data.channel, seq); }
 }
 
 // Takes one message (from the stream or a post's answer) into every view
@@ -1145,7 +1182,7 @@ function apply(type, data) {
 // is replaced when it is as new as the copy held, never counted twice. Only
 // a message just posted counts as unread or as a reply; an edit of one never
 // loaded here does not.
-function ingest(m, created = true) {
+function ingest(m, created = true, seq = 0) {
   const tk = threadOf(m);
   const key = tkey(m.channel, tk);
   const fresh = !m.updated_at || !m.posted_at || m.updated_at - m.posted_at < 2;
@@ -1172,9 +1209,13 @@ function ingest(m, created = true) {
     }
   }
   const viewing = m.channel === S.channel && tk === S.thread;
-  // The owner's own message (here, or mirrored from elsewhere) reads its thread, and its channel as the server counts.
-  if (isNew && m.author === 'owner') { S.threadUnread.delete(key); S.baseline.delete(m.channel); }
-  else if (isNew && !(viewing && document.visibilityState === 'visible')) S.threadUnread.set(key, (S.threadUnread.get(key) || 0) + 1);
+  // A message counts once, when the bot's counts do not take it in yet (a post's answer, an event after them), as the
+  // bot counts it: the owner's own (here, or mirrored) reads its thread; the bot's adds one, which the screen reads.
+  const counts = created && fresh && !S.tallied.has(tkey(m.channel, m.id)) && !(seq && seq <= (S.counted.get(m.channel) || 0));
+  if (created && fresh) S.tallied.add(tkey(m.channel, m.id));
+  if (counts && m.author === 'owner') S.unread.delete(key);
+  else if (counts) S.unread.set(key, (S.unread.get(key) || 0) + 1);
+  if (isNew && viewing && m.author !== 'owner') readSoon();
   if (isNew && viewing && S.push && !S.push.sub) seenLater(`${m.channel}/${tk}`); // push off here: no worker says it
   if (viewing) {
     const stick = nearBottom();
@@ -1194,7 +1235,7 @@ function ingest(m, created = true) {
 }
 
 // A message in a thread the list does not hold: read the thread so its
-// parent, not the newest reply, names it.
+// parent, not the newest reply, names it. A read marks nothing read.
 async function fixParent(ch, tk) {
   try {
     const rows = await call('GET', `/channels/${enc(ch)}/threads/${enc(tk)}`);
@@ -3386,15 +3427,13 @@ async function boot() {
   // Wait for the stream before the first reads, so no event falls between them.
   await Promise.race([es.ready, new Promise((resolve) => { setTimeout(resolve, 3000); })]);
   try {
-    const rows = await call('GET', '/channels');
-    S.channels = rows || [];
-    for (const c of S.channels) if (c.unread) S.baseline.set(c.id, Number(c.unread) || 0);
+    await loadChannels();
   } catch (e) {
     toast(`Could not load the menu: ${e.message}`);
     return;
   }
   S.ready = true;
-  S.queue.splice(0).forEach(([t, d]) => apply(t, d));
+  S.queue.splice(0).forEach(([t, d, s]) => apply(t, d, s));
   renderChannels();
   route();
   if (S.push === undefined) { S.push = null; initPush().catch(() => {}); }
@@ -3504,11 +3543,9 @@ async function init() {
   });
   // Escape closes the drawer, unless it closes a dialog over it.
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !document.querySelector('dialog[open]')) document.body.classList.remove('drawer'); });
+  // Back on the screen: the thread in view is read, and every count comes from the bot again.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && !S.halted && S.thread && S.threadUnread.delete(tkey(S.channel, S.thread))) {
-      renderChannels();
-      renderThreads();
-    }
+    if (document.visibilityState === 'visible' && !S.halted && S.ready) { redraw(); readSoon(); recount(); }
   });
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register(`${BASE}/sw.js`, { scope: `${BASE}/` }).catch(() => {});
