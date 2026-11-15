@@ -10,6 +10,13 @@ keep their cards, so the user cancels those there.
 The words are the user's own: in a room or the DM the bot puts a header
 before them, and the header does not count. A message the user deletes
 while it waits behind a running turn is withdrawn and never starts.
+
+A stopped request stays in the session's transcript with no answer, and
+the thread's next turn resumes that session. Unless it is told, the
+model reads two open requests and does both, the stopped one first. So
+a stop writes the request's words on the session's row (STOPPED_KEY),
+and the next turn takes them off and says in its prompt that the request
+is withdrawn (withdrawn_note).
 """
 from __future__ import annotations
 
@@ -43,6 +50,79 @@ def is_cancel(text: str) -> bool:
     if not t or len(t.split()) > MAX_WORDS:
         return False
     return bool(_CANCEL.match(t))
+
+
+# The session-row key that holds a stopped request's words until the
+# thread's next turn takes them, and how many characters it keeps.
+STOPPED_KEY = "stopped_request"
+STOPPED_MAX_CHARS = 500
+
+
+def stopped_words(user_msg: str) -> str:
+    """The words of a stopped request as its session row keeps them."""
+    words = " ".join(own_words(user_msg).split())
+    if len(words) > STOPPED_MAX_CHARS:
+        words = words[:STOPPED_MAX_CHARS - 1] + "…"
+    return words
+
+
+def withdrawn_note(words: str) -> str:
+    """The prompt lines that withdraw a stopped request; '' for none."""
+    words = " ".join(str(words or "").split())
+    if not words:
+        return ""
+    return ("A STOPPED REQUEST: the user stopped your previous turn in this conversation "
+            f"while it worked on this request:\n> {words}\n"
+            "That request is withdrawn. Do not finish it, repeat it or continue any step of it. "
+            "Act only on the user's latest message. If that message asks you to go on with it "
+            "or asks for the same thing again, do it as the latest message says.")
+
+
+def stopped_session_keys(dispatch: dict) -> list[str]:
+    """The session rows a stopped dispatch's request is written on: its own
+    session, and its thread's when it ran in a side session, since the
+    thread's next message goes to the thread's session."""
+    d = dispatch or {}
+    thread_ts = str(d.get("thread_ts") or "")
+    keys = [str(d.get("session_key") or "") or thread_ts]
+    if thread_ts and thread_ts not in keys:
+        keys.append(thread_ts)
+    return [k for k in keys if k]
+
+
+def record_stop(sessions, keys: list[str], user_msg: str) -> list[str]:
+    """Write a stopped request's words on each session row (`sessions` is
+    slack_sessions). Returns the keys it could not write."""
+    words = stopped_words(user_msg)
+    failed = []
+    for key in keys if words else ():
+        try:
+            sessions.remember(key, **{STOPPED_KEY: words})
+        except Exception:
+            failed.append(key)
+    return failed
+
+
+def forget_stop(sessions, keys: list[str]) -> list[str]:
+    """Take the stopped request off each session row. Returns the keys it
+    could not clear."""
+    failed = []
+    for key in keys:
+        try:
+            sessions.forget_meta(key, STOPPED_KEY)
+        except Exception:
+            failed.append(key)
+    return failed
+
+
+def take_stop_note(sessions, key: str, meta: dict) -> str:
+    """The note that withdraws the request a stop left in this session,
+    taken off the session's row so only one turn adds it; '' when there
+    is none. `meta` is the row's meta as the turn's lookup read it."""
+    note = withdrawn_note((meta or {}).get(STOPPED_KEY) or "")
+    if note:
+        forget_stop(sessions, [key])
+    return note
 
 
 class LiveRuns:

@@ -2094,10 +2094,22 @@ def _cancel_thread_runs(channel: str, thread_ts: str) -> list[str]:
                 and d.get("lane") not in ("resident", "deferred")]
     stopped = []
     for rid, d in mine:
+        if rid not in _LIVE_RUNS.live():
+            continue
+        # The stopped request stays in the session's transcript, unanswered;
+        # the thread's next turn withdraws it (turn_cancel.take_stop_note).
+        # Written before the stop, so a message waiting on this session
+        # reads it.
+        from preprocessor import slack_sessions as _ss
+        keys = _turn_cancel.stopped_session_keys(d)
+        for key in _turn_cancel.record_stop(_ss, keys, str(d.get("user_msg") or "")):
+            log.warning(f"could not record the stopped request on session {key}")
         if _LIVE_RUNS.stop(rid, _stop_claude):
             words = " ".join(_turn_cancel.own_words(str(d.get("user_msg") or "")).split())
             stopped.append(words[:60] + ("…" if len(words) > 60 else ""))
             log.info(f"turn {rid} stopped by the user in thread {thread_ts}")
+        else:
+            _turn_cancel.forget_stop(_ss, keys)
     return stopped
 
 
@@ -12799,6 +12811,13 @@ actually want.
         if ack == "hourglass_flowing_sand":
             _swap_reaction(channel, msg_ts, "hourglass_flowing_sand", "eyes")
             ack = "eyes"
+        # A turn the user stopped left its request in this session's
+        # transcript with no answer: this turn's prompt withdraws it, in the
+        # task block (a fresh prompt) and in the continuation below.
+        stopped_note = _turn_cancel.take_stop_note(_sessions, skey, session_meta)
+        if stopped_note:
+            log.info(f"thread {thread_ts}: the turn withdraws the request the user stopped")
+            task_block = task_block + "\n\n" + stopped_note
         # One token for the whole turn: the prompt names it and the claims
         # below take it, even if a failed resume mints a new session.
         stage_tok = _sessions.stage_token(session_id)
@@ -13206,9 +13225,12 @@ This auto-archives the email from the inbox. One command does everything."""
                 f"\nSkill instructions relevant to this message:\n"
                 f"{skill_instructions}\n" if skill_instructions.strip() else ""
             )
+            # The note sits before the reply, so the reply is what the turn
+            # reads last.
+            stopped_block = f"{stopped_note}\n\n" if stopped_note else ""
             prompt = f"""{_PS['continuation_header']}
 
-The user replied:
+{stopped_block}The user replied:
 > {user_msg}
 {continuation_skills}
 Reminders:
