@@ -364,6 +364,28 @@ def test_the_service_worker_shows_pushes_and_opens_only_this_app():
     assert sw.index("addEventListener('push'") < sw.index("addEventListener('fetch'")
 
 
+def test_a_file_in_the_home_screen_app_opens_a_sheet_not_a_page():
+    """Issue #294: in the iOS home-screen app a file link took the app's one
+    window to the file, which has no back button. There a tap opens a sheet
+    whose Save hands the fetched file to the share sheet; the file is
+    fetched before the tap that shares it."""
+    js = read("app.js")
+    render = js[js.index("function renderFile"):js.index("const homeScreenIOS")]
+    assert "const sheet = url && homeScreenIOS();" in render
+    assert "relayFile(f, box, !sheet)" in render
+    assert "e.preventDefault(); fileSheet(f);" in render
+    assert "const homeScreenIOS = () => navigator.standalone === true;" in js
+    sheet = js[js.index("function fileSheet"):js.index("// Through the relay a stored file")]
+    assert sheet.index("fetchFile(f).then") < sheet.index("save.onclick")
+    assert "navigator.canShare({ files: [file] })" in sheet
+    assert "await navigator.share({ files: [file] });" in sheet
+    assert "e.name !== 'AbortError'" in sheet
+    relay = js[js.index("function relayFile"):js.index("const norm =")]
+    assert "if (!links) return;" in relay
+    css = read("app.css")
+    assert "#file-sheet::backdrop" in css and "#file-sheet .sheet" in css
+
+
 def test_the_app_never_parses_text_as_html():
     js = read("app.js")
     for word in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "DOMParser",
@@ -469,7 +491,9 @@ def test_the_app_stays_small():
     # 5,370: 5,360 plus a thread's state kept by the order the page learned it, not by its `at`.
     # 5,407: 5,370 plus the bot's read state (the counts per conversation from the bot and its `read` event, kept
     #     over an older answer, the read of the conversation on screen, and the counts taken again on the return).
-    assert lines <= 5407, f"{lines} lines: the contract keeps the app near 5,407 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place and a calm connection line"
+    # 5,474: 5,407 plus the home-screen file sheet (#294: in the iOS home-screen app a tap on a file opens a
+    #     sheet whose Save shares the file it fetched, since the file's own page has no way back).
+    assert lines <= 5474, f"{lines} lines: the contract keeps the app near 5,474 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line and the home-screen file sheet"
 
 
 # -- in a browser, against the stub ---------------------------------------
