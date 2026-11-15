@@ -1836,10 +1836,19 @@ _SCHEDULER_TOOL_PATTERNS = [
 ]
 
 _SCHEDULER_ARG_RE = re.compile(r"--(duration|days-ahead|num-options)\s+(\d+)")
-# Approximate attendee count by counting top-level {} in the attendees JSON.
+# Approximate attendee count by counting top-level {} in the attendees JSON
+# (its quotes escaped when Codex wraps the command in `bash -c "..."`).
 # The 60-char per-value cap on truncated args can under-count; a trace can
 # live with that.
-_SCHEDULER_ATTENDEE_COUNT_RE = re.compile(r'\{"email"')
+_SCHEDULER_ATTENDEE_COUNT_RE = re.compile(r'\{\\?"email')
+# A help call is no scheduler call. The flag ends at a space, the end, or
+# the closing quote of Codex's `bash -c '...'` wrapper.
+_HELP_FLAG_RE = re.compile(r"(?:^|\s)(?:-h|--help)(?=\s|$|['\"])")
+# The plain line a scheduler verb ends with when Graph failed past its
+# retries (graph_client.UNAVAILABLE_TEXT, THROTTLED_TEXT), and the trace's
+# words for it.
+_GRAPH_FAILURE_SUMMARIES = (("Outlook did not answer", "Outlook did not answer"),
+                            ("Microsoft is limiting mail access", "Outlook throttled"))
 
 
 def _identify_scheduler_call(tc):
@@ -1862,7 +1871,7 @@ def _identify_scheduler_call(tc):
         args_str = str(tc[4].get("command", "") or "")
     else:
         args_str = str(tc[2] or "") if len(tc) > 2 else ""
-    if not args_str or re.search(r"(?:^|\s)(?:-h|--help)(?:\s|$)", args_str):
+    if not args_str or _HELP_FLAG_RE.search(args_str):
         return None
     for substr, label in _SCHEDULER_TOOL_PATTERNS:
         if substr in args_str:
@@ -1881,9 +1890,13 @@ def _summarize_scheduler_result(label, result_snippet):
     capture time, or a truncated snippet.
 
     propose-meeting, booking-propose → option count; validate-draft →
-    valid/blocked; others → "ok" (we only know it ran without ERR).
+    valid/blocked; others → "ok" (we only know it ran without ERR). A
+    verb that Graph failed names that failure.
     """
     s = str(result_snippet or "")
+    for line, words in _GRAPH_FAILURE_SUMMARIES:
+        if line in s:
+            return words
     if label in ("propose-meeting", "booking-propose"):
         try:
             # The solver prints its calendar reads before the JSON.
@@ -1905,6 +1918,14 @@ def _summarize_scheduler_result(label, result_snippet):
             return "blocked"
         return "?"
     return "ok"
+
+
+def _scheduler_trace_summary(command, output):
+    """The trace's summary of one command's whole output when it is a
+    scheduler call, else None. The Codex arm reads it before its runner
+    cuts the output to its end (codex_cli.parse_events `summarize`)."""
+    ident = _identify_scheduler_call(("Bash", 0.0, "", "", {"command": str(command or "")}))
+    return _summarize_scheduler_result(ident[0], output) if ident else None
 
 
 def _format_scheduler_trace(tool_calls):
@@ -12215,7 +12236,7 @@ def _codex_turn_live(*, prompt, fresh_prompt, run_id, thread_ts, lane,
         from preprocessor import codex_turn as _ct
         rec = _ct.run_turn(prompt, thread_key=thread_ts, run_id=run_id, live=True,
                            fresh_prompt=fresh_prompt, lane=lane, claude_cwd=claude_cwd,
-                           user_text=user_text,
+                           user_text=user_text, summarize=_scheduler_trace_summary,
                            on_event=progress.codex_event if progress is not None else None)
     except Exception as e:
         log.warning(f"codex arm: raised, Claude takes the turn: {e}")

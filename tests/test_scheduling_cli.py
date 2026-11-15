@@ -239,6 +239,61 @@ def _with_id(event: dict, event_id: str) -> dict:
     return e
 
 
+def _graph_504():
+    """The error a Graph calendar read raises after its retries on 504s."""
+    import requests
+    url = se.graph.GRAPH_URL + "/me/calendarView"
+    r = requests.Response()
+    r.status_code, r.url = 504, url
+    r.request = requests.Request("GET", url).prepare()
+    try:
+        r.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        return e
+    raise AssertionError("no error raised")
+
+
+def _run_verb_capturing(func, **fields):
+    import argparse
+    from contextlib import redirect_stderr
+    args = argparse.Namespace(func=func, **fields)
+    out, err = io.StringIO(), io.StringIO()
+    code = None
+    with redirect_stdout(out), redirect_stderr(err):
+        try:
+            se.run_verb(args)
+        except SystemExit as e:
+            code = e.code
+    return code, out.getvalue(), err.getvalue()
+
+
+def test_a_graph_outage_ends_propose_meeting_with_one_plain_line_and_tempfail():
+    """The calendar read met 504s past its retries: the verb ends with one
+    line on stderr and EX_TEMPFAIL, no traceback, so the EA runs it again
+    instead of reporting that no times could be found."""
+    with _patched_engine(outlook_events=[], google_events=[]), \
+         patch.object(se.graph, "get_calendar_view", side_effect=_graph_504()):
+        code, out, err = _run_verb_capturing(
+            se.cmd_propose_meeting, duration=30, days_ahead=7, num_options=3,
+            attendees="[]", constraints="[]", earliest_date=date.today().isoformat(),
+            latest_date=(date.today() + timedelta(days=7)).isoformat(), ignore_event=[])
+    assert code == se.GRAPH_TEMPFAIL_EXIT == 75, (code, out, err)
+    assert err == ("Outlook did not answer (Microsoft returned HTTP 504). "
+                   "Run the same command again in a minute.\n"), err
+    assert "Traceback" not in out + err
+
+
+def test_any_other_error_still_raises():
+    def boom(args):
+        raise ValueError("a solver bug")
+    try:
+        _run_verb_capturing(boom)
+    except ValueError as e:
+        assert str(e) == "a solver bug"
+    else:
+        raise AssertionError("a non-Graph error must surface with its traceback")
+
+
 # ---------------------------------------------------------------------------
 # Universal contracts
 # ---------------------------------------------------------------------------

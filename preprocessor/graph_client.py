@@ -1490,6 +1490,51 @@ def throttle_line(exc: BaseException) -> Optional[str]:
     return None
 
 
+# The words the EA reads when Microsoft's service stayed down through a
+# call's retries: the line a verb prints in place of a traceback, so the
+# turn tries again in a minute instead of giving up on the first burst.
+UNAVAILABLE_TEXT = "Outlook did not answer ({why}). Run the same command again in a minute."
+_UNAVAILABLE_STATUSES = (502, 503, 504)
+
+
+def _on_graph(exc) -> bool:
+    """Whether the request `exc` came from went to the Graph or Outlook
+    API (a requests error from another service is not Outlook's)."""
+    url = str(getattr(getattr(exc, "request", None), "url", "") or "")
+    if not url:
+        url = str(getattr(getattr(exc, "response", None), "url", "") or "")
+    return url.startswith((GRAPH_URL + "/", OUTLOOK_REST_URL + "/"))
+
+
+def unavailable_line(exc: BaseException) -> Optional[str]:
+    """The one line for an error that is the Graph service failing after
+    the call's retries (HTTP 502, 503 or 504, a timeout, no connection),
+    else None. A throttled call is throttle_line's."""
+    cur = exc
+    for _ in range(5):
+        if cur is None:
+            break
+        if isinstance(cur, requests.exceptions.RequestException) and _on_graph(cur):
+            if isinstance(cur, requests.exceptions.HTTPError):
+                status = getattr(getattr(cur, "response", None), "status_code", None)
+                if status in _UNAVAILABLE_STATUSES:
+                    return UNAVAILABLE_TEXT.format(why=f"Microsoft returned HTTP {status}")
+                return None
+            if isinstance(cur, requests.exceptions.Timeout):
+                return UNAVAILABLE_TEXT.format(why="the request timed out")
+            if isinstance(cur, requests.exceptions.ConnectionError):
+                return UNAVAILABLE_TEXT.format(why="no connection to Microsoft")
+            return None
+        cur = cur.__cause__ or cur.__context__
+    return None
+
+
+def failure_line(exc: BaseException) -> Optional[str]:
+    """The one plain line for a Graph failure worth trying again later
+    (throttle_line, else unavailable_line), else None."""
+    return throttle_line(exc) or unavailable_line(exc)
+
+
 def _retry_after(response) -> Optional[int]:
     """Graph's Retry-After in seconds, when it sent a number."""
     ra = response.headers.get("Retry-After") if response is not None else None

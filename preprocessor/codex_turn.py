@@ -417,11 +417,17 @@ def clear_staged(root: Path, runner=None) -> None:
 # ── the turn ──────────────────────────────────────────────────────────
 
 def _shape(res: dict, thread_id: str, mode: str, staged: dict | None = None) -> dict:
-    """The result in the bot's shape, plus the harness fields."""
+    """The result in the bot's shape, plus the harness fields. A command is
+    (name, seconds, command, end of output, input), plus the summary its
+    `summarize` gave, the bot's trace reading of the whole output."""
     calls = []
     for c in res.get("tool_calls") or []:
         cmd = str((c.get("input") or {}).get("command") or "")
-        calls.append(("Bash", 0.0, cmd[:600], str(c.get("output") or "")[-300:], {"command": cmd}))
+        row = ("Bash", float(c.get("elapsed_s") or 0.0), cmd[:600], str(c.get("output") or "")[-300:],
+               {"command": cmd})
+        if c.get("summary"):
+            row += (str(c["summary"]),)
+        calls.append(row)
     return {"output": res.get("output") or "", "tool_calls": calls,
             "returncode": 0 if not res.get("harness_error") else (res.get("exit_code") or 1),
             "num_turns": int(res.get("num_turns") or 0), "duration_ms": int(float(res.get("duration_s") or 0) * 1000),
@@ -434,7 +440,7 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
              lane: str = "", model: str = "", timeout: int | None = None, codex_run=None,
              scratch_runner=None, clear_runner=None, on_event=None, persist: bool = True,
              keep_scratch: bool = False, claude_cwd=None, user_text: str = "",
-             pages_runner=None) -> dict:
+             pages_runner=None, summarize=None) -> dict:
     """One turn. `fresh_prompt` is the fresh prompt the bot built for this
     turn (it carries the chat thread's history); `prompt`, the prompt it
     would send a resumed Claude session, stands in when there is none.
@@ -442,7 +448,8 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
     (default: the deployed tree), which decides the context block.
     `user_text` is the message the user sent this turn: a live turn's
     staged preference writes are applied after it only when the words they
-    quote are in it. Returns
+    quote are in it. `summarize(command, output)` is the bot's trace
+    reading of a command's whole output (codex_cli.parse_events). Returns
     the bot's result shape (`_shape`); `harness_error` set means Codex did
     not answer and the caller lets Claude take the turn.
 
@@ -487,6 +494,8 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
         text += "\nSite repository refresh before this turn: " + json.dumps(site_refresh) \
             + pages_note(pages, codex_ghost._mediated())
     extra = {"on_event": on_event} if on_event is not None else {}
+    if summarize is not None:
+        extra["summarize"] = summarize
     if live:
         extra["search"] = True
     res = runner(wrap(text), cwd=root, sandbox="workspace-write", add_dirs=add_dirs, tmp_dir=tmp_dir, model=model,

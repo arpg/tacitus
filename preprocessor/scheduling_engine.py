@@ -3051,6 +3051,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Exit status of a verb that Graph failed past its retries (EX_TEMPFAIL, as
+# graph_actions.THROTTLED_EXIT): the caller runs it again later.
+GRAPH_TEMPFAIL_EXIT = 75
+
+
+def run_verb(args) -> None:
+    """Run a parsed verb. Graph down or throttled past the call's retries
+    ends it with one plain line on stderr and GRAPH_TEMPFAIL_EXIT, no
+    traceback: the turn reads the line and runs the verb again instead of
+    reporting that no times could be found."""
+    try:
+        args.func(args)
+    except Exception as e:
+        line = graph.failure_line(e)
+        if line is None:
+            raise
+        print(line, file=sys.stderr)
+        sys.exit(GRAPH_TEMPFAIL_EXIT)
+
+
 if __name__ == "__main__":
     parser = build_parser()
     args = parser.parse_args()
@@ -3059,4 +3079,4 @@ if __name__ == "__main__":
     except ModuleNotFoundError:
         from preprocessor import mail_mediation as _mm_child
     _mm_child.check_child_parse(parser, args)  # the verb the mediator checked
-    args.func(args)
+    run_verb(args)

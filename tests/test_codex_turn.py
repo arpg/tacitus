@@ -113,6 +113,25 @@ def test_a_live_turn_runs_on_the_real_ea_dir_with_writes_confined_and_keeps_its_
     assert ct.thread_row("t1", "live")["turns"] == 2 and ct.thread_row("t1", "live")["thread_id"] == "th-2"
 
 
+def test_a_command_keeps_its_run_time_and_the_bots_summary(private):
+    """The trace shows how long a command ran and what its whole output
+    said; the bot's summary hook goes to the runner, and a command with
+    no measured time stays 0.0."""
+    hook = lambda command, output: None  # noqa: E731
+    run = _codex([{"output": "Done.", "tool_calls": [
+        {"input": {"command": "python3 x scheduling_engine.py propose-meeting"}, "output": "tail",
+         "elapsed_s": 66.2, "summary": "Outlook did not answer"},
+        {"input": {"command": "python3 x ledger.py list"}, "output": "rows"}]}])
+    rec = ct.run_turn("C", thread_key="t9", run_id="r9", live=True, codex_run=run, summarize=hook)
+    assert run.calls[0]["summarize"] is hook
+    first, second = rec["tool_calls"]
+    assert first[1] == 66.2 and first[5] == "Outlook did not answer" and len(first) == 6
+    assert second[1] == 0.0 and len(second) == 5
+    plain = _codex([{"output": "ok"}])
+    ct.run_turn("C", thread_key="t9", run_id="r10", live=True, codex_run=plain)
+    assert "summarize" not in plain.calls[0], "a runner that takes no hook gets none"
+
+
 def test_a_registered_thread_is_never_resumed(private):
     """`codex exec resume` drops the writable roots: a resumed turn's
     sandbox policy has none, so it could not write the ledger, a draft or

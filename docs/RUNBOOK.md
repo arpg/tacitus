@@ -325,7 +325,12 @@ own requests keep working while the ticks are throttled.
 
 An interactive call also stops retrying once its next wait would take it
 past 45 s from its first attempt (the mediator ends its child at 120 s). A throttled `graph_actions` verb
-exits 75 with one plain line on stderr, which the EA passes on.
+exits 75 with one plain line on stderr, which the EA passes on. A
+`scheduling_engine.py` verb exits 75 the same way when Graph stayed
+throttled or down (HTTP 502, 503 or 504, a timeout, no connection)
+through a call's retries: "Outlook did not answer (Microsoft returned
+HTTP 504). Run the same command again in a minute." Microsoft's 504s
+come in bursts of a few minutes; a run after the burst succeeds.
 
 The mail tagger and `ledger_sync check` back off further: a tick that met
 a 429 makes the job's next 3 ticks skip (`~/.ea/state/tick-backoff.json`)

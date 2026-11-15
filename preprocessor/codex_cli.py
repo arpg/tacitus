@@ -130,11 +130,17 @@ def build(*, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
     return cmd
 
 
-def parse_events(stdout: str) -> dict:
+def parse_events(stdout: str, *, elapsed: dict | None = None, summarize=None) -> dict:
     """What the JSONL event stream says: the agent's messages in order,
     the commands it ran, the files it changed, the usage, and any error
     items that are not the enterprise-config notices codex prints on
-    every run."""
+    every run.
+
+    A command keeps the end of its output. `elapsed` maps an item id to
+    the seconds its command ran (the streaming read measures it; the
+    events carry no clock), kept as `elapsed_s`. `summarize(command,
+    output)` is the caller's short reading of a command's whole output,
+    kept as `summary` when it gives one."""
     messages, tool_calls, files, errors = [], [], [], []
     usage: dict = {}
     turns = 0
@@ -162,9 +168,21 @@ def parse_events(stdout: str) -> dict:
         if kind == "agent_message":
             messages.append(str(item.get("text") or ""))
         elif kind == "command_execution":
-            tool_calls.append({"tool": "Bash", "input": {"command": str(item.get("command") or "")},
-                               "exit_code": item.get("exit_code"),
-                               "output": str(item.get("aggregated_output") or "")[-2000:]})
+            command = str(item.get("command") or "")
+            output = str(item.get("aggregated_output") or "")
+            call = {"tool": "Bash", "input": {"command": command},
+                    "exit_code": item.get("exit_code"), "output": output[-2000:]}
+            secs = (elapsed or {}).get(item.get("id"))
+            if secs is not None:
+                call["elapsed_s"] = round(float(secs), 2)
+            if summarize is not None:
+                try:
+                    summary = summarize(command, output)
+                except Exception:
+                    summary = None
+                if summary:
+                    call["summary"] = str(summary)
+            tool_calls.append(call)
         elif kind == "file_change":
             files += [str(c.get("path") or "") for c in item.get("changes") or []]
         elif kind == "error":
@@ -176,14 +194,32 @@ def parse_events(stdout: str) -> dict:
 
 
 class _Done:
-    def __init__(self, stdout: str, stderr: str, returncode: int):
+    def __init__(self, stdout: str, stderr: str, returncode: int, elapsed: dict | None = None):
         self.stdout, self.stderr, self.returncode = stdout, stderr, returncode
+        self.elapsed = elapsed or {}
+
+
+def clock_command(ev, started: dict, elapsed: dict, now: float) -> None:
+    """Note one event's arrival at `now`: a command item's start goes in
+    `started`, and its end puts the seconds between the two in `elapsed`,
+    both by item id."""
+    if not isinstance(ev, dict):
+        return
+    item = ev.get("item") or {}
+    iid = item.get("id")
+    if not iid or item.get("type") != "command_execution":
+        return
+    if ev.get("type") == "item.started":
+        started[iid] = now
+    elif ev.get("type") == "item.completed" and iid in started:
+        elapsed[iid] = now - started.pop(iid)
 
 
 def _run_streaming(cmd, prompt: str, *, timeout: int, cwd: str, env, on_event) -> "_Done":
     """The same run, read line by line: each JSONL event goes to on_event
-    as it arrives. A run past its timeout is ended and reported as
-    subprocess.run would (TimeoutExpired)."""
+    as it arrives, and each command's run time is measured from its start
+    and end events (`_Done.elapsed`). A run past its timeout is ended and
+    reported as subprocess.run would (TimeoutExpired)."""
     import threading
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                          text=True, cwd=cwd, env=env)
@@ -211,15 +247,23 @@ def _run_streaming(cmd, prompt: str, *, timeout: int, cwd: str, env, on_event) -
     timer.daemon = True
     timer.start()
     lines = []
+    started: dict = {}
+    elapsed: dict = {}
     try:
         for line in p.stdout:
             lines.append(line)
             s = line.strip()
-            if s.startswith("{"):
-                try:
-                    on_event(json.loads(s))
-                except Exception:
-                    pass
+            if not s.startswith("{"):
+                continue
+            try:
+                ev = json.loads(s)
+            except ValueError:
+                continue
+            clock_command(ev, started, elapsed, time.monotonic())
+            try:
+                on_event(ev)
+            except Exception:
+                pass
         p.wait()
     finally:
         timer.cancel()
@@ -230,13 +274,13 @@ def _run_streaming(cmd, prompt: str, *, timeout: int, cwd: str, env, on_event) -
         err = p.stderr.read() if p.stderr else ""
     except (OSError, ValueError):
         pass
-    return _Done("".join(lines), err, p.returncode)
+    return _Done("".join(lines), err, p.returncode, elapsed)
 
 
 def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_dirs=(),
         timeout: int = 600, env: dict | None = None, prefix=(), last_message_dir=None,
         ephemeral: bool = True, resume: str = "", on_event=None, disable=(),
-        codex_bin: str = "", tmp_dir=None, search: bool = False) -> dict:
+        codex_bin: str = "", tmp_dir=None, search: bool = False, summarize=None) -> dict:
     """One non-interactive run. Returns {"output", "tool_calls",
     "exit_code", "duration_s", "harness_error", "num_turns", "usage",
     "files", "stderr", "thread_id"}: `output` is the agent's final message
@@ -252,10 +296,12 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
     `last_message_dir` is where the `-o` file goes, a directory that user
     can write (the owner's temp dir is not). `on_event`, when given, gets
     each JSONL event as it arrives (the turn's progress line reads the
-    command items); without it the run is read whole at the end.
-    `tmp_dir` is the run's temp dir in place of /tmp (build, temp_flags);
-    the caller makes it. `search` turns on the hosted `web_search` tool (live
-    results; the provider runs it, so the sandbox still has no network)."""
+    command items), and each command keeps its run time (`elapsed_s`);
+    without it the run is read whole at the end and no command is timed.
+    `summarize` is parse_events'. `tmp_dir` is the run's temp dir in place
+    of /tmp (build, temp_flags); the caller makes it. `search` turns on the
+    hosted `web_search` tool (live results; the provider runs it, so the
+    sandbox still has no network)."""
     prefix = list(prefix or ())
     b = codex_bin or binary()
     if not b and not prefix:
@@ -294,7 +340,7 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
                     "harness_error": f"codex could not start: {e}", "num_turns": 0,
                     "usage": {}, "files": [], "stderr": ""}
         duration = time.time() - start
-        parsed = parse_events(r.stdout)
+        parsed = parse_events(r.stdout, elapsed=getattr(r, "elapsed", None), summarize=summarize)
         output = ""
         try:
             output = last.read_text().strip()
