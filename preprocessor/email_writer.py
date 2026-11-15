@@ -15,6 +15,11 @@ brief names), the thread's last messages read from the mailbox (with
 post-processing: notes to the caller split off, dashes fixed, and an
 empty answer or a `NEED:` refused.
 
+With the `voice_examples` switch on, the instructions also carry a few
+of the user's own sent emails closest to the brief (sent_index.py: same
+recipient first, then anyone; never mail the EA wrote, never this
+conversation). The record lists them by id, date and score.
+
 A brief can carry a `KNOW:` part (facts and limits that keep the email
 accurate) beside `SAY:` (what it says). A body that restates a KNOW line
 gets one revision call, and a sentence that survives it is cut; the
@@ -206,10 +211,14 @@ def draft_text(draft_id: str, *, graph) -> tuple[str, str]:
     return draft_ab.own_text(msg)[:DRAFT_CHARS], msg.get("conversationId") or ""
 
 
-def messages(brief: str, to: str, *, thread: str = "", draft: str = "") -> list[dict]:
-    """The subagent's context for the brief, with the thread and the
-    current draft added to the request."""
+def messages(brief: str, to: str, *, thread: str = "", draft: str = "",
+             examples: str = "") -> list[dict]:
+    """The subagent's context for the brief, with the user's own emails
+    (`examples`, sent_index.render) added to the instructions and the
+    thread and the current draft added to the request."""
     msgs = draft_ab.remote_messages(brief, to)
+    if examples:
+        msgs[0] = {**msgs[0], "content": f"{msgs[0]['content']}\n\n{examples}"}
     user = msgs[-1]["content"]
     if thread:
         user += f"\n\n=== The thread (oldest first) ===\n{thread}"
@@ -329,6 +338,35 @@ def _drop_know(brief: str, body: str, meta: dict, msgs: list[dict], rec: dict, *
     return fixed, meta
 
 
+# ── the user's own emails ─────────────────────────────────────────────
+
+def examples_on(cfg: dict | None = None) -> bool:
+    """The `voice_examples` switch: the writer is shown the user's own
+    emails closest to the brief (sent_index.py)."""
+    cfg = cfg if cfg is not None else remote_llm.config()
+    return cfg.get("voice_examples") == "on"
+
+
+def voice_examples(brief: str, to: str, conversation_id: str, rec: dict) -> str:
+    """The prompt section of the user's own emails for this brief, or ''
+    (switch off, empty index, endpoint down). Matched on the SAY part:
+    what the email says, not the limits behind it."""
+    if not examples_on():
+        return ""
+    t0 = time.monotonic()
+    try:
+        import sent_index
+        say, _ = brief_parts(brief)
+        found = sent_index.examples(say, to, conversation_id=conversation_id)
+    except Exception as e:
+        rec["examples_error"] = f"{type(e).__name__}: {str(e)[:160]}"
+        return ""
+    rec["examples"] = [{"id": x["id"][-16:], "sent_at": x["sent_at"], "score": x["score"],
+                        "same_recipient": to.lower() in x["recipients"]} for x in found]
+    rec["examples_ms"] = int((time.monotonic() - t0) * 1000)
+    return sent_index.render(found)
+
+
 # ── the call ──────────────────────────────────────────────────────────
 
 def note_brief(brief: str, rec: dict) -> None:
@@ -364,7 +402,8 @@ def _compose_and_write(brief: str, to: str, conversation_id: str, draft_id: str,
             # The brief carries what the reply must say; the thread only
             # adds to it, so the body is still written without it.
             rec["thread_error"] = str(e)[:200]
-    msgs = messages(brief, to, thread=thread, draft=draft)
+    examples = voice_examples(brief, to, rec["conversation_id"], rec)
+    msgs = messages(brief, to, thread=thread, draft=draft, examples=examples)
     rec["sent_chars"] = sum(len(str(m.get("content") or "")) for m in msgs)
     note_brief(brief, rec)
     left = budget - (time.monotonic() - t0) - 2

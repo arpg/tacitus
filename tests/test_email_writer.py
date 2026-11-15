@@ -394,3 +394,63 @@ def test_a_clean_body_makes_one_call(store, work):
     ans, code = ew.write("pat@example.edu", KNOW_BRIEF, str(work / "b.txt"), chat=chat)
     assert code == 0 and len(chat.calls) == 1
     assert "know_fix" not in rl.read(ew.STORE)[-1]
+
+
+# ── the user's own emails ─────────────────────────────────────────────
+
+def _switch(store, value):
+    cfg = {**_cfg(), "voice_examples": value}
+    owner_trust.write_owner_file(store / rl.CONFIG_FILE, json.dumps(cfg).encode(), mode=0o600)
+
+
+FOUND = [{"id": "AAMk-example-0001", "conversation_id": "c1", "sent_at": "2024-03-01T10:00:00Z",
+          "subject": "s", "text": "Hi Pat, sounds good! I'll bring the slides. Kit", "words": 9,
+          "recipients": ["pat@example.edu"], "score": 0.81}]
+
+
+def test_examples_are_off_by_default(store, work, monkeypatch):
+    import sent_index
+    monkeypatch.setattr(sent_index, "examples", lambda *a, **k: pytest.fail("looked up"))
+    chat = _chats(CLEAN)
+    ans, code = ew.write("pat@example.edu", BRIEF, str(work / "b.txt"), chat=chat)
+    assert code == 0 and "The user's own emails" not in chat.calls[0][0]["content"]
+    assert "examples" not in rl.read(ew.STORE)[-1]
+
+
+def test_examples_on_put_the_users_emails_in_the_instructions(store, work, monkeypatch):
+    import sent_index
+    _switch(store, "on")
+    seen = {}
+
+    def examples(say, to, **kw):
+        seen.update(say=say, to=to, **kw)
+        return FOUND
+    monkeypatch.setattr(sent_index, "examples", examples)
+    chat = _chats(CLEAN)
+    ans, code = ew.write("pat@example.edu", KNOW_BRIEF, str(work / "b.txt"), chat=chat,
+                         conversation_id="", graph=None)
+    system = chat.calls[0][0]["content"]
+    assert code == 0 and "=== The user's own emails" in system and "I'll bring the slides" in system
+    # Matched on what the email says, not on the limits behind it.
+    assert "sensor mount" in seen["say"] and "outdoors" not in seen["say"]
+    assert seen["to"] == "pat@example.edu"
+    rec = rl.read(ew.STORE)[-1]
+    assert rec["examples"] == [{"id": FOUND[0]["id"][-16:], "sent_at": "2024-03-01T10:00:00Z",
+                                "score": 0.81, "same_recipient": True}]
+
+
+def test_a_failed_lookup_still_writes(store, work, monkeypatch):
+    import sent_index
+    _switch(store, "on")
+
+    def down(*a, **k):
+        raise sent_index.EmbedError("connection refused")
+    monkeypatch.setattr(sent_index, "examples", down)
+    chat = _chats(CLEAN)
+    ans, code = ew.write("pat@example.edu", BRIEF, str(work / "b.txt"), chat=chat)
+    assert code == 0 and "The user's own emails" not in chat.calls[0][0]["content"]
+    assert "connection refused" in rl.read(ew.STORE)[-1]["examples_error"]
+
+
+def test_the_switch_is_registered():
+    assert rl.SWITCHES["voice_examples"] == ("off", "on")

@@ -434,6 +434,26 @@ def test_the_first_checked_sync_reads_back_far_and_purges_once():
         assert days == [sp.FIRST_PURGE_DAYS, 21]
 
 
+def test_sync_feeds_the_sent_index_only_once_it_exists():
+    import sent_index
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "p.db"
+        sent = [_msg("alice@x.edu", "2026-06-01T10:00:00Z", BODY)]
+        fed = []
+        real = (sent_index.db_path, sent_index.add_fetched, ea_written.load)
+        sent_index.db_path = lambda: Path(td) / "sent-index.db"
+        sent_index.add_fetched = lambda msgs: fed.append(len(msgs)) or {"added": len(msgs)}
+        ea_written.load = lambda folder=None: ea_written.Matcher([])
+        try:
+            rc, out = _sync_with(sent, db)
+            assert rc == 0 and json.loads(out)["sent_index"] is None and fed == []
+            (Path(td) / "sent-index.db").touch()
+            rc, out = _sync_with(sent, db)
+            assert json.loads(out)["sent_index"] == {"added": 1} and fed == [1]
+        finally:
+            sent_index.db_path, sent_index.add_fetched, ea_written.load = real
+
+
 def test_a_long_line_starting_with_thanks_is_no_closing():
     body = ("Hi Alice,\n\nSee the attached plan.\n\nThanks, this is great and we "
             "will name your group as a partner on the proposal.\n\nKit")

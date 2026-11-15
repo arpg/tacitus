@@ -459,6 +459,53 @@ node owner's `Tailscale-User-Login`. Votes go to
 report give the tally. The user recognises his own sent wording, which
 often is Claude's, so the vote leans toward Claude.
 
+### The user's own emails as examples (`preprocessor/sent_index.py`)
+
+The writer drafts closer to the user's voice from their real emails than
+from a description of their style. With the `voice_examples` switch on,
+`email_writer.py` puts a few of them in the writer's instructions: up to
+three to the same recipient that are closest to the brief's `SAY:` part,
+then up to three to anyone. Mail the EA wrote is never an example
+(`ea_written.py`), and neither is mail from the draft's own conversation.
+The record lists the examples by id, date and score.
+
+`sent_index.py sync` indexes Sent Items into `<private_dir>/sent-index.db`
+(owner-only): the user's own text, the recipients, whether the EA wrote
+it, and an embedding. It reads page by page from a watermark, so a run
+that stops on a Graph error resumes where it stopped. The first run starts
+at `FIRST_SINCE`; after that the weekly `style_profiles.py sync` hands the
+index the mail it already fetched. The embeddings come from an
+OpenAI-compatible `/v1/embeddings` endpoint on the owner's machine:
+`embed_endpoint` and `embed_model` in remote-llm.json, by default a local
+Ollama at `http://127.0.0.1:11434/v1` with `qwen3-embedding:0.6b`
+(`ollama pull qwen3-embedding:0.6b`). The examples go only to the remote
+writer, which runs when drafting is local; a hosted route turns the
+writer off.
+
+Turn it on after the evaluation below shows a gain:
+
+    python3 preprocessor/remote_llm.py set voice_examples on
+
+### Voice evaluation (`preprocessor/voice_eval.py`)
+
+Can the user tell their own email from the writer's? Held-out items are
+real emails the user wrote (from the index, never EA-written). The remote
+model writes the brief an assistant would have been given for each, and
+the writer drafts from that brief once per arm: `baseline` (as today) and
+`examples` (plus the user's emails closest to the brief, drawn only from
+mail sent before the item and outside its conversation).
+
+- `judge`: the remote model sees four other real emails by the user, then
+  the real and drafted emails in both orders, and names the real one. Its
+  accuracy per arm is a quick proxy; lower means a closer voice.
+- `serve`: the user's blind vote on a tailnet page (the same route and
+  owner check as `draft_review.py`). Each item appears in one arm only, so
+  no real email is seen twice; the arm and the brief show after the vote.
+  A pick rate near one half means the writer passes.
+
+`build`, `generate`, `judge` and `summary` print counts and rates, never
+email text. The store is `remote-llm/voice-eval/`.
+
 ## Digests on the remote model (`preprocessor/remote_digests.py`)
 
 The two cron lanes that read mail in bulk, `list-digest` (every list in

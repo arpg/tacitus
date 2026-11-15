@@ -627,6 +627,21 @@ def _mark_purged() -> None:
         con.close()
 
 
+def _feed_index(sent: list) -> dict | None:
+    """Hand the fetched mail to the writer's sent-mail index, when the
+    owner has built one (sent_index.py); None when there is none."""
+    try:
+        import sent_index
+    except ImportError:
+        from preprocessor import sent_index
+    try:
+        if not sent_index.db_path().exists():
+            return None
+    except Exception:
+        return None
+    return sent_index.add_fetched(sent)
+
+
 def cmd_sync(args) -> int:
     """Backfill from sent mail, with real bodies, leaving out and purging
     mail the EA wrote. A failed read prints a JSON error and leaves every
@@ -645,6 +660,7 @@ def cmd_sync(args) -> int:
             _mark_purged()
     except Exception as exc:
         return _sync_error(f"could not update the profiles: {exc}")
+    result["sent_index"] = _feed_index(sent)
     contacts = result.pop("contacts", [])
     print(json.dumps({"status": "ok", "days": days, "fetched": len(sent), **result,
                       "contacts_updated": len(contacts),

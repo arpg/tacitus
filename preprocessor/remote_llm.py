@@ -160,6 +160,7 @@ def _off() -> dict:
     return {"endpoint": "", "model": "", "image_model": "", "shadow_until": "", "ghost": {},
             "mail": "off", "scheduling": "off", "drafting": "off", "digests": "off",
             "briefings": "off", "audits": "off", "reconcile": "off",
+            "voice_examples": "off", "embed_endpoint": "", "embed_model": "",
             "qwen_share": 0.5,
             "ab": {"share": 0.0, "lanes": [], "from": "", "until": "", "arm": "remote"},
             "sched_backstop": True,
@@ -224,6 +225,13 @@ def config() -> dict:
     # The nightly reconcile (ledger_reconcile.py): `nightly` judges every
     # open row against the thread records, by project.
     cfg["reconcile"] = "nightly" if raw.get("reconcile") == "nightly" else "off"
+    # The writer's examples of the user's own mail (sent_index.py): `on`
+    # shows them; the embeddings come from an endpoint on the owner's
+    # machine (sent_index.EMBED_ENDPOINT when the file names none).
+    cfg["voice_examples"] = "on" if raw.get("voice_examples") == "on" else "off"
+    emb = str(raw.get("embed_endpoint") or "").strip().rstrip("/")
+    cfg["embed_endpoint"] = emb if emb.startswith(("http://", "https://")) else ""
+    cfg["embed_model"] = str(raw.get("embed_model") or "").strip()
     # The Claude backstop on the scheduling agent's live writes
     # (sched_agent.backstop_review) is on unless the file says false.
     cfg["sched_backstop"] = raw.get("sched_backstop") is not False
@@ -726,7 +734,10 @@ SWITCHES = {"mail": ("off", "shadow", "enforce", "ghost", "sealed"),
             "scheduling": ("off", "shadow", "enforce"),
             "drafting": ("off", "ab", "remote"), "digests": ("off", "remote"),
             "briefings": ("off", "remote"), "audits": ("off", "remote"),
-            "reconcile": ("off", "nightly")}
+            "reconcile": ("off", "nightly"),
+            # The writer is shown the user's own emails closest to the brief
+            # (sent_index.py, email_writer.voice_examples).
+            "voice_examples": ("off", "on")}
 
 
 # The switches the routing table can move (model_routing.py): the task
