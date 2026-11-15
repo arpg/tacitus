@@ -175,7 +175,13 @@ under a ShadowFrontend the composite switches the shadow off
   with LIKE.
 - `events(seq INTEGER PK AUTOINCREMENT, at REAL, type TEXT, channel TEXT,
   id TEXT, payload TEXT)`: the SSE log; `type` is `message`, `update`,
-  `reaction`, `card`, `status`, `file`, `channel`.
+  `reaction`, `card`, `status`, `file`, `channel`, `thread_state`,
+  `release`, `read`.
+- `reads(channel TEXT PK, seq INT)`: each channel's floor, under which
+  every message is read; `thread_reads(channel TEXT, thread_key TEXT,
+  seq INT, PK(channel, thread_key))`: each thread's read mark above it
+  (Unread). The index `messages_author(channel, author, seq)` serves the
+  counts.
 - `files(id TEXT PK, channel TEXT, name TEXT, path TEXT, mimetype TEXT, size INT, at REAL)`;
   uploads land under `<store dir>/webchat-files/`.
 - `scheduled_posts(id INTEGER PK AUTOINCREMENT, channel TEXT, text TEXT,
@@ -231,13 +237,14 @@ subset and escapes everything else; it never injects HTML from text.
 | GET | `/manifest.sig.json` | the signed manifest of the app's files, without auth (Code integrity); 404 when the bot signs none |
 | GET | `/api/bundle` | the same document, for the owner: the route the relay reaches |
 | GET | `/api/app/{file}` | a file that the signed manifest names, its bytes as on disk (`headers.json` as the bot writes it), as an attachment with the sandbox policy and the type of its name; 404 for any other name. A phone off the tailnet, or on the relay's origin, takes a new release here, through the relay (Code integrity) |
-| GET | `/api/channels` | `[{"id","name","kind","archived","last_at","unread"}]` |
+| GET | `/api/channels` | `[{"id","name","kind","archived","description","last_at","unread","unread_threads","as_of"}]`; `unread_threads` maps each thread with unread messages to its count, `unread` is their sum, and `as_of` is the last event the counts take in (Unread) |
 | PATCH | `/api/channels/{ch}` | `{"name"}` → the room's row: the owner renames a room (Rooms). Its spaces are collapsed and a leading `#` dropped; 400 for an empty name, one over 60 characters or one with a control character, and for a fixed place (kind `main`, `dm`, `sched` or `digest`); 404 for an unknown room; 409 for a name another channel has; the same name answers the row as it is. A chat action: a relayed device that may chat may take it |
 | POST | `/api/channels/{ch}/archive`, `/api/channels/{ch}/unarchive` | `{}` → the room's row with `archived` set or cleared; a room in that state already is answered as it is. 400 for a fixed place, 404 for an unknown room. A chat action, as the rename |
 | GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count`, `last_at` and the thread's state: `state`, `state_by`, `state_reason`, `state_at`, `stale` (State) |
 | GET | `/api/needs` | `{"threads": [...]}`: the threads whose state is `needs_you` or `waiting` in channels that are not archived, each a threads row with `channel_name`; `needs_you` first, then newest first; at most 200; one query, and it moves no read mark (State). `needs` is never a channel id |
 | POST | `/api/threads/{ch}/{thread_key}/state` | `{"state": "done" \| "needs_you" \| "waiting"}` → the thread's row as the threads route gives it, with `channel_name`: the owner's override (`state_by` `owner`), until a new message lands in the thread; 400 for another state, 404 for an unknown thread. A chat action: a relayed device that may chat may take it (State) |
-| GET | `/api/channels/{ch}/threads/{thread_key}` | the thread, oldest first, parent first |
+| GET | `/api/channels/{ch}/threads/{thread_key}` | the thread, oldest first, parent first; like every GET, it moves no read mark |
+| POST | `/api/channels/{ch}/threads/{thread_key}/read` | `{"upto"?: <seq>}` → `{"channel", "thread_key", "unread", "unread_threads", "as_of"}`, the channel's counts: the owner read the thread, up to `upto` (the newest message the app shows) or its newest message; the mark never moves back. A move that changes the counts appends a `read` event with the same body. A message id names its thread; 400 for an `upto` that is not a whole number of 0 or more, 404 for an unknown channel or thread. A chat action: a relayed device that may chat may take it (Unread) |
 | POST | `/api/channels/{ch}/messages` | `{"text", "thread_key"?}` → the stored owner message; dispatches an `InboundMessage` |
 | GET | `/api/search?q=<text>&channel=<id>&limit=50` | `{"results": [{"channel", "channel_name", "thread_key", "thread_title", "id", "author", "kind", "posted_at", "snippet"}], "mode": "fts5" \| "like"}`: the messages that hold every word of `q`, newest first, a removed one left out; `channel` optional (404 for an unknown one), `limit` 1 to 200; `snippet` is at most 160 characters on one line around the first hit; `thread_title` is the conversation's first message's card title or first line. 400 for an empty `q` or one over 200 characters. A GET: a relayed device that reads may search (The owner's own actions) |
 | POST | `/api/messages/{ch}/{id}/react` | `{"emoji"}`, one of `+1`, `white_check_mark`, `heart`, `eyes`, `joy` (or its glyph) → the message JSON: the owner's reaction toggled, with a `reaction` event; 400 for another emoji, 404 for an unknown message, 409 for a removed one |
@@ -246,7 +253,7 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/channels/{ch}/files` | multipart `file` (one part, or up to 10 parts in order), optional `text`, `thread_key`, `nonce` → the stored `file` message of the first file, which carries the text; each other file is a `file` message of its own after it in the same thread (the stream brings them); dispatches one `InboundMessage` with `files=[FileRef, ...]`, every file in order. A `nonce` the browser sent before answers the same row and dispatches nothing, as for a message; 400 for more than 10 files |
 | GET | `/api/files/{id}` | the bytes, `Content-Disposition: attachment` |
 | POST | `/api/cards/{ch}/{id}/actions` | `{"action_id", "value"?, "selected"?, "text"?}` → `{"ok": true}`; dispatches an `ActionEvent` (`source` `button` or `select`); `text` is the owner's line, kept on one line of 300 characters at most and only for an action the card stored with `ask` |
-| GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row, `thread_state` events `{"channel", "thread_key", "state", "by", "reason", "at", "stale"}`, `release` events `{"bundle"}` when the bot signs a new release of the app); a `: ping` comment every 20 s |
+| GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row, `thread_state` events `{"channel", "thread_key", "state", "by", "reason", "at", "stale"}`, `release` events `{"bundle"}` when the bot signs a new release of the app, `read` events `{"channel", "thread_key", "unread", "unread_threads", "as_of"}` when a thread read on some device changes the channel's counts, `thread_key` "" for the whole channel); a `: ping` comment every 20 s |
 | POST | `/api/pair` | `{"token"}` → sets the cookie |
 | GET | `/api/push/vapid` | `{"key": "<base64url P-256 point>"}`, the `applicationServerKey`; 404 when push is off |
 | POST | `/api/push/subscribe` | the browser's `PushSubscription.toJSON()` → `{"ok": true}` |
@@ -345,6 +352,50 @@ primary would be the bot's, among its status marks. So the primary
 keeps the message as it was sent, and the bot's turns there read the
 primary's copy: an edit or a removal on the web changes what the web
 chat shows.
+
+## Unread
+
+The bot keeps the read state, per thread, and every device shows the
+bot's counts (`WebStore.mark_thread_read`, `_counts`).
+
+- An unread message is the bot's, live (never a history row), and after
+  the latest of three marks: the channel's floor (`reads`), the thread's
+  read mark (`thread_reads`) and the owner's last live message in the
+  thread.
+- A thread's count is its unread messages; a channel's `unread` is the
+  sum over its threads.
+- The owner's message reads its own thread, never the rest of the channel.
+- No GET moves a mark: a list, a thread or a search the app reads is not
+  the owner reading.
+- The app marks a thread read with `POST
+  /api/channels/{ch}/threads/{thread_key}/read` when the owner looks at
+  it: on opening it with the page in view, on a message landing in it on
+  screen, and on the page coming back into view with it open.
+- The post carries `upto`, the newest message the app shows; the mark
+  moves to it (or to the thread's newest message without one) and never
+  back, so a message that lands in between stays unread.
+- A move that changes the counts appends a `read` event with the
+  channel's new counts; every open app takes them.
+- The channel's floor then rises to just under its oldest unread message
+  (to its newest message with none), and the thread marks under it go:
+  the counts read only the rows above it, and nothing read turns unread.
+- A store from before keeps its channel read mark as the floor.
+- Each count the bot sends (a channel row, a `channel` or `read` event, a
+  read's answer) carries `as_of`, the last event it takes in; the bot
+  reads the counts in one transaction, so they take in every event up to
+  it and none after.
+- The app takes a channel's counts only from an answer whose `as_of` is
+  no older than the last event of that channel it took in, so a late
+  answer never undoes a newer read; it counts each message event after
+  them itself, once: one for a bot message, the thread cleared for the
+  owner's own.
+- The thread on screen shows no count while the page is in view.
+- The app takes every count from `/api/channels` again when its stream
+  opens again and when the page comes back into view: an iPhone's
+  home-screen app loses its stream while it is away.
+- A thread read on any device drops the push queued for a message it
+  shows (Notifications, Quiet hours). A read sends no clear: that stays
+  with the page that shows the thread (`/api/push/seen`).
 
 ## State
 
@@ -615,7 +666,9 @@ from `bundle.js`; Code integrity, below).
 Layout: a channel list (left on wide screens, a drawer on narrow), a
 thread list for the selected channel, and the open thread with a
 composer at the bottom. The DM channel opens by default. Unread badges
-from the event stream. A top-level message in a channel starts a thread;
+show the bot's counts per thread (Unread): on a thread's card, on its
+channel's row, as the dot on the Menu button for the other channels and
+in the page's title. A top-level message in a channel starts a thread;
 replying stays in it.
 
 The channel list's width. From 1000px wide the channel list is a column
@@ -940,10 +993,9 @@ none of these channels and its own `sched_channel` is ""; the
 composite gives the primary's, and the mirrored scheduling channel is
 the store's channel of kind `sched`. Rooms
 are `r<n>`, files `f<n>`, messages `w<seq>`, threads `t<seq>`. A channel
-row also carries `description`. `unread` counts the bot's messages after
-the owner's last message in the channel or the channel's read mark;
-`GET .../threads` and `GET .../threads/{key}` move the read mark to the
-newest message. `thread_channel(key)` names the one channel that holds a
+row also carries `description`, and its counts (`unread`,
+`unread_threads`, `as_of`) are the bot's, per thread (Unread); no GET
+moves a read mark. `thread_channel(key)` names the one channel that holds a
 thread key or message id (None for none or several), for a caller that
 has the key alone (the bot delivering a staged job).
 
@@ -1223,8 +1275,7 @@ or clear to that browser carries it in `close`, and the app's sweep closes
 it when the app opens (both below). The two-minute window holds: an
 answer right after the reply does not buzz again. The app drops the
 thread's unread count when the owner's message arrives on the stream,
-also with the thread closed, and the channel's count from the server as
-the server counts it.
+also with the thread closed, as the bot counts it (Unread).
 
 **What each browser gets on a clear.** Every browser expects each push
 to show a notification (`userVisibleOnly`), none counts a notification
@@ -1283,9 +1334,10 @@ the host sets `quiet_until` (`chat.quiet_until`, from
 `quiet_hours.quiet_end`, the same window that holds the notifier's posts;
 `only_when_traveling` applies). The queued row names its message
 (`channel`, `seq`), and the worker drops it at its moment when the owner
-has read that message since (the channel's read mark, or a later message
-of the owner's in the channel, as `unread` counts), so a conversation
-read at night does not buzz in the morning. A hook that fails sends the
+has read that message since (the channel's floor, its thread's read mark
+from any device, or a later message of the owner's in its thread, as
+`unread` counts), so a conversation read at night does not buzz in the
+morning. A hook that fails sends the
 push at once, as a chat post does when the quiet-hours gate fails.
 
 **VAPID.** The key pair (P-256) is made on first use in

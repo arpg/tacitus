@@ -6,11 +6,19 @@ their tailnet (`tailscale serve`, which adds the identity header) or by
 pairing a browser with a token. Nothing here talks to another server.
 
 The store is one SQLite file (`webchat.sqlite`): channels, messages, the
-event log the browser streams, uploaded files and a read mark per
-channel. Uploads sit beside it under `webchat-files/`. Every write to a
-message or a channel appends an event in the same transaction and hands
-it to each open event stream, so a browser that reconnects with
-`Last-Event-ID` replays exactly what it missed.
+event log the browser streams, uploaded files and the read marks (one
+per thread over a floor per channel). Uploads sit beside it under
+`webchat-files/`. Every write to a message or a channel, and each read
+that changes the unread counts, appends an event in the same transaction
+and hands it to each open event stream, so a browser that reconnects
+with `Last-Event-ID` replays exactly what it missed.
+
+Read state lives here alone (docs/webchat.md, Unread): a thread's unread
+count is the bot's live messages after the latest of the channel's floor,
+the thread's read mark and the owner's last live message in the thread; a
+channel's is the sum over its threads. No GET moves a mark. The app posts
+the thread the owner looks at (`POST /api/channels/<c>/threads/<t>/read`),
+and the `read` event carries the channel's new counts to every open app.
 
 Several processes write one store (docs/webchat.md, CLI senders). The
 bot serves it. A command-line sender in an owner process (chat_notify,
@@ -338,7 +346,7 @@ RESERVED_CHANNEL_IDS = frozenset({"needs"})
 # that lives on Slack in shadow mode takes it too.
 ROOM_NAME_MAX = 60
 EVENT_TYPES = ("message", "update", "reaction", "card", "status", "file", "channel",
-               "thread_state", "release")
+               "thread_state", "release", "read")
 LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
 # Host names a loopback client (the relay client, a test) puts in Host and
 # Origin, with this server's port.
@@ -407,6 +415,7 @@ CREATE TABLE IF NOT EXISTS messages(
     posted_at REAL, updated_at REAL, history INT DEFAULT 0, edits TEXT, deleted_at REAL,
     owner_reactions TEXT, UNIQUE(channel, id));
 CREATE INDEX IF NOT EXISTS messages_thread ON messages(channel, thread_key, seq);
+CREATE INDEX IF NOT EXISTS messages_author ON messages(channel, author, seq);
 CREATE TABLE IF NOT EXISTS events(
     seq INTEGER PRIMARY KEY AUTOINCREMENT, at REAL, type TEXT, channel TEXT, id TEXT,
     payload TEXT);
@@ -414,6 +423,8 @@ CREATE TABLE IF NOT EXISTS files(
     id TEXT PRIMARY KEY, channel TEXT, name TEXT, path TEXT, mimetype TEXT, size INT,
     at REAL);
 CREATE TABLE IF NOT EXISTS reads(channel TEXT PRIMARY KEY, seq INT);
+CREATE TABLE IF NOT EXISTS thread_reads(
+    channel TEXT, thread_key TEXT, seq INT, PRIMARY KEY (channel, thread_key));
 CREATE TABLE IF NOT EXISTS push_subscriptions(
     endpoint TEXT PRIMARY KEY, keys TEXT, created_at REAL, last_ok REAL,
     failures INT DEFAULT 0, last_seen REAL, device TEXT);
@@ -993,17 +1004,51 @@ class WebStore:
     def _channel_json(self, row: sqlite3.Row) -> dict:
         cid = row["id"]
         last = self._one("SELECT MAX(posted_at) AS t FROM messages WHERE channel=?", (cid,))
-        # A history row (copied from the primary's past) counts neither as
-        # unread nor as the owner's last message.
-        unread = self._one(
-            "SELECT COUNT(*) AS n FROM messages WHERE channel=? AND author=? AND history=0 "
-            "AND seq > MAX(COALESCE((SELECT seq FROM reads WHERE channel=?), 0),"
-            "COALESCE((SELECT MAX(seq) FROM messages WHERE channel=? AND author=? "
-            "AND history=0), 0))",
-            (cid, BOT, cid, cid, OWNER))
         return {"id": cid, "name": row["name"] or "", "kind": row["kind"] or "room",
                 "archived": bool(row["archived"]), "description": row["description"] or "",
-                "last_at": last["t"] if last else None, "unread": int(unread["n"]) if unread else 0}
+                "last_at": last["t"] if last else None, **self._counts(cid)}
+
+    def _counts(self, channel: str) -> dict:
+        """The channel's read state as its row and the `read` event carry
+        it: `unread_threads` (each thread with unread messages: how many),
+        `unread` (their sum) and `as_of`, the seq of the last event they
+        take in. They are read in one transaction, so they take in every
+        event up to as_of and none after it: an app that holds them counts
+        each later message itself, and keeps them over an older answer."""
+        def read() -> dict:
+            threads = {r["k"]: int(r["n"]) for r in self._unread_rows(channel)}
+            return {"as_of": self.max_event_seq(), "unread": sum(threads.values()),
+                    "unread_threads": threads}
+        with self._lock:
+            if self._conn.in_transaction:
+                return read()
+            self._conn.execute("BEGIN")
+            try:
+                return read()
+            finally:
+                self._conn.commit()
+
+    def _unread_rows(self, channel: str) -> list[sqlite3.Row]:
+        """Each thread of the channel with unread messages: {"k" (its key),
+        "n" (how many), "first" (the oldest one's seq)}. An unread message
+        is the bot's, live, and after the latest of the channel's floor
+        (`reads`), the thread's read mark (`thread_reads`) and the owner's
+        last live message in the thread. A history row (copied from the
+        primary's past) counts neither as unread nor as the owner's last
+        message. The bot's messages above the floor come from the
+        `messages_author` index; the owner's last message is a walk back
+        through its thread (`messages_thread`) to the first one."""
+        row = self._one("SELECT seq FROM reads WHERE channel=?", (channel,))
+        floor = int(row["seq"] or 0) if row else 0
+        return self._all(
+            "SELECT m.thread_key AS k, COUNT(*) AS n, MIN(m.seq) AS first FROM messages m "
+            "WHERE m.channel=? AND m.author=? AND m.seq > ? AND m.history=0 "
+            "AND m.seq > COALESCE((SELECT r.seq FROM thread_reads r WHERE r.channel=m.channel "
+            "AND r.thread_key=m.thread_key), 0) "
+            "AND m.seq > COALESCE((SELECT o.seq FROM messages o INDEXED BY messages_thread "
+            "WHERE o.channel=m.channel AND o.thread_key=m.thread_key AND o.author=? "
+            "AND o.history=0 ORDER BY o.seq DESC LIMIT 1), 0) "
+            "GROUP BY m.thread_key", (channel, BOT, floor, OWNER))
 
     def channels(self) -> list[dict]:
         rows = self._all("SELECT * FROM channels ORDER BY CASE kind WHEN 'dm' THEN 0 "
@@ -1851,13 +1896,74 @@ class WebStore:
             if tmp.exists():
                 tmp.unlink()
 
-    def mark_read(self, channel: str) -> None:
-        with self._lock:
-            with self._conn:
-                self._conn.execute(
-                    "INSERT INTO reads(channel, seq) VALUES (?, (SELECT COALESCE(MAX(seq), 0) "
-                    "FROM messages WHERE channel=?)) ON CONFLICT(channel) DO UPDATE SET "
-                    "seq=excluded.seq", (channel, channel))
+    # read marks (docs/webchat.md, Unread)
+
+    def _set_floor(self, channel: str, seq: int) -> None:
+        """Raise the channel's floor to `seq` (never lower it) and drop the
+        thread marks under it, inside the caller's transaction."""
+        self._conn.execute("INSERT INTO reads(channel, seq) VALUES (?, ?) ON CONFLICT(channel) "
+                           "DO UPDATE SET seq=MAX(COALESCE(seq, 0), excluded.seq)",
+                           (channel, int(seq)))
+        self._conn.execute("DELETE FROM thread_reads WHERE channel=? AND seq <= "
+                           "(SELECT seq FROM reads WHERE channel=?)", (channel, channel))
+
+    def _read_event(self, channel: str, thread_key: str) -> dict:
+        """The `read` event's payload, inside the caller's transaction:
+        {"channel", "thread_key", **_counts}."""
+        return {"channel": channel, "thread_key": thread_key, **self._counts(channel)}
+
+    def mark_read(self, channel: str) -> dict:
+        """Every message of the channel is read: its floor rises to its
+        newest message, with a `read` event (`thread_key` ""); the payload."""
+        def run() -> dict:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute("SELECT MAX(seq) AS s FROM messages WHERE channel=?",
+                                     (channel,)).fetchone()
+            self._set_floor(channel, int(row["s"] or 0))
+            out = self._read_event(channel, "")
+            self._emit("read", channel, "", out)
+            return out
+        return self._transaction(run)
+
+    def mark_thread_read(self, channel: str, thread_key: str,
+                         upto: int | None = None) -> dict | None:
+        """The owner read the thread: its read mark moves to its newest
+        message, or to `upto` when that is older (the newest message the
+        app showed, so one that landed since stays unread). A mark never
+        moves back. A move that changes the channel's counts appends a
+        `read` event with them. The channel's floor then rises to just
+        under its oldest unread message (to its newest message when none
+        is left), which keeps the counts' reads short and turns nothing
+        unread. The payload, as the event carries it; None for a thread
+        with no messages. One write transaction from the first read, so
+        another process's write lands wholly before or after it."""
+        def run() -> dict | None:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute("SELECT MAX(seq) AS s FROM messages WHERE channel=? AND "
+                                     "thread_key=?", (channel, thread_key)).fetchone()
+            if row is None or row["s"] is None:
+                return None
+            to = int(row["s"]) if upto is None else min(int(upto), int(row["s"]))
+            # Where the thread is read to now: its mark, or the floor above it.
+            now = self._conn.execute(
+                "SELECT MAX(COALESCE((SELECT seq FROM thread_reads WHERE channel=? AND "
+                "thread_key=?), 0), COALESCE((SELECT seq FROM reads WHERE channel=?), 0)) AS s",
+                (channel, thread_key, channel)).fetchone()
+            if to <= int(now["s"] or 0):
+                return self._read_event(channel, thread_key)
+            before = {r["k"]: int(r["n"]) for r in self._unread_rows(channel)}
+            self._conn.execute("INSERT INTO thread_reads(channel, thread_key, seq) VALUES (?,?,?) "
+                               "ON CONFLICT(channel, thread_key) DO UPDATE SET seq=excluded.seq",
+                               (channel, thread_key, to))
+            firsts = [int(r["first"]) for r in self._unread_rows(channel)]
+            newest = self._conn.execute("SELECT COALESCE(MAX(seq), 0) FROM messages WHERE "
+                                        "channel=?", (channel,)).fetchone()[0]
+            self._set_floor(channel, min(firsts) - 1 if firsts else int(newest))
+            out = self._read_event(channel, thread_key)
+            if out["unread_threads"] != before:
+                self._emit("read", channel, thread_key, out)
+            return out
+        return self._transaction(run)
 
     # web push: the browsers' subscriptions and the pushes queued for later
 
@@ -2008,16 +2114,19 @@ class WebStore:
     def push_claim_due(self, now: float) -> list[dict]:
         """Take the queued pushes due by `now` off the queue, in one
         transaction, so two processes never both send one. The push of a
-        message the owner has read since (the channel's read mark, or a
-        later message of the owner's in the channel, as `unread` counts) is
-        dropped, not returned."""
+        message the owner has read since (the channel's floor, its thread's
+        read mark from any device, or a later message of the owner's in its
+        thread, as `unread` counts) is dropped, not returned."""
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 rows = [dict(r) for r in self._conn.execute(
                     "SELECT q.*, (q.seq IS NOT NULL AND (q.seq <= COALESCE((SELECT seq FROM "
-                    "reads WHERE channel=q.channel), 0) OR q.seq <= COALESCE((SELECT MAX(seq) "
-                    "FROM messages WHERE channel=q.channel AND author=? AND history=0), 0))) "
+                    "reads WHERE channel=q.channel), 0) OR q.seq <= COALESCE((SELECT r.seq FROM "
+                    "thread_reads r JOIN messages m ON m.seq=q.seq WHERE r.channel=q.channel AND "
+                    "r.thread_key=m.thread_key), 0) OR q.seq <= COALESCE((SELECT MAX(o.seq) FROM "
+                    "messages m JOIN messages o ON o.channel=m.channel AND o.thread_key=m.thread_key "
+                    "WHERE m.seq=q.seq AND o.author=? AND o.history=0), 0))) "
                     "AS seen FROM push_queue q WHERE q.due_at <= ? ORDER BY q.due_at",
                     (OWNER, now))]
                 self._conn.execute("DELETE FROM push_queue WHERE due_at <= ?", (now,))
@@ -4376,18 +4485,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 self._need_channel(segs[1])
                 limit = self._int(query, "limit", 50, 1, 200)
                 before = self._int(query, "before", None, 0, None)
-                rows = store.threads(segs[1], limit, before)
-                store.mark_read(segs[1])
-                self._json(200, rows)
+                self._json(200, store.threads(segs[1], limit, before))
                 return None
             if n == 4 and segs[0] == "channels" and segs[2] == "threads":
                 self._need_channel(segs[1])
                 key = store.thread_of(segs[1], segs[3])
                 if not key:
                     raise _HttpError(404, "no such thread")
-                rows = store.thread(segs[1], key)
-                store.mark_read(segs[1])
-                self._json(200, rows)
+                self._json(200, store.thread(segs[1], key))
                 return None
             if n == 2 and segs[0] == "files":
                 self._file(segs[1])
@@ -4452,6 +4557,22 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return after
             if n == 3 and segs[0] == "channels" and segs[2] == "files":
                 return self._upload(segs[1])
+            if n == 5 and segs[0] == "channels" and segs[2] == "threads" and segs[4] == "read":
+                # The owner looks at a thread on some device: its read mark
+                # moves (never back, never past `upto`, the newest message the
+                # app showed), and the `read` event carries the channel's
+                # counts to every open app (WebStore.mark_thread_read). A
+                # chat action, like a message.
+                self._need_channel(segs[1])
+                key = store.thread_of(segs[1], segs[3])
+                if not key:
+                    raise _HttpError(404, "no such thread")
+                upto = self._read_json().get("upto")
+                if upto is not None and (isinstance(upto, bool) or not isinstance(upto, int)
+                                         or upto < 0):
+                    raise _HttpError(400, "upto is the seq of a message")
+                self._json(200, store.mark_thread_read(segs[1], key, upto))
+                return None
             if n == 4 and segs[0] == "messages" and segs[3] == "react":
                 emoji = self._read_json().get("emoji")
                 if not isinstance(emoji, str):
