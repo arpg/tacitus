@@ -1077,6 +1077,11 @@ def analyze_writing_style(sent: list) -> dict:
         return max(counts, key=counts.get)
 
     avg_len = sum(all_lengths) // len(all_lengths) if all_lengths else 80
+    rate = contraction_count / total_count
+    try:
+        from style_profiles import contraction_guidance
+    except ImportError:
+        from preprocessor.style_profiles import contraction_guidance
 
     # Build per-contact profiles (only for contacts with 3+ emails)
     per_contact = {}
@@ -1108,7 +1113,8 @@ def analyze_writing_style(sent: list) -> dict:
         "default_greeting": most_common(all_greetings) or "Hi {name},",
         "default_closing": most_common(all_closings) or "Best,",
         "avg_length_words": avg_len,
-        "uses_contractions": contraction_count > total_count * 0.3,
+        "contraction_rate": round(rate, 2),
+        "contractions": contraction_guidance(rate),
         "per_contact": per_contact,
     }
 

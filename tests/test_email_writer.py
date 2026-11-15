@@ -305,3 +305,92 @@ def test_each_brief_sent_is_recorded_owner_side(store, work, capsys, monkeypatch
                                  mode=0o600)
     _run(capsys, "--to", "pat@example.edu", "--brief-file", _brief(work), "--out", work / "b2.txt")
     assert len(log.read_text().splitlines()) == 1
+
+
+# ── the brief's KNOW part ─────────────────────────────────────────────
+
+KNOW_BRIEF = (
+    "Recipient: pat@example.edu.\n"
+    "SAY: Ask Pat whether the field team can build the sensor mount and "
+    "join two week-long site visits in March.\n"
+    "KNOW: The prototype has not been tested outdoors yet. The core work needs no "
+    "aircraft support. Funding is expected but not awarded.")
+LEAKY = ("Hi Pat,\n\nCould your field team build the sensor mount and join two "
+         "week-long site visits in March? The prototype has not been tested outdoors "
+         "yet. The core work needs no aircraft support. If you want to fly something "
+         "anyway, that is fine with me.\n\nKit")
+CLEAN = ("Hi Pat,\n\nCould your field team build the sensor mount and join two "
+         "week-long site visits in March?\n\nKit")
+
+
+def test_brief_parts_split_say_from_know():
+    say, know = ew.brief_parts(KNOW_BRIEF)
+    assert "sensor mount" in say and "outdoors" not in say
+    assert know == ["The prototype has not been tested outdoors yet.",
+                    "The core work needs no aircraft support.",
+                    "Funding is expected but not awarded."]
+    assert ew.brief_parts(BRIEF) == (BRIEF, [])
+
+
+def test_know_leaks_find_restated_lines_only():
+    assert ew.know_leaks(KNOW_BRIEF, LEAKY) == [
+        "The prototype has not been tested outdoors yet.",
+        "The core work needs no aircraft support."]
+    assert ew.know_leaks(KNOW_BRIEF, CLEAN) == []
+    # A brief with no KNOW part has nothing to leak.
+    assert ew.know_leaks(BRIEF, LEAKY) == []
+    # A fact the SAY part carries too may be said.
+    both = KNOW_BRIEF.replace("in March.", "in March. The core work needs no aircraft support.")
+    assert ew.know_leaks(both, LEAKY) == ["The prototype has not been tested outdoors yet."]
+
+
+def test_cut_sentences_keeps_paragraphs():
+    out = ew.cut_sentences(LEAKY, ew.know_leaks(KNOW_BRIEF, LEAKY))
+    assert out.startswith("Hi Pat,\n\nCould your field team") and out.endswith("\n\nKit")
+    assert "outdoors" not in out and "aircraft" not in out and "  " not in out
+
+
+def _chats(*answers):
+    def fn(messages, **kw):
+        fn.calls.append(messages)
+        text = answers[min(len(fn.calls), len(answers)) - 1]
+        return {"content": text, "contents": [text], "latency_ms": 500}
+    fn.calls = []
+    return fn
+
+
+def test_a_know_leak_gets_one_revision(store, work):
+    out = work / "body.txt"
+    chat = _chats(LEAKY, CLEAN)
+    ans, code = ew.write("pat@example.edu", KNOW_BRIEF, str(out), chat=chat)
+    assert code == 0 and out.read_text() == CLEAN
+    assert len(chat.calls) == 2
+    ask = chat.calls[1][-1]["content"]
+    assert chat.calls[1][-2] == {"role": "assistant", "content": LEAKY}
+    assert "- The core work needs no aircraft support." in ask
+    rec = rl.read(ew.STORE)[-1]
+    assert rec["know_fix"] == "revised" and len(rec["know_leaks"]) == 2
+
+
+def test_a_leak_the_revision_keeps_is_cut(store, work):
+    out = work / "body.txt"
+    chat = _chats(LEAKY, LEAKY)
+    ans, code = ew.write("pat@example.edu", KNOW_BRIEF, str(out), chat=chat)
+    body = out.read_text()
+    assert code == 0 and "outdoors" not in body and "aircraft" not in body
+    assert rl.read(ew.STORE)[-1]["know_fix"] == "cut"
+
+
+def test_no_time_for_a_revision_cuts_at_once(store, work, monkeypatch):
+    monkeypatch.setattr(ew, "FIX_MIN_S", 10_000)
+    out = work / "body.txt"
+    chat = _chats(LEAKY, CLEAN)
+    ans, code = ew.write("pat@example.edu", KNOW_BRIEF, str(out), chat=chat)
+    assert code == 0 and len(chat.calls) == 1 and "aircraft" not in out.read_text()
+
+
+def test_a_clean_body_makes_one_call(store, work):
+    chat = _chats(CLEAN)
+    ans, code = ew.write("pat@example.edu", KNOW_BRIEF, str(work / "b.txt"), chat=chat)
+    assert code == 0 and len(chat.calls) == 1
+    assert "know_fix" not in rl.read(ew.STORE)[-1]

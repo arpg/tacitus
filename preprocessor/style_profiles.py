@@ -55,6 +55,9 @@ _GREETING_RE = re.compile(
     re.IGNORECASE)
 _CLOSING_WORDS = ("best", "cheers", "thanks", "thank you", "regards",
                   "sincerely", "all the best", "take care", "warmly")
+# A closing is a few words ("Thanks,", "All the best,", "Best, Kit"). A
+# longer line that starts with "Thanks," is the last sentence of the body.
+CLOSING_MAX_WORDS = 4
 _CONTRACTION_RE = re.compile(
     r"\b(?:don't|can't|won't|isn't|aren't|it's|i'm|i'll|i've|we're|"
     r"we'll|that's|there's|doesn't|didn't|haven't|you're|let's)\b",
@@ -186,6 +189,25 @@ def _own_text(body: str) -> str:
     return text
 
 
+def closing_ok(line: str) -> bool:
+    """True for a line short enough to be a closing."""
+    return len((line or "").split()) <= CLOSING_MAX_WORDS
+
+
+def contraction_guidance(rate: float) -> str:
+    """The instruction a writer follows for a contraction rate (the share
+    of emails with at least one). A yes/no flag turned a rate of 0.33 into
+    "no contractions", and the writer then used none: further from the
+    user than either habit."""
+    pct = round(100 * rate)
+    if rate < 0.15:
+        return f"rarely ({pct}% of emails): write the words out (do not, I will)"
+    if rate < 0.6:
+        return (f"sometimes ({pct}% of emails): use one or two where they read "
+                "naturally (I'll, it's, don't); do not write them all out")
+    return f"usually ({pct}% of emails): use natural contractions (don't, I'll, it's)"
+
+
 def _extract_features(text: str) -> dict:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     greeting = ""
@@ -196,6 +218,8 @@ def _extract_features(text: str) -> dict:
             greeting = f"{word} {{name}}," if m.group(2) else f"{word},"
     closing = ""
     for ln in reversed(lines[-4:]):
+        if not closing_ok(ln):
+            continue
         low = ln.lower().rstrip(",.!")
         for c in _CLOSING_WORDS:
             if low == c or low.startswith(c + ","):
@@ -220,8 +244,29 @@ def _extract_features(text: str) -> dict:
     }
 
 
+def _message_text(m: dict) -> str:
+    """The user's own text of a sent message: the body when the read has
+    it, the preview otherwise, quoted history cut."""
+    body = (m.get("body") or {}).get("content") if isinstance(
+        m.get("body"), dict) else (m.get("bodyPreview") or "")
+    if not body:
+        body = m.get("bodyPreview") or ""
+    return _own_text(_html_to_text(body))
+
+
+def _ea_matcher(ea):
+    """The EA-written matcher a caller passed, or the one on record."""
+    if ea is not None:
+        return ea
+    try:
+        import ea_written
+    except ImportError:
+        from preprocessor import ea_written
+    return ea_written.load()
+
+
 def update_from_messages(sent: list, db_path: Path | None = None,
-                         reprocess: bool = False) -> dict:
+                         reprocess: bool = False, matcher=None) -> dict:
     """Incrementally fold a batch of sent messages into the profiles.
 
     Idempotent via the sentDateTime watermark — safe to call with the
@@ -232,6 +277,11 @@ def update_from_messages(sent: list, db_path: Path | None = None,
     Per-message rows are keyed and updated in place, so the totals stay
     correct across the overlap. `contacts` lists the addresses whose
     profile the batch touched.
+
+    Mail the EA wrote is skipped (`ea_written` counts it): a profile
+    built from the writer's own output teaches the writer its own voice
+    (ea_written.py). `matcher` is the ea_written.Matcher to use; None
+    reads the one on record.
     """
     global DB_PATH
     if db_path:
@@ -241,9 +291,10 @@ def update_from_messages(sent: list, db_path: Path | None = None,
         row = con.execute(
             "SELECT value FROM sync_state WHERE key='watermark'").fetchone()
         watermark = row["value"] if row else ""
-        processed = skipped = 0
+        processed = skipped = ea_skipped = 0
         new_watermark = watermark
         touched: set[str] = set()
+        ea = None
 
         for m in sorted(sent or [], key=lambda x: x.get("sentDateTime") or ""):
             sent_at = m.get("sentDateTime") or ""
@@ -267,13 +318,15 @@ def update_from_messages(sent: list, db_path: Path | None = None,
             if not people or len(people) > MAX_CONVERSATION_RECIPIENTS:
                 skipped += 1
                 continue
-            body = (m.get("body") or {}).get("content") if isinstance(
-                m.get("body"), dict) else (m.get("bodyPreview") or "")
-            if not body:
-                body = m.get("bodyPreview") or ""
-            text = _own_text(_html_to_text(body))
+            text = _message_text(m)
             if len(text) < 20:
                 skipped += 1
+                continue
+            if ea is None:
+                ea = _ea_matcher(matcher)
+            if ea.is_ea_written(text, m.get("conversationId") or "", sent_at):
+                skipped += 1
+                ea_skipped += 1
                 continue
 
             f = _extract_features(text)
@@ -352,9 +405,87 @@ def update_from_messages(sent: list, db_path: Path | None = None,
                 "VALUES ('watermark', ?)", (new_watermark,))
         con.commit()
         return {"processed": processed, "skipped": skipped,
+                "ea_written": ea_skipped,
+                "ea_check": bool(ea is None or ea.available),
                 "watermark": new_watermark, "contacts": sorted(touched)}
     finally:
         con.close()
+
+
+def purge_ea_written(sent: list, matcher=None, db_path: Path | None = None) -> dict:
+    """Remove from the profiles each message in `sent` the EA wrote: its
+    per-message row, its snippet and its share of the running totals. A
+    profile left with no message is removed, so a writer gets `found:
+    false` rather than a profile of its own voice. `ea_check` is False
+    when the writer's logs could not be read, so older mail went
+    unchecked (ea_written.load)."""
+    global DB_PATH
+    if db_path:
+        DB_PATH = Path(db_path)
+    ea = _ea_matcher(matcher)
+    if not len(ea):
+        return {"purged": 0, "purged_contacts": 0, "ea_check": ea.available}
+    con = _connect()
+    removed = 0
+    touched: set[str] = set()
+    try:
+        for m in sent or []:
+            sent_at = m.get("sentDateTime") or ""
+            text = _message_text(m) if sent_at else ""
+            if len(text) < 20 or not ea.is_ea_written(
+                    text, m.get("conversationId") or "", sent_at):
+                continue
+            for r in m.get("toRecipients") or []:
+                addr = ((r.get("emailAddress") or {}).get("address") or "").lower()
+                if not addr:
+                    continue
+                con.execute("DELETE FROM snippets WHERE contact = ? AND sent_at = ?",
+                            (addr, sent_at))
+                row = con.execute(
+                    "SELECT words, contractions FROM msgs WHERE contact = ? AND sent_at = ?",
+                    (addr, sent_at)).fetchone()
+                if not row:
+                    continue
+                con.execute("DELETE FROM msgs WHERE contact = ? AND sent_at = ?",
+                            (addr, sent_at))
+                con.execute("""
+                    UPDATE profiles SET sum_words = MAX(0, sum_words - ?),
+                        samples = MAX(0, samples - 1),
+                        contraction_hits = MAX(0, contraction_hits - ?),
+                        updated_at = ? WHERE contact = ?
+                """, (row["words"], row["contractions"], _now_iso(), addr))
+                removed += 1
+                touched.add(addr)
+        for addr in touched:
+            _refresh_marks(con, addr)
+        con.commit()
+    finally:
+        con.close()
+    return {"purged": removed, "purged_contacts": len(touched),
+            "ea_check": ea.available}
+
+
+def _refresh_marks(con: sqlite3.Connection, contact: str) -> None:
+    """After a purge: drop a profile with no message left, and take its
+    greeting and closing from the latest message that still counts (the
+    columns are last-write-wins, so a purged message may have set them)."""
+    row = con.execute("SELECT samples FROM profiles WHERE contact = ?",
+                      (contact,)).fetchone()
+    if row is None:
+        return
+    if (row["samples"] or 0) <= 0:
+        con.execute("DELETE FROM profiles WHERE contact = ?", (contact,))
+        con.execute("DELETE FROM snippets WHERE contact = ?", (contact,))
+        return
+    msgs = con.execute("SELECT greeting, closing FROM msgs WHERE contact = ? "
+                       "ORDER BY sent_at DESC", (contact,)).fetchall()
+    if not msgs:
+        return
+    greeting = next((r["greeting"] for r in msgs if r["greeting"]), "")
+    closing = next((r["closing"] for r in msgs
+                    if r["closing"] and closing_ok(r["closing"])), "")
+    con.execute("UPDATE profiles SET greeting = ?, closing = ? WHERE contact = ?",
+                (greeting, closing, contact))
 
 
 def get_profile(contact: str, db_path: Path | None = None) -> dict | None:
@@ -375,14 +506,17 @@ def get_profile(contact: str, db_path: Path | None = None) -> dict | None:
             "contact": row["contact"],
             "display_name": row["display_name"],
             "greeting": row["greeting"],
-            "closing": row["closing"],
+            # A row written before closings had a length cap can hold the
+            # body's last sentence; that is no closing.
+            "closing": row["closing"] if closing_ok(row["closing"]) else "",
             "avg_words": round(row["sum_words"] / samples),
             "samples": samples,
-            "uses_contractions": (row["contraction_hits"] / samples) >= 0.4,
             "last_sent_at": row["last_sent_at"],
             "recent_examples": snippets,
         }
         out.update(_reduce_msgs(con, contact.lower()))
+        rate = out.get("contraction_rate", row["contraction_hits"] / samples)
+        out["contractions"] = contraction_guidance(rate)
         return out
     finally:
         con.close()
@@ -403,8 +537,9 @@ def _reduce_msgs(con: sqlite3.Connection, contact: str) -> dict:
     words = [r["words"] for r in rows]
     total = sum(words) or 1
     n = len(rows)
-    bare = sum(1 for r in rows if not r["closing"])
-    closings = Counter(r["closing"] for r in rows if r["closing"])
+    real = [r["closing"] if closing_ok(r["closing"]) else "" for r in rows]
+    bare = sum(1 for c in real if not c)
+    closings = Counter(c for c in real if c)
 
     def per_1k(field):
         return round(1000 * sum(r[field] for r in rows) / total, 1)
@@ -467,19 +602,51 @@ def _fetch_sent(days: int) -> list:
         return graph.get_sent(days_back=days)
 
 
-def cmd_sync(args) -> int:
-    """Backfill from sent mail, with real bodies. A failed read prints a
-    JSON error and leaves every profile as it was."""
+# The first sync that can check for EA-written mail reads this far back,
+# once, and purges what the profiles already hold of it (ea_written.py).
+FIRST_PURGE_DAYS = 200
+PURGE_KEY = "ea_written_purged"
+
+
+def _purged_before() -> bool:
+    con = _connect()
     try:
-        sent = _fetch_sent(args.days)
+        return con.execute("SELECT 1 FROM sync_state WHERE key = ?",
+                           (PURGE_KEY,)).fetchone() is not None
+    finally:
+        con.close()
+
+
+def _mark_purged() -> None:
+    con = _connect()
+    try:
+        con.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
+                    (PURGE_KEY, _now_iso()))
+        con.commit()
+    finally:
+        con.close()
+
+
+def cmd_sync(args) -> int:
+    """Backfill from sent mail, with real bodies, leaving out and purging
+    mail the EA wrote. A failed read prints a JSON error and leaves every
+    profile as it was."""
+    try:
+        ea = _ea_matcher(None)
+        first = ea.available and not _purged_before()
+        days = max(args.days, FIRST_PURGE_DAYS) if first else args.days
+        sent = _fetch_sent(days)
     except Exception as exc:
         return _sync_error(f"could not read Sent Items: {exc}")
     try:
-        result = update_from_messages(sent, reprocess=True)
+        result = update_from_messages(sent, reprocess=True, matcher=ea)
+        result.update(purge_ea_written(sent, matcher=ea))
+        if first:
+            _mark_purged()
     except Exception as exc:
         return _sync_error(f"could not update the profiles: {exc}")
     contacts = result.pop("contacts", [])
-    print(json.dumps({"status": "ok", "fetched": len(sent), **result,
+    print(json.dumps({"status": "ok", "days": days, "fetched": len(sent), **result,
                       "contacts_updated": len(contacts),
                       "contacts": contacts[:MAX_LISTED_CONTACTS]}))
     return 0

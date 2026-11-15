@@ -2365,6 +2365,17 @@ Quoted history, Outlook disclaimers and Zoom invite boilerplate are
 stripped before any feature is extracted — invite text rides over the
 signature on every hold and otherwise reads as the user's prose.
 
+Mail the EA wrote is left out (`ea_written.py`). A sent message whose
+text comes mostly from an EA body, in runs of three words or more, is
+the writer's prose even after the user's edits; folded in, it teaches
+the writer its own voice as the user's. The EA bodies come from
+`draft_capture`'s store and the remote writer's logs. The first sync
+that can read those logs reaches back `FIRST_PURGE_DAYS` once and
+purges what the profiles already hold of such mail. The profile reports
+contractions as guidance from the measured rate (`contractions`,
+`contraction_rate`), not a yes/no flag, and a closing is at most four
+words.
+
 **`draft_capture.py`: what the user changed, not just what they write.**
 `graph_actions.py` calls it on `create-draft`, `create-reply` and
 `update-draft`, storing the EA-authored body under

@@ -36,8 +36,9 @@ style profiles govern that content.
 ### Drafting in the user's voice
 
 Email bodies come from the remote writer, the model the user chose to
-write in their voice. Write the brief (the recipient, the thread or
-request, what the reply must say) to a file in `~/.ea/state/`, then:
+write in their voice. Write the brief to a file in `~/.ea/state/`: the
+recipient, the thread or request, then `SAY:` (what the reply says) and
+`KNOW:` (facts and limits for accuracy, never stated in it). Then:
 
 ```
 python3 /home/ea-bot/ea-system/preprocessor/email_writer.py write --to <addr> --brief-file /home/ea-bot/.ea/state/<name>-brief.txt --out /home/ea-bot/.ea/state/reply-body.txt [--conversation-id <id>] [--draft-id <draft id>]
@@ -50,9 +51,8 @@ it; if a fact is wrong, correct the brief and run it again. A `notes`
 field is for you, never for the email. A `need` field is a question:
 answer it in the brief and run again, or ask the user.
 
-Exit 4 is the writer's fallback (writer off, a `NEED:`, an empty or late
-answer, an endpoint error); exit 3 means the mail mediator did not answer
-in time. Treat both the same way: give the same brief to the `email-author`
+Exit 4 (the writer's fallback) and exit 3 (the mediator did not answer
+in time) are the same: give the same brief to the `email-author`
 subagent (Agent tool, `subagent_type: "email-author"`). Letters
 (recommendations, formal documents) also come from the subagent. Call it
 in the foreground, never as a background agent: a background call ends
