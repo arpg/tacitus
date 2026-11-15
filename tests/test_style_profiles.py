@@ -9,6 +9,7 @@ snippet rotation (latest 3), quoted-history stripping, and get_profile.
 
 import os
 import sys
+import sqlite3
 import tempfile
 import traceback
 from pathlib import Path
@@ -48,7 +49,8 @@ def test_profile_accumulates():
         assert p["samples"] == 2
         assert p["greeting"] == "Hi {name},"
         assert p["closing"].lower().startswith("thanks")
-        assert p["uses_contractions"] is True
+        assert p["contractions"].startswith("sometimes (50%")
+        assert "uses_contractions" not in p
         assert len(p["recent_examples"]) == 2
 
 
@@ -348,6 +350,117 @@ def test_sync_reports_counts_and_contacts_and_repeats_without_double_counting():
         assert rc == 0 and json.loads(out)["status"] == "ok"
         p = sp.get_profile("alice@x.edu", db_path=db)
         assert p["messages"] == 1 and p["samples"] == 1
+
+
+# ── EA-written mail, closings, contraction guidance ──────────────────
+
+import ea_written  # noqa: E402
+
+EA_BODY = ("Hi Alice,\n\nThe lab can host the visit on the ninth. We need the "
+           "mount finished before then, and two people for the outdoor runs. "
+           "Could you confirm who will come?\n\nKit")
+OWN_BODY = "Hi Alice,\n\nCan't make Tuesday, sorry! Let's do Friday.\n\nKit"
+
+
+def _conv(msg, conv):
+    return {**msg, "conversationId": conv}
+
+
+def _ea(conv="c-ea", ts="2026-06-01T09:00:00Z"):
+    return ea_written.Matcher([{"ts": ts, "conversation_id": conv, "text": EA_BODY}])
+
+
+def test_mail_the_ea_wrote_is_left_out():
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "p.db"
+        r = sp.update_from_messages(
+            [_conv(_msg("alice@x.edu", "2026-06-01T10:00:00Z", EA_BODY), "c-ea"),
+             _conv(_msg("alice@x.edu", "2026-06-02T10:00:00Z", OWN_BODY), "c-own")],
+            db_path=db, matcher=_ea())
+        assert r["processed"] == 1 and r["ea_written"] == 1 and r["ea_check"] is True
+        p = sp.get_profile("alice@x.edu", db_path=db)
+        assert p["samples"] == 1 and p["messages"] == 1
+        assert [e["snippet"] for e in p["recent_examples"]] == [OWN_BODY]
+
+
+def test_purge_removes_ea_mail_already_in_a_profile():
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "p.db"
+        ea_msg = _conv(_msg("alice@x.edu", "2026-06-01T10:00:00Z", EA_BODY), "c-ea")
+        own = _conv(_msg("alice@x.edu", "2026-06-02T10:00:00Z", OWN_BODY), "c-own")
+        only_ea = _conv(_msg("bo@x.edu", "2026-06-01T10:00:00Z", EA_BODY, name="Bo"), "c-ea")
+        empty = ea_written.Matcher([])
+        sp.update_from_messages([ea_msg, own, only_ea], db_path=db, matcher=empty)
+        before = sp.get_profile("alice@x.edu", db_path=db)
+        assert before["samples"] == 2
+        r = sp.purge_ea_written([ea_msg, own, only_ea], matcher=_ea(), db_path=db)
+        assert r == {"purged": 2, "purged_contacts": 2, "ea_check": True}
+        p = sp.get_profile("alice@x.edu", db_path=db)
+        assert p["samples"] == 1 and p["messages"] == 1
+        assert p["avg_words"] == len(OWN_BODY.split())
+        assert p["contraction_rate"] == 1.0
+        assert [e["snippet"] for e in p["recent_examples"]] == [OWN_BODY]
+        # A contact the EA alone wrote to has no profile left.
+        assert sp.get_profile("bo@x.edu", db_path=db) is None
+        # A second purge finds nothing.
+        assert sp.purge_ea_written([ea_msg], matcher=_ea(), db_path=db)["purged"] == 0
+
+
+def test_purge_without_the_record_checks_nothing():
+    with tempfile.TemporaryDirectory() as td:
+        r = sp.purge_ea_written([], matcher=ea_written.Matcher([], available=False),
+                                db_path=Path(td) / "p.db")
+        assert r == {"purged": 0, "purged_contacts": 0, "ea_check": False}
+
+
+def test_the_first_checked_sync_reads_back_far_and_purges_once():
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "p.db"
+        ea_msg = _conv(_msg("alice@x.edu", "2026-06-01T10:00:00Z", EA_BODY), "c-ea")
+        sp.update_from_messages([ea_msg], db_path=db, matcher=ea_written.Matcher([]))
+        days = []
+        real_fetch, real_db, real_load = sp._fetch_sent, sp.DB_PATH, ea_written.load
+        sp._fetch_sent = lambda d: days.append(d) or [ea_msg]
+        sp.DB_PATH, ea_written.load = db, (lambda folder=None: _ea())
+        try:
+            rc, out = _run_main(["sync", "--days", "21"])
+            res = json.loads(out)
+            assert rc == 0 and res["purged"] == 1 and res["ea_written"] == 1
+            assert sp.get_profile("alice@x.edu", db_path=db) is None
+            rc, out = _run_main(["sync", "--days", "21"])
+            assert rc == 0 and json.loads(out)["days"] == 21
+        finally:
+            sp._fetch_sent, sp.DB_PATH, ea_written.load = real_fetch, real_db, real_load
+        assert days == [sp.FIRST_PURGE_DAYS, 21]
+
+
+def test_a_long_line_starting_with_thanks_is_no_closing():
+    body = ("Hi Alice,\n\nSee the attached plan.\n\nThanks, this is great and we "
+            "will name your group as a partner on the proposal.\n\nKit")
+    assert sp._extract_features(body)["closing"] == ""
+    assert sp._extract_features("Hi Alice,\n\nSee you then.\n\nThanks,\nKit")[
+        "closing"] == "Thanks"
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "p.db"
+        sp.update_from_messages([_msg("alice@x.edu", "2026-06-01T10:00:00Z", body)],
+                                db_path=db, matcher=ea_written.Matcher([]))
+        # A row stored before the cap still reads back with no closing.
+        con = sqlite3.connect(db)
+        long = "Thanks, this is great and we will name your group as a partner"
+        con.execute("UPDATE profiles SET closing = ?", (long,))
+        con.execute("UPDATE msgs SET closing = ?", (long,))
+        con.commit()
+        con.close()
+        p = sp.get_profile("alice@x.edu", db_path=db)
+        assert p["closing"] == "" and p["sign_off"].startswith("bare")
+        assert p["closings_seen"] == {}
+
+
+def test_contraction_guidance_follows_the_rate():
+    assert sp.contraction_guidance(0.0).startswith("rarely (0%")
+    assert sp.contraction_guidance(0.33).startswith("sometimes (33%")
+    assert "do not write them all out" in sp.contraction_guidance(0.33)
+    assert sp.contraction_guidance(0.8).startswith("usually (80%")
 
 
 if __name__ == "__main__":

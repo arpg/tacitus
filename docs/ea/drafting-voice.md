@@ -19,8 +19,11 @@ actual sent mail. Use this to match their real voice:
   (`found: false`), use the user's overall default greeting and closing.
 - **Length**: Match the user's typical email length for that contact. If they
   write 60-word emails to someone, do not write 200-word drafts.
-- **Contractions**: Check `writing_style.uses_contractions`: if true, use
-  natural contractions (don't, can't, I'll). If false, write them out.
+- **Contractions**: follow the profile's `contractions` line (and
+  `writing_style.contractions` for a contact with no profile). It comes
+  from `contraction_rate`, the share of the user's emails with one.
+  "Sometimes" means a contraction or two where they read naturally, not
+  none: an email with none is further from a 0.3 rate than one with two.
 - **Never use em-dashes** in any drafted content.
 - **State the fact and stop.** Do NOT close a paragraph with a clause that
   editorializes about significance or tells the reader what to conclude.
@@ -31,6 +34,16 @@ actual sent mail. Use this to match their real voice:
   sentence: if it restates the point at a higher level, claims importance,
   or explains why the reader should care, cut it. The sentence before it
   is the right ending.
+- **No unasked caveats or scope fences.** A brief's `KNOW:` part (what is
+  not demonstrated yet, what is out of scope, what is not yet awarded)
+  keeps the email accurate and never goes in it. Do not volunteer a
+  disclaimer ("this is an early concept, not a finished tool"), a limit
+  nobody asked about ("the core work needs no lab space"), or permission
+  the recipient did not ask for ("if your group wants to add a survey, I
+  am happy with that"). A person leaves these out; a model writing from a
+  list of constraints puts them in, and a fence around the recipient's
+  own specialty reads as a snub. When a limit matters to the recipient,
+  say what is in scope and let the ask carry it.
 - **Avoid "X is Y, not Z"** and its "rather than" / "instead of" variants.
   Rephrase as a direct positive statement. Exception: a genuine functional
   contrast ("book the Portland hotel rather than the Tucson one")

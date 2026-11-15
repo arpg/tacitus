@@ -15,6 +15,11 @@ brief names), the thread's last messages read from the mailbox (with
 post-processing: notes to the caller split off, dashes fixed, and an
 empty answer or a `NEED:` refused.
 
+A brief can carry a `KNOW:` part (facts and limits that keep the email
+accurate) beside `SAY:` (what it says). A body that restates a KNOW line
+gets one revision call, and a sentence that survives it is cut; the
+record notes `know_leaks` and `know_fix`.
+
 Run as ea-bot, the CLI forwards through mail_mediation to the owner-side
 mediator, which re-runs it as the owner, so the endpoint key and the mailbox
 token stay owner-side. --brief-file is an input the mediator stages by
@@ -215,6 +220,115 @@ def messages(brief: str, to: str, *, thread: str = "", draft: str = "") -> list[
     return msgs
 
 
+# ── the brief's KNOW part ─────────────────────────────────────────────
+#
+# A brief has two parts: SAY, what the email says, and KNOW, facts and
+# limits that keep it accurate ("no claim that the system works yet",
+# "the core scope has no flight requirement"). A writer that states a
+# KNOW line hands the recipient a disclaimer or a scope fence nobody
+# volunteers, and recipients read that as a model's writing. The writer
+# is told so; a body that still restates a KNOW line gets one revision
+# call, and a sentence that survives it is cut.
+
+_PART = re.compile(r"^\s*(SAY|KNOW)\s*:\s*(.*)$", re.IGNORECASE)
+_SENTENCE = re.compile(r"(?<=[.!?;])\s+|\n+")
+_TOKEN = re.compile(r"[a-z0-9]+")
+_STOP = frozenset("""the and for but not nor with from that this these those there their
+they them then than into onto over under about above below also just only very
+any all each some such our ours your yours its his her who whom which what when
+where how why are was were been being has have had does did doing will would
+shall should can could may might must yet now one two say says said""".split())
+# A sentence restates a KNOW line when it holds this share of the line's
+# content words, and the line has at least KNOW_MIN of them.
+LEAK_SHARE = 0.6
+KNOW_MIN = 3
+FIX_MIN_S = 20
+
+
+def brief_parts(brief: str) -> tuple[str, list[str]]:
+    """(the brief without its KNOW part, the KNOW part's sentences). A
+    brief with no `KNOW:` heading has no KNOW part."""
+    keep, know, part = [], [], "say"
+    for line in (brief or "").splitlines():
+        m = _PART.match(line)
+        if m:
+            part = m.group(1).lower()
+            line = m.group(2)
+        (know if part == "know" else keep).append(line)
+    sentences = [x.strip(" -*\u2022\t") for x in _SENTENCE.split("\n".join(know))]
+    return "\n".join(keep), [x for x in sentences if x]
+
+
+def _content(text: str) -> set[str]:
+    out = set()
+    for w in _TOKEN.findall((text or "").lower()):
+        if len(w) < 3 or w in _STOP:
+            continue
+        out.add(w[:-1] if len(w) > 4 and w.endswith("s") else w)
+    return out
+
+
+def _covers(line: set[str], sentence: set[str]) -> bool:
+    return len(line) >= KNOW_MIN and len(line & sentence) / len(line) >= LEAK_SHARE
+
+
+def know_leaks(brief: str, body: str) -> list[str]:
+    """The body's sentences that restate a KNOW line the SAY part does
+    not also carry."""
+    say, know = brief_parts(brief)
+    if not know:
+        return []
+    said = [_content(x) for x in _SENTENCE.split(say)]
+    lines = [k for k in (_content(x) for x in know)
+             if not any(_covers(k, s) for s in said)]
+    leaks = []
+    for sentence in _SENTENCE.split(body or ""):
+        words = _content(sentence)
+        if len(words) >= KNOW_MIN and any(_covers(k, words) for k in lines):
+            leaks.append(sentence.strip())
+    return leaks
+
+
+def cut_sentences(body: str, sentences: list[str]) -> str:
+    """The body without these sentences, its paragraphs kept."""
+    paras = []
+    for para in body.split("\n\n"):
+        for s in sentences:
+            para = para.replace(s, "")
+        para = re.sub(r"[ \t]{2,}", " ", para).strip()
+        if para:
+            paras.append(para)
+    return "\n\n".join(paras)
+
+
+def _drop_know(brief: str, body: str, meta: dict, msgs: list[dict], rec: dict, *,
+               chat, left: float) -> tuple[str, dict]:
+    """The body with no sentence that restates a KNOW line: one revision
+    call when there is time for it, then a cut of what is left."""
+    leaks = know_leaks(brief, body)
+    if not leaks:
+        return body, meta
+    rec["know_leaks"] = leaks[:10]
+    fixed = ""
+    if left >= FIX_MIN_S:
+        ask = ("These sentences state what the brief put under KNOW, which is for "
+               "accuracy only and never goes in the email:\n"
+               + "\n".join(f"- {x}" for x in leaks)
+               + "\nWrite the email again without them, and without any sentence "
+                 "that only makes sense next to them. Change nothing else.")
+        revised, rmeta = draft_ab.remote_body(
+            brief, "", chat=chat, purpose=PURPOSE, timeout=max(5, min(REMOTE_TIMEOUT_S, left)),
+            messages=[*msgs, {"role": "assistant", "content": body},
+                      {"role": "user", "content": ask}])
+        if revised and not know_leaks(brief, revised):
+            fixed, meta = revised, {**meta, **rmeta}
+            rec["know_fix"] = "revised"
+    if not fixed:
+        fixed = cut_sentences(body, know_leaks(brief, body))
+        rec["know_fix"] = "cut"
+    return fixed, meta
+
+
 # ── the call ──────────────────────────────────────────────────────────
 
 def note_brief(brief: str, rec: dict) -> None:
@@ -254,8 +368,12 @@ def _compose_and_write(brief: str, to: str, conversation_id: str, draft_id: str,
     rec["sent_chars"] = sum(len(str(m.get("content") or "")) for m in msgs)
     note_brief(brief, rec)
     left = budget - (time.monotonic() - t0) - 2
-    return draft_ab.remote_body(brief, to, chat=chat, messages=msgs, purpose=PURPOSE,
-                                timeout=max(5, min(REMOTE_TIMEOUT_S, left)))
+    body, meta = draft_ab.remote_body(brief, to, chat=chat, messages=msgs, purpose=PURPOSE,
+                                      timeout=max(5, min(REMOTE_TIMEOUT_S, left)))
+    if body:
+        body, meta = _drop_know(brief, body, meta, msgs, rec, chat=chat,
+                                left=budget - (time.monotonic() - t0) - 2)
+    return body, meta
 
 
 WRITER_OFF = {"status": "fallback", "reason": "writer off"}

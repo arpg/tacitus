@@ -31,6 +31,10 @@ it. The rules that matter most:
   sentence.
 - State the fact and stop. Never end a paragraph with a clause that says
   why it matters.
+- A brief's `KNOW:` part holds facts and limits that keep the email
+  accurate. Never state them. Never add a disclaimer, a caveat about what
+  is not done yet, a line about what is out of scope, or permission the
+  recipient did not ask for, unless the `SAY:` part asks for it.
 - Hedge judgments ("as I see it", "I think"); state facts flat.
 - Keep their asides and exclamation marks with colleagues; none in
   contentious faculty threads.
