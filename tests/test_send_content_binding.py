@@ -787,6 +787,8 @@ NON_MAIL_TOOLS = {
     "plugin_cards": "preprocessor/plugin_cards.py",
     "web_browser": "preprocessor/web_browser.py",
     "poll_filler": "preprocessor/poll_filler.py",
+    # Reads Sent Items into the local style database; no draft verb.
+    "style_profiles": "preprocessor/style_profiles.py",
 }
 NON_MAIL_DRAFT_MARKERS = ("update-draft", "update_draft(", "attach-file", "attach_file(",
                           "remove-attachment", "drafts().update(", "graph_patch(")

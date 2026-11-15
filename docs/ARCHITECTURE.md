@@ -2041,6 +2041,9 @@ account holds `owner` on the calendar).
   snooze-message, wake-snoozed
   scheduling_engine.py (propose-meeting, validate-draft,
                         log-decision, review-patterns)
+  style_profiles.py sync (a Sent Items read in mail_mediation.SAFE,
+                        run owner-side; get and stats read the local
+                        database in place)
   google_calendar_client.py (get-events, list-ea-managed: plain reads in
                         mail_mediation.SAFE; create/update/delete-event pass
                         ONLY via the EA-Managed carve-out, which checks the

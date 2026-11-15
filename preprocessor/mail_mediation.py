@@ -212,6 +212,11 @@ SAFE = {
     # nothing else, so a resident that forges a token file in its own space
     # changes nothing.
     "plugin_cards": {"consume-token"},
+    # The style refresh: a read of Sent Items with the owner's token, folded
+    # into the profiles database in the resident's state (the owner's weekly
+    # cron writes the same file). The resident gets the counts and the
+    # touched addresses back, never a message.
+    "style_profiles": {"sync"},
 }
 GATED = {
     "graph_actions": {

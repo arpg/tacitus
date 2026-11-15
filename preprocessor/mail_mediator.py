@@ -55,6 +55,7 @@ TOOLS = {
     "plugin_cards": REPO / "preprocessor" / "plugin_cards.py",
     "web_browser": REPO / "preprocessor" / "web_browser.py",
     "poll_filler": REPO / "preprocessor" / "poll_filler.py",
+    "style_profiles": REPO / "preprocessor" / "style_profiles.py",
 }
 # Tools that run as the resident (ea-bot) outside Codex's network sandbox,
 # never as the owner, and the variable that tells each one it is that worker.
