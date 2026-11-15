@@ -10,6 +10,13 @@ writer drafts from that brief once per arm:
     examples   the same plus the user's own emails closest to the brief
                (sent_index.examples), drawn only from mail sent before the
                item and outside its conversation
+    examples_counts  the same, with what those emails do counted
+               (sent_index.describe: exclamation marks, asides,
+               contractions, length)
+    examples_only    examples_counts, with the style profile's own recent
+               emails left out (its numbers kept): the retrieved emails
+               are the only samples of the voice. This is what the writer
+               does with `voice_examples` on.
 
 Two measures, the second the one that decides:
   - judge: the remote model sees four other real emails by the user and the
@@ -22,7 +29,7 @@ Two measures, the second the one that decides:
     voice_eval.py build [--n 40] [--start 2023-01-01] [--end 2026-01-01]
     voice_eval.py generate [--arm baseline --arm examples]
     voice_eval.py judge [--arm ...]
-    voice_eval.py serve [--port 3091]     the blind page, tailnet only
+    voice_eval.py serve [--port 3091]     the blind page, tailnet only (PAGE_ARMS)
     voice_eval.py summary                 counts and rates, never text
 
 Every call goes to the remote model the writer uses, never a hosted one.
@@ -53,7 +60,9 @@ BODIES = f"{DIR}/bodies.jsonl"
 JUDGED = f"{DIR}/judged.jsonl"
 VOTES = f"{DIR}/votes.jsonl"
 TOKEN = f"{DIR}/review-token"
-ARMS = ("baseline", "examples")
+ARMS = ("baseline", "examples", "examples_counts", "examples_only")
+# The page's arms: the writer as it is against the best candidate.
+PAGE_ARMS = ("baseline", "examples_only")
 PORT = 3091
 MIN_WORDS, MAX_WORDS = 30, 250
 MAX_RECIPIENTS = 3
@@ -66,14 +75,17 @@ _CONTRACTION = re.compile(r"\b\w+'(?:t|ll|ve|re|m|d|s)\b", re.IGNORECASE)
 KINDS = ["reply-yes", "reply-no", "scheduling", "request", "update", "pitch", "thanks",
          "question", "introduction", "other"]
 BRIEF_SCHEMA = {"type": "object", "additionalProperties": False,
-                "required": ["say", "kind"],
-                "properties": {"say": {"type": "string"}, "kind": {"type": "string", "enum": KINDS}}}
+                "required": ["recipient_name", "say", "kind"],
+                "properties": {"recipient_name": {"type": "string"}, "say": {"type": "string"},
+                               "kind": {"type": "string", "enum": KINDS}}}
 BRIEF_PROMPT = (
-    "You write the brief an executive assistant hands to a ghostwriter. Given an email "
-    "a professor sent, write what the ghostwriter must convey: the facts, the asks, the "
-    "decisions, dates and names, in plain neutral words. Do not copy phrases, tone, "
-    "greeting, sign-off, asides or punctuation from the email: the ghostwriter supplies "
-    "the voice. 25 to 90 words. Also name the kind of email.")
+    "You write the brief an executive assistant hands to a ghostwriter who writes as the "
+    "user. Given an email the user sent, write what the ghostwriter must convey: the "
+    "facts, the asks, the decisions, and every name, date, time, number and link the "
+    "email states, in plain neutral words. Call the sender \"the user\". Give the "
+    "recipient's name as the email addresses them (\"\" when it does not). Do not copy "
+    "phrases, tone, greeting, sign-off, asides or punctuation from the email: the "
+    "ghostwriter supplies the voice. 25 to 90 words. Also name the kind of email.")
 JUDGE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["pick"],
                 "properties": {"pick": {"type": "string", "enum": ["A", "B"]}}}
 JUDGE_PROMPT = (
@@ -141,7 +153,9 @@ def build(n: int, start: str, end: str, *, seed: int = 7, con=None, chat=None) -
         except Exception:
             failed += 1
             continue
-        brief = (f"Recipient: {', '.join(row['recipients'])}.\nSubject: {row['subject']}\n"
+        name = (b.get("recipient_name") or "").strip()
+        brief = (f"Recipient: {', '.join(row['recipients'])}"
+                 f"{f' ({name})' if name else ''}.\nSubject: {row['subject']}\n"
                  f"SAY: {b['say'].strip()}")
         remote_llm.append(ITEMS, {"id": row["id"], "to": to, "recipients": row["recipients"],
                                   "sent_at": row["sent_at"], "conversation_id": row["conversation_id"],
@@ -160,15 +174,19 @@ def draft(item: dict, arm: str, *, chat=None, con=None, embedder=None) -> tuple[
     import email_writer
     import sent_index
     ex_text, ex_ids = "", []
-    if arm == "examples":
+    profile = None
+    if arm in ("examples", "examples_counts", "examples_only"):
         say, _ = email_writer.brief_parts(item["brief"])
         found = sent_index.examples(say, item["to"], conversation_id=item["conversation_id"],
                                     before=item["sent_at"], exclude_ids=(item["id"],),
                                     con=con, embedder=embedder)
-        ex_text, ex_ids = sent_index.render(found), [x["id"] for x in found]
+        ex_text = sent_index.render(found, counts=arm != "examples")
+        ex_ids = [x["id"] for x in found]
+        if arm == "examples_only":
+            profile = email_writer.numbers_only(draft_ab._style_profile(item["to"]))
     elif arm != "baseline":
         raise ValueError(f"no arm {arm!r}")
-    msgs = email_writer.messages(item["brief"], item["to"], examples=ex_text)
+    msgs = email_writer.messages(item["brief"], item["to"], examples=ex_text, profile=profile)
     body, meta = draft_ab.remote_body(item["brief"], item["to"], chat=chat, messages=msgs,
                                       purpose="voice-eval")
     return body, {**meta, "examples": ex_ids}
@@ -249,7 +267,7 @@ def judge(arms: list[str], *, chat=None, con=None) -> dict:
 
 # ── the blind page ────────────────────────────────────────────────────
 
-def assignment(items: list[dict], have: dict, arms=ARMS) -> list[tuple[dict, str]]:
+def assignment(items: list[dict], have: dict, arms=PAGE_ARMS) -> list[tuple[dict, str]]:
     """Each item in one arm, balanced, in a fixed order: (item, arm). An
     item without a body in its arm is left out."""
     order = sorted(items, key=lambda x: _seed("order", x["id"]))
@@ -462,12 +480,16 @@ def summary() -> dict:
         out["real"].update({k: round(sum(s[k] for s in real_style) / len(real_style), 2)
                             for k in ("contraction", "exclaim", "paren")})
     for arm in ARMS:
+        # Paired with the baseline: the items both drafted.
+        paired = {i for i in items if (i, arm) in have and (i, "baseline") in have}
         bs = [(items[i], b) for (i, a), b in have.items() if a == arm and i in items]
         if not bs:
             continue
         gen = [_style(b["body"]) for _, b in bs]
         ratio = [len(b["body"].split()) / max(1, len(it["real"].split())) for it, b in bs]
         js = [c for (i, a, _), c in judged.items() if a == arm]
+        jp = [c for (i, a, _), c in judged.items() if a == arm and i in paired]
+        jb = [c for (i, a, _), c in judged.items() if a == "baseline" and i in paired]
         vs = [v for v in vts.values() if v["arm"] == arm]
         out["arms"][arm] = {
             "bodies": len(bs),
@@ -477,6 +499,12 @@ def summary() -> dict:
                for k in ("contraction", "exclaim", "paren")},
             "judge_calls": len(js),
             "judge_found_real": round(sum(js) / len(js), 2) if js else None,
+            "paired_items": len(paired),
+            "judge_found_real_paired": round(sum(jp) / len(jp), 2) if jp else None,
+            "baseline_on_same_items": round(sum(jb) / len(jb), 2) if jb else None,
+            "needs": sum(1 for b in remote_llm.read(BODIES)
+                         if b["arm"] == arm and not b.get("body")
+                         and "NEED" in (b.get("reason") or "")),
             "votes": len(vs),
             "you_found_yours": round(sum(v["result"] == "real" for v in vs) / len(vs), 2)
             if vs else None,

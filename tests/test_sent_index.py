@@ -228,3 +228,13 @@ def test_ea_since_prefers_the_config_and_falls_back_to_the_ledger(monkeypatch, t
     assert si.ea_since({}) == "2026-04-02T00:00:00Z"
     monkeypatch.setattr(ledger, "DB_PATH", tmp_path / "missing.db")
     assert si.ea_since({}) == ""
+
+
+def test_counts_say_what_the_examples_do():
+    found = [{"id": "a", "recipients": [], "sent_at": "", "text": "Great news! I'll come (finally)."},
+             {"id": "b", "recipients": [], "sent_at": "", "text": "Thanks, see you then."}]
+    line = si.describe(found)
+    assert line.startswith("Across these 2 emails: 1 use an exclamation mark, 1 have an aside")
+    assert "1 use contractions" in line
+    assert si.render(found, counts=True).endswith(line)
+    assert "Across these" not in si.render(found)

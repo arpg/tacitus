@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -354,8 +355,26 @@ def examples(brief: str, to: str = "", *, conversation_id: str = "", before: str
             con.close()
 
 
-def render(found: list[dict]) -> str:
-    """The prompt section that shows the writer the user's own emails."""
+_CONTRACTION = re.compile(r"\b\w+'(?:t|ll|ve|re|m|d|s)\b", re.IGNORECASE)
+
+
+def describe(found: list[dict]) -> str:
+    """What the examples do, counted: a model that reads examples still
+    flattens what it is not told to keep (exclamation marks, asides,
+    length)."""
+    n = len(found)
+    texts = [x["text"] for x in found]
+    words = sorted(len(t.split()) for t in texts)
+    return (f"Across these {n} emails: {sum('!' in t for t in texts)} use an exclamation "
+            f"mark, {sum('(' in t for t in texts)} have an aside in parentheses, "
+            f"{sum(bool(_CONTRACTION.search(t)) for t in texts)} use contractions, and the "
+            f"median length is {words[n // 2]} words. Your draft should read like one more "
+            f"of them.")
+
+
+def render(found: list[dict], *, counts: bool = False) -> str:
+    """The prompt section that shows the writer the user's own emails;
+    with `counts`, followed by what they do (`describe`)."""
     if not found:
         return ""
     parts = ["=== The user's own emails (real, written and sent by them) ===",
@@ -366,6 +385,8 @@ def render(found: list[dict]) -> str:
         to = ", ".join(x.get("recipients") or [])
         text = x["text"] if len(x["text"]) <= EXAMPLE_CHARS else x["text"][:EXAMPLE_CHARS] + " [...]"
         parts.append(f"--- Email {i} (to {to}, {str(x.get('sent_at'))[:10]}) ---\n{text}")
+    if counts:
+        parts.append(describe(found))
     return "\n\n".join(parts)
 
 

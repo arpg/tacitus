@@ -426,11 +426,17 @@ def test_examples_on_put_the_users_emails_in_the_instructions(store, work, monke
         seen.update(say=say, to=to, **kw)
         return FOUND
     monkeypatch.setattr(sent_index, "examples", examples)
+    monkeypatch.setattr(ab, "_style_profile", lambda addr: json.dumps(
+        {"found": True, "contact": addr, "recent_examples": [{"snippet": "SAMPLE-FROM-PROFILE"}]}))
     chat = _chats(CLEAN)
     ans, code = ew.write("pat@example.edu", KNOW_BRIEF, str(work / "b.txt"), chat=chat,
                          conversation_id="", graph=None)
+    assert "SAMPLE-FROM-PROFILE" not in chat.calls[0][0]["content"]
     system = chat.calls[0][0]["content"]
     assert code == 0 and "=== The user's own emails" in system and "I'll bring the slides" in system
+    assert "Across these 1 emails" in system
+    # The profile keeps its numbers, not its own samples.
+    assert '"contact": "pat@example.edu"' in system
     # Matched on what the email says, not on the limits behind it.
     assert "sensor mount" in seen["say"] and "outdoors" not in seen["say"]
     assert seen["to"] == "pat@example.edu"

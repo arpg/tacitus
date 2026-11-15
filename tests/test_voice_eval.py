@@ -59,7 +59,8 @@ class Chat:
         self.calls.append((kw.get("purpose"), messages))
         purpose = kw.get("purpose")
         if purpose == "voice-eval-brief":
-            text = json.dumps({"say": "Ask them to check the numbers by Friday.", "kind": "request"})
+            text = json.dumps({"recipient_name": "Alex", "say": "Ask them to check the numbers by Friday.",
+                               "kind": "request"})
         elif purpose == "voice-eval-judge":
             text = json.dumps({"pick": self.pick})
         else:
@@ -73,6 +74,7 @@ def test_build_back_translates_held_out_mail(env):
     assert r["added"] == 3 and r["failed"] == 0
     items = rl.read(ve.ITEMS)
     assert len(items) == 3 and all(x["brief"].startswith("Recipient: ") for x in items)
+    assert all("(Alex)." in x["brief"] for x in items)
     assert all("SAY: Ask them" in x["brief"] and x["real"] in TEXTS for x in items)
     sys_prompt, user = chat.calls[0][1][0]["content"], chat.calls[0][1][1]["content"]
     assert "Do not copy phrases" in sys_prompt and "Email:\n" in user
@@ -85,9 +87,9 @@ def test_generate_drafts_each_arm_as_of_the_item(env):
     chat = Chat()
     ve.build(4, "2024-01-01", "2024-02-01", con=env, chat=chat)
     r = ve.generate(list(ve.ARMS), chat=chat, con=env, embedder=emb)
-    assert r == {"made": 8, "failed": 0}
+    assert r == {"made": 16, "failed": 0}
     have = ve.bodies()
-    assert len(have) == 8
+    assert len(have) == 16
     items = {x["id"]: x for x in rl.read(ve.ITEMS)}
     for (iid, arm), b in have.items():
         item = items[iid]
@@ -100,7 +102,8 @@ def test_generate_drafts_each_arm_as_of_the_item(env):
             assert all(sent[e] < item["sent_at"] for e in b["examples"])
     writer = [m for p, m in chat.calls if p == "voice-eval"]
     with_ex = [m for m in writer if "The user's own emails" in m[0]["content"]]
-    assert with_ex and len(with_ex) < len(writer)
+    counted = [m for m in with_ex if "Across these" in m[0]["content"]]
+    assert with_ex and len(with_ex) < len(writer) and 0 < len(counted) < len(with_ex)
     assert ve.generate(list(ve.ARMS), chat=chat, con=env, embedder=emb) == {"made": 0, "failed": 0}
 
 
@@ -116,6 +119,7 @@ def test_judge_asks_both_orders_and_scores_the_real_side(env):
     s = ve.summary()
     assert s["arms"]["baseline"]["judge_found_real"] == 0.5
     assert s["arms"]["baseline"]["judge_calls"] == 4
+    assert s["arms"]["baseline"]["paired_items"] == 2
 
 
 def test_each_item_is_voted_in_one_arm_and_the_vote_is_scored(env):
@@ -123,7 +127,7 @@ def test_each_item_is_voted_in_one_arm_and_the_vote_is_scored(env):
     ve.build(4, "2024-01-01", "2024-02-01", con=env, chat=chat)
     ve.generate(list(ve.ARMS), chat=chat, con=env, embedder=emb)
     pairs = ve.assignment(rl.read(ve.ITEMS), ve.bodies())
-    assert len(pairs) == 4 and {a for _, a in pairs} == set(ve.ARMS)
+    assert len(pairs) == 4 and {a for _, a in pairs} == set(ve.PAGE_ARMS)
     assert len({item["id"] for item, _ in pairs}) == 4
     item, arm = pairs[0]
     real = ve.sides(item, arm)
@@ -172,3 +176,12 @@ def test_the_page_answers_only_the_owner_and_shows_no_arm_before_the_vote(env):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_numbers_only_keeps_the_rates_and_drops_the_samples():
+    p = json.dumps({"found": True, "median_words": 44, "recent_examples": [{"snippet": "x"}],
+                    "closing": "Thanks, this is a whole sentence"})
+    import email_writer
+    out = json.loads(email_writer.numbers_only(p))
+    assert out == {"found": True, "median_words": 44}
+    assert email_writer.numbers_only("not json") == "not json"
