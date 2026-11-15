@@ -21,6 +21,10 @@ teach it its own voice.
 The weekly `style_profiles.py sync` also hands its fetched mail to
 `add_fetched`, so the index keeps up with no read of its own.
 
+Mail the EA may have written before its bodies were on record (from when
+it began drafting to the first sync, less draft_capture's retention) is
+never an example either (`unchecked`).
+
 Store: <private_dir>/sent-index.db, owner-only. The embeddings come from
 an OpenAI-compatible /v1/embeddings endpoint on the owner's machine
 (`embed_endpoint` and `embed_model` in remote-llm.json; default a local
@@ -157,6 +161,39 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     return con
 
 
+def ea_since(cfg: dict | None = None) -> str:
+    """When the EA began drafting: `ea_drafting_since` in remote-llm.json,
+    else the ledger's first row. '' when neither is known."""
+    if cfg is None:
+        try:
+            import remote_llm
+            cfg = remote_llm.config()
+        except Exception:
+            cfg = {}
+    if cfg.get("ea_drafting_since"):
+        return str(cfg["ea_drafting_since"])
+    try:
+        import ledger
+        con = ledger.guarded_connect(ledger.DB_PATH, timeout=5, read_only=True)
+        try:
+            row = con.execute("SELECT MIN(created_at) FROM ledger").fetchone()
+        finally:
+            con.close()
+        return (row[0] or "") if row else ""
+    except Exception:
+        return ""
+
+
+def unchecked(con, cfg: dict | None = None) -> tuple[str, str]:
+    """(from, until): sent mail no EA record covers. The EA drafted from
+    `ea_since`, but its bodies are on record only from `checked_from`
+    (the first sync, less draft_capture's retention), so mail between the
+    two may be the EA's and is never an example. ('', '') when there is
+    no such window."""
+    lo, hi = ea_since(cfg), _state(con, "checked_from")
+    return (lo, hi) if lo and hi and lo < hi else ("", "")
+
+
 def _state(con, key: str, value: str | None = None) -> str:
     if value is not None:
         con.execute("INSERT OR REPLACE INTO state (key, value) VALUES (?, ?)", (key, value))
@@ -283,6 +320,10 @@ def examples(brief: str, to: str = "", *, conversation_id: str = "", before: str
         if before:
             where.append("sent_at < ?")
             args.append(before)
+        lo, hi = unchecked(con)
+        if lo:
+            where.append("NOT (sent_at >= ? AND sent_at < ?)")
+            args += [lo, hi]
         skip = set(exclude_ids or ())
         if not con.execute(f"SELECT 1 FROM mail WHERE {' AND '.join(where)} LIMIT 1",
                            args).fetchone():
@@ -339,6 +380,14 @@ def sync(*, since: str = "", max_pages: int = 0, con: sqlite3.Connection | None 
     con = con or connect()
     totals = {"pages": 0, "added": 0, "skipped": 0, "ea_written": 0}
     try:
+        if not _state(con, "checked_from"):
+            # From here on every EA body is on record when its mail is
+            # indexed: draft_capture keeps a month, the writer's logs more.
+            import draft_capture
+            from datetime import timedelta
+            _state(con, "checked_from", (datetime.now(timezone.utc) - timedelta(
+                days=draft_capture.RETENTION_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+            con.commit()
         start = since or _state(con, "watermark") or FIRST_SINCE
         if len(start) == 10:
             start += "T00:00:00Z"
@@ -391,8 +440,10 @@ def stats(con: sqlite3.Connection | None = None) -> dict:
     try:
         r = con.execute("SELECT COUNT(*) n, SUM(ea_written) ea, MIN(sent_at) lo, "
                         "MAX(sent_at) hi FROM mail").fetchone()
+        lo, hi = unchecked(con)
         return {"messages": r["n"], "ea_written": r["ea"] or 0, "first": r["lo"] or "",
-                "last": r["hi"] or "", "watermark": _state(con, "watermark")}
+                "last": r["hi"] or "", "watermark": _state(con, "watermark"),
+                "unchecked": {"from": lo, "until": hi} if lo else None}
     finally:
         if own:
             con.close()

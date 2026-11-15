@@ -189,3 +189,42 @@ def test_add_fetched_reports_rather_than_raises(monkeypatch, tmp_path):
     monkeypatch.setattr(ea_written, "load", lambda folder=None: ea_written.Matcher([]))
     out = si.add_fetched([msg(1, "alex@x.edu", 1, BUDGET)])
     assert "down" in out["error"]
+
+
+def test_mail_from_the_unchecked_window_is_never_an_example(con, monkeypatch):
+    _load(con, [msg(1, "alex@x.edu", 1, BUDGET), msg(2, "alex@x.edu", 5, REVIEW),
+                msg(4, "alex@x.edu", 20, THANKS.replace("Sam", "Alex"))])
+    monkeypatch.setattr(si, "ea_since", lambda cfg=None: "2024-01-03T00:00:00Z")
+    assert si.unchecked(con) == ("", "")          # no first sync yet: no window
+    si._state(con, "checked_from", "2024-01-10T00:00:00Z")
+    assert si.unchecked(con) == ("2024-01-03T00:00:00Z", "2024-01-10T00:00:00Z")
+    ids = {x["id"] for x in si.examples("budget", "alex@x.edu", con=con, embedder=emb, k_any=0)}
+    assert ids == {"m1", "m4"}
+    assert si.stats(con)["unchecked"] == {"from": "2024-01-03T00:00:00Z",
+                                          "until": "2024-01-10T00:00:00Z"}
+
+
+def test_the_first_sync_marks_where_the_records_begin(con):
+    si.sync(con=con, fetch=lambda url, params: {"value": []},
+            matcher=ea_written.Matcher([]), embedder=emb)
+    first = si._state(con, "checked_from")
+    assert first.endswith("Z")
+    si.sync(con=con, fetch=lambda url, params: {"value": []},
+            matcher=ea_written.Matcher([]), embedder=emb)
+    assert si._state(con, "checked_from") == first
+
+
+def test_ea_since_prefers_the_config_and_falls_back_to_the_ledger(monkeypatch, tmp_path):
+    import sqlite3
+    import ledger
+    assert si.ea_since({"ea_drafting_since": "2026-04-01"}) == "2026-04-01"
+    db = tmp_path / "ledger.db"
+    c = sqlite3.connect(db)
+    c.execute("CREATE TABLE ledger (created_at TEXT)")
+    c.executemany("INSERT INTO ledger VALUES (?)", [("2026-05-01T00:00:00Z",), ("2026-04-02T00:00:00Z",)])
+    c.commit()
+    c.close()
+    monkeypatch.setattr(ledger, "DB_PATH", db)
+    assert si.ea_since({}) == "2026-04-02T00:00:00Z"
+    monkeypatch.setattr(ledger, "DB_PATH", tmp_path / "missing.db")
+    assert si.ea_since({}) == ""

@@ -161,6 +161,7 @@ def _off() -> dict:
             "mail": "off", "scheduling": "off", "drafting": "off", "digests": "off",
             "briefings": "off", "audits": "off", "reconcile": "off",
             "voice_examples": "off", "embed_endpoint": "", "embed_model": "",
+            "ea_drafting_since": "",
             "qwen_share": 0.5,
             "ab": {"share": 0.0, "lanes": [], "from": "", "until": "", "arm": "remote"},
             "sched_backstop": True,
@@ -232,6 +233,10 @@ def config() -> dict:
     emb = str(raw.get("embed_endpoint") or "").strip().rstrip("/")
     cfg["embed_endpoint"] = emb if emb.startswith(("http://", "https://")) else ""
     cfg["embed_model"] = str(raw.get("embed_model") or "").strip()
+    # When the EA began drafting (YYYY-MM-DD); sent_index reads the
+    # ledger's first row when the file names none.
+    since = str(raw.get("ea_drafting_since") or "").strip()
+    cfg["ea_drafting_since"] = since if re.fullmatch(r"\d{4}-\d{2}-\d{2}", since) else ""
     # The Claude backstop on the scheduling agent's live writes
     # (sched_agent.backstop_review) is on unless the file says false.
     cfg["sched_backstop"] = raw.get("sched_backstop") is not False
