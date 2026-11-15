@@ -150,9 +150,12 @@ SAFE = {
     # (remote-llm.json). Its --attachment-id is an ID_FLAGS value and its
     # --output an OUTPUT_FLAGS path (staged and delivered like
     # download-attachment's), written only outside sealed mail.
+    # ask is a read too: one question about a message or a thread,
+    # answered by the owner's local model from the whole text; the lane
+    # gets the answer alone, in its keep level's terms (mail_ask.py).
     "mail_actions": {"search", "get-message", "get-draft", "mark-read", "mark-unread",
                      "create-draft", "create-reply", "update-draft", "delete-draft",
-                     "create-forward", "preflight-check", "describe-attachment"},
+                     "create-forward", "preflight-check", "describe-attachment", "ask"},
     # list-ea-managed is a READ of the EA's own rule calendar; it returns the
     # event ids a later move or delete has to name. It grants no write:
     # create-event stays GATED apart from the attendee-less auto-hold

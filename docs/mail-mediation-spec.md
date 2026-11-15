@@ -69,6 +69,11 @@ ea-bot has no route to any of these.
   hosted models (any keep level below full, or applicant mail at every level;
   `privacy_rules.py`), it is refused before it runs for every lane, a chat turn
   included, as its `download-attachment` and `scan-attachments` twins are.
+  `ask`: one question about a message or a thread, answered owner-side by the local
+  model from the full text (forwarded parts included); the lane gets the answer
+  alone, in the thread's keep-level terms (`mail_ask.py`, docs/remote-llm.md). It
+  runs on its own thread (`ASYNC_VERBS`), and a cron lane's question about a kept
+  thread is refused before it runs.
 - Every mediated read's request carries the turn's model (`EA_TURN_MODEL`: `claude:<model>`,
   `codex` or `local`), which the release log counts as data. The resident writes it, so
   no check gates on it: the keep levels apply by lane (cron or not) and by message.

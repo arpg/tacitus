@@ -75,8 +75,9 @@ MAX_AVAILABLE_BYTES = 256 * 1024
 # its own thread, so the queue keeps serving every other verb meanwhile.
 ASYNC_TOOLS = {"email_writer", *RESIDENT_BROWSER_TOOLS}
 # Single verbs of an otherwise quick tool that wait on a model: an image
-# read waits on the local model, up to mail_actions.DESCRIBE_BUDGET_S.
-ASYNC_VERBS = {("mail_actions", "describe-attachment")}
+# read waits on the local model, up to mail_actions.DESCRIBE_BUDGET_S, and
+# a question about mail up to mail_ask.ASK_BUDGET_S.
+ASYNC_VERBS = {("mail_actions", "describe-attachment"), ("mail_actions", "ask")}
 ASYNC_MAX = 4
 _async_slots = threading.BoundedSemaphore(ASYNC_MAX)
 _browser_slots = threading.BoundedSemaphore(2)

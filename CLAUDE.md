@@ -431,14 +431,14 @@ meeting confirmation is the body.
    `search` plus a `get-message` per hit. Every `search` and
    `list-mail` row carries `conversation_id`. `--full` keeps quotes;
    `--max-chars` bounds each message.
-9b. SEALED MAIL. When `mail_gate.mode` is `sealed` (reads carry
-   `"sealed": true`), reads return the remote model's record, not the
-   text: `text`/`body` is a summary; `remote_record` has the ask,
-   deadline, offered times and people; `own: true` marks the user's
-   messages; `remote_unread: true` means try again in a minute or ask.
-   The ledger row's `thread_brief` (`ledger.py get --id <id>`) carries the
-   same facts plus `waiting_on_reply`. Read the row first. Ids still
-   work for `create-reply`. Never ask for raw text.
+9b. SEALED AND KEPT MAIL. A read with `"sealed": true` or `kept_level`
+   gives the local model's record, not the text: `text`/`body` is a
+   summary; `remote_record` has the ask, deadline, offered times and
+   people; `own: true` marks the user's mail; `remote_unread: true`: try
+   again in a minute. The row's `thread_brief` (`ledger.py get`) has the
+   same facts. A fact it omits (a forward's content): `mail_actions.py
+   ask --provider outlook --conversation-id <id> --question "<fact>"`.
+   Ids work for `create-reply`. Never ask for raw text.
 10. NEVER fetch full bodies except to draft a reply to that message or
    for a scheduling request (to see whether the sender offered specific
    options). With sealed mail, `offered_times` and `scheduling` answer it.

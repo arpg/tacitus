@@ -36,6 +36,12 @@ With no such model the answer is {"need": "no image model"}, and outside
 sealed mail the one image picked is saved to --output for the lane to
 open (Read on Claude, view_image on Codex).
 
+Questions (a fact the mail record leaves out, such as what a forward carried):
+    python3 mail_actions.py ask --provider outlook (--message-id <id> | --conversation-id <id>) --question "<the fact you need>"
+The local model reads the whole text in the owner's process, forwarded
+and quoted parts included, and the lane gets its answer alone, in the
+keep level's terms (mail_ask.py). Outlook only.
+
 Every verb runs the provider CLI's own verb in this process (DELEGATE):
 graph_actions on Outlook, gmail_client on Gmail. Its journaling
 (draft_events), its checks and search-mail's notes are the provider
@@ -566,6 +572,19 @@ def cmd_describe_attachment(args) -> int:
     return 0
 
 
+def cmd_ask(args) -> int:
+    """One question about one message or thread, answered by the local
+    model from the whole text (mail_ask.py). Exit 0 with an answer, 1 with
+    an error."""
+    if args.provider != "outlook":
+        return _fail("ask reads Outlook mail; Gmail's own text is read with get-message", 1)
+    import mail_ask
+    out = mail_ask.ask(args.question, message_id=args.message_id or "",
+                       conversation_id=args.conversation_id or "")
+    print(json.dumps(out, indent=2))
+    return 1 if "error" in out else 0
+
+
 PROVIDERS = ("outlook", "gmail")
 
 
@@ -735,6 +754,19 @@ def build_parser() -> argparse.ArgumentParser:
                              "file under ~/.ea/state, uploads or docs. The way to open it "
                              "when no model reads images.")
     p_desc.set_defaults(func=cmd_describe_attachment)
+
+    p_ask = sub.add_parser("ask", allow_abbrev=False,
+                           help="Ask the local model one question about a message or a thread "
+                                "(forwarded parts included)")
+    p_ask.add_argument("--provider", required=True, choices=PROVIDERS)
+    p_ask.add_argument("--account", default=None, help=acct_help)
+    which_ask = p_ask.add_mutually_exclusive_group(required=True)
+    which_ask.add_argument("--message-id", dest="message_id", help="One message")
+    which_ask.add_argument("--conversation-id", dest="conversation_id",
+                           help="Every message of one thread")
+    p_ask.add_argument("--question", required=True,
+                       help="The fact you need, as one question")
+    p_ask.set_defaults(func=cmd_ask)
 
     p_send = sub.add_parser("send-draft", allow_abbrev=False,
                             help="Send a draft the user approved (the bot's, with its token)")
