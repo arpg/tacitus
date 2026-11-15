@@ -87,9 +87,9 @@ def test_generate_drafts_each_arm_as_of_the_item(env):
     chat = Chat()
     ve.build(4, "2024-01-01", "2024-02-01", con=env, chat=chat)
     r = ve.generate(list(ve.ARMS), chat=chat, con=env, embedder=emb)
-    assert r == {"made": 16, "failed": 0}
+    assert r == {"made": 24, "failed": 0}
     have = ve.bodies()
-    assert len(have) == 16
+    assert len(have) == 24
     items = {x["id"]: x for x in rl.read(ve.ITEMS)}
     for (iid, arm), b in have.items():
         item = items[iid]
@@ -185,3 +185,20 @@ def test_numbers_only_keeps_the_rates_and_drops_the_samples():
     out = json.loads(email_writer.numbers_only(p))
     assert out == {"found": True, "median_words": 44}
     assert email_writer.numbers_only("not json") == "not json"
+
+
+def test_the_warm_and_hot_arms_sample_and_the_others_do_not(env):
+    import email_writer
+    chat = Chat()
+    seen = []
+    real = chat.__call__
+
+    def spy(messages, **kw):
+        seen.append((kw.get("purpose"), kw.get("temperature"), (kw.get("sampling") or {}).get("top_k")))
+        return real(messages, **kw)
+    ve.build(1, "2024-01-01", "2024-02-01", con=env, chat=chat)
+    ve.generate(["examples_only", "examples_warm", "examples_hot"], chat=spy, con=env, embedder=emb)
+    temps = sorted((t, k) for p, t, k in seen if p == "voice-eval" and t is not None)
+    assert temps == [(email_writer.SAMPLING["warm"]["temperature"], 20),
+                     (email_writer.SAMPLING["hot"]["temperature"], 40)]
+    assert sum(1 for p, t, _ in seen if p == "voice-eval" and t is None) == 1

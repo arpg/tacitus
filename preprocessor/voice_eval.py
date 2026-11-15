@@ -17,6 +17,8 @@ writer drafts from that brief once per arm:
                emails left out (its numbers kept): the retrieved emails
                are the only samples of the voice. This is what the writer
                does with `voice_examples` on.
+    examples_warm, examples_hot   examples_only with the `warm` or `hot`
+               sampling preset (email_writer.SAMPLING) for the draft
 
 Two measures, the second the one that decides:
   - judge: the remote model sees four other real emails by the user and the
@@ -60,7 +62,8 @@ BODIES = f"{DIR}/bodies.jsonl"
 JUDGED = f"{DIR}/judged.jsonl"
 VOTES = f"{DIR}/votes.jsonl"
 TOKEN = f"{DIR}/review-token"
-ARMS = ("baseline", "examples", "examples_counts", "examples_only")
+ARMS = ("baseline", "examples", "examples_counts", "examples_only", "examples_warm",
+        "examples_hot")
 # The page's arms: the writer as it is against the best candidate.
 PAGE_ARMS = ("baseline", "examples_only")
 PORT = 3091
@@ -175,20 +178,23 @@ def draft(item: dict, arm: str, *, chat=None, con=None, embedder=None) -> tuple[
     import sent_index
     ex_text, ex_ids = "", []
     profile = None
-    if arm in ("examples", "examples_counts", "examples_only"):
+    sampling = email_writer.SAMPLING.get(arm.rsplit("_", 1)[-1]) if arm.startswith(
+        "examples_") else None
+    if arm in ("examples", "examples_counts", "examples_only", "examples_warm", "examples_hot"):
         say, _ = email_writer.brief_parts(item["brief"])
         found = sent_index.examples(say, item["to"], conversation_id=item["conversation_id"],
                                     before=item["sent_at"], exclude_ids=(item["id"],),
                                     con=con, embedder=embedder)
         ex_text = sent_index.render(found, counts=arm != "examples")
         ex_ids = [x["id"] for x in found]
-        if arm == "examples_only":
+        if arm in ("examples_only", "examples_warm", "examples_hot"):
             profile = email_writer.numbers_only(draft_ab._style_profile(item["to"]))
     elif arm != "baseline":
         raise ValueError(f"no arm {arm!r}")
     msgs = email_writer.messages(item["brief"], item["to"], examples=ex_text, profile=profile)
-    body, meta = draft_ab.remote_body(item["brief"], item["to"], chat=chat, messages=msgs,
-                                      purpose="voice-eval")
+    body, meta = email_writer.sampled_body(item["brief"], item["to"], chat=chat, messages=msgs,
+                                           purpose="voice-eval", timeout=remote_llm.TIMEOUT_S,
+                                           sampling=sampling)
     return body, {**meta, "examples": ex_ids}
 
 

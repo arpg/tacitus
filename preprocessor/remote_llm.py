@@ -160,7 +160,8 @@ def _off() -> dict:
     return {"endpoint": "", "model": "", "image_model": "", "shadow_until": "", "ghost": {},
             "mail": "off", "scheduling": "off", "drafting": "off", "digests": "off",
             "briefings": "off", "audits": "off", "reconcile": "off",
-            "voice_examples": "off", "embed_endpoint": "", "embed_model": "",
+            "voice_examples": "off", "writer_sampling": "off",
+            "embed_endpoint": "", "embed_model": "",
             "ea_drafting_since": "",
             "qwen_share": 0.5,
             "ab": {"share": 0.0, "lanes": [], "from": "", "until": "", "arm": "remote"},
@@ -230,6 +231,8 @@ def config() -> dict:
     # shows them; the embeddings come from an endpoint on the owner's
     # machine (sent_index.EMBED_ENDPOINT when the file names none).
     cfg["voice_examples"] = "on" if raw.get("voice_examples") == "on" else "off"
+    ws = raw.get("writer_sampling")
+    cfg["writer_sampling"] = ws if ws in ("warm", "hot") else "off"
     emb = str(raw.get("embed_endpoint") or "").strip().rstrip("/")
     cfg["embed_endpoint"] = emb if emb.startswith(("http://", "https://")) else ""
     cfg["embed_model"] = str(raw.get("embed_model") or "").strip()
@@ -742,7 +745,9 @@ SWITCHES = {"mail": ("off", "shadow", "enforce", "ghost", "sealed"),
             "reconcile": ("off", "nightly"),
             # The writer is shown the user's own emails closest to the brief
             # (sent_index.py, email_writer.voice_examples).
-            "voice_examples": ("off", "on")}
+            "voice_examples": ("off", "on"),
+            # The writer's decoding (email_writer.SAMPLING): off is greedy.
+            "writer_sampling": ("off", "warm", "hot")}
 
 
 # The switches the routing table can move (model_routing.py): the task
