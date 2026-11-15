@@ -25,3 +25,5 @@ playwright>=1.64.1
 # fails the wall if NEITHER backend is available, so this cannot silently
 # regress to the 2026-08-28 state where every PDF extracted to "".
 pypdf>=6.21.4
+# sent_index ranks the user's sent mail by embedding similarity.
+numpy>=1.26
