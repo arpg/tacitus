@@ -294,16 +294,19 @@ def finish_body(text: str) -> tuple[str, dict]:
 
 
 def remote_body(prompt: str, recipient: str, *, chat=None, messages: list[dict] | None = None,
-                purpose: str = "draft-ab", timeout: float = REMOTE_TIMEOUT_S) -> tuple[str, dict]:
+                purpose: str = "draft-ab", timeout: float = REMOTE_TIMEOUT_S,
+                sampling: dict | None = None) -> tuple[str, dict]:
     """(body, metadata) from the remote model; body '' with a reason in
     the metadata when it cannot be used. `messages` replaces the context
     built from the prompt (the email writer adds the thread and the
-    current draft to it)."""
+    current draft to it). `sampling` (temperature, top_p, top_k,
+    presence_penalty) replaces greedy decoding."""
     chat = chat or remote_llm.chat
     t0 = time.monotonic()
+    knobs = {"temperature": sampling["temperature"], "sampling": sampling} if sampling else {}
     try:
         res = chat(messages or remote_messages(prompt, recipient), purpose=purpose,
-                   max_tokens=1500, timeout=timeout)
+                   max_tokens=1500, timeout=timeout, **knobs)
     except remote_llm.RemoteLLMError as e:
         kind = ("empty" if isinstance(e, remote_llm.ModelOutputError)
                 else "timeout" if "timed out" in str(e) else "error")

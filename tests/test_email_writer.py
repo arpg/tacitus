@@ -460,3 +460,91 @@ def test_a_failed_lookup_still_writes(store, work, monkeypatch):
 
 def test_the_switch_is_registered():
     assert rl.SWITCHES["voice_examples"] == ("off", "on")
+
+
+
+# ── decoding ──────────────────────────────────────────────────────────
+
+def _sampling(store, value):
+    cfg = {**_cfg(), "writer_sampling": value}
+    owner_trust.write_owner_file(store / rl.CONFIG_FILE, json.dumps(cfg).encode(), mode=0o600)
+
+
+def _kw_chats(*answers):
+    def fn(messages, **kw):
+        fn.kws.append(kw)
+        text = answers[min(len(fn.kws), len(answers)) - 1]
+        return {"content": text, "contents": [text], "latency_ms": 5}
+    fn.kws = []
+    return fn
+
+
+def test_greedy_by_default(store, work):
+    chat = _kw_chats(CLEAN)
+    ew.write("pat@example.edu", BRIEF, str(work / "b.txt"), chat=chat)
+    assert "temperature" not in chat.kws[0] and "sampling" not in rl.read(ew.STORE)[-1]
+
+
+def test_warm_samples_the_draft_and_keeps_the_know_revision_greedy(store, work):
+    _sampling(store, "warm")
+    chat = _kw_chats(LEAKY, CLEAN)
+    ans, code = ew.write("pat@example.edu", KNOW_BRIEF, str(work / "b.txt"), chat=chat)
+    assert code == 0 and len(chat.kws) == 2
+    assert chat.kws[0]["temperature"] == 0.7 and chat.kws[0]["sampling"]["top_p"] == 0.8
+    assert "temperature" not in chat.kws[1]
+    assert rl.read(ew.STORE)[-1]["sampling"] == "warm"
+
+
+def test_the_sampling_switch_takes_its_presets_only(store):
+    assert rl.SWITCHES["writer_sampling"] == ("off", "warm", "hot")
+    _sampling(store, "scorching")
+    assert ew.writer_sampling() is None
+    _sampling(store, "hot")
+    assert ew.writer_sampling()["temperature"] == 1.0
+
+
+def test_a_sampled_need_gets_one_greedy_retry(store, work):
+    _sampling(store, "hot")
+    chat = _kw_chats("NEED: the date", CLEAN)
+    ans, code = ew.write("pat@example.edu", BRIEF, str(work / "b.txt"), chat=chat)
+    assert code == 0 and (work / "b.txt").read_text() == CLEAN
+    assert chat.kws[0]["temperature"] == 1.0 and "temperature" not in chat.kws[1]
+    assert rl.read(ew.STORE)[-1]["greedy_retry"] == "need"
+
+
+def test_a_need_the_greedy_retry_repeats_falls_back(store, work):
+    _sampling(store, "warm")
+    chat = _kw_chats("NEED: the date", "NEED: the date")
+    ans, code = ew.write("pat@example.edu", BRIEF, str(work / "b.txt"), chat=chat)
+    assert code == 4 and ans["need"] == "the date" and len(chat.kws) == 2
+
+
+def test_a_greedy_need_is_not_retried(store, work):
+    chat = _kw_chats("NEED: the date", CLEAN)
+    ans, code = ew.write("pat@example.edu", BRIEF, str(work / "b.txt"), chat=chat)
+    assert code == 4 and len(chat.kws) == 1
+
+
+def test_unsourced_numbers():
+    assert ew.unsourced_numbers("See you at 3:30 on the 9th, room 214.", "meet 3:30, 9th") == ["214"]
+    assert ew.unsourced_numbers("Two weeks, then 5 more.", "") == ["5"]
+    assert ew.unsourced_numbers("No numbers here.", "") == []
+
+
+def test_a_sampled_draft_with_a_number_no_source_gave_is_redone_greedily(store, work):
+    _sampling(store, "hot")
+    invented = "Hi Pat,\n\nYes, they go out tonight to all 12 reviewers!\n\nKit"
+    chat = _kw_chats(invented, CLEAN)
+    ans, code = ew.write("pat@example.edu", BRIEF, str(work / "b.txt"), chat=chat)
+    assert code == 0 and (work / "b.txt").read_text() == CLEAN
+    assert "temperature" not in chat.kws[1]
+    assert rl.read(ew.STORE)[-1]["greedy_retry"] == "number"
+
+
+def test_a_sampled_draft_with_sourced_numbers_stands(store, work):
+    _sampling(store, "hot")
+    brief = BRIEF + " The slides have 12 pages."
+    body = "Hi Pat,\n\nYes! All 12 pages go out tonight.\n\nKit"
+    chat = _kw_chats(body)
+    ans, code = ew.write("pat@example.edu", brief, str(work / "b.txt"), chat=chat)
+    assert code == 0 and (work / "b.txt").read_text() == body and len(chat.kws) == 1

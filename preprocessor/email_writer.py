@@ -22,6 +22,9 @@ conversation), with what they do counted, and the style profile keeps
 its numbers but not its own samples. The record lists the examples by
 id, date and score.
 
+The `writer_sampling` switch (`warm`, `hot`) replaces greedy decoding on
+the draft call with a sampling preset (SAMPLING); the record names it.
+
 A brief can carry a `KNOW:` part (facts and limits that keep the email
 accurate) beside `SAY:` (what it says). A body that restates a KNOW line
 gets one revision call, and a sentence that survives it is cut; the
@@ -341,6 +344,67 @@ def _drop_know(brief: str, body: str, meta: dict, msgs: list[dict], rec: dict, *
     return fixed, meta
 
 
+# ── decoding ──────────────────────────────────────────────────────────
+#
+# Greedy decoding (temperature 0) gives the most likely word every time,
+# and the most likely email is a flat one: shorter than the user's, with
+# none of their exclamation marks or asides. `writer_sampling` in
+# remote-llm.json picks a preset for the draft call; the KNOW revision
+# stays greedy, since it must change only what it is told to.
+
+SAMPLING = {
+    # The model's recommended non-thinking settings (tool_gateway.SAMPLING).
+    "warm": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0,
+             "presence_penalty": 1.0},
+    "hot": {"temperature": 1.0, "top_p": 0.95, "top_k": 40, "min_p": 0.0,
+            "presence_penalty": 1.0},
+}
+
+
+_NUMBER = re.compile(r"\d[\d:/.,$%-]*")
+
+
+def unsourced_numbers(body: str, sources: str) -> list[str]:
+    """Numbers in `body` (times, dates, amounts, counts) that appear
+    nowhere in `sources`: the brief, the thread and the current draft."""
+    found = {m.strip(".,:-/") for m in _NUMBER.findall(body or "")}
+    return sorted(n for n in found if n and n not in (sources or ""))
+
+
+def sampled_body(brief: str, to: str, *, chat, messages: list[dict], purpose: str,
+                 timeout: float, sampling: dict | None, left=None) -> tuple[str, dict]:
+    """The draft call with `sampling`, kept to what greedy decoding would
+    risk. A sampled answer gets one greedy retry when it asks for more
+    (`NEED:`), comes back empty, or holds a number found in none of the
+    messages: sampled, the writer asked about twice as often as greedy on
+    the same briefs, and now and then put a count in prose that no source
+    gave. Sampling changes how the email reads, never what it states.
+    `left` is a callable giving the seconds still in the budget."""
+    body, meta = draft_ab.remote_body(brief, to, chat=chat, messages=messages, purpose=purpose,
+                                      timeout=timeout, sampling=sampling)
+    first = ""
+    if sampling and not body and meta.get("kind") in ("need", "empty"):
+        first = meta.get("kind")
+    elif sampling and body:
+        # The writer's own instructions hold numbers too (the profile's
+        # rates); the facts come from the request.
+        if unsourced_numbers(body, str(messages[-1].get("content") or "")):
+            first = "number"
+    if first and (left is None or left() >= FIX_MIN_S):
+        t = timeout if left is None else max(5, min(REMOTE_TIMEOUT_S, left()))
+        body, meta = draft_ab.remote_body(brief, to, chat=chat, messages=messages,
+                                          purpose=purpose, timeout=t)
+        meta = {**meta, "greedy_retry": first}
+    return body, meta
+
+
+def writer_sampling(cfg: dict | None = None) -> dict | None:
+    """The sampling preset the `writer_sampling` switch names, or None
+    (greedy) when it is off."""
+    cfg = cfg if cfg is not None else remote_llm.config()
+    return SAMPLING.get(cfg.get("writer_sampling") or "")
+
+
 # ── the user's own emails ─────────────────────────────────────────────
 
 def examples_on(cfg: dict | None = None) -> bool:
@@ -426,8 +490,14 @@ def _compose_and_write(brief: str, to: str, conversation_id: str, draft_id: str,
     rec["sent_chars"] = sum(len(str(m.get("content") or "")) for m in msgs)
     note_brief(brief, rec)
     left = budget - (time.monotonic() - t0) - 2
-    body, meta = draft_ab.remote_body(brief, to, chat=chat, messages=msgs, purpose=PURPOSE,
-                                      timeout=max(5, min(REMOTE_TIMEOUT_S, left)))
+    sampling = writer_sampling()
+    if sampling:
+        rec["sampling"] = remote_llm.config().get("writer_sampling")
+    body, meta = sampled_body(brief, to, chat=chat, messages=msgs, purpose=PURPOSE,
+                              timeout=max(5, min(REMOTE_TIMEOUT_S, left)), sampling=sampling,
+                              left=lambda: budget - (time.monotonic() - t0) - 2)
+    if meta.get("greedy_retry"):
+        rec["greedy_retry"] = meta["greedy_retry"]
     if body:
         body, meta = _drop_know(brief, body, meta, msgs, rec, chat=chat,
                                 left=budget - (time.monotonic() - t0) - 2)
