@@ -244,6 +244,20 @@ def _extract_features(text: str) -> dict:
     }
 
 
+def _keep_snippet(con: sqlite3.Connection, addr: str, sent_at: str, text: str) -> None:
+    """Store this message's snippet and keep only the latest
+    MAX_SAMPLES_PER_CONTACT for the contact. A message seen again (a sync
+    revisiting the briefing's previews) goes through here too, so a long
+    revisit cannot leave a contact with every snippet in its window."""
+    con.execute("INSERT OR REPLACE INTO snippets (contact, sent_at, snippet) VALUES (?, ?, ?)",
+                (addr, sent_at, text[:SNIPPET_CHARS]))
+    con.execute("""
+        DELETE FROM snippets WHERE contact = ? AND sent_at NOT IN (
+            SELECT sent_at FROM snippets WHERE contact = ?
+            ORDER BY sent_at DESC LIMIT ?)
+    """, (addr, addr, MAX_SAMPLES_PER_CONTACT))
+
+
 def _message_text(m: dict) -> str:
     """The user's own text of a sent message: the body when the read has
     it, the preview otherwise, quoted history cut."""
@@ -350,10 +364,7 @@ def update_from_messages(sent: list, db_path: Path | None = None,
                     """, (f["words"], f["greeting"], f["closing"],
                           1 if f["contractions"] else 0, f["questions"],
                           f["exclamations"], f["hedges"], addr, sent_at))
-                    con.execute(
-                        "INSERT OR REPLACE INTO snippets (contact, sent_at,"
-                        " snippet) VALUES (?, ?, ?)",
-                        (addr, sent_at, text[:SNIPPET_CHARS]))
+                    _keep_snippet(con, addr, sent_at, text)
                     continue
                 con.execute("""
                     INSERT INTO profiles (contact, display_name, greeting,
@@ -385,15 +396,7 @@ def update_from_messages(sent: list, db_path: Path | None = None,
                       1 if f["contractions"] else 0, f["questions"],
                       f["exclamations"], f["hedges"]))
 
-                con.execute(
-                    "INSERT OR REPLACE INTO snippets (contact, sent_at,"
-                    " snippet) VALUES (?, ?, ?)",
-                    (addr, sent_at, text[:SNIPPET_CHARS]))
-                con.execute("""
-                    DELETE FROM snippets WHERE contact = ? AND sent_at NOT IN (
-                        SELECT sent_at FROM snippets WHERE contact = ?
-                        ORDER BY sent_at DESC LIMIT ?)
-                """, (addr, addr, MAX_SAMPLES_PER_CONTACT))
+                _keep_snippet(con, addr, sent_at, text)
 
             processed += 1
             if sent_at > new_watermark:
@@ -500,7 +503,7 @@ def get_profile(contact: str, db_path: Path | None = None) -> dict | None:
             return None
         snippets = [dict(r) for r in con.execute(
             "SELECT sent_at, snippet FROM snippets WHERE contact = ? "
-            "ORDER BY sent_at DESC", (contact.lower(),))]
+            "ORDER BY sent_at DESC LIMIT ?", (contact.lower(), MAX_SAMPLES_PER_CONTACT))]
         samples = row["samples"] or 1
         out = {
             "contact": row["contact"],
