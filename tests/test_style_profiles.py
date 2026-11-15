@@ -79,6 +79,28 @@ def test_snippet_rotation_keeps_latest_three():
         assert "number 3" in p["recent_examples"][-1]["snippet"]
 
 
+def test_a_sync_revisiting_old_mail_keeps_three_snippets():
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "p.db"
+        msgs = [_msg("kit.bancroft59@example.edu", f"2026-06-0{i}T10:00:00Z",
+                     f"Hi Alice,\n\nNote number {i} here with enough text.")
+                for i in range(1, 7)]
+        sp.update_from_messages(msgs, db_path=db, matcher=ea_written.Matcher([]))
+        # A full-body sync revisits every one of them.
+        sp.update_from_messages(msgs, db_path=db, reprocess=True,
+                                matcher=ea_written.Matcher([]))
+        con = sqlite3.connect(db)
+        n = con.execute("SELECT COUNT(*) FROM snippets").fetchone()[0]
+        con.execute("INSERT INTO snippets VALUES ('kit.bancroft59@example.edu', "
+                    "'2026-05-01T10:00:00Z', 'an old extra row')")
+        con.commit()
+        con.close()
+        assert n == 3
+        p = sp.get_profile("kit.bancroft59@example.edu", db_path=db)
+        assert len(p["recent_examples"]) == 3
+        assert "number 6" in p["recent_examples"][0]["snippet"]
+
+
 def test_quoted_history_stripped():
     body = ("Hi Bob,\n\nYes, approved.\n\nKit\n"
             "________________________________\n"
