@@ -480,8 +480,73 @@ function renderFile(f) {
     f.size != null ? h('span', { class: 'size' }, size(f.size)) : null];
   box.append(url ? h('a', { class: 'file-link', href, download: f.name || true }, label)
     : h('span', { class: 'file-link' }, label));
-  if (viaRelay) relayFile(f, box);
+  const sheet = url && homeScreenIOS();
+  if (viaRelay) relayFile(f, box, !sheet);
+  if (sheet) {
+    for (const a of box.querySelectorAll('a')) {
+      a.removeAttribute('target');
+      a.addEventListener('click', (e) => { e.preventDefault(); fileSheet(f); });
+    }
+  }
   return box;
+}
+
+// In the iPhone or iPad home-screen app a link to a file takes the app's
+// only window to the file, and that window has no back button: the app is
+// stuck until it is closed (issue #294). There a tap on a file opens this
+// sheet instead, and Save hands the file to the share sheet (Save to Files,
+// AirDrop, another app), which returns to the chat. The file is fetched
+// when the sheet opens and shared on the Save tap: iOS lets a page share
+// only while a tap is fresh, and a fetch can outlast that.
+const homeScreenIOS = () => navigator.standalone === true;
+
+async function fetchFile(f) {
+  const res = await T.api('GET', `/files/${enc(f.id)}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const type = String(res.headers.get('content-type') || f.mimetype || '').split(';')[0].trim();
+  return new File([await res.arrayBuffer()], f.name || 'file', { type: type || 'application/octet-stream' });
+}
+
+function fileSheet(f) {
+  if (!f.id) {
+    // A file another service holds: the browser outside the app opens it.
+    if (fileUrl(f)) window.open(fileUrl(f), '_blank', 'noopener');
+    return;
+  }
+  let dlg = $('file-sheet');
+  if (!dlg) {
+    dlg = h('dialog', { id: 'file-sheet', 'aria-labelledby': 'file-sheet-title' });
+    dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
+    document.body.append(dlg);
+  }
+  const status = h('p', { class: 'note', 'aria-live': 'polite' }, 'Getting the file\u2026');
+  const close = h('button', { type: 'button', class: 'btn', onclick: () => dlg.close() }, 'Close');
+  const save = h('button', { type: 'button', class: 'btn primary', disabled: true }, 'Save');
+  dlg.replaceChildren(h('div', { class: 'sheet' },
+    h('h2', { id: 'file-sheet-title' }, f.name || 'file'),
+    f.size != null ? h('p', { class: 'size' }, size(f.size)) : null,
+    status, h('div', { class: 'dialog-actions' }, close, save)));
+  if (!dlg.open) dlg.showModal();
+  const shown = dlg.firstChild;
+  fetchFile(f).then((file) => {
+    if (dlg.firstChild !== shown) return; // another file's sheet replaced this one
+    if (!(navigator.canShare && navigator.canShare({ files: [file] }))) {
+      status.textContent = 'This device cannot save files from the app. Open the chat in Safari to download it.';
+      return;
+    }
+    status.textContent = '';
+    save.disabled = false;
+    save.onclick = async () => {
+      try {
+        await navigator.share({ files: [file] });
+        dlg.close();
+      } catch (e) {
+        if (e.name !== 'AbortError') status.textContent = `Could not save the file: ${e.message}`;
+      }
+    };
+  }).catch((e) => {
+    if (dlg.firstChild === shown) status.textContent = `Could not fetch the file: ${e.message}`;
+  });
 }
 
 // Through the relay a stored file has no address the phone can reach: an
@@ -489,7 +554,7 @@ function renderFile(f) {
 // A blob page has this page's origin, so only a raster image keeps its
 // type; anything else (SVG, HTML) is plain bytes, and every link downloads.
 const RASTER = /^image\/(png|jpeg|gif|webp)$/;
-function relayFile(f, box) {
+function relayFile(f, box, links = true) {
   let got = null;
   const blob = () => (got ||= T.api('GET', `/files/${enc(f.id)}`).then(async (res) => {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -497,7 +562,8 @@ function relayFile(f, box) {
     return URL.createObjectURL(new Blob([await res.arrayBuffer()], { type: RASTER.test(type) ? type : 'application/octet-stream' }));
   }).catch((e) => { got = null; throw e; }));
   const img = box.querySelector('img');
-  if (img) blob().then((u) => { img.src = u; img.parentElement.href = u; }).catch(() => {});
+  if (img) blob().then((u) => { img.src = u; if (links) img.parentElement.href = u; }).catch(() => {});
+  if (!links) return; // the home-screen file sheet takes the taps (fileSheet)
   for (const a of box.querySelectorAll('a')) {
     a.setAttribute('download', f.name || 'file');
     a.removeAttribute('target');

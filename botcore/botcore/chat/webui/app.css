@@ -775,16 +775,16 @@ body.digest #composer, body.digest #new-thread { display: none; }
   box-shadow: -6px 0 currentColor, 6px 0 currentColor; }
 .chan-row:hover .room-more, .chan-row:has(.chan.active) .room-more, .room-more:focus-visible { opacity: 1; }
 .room-more:hover { background: var(--hover); color: var(--text); }
-#room-menu { width: min(calc(100% - 32px), 360px); padding: 0; border: 1px solid var(--border); border-radius: var(--r-xl);
+#room-menu, #file-sheet { width: min(calc(100% - 32px), 360px); padding: 0; border: 1px solid var(--border); border-radius: var(--r-xl);
   background: var(--panel); color: var(--text); box-shadow: var(--shadow-lg); }
-#room-menu[open] { animation: fade .18s var(--ease); }
-#room-menu::backdrop { background: var(--scrim); }
-#room-menu .sheet { display: grid; gap: 8px; padding: 20px; }
-#room-menu h2 { margin: 0 0 4px; font-size: 17px; overflow-wrap: anywhere; }
-#room-menu p { margin: 0; }
-#room-menu label { font-weight: 600; }
-#room-menu input { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--bg); font-size: 16px; }
-#room-menu .error:empty { display: none; }
+#room-menu[open], #file-sheet[open] { animation: fade .18s var(--ease); }
+#room-menu::backdrop, #file-sheet::backdrop { background: var(--scrim); }
+#room-menu .sheet, #file-sheet .sheet { display: grid; gap: 8px; padding: 20px; }
+#room-menu h2, #file-sheet h2 { margin: 0 0 4px; font-size: 17px; overflow-wrap: anywhere; }
+#room-menu p, #file-sheet p { margin: 0; }
+#room-menu label, #file-sheet label { font-weight: 600; }
+#room-menu input, #file-sheet input { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--bg); font-size: 16px; }
+#room-menu .error:empty, #file-sheet .error:empty { display: none; }
 .sheet-item { min-height: 44px; padding: 10px 14px; border: 0; border-radius: var(--r-m); background: var(--bg); text-align: left;
   font-size: 16px; cursor: pointer; transition: background-color .15s; }
 .sheet-item.danger { color: var(--danger); }
@@ -863,3 +863,4 @@ button.chip { cursor: pointer; }
   .reactions button.chip { min-height: 44px; margin-block: -9px; }
   .pend .icon { width: 44px; height: 44px; margin-block: -6px; }
 }
+#file-sheet .size, #file-sheet .note { color: var(--muted); }
