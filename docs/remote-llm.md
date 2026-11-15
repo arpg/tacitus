@@ -259,6 +259,30 @@ EA on the user's word, and the daily preferences digest shows every rule
 added or retired. That is why no rule there can raise the keep list, and
 why a rule that opens mail names one person.
 
+### Questions about mail (`preprocessor/mail_ask.py`)
+
+A lane that gets the record (sealed mail, or kept mail in any mode)
+sees a summary of two sentences, the ask and the deadline. The record
+is made from a message's new text, so a forward's record covers the
+note above the forwarded part and none of what was forwarded. A lane
+asks for a fact the record leaves out:
+
+```
+mail_actions.py ask --provider outlook --conversation-id <id> --question "<the fact>"
+mail_actions.py ask --provider outlook --message-id <id> --question "<the fact>"
+```
+
+The verb runs owner-side (a mediated read, on its own thread like an
+image read). The local model reads the whole text, forwarded and quoted
+parts included (a reply's quoted history is left to the thread, a
+forward is read whole), and the lane gets its answer alone with the
+messages it names. The thread's strictest keep level holds: at `facts`
+the verb answers nothing; below `full` the answer is in the model's own
+words (a run of 12 words copied from the mail is asked again once, then
+refused) and the files are not read; at `full` the PDFs are read too. A
+cron lane's question about a kept thread is refused before it runs, as
+its reads are.
+
 ## The shadow run
 
 | What | Where | When |

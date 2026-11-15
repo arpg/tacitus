@@ -1404,6 +1404,12 @@ SEAL_INLINE_CAP = 12        # threads fetched per sync_briefs pass
 INLINE_MSG_CAP = 40         # messages one sealed read extracts inline, within the budget
 
 
+# A question about mail (mail_ask.py): its answer is the local model's, so
+# release_filter leaves it as it is; a cron lane may not ask about a kept
+# thread (release_precheck), and the keep level is applied in the verb.
+ASK_VERB = ("mail_actions", "ask")
+
+
 def _cron_lane(run_id: str) -> bool:
     return str(run_id or "").startswith("cron-")
 
@@ -1499,7 +1505,11 @@ def level_view(row: dict, rec: dict | None, dec: dict) -> dict:
 def release_precheck(tool: str, verb: str, argv: list, run_id: str) -> str:
     """'' or the refusal, decided before the read runs: a cron lane's read
     of one message or thread kept on the machine; and any lane's read of
-    the files of a kept message (FILE_VERBS)."""
+    the files of a kept message (FILE_VERBS). A question about mail
+    (mail_actions ask) is a read of its message or thread here."""
+    if (tool, verb) == ASK_VERB:
+        tool, verb = "graph_actions", ("get-conversation" if _flag_value(argv, "--conversation-id")
+                                       else "get-message")
     tool, verb = as_graph_read(tool, verb, argv)
     cron = _cron_lane(run_id)
     if tool != "graph_actions" or verb not in RELEASE_VERBS or not (cron or verb in FILE_VERBS):

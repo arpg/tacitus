@@ -580,7 +580,11 @@ mediator within a budget, and any failure refuses the read. The record
 lists the message's attachments with `inline` and `image` flags, inline
 images included (Graph's `hasAttachments` counts none of those), so a
 lane knows a picture is there; `describe-attachment` reads it as text and
-never hands a sealed lane the picture itself. At the end of
+never hands a sealed lane the picture itself. The record is made from a
+message's new text, so a fact it leaves out (what a forward carried, a
+detail past the summary) is one question away: `mail_actions.py ask`
+(mail_ask.py) has the local model read the whole text owner-side and
+hands the lane its answer alone, in the thread's keep-level terms. At the end of
 each `mail_privacy.py tick`, `sync_briefs` composes a `thread_brief` for
 every open ledger row with a conversation id (one line per message, the
 user's own replies extracted too, the latest ask, deadline, offered
@@ -2063,6 +2067,11 @@ account holds `owner` on the calendar).
                         mediator thread of its own, ASYNC_VERBS. With no
                         model it answers need and, outside sealed mail,
                         saves the image to its staged --output)
+  mail_actions.py ask (one question about a message or a thread,
+                        answered owner-side by the local model from the
+                        full text, forwards included; facts-level mail
+                        answers nothing, kept mail in the model's own
+                        words; ASYNC_VERBS)
   poll_filler.py (read-poll, fill-poll)
   booking_link.py (read, propose: cal.com/Calendly open slots over a public GET,
                         fed to propose-meeting; it has no booking verb)

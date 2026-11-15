@@ -772,6 +772,7 @@ NOT_DRAFT_CHANGING = {
         "create-forward": "makes a new draft id, which gets its own card",
         "preflight-check": "read",
         "describe-attachment": "read; an image as text, or saved to a local file",
+        "ask": "read; the local model answers a question about a message or thread",
     },
 }
 

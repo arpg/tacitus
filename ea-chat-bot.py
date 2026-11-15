@@ -3013,7 +3013,10 @@ def _tools_block(body_file: str, needed_modules: set[str] | None = None) -> str:
   create-reply, update-draft, delete-draft, create-forward, preflight-check,
   mark-read, mark-unread, and describe-attachment --all-images (an image on a
   message, a picture in the body included, read out as text; never tell the
-  user an image could not be read before you run it). Check a draft's
+  user an image could not be read before you run it). A fact the mail
+  record leaves out (kept or sealed mail, what a forward carried): ask
+  --provider outlook --conversation-id <id> --question "<the fact>"; the
+  local model answers from the full text. Check a draft's
   recipients before sending with preflight-check. Never search plus a
   get-message per hit -- search matches
   loosely, so you pay for hits that are not in the thread.
