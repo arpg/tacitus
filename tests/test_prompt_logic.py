@@ -607,6 +607,22 @@ def test_install_site_names_route_to_the_sites_guide(tmp_path, monkeypatch):
     finally:
         pl._site_keywords.cache_clear()
 
+
+def test_a_claude_handoff_loads_its_skill_and_not_the_export_flow():
+    """The web chat's Claude button and the return block pasted back from
+    that chat load skills/claude-handoff.md, in a thread too; neither
+    starts the in-thread context export, which takes the turn over."""
+    import re
+    button = re.search(r"const HANDOFF_ASK = '([^']+)';", (PROJECT_ROOT / "botcore" / "botcore" / "chat"
+                                                          / "webui" / "app.js").read_text()).group(1)
+    for msg in (button, "Give a handoff doc for me to upload to a Claude session",
+                "TACITUS RETURN\nhandoff: x.claude.md\nDECISIONS\n- keep the elective list"):
+        for in_thread in (True, False):
+            skills = detect_skills(msg, in_thread)
+            assert "claude-handoff" in skills and "context-export" not in skills, (msg, skills)
+    assert "claude-handoff" not in detect_skills("dump this thread", True)
+    assert (PROJECT_ROOT / "skills" / "claude-handoff.md").exists()
+
 if __name__ == "__main__":
     main()
 

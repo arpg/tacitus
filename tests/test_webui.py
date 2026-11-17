@@ -511,7 +511,10 @@ def test_the_app_stays_small():
     # 5,531: 5,503 plus the Models page's one pick at the top (#252: Claude or Codex saved at once, the
     #     line for one AI set up and for custom settings, Open Advanced) and the rest under Advanced.
     # 5,607: 5,579 and 5,531 together, debug mode, the drawer's Recent list and the one model pick.
-    assert lines <= 5607, f"{lines} lines: the contract keeps the app near 5,607 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line, the home-screen file sheet, a long card link shown as its site, a channel's mute, debug mode, the drawer's Recent list and the one model pick with the rest under Advanced"
+    # 5,532: 5,474 plus the Claude button (a handoff file asked for in the open conversation) and Send to
+    #     Claude on that file (its bytes fetched when it shows, shared in one tap, saved where a page cannot share).
+    # 5,665: 5,607 and 5,532 together, with the Claude button and Send to Claude.
+    assert lines <= 5665, f"{lines} lines: the contract keeps the app near 5,665 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line, the home-screen file sheet, a long card link shown as its site, a channel's mute, debug mode, the drawer's Recent list and the one model pick with the rest under Advanced, and the Claude handoff"
 
 
 # A `:name:` in the sources that is not an emoji: a prompt that names the
@@ -1175,6 +1178,56 @@ def test_the_paperclip_uploads_and_files_render(app):
     assert stub.posts[0]["text"] == "The chart" and stub.posts[0]["file"]["name"] == "icon-512.png"
     expect(page.locator(".msg.own .file img")).to_have_count(2)
     assert not errors, errors
+
+
+def test_the_claude_button_asks_for_a_handoff_and_its_file_goes_to_the_share_sheet(app):
+    """skills/claude-handoff.md: the header's Claude button asks Tacitus, in
+    the open conversation, for one file to take to the Claude app. That file
+    on the reply carries Send to Claude, which hands the bytes it fetched
+    when it showed to the share sheet in one tap. A page that cannot share
+    a file saves it instead; no other file has the button."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    share = ("window.__shared = [];"
+             "Object.defineProperty(navigator, 'canShare', { value: (d) => Boolean(d && d.files), configurable: true });"
+             "Object.defineProperty(navigator, 'share', { value: async (d) => {"
+             " window.__shared.push(await Promise.all(d.files.map(async (f) => [f.name, await f.text()]))); },"
+             " configurable: true });")
+    page, stub, errors = app(init=share)
+    open_thread(page, "Here is the figure")
+    tk = page.locator(".thread-item.active").get_attribute("data-thread")
+    expect(page.locator("#to-claude")).to_be_visible()
+    expect(page.locator(".to-claude-file")).to_have_count(0)
+    page.click("#to-claude")
+    wait_for(lambda: stub.posts)
+    assert stub.posts == [{"channel": W.DM, "text": "Make a Claude handoff file for this conversation.",
+                           "thread_key": tk, "file": None}]
+    body = "# Field plan: talk-through\n\n## For Claude: how to run this conversation\n"
+    stub.files["f9"] = ("field-plan-2026-11-17.claude.md", "text/markdown", body.encode())
+    stub.add(W.DM, "", kind="file", thread_key=tk, event="message",
+             file={"id": "f9", "name": "field-plan-2026-11-17.claude.md", "url": "",
+                   "mimetype": "text/markdown", "size": len(body)})
+    btn = page.locator(".file:has-text('field-plan') .to-claude-file")
+    expect(btn).to_have_text("Send to Claude")
+    btn.click()
+    wait_for(lambda: page.evaluate("window.__shared.length"))
+    assert page.evaluate("window.__shared") == [[["field-plan-2026-11-17.claude.md", body]]]
+    page.click("#new-thread")
+    expect(page.locator("#to-claude")).to_be_hidden()
+    assert not errors, errors
+
+    plain, stub2, errors2 = app(init="Object.defineProperty(navigator, 'canShare', { value: undefined, configurable: true });")
+    open_thread(plain, "Here is the figure")
+    tk2 = plain.locator(".thread-item.active").get_attribute("data-thread")
+    stub2.files["f9"] = ("field-plan-2026-11-17.claude.md", "text/markdown", body.encode())
+    stub2.add(W.DM, "", kind="file", thread_key=tk2, event="message",
+              file={"id": "f9", "name": "field-plan-2026-11-17.claude.md", "url": "",
+                    "mimetype": "text/markdown", "size": len(body)})
+    expect(plain.locator(".to-claude-file")).to_have_text("Save for Claude")
+    with plain.expect_download() as dl:
+        plain.click(".to-claude-file")
+    assert dl.value.suggested_filename == "field-plan-2026-11-17.claude.md"
+    assert not errors2, errors2
 
 
 def go(page, title):

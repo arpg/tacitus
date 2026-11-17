@@ -55,6 +55,18 @@ def test_what_is_not_a_path_to_attach():
     assert RF.named_paths(text, HOME) == []
 
 
+def test_a_handoff_for_the_claude_app_attaches_and_other_markdown_does_not():
+    """skills/claude-handoff.md: the one Markdown file made for the Claude
+    app comes to the phone as an attachment; notes and sources stay paths."""
+    text = ("`~/.ea/docs/bs-ai/bs-ai-proposal-2026-11-17.claude.md` has the proposal. "
+            "Notes are at ~/.ea/docs/bs-ai/notes.md, the source at ~/.ea/docs/bs-ai/claude.md "
+            "and a bare suffix at ~/.ea/docs/bs-ai/.claude.md; also ~/.ea/docs/x/Plan.CLAUDE.MD.")
+    assert RF.named_paths(text, HOME) == [
+        "/home/ea-bot/.ea/docs/bs-ai/bs-ai-proposal-2026-11-17.claude.md",
+        "/home/ea-bot/.ea/docs/x/Plan.CLAUDE.MD",
+    ]
+
+
 def test_each_file_once_and_case_folded_types():
     text = ("`/home/ea-bot/.ea/docs/a/Report.PDF` and again "
             "~/.ea/docs/a/Report.PDF and ~/.ea/docs/a/../a/Report.PDF")
