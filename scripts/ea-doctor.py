@@ -75,6 +75,9 @@ REQUIRED_SLACK_SCOPES = ("chat:write", "channels:history", "channels:read",
                          "im:history", "im:write", "files:read", "files:write",
                          "reactions:write")
 SERVICES = (("ea-chat-bot", True), ("ea-dashboard", False), ("ea-mail-mediator", False))
+# Services that run as the owner's systemd user unit (deploy/enable-dashboard.sh);
+# the check asks the user manager when the system has no such unit.
+USER_UNIT_SERVICES = ("ea-dashboard",)
 PLACEHOLDERS = {"Your Name", "your.email@example.com", "REPLACE_ME", "CHANGEME", ""}
 
 
@@ -1618,6 +1621,11 @@ def check_services():
     for unit, required in SERVICES:
         r = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True)
         state = r.stdout.strip()
+        if state != "active" and unit in USER_UNIT_SERVICES:
+            u = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True)
+            if u.stdout.strip() == "active":
+                ok(f"service: {unit}", "user unit")
+                continue
         if state == "active":
             ok(f"service: {unit}")
         elif required and NEEDS_SLACK:
@@ -1628,7 +1636,7 @@ def check_services():
             warn(f"service: {unit}", state or "not installed", "the Slack bot; not used by this profile")
         else:
             warn(f"service: {unit}", state or "not installed",
-                 {"ea-dashboard": "optional web board (deploy/ea-dashboard.service); not needed for reports",
+                 {"ea-dashboard": "optional web board; bash deploy/enable-dashboard.sh installs it as your user unit (docs/SETUP.md 'Project dashboard'); not needed for reports",
                   "ea-mail-mediator": "required only when mail mediation is on (docs/mail-mediation-spec.md)"}[unit])
 
 

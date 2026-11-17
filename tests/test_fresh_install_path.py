@@ -239,6 +239,26 @@ def test_doctor_fix_texts_name_sections_that_exist():
     assert 'f"sudo -u ea-bot /usr/bin/python3 {code}/preprocessor/install_overlay.py render"' in doctor
 
 
+def test_every_deploy_or_scripts_file_the_doctor_and_docs_name_exists():
+    """A fix text that names a file the repository does not ship sends an
+    installer looking for it (the doctor named a dashboard unit file that
+    was never committed)."""
+    import re
+    pat = re.compile(r"(?<![\w/.~-])((?:deploy|scripts)/[\w./-]*\w\."
+                     r"(?:sh|py|service|timer|plist|conf)(?:\.in)?)(?![\w-])")
+    texts = [REPO / "scripts/ea-doctor.py", REPO / "CLAUDE.md", *sorted((REPO / "docs").rglob("*.md"))]
+    named, missing = 0, []
+    for path in texts:
+        for rel in sorted(set(pat.findall(path.read_text()))):
+            named += 1
+            if not (REPO / rel).exists():
+                missing.append(f"{path.relative_to(REPO)}: {rel}")
+    assert named > 50, named
+    assert not missing, missing
+    doctor = (REPO / "scripts/ea-doctor.py").read_text()
+    assert "deploy/enable-dashboard.sh" in doctor and '"ea-dashboard",)' in doctor
+
+
 # ── harden-permissions.sh without a bot unit ─────────────────────────
 
 def test_harden_skips_the_bot_unit_steps_when_there_is_no_unit():
