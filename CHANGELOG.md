@@ -24,6 +24,15 @@ repository that preceded it.
   or only Codex set up, the page names it instead of offering a choice.
   Setup asks Claude or Codex only when Codex is on the machine, and
   skips the own-model step unless you ask for it.
+- **The scheduled runs tell the model to send one command per shell
+  call.** The cron and plugin lanes match each shell call against a
+  literal allowlist, so a call with a part the list does not grant (a
+  `cd`, a pipe into `head`) is refused.
+  Their prompts now carry a rule that says so (about 900 bytes in a cron
+  prompt, 260 in a plugin prompt). The cron rule names the lane's own
+  commands, and no draft verb when drafting is off; a lane on Codex, which
+  has no allowlist, gets no rule. `EA_LITERAL_COMMANDS=0` in `~/.ea/.env`
+  turns it off; before, it was off unless set to `1`.
 - **The web chat's unread counts are the same on every device.** The bot
   keeps a read mark per conversation; a conversation you read on your
   phone clears its badge on your computer at once, and the reverse. A

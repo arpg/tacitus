@@ -530,6 +530,20 @@ v = json.loads(sys.argv[1]) if sys.argv[1] else [':sparkles:']
 print(', '.join(v))
 " "${ANCHORS_JSON:-[]}")
 
+# The shell rule (EA_LITERAL_COMMANDS in .env, as in run-agent.sh; on
+# unless 0). The allowlist below is matched literally under dontAsk, so a
+# call with any part it does not grant (a cd, a pipe, python3 -c) is
+# refused. Each plugin has its own grants, so the rule names no command.
+SHELL_RULE=""
+if [[ "${EA_LITERAL_COMMANDS:-1}" != 0 ]]; then
+    SHELL_RULE="SHELL RULE: every Bash call is one command your grants allow, matched
+literally: no cd, no && or ;, no pipe, no python3 -c, no \$(...), no ~, no
+relative path. A call refused for its form: rewrite it as one granted
+command and run it again. The shell is not gone.
+
+"
+fi
+
 PROMPT="You are running as the EA plugin '${PLUGIN_NAME}' at $(date).
 
 Execute the following skill instructions:
@@ -539,7 +553,7 @@ ${SKILL_CONTENT}
 The collected data is at: ${EA_BOT_COLLECT_OUT}
 Your plugin directory is: ${EA_BOT_PLUGIN_DIR}
 
-CRITICAL OUTPUT RULE: claude -p only captures text from the FINAL assistant turn.
+${SHELL_RULE}CRITICAL OUTPUT RULE: claude -p only captures text from the FINAL assistant turn.
 Any text you write BEFORE a tool call is SILENTLY DROPPED. Do ALL tool calls
 (reading files, ledger writes) FIRST, then write the Slack message text as
 your FINAL output with NO tool calls after it.

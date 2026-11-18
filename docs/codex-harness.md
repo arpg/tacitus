@@ -145,7 +145,9 @@ on the Codex CLI is one more entry there.
 lane on Codex for real: `codex_ghost.py run-lane --live` as the resident
 against the real EA_DIR, from `~/.ea/state/codex-lane` (`LANE_CWD`, made
 as the resident, mode 750), writes confined to its state and docs, the
-same prompt and the same output handling. The Claude lane starts in the
+same output handling, and the same prompt less the Claude lane's fifth
+rule (one granted command per shell call, `EA_LITERAL_COMMANDS`): Codex
+has no allowlist to match a command against. The Claude lane starts in the
 resident's home; the Codex lane does not, because Codex makes its working
 directory writable (see "Temp files"). The prompt names every file by
 its full path, and a line after it says where the Codex run starts. It runs only when `codex_ghost.py

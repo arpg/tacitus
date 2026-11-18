@@ -238,13 +238,16 @@ def test_the_2026_08_31_incident_is_caught():
 # ── coverage stays complete as the script grows ─────────────────────
 
 def test_literal_command_rule_evaluates():
-    """The opt-in fifth rule is its own multi-line string; it must survive
-    set -euo pipefail and keep its literal $(...) and the script path."""
+    """The fifth rule is its own multi-line string; it must survive
+    set -euo pipefail and keep its literal $(...), the script path and
+    the mail verbs the gate picks."""
     assignment = _extract('LITERAL_RULE="5. EVERY Bash CALL',
                           'as if the shell were gone.\n"')
-    out = _evaluate(assignment, _stub_env(""), varname="LITERAL_RULE")
+    env = {**_stub_env(""), "MAIL_VERBS": "search, get-message"}
+    out = _evaluate(assignment, env, varname="LITERAL_RULE")
     assert "no \\$(...)" not in out and "no $(...)" in out
     assert "/home/ea-bot/ea-system/preprocessor/<script>.py" in out
+    assert "(search, get-message)." in out
     missing = [l for l in _literal_lines(assignment) if l not in out]
     assert not missing, f"literal rule lines were mutated: {missing[:3]}"
 
@@ -256,7 +259,7 @@ def test_all_multiline_strings_are_covered():
     known = {
         "PROMPT",          # covered above
         "RETRY_PROMPT",    # covered above
-        "LITERAL_RULE",    # covered above (EA_LITERAL_COMMANDS=1)
+        "LITERAL_RULE",    # covered above (on unless EA_LITERAL_COMMANDS=0)
         # the python -c body for strip_preamble; its behaviour is pinned
         # end-to-end by test_run_agent_preamble.py
         "STRIP_PREAMBLE_MAX_LINES",

@@ -468,6 +468,50 @@ case "$AGENT" in
         ;;
 esac
 
+# The lane on Codex (docs/codex-harness.md, "Production"): EA_HARNESS=codex
+# runs a briefing lane through codex_ghost.py run-lane --live as ea-bot,
+# the same prompt less the literal-command rule (Codex has no allowlist),
+# writes confined to the EA state. It runs only when the ghost arm's final
+# verdict for briefings is GO (codex_ghost.py gate), or with
+# EA_HARNESS_FORCE=1; otherwise the Claude run below goes ahead and the
+# log says why. The owner's Settings choice (the routing table's hosted
+# model for the agent's task: briefing, audit or digests) runs the lane on
+# Codex with no gate: `model_routing.py harness` says codex. The choice is
+# made before the prompt is built, which depends on it.
+CODEX_LANE=0
+ROUTED_HARNESS=claude
+if [[ "$REMOTE_BRIEFING" == 0 ]]; then
+    ROUTED_HARNESS=$(EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/model_routing.py" harness \
+        --agent "$AGENT" 2>>"$LOG_FILE" || echo claude)
+fi
+if [[ "$ROUTED_HARNESS" == "codex" ]]; then
+    CODEX_LANE=1
+    log "Harness: codex (the hosted model in Settings)"
+elif [[ "$REMOTE_BRIEFING" == 0 && "${EA_HARNESS:-claude}" == "codex" ]]; then
+    case "$AGENT" in
+        morning-briefing|afternoon-catchup)
+            GATE_WHY=$(EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/codex_ghost.py" gate briefing 2>>"$LOG_FILE")
+            GATE_RC=$?
+            if [[ "$GATE_RC" == 0 || "${EA_HARNESS_FORCE:-0}" == 1 ]]; then
+                CODEX_LANE=1
+                log "Harness: codex (${GATE_WHY:-forced})"
+            else
+                log "Harness: claude; the codex gate said: ${GATE_WHY}"
+            fi
+            ;;
+        *)
+            # No ghost verdict exists for the other lanes yet, so they run
+            # on Codex only when forced; the same runner serves them.
+            if [[ "${EA_HARNESS_FORCE:-0}" == 1 ]]; then
+                CODEX_LANE=1
+                log "Harness: codex (forced; no ghost verdict exists for $AGENT)"
+            else
+                log "Harness: claude; a lane other than the briefings runs on codex only with EA_HARNESS_FORCE=1"
+            fi
+            ;;
+    esac
+fi
+
 [[ "$REMOTE_BRIEFING" == 0 ]] && log "Invoking Claude Code with skill: $(basename "$SKILL_FILE") (model: $MODEL)"
 
 # Build the prompt from the skill file, then append the user's own rules
@@ -518,26 +562,33 @@ if [[ -n "$USER_RULES" ]]; then
     SKILL_CONTENT="${SKILL_CONTENT}"$'\n\n'"${USER_RULES}"
 fi
 
-# EA_LITERAL_COMMANDS=1 in .env (off by default): a fifth repeated rule, for
-# a model that writes compound shell commands, which this lane's literal
-# allowlist refuses (cd, &&, pipes, python3 -c). Off, the prompt is as before.
+# The literal-command rule, a fifth repeated rule. This lane's allowlist
+# (ALLOWED_TOOLS below) is matched literally under dontAsk, so a call with
+# any part the list does not grant (a cd, a pipe into head, python3 -c) is
+# refused. On unless EA_LITERAL_COMMANDS=0 in .env. Each command the rule
+# names is a grant of this lane (tests/test_fresh_install_path.py checks
+# them against ALLOWED_TOOLS and the deny lists); with drafting off it
+# names no draft verb, since the no-drafting list denies them. A Codex
+# lane has no allowlist (its sandbox is the boundary) and gets four rules.
 RULE_COUNT=four
 LITERAL_RULE=""
-if [[ "${EA_LITERAL_COMMANDS:-}" == 1 ]]; then
+if [[ "${EA_LITERAL_COMMANDS:-1}" != 0 && "${CODEX_LANE:-0}" != 1 ]]; then
     RULE_COUNT=five
+    MAIL_VERBS="search, get-message, create-reply, create-draft"
+    [[ "${HAS_DRAFTING:-1}" == 1 ]] || MAIL_VERBS="search, get-message; drafting is off, so no draft verb runs"
     LITERAL_RULE="5. EVERY Bash CALL IS ONE COMMAND THIS LANE GRANTS, matched literally:
    python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/<script>.py ... for one of the
    granted scripts (that absolute path), jq '<filter>' <file>, cat <file> or
    ls <dir>. No cd, no && or ;, no pipe, no python3 -c, no \$(...), no ~.
-   Mail goes through mail_actions.py --provider outlook|gmail (search,
-   get-message, create-reply, create-draft); threads through
-   graph_actions.py get-conversation or gmail_client.py get-thread; never
-   run graph_client.py. Read files with the Read
-   tool, filter JSON with jq, and write files with Write or Edit. A call
-   refused for its FORM (a pipe, a cd, a relative path): rewrite it as one
-   granted command and run it again. A call refused by design (send-draft,
-   create-event, any verb that waits for a button) stays refused; never
-   retry it. Never finish the run as if the shell were gone.
+   Mail goes through mail_actions.py --provider outlook|gmail
+   (${MAIL_VERBS}).
+   Threads: graph_actions.py get-conversation or gmail_client.py
+   get-thread; never run graph_client.py. Read files with the Read tool,
+   filter JSON with jq, and write files with Write or Edit.
+   A call refused for its FORM (a pipe, a cd, a relative path): rewrite it
+   as one granted command and run it again. A call refused by design
+   (send-draft, create-event, any verb that waits for a button) stays
+   refused; never retry it. Never finish the run as if the shell were gone.
 "
 fi
 
@@ -746,47 +797,6 @@ ALLOWED_TOOLS+=",Bash(cat *),Bash(ls *),Read,Agent"
 # here: no retry, no validation, no Slack post, no failure line in the log,
 # and the run log just stops after "Invoking Claude Code with skill: …".
 # Capture the status instead and let the validate/retry ladder below run.
-# The lane on Codex (docs/codex-harness.md, "Production"): EA_HARNESS=codex
-# runs a briefing lane through codex_ghost.py run-lane --live as ea-bot,
-# the same prompt, writes confined to the EA state. It runs only when the
-# ghost arm's final verdict for briefings is GO (codex_ghost.py gate), or
-# with EA_HARNESS_FORCE=1; otherwise the Claude run below goes ahead and
-# the log says why. The owner's Settings choice (the routing table's
-# hosted model for the agent's task: briefing, audit or digests) runs the
-# lane on Codex with no gate: `model_routing.py harness` says codex.
-CODEX_LANE=0
-ROUTED_HARNESS=claude
-if [[ "$REMOTE_BRIEFING" == 0 ]]; then
-    ROUTED_HARNESS=$(EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/model_routing.py" harness \
-        --agent "$AGENT" 2>>"$LOG_FILE" || echo claude)
-fi
-if [[ "$ROUTED_HARNESS" == "codex" ]]; then
-    CODEX_LANE=1
-    log "Harness: codex (the hosted model in Settings)"
-elif [[ "$REMOTE_BRIEFING" == 0 && "${EA_HARNESS:-claude}" == "codex" ]]; then
-    case "$AGENT" in
-        morning-briefing|afternoon-catchup)
-            GATE_WHY=$(EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/codex_ghost.py" gate briefing 2>>"$LOG_FILE")
-            GATE_RC=$?
-            if [[ "$GATE_RC" == 0 || "${EA_HARNESS_FORCE:-0}" == 1 ]]; then
-                CODEX_LANE=1
-                log "Harness: codex (${GATE_WHY:-forced})"
-            else
-                log "Harness: claude; the codex gate said: ${GATE_WHY}"
-            fi
-            ;;
-        *)
-            # No ghost verdict exists for the other lanes yet, so they run
-            # on Codex only when forced; the same runner serves them.
-            if [[ "${EA_HARNESS_FORCE:-0}" == 1 ]]; then
-                CODEX_LANE=1
-                log "Harness: codex (forced; no ghost verdict exists for $AGENT)"
-            else
-                log "Harness: claude; a lane other than the briefings runs on codex only with EA_HARNESS_FORCE=1"
-            fi
-            ;;
-    esac
-fi
 if [[ "$CODEX_LANE" == 1 ]]; then
     set +e
     CLAUDE_OUTPUT=$(printf '%s' "$PROMPT" | EA_DIR="$EA_DIR" "$PYTHON3" "$SCRIPT_DIR/preprocessor/codex_ghost.py" run-lane \
