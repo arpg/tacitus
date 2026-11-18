@@ -1392,16 +1392,23 @@ enabled later, on another machine. `docs/EVAL.md` has the eval suite.
 ### Project dashboard
 
 `preprocessor/project_dashboard.py` is the optional drag-and-drop board
-over the project store, run as the `ea-dashboard` service. It binds
-`EA_DASH_BIND` when set, else the Tailscale IP, else 127.0.0.1, on
-`EA_DASH_PORT` (default 8377). Any address other than loopback needs the
+over the project store, run as the `ea-dashboard` service. On Linux,
+`bash deploy/enable-dashboard.sh` (as you, no root) writes it as your
+systemd user unit and starts it; `--status` says where it serves and
+`--rollback` removes it. The server writes the store through the `ea`
+group, and a user unit has only the groups your user manager started
+with: when the install added you to `ea` after that, the script says so
+and names the restart. macOS and Docker have no dashboard service.
+
+It binds `EA_DASH_BIND` when set, else the Tailscale IP, else 127.0.0.1,
+on `EA_DASH_PORT` (default 8377). Any address other than loopback needs the
 shared token `EA_DASH_TOKEN`, because every device on the tailnet could
 otherwise rewrite the store. Set it once as an owner secret:
 
 ```bash
 python3 -c 'import secrets; print(secrets.token_urlsafe(32))'   # a long random value
 scripts/set-secret.sh EA_DASH_TOKEN                              # paste it at the prompt
-systemctl --user restart ea-dashboard                            # or the system unit, where it is one
+systemctl --user restart ea-dashboard
 ```
 
 The dashboard reads `EA_DASH_TOKEN` from its environment, else from the
