@@ -2323,6 +2323,7 @@
       "is_thread_reply": false,
       "expected": {
         "modules": [
+          "scan",
           "triage"
         ],
         "skills": [
@@ -2337,7 +2338,45 @@
       ],
       "tier": "easy",
       "source": "synthetic",
-      "notes": "Triage keyword triggers triage module"
+      "notes": "Triage keyword triggers triage module; a triage of the inbox is also a scan, so the turn gets the replies that wait"
+    },
+    {
+      "id": "module-scan-001",
+      "message": "Anything else we should handle?",
+      "is_thread_reply": false,
+      "expected": {
+        "modules": [
+          "scan"
+        ],
+        "skills": [],
+        "needs_mcp": true
+      },
+      "tags": [
+        "module-detection",
+        "scan",
+        "synthetic"
+      ],
+      "tier": "easy",
+      "source": "synthetic",
+      "notes": "A follow-up asking what else needs handling is a scan: the turn gets the replies that wait"
+    },
+    {
+      "id": "module-scan-002",
+      "message": "Anything else you need from me before you send it?",
+      "is_thread_reply": false,
+      "expected": {
+        "modules": [],
+        "skills": [],
+        "needs_mcp": true
+      },
+      "tags": [
+        "module-detection",
+        "scan",
+        "synthetic"
+      ],
+      "tier": "easy",
+      "source": "synthetic",
+      "notes": "A question about the EA's own needs is not a scan"
     },
     {
       "id": "module-drafting-001",
