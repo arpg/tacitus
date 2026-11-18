@@ -4,7 +4,9 @@ Pass-through cost logger for `claude -p --output-format stream-json --verbose`.
 
 Reads stream-json events on stdin, writes the final assistant text on stdout
 (so the rest of the orchestrator keeps working unchanged), and appends a
-one-line cost record per invocation to ~/.ea/logs/claude-cost.log.
+one-line cost record per invocation to ~/.ea/logs/claude-cost.log. A
+`rate_limit_event` in the stream is saved as the plan's latest usage reading
+(rate_limits.py), which the chat bot's reply footer and `usage` command read.
 
 Log line format (parseable; mirrors ea-chat-bot's `[mono] done` summary):
 
@@ -29,6 +31,10 @@ import sys as _sys
 _sys.path.insert(0, str(Path(__file__).resolve().parent))
 from log_paths import owner_log  # noqa: E402
 import web_tool_log  # noqa: E402
+try:
+    import rate_limits  # noqa: E402
+except Exception:  # a usage reading must never break the pipe
+    rate_limits = None
 # Written only by the owner's run-agent/run-plugin pipe, so keep it out of
 # ea-bot's reach (a fixed name in the shared dir could be symlink-swapped).
 LOG_PATH = owner_log("claude-cost.log")
@@ -66,6 +72,10 @@ def main() -> int:
                     if block.get("name") in web_tool_log.WEB_TOOLS:
                         web_tool_log.note(block.get("name"), block.get("input"),
                                           lane=f"cron:{args.agent}")
+        elif etype == "rate_limit_event" and rate_limits is not None:
+            # Never raises; saved only by an owner process.
+            rate_limits.note_stream_event(
+                ev, source=args.agent if ":" in args.agent else f"cron:{args.agent}")
         elif etype == "result":
             result_event = ev
 

@@ -29,11 +29,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# Usage tracking — uses Claude Code's own OAuth token
+# Usage tracking: the plan's windows each Claude run reports (rate_limits),
+# the usage endpoint last (claude_usage)
 sys_path_entry = str(Path(__file__).parent / "preprocessor")
 if sys_path_entry not in sys.path:
     sys.path.insert(0, sys_path_entry)
-from claude_usage import get_usage, format_usage_footer as _fmt_usage, format_usage_report
+from claude_usage import (footer_usage, report_usage, format_usage_footer as _fmt_usage,
+                          format_usage_report)
+import rate_limits as _rate_limits
 from preprocessor import model_tiers as _tiers
 from preprocessor import model_routing as _routing
 from log_paths import owner_log_dir as _owner_log_dir, owner_log as _owner_log
@@ -806,6 +809,12 @@ def _run_claude_streaming(
                                 snippet = result_snippet[:120].replace("\n", " ")
                                 log.info(f"  [{label}] tool_result: {tname} {status} "
                                          f"({telapsed:.1f}s) {snippet}")
+
+                elif etype == "rate_limit_event" and not extra_env:
+                    # The plan's windows, for the reply footer and `usage`.
+                    # A turn on the on-prem arm talks to the tool gateway,
+                    # not to the Claude account, so its events are skipped.
+                    _note_rate_limits(event, label)
 
                 elif etype == "result":
                     result_event = event
@@ -1677,6 +1686,36 @@ def _save_usage(data: dict):
     _atomic.write_json(USAGE_LEDGER, data, mode=0o600)
 
 
+def _note_rate_limits(event: dict, label: str) -> None:
+    """Save the plan's usage windows a Claude run reported
+    (rate_limits.py), so the reply footer and the `usage` command need no
+    API call. Never raises."""
+    try:
+        _rate_limits.note_stream_event(event, source=f"chat:{label}")
+    except Exception as e:
+        log.debug(f"rate-limit reading not saved: {e}")
+
+
+# The `usage` command's refresh run: one word on the cheapest model, no
+# tools, no MCP, no session file. Its stream carries a fresh reading.
+USAGE_REFRESH_PROMPT = "Reply with the single word: ok"
+USAGE_REFRESH_MODEL = "haiku"
+USAGE_REFRESH_TIMEOUT_S = 90
+
+
+def _usage_refresh_run() -> None:
+    """Start the one-word Claude run whose stream saves a fresh usage
+    reading (_run_claude_streaming, _note_rate_limits). It spends a little
+    of the plan's quota, so only the `usage` command starts it, through
+    claude_usage.report_usage, when the saved reading is stale; a reply
+    footer never does."""
+    _run_claude_streaming(
+        ["-p", USAGE_REFRESH_PROMPT, "--model", USAGE_REFRESH_MODEL, "--tools", "",
+         "--strict-mcp-config", "--no-session-persistence"],
+        timeout=USAGE_REFRESH_TIMEOUT_S, label="usage", _max_retries=1,
+        cwd=_lane_cwd("reply"), stall=USAGE_REFRESH_TIMEOUT_S)
+
+
 def _record_invocation(model: str, elapsed_sec: float, stderr_text: str,
                        cost_usd: float = 0.0, usage: dict = None, label: str = "EA") -> str:
     """Record an invocation and return a usage footer for Slack; `label`
@@ -1715,9 +1754,10 @@ def _record_invocation(model: str, elapsed_sec: float, stderr_text: str,
 
     _save_usage(data)
 
-    # Build footer with plan usage (replaces old cost/token footer)
+    # The plan usage line: the saved reading first, no API call per reply
+    # (claude_usage.footer_usage).
     try:
-        usage_data = get_usage()
+        usage_data = footer_usage()
     except Exception:
         usage_data = {"error": "fetch failed"}
     footer = _fmt_usage(usage_data, elapsed_sec, label=label)
@@ -10614,9 +10654,9 @@ def _try_resident_dispatch(channel: str, thread_ts: str, msg_ts: str,
                  f"resident reply")
 
     # The same usage line as the per-thread lane: the resident runs on the
-    # same Claude account (get_usage reads it as ea-bot).
+    # same Claude account, whose saved reading footer_usage reads.
     try:
-        footer = _fmt_usage(get_usage(), elapsed, label="EA resident")
+        footer = _fmt_usage(footer_usage(), elapsed, label="EA resident")
     except Exception as e:
         log.warning(f"resident usage footer failed: {e}")
         footer = f"\n\n---\n_EA resident: {elapsed:.0f}s_"
@@ -12763,7 +12803,9 @@ def handle_message_async(
     # Handle "usage" / "quota" command without invoking Claude
     if user_msg.strip().lower() in ("usage", "quota", "limits"):
         try:
-            usage_data = get_usage()
+            # The saved reading, else a one-word refresh run, else the
+            # usage endpoint (claude_usage.report_usage).
+            usage_data = report_usage(refresh=_usage_refresh_run)
             response = format_usage_report(usage_data)
             FRONTEND.post(
                 channel=channel, thread_ts=thread_ts, text=response,
