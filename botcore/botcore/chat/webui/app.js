@@ -921,6 +921,13 @@ function renderThreads() {
     if (old.length) box.append(olderPart(old));
     return;
   }
+  if ((chan(S.channel) || {}).kind === 'dm') { // drawn again, the request that had the focus keeps it
+    const had = document.activeElement && document.activeElement.closest('.req');
+    box.replaceChildren(...requestsPart().filter(Boolean));
+    const again = had && box.querySelector(`.req[data-id="${CSS.escape(had.dataset.id)}"] .req-head`);
+    if (again) again.focus({ preventScroll: true });
+    return;
+  }
   const th = S.threads.get(S.channel);
   if (!th || (th.loading && !th.list.length)) {
     box.replaceChildren(h('p', { class: 'empty' }, 'Loading...'));
@@ -932,7 +939,6 @@ function renderThreads() {
     h('button', { type: 'button', class: 'filter' + (v === S.filter ? ' on' : ''), 'aria-pressed': String(v === S.filter),
       'data-filter': v, onclick: () => setFilter(v) }, label)));
   const kind = (chan(S.channel) || {}).kind;
-  if (kind === 'dm') return box.replaceChildren(...requestsPart(sorted, th.more).filter(Boolean));
   box.replaceChildren(...(th.list.length ? [chips] : []), ...shown.map((p) => threadCard(p, S.channel)));
   if (!th.list.length) box.append(emptyNote(kind));
   else if (!shown.length) box.append(h('p', { class: 'empty' }, FILTERS.find(([v]) => v === S.filter)[2]));
@@ -942,17 +948,100 @@ function renderThreads() {
   }
 }
 
-// Action requests says what it is for, then the requests that wait for a tap, newest first, and under a shut
-// "Earlier" part the rest (answered, expired, notices, and conversations typed there before it took taps only).
-function requestsPart(sorted, more) {
-  const wait = sorted.filter((p) => p.waiting), rest = sorted.filter((p) => !p.waiting);
+/* -- Action requests: one block per request, opened in place --------- */
+
+// The DM is Action requests (GET /api/requests): a block per request, folded to what a person decides at a glance (the
+// action in plain words, who and what it concerns, an event's time, how long it has waited, the project), its left
+// edge by urgency with a word for Soon and Overdue. A tap opens it in place to the card as it is, with the same
+// buttons, the same route and the same rules; folded, it has no button. The answered ones fold to one line each under
+// a shut Earlier part. The bot sends every word of the folded block; an old card with none shows its title.
+Object.assign(S, { reqs: null, reqOpen: new Set(), reqLines: new Map() });
+const URGENT = { overdue: 'Overdue', soon: 'Soon' };
+
+async function loadRequests() {
+  try { S.reqs = await call('GET', '/requests'); } catch { return; } // the list keeps what it had
+  if ((chan(S.channel) || {}).kind !== 'dm' || S.needsView || S.search) return;
+  renderThreads();
+  const r = S.reqFocus && [...S.reqs.waiting, ...S.reqs.done].find((x) => x.id === S.reqFocus);
+  S.reqFocus = '';
+  if (!r) return;
+  if (!r.waiting) { S.earlierOpen = true; renderThreads(); }
+  S.reqOpen.delete(r.id);
+  await toggleRequest(r);
+  const li = $('thread-list').querySelector(`.req[data-id="${CSS.escape(r.id)}"]`);
+  if (li) li.scrollIntoView({ block: 'start' });
+}
+
+function requestsPart() {
+  if (!S.reqs) { loadRequests(); return [h('p', { class: 'place-note' }, DM_NOTE), h('p', { class: 'empty' }, 'Loading...')]; }
+  const { waiting = [], done = [] } = S.reqs;
   const toggle = () => { S.earlierOpen = !S.earlierOpen; renderThreads(); $('earlier-toggle').focus(); };
-  return [h('p', { class: 'place-note' }, DM_NOTE), ...wait.map((p) => threadCard(p, S.channel)),
-    wait.length ? null : h('p', { class: 'empty' }, 'Nothing waits for you now.'),
-    rest.length ? h('section', { class: 'older', 'aria-label': 'Earlier' }, h('div', { class: 'needs-head' },
+  return [h('p', { class: 'place-note' }, DM_NOTE),
+    waiting.length ? h('ul', { class: 'reqs', 'aria-label': 'Waiting for you' }, waiting.map(reqBlock))
+      : h('p', { class: 'empty' }, 'Nothing waits for you now.'),
+    done.length ? h('section', { class: 'older', 'aria-label': 'Earlier' }, h('div', { class: 'needs-head' },
       h('button', { type: 'button', id: 'earlier-toggle', class: 'older-toggle', 'aria-expanded': String(Boolean(S.earlierOpen)),
-        onclick: toggle }, `Earlier (${rest.length})`)), S.earlierOpen ? rest.map((p) => threadCard(p, S.channel)) : null) : null,
-    more ? h('button', { type: 'button', class: 'btn plain more', onclick: () => loadThreads(S.channel, true) }, 'Show older') : null];
+        onclick: toggle }, `Earlier (${done.length})`)), S.earlierOpen ? h('ul', { class: 'reqs done' }, done.map(reqBlock)) : null) : null,
+    h('p', { class: 'taps-note' }, ...tapsOnly())];
+}
+
+// Why a request is urgent, in words: its deadline, its event's time, its buttons' last day, or its wait.
+function reqWhy(r) {
+  const days = Math.round(((r.at || 0) * 1000 - new Date().setHours(0, 0, 0, 0)) / 864e5 - 0.5);
+  return {
+    due: r.urgency === 'overdue' ? `Was due ${when(r.at, true)}` : `Due ${when(r.at, true)}`,
+    starts: r.urgency === 'overdue' ? 'Its time has passed' : `Starts ${when(r.at)}`,
+    expires: days <= 0 ? 'Expires today' : 'Expires tomorrow',
+    waited: `Waiting ${ageDays(r.at)}`,
+  }[r.why] || (Date.now() / 1000 - (r.posted_at || 0) >= 86400 ? `Waiting ${ageDays(r.posted_at)}` : '');
+}
+
+function reqBlock(r) {
+  const open = S.reqOpen.has(r.id), id = `req-${r.id}`, done = !r.waiting;
+  const word = !done && URGENT[r.urgency];
+  const what = r.what || (done ? '' : r.text && oneLine(r.text, 120)), why = !done && reqWhy(r);
+  const time = h('time', { class: 'req-time' }, when(r.posted_at, true));
+  const button = (...kids) => h('button', { type: 'button', class: 'req-head', 'aria-expanded': String(open), 'aria-controls': id,
+    onclick: () => toggleRequest(r) }, ...kids);
+  // Answered: one quiet line, what it was and what happened, then when.
+  const head = done ? button(h('span', { class: 'req-sum' }, h('b', {}, r.action || 'Request'), what ? `: ${what}` : '', ' · ',
+    r.kind === 'status' ? cardText(r.text, 'req-out') : 'A note'), time)
+    : button(h('span', { class: 'req-top' }, h('span', { class: 'req-act' }, r.action || 'Request'),
+      word ? h('span', { class: `req-flag u-${r.urgency}` }, word) : null, time),
+    what ? h('span', { class: 'req-what' }, what) : null,
+    r.who || r.when ? h('span', { class: 'req-who' }, [r.who, r.when].filter(Boolean).join(' · ')) : null,
+    why || r.project ? h('span', { class: 'req-meta' }, why ? h('span', {}, why) : null,
+      r.project ? h('span', { class: 'req-proj' }, r.project) : null) : null);
+  return h('li', { class: `req u-${done ? 'done' : r.urgency || 'calm'}${open ? ' open' : ''}`, 'data-id': r.id }, head,
+    h('div', { class: 'req-body', id, hidden: !open }, open ? reqBody(r) : null));
+}
+
+// Opened: the card as the bot posted it, with its buttons while they act; its status line once answered; then the
+// bot's lines under it (a question, a pointer) and a link to the conversation it came from.
+function reqBody(r) {
+  const lines = (S.reqLines.get(r.id) || []).map((m) => h('div', { class: 'req-line' }, markdown(m.text)));
+  const from = r.origin ? h('a', { class: 'req-from', href: hashFor(r.origin.channel, r.origin.thread_key) }, 'Open the conversation') : null;
+  if (r.kind === 'card' && r.card) return [renderCard(r), ...lines, from];
+  if (r.kind === 'status') return [cardText(r.text, 'card status'), ...lines, from];
+  return [h('div', { class: 'text' }, markdown(r.text || '')), r.file ? renderFile(r.file) : null, ...lines,
+    h('a', { class: 'req-from', href: hashFor(r.channel, r.thread_key) }, 'Open it')];
+}
+
+async function toggleRequest(r) {
+  S.reqOpen.has(r.id) ? S.reqOpen.delete(r.id) : S.reqOpen.add(r.id);
+  const redrawOne = () => {
+    const li = $('thread-list').querySelector(`.req[data-id="${CSS.escape(r.id)}"]`);
+    if (li) { li.replaceWith(reqBlock(r)); $('thread-list').querySelector(`.req[data-id="${CSS.escape(r.id)}"] .req-head`).focus(); }
+  };
+  redrawOne();
+  if (!S.reqOpen.has(r.id)) return;
+  try { // the bot's lines after the card in its thread, and the thread read up to them
+    const rows = await call('GET', `/channels/${enc(r.channel)}/threads/${enc(r.thread_key)}`);
+    S.reqLines.set(r.id, rows.filter((m) => m.seq > r.seq && m.kind === 'message' && m.author !== 'owner' && m.text));
+    const upto = Math.max(0, ...rows.map((m) => m.seq || 0));
+    if (S.reqOpen.has(r.id)) redrawOne();
+    if (upto) call('POST', `/channels/${enc(r.channel)}/threads/${enc(r.thread_key)}/read`, { upto }).then((out) => takeCounts(r.channel, out), () => {});
+  } catch { /* the card shows without its lines */ }
 }
 
 // A card's arrival or its answer changes what waits in Action requests: its count and its list come from the bot again.
@@ -960,8 +1049,7 @@ function tapSoon() {
   clearTimeout(S.tapTimer);
   S.tapTimer = setTimeout(() => {
     loadChannels().then(redraw, () => {});
-    const dm = S.channels.find((c) => c.kind === 'dm');
-    if (dm && S.threads.has(dm.id)) loadThreads(dm.id);
+    if (S.reqs) loadRequests();
   }, 300);
 }
 
@@ -1229,8 +1317,8 @@ async function openThread(ch, tk, token) {
 
 function parseHash() {
   const dec = (s) => { try { return decodeURIComponent(s || ''); } catch { return ''; } };
-  const [ch, tk] = location.hash.replace(/^#\/?/, '').split('/');
-  return { ch: dec(ch), tk: dec(tk) };
+  const [ch, tk, id] = location.hash.replace(/^#\/?/, '').split('/');
+  return { ch: dec(ch), tk: dec(tk), id: dec(id) };
 }
 
 // The app opens on Ask Tacitus, where the owner asks; a link or the address names any other place.
@@ -1241,8 +1329,10 @@ function defaultChannel() {
 
 async function route() {
   if (!S.ready) return;
-  const { ch, tk } = parseHash();
+  const { ch, tk, id } = parseHash();
   const needs = ch === NEEDS;
+  // A link to a card in Action requests (the bot's pointer) opens its block in place, in the list.
+  if (id && (chan(ch) || {}).kind === 'dm') { S.reqFocus = id; location.replace(hashFor(ch)); return; }
   if (!needs && !chan(ch)) {
     const def = defaultChannel();
     if (def) location.replace(hashFor(def.id));
@@ -1265,6 +1355,7 @@ async function route() {
   stateShown();
   if (needs) loadNeeds();
   else if (changed || !S.threads.has(ch)) loadThreads(ch);
+  if (!needs && (chan(ch) || {}).kind === 'dm') loadRequests();
   await openThread(S.channel, S.thread, token);
 }
 
@@ -3387,15 +3478,15 @@ const DM_NOTE = 'Drafts, meetings and other requests wait here for your tap. Not
 // the digests (the bot posts there and reads no reply) and Action requests (it takes taps only; words go to Ask Tacitus).
 const DIGEST_NOTE = 'Tacitus posts your mail digests here; it does not read replies.';
 function composerView() {
-  const kind = S.needsView ? '' : (chan(S.channel) || {}).kind, main = mainChannel();
+  const kind = S.needsView ? '' : (chan(S.channel) || {}).kind;
   document.body.classList.toggle('no-composer', kind === 'digest' || kind === 'dm');
+  document.body.classList.toggle('requests', kind === 'dm'); // on a wide screen its blocks take the conversation's room
   $('composer-off').hidden = kind !== 'digest' && kind !== 'dm';
   if (kind === 'digest') $('composer-off').replaceChildren(DIGEST_NOTE);
-  else if (kind === 'dm') {
-    $('composer-off').replaceChildren('Here you only tap buttons. To ask Tacitus something, use ',
-      main ? h('a', { href: hashFor(main.id) }, 'Ask Tacitus') : 'Ask Tacitus', '.');
-  }
+  else if (kind === 'dm') $('composer-off').replaceChildren(...tapsOnly());
 }
+const tapsOnly = (main = mainChannel()) => ['Here you only tap buttons. To ask Tacitus something, use ',
+  main ? h('a', { href: hashFor(main.id) }, 'Ask Tacitus') : 'Ask Tacitus', '.'];
 
 // New room: the owner's own words to the bot, in a new conversation in the
 // EA channel, which then opens; the bot answers there and the room arrives

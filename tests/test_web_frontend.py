@@ -2724,3 +2724,65 @@ def test_the_posters_take_the_place_name_from_the_configured_front_end(tmp_path,
         line = sched_agent.fallback_reply({"writes": [{"tool": "create-reply", "executed": True}]})
         assert f"the Send button is in {want}." in line, line
     assert seen == {"slack": "your DM", "web": "Action requests"}
+
+
+def test_the_requests_route_gives_each_request_its_block_and_urgency(fe):
+    """GET /api/requests: every waiting card of the DM (most urgent first,
+    then newest) with its folded words, its urgency and its project (the
+    host's, else the room its conversation is in); the rest (an answered
+    card, a notice) under `done`, newest first, at most `limit`. A host
+    whose context fails gives no project and no deadline."""
+    from dataclasses import asdict
+    from datetime import date, datetime, timedelta
+    fe.create_private_room("ea-grant")
+    room = next(c["id"] for c in fe.store.channels() if c["name"] == "ea-grant")
+    talk = _say(fe, room, "Reply to the panel about the figures.")
+    over = fe.post_card("dm", card(title=":lock: Send this reply?", ea_channel=room, thread_ts=talk["thread_key"],
+                                   fields=[CardField("To", "a@example.test, b@example.test, c@example.test, "
+                                                           "d@example.test"), CardField("Subject", "Re: Figures")]))
+    soon = fe.post_card("dm", card(kind="event", title=":lock: Create this event?",
+                                   fields=[CardField("Subject", "Review panel"), CardField("When", "Thu 10:00"),
+                                           CardField("Attendees", "s@example.test")]))
+    calm = fe.post_card("dm", card(kind="plugin", title=":lock: *Upload the letter?*", fields=[]))
+    done = fe.post_card("dm", card(title="Sent one"))
+    fe.replace_card_with_status(done, ":white_check_mark: Sent.")
+    old = fe.store.add_message("dm", mid=None, thread_key=None, author="bot", kind="card", text="",
+                               card=asdict(card(title="An old one")), posted_at=time.time() - 6.5 * 86400)
+    notice = fe.post("dm", "Your flight leaves at nine.")
+    asked = []
+
+    def ctx(items):
+        asked.append(sorted(i["id"] for i in items))
+        return {over.id: {"due": (date.today() - timedelta(days=1)).isoformat()},
+                soon.id: {"starts": (datetime.now() + timedelta(hours=5)).isoformat(), "project": "review-panel"}}
+    fe.request_context = ctx
+    status, _h, body = owner(fe, "GET", "/api/requests")
+    out = json.loads(body)
+    assert status == 200 and out["as_of"] == fe.store.max_event_seq()
+    assert [j["id"] for j in out["waiting"]] == [over.id, old["id"], soon.id, calm.id]
+    assert [j["id"] for j in out["done"]] == [notice.id, done.id]
+    w = {j["id"]: j for j in out["waiting"]}
+    assert {k: w[over.id][k] for k in ("action", "who", "what", "urgency", "why", "project", "waiting")} == \
+        {"action": "Send email", "who": "To a@example.test, b@example.test and 2 more", "what": "Re: Figures",
+         "urgency": "overdue", "why": "due", "project": "grant", "waiting": True}  # the room's name, no "ea-"
+    assert w[over.id]["origin"] == {"channel": room, "thread_key": talk["thread_key"], "kind": "room", "name": "ea-grant"}
+    assert w[over.id]["card"]["fields"][0]["value"].startswith("a@example.test")  # the full card, for opening
+    assert (w[old["id"]]["urgency"], w[old["id"]]["why"]) == ("overdue", "expires")
+    assert {k: w[soon.id][k] for k in ("action", "who", "when", "urgency", "why", "project")} == \
+        {"action": "Create meeting", "who": "Attendees s@example.test", "when": "Thu 10:00", "urgency": "soon",
+         "why": "starts", "project": "review-panel"}
+    assert (w[calm.id]["action"], w[calm.id]["what"], w[calm.id]["urgency"]) == ("Upload the letter?", "", "calm")
+    d = {j["id"]: j for j in out["done"]}
+    assert (d[done.id]["action"], d[done.id]["kind"], d[done.id]["urgency"]) == ("Send email", "status", "calm")
+    assert d[notice.id]["action"] == "Notice"
+    assert asked == [sorted([over.id, soon.id, calm.id, old["id"], done.id, notice.id])]
+    assert [j["id"] for j in json.loads(owner(fe, "GET", "/api/requests?limit=1")[2])["done"]] == [notice.id]
+    assert owner(fe, "GET", "/api/requests?limit=0")[0] == 400
+    assert call(fe, "GET", "/api/requests")[0] == 401
+
+    def broken(items):
+        raise OSError("the ledger is away")
+    fe.request_context = broken
+    out = json.loads(owner(fe, "GET", "/api/requests")[2])
+    assert {j["id"]: j["project"] for j in out["waiting"]}[over.id] == "grant"  # the room still names it
+    assert {j["id"]: j["urgency"] for j in out["waiting"]}[over.id] == "calm"  # no deadline known

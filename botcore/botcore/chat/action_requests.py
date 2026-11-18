@@ -1,0 +1,156 @@
+"""Action requests as blocks (docs/webchat.md, Action requests): what one
+request in the DM shows folded, read from the card the bot posted.
+
+A request is a card (or the status line that replaced it) in the DM, at
+the top or in a thread (the Replies card's rows), or a thread there that
+opens with a plain message (a notice, a device to approve, or something
+the owner typed before the place took button presses only). block()
+gives the fields a folded block needs from the card's own structure: its
+kind as plain words (`action`), who it concerns (`who`), its subject or
+event (`what`) and the event's time (`when`), each from the card's
+labelled fields, never from its body or its text. A card with none of
+them falls back to its title.
+
+urgency() is the one cue the block is coloured by: `overdue`, `soon` or
+`calm`, with `why` (what decided it: `due`, `starts`, `expires` or
+`waited`) and `at` (the moment it names), which the app puts in words. The
+inputs are the request's linked deadline and its event's start (the
+host's request_context, from the ledger and the staged event), the card's
+age against the seven days its buttons last, and how long it has waited.
+"""
+from __future__ import annotations
+
+import re
+import time
+from datetime import datetime
+from typing import Any
+
+from . import card_text
+from . import thread_state as _ts
+
+# A card kind as the owner reads it, folded.
+ACTIONS = {
+    "send": "Send email", "bulk": "Send emails", "schedule": "Send later",
+    "event": "Create meeting", "event_update": "Move meeting", "event_delete": "Delete meeting",
+    "publish": "Publish", "close": "Close item", "closed": "Closed for you",
+    "replies": "Reply needed", "room": "Pick a room", "invite": "Answer an invite",
+}
+# The labelled fields each part reads, first found wins.
+WHO = ("To", "Attendees", "Organizer", "From")
+WHAT = ("Subject", "Event")
+WHEN = ("New time", "When")
+# A waiting request turns `soon` this long before its deadline or its
+# event, or after it has waited this long (the Replies card's first rung);
+# `overdue` once the deadline or the event has passed, or a day before its
+# buttons stop acting.
+SOON_S = 2 * 86400
+WAITED_S = 3 * 86400
+EXPIRES_S = 86400
+LEVELS = ("overdue", "soon", "calm")
+_ADDRESSES_SHOWN = 2
+_MULTI_RE = re.compile(r"\s*[,;]\s*")
+
+
+def _fields(card: dict) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for f in card.get("fields") or []:
+        if isinstance(f, dict) and f.get("label") and f.get("label") not in out:
+            out[str(f["label"])] = card_text.one_line(str(f.get("value") or ""), 300)
+    return out
+
+
+def _first(fields: dict[str, str], labels: tuple[str, ...]) -> tuple[str, str]:
+    for label in labels:
+        if fields.get(label):
+            return label, fields[label]
+    return "", ""
+
+
+def _people(value: str) -> str:
+    """At most two names or addresses, then how many more."""
+    parts = [p for p in _MULTI_RE.split(value) if p]
+    if len(parts) <= _ADDRESSES_SHOWN + 1:
+        return ", ".join(parts)
+    return ", ".join(parts[:_ADDRESSES_SHOWN]) + f" and {len(parts) - _ADDRESSES_SHOWN} more"
+
+
+def block(msg: dict) -> dict:
+    """The folded block's words for one request (a stored message as the
+    store's JSON gives it): {"action", "who", "what", "when"}, "" where the
+    card has no such field. `what` falls back to the card's title (or a
+    message's first line) when the card names no subject."""
+    card = msg.get("card") if isinstance(msg.get("card"), dict) else {}
+    title = _ts.plain(card.get("title") or msg.get("text"), 120)
+    if not card:
+        file = msg.get("file") if isinstance(msg.get("file"), dict) else {}
+        if msg.get("author") == "owner":
+            return {"action": "Your message", "who": "", "what": title, "when": ""}
+        if file:
+            return {"action": "A file for you", "who": "", "what": title or card_text.one_line(
+                str(file.get("name") or ""), 120), "when": ""}
+        device = _ts.device_code(msg.get("text"))
+        return {"action": "Approve a device" if device else "Notice", "who": "", "what": title,
+                "when": ""}
+    kind = str(card.get("kind") or "")
+    fields = _fields(card)
+    label, who = _first(fields, WHO)
+    _l, what = _first(fields, WHAT)
+    _w, when = _first(fields, WHEN)
+    action = ACTIONS.get(kind) or title or "Request"
+    if kind == "close" and len(card.get("actions") or []) > 2:
+        action = "Close items"
+    return {"action": action,
+            "who": f"{label} {_people(who)}".strip() if who else "",
+            "what": what or (title if title != action else ""),
+            "when": when}
+
+
+def _epoch(value: Any, *, end_of_day: bool) -> float | None:
+    """A moment from the host: seconds, an ISO time, or a date (the end of
+    that local day when `end_of_day`, a deadline's last moment)."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    try:
+        if len(text) == 10:
+            day = datetime.strptime(text, "%Y-%m-%d")
+            return (day.replace(hour=23, minute=59, second=59) if end_of_day else day).timestamp()
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def urgency(msg: dict, waiting: bool, ctx: dict | None = None,
+            now: float | None = None) -> dict:
+    """{"urgency", "why", "at"} for one request. Only a waiting request is
+    anything but calm. Overdue: its linked deadline passed, its event's
+    start passed, or its buttons stop acting within a day. Soon: a deadline
+    or a start within two days, or three days of waiting. The first that
+    holds, in that order, names `why` and `at`."""
+    now = time.time() if now is None else float(now)
+    if not waiting:
+        return {"urgency": "calm", "why": "", "at": None}
+    ctx = ctx or {}
+    due = _epoch(ctx.get("due"), end_of_day=True)
+    starts = _epoch(ctx.get("starts"), end_of_day=False)
+    posted = float(msg.get("posted_at") or now)
+    expires = posted + _ts.CARD_LIVE_S
+    for level, why, at, test in (
+            ("overdue", "due", due, due is not None and due < now),
+            ("overdue", "starts", starts, starts is not None and starts < now),
+            ("overdue", "expires", expires, msg.get("kind") == "card" and expires - now < EXPIRES_S),
+            ("soon", "due", due, due is not None and due - now < SOON_S),
+            ("soon", "starts", starts, starts is not None and starts - now < SOON_S),
+            ("soon", "waited", posted, now - posted >= WAITED_S)):
+        if test:
+            return {"urgency": level, "why": why, "at": at}
+    return {"urgency": "calm", "why": "", "at": None}
+
+
+def order(items: list[dict]) -> list[dict]:
+    """Waiting requests as the list shows them: overdue, then soon, then
+    calm, each newest first."""
+    return sorted(items, key=lambda j: (LEVELS.index(j.get("urgency") or "calm"),
+                                        -float(j.get("posted_at") or 0)))

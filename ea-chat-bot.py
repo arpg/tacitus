@@ -117,6 +117,11 @@ for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
         _web.debug_on = _web_notify_settings.debug_on
         # The names the owner gave conversations title them in the app.
         _web.conversation_names = lambda: _conversation_names()
+        # Action requests' blocks: each request's project, deadline and event
+        # start, read from the ledger and the staged event left in place.
+        from preprocessor import web_requests as _web_requests
+        _web.request_context = lambda items: _web_requests.context(
+            items, payload_of=lambda v: _staged_button_payload(v, consume=False))
 
 
 def _private_state(name: str) -> Path:
