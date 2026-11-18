@@ -9,9 +9,11 @@ remote-writer briefs from owner processes (outbound_log.py). Summarises
 what left the machine and flags blocked fetches, exfil-shaped URLs and
 searches, web tools in a cron lane, volume spikes, new hosts, many
 subdomains, poll submissions under another name and any sign that the
-ea-bot log was tampered with (see outbound_review). Posts once a day,
-always a line (a short all-clear when nothing tripped), so the review is
-visibly running.
+ea-bot log was tampered with (see outbound_review). Posts when a check
+tripped; a clear day posts its short all-clear on Mondays only
+(HEARTBEAT_WEEKDAY), so the review is visibly running and a quiet day adds
+nothing to the health channel. A clear day not posted still advances the
+cursors: its window was read.
 
 With no cursor (a first run, or the file was removed) or a cursor that is
 refused or is not JSON, each log is read from its start (bounded by size)
@@ -24,11 +26,20 @@ Cron (owner, daily):  45 6 * * *  python3 .../scripts/outbound-review.py
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "preprocessor"))
+
+
+# The weekday (Monday 0) a clear review still posts its all-clear.
+HEARTBEAT_WEEKDAY = 0
+
+
+def _today() -> datetime:
+    return datetime.now()
 
 
 def main() -> int:
@@ -41,7 +52,9 @@ def main() -> int:
     report, new_state = R.review(state)
 
     text = R.render(report)
-    if not chat_notify.post(chat_notify.health_channel_key(), text):
+    flagged = R.has_flags(report)
+    if (flagged or _today().weekday() == HEARTBEAT_WEEKDAY) and not chat_notify.post(
+            chat_notify.health_channel_key(), text):
         print("outbound-review: post failed; cursors not advanced", file=sys.stderr)
         return 1
     if state is not None and state.get("cursor_problem"):
@@ -52,7 +65,7 @@ def main() -> int:
     print(f"outbound-review: {report['fetches']} fetches, {report['web_fetches']} WebFetch, "
           f"{report['web_searches']} WebSearch, {report.get('briefs', 0)} writer briefs, "
           f"{len(report.get('log_anomalies') or [])} log anomalies, "
-          f"{'flagged' if R.has_flags(report) else 'clear'}")
+          f"{'flagged' if flagged else 'clear'}")
     return 0
 
 

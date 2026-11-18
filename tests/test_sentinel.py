@@ -894,7 +894,7 @@ def test_breaker_detail_names_the_service_and_error_kind_only():
     try:
         ok, detail = sentinel.check_circuit_breakers()
         assert not ok
-        assert detail.startswith("circuit breaker OPEN: remote-llm (HTTP 502), "
+        assert detail.startswith("circuit breaker OPEN: remote-llm (HTTP 5xx), "
                                  "remote-llm-tune (timed out after 330s) ")
         assert "15" not in detail and "<html>" not in detail
         retry_policy.open_breakers = lambda: []
@@ -919,7 +919,7 @@ def test_breaker_detail_says_what_each_graph_lane_does():
 
     try:
         assert detail("graph") == (
-            "circuit breaker OPEN: graph (HTTP 504 after 6 attempts) — "
+            "circuit breaker OPEN: graph (HTTP 5xx after 6 attempts) — "
             "the owner's own mail actions still try once each")
         bg = detail("graph-background")
         assert bg.endswith("— background mail jobs are failing fast"), bg
@@ -933,6 +933,60 @@ def test_breaker_detail_says_what_each_graph_lane_does():
             "remote-llm: external service down; calls are failing fast"), mixed
         assert detail("remote-llm").endswith(
             "— external service down; calls are failing fast")
+    finally:
+        retry_policy.open_breakers = orig
+
+
+def test_an_outage_that_answers_502_503_and_504_in_turn_is_one_alert():
+    """The detail is the alert's fingerprint: a server error's code changes
+    from probe to probe in one outage, so every 5xx code reads the same.
+    A 429 is another kind of trouble and reads as itself."""
+    import retry_policy
+    orig = retry_policy.open_breakers
+    seen = set()
+    try:
+        for code in (502, 503, 504, 502):
+            retry_policy.open_breakers = lambda c=code: [
+                {"service": "graph-background", "failures": 3,
+                 "last_error": f"HTTP {c} after 6 attempts"}]
+            seen.add(sentinel.check_circuit_breakers()[1])
+        assert len(seen) == 1 and "HTTP 5xx after 6 attempts" in seen.pop()
+        retry_policy.open_breakers = lambda: [
+            {"service": "graph", "failures": 3, "last_error": "HTTP 429 after 6 attempts"}]
+        assert "(HTTP 429 after 6 attempts)" in sentinel.check_circuit_breakers()[1]
+    finally:
+        retry_policy.open_breakers = orig
+
+
+def test_a_graph_breaker_alerts_only_after_it_stays_open_for_the_grace():
+    """Microsoft's 502 and 504 bursts open a Graph breaker for minutes and
+    clear by themselves: a Graph breaker open less than the grace since its
+    first opening is no alert. Past the grace it alerts; another breaker,
+    and a Graph entry without `since`, alert at once."""
+    import retry_policy
+    orig = retry_policy.open_breakers
+    now = time.time()
+    grace = sentinel.GRAPH_OPEN_GRACE_S
+
+    def check(*entries):
+        retry_policy.open_breakers = lambda: [
+            {"failures": 3, "last_error": "HTTP 504 after 6 attempts", **e} for e in entries]
+        return sentinel.check_circuit_breakers()
+
+    try:
+        ok, text = check({"service": "graph-background", "since": now - 600})
+        assert ok and "no alert yet" in text, text
+        ok, text = check({"service": "graph", "since": now - 60},
+                         {"service": "graph-background", "since": now - 600})
+        assert ok, text
+        ok, text = check({"service": "graph-background", "since": now - grace - 60})
+        assert not ok and text.startswith("circuit breaker OPEN: graph-background"), text
+        ok, text = check({"service": "graph-background"})
+        assert not ok, text
+        ok, text = check({"service": "graph-background", "since": now - 60},
+                         {"service": "remote-llm", "since": now - 60})
+        assert not ok and text.startswith("circuit breaker OPEN: remote-llm (HTTP 5xx"), text
+        assert "graph-background" not in text
     finally:
         retry_policy.open_breakers = orig
 

@@ -278,6 +278,8 @@ body.resizing, body.resizing * { cursor: col-resize; -webkit-user-select: none; 
 #needs-link { margin-top: 8px; }
 #needs-link svg { width: 18px; height: 18px; vertical-align: -3px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
 .badge.needs { background: var(--accent); color: var(--accent-text); }
+.badge.muted { background: var(--hover); color: var(--muted); }
+.sheet-note { margin: 4px 0 8px; color: var(--muted); font-size: 13px; }
 
 .badge { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--badge); color: #fff;
   font-size: 12px; font-weight: 700; line-height: 20px; text-align: center; }

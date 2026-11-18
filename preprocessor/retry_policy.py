@@ -92,7 +92,8 @@ class CircuitOpen(RuntimeError):
         self.reopens_at = reopens_at
 
 
-_NUMBER_FIELDS = ("failures", "last_failure_ts", "opened_at", "cooldown", "opens", "threshold")
+_NUMBER_FIELDS = ("failures", "last_failure_ts", "opened_at", "cooldown", "opens", "threshold",
+                  "since")
 
 
 def _valid_entry(entry: dict) -> dict:
@@ -203,10 +204,14 @@ class CircuitBreaker:
             "threshold": self.threshold,
             "opens": e.get("opens") or 0,
         }
+        if e.get("since"):
+            entry["since"] = e["since"]
         if failures >= self.threshold:
             # Stamp opened_at on the crossing failure and on any failure
-            # during half-open probing.
+            # during half-open probing. `since` is the first opening of
+            # this outage; the success that clears the entry clears it.
             entry["opened_at"] = now
+            entry.setdefault("since", now)
             if not prev_opened or (now - prev_opened) >= self.cooldown:
                 entry["opens"] += 1
         self._write(entry)

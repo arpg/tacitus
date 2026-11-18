@@ -149,8 +149,9 @@ under a ShadowFrontend the composite switches the shadow off
 
 ## Store (SQLite)
 
-- `channels(id TEXT PK, name TEXT, kind TEXT, archived INT, description TEXT)`;
-  kind is `main`, `sched`, `dm`, `room` or `digest`.
+- `channels(id TEXT PK, name TEXT, kind TEXT, archived INT, description TEXT, muted INT)`;
+  kind is `main`, `sched`, `dm`, `room` or `digest`. A store from before
+  the mute takes the column with its digest channels muted (Muted channels).
 - `messages(seq INTEGER PK AUTOINCREMENT, channel TEXT, id TEXT, thread_key TEXT,
   author TEXT, kind TEXT, text TEXT, card TEXT, file TEXT, reactions TEXT,
   posted_at REAL, updated_at REAL, history INT, edits TEXT, deleted_at REAL,
@@ -237,9 +238,10 @@ subset and escapes everything else; it never injects HTML from text.
 | GET | `/manifest.sig.json` | the signed manifest of the app's files, without auth (Code integrity); 404 when the bot signs none |
 | GET | `/api/bundle` | the same document, for the owner: the route the relay reaches |
 | GET | `/api/app/{file}` | a file that the signed manifest names, its bytes as on disk (`headers.json` as the bot writes it), as an attachment with the sandbox policy and the type of its name; 404 for any other name. A phone off the tailnet, or on the relay's origin, takes a new release here, through the relay (Code integrity) |
-| GET | `/api/channels` | `[{"id","name","kind","archived","description","last_at","unread","unread_threads","as_of"}]`; `unread_threads` maps each thread with unread messages to its count, `unread` is their sum, and `as_of` is the last event the counts take in (Unread) |
+| GET | `/api/channels` | `[{"id","name","kind","archived","description","muted","last_at","unread","unread_threads","as_of"}]`; `unread_threads` maps each thread with unread messages to its count, `unread` is their sum, and `as_of` is the last event the counts take in (Unread) |
 | PATCH | `/api/channels/{ch}` | `{"name"}` → the room's row: the owner renames a room (Rooms). Its spaces are collapsed and a leading `#` dropped; 400 for an empty name, one over 60 characters or one with a control character, and for a fixed place (kind `main`, `dm`, `sched` or `digest`); 404 for an unknown room; 409 for a name another channel has; the same name answers the row as it is. A chat action: a relayed device that may chat may take it |
 | POST | `/api/channels/{ch}/archive`, `/api/channels/{ch}/unarchive` | `{}` → the room's row with `archived` set or cleared; a room in that state already is answered as it is. 400 for a fixed place, 404 for an unknown room. A chat action, as the rename |
+| POST | `/api/channels/{ch}/mute`, `/api/channels/{ch}/unmute` | `{}` → the channel's row with `muted` set or cleared; a channel in that state already is answered as it is. 400 for the EA channel and the DM, 404 for an unknown channel. A chat action, as the rename (Muted channels) |
 | GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count`, `last_at` and the thread's state: `state`, `state_by`, `state_reason`, `state_at`, `stale` (State) |
 | GET | `/api/needs` | `{"threads": [...]}`: the threads whose state is `needs_you` or `waiting` in channels that are not archived, each a threads row with `channel_name`; `needs_you` first, then newest first; at most 200; one query, and it moves no read mark (State). `needs` is never a channel id |
 | POST | `/api/threads/{ch}/{thread_key}/state` | `{"state": "done" \| "needs_you" \| "waiting"}` → the thread's row as the threads route gives it, with `channel_name`: the owner's override (`state_by` `owner`), until a new message lands in the thread; 400 for another state, 404 for an unknown thread. A chat action: a relayed device that may chat may take it (State) |
@@ -352,6 +354,27 @@ primary would be the bot's, among its status marks. So the primary
 keeps the message as it was sent, and the bot's turns there read the
 primary's copy: an edit or a removal on the web changes what the web
 chat shows.
+
+## Muted channels
+
+A muted channel's unread count adds nothing to the menu button's count or
+the tab title, it does not rise to the top of the drawer, and its own
+count shows in grey. Its threads count as they always do, and pushes are
+unchanged (Notifications): a reply in a conversation the owner wrote in
+still pushes. The flag is the store's (`channels.muted`) and this app's
+alone; shadow mode does not tell the primary.
+
+- A new digest channel starts muted (`MUTED_KINDS`), and a store from
+  before the column mutes its digest channels.
+- The health channel (the web block's `notify.health`) is muted once per
+  store when the bot starts (`WebFrontend._mute_defaults`,
+  `WebStore.mute_once`, the meta key `muted_default:<id>`); an unmute
+  after that stays through restarts. The EA channel named as the health
+  channel is never muted.
+- The owner mutes and unmutes a room from its menu (Rename room, Mute or
+  Unmute, Archive room) and the digests from theirs (Mute or Unmute
+  alone); `POST /api/channels/{ch}/mute` or `/unmute`. The EA channel and
+  the DM refuse.
 
 ## Unread
 

@@ -585,6 +585,26 @@ def test_the_daily_script_posts_an_anomaly_and_holds_the_cursor_on_a_failed_post
     assert R.read_state()["logs"]["fetch_url"]["offset"] == paths["fetch_url"].stat().st_size
 
 
+def test_a_clear_review_posts_on_mondays_only_and_still_advances(logs, tmp_path, monkeypatch):
+    """A day with nothing flagged adds nothing to the health channel but on
+    Monday, the weekly sign that the review runs; its window is read either
+    way, so the cursors move."""
+    from datetime import datetime
+    from preprocessor import chat_notify
+    paths, specs = logs
+    mod = _script(monkeypatch, tmp_path, specs)
+    posts = []
+    monkeypatch.setattr(chat_notify, "health_channel_key", lambda: "health")
+    monkeypatch.setattr(chat_notify, "post", lambda key, text: posts.append(text) or True)
+    monkeypatch.setattr(mod, "_today", lambda: datetime(2026, 11, 17))   # a Tuesday
+    assert mod.main() == 0 and len(posts) == 1                          # the first run is flagged
+    seeded = R.read_state()
+    assert mod.main() == 0 and len(posts) == 1                          # clear: nothing posted
+    assert R.read_state()["last_ts"] >= seeded["last_ts"]
+    monkeypatch.setattr(mod, "_today", lambda: datetime(2026, 11, 16))   # a Monday
+    assert mod.main() == 0 and len(posts) == 2 and "Nothing looked off." in posts[-1]
+
+
 # --- a lost, refused or bad cursor never skips a window silently -------------
 
 def test_a_cursor_that_is_not_json_is_set_aside_and_each_log_is_read_from_its_start(

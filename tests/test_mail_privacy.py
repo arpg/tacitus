@@ -330,7 +330,10 @@ def test_measure_without_mail_reads(priv):
     text = mp.summary_text(m, {}, 1, cfg={"mail": "enforce", "scheduling": "off", "drafting": "remote",
                                           "ghost": {"mail": {"from": "2026-10-11", "until": "2026-10-17"}}})
     assert "Mail: 2 messages" in text
-    assert text.startswith("*Remote LLM shadow run, day 1* (mail enforce, scheduling off; numbers only)")
+    assert text.startswith("*Remote LLM report* (mail enforce, scheduling off; numbers only)")
+    shadow = mp.summary_text(m, {}, 3, cfg={"mail": "shadow", "scheduling": "off",
+                                             "shadow_until": "2999-01-01"})
+    assert shadow.startswith("*Remote LLM shadow run, day 3* (mail shadow to 2999-01-01"), shadow
     # The briefing reduction and the drafting A/B lines appear only while they run.
     assert "Briefing:" not in text and "Drafting A/B" not in text
 

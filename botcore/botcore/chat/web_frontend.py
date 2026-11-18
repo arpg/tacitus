@@ -118,6 +118,13 @@ Slack rename does, so the room registry keeps the name. In
 shadow mode the composite makes the change on the primary
 (`inbound("rename" | "archive", channel=..., ...)`) and writes the row
 here; a primary that cannot rename refuses in words the app shows.
+The owner mutes and unmutes a room, Scheduling or the digests (`POST
+/api/channels/<id>/mute`, `/unmute`); the EA channel and the DM refuse. A
+muted channel's unread count adds nothing to the menu badge or the tab
+title, and the channel does not rise to the top of the drawer. A digest
+channel starts muted, and so does the health channel (the web block's
+`notify.health`) once per store; an unmute stays. The mute is this app's
+alone: shadow mode does not tell the primary.
 
 Settings screens: the host registers a page in `settings_pages` (a name
 and an object with `get()` and `save(body)`; the EA's routing table is
@@ -339,6 +346,15 @@ _TERM_RE = re.compile(r"[^\W_]+")
 # `digest` is a channel of automated digests for the owner alone: a host
 # keeps a channel of that kind out of what its model reads.
 KINDS = ("main", "sched", "dm", "room", "digest")
+# The kinds a new channel of starts muted: its unread count adds nothing to
+# the app's menu badge or its tab title, and it does not rise to the top of
+# the drawer. The owner mutes or unmutes any channel but the EA channel and
+# the DM (MUTE_FIXED) from its menu.
+MUTED_KINDS = frozenset({"digest"})
+MUTE_FIXED = frozenset({"main", "dm"})
+# The meta key that records the one default mute of the health channel (the
+# web block's notify.health): an unmute after it stays.
+MUTE_DEFAULT_KEY = "muted_default:"
 # Channel ids the app's routes take for their own (`#/needs`, the Needs you
 # view): no channel may have one.
 RESERVED_CHANNEL_IDS = frozenset({"needs"})
@@ -408,7 +424,7 @@ PLACEHOLDER_PAGE = (b"<!doctype html><html><head><meta charset=\"utf-8\">"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS channels(
     id TEXT PRIMARY KEY, name TEXT, kind TEXT, archived INT DEFAULT 0,
-    description TEXT DEFAULT '');
+    description TEXT DEFAULT '', muted INT DEFAULT 0);
 CREATE TABLE IF NOT EXISTS messages(
     seq INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, id TEXT, thread_key TEXT,
     author TEXT, kind TEXT, text TEXT, card TEXT, file TEXT, reactions TEXT,
@@ -856,6 +872,12 @@ class WebStore:
                 if col not in cols:
                     # A store from before the owner's edits, removals and reactions.
                     self._conn.execute(f"ALTER TABLE messages ADD COLUMN {col} {typ}")
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(channels)")}
+            if "muted" not in cols:
+                # A store from before the mute: the digests start muted, as a
+                # new digest channel does (upsert_channel).
+                self._conn.execute("ALTER TABLE channels ADD COLUMN muted INT DEFAULT 0")
+                self._conn.execute("UPDATE channels SET muted=1 WHERE kind='digest'")
             cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(push_subscriptions)")}
             if "last_seen" not in cols:
                 # A store from before: a subscription counts as posted when made.
@@ -1006,6 +1028,7 @@ class WebStore:
         last = self._one("SELECT MAX(posted_at) AS t FROM messages WHERE channel=?", (cid,))
         return {"id": cid, "name": row["name"] or "", "kind": row["kind"] or "room",
                 "archived": bool(row["archived"]), "description": row["description"] or "",
+                "muted": bool(row["muted"]),
                 "last_at": last["t"] if last else None, **self._counts(cid)}
 
     def _counts(self, channel: str) -> dict:
@@ -1638,9 +1661,11 @@ class WebStore:
             return cur.rowcount
 
     def upsert_channel(self, cid: str, name: str, kind: str, archived: bool = False,
-                       description: str | None = None) -> dict:
+                       description: str | None = None, muted: bool | None = None) -> dict:
         """Write a channel row; a `channel` event when it changed. A
-        reserved id (RESERVED_CHANNEL_IDS) is refused with ValueError."""
+        reserved id (RESERVED_CHANNEL_IDS) is refused with ValueError.
+        `muted` None keeps the row's mute; a new row starts muted when it
+        is a digest channel (MUTED_KINDS)."""
         if str(cid).strip().lower() in RESERVED_CHANNEL_IDS:
             raise ValueError(f"{cid!r} is a reserved channel id")
         kind = kind if kind in KINDS else "room"
@@ -1648,13 +1673,17 @@ class WebStore:
         def run() -> dict:
             row = self._conn.execute("SELECT * FROM channels WHERE id=?", (cid,)).fetchone()
             desc = description if description is not None else (row["description"] if row else "")
-            new = (name or (row["name"] if row else "") or cid, kind, int(bool(archived)), desc or "")
+            mute = muted if muted is not None else (
+                bool(row["muted"]) if row else kind in MUTED_KINDS)
+            new = (name or (row["name"] if row else "") or cid, kind, int(bool(archived)), desc or "",
+                   int(bool(mute)))
             if row is None:
-                self._conn.execute("INSERT INTO channels(id, name, kind, archived, description) "
-                                   "VALUES (?,?,?,?,?)", (cid, *new))
-            elif (row["name"], row["kind"], row["archived"], row["description"]) != new:
-                self._conn.execute("UPDATE channels SET name=?, kind=?, archived=?, description=? "
-                                   "WHERE id=?", (*new, cid))
+                self._conn.execute("INSERT INTO channels(id, name, kind, archived, description, "
+                                   "muted) VALUES (?,?,?,?,?,?)", (cid, *new))
+            elif (row["name"], row["kind"], row["archived"], row["description"],
+                  row["muted"]) != new:
+                self._conn.execute("UPDATE channels SET name=?, kind=?, archived=?, description=?, "
+                                   "muted=? WHERE id=?", (*new, cid))
             else:
                 return self._channel_json(row)
             out = self._channel_json(self._conn.execute(
@@ -1672,7 +1701,30 @@ class WebStore:
         return self.upsert_channel(cid, fields.get("name", row["name"]),
                                    fields.get("kind", row["kind"]),
                                    fields.get("archived", row["archived"]),
-                                   fields.get("description", row["description"]))
+                                   fields.get("description", row["description"]),
+                                   fields.get("muted", row["muted"]))
+
+    def mute_once(self, cid: str) -> bool:
+        """Mute channel `cid` the first time it is named here, once per
+        store (the meta key MUTE_DEFAULT_KEY + cid); True when it was named
+        now. An unmute after it stays. A channel the store lacks is not
+        named, so the default waits for it."""
+        key = MUTE_DEFAULT_KEY + str(cid or "")
+        if not cid or self._one("SELECT 1 FROM meta WHERE key=?", (key,)):
+            return False
+
+        def run() -> bool:
+            row = self._conn.execute("SELECT * FROM channels WHERE id=?", (cid,)).fetchone()
+            if row is None:
+                return False
+            self._conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                               (key, str(time.time())))
+            if not row["muted"] and row["kind"] not in MUTE_FIXED:
+                self._conn.execute("UPDATE channels SET muted=1 WHERE id=?", (cid,))
+                self._emit("channel", cid, cid, self._channel_json(self._conn.execute(
+                    "SELECT * FROM channels WHERE id=?", (cid,)).fetchone()))
+            return True
+        return self._transaction(run)
 
     def add_message(self, channel: str, *, mid: str | None, thread_key: str | None,
                     author: str, kind: str, text: str = "", card: dict | None = None,
@@ -2670,6 +2722,7 @@ class WebFrontend(ChatFrontend):
                 log.warning("web chat: links to the primary not rewritten: %s", e)
             if self.inbound is None:
                 self._ensure_own_channels()
+            self._mute_defaults()
             cls = _Server6 if ":" in self.bind else _Server
             srv = cls((self.bind, self.port), _Handler, max_per_peer=self.peer_connections)
             srv.frontend = self
@@ -3035,6 +3088,20 @@ class WebFrontend(ChatFrontend):
         archived = not self.sched_on
         if row["kind"] == "sched" and bool(row["archived"]) != archived:
             self.store.set_channel(SCHED_ID, archived=archived)
+
+    def _mute_defaults(self) -> None:
+        """Mute the health channel (the web block's notify.health) once per
+        store: the sentinel and the nightly reviews post there for the
+        record, and its count stays off the menu badge. An unmute after it
+        stays (Store.mute_once); the EA channel and the DM are never muted."""
+        notify = self.cfg.get("notify")
+        entry = notify.get("health") if isinstance(notify, dict) else None
+        cid = str(entry.get("channel") or "") if isinstance(entry, dict) else ""
+        try:
+            if cid and self.store.mute_once(cid):
+                log.info("web chat: the health channel %s is muted (once; unmute from its menu)", cid)
+        except sqlite3.Error as e:
+            log.warning("web chat: the health channel's default mute was not written: %s", e)
 
     def _ensure_pair_token(self) -> None:
         p = self.pair_token_file
@@ -4156,6 +4223,21 @@ class WebFrontend(ChatFrontend):
                 pass
         return self.store.channel(channel) or ch
 
+    def web_mute(self, channel: str, muted: bool) -> dict:
+        """Mute a channel, or unmute it: its row. A muted channel's unread
+        count adds nothing to the app's menu badge or tab title, and the
+        channel keeps its place in the drawer. The EA channel and the DM
+        refuse. The mute is this app's alone: in shadow mode the primary
+        is not told."""
+        ch = self.store.channel(channel)
+        if ch is None:
+            raise _HttpError(404, "There is no such place.")
+        if ch["kind"] in MUTE_FIXED:
+            raise _HttpError(400, "Ask Tacitus and Direct messages cannot be muted.")
+        if bool(ch["muted"]) == muted:
+            return ch
+        return self.store.set_channel(channel, muted=muted) or ch
+
     # the owner's edits, removals and reactions. They change this store
     # alone: in shadow mode the primary keeps the message as it was sent
     # (the composite takes messages, clicks and room changes, not these;
@@ -4541,6 +4623,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if method == "POST":
             if n == 3 and segs[0] == "channels" and segs[2] in ("archive", "unarchive"):
                 self._json(200, fe.web_archive(segs[1], segs[2] == "archive"))
+                return None
+            if n == 3 and segs[0] == "channels" and segs[2] in ("mute", "unmute"):
+                self._json(200, fe.web_mute(segs[1], segs[2] == "mute"))
                 return None
             if n == 3 and segs[0] == "channels" and segs[2] == "messages":
                 body = self._read_json()
