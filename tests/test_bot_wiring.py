@@ -481,8 +481,24 @@ def test_resident_replies_carry_the_usage_footer():
     """A resident reply ends with session and weekly usage and their reset
     times, as a per-thread reply does; only the label differs."""
     fn = _fn_body("_try_resident_dispatch")
-    assert '_fmt_usage(get_usage(), elapsed, label="EA resident")' in fn
+    assert '_fmt_usage(footer_usage(), elapsed, label="EA resident")' in fn
     assert "response = reply + footer" in fn
+
+
+def test_usage_comes_from_the_runs_with_no_api_call_per_reply():
+    """Each Claude run's rate_limit_event is saved (rate_limits.py); the
+    reply footers read it (footer_usage, which asks the endpoint at most
+    once per gap), and only the `usage` command may start a refresh run."""
+    runner = _fn_body("_run_claude_streaming")
+    assert 'elif etype == "rate_limit_event" and not extra_env:' in runner
+    assert "_note_rate_limits(event, label)" in runner
+    assert "usage_data = footer_usage()" in _fn_body("_record_invocation")
+    assert "get_usage(" not in BOT_SRC
+    assert BOT_SRC.count("_usage_refresh_run") == 2
+    assert "report_usage(refresh=_usage_refresh_run)" in BOT_SRC
+    refresh = _fn_body("_usage_refresh_run")
+    for flag in ('"--tools", ""', '"--strict-mcp-config"', '"--no-session-persistence"'):
+        assert flag in refresh
 
 
 def test_a_cold_resident_follow_up_carries_the_thread():

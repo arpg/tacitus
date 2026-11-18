@@ -33,6 +33,9 @@ FAKE = textwrap.dedent("""
     prompt = sys.stdin.read()
     if os.environ.get("FAKE_SILENT"):
         time.sleep(60)
+    if os.environ.get("FAKE_RATE"):
+        print(json.dumps({"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {
+            "five_hour": {"utilization": 0.25, "resetsAt": 1795029000, "status": "allowed"}}}}))
     print(json.dumps({"type": "result", "subtype": "success", "num_turns": 1,
                       "result": json.dumps({"argv": sys.argv[1:], "prompt_len": len(prompt),
                                             "tail": prompt[-12:]})}))
@@ -63,6 +66,7 @@ def runner(tmp_path, monkeypatch):
           "_is_gmail_draft_tool": lambda *a: False,
           "_NOT_LOGGED_IN": "Not logged in", "_LOGIN_LOST_MARKERS": ("Not logged in",),
           "_login_lost_message": lambda: "login lost",
+          "_note_rate_limits": lambda event, label: None,
           "_sudo_claude_cmd": lambda args, run_id="", extra_env=None: [sys.executable, str(fake), *args]}
     code = (_src("@dataclass\nclass ClaudeResult", "\n\n\n_GMAIL_DRAFT_TOOLS")
             + "\n\n" + _src("def _run_claude_streaming(", "\n# ----"))
@@ -127,6 +131,21 @@ def test_a_run_that_cannot_start_is_an_error_not_a_timeout(runner):
     ns["_sudo_claude_cmd"] = lambda args, run_id="", extra_env=None: ["/nonexistent/claude", *args]
     cr = ns["_run_claude_streaming"](_args("hi"), timeout=5, label="t")
     assert cr.returncode == -1 and not cr.timed_out and cr.output.startswith("Error:")
+
+
+def test_a_runs_rate_limit_event_is_noted_except_on_the_on_prem_arm(runner, monkeypatch):
+    # The plan's windows feed the reply footer (rate_limits.py); a turn on
+    # the tool gateway is not the Claude account's, so it notes nothing.
+    ns, _ = runner
+    monkeypatch.setenv("FAKE_RATE", "1")
+    noted = []
+    ns["_note_rate_limits"] = lambda event, label: noted.append((event["type"], label))
+    cr = ns["_run_claude_streaming"](_args("hi"), timeout=30, label="mono")
+    assert cr.returncode == 0 and json.loads(cr.output)["prompt_len"] == 2
+    assert noted == [("rate_limit_event", "mono")]
+    cr = ns["_run_claude_streaming"](_args("hi"), timeout=30, label="mono",
+                                     extra_env={"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"})
+    assert cr.returncode == 0 and noted == [("rate_limit_event", "mono")]
 
 
 def test_timeouts_are_sized_for_room_turns():

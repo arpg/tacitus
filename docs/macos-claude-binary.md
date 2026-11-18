@@ -91,11 +91,13 @@ and `scripts/ea-bot-shell.sh` all get it with no code change.
 - The token covers the model. The claude.ai connectors (Gmail, Google Calendar
   MCP) may not come with it; the EA reads Outlook and the Google calendars
   through its own clients and the mail mediator.
-- The `usage` chat command (`preprocessor/claude_usage.py`) reads this token
-  when ea-bot has no credentials file. On 2026-10-16
-  `https://api.anthropic.com/api/oauth/usage` answered HTTP 429 to it
-  repeatedly over 15 minutes, while model calls on the same token worked.
-  Treat `usage` as unavailable on this install unless that changes.
+- The reply footer and the `usage` chat command read the plan's windows
+  from the `rate_limit_event` each Claude run prints
+  (`preprocessor/rate_limits.py`, docs/ea/usage-tracking.md), so they work
+  on this token. The usage endpoint
+  (`https://api.anthropic.com/api/oauth/usage`) does not accept this token:
+  it answers HTTP 429 or a scope error while model calls on the same token
+  work. `preprocessor/claude_usage.py` keeps it as the last fallback only.
 - Set it without printing it: copy the token, then pipe `pbpaste` into a
   `sudo -u ea-bot` writer, and clear the clipboard with `pbcopy < /dev/null`.
 
