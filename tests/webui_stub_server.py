@@ -54,10 +54,12 @@ routes ("all", "handoff" or "none"), beside `handoff`, as the bot says
 both; left out, /api/me says neither.
 
 A room's menu renames a room (PATCH /api/channels/<id> with a name),
-archives it and brings it back (POST .../archive, .../unarchive), each
+archives it and brings it back (POST .../archive, .../unarchive), and
+mutes or unmutes a room or the digests (POST .../mute, .../unmute), each
 answered with the room's row and sent as a `channel` event, as the bot
-does; `room_changes` records each. A fixed place answers 400, a name
-another room has 409.
+does; `room_changes` records each. A fixed place answers 400 (the EA
+channel and the DM to a mute too), a name another room has 409. The
+digests start muted, as the bot's do.
 
 The owner's own actions: GET /api/search finds the messages that hold
 every word of `q` (any case, anywhere in the text), newest first, with
@@ -255,7 +257,8 @@ class Stub:
             ROOM: {"id": ROOM, "name": "ea-example-project", "kind": "room", "archived": False,
                    "description": "A made-up project room"},
             OLD: {"id": OLD, "name": "ea-old-project", "kind": "room", "archived": True},
-            DIGEST: {"id": DIGEST, "name": "Mail digests", "kind": "digest", "archived": False},
+            DIGEST: {"id": DIGEST, "name": "Mail digests", "kind": "digest", "archived": False,
+                     "muted": True},
         }
         self._seed()
         if tick > 0:
@@ -428,13 +431,17 @@ class Stub:
             return row
 
     def change_room(self, cid: str, **fields) -> tuple[int, dict]:
-        """Rename, archive or bring back a room as the bot does: (status,
-        the row or the error), and a `channel` event for a change."""
+        """Rename, archive, bring back, mute or unmute a room as the bot
+        does: (status, the row or the error), and a `channel` event for a
+        change."""
         with self.cond:
             row = self.channels.get(cid)
             if row is None:
                 return 404, {"error": "no such room"}
-            if row["kind"] != "room":
+            if set(fields) == {"muted"}:
+                if row["kind"] in ("main", "dm"):
+                    return 400, {"error": "Ask Tacitus and Direct messages cannot be muted."}
+            elif row["kind"] != "room":
                 return 400, {"error": "Only a room can be renamed or archived."}
             name = fields.get("name")
             if name is not None and any(c is not row and c["name"].lower() == name.lower()
@@ -731,6 +738,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(401, {"error": "not the owner"})
         if len(parts) == 3 and parts[0] == "channels" and parts[2] in ("archive", "unarchive"):
             return self._json(*s.change_room(parts[1], archived=parts[2] == "archive"))
+        if len(parts) == 3 and parts[0] == "channels" and parts[2] in ("mute", "unmute"):
+            return self._json(*s.change_room(parts[1], muted=parts[2] == "mute"))
         if len(parts) == 3 and parts[0] == "channels" and parts[1] in s.channels:
             if parts[2] == "messages":
                 data = json.loads(self._body() or b"{}")

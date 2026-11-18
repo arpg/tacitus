@@ -2541,7 +2541,11 @@ def summary_text(m: dict, s: dict, day_n: int, cfg: dict | None = None) -> str:
     writer is the default, the shadow scheduling counters while the ghost
     week reports the same turns) is left out."""
     cfg = cfg if cfg is not None else remote_llm.config()
-    lines = [f"*Remote LLM shadow run, day {day_n}* ({_switch_text(cfg)}; numbers only)"]
+    # The day count names a test; once no part is in ghost or shadow the
+    # same numbers are the remote model's standing report.
+    testing = any(remote_llm.mode(part, cfg) in ("ghost", "shadow") for part in ("mail", "scheduling"))
+    title = f"Remote LLM shadow run, day {day_n}" if testing else "Remote LLM report"
+    lines = [f"*{title}* ({_switch_text(cfg)}; numbers only)"]
     lines.append(
         f"Mail: {m['messages']} messages. {m['ok']} extracted, {m['errors']} errors. "
         f"Warm p95 {_fmt(m.get('latency_p95_s'))} s. {m.get('cold_starts', 0)} cold starts.")

@@ -1927,6 +1927,81 @@ def test_the_owner_archives_a_room_and_brings_it_back(fe):
     assert not fe.store.channel("main")["archived"] and not fe.store.channel("dm")["archived"]
 
 
+def test_the_owner_mutes_a_channel_and_the_ea_channel_and_the_dm_refuse(fe):
+    fe.create_private_room("ea-atlas")
+    assert fe.store.channel("r1")["muted"] is False
+    assert call(fe, "POST", "/api/channels/r1/mute")[0] == 401
+    since = fe.store.max_event_seq()
+    status, _h, body = owner(fe, "POST", "/api/channels/r1/mute")
+    assert status == 200 and json.loads(body)["muted"] is True
+    assert [(t, e["muted"]) for t, e in _new_events(fe, since)] == [("channel", True)]
+    # muting it again answers the row as it is, with no event
+    since = fe.store.max_event_seq()
+    assert json.loads(owner(fe, "POST", "/api/channels/r1/mute")[2])["muted"] is True
+    assert _new_events(fe, since) == []
+    # a rename or an archive keeps the mute
+    fe.archive("r1")
+    fe.unarchive("r1")
+    assert fe.store.channel("r1")["muted"] is True
+    status, _h, body = owner(fe, "POST", "/api/channels/r1/unmute")
+    assert status == 200 and json.loads(body)["muted"] is False
+    # Scheduling may be muted; the EA channel and the DM refuse in plain words
+    assert owner(fe, "POST", "/api/channels/sched/mute")[0] == 200
+    for cid, want in (("main", 400), ("dm", 400), ("r9", 404)):
+        status, _h, out = owner(fe, "POST", f"/api/channels/{cid}/mute")
+        assert status == want, cid
+        assert not JARGON.search(json.loads(out)["error"])
+    assert not fe.store.channel("main")["muted"] and not fe.store.channel("dm")["muted"]
+
+
+def test_a_digest_channel_starts_muted_and_the_health_channel_once(tmp_path):
+    """A new digest channel starts muted. The health channel the web block
+    names (notify.health) is muted the first time the bot starts with it,
+    and an unmute after that stays through a restart; the EA channel named
+    as the health channel is never muted."""
+    store = wf.WebStore(tmp_path / "priv" / "webchat.sqlite")
+    assert store.upsert_channel("digests", "Mail digests", "digest")["muted"] is True
+    assert store.upsert_channel("r5", "ea-health", "room")["muted"] is False
+    store.close()
+    f = make(tmp_path, notify={"health": {"channel": "r5"}})
+    f.start()
+    try:
+        assert f.store.channel("r5")["muted"] is True
+        f.store.set_channel("r5", muted=False)
+    finally:
+        f.stop()
+    f = make(tmp_path, notify={"health": {"channel": "r5"}})
+    f.start()
+    try:
+        assert f.store.channel("r5")["muted"] is False
+        assert f.store.channel("digests")["muted"] is True
+    finally:
+        f.stop()
+    f = make(tmp_path / "other", notify={"health": {"channel": "main"}})
+    f.start()
+    try:
+        assert f.store.channel("main")["muted"] is False
+    finally:
+        f.stop()
+
+
+def test_a_store_from_before_the_mute_mutes_its_digests(tmp_path):
+    import sqlite3
+    path = tmp_path / "old" / "webchat.sqlite"
+    path.parent.mkdir()
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE channels(id TEXT PRIMARY KEY, name TEXT, kind TEXT, archived INT DEFAULT 0, "
+        "description TEXT DEFAULT '');"
+        "INSERT INTO channels(id, name, kind) VALUES ('digests', 'Mail digests', 'digest');"
+        "INSERT INTO channels(id, name, kind) VALUES ('r1', 'ea-atlas', 'room');")
+    conn.commit()
+    conn.close()
+    store = wf.WebStore(path)
+    assert store.channel("digests")["muted"] is True and store.channel("r1")["muted"] is False
+    store.close()
+
+
 def test_a_relayed_device_that_may_chat_may_rename_and_archive(fe):
     """Room admin changes no mail and sends nothing: a chat action, which a
     device the relay lets chat may take, as a message."""

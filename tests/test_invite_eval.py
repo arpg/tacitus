@@ -95,3 +95,30 @@ def test_invites_staged_from_accepted_times_are_scored_and_counted():
     assert line.endswith("1 accepted time went to a thread")
     assert ie.render(ie.summarize([], 2), "2026-10-22") == (
         ":calendar: invite eval 2026-10-22: no invites; 2 accepted times went to a thread")
+
+
+def test_a_day_with_no_invite_posts_nothing(monkeypatch, tmp_path):
+    """--post sends the line to the health channel on a day with an invite;
+    a day with none posts nothing (the line is printed and the file kept)."""
+    import types
+    from datetime import datetime, timezone
+    turns = []
+    posts = []
+    stubs = {
+        "remote_llm": types.SimpleNamespace(read=lambda name: list(turns) if name == ie.TURNS else [],
+                                            store_dir=lambda: tmp_path),
+        "graph_client": types.SimpleNamespace(get_conversation_messages=lambda conv, top=50: [],
+                                              get_calendar_view=lambda a, b: []),
+        "sched_thread_state": types.SimpleNamespace(analyze=lambda *a, **k: {}),
+        "sched_agent": types.SimpleNamespace(DEFAULT_TZ="America/Denver"),
+        "chat_notify": types.SimpleNamespace(health_channel_key=lambda: "health",
+                                             post=lambda key, text: posts.append((key, text))),
+    }
+    for name, mod in stubs.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+    monkeypatch.setattr(ie, "_user_addrs", lambda: set())
+    assert ie.run(1, post=True, json_path=str(tmp_path / "a.json"))["invites"] == 0
+    assert posts == [] and (tmp_path / "a.json").exists()
+    turns.append(dict(REC, ts=datetime.now(timezone.utc).isoformat()))
+    assert ie.run(1, post=True, json_path=str(tmp_path / "b.json"))["invites"] == 1
+    assert [k for k, _t in posts] == ["health"] and "1 invite" in posts[0][1]

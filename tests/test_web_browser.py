@@ -54,6 +54,25 @@ def test_route_blocks_private_redirect_target_before_any_connection(monkeypatch)
     assert "connect" not in calls
 
 
+def test_a_tracker_request_is_dropped_before_it_leaves_and_never_logged(monkeypatch):
+    calls, logged = [], []
+    monkeypatch.setattr(W.F, "validate_url", lambda url: pytest.fail(f"validated {url}"))
+    monkeypatch.setattr(W.F, "_log_event", lambda *a, **k: logged.append((a, k)))
+    route = SimpleNamespace(abort=lambda: calls.append("abort"))
+    for url in ["https://www.google-analytics.com/g/collect?v=2&tid=G-X",
+                "https://stats.g.doubleclick.net/g/collect?v=2",
+                "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js",
+                "https://www.googletagmanager.com/gtag/js?id=G-X",
+                "https://analytics.google.com/g/collect?v=2"]:
+        blocked = []
+        W.route_handler(blocked)(route, SimpleNamespace(url=url))
+        assert blocked == [] and calls[-1] == "abort", url
+    assert logged == []
+    for url in ["https://docs.google.com/forms/d/e/x/viewform", "https://www.google.com/recaptcha/api.js",
+                "https://notdoubleclick.net.example/", "https://example.org/?u=doubleclick.net"]:
+        assert not W.is_tracker(url), url
+
+
 def test_route_pins_dns_disables_proxy_and_preserves_post(monkeypatch):
     trace = []
     info = {"host": "public.example", "ips": ["8.8.8.8"], "addrinfo": ["pinned"]}

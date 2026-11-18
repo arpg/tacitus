@@ -17,6 +17,7 @@ import os
 import pwd
 import stat
 import sys
+import urllib.parse
 import uuid
 from pathlib import Path
 
@@ -119,15 +120,37 @@ def upload_file(path: str) -> dict:
     raise ValueError("upload path is outside the EA's allowed file roots")
 
 
+# Ad and analytics hosts a page's scripts send beacons to, matched by
+# suffix. The browser drops each such request before it leaves the
+# machine: no form or page text needs one, and each beacon is data the
+# page sends from the EA's browser. A dropped request is neither logged as
+# a fetch nor reported as blocked, so the outbound review never flags one.
+TRACKER_HOSTS = ("doubleclick.net", "googlesyndication.com", "googletagmanager.com",
+                 "google-analytics.com", "analytics.google.com", "googleadservices.com",
+                 "adservice.google.com", "fundingchoicesmessages.google.com")
+
+
+def is_tracker(url: str) -> bool:
+    try:
+        host = (urllib.parse.urlsplit(url or "").hostname or "").lower()
+    except ValueError:
+        return False
+    return any(host == s or host.endswith("." + s) for s in TRACKER_HOSTS)
+
+
 def route_handler(blocked: list, policy=None):
     """Validate AND pin every HTTP request, including redirects and POSTs.
 
     Chromium receives each response through route.fulfill. It never gets a
     second, unvalidated DNS lookup. Requests has no environment proxy or
     netrc credentials. Redirects are fulfilled one hop at a time, causing
-    the browser's next hop to pass through this check too.
+    the browser's next hop to pass through this check too. A request to an
+    ad or analytics host (TRACKER_HOSTS) is dropped before any of it.
     """
     def handle(route, request):
+        if is_tracker(request.url):
+            route.abort()
+            return
         try:
             if policy and policy.get("entered_data"):
                 if G.origin(request.url) not in policy["origins"]:

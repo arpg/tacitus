@@ -748,14 +748,21 @@ def check_circuit_breakers() -> tuple[bool, str]:
         open_now = retry_policy.open_breakers()
     except Exception as e:
         return (True, f"breaker check skipped ({e})")
+    graph_keys = set(getattr(retry_policy, "GRAPH_BREAKERS", {}).values())
+    now = time.time()
+    young = [b for b in open_now if b["service"] in graph_keys and b.get("since")
+             and now - b["since"] < GRAPH_OPEN_GRACE_S]
+    open_now = [b for b in open_now if b not in young]
     if not open_now:
+        if young:
+            return (True, f"{', '.join(b['service'] for b in young)} open less than "
+                          f"{GRAPH_OPEN_GRACE_S // 60} min; no alert yet")
         return (True, "no open circuit breakers")
     # The detail is fingerprinted, so it names the services and the kind
     # of error only. A failure count or a full error text would change
     # with every probe and re-alert on each one.
     names = ", ".join(
         f"{b['service']} ({_error_kind(b.get('last_error'))})" for b in open_now)
-    graph_keys = set(getattr(retry_policy, "GRAPH_BREAKERS", {}).values())
     graph = frozenset(b["service"] for b in open_now if b["service"] in graph_keys)
     others = [b["service"] for b in open_now if b["service"] not in graph_keys]
     notes = []
@@ -767,6 +774,12 @@ def check_circuit_breakers() -> tuple[bool, str]:
         notes = [f"mail: {notes[0]}", f"{', '.join(others)}: {notes[1]}"]
     return (False, f"circuit breaker OPEN: {names} — " + ". ".join(notes))
 
+
+# A Graph breaker opens in Microsoft's short 502 and 504 bursts, which
+# clear by themselves: it alerts once it has stayed open this long since
+# the outage's first opening (the entry's `since`). An entry without one
+# (written before the stamp) alerts at once, as other breakers do.
+GRAPH_OPEN_GRACE_S = 30 * 60
 
 # What an open breaker means for its callers. The two Graph lanes differ
 # (retry_policy.GRAPH_BREAKERS): an open interactive breaker gives each of
@@ -783,10 +796,12 @@ _GRAPH_OPEN_TEXT = {
 
 
 def _error_kind(error) -> str:
-    """'HTTP 502' from 'HTTP 502: <html>...'; the first words otherwise."""
+    """'HTTP 5xx' from 'HTTP 502: <html>...'; the first words otherwise.
+    A server error's code is one kind: an outage answers 502, 503 and 504
+    in turn, and a new code each probe would re-alert the same outage."""
     text = re.sub(r"\s+", " ", str(error or "?")).strip()
     head = text.split(":", 1)[0].strip()
-    return (head or text)[:40] or "?"
+    return re.sub(r"^HTTP 5\d\d\b", "HTTP 5xx", (head or text)[:40]) or "?"
 
 
 def check_resident_pane() -> tuple[bool, str]:

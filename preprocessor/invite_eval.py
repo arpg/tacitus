@@ -19,8 +19,10 @@ invite:
 
 A check is True, False or None (not decidable from the data). The
 window's counts and every failing invite go to a JSON file under the
-owner's store and, with --post, one line to the health channel. Owner
-only: it reads the pipeline's records, the mailbox and the calendar.
+owner's store and, with --post, one line to the health channel on a day
+with an invite (a day with none posts nothing; its line is in the log and
+the file). Owner only: it reads the pipeline's records, the mailbox and
+the calendar.
 
   python3 preprocessor/invite_eval.py [--days 1] [--post] [--json path]
 """
@@ -255,7 +257,7 @@ def run(days: int, *, post: bool, json_path: str) -> dict:
     out_path.write_text(json.dumps({"day": day, "days": days, "summary": summary}, indent=1, default=str))
     text = render(summary, day)
     print(text)
-    if post:
+    if post and summary["invites"]:
         try:
             import chat_notify
             chat_notify.post(chat_notify.health_channel_key(), text)

@@ -161,6 +161,30 @@ def test_an_entry_records_its_own_cooldown_and_each_reopening():
         assert "remote" not in rp._load_all()
 
 
+def test_an_outage_keeps_the_time_of_its_first_opening_until_a_success():
+    """`since` is stamped when the breaker first opens and kept through its
+    reopenings; the success that clears the entry clears it, so the next
+    outage starts its own."""
+    with tempfile.TemporaryDirectory() as td:
+        _setup(Path(td))
+        b = _breaker("graph-background", threshold=2)
+        b.record_failure("HTTP 504")
+        assert "since" not in rp._load_all()["graph-background"]
+        b.record_failure("HTTP 504")          # opens
+        first = rp._load_all()["graph-background"]["since"]
+        state = rp._load_all()
+        state["graph-background"]["opened_at"] -= 1000
+        state["graph-background"]["since"] -= 1000
+        rp._save_all(state)
+        b.record_failure("HTTP 504")          # a failed probe reopens it
+        e = rp._load_all()["graph-background"]
+        assert e["opens"] == 2 and e["since"] == first - 1000
+        b.record_success()
+        b.record_failure("HTTP 504")
+        b.record_failure("HTTP 504")
+        assert rp._load_all()["graph-background"]["since"] > first - 1000
+
+
 def test_open_breakers_reads_the_entry_cooldown_not_the_default():
     with tempfile.TemporaryDirectory() as td:
         _setup(Path(td))

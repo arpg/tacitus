@@ -495,7 +495,9 @@ def test_the_app_stays_small():
     #     sheet whose Save shares the file it fetched, since the file's own page has no way back).
     # 5,486: 5,474 plus a long link target on a card shown as its site (an Outlook link on a close card).
     # 5,487: 5,486 plus the emoji the code and the prompts write that the table lacked.
-    assert lines <= 5487, f"{lines} lines: the contract keeps the app near 5,487 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line, the home-screen file sheet and a long card link shown as its site"
+    # 5,503: 5,487 plus a channel's mute (Mute and Unmute in a room's or the digests' menu, a muted
+    #     channel's grey count kept off the menu's count and the title, and its place kept in the drawer).
+    assert lines <= 5503, f"{lines} lines: the contract keeps the app near 5,503 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line, the home-screen file sheet, a long card link shown as its site and a channel's mute"
 
 
 # A `:name:` in the sources that is not an emoji: a prompt that names the
@@ -1645,14 +1647,14 @@ def test_a_rooms_dots_open_its_menu_and_rename_it_in_place(app):
     page, stub, errors = app()
     page.wait_for_selector(".thread-item")
     assert page.locator("#channel-list > a.chan .room-more").count() == 0
-    expect(page.locator(".chan-row")).to_have_count(2)  # the room, and the archived one
+    expect(page.locator(".chan-row")).to_have_count(3)  # the room, the archived one and the digests
     row, menu = page.locator(f'.chan-row[data-room="{W.ROOM}"]'), page.locator("#room-menu")
     dots = row.locator(".room-more")
     expect(dots).to_have_attribute("aria-label", "Room options: example-project")
     row.hover()
     dots.click()
     expect(menu.locator("h2")).to_have_text("example-project")
-    expect(menu.locator("button")).to_have_text(["Rename room", "Archive room", "Cancel"])
+    expect(menu.locator("button")).to_have_text(["Rename room", "Mute", "Archive room", "Cancel"])
     assert page.evaluate("location.hash") == "#/stream%3A7"  # the dots open no room
     menu.get_by_role("button", name="Rename room").click()
     field = menu.locator("#room-menu-name")
@@ -1706,7 +1708,50 @@ def test_archive_asks_once_and_bring_back_returns_the_room(app):
     menu.get_by_role("button", name="Bring back").click()
     expect(menu).to_be_hidden()
     assert stub.room_changes[-1] == {"id": W.OLD, "archived": False}
-    expect(page.locator("#channel-list > .chan-row .c-name")).to_have_text(["old-project"])
+    expect(page.locator(f'#channel-list > .chan-row[data-room="{W.OLD}"] .c-name')).to_have_text("old-project")
+    assert not errors, errors
+
+
+def test_a_muted_channel_keeps_its_count_off_the_menu_and_the_title(app):
+    """The digests start muted: their new messages show a grey count beside
+    the name, add nothing to the title, and the channel keeps its place in
+    the drawer. Mute in a room's menu mutes the room the same way; the
+    digests' menu holds Unmute alone, and Unmute brings their count back."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    expect(page.locator('a.chan[href="#/stream%3A9"] .badge')).to_be_visible()
+    shown = lambda: int((re.match(r"\((\d+)\)", page.title()) or [0, 0])[1])  # noqa: E731
+    names = lambda: page.locator("#channel-list .c-name").all_text_contents()  # noqa: E731
+    before, order = shown(), names()
+    stub.emit_bot(W.DIGEST, "Mail digest one")
+    stub.emit_bot(W.DIGEST, "Mail digest two")
+    digest = page.locator(f'.chan-row[data-room="{W.DIGEST}"]')
+    expect(digest.locator(".badge.muted")).to_have_text("2")
+    expect(digest.locator("a.chan")).not_to_have_class(re.compile(r"\bunread\b"))
+    assert shown() == before and names() == order
+    room = page.locator(f'.chan-row[data-room="{W.ROOM}"]')
+    stub.emit_bot(W.ROOM, "A note in the room")
+    expect(room.locator(".badge")).to_be_visible()
+    before, in_room = shown(), int(room.locator(".badge").text_content())
+    menu = page.locator("#room-menu")
+    room.hover()
+    room.locator(".room-more").click()
+    menu.get_by_role("button", name="Mute").click()
+    expect(menu).to_be_hidden()
+    assert stub.room_changes == [{"id": W.ROOM, "muted": True}]
+    expect(room.locator(".badge.muted")).to_have_text(str(in_room))
+    expect(page).to_have_title(f"({before - in_room}) Tacitus" if before > in_room else "Tacitus")
+    digest.hover()
+    digest.locator(".room-more").click()
+    expect(menu.locator("h2")).to_have_text("Mail digests")
+    expect(menu.locator("button")).to_have_text(["Unmute", "Cancel"])
+    menu.get_by_role("button", name="Unmute").click()
+    expect(menu).to_be_hidden()
+    assert stub.room_changes[-1] == {"id": W.DIGEST, "muted": False}
+    expect(digest.locator(".badge:not(.muted)")).to_have_text("2")
+    expect(page).to_have_title(f"({before - in_room + 2}) Tacitus")
     assert not errors, errors
 
 

@@ -757,18 +757,21 @@ function readSoon() {
 function renderChannels() {
   const box = $('channel-list');
   // A channel with unread messages rises to the top; the rest keep their kind order, then their names.
-  const rows = [...S.channels].sort((a, b) => (unreadFor(b.id) ? 1 : 0) - (unreadFor(a.id) ? 1 : 0)
+  // A muted one keeps its place, shows its count in grey and adds nothing to the menu's count or the title.
+  const loud = (c) => (!c.muted && unreadFor(c.id) ? 1 : 0);
+  const rows = [...S.channels].sort((a, b) => loud(b) - loud(a)
     || (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9) || channelName(a).localeCompare(channelName(b)));
   let total = 0;
   const item = (c) => {
     const n = unreadFor(c.id);
-    if (!c.archived) total += n;
+    if (!c.archived && !c.muted) total += n;
     return roomRow(c, h('a', {
-      class: 'chan' + (c.id === S.channel && !S.needsView ? ' active' : '') + (n ? ' unread' : ''),
+      class: 'chan' + (c.id === S.channel && !S.needsView ? ' active' : '') + (n && !c.muted ? ' unread' : '')
+        + (c.muted ? ' muted' : ''),
       href: hashFor(c.id), title: c.description || null,
     }, h('span', { class: 'c-icon', 'aria-hidden': 'true' }, c.kind === 'dm' ? '@' : '#'),
     h('span', { class: 'c-name' }, channelName(c)),
-    n ? h('span', { class: 'badge', 'aria-label': `${n} unread` }, String(n)) : null));
+    n ? h('span', { class: 'badge' + (c.muted ? ' muted' : ''), 'aria-label': `${n} unread${c.muted ? ', muted' : ''}` }, String(n)) : null));
   };
   const live = rows.filter((c) => !c.archived).map(item);
   const old = rows.filter((c) => c.archived);
@@ -779,7 +782,8 @@ function renderChannels() {
   }
   document.title = total ? `(${total}) Tacitus` : 'Tacitus';
   fitNav();
-  const others = total - unreadFor(S.channel);
+  const here = chan(S.channel);
+  const others = total - (here && !here.archived && !here.muted ? unreadFor(S.channel) : 0);
   $('menu').dataset.unread = others > 0 ? String(others) : '';
   // The Needs you entry above the channels, with the count of threads that need the owner this week.
   const need = needsRows().filter((r) => stateOf(r.channel, threadOf(r)) === 'needs_you' && !staleOf(r)).length;
@@ -3055,23 +3059,27 @@ async function saveNotify(e) {
   }
 }
 
-/* -- A room's menu: rename, archive, bring back -------------------- */
+/* -- A room's menu: rename, mute, archive, bring back -------------- */
 
 // A room in the drawer has a menu: its dots button opens it with a mouse, a
-// long press (600 ms, held still) with a finger; the fixed places have none.
-// It renames the room in place, archives it after one plain question, or
-// brings an archived one back. The answer redraws the drawer at once, and
-// the bot's `channel` event does in every other open app.
+// long press (600 ms, held still) with a finger. The digests have one with
+// Mute or Unmute alone; the other fixed places have none. It renames the
+// room in place, mutes or unmutes it, archives it after one plain question,
+// or brings an archived one back. The answer redraws the drawer at once,
+// and the bot's `channel` event does in every other open app.
+const hasMenu = (c) => c.kind === 'room' || c.kind === 'digest';
+
 function roomRow(c, link) {
-  if (c.kind !== 'room') return link;
+  if (!hasMenu(c)) return link;
   return h('div', { class: 'chan-row', 'data-room': c.id }, link,
-    h('button', { type: 'button', class: 'room-more', 'aria-label': `Room options: ${channelName(c)}`,
+    h('button', { type: 'button', class: 'room-more',
+      'aria-label': `${c.kind === 'room' ? 'Room options' : 'Options'}: ${channelName(c)}`,
       'aria-haspopup': 'dialog', onclick: () => roomMenu(c.id) }));
 }
 
 function roomMenu(id, mode = 'menu') {
   const c = chan(id), dlg = $('room-menu');
-  if (!c || c.kind !== 'room') return;
+  if (!c || !hasMenu(c)) return;
   const name = channelName(c);
   const cancel = h('button', { type: 'button', class: 'btn', onclick: () => dlg.close() }, 'Cancel');
   const item = (label, next, cls = '') => h('button', { type: 'button', class: `sheet-item ${cls}`, onclick: next }, label);
@@ -3082,8 +3090,14 @@ function roomMenu(id, mode = 'menu') {
       error, h('div', { class: 'dialog-actions' }, cancel, h('button', { type: 'submit', class: 'btn primary' }, 'Save'))],
     archive: () => [h('p', {}, `Archive ${name}? Its conversations stay; the room moves under Archived.`),
       error, h('div', { class: 'dialog-actions' }, cancel, h('button', { type: 'submit', class: 'btn primary danger' }, 'Archive'))],
-    menu: () => [...(c.archived ? [item('Bring back', () => roomDo(c, 'unarchive'))]
-      : [item('Rename room', () => roomMenu(id, 'rename')), item('Archive room', () => roomMenu(id, 'archive'), 'danger')]), error, cancel],
+    menu: () => {
+      const mute = item(c.muted ? 'Unmute' : 'Mute', () => roomDo(c, c.muted ? 'unmute' : 'mute'));
+      return [...(c.kind !== 'room' ? [mute] : c.archived ? [item('Bring back', () => roomDo(c, 'unarchive'))]
+        : [item('Rename room', () => roomMenu(id, 'rename')), mute, item('Archive room', () => roomMenu(id, 'archive'), 'danger')]),
+      ...(c.kind === 'room' && c.archived ? [] : [h('p', { class: 'sheet-note' }, c.muted
+        ? 'Muted: its new messages do not add to the count on the menu.'
+        : 'Mute it to keep its new messages off the count on the menu.')]), error, cancel];
+    },
   }[mode]();
   dlg.replaceChildren(h('form', { class: 'sheet', novalidate: true, 'data-mode': mode,
     onsubmit: (e) => { e.preventDefault(); roomDo(c, mode); } }, h('h2', { id: 'room-menu-title' }, name), body));
