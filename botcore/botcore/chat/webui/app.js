@@ -58,6 +58,7 @@ const EMOJI = Object.fromEntries(Object.entries({
   '♻️': 'recycle', '👌': 'ok_hand', '🎯': 'dart', '🍂': 'leaves', '🌐': 'globe_with_meridians',
   '🎓': 'mortar_board', '☀️': 'sunny', '☕': 'coffee', '💤': 'zzz', '👋': 'wave', '🙏': 'pray',
   '👏': 'clap', '❤️': 'heart', 'ℹ️': 'information_source info', '🖼️': 'image frame_with_picture', '⏩': 'fast_forward', '1️⃣': 'one', '2️⃣': 'two', '3️⃣': 'three',
+  '↩️': 'leftwards_arrow_with_hook', '🎛️': 'control_knobs', '😴': 'sleeping', '🔕': 'no_bell', '🌱': 'seedling', '🌅': 'sunrise', '🔧': 'wrench',
 }).flatMap(([glyph, names]) => names.split(' ').map((n) => [n, glyph])));
 
 const S = {
