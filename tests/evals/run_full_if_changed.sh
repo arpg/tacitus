@@ -104,13 +104,14 @@ unclaim_state() {
 # `… >> ~/.ea-private/logs/eval-full.log 2>&1`, so cron mails nothing and a non-zero
 # exit reaches no one; without this, a real regression stays in a log file.
 # Deferred during quiet hours by slack_notifier and delivered in the morning
-# digest, which is the right cadence for a 2 AM job.
+# digest, which is the right cadence for a 2 AM job. A diagnostic: it posts
+# only in debug mode (chat_notify, Debug mode), and the log keeps it either way.
 alert() {
     python3 -c "
 import sys
 sys.path.insert(0, '$REPO_ROOT/preprocessor')
 import slack_notifier as slack
-slack.post_to_slack(slack.health_channel_key(), sys.stdin.read())
+slack.post_to_slack(slack.health_channel_key(), sys.stdin.read(), diagnostic=True)
 " <<< "$1" >>"$LOG_FILE" 2>&1 || echo "[alert] Slack notify failed (see $LOG_FILE)"
 }
 

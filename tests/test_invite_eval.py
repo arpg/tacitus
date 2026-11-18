@@ -112,7 +112,7 @@ def test_a_day_with_no_invite_posts_nothing(monkeypatch, tmp_path):
         "sched_thread_state": types.SimpleNamespace(analyze=lambda *a, **k: {}),
         "sched_agent": types.SimpleNamespace(DEFAULT_TZ="America/Denver"),
         "chat_notify": types.SimpleNamespace(health_channel_key=lambda: "health",
-                                             post=lambda key, text: posts.append((key, text))),
+                                             post=lambda key, text, **kw: posts.append((key, text, kw))),
     }
     for name, mod in stubs.items():
         monkeypatch.setitem(sys.modules, name, mod)
@@ -121,4 +121,5 @@ def test_a_day_with_no_invite_posts_nothing(monkeypatch, tmp_path):
     assert posts == [] and (tmp_path / "a.json").exists()
     turns.append(dict(REC, ts=datetime.now(timezone.utc).isoformat()))
     assert ie.run(1, post=True, json_path=str(tmp_path / "b.json"))["invites"] == 1
-    assert [k for k, _t in posts] == ["health"] and "1 invite" in posts[0][1]
+    assert [k for k, _t, _kw in posts] == ["health"] and "1 invite" in posts[0][1]
+    assert posts[0][2] == {"diagnostic": True}   # posted only in debug mode

@@ -2002,6 +2002,95 @@ def test_a_store_from_before_the_mute_mutes_its_digests(tmp_path):
     store.close()
 
 
+def _hidden(f) -> list[str]:
+    rows = json.loads(owner(f, "GET", "/api/channels")[2])
+    return [r["id"] for r in rows if r.get("hidden")]
+
+
+def test_debug_mode_off_hides_the_health_room_and_keeps_its_threads(tmp_path):
+    """An existing store with the health room's reports: while the host's
+    debug mode is off, /api/channels marks the room `hidden` and its threads
+    stay; debug_changed() tells every open app with a `channel` event. With
+    no host switch (botcore alone) or one that cannot be read, nothing is
+    hidden, and a fixed place named as the health channel never is."""
+    store = wf.WebStore(tmp_path / "priv" / "webchat.sqlite")
+    store.upsert_channel("r5", "ea-health", "room")
+    store.add_message("r5", mid=None, thread_key=None, author=wf.BOT, kind="message",
+                      text=":broom: Reconcile: 3 rows in 1 group.")
+    store.close()
+    f = make(tmp_path, notify={"health": {"channel": "r5"}})
+    f.start()
+    try:
+        assert f.diagnostic_channels() == {"r5"} and _hidden(f) == []
+        debug = {"on": False}
+        f.debug_on = lambda: debug["on"]
+        assert _hidden(f) == ["r5"]
+        status, _h, body = owner(f, "GET", "/api/channels/r5/threads")
+        assert status == 200 and [t["text"] for t in json.loads(body)] == [
+            ":broom: Reconcile: 3 rows in 1 group."]
+        since = f.store.max_event_seq()
+        debug["on"] = True
+        f.debug_changed()
+        assert [(t, e["id"], e["hidden"]) for t, e in _new_events(f, since)] == [
+            ("channel", "r5", False)]
+        assert _hidden(f) == []
+        since = f.store.max_event_seq()
+        debug["on"] = False
+        f.debug_changed()
+        assert [(t, e["id"], e["hidden"]) for t, e in _new_events(f, since)] == [
+            ("channel", "r5", True)]
+        f.debug_on = lambda: 1 / 0
+        assert _hidden(f) == []
+    finally:
+        f.stop()
+    f = make(tmp_path / "other", notify={"health": {"channel": "main"}})
+    f.start()
+    try:
+        f.debug_on = lambda: False
+        assert f.diagnostic_channels() == set() and _hidden(f) == []
+    finally:
+        f.stop()
+
+
+def test_the_debug_page_saves_the_switch_and_tells_every_open_app(fe, notify_page, caplog):
+    """GET is debug mode as chat.json says it (off for a block from before
+    the switch); POST {"on": bool} writes the chat block's `diagnostics`,
+    keeps every other key, and shows or hides the health room at once. A
+    refusal is in plain words, and a relayed request changes nothing."""
+    mod, priv = notify_page
+    fe.cfg["notify"] = {"health": {"channel": "r5"}}
+    fe.store.upsert_channel("r5", "ea-health", "room")
+    fe.settings_pages["debug"] = mod.DebugSettings(fe)
+    fe.debug_on = mod.debug_on
+    assert "debug" in json.loads(owner(fe, "GET", "/api/me")[2])["settings"]
+    path = "/api/settings/debug"
+    assert json.loads(owner(fe, "GET", path)[2]) == {"on": False}
+    assert _hidden(fe) == ["r5"]
+    caplog.set_level("INFO", logger="chat.web")
+    since = fe.store.max_event_seq()
+    status, _h, body = owner(fe, "POST", path, {"on": True})
+    assert status == 200 and json.loads(body) == {"on": True, "saved": True}
+    saved = json.loads((priv / "chat.json").read_text())
+    assert saved["diagnostics"] is True and saved["web"]["notify_push"]["extra"] == "kept"
+    assert (priv / "chat.json").stat().st_mode & 0o777 == 0o600
+    assert any("debug mode saved (header): on" in r.getMessage() for r in caplog.records)
+    assert [(t, e["id"], e["hidden"]) for t, e in _new_events(fe, since)] == [("channel", "r5", False)]
+    assert json.loads(owner(fe, "GET", path)[2]) == {"on": True} and _hidden(fe) == []
+    assert json.loads(owner(fe, "POST", path, {"on": False})[2])["on"] is False
+    assert _hidden(fe) == ["r5"]
+    before = (priv / "chat.json").read_text()
+    said = []
+    for body in ({"on": "yes"}, {}, {"on": True, "extra": 1}):
+        status, _h, raw = owner(fe, "POST", path, body)
+        assert (status, json.loads(raw)["error"]) == (400, "Debug mode takes on or off."), body
+        said.append(json.loads(raw)["error"])
+    status, _h, raw = owner(fe, "POST", path, {"on": True}, {"X-Tacitus-Relay": "1"})
+    assert status == 403 and "own web chat" in json.loads(raw)["error"]
+    assert call(fe, "POST", path, {"on": True})[0] == 401
+    assert (priv / "chat.json").read_text() == before
+    assert not [t for t in said if JARGON.search(t)]
+
+
 def test_a_relayed_device_that_may_chat_may_rename_and_archive(fe):
     """Room admin changes no mail and sends nothing: a chat action, which a
     device the relay lets chat may take, as a message."""

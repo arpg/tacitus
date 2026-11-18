@@ -626,6 +626,8 @@ def integrity_failures() -> dict:
 
 
 def _post_health(text: str) -> bool:
+    """An alert: it posts whether or not debug mode is on (chat_notify,
+    Debug mode)."""
     try:
         import chat_notify
     except ModuleNotFoundError:

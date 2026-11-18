@@ -38,12 +38,14 @@ SPLIT_MARKER = "---===FF_BRIEFING_SPLIT===---"
 
 
 def post_to_slack(channel_key: str, text: str, blocks: Optional[list] = None,
-                  priority: str = "normal", _bypass_quiet: bool = False) -> bool:
-    """Post a message through chat_notify.post (quiet-hours gate, split,
-    route by frontend). Returns True on success or deferral, False on a
-    real send failure."""
+                  priority: str = "normal", _bypass_quiet: bool = False,
+                  diagnostic: bool = False) -> bool:
+    """Post a message through chat_notify.post (debug-mode and quiet-hours
+    gates, split, route by frontend). `diagnostic=True` marks one of the
+    bot's own reports, posted only in debug mode. Returns True on success,
+    deferral or a diagnostic left out, False on a real send failure."""
     return bool(chat_notify.post(channel_key, text, blocks=blocks, priority=priority,
-                                 _bypass_quiet=_bypass_quiet))
+                                 _bypass_quiet=_bypass_quiet, diagnostic=diagnostic))
 
 
 def scheduling_channel_key() -> str:

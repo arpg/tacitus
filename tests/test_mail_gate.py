@@ -174,6 +174,7 @@ def test_digest_with_no_digest_channel_posts_nothing_and_keeps_its_window(store,
                                                                           capsys):
     import chat_notify
     _rec("f1", "c1")
+    monkeypatch.setattr(chat_notify, "diagnostics_on", lambda: True)   # debug mode on: the transport
     monkeypatch.setattr(chat_notify, "frontend_name", lambda: "slack")
     monkeypatch.setattr(chat_notify, "_load_webhooks",
                         lambda: {"ea-assistant": "https://hooks.example/A"})

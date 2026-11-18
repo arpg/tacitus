@@ -1,5 +1,6 @@
 """The web chat's Notifications settings: which of the bot's posts notify
-the owner's devices (docs/webchat.md, Notifications (Web Push)).
+the owner's devices (docs/webchat.md, Notifications (Web Push)), and the
+debug-mode switch (docs/webchat.md, Debug mode).
 
 The switches are the web block's `notify_push` in the owner-private
 chat.json (botcore's web_push_policy.Settings reads it):
@@ -22,17 +23,27 @@ other key kept) and puts the new settings in force in the running front
 end at once; a command-line sender reads the file on its next run. The
 front end refuses a relayed save: settings change only in the owner's
 own web chat. What the page says is in plain words (tests/plain_words.py).
+
+`DebugSettings` is the page at /api/settings/debug, one switch in the
+Settings menu: the chat block's `diagnostics` in the same file
+(ea_config.diagnostics_on). GET is {"on": bool}; POST {"on": bool} saves
+it the same way and has the front end show or hide the health channel
+on every open app (WebFrontend.debug_changed). Every notifier reads the
+file on each post (chat_notify.diagnostics_on), so a change counts from
+the next one. `chat_notify.py debug on|off` saves it from a shell.
 """
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Callable
 
 try:
+    import ea_config as _ea_config
     import owner_trust as _ot
     from chat import web_frontend as _wf
 except ImportError:  # imported as preprocessor.web_notify_settings
+    from preprocessor import ea_config as _ea_config
     from preprocessor import owner_trust as _ot
     from preprocessor.chat import web_frontend as _wf
 
@@ -74,12 +85,10 @@ def checked(body: Any) -> dict:
     return out
 
 
-def save(body: Any, who: dict | None = None) -> Any:
-    """Merge the changes in `body` over the web block's `notify_push` in the
-    owner-private chat.json and write it; the settings now in force
-    (web_push_policy.Settings). The log names the credential in `who` that
-    signed the save in. Raises NotifyRefused."""
-    changes = checked(body)
+def _rewrite(change: Callable[[dict], None], what: str) -> None:
+    """Read the owner-private chat.json, let `change` edit the block in
+    place, and write it back (owner processes only, mode 0600, every other
+    key kept). `what` names the settings in the log. Raises NotifyRefused."""
     if not _ot.is_owner_process():
         raise NotifyRefused("Tacitus could not save: only the part of Tacitus that runs as you "
                             "may change these settings.")
@@ -87,19 +96,32 @@ def save(body: Any, who: dict | None = None) -> Any:
     try:
         block = json.loads(_ot.read_owner_file(path))
     except (OSError, ValueError, _ot.OwnerTrustError) as e:
-        log.warning("web chat: notification settings not saved: %s is unreadable: %s", path, e)
+        log.warning("web chat: %s not saved: %s is unreadable: %s", what, path, e)
         raise NotifyRefused("Tacitus could not read its settings file.") from None
     if not isinstance(block, dict):
         raise NotifyRefused("Tacitus could not read its settings file.")
-    web = block.get("web") if isinstance(block.get("web"), dict) else {}
-    current = web.get("notify_push") if isinstance(web.get("notify_push"), dict) else {}
-    merged = {**current, **changes}
-    block["web"] = {**web, "notify_push": merged}
+    change(block)
     try:
         _ot.write_owner_file(path, json.dumps(block, indent=2) + "\n", mode=0o600)
     except (OSError, _ot.OwnerTrustError) as e:
-        log.warning("web chat: notification settings not saved: %s was not written: %s", path, e)
+        log.warning("web chat: %s not saved: %s was not written: %s", what, path, e)
         raise NotifyRefused("Tacitus could not write the settings file.") from None
+
+
+def save(body: Any, who: dict | None = None) -> Any:
+    """Merge the changes in `body` over the web block's `notify_push` in the
+    owner-private chat.json and write it; the settings now in force
+    (web_push_policy.Settings). The log names the credential in `who` that
+    signed the save in. Raises NotifyRefused."""
+    changes = checked(body)
+    merged: dict = {}
+
+    def change(block: dict) -> None:
+        web = block.get("web") if isinstance(block.get("web"), dict) else {}
+        current = web.get("notify_push") if isinstance(web.get("notify_push"), dict) else {}
+        merged.update({**current, **changes})
+        block["web"] = {**web, "notify_push": dict(merged)}
+    _rewrite(change, "notification settings")
     log.info("web chat: notification settings saved (%s): %s",
              str((who or {}).get("credential") or "unknown")[:20], json.dumps(changes, sort_keys=True))
     return _policy.Settings.from_config(merged)
@@ -120,3 +142,46 @@ class NotifySettings:
         settings = save(body, who)
         self.fe.push_settings = settings
         return {**payload(settings), "saved": True}
+
+
+# ── debug mode ────────────────────────────────────────────────────────
+
+def debug_on() -> bool:
+    """Debug mode as this process reads the chat block now (the owner's
+    chat.json in an owner process): the front end's `debug_on`."""
+    return _ea_config.diagnostics_on(_ea_config.get_chat())
+
+
+def save_debug(on: Any, who: dict | None = None) -> bool:
+    """Write debug mode (the chat block's `diagnostics`) into the
+    owner-private chat.json; the value saved. Raises NotifyRefused."""
+    if not isinstance(on, bool):
+        raise NotifyRefused("Debug mode takes on or off.")
+
+    def change(block: dict) -> None:
+        block["diagnostics"] = on
+    _rewrite(change, "debug mode")
+    log.info("web chat: debug mode saved (%s): %s",
+             str((who or {}).get("credential") or "unknown")[:20], "on" if on else "off")
+    return on
+
+
+class DebugSettings:
+    """Debug mode in the web chat's Settings menu: botcore's WebFrontend
+    serves it at /api/settings/debug for the front end `fe`, which a save
+    tells, so every open app shows or hides the health channel at once."""
+
+    def __init__(self, fe: Any) -> None:
+        self.fe = fe
+
+    def get(self) -> dict:
+        return {"on": debug_on()}
+
+    def save(self, body: dict, who: dict | None = None) -> dict:
+        if not isinstance(body, dict) or set(body) != {"on"}:
+            raise NotifyRefused("Debug mode takes on or off.")
+        on = save_debug(body["on"], who)
+        changed = getattr(self.fe, "debug_changed", None)
+        if callable(changed):
+            changed()
+        return {"on": on, "saved": True}

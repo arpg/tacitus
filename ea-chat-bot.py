@@ -107,6 +107,11 @@ for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
         # The New room button shows only in a mode with rooms (_rooms_on,
         # read when the app asks).
         _web.rooms_enabled = lambda: _rooms_on()
+        # Debug mode (the chat block's `diagnostics` in the owner-private
+        # chat.json): one switch in the Settings menu; while it is off the
+        # drawer leaves out the health channel (docs/webchat.md, Debug mode).
+        _web.settings_pages["debug"] = _web_notify_settings.DebugSettings(_web)
+        _web.debug_on = _web_notify_settings.debug_on
 
 
 def _private_state(name: str) -> Path:

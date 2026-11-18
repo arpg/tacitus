@@ -293,7 +293,7 @@ its reads are.
 | Re-run each scheduling turn | `sched_agent.py run-job` | spawned by the bot after every Claude turn whose modules include scheduling (scheduling channel, proactive requests, scheduling turns elsewhere); not behind a remote-arm turn Claude redid, whose own row is the measure (llm-lanes.md, section 2.15) |
 | Record which threads a mail read handed to a lane | `mail_privacy.note_release` | the mediator, after it answers a read verb |
 | Record Claude's staged events and the user's button outcomes | `sched_agent.note_claude_staged`, `note_event_outcome` | the bot |
-| Numbers to the health channel | `mail_privacy.py report --post` | daily 17:30 |
+| Numbers to the health channel, in debug mode alone | `mail_privacy.py report --post` | daily 17:30 |
 | Final report and grading sheets (private markdown) | `mail_privacy.py final-report` | posted by the report on `shadow_until` |
 
 The report's header names each switch and the date its window ends. A
@@ -620,7 +620,9 @@ thread when a lane acts on it or the user asks in a room or thread.
   places. With none of them (Slack without that webhook, or no chat) it
   posts nothing, says so and keeps its window for the next run; the EA
   channel is never the fall-back. Mail the list digest covers is not
-  repeated.
+  repeated. It is a diagnostic: it posts only in debug mode
+  (docs/webchat.md, Debug mode), and with debug mode off each run still
+  moves its window on.
 - **Cron lanes' reads.** A `cron-` run (a Codex ghost's `cron-ghost-codex-`
   included) reads no `local` thread through the mediator: a read of one
   such message or thread is refused before it runs, and search and list

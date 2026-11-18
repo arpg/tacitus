@@ -1259,7 +1259,11 @@ live install from metadata only, and `scripts/boundary-audit.py` checks them
 daily from cron, posting to the health channel only when a result changes.
 Sentinel's alerts, the daily outbound-web, preference-rule and persistence
 reviews, and plugin integrity failures post there too: the chat key `health`, with the
-main EA channel as the fallback when no health channel is configured.
+main EA channel as the fallback when no health channel is configured, or
+while debug mode keeps the web chat's health room out of the drawer. Debug
+mode, off by default, holds back only the bot's own reports: each check
+above posts in any mode, and so does an outbound review that finds a
+protection that did not hold (docs/webchat.md, Debug mode).
 
 sshd refuses logins for the resident, which controls its own
 `authorized_keys`: `deploy/ssh-deny-resident.sh` (root; --status,

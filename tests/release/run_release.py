@@ -764,9 +764,11 @@ def pick_baseline(runs: list[dict], *, run_id: str = "", explicit: str = "",
 
 
 def _alert(text: str) -> None:
+    """A run that is not green: a diagnostic, posted only in debug mode
+    (chat_notify, Debug mode); the run's record keeps it either way."""
     try:
         import slack_notifier as chat
-        chat.post_to_slack(chat.health_channel_key(), text)
+        chat.post_to_slack(chat.health_channel_key(), text, diagnostic=True)
     except Exception as e:
         print(f"[alert] chat notify failed: {e}", file=sys.stderr)
 

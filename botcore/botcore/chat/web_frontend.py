@@ -126,6 +126,14 @@ channel starts muted, and so does the health channel (the web block's
 `notify.health`) once per store; an unmute stays. The mute is this app's
 alone: shadow mode does not tell the primary.
 
+Debug mode: the host sets `debug_on`, a callable that says whether the
+owner's debug mode is on. While it is off, `/api/channels` marks each
+diagnostic channel (the health channel, when it is a room) `hidden`, and
+the app leaves it out of the drawer and its count out of the menu badge;
+its threads stay in the store. The host calls `debug_changed()` after a
+change, and a `channel` event with `hidden` shows or hides it on every
+open app.
+
 Settings screens: the host registers a page in `settings_pages` (a name
 and an object with `get()` and `save(body)`; the EA's routing table is
 `routing`, model_routing.WebSettings, and the notification switches
@@ -1779,15 +1787,16 @@ class WebStore:
                         "thread_key=?", (channel, thread_key))
         return float(row["t"]) if row and row["t"] is not None else None
 
-    def touch_channel(self, cid: str) -> dict | None:
+    def touch_channel(self, cid: str, **extra: Any) -> dict | None:
         """Append a `channel` event carrying the channel's row as it is now
-        (its last_at and unread), so an open app reads it again; None when
+        (its last_at and unread), with the keys of `extra` over it (the
+        front end's `hidden`), so an open app reads it again; None when
         there is no such channel."""
         def run() -> dict | None:
             row = self._conn.execute("SELECT * FROM channels WHERE id=?", (cid,)).fetchone()
             if row is None:
                 return None
-            out = self._channel_json(row)
+            out = {**self._channel_json(row), **extra}
             self._emit("channel", cid, cid, out)
             return out
         return self._transaction(run)
@@ -2546,6 +2555,10 @@ class WebFrontend(ChatFrontend):
         # None means it does). /api/me says so, and the app shows its New
         # room button only then.
         self.rooms_enabled: Any = None
+        # Whether the owner's debug mode is on (a callable the host sets;
+        # None means it is). While it is off, /api/channels marks each
+        # diagnostic channel `hidden` and the app leaves it out of the drawer.
+        self.debug_on: Any = None
         self.html_csp = self._html_csp()
         # The app's signed bundle (web_bundle.Bundle) once start() signed it.
         self._bundle: web_bundle.Bundle | None = None
@@ -3094,14 +3107,48 @@ class WebFrontend(ChatFrontend):
         store: the sentinel and the nightly reviews post there for the
         record, and its count stays off the menu badge. An unmute after it
         stays (Store.mute_once); the EA channel and the DM are never muted."""
-        notify = self.cfg.get("notify")
-        entry = notify.get("health") if isinstance(notify, dict) else None
-        cid = str(entry.get("channel") or "") if isinstance(entry, dict) else ""
+        cid = self._health_id()
         try:
             if cid and self.store.mute_once(cid):
                 log.info("web chat: the health channel %s is muted (once; unmute from its menu)", cid)
         except sqlite3.Error as e:
             log.warning("web chat: the health channel's default mute was not written: %s", e)
+
+    def _health_id(self) -> str:
+        """The channel the web block's notify.health names, or ""."""
+        notify = self.cfg.get("notify")
+        entry = notify.get("health") if isinstance(notify, dict) else None
+        return str(entry.get("channel") or "") if isinstance(entry, dict) else ""
+
+    # debug mode (docs/webchat.md, Debug mode)
+
+    def diagnostic_channels(self) -> set[str]:
+        """The channels that hold only the bot's own reports: the health
+        channel (notify.health) when the store holds it as a room. A fixed
+        place (the EA channel, the DM, Scheduling, the digests) never is."""
+        cid = self._health_id()
+        row = self.store.channel(cid) if cid else None
+        return {cid} if row is not None and row["kind"] == "room" else set()
+
+    def hidden_channels(self) -> set[str]:
+        """The channels the drawer leaves out now: the diagnostic channels
+        while the host's debug mode is off, none while it is on. A switch
+        that cannot be read hides nothing."""
+        try:
+            if self.debug_on is None or self.debug_on():
+                return set()
+        except Exception as e:
+            log.warning("web chat: debug mode could not be read: %s", e)
+            return set()
+        return self.diagnostic_channels()
+
+    def debug_changed(self) -> None:
+        """After the host changed debug mode: a `channel` event for each
+        diagnostic channel, carrying `hidden` as it is now, so every open
+        app shows or hides it at once."""
+        hidden = self.hidden_channels()
+        for cid in sorted(self.diagnostic_channels()):
+            self.store.touch_channel(cid, hidden=cid in hidden)
 
     def _ensure_pair_token(self) -> None:
         p = self.pair_token_file
@@ -4561,7 +4608,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 self._json(200, pusher.store.push_list())
                 return None
             if segs == ["channels"]:
-                self._json(200, store.channels())
+                hidden = fe.hidden_channels()
+                self._json(200, [{**c, "hidden": True} if c["id"] in hidden else c
+                                 for c in store.channels()])
                 return None
             if n == 3 and segs[0] == "channels" and segs[2] == "threads":
                 self._need_channel(segs[1])

@@ -1172,6 +1172,8 @@ def tripwire(*, now: datetime | None = None, post=None, cfg: dict | None = None)
         st = _state()
         last = _parse(st.get("last_alert") or "")
         if last is None or (now - last).total_seconds() >= TRIPWIRE_EVERY_S:
+            # An alert: mail that does not seal is mail no lane can read, so
+            # it posts whether or not debug mode is on (chat_notify, Debug mode).
             text = ":warning: Ghost-week tripwire. " + " ".join(alerts) + \
                 " Turn back with `remote_llm.py set mail enforce` or `set scheduling shadow`."
             try:

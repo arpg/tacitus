@@ -570,18 +570,20 @@ def test_the_daily_script_posts_an_anomaly_and_holds_the_cursor_on_a_failed_post
     from preprocessor import chat_notify
     paths, specs = logs
     mod = _script(monkeypatch, tmp_path, specs)
-    posts = []
+    posts, kinds = [], []
     monkeypatch.setattr(chat_notify, "health_channel_key", lambda: "health")
-    monkeypatch.setattr(chat_notify, "post", lambda key, text: posts.append(text) or True)
+    monkeypatch.setattr(chat_notify, "post", lambda key, text, **kw: posts.append(text) or kinds.append(kw) or True)
     assert mod.main() == 0 and len(posts) == 1                       # first run: posted
     assert f"LOG CHECK {R.NO_CURSOR}" in posts[0]
+    assert kinds == [{"diagnostic": True}]       # a first run's missing cursor: a diagnostic
     seeded = R.read_state()
     _add(paths["fetch_url"], _line("2999-01-01T00:00:00Z"))
-    monkeypatch.setattr(chat_notify, "post", lambda key, text: bool(posts.append(text)))
+    monkeypatch.setattr(chat_notify, "post", lambda key, text, **kw: bool(posts.append(text)))
     assert mod.main() == 1 and R.read_state() == seeded              # a failed post: no advance
-    monkeypatch.setattr(chat_notify, "post", lambda key, text: posts.append(text) or True)
+    monkeypatch.setattr(chat_notify, "post", lambda key, text, **kw: posts.append(text) or kinds.append(kw) or True)
     assert mod.main() == 0
     assert "LOG CHECK fetch-url.log: 1 record(s) with a time in the future" in posts[-1]
+    assert kinds[-1] == {"diagnostic": False}    # an ea-bot log that looks rewritten: an alert
     assert R.read_state()["logs"]["fetch_url"]["offset"] == paths["fetch_url"].stat().st_size
 
 
@@ -593,9 +595,9 @@ def test_a_clear_review_posts_on_mondays_only_and_still_advances(logs, tmp_path,
     from preprocessor import chat_notify
     paths, specs = logs
     mod = _script(monkeypatch, tmp_path, specs)
-    posts = []
+    posts, kinds = [], []
     monkeypatch.setattr(chat_notify, "health_channel_key", lambda: "health")
-    monkeypatch.setattr(chat_notify, "post", lambda key, text: posts.append(text) or True)
+    monkeypatch.setattr(chat_notify, "post", lambda key, text, **kw: posts.append(text) or kinds.append(kw) or True)
     monkeypatch.setattr(mod, "_today", lambda: datetime(2026, 11, 17))   # a Tuesday
     assert mod.main() == 0 and len(posts) == 1                          # the first run is flagged
     seeded = R.read_state()
@@ -603,6 +605,7 @@ def test_a_clear_review_posts_on_mondays_only_and_still_advances(logs, tmp_path,
     assert R.read_state()["last_ts"] >= seeded["last_ts"]
     monkeypatch.setattr(mod, "_today", lambda: datetime(2026, 11, 16))   # a Monday
     assert mod.main() == 0 and len(posts) == 2 and "Nothing looked off." in posts[-1]
+    assert kinds[-1] == {"diagnostic": True}
 
 
 # --- a lost, refused or bad cursor never skips a window silently -------------
@@ -612,9 +615,9 @@ def test_a_cursor_that_is_not_json_is_set_aside_and_each_log_is_read_from_its_st
     from preprocessor import chat_notify
     paths, specs = logs
     mod = _script(monkeypatch, tmp_path, specs)
-    posts = []
+    posts, kinds = [], []
     monkeypatch.setattr(chat_notify, "health_channel_key", lambda: "health")
-    monkeypatch.setattr(chat_notify, "post", lambda key, text: posts.append(text) or True)
+    monkeypatch.setattr(chat_notify, "post", lambda key, text, **kw: posts.append(text) or kinds.append(kw) or True)
     _add(paths["fetch_url"], _line("2026-10-18T09:00:00Z"))
     assert mod.main() == 0
     # the cursor is broken; a record lands before the next run
@@ -626,6 +629,7 @@ def test_a_cursor_that_is_not_json_is_set_aside_and_each_log_is_read_from_its_st
     assert ("LOG CHECK the review cursor is not JSON; it is set aside and each log was read "
             "from its start") in posts[-1]
     assert "CHECK URL (encoded query value) to out.example" in posts[-1]
+    assert kinds[-1] == {"diagnostic": False}    # a cursor that is not JSON: an alert
     aside = list(tmp_path.glob("seen.json.bad-*"))
     assert len(aside) == 1 and aside[0].read_text() == "{broken"
     st = R.read_state()
@@ -639,7 +643,7 @@ def test_a_failed_post_keeps_a_bad_cursor_where_it_is(logs, tmp_path, monkeypatc
     mod = _script(monkeypatch, tmp_path, specs)
     (tmp_path / "seen.json").write_text("[1, 2]")
     monkeypatch.setattr(chat_notify, "health_channel_key", lambda: "health")
-    monkeypatch.setattr(chat_notify, "post", lambda key, text: False)
+    monkeypatch.setattr(chat_notify, "post", lambda key, text, **kw: False)
     assert mod.main() == 1
     assert (tmp_path / "seen.json").read_text() == "[1, 2]"
     assert R.read_state()["cursor_problem"] == "is not a JSON object"

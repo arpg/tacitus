@@ -61,6 +61,13 @@ does; `room_changes` records each. A fixed place answers 400 (the EA
 channel and the DM to a mute too), a name another room has 409. The
 digests start muted, as the bot's do.
 
+`debug` (True or False; None, the default, leaves both out) adds the
+health room, with a made-up report in it, and the Debug mode switch in
+the Settings menu (/api/me names `debug`). While it is False the room's
+row carries `hidden`, as the bot's does with debug mode off; a POST to
+/api/settings/debug sets it, records the body in `debug_posts` and sends
+the room's row as a `channel` event, as the bot does.
+
 The owner's own actions: GET /api/search finds the messages that hold
 every word of `q` (any case, anywhere in the text), newest first, with
 the bot's row shape; POST /api/messages/<ch>/<id>/react toggles one of the
@@ -122,6 +129,7 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' 
        "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 
 DM, MAIN, SCHED, ROOM, OLD, DIGEST = "stream:7", "stream:9", "stream:11", "r1", "r2", "digests"
+HEALTH = "r3"  # the health room, with `debug`
 # The install /api/relay/status names; a pairing link for another is refused.
 STUB_INSTALL = "a" * 26
 STUB_BOT_PUBLIC = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"  # 32 bytes of 1, base64url
@@ -188,7 +196,7 @@ class Stub:
                  sign: bool = False, relay_pairing: bool = False, settings: bool | list = False,
                  push: bool = False, handoff: bool = False, owner_routes: str | None = None,
                  subscriptions: list | None = None, public_url: str | None = None,
-                 rooms: bool | None = None):
+                 rooms: bool | None = None, debug: bool | None = None):
         self.cond = threading.Condition()
         self.public_url = public_url
         # /api/me's `rooms`: None leaves it out, as a bot from before it did
@@ -197,6 +205,10 @@ class Stub:
         self.owner_routes = owner_routes
         self.handoffs: list[dict] = []
         self.settings = (["notify", "routing"] if settings is True else list(settings or []))
+        self.debug = debug
+        self.debug_posts: list[dict] = []
+        if debug is not None:
+            self.settings.append("debug")
         self.push = push
         self.subscriptions = list(subscriptions or [])
         self.routing = json.loads(json.dumps(ROUTING))
@@ -260,7 +272,12 @@ class Stub:
             DIGEST: {"id": DIGEST, "name": "Mail digests", "kind": "digest", "archived": False,
                      "muted": True},
         }
+        if debug is not None:
+            self.channels[HEALTH] = {"id": HEALTH, "name": "ea-health", "kind": "room",
+                                     "archived": False, "muted": False}
         self._seed()
+        if debug is not None:
+            self.add(HEALTH, ":broom: Reconcile: 12 rows in 3 groups.")
         if tick > 0:
             threading.Thread(target=self._ticker, args=(tick,), daemon=True).start()
 
@@ -309,7 +326,22 @@ class Stub:
     def channel_row(self, cid: str) -> dict:
         """A channel's row as /api/channels and a `channel` event give it."""
         last = max((m["posted_at"] for m in self.messages if m["channel"] == cid), default=None)
-        return {**self.channels[cid], "last_at": last, **self.counts(cid)}
+        hidden = {"hidden": True} if cid == HEALTH and self.debug is False else {}
+        return {**self.channels[cid], "last_at": last, **self.counts(cid), **hidden}
+
+    def set_debug(self, body) -> tuple[int, dict]:
+        """Debug mode as the bot saves it: (status, the page's answer), and
+        the health room's row with its `hidden` as a `channel` event."""
+        self.debug_posts.append(body)
+        if not isinstance(body, dict) or set(body) != {"on"} or not isinstance(body["on"], bool):
+            return 400, {"error": "Debug mode takes on or off."}
+        with self.cond:
+            self.debug = body["on"]
+            self.eseq += 1
+            self.events.append((self.eseq, "channel", {**self.channel_row(HEALTH),
+                                                       "hidden": not self.debug}))
+            self.cond.notify_all()
+        return 200, {"on": self.debug, "saved": True}
 
     def mark_read(self, channel: str, key: str, upto: int | None = None) -> dict | None:
         """The owner read a thread: its mark moves to its newest message (or
@@ -678,6 +710,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, s.routing)
         if parts == ["settings", "notify"] and "notify" in s.settings:
             return self._json(200, s.notify)
+        if parts == ["settings", "debug"] and "debug" in s.settings:
+            return self._json(200, {"on": s.debug})
         if parts == ["push", "vapid"] and s.push:
             return self._json(200, {"key": STUB_VAPID})
         if parts == ["push", "subscriptions"] and s.push:
@@ -775,6 +809,8 @@ class Handler(BaseHTTPRequestHandler):
                     s.add(parts[1], "", author="owner", kind="file", thread_key=first["thread_key"], file=ref,
                           event="file")
                 return self._json(200, first)
+        if parts == ["settings", "debug"] and "debug" in s.settings:
+            return self._json(*s.set_debug(json.loads(self._body() or b"{}")))
         if parts == ["settings", "notify"] and "notify" in s.settings:
             body = json.loads(self._body() or b"{}")
             s.notify_posts.append(body)

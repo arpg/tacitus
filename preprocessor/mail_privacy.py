@@ -2672,9 +2672,12 @@ def report(post: bool = False) -> dict:
         today = datetime.now().astimezone().date()
         last_day = until is not None and today == until
         if on or last_day:
+            # The report and the line after it are diagnostics: they post
+            # only in debug mode (chat_notify, Debug mode).
             try:
                 import slack_notifier
-                slack_notifier.post_to_slack(slack_notifier.health_channel_key(), text)
+                slack_notifier.post_to_slack(slack_notifier.health_channel_key(), text,
+                                             diagnostic=True)
             except Exception as e:
                 print(f"mail_privacy: post failed: {e}", file=sys.stderr)
         if last_day:
@@ -2684,7 +2687,7 @@ def report(post: bool = False) -> dict:
                 slack_notifier.post_to_slack(
                     slack_notifier.health_channel_key(),
                     "The shadow run ended today. The final report and the grading sheets "
-                    f"are in {path.parent} (private).")
+                    f"are in {path.parent} (private).", diagnostic=True)
             except Exception:
                 pass
     return {"text": text, "metrics": m, "scheduling": s}

@@ -390,7 +390,8 @@ Exit codes: 0 green, 1 red or amber, 2 harness, 3 skipped.
 - Saturday 23:00 (`crontab.master`): `tests/release/run_weekly.sh`
   runs every lane, but skips when the prompt-affecting code, both model
   ids and the switch values match the last full run. A red, amber or
-  harness verdict is posted to the health channel. Toggle:
+  harness verdict is posted to the health channel in debug mode
+  (docs/webchat.md, Debug mode); the run's record keeps it either way. Toggle:
   `release_tests_enabled` in the owner-private `~/.ea-private/evals.json`.
 - Cutting a tag: `scripts/cut-tag.sh v1.2.0 [-m "..."] [--push]` checks
   the branch, the tree and the CHANGELOG heading, runs the suite on HEAD

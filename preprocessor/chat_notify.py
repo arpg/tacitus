@@ -30,6 +30,19 @@ the post opened (a non-empty str) where they would return True, so a
 caller can link to it (usage_tips: the push of a weekly tip opens its
 thread).
 
+Debug mode (the chat block's `diagnostics`, off by default;
+diagnostics_on) is the one gate for the bot's own checks and reports. A
+caller marks such a post `diagnostic=True` (post, post_digest,
+slack_notifier.post_to_slack). With debug mode off it goes to no
+frontend and to no quiet-hours queue: the call prints one line and
+returns True, so the caller's cursor moves on as after a post. A post
+with no mark (an alert: a service down, a sign-in that broke, a boundary
+check that fails) goes out either way. On the web chat the health
+channel leaves the drawer while debug mode is off (botcore's
+WebFrontend.hidden_channels), so a health post that still goes out goes
+to the EA channel (_web_route). docs/webchat.md, Debug mode, lists each
+poster and its kind.
+
 post_as_bot() is the direct post with bot credentials that owner-side
 jobs (scheduled_sends, owner plugins) use for alerts into the EA
 channel. llm_tool_grants() names the chat tools the LLM gets on the
@@ -37,7 +50,8 @@ configured platform, without building a client.
 
 CLI:
     chat_notify.py llm-grants
-    chat_notify.py post --key personal --text "..."
+    chat_notify.py post --key personal --text "..." [--diagnostic]
+    chat_notify.py debug [on|off]     # debug mode: say it, or set it (owner only)
 """
 from __future__ import annotations
 
@@ -92,6 +106,26 @@ def _chat_cfg() -> dict:
 def frontend_name() -> str:
     """The configured chat frontend ("slack" when unset)."""
     return str(_chat_cfg().get("frontend") or "slack")
+
+
+# The key the health and boundary checks post under (health_channel_key).
+HEALTH_KEY = "health"
+
+
+def diagnostics_on() -> bool:
+    """True while debug mode is on: the chat block's `diagnostics` is a
+    literal true (ea_config.diagnostics_on). Off by default, on a fresh
+    install and on one whose block predates the switch."""
+    return _ea_config().diagnostics_on(_chat_cfg())
+
+
+def _withheld(channel_key: str, text: str) -> bool:
+    """A diagnostic left out while debug mode is off: one line in this
+    process's output (the owner's cron log), with no text of the post,
+    which can carry mail. True, as a post that went out."""
+    print(f"[debug mode off] diagnostic for '{channel_key}' not posted "
+          f"({len(text)} characters); Settings > Debug mode posts these")
+    return True
 
 
 def _owner_trust():
@@ -319,8 +353,15 @@ def _web_route(fe, channel_key: str, direct: bool = False) -> str:
     """The web channel a key posts to: the one `web.notify` names, else
     the DM for a direct message, Scheduling for the `scheduling` key while
     that channel is there, and the EA channel for the rest. A digest key
-    never comes here (_send_digest names its channel)."""
+    never comes here (_send_digest names its channel). While debug mode is
+    off, the health channel is out of the drawer (when it is a room,
+    WebFrontend.diagnostic_channels), so what still posts under the health
+    key, an alert, goes to the EA channel."""
     target = _web_target(channel_key)
+    if target and channel_key == HEALTH_KEY and not diagnostics_on():
+        hidden = getattr(fe, "diagnostic_channels", None)
+        if callable(hidden) and target in hidden():
+            return fe.main_channel
     if target:
         return target
     if direct:
@@ -400,7 +441,7 @@ def _send_digest(key: str, parts: list[str]) -> bool | str | None:
     return None
 
 
-def post_digest(key: str, text: str) -> bool | str | None:
+def post_digest(key: str, text: str, *, diagnostic: bool = False) -> bool | str | None:
     """Post one digest. `key` names it (DIGEST_KEYS; the web chat records
     it as the thread's notifier key). Web chat: a new thread in the digest
     channel, made when it is missing. Slack: the `mail-digest`
@@ -408,7 +449,10 @@ def post_digest(key: str, text: str) -> bool | str | None:
     when the post failed, None when the frontend has no such place (Slack
     without that webhook, or no chat): the caller decides, and nothing
     goes to a channel a Claude lane reads. post() routes a digest key here
-    too."""
+    too. A `diagnostic` digest (the mail held back, a briefing preview)
+    posts only in debug mode; with it off the call returns True."""
+    if diagnostic and not diagnostics_on():
+        return _withheld(key, text)
     return _send_digest(key, [text])
 
 
@@ -422,12 +466,18 @@ def web_direct(text: str) -> bool:
 # ── Public API ────────────────────────────────────────────────────────
 
 def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
-         priority: str = "normal", _bypass_quiet: bool = False) -> bool | str:
+         priority: str = "normal", _bypass_quiet: bool = False,
+         diagnostic: bool = False) -> bool | str:
     """Post a message to the configured chat platform.
 
     If `text` contains `SPLIT_MARKER`, splits into multiple top-level
     messages and posts them sequentially. Otherwise posts as a single
     message.
+
+    `diagnostic=True` marks one of the bot's own checks and reports: while
+    debug mode is off (diagnostics_on) it reaches no frontend and no
+    quiet-hours queue, and the call returns True. A held one carries the
+    mark, so a flush after debug mode went off drops it.
 
     `priority`: "normal" or "urgent". When the user is in local quiet hours
     (see quiet_hours.py / travel mode), a deferrable post is HELD in a queue
@@ -442,11 +492,14 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
     that went out on the web chat returns the key of the thread it opened
     instead of True (a non-empty str): truthy wherever True is.
     """
+    if diagnostic and not diagnostics_on():
+        return _withheld(channel_key, text)
     if not _bypass_quiet and channel_key not in DIGEST_KEYS:
         try:
             import quiet_hours
             if quiet_hours.should_defer(priority):
-                quiet_hours.defer(channel_key, text, priority)
+                quiet_hours.defer(channel_key, text, priority,
+                                  **({"diagnostic": True} if diagnostic else {}))
                 print(f"[quiet-hours] held post to '{channel_key}' "
                       f"(priority={priority}); will deliver after quiet hours")
                 return True
@@ -578,12 +631,30 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--text", required=True)
     p.add_argument("--priority", default="normal", choices=("normal", "urgent"))
     p.add_argument("--bypass-quiet", action="store_true")
+    p.add_argument("--diagnostic", action="store_true",
+                   help="one of the bot's own reports: posted only in debug mode")
+    d = sub.add_parser("debug", help="say whether debug mode is on, or turn it on or off "
+                                     "(writes the owner-private chat.json)")
+    d.add_argument("state", nargs="?", choices=("on", "off"))
     a = ap.parse_args(argv)
     if a.cmd == "llm-grants":
         print(llm_tool_grants())
         return 0
-    return 0 if post(a.key, a.text, priority=a.priority,
-                     _bypass_quiet=a.bypass_quiet) else 1
+    if a.cmd == "debug":
+        if a.state:
+            try:
+                import web_notify_settings
+            except ImportError:
+                from preprocessor import web_notify_settings
+            try:
+                web_notify_settings.save_debug(a.state == "on", {"credential": "command line"})
+            except ValueError as e:
+                print(e)
+                return 1
+        print(f"Debug mode is {'on' if diagnostics_on() else 'off'}.")
+        return 0
+    return 0 if post(a.key, a.text, priority=a.priority, _bypass_quiet=a.bypass_quiet,
+                     diagnostic=a.diagnostic) else 1
 
 
 if __name__ == "__main__":

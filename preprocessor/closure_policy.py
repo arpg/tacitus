@@ -508,12 +508,15 @@ def _health_line(ch: dict) -> str:
 
 
 def _post(lines: list[str]) -> bool:
+    """The night's signal changes: a diagnostic, posted only in debug mode
+    (chat_notify, Debug mode); a change counts as posted either way."""
     try:
         try:
             import chat_notify
         except ModuleNotFoundError:  # imported as preprocessor.<mod>
             from preprocessor import chat_notify
-        return bool(chat_notify.post(chat_notify.health_channel_key(), "\n".join(lines)))
+        return bool(chat_notify.post(chat_notify.health_channel_key(), "\n".join(lines),
+                                     diagnostic=True))
     except Exception as e:
         print(f"closure_policy: the health post failed: {e}", file=sys.stderr)
         return False

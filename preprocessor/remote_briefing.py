@@ -1492,9 +1492,10 @@ def _preview(text: str) -> bool:
     (chat_notify.post_digest): on the web chat a thread of its own in the
     digest channel; on Slack the `mail-digest` webhook. The briefing's chat
     reader reads none of them, so a preview never reads as a briefing that
-    went out. False when there is no such place or the post failed."""
+    went out. False when there is no such place or the post failed. A
+    diagnostic: it posts only in debug mode (chat_notify, Debug mode)."""
     import chat_notify
-    return bool(chat_notify.post_digest(PREVIEW_KEY, text))
+    return bool(chat_notify.post_digest(PREVIEW_KEY, text, diagnostic=True))
 
 
 def room_slices(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dict],

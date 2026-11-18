@@ -3,7 +3,8 @@
 When `mail_gate.mode` is `enforce`, no email text is in this file. An
 email item's `body_preview` is the remote model's summary (with its ask,
 due date and offered times; `remote_record` has the fields). FYI mail and
-mail kept from Claude are left out; the remote digest covers them. Pull
+mail kept from Claude are left out; kept mail with an ask comes back as
+its own ledger row, and in debug mode the remote digest lists the rest. Pull
 the thread with `get-conversation` when you act on an item.
 
 The preprocessor (Python, no Claude tokens) produces a DELTA briefing JSON:

@@ -238,7 +238,7 @@ subset and escapes everything else; it never injects HTML from text.
 | GET | `/manifest.sig.json` | the signed manifest of the app's files, without auth (Code integrity); 404 when the bot signs none |
 | GET | `/api/bundle` | the same document, for the owner: the route the relay reaches |
 | GET | `/api/app/{file}` | a file that the signed manifest names, its bytes as on disk (`headers.json` as the bot writes it), as an attachment with the sandbox policy and the type of its name; 404 for any other name. A phone off the tailnet, or on the relay's origin, takes a new release here, through the relay (Code integrity) |
-| GET | `/api/channels` | `[{"id","name","kind","archived","description","muted","last_at","unread","unread_threads","as_of"}]`; `unread_threads` maps each thread with unread messages to its count, `unread` is their sum, and `as_of` is the last event the counts take in (Unread) |
+| GET | `/api/channels` | `[{"id","name","kind","archived","description","muted","last_at","unread","unread_threads","as_of"}]`; `unread_threads` maps each thread with unread messages to its count, `unread` is their sum, and `as_of` is the last event the counts take in (Unread); a row the drawer leaves out also has `"hidden": true` (Debug mode) |
 | PATCH | `/api/channels/{ch}` | `{"name"}` → the room's row: the owner renames a room (Rooms). Its spaces are collapsed and a leading `#` dropped; 400 for an empty name, one over 60 characters or one with a control character, and for a fixed place (kind `main`, `dm`, `sched` or `digest`); 404 for an unknown room; 409 for a name another channel has; the same name answers the row as it is. A chat action: a relayed device that may chat may take it |
 | POST | `/api/channels/{ch}/archive`, `/api/channels/{ch}/unarchive` | `{}` → the room's row with `archived` set or cleared; a room in that state already is answered as it is. 400 for a fixed place, 404 for an unknown room. A chat action, as the rename |
 | POST | `/api/channels/{ch}/mute`, `/api/channels/{ch}/unmute` | `{}` → the channel's row with `muted` set or cleared; a channel in that state already is answered as it is. 400 for the EA channel and the DM, 404 for an unknown channel. A chat action, as the rename (Muted channels) |
@@ -271,8 +271,8 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/relay/approve` | `{"device", "cards"?}` → `{"ok": true}`: let a waiting device in, and set whether a relay-origin or hosted device may press card buttons (`cards`, default false; approving again changes it); 400 for a `cards` that is not true or false, 404 for an unknown device. Through the relay, only for a device whose handoff this same phone started (403 otherwise), with a DM notice to the owner |
 | POST | `/api/relay/revoke` | `{"device"}` → `{"ok": true}`: its sessions and streams end, its push subscriptions go; 404 for an unknown device. Through the relay, only a computer the asking phone added with a code (403 otherwise: other devices are removed in the owner's own web chat) |
 | GET | `/api/relay/status` | `{"enabled": bool, ...}`: the relay client's state (`connected`, `install_id`, `bot_public`, `client_key`, `sign_public`, `devices`, `pending`, ...), how a phone can pair (`pair_own`, `pair_relay`, and `bundle`, the bundle hash or null), and `handoff` (a code for a computer would work now) with `hosted_app` (where that computer opens the app, "" when off) |
-| GET | `/api/settings/{name}` | the page's data; for `routing` (the EA's routing table, `docs/llm-lanes.md` 1.1): `{"local": {"configured", "model", "reachable", "detail"}, "source", "values", "rows": [{"task", "label", "what", "value", "allowed", "locked", "floor", "effective", "why"}]}`; for `notify` (Notifications): `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}`, the settings in force; 404 for a page the host did not register |
-| POST | `/api/settings/{name}` | for `routing`, `{"tasks": {"<task>": "local" \| "hosted" \| "auto"}}` → the page's data with `"saved": true`; the bot writes the owner-private `routing.json`, never `ea-config.json`. 400 with the reason for an unknown task or value or a value under a floor. For `notify`, the keys to change, any of `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}` → the page's data with `"saved": true`; the bot merges them over the web block's `notify_push` in the owner-private `chat.json` (every other key kept, mode 0600; `preprocessor/web_notify_settings.py`) and pushes by them at once. 400 with the reason for an unknown key, a switch that is not true or false, another `quiet`, an empty body, or a process that is not the owner's. Either page: 403 for a relayed request (settings change only in the owner's own web chat) |
+| GET | `/api/settings/{name}` | the page's data; for `routing` (the EA's routing table, `docs/llm-lanes.md` 1.1): `{"local": {"configured", "model", "reachable", "detail"}, "source", "values", "rows": [{"task", "label", "what", "value", "allowed", "locked", "floor", "effective", "why"}]}`; for `notify` (Notifications): `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}`, the settings in force; for `debug` (Debug mode): `{"on": bool}`; 404 for a page the host did not register |
+| POST | `/api/settings/{name}` | for `routing`, `{"tasks": {"<task>": "local" \| "hosted" \| "auto"}}` → the page's data with `"saved": true`; the bot writes the owner-private `routing.json`, never `ea-config.json`. 400 with the reason for an unknown task or value or a value under a floor. For `notify`, the keys to change, any of `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}` → the page's data with `"saved": true`; the bot merges them over the web block's `notify_push` in the owner-private `chat.json` (every other key kept, mode 0600; `preprocessor/web_notify_settings.py`) and pushes by them at once. 400 with the reason for an unknown key, a switch that is not true or false, another `quiet`, an empty body, or a process that is not the owner's. For `debug`, `{"on": bool}` → `{"on": bool, "saved": true}`; the bot writes the chat block's `diagnostics` into the owner-private `chat.json` the same way and sends the health room's row with its `hidden` mark as a `channel` event; 400 "Debug mode takes on or off." for any other body. Every page: 403 for a relayed request (settings change only in the owner's own web chat) |
 | POST | `/api/relay/attest` | `{"bundle": "<hash>"}`, from a phone through the relay only → `{"ok": true, "bundle_verified": true, "release"}`, or 409 `{"error", "bundle_verified": false}` for another hash; it records the check and grants nothing (Code integrity) |
 
 The owner routes under `/api/relay/`, and `/api/pair`, answer only in
@@ -375,6 +375,79 @@ alone; shadow mode does not tell the primary.
   Unmute, Archive room) and the digests from theirs (Mute or Unmute
   alone); `POST /api/channels/{ch}/mute` or `/unmute`. The EA channel and
   the DM refuse.
+
+## Debug mode
+
+Most installs do not want the bot's own checks and reports in their
+chat. Debug mode, off by default, decides whether they post at all. It
+is the chat block's `diagnostics` (`ea_config.diagnostics_on`: only a
+literal `true` turns it on). An owner process reads it from the
+owner-private `chat.json` alone, so the resident's copy in
+`ea-config.json` never turns it on or off for the owner's posts.
+
+- **Where the owner sets it.** The Settings menu has a Debug mode switch
+  ("Shows the checks and reports Tacitus runs on itself. Problems you need
+  to fix show either way."), in the owner's own copy of the app, where
+  `/api/me` names the `debug` page. It reads the bot's answer each time
+  the menu opens and saves at once. From a shell, and on Slack:
+  `python3 preprocessor/chat_notify.py debug on` (or `off`; with no word
+  it says which).
+- **The gate.** A poster marks one of the bot's own reports
+  `diagnostic=True` (`chat_notify.post`, `post_digest`,
+  `slack_notifier.post_to_slack`, `chat_notify.py post --diagnostic`).
+  With debug mode off such a post goes to no front end, Slack or web, and
+  to no quiet-hours queue; a diagnostic held overnight while debug mode
+  was on is dropped by a flush after it went off. The call prints one line
+  to the poster's log (`[debug mode off] diagnostic for '<key>' not
+  posted`, with its length and no word of its text) and returns True, so
+  the poster's cursor, window or snapshot moves on as after a post: turning
+  debug mode on later brings no backlog. The work behind each report still
+  runs and keeps its own record (its log, its state file, its run record).
+- **The drawer.** While debug mode is off, `/api/channels` marks the
+  health room (the web block's `notify.health`, when it is a room: never
+  the EA channel, the DM, Scheduling or the digests) `hidden`, and the app
+  leaves it out of the drawer and its count out of the menu badge and the
+  title. Its threads stay in the store. A save sends the room's row with
+  `hidden` as a `channel` event, so every open app shows or hides it at
+  once. The Mail digests channel stays: it holds the list and admissions
+  digests as well.
+- **Alerts.** A post with no mark goes out in any mode. While the health
+  room is hidden, a post under the `health` key goes to the EA channel
+  (`chat_notify._web_route`). On Slack the health webhook keeps its alerts.
+- **An install from before the switch** has no `diagnostics` key, so it
+  reads off: its diagnostics stop with the update, and its health room
+  leaves the drawer with its history kept. Turning debug mode on shows the
+  room and its history again.
+- **`EA_DEBUG`** does not turn debug mode on. It sets the log level of one
+  process (ea-config.json `log_level`), often for a short time while
+  chasing a problem, and the resident can set it in `~/.ea/.env`; what the
+  user sees in the chat is their own choice in Settings.
+
+Each poster's kind (`tests/test_debug_mode.py` holds this table, and fails
+when a new poster under the `health` key or a digest is not in it):
+
+| Post | Poster | Kind |
+|---|---|---|
+| The mail the gate held back ("Mail your own model held back ...") | `mail_gate.py digest` | diagnostic |
+| A briefing preview | `remote_briefing.py run --dry-run --preview` | diagnostic |
+| The remote model's report, and the line on the shadow run's last day | `mail_privacy.py report --post` | diagnostic |
+| The invite eval | `invite_eval.py --post` | diagnostic |
+| The nightly reconcile's summary | `ledger_reconcile.py run` | diagnostic |
+| A closure signal that now closes or proposes | `closure_policy.py` | diagnostic |
+| Full-mode and remote briefing evals that failed or could not run | `tests/evals/run_full_if_changed.sh` | diagnostic |
+| Release tests that are not green | `tests/release/run_release.py --alert` | diagnostic |
+| The outbound web review: its all-clear and its flags | `scripts/outbound-review.py` | diagnostic |
+| The outbound web review when a protection did not hold (a web tool in a cron lane, an ea-bot log rewritten, a cursor refused) | `scripts/outbound-review.py` | alert |
+| The sentinel: a service down, a briefing that did not post, a Graph breaker open 30 minutes, a sign-in that cannot renew, and its recovery | `sentinel.py check` | alert |
+| The boundary audit, on a change | `scripts/boundary-audit.py` | alert |
+| A plugin whose files changed, which does not act | `plugin_registry.alert_integrity_failures` | alert |
+| Sealed mail that fails to seal or comes back unread in bulk | `ghost_week.tripwire` | alert |
+| A change in the ea-bot stores that steer later sessions | `scripts/persistence-digest.py` | alert |
+| A standing rule added or retired | `scripts/preferences-digest.py` | alert |
+| The list digests and the admissions digest | `remote_digests.py` | content |
+
+A loud alert (`alert.py`, a page watch), a card, the briefings and a
+failed update (the briefing's update line) never pass through the gate.
 
 ## Unread
 
@@ -817,8 +890,9 @@ the bottom on a phone, with a row per place, each with what it holds
 under its name, in this order: Notifications, where `/api/me` says
 `push`; Devices, where adding a device works from here (the rule the
 "Add a device" dialog follows, docs/webchat-relay.md); Models, where
-`/api/me` names the `routing` page and the copy is not relayed; and How
-Tacitus works, the welcome. Under the rows a line says how this browser
+`/api/me` names the `routing` page and the copy is not relayed; How
+Tacitus works, the welcome; and the Debug mode switch, where `/api/me`
+names the `debug` page and the copy is not relayed (Debug mode). Under the rows a line says how this browser
 reaches Tacitus now, with the dot: "Connected on your own network.", or
 away from home through the relay's host; "Connecting" or "Reconnecting"
 the same way while the stream opens; and, once it has been down past the

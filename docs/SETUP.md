@@ -587,7 +587,11 @@ thread goes through the bot, which posts it in that thread.
 
 The mail digests (the mail kept from Claude, the list and admissions
 digests, a briefing preview) land in a channel of their own, "Mail
-digests", which appears with the first one. Claude never reads it, and
+digests", which appears with the first one. The mail kept from Claude
+and a briefing preview are the bot's own reports: they post only in
+debug mode (Settings, Debug mode), as do the health channel's reports;
+an alert there posts either way, in `ea` while debug mode is off
+([docs/webchat.md](webchat.md#debug-mode)). Claude never reads it, and
 the `notify` map cannot move a digest out of it. The direct message of
 an alert (`alert.py`, a page watch) lands in your DM; a `personal`
 entry in the map moves it.
@@ -1157,12 +1161,15 @@ institution.
 
 **`ea-config.json`**: `profile` (the mode) and `profile_version`;
 `drafting`; `reports.schedule` ([Choose a mode](#choose-a-mode)); the `chat` block (frontend, server, bot,
-owner id, streams, `notify` map; the web chat's `web` block counts only
-in the owner-private `chat.json`); the operational toggles `ea_enabled`
+owner id, streams, `notify` map, and `diagnostics`, debug mode: off by
+default, true posts the bot's own checks and reports
+([docs/webchat.md](webchat.md#debug-mode)); the web chat's `web` block and
+`diagnostics` count only in the owner-private `chat.json`, which the web
+chat's Settings and `chat_notify.py debug on|off` write); the operational toggles `ea_enabled`
 (the master pause: cron agents exit at once and the bot answers "EA is
 paused"; token refresh and ledger sync continue),
-`log_level` (`EA_DEBUG` overrides to DEBUG;
-the bot needs a restart for this one); `quiet_hours` and `travel_mode`;
+`log_level` (`EA_DEBUG` overrides to DEBUG and does not turn on debug
+mode in the chat; the bot needs a restart for this one); `quiet_hours` and `travel_mode`;
 `admissions_filter`; `mail_gate`. Missing toggles default to on. The
 nightly full-mode evals and the weekly release tests run a model as the
 owner, so their switches (`eval_full_enabled`, `release_tests_enabled`)
@@ -1534,7 +1541,8 @@ tokens, the deck builder) is the normal state of a new install.
 - **A `-p` lane exits silently with no output**: see
   [Trust state in .claude.json](#trust-state-in-claudejson).
 - **The Claude login fails or has expired** (the doctor's `ea-bot: Claude
-  login`, the sentinel's `ea_bot_login` alert on the health channel, or
+  login`, the sentinel's `ea_bot_login` alert on the health channel (in
+  `ea` on the web chat while debug mode is off), or
   a chat reply that starts "The EA is offline"; the CLI answers a run
   with no login with "Not logged in" and exit 0, so nothing else fails):
   ea-bot logs in with its own copy of Claude Code. On Linux, `sudo -u ea-bot env HOME=/home/ea-bot

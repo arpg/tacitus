@@ -301,14 +301,19 @@ def _load_queue() -> list:
     return [i for i in data if isinstance(i, dict)] if isinstance(data, list) else []
 
 
-def defer(channel_key: str, text: str, priority: str = "normal") -> None:
-    """Hold a post for delivery after quiet hours end."""
+def defer(channel_key: str, text: str, priority: str = "normal",
+          diagnostic: bool = False) -> None:
+    """Hold a post for delivery after quiet hours end. A `diagnostic` one
+    (chat_notify.post) carries the mark, so a flush made after debug mode
+    went off drops it."""
     item = {
         "ts_utc": datetime.now(ZoneInfo("UTC")).isoformat(),
         "channel_key": channel_key,
         "text": text,
         "priority": priority,
     }
+    if diagnostic:
+        item["diagnostic"] = True
     _update_json(QUEUE_FILE, lambda q: q.append(item), [])
 
 
@@ -343,6 +348,17 @@ def flush_if_clear(force: bool = False) -> int:
     qh = ea_config.get_quiet_hours()
     flushed = 0
     sent: list = []
+
+    # A diagnostic held while debug mode was on leaves the queue unposted
+    # once it is off (chat_notify.post, diagnostic). A chat block that
+    # cannot be read keeps it: the post itself fails the same way.
+    try:
+        debug = slack_notifier.chat_notify.diagnostics_on()
+    except Exception:
+        debug = True
+    if not debug:
+        sent = [i for i in queue if i.get("diagnostic") is True]
+        queue = [i for i in queue if i.get("diagnostic") is not True]
 
     # Group by channel so each channel gets its own digest.
     channels: dict[str, list] = {}

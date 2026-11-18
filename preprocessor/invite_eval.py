@@ -260,7 +260,7 @@ def run(days: int, *, post: bool, json_path: str) -> dict:
     if post and summary["invites"]:
         try:
             import chat_notify
-            chat_notify.post(chat_notify.health_channel_key(), text)
+            chat_notify.post(chat_notify.health_channel_key(), text, diagnostic=True)
         except Exception as e:
             print(f"  health post failed: {e}", file=sys.stderr)
     return summary

@@ -433,6 +433,9 @@ def write_snapshot(path: Path, files: dict) -> None:
 
 
 def _post(text: str) -> bool:
+    """An alert: a change in ea-bot's stores the owner did not make came
+    from an EA session, so it posts whether or not debug mode is on
+    (chat_notify, Debug mode)."""
     from preprocessor import chat_notify
     return chat_notify.post(chat_notify.health_channel_key(), text)
 
