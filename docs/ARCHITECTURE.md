@@ -1448,6 +1448,13 @@ the lanes with no token: the resident, crons and plugins' own jobs.
   _load_briefing_extract(msg)
   (entity-score obligations from briefing, return top-N matches)
        |
+  _reply_scan_for(channel)             [reply_scan.py]
+  (ONLY IF the "scan" module is detected: an inbox scan, "anything
+   else?". The live reply queue, today's replies too, as the REPLIES
+   THAT WAIT block with the rule to account for every row; a project
+   room gets its project's rows and the count of the rest. Appended to
+   the fresh prompt and the continuation alike)
+       |
   _build_scheduling_context(needed_modules)
   (inline scheduling-rules.md + scheduling-preferences.json
    ONLY IF "scheduling" module is detected)
@@ -1490,6 +1497,10 @@ the lanes with no token: the resident, crons and plugins' own jobs.
        +---- event action? --> _post_event_*_confirmation()
        |                       (:lock: block with action/Cancel)
        |
+  reply_scan.unanswered / footer       a scan turn: each block row the
+                                       reply neither named nor acted on
+                                       gets a line under the reply,
+                                       built in code
   post response text to Slack thread (chunked at 3000 chars)
   append usage footer
   swap reaction: :eyes: --> :white_check_mark:
@@ -2576,6 +2587,7 @@ Files that participate in prompt construction and action execution:
 | `scripts/install/setup_questions.py` | Every install question as data (answer key, kind, label, default sources, condition, notes), read by `user_init.py` and `setup_web.py`; the README's "Your responsibility" notice for the profile phase |
 | `preprocessor/mail_links.py` | Redirect links in an email body (google.com/url?q=, SafeLinks) and where its quoted history starts; the Send card warning and gmail_client's quoting use it |
 | `preprocessor/reply_files.py` | The files a reply names, for the bot to attach after the turn: path extraction, the turn's own uploads, the (thread, digest) sent log |
+| `preprocessor/reply_scan.py` | The replies that wait, for a chat turn that scans the inbox (the `scan` module): the reply queue as a prompt block with the rule to account for every row, a project room's part of it, and after the turn the footer that names each row the reply left out |
 | `preprocessor/slack_reader.py` | Shim over `chat_read` |
 | `preprocessor/slack_notifier.py` | Shim over `chat_notify` (`post_to_slack`) |
 | `preprocessor/dispatch_log.py` | Dispatch instrumentation; SQLite log + precision analysis CLI |
