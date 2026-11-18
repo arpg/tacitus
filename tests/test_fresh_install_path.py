@@ -114,7 +114,7 @@ def _skill_content(tmp_path: Path, has_slack: str, facts: str | None) -> str:
               f"PYTHON3={shlex.quote(sys.executable)}\nSCRIPT_DIR={shlex.quote(str(code))}\n"
               f"EA_DIR={shlex.quote(str(ea_dir))}\nSKILL_FILE={shlex.quote(str(skill))}\n"
               f"LOG_FILE={shlex.quote(str(tmp_path / 'run.log'))}\nHAS_SLACK={has_slack}\n"
-              "PROFILE=email\nAGENT=morning-briefing\n"
+              "PROFILE=email\nAGENT=morning-briefing\nEA_BOT_SCRIPT_DIR=/srv/ea\n"
               'log() { echo "[t] $*" >> "$LOG_FILE"; }\n'
               + block + '\nprintf "%s" "$SKILL_CONTENT"\n')
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
@@ -183,26 +183,116 @@ def test_briefing_model_follows_the_installs_pin():
 
 
 
-def test_the_literal_command_rule_is_opt_in():
-    """EA_LITERAL_COMMANDS=1 adds rule 5 to the cron prompt; unset, the
-    prompt says four rules and carries no fifth."""
+def _literal_rule(**env) -> tuple[str, str]:
+    """(RULE_COUNT, LITERAL_RULE) from run-agent.sh's own gate block."""
     start = RUN_AGENT.index("RULE_COUNT=four")
     gate = RUN_AGENT[start:RUN_AGENT.index("\nfi\n", start) + 4]
+    out = subprocess.run(["bash", "-c", "set -euo pipefail\n" + gate
+                          + 'printf "%s|%s" "$RULE_COUNT" "$LITERAL_RULE"'],
+                         capture_output=True, text=True,
+                         env={"PATH": os.environ["PATH"], "EA_BOT_SCRIPT_DIR": "/srv/ea", **env})
+    assert out.returncode == 0, out.stderr
+    count, rule = out.stdout.split("|", 1)
+    return count, rule
 
-    def rules(**env):
-        out = subprocess.run(["bash", "-c", gate + 'printf "%s|%s" "$RULE_COUNT" "$LITERAL_RULE"'],
-                             capture_output=True, text=True,
-                             env={"PATH": os.environ["PATH"], "EA_BOT_SCRIPT_DIR": "/srv/ea", **env}).stdout
-        return out.split("|", 1)
 
-    assert rules() == ["four", ""]
-    assert rules(EA_LITERAL_COMMANDS="0") == ["four", ""]
-    count, rule = rules(EA_LITERAL_COMMANDS="1")
+def test_the_literal_command_rule_is_on_by_default():
+    """Unset, the cron prompt says five rules and carries rule 5;
+    EA_LITERAL_COMMANDS=0 turns it off, and a Codex lane never gets it."""
+    count, rule = _literal_rule()
     assert count == "five" and rule.startswith("5. EVERY Bash CALL")
     assert "/srv/ea/preprocessor/<script>.py" in rule and "$(...)" in rule
     # mail goes through the unified CLI the lane grants, threads through the provider's
-    assert "mail_actions.py --provider" in rule and "never\n   retry it" in rule
+    assert "mail_actions.py --provider" in rule and "never retry it" in rule
+    assert _literal_rule(EA_LITERAL_COMMANDS="1") == (count, rule)
+    assert _literal_rule(EA_LITERAL_COMMANDS="0") == ("four", "")
+    # Codex runs in its sandbox with no allowlist: the rule would not be true there
+    assert _literal_rule(CODEX_LANE="1") == ("four", "")
     assert "${RULE_COUNT:-four} rules from CLAUDE.md" in RUN_AGENT and "${LITERAL_RULE:-}" in RUN_AGENT
+    # the harness is chosen before the prompt that depends on it is built
+    assert RUN_AGENT.index("\nCODEX_LANE=0\n") < RUN_AGENT.index("RULE_COUNT=four")
+    assert RUN_AGENT.index("RULE_COUNT=four") < RUN_AGENT.index('PROMPT="You are running as the EA agent')
+
+
+def _rule_pattern_matches(pattern: str, command: str) -> bool:
+    """A Bash(<pattern>) permission rule: `*` matches any text."""
+    import re
+    return re.fullmatch(".*".join(re.escape(p) for p in pattern.split("*")), command, re.S) is not None
+
+
+def _bash_rules(lines) -> list[str]:
+    return [ln[len("Bash("):-1] for ln in (l.strip() for l in lines)
+            if ln.startswith("Bash(") and ln.endswith(")")]
+
+
+def _rule_commands(rule: str) -> list[str]:
+    """One sample command line for each command the rule tells the lane to run."""
+    import re
+    flat = " ".join(rule.split())
+    prefix = re.search(r"python3 (\S+)/preprocessor/<script>\.py", flat).group(1)
+    cmds = [f"python3 {prefix}/preprocessor/ledger.py list --status open"]
+    plain = {"jq '<filter>' <file>": "jq .items /tmp/b.json", "cat <file>": "cat /tmp/b.json",
+             "ls <dir>": "ls /tmp"}
+    for shape, sample in plain.items():
+        assert shape in flat, shape
+        cmds.append(sample)
+    verbs = re.search(r"mail_actions\.py --provider outlook\|gmail \(([^)]*)\)", flat).group(1)
+    for verb in verbs.split(";")[0].split(","):
+        for provider in ("outlook", "gmail"):
+            cmds.append(f"python3 {prefix}/preprocessor/mail_actions.py {verb.strip()} "
+                        f"--provider {provider} --message-id m1")
+    for script, verb in re.findall(r"(graph_actions\.py|gmail_client\.py) (get-\w+)", flat):
+        cmds.append(f"python3 {prefix}/preprocessor/{script} {verb} --conversation-id c1")
+    return cmds
+
+
+def test_the_literal_command_rule_names_only_what_the_lane_grants():
+    """Every command rule 5 names matches a grant of the cron lane's
+    ALLOWED_TOOLS and no deny rule; with drafting off it names no verb the
+    no-drafting list denies. A rule that named a refused command would
+    cause the refusals it exists to stop."""
+    sys.path.insert(0, str(REPO / "tests"))
+    from test_allowed_tools import parse_run_agent_allowed_tools
+    grants, problems = parse_run_agent_allowed_tools()
+    assert not problems, problems
+    allow = _bash_rules(grants)
+    deny = _bash_rules((REPO / "scripts/disallowed-tools.txt").read_text().splitlines())
+    no_drafting = _bash_rules((REPO / "scripts/disallowed-tools.no-drafting.txt").read_text().splitlines())
+    script_dir = "/home/ea-bot/ea-system"  # the parse's own stand-in for EA_BOT_SCRIPT_DIR
+    for drafting, denied in (("1", deny), ("0", deny + no_drafting)):
+        _, rule = _literal_rule(EA_BOT_SCRIPT_DIR=script_dir, HAS_DRAFTING=drafting)
+        cmds = _rule_commands(rule)
+        assert len(cmds) >= 9, cmds
+        for cmd in cmds:
+            assert any(_rule_pattern_matches(g, cmd) for g in allow), f"not granted: {cmd}"
+            hit = [d for d in denied if _rule_pattern_matches(d, cmd)]
+            assert not hit, f"drafting={drafting}: the rule names {cmd!r}, denied by {hit}"
+    # with drafting on the draft verbs are named; off, they are gone and the rule says why
+    on, off = _literal_rule()[1], _literal_rule(HAS_DRAFTING="0")[1]
+    assert "create-reply" in on.split("Threads:")[0]
+    assert "create-reply" not in off.split("Threads:")[0] and "drafting is off" in off
+
+
+def test_the_plugin_lane_carries_the_shell_rule():
+    """run-plugin.sh's allowlist is literal too, and its grants differ per
+    plugin, so its rule names no command; EA_LITERAL_COMMANDS=0 removes it."""
+    src = (REPO / "run-plugin.sh").read_text()
+    start = src.index('SHELL_RULE=""')
+    gate = src[start:src.index("\nfi\n", start) + 4]
+
+    def shell_rule(**env):
+        r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + gate + 'printf "%s" "$SHELL_RULE"'],
+                           capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
+        assert r.returncode == 0, r.stderr
+        return r.stdout
+
+    rule = shell_rule()
+    assert rule.startswith("SHELL RULE: every Bash call is one command") and "no $(...)" in rule
+    assert rule.endswith("\n\n") and "jq" not in rule and "Bash(" not in rule
+    assert shell_rule(EA_LITERAL_COMMANDS="0") == ""
+    assert "${SHELL_RULE}CRITICAL OUTPUT RULE:" in src
+    assert src.index('SHELL_RULE=""') < src.index('PROMPT="You are running as the EA plugin')
+
 
 # ── the doctor in the reviewer mode ──────────────────────────────────
 

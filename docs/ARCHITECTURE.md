@@ -718,6 +718,16 @@ the chat-replies step, and write the report for
 `~/.ea/state/reports/<agent>-latest.md` and the phone push. The user
 rules (`preferences.py render --skill`) come after both blocks.
 
+After the skill the prompt repeats the `CLAUDE.md` rules the cron lane
+gets wrong: four, and a fifth on the command shape unless
+`EA_LITERAL_COMMANDS=0`. The lane's allowlist is matched literally under
+`dontAsk`, so the fifth rule says one granted command per Bash call and
+names only the lane's grants, with no draft verb when drafting is off
+(`tests/test_fresh_install_path.py` checks the names against the
+allowlist and the deny lists). A lane on Codex has no allowlist and gets
+four. `run-plugin.sh` adds a shorter rule of the same kind under the same
+switch; it names no command, since each plugin has its own grants.
+
 The scheduling channel is the lane with the shortest memory: each
 thread is one `claude -p` session on `prompts/CLAUDE-scheduling.md` (the
 scheduler's own operating file), started with the scheduling rules, the
@@ -1092,6 +1102,8 @@ Invoked by cron (morning, afternoon, weekly) or manually.
    skip Claude)              + cat(skills/<agent>.md)    [INLINED]
                              + path to briefing JSON     [REFERENCED]
                              + path to CLAUDE.md         [REFERENCED]
+                             + four CLAUDE.md rules, five with the
+                               command-shape rule (EA_LITERAL_COMMANDS)
                              + output format rules
                              + forbidden patterns
                              + workflow order
