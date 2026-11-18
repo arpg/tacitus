@@ -34,7 +34,10 @@ bot in the EA channel, and empty lists that say what each place is for. A
 room's menu (dots with a mouse, a long press with a finger) renames it in
 place, archives it after one question and brings an archived one back.
 Every string the app shows passes a plain-words scan, and the drawer
-names each place in the app's own words. The owner searches every
+names each place in the app's own words. The drawer opens with Recent,
+the latest conversations of every place in the bot's order, the same on
+a phone and a computer, then Ask Tacitus and Direct messages, then More;
+Direct messages says what it is for. The owner searches every
 conversation from the menu and lands on the hit, reacts from a strip (a
 long press on a phone), and edits or deletes their own message in its
 first 15 minutes.
@@ -499,7 +502,13 @@ def test_the_app_stays_small():
     #     channel's grey count kept off the menu's count and the title, and its place kept in the drawer).
     # 5,520: 5,503 plus debug mode (#245: a channel the bot marks hidden left out of the drawer with its
     #     count, and the Debug mode switch in the Settings menu, read when the menu opens and saved at once).
-    assert lines <= 5520, f"{lines} lines: the contract keeps the app near 5,520 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line, the home-screen file sheet, a long card link shown as its site, a channel's mute and debug mode"
+    # 5,562: 5,503 plus the drawer's Recent list (the latest conversations of every place in the bot's order, five
+    #     shown until Show more, the names the owner gave them on every card), its parts (Ask Tacitus and Direct
+    #     messages, then More), the line that says what Direct messages is for, and a room's sheet that the tap
+    #     ending a long press does not press.
+    # 5,579: both together, debug mode and the drawer's Recent list, with a hidden channel's conversations
+    #     left out of Recent too.
+    assert lines <= 5579, f"{lines} lines: the contract keeps the app near 5,579 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line, the home-screen file sheet, a long card link shown as its site, a channel's mute, debug mode and the drawer's Recent list"
 
 
 # A `:name:` in the sources that is not an emoji: a prompt that names the
@@ -655,10 +664,10 @@ def test_the_drawer_names_each_place_in_plain_words(app):
     page, stub, errors = app()
     page.wait_for_selector(".thread-item")
     links = page.locator("#channel-list > a.chan, #channel-list > .chan-row > a.chan")
-    expect(links.locator(".c-name")).to_have_text(["Ask Tacitus", "Direct messages", "Scheduling", "Mail digests",
-                                                   "example-project"])  # the unread one first, then by kind
+    expect(links.locator(".c-name")).to_have_text(["Ask Tacitus", "Direct messages", "Scheduling", "example-project",
+                                                   "Mail digests"])  # the two places to talk, then More by kind
     assert [links.nth(i).get_attribute("href") for i in range(5)] == [
-        "#/stream%3A9", "#/stream%3A7", "#/stream%3A11", "#/digests", "#/r1"]
+        "#/stream%3A9", "#/stream%3A7", "#/stream%3A11", "#/r1", "#/digests"]
     expect(page.locator("#channel-list details .c-name")).to_have_text("old-project")
     expect(page.locator("#new-thread")).to_have_text("New conversation")
     expect(page.locator("#back")).to_have_attribute("aria-label", "Back to conversations")
@@ -1810,7 +1819,8 @@ def test_the_debug_switch_shows_only_where_the_bot_serves_it(app):
 def test_a_long_press_on_a_room_opens_its_menu_as_a_sheet_on_a_phone(app):
     """On a phone the dots are gone: a long press on a room opens its menu,
     docked to the bottom with 44px buttons, and the tap that ends the press
-    opens nothing. A long press on a fixed place opens no menu."""
+    opens nothing, nor presses the sheet's button that opened under it. A
+    long press on a fixed place opens no menu."""
     from playwright.sync_api import expect
     import webui_stub_server as W
     page, stub, errors = app(**PHONE)
@@ -1819,6 +1829,7 @@ def test_a_long_press_on_a_room_opens_its_menu_as_a_sheet_on_a_phone(app):
     wait_for(lambda: page.evaluate("document.getElementById('channels').getBoundingClientRect().left >= 0"))
     expect(page.locator(f'.chan-row[data-room="{W.ROOM}"] .room-more')).to_be_hidden()
     before = page.evaluate("location.hash")
+    page.locator(f'.chan-row[data-room="{W.ROOM}"]').scroll_into_view_if_needed()  # under More, past Recent
     assert page.evaluate(PRESS, f'.chan-row[data-room="{W.ROOM}"] a.chan') == before
     menu = page.locator("#room-menu")
     expect(menu).to_be_visible()
@@ -1829,6 +1840,7 @@ def test_a_long_press_on_a_room_opens_its_menu_as_a_sheet_on_a_phone(app):
     assert page.evaluate(SMALL_TARGETS) == []
     menu.get_by_role("button", name="Cancel").click()
     expect(menu).to_be_hidden()
+    page.locator('#channel-list > a.chan[href="#/stream%3A9"]').scroll_into_view_if_needed()
     page.evaluate(PRESS, '#channel-list > a.chan[href="#/stream%3A9"]')
     expect(menu).to_be_hidden()
     assert page.evaluate(SIDEWAYS) == [0, 0]
@@ -2664,7 +2676,7 @@ def test_an_empty_list_says_what_the_place_is_for(app, size):
     stub.messages[:] = [m for m in stub.messages if m["channel"] not in (W.DM, W.MAIN, W.SCHED, W.ROOM)]
     page.reload()
     empty = page.locator("#thread-list .empty")
-    expect(empty).to_have_text("Cards that need your tap land here.")  # the DM opens first
+    expect(empty).to_have_text("Drafts and meetings wait here as cards. Nothing goes out until you tap Send or Create.")  # the DM opens first
     expect(page.locator("#thread-list .filters")).to_have_count(0)  # nothing to filter
     for where, says in (("r1", "This room is for one project. Ask about it here and Tacitus keeps track of it."),
                         ("stream%3A11", "Tacitus finds meeting times here."),
@@ -2684,6 +2696,186 @@ def test_an_empty_list_says_what_the_place_is_for(app, size):
     expect(page.locator("#text")).to_be_focused()
     assert page.input_value("#text") == "Find me an hour with Dana next week."
     assert page.evaluate("[$('text').selectionStart, $('text').selectionEnd]") == [21, 25]
+    assert not errors, errors
+
+
+# -- Recent and the drawer's parts (docs/webchat.md, Recent) ----------------
+
+RECENT = "#channel-list .recent .recent-item"
+# The drawer's list from the top: Recent, each place by its name, More, Archived.
+PARTS = """[...$('channel-list').children].map((el) => el.matches('section.recent') ? 'Recent'
+  : el.matches('h2') ? el.textContent : el.matches('details') ? 'Archived' : el.querySelector('.c-name').textContent)"""
+
+
+@SIZES
+def test_recent_heads_the_drawer_and_opens_a_conversation_in_place(app, size):
+    """Recent lists the latest conversations of every place, newest first,
+    each with its place, its time and its count; five show until Show more.
+    Under it Ask Tacitus and Direct messages, then More with the other
+    places. A tap opens the conversation in place (on a phone the drawer
+    closes on it), and reading it clears its count."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app(**(PHONE if size == "phone" else {}))
+    page.wait_for_selector(RECENT, state="attached")  # in the drawer, shut on a phone
+    assert page.evaluate(PARTS) == ["Recent", "Ask Tacitus", "Direct messages", "More", "Scheduling",
+                                    "example-project", "Mail digests", "Archived"]
+    rows = page.locator(RECENT)
+    expect(rows).to_have_count(5)
+    expect(rows.first.locator(".r-title")).to_have_text("Here is the figure.")
+    new = stub.emit_bot(W.SCHED, "Find an hour for the budget review.")
+    expect(rows.first.locator(".r-title")).to_have_text("Find an hour for the budget review.")
+    expect(rows.first.locator(".r-where")).to_contain_text("Scheduling · ")
+    expect(rows.first.locator(".badge")).to_have_text("1")
+    if size == "phone":
+        page.click("#menu")
+        wait_for(lambda: page.evaluate("document.getElementById('channels').getBoundingClientRect().left >= 0"))
+        assert page.evaluate(SMALL_TARGETS) == []
+        assert page.evaluate(SIDEWAYS) == [0, 0]
+    more = page.locator("#recent-more")
+    expect(more).to_have_text("Show more")
+    more.click()
+    expect(rows).to_have_count(8)  # every conversation not archived, the digests' none
+    expect(more).to_have_attribute("aria-expanded", "true")
+    expect(more).to_have_text("Show less")
+    expect(more).to_be_focused()
+    rows.first.click()
+    expect(page).to_have_url(re.compile(re.escape(f"#/stream%3A11/{new['thread_key']}") + "$"))
+    expect(page.locator("#messages .msg")).to_have_count(1)
+    expect(page.locator("#thread-title")).to_have_text("Find an hour for the budget review.")
+    if size == "phone":
+        assert page.evaluate("document.body.classList.contains('drawer')") is False
+        expect(page.locator("#thread")).to_be_visible()
+    else:
+        expect(page.locator("#channel-name")).to_have_text("Scheduling")
+        expect(rows.first).to_have_class(re.compile(r"\bactive\b"))
+    wait_for(lambda: any(p["thread_key"] == new["thread_key"] for p in stub.read_posts))
+    expect(rows.first.locator(".badge")).to_have_count(0)
+    assert not errors, errors
+
+
+def test_recent_puts_an_unread_card_first_and_leaves_out_muted_places(app):
+    """A card that waits for a tap ranks first while it is unread, from any
+    place, a muted one too; read, it takes its place by time. A muted
+    place's other conversations stay out of Recent."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app()
+    page.wait_for_selector(RECENT)
+    titles = lambda: page.locator(f"{RECENT} .r-title").all_text_contents()  # noqa: E731
+    gets = stub.recent_gets
+    stub.emit_bot(W.DIGEST, "Your mail digest for Tuesday.")
+    wait_for(lambda: stub.recent_gets > gets)
+    card = stub.add(W.DM, "", kind="card", at=time.time() - 3600, event="card", card={
+        "kind": "send", "title": ":lock: *Send this reply?*", "fields": [], "lines": [], "body": "Tuesday works.",
+        "quoted": "", "actions": [{"id": "send", "label": "Send", "value": "s", "style": "primary", "word": "send"}],
+        "select": None, "block_id": "", "footer": "", "fallback_text": "Send this reply?", "thread_ts": "",
+        "ea_channel": W.DM, "content_fingerprint": "", "no_default": False})
+    stub.emit_bot(W.MAIN, "The room is booked for Friday.")
+    wait_for(lambda: titles()[:2] == ["Send this reply?", "The room is booked for Friday."])
+    assert "Your mail digest for Tuesday." not in titles()
+    # read, it takes its place by time: after the newer message
+    page.click(f"{RECENT}:has-text('Send this reply?')")
+    wait_for(lambda: any(p["thread_key"] == card["thread_key"] for p in stub.read_posts))
+    wait_for(lambda: titles()[:2] == ["The room is booked for Friday.", "Send this reply?"])
+    # an unread card in a muted place: first, its count grey; read, it leaves
+    note = stub.add(W.DIGEST, "", kind="card", event="card", card={**card["card"], "title": "Keep this list?"})
+    wait_for(lambda: titles()[:1] == ["Keep this list?"])
+    expect(page.locator(f"{RECENT} .badge.muted")).to_have_text("1")
+    stub.mark_read(W.DIGEST, note["thread_key"])
+    wait_for(lambda: "Keep this list?" not in titles())
+    assert not errors, errors
+
+
+def test_recent_leaves_out_the_health_room_while_debug_mode_hides_it(app):
+    """Debug mode off: the health room's conversation stays out of Recent,
+    even from an answer that lists it. The switch on brings it in; off, it
+    leaves again."""
+    page, stub, errors = app(debug=False)
+    page.wait_for_selector(RECENT)
+    shown = lambda: any("Reconcile" in t for t in page.locator(f"{RECENT} .r-title").all_text_contents())  # noqa: E731
+    assert any("Reconcile" in r.get("text", "") for r in stub.recent()["threads"])  # the answer lists it
+    assert not shown()
+    page.locator("#open-settings").click()
+    page.locator("#debug-row").click()
+    wait_for(shown)
+    page.locator("#debug-row").click()
+    wait_for(lambda: not shown())
+    assert not errors, errors
+
+
+def test_two_devices_show_one_recent_list(browser, stub_factory):
+    """Recent is the bot's order, not the page's: a phone and a computer on
+    one bot list the same conversations in the same order, a message moves
+    its conversation to the top on both, and a read on one clears its count
+    on the other. An answer older than the list shown is dropped."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    url, stub = stub_factory()
+    pages, errors = [], []
+    for kw in (PHONE, {"viewport": {"width": 1280, "height": 800}}):
+        ctx = browser.new_context(viewport=kw["viewport"], **kw.get("context", {}))
+        ctx.add_init_script(WELCOMED)
+        page = ctx.new_page()
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(url)
+        page.wait_for_selector(RECENT, state="attached")
+        pages.append(page)
+    phone, computer = pages
+    titles = lambda p: p.locator(f"{RECENT} .r-title").all_text_contents()  # noqa: E731
+    try:
+        assert titles(phone) == titles(computer) and len(titles(phone)) == 5
+        room = next(m for m in stub.messages if m["channel"] == W.ROOM)["thread_key"]
+        stub.emit_bot(W.ROOM, "The budget table is in.", thread_key=room)
+        for p in pages:
+            wait_for(lambda p=p: titles(p)[0] == "Project notes live here.")
+            expect(p.locator(f"{RECENT} >> nth=0 >> .badge")).to_have_text("1")
+        assert titles(phone) == titles(computer)
+        phone.click("#menu")
+        phone.locator(RECENT).first.click()
+        expect(phone.locator("#messages .msg")).to_have_count(2)
+        expect(computer.locator(f"{RECENT} >> nth=0 >> .badge")).to_have_count(0)
+        # an older answer than the list shown does not replace it
+        computer.evaluate("S.recentAsOf = 1e9")
+        stub.emit_bot(W.MAIN, "A newer message.")
+        wait_for(lambda: titles(phone)[0] == "A newer message.")
+        computer.wait_for_timeout(600)
+        assert titles(computer)[0] == "Project notes live here."
+        assert not errors, errors
+    finally:
+        for p in pages:
+            p.context.close()
+
+
+def test_a_name_the_owner_gave_titles_the_conversation_everywhere(app):
+    """A conversation the owner named (`name this conversation`) shows the
+    name in Recent, on its card in its place and in its header."""
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    page.wait_for_selector(RECENT)
+    fig = next(m for m in stub.messages if m["text"] == "Here is the figure.")
+    stub.names[fig["thread_key"]] = "Spring retreat plans"
+    page.reload()
+    page.wait_for_selector(RECENT)
+    expect(page.locator(f"{RECENT} .r-title").first).to_have_text("Spring retreat plans")
+    open_thread(page, "Spring retreat plans")  # its card in Direct messages, which opens first
+    expect(page.locator("#thread-title")).to_have_text("Spring retreat plans")
+    assert not errors, errors
+
+
+@SIZES
+def test_direct_messages_says_what_it_is_for(app, size):
+    """Direct messages, where cards land, says so in one line above its
+    cards; no other place shows the line."""
+    from playwright.sync_api import expect
+    page, stub, errors = app(**(PHONE if size == "phone" else {}))
+    page.wait_for_selector(".thread-item")
+    note = page.locator("#thread-list .place-note")
+    expect(note).to_have_text("Drafts and meetings wait here as cards. Nothing goes out until you tap Send or Create.")
+    assert page.evaluate("$('thread-list').firstElementChild.className") == "place-note"
+    page.evaluate("location.hash = '#/stream%3A9'")
+    expect(page.locator("#channel-name")).to_have_text("Ask Tacitus")
+    expect(note).to_have_count(0)
     assert not errors, errors
 
 

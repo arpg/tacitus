@@ -2601,7 +2601,8 @@ Every place the user talks to the EA is a Claude session run as ea-bot in
 `/home/ea-bot/ea-system`; what makes one "a Slack thread's", "a channel's"
 or "the shell's" is a registry row. `preprocessor/slack_sessions.py` maps
 thread_ts to a session (`adopt()` binds a thread to an EXISTING session,
-`set_title()`/`recent()` are the conversation index);
+`set_title()`/`recent()` are the conversation index, and `names()` gives
+the web chat the names the owner gave conversations, its titles in Recent);
 `preprocessor/ea_channels.py` maps a private channel to a project
 (`#ea-<project>`, kind project) or to one session (`#tmp-<id8>`, kind
 session). Both kinds run on a session of their own: a session room on the

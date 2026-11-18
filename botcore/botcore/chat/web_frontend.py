@@ -121,10 +121,10 @@ here; a primary that cannot rename refuses in words the app shows.
 The owner mutes and unmutes a room, Scheduling or the digests (`POST
 /api/channels/<id>/mute`, `/unmute`); the EA channel and the DM refuse. A
 muted channel's unread count adds nothing to the menu badge or the tab
-title, and the channel does not rise to the top of the drawer. A digest
-channel starts muted, and so does the health channel (the web block's
-`notify.health`) once per store; an unmute stays. The mute is this app's
-alone: shadow mode does not tell the primary.
+title, the channel does not rise in the drawer, and its conversations
+stay out of Recent. A digest channel starts muted, and so does the health
+channel (the web block's `notify.health`) once per store; an unmute stays.
+The mute is this app's alone: shadow mode does not tell the primary.
 
 Debug mode: the host sets `debug_on`, a callable that says whether the
 owner's debug mode is on. While it is off, `/api/channels` marks each
@@ -160,6 +160,15 @@ every change and the tick, on a thread of their own. `thread_origin`
 records the notifier key of an automated post (chat_notify), which the
 rules read. The states live in this store alone: nothing reaches the
 primary in shadow mode.
+
+Recent (docs/webchat.md, Recent): `/api/recent` lists the latest
+conversations of every channel that is not archived, newest activity
+first, in one snapshot with `as_of`, so every device shows the same list.
+A conversation whose card waits for a tap and that has unread messages
+comes first; a muted channel's conversations are left out but such a one,
+and a hidden channel's (Debug mode) are left out with no exception.
+The host's `conversation_names` (the names the owner gave conversations)
+title the rows of Recent, the threads route, Needs you and search.
 
 The owner's own actions (docs/webchat.md): `/api/search` reads the
 FTS5 index `messages_fts` when this SQLite has FTS5, else the messages
@@ -330,6 +339,10 @@ HANDLER_TIMEOUT_S = 30
 BUNDLE_CHECK_S = 15.0
 # Threads the Needs you view lists at most.
 NEEDS_CAP = 200
+# The drawer's Recent list: the conversations it asks for, and the most one
+# request may ask.
+RECENT_LIMIT = 20
+RECENT_CAP = 50
 # Seconds the push_sent table keeps a text check (ten seconds count), and
 # push_shown a push delivered under a tag, which a notification may show
 # for days.
@@ -355,9 +368,9 @@ _TERM_RE = re.compile(r"[^\W_]+")
 # keeps a channel of that kind out of what its model reads.
 KINDS = ("main", "sched", "dm", "room", "digest")
 # The kinds a new channel of starts muted: its unread count adds nothing to
-# the app's menu badge or its tab title, and it does not rise to the top of
-# the drawer. The owner mutes or unmutes any channel but the EA channel and
-# the DM (MUTE_FIXED) from its menu.
+# the app's menu badge or its tab title, it does not rise in the drawer, and
+# its conversations stay out of Recent (WebStore.recent). The owner mutes or
+# unmutes any channel but the EA channel and the DM (MUTE_FIXED) from its menu.
 MUTED_KINDS = frozenset({"digest"})
 MUTE_FIXED = frozenset({"main", "dm"})
 # The meta key that records the one default mute of the health channel (the
@@ -1050,6 +1063,11 @@ class WebStore:
             threads = {r["k"]: int(r["n"]) for r in self._unread_rows(channel)}
             return {"as_of": self.max_event_seq(), "unread": sum(threads.values()),
                     "unread_threads": threads}
+        return self._snapshot(read)
+
+    def _snapshot(self, read: Callable[[], Any]) -> Any:
+        """`read()` in one read transaction: what it reads takes in every
+        event up to the last one it sees and none after it."""
         with self._lock:
             if self._conn.in_transaction:
                 return read()
@@ -1180,13 +1198,7 @@ class WebStore:
             "ON s.channel = m.channel AND s.thread_key = m.thread_key "
             "WHERE (? IS NULL OR m.seq < ?) "
             "ORDER BY m.seq DESC LIMIT ?", (channel, before, before, int(limit)))
-        out = []
-        for r in rows:
-            j = self._msg_json(r, int(r["n"]) - 1)
-            j["last_at"] = r["last_at"]
-            j.update(self._state_fields(r))
-            out.append(j)
-        return out
+        return [self._thread_json(r) for r in rows]
 
     @staticmethod
     def _state_fields(r: sqlite3.Row) -> dict:
@@ -1323,9 +1335,7 @@ class WebStore:
     def _state_rows(self, rows: list[sqlite3.Row]) -> list[dict]:
         out = []
         for r in rows:
-            j = self._msg_json(r, int(r["n"]) - 1)
-            j["last_at"] = r["last_at"]
-            j.update(self._state_fields(r))
+            j = self._thread_json(r)
             j["channel_name"] = r["channel_name"] or r["channel"]
             out.append(j)
         return out
@@ -1340,6 +1350,59 @@ class WebStore:
             "ORDER BY CASE x.st_state WHEN 'needs_you' THEN 0 ELSE 1 END, x.last_at DESC "
             "LIMIT ?", (int(limit),))
         return self._state_rows(rows)
+
+    def recent(self, limit: int = RECENT_LIMIT) -> dict:
+        """The drawer's Recent list, {"threads", "as_of"}: the latest
+        conversations of every channel that is not archived, read in one
+        snapshot whose `as_of` is the last event it takes in, as the counts
+        carry it. Each row is a thread row as threads() gives it, with
+        `channel_name`, `unread` (the thread's count, as `_counts` gives it)
+        and `needs_tap`: the thread holds a card that waits for a tap (no
+        status line has replaced it) and has unread messages. Those come
+        first, newest first; then the rest by their newest message, a muted
+        channel's left out. It moves no read mark."""
+        def read() -> dict:
+            names = {r["id"]: r["name"] or r["id"] for r in self._all(
+                "SELECT id, name FROM channels WHERE archived = 0")}
+            counts: dict[str, dict] = {}
+
+            def unread(ch: str, key: str) -> int:
+                if ch not in counts:
+                    counts[ch] = {r["k"]: int(r["n"]) for r in self._unread_rows(ch)}
+                return counts[ch].get(key, 0)
+            cards = [(r["channel"], r["k"]) for r in self._all(
+                "SELECT DISTINCT channel, thread_key AS k FROM messages WHERE kind = 'card'")
+                if r["channel"] in names and unread(r["channel"], r["k"])]
+            rest = [(r["channel"], r["k"]) for r in self._all(
+                "SELECT m.channel AS channel, m.thread_key AS k, MAX(m.posted_at) AS last_at, "
+                "MAX(m.seq) AS newest FROM messages m JOIN channels c ON c.id = m.channel AND "
+                "c.archived = 0 AND c.muted = 0 GROUP BY m.channel, m.thread_key "
+                "ORDER BY last_at DESC, newest DESC LIMIT ?", (int(limit),))]
+            rows = []
+            for ch, key in dict.fromkeys(cards + rest):
+                got = self._all(self._THREAD_ROW, (ch, key))
+                if got:
+                    j = self._thread_json(got[0])
+                    j.update(channel_name=names[ch], unread=unread(ch, key),
+                             needs_tap=(ch, key) in cards)
+                    rows.append(j)
+            rows.sort(key=lambda j: (not j["needs_tap"], -(j["last_at"] or 0)))
+            return {"threads": rows[:int(limit)], "as_of": self.max_event_seq()}
+        return self._snapshot(read)
+
+    # One thread's row as threads() gives it, by channel and thread key.
+    _THREAD_ROW = (
+        "SELECT m.*, t.n AS n, t.last_at AS last_at, s.state AS st_state, s.by AS st_by, "
+        "s.reason AS st_reason, s.at AS st_at, s.stale AS st_stale FROM (SELECT MIN(seq) AS "
+        "first, COUNT(*) AS n, MAX(posted_at) AS last_at FROM messages WHERE channel=? AND "
+        "thread_key=?) t JOIN messages m ON m.seq = t.first LEFT JOIN thread_state s "
+        "ON s.channel = m.channel AND s.thread_key = m.thread_key")
+
+    def _thread_json(self, r: sqlite3.Row) -> dict:
+        j = self._msg_json(r, int(r["n"]) - 1)
+        j["last_at"] = r["last_at"]
+        j.update(self._state_fields(r))
+        return j
 
     def thread_row(self, channel: str, thread_key: str) -> dict | None:
         """One thread's row as threads() gives it, with `channel_name`; None
@@ -2559,6 +2622,10 @@ class WebFrontend(ChatFrontend):
         # None means it is). While it is off, /api/channels marks each
         # diagnostic channel `hidden` and the app leaves it out of the drawer.
         self.debug_on: Any = None
+        # The names the owner gave conversations (`name this conversation`):
+        # a callable the host sets that answers {thread key: name}. The
+        # thread rows carry them as their titles (named()).
+        self.conversation_names: Callable[[], dict] | None = None
         self.html_csp = self._html_csp()
         # The app's signed bundle (web_bundle.Bundle) once start() signed it.
         self._bundle: web_bundle.Bundle | None = None
@@ -2580,6 +2647,23 @@ class WebFrontend(ChatFrontend):
             return bool(self.rooms_enabled())
         except Exception:
             return True
+
+    def named(self, rows: list[dict], field: str = "title") -> list[dict]:
+        """The rows, each with the name the owner gave its conversation in
+        `field` (a thread row's `title`, a search hit's `thread_title`) where
+        the host names one; a host whose names fail names none. A name is
+        text from the resident's registry: one line of 120 characters at
+        most, shown as text."""
+        try:
+            names = self.conversation_names() if self.conversation_names else {}
+        except Exception as e:
+            log.warning("web chat: conversation names failed: %s", e)
+            names = {}
+        for r in rows:
+            name = names.get(r.get("thread_key")) if isinstance(names, dict) else None
+            if isinstance(name, str) and name.strip():
+                r[field] = " ".join(name.split())[:120]
+        return rows
 
     @classmethod
     def from_config(cls, cfg: dict | None, *, store_path: str | Path | None = None,
@@ -4616,7 +4700,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 self._need_channel(segs[1])
                 limit = self._int(query, "limit", 50, 1, 200)
                 before = self._int(query, "before", None, 0, None)
-                self._json(200, store.threads(segs[1], limit, before))
+                self._json(200, fe.named(store.threads(segs[1], limit, before)))
                 return None
             if n == 4 and segs[0] == "channels" and segs[2] == "threads":
                 self._need_channel(segs[1])
@@ -4632,7 +4716,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 self._events(query)
                 return None
             if segs == ["needs"]:
-                self._json(200, {"threads": store.needs(NEEDS_CAP)})
+                self._json(200, {"threads": fe.named(store.needs(NEEDS_CAP))})
+                return None
+            if segs == ["recent"]:
+                out = store.recent(self._int(query, "limit", RECENT_LIMIT, 1, RECENT_CAP))
+                hidden = fe.hidden_channels()  # debug mode off: the health room's stay out
+                out["threads"] = [t for t in out["threads"] if t["channel"] not in hidden]
+                fe.named(out["threads"])
+                self._json(200, out)
                 return None
             if segs == ["search"]:
                 q = (query.get("q") or [""])[0].strip()
@@ -4644,7 +4735,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 if ch:
                     self._need_channel(ch)
                 limit = self._int(query, "limit", 50, 1, SEARCH_CAP)
-                self._json(200, {"results": store.search(q, ch, limit), "mode": store.search_mode})
+                self._json(200, {"results": fe.named(store.search(q, ch, limit), "thread_title"),
+                                 "mode": store.search_mode})
                 return None
         if n == 3 and segs[0] == "messages" and method in ("PATCH", "DELETE"):
             # The owner's own message: a chat action, as a message is.

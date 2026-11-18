@@ -1742,6 +1742,121 @@ def test_the_owner_sets_a_thread_s_state_and_the_stream_says_so(fe):
     assert owner(fe, "GET", path)[0] == 404
 
 
+# ── Recent (docs/webchat.md, Recent) ─────────────────────────────────────
+
+def _recent(f, query=""):
+    status, _h, body = owner(f, "GET", "/api/recent" + query)
+    assert status == 200, body
+    return json.loads(body)
+
+
+def test_recent_lists_the_latest_conversations_of_every_place_newest_first(fe):
+    fe.create_private_room("ea-trip")
+    fe.create_private_room("ea-old")
+    rooms = {c["name"]: c["id"] for c in fe.store.channels()}
+    a = fe.post("main", "a")
+    fe.post("sched", "s")
+    fe.post(rooms["ea-trip"], "r")
+    fe.post(rooms["ea-old"], "o")
+    fe.archive(rooms["ea-old"])
+    fe.post("dm", "d")
+    fe.post("main", "a2", thread_ts=a.thread_key)  # a reply makes `a` the newest
+    before = owner(fe, "GET", "/api/channels")[2]
+    out = _recent(fe)
+    assert [t["text"] for t in out["threads"]] == ["a", "d", "r", "s"]  # the archived room's left out
+    first = out["threads"][0]
+    assert (first["channel"], first["channel_name"], first["reply_count"], first["unread"],
+            first["needs_tap"], first["state"]) == ("main", "ea", 1, 2, False, "none")
+    assert first["last_at"] == fe.store.thread("main", a.thread_key)[-1]["posted_at"]
+    assert [t["text"] for t in _recent(fe, "?limit=2")["threads"]] == ["a", "d"]
+    for bad in ("0", "51", "x"):
+        assert owner(fe, "GET", f"/api/recent?limit={bad}")[0] == 400
+    assert owner(fe, "GET", "/api/channels")[2] == before  # a read of the list reads no conversation
+    assert call(fe, "GET", "/api/recent")[0] == 401
+
+
+def test_recent_puts_an_unread_card_first_and_leaves_out_muted_places(fe):
+    c = fe.post_card("dm", card())
+    fe.post("main", "newer")
+    fe.store.upsert_channel("digests", "Mail digests", "digest")  # a digest place starts muted
+    fe.post("digests", "a digest")
+    got = _recent(fe)["threads"]
+    assert [(t["channel"], t["needs_tap"]) for t in got] == [("dm", True), ("main", False)]
+    # read, the card takes its place by time
+    fe.store.mark_thread_read("dm", c.thread_key)
+    got = _recent(fe)["threads"]
+    assert [(t["channel"], t["needs_tap"]) for t in got] == [("main", False), ("dm", False)]
+    # an unread card in a muted place comes first; once its status line replaces it, the place's out again
+    k = fe.post_card("digests", card(title="Keep this list?"))
+    got = _recent(fe)["threads"]
+    assert (got[0]["channel"], got[0]["needs_tap"], got[0]["unread"]) == ("digests", True, 1)
+    fe.replace_card_with_status(k, "Kept.")
+    assert [t["channel"] for t in _recent(fe)["threads"]] == ["main", "dm"]
+
+
+def test_recent_leaves_out_the_health_room_while_debug_mode_hides_it(tmp_path):
+    """While debug mode is off, Recent leaves out the hidden health room's
+    conversations, an unread card too (a muted place would show that one);
+    turned on, they come back."""
+    store = wf.WebStore(tmp_path / "priv" / "webchat.sqlite")
+    store.upsert_channel("r5", "ea-health", "room")
+    store.close()
+    f = make(tmp_path, notify={"health": {"channel": "r5"}})
+    f.start()
+    try:
+        f.post("main", "a")
+        f.post_card("r5", card(title="Check the mail gate?"))
+        debug = {"on": False}
+        f.debug_on = lambda: debug["on"]
+        assert _hidden(f) == ["r5"]
+        assert [t["channel"] for t in _recent(f)["threads"]] == ["main"]
+        debug["on"] = True
+        assert [t["channel"] for t in _recent(f)["threads"]] == ["r5", "main"]
+    finally:
+        f.stop()
+
+
+def test_recent_is_one_snapshot_the_same_on_every_device(fe):
+    """Two devices that ask with no event in between get the same answer,
+    and its counts are the channel rows' counts at the same as_of."""
+    a = fe.post("main", "a")
+    fe.post("dm", "b")
+    first, second = _recent(fe), _recent(fe)
+    assert first == second and first["as_of"] == fe.store.max_event_seq()
+    fe.post("main", "a2", thread_ts=a.thread_key)
+    third = _recent(fe)
+    assert third["as_of"] > first["as_of"] and third["threads"][0]["thread_key"] == a.thread_key
+    rows = {r["id"]: r for r in json.loads(owner(fe, "GET", "/api/channels")[2])}
+    assert rows["main"]["as_of"] == third["as_of"]
+    for t in third["threads"]:
+        assert t["unread"] == rows[t["channel"]]["unread_threads"].get(t["thread_key"], 0)
+    read = json.loads(owner(fe, "POST", f"/api/channels/main/threads/{a.thread_key}/read", {})[2])
+    after = _recent(fe)
+    assert after["as_of"] >= read["as_of"] and after["threads"][0]["unread"] == 0
+
+
+def test_the_owner_s_names_title_recent_threads_needs_and_search(fe):
+    a = fe.post("main", "Budget question for the trip")
+    _state(fe, "main", a.thread_key, "needs_you")
+    fe.conversation_names = lambda: {a.thread_key: "  Trip \n  budget  ", "t999": "Elsewhere"}
+    assert _recent(fe)["threads"][0]["title"] == "Trip budget"
+    assert json.loads(owner(fe, "GET", "/api/channels/main/threads")[2])[0]["title"] == "Trip budget"
+    assert json.loads(owner(fe, "GET", "/api/needs")[2])["threads"][0]["title"] == "Trip budget"
+    hit = json.loads(owner(fe, "GET", "/api/search?q=budget")[2])["results"][0]
+    assert hit["thread_title"] == "Trip budget"
+
+    def broken():
+        raise OSError("the registry is away")
+    fe.conversation_names = broken
+    assert "title" not in _recent(fe)["threads"][0]  # the routes answer, with no names
+
+
+def test_the_bot_names_conversations_in_the_web_chat():
+    bot = (ROOT / "ea-chat-bot.py").read_text()
+    assert "_web.conversation_names = lambda: _conversation_names()" in bot
+    assert "_NAMES_CACHE[0] = None" in bot  # a new name shows at the next read
+
+
 def test_needs_and_threads_carry_stale_and_the_stream_says_so(fe):
     old = fe.post("main", "old question")
     new = fe.post("main", "new question")
