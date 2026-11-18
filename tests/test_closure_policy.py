@@ -483,8 +483,11 @@ def _bot_ns(calls: dict):
         calls.setdefault("status", []).append(text)
         calls.setdefault("retired", []).append((ch, ts))
     ns = {"json": json, "time": __import__("time"), "datetime": datetime, "timezone": timezone,
-          "uuid": __import__("uuid"), "_chat": _chat, "app": App(),
+          "uuid": __import__("uuid"), "re": __import__("re"), "_chat": _chat, "app": App(),
           "SCRIPT_DIR": ROOT, "_CARDS": Cards(),
+          # The close card's mail links: no Graph unless a test gives one.
+          "_graph_json": lambda *a: calls.setdefault("graph", []).append(a) or {},
+          "_GMAIL_ACCOUNT": "",
           "_LEDGER_OPEN_STATUSES": ("open", "follow_up", "snoozed"),
           "_private_state": lambda name: Path("/nonexistent") / name,
           "_atomic": types.SimpleNamespace(write_json=lambda p, d, mode=0: store.update(d=d)),
@@ -590,6 +593,151 @@ def test_one_by_one_posts_the_row_cards_in_the_batch_thread_and_each_names_its_r
                                 card=types.SimpleNamespace(channel="dm", id="m2"))
     ns["handle_close_proposed"](one)
     assert cli == [("confirm", "--id", "t1")] and len(ns["_load_close_batches"]()) == 1
+
+
+# ── the card shows each row's thread ───────────────────────────────────
+
+_LINK = ("https://outlook.office365.com/owa/?ItemID=AAMkAD" + "x" * 180
+         + "%3D&exvsurl=1&viewmodel=ReadMessageItem")
+
+
+def _thread_row(rid: str = "t1", conv: str = "AAQkCONV1=", **kw) -> dict:
+    # Noon UTC: the same day in every zone from UTC-12 to UTC+11.
+    return {"id": rid, "description": "Send the signed form",
+            "from_email": "pat.lindqvist@example.edu", "from_name": "Pat Lindqvist",
+            "conversation_id": conv,
+            "recent": [{"from": "pat.lindqvist@example.edu", "received": "2026-11-12T12:00:00Z",
+                        "own": False, "gist": "Asks for the signed form by Friday."},
+                       {"from": "kit.marlowe@example.edu", "received": "2026-11-14T12:00:00Z",
+                        "own": True, "gist": "Sends the signed form."}],
+            "proposal": {"why": "you replied in its thread", "at": _ago(hours=2)}, **kw}
+
+
+def _links(calls: dict, links: dict):
+    return lambda *a: calls.setdefault("graph", []).append(a) or {"links": links}
+
+
+def test_a_row_card_shows_the_last_messages_and_links_the_newest_mail():
+    from preprocessor import chat as _chat
+    calls: dict = {}
+    ns = _bot_ns(calls)
+    ns["_graph_json"] = _links(calls, {"AAQkCONV1=": {"web_link": _LINK}})
+    rows = [_thread_row()]
+    ns["_ledger_cli"] = lambda *a: {"entries": rows} if a[0] == "proposals" else {}
+    assert ns["_post_close_proposals"](force=True) == 1
+    (card,) = calls["cards"]
+    assert "This looks done" in card.title
+    inert = _chat.card_text.inert
+    assert card.lines == [
+        "The last messages in its thread:",
+        "• " + inert("Pat Lindqvist, Nov 12: Asks for the signed form by Friday.", 200),
+        "• " + inert("You, Nov 14: Sends the signed form.", 200),
+        f"<{_LINK}|Open the newest email>"]
+    assert card.fallback_text.endswith("|Open the newest email>")
+    # One Graph call; the id rides in one token, so a leading dash is no flag.
+    assert calls["graph"] == [("web-links", "--conversation-id=AAQkCONV1=")]
+
+
+def test_the_batch_card_gives_each_row_its_newest_message_and_an_outlook_link_only():
+    calls: dict = {}
+    ns = _bot_ns(calls)
+    ns["_graph_json"] = _links(calls, {
+        "AAQkCONV1=": {"web_link": _LINK},
+        "AAQkCONV2=": {"web_link": "https://evil.example/owa/?ItemID=x"}})
+    rows = [_thread_row("t1"), _thread_row("t2", conv="AAQkCONV2="),
+            {"id": "t3", "description": "No mail", "proposal": {"why": "", "at": _ago(hours=2)}}]
+    ns["_ledger_cli"] = lambda *a: {"entries": rows} if a[0] == "proposals" else {}
+    assert ns["_post_close_proposals"](force=True) == 3
+    one, two, three = calls["cards"][0].lines
+    assert one.split("\n")[1].startswith("Last: ") and "You, Nov 14" in one
+    assert "Pat Lindqvist" not in one and one.endswith(f"<{_LINK}|open it>")
+    assert "You, Nov 14" in two and "open it" not in two and "evil" not in two
+    assert "\n" not in three
+    assert calls["graph"] == [("web-links", "--conversation-id=AAQkCONV1=",
+                               "--conversation-id=AAQkCONV2=")]
+
+
+def test_a_kept_thread_shows_who_and_when_and_no_gist():
+    calls: dict = {}
+    ns = _bot_ns(calls)
+    rows = [_thread_row(recent=[{"from": "pat.lindqvist@example.edu", "own": False, "gist": "",
+                                 "received": "2026-11-12T12:00:00Z", "kept": True}])]
+    ns["_ledger_cli"] = lambda *a: {"entries": rows} if a[0] == "proposals" else {}
+    ns["_post_close_proposals"](force=True)
+    lines = calls["cards"][0].lines
+    assert lines[1].endswith("Pat Lindqvist, Nov 12: kept on your machine")
+
+
+def test_a_failed_lookup_leaves_the_card_without_a_link():
+    calls: dict = {}
+    ns = _bot_ns(calls)
+
+    def boom(*a):
+        raise RuntimeError("Graph 504")
+    ns["_graph_json"] = boom
+    rows = [_thread_row()]
+    ns["_ledger_cli"] = lambda *a: {"entries": rows} if a[0] == "proposals" else {}
+    assert ns["_post_close_proposals"](force=True) == 1
+    lines = calls["cards"][0].lines
+    assert len(lines) == 3 and not any("newest email" in ln for ln in lines)
+
+
+def test_one_by_one_looks_the_links_up_once_for_its_row_cards():
+    calls: dict = {}
+    ns = _bot_ns(calls)
+    ns["_graph_json"] = _links(calls, {"AAQkCONV1=": {"web_link": _LINK}})
+    rows = [_thread_row("t1"), _thread_row("t2", conv="AAQkCONV2=")]
+    ns["_ledger_cli"] = lambda *a: {"entries": rows} if a[0] == "proposals" else {}
+    ns["_post_close_proposals"](force=True)
+    value = calls["cards"][0].actions[1].value
+    ns["handle_review_proposed"](types.SimpleNamespace(value=value, card=types.SimpleNamespace(
+        channel="dm", id="m1", thread_key="dm-thread-1")))
+    first, second = calls["cards"][1:]
+    assert first.lines[-1] == f"<{_LINK}|Open the newest email>"
+    assert len(second.lines) == 3 and "newest email" not in second.lines[-1]
+    assert len(calls["graph"]) == 2          # the batch card's, then the row cards'
+
+
+def test_a_gmail_thread_links_to_gmail_with_no_graph_call():
+    calls: dict = {}
+    ns = _bot_ns(calls)
+    ns["_GMAIL_ACCOUNT"] = "kit.marlowe@gmail.com"
+    rows = [_thread_row("t1", conv="", gmail_thread_id="18c2f0a1b2c3d4e5"),
+            _thread_row("t2", conv="", gmail_thread_id="18c2f0a1/../x")]
+    assert ns["_proposal_mail_links"](rows) == {
+        "t1": "https://mail.google.com/mail/u/kit.marlowe@gmail.com/#all/18c2f0a1b2c3d4e5"}
+    assert "graph" not in calls
+
+
+def test_proposals_carry_the_threads_last_messages(tmp_path):
+    ea = _ea(tmp_path)
+    _cli(ea, "add", "--id", "t1", "--type", "task", "--description", "Send the form")
+    _cli(ea, "close", "--id", "t1", "--note", "looks sent", "--skip-archive")
+    brief = {"messages": [{"id": f"m{i}", "from": "pat.lindqvist@example.edu",
+                           "received": f"2026-11-1{i}T12:00:00Z", "own": i == 4,
+                           "gist": f"gist {i}", "quotes": ["verbatim"]} for i in (4, 1, 3, 2)]}
+    db = sqlite3.connect(str(ea / "state" / "obligations-ledger.db"))
+    meta = json.loads(db.execute("SELECT metadata FROM ledger WHERE id='t1'").fetchone()[0])
+    db.execute("UPDATE ledger SET metadata=? WHERE id='t1'",
+               (json.dumps({**meta, "thread_brief": brief}),))
+    db.commit()
+    db.close()
+    (entry,) = _cli(ea, "proposals")["entries"]
+    assert [m["gist"] for m in entry["recent"]] == ["gist 2", "gist 3", "gist 4"]
+    assert entry["recent"][-1]["own"] is True
+    assert set(entry["recent"][0]) == {"from", "received", "own", "gist"}
+
+
+def test_a_kept_thread_gives_no_gist_and_says_so():
+    msgs = [{"from": "a@example.edu", "received": "2026-11-12T12:00:00Z", "gist": "g"}]
+    for level, gist in (("local", ""), ("facts", ""), ("summary", "g"), (None, "g")):
+        brief = {"messages": msgs, **({"keep_level": level} if level else {})}
+        (m,) = ledger_mod.recent_messages({"thread_brief": brief})
+        assert m["gist"] == gist and m.get("kept", False) is (not gist), level
+    (m,) = ledger_mod.recent_messages({"thread_brief": {"messages": msgs},
+                                       "kept_from_frontier": "keep list"})
+    assert m["gist"] == "" and m["kept"]
+    assert ledger_mod.recent_messages({}) == []
 
 
 def test_a_card_left_unanswered_a_week_expires_into_the_briefing_line():

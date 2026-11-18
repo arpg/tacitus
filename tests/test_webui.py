@@ -493,7 +493,42 @@ def test_the_app_stays_small():
     #     over an older answer, the read of the conversation on screen, and the counts taken again on the return).
     # 5,474: 5,407 plus the home-screen file sheet (#294: in the iOS home-screen app a tap on a file opens a
     #     sheet whose Save shares the file it fetched, since the file's own page has no way back).
-    assert lines <= 5474, f"{lines} lines: the contract keeps the app near 5,474 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line and the home-screen file sheet"
+    # 5,486: 5,474 plus a long link target on a card shown as its site (an Outlook link on a close card).
+    # 5,487: 5,486 plus the emoji the code and the prompts write that the table lacked.
+    assert lines <= 5487, f"{lines} lines: the contract keeps the app near 5,487 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line, the home-screen file sheet and a long card link shown as its site"
+
+
+# A `:name:` in the sources that is not an emoji: a prompt that names the
+# syntax, a POSIX class, a thread key's parts, a mail quote header, a URL.
+NOT_EMOJI = {"emoji", "emoji_shortcodes", "space", "topic", "wrote", "https"}
+_SHORTCODE_RE = re.compile(r"(?<![\w:]):([a-z][a-z0-9_+-]{1,40}):(?!\w)")
+
+
+def test_every_shortcode_the_bot_and_its_prompts_write_has_a_glyph():
+    """The app draws a shortcode only from its own table (EMOJI in
+    app.js); any other shows as `:name:`, as the Reopen button's
+    `:leftwards_arrow_with_hook:` did. Every shortcode the code writes,
+    and every one a prompt, a skill or a topic guide shows the model, is
+    in the table."""
+    app = read("app.js")
+    block = app[app.index("const EMOJI = "):app.index("}).flatMap(([glyph, names])")]
+    known = {n for _glyph, names in re.findall(r"'([^']+)':\s*'([^']+)'", block)
+             for n in names.split()}
+    root = TESTS.parent
+    sources = [root / "ea-chat-bot.py", root / "CLAUDE.md"]
+    for sub, pattern in (("preprocessor", "*.py"), ("botcore/botcore", "*.py"),
+                         ("scripts", "*.py"), ("scripts", "*.sh"),
+                         ("prompts", "*.md"), ("skills", "*.md"), ("docs/ea", "*.md"),
+                         (".claude/skills", "*.md")):
+        sources += [p for p in sorted((root / sub).rglob(pattern)) if p.is_file()]
+    missing = {}
+    for path in sources:
+        for i, line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+            for name in _SHORTCODE_RE.findall(line):
+                if name not in known and name not in NOT_EMOJI:
+                    missing.setdefault(name, f"{path.relative_to(root)}:{i}")
+    assert not missing, ("shortcodes the web app draws as text; add each to EMOJI in app.js "
+                         f"(or to NOT_EMOJI here when it is no emoji): {missing}")
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -667,6 +702,12 @@ def test_the_renderers_build_elements_and_keep_text_as_text(app):
     assert card("*Confirm* <https://e.example|here>") == (
         '<strong>Confirm</strong> here (<a href="https://e.example" target="_blank" '
         'rel="noopener noreferrer">https://e.example</a>)')
+    # A long target (an Outlook link) shows its site, read from the address,
+    # and the whole address on hover.
+    long = "https://user@outlook.office365.com/owa/?ItemID=" + "A" * 200
+    assert card(f"<{long}|Open the newest email>") == (
+        f'Open the newest email (<a href="{long}" target="_blank" rel="noopener noreferrer" '
+        f'title="{long}">https://outlook.office365.com/\u2026</a>)')
     assert card("\ue000*x* <b>\ue001") == '<code class="inert">*x* &lt;b&gt;</code>'
     assert page.evaluate("clean('a\u202eb\u200bc')") == "a[U+202E]b[U+200B]c"
     family = "\U0001f468\u200d\U0001f469"

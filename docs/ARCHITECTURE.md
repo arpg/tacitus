@@ -2719,7 +2719,15 @@ newer evidence proposes, since on the owner's record a reply or an
 archive ends an active thread's work less often.
 
 Proposals of one hour share one card; "One by one" posts the row cards in
-that card's thread; a card with no answer for 7 days gives way to an
+that card's thread. Each row shows its thread: the batch card the newest
+message, a row card the last three (`ledger.py proposals` `recent`: who,
+the day and the remote model's gist from the thread brief, never the
+mail's text, and no gist of a kept thread, since card text is chat
+history a model reads), and a link to the newest mail. The bot looks
+the Outlook link up when it posts the card (`graph_actions.py
+web-links`, by conversation, since a folder move changes a message's
+id); a Gmail thread's link is built from its thread id. A card with no
+answer for 7 days gives way to an
 expiry line, and its rows stay on the briefing's "Looks done?" line. Each
 button names its rows, so the web chat's Mark done on the card's thread
 is its Close (`web_thread_state.py`). A send's close archives the mail it

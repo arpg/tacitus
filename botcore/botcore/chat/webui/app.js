@@ -58,6 +58,7 @@ const EMOJI = Object.fromEntries(Object.entries({
   '♻️': 'recycle', '👌': 'ok_hand', '🎯': 'dart', '🍂': 'leaves', '🌐': 'globe_with_meridians',
   '🎓': 'mortar_board', '☀️': 'sunny', '☕': 'coffee', '💤': 'zzz', '👋': 'wave', '🙏': 'pray',
   '👏': 'clap', '❤️': 'heart', 'ℹ️': 'information_source info', '🖼️': 'image frame_with_picture', '⏩': 'fast_forward', '1️⃣': 'one', '2️⃣': 'two', '3️⃣': 'three',
+  '↩️': 'leftwards_arrow_with_hook', '🎛️': 'control_knobs', '😴': 'sleeping', '🔕': 'no_bell', '🌱': 'seedling', '🌅': 'sunrise', '🔧': 'wrench',
 }).flatMap(([glyph, names]) => names.split(' ').map((n) => [n, glyph])));
 
 const S = {
@@ -277,6 +278,14 @@ function emojiNode(name) {
   return glyph ? h('span', { class: 'emoji', title: `:${name}:`, role: 'img', 'aria-label': name }, glyph) : null;
 }
 
+// A labelled link's target as a card shows it: whole up to 60 characters; a longer
+// one (an Outlook link's id) shows its site, read from the address, and all of it on hover.
+function shownTarget(url) {
+  let u;
+  try { u = new URL(url); } catch { return url; }
+  return url.length <= 60 || !/^https?:$/.test(u.protocol) ? url : `${u.protocol}//${u.host}/…`;
+}
+
 // Appends `text` to `out` with inline markup; card mode reads Slack mrkdwn
 // and shows a labelled link's target, so a label cannot hide where it goes.
 function inline(text, card, out) {
@@ -295,7 +304,11 @@ function inline(text, card, out) {
     } else if (g.href !== undefined) out.append(link(g.href, g.label) || m[0]);
     else if (g.aurl !== undefined) {
       const label = (g.alabel || '').trim();
-      if (card && label) out.append(label + ' (', link(g.aurl) || g.aurl, ')');
+      if (card && label) {
+        const a = link(g.aurl, shownTarget(g.aurl));
+        if (a && a.textContent !== g.aurl) a.title = g.aurl;
+        out.append(label + ' (', a || g.aurl, ')');
+      }
       else out.append(link(g.aurl, label) || m[0]);
     } else if (g.mention !== undefined) out.append(h('span', { class: 'mention' }, g.sigil + g.mention));
     else if (g.bold !== undefined) out.append(wrap('strong', g.bold));

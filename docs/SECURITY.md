@@ -173,7 +173,9 @@ the API gives no bytes). One module computes it for Outlook and Gmail.
   lines come first and the body last, as plain preformatted text, so no
   body can push the recipients out of view or hide what follows. A
   labelled link in
-  card text shows its target, and on Slack a special token (`<!channel>`,
+  card text shows its target (in the web app a target longer than 60
+  characters shows its site, read from the address itself, and the whole
+  address on hover), and on Slack a special token (`<!channel>`,
   `<@U1>`, `<#C1>`) outside a span shows as typed. A plugin template
   fills each value as a span; a precision spec (`{x:.20}`) cuts the value
   before it is wrapped, with the visible marker, and that card has no

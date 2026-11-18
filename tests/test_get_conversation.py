@@ -379,6 +379,68 @@ def test_a_folder_search_with_hits_is_not_annotated():
     assert out[0]["conversation_id"] == "AAQkCONV="
 
 
+# ── web-links: the close card's link to a thread's newest mail ─────────
+
+def _linked(mid, when, *, draft=False):
+    m = _msg(mid, "pat.lindqvist@example.edu", when, "x", draft=draft)
+    m["webLink"] = f"https://outlook.office365.com/owa/?ItemID={mid}"
+    return m
+
+
+def test_the_web_link_is_the_newest_non_draft_message_of_the_thread():
+    seen = {}
+
+    def fake_get(endpoint, params=None, **kw):
+        seen["params"] = params
+        return {"value": [_linked("m1", "2026-11-12T12:00:00Z"),
+                          _linked("d1", "2026-11-15T12:00:00Z", draft=True),
+                          _linked("m3", "2026-11-14T12:00:00Z"),
+                          _linked("m2", "2026-11-13T12:00:00Z")]}
+
+    with patch.object(gc, "graph_get", fake_get):
+        got = gc.conversation_web_link("AAQk'CONV=")
+    assert got == {"id": "m3", "web_link": "https://outlook.office365.com/owa/?ItemID=m3",
+                   "received": "2026-11-14T12:00:00Z", "from": "pat.lindqvist@example.edu"}
+    assert seen["params"]["$filter"] == "conversationId eq 'AAQk''CONV='"
+    # Graph will not reliably order a conversationId filter: sorted here.
+    assert "webLink" in seen["params"]["$select"] and "$orderby" not in seen["params"]
+    with patch.object(gc, "graph_get", lambda *a, **k: {"value": []}):
+        assert gc.conversation_web_link("AAQkCONV=") is None
+
+
+def test_web_links_answers_each_thread_and_never_sends_an_odd_id_to_graph():
+    import json as _json
+    asked = []
+
+    def fake(conv):
+        asked.append(conv)
+        if conv == "AAQkBAD=":
+            raise RuntimeError("Graph 504")
+        if conv == "AAQkGONE=":
+            return None
+        return {"id": "m", "web_link": f"https://outlook.office365.com/owa/?ItemID={conv}",
+                "received": "2026-11-14T12:00:00Z", "from": "a@example.edu"}
+
+    odd = "x' or 1 eq 1"
+    with patch.object(ga.graph, "conversation_web_link", fake):
+        out, _err = _capture(ga.cmd_web_links, SimpleNamespace(conversation_id=[
+            "AAQkONE=", "AAQkONE=", "AAQkBAD=", "AAQkGONE=", odd]))
+    got = _json.loads(out)
+    assert asked == ["AAQkONE=", "AAQkBAD=", "AAQkGONE="]
+    assert got["links"] == {"AAQkONE=": {
+        "web_link": "https://outlook.office365.com/owa/?ItemID=AAQkONE=",
+        "received": "2026-11-14T12:00:00Z", "from": "a@example.edu"}}
+    assert "Graph 504" in got["errors"]["AAQkBAD="]
+    assert set(got["errors"]) == {"AAQkBAD=", "AAQkGONE=", odd}
+
+
+def test_web_links_is_the_owners_verb_only():
+    """The bot runs it as the owner; ea-bot reads a thread with get-conversation."""
+    assert not mm.is_safe("graph_actions", "web-links")
+    assert not mm.is_allowed("graph_actions", "web-links",
+                             ["web-links", "--conversation-id", "C"])
+
+
 # ── mediation ──────────────────────────────────────────────────────────
 
 def test_get_conversation_is_a_safe_mediated_read():
