@@ -295,10 +295,15 @@ def test_each_poster_is_classified(name, kind):
 
 
 def test_every_poster_to_the_health_key_or_the_digest_place_is_classified():
-    files = subprocess.run(["git", "-C", str(REPO), "ls-files", "*.py", "*.sh"],
-                           capture_output=True, text=True, check=True).stdout.split()
+    out = subprocess.run(["git", "-C", str(REPO), "ls-files", "*.py", "*.sh"],
+                         capture_output=True, text=True)
+    files = out.stdout.split() if out.returncode == 0 else []
+    if not files:  # the Docker image has no .git: the tree itself
+        files = [p.relative_to(REPO).as_posix() for p in REPO.rglob("*")
+                 if p.suffix in (".py", ".sh") and p.is_file()
+                 and not {".git", ".venv", "node_modules"} & set(p.parts)]
     if not files:
-        pytest.skip("not a git checkout")
+        pytest.skip("no source files found")
     found = set()
     for f in files:
         if f.startswith("tests/test_") or f in ("preprocessor/chat_notify.py",
