@@ -2618,6 +2618,62 @@ def _load_briefing_extract(msg: str) -> tuple[str, list[str]]:
         return "", []
 
 
+# ---------------------------------------------------------------------------
+# The replies that wait, for a turn that scans the inbox
+# ---------------------------------------------------------------------------
+# A message that asks for an inbox scan or what else needs attention (the
+# `scan` module of prompt_logic) gets the reply queue in its prompt, read
+# live and built in code (reply_scan.block), with the rule to account for
+# every row. After the turn, each row the reply neither named nor acted on
+# gets a line in a footer built in code (reply_scan.footer). In a project
+# room the block lists that project's replies and counts the others.
+
+def _reply_scan_owner() -> set[str]:
+    """The owner's own names, which never name a sender in his reply."""
+    from preprocessor import reply_scan as _rs
+    try:
+        text = _resident_io.read_text(_profile_path)
+        name = str((json.loads(text) if text else {}).get("name") or "")
+    except Exception:
+        name = ""
+    return _rs.owner_words(name, _USER_EMAIL)
+
+
+def _reply_scan_placer():
+    """placer(row) -> the row's projects, the way the briefing's room
+    slices place an item (briefing_rooms.projects_for)."""
+    import briefing_rooms  # noqa: PLC0415  (preprocessor/ on sys.path)
+    import project_store  # noqa: PLC0415
+    conn = project_store._get_db()
+    idx = briefing_rooms.index(conn)
+    return lambda r: briefing_rooms.projects_for(
+        {"ledger_id": r.get("id") or "", "conversation_id": r.get("conversation_id") or "",
+         "title": r.get("description") or "", "summary": r.get("notes") or ""}, idx, conn)
+
+
+def _reply_scan_for(channel: str) -> tuple[str, list[dict], int]:
+    """(the block, the rows it shows, the count it leaves out) for a scan
+    turn in `channel`: the live reply queue with the replies that came
+    today (ledger.py reply-queue --min-age 0). ('', [], 0) when the ledger
+    gave no answer."""
+    from preprocessor import reply_scan as _rs
+    out = _ledger_cli("reply-queue", "--min-age", "0")
+    entries = out.get("entries")
+    if not isinstance(entries, list):
+        log.warning("reply scan: the ledger gave no reply queue")
+        return "", [], 0
+    rows = [r for r in entries if isinstance(r, dict) and r.get("id")]
+    owed, outside = int(out.get("owed") or 0), 0
+    scope = _channel_scope(channel) if channel != CHANNEL_ID else None
+    if scope and scope.get("kind") == "project" and scope.get("project"):
+        try:
+            rows, outside = _rs.for_project(rows, scope["project"], _reply_scan_placer())
+            owed = 0
+        except Exception as e:
+            log.warning(f"reply scan: no project slice, the whole queue goes: {e}")
+    return _rs.block(rows, outside=outside, owed=owed)
+
+
 _CONV_INDEX_CACHE: dict = {"ts": 0.0, "text": "", "rows": []}
 _CONV_INDEX_TTL_S = 120
 _CONV_CUE_RE = re.compile(
@@ -5275,7 +5331,11 @@ if "preprocessor.web_thread_state" in sys.modules:
 # ---------------------------------------------------------------------------
 # A thread that has waited REPLY_CARD_MIN_AGE days or more for the owner's
 # reply and has no live Send card goes on one card in the owner's DM, once
-# a local day from REPLY_CARD_HOUR and outside quiet hours. The card lists
+# a local day from REPLY_CARD_HOUR and outside quiet hours. A thread a
+# briefing run asked the owner to decide goes on it from its first day
+# (REPLY_DECISION_MIN_AGE): no run writes a draft for it, so the days
+# before the card are not a draft's days, and its answer buttons are on
+# the card. The card lists
 # each thread with where its reply stands: a draft whose Send card closed,
 # a question for the owner, a meeting to place, no draft. One by one puts
 # a card per thread in the card's own thread: Draft it starts a turn there
@@ -5300,6 +5360,7 @@ if "preprocessor.web_thread_state" in sys.modules:
 _REPLY_CARDS = _private_state("reply-queue-cards.json")
 REPLY_CARD_HOUR = 8
 REPLY_CARD_MIN_AGE = 3      # ledger.REPLY_NAME_DAYS
+REPLY_DECISION_MIN_AGE = 1  # ledger.REPLY_DRAFT_DAYS
 REPLY_CARD_MAX = 10
 REPLY_SKIP_DAYS = 3
 REPLY_CHOICE_CHARS = 48     # ledger.REPLY_CHOICE_CHARS
@@ -5342,12 +5403,24 @@ def _reply_clock() -> tuple[str, int, bool]:
         return now.strftime("%Y-%m-%d"), now.hour, False
 
 
+def _reply_carded(row: dict) -> bool:
+    """A thread goes on the Replies card at REPLY_CARD_MIN_AGE days, or
+    from REPLY_DECISION_MIN_AGE when a run asked the owner to decide it."""
+    queued = row.get("queued") if isinstance(row.get("queued"), dict) else {}
+    try:
+        age = int(row.get("age_days") or 0)
+    except (TypeError, ValueError):
+        return False
+    return age >= REPLY_CARD_MIN_AGE or (
+        age >= REPLY_DECISION_MIN_AGE and queued.get("outcome") == "decision")
+
+
 def _reply_queue_rows() -> list[dict] | None:
     """The threads the Replies card is about, oldest first (ledger.py
-    reply-queue); None when the ledger gave no answer."""
-    out = _ledger_cli("reply-queue", "--min-age", str(REPLY_CARD_MIN_AGE))
+    reply-queue, _reply_carded); None when the ledger gave no answer."""
+    out = _ledger_cli("reply-queue", "--min-age", str(REPLY_DECISION_MIN_AGE))
     rows = out.get("entries")
-    return [r for r in rows if isinstance(r, dict) and r.get("id")] \
+    return [r for r in rows if isinstance(r, dict) and r.get("id") and _reply_carded(r)] \
         if isinstance(rows, list) else None
 
 
@@ -13049,6 +13122,19 @@ actually want.
         mono_body_file = _body_file_path(msg_ts)
         tools_block = _tools_block(body_file=mono_body_file, needed_modules=needed_modules)
 
+        # An inbox scan or "anything else?" (the `scan` module): the replies
+        # that wait, read live and built in code (_reply_scan_for), go into
+        # the fresh prompt and the continuation alike; the rows come back
+        # after the turn for the footer. The scheduling channel has no scan.
+        scan_block, scan_rows, scan_hidden = "", [], 0
+        if "scan" in needed_modules and not sched_lane:
+            try:
+                scan_block, scan_rows, scan_hidden = _reply_scan_for(channel)
+                log.info(f"reply scan: {len(scan_rows)} row(s) in the prompt, {scan_hidden} more "
+                         f"counted, {len(scan_block.encode())} bytes")
+            except Exception as e:
+                log.warning(f"reply scan block skipped: {e}")
+
         # The model A/B (model_arms.py): the topic's arm is drawn here,
         # before the prompt is built, because the remote arm gets the
         # scheduling lane's compact prompt (remote_sched_prompt) in place
@@ -13300,7 +13386,10 @@ repeatedly or try workarounds — one check, then tell the user.
 Do NOT:
 - Read CLAUDE.md, CLAUDE.local.md or config files: the instructions are already loaded.
 - Read briefing-latest.json — the relevant extract is already above.
-- Search the ledger for general context — only search if you need a specific ID.
+- Search the ledger for general context on a simple task; there, search only for a
+  specific ID. A request to scan the inbox, or to say what else needs attention, is
+  not a simple task: the REPLIES THAT WAIT block, when the prompt has one, lists the
+  rows the reply must account for.
 - Call find-slots, check-slots, or get-availability — those commands do not exist.
 Plan your tool calls before executing.
 For scheduling: ONE call to propose-meeting.
@@ -13357,6 +13446,8 @@ This auto-archives the email from the inbox. One command does everything."""
             prompt = prompt + "\n\n" + STAGE_TOKEN_NOTE.format(token=stage_tok)
         if not resuming and session_meta.get("rotated_from"):
             prompt = prompt + "\n\n" + ROOM_ROTATION_NOTE
+        if scan_block:
+            prompt = prompt + "\n\n" + scan_block
         full_prompt = prompt
         # The scheduling prompt and the slim reply prompt carry all their
         # instructions, so they run outside the deployed tree, where Claude
@@ -13412,6 +13503,8 @@ Reminders:
                 prompt = prompt + "\n\n" + STAGE_TOKEN_NOTE.format(token=stage_tok)
             if conv_block:
                 prompt = prompt + "\n\n" + conv_block
+            if scan_block:
+                prompt = prompt + "\n\n" + scan_block
 
         # Draft-events journal: snapshot the offset so we can read exactly
         # the mutations this run performs (replaces stdout regex scanning).
@@ -13779,6 +13872,23 @@ Reminders:
                         "code_results": (code or {}).get("results", [])})
         except Exception as e:
             log.warning(f"reply check skipped: {e}")
+
+        # A scan turn: each row of the REPLIES THAT WAIT block that the
+        # reply neither named nor acted on gets a line under it, built here
+        # (reply_scan.footer), so no reply owed goes unsaid.
+        if scan_rows and cr.returncode == 0 and (cr.output or "").strip():
+            try:
+                from preprocessor import reply_scan as _rs
+                missing = _rs.unanswered(scan_rows, response, cr.tool_calls,
+                                         owner=_reply_scan_owner())
+                scan_note = _rs.footer(missing, hidden=scan_hidden)
+                if scan_note:
+                    response = response.rstrip() + "\n\n" + scan_note
+                log.info(f"reply scan: the reply covers {len(scan_rows) - len(missing)} of "
+                         f"{len(scan_rows)} row(s)"
+                         + (f"; the footer names {[r['id'] for r in missing]}" if missing else ""))
+            except Exception as e:
+                log.warning(f"reply scan footer skipped: {e}")
 
         # Deterministic diction backstop (see style_guard.py)
         try:

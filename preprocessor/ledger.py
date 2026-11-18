@@ -1215,15 +1215,16 @@ def cmd_note_reply(args) -> int:
 def cmd_reply_queue(args) -> int:
     """The replies that wait now (reply_backlog on the live rows), oldest
     first: the rows `--min-age` days old or more, with `owed` counting the
-    whole queue. The bot's Replies card reads it; the briefing's own copy
-    is as old as the run that made it."""
+    whole queue. The bot's Replies card reads it, and so does a chat turn
+    that scans the inbox (`--min-age 0`: the replies that came today too);
+    the briefing's own copy is as old as the run that made it."""
     try:
         import user_tz
         zone = user_tz.zone()
     except Exception:
         zone = None   # the system's zone
     queue = reply_backlog(get_open_entries(), draft_convs=None, zone=zone,
-                          cap=REPLY_BACKLOG_CAP)
+                          cap=REPLY_BACKLOG_CAP, min_days=min(args.min_age, REPLY_DRAFT_DAYS))
     owed = queue[0]["total"] if queue else 0
     entries = [e for e in queue if e["age_days"] >= args.min_age]
     _output({"owed": owed, "count": len(entries), "entries": entries})
@@ -2007,10 +2008,12 @@ def reply_rung(age: int | None) -> str:
 
 
 def reply_backlog(rows: list[dict], today=None, *, draft_convs=(), zone=None,
-                  cap: int = REPLY_BACKLOG_CAP) -> list[dict]:
-    """The open rows that have owed a reply for REPLY_DRAFT_DAYS or more,
-    one per thread, oldest first, `cap` at most; `total` on each entry
-    counts them all.
+                  cap: int = REPLY_BACKLOG_CAP, min_days: int = REPLY_DRAFT_DAYS) -> list[dict]:
+    """The open rows that have owed a reply for `min_days` or more (the
+    ladder's first step, REPLY_DRAFT_DAYS, unless a caller wants the
+    replies that came today too: 0), one per thread, oldest first, `cap`
+    at most; `total` on each entry counts them all. A reply younger than
+    the ladder's first step has no `rung`.
 
     Pure. A row is out while it is parked, snoozed, in follow-up, waiting
     on the other side or proposed for closing. `draft_convs` are the
@@ -2035,7 +2038,7 @@ def reply_backlog(rows: list[dict], today=None, *, draft_convs=(), zone=None,
                 or waiting_on_reply(o, today):
             continue
         age = reply_age(o, today, zone)
-        if not reply_rung(age):
+        if age is None or age < max(min_days, 0):
             continue
         brief, target = _thread(o), reply_target(o)
         conv = str(o.get("conversation_id") or brief.get("conversation_id") or "")
@@ -2765,7 +2768,8 @@ def main():
     p_rq = sub.add_parser("reply-queue", help="List the replies that wait, oldest first",
                           allow_abbrev=False)
     p_rq.add_argument("--min-age", type=int, default=REPLY_DRAFT_DAYS,
-                      help="Only the rows this many days old or more")
+                      help="Only the rows this many days old or more; 0 adds the replies "
+                           "that came today")
 
     p_conf = sub.add_parser("confirm", help="The user confirmed a proposed row is done", allow_abbrev=False)
     p_conf.add_argument("--id", required=True)

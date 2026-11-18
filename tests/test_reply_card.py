@@ -216,7 +216,7 @@ def test_the_card_lists_the_threads_that_wait_oldest_first():
              _q("ready", 4, queued={"outcome": "drafted", "draft_id": "d-live"})]
     ns, calls = _bot(queue, confirms={"d-live": {"status": "live"}})
     assert _tick(ns) == 4
-    assert calls["cli"][0] == ("reply-queue", "--min-age", "3")
+    assert calls["cli"][0] == ("reply-queue", "--min-age", "1")
     (card,) = calls["cards"]
     assert card.kind == "replies" and calls["threads"] == [None]
     assert "*4 replies wait for you.* The oldest has waited 12 days." in card.title
@@ -227,6 +227,24 @@ def test_the_card_lists_the_threads_that_wait_oldest_first():
     (action,) = card.actions
     assert (action.id, action.word, action.style) == ("review_replies", "one by one", "primary")
     assert action.value["rows"] == ["response-pat", "response-lee", "response-sam", "response-kim"]
+
+
+def test_a_question_for_the_owner_is_on_the_card_from_its_first_day():
+    """A run asked the owner to decide a day-old thread: no run writes a
+    draft for it, so it is on that day's card with its answer buttons. A
+    day-old thread with no question waits for its draft, as before."""
+    ask = {"outcome": "decision", "note": "Host the visit?", "choices": ["Yes, host it", "No"]}
+    queue = [_q("pat", 7), _q("lee", 1, queued=ask), _q("kim", 2), _q("sam", 1),
+             _q("ann", 0, queued=dict(ask))]
+    ns, calls = _bot(queue)
+    assert _tick(ns) == 2
+    (card,) = calls["cards"]
+    assert card.actions[0].value["rows"] == ["response-pat", "response-lee"]
+    assert "1 day, needs your answer)" in card.lines[1]
+    # The click finds the row through the same rule.
+    rid, _batch, row = ns["_reply_click"](_ev({"row": "response-lee", "batch": "b"}))
+    assert rid == "response-lee" and row is not None
+    assert ns["_reply_click"](_ev({"row": "response-kim", "batch": "b"}))[2] is None
 
 
 def test_the_card_names_at_most_ten_and_counts_the_rest():

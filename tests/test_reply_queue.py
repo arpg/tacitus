@@ -261,6 +261,25 @@ def test_the_reply_queue_verb_lists_the_live_queue_from_an_age(db, monkeypatch, 
     assert ledger.main() == 0
     out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert [e["id"] for e in out["entries"]] == ["row-old", "row-mid", "row-new"]
+    # A chat turn that scans the inbox reads the replies that came today too.
+    _insert(db, "row-today", metadata=brief(0.0))
+    monkeypatch.setattr(sys, "argv", ["ledger.py", "reply-queue", "--min-age", "0"])
+    assert ledger.main() == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert out["owed"] == 4
+    assert [(e["id"], e["rung"]) for e in out["entries"]][-1] == ("row-today", "")
+    monkeypatch.setattr(sys, "argv", ["ledger.py", "reply-queue"])
+    assert ledger.main() == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert out["owed"] == 3 and "row-today" not in [e["id"] for e in out["entries"]]
+
+
+def test_the_queue_takes_the_replies_that_came_today_only_when_asked():
+    rows = [_row("pat", 3), _row("sam", 0)]
+    assert [e["id"] for e in _backlog(rows)] == ["row-pat"]
+    out = _backlog(rows, min_days=0)
+    assert [(e["id"], e["age_days"], e["rung"], e["total"]) for e in out] == [
+        ("row-pat", 3, "name", 2), ("row-sam", 0, "", 2)]
 
 
 # ── a snooze that ends ────────────────────────────────────────────────

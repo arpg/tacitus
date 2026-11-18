@@ -198,6 +198,18 @@ MODULE_KEYWORDS: dict[str, set[str]] = {
                  "gdoc", "shared doc", "meeting notes"},
     "triage": {"triage", "archive", "clear out", "mark done", "close out",
                "inbox", "what's new", "catch me up", "what did i miss"},
+    # A request to scan the inbox or to say what else needs the user: the
+    # turn gets the replies that wait (reply_scan.block) and must account
+    # for each. No guide of its own; the block carries its rule.
+    "scan": {"what did i miss", "what have i missed", "what am i missing",
+             "what am i forgetting", "what are we missing", "what are we forgetting",
+             "anything i missed", "anything i'm missing", "anything i am missing",
+             "on my plate", "who's waiting", "who is waiting", "what's waiting",
+             "what is waiting", "waiting on me", "waiting for me", "waiting for my reply",
+             "what do i owe", "who do i owe", "what's outstanding",
+             "what is outstanding", "what's pending", "what is pending",
+             "needs my attention", "need my attention", "needs attention",
+             "inbox zero"},
     "drafting": {"draft", "reply to", "respond to", "write to", "write back",
                  "email to", "compose"},
     # Working documents reviewed as GitHub pull requests: anything that may
@@ -268,6 +280,24 @@ MODULE_PATTERNS: dict[str, list[re.Pattern]] = {
     ],
     "webfetch": [
         re.compile(r"https?://\S+"),                   # any URL in the message
+    ],
+    # "Scan the inbox", "go through my inbox", "what's in the inbox?";
+    # "anything else we need to handle?", "what else needs doing?", a bare
+    # "anything else?". "Anything else you need?" asks about the EA's
+    # needs, so a "you" right after the phrase is no scan.
+    "scan": [
+        re.compile(r"\b(?:scan|triage|sweep|go through|look through|work through|check|review"
+                   r"|clean up|clear out|process)\s+(?:the |my |our )?inbox\b"),
+        re.compile(r"\bwhat(?:'s| is)\s+(?:still\s+)?in\s+(?:the |my |our )?inbox\b"),
+        re.compile(r"\b(?:anything|what) else\b(?!\s+(?:do\s+|did\s+|can\s+|could\s+)?you\b)"
+                   r".{0,40}\b(?:handle|handled|handling|do|done|doing|answer|reply|respond"
+                   r"|address|tackle|deal with|attend to|attention|miss|missing|forget"
+                   r"|forgetting|waiting|owe|follow up|need|needs)\b"),
+        re.compile(r"^\W*anything else\W*$|\banything else\s*\?\s*$"),
+        re.compile(r"\b(?:replies|emails|mails|messages|threads)\s+(?:do\s+|have\s+)?(?:i|we)\s+"
+                   r"(?:still\s+)?(?:owe|need to answer|have(?:n't| not) answered|not answered)\b"),
+        re.compile(r"\b(?:open|pending|outstanding|unanswered)\s+(?:replies|emails|threads"
+                   r"|requests|items|asks)\b"),
     ],
 }
 
