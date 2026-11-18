@@ -242,13 +242,14 @@ subset and escapes everything else; it never injects HTML from text.
 | PATCH | `/api/channels/{ch}` | `{"name"}` → the room's row: the owner renames a room (Rooms). Its spaces are collapsed and a leading `#` dropped; 400 for an empty name, one over 60 characters or one with a control character, and for a fixed place (kind `main`, `dm`, `sched` or `digest`); 404 for an unknown room; 409 for a name another channel has; the same name answers the row as it is. A chat action: a relayed device that may chat may take it |
 | POST | `/api/channels/{ch}/archive`, `/api/channels/{ch}/unarchive` | `{}` → the room's row with `archived` set or cleared; a room in that state already is answered as it is. 400 for a fixed place, 404 for an unknown room. A chat action, as the rename |
 | POST | `/api/channels/{ch}/mute`, `/api/channels/{ch}/unmute` | `{}` → the channel's row with `muted` set or cleared; a channel in that state already is answered as it is. 400 for the EA channel and the DM, 404 for an unknown channel. A chat action, as the rename (Muted channels) |
-| GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count`, `last_at` and the thread's state: `state`, `state_by`, `state_reason`, `state_at`, `stale` (State) |
-| GET | `/api/needs` | `{"threads": [...]}`: the threads whose state is `needs_you` or `waiting` in channels that are not archived, each a threads row with `channel_name`; `needs_you` first, then newest first; at most 200; one query, and it moves no read mark (State). `needs` is never a channel id |
+| GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count`, `last_at` and the thread's state: `state`, `state_by`, `state_reason`, `state_at`, `stale` (State); `title` on a conversation the owner named (Recent) |
+| GET | `/api/recent?limit=20` | `{"threads": [...], "as_of"}`: the drawer's Recent list, one snapshot whose `as_of` is the last event it takes in; each a threads row with `channel_name`, `unread` (the thread's count) and `needs_tap`; `limit` 1 to 50 (Recent). It moves no read mark |
+| GET | `/api/needs` | `{"threads": [...]}`: the threads whose state is `needs_you` or `waiting` in channels that are not archived, each a threads row with `channel_name` (and `title`, as there); `needs_you` first, then newest first; at most 200; one query, and it moves no read mark (State). `needs` is never a channel id |
 | POST | `/api/threads/{ch}/{thread_key}/state` | `{"state": "done" \| "needs_you" \| "waiting"}` → the thread's row as the threads route gives it, with `channel_name`: the owner's override (`state_by` `owner`), until a new message lands in the thread; 400 for another state, 404 for an unknown thread. A chat action: a relayed device that may chat may take it (State) |
 | GET | `/api/channels/{ch}/threads/{thread_key}` | the thread, oldest first, parent first; like every GET, it moves no read mark |
 | POST | `/api/channels/{ch}/threads/{thread_key}/read` | `{"upto"?: <seq>}` → `{"channel", "thread_key", "unread", "unread_threads", "as_of"}`, the channel's counts: the owner read the thread, up to `upto` (the newest message the app shows) or its newest message; the mark never moves back. A move that changes the counts appends a `read` event with the same body. A message id names its thread; 400 for an `upto` that is not a whole number of 0 or more, 404 for an unknown channel or thread. A chat action: a relayed device that may chat may take it (Unread) |
 | POST | `/api/channels/{ch}/messages` | `{"text", "thread_key"?}` → the stored owner message; dispatches an `InboundMessage` |
-| GET | `/api/search?q=<text>&channel=<id>&limit=50` | `{"results": [{"channel", "channel_name", "thread_key", "thread_title", "id", "author", "kind", "posted_at", "snippet"}], "mode": "fts5" \| "like"}`: the messages that hold every word of `q`, newest first, a removed one left out; `channel` optional (404 for an unknown one), `limit` 1 to 200; `snippet` is at most 160 characters on one line around the first hit; `thread_title` is the conversation's first message's card title or first line. 400 for an empty `q` or one over 200 characters. A GET: a relayed device that reads may search (The owner's own actions) |
+| GET | `/api/search?q=<text>&channel=<id>&limit=50` | `{"results": [{"channel", "channel_name", "thread_key", "thread_title", "id", "author", "kind", "posted_at", "snippet"}], "mode": "fts5" \| "like"}`: the messages that hold every word of `q`, newest first, a removed one left out; `channel` optional (404 for an unknown one), `limit` 1 to 200; `snippet` is at most 160 characters on one line around the first hit; `thread_title` is the name the owner gave the conversation, else its first message's card title or first line. 400 for an empty `q` or one over 200 characters. A GET: a relayed device that reads may search (The owner's own actions) |
 | POST | `/api/messages/{ch}/{id}/react` | `{"emoji"}`, one of `+1`, `white_check_mark`, `heart`, `eyes`, `joy` (or its glyph) → the message JSON: the owner's reaction toggled, with a `reaction` event; 400 for another emoji, 404 for an unknown message, 409 for a removed one |
 | PATCH | `/api/messages/{ch}/{id}` | `{"text"}` → the message JSON with the new text, the old one kept in `edits`, `updated_at` raised and an `update` event; the owner's own text message only (403 for the bot's, 400 for a card or a file), in its first 15 minutes (409 after, with a plain error), 409 for a removed one |
 | DELETE | `/api/messages/{ch}/{id}` | → the message JSON, `deleted` true, text "" (`edits` and `owner_reactions` dropped), with an `update` event; the same rules as PATCH; a removed message answers as it is |
@@ -357,12 +358,14 @@ chat shows.
 
 ## Muted channels
 
-A muted channel's unread count adds nothing to the menu button's count or
-the tab title, it does not rise to the top of the drawer, and its own
-count shows in grey. Its threads count as they always do, and pushes are
-unchanged (Notifications): a reply in a conversation the owner wrote in
-still pushes. The flag is the store's (`channels.muted`) and this app's
-alone; shadow mode does not tell the primary.
+A muted channel's unread count adds nothing to the menu button's count
+or the tab title, it does not rise to the top of More in the drawer, its
+conversations stay out of Recent (but one whose card waits for a tap,
+unread), and its own count shows in grey. Its threads count as they
+always do, and pushes are unchanged (Notifications): a reply in a
+conversation the owner wrote in still pushes. The flag is the store's
+(`channels.muted`) and this app's alone; shadow mode does not tell the
+primary.
 
 - A new digest channel starts muted (`MUTED_KINDS`), and a store from
   before the column mutes its digest channels.
@@ -406,8 +409,8 @@ owner-private `chat.json` alone, so the resident's copy in
 - **The drawer.** While debug mode is off, `/api/channels` marks the
   health room (the web block's `notify.health`, when it is a room: never
   the EA channel, the DM, Scheduling or the digests) `hidden`, and the app
-  leaves it out of the drawer and its count out of the menu badge and the
-  title. Its threads stay in the store. A save sends the room's row with
+  leaves it out of the drawer, its conversations out of Recent and its
+  count out of the menu badge and the title. Its threads stay in the store. A save sends the room's row with
   `hidden` as a `channel` event, so every open app shows or hides it at
   once. The Mail digests channel stays: it holds the list and admissions
   digests as well.
@@ -492,6 +495,42 @@ bot's counts (`WebStore.mark_thread_read`, `_counts`).
 - A thread read on any device drops the push queued for a message it
   shows (Notifications, Quiet hours). A read sends no clear: that stays
   with the page that shows the thread (`/api/push/seen`).
+
+## Recent
+
+The drawer's first part lists the latest conversations of every place,
+so a conversation begun on one device is at hand on another
+(`WebStore.recent`, `GET /api/recent`).
+
+- The bot orders the list, never the page: each device shows the answer
+  it got, and two devices that ask with no event in between get the same
+  one.
+- A conversation's place in it is the time of its newest message.
+- A conversation whose card waits for a tap (a `card` message no status
+  line has replaced yet) and that has unread messages comes first
+  (`needs_tap`), from any place. Once read it takes its place by time;
+  Needs you keeps it while its state says so.
+- Archived channels are left out, and so are muted channels' (Muted
+  channels), but for a conversation that needs a tap. A hidden channel's
+  (Debug mode) are left out with no exception.
+- The answer is one read transaction with `as_of`, as the counts are
+  (Unread). The app keeps an answer only when its `as_of` is no older
+  than the list it shows, and asks again 300 ms after a message, a card's
+  status line, a read or a channel change on the stream, when the stream
+  opens and when the page comes back into view.
+- Each row shows its title, its place and its time, and the thread's
+  count from this page's counts (Unread), so a read on any device clears
+  it at once. Five show; Show more shows the rest of the 20 the app asks
+  for.
+- A row's title is the name the owner gave the conversation (`name this
+  conversation`, kept as `name` in the session registry beside the
+  default title, which a new session's first words replace; a name lasts
+  while the registry keeps the thread, two weeks idle), else the first
+  message's card title or first line. The bot hands the names to the web
+  front end (`conversation_names`, read at most once in 30 seconds and
+  at once after a rename), and the threads, Needs you and search rows
+  carry them too (`title`, a search hit's `thread_title`): the cards and
+  the header use the same name.
 
 ## State
 
@@ -795,10 +834,13 @@ words; a literal that is code (one lower-case word: an id, a class, a
 key, a route, an event name) or on its short `NOT_SHOWN` list is
 skipped. Text the bot sends (messages, cards, its error answers, the
 Settings rows) is the bot's. The drawer names the fixed channels by
-kind, not by the bot's names: "Direct messages" (`dm`), "Ask Tacitus"
-(`main`), "Scheduling" (`sched`) and "Mail digests" (`digest`), in that
-order after any with unread messages, then the rooms, each by its name
-without the `ea-` prefix. The links keep the channel id; the header, a
+kind, not by the bot's names: "Ask Tacitus" (`main`), "Direct messages"
+(`dm`), "Scheduling" (`sched`) and "Mail digests" (`digest`), and the
+rooms each by its name without the `ea-` prefix. Under Search and Needs
+you it has three parts: "Recent" (Recent, above), then Ask Tacitus and
+Direct messages in that order, then "More": Scheduling, the rooms and
+Mail digests, any with unread messages first, then by kind and name;
+Archived last. The links keep the channel id; the header, a
 Needs you card's channel and a new conversation's box ("Ask Tacitus" in
 the main channel, "Message <name>" elsewhere) use the same names. The
 drawer is "Menu" to a screen reader.
@@ -807,10 +849,10 @@ A room's menu: each room in the drawer (and under Archived) has a small
 dots button, shown on hover or focus with a mouse ("Room options:
 <name>" to a screen reader); with a finger a long press on the room
 (600 ms, held still) opens the menu, and the tap that ends the press
-opens nothing. The fixed places (Ask Tacitus, Direct messages,
-Scheduling, Mail digests, Needs you) have no menu. The menu is a dialog,
-a sheet docked to the bottom at phone width, titled with the room's
-name: "Rename room" and "Archive room", or "Bring back" alone for an
+opens nothing, not even the sheet's button that opened under the
+finger. The fixed places (Ask Tacitus, Direct messages, Scheduling, Mail
+digests, Needs you) have no menu. The menu is a dialog, a sheet docked
+to the bottom at phone width, titled with the room's name: "Rename room" and "Archive room", or "Bring back" alone for an
 archived room, and Cancel. Rename room puts the name in a field with
 Cancel and Save; Save sends it with the bot's `ea-` mark kept when the
 old name had it, and a refusal ("Another room has that name.") stays
@@ -1000,12 +1042,14 @@ one line what a room is for, refuses an empty name where it is typed,
 and posts `open a room for <name>` as the owner in a new conversation in
 the EA channel, which then opens: the bot answers there, and the room
 arrives as a `channel` event. An empty list says what the place is for:
-the EA channel offers an example to tap, Direct messages says the cards
-that need a tap land there, a room that it is for one project, the
-scheduling channel that Tacitus finds meeting times there, and Mail
-digests that Tacitus posts the owner's mail digests there and does not
-read replies. The digest channel shows no New conversation and its
-threads no composer; that line stands in the composer's place.
+the EA channel offers an example to tap, Direct messages that drafts and
+meetings wait there as cards and nothing goes out until the owner taps
+Send or Create (the same line heads its cards when it has some, so it
+never reads as a second place to talk), a room that it is for one
+project, the scheduling channel that Tacitus finds meeting times there,
+and Mail digests that Tacitus posts the owner's mail digests there and
+does not read replies. The digest channel shows no New conversation and
+its threads no composer; that line stands in the composer's place.
 
 The owner's own actions. "Search" at the top of the drawer opens a
 field in the list's header ("Search your conversations"); the list then

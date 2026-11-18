@@ -95,6 +95,12 @@ the bot's rules would; each change is a `thread_state` event. A state
 carries `stale` as the bot's stale shelf sets it; `add_stale` adds made-up
 threads whose state is days old and on the shelf.
 
+GET /api/recent lists the latest conversations of every channel that is
+not archived, as the bot does: a card that waits for a tap and is unread
+first, then the newest, a muted channel's left out but such a one, with
+`as_of`; `recent_gets` counts the reads. `names` maps a thread key to the
+name the owner gave it, which its rows carry as `title`.
+
 With `sign=True` (or `--sign`) it signs the app's files as the bot does
 (web_bundle, which needs the cryptography package) and serves the signed
 manifest at /chat/manifest.sig.json, and a relay pairing carries its
@@ -255,6 +261,8 @@ class Stub:
         self.reads: dict[tuple[str, str], int] = {}  # (channel, thread key) -> its read mark
         self.read_posts: list[dict] = []  # each POST .../read: channel, thread key and body
         self.thread_gets: list[tuple[str, str]] = []  # each GET of one thread
+        self.recent_gets = 0
+        self.names: dict[str, str] = {}  # thread key -> the name the owner gave it
         # Each stream request: its Last-Event-ID header and its ?since=.
         self.streams: list[dict] = []
         self.refuse_streams = 0
@@ -404,9 +412,26 @@ class Stub:
         """A thread row as the threads route gives it: the parent, its
         replies and its state."""
         st = self.states.get((m["channel"], m["thread_key"])) or {}
+        name = self.names.get(m["thread_key"])
         return {**self.view(m), "state": st.get("state", "none"), "state_by": st.get("by", ""),
                 "state_reason": st.get("reason", ""), "state_at": st.get("at", 0),
-                "stale": bool(st.get("stale"))}
+                "stale": bool(st.get("stale")), **({"title": name} if name else {})}
+
+    def recent(self, limit: int = 20) -> dict:
+        """The drawer's Recent list in one snapshot, as the bot gives it."""
+        with self.cond:
+            self.recent_gets += 1
+            rows = []
+            for cid, c in self.channels.items():
+                counts = self.counts(cid)["unread_threads"]
+                for p in [] if c["archived"] else self.parents(cid, 10 ** 6, None):
+                    tap = bool(counts.get(p["thread_key"])) and any(
+                        m["kind"] == "card" for m in self.thread(cid, p["thread_key"]))
+                    if tap or not c.get("muted"):
+                        rows.append({**p, "channel_name": c["name"], "needs_tap": tap,
+                                     "unread": counts.get(p["thread_key"], 0)})
+            rows.sort(key=lambda r: (not r["needs_tap"], -r["last_at"]))
+            return {"threads": rows[:limit], "as_of": self.eseq}
 
     def set_state(self, channel: str, thread_key: str, state: str, by: str = "rule",
                   reason: str = "", *, at: float | None = None, stale: bool = False) -> dict:
@@ -740,6 +765,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, data, mime, {"Content-Disposition": f'attachment; filename="{name}"'})
         if parts == ["needs"]:
             return self._json(200, {"threads": s.needs()})
+        if parts == ["recent"]:
+            return self._json(200, s.recent(int(q.get("limit", ["20"])[0])))
         if parts == ["search"]:
             text = q.get("q", [""])[0].strip()
             if not text:

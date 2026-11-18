@@ -207,6 +207,30 @@ def test_conversation_index_titles_and_recent():
     assert ss.title_from_message("short one") == "short one"
 
 
+def test_a_name_the_owner_gave_outlasts_the_default_title_and_an_aged_out_session():
+    """`name this conversation` keeps the owner's name apart from the
+    default title, so a new session's first words never replace it; the
+    web chat reads the names (names()), side sessions left out."""
+    with tempfile.TemporaryDirectory() as td:
+        _setup(Path(td))
+        ts = "1788000003.000100"
+        ss.lookup(ts)
+        ss.remember(ts, title="first words")
+        assert ss.names() == {}
+        assert ss.set_title(ts, "Trip budget")
+        ss.remember(ts, title="later words")  # a new session's default title
+        assert ss.names() == {ts: "Trip budget"} and ss.recent()[0]["title"] == "Trip budget"
+        reg = json.loads(ss.REGISTRY.read_text())
+        reg[ts]["last_used"] = (datetime.now(timezone.utc) - timedelta(days=ss.MAX_AGE_DAYS + 1)).isoformat()
+        ss.REGISTRY.write_text(json.dumps(reg))
+        _sid, resumable, meta = ss.lookup(ts)
+        assert not resumable and meta["name"] == "Trip budget"
+        side = ss.side_key(ts, "reply")
+        ss.lookup(side)
+        assert ss.set_title(side, "A side name")
+        assert ss.names() == {ts: "Trip budget"}
+
+
 def test_side_sessions_sit_beside_their_thread():
     """A side session has its own registry row and session, keyed by the
     thread; its thread lists it, and the conversation index leaves it out:

@@ -112,6 +112,8 @@ for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
         # drawer leaves out the health channel (docs/webchat.md, Debug mode).
         _web.settings_pages["debug"] = _web_notify_settings.DebugSettings(_web)
         _web.debug_on = _web_notify_settings.debug_on
+        # The names the owner gave conversations title them in the app.
+        _web.conversation_names = lambda: _conversation_names()
 
 
 def _private_state(name: str) -> Path:
@@ -10928,6 +10930,20 @@ def _channel_label(channel_id: str) -> str:
     return "DM" if FRONTEND.is_dm(channel_id) else channel_id
 
 
+# The names the owner gave conversations (`name this conversation`), read
+# from the session registry at most once a NAMES_TTL_S; a new name drops it.
+_NAMES_CACHE: list = [None, {}]
+NAMES_TTL_S = 30.0
+
+
+def _conversation_names() -> dict:
+    """{thread key: name} for the web chat's titles (slack_sessions.names)."""
+    if _NAMES_CACHE[0] is None or time.monotonic() - _NAMES_CACHE[0] > NAMES_TTL_S:
+        from preprocessor import slack_sessions as _sessions_mod
+        _NAMES_CACHE[:] = [time.monotonic(), _sessions_mod.names()]
+    return _NAMES_CACHE[1]
+
+
 def _colleague_command(channel: str, thread_ts: str, msg_ts: str,
                        user_msg: str) -> dict | None:
     """The three commands that make threads and channels navigable, the
@@ -11012,6 +11028,7 @@ def _colleague_command(channel: str, thread_ts: str, msg_ts: str,
             _sessions_mod.lookup(thread_ts)
             _sessions_mod.remember(thread_ts, channel=channel)
         ok = _sessions_mod.set_title(thread_ts, title)
+        _NAMES_CACHE[0] = None
         return {"ok": ok, "text": (f":label: This conversation is now *{title}*."
                                    if ok else ":x: Could not name this thread.")}
 

@@ -6,6 +6,15 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The web chat's menu starts with Recent.** The latest conversations of
+  every place, newest first, in the bot's order, so the list is the same
+  on your phone and your computer and you can pick up on one what you
+  began on the other. A card that waits for your tap stays at the top
+  until you open it. Under Recent come Ask Tacitus and Direct messages;
+  Scheduling, your rooms and Mail digests sit under More. Direct messages
+  says in one line that drafts and meetings wait there as cards. A
+  conversation you named (`name this conversation`) shows that name in
+  the app.
 - **The web chat's unread counts are the same on every device.** The bot
   keeps a read mark per conversation; a conversation you read on your
   phone clears its badge on your computer at once, and the reverse. A

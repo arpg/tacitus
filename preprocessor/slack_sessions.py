@@ -284,7 +284,7 @@ def lookup(thread_ts: str) -> tuple[str, bool, dict]:
         if old.get("session_id"):
             meta = dict(old.get("meta") or {})
             keep = {k: v for k, v in meta.items()
-                    if k in ("title", "channel", "model", "effort", "tier")}
+                    if k in ("title", "name", "channel", "model", "effort", "tier")}
             keep["expired_session_id"] = old["session_id"]
             keep["expired_last_used"] = old.get("last_used") or old.get("created") or ""
             row["meta"] = keep
@@ -490,7 +490,8 @@ def find_thread(session_id: str) -> str:
 
 def set_title(thread_ts: str, title: str) -> bool:
     """Name a conversation so it can be found again ("name this
-    conversation X", or the first message's opening words by default)."""
+    conversation X"). The owner's name is kept as `name` too, which the
+    first message's default title of a new session never replaces."""
     title = " ".join((title or "").split())[:120]
     if not title:
         return False
@@ -498,10 +499,17 @@ def set_title(thread_ts: str, title: str) -> bool:
     def fn(rows: dict) -> bool:
         if thread_ts not in rows:
             return False
-        rows[thread_ts].setdefault("meta", {})["title"] = title
+        rows[thread_ts].setdefault("meta", {}).update(title=title, name=title)
         return True
 
     return _mutate(fn)
+
+
+def names() -> dict[str, str]:
+    """The names the owner gave conversations, by thread key: the web
+    chat's titles for them."""
+    return {ts: (entry.get("meta") or {})["name"] for ts, entry in _load().items()
+            if SIDE_SEP not in ts and isinstance((entry.get("meta") or {}).get("name"), str)}
 
 
 def title_from_message(text: str, limit: int = 72) -> str:
@@ -533,7 +541,8 @@ def recent(limit: int = 12, days: int = 14) -> list[dict]:
             continue
         meta = entry.get("meta") or {}
         rows.append({"thread_ts": ts, "session_id": entry.get("session_id", ""),
-                     "title": meta.get("title", ""), "channel": meta.get("channel", ""),
+                     "title": meta.get("name") or meta.get("title", ""),
+                     "channel": meta.get("channel", ""),
                      "model": meta.get("model", ""),
                      "adopted_from": meta.get("adopted_from", ""),
                      "expired_session_id": meta.get("expired_session_id", ""),
