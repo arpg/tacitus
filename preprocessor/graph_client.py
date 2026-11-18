@@ -2363,6 +2363,27 @@ def conversation_latest_message(conversation_id: str) -> Optional[dict]:
                                   + (m.get("ccRecipients") or []) if addr(r)})}
 
 
+def conversation_web_link(conversation_id: str) -> Optional[dict]:
+    """The newest NON-DRAFT message of a conversation as {"id", "web_link",
+    "received", "from"}, or None. A move to another folder changes a
+    message's id and the webLink that carries it, so a caller looks the
+    link up by conversation when it shows it. Raises on a Graph error."""
+    data = graph_get("/me/messages", {
+        "$filter": f"conversationId eq '{_odata_quote(conversation_id)}'",
+        "$select": "id,isDraft,receivedDateTime,from,webLink",
+        "$top": 50,
+    })
+    msgs = [m for m in data.get("value", []) if not m.get("isDraft") and m.get("webLink")]
+    if not msgs:
+        return None
+    msgs.sort(key=lambda m: m.get("receivedDateTime", ""), reverse=True)
+    m = msgs[0]
+    return {"id": m.get("id") or "", "web_link": m["webLink"],
+            "received": m.get("receivedDateTime") or "",
+            "from": ((m.get("from") or {}).get("emailAddress") or {})
+            .get("address", "").lower()}
+
+
 def conversation_latest_sender(conversation_id: str) -> Optional[str]:
     """Lowercased from-address of the most recent NON-DRAFT message in a
     conversation (or None). Lets a caller skip drafting a reply when the user

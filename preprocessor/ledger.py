@@ -1307,9 +1307,43 @@ def cmd_proposals(args) -> int:
     db.close()
     _output({"count": len(rows), "entries": [
         {"id": r["id"], "type": r.get("type"), "description": r.get("description"),
-         "from_email": r.get("from_email"), "conversation_id": r.get("conversation_id"),
-         "proposal": r["close_proposal"]} for r in rows]})
+         "from_email": r.get("from_email"), "from_name": r.get("from_name"),
+         "conversation_id": r.get("conversation_id"),
+         "gmail_thread_id": r.get("gmail_thread_id"),
+         "recent": recent_messages(r), "proposal": r["close_proposal"]} for r in rows]})
     return 0
+
+
+RECENT_MESSAGES = 3
+
+
+def kept_thread(entry: dict, brief: dict | None = None) -> bool:
+    """The row's mail is kept from the frontier models (on the machine, or
+    facts only): a surface they read shows no gist of it."""
+    brief = brief if brief is not None else entry.get("thread_brief")
+    brief = brief if isinstance(brief, dict) else {}
+    return bool(entry.get("kept_from_frontier") or entry.get("kept_from_claude")
+                or brief.get("kept_from_frontier") or brief.get("kept_from_claude")
+                or brief.get("keep_level") in ("local", "facts"))
+
+
+def recent_messages(entry: dict, n: int = RECENT_MESSAGES) -> list[dict]:
+    """The last `n` messages of the row's thread, oldest first, from its
+    thread brief: who sent each, when, whether the user did, and the
+    remote model's gist. A chat card shows them, and the chat's models read
+    its history, so a kept thread (kept_thread) gives no gist and says so
+    (`kept`); a message the model has not read yet has none either."""
+    brief = entry.get("thread_brief")
+    msgs = brief.get("messages") if isinstance(brief, dict) else None
+    if not isinstance(msgs, list):
+        return []
+    kept = kept_thread(entry, brief)
+    msgs = sorted((m for m in msgs if isinstance(m, dict)),
+                  key=lambda m: str(m.get("received") or ""))
+    return [{"from": str(m.get("from") or ""), "received": str(m.get("received") or ""),
+             "own": bool(m.get("own")), "gist": "" if kept else str(m.get("gist") or ""),
+             **({"kept": True} if kept else {})}
+            for m in msgs[-n:]]
 
 
 def cmd_closure_report(args) -> int:
@@ -2011,10 +2045,8 @@ def reply_backlog(rows: list[dict], today=None, *, draft_convs=(), zone=None,
         queued = o.get("reply_queue") if isinstance(o.get("reply_queue"), dict) else {}
         if queued.get("inbound") != target["since"]:
             queued = {}
-        kept = bool(o.get("kept_from_frontier") or o.get("kept_from_claude")
-                    or brief.get("kept_from_frontier") or brief.get("kept_from_claude")
-                    or brief.get("keep_level") in ("local", "facts"))
-        thread = [{"own": bool(m.get("own")), "received": str(m.get("received") or "")[:10],
+        kept = kept_thread(o, brief)
+        thread =[{"own": bool(m.get("own")), "received": str(m.get("received") or "")[:10],
                    "gist": str(m.get("gist") or "")[:300]}
                   for m in (brief.get("messages") or [])[-3:] if isinstance(m, dict)]
         same_sender = target["from"].lower() == str(o.get("from_email") or "").lower()

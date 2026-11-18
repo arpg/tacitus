@@ -766,6 +766,33 @@ def cmd_get_conversation(args):
     print(json.dumps(output, indent=2))
 
 
+def cmd_web_links(args):
+    """The Outlook web link of each conversation's newest message, looked
+    up now: {"links": {conversation id: {"web_link", "received", "from"}},
+    "errors": {conversation id: why}}. The bot's close card runs it as the
+    owner, with conversation ids from the ledger (resident space): an id
+    that is not a plain mail id never reaches Graph."""
+    try:
+        import mail_mediation as _mm
+    except ModuleNotFoundError:  # imported as preprocessor.<mod>
+        from preprocessor import mail_mediation as _mm
+    links, errors = {}, {}
+    for conv in dict.fromkeys(args.conversation_id):
+        if not _mm.is_plain_id(conv):
+            errors[str(conv)[:24]] = "not a plain mail id"
+            continue
+        try:
+            got = graph.conversation_web_link(conv)
+        except Exception as e:
+            errors[conv] = str(e)[:200]
+            continue
+        if not got:
+            errors[conv] = "no message with that conversation id"
+            continue
+        links[conv] = {k: got[k] for k in ("web_link", "received", "from")}
+    print(json.dumps({"links": links, "errors": errors}, indent=2))
+
+
 def cmd_get_message(args):
     try:
         msg = graph.get_message_full(args.message_id)
@@ -2375,6 +2402,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--include-drafts", action="store_true",
                    help="Include unsent drafts in the thread")
     p.set_defaults(func=cmd_get_conversation)
+
+    # web-links — the Outlook link of each thread's newest message
+    p = sub.add_parser(
+        "web-links",
+        help="The Outlook web link of each conversation's newest message, "
+             "looked up now (the bot's close card)",
+        allow_abbrev=False)
+    p.add_argument("--conversation-id", action="append", required=True,
+                   help="A conversationId; repeat for more")
+    p.set_defaults(func=cmd_web_links)
 
     # resolve-contact — find email by name via People API
     p = sub.add_parser("resolve-contact", help="Look up a person's email by name", allow_abbrev=False)

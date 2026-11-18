@@ -493,7 +493,8 @@ def test_the_app_stays_small():
     #     over an older answer, the read of the conversation on screen, and the counts taken again on the return).
     # 5,474: 5,407 plus the home-screen file sheet (#294: in the iOS home-screen app a tap on a file opens a
     #     sheet whose Save shares the file it fetched, since the file's own page has no way back).
-    assert lines <= 5474, f"{lines} lines: the contract keeps the app near 5,474 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line and the home-screen file sheet"
+    # 5,486: 5,474 plus a long link target on a card shown as its site (an Outlook link on a close card).
+    assert lines <= 5486, f"{lines} lines: the contract keeps the app near 5,486 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line, the home-screen file sheet and a long card link shown as its site"
 
 
 # -- in a browser, against the stub ---------------------------------------
@@ -667,6 +668,12 @@ def test_the_renderers_build_elements_and_keep_text_as_text(app):
     assert card("*Confirm* <https://e.example|here>") == (
         '<strong>Confirm</strong> here (<a href="https://e.example" target="_blank" '
         'rel="noopener noreferrer">https://e.example</a>)')
+    # A long target (an Outlook link) shows its site, read from the address,
+    # and the whole address on hover.
+    long = "https://user@outlook.office365.com/owa/?ItemID=" + "A" * 200
+    assert card(f"<{long}|Open the newest email>") == (
+        f'Open the newest email (<a href="{long}" target="_blank" rel="noopener noreferrer" '
+        f'title="{long}">https://outlook.office365.com/\u2026</a>)')
     assert card("\ue000*x* <b>\ue001") == '<code class="inert">*x* &lt;b&gt;</code>'
     assert page.evaluate("clean('a\u202eb\u200bc')") == "a[U+202E]b[U+200B]c"
     family = "\U0001f468\u200d\U0001f469"

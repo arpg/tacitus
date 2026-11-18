@@ -4835,23 +4835,116 @@ def _proposal_line(n: int, row: dict) -> str:
     return f"{n}. {inert(desc, 110)}" + (f" ({inert(why, 140)})" if why else "")
 
 
-def _close_proposals_card(batch_id: str, rows: list[dict]) -> "_chat.ConfirmationCard":
+# A row on a close card carries its thread: the last messages (ledger
+# recent_messages: who, when, the remote model's gist, never the mail's
+# text, and no gist of a kept thread) and a link to the newest mail. An
+# Outlook link carries the message's id, which a move to another folder
+# changes, so the bot looks it up by conversation when it posts the card.
+_MAIL_LINK_PREFIXES = ("https://outlook.office365.com/", "https://outlook.office.com/",
+                       "https://outlook.live.com/")
+_GMAIL_THREAD_RE = re.compile(r"[0-9a-f]{8,32}")
+
+
+def _proposal_mail_links(rows: list[dict]) -> dict:
+    """{ledger id: the link to its thread's newest mail}, for the rows that
+    have one: one graph_actions call for all the Outlook threads; a Gmail
+    thread's link needs no call. A lookup that fails leaves the row with
+    no link."""
+    from urllib.parse import quote
+    links, convs = {}, {}
+    for r in rows:
+        tid = str(r.get("gmail_thread_id") or "")
+        conv = str(r.get("conversation_id") or "")
+        if tid:
+            if _GMAIL_ACCOUNT and _GMAIL_THREAD_RE.fullmatch(tid):
+                links[r["id"]] = (f"https://mail.google.com/mail/u/"
+                                  f"{quote(_GMAIL_ACCOUNT, safe='@.')}/#all/{tid}")
+        elif conv:
+            convs.setdefault(conv, []).append(r["id"])
+    if not convs:
+        return links
+    try:
+        got = _graph_json("web-links", *[f"--conversation-id={c}" for c in convs])
+    except Exception as e:
+        log.warning(f"close-proposal mail links failed: {e}")
+        return links
+    found = got.get("links") if isinstance(got.get("links"), dict) else {}
+    for conv, ids in convs.items():
+        url = str((found.get(conv) or {}).get("web_link") or "")
+        # The link goes into Slack's <url|label>: none of its marks inside.
+        if url.startswith(_MAIL_LINK_PREFIXES) and not re.search(r"[\s<>|]", url):
+            for rid in ids:
+                links[rid] = url
+    return links
+
+
+def _mail_day(ts: str) -> str:
+    """'Nov 14' in the user's zone; '' for a time that does not parse."""
+    try:
+        at = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    try:
+        from preprocessor import user_tz as _user_tz
+        at = at.astimezone(_user_tz.zone())
+    except Exception:
+        at = at.astimezone()
+    return f"{at:%b} {at.day}"
+
+
+def _recent_line(m: dict, row: dict) -> str:
+    """One message of a row's thread: who, the day, the gist."""
+    sender = str(m.get("from") or "").strip()
+    if m.get("own"):
+        who = "You"
+    elif sender and sender.lower() == str(row.get("from_email") or "").lower() \
+            and row.get("from_name"):
+        who = str(row["from_name"]).strip()
+    else:
+        who = sender or "Someone"
+    day = _mail_day(m.get("received") or "")
+    head = f"{who}, {day}" if day else who
+    gist = str(m.get("gist") or "").strip()
+    note = gist or ("kept on your machine" if m.get("kept") else "")
+    return _chat.card_text.inert(f"{head}: {note}" if note else head, 200)
+
+
+def _mail_link(url: str, label: str) -> str:
+    return f"<{url}|{label}>" if url else ""
+
+
+def _close_proposals_card(batch_id: str, rows: list[dict],
+                          links: dict | None = None) -> "_chat.ConfirmationCard":
+    """The confirm card for rows that look done. `links` maps a ledger id
+    to its thread's newest mail (_proposal_mail_links)."""
+    links = links or {}
     n = len(rows)
     if n == 1:
         rid = rows[0]["id"]
         title = (":white_check_mark: *This looks done.* Close it, or keep it open.\n"
                  + _proposal_line(1, rows[0])[3:])
+        recent = [m for m in rows[0].get("recent") or [] if isinstance(m, dict)]
+        lines = (["The last messages in its thread:"]
+                 + [f"• {_recent_line(m, rows[0])}" for m in recent]) if recent else []
+        link = _mail_link(links.get(rid, ""), "Open the newest email")
+        lines += [link] if link else []
         value = {"ledger_id": rid, "batch": batch_id}
         return _chat.ConfirmationCard(
-            kind="close", title=title,
+            kind="close", title=title, lines=lines,
             actions=[_chat.CardAction("close_proposed", ":white_check_mark: Close", value,
                                       "primary", "close"),
                      _chat.CardAction("keep_open_proposed", "Still open", value, "danger",
                                       "keep")],
-            block_id=f"close_proposed_{batch_id}", fallback_text=title)
+            block_id=f"close_proposed_{batch_id}", fallback_text="\n".join([title] + lines))
     title = (f":white_check_mark: *{n} items look done.* Close them all, or go one "
              f"by one and keep any that are still open.")
-    lines = [_proposal_line(i + 1, r) for i, r in enumerate(rows)]
+    lines = []
+    for i, r in enumerate(rows):
+        recent = [m for m in r.get("recent") or [] if isinstance(m, dict)]
+        last = "Last: " + _recent_line(recent[-1], r) if recent else ""
+        link = _mail_link(links.get(r["id"], ""), "open it")
+        tail = " ".join(x for x in (last, link) if x)
+        lines.append(_proposal_line(i + 1, r) + (f"\n{tail}" if tail else ""))
     value = {"batch": batch_id, "ledger_ids": [r["id"] for r in rows]}
     return _chat.ConfirmationCard(
         kind="close", title=title, lines=lines,
@@ -4914,7 +5007,8 @@ def _post_close_proposals(force: bool = False) -> int:
     rows = rows[:CLOSE_CARD_MAX]
     batch_id = uuid.uuid4().hex[:12]
     try:
-        ref = _post_card(dm_channel, _close_proposals_card(batch_id, rows))
+        ref = _post_card(dm_channel, _close_proposals_card(batch_id, rows,
+                                                           _proposal_mail_links(rows)))
     except Exception as e:
         log.warning(f"close-proposal card failed: {e}")
         return 0
@@ -5046,13 +5140,14 @@ def handle_review_proposed(ev: "_chat.ActionEvent"):
     pending = {r["id"]: r for r in (_ledger_cli("proposals").get("entries") or [])}
     _replace_buttons_with_status(ev.card.channel, ev.card.id, ":ok_hand: One by one:")
     thread = getattr(ev.card, "thread_key", "") or ev.card.id
-    for rid in batch.get("ids") or named:
-        row = pending.get(rid)
-        if row is None:
-            continue
+    ids = [rid for rid in batch.get("ids") or named if rid in pending]
+    links = _proposal_mail_links([pending[rid] for rid in ids])
+    for rid in ids:
+        row = pending[rid]
         sub = f"{batch_id}-{rid[-8:]}"
         try:
-            ref = _post_card(ev.card.channel, _close_proposals_card(sub, [row]), thread_ts=thread)
+            ref = _post_card(ev.card.channel, _close_proposals_card(sub, [row], links),
+                             thread_ts=thread)
         except Exception as e:
             log.warning(f"close-proposal row card failed for {rid}: {e}")
             continue
