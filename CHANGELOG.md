@@ -15,6 +15,15 @@ repository that preceded it.
   says in one line that drafts and meetings wait there as cards. A
   conversation you named (`name this conversation`) shows that name in
   the app.
+- **The Models page asks one thing: Claude or Codex.** Settings, then
+  Models, opens on "Which AI does the work", and a tap saves it at once.
+  Each task's own pick, the presets, your own model and the floors are
+  under Advanced, closed until you open it. A pick saves the one switch
+  alone, so a task on your own model or set apart stays where it is,
+  and the page says so in one line while you have one. With only Claude
+  or only Codex set up, the page names it instead of offering a choice.
+  Setup asks Claude or Codex only when Codex is on the machine, and
+  skips the own-model step unless you ask for it.
 - **The web chat's unread counts are the same on every device.** The bot
   keeps a read mark per conversation; a conversation you read on your
   phone clears its badge on your computer at once, and the reverse. A

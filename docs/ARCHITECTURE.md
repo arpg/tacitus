@@ -626,7 +626,10 @@ take `hosted` only while the keep list is empty. The table is
 (`/api/settings/routing`) and `model_routing.py set`; owner processes
 never read the `routing` block in `ea-config.json`. Which hosted model a
 task runs on is one switch, `hosted_default` (Claude or Codex), with
-per-task overrides over it (`model_routing.py set-hosted`). The hosted
+per-task overrides over it (`model_routing.py set-hosted`). The
+Settings screen opens on that switch alone and keeps the rest under
+Advanced; a pick there saves the switch and nothing else
+(`model_routing.simple_view`, `hosted_ready`). The hosted
 models are one registry (`ea_config.HOSTED_MODELS`), and the policy code
 asks `model_routing` by class (`is_hosted`, `is_local`, `is_base`,
 `for_model`) instead of naming a model (docs/model-routing.md). Presets

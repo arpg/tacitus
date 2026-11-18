@@ -148,7 +148,8 @@ def test_the_skill_points_into_setup_md_by_heading_only():
         assert must in skill, must
     # 450: section 6 asks for the web chat first, with its host, login and serve line.
     # 485: every section opens with its Why, and section 4 signs in Google Drive.
-    assert len(skill.splitlines()) <= 485, "the skill stays under 500 lines"
+    # 499: section 5b asks Claude or Codex, and 7b, the owner's own model, is skipped unless asked.
+    assert len(skill.splitlines()) <= 499, "the skill stays under 500 lines"
     for text, name in ((skill, "SKILL.md"), (SETUP.read_text(), "docs/SETUP.md")):
         assert chr(0x2014) not in text, f"em-dash in {name}"
 

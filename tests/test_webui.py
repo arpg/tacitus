@@ -508,7 +508,10 @@ def test_the_app_stays_small():
     #     ending a long press does not press.
     # 5,579: both together, debug mode and the drawer's Recent list, with a hidden channel's conversations
     #     left out of Recent too.
-    assert lines <= 5579, f"{lines} lines: the contract keeps the app near 5,579 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line, the home-screen file sheet, a long card link shown as its site, a channel's mute, debug mode and the drawer's Recent list"
+    # 5,531: 5,503 plus the Models page's one pick at the top (#252: Claude or Codex saved at once, the
+    #     line for one AI set up and for custom settings, Open Advanced) and the rest under Advanced.
+    # 5,607: 5,579 and 5,531 together, debug mode, the drawer's Recent list and the one model pick.
+    assert lines <= 5607, f"{lines} lines: the contract keeps the app near 5,607 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line, the home-screen file sheet, a long card link shown as its site, a channel's mute, debug mode, the drawer's Recent list and the one model pick with the rest under Advanced"
 
 
 # A `:name:` in the sources that is not an emoji: a prompt that names the
@@ -3324,7 +3327,7 @@ def test_the_settings_menu_is_in_the_drawer():
     js = read("app.js")
     assert "call('GET', '/settings/routing')" in js
     assert "const out = await call('POST', '/settings/routing', presetPick ? { preset: presetPick } : body);" in js
-    assert "if (pick && pick.value !== $('settings-default').dataset.was) body.hosted_default = pick.value;" in js
+    assert "renderSettings(await call('POST', '/settings/routing', { hosted_default: model }));" in js  # the pick alone
     assert "call('GET', '/settings/notify')" in js and "call('POST', '/settings/notify', {" in js
     assert "notify: pages.includes('notify') && Boolean(S.me.push), routing: pages.includes('routing')" in js
     assert "$('notify-kinds').hidden = T.relay || !shown.notify;" in js
@@ -4235,32 +4238,43 @@ def test_each_phone_is_stacked_at_phone_width(app):
 
 
 def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
-    """The screen draws a row per task from /settings/routing: the value
-    checked, a value a floor refuses disabled with the floor's line under
-    the row, the model it runs on now, and the local model's state at the
-    top. A task with a Codex route picks its hosted model, Claude or Codex;
-    another says what Hosted means there. Save posts the enabled choices
-    and redraws from the answer; a refusal stays on screen."""
+    """Under Advanced the screen draws a row per task from /settings/routing:
+    the value checked, a value a floor refuses disabled with the floor's
+    line under the row, the model it runs on now, and the local model's
+    state. A task with a Codex route picks its hosted model, Claude or
+    Codex; another says what Hosted means there. Save posts the enabled
+    choices and redraws from the answer; a refusal stays on screen. The
+    pick at the top saves the switch alone, at once, and the rows that
+    follow it move with it."""
     from playwright.sync_api import expect
     page, stub, errors = app(settings=True)
     page.wait_for_selector(".thread-item")
     page.click("#open-settings")
     page.click("#go-routing")
     expect(page.locator("#settings-title")).to_have_text("Models")
+    # the one pick heads the page: the hosted model of every task not set apart
+    switch = page.locator("#settings-default")
+    expect(switch.locator(".s-name")).to_have_text("Which AI does the work")
+    expect(switch.locator("label")).to_have_text(["Claude", "Codex"])
+    expect(switch.locator("input[value=codex]")).to_be_checked()
+    expect(switch.locator("p").first).to_have_text("Tacitus does its work with the AI you pick.")
+    # these made-up rows run on the owner's own model and set one task apart: the line says so
+    expect(switch.locator(".s-custom")).to_have_text(
+        "Custom settings are on. Some tasks run on your own model or have their own pick. "
+        "A pick here changes only the tasks that follow it.")
+    advanced = page.locator("#settings-advanced")
+    expect(page.locator("#settings-rows")).to_be_hidden()
+    switch.locator("button", has_text="Open Advanced").click()   # it opens the rest in place
+    expect(advanced).to_have_attribute("open", "")
+    expect(advanced.locator("summary")).to_be_focused()
     expect(page.locator("#routing-settings .s-key").first).to_have_text(
         "Each task runs on your own model, on Claude or Codex, or on Auto, which lets Tacitus choose. "
-        "Pick Claude or Codex for every task here, or set a task that can use both apart under it.")
-    # the presets head the page: a button each, and Save current as...
+        "A task that can use both Claude and Codex can be set apart from your pick at the top.")
+    # the presets head Advanced: a button each, and Save current as...
     presets = page.locator("#settings-presets")
     expect(presets.locator(".s-name")).to_have_text("Presets")
     expect(presets.locator(".ways button")).to_have_text(["Private", "All Claude", "All Codex"])
     expect(presets.locator(".ways button[aria-pressed=true]")).to_have_count(0)
-    # the one switch heads the page: the hosted model of every task not set apart
-    switch = page.locator("#settings-default")
-    expect(switch.locator(".s-name")).to_have_text("Hosted model")
-    expect(switch.locator("label")).to_have_text(["Claude", "Codex"])
-    expect(switch.locator("input[value=codex]")).to_be_checked()
-    expect(switch.locator("p")).to_have_text("Every task below uses it unless you set the task apart.")
     rows = page.locator("#settings-rows li")
     expect(rows).to_have_count(4)
     expect(page.locator("#settings-local")).to_have_text("Local model local-27b: reachable. Answered 2 min ago.")
@@ -4296,8 +4310,8 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     expect(chat.locator(".s-floor")).to_have_text(
         "Your own model does not hold up in conversation yet. Talking with you and finding meeting times "
         "stay on Claude or Codex for now.")
-    # a task that can use both says whether it follows the switch or is set apart
-    expect(chat.locator(".s-own")).to_have_text("Follows the hosted model at the top.")
+    # a task that can use both says whether it follows the pick at the top or is set apart
+    expect(chat.locator(".s-own")).to_have_text("Follows your pick at the top.")
     expect(review.locator(".s-own")).to_have_text("Set for this task. Use default")
     expect(review.locator("input[name=hosted-review][value=claude]")).to_be_checked()
     expect(drafting.locator(".s-own")).to_have_count(0)
@@ -4327,23 +4341,28 @@ def test_the_settings_screen_renders_the_rows_and_saves_the_table(app):
     expect(chat.locator(".s-now")).to_have_text("Now on Claude. Auto picked Claude.")
     expect(chat.locator(".s-note")).to_have_count(0)
     expect(chat.locator(".s-own")).to_have_text("Set for this task. Use default")
-    # Use default: the task follows the switch again, and a flip of the switch moves it with
-    # the rest; Save sends 'default' for the task and the switch, nothing for a row left alone
+    # Use default: the task follows the pick at the top again; Save sends 'default' for it
+    # and nothing for a row left alone
     chat.locator(".s-own button").click()
     expect(chat.locator("input[name=hosted-chat][value=codex]")).to_be_checked()
-    expect(chat.locator(".s-own")).to_have_text("Follows the hosted model at the top.")
-    switch.locator("input[value=claude]").check()
-    expect(chat.locator("input[name=hosted-chat][value=claude]")).to_be_checked()
-    expect(review.locator("input[name=hosted-review][value=claude]")).to_be_checked()
+    expect(chat.locator(".s-own")).to_have_text("Follows your pick at the top.")
     page.evaluate("document.getElementById('settings-note').textContent = ''")  # wait for this save's own line
     page.click("#settings-save")
     expect(page.locator("#settings-note")).to_have_text("Saved. Each task uses its model from its next run.")
     assert stub.settings_posts[1] == {"tasks": {"drafting": "hosted", "mail": "auto", "review": "hosted",
-                                                "chat": "auto"}, "hosted": {"chat": "default"},
-                                      "hosted_default": "claude"}
+                                                "chat": "auto"}, "hosted": {"chat": "default"}}
+    expect(chat.locator(".s-own")).to_have_text("Follows your pick at the top.")
+    # the pick at the top saves the switch alone, at once: a row that follows it moves with
+    # it, a row set apart stays, and Advanced stays open
+    switch.locator("input[value=claude]").check()
+    expect(page.locator("#simple-note")).to_have_text("Saved. The change starts with each task's next run.")
+    assert stub.settings_posts[2] == {"hosted_default": "claude"}
     expect(switch.locator("input[value=claude]")).to_be_checked()
-    expect(chat.locator(".s-own")).to_have_text("Follows the hosted model at the top.")
+    expect(chat.locator("input[name=hosted-chat][value=claude]")).to_be_checked()
+    expect(chat.locator(".s-own")).to_have_text("Follows your pick at the top.")
+    expect(review.locator("input[name=hosted-review][value=claude]")).to_be_checked()
     expect(review.locator(".s-own")).to_have_text("Set for this task. Use default")
+    expect(advanced).to_have_attribute("open", "")
     # a value the bot refuses: the reason stays on screen and nothing changes
     page.evaluate("document.querySelector('#settings-rows li[data-task=review] input[value=local]').disabled = false")
     review.locator("input[value=local]").check()
@@ -4379,6 +4398,137 @@ SETTINGS_SMALL = """() => [...document.querySelectorAll('#settings .seg label, #
 SHOWN_ITEMS = "#settings-menu .s-item:visible .s-label"
 
 
+def plain_routing(model: str = "claude") -> dict:
+    """The stub's routing table as a plain install has it: every row on
+    the hosted model `model` where it can be, nothing on the owner's own
+    model and nothing set apart."""
+    import webui_stub_server as W
+    r = json.loads(json.dumps(W.ROUTING))
+    r["hosted_default"] = model
+    for row in r["rows"]:
+        hosted = model if len(row["hosted_allowed"]) > 1 else row["hosted"]
+        row.update(hosted=hosted, effective="hosted", runs_on=W.STUB_NAMES[hosted],
+                   hosted_source="default" if len(row["hosted_allowed"]) > 1 else "fixed")
+    return r
+
+
+def open_models(app, routing=None, ready=None, **kw):
+    """(page, stub, errors) with Settings open on the Models page, the stub
+    serving `routing` (default its own) with `ready` models set up."""
+    page, stub, errors = app(settings=True, **kw)
+    if routing is not None:
+        stub.routing = routing
+    stub.ready = dict(ready or {})
+    page.wait_for_selector(".thread-item")
+    if page.locator("#menu").is_visible():
+        page.click("#menu")
+    page.click("#open-settings")
+    page.click("#go-routing")
+    return page, stub, errors
+
+
+def test_the_models_page_opens_on_one_pick_for_a_plain_install(app):
+    """A plain install's Models page asks one thing, Claude or Codex, with
+    no line about custom settings; Advanced is closed, so no task, preset or
+    own-model choice shows. A tap saves the switch alone, at once. Advanced
+    opens on every option there is, each task following the pick, and it is
+    closed again the next time the page opens."""
+    from playwright.sync_api import expect
+    page, stub, errors = open_models(app, plain_routing(), viewport={"width": 390, "height": 844},
+                                     context={"has_touch": True, "is_mobile": True})
+    pick = page.locator("#settings-default")
+    expect(pick.locator(".s-name")).to_have_text("Which AI does the work")
+    expect(pick.locator("label")).to_have_text(["Claude", "Codex"])
+    expect(pick.locator("input[value=claude]")).to_be_checked()
+    expect(pick.locator(".s-custom")).to_have_count(0)
+    expect(pick).to_have_text("Which AI does the workClaudeCodexTacitus does its work with the AI you pick.")
+    expect(page.locator("#settings-advanced")).not_to_have_attribute("open", "")
+    for hidden in ("#settings-presets", "#settings-local", "#settings-rows", "#settings-save"):
+        expect(page.locator(hidden)).to_be_hidden()
+    expect(page.locator("#settings-advanced > summary")).to_have_text("Advanced")
+    shown = page.locator("#routing-settings").inner_text()
+    assert "own model" not in shown and not JARGON.search(shown), shown
+    assert page.evaluate(SETTINGS_SMALL) == []
+    pick.locator("label", has_text="Codex").tap()
+    expect(page.locator("#simple-note")).to_have_text("Saved. The change starts with each task's next run.")
+    assert stub.settings_posts == [{"hosted_default": "codex"}]
+    expect(pick.locator("input[value=codex]")).to_be_checked()
+    expect(page.locator("#settings-rows")).to_be_hidden()
+    # Advanced: the presets, the local model's state, a row per task with every value, Save
+    page.locator("#settings-advanced > summary").tap()
+    expect(page.locator("#settings-presets .ways button")).to_have_text(["Private", "All Claude", "All Codex"])
+    expect(page.locator("#settings-local")).to_be_visible()
+    rows = page.locator("#settings-rows li")
+    expect(rows).to_have_count(4)
+    for task in ("drafting", "mail", "review", "chat"):
+        expect(rows.locator(f"input[name=route-{task}]")).to_have_count(3)
+    chat = page.locator('#settings-rows li[data-task="chat"]')
+    expect(chat.locator("input[name=hosted-chat][value=codex]")).to_be_checked()
+    expect(chat.locator(".s-own")).to_have_text("Follows your pick at the top.")
+    expect(page.locator("#settings-save")).to_be_visible()
+    page.click("#settings-back")
+    page.click("#go-routing")
+    expect(page.locator("#settings-advanced")).not_to_have_attribute("open", "")
+    expect(page.locator("#simple-note")).to_have_text("")
+    assert not errors, errors
+
+
+def test_a_custom_install_keeps_its_settings_and_says_so(app):
+    """An install with tasks on the owner's own model and a task set apart
+    says so in one line under the pick, with a button that opens Advanced.
+    A pick then sends the switch alone: the tasks on the owner's own model
+    and the task set apart stay where they are, and the line stays."""
+    from playwright.sync_api import expect
+    page, stub, errors = open_models(app)
+    pick = page.locator("#settings-default")
+    line = pick.locator(".s-custom")
+    expect(line).to_contain_text("Custom settings are on. Some tasks run on your own model or have their own pick.")
+    expect(page.locator("#settings-rows")).to_be_hidden()
+    pick.locator("label", has_text="Claude").click()
+    expect(page.locator("#simple-note")).to_have_text("Saved. The change starts with each task's next run.")
+    assert stub.settings_posts == [{"hosted_default": "claude"}]   # no task value, no override
+    expect(line).to_be_visible()
+    pick.locator("button", has_text="Open Advanced").click()
+    for task in ("drafting", "mail"):
+        expect(page.locator(f'#settings-rows li[data-task="{task}"] .s-now')).to_have_text(
+            "Now on your own model. Auto picked your own model.")
+    review = page.locator('#settings-rows li[data-task="review"]')
+    expect(review.locator(".s-own")).to_have_text("Set for this task. Use default")
+    assert [r["effective"] for r in stub.routing["rows"]][:2] == ["local", "local"]
+    # a pick the bot refuses: its reason under the pick, and the saved pick checked again
+    page.evaluate("document.querySelector('#settings-default input[value=codex]').value = 'gpt'")
+    pick.locator("label", has_text="Codex").click()
+    expect(page.locator("#simple-note")).to_have_text("Not saved: The hosted model is Claude or Codex.")
+    expect(pick.locator("input[value=claude]")).to_be_checked()
+    assert stub.routing["hosted_default"] == "claude"
+    assert errors == ["Failed to load resource: the server responded with a status of 400 (Bad Request)"]
+
+
+def test_with_one_ai_set_up_the_page_names_it_instead_of_a_choice(app):
+    """With only Claude set up the page says Claude does the work and offers
+    no dead choice. When the switch names the model that is not set up, the
+    line says so and one button moves the work to the one that is."""
+    from playwright.sync_api import expect
+    page, stub, errors = open_models(app, plain_routing("claude"), ready={"codex": False})
+    pick = page.locator("#settings-default")
+    expect(pick.locator("p").first).to_have_text("Claude does the work. Codex is not set up on this computer.")
+    expect(pick.locator("input")).to_have_count(0)
+    expect(pick.locator("button")).to_have_count(0)
+    expect(pick).to_have_text("Which AI does the workClaude does the work. Codex is not set up on this computer.")
+    page.click("#settings-back")
+    stub.routing = plain_routing("codex")
+    page.click("#go-routing")
+    expect(pick.locator("p").first).to_have_text(
+        "Codex is picked, but it is not set up on this computer. Use Claude until it is.")
+    expect(pick.locator("input")).to_have_count(0)
+    pick.locator("button", has_text="Use Claude").click()
+    expect(page.locator("#simple-note")).to_have_text("Saved. The change starts with each task's next run.")
+    assert stub.settings_posts == [{"hosted_default": "claude"}]
+    expect(pick.locator("p").first).to_have_text("Claude does the work. Codex is not set up on this computer.")
+    expect(pick.locator("button")).to_have_count(0)
+    assert not errors, errors
+
+
 def test_the_settings_menu_fits_a_phone_and_shows_only_what_the_bot_serves(app):
     """On a phone Settings is a sheet docked to the bottom: a row per page
     (Notifications and Models where the bot serves them, and the tour), how
@@ -4399,7 +4549,7 @@ def test_the_settings_menu_fits_a_phone_and_shows_only_what_the_bot_serves(app):
     expect(page.locator("#settings-conn")).to_have_text("Connected on your own network.")
     assert page.evaluate("Math.round($('settings').getBoundingClientRect().bottom) === innerHeight")  # docked
     assert page.evaluate(SETTINGS_SMALL) == []
-    for row, title, shown in (("go-notify", "Notifications", "#notify-kinds"), ("go-routing", "Models", "#settings-rows li")):
+    for row, title, shown in (("go-notify", "Notifications", "#notify-kinds"), ("go-routing", "Models", "#settings-default")):
         page.click(f"#{row}")
         expect(page.locator("#settings-title")).to_have_text(title)
         expect(page.locator("#settings-back")).to_be_focused()
@@ -4408,7 +4558,13 @@ def test_the_settings_menu_fits_a_phone_and_shows_only_what_the_bot_serves(app):
         assert page.evaluate(SETTINGS_SMALL) == [], title
         assert page.evaluate("$('settings').scrollWidth - $('settings').clientWidth") == 0
         assert page.evaluate(SIDEWAYS) == [0, 0]
-        if row == "go-routing":   # a tap on a "?" opens its note, and the sheet still fits
+        if row == "go-routing":   # Advanced opens with a tap; a tap on a "?" opens its note, and the sheet still fits
+            expect(page.locator("#settings-rows")).to_be_hidden()
+            summary = page.locator("#settings-advanced > summary")
+            assert summary.bounding_box()["height"] >= 44
+            summary.tap()
+            expect(page.locator("#settings-rows li").first).to_be_visible()
+            assert page.evaluate(SETTINGS_SMALL) == []
             page.locator("#settings-rows .s-help-btn").first.tap()
             expect(page.locator("#settings-rows .s-help").first).to_be_visible()
             assert page.evaluate(SETTINGS_SMALL) == []

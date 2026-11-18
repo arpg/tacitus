@@ -113,6 +113,8 @@ skip every question it answered. Each section writes a value this list checks:
   user said they never use Google: section 4 is done.
 - `id ea-bot` answers and `/home/ea-bot/ea-system/CLAUDE.local.md`
   exists: section 5 is done.
+- On macOS, with no `codex` on the PATH, or once the `Hosted model` line of
+  `python3 preprocessor/model_routing.py show` lacks `(not chosen yet)`: section 5b is done.
 - `python3 scripts/ea-doctor.py --profile <name>` prints no FAIL:
   only sections 8 and 9 remain.
 - `python3 preprocessor/onboarding.py ask --count 3` prints nothing
@@ -329,6 +331,28 @@ differences are docs/SETUP.md "macOS notes". The doctor's two `install
 overlay` lines confirm both steps. Run both again after any later change
 to `user-profile.json`.
 
+## 5b. Claude or Codex (all modes)
+
+**Why:** the EA does its work with one AI, and the user picks which. Claude
+is always set up (ea-bot's login above). Ask only when the user has the
+Codex CLI (`command -v codex` prints a path), and not on macOS, where the
+Codex step does not run yet; otherwise ask nothing, say in one line that
+Claude does the work, and go on. Ask "Which AI should do the work?" with
+these two answers, word for word; recommend Claude:
+
+- `Claude`: Claude does the work, on the Claude plan ea-bot signed in with.
+- `Codex`: Codex does the work, on your ChatGPT plan. Reading your mail and writing replies stay on Claude.
+
+Ask nothing else about models: no task by task choice, no preset, no
+model of their own (7b). Claude: run
+`python3 preprocessor/model_routing.py set-hosted claude`. Codex: a step
+the user types here, which prints a link and a code for any browser:
+`! bash deploy/enable-codex-ghost.sh` (it copies their Codex to ea-bot,
+signs ea-bot in and probes); on its OK run `set-hosted codex`, else say
+so in one line and run `set-hosted claude`. Check: `model_routing.py show`
+names the pick on its `Hosted model` line. Settings, then Models, in the
+chat changes it later (docs/SETUP.md "Claude or Codex").
+
 ## 6. Chat platform (assistant and collaborator)
 
 **Why:** the chat shows the drafts and buttons; the platform decides who
@@ -383,12 +407,12 @@ section 5, and to finish each one's sign-in there. Check, as ea-bot:
 lists `claude.ai Gmail` and `claude.ai Google Calendar` as connected
 (docs/SETUP.md "Claude Code connectors").
 
-## 7b. Remote writer (optional, any mode that drafts)
+## 7b. Advanced: a model of their own (skipped by default)
 
-**Why:** some users want a model of their own to write the bodies. Ask once, after the connectors: do they run their own model, or have an
-OpenAI-compatible endpoint, that should write the email bodies instead
-of Claude? Most say no; then skip this screen and say nothing more. If
-yes, ask for the https endpoint, the model name and the API key, then:
+**Why:** an owner who runs a model of their own can have it write the
+bodies. Skip this section: do not offer it or ask about it. Run it only
+when the user brings it up themselves (a model they run or host). Then
+ask for its https endpoint, the model name and the API key, then:
 the `REMOTE_LLM_API_KEY=` line into `~/.ea-private/secrets.env`,
 `python3 preprocessor/remote_llm.py init --endpoint <https URL> --model <name> --drafting remote`,
 then `python3 preprocessor/remote_llm.py ping`. The endpoint must be

@@ -103,7 +103,10 @@ The page lists these at the end, with the commands:
   first-week questions.
 
 Also terminal only: more than one group list or deadline domain per
-run, and `--style-only`.
+run, `--style-only`, and the one model question, Claude or Codex, which
+`/setup` asks after the service account and only when Codex is on the
+machine (docs/SETUP.md "Claude or Codex"). The page asks nothing about
+models, and nothing about a model of the owner's own.
 
 ## API
 

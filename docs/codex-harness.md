@@ -122,8 +122,8 @@ grades it against Claude. Claude stays the workhorse throughout.
 
 ## Production
 
-The owner moves every task to Codex, and back, with one switch: "Hosted
-model" at the top of the web chat's Models page, or `model_routing.py
+The owner moves every task to Codex, and back, with one switch: "Which
+AI does the work" at the top of the web chat's Models page, or `model_routing.py
 set-hosted codex|claude` (the routing table's `hosted_default`,
 docs/model-routing.md, "The hosted model: one switch"). A task can be
 set apart from it (an override). `chat` and `scheduling` then run their
