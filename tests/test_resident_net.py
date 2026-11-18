@@ -500,7 +500,9 @@ def test_doc_review_reads_refresh_the_copy_through_the_mediator(sandbox, monkeyp
 
     monkeypatch.setattr(M, "_request", request)
     assert dr._refresh_cache(M, 12) is None
-    assert seen == [("doc_review", ["prefetch", "--pr", "12"])]
+    assert dr._refresh_cache(M, doc="docs/notes.md") is None
+    assert seen == [("doc_review", ["prefetch", "--pr", "12"]),
+                    ("doc_review", ["prefetch", "--doc", "docs/notes.md"])]
     monkeypatch.setattr(M, "_request", lambda *a, **kw: {"stdout": "", "stderr": "no such pull request\n", "rc": 1})
     assert dr._refresh_cache(M, 12)["rc"] == 1
     # No sandbox: the copy the bot prefetched stands.

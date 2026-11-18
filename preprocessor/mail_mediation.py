@@ -253,14 +253,15 @@ GATED = {
 # tests/test_resident_net.py names the confinement of each path option.
 # publish and push stay behind their button tokens. doc_review's `review`
 # and `fetch` are not listed: in the sandbox they forward `prefetch` and
-# then answer from the cache, so `fetch --out` is written by the sandboxed
-# process.
+# then answer from the cache (or, for `fetch --doc`, from main as the
+# clone now holds it), so `fetch --out` is written by the sandboxed
+# process. `list` writes nothing.
 RESIDENT_NET = {
     "fetch_url": {"fetch"},
     "booking_link": {"read", "propose"},
     "site_tools": {"status", "diff", "pull", "commit", "revert", "preview"},
     "overleaf_tools": {"clone", "status", "diff", "commit", "pull", "preview"},
-    "doc_review": {"open", "update", "reply", "resolve", "status", "purge", "prefetch"},
+    "doc_review": {"open", "update", "reply", "resolve", "status", "purge", "prefetch", "list"},
 }
 # A plugin's own script (plugin_run.py): the mediator runs it as the
 # resident when the script is one a Claude turn may run (the plugin tool
