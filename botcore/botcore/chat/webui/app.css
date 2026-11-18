@@ -609,6 +609,14 @@ a.file-link .file-name { color: var(--accent); }
 .seg label:has(input:disabled) { opacity: .55; cursor: default; }
 .seg input { margin: 0; accent-color: var(--accent); }
 .settings-actions { display: flex; gap: 8px; }
+/* Models: the one pick at the top, a line when custom settings are on, the rest under Advanced */
+#settings-default .s-custom { color: var(--text); border-left: 3px solid var(--accent); padding-left: 8px; }
+#settings-default > .btn { grid-column: 1 / -1; justify-self: start; }
+#simple-note:empty { display: none; }
+#settings-advanced > summary { padding-block: 8px; font-weight: 600; cursor: pointer; }
+.s-adv { display: grid; gap: 12px; margin-top: 4px; }
+@media (max-width: 599px) { #settings-default { grid-template-columns: minmax(0, 1fr); } } /* the pick under its name */
+@media (pointer: coarse) { #settings-advanced > summary { padding-block: 13px; } }
 
 /* New room: the name, a plain hint, Cancel and Open room on the right */
 

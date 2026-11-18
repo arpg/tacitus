@@ -2888,15 +2888,16 @@ async function phoneAct(verb, d) {
 
 /* -- Settings: which model does each task (docs/llm-lanes.md, 1.1) -- */
 
-// One row per task: local, hosted or auto (the remote-LLM switches decide), what the task
-// does, the model it runs on now and, where a floor holds a value, what the floor says.
-// The hosted model at the top is the one switch, Claude or Codex, for every task. A task
-// that can use both also picks its own, and says under it whether it follows the switch
-// or is set apart, with Use default to follow it again; under any other task a line says
-// what Hosted means there. The local model's state follows the switch. A choice reads
-// Your own model, the task's hosted model by name (Claude or Codex) or Auto; a row a
-// floor holds has the choices it refuses disabled and the floor's line under it. The
-// presets head the page. Only the owner's own web chat saves.
+// The page opens on one choice, which AI does the work (the switch, `hosted_default`), saved
+// at once and alone, so a task set apart or on the owner's own model stays where it is; a
+// line says so when there is one. With one AI set up, a line names it instead. Advanced,
+// closed each time the page opens, holds the rest: the presets, the local model's state and
+// a row per task: local, hosted or auto (the remote-LLM switches decide), what the task does,
+// the model it runs on now and any floor's line, with the values the floor refuses disabled.
+// A task that can use both also picks its own, following the pick at the top or set apart
+// (Use default follows it again); under any other task a line says what Hosted means there.
+// A choice reads Your own model, the task's hosted model by name or Auto. Only the owner's
+// own web chat saves.
 const ROUTE_WORDS = { local: 'Your own model', hosted: 'Claude or Codex', auto: 'Auto' };
 let presetPick = ''; // the preset button pressed since the page was drawn, sent alone on Save
 const cap = (t) => (t ? t[0].toUpperCase() + t.slice(1) : t);
@@ -2906,11 +2907,28 @@ const seg = (data, name, by, now, ok, change) => h('span', { class: 'seg', role:
   value: m, checked: now === m, disabled: !ok(m) }), (data.hosted_names || {})[m] || m)));
 
 function defaultPick(data) {
-  $('settings-default').dataset.was = data.hosted_default;
-  $('settings-default').replaceChildren(h('span', { class: 's-name', id: 'hosted-default-name' }, 'Hosted model'),
-    seg(data, 'hosted-default', 'hosted-default-name', data.hosted_default, () => true,
-      (e) => $('settings-rows').querySelectorAll('li[data-follow]').forEach((li) => pickIn(li, e.target.value))),
-    h('p', {}, 'Every task below uses it unless you set the task apart.'));
+  const s = data.simple || { choices: [] }, box = $('settings-default'), adv = $('settings-advanced');
+  const ready = s.choices.filter((c) => c.ready), one = ready.length === 1 ? ready[0] : null;
+  box.dataset.was = data.hosted_default;
+  box.replaceChildren(...[h('span', { class: 's-name', id: 'hosted-default-name' }, 'Which AI does the work'),
+    !one && seg(data, 'hosted-default', 'hosted-default-name', data.hosted_default,
+      (m) => !ready.length || ready.some((c) => c.model === m), (e) => pickAI(e.target.value)),
+    h('p', {}, one ? s.line : 'Tacitus does its work with the AI you pick.'),
+    one && one.model !== data.hosted_default && h('button', { type: 'button', class: 'btn small', onclick: () => pickAI(one.model) }, `Use ${one.name}`),
+    s.custom && h('p', { class: 's-custom' }, s.custom_line),
+    s.custom && h('button', { type: 'button', class: 'btn small',
+      onclick: () => { adv.open = true; adv.querySelector('summary').focus(); } }, 'Open Advanced')].filter(Boolean));
+}
+
+// A pick saves the switch alone, at once, and the page redraws from the answer.
+async function pickAI(model) {
+  try {
+    renderSettings(await call('POST', '/settings/routing', { hosted_default: model }));
+    $('simple-note').textContent = "Saved. The change starts with each task's next run.";
+  } catch (e) {
+    $('simple-note').textContent = `Not saved: ${e.message}`;
+    pickIn($('settings-default'), $('settings-default').dataset.was);
+  }
 }
 
 // The presets: a button each, the built-ins first, the one in force pressed; "Save current
@@ -2936,9 +2954,9 @@ async function savePreset() {
 
 function hostedPick(data, r) {
   const own = h('p', { class: 's-own' });
-  const mark = (apart) => own.replaceChildren(apart ? 'Set for this task. ' : 'Follows the hosted model at the top.',
+  const mark = (apart) => own.replaceChildren(apart ? 'Set for this task. ' : 'Follows your pick at the top.',
     apart ? h('button', { type: 'button', class: 'btn small', onclick: () => { own.closest('li').dataset.follow = '1';
-      pickIn(own.closest('li'), $('settings-default').querySelector('input:checked').value); mark(false); } }, 'Use default') : '');
+      pickIn(own.closest('li'), $('settings-default').dataset.was); mark(false); } }, 'Use default') : '');
   mark(r.hosted_source === 'override');
   return [h('span', { class: 's-hosted' }, h('span', { class: 's-sub', id: `hosted-${r.task}-name` }, 'Hosted model'),
     seg(data, `hosted-${r.task}`, `hosted-${r.task}-name`, r.hosted, (m) => r.hosted_allowed.includes(m),
@@ -3025,8 +3043,9 @@ async function settingsPage(page) {
     }
     return;
   }
-  $('settings-note').textContent = '';
-  try { renderSettings(await call('GET', '/settings/routing')); } catch (e) { $('settings-note').textContent = `Could not read the settings: ${e.message}`; }
+  $('settings-note').textContent = $('simple-note').textContent = '';
+  $('settings-advanced').open = false;
+  try { renderSettings(await call('GET', '/settings/routing')); } catch (e) { $('simple-note').textContent = `Could not read the settings: ${e.message}`; }
 }
 
 // The menu's last line: how this browser reaches Tacitus now, the live dot in words.
@@ -3053,8 +3072,8 @@ function settingsMenu() {
   $('debug').addEventListener('change', saveDebug);
 }
 
-// Save sends the values, a task's own hosted model only where it changed ('default' when the
-// task follows the switch again), and the switch only when it moved.
+// Advanced's Save sends the values and a task's own hosted model only where it changed
+// ('default' when the task follows the pick at the top again); the pick saves on its own.
 async function saveSettings() {
   const tasks = {}, hosted = {}, body = { tasks };
   for (const el of $('settings-rows').querySelectorAll('input:checked:not(:disabled)')) {
@@ -3063,8 +3082,6 @@ async function saveSettings() {
     else if (li.dataset.follow) { if (apart) hosted[li.dataset.task] = 'default'; }
     else if (!apart || el.value !== li.dataset.model) hosted[li.dataset.task] = el.value;
   }
-  const pick = $('settings-default').querySelector('input:checked');
-  if (pick && pick.value !== $('settings-default').dataset.was) body.hosted_default = pick.value;
   if (Object.keys(hosted).length) body.hosted = hosted;
   $('settings-save').disabled = true;
   try {

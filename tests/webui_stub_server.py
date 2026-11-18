@@ -26,9 +26,13 @@ pairs only through its own copy of the app (a bot with no public_url, on
 this machine): /api/me says `relay`, `pairs` records each pairing,
 `devices` are the paired devices "Add a device" lists, and `approvals`
 records each Approve (with its `cards` choice). The Settings screen reads
-`routing` (three made-up rows: one free, one under the keep floor, one
-under the stakes floor) and `settings_posts` records each Save; a value a
-row does not allow answers 400, as the bot's floors do. Only with
+`routing` (four made-up rows: one free, one under the keep floor, one
+under the stakes floor and set apart, one under the chat floor) and
+`settings_posts` records each Save; a value a row does not allow answers
+400, as the bot's floors do. Its `simple` block (the one pick at the top)
+is drawn again from the rows after each save, as the bot's simple_view
+draws it: custom while a row runs on the owner's own model or is set
+apart, and a line when `ready` leaves one model set up. Only with
 `settings=True` does /api/me name the pages: `routing` and `notify` (a
 list names some of them). The Notifications section reads `notify` (the
 three switches and the quiet-hours choice) and `notify_posts` records each
@@ -190,6 +194,28 @@ ROUTING = {
 STUB_NAMES = {"claude": "Claude", "codex": "Codex"}
 
 
+def simple(routing: dict, ready: dict | None = None) -> dict:
+    """The one pick at the top for `routing`, as model_routing.simple_view
+    words it; `ready` ({model: set up}) defaults to both set up."""
+    ready = {m: True for m in STUB_NAMES} | (ready or {})
+    pick, up = routing["hosted_default"], [m for m in STUB_NAMES if ready[m]]
+    line = ""
+    if len(up) == 1:
+        down = [STUB_NAMES[m] for m in STUB_NAMES if not ready[m]][0]
+        line = (f"{STUB_NAMES[up[0]]} does the work. {down} is not set up on this computer." if up[0] == pick else
+                f"{STUB_NAMES[pick]} is picked, but it is not set up on this computer. Use {STUB_NAMES[up[0]]} until it is.")
+    clauses = (["run on your own model"] if any(r["effective"] in ("local", "mixed") for r in routing["rows"]) else []) \
+        + (["have their own pick"] if any(r["hosted_source"] == "override" for r in routing["rows"]) else [])
+    some = " or ".join(clauses)
+    return {"model": pick, "choices": [{"model": m, "name": n, "ready": ready[m]} for m, n in STUB_NAMES.items()],
+            "line": line, "custom": bool(clauses),
+            "custom_line": f"Custom settings are on. Some tasks {some}. A pick here changes only the tasks that follow it."
+            if clauses else ""}
+
+
+ROUTING["simple"] = simple(ROUTING)
+
+
 def _b64(data: str | bytes) -> str:
     raw = data.encode() if isinstance(data, str) else data
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
@@ -218,6 +244,7 @@ class Stub:
         self.push = push
         self.subscriptions = list(subscriptions or [])
         self.routing = json.loads(json.dumps(ROUTING))
+        self.ready: dict = {}  # {model: set up} for the pick at the top; both by default
         self.settings_posts: list[dict] = []
         self.notify = dict(NOTIFY)
         self.notify_posts: list[dict] = []
@@ -732,7 +759,7 @@ class Handler(BaseHTTPRequestHandler):
                                     **({"relay": True} if s.relay_pairing else {}),
                                     **({"owner_routes": s.owner_routes, "handoff": s.handoff} if s.owner_routes else {})})
         if parts == ["settings", "routing"] and "routing" in s.settings:
-            return self._json(200, s.routing)
+            return self._json(200, {**s.routing, "simple": simple(s.routing, s.ready)})
         if parts == ["settings", "notify"] and "notify" in s.settings:
             return self._json(200, s.notify)
         if parts == ["settings", "debug"] and "debug" in s.settings:
@@ -861,14 +888,14 @@ class Handler(BaseHTTPRequestHandler):
                 name = str(preset.get("save") or "")
                 s.routing["presets"].append({"name": name, "label": name, "note": "", "builtin": False})
                 s.routing["preset_now"] = name
-                return self._json(200, {**s.routing, "saved": True, "notes": []})
+                return self._json(200, {**s.routing, "simple": simple(s.routing, s.ready), "saved": True, "notes": []})
             if isinstance(preset, str):
                 model = {"claude": "claude", "codex": "codex"}.get(preset, s.routing["hosted_default"])
                 s.routing.update(hosted_default=model, preset_now=preset)
                 for row in rows.values():
                     if len(row["hosted_allowed"]) > 1:
                         row.update(hosted=model, hosted_source="default", runs_on=STUB_NAMES[model])
-                return self._json(200, {**s.routing, "saved": True,
+                return self._json(200, {**s.routing, "simple": simple(s.routing, s.ready), "saved": True,
                                         "notes": ["Reading your mail stays on Auto while you keep some mail "
                                                   "away from hosted models."]})
             for task, value in (body.get("tasks") or {}).items():
@@ -878,6 +905,8 @@ class Handler(BaseHTTPRequestHandler):
             for task, model in (body.get("hosted") or {}).items():
                 if model not in rows[task]["hosted_allowed"] + ["default"]:
                     return self._json(400, {"error": f'"{rows[task]["label"]}" has no hosted model of its own to pick.'})
+            if body.get("hosted_default") and body["hosted_default"] not in STUB_NAMES:
+                return self._json(400, {"error": "The hosted model is Claude or Codex."})
             # the switch moves every task that follows it; "default" makes a task follow it again
             s.routing["hosted_default"] = body.get("hosted_default") or s.routing["hosted_default"]
             picked = {t: r["hosted"] for t, r in rows.items() if r["hosted_source"] == "override"}
@@ -890,7 +919,7 @@ class Handler(BaseHTTPRequestHandler):
                     row["hosted_source"] = "override" if own else "default"
                     if model != row["hosted"]:
                         moves[task] = model
-            for task, value in body["tasks"].items():
+            for task, value in (body.get("tasks") or {}).items():
                 rows[task]["value"] = value
                 if value != "auto":
                     rows[task].update(effective=value, why="set to your own model" if value == "local"
@@ -904,7 +933,7 @@ class Handler(BaseHTTPRequestHandler):
                     if rows[task]["value"] == "auto":
                         rows[task]["why"] = f"Auto picked {STUB_NAMES[model]}"
                     rows[task]["hosted_note"] = (ROUTING["rows"][3]["hosted_note"] if model == "codex" else "")
-            return self._json(200, {**s.routing, "saved": True})
+            return self._json(200, {**s.routing, "simple": simple(s.routing, s.ready), "saved": True})
         if parts == ["diag"]:
             s.diags.append(json.loads(self._body() or b"{}"))
             return self._json(200, {"ok": True})

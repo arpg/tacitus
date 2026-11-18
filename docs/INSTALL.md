@@ -24,12 +24,13 @@ Start the IT request first. Everything else fits in one sitting.
 |---|---|---|---|
 | An always-on machine with `sudo` | every mode | none | Linux (a server, a NUC) or macOS. WSL2 is untested. |
 | Claude Pro or Max | every mode | minutes | The EA's service account signs in with its own copy and uses your quota. |
+| Codex with a ChatGPT plan | optional, Linux | minutes | Only if you want Codex to do the work. With the Codex CLI on the machine, setup asks once: Claude or Codex. Without it, setup asks nothing about models (SETUP.md "Claude or Codex"). |
 | An Outlook app registration | every mode | days, sometimes weeks | Send [docs/it-request.md](it-request.md) to your IT group. It lists the permissions, the data flow and the security model. If you can register apps yourself, see SETUP.md "Microsoft Graph app registration". |
 | A Google Cloud OAuth app | Google Calendar or Gmail | 15 minutes | SETUP.md "Google OAuth app". Google shows an "unverified app" screen at sign-in; continue through "Advanced". You are the only user. Publish the app, or Google ends the sign-in every 7 days. |
 | An `EA-Managed` Google calendar | `assistant` and `collaborator` (optional on `reviewer`) | 2 minutes | A secondary calendar where your scheduling rules live as recurring events. Setup tells you when to create it. |
 | Tailscale on the machine and on your phone | `assistant` and `collaborator` with the web chat | minutes | The bot serves the web chat on your tailnet. See [Choosing a chat platform](#choosing-a-chat-platform). In Docker, a TLS proxy and a host name take its place ([docs/docker.md](docker.md#web-chat)). |
 | A Slack workspace | `assistant` and `collaborator` on Slack instead | minutes | One private channel and one bot app (SETUP.md "Slack"). |
-| A model you host | optional | varies | Any OpenAI-compatible endpoint (vLLM, Ollama). It reads mail and writes drafts in place of Claude. See [docs/remote-llm.md](remote-llm.md). |
+| A model you host | advanced, optional | varies | Any OpenAI-compatible endpoint (vLLM, Ollama). It reads mail and writes drafts in place of Claude. Setup skips it unless you ask (SETUP.md "Advanced: your own model"). See [docs/remote-llm.md](remote-llm.md). |
 
 Python 3.10 to 3.14 must be on the machine. On macOS use Homebrew's
 Python; Apple's `/usr/bin/python3` is 3.9. `install.sh` checks this and
@@ -116,12 +117,15 @@ question at a time.
 4. **Google** (optional). The accounts to read, a sign-in, the
    `EA-Managed` calendar, and your working hours.
 5. **The service account.** Creates the `ea-bot` user that Claude runs
-   as, and turns on the mail mediator.
+   as, and turns on the mail mediator. Then, only when Codex is on this
+   machine, one question: Claude or Codex. You can change it later in
+   the chat's Settings, then Models.
 6. **Chat** (`assistant` and `collaborator`). Setup asks which: the web chat
    (recommended, self-hosted) or Slack. For the web chat it asks this
    machine's tailnet name and your Tailscale login, writes the settings
    and gives you the `tailscale serve` line (step 8 below).
-7. **Extras** (optional). Claude Code connectors, and the model you host.
+7. **Extras** (optional). Claude Code connectors. A model you host is an
+   advanced step that setup skips unless you ask for it.
 8. **Acceptance.** Locks down permissions, installs the scheduled jobs,
    runs the health check and one briefing so you can see where it lands.
 9. **First week.** Three preference questions, in your own words.
@@ -174,7 +178,9 @@ where you do it and what it does.
     the Home Screen, and turn on Notifications in the channel drawer.
 
 The count leaves out the IT request, which comes before the install,
-and the questions you answer, since setup writes the files. A `reviewer`
+and the questions you answer, since setup writes the files. Picking
+Codex adds one step: in Claude Code, `! bash deploy/enable-codex-ghost.sh`
+signs ea-bot in to Codex with a code in your browser. A `reviewer`
 install without Google skips steps 3, 4, 5, 8, 9 and 12. A
 `collaborator` install has the same twelve steps as `assistant`. On macOS, step
 6 is `sudo ./scripts/install/setup-ea-user-macos.sh`, step 7 is

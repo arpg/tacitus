@@ -20,11 +20,13 @@ name.
 - [Web chat](#web-chat)
 - [Slack](#slack)
 - [The service account](#the-service-account)
+- [Claude or Codex](#claude-or-codex)
 - [Services](#services)
 - [Cron schedule](#cron-schedule)
 - [Hardening](#hardening)
 - [Config files](#config-files)
 - [Optional features](#optional-features)
+- [Advanced: your own model](#advanced-your-own-model)
 - [Docker](#docker)
 - [macOS notes](#macos-notes)
 - [Troubleshooting and the doctor's checks](#troubleshooting-and-the-doctors-checks)
@@ -33,6 +35,9 @@ name.
 
 - **Claude Code** with a Max or Pro subscription. The agents use your
   quota; `ea-bot` (the service account) logs in with its own copy.
+- **Optional: Codex**, the Codex CLI signed in to a ChatGPT plan, on
+  Linux. With it on the machine, setup asks once whether Claude or Codex
+  does the work ([Claude or Codex](#claude-or-codex)).
 - **Python 3.10+** (`python3 --version`); 3.12+ on Ubuntu 24.04 and
   later, where the system Python is PEP 668 managed (see
   [Python packages in three places](#python-packages-in-three-places)).
@@ -808,6 +813,39 @@ the less-privileged user. The Docker image writes the same rule.
    A startup FATAL about a missing ea-bot user means the installer did
    not complete; run it again rather than touching the check.
 
+## Claude or Codex
+
+**Why:** the EA does its work with one AI, and you pick which. Claude is
+always set up: ea-bot's own Claude login ([The service account](#the-service-account))
+runs every install. Codex is a second choice for an owner who has the
+Codex CLI and a ChatGPT plan.
+
+Setup asks one question after the service account, and only when
+`codex` is on your PATH on Linux: Claude or Codex. Without Codex, or on
+macOS, it asks nothing and Claude does the work. On Codex, you type
+`! bash deploy/enable-codex-ghost.sh` in Claude Code: it copies your
+Codex into ea-bot's space, signs ea-bot in with a link and a code for
+any browser, and ends with a probe. Setup then runs
+`python3 preprocessor/model_routing.py set-hosted codex`. On Claude it
+runs `set-hosted claude`.
+
+The pick is the routing table's one switch, `hosted_default`
+([docs/model-routing.md](model-routing.md), "The hosted model: one
+switch"). Reading your mail and writing replies stay on Claude whatever
+the pick, so an install on Codex keeps its Claude login too. Change it
+any time:
+
+- In the web chat: Settings, then Models. The page opens on this one
+  choice, "Which AI does the work", and a tap saves it. With only one of
+  the two set up, the page names it in place of the choice. Each task's
+  own pick, the presets and your own model are under Advanced, closed
+  until you open it.
+- As the owner: `python3 preprocessor/model_routing.py set-hosted claude|codex`.
+
+A pick saves the switch alone. A task you set apart under Advanced, and
+a task on your own model, stay where they are, and the page says so in
+one line while you have one.
+
 ## Services
 
 Two long-lived services run **as you**, never as ea-bot: the mail
@@ -1306,38 +1344,6 @@ connectors' write verbs (send, create draft, create event) are denied by
 the tool allowlist; drafts go through `gmail_client.py` and events
 through the confirmation cards.
 
-### Remote writer
-
-By default the email bodies the EA drafts come from Claude (the
-`email-author` subagent, running as ea-bot). The remote writer has them
-written by a model you run yourself, or any OpenAI-compatible endpoint,
-so the thread text and the draft never reach Anthropic for that step. It
-needs an https URL that serves `/v1/chat/completions` (vLLM, llama.cpp's
-server, Ollama behind a TLS proxy, a hosted provider), the model name,
-and an API key. The key and the switch file are owner-only; ea-bot can
-neither read the key nor point the writer elsewhere, and the call runs
-through the mail mediator as you. A plain `http://` endpoint is refused.
-
-```bash
-echo 'REMOTE_LLM_API_KEY=<your key>' >> ~/.ea-private/secrets.env   # the key, in your private secrets file
-python3 preprocessor/remote_llm.py init \
-    --endpoint https://llm.example.edu/v1 --model <model name> --drafting remote   # the switch file, drafting on
-python3 preprocessor/remote_llm.py ping      # one round trip: model name and latency
-```
-
-No restart is needed. `remote_llm.py switches` shows each switch;
-`remote_llm.py set drafting off` returns the bodies to Claude. The same
-file carries the larger lanes (the mail gate, digests, briefings, the
-scheduling agent), which stay off until you turn them on
-(`docs/llm-lanes.md`). The doctor reports the writer's state and fails
-only when a switch is on with no key. When the endpoint is down or the
-model asks a question, the lane falls back to the subagent for that draft
-and says so; letters stay on the subagent. A model that writes well in
-someone's voice needs real context (the thread, the profile and the
-voice guide run to several thousand tokens) and a chat template that
-follows a system prompt; a 27B instruction model with a 131k window has
-run in daily use. Read the first few drafts.
-
 ### GitHub identity
 
 Three tools commit as a GitHub account of the EA's own: the doc-review
@@ -1426,6 +1432,47 @@ not loop), the journal shows a `WARNING` line, and the doctor shows
 `dashboard: loopback fallback` until the token is set and the service
 restarts. `EA_DASH_BIND=127.0.0.1` keeps it on loopback on purpose, with
 no token and no warning.
+
+## Advanced: your own model
+
+Setup skips this section unless you ask for it, and the web chat keeps
+it under Advanced on the Models page. It is for an owner who runs a
+model of their own, an OpenAI-compatible endpoint, and wants it to read
+mail or write drafts in place of Claude or Codex. Which task runs on it
+is the routing table ([docs/model-routing.md](model-routing.md)); the
+lanes it can take are [docs/llm-lanes.md](llm-lanes.md).
+
+### Remote writer
+
+By default the email bodies the EA drafts come from Claude (the
+`email-author` subagent, running as ea-bot). The remote writer has them
+written by a model you run yourself, or any OpenAI-compatible endpoint,
+so the thread text and the draft never reach Anthropic for that step. It
+needs an https URL that serves `/v1/chat/completions` (vLLM, llama.cpp's
+server, Ollama behind a TLS proxy, a hosted provider), the model name,
+and an API key. The key and the switch file are owner-only; ea-bot can
+neither read the key nor point the writer elsewhere, and the call runs
+through the mail mediator as you. A plain `http://` endpoint is refused.
+
+```bash
+echo 'REMOTE_LLM_API_KEY=<your key>' >> ~/.ea-private/secrets.env   # the key, in your private secrets file
+python3 preprocessor/remote_llm.py init \
+    --endpoint https://llm.example.edu/v1 --model <model name> --drafting remote   # the switch file, drafting on
+python3 preprocessor/remote_llm.py ping      # one round trip: model name and latency
+```
+
+No restart is needed. `remote_llm.py switches` shows each switch;
+`remote_llm.py set drafting off` returns the bodies to Claude. The same
+file carries the larger lanes (the mail gate, digests, briefings, the
+scheduling agent), which stay off until you turn them on
+(`docs/llm-lanes.md`). The doctor reports the writer's state and fails
+only when a switch is on with no key. When the endpoint is down or the
+model asks a question, the lane falls back to the subagent for that draft
+and says so; letters stay on the subagent. A model that writes well in
+someone's voice needs real context (the thread, the profile and the
+voice guide run to several thousand tokens) and a chat template that
+follows a system prompt; a 27B instruction model with a 131k window has
+run in daily use. Read the first few drafts.
 
 ## Docker
 

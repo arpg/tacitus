@@ -191,6 +191,37 @@ would run a chat or scheduling turn on the owner's own model (rows 1 to
 5, an A/B draw, a local session) runs on the hosted model rows 6 to 8
 name, and `model_tiers.resolve` says so with `floor: "local_chat"`.
 
+## One pick for most people
+
+The Models page opens on the switch alone, as "Which AI does the work"
+with Claude and Codex, and keeps every other choice (each task's value
+and its own pick, the presets, the owner's own model, the floors' lines)
+under Advanced, a disclosure closed each time the page opens.
+`model_routing.simple_view` gives the screen what it needs as `simple`
+in the page's data:
+
+- **The pick** saves `hosted_default` alone, at once, through the same
+  route and `save` as the rest. It never writes a task's value or an
+  override, so a task on the owner's own model stays there and a task
+  set apart keeps its model. The change log line shows `hosted_default`
+  only.
+- **One model set up.** `hosted_ready` says which hosted models this
+  host can run: the harness's program on the resident's PATH and, for
+  Codex, its login file (`~/.codex/auth.json` in the resident's home).
+  Claude's login sits in a folder the owner cannot open, so only its
+  program counts. A check the owner cannot make counts as set up. With
+  exactly one set up, the screen names it in place of the choice, and
+  offers "Use <name>" when the switch names the other.
+- **Custom settings.** The screen says so in one line, with Open
+  Advanced, when a task runs on the owner's own model now (its row is
+  `local` or `mixed`), when a task has an override, or, with no switch
+  set, when the tiers block puts a task on the other model. The line
+  says a pick changes only the tasks that follow it.
+
+`@claude`, `@codex`, `@fable`, `@local`, `use ...`, `set-hosted`,
+`set`, `preset` and the `routing` chat command are the advanced paths
+and work as before.
+
 ## Presets
 
 A preset is a whole table under a name, the owner's stash of settings:
@@ -222,7 +253,7 @@ $ python3 /opt/ea-system/preprocessor/model_routing.py preset save "Travel week"
 $ python3 /opt/ea-system/preprocessor/model_routing.py preset apply codex
 ```
 
-The Models page has a Presets row at its top: a button for each
+Under Advanced, the Models page has a Presets row at its top: a button for each
 preset, the one the table matches pressed (a saved preset before a
 built-in that makes the same table), and "Save current as...", which
 asks for a name in the browser's own box. A pressed button is sent

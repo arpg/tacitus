@@ -111,6 +111,13 @@ defined here and never written) and the ones `preset save` keeps under
 `presets` in routing.json. `apply` writes a preset's task values and its
 switch (a preset without one leaves the switch as it is) and keeps the
 per-task overrides only where the preset names them.
+
+The simple view (simple_view, the page's `simple`). The Settings screen
+opens on the switch alone, and everything above sits under Advanced. A
+pick there saves `hosted_default` alone, so it never moves a task on the
+owner's own model or a task with an override; while one exists the view
+says so in one line. hosted_ready says which hosted models this host can
+run, and with exactly one the view names it in place of the choice.
 """
 from __future__ import annotations
 
@@ -832,18 +839,123 @@ def rows(*, cfg: dict | None = None, routing: dict | None = None,
     return out
 
 
+# ── the simple view ───────────────────────────────────────────────────
+#
+# The Models page opens on one choice: which hosted model does the work,
+# which is the switch (`hosted_default`) and nothing else. A pick there
+# saves the switch alone, so it never touches a task's value (a task on
+# the owner's own model stays there) or a task's override. Everything
+# else on the page sits under Advanced.
+
+# Where the resident finds each harness's program (its PATH, as
+# codex_ghost._bot_env gives it, without the venv) and the login file a
+# harness keeps where the owner can look ('' for one it keeps out of the
+# owner's sight: Claude's is in a 0700 folder, or in its settings on a
+# Mac). A harness this map does not name counts as set up.
+RESIDENT_PATH = (".local/bin", "/usr/local/bin", "/usr/bin", "/bin")
+HARNESS_FILES = {"claude": ("claude", ""), "codex": ("codex", ".codex/auth.json")}
+
+
+def _resident_home() -> Path | None:
+    """The resident's home: EA_BOT_HOME, else its passwd entry; None when
+    this host has no resident."""
+    if os.environ.get("EA_BOT_HOME"):
+        return Path(os.environ["EA_BOT_HOME"])
+    try:
+        import pwd
+        return Path(pwd.getpwnam(os.environ.get("EA_RESIDENT_USER", "ea-bot")).pw_dir)
+    except (ImportError, KeyError):
+        return None
+
+
+def _there(path: Path) -> bool | None:
+    """True when `path` exists, False when it does not, None when this
+    process may not look (a folder of the resident's it cannot open)."""
+    try:
+        os.stat(path)
+        return True
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return None
+
+
+def hosted_ready(home: Path | None = None) -> dict[str, bool]:
+    """{model: set up} for each hosted model: its harness's program is on
+    the resident's PATH and, where the owner can see the harness's login
+    file, the file is there. A check the owner cannot make counts as set
+    up, so a model that works is never hidden; with no resident on this
+    host every model counts as set up."""
+    home = home if home is not None else _resident_home()
+    out = {}
+    for key, m in REGISTRY.items():
+        prog, login = HARNESS_FILES.get(m["harness"], ("", ""))
+        if home is None or not prog:
+            out[key] = True
+            continue
+        found = [_there((Path(d) if d.startswith("/") else home / d) / prog) for d in RESIDENT_PATH]
+        has = True if True in found else (None if None in found else False)
+        out[key] = has is not False and (not login or _there(home / login) is not False)
+    return out
+
+
+def _some(clauses: list[str]) -> str:
+    """'Some tasks a.', 'Some tasks a or b.', 'Some tasks a, b or c.'"""
+    if len(clauses) == 1:
+        return f"Some tasks {clauses[0]}."
+    return f"Some tasks {', '.join(clauses[:-1])} or {clauses[-1]}."
+
+
+def simple_view(data_rows: list[dict], block: dict, ready: dict[str, bool]) -> dict:
+    """The page's one choice, in plain words: {"model" (the switch, the
+    base when unset), "choices" [{"model", "name", "ready"}], "line" (with
+    exactly one model set up: which one does the work, '' otherwise),
+    "custom" (true when a pick here leaves some task where it is, or the
+    tasks do not all run on the model shown), "custom_line"}. Custom is a
+    task on the owner's own model now, a task with an override, or, with
+    no switch set, a task whose tiers block names another model."""
+    pick = block.get("hosted_default") or BASE
+    choices = [{"model": k, "name": MODEL_NAMES[k], "ready": bool(ready.get(k, True))} for k in REGISTRY]
+    up = [c for c in choices if c["ready"]]
+    line = ""
+    if len(up) == 1:
+        only = up[0]
+        line = (f"{only['name']} does the work. "
+                f"{_and([c['name'] for c in choices if not c['ready']])} is not set up on this computer."
+                if only["model"] == pick else
+                f"{MODEL_NAMES[pick]} is picked, but it is not set up on this computer. "
+                f"Use {only['name']} until it is.")
+    clauses = []
+    if any(r["effective"] in ("local", "mixed") for r in data_rows):
+        clauses.append("run on your own model")
+    if block["hosted"]:
+        clauses.append("have their own pick")
+    others = sorted({r["hosted"] for r in data_rows
+                     if r["hosted_source"] != "fixed" and r["hosted"] != pick and r["task"] not in block["hosted"]})
+    if others:
+        clauses.append("run on " + _and([MODEL_NAMES[m] for m in others]))
+    return {"model": pick, "choices": choices, "line": line, "custom": bool(clauses),
+            "custom_line": (f"Custom settings are on. {_some(clauses)} "
+                            "A pick here changes only the tasks that follow it.") if clauses else ""}
+
+
 def payload(*, cfg: dict | None = None, routing: dict | None = None,
-            tiers: dict | None = None, verbose: bool = False) -> dict:
+            tiers: dict | None = None, verbose: bool = False, ready: dict | None = None) -> dict:
     """The Settings screen's data (GET /api/settings/routing), in plain
-    words; `verbose` gives the code's terms (`show --verbose`, the doctor)."""
+    words; `verbose` gives the code's terms (`show --verbose`, the doctor).
+    `simple` is the page's one choice (simple_view); `ready` says which
+    hosted models are set up, default hosted_ready()."""
     cfg = _remote_cfg(cfg)
     source = "given" if routing is not None else _ea_config.get_routing_source()[1]
     default = hosted_default(routing)
+    tiers = tiers if tiers is not None else _ea_config.get_tiers()
+    table_rows = rows(cfg=cfg, routing=routing, tiers=tiers, verbose=verbose)
     return {"local": local_status(cfg, verbose=verbose), "source": source, "values": list(VALUES),
             "hosted_values": list(HOSTED), "hosted_names": dict(MODEL_NAMES),
             "hosted_default": default or BASE, "hosted_default_set": bool(default),
             "presets": preset_list(routing), "preset_now": preset_now(routing),
-            "rows": rows(cfg=cfg, routing=routing, tiers=tiers, verbose=verbose)}
+            "simple": simple_view(table_rows, _block(routing), hosted_ready() if ready is None else ready),
+            "rows": table_rows}
 
 
 def lines(data: dict | None = None) -> list[str]:

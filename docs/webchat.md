@@ -272,8 +272,8 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/relay/approve` | `{"device", "cards"?}` → `{"ok": true}`: let a waiting device in, and set whether a relay-origin or hosted device may press card buttons (`cards`, default false; approving again changes it); 400 for a `cards` that is not true or false, 404 for an unknown device. Through the relay, only for a device whose handoff this same phone started (403 otherwise), with a DM notice to the owner |
 | POST | `/api/relay/revoke` | `{"device"}` → `{"ok": true}`: its sessions and streams end, its push subscriptions go; 404 for an unknown device. Through the relay, only a computer the asking phone added with a code (403 otherwise: other devices are removed in the owner's own web chat) |
 | GET | `/api/relay/status` | `{"enabled": bool, ...}`: the relay client's state (`connected`, `install_id`, `bot_public`, `client_key`, `sign_public`, `devices`, `pending`, ...), how a phone can pair (`pair_own`, `pair_relay`, and `bundle`, the bundle hash or null), and `handoff` (a code for a computer would work now) with `hosted_app` (where that computer opens the app, "" when off) |
-| GET | `/api/settings/{name}` | the page's data; for `routing` (the EA's routing table, `docs/llm-lanes.md` 1.1): `{"local": {"configured", "model", "reachable", "detail"}, "source", "values", "rows": [{"task", "label", "what", "value", "allowed", "locked", "floor", "effective", "why"}]}`; for `notify` (Notifications): `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}`, the settings in force; for `debug` (Debug mode): `{"on": bool}`; 404 for a page the host did not register |
-| POST | `/api/settings/{name}` | for `routing`, `{"tasks": {"<task>": "local" \| "hosted" \| "auto"}}` → the page's data with `"saved": true`; the bot writes the owner-private `routing.json`, never `ea-config.json`. 400 with the reason for an unknown task or value or a value under a floor. For `notify`, the keys to change, any of `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}` → the page's data with `"saved": true`; the bot merges them over the web block's `notify_push` in the owner-private `chat.json` (every other key kept, mode 0600; `preprocessor/web_notify_settings.py`) and pushes by them at once. 400 with the reason for an unknown key, a switch that is not true or false, another `quiet`, an empty body, or a process that is not the owner's. For `debug`, `{"on": bool}` → `{"on": bool, "saved": true}`; the bot writes the chat block's `diagnostics` into the owner-private `chat.json` the same way and sends the health room's row with its `hidden` mark as a `channel` event; 400 "Debug mode takes on or off." for any other body. Every page: 403 for a relayed request (settings change only in the owner's own web chat) |
+| GET | `/api/settings/{name}` | the page's data; for `routing` (the EA's routing table, `docs/llm-lanes.md` 1.1): `{"local": {"configured", "model", "reachable", "detail"}, "source", "values", "hosted_default", "simple": {"model", "choices": [{"model", "name", "ready"}], "line", "custom", "custom_line"}, "rows": [{"task", "label", "what", "value", "allowed", "locked", "floor", "effective", "why"}]}`; for `notify` (Notifications): `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}`, the settings in force; for `debug` (Debug mode): `{"on": bool}`; 404 for a page the host did not register |
+| POST | `/api/settings/{name}` | for `routing`, `{"tasks": {"<task>": "local" \| "hosted" \| "auto"}}`, or the pick at the top alone, `{"hosted_default": "claude" \| "codex"}`, → the page's data with `"saved": true`; the bot writes the owner-private `routing.json`, never `ea-config.json`. 400 with the reason for an unknown task or value or a value under a floor. For `notify`, the keys to change, any of `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}` → the page's data with `"saved": true`; the bot merges them over the web block's `notify_push` in the owner-private `chat.json` (every other key kept, mode 0600; `preprocessor/web_notify_settings.py`) and pushes by them at once. 400 with the reason for an unknown key, a switch that is not true or false, another `quiet`, an empty body, or a process that is not the owner's. For `debug`, `{"on": bool}` → `{"on": bool, "saved": true}`; the bot writes the chat block's `diagnostics` into the owner-private `chat.json` the same way and sends the health room's row with its `hidden` mark as a `channel` event; 400 "Debug mode takes on or off." for any other body. Every page: 403 for a relayed request (settings change only in the owner's own web chat) |
 | POST | `/api/relay/attest` | `{"bundle": "<hash>"}`, from a phone through the relay only → `{"ok": true, "bundle_verified": true, "release"}`, or 409 `{"error", "bundle_verified": false}` for another hash; it records the check and grants nothing (Code integrity) |
 
 The owner routes under `/api/relay/`, and `/api/pair`, answer only in
@@ -967,33 +967,47 @@ it was made, with Remove (`/api/push/revoke`); this browser's own row
 (its endpoint's id, the sha256 the bot lists) says "This phone" or "This
 browser" and has no Remove, since its switch is above.
 
-Models: a line that says what the values mean (each task runs on the
-owner's own model, on Claude or Codex, picked once for every task or set
-apart per task, or on Auto, which lets Tacitus choose); "Presets", a
-button for each preset with the one in force pressed (a pressed one is
-sent alone on Save, `preset`) and "Save current as...", which asks for a
-name in the browser's own box (docs/model-routing.md, "Presets"); "Hosted model" with Claude
-and Codex, the one switch for every task not set apart (docs/model-routing.md,
-"The hosted model: one switch"); the local model's name and state;
-then one row per task with Your own model, the task's hosted model by
-name (Claude or Codex) and Auto, "Your own model" disabled under the chat
-floor's line on talking with you and finding meeting times (a
-"?" beside a name the bot sends `help` for, Reading your mail, Sorting
-mail and Writing replies, opens what the task is in plain words under the
-row, and closes it on a second press; on a touch screen its press area is
-44px around a small circle); under
-a task with a Codex route, "Hosted model" with Claude and Codex and a
-line that says "Follows the hosted model at the top." or "Set for this
-task." with Use default, which makes the task follow the switch again (a
-flip of the switch moves every row that follows it on screen); under
-another, a line on what Hosted means there; a line on what the task
-does, a line on the model it runs on now and why ("Now on Codex. Auto
-picked Codex."), and the floor's line under a row a floor holds (the
-values it refuses are disabled). Save, for this section alone, posts the
-enabled choices (`tasks`; `hosted` only for a row whose own model
-changed, `default` for one that follows the switch again; and
-`hosted_default` when the switch moved) and
-redraws from the answer, with "Saved." or the bot's reason under the
+Models opens on one choice, "Which AI does the work", with Claude and
+Codex: the routing table's one switch for every task not set apart
+(`hosted_default`; docs/model-routing.md, "The hosted model: one
+switch"), from the answer's `simple` block. A tap posts the switch
+alone (`{"hosted_default": "<model>"}`) at once and redraws the page
+from the answer, with "Saved. The change starts with each task's next
+run." or the bot's reason under the choice. It never sends a task's
+value or a task's own pick, so a task set apart or on the owner's own
+model stays where it is. With exactly one of the two set up (`ready` in
+`simple.choices`), a line names the one that does the work in place of
+the choice; when the switch names the one that is not set up, the line
+says so and a "Use <name>" button posts the switch to the other. While
+custom settings are on (`simple.custom`: a task on the owner's own model
+now, a task set apart, or with no switch set a task the tiers block puts
+on the other model), `simple.custom_line` says so in one line with Open
+Advanced under it.
+
+Advanced, a disclosure closed each time the page opens, holds the rest:
+a line that says what the values mean (each task runs on the owner's own
+model, on Claude or Codex, or on Auto, which lets Tacitus choose, and a
+task that can use both can be set apart from the pick at the top);
+"Presets", a button for each preset with the one in force pressed (a
+pressed one is sent alone on Save, `preset`) and "Save current as...",
+which asks for a name in the browser's own box (docs/model-routing.md,
+"Presets"); the local model's name and state; then one row per task with
+Your own model, the task's hosted model by name (Claude or Codex) and
+Auto, "Your own model" disabled under the chat floor's line on talking
+with you and finding meeting times (a "?" beside a name the bot sends
+`help` for, Reading your mail, Sorting mail and Writing replies, opens
+what the task is in plain words under the row, and closes it on a second
+press; on a touch screen its press area is 44px around a small circle);
+under a task with a Codex route, "Hosted model" with Claude and Codex
+and a line that says "Follows your pick at the top." or "Set for this
+task." with Use default, which makes the task follow the pick at the top
+again; under another, a line on what Hosted means there; a line on what
+the task does, a line on the model it runs on now and why ("Now on
+Codex. Auto picked Codex."), and the floor's line under a row a floor
+holds (the values it refuses are disabled). Save, for Advanced alone,
+posts the enabled choices (`tasks`; `hosted` only for a row whose own
+model changed, `default` for one that follows the pick at the top again)
+and redraws from the answer, with "Saved." or the bot's reason under the
 rows.
 
 The state of a conversation. Each thread card carries a sticker beside
