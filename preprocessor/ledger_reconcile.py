@@ -731,9 +731,11 @@ def summary_line(rec: dict) -> str:
 
 
 def _post(text: str) -> None:
+    """The night's summary line: a diagnostic, posted only in debug mode
+    (chat_notify, Debug mode). The rows it found reach the morning card."""
     try:
         import slack_notifier
-        slack_notifier.post_to_slack(slack_notifier.health_channel_key(), text)
+        slack_notifier.post_to_slack(slack_notifier.health_channel_key(), text, diagnostic=True)
     except Exception as e:
         print(f"ledger_reconcile: post failed: {str(e)[:160]}", file=sys.stderr)
 

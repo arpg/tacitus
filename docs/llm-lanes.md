@@ -393,7 +393,10 @@ FYI mail that arrived earlier with a date in the next seven days is
 listed again under "Coming up" until its day, so a dated FYI item keeps
 its deadline in view without reaching Claude. Mail the list digest covers
 is not repeated. It posts at 08:30, 12:30 and
-17:30 on weekdays and at 17:00 at weekends, one topic per day.
+17:30 on weekdays and at 17:00 at weekends, one topic per day, and only
+in debug mode (docs/webchat.md, Debug mode): with it off, each run moves
+its window on and posts nothing. Kept mail with an ask still reaches the
+briefing as its own ledger row.
 
 The digest for the made-up morning:
 

@@ -1541,7 +1541,8 @@ def _save_state(state: dict) -> None:
 
 def _post(text: str) -> bool:
     """Post to the health channel (the main EA channel when none is
-    configured); retry once, then the personal channel."""
+    configured); retry once, then the personal channel. An alert: it posts
+    whether or not debug mode is on (chat_notify, Debug mode)."""
     try:
         import slack_notifier
     except Exception as e:

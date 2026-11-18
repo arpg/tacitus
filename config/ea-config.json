@@ -79,6 +79,7 @@
   "chat": {
     "frontend": "slack",
     "shadow": "",
+    "diagnostics": false,
     "web": {
       "bind": "127.0.0.1",
       "port": 8470,
@@ -92,5 +93,5 @@
       "sched": true
     }
   },
-  "chat_note": "Chat platform (ea_config.get_chat()): frontend is web (the bot's own web chat, self-hosted), slack or memory (tests only); shadow \"web\" runs the web chat beside Slack. The web block configures the bot's own web chat (docs/webchat.md): the loopback bind and port, the path under which it serves, the public URL the owner opens, the Tailscale login that counts as the owner (trust_tailscale_header false turns that sign-in off), the pairing token file and store (empty: beside the store, in the owner-private directory), backfill_days, the days of history a shadow web chat copies in when the bot starts (0: none), and sched, the Scheduling channel the web chat makes when it runs alone (false: none; scheduling requests then wait in the EA channel). A notify map in the web block sends a notifier channel key to a web channel ({\"health\": {\"channel\": \"<id>\"}}); a key it does not name goes to the EA channel. Slack takes its tokens and channel ids from the environment and its notifier webhooks from slack_webhooks.json; the owner-private chat.json names slack.owner_user_id. get_chat() re-defaults every missing subkey, so a partial block is safe."
+  "chat_note": "Chat platform (ea_config.get_chat()): frontend is web (the bot's own web chat, self-hosted), slack or memory (tests only); shadow \"web\" runs the web chat beside Slack. diagnostics true is debug mode: the bot posts its own checks and reports (the held-back mail digest, the remote model's report, the evals and reviews) and the web chat shows its health channel; false, the default, posts none of them, and a problem you must fix still posts. An owner process reads this switch only from the owner-private chat.json, which the web chat's Settings writes. The web block configures the bot's own web chat (docs/webchat.md): the loopback bind and port, the path under which it serves, the public URL the owner opens, the Tailscale login that counts as the owner (trust_tailscale_header false turns that sign-in off), the pairing token file and store (empty: beside the store, in the owner-private directory), backfill_days, the days of history a shadow web chat copies in when the bot starts (0: none), and sched, the Scheduling channel the web chat makes when it runs alone (false: none; scheduling requests then wait in the EA channel). A notify map in the web block sends a notifier channel key to a web channel ({\"health\": {\"channel\": \"<id>\"}}); a key it does not name goes to the EA channel. Slack takes its tokens and channel ids from the environment and its notifier webhooks from slack_webhooks.json; the owner-private chat.json names slack.owner_user_id. get_chat() re-defaults every missing subkey, so a partial block is safe."
 }

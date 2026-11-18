@@ -133,8 +133,8 @@ promoted.
 
 The nightly `collect --report` runs `closure_policy.update` after the
 eval. It writes `~/.ea/state/closure-policy.json` (each signal's state,
-the numbers behind it, the last changes) and posts each change as one
-line to the health channel. `ledger.py closure-report` shows each
+the numbers behind it, the last changes) and, in debug mode, posts each
+change as one line to the health channel. `ledger.py closure-report` shows each
 signal's `policy` (promoted, demoted, base, or never). The switch is
 `closure.hill_climb` in `ea-config.json` (on; false turns every move
 off), and an install with no chat buttons gets no promotion (no Reopen).

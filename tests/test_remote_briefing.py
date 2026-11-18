@@ -773,6 +773,7 @@ def test_the_footer_split_is_off_unless_the_install_turns_it_on(tmp_path):
 def test_the_preview_goes_where_the_mail_digests_go(monkeypatch):
     import chat_notify
     sent = []
+    monkeypatch.setattr(chat_notify, "diagnostics_on", lambda: True)   # debug mode on: the transport
     monkeypatch.setattr(chat_notify, "frontend_name", lambda: "web")
     monkeypatch.setattr(chat_notify, "_send_web",
                         lambda key, parts, *, channel="", direct=False:
@@ -785,6 +786,10 @@ def test_the_preview_goes_where_the_mail_digests_go(monkeypatch):
                         lambda: {"ea-assistant": "https://hooks.example/A"})
     monkeypatch.setattr(chat_notify, "_send_slack", lambda *a: pytest.fail("posted on Slack"))
     assert rb._preview("Morning briefing") is False
+    # debug mode off: a diagnostic, posted nowhere, and the dry run counts it as handed off
+    monkeypatch.setattr(chat_notify, "diagnostics_on", lambda: False)
+    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "web")
+    assert rb._preview("Morning briefing") is True and len(sent) == 1
 
 
 def _vote_row(due: str) -> dict:

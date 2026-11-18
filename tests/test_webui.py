@@ -497,7 +497,9 @@ def test_the_app_stays_small():
     # 5,487: 5,486 plus the emoji the code and the prompts write that the table lacked.
     # 5,503: 5,487 plus a channel's mute (Mute and Unmute in a room's or the digests' menu, a muted
     #     channel's grey count kept off the menu's count and the title, and its place kept in the drawer).
-    assert lines <= 5503, f"{lines} lines: the contract keeps the app near 5,503 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line, the home-screen file sheet, a long card link shown as its site and a channel's mute"
+    # 5,520: 5,503 plus debug mode (#245: a channel the bot marks hidden left out of the drawer with its
+    #     count, and the Debug mode switch in the Settings menu, read when the menu opens and saved at once).
+    assert lines <= 5520, f"{lines} lines: the contract keeps the app near 5,520 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line, the home-screen file sheet, a long card link shown as its site, a channel's mute and debug mode"
 
 
 # A `:name:` in the sources that is not an emoji: a prompt that names the
@@ -1752,6 +1754,56 @@ def test_a_muted_channel_keeps_its_count_off_the_menu_and_the_title(app):
     assert stub.room_changes[-1] == {"id": W.DIGEST, "muted": False}
     expect(digest.locator(".badge:not(.muted)")).to_have_text("2")
     expect(page).to_have_title(f"({before - in_room + 2}) Tacitus")
+    assert not errors, errors
+
+
+def test_debug_mode_off_leaves_the_health_room_out_and_the_switch_brings_it_back(app):
+    """With debug mode off the bot marks the health room hidden: the drawer
+    leaves it out, and its unread report adds nothing to the title. The
+    Debug mode switch in the Settings menu shows the bot's answer when the
+    menu opens and saves at once; the bot's `channel` event then shows the
+    room, and turning the switch off hides it again."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app(debug=False)
+    page.wait_for_selector(".thread-item")
+    room = page.locator(f'#channel-list a.chan[href="#/{W.HEALTH}"]')
+    expect(page.locator("#channel-list a.chan .c-name").first).to_be_visible()
+    expect(room).to_have_count(0)
+    shown = lambda: int((re.match(r"\((\d+)\)", page.title()) or [0, 0])[1])  # noqa: E731
+    before = shown()
+    page.locator("#open-settings").click()
+    row, box = page.locator("#debug-row"), page.locator("#debug")
+    expect(row.locator(".s-label")).to_have_text("Debug mode")
+    expect(row.locator(".s-detail")).to_have_text(
+        "Shows the checks and reports Tacitus runs on itself. Problems you need to fix show either way.")
+    expect(box).not_to_be_checked()
+    row.click()
+    expect(box).to_be_checked()
+    assert stub.debug_posts == [{"on": True}]
+    expect(room).to_have_count(1)
+    expect(room.locator(".c-name")).to_have_text("health")
+    expect(page).to_have_title(f"({before + 1}) Tacitus")
+    row.click()
+    expect(box).not_to_be_checked()
+    assert stub.debug_posts[-1] == {"on": False}
+    expect(room).to_have_count(0)
+    expect(page).to_have_title(f"({before}) Tacitus" if before else "Tacitus")
+    # the menu opened again reads the switch from the bot
+    stub.debug = True
+    page.locator("#settings-close").click()
+    page.locator("#open-settings").click()
+    expect(box).to_be_checked()
+    assert not errors, errors
+
+
+def test_the_debug_switch_shows_only_where_the_bot_serves_it(app):
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    page.locator("#open-settings").click()
+    expect(page.locator("#tour-again")).to_be_visible()
+    expect(page.locator("#debug-row")).to_be_hidden()
     assert not errors, errors
 
 

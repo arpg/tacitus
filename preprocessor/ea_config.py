@@ -216,6 +216,10 @@ DEFAULTS = {
         "frontend": "slack",
         # A second front end that mirrors the first ("web"), or "" for none.
         "shadow": "",
+        # Debug mode (diagnostics_on): true posts the bot's own checks and
+        # reports (chat_notify.post with diagnostic=True) and shows the web
+        # chat's health channel; false, the default, posts none of them.
+        "diagnostics": False,
         # The bot's own web chat (docs/webchat.md). Empty pair_token_file and
         # store_path mean the defaults beside the store (chat.load_frontend).
         # backfill_days: the days of the primary's history a shadow web chat
@@ -336,6 +340,16 @@ def chat_from_block(val) -> dict:
             web.update(wval)
     cfg["web"] = web
     return cfg
+
+
+def diagnostics_on(chat: dict | None) -> bool:
+    """Debug mode: True only when the chat block's `diagnostics` is a
+    literal true. Off, the notifier posts no diagnostic (chat_notify) and
+    the web chat leaves its health channel out of the drawer. An owner
+    process reads the block from the owner-private chat.json (get_chat),
+    so the resident's copy in ea-config.json never sets it for the
+    owner's posts."""
+    return isinstance(chat, dict) and chat.get("diagnostics") is True
 
 
 def web_sched_on(chat: dict | None) -> bool:

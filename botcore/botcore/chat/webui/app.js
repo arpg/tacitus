@@ -758,8 +758,9 @@ function renderChannels() {
   const box = $('channel-list');
   // A channel with unread messages rises to the top; the rest keep their kind order, then their names.
   // A muted one keeps its place, shows its count in grey and adds nothing to the menu's count or the title.
+  // A hidden one (the health channel while debug mode is off) is left out, its count too.
   const loud = (c) => (!c.muted && unreadFor(c.id) ? 1 : 0);
-  const rows = [...S.channels].sort((a, b) => loud(b) - loud(a)
+  const rows = S.channels.filter((c) => !c.hidden).sort((a, b) => loud(b) - loud(a)
     || (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9) || channelName(a).localeCompare(channelName(b)));
   let total = 0;
   const item = (c) => {
@@ -783,7 +784,7 @@ function renderChannels() {
   document.title = total ? `(${total}) Tacitus` : 'Tacitus';
   fitNav();
   const here = chan(S.channel);
-  const others = total - (here && !here.archived && !here.muted ? unreadFor(S.channel) : 0);
+  const others = total - (here && !here.archived && !here.muted && !here.hidden ? unreadFor(S.channel) : 0);
   $('menu').dataset.unread = others > 0 ? String(others) : '';
   // The Needs you entry above the channels, with the count of threads that need the owner this week.
   const need = needsRows().filter((r) => stateOf(r.channel, threadOf(r)) === 'needs_you' && !staleOf(r)).length;
@@ -2965,6 +2966,7 @@ async function settingsPage(page) {
   $('settings').scrollTop = 0;
   if (page === 'menu') {
     connLine();
+    if (!$('debug-row').hidden) call('GET', '/settings/debug').then((d) => { $('debug').checked = d.on === true; }, () => {});
     if (from && from !== 'menu') $(`go-${from}`).focus(); // back where Back came from
     return;
   }
@@ -3004,6 +3006,7 @@ function settingsMenu() {
   $('tour-again').addEventListener('click', () => { $('settings').close(); welcome(0); });
   $('settings-save').addEventListener('click', saveSettings);
   $('notify-rows').addEventListener('change', saveNotify);
+  $('debug').addEventListener('change', saveDebug);
 }
 
 // Save sends the values, a task's own hosted model only where it changed ('default' when the
@@ -3057,6 +3060,16 @@ async function saveNotify(e) {
   } finally {
     inputs.forEach((i) => { i.disabled = false; });
   }
+}
+
+// Debug mode (docs/webchat.md): saved at once; the bot's `channel` event then shows or hides its place on every open app.
+async function saveDebug(e) {
+  const box = e.target;
+  box.disabled = true;
+  try { box.checked = (await call('POST', '/settings/debug', { on: box.checked })).on === true; } catch (err) {
+    box.checked = !box.checked;
+    $('settings-conn').textContent = `Debug mode not saved: ${err.message}`;
+  } finally { box.disabled = false; }
 }
 
 /* -- A room's menu: rename, mute, archive, bring back -------------- */
@@ -3539,6 +3552,7 @@ async function boot() {
   $('go-routing').hidden = T.relay || !shown.routing;
   $('open-settings').hidden = false;
   footer();
+  $('debug-row').hidden = T.relay || !((S.me && S.me.settings) || []).includes('debug'); // saved only from the owner's own copy
   welcomeOnce();
   if (!T.relay) checkBundle().catch(() => {}); // the bot's own copy: checked meanwhile
   else if (!relayCopy()) { // the bot's own copy off the tailnet: a new release comes through the relay

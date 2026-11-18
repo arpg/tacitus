@@ -37,7 +37,9 @@ def main() -> int:
     posted = True
     if text:
         # Normal priority: held during quiet hours and delivered in the
-        # morning digest, like other non-urgent posts.
+        # morning digest, like other non-urgent posts. An alert: a rule the
+        # owner did not set must reach them, so it posts whether or not
+        # debug mode is on (chat_notify, Debug mode).
         posted = chat_notify.post(chat_notify.health_channel_key(), text)
 
     if posted:

@@ -53,9 +53,9 @@ def web(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "quiet_hours", types.SimpleNamespace(
         should_defer=lambda priority: True, defer=lambda *a: held.append(a)))
 
-    def block(extra: dict | None = None) -> None:
+    def block(extra: dict | None = None, *, debug: bool = False) -> None:
         (priv / "chat.json").write_text(json.dumps(
-            {"frontend": "web", "web": {"port": 0, **(extra or {})}}))
+            {"frontend": "web", "diagnostics": debug, "web": {"port": 0, **(extra or {})}}))
         (priv / "chat.json").chmod(0o600)
     block()
     return types.SimpleNamespace(priv=priv, store=lambda: WebStore(priv / "webchat.sqlite"),
@@ -130,6 +130,7 @@ def gate(web, monkeypatch):
 
 
 def test_the_mail_gate_digest_posts_on_the_web_chat_and_records_the_run(gate):
+    gate.block(debug=True)
     assert mg.digest(now=NOW) == {"posted": True, "rows": 2}
     (thread,) = gate.store().threads(DIGESTS)
     assert "summary of f1" in thread["text"] and "summary of k1" in thread["text"]
@@ -150,7 +151,23 @@ def test_the_list_and_admissions_digests_post_in_the_digest_channel(web):
     assert _texts(store, "main") == []
 
 
-def test_the_briefing_preview_posts_in_the_digest_channel(web):
+def test_the_mail_gate_digest_is_a_diagnostic_and_its_window_moves_on_without_debug_mode(gate, capsys):
+    """Debug mode off (the default): the mail held back is not posted, the
+    digest channel is not made, and the next run starts where this one
+    ended, as after a post; the log line carries no text of the mail."""
+    assert mg.digest(now=NOW) == {"posted": True, "rows": 2}
+    assert gate.store().channel(DIGESTS) is None and _texts(gate.store(), "main") == []
+    out = capsys.readouterr().out
+    assert "[debug mode off] diagnostic for 'mail-digest' not posted" in out
+    assert "summary of" not in out and "alice@" not in out
+    assert rl.read(mg.DIGEST_STATE)[-1]["until"] == NOW.isoformat(timespec="seconds")
+    assert mg.digest(now=NOW + timedelta(minutes=5)) == {"posted": False, "rows": 0}
+
+
+def test_the_briefing_preview_posts_in_the_digest_channel_in_debug_mode_alone(web):
+    assert rb._preview("*Morning briefing, Thu Oct 8*")  # debug mode off: nothing posted
+    assert web.store().channel(DIGESTS) is None
+    web.block(debug=True)
     assert rb._preview("*Morning briefing, Fri Oct 9*\n1. Send the slides")
     store = web.store()
     (thread,) = store.threads(DIGESTS)

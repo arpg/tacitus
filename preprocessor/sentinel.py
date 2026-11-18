@@ -885,7 +885,8 @@ def _log_local(record: dict) -> None:
 
 def _post_alert(text: str) -> bool:
     """Post to the health channel (the main EA channel when none is
-    configured); retry once; fall back to 'personal'.
+    configured); retry once; fall back to 'personal'. An alert: it posts
+    whether or not debug mode is on (chat_notify, Debug mode).
 
     Returns True if any channel accepted the message."""
     try:

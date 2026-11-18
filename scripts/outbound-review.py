@@ -13,7 +13,10 @@ ea-bot log was tampered with (see outbound_review). Posts when a check
 tripped; a clear day posts its short all-clear on Mondays only
 (HEARTBEAT_WEEKDAY), so the review is visibly running and a quiet day adds
 nothing to the health channel. A clear day not posted still advances the
-cursors: its window was read.
+cursors: its window was read. The review is a diagnostic, posted only in
+debug mode, unless a protection did not hold (protection_failed): that is
+an alert, posted in any mode (chat_notify, Debug mode). The text goes to
+the cron log either way.
 
 With no cursor (a first run, or the file was removed) or a cursor that is
 refused or is not JSON, each log is read from its start (bounded by size)
@@ -42,6 +45,14 @@ def _today() -> datetime:
     return datetime.now()
 
 
+def protection_failed(report: dict, no_cursor: str) -> bool:
+    """True when the review shows a protection that did not hold: a web
+    tool in a cron lane (the deny list), or a log check other than a first
+    run's missing cursor (an ea-bot log rewritten, a cursor refused)."""
+    return bool(report.get("web_cron_lanes")
+                or [a for a in report.get("log_anomalies") or [] if a != no_cursor])
+
+
 def main() -> int:
     import outbound_review as R
     from preprocessor import chat_notify
@@ -53,8 +64,10 @@ def main() -> int:
 
     text = R.render(report)
     flagged = R.has_flags(report)
+    print(text)
     if (flagged or _today().weekday() == HEARTBEAT_WEEKDAY) and not chat_notify.post(
-            chat_notify.health_channel_key(), text):
+            chat_notify.health_channel_key(), text,
+            diagnostic=not protection_failed(report, R.NO_CURSOR)):
         print("outbound-review: post failed; cursors not advanced", file=sys.stderr)
         return 1
     if state is not None and state.get("cursor_problem"):
