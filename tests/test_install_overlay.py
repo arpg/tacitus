@@ -37,7 +37,7 @@ def test_render_carries_the_install_facts(ea):
     text = io_.render_text()
     for must in ("Ana Lopez", "ana@example.edu", "Physics, Example University",
                  "Internal mail domains: example.edu", "a first email outside example.edu",
-                 "Online meetings use Zoom", "https://zoom.example/ana", "`ea` (the EA channel)",
+                 "Online meetings use Zoom", "https://zoom.example/ana", "`ea` (the EA channel",
                  "ana@example.com", "commits as `ana-bot`", "`ana/doc-review`", "The lab site",
                  "physics-news (filter)", "The department meeting is on Tuesdays."):
         assert must in text, must
@@ -177,7 +177,12 @@ def test_a_web_chat_install_names_the_web_chat_and_where_the_send_button_is(ea):
     chat = text[text.index("## Chat"):text.index("## Accounts")]
     assert f"Platform: the {WebFrontend.PROMPT_STRINGS['platform']}" in chat
     assert WebFrontend.PROMPT_STRINGS["confirm_location"] in chat
-    assert "`ea` (the EA channel)" in chat and "`dm` (the DM)" in chat
+    assert "`ea` (the EA channel, Ask Tacitus in the app)" in chat
+    assert "`dm` (the DM, Action requests in the app)" in chat
+    # the model says the web chat's name where its guides say the user's DM
+    assert "The DM is named Action requests here and takes button presses only" in chat
+    assert "Where CLAUDE.md, a skill or a guide says the user's DM, say Action requests." in chat
+    assert "Each confirmation card goes to Action requests" in chat
     assert "`Scheduling` (the scheduling channel" in chat
     assert "no scheduling channel" not in chat and "Install profile: `collaborator`" in chat
     assert "project rooms are rooms in the web chat" in chat

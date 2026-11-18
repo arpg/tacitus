@@ -100,10 +100,18 @@ carries `stale` as the bot's stale shelf sets it; `add_stale` adds made-up
 threads whose state is days old and on the shelf.
 
 GET /api/recent lists the latest conversations of every channel that is
-not archived, as the bot does: a card that waits for a tap and is unread
-first, then the newest, a muted channel's left out but such a one, with
+neither archived nor muted, newest first, as the bot does (is_conversation:
+a thread the owner wrote in, or a briefing the bot opened, in a talk place;
+in the DM only a thread the owner opened; never a card's thread), with
 `as_of`; `recent_gets` counts the reads. `names` maps a thread key to the
 name the owner gave it, which its rows carry as `title`.
+
+The DM is Action requests: it holds the requests (cards), its row carries
+`waiting` (the cards whose buttons still act) and its thread rows `waiting`
+each. A post to it starts a new conversation in the main channel, opened by
+the bot's line that names the request, as the bot does. GET /api/needs
+leaves out what waits on a tap: a thread in the DM the owner did not open,
+a thread that opens with a card, and a state marked `tap`.
 
 With `sign=True` (or `--sign`) it signs the app's files as the bot does
 (web_bundle, which needs the cryptography package) and serves the signed
@@ -148,6 +156,8 @@ STUB_BUNDLE = "b" * 64  # a made-up hash of the bot's signed app bundle, when it
 STUB_HOSTED = "https://app.example.org/"  # the website's copy of the app a handoff names
 STUB_HANDOFF_PAIRING = "7" * 32  # the pairing id behind the made-up handoff code
 WEEKLY = "stream:9:topic:weekly%20plan"
+# A briefing's opening line, as the bot's push policy reads its title.
+BRIEFING = re.compile(r"^\W*(?:morning briefing|afternoon update)\b", re.I)
 ROOM_ASK = re.compile(r"^\s*open a (?:channel|room) for (?P<name>.+?)\s*$", re.I)
 NOTIFY = {"briefings": True, "replies": True, "rooms": True, "quiet": "queue"}
 NOTIFY_NAMES = {"briefings": "Briefings", "replies": "Replies", "rooms": "Rooms"}
@@ -362,7 +372,19 @@ class Stub:
         """A channel's row as /api/channels and a `channel` event give it."""
         last = max((m["posted_at"] for m in self.messages if m["channel"] == cid), default=None)
         hidden = {"hidden": True} if cid == HEALTH and self.debug is False else {}
-        return {**self.channels[cid], "last_at": last, **self.counts(cid), **hidden}
+        waiting = {"waiting": sum(self.waiting(cid).values())} if self.channels[cid]["kind"] == "dm" else {}
+        return {**self.channels[cid], "last_at": last, **self.counts(cid), **hidden, **waiting}
+
+    def waiting(self, channel: str) -> dict:
+        """{thread key: its cards whose buttons still act}, as the bot counts
+        them: a card with an action or a select and no undo mark."""
+        out: dict[str, int] = {}
+        for m in self.messages:
+            c = m.get("card") or {}
+            if m["channel"] == channel and m["kind"] == "card" and not m["deleted"] \
+                    and (c.get("actions") or c.get("select")) and not c.get("undo"):
+                out[m["thread_key"]] = out.get(m["thread_key"], 0) + 1
+        return out
 
     def set_debug(self, body) -> tuple[int, dict]:
         """Debug mode as the bot saves it: (status, the page's answer), and
@@ -442,7 +464,9 @@ class Stub:
         name = self.names.get(m["thread_key"])
         return {**self.view(m), "state": st.get("state", "none"), "state_by": st.get("by", ""),
                 "state_reason": st.get("reason", ""), "state_at": st.get("at", 0),
-                "stale": bool(st.get("stale")), **({"title": name} if name else {})}
+                "stale": bool(st.get("stale")), "tap": bool(st.get("tap")),
+                "waiting": self.waiting(m["channel"]).get(m["thread_key"], 0),
+                **({"title": name} if name else {})}
 
     def recent(self, limit: int = 20) -> dict:
         """The drawer's Recent list in one snapshot, as the bot gives it."""
@@ -451,21 +475,31 @@ class Stub:
             rows = []
             for cid, c in self.channels.items():
                 counts = self.counts(cid)["unread_threads"]
-                for p in [] if c["archived"] else self.parents(cid, 10 ** 6, None):
-                    tap = bool(counts.get(p["thread_key"])) and any(
-                        m["kind"] == "card" for m in self.thread(cid, p["thread_key"]))
-                    if tap or not c.get("muted"):
-                        rows.append({**p, "channel_name": c["name"], "needs_tap": tap,
+                for p in [] if c["archived"] or c.get("muted") else self.parents(cid, 10 ** 6, None):
+                    if self.conversation(c, p):
+                        rows.append({**p, "channel_name": c["name"],
                                      "unread": counts.get(p["thread_key"], 0)})
-            rows.sort(key=lambda r: (not r["needs_tap"], -r["last_at"]))
+            rows.sort(key=lambda r: -r["last_at"])
             return {"threads": rows[:limit], "as_of": self.eseq}
 
+    def conversation(self, c: dict, p: dict) -> bool:
+        """The bot's rule for Recent (web_frontend.is_conversation)."""
+        if p["kind"] in ("card", "status") or c["kind"] == "digest":
+            return False
+        if c["kind"] == "dm":
+            return p["author"] == "owner"
+        if any(m["author"] == "owner" for m in self.thread(p["channel"], p["thread_key"])):
+            return True
+        return p["author"] == "bot" and bool(BRIEFING.match(p["text"] or ""))
+
     def set_state(self, channel: str, thread_key: str, state: str, by: str = "rule",
-                  reason: str = "", *, at: float | None = None, stale: bool = False) -> dict:
-        """Set a thread's state and send the `thread_state` event."""
+                  reason: str = "", *, at: float | None = None, stale: bool = False,
+                  tap: bool = False) -> dict:
+        """Set a thread's state and send the `thread_state` event; `tap` marks
+        a state that only says a card waits (thread_state.waits_on_tap)."""
         with self.cond:
             st = {"state": state, "by": by, "reason": reason, "at": at or time.time(),
-                  "stale": stale}
+                  "stale": stale, "tap": tap}
             self.states[(channel, thread_key)] = st
             self.eseq += 1
             self.events.append((self.eseq, "thread_state",
@@ -497,7 +531,9 @@ class Stub:
         """Every thread that needs the owner or waits, needs you first,
         then newest first, each with its channel's name."""
         out = [{**p, "channel_name": self.channels[c]["name"]} for c in self.channels
-               for p in self.parents(c, 10 ** 6, None) if p["state"] in ("needs_you", "waiting")]
+               for p in self.parents(c, 10 ** 6, None) if p["state"] in ("needs_you", "waiting")
+               and not p["tap"] and p["kind"] not in ("card", "status")
+               and (self.channels[c]["kind"] != "dm" or p["author"] == "owner")]
         out.sort(key=lambda p: (p["state"] != "needs_you", -p.get("last_at", p["posted_at"])))
         return out[:200]
 
@@ -562,13 +598,13 @@ class Stub:
 
     def _seed(self) -> None:
         t0 = time.time() - 3 * 86400
-        ask = self.add(DM, "Draft a reply to the budget question from the example lab.",
+        ask = self.add(MAIN, "Draft a reply to the budget question from the example lab.",
                        author="owner", reactions=["eyes", "white_check_mark"], at=t0)
         tk = ask["thread_key"]
-        self.add(DM, "Draft created. **To:** someone@example.org\n\n- Point one\n- Point *two*\n\n"
+        self.add(MAIN, "Draft created. **To:** someone@example.org\n\n- Point one\n- Point *two*\n\n"
                  "The row is `ledger 12`. See [the guide](https://example.org/guide) :memo:",
                  thread_key=tk, at=t0 + 60)
-        self.add(DM, "", kind="card", thread_key=tk, at=t0 + 61, card={
+        self.add(MAIN, "", kind="card", thread_key=tk, at=t0 + 61, card={
             "kind": "send", "title": ":lock: *Confirm send*",
             "fields": [{"label": "To", "value": "someone@example.org"},
                        {"label": "Subject", "value": "Re: \ue000Budget\ue001 question \u202eevil"}],
@@ -580,14 +616,22 @@ class Stub:
                 {"id": "edit", "label": ":pencil2: Edit", "value": {"draft": "d1"}, "style": "", "word": "edit"},
                 {"id": "cancel", "label": "Cancel", "value": {"draft": "d1"}, "style": "danger", "word": "cancel"}],
             "select": None, "block_id": "", "footer": "Code ABCD", "fallback_text": "Confirm send",
-            "thread_ts": tk, "ea_channel": DM, "content_fingerprint": "", "no_default": False})
-        odd = self.add(DM, "Markup check: <img src=x onerror=\"window.__xss=1\"> "
+            "thread_ts": tk, "ea_channel": MAIN, "content_fingerprint": "", "no_default": False})
+        odd = self.add(MAIN, "Markup check: <img src=x onerror=\"window.__xss=1\"> "
                        "<script>window.__xss=2</script> [click](javascript:window.__xss=3)\n\n"
                        "| Item | Cost |\n|---|---|\n| Trip | 100 |\n\n```\nprint('<b>')\n```",
                        at=t0 + 3600)
-        self.add(DM, ":white_check_mark: Sent to someone@example.org.", kind="status",
+        self.add(MAIN, ":white_check_mark: Sent to someone@example.org.", kind="status",
                  thread_key=odd["thread_key"], at=t0 + 3700)
-        self.add(DM, "", kind="card", at=t0 + 7200, card={
+        # Action requests holds one request, answered; a test adds the ones that wait.
+        self.add(DM, ":white_check_mark: Sent to someone@example.org.", kind="status", at=t0 + 7000, card={
+            "kind": "send", "title": ":lock: *Confirm send*",
+            "fields": [{"label": "To", "value": "someone@example.org"}, {"label": "Subject", "value": "Re: Room booking"}],
+            "lines": [], "body": "The room is booked.", "quoted": "",
+            "actions": [{"id": "send", "label": "Send", "value": {"draft": "d0"}, "style": "primary", "word": "send"}],
+            "select": None, "block_id": "", "footer": "", "fallback_text": "Confirm send", "thread_ts": "",
+            "ea_channel": MAIN, "content_fingerprint": "", "no_default": False})
+        self.add(MAIN, "", kind="card", at=t0 + 7200, card={
             "kind": "room", "title": ":lock: *Open a room*", "fields": [],
             "lines": ["Pick a project for this thread."], "body": "", "quoted": "",
             "actions": [{"id": "create", "label": "Create", "value": "c", "style": "primary", "word": "create"},
@@ -599,10 +643,10 @@ class Stub:
         png = (WEBUI / "icon-192.png").read_bytes()
         self.files["f1"] = ("figure.png", "image/png", png)
         self.files["f2"] = ("notes.pdf", "application/pdf", b"%PDF-1.4 made-up\n")
-        fig = self.add(DM, "Here is the figure.", author="owner", kind="file", at=t0 + 9000,
+        fig = self.add(MAIN, "Here is the figure.", author="owner", kind="file", at=t0 + 9000,
                        file={"id": "f1", "name": "figure.png", "url": "", "mimetype": "image/png",
                              "size": len(png)})
-        self.add(DM, "", kind="file", thread_key=fig["thread_key"], at=t0 + 9100,
+        self.add(MAIN, "", kind="file", thread_key=fig["thread_key"], at=t0 + 9100,
                  file={"id": "f2", "name": "notes.pdf", "url": "", "mimetype": "application/pdf",
                        "size": 17})
         self.add(MAIN, ":calendar: Weekly plan\n\n# Monday\nTwo meetings.", thread_key=WEEKLY, at=t0 + 100)
@@ -628,6 +672,13 @@ class Stub:
 
     def post(self, channel: str, text: str, thread_key: str | None, file: dict | None = None,
              nonce: str | None = None) -> dict:
+        if self.channels.get(channel, {}).get("kind") == "dm":
+            # Action requests takes taps only: the words start a conversation in the main channel.
+            first = self.thread(channel, thread_key)[:1] if thread_key else []
+            title = ((first[0].get("card") or {}).get("title") or first[0]["text"]).strip(":lock* ") if first else ""
+            line = (f"You wrote this about a request in Action requests: [{title}](#/{channel}/{thread_key})."
+                    if title else "You wrote this in Action requests, which takes taps only, so it starts here.")
+            channel, thread_key = MAIN, self.add(MAIN, line, event="message")["thread_key"]
         m = self.add(channel, text, author="owner", kind="file" if file else "message",
                      thread_key=thread_key, file=file, event="file" if file else "message")
         self.posts.append({"channel": channel, "text": text, "thread_key": thread_key, "file": file})

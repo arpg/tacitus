@@ -279,6 +279,10 @@ class ShadowFrontend(ChatFrontend):
     def registry(self):
         return self.primary.registry
 
+    @property
+    def dm_takes_text(self) -> bool:
+        return getattr(self.primary, "dm_takes_text", True)
+
     # lifecycle
 
     def start(self) -> None:

@@ -46,9 +46,9 @@ answer and the owner's override each write the store's `thread_state`
 row, which appends a `thread_state` event when the state, `by` or the
 reason changed.
 
-A conversation's cards in Direct messages. A card the owner asked for in
-another conversation lives in the DM, with a one-line pointer where it
-was asked. The store links the two (its `card_link` table: from the
+A conversation's cards in Action requests. A card the owner asked for in
+another conversation lives in the DM (the web app's Action requests), with
+a one-line pointer where it was asked. The store links the two (its `card_link` table: from the
 card's own `ea_channel` and `thread_ts`, and from the pointer's link,
 pointer_targets()), and rule 2b (linked_state) reads the linked cards:
 one still live is `needs_you`, all settled with no owner message since is
@@ -235,6 +235,10 @@ def _live(m: dict, now: float) -> bool:
     return now - float(m.get("posted_at") or now) < CARD_LIVE_S
 
 
+# The test as other modules read it (the web store's Action requests).
+is_live_card = _live
+
+
 # A status line that says the card expired with no answer: the question
 # moved elsewhere (the briefing), and nothing was done.
 EXPIRED_MARKS = (":zzz:", ":sleeping:")
@@ -298,7 +302,7 @@ def link_keys(messages: list[dict]) -> tuple[list[str], list[str]]:
     return uniq(keys["ledger_id"] + words), uniq(keys["conversation_id"])
 
 
-# ── a conversation's cards in Direct messages, stale, the nudge ───────
+# ── a conversation's cards in Action requests, stale, the nudge ───────
 
 # A needs_you or waiting conversation quiet this long sits on the stale
 # shelf ("Older" in Needs you).
@@ -308,16 +312,39 @@ STALE_S = 7 * 86400
 NUDGE_AFTER_S = 24 * 3600
 NUDGE_CAP = 10
 NUDGE_TEXT = "Still need this? Reply here, or tap Mark done."
-CARD_WAITS = "Its card in Direct messages waits for you."
+# The web app's name for the DM, where every card waits for a tap.
+CARD_PLACE = "Action requests"
+CARD_WAITS = "Its request in Action requests waits for you."
+# The same reason as rows stored before the place had its name hold it.
+CARD_WAITS_BEFORE = "Its card in Direct messages waits for you."
 CARD_BUSY = "Tacitus is acting on the button you pressed."
 # Where a linked card sits, in the prompt's line for it.
-LINKED_PLACE = "Direct messages"
+LINKED_PLACE = CARD_PLACE
+# The words that name the place in the bot's pointer, on Slack (the DM) and
+# on the web chat (front end prompt strings, `card_place`).
+POINTER_PLACES = ("your DM", CARD_PLACE)
 # The pointer the bot leaves where a card was asked for
-# (ea-chat-bot._post_dm_breadcrumb: ":lock: <What> is in your DM: <link|open
+# (ea-chat-bot._post_dm_breadcrumb: ":lock: <What> is in <the place>: <link|open
 # it>"), as the web chat stores it: a Markdown link after the words, the
 # lock under its core name, or Zulip's in history imported from Zulip.
-POINTER_RE = re.compile(r":lock(?:ed)?:[^\n]{0,160}? (?:is|are) in your DM:? *"
+POINTER_RE = re.compile(r":lock(?:ed)?:[^\n]{0,160}? (?:is|are) in (?:your DM|Action requests):? *"
                         r"\[[^\]\n]{1,40}\]\((\S+?)\)")
+
+
+def names_card_place(text: str | None) -> bool:
+    """True when a bot line names the place where cards wait, the cheap
+    test before POINTER_RE."""
+    t = str(text or "")
+    return any(f"in {p}" in t for p in POINTER_PLACES)
+
+
+def waits_on_tap(state: str | None, by: str | None, reason: str | None) -> bool:
+    """True when a state says only that a card waits for a tap: rule 2 (a
+    live card in the thread) or rule 2b (its card in Action requests).
+    Needs you leaves such a conversation to Action requests."""
+    r = str(reason or "")
+    return state == "needs_you" and by == "rule" and (
+        r in (CARD_WAITS, CARD_WAITS_BEFORE) or r.endswith("still has its buttons."))
 # The card a pointer's link names: the web chat's own hash route
 # (#/<channel>/<thread>/<message>) or Slack's permalink (/archives/<C>/p<ts>).
 _WEB_LINK_RE = re.compile(r"#/([^/\s?#]+)/([^/\s?#]+)/([^/\s?#]+)$")
@@ -604,7 +631,7 @@ def decide(messages: list[dict], *, channel: dict | None = None,
             return "needs_you", "rule", "A phone waits for your approval."
         return "done", "rule", "The phone was approved or removed."
 
-    # 2b. The conversation's cards in Direct messages; a live one yields to
+    # 2b. The conversation's cards in Action requests; a live one yields to
     # the owner's message after it as rule 2 does (1a).
     got = linked_state(linked or [], messages, now)
     if got and got[1] == CARD_WAITS:
@@ -674,7 +701,7 @@ PROMPT = """You read one conversation from a chat between a person (the owner) a
 
 Today is {today}. The channel is "{name}" (kind: {kind}).{ledger}
 
-The messages, oldest first. Each line gives the author, the time and the text. A card shows its title and what happened to it. A card in Direct messages is one this conversation asked for, posted in the owner's direct messages.
+The messages, oldest first. Each line gives the author, the time and the text. A card shows its title and what happened to it. A card in Action requests is one this conversation asked for, posted where the owner's buttons wait.
 
 {messages}
 
@@ -687,7 +714,7 @@ BATCH_PROMPT = """You read {count} conversations from a chat between a person (t
 
 """ + STATES_TEXT + """
 
-Today is {today}. Each conversation below opens with a line that gives its ref, then its channel and the items on the owner's task list it is linked to, if any. Its messages follow, oldest first. Each line gives the author, the time and the text. A card shows its title and what happened to it. A card in Direct messages is one this conversation asked for, posted in the owner's direct messages.
+Today is {today}. Each conversation below opens with a line that gives its ref, then its channel and the items on the owner's task list it is linked to, if any. Its messages follow, oldest first. Each line gives the author, the time and the text. A card shows its title and what happened to it. A card in Action requests is one this conversation asked for, posted where the owner's buttons wait.
 
 {conversations}
 
@@ -739,7 +766,7 @@ def _line(m: dict, now: float) -> str:
 
 def _linked_line(c: dict, now: float) -> tuple[float, str] | None:
     """A card the conversation links to as one prompt line in the shape of a card in the thread, with the time it
-    last changed: `card "Title" in Direct messages:` and its outcome (its
+    last changed: `card "Title" in Action requests:` and its outcome (its
     status line, `failed`, `expired`, or waiting for a button). None for a
     link to no card (a card the store does not hold)."""
     if c.get("kind") not in ("card", "status") or not isinstance(c.get("card"), dict):
@@ -813,7 +840,7 @@ def judge_prompt(messages: list[dict], *, channel: dict | None = None,
                  linked: list[dict] | None = None) -> str:
     """The model's prompt: the thread's messages (author, time, text, and a
     card's title and outcome, never its body or fields), one line for each
-    card the conversation links to in Direct messages (its title and
+    card the conversation links to in Action requests (its title and
     outcome, as a card in the thread shows), the channel's kind and name,
     the linked ledger rows' type, status, deadline and last action, and
     today's date. The first message stays; past the caps the oldest of
@@ -1364,7 +1391,7 @@ class ThreadStates:
                 "hosted_threads": hosted["asked"], "stale": self.shelve(now),
                 "nudges": self.nudges(now)}
 
-    # a conversation's cards in Direct messages, the stale shelf, the nudge
+    # a conversation's cards in Action requests, the stale shelf, the nudge
 
     @staticmethod
     def _messages(store: Any, channel: str, key: str) -> list[dict]:

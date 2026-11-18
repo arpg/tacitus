@@ -377,7 +377,7 @@ def test_the_conversation_index_names_the_web_chats_channels_as_the_app_does():
     exec(src, ns)
     label = ns["_channel_label"]
     assert [label(c) for c in ("main", "sched", "dm", "digests", "r1")] == \
-        ["Ask Tacitus", "Scheduling", "Direct messages", "Mail digests", "#ea-atlas"]
+        ["Ask Tacitus", "Scheduling", "Action requests", "Mail digests", "#ea-atlas"]
     app = (ROOT / "botcore" / "botcore" / "chat" / "webui" / "app.js").read_text()
     names = re.search(r"const KIND_NAMES = \{([^}]*)\}", app).group(1)
     for kind, shown in ns["_WEB_CHANNEL_NAMES"].items():

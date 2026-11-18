@@ -454,7 +454,7 @@ class _NoModalFrontend:
 def _edit_tap(fe, value, subject="Lab visit"):
     """An Edit tap on a Send card at the top of the owner's DM: the card
     is the first message of a thread of its own (w200 opens t200)."""
-    ns = {"FRONTEND": fe, "_verify_button_user": lambda ev: True,
+    ns = {"FRONTEND": fe, "_verify_button_user": lambda ev: True, "CHANNEL_ID": "main",
           "_delivery_channel": lambda key: {"t100": "main", "t300": "dm"}.get(key, "main"),
           "_card_value": lambda ev: value,
           "_fetch_draft_body": lambda did: {"subject": subject, "body": "x"} if subject
@@ -493,6 +493,32 @@ def test_a_draft_from_no_conversation_is_asked_about_under_its_card():
     _edit_tap(fe, {"draft_id": "d1", "thread_ts": "t100"})
     assert len(fe.posts) == 1 and fe.posts[0][:2] == ("dm", "w200")
     assert "*Lab visit*" in fe.posts[0][2]
+
+
+class _TapsOnlyFrontend(_NoModalFrontend):
+    """The web chat: its DM (Action requests) takes button presses only."""
+    dm_takes_text = False
+
+    def is_dm(self, channel):
+        return channel == "dm"
+
+
+def test_where_the_dm_takes_taps_only_the_question_opens_a_conversation_in_the_ea_channel():
+    """On the web chat nobody types in Action requests: a draft from no
+    conversation, or from one in the DM (the Replies thread), is asked about
+    in a new conversation in the EA channel, and the card points there. A
+    draft from a conversation in a talk place is asked about there."""
+    for value in ({"draft_id": "d1"}, {"draft_id": "d1", "thread_ts": "t300", "ea_channel": "dm"}):
+        fe = _TapsOnlyFrontend()
+        _edit_tap(fe, value)
+        (ch1, key1, ask), (ch2, key2, pointer) = fe.posts
+        assert (ch1, key1) == ("main", None), value  # a new conversation
+        assert "What should I change in the draft to *Lab visit*?" in ask
+        assert (ch2, key2) == ("dm", "w200") and "https://chat.example/main/m1" in pointer
+    fe = _TapsOnlyFrontend()
+    _edit_tap(fe, {"draft_id": "d1", "thread_ts": "t100", "ea_channel": "main"})
+    assert [p[:2] for p in fe.posts] == [("main", "t100"), ("dm", "w200")]
+
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

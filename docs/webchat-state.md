@@ -61,13 +61,14 @@ thread: the colleague has not replied yet").
    `needs_you` ("A phone waits for your approval.") while a device with
    that code waits for approval, `done` once it is approved or removed.
    With no relay running the rule waits, and rule 7 applies.
-2b. The conversation's cards in Direct messages. A card the owner asked
-   for in another conversation is posted in the DM, and the bot leaves a
-   one-line pointer where it was asked ("The Send button for this draft
-   is in your DM: [open it](...)"; Create, Reschedule, Delete, Schedule,
+2b. The conversation's cards in Action requests. A card the owner asked
+   for in another conversation is posted in the DM (the web app's Action
+   requests), and the bot leaves a one-line pointer where it was asked
+   ("The Send button for this draft is in Action requests: [open it](...)",
+   or "in your DM" on Slack and in what the store held before; Create, Reschedule, Delete, Schedule,
    Publish and a plugin's button alike). The store links the two (Store,
    `card_link`). One linked card still live (rule 2's test, and no rule
-   1a): `needs_you`, "Its card in Direct messages waits for you." A press
+   1a): `needs_you`, "Its request in Action requests waits for you." A press
    under way within 20 minutes: `working`. Every linked card acted on
    (rule 4's status line, or a text card's) and no owner message in
    the conversation after the last of them: `done`, "Its card was
@@ -197,9 +198,9 @@ settles every thread Tacitus started that the owner never wrote in.
 
 Input: the thread's messages (author, time,
 text, card titles and outcomes; never a card's body, fields or quoted
-mail), one line for each card the conversation links to in Direct
-messages, placed by the time it last changed, in the shape of a card in
-the thread (`[bot, <time>] card "Confirm send" in Direct messages: Sent.`;
+mail), one line for each card the conversation links to in Action
+requests, placed by the time it last changed, in the shape of a card in
+the thread (`[bot, <time>] card "Confirm send" in Action requests: Sent.`;
 `: failed` for a failed press, without its words; `: expired` past the
 card registry's 7 days; `: waiting for a button` while live; a link to
 no card the store holds gives no line), the channel's kind and
@@ -372,7 +373,7 @@ A needs row is the same with `"channel_name": "dm"`.
 ## The app
 
 - **Sticker** on each thread card: top-right beside the time. `needs_you` in the accent colour with weight, `waiting` in the warn colour, `working` muted with a small pulse (none under reduced motion), `done` muted with a check. `none` shows nothing. The reason is the card's `title` attribute and is read by screen readers.
-- **Needs you** at the top of the channel list, above the DM, with a count badge of the `needs_you` threads that are not stale; tapping it shows the `/api/needs` list, each card carrying its channel's name under the title; opening a card goes to that thread in its channel (the hash route). With stale rows the list has two parts: "This week" (the fresh rows) and "Older", shut at first, its count on the button that opens it ("Older (12)") and "Mark all done" beside it, which asks once ("Mark all 12 older items done? They leave Needs you. Nothing is sent or deleted.") and then posts `done` to the state route for each, one at a time.
+- **Needs you** at the top of the channel list, above the places, with a count badge of the `needs_you` threads that are not stale; tapping it shows the `/api/needs` list, which leaves out what waits on a tap (a request in Action requests, and a conversation whose state is only that its request waits, the row's `tap`: docs/webchat.md, Action requests), each card carrying its channel's name under the title; opening a card goes to that thread in its channel (the hash route). With stale rows the list has two parts: "This week" (the fresh rows) and "Older", shut at first, its count on the button that opens it ("Older (12)") and "Mark all done" beside it, which asks once ("Mark all 12 older items done? They leave Needs you. Nothing is sent or deleted.") and then posts `done` to the state route for each, one at a time.
 - **A stale sticker** is muted (no accent, no amber) and says how long the state has waited: "Needs you · 9 days", "Waiting · 16 days", in every list.
 - **Filter chips** at the top of a channel's thread list: All, Needs you, Waiting, Done. The choice is per browser (localStorage), default All.
 - **Override**: in the thread header a small button "Mark done" (or "Needs me" when the state is done); long-press on a card does the same on a phone. It calls the state route; the sticker updates from the SSE event.
@@ -470,7 +471,7 @@ bot side changed it here:
 - **Linked cards reach the model** (a failed or expired card in the DM
   left rule 2b undecided, and the model's prompt did not say the card
   existed): each linked card is one line in the prompt's messages, local
-  and hosted alike, and both prompts say what a card in Direct messages
+  and hosted alike, and both prompts say what a card in Action requests
   is.
 - **No nudge after Needs me** (the nudge asked "Still need this?" a day
   after the owner tapped Needs me): a state the owner set is never

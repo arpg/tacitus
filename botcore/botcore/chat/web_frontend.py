@@ -162,11 +162,21 @@ rules read. The states live in this store alone: nothing reaches the
 primary in shadow mode.
 
 Recent (docs/webchat.md, Recent): `/api/recent` lists the latest
-conversations of every channel that is not archived, newest activity
-first, in one snapshot with `as_of`, so every device shows the same list.
-A conversation whose card waits for a tap and that has unread messages
-comes first; a muted channel's conversations are left out but such a one,
-and a hidden channel's (Debug mode) are left out with no exception.
+conversations of every channel that is neither archived nor muted, newest
+activity first, in one snapshot with `as_of`, so every device shows the
+same list. A conversation is a thread the owner wrote in, or a briefing the
+bot opened in a talk place (is_conversation); a card's thread, a notice and
+anything in Action requests (the DM) but a thread the owner opened there
+are not. A hidden channel's (Debug mode) are left out by the app.
+
+Action requests (docs/webchat.md, Action requests): the DM channel takes
+button presses only. Its row carries `waiting`, the cards whose buttons
+still act there (thread_state._live), and its threads rows `waiting` per
+thread. A typed message or upload posted to it goes to a new conversation
+in the EA channel instead (WebFrontend._reroute), with the bot's line that
+names the request it was written on. Needs you leaves out what waits on a
+tap there: its own threads and a conversation whose only wait is its card
+(thread_state.waits_on_tap).
 The host's `conversation_names` (the names the owner gave conversations)
 title the rows of Recent, the threads route, Needs you and search.
 
@@ -250,6 +260,7 @@ from .base import (
     RoomNameTaken,
 )
 from . import thread_state as _ts
+from . import card_text
 from .cards import ConfirmationCard, action_text
 from .text import mrkdwn_to_markdown
 from .types import (
@@ -337,6 +348,8 @@ HANDLER_TIMEOUT_S = 30
 # Seconds between the serving process's checks of the app's files against
 # the manifest it signed (a changed file is logged once).
 BUNDLE_CHECK_S = 15.0
+# The title of a card's push: the request waits for a tap in Action requests.
+CARD_PUSH_TITLE = "Action request"
 # Threads the Needs you view lists at most.
 NEEDS_CAP = 200
 # The drawer's Recent list: the conversations it asks for, and the most one
@@ -507,6 +520,34 @@ def _loads(text: str | None) -> Any:
         return json.loads(text)
     except ValueError:
         return None
+
+
+# The places where the owner talks with Tacitus; Action requests (`dm`)
+# takes button presses only, and the digests take nothing.
+TALK_KINDS = frozenset({"main", "sched", "room"})
+
+
+def is_conversation(kind: str, first_kind: str, first_author: str, first_text: str | None,
+                    owner_in: bool) -> bool:
+    """Whether a thread is a conversation the owner is having, the rule of
+    Recent: a thread that opens with a card or a card's status line never
+    is; in Action requests (`dm`) only a thread the owner opened by typing
+    there (before the place took button presses only) is one; in a talk
+    place (TALK_KINDS) a thread the owner wrote in is one, and so is a
+    briefing the bot opened (the morning briefing or an afternoon update,
+    as the push policy reads its title). Anything else the bot opened (a
+    notice, an alert, a pointer, a check) is not, until the owner writes in
+    it."""
+    if first_kind in ("card", "status"):
+        return False
+    if kind == "dm":
+        return first_author == OWNER
+    if kind not in TALK_KINDS:
+        return False
+    if owner_in:
+        return True
+    return first_author == BOT and first_kind == "message" \
+        and bool(web_push_policy.report_title(first_text))
 
 
 def fts5_available(conn: sqlite3.Connection) -> bool:
@@ -1047,10 +1088,27 @@ class WebStore:
     def _channel_json(self, row: sqlite3.Row) -> dict:
         cid = row["id"]
         last = self._one("SELECT MAX(posted_at) AS t FROM messages WHERE channel=?", (cid,))
-        return {"id": cid, "name": row["name"] or "", "kind": row["kind"] or "room",
-                "archived": bool(row["archived"]), "description": row["description"] or "",
-                "muted": bool(row["muted"]),
-                "last_at": last["t"] if last else None, **self._counts(cid)}
+        out = {"id": cid, "name": row["name"] or "", "kind": row["kind"] or "room",
+               "archived": bool(row["archived"]), "description": row["description"] or "",
+               "muted": bool(row["muted"]),
+               "last_at": last["t"] if last else None, **self._counts(cid)}
+        if out["kind"] == "dm":
+            out["waiting"] = sum(self.waiting_cards(cid).values())
+        return out
+
+    def waiting_cards(self, channel: str) -> dict[str, int]:
+        """{thread key: how many cards there wait for a tap}: a card whose
+        buttons still act (thread_state._live: no outcome yet, an action or a
+        select, no undo mark, younger than the card registry keeps it)."""
+        now = time.time()
+        out: dict[str, int] = {}
+        for r in self._all("SELECT thread_key, kind, card, posted_at FROM messages WHERE channel=? "
+                           "AND kind='card' AND deleted_at IS NULL AND posted_at > ?",
+                           (channel, now - _ts.CARD_LIVE_S)):
+            if _ts.is_live_card({"kind": r["kind"], "card": _loads(r["card"]),
+                          "posted_at": r["posted_at"]}, now):
+                out[r["thread_key"]] = out.get(r["thread_key"], 0) + 1
+        return out
 
     def _counts(self, channel: str) -> dict:
         """The channel's read state as its row and the `read` event carry
@@ -1198,16 +1256,21 @@ class WebStore:
             "ON s.channel = m.channel AND s.thread_key = m.thread_key "
             "WHERE (? IS NULL OR m.seq < ?) "
             "ORDER BY m.seq DESC LIMIT ?", (channel, before, before, int(limit)))
-        return [self._thread_json(r) for r in rows]
+        out = [self._thread_json(r) for r in rows]
+        waiting = self.waiting_cards(channel)
+        for j in out:
+            j["waiting"] = waiting.get(j["thread_key"], 0)
+        return out
 
     @staticmethod
     def _state_fields(r: sqlite3.Row) -> dict:
         state = r["st_state"] if r["st_state"] in _ts.STATES else None
         if state is None:
             return {"state": "none", "state_by": None, "state_reason": "", "state_at": None,
-                    "stale": False}
+                    "stale": False, "tap": False}
         return {"state": state, "state_by": r["st_by"], "state_reason": r["st_reason"] or "",
-                "state_at": r["st_at"], "stale": bool(r["st_stale"])}
+                "state_at": r["st_at"], "stale": bool(r["st_stale"]),
+                "tap": _ts.waits_on_tap(state, r["st_by"], r["st_reason"])}
 
     # the state of a conversation (docs/webchat-state.md)
 
@@ -1222,6 +1285,7 @@ class WebStore:
     def _state_event(row: dict) -> dict:
         out = {k: row[k] for k in ("channel", "thread_key", "state", "by", "reason", "at")}
         out["stale"] = bool(row.get("stale"))
+        out["tap"] = _ts.waits_on_tap(row["state"], row["by"], row["reason"])
         return out
 
     def _last_at(self, channel: str, thread_key: str) -> float | None:
@@ -1274,7 +1338,8 @@ class WebStore:
             # new state on a conversation quiet past a week is stale at once.
             stale = _ts.is_stale(state, by, now, last, now - _ts.STALE_S)
             new = {"channel": channel, "thread_key": thread_key, "state": state, "by": by,
-                   "reason": reason or "", "at": now, "stale": stale}
+                   "reason": reason or "", "at": now, "stale": stale,
+                   "tap": _ts.waits_on_tap(state, by, reason)}
             self._conn.execute(
                 "INSERT INTO thread_state(channel, thread_key, state, by, reason, at, judged_seq, "
                 "stale) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(channel, thread_key) DO UPDATE SET "
@@ -1334,33 +1399,41 @@ class WebStore:
 
     def _state_rows(self, rows: list[sqlite3.Row]) -> list[dict]:
         out = []
+        waiting: dict[str, dict[str, int]] = {}
         for r in rows:
             j = self._thread_json(r)
             j["channel_name"] = r["channel_name"] or r["channel"]
+            if j["channel"] not in waiting:
+                waiting[j["channel"]] = self.waiting_cards(j["channel"])
+            j["waiting"] = waiting[j["channel"]].get(j["thread_key"], 0)
             out.append(j)
         return out
 
     def needs(self, limit: int = 200) -> list[dict]:
-        """Every thread whose state is needs_you or waiting, in channels that
-        are not archived: the thread row as threads() gives it, with
-        `channel_name`; needs_you first, then newest first. One statement;
-        it moves no read mark."""
+        """Every conversation whose state is needs_you or waiting, in channels
+        that are not archived: the thread row as threads() gives it, with
+        `channel_name`; needs_you first, then newest first. What waits on a
+        tap belongs to Action requests and is left out: a thread there the
+        owner did not open, a thread that opens with a card, and a conversation
+        whose only wait is its card. One statement; it moves no read mark."""
         rows = self._all(self._STATE_ROWS.format(
-            where="c.archived = 0 WHERE s.state IN ('needs_you', 'waiting')") +
-            "ORDER BY CASE x.st_state WHEN 'needs_you' THEN 0 ELSE 1 END, x.last_at DESC "
-            "LIMIT ?", (int(limit),))
-        return self._state_rows(rows)
+            where="c.archived = 0 WHERE s.state IN ('needs_you', 'waiting') "
+                  "AND NOT (c.kind = 'dm' AND EXISTS (SELECT 1 FROM messages f WHERE "
+                  "f.seq = (SELECT MIN(seq) FROM messages WHERE channel=s.channel AND "
+                  "thread_key=s.thread_key) AND f.author != 'owner'))") +
+            "WHERE m.kind NOT IN ('card', 'status') "
+            "ORDER BY CASE x.st_state WHEN 'needs_you' THEN 0 ELSE 1 END, x.last_at DESC", ())
+        out = [j for j in self._state_rows(rows) if not j["tap"]]
+        return out[:int(limit)]
 
     def recent(self, limit: int = RECENT_LIMIT) -> dict:
         """The drawer's Recent list, {"threads", "as_of"}: the latest
-        conversations of every channel that is not archived, read in one
-        snapshot whose `as_of` is the last event it takes in, as the counts
-        carry it. Each row is a thread row as threads() gives it, with
-        `channel_name`, `unread` (the thread's count, as `_counts` gives it)
-        and `needs_tap`: the thread holds a card that waits for a tap (no
-        status line has replaced it) and has unread messages. Those come
-        first, newest first; then the rest by their newest message, a muted
-        channel's left out. It moves no read mark."""
+        conversations (is_conversation) of every channel that is neither
+        archived nor muted, newest message first, read in one snapshot whose
+        `as_of` is the last event it takes in, as the counts carry it. Each
+        row is a thread row as threads() gives it, with `channel_name` and
+        `unread` (the thread's count, as `_counts` gives it). It moves no
+        read mark."""
         def read() -> dict:
             names = {r["id"]: r["name"] or r["id"] for r in self._all(
                 "SELECT id, name FROM channels WHERE archived = 0")}
@@ -1370,24 +1443,29 @@ class WebStore:
                 if ch not in counts:
                     counts[ch] = {r["k"]: int(r["n"]) for r in self._unread_rows(ch)}
                 return counts[ch].get(key, 0)
-            cards = [(r["channel"], r["k"]) for r in self._all(
-                "SELECT DISTINCT channel, thread_key AS k FROM messages WHERE kind = 'card'")
-                if r["channel"] in names and unread(r["channel"], r["k"])]
-            rest = [(r["channel"], r["k"]) for r in self._all(
-                "SELECT m.channel AS channel, m.thread_key AS k, MAX(m.posted_at) AS last_at, "
-                "MAX(m.seq) AS newest FROM messages m JOIN channels c ON c.id = m.channel AND "
-                "c.archived = 0 AND c.muted = 0 GROUP BY m.channel, m.thread_key "
-                "ORDER BY last_at DESC, newest DESC LIMIT ?", (int(limit),))]
             rows = []
-            for ch, key in dict.fromkeys(cards + rest):
-                got = self._all(self._THREAD_ROW, (ch, key))
+            cur = self._conn.execute(
+                "SELECT t.channel AS channel, t.k AS k, c.kind AS ckind, f.kind AS fkind, "
+                "f.author AS fauthor, substr(f.text, 1, 600) AS ftext, EXISTS (SELECT 1 FROM messages o "
+                "INDEXED BY messages_thread WHERE o.channel = t.channel AND o.thread_key = t.k "
+                "AND o.author = ?) AS owner_in FROM (SELECT channel, thread_key AS k, "
+                "MIN(seq) AS first, MAX(posted_at) AS last_at, MAX(seq) AS newest FROM messages "
+                "GROUP BY channel, thread_key) t JOIN channels c ON c.id = t.channel AND "
+                "c.archived = 0 AND c.muted = 0 AND c.kind != 'digest' JOIN messages f "
+                "ON f.seq = t.first WHERE f.kind NOT IN ('card', 'status') "
+                "ORDER BY t.last_at DESC, t.newest DESC", (OWNER,))
+            for r in cur:
+                if len(rows) >= int(limit):
+                    break
+                if not is_conversation(r["ckind"], r["fkind"], r["fauthor"], r["ftext"],
+                                       bool(r["owner_in"])):
+                    continue
+                got = self._all(self._THREAD_ROW, (r["channel"], r["k"]))
                 if got:
                     j = self._thread_json(got[0])
-                    j.update(channel_name=names[ch], unread=unread(ch, key),
-                             needs_tap=(ch, key) in cards)
+                    j.update(channel_name=names[r["channel"]], unread=unread(r["channel"], r["k"]))
                     rows.append(j)
-            rows.sort(key=lambda j: (not j["needs_tap"], -(j["last_at"] or 0)))
-            return {"threads": rows[:int(limit)], "as_of": self.max_event_seq()}
+            return {"threads": rows, "as_of": self.max_event_seq()}
         return self._snapshot(read)
 
     # One thread's row as threads() gives it, by channel and thread key.
@@ -1412,13 +1490,14 @@ class WebStore:
         got = self._state_rows(rows)
         return got[0] if got else None
 
-    # a conversation's cards in Direct messages, the stale shelf, the nudge
+    # a conversation's cards in Action requests, the stale shelf, the nudge
 
     def _link(self, row: sqlite3.Row) -> None:
         """Link a stored message to the conversation it belongs to, inside
         the caller's transaction: a card to the conversation it reports back
         to (its card JSON's ea_channel and thread_ts, the card registry's
-        link) and a bot's pointer ("... is in your DM: [open it](...)") to the
+        link) and a bot's pointer ("... is in Action requests: [open it](...)",
+        or "in your DM" on Slack and in what the store held before) to the
         card its link names. A link is kept once."""
         links: list[tuple[str, str, str, str]] = []
         origin = _ts.card_origin(_loads(row["card"])) if row["card"] else None
@@ -1427,7 +1506,7 @@ class WebStore:
             if (origin[0], key) != (row["channel"], row["thread_key"]):
                 links.append((origin[0], key, row["channel"], row["id"]))
         text = row["text"] or ""
-        if row["author"] == BOT and row["kind"] == "message" and "in your DM" in text:
+        if row["author"] == BOT and row["kind"] == "message" and _ts.names_card_place(text):
             links += [(row["channel"], row["thread_key"], ch, cid)
                       for ch, cid in _ts.pointer_targets(text)]
         for link in links:
@@ -1444,7 +1523,8 @@ class WebStore:
         def run() -> int:
             rows = self._conn.execute(
                 "SELECT * FROM messages WHERE card IS NOT NULL OR (author=? AND kind='message' "
-                "AND text LIKE '%in your DM%')", (BOT,)).fetchall()
+                "AND (text LIKE '%in your DM%' OR text LIKE '%in Action requests%'))",
+                (BOT,)).fetchall()
             for r in rows:
                 self._link(r)
             self._conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES "
@@ -2500,6 +2580,8 @@ class WebFrontend(ChatFrontend):
     """The bot's own web chat: the store, the HTTP API and the event stream."""
 
     name = "web"
+    # Action requests (the DM) takes button presses only (_reroute).
+    dm_takes_text = False
     capabilities = frozenset({"buttons", "select", "files", "private_rooms", "reactions"})
     limits = Limits(20000, 20000, 200, 0)
 
@@ -2513,11 +2595,14 @@ class WebFrontend(ChatFrontend):
                              "`code`, - lists, :emoji_shortcodes: (not unicode emoji)."),
         "format_rule_reply": ("Your reply is posted to a thread in the Tacitus web chat. "
                               "Write Markdown: **bold**, _italic_, [text](url) links."),
-        "confirm_location": "the Send button is on the card in your DM thread",
+        "confirm_location": "the Send button is on the card in Action requests",
         "confirm_sentence": ("The bot posts a :lock: confirmation card with Send and Cancel "
-                             "buttons in your DM, with a one-line pointer in this thread; say "
-                             "\"the Send button is on the card in your DM thread\", never "
-                             "\"above\"."),
+                             "buttons in Action requests (the user's DM on this web chat), "
+                             "with a one-line pointer in this thread; say \"the Send button "
+                             "is on the card in Action requests\", never \"above\"."),
+        # The place where every card waits, as a sentence names it ("is in
+        # Action requests"); Slack's is "your DM".
+        "card_place": _ts.CARD_PLACE,
         "history_note": "",
         "room_word": "room",
         "continuation_header": "Continuing the web chat thread:",
@@ -2529,8 +2614,8 @@ class WebFrontend(ChatFrontend):
             "[text](url) links.\n"
             "Use emoji shortcodes (:white_check_mark:, :email:) not unicode emoji."),
         "confirm_sentence_wrapped": (
-            "buttons themselves are posted on a card in your DM, so say \"the\n"
-            "Send button is on the card in your DM thread\", never \"above\"."),
+            "buttons themselves are posted on a card in Action requests, so say \"the\n"
+            "Send button is on the card in Action requests\", never \"above\"."),
     }
 
     def __init__(self, cfg: dict | None = None, *, store_path: str | Path,
@@ -3669,13 +3754,14 @@ class WebFrontend(ChatFrontend):
                     wait=self.writer_only, dedupe=True)
 
     def _push_card(self, row: dict | None, card: ConfirmationCard) -> None:
-        """A new card is pushed at once, at high urgency: "Tacitus", then the
-        card's title. Never a field, a line or the body: they hold addresses
-        and mail text, and a notification shows on a locked screen. Two
-        cards with one title are two pushes: no text check."""
+        """A new card is pushed at once, at high urgency: "Action request"
+        (the place it waits in), then the card's title. Never a field, a
+        line or the body: they hold addresses and mail text, and a
+        notification shows on a locked screen. Two cards with one title are
+        two pushes: no text check."""
         if not row:
             return
-        self.notify("Tacitus", card.title or "A card to confirm",
+        self.notify(CARD_PUSH_TITLE, card.title or "A card to confirm",
                     self._permalink(row["channel"], row["thread_key"], row["id"]),
                     self._push_tag(row), urgency="high", wait=self.writer_only)
 
@@ -4131,6 +4217,41 @@ class WebFrontend(ChatFrontend):
         if nonce and isinstance(row, dict) and row.get("id"):
             self._nonces[nonce] = (time.time(), row)
 
+    def _reroute(self, channel: str, thread_key: str | None) -> tuple[str, str | None]:
+        """Where the owner's typed message or upload goes: (channel, thread
+        key). Action requests (the DM) takes button presses only, so words
+        posted there (by an app from before, or a script) start a new
+        conversation in the EA channel. Standalone, the bot's line opens it
+        and names the request it was written on, with that request's
+        title, its first fields and a link, so the turn reads what the
+        request held; the answer's thread key is that conversation's. In
+        shadow mode the words go to the primary's EA channel as a new
+        conversation. Anywhere else the words stay where they were posted."""
+        ch = self.store.channel(channel)
+        main = self.main_channel if self.store.channel(self.main_channel) else next(
+            (c["id"] for c in self.store.channels() if c["kind"] == "main" and not c["archived"]), "")
+        if not ch or ch["kind"] != "dm" or not main:
+            return channel, thread_key
+        if self.inbound is not None:
+            return main, None
+        line = "You wrote this in Action requests, which takes taps only, so it starts here."
+        key = self.store.thread_of(channel, thread_key) if thread_key else None
+        first = self.store.thread(channel, key, 1) if key else []
+        if first:
+            m = first[0]
+            card = m.get("card") if isinstance(m.get("card"), dict) else {}
+            title = _ts.plain(card.get("title") or m.get("text"), 80) or "a request"
+            fields = "; ".join(
+                f"{card_text.one_line(str(f.get('label') or ''), 30)}: "
+                f"{card_text.one_line(str(f.get('value') or ''), 120)}"
+                for f in (card.get("fields") or [])[:3] if isinstance(f, dict))
+            line = (f"You wrote this about a request in Action requests: "
+                    f"[{title.replace(']', ')')}]({self._permalink(channel, key, m['id'])})"
+                    + (f". {fields}." if fields else "."))
+        opener = self.store.add_message(main, mid=None, thread_key=None,
+                                        author=BOT, kind="message", text=line)
+        return main, opener["thread_key"]
+
     def web_message(self, channel: str, text: str, thread_key: str | None,
                     nonce: str | None = None) -> tuple[dict, Callable[[], None] | None]:
         """Store the owner's message and build its dispatch: (the stored
@@ -4142,7 +4263,8 @@ class WebFrontend(ChatFrontend):
         seen = self._nonce_seen(nonce)
         if seen is not None:
             return seen, None
-        ch, key = self._target(channel, thread_key)
+        channel, key = self._reroute(channel, thread_key)
+        ch, key = self._target(channel, key)
         msg = InboundMessage(channel=channel, msg_id="", text=text, user_id=self.owner_id,
                              posted_at=time.time(), thread_key=key, is_reply=bool(key),
                              is_dm=ch["kind"] == "dm", raw={"source": "web"})
@@ -4172,7 +4294,8 @@ class WebFrontend(ChatFrontend):
         seen = self._nonce_seen(nonce)
         if seen is not None:
             return seen, None
-        ch, key = self._target(channel, thread_key)
+        channel, key = self._reroute(channel, thread_key)
+        ch, key = self._target(channel, key)
         named = [(safe_name(name, "upload"), data, mt) for name, data, mt in files]
         files = [(name, data, self._mimetype(name, mt)) for name, data, mt in named]
         msg = InboundMessage(channel=channel, msg_id="", text=text, user_id=self.owner_id,
@@ -4364,7 +4487,7 @@ class WebFrontend(ChatFrontend):
         if ch is None:
             raise _HttpError(404, "There is no such place.")
         if ch["kind"] in MUTE_FIXED:
-            raise _HttpError(400, "Ask Tacitus and Direct messages cannot be muted.")
+            raise _HttpError(400, "Ask Tacitus and Action requests cannot be muted.")
         if bool(ch["muted"]) == muted:
             return ch
         return self.store.set_channel(channel, muted=muted) or ch

@@ -326,7 +326,7 @@ def test_a_card_push_and_the_answer_that_follows_buzz_once(pushing):
            thread_ts=key)
     f.post("main", "Draft created; the Send button is in your DM.", thread_ts=key)
     time.sleep(0.2)
-    assert [(p["title"], p["body"], u) for p, u in f.sent] == [("Tacitus", "Send this draft?", "high")]
+    assert [(p["title"], p["body"], u) for p, u in f.sent] == [("Action request", "Send this draft?", "high")]
 
 
 @needs_push
@@ -433,7 +433,7 @@ def test_quiet_hours_hold_a_briefing_and_a_reply_until_they_end(pushing):
     f.post_card("dm", card())                               # and so does a card
     assert until(lambda: len(f.sent) == 2)
     time.sleep(0.2)
-    assert sorted(s[0]["title"] for s in f.sent) == ["Tacitus", "Tacitus"]
+    assert sorted(s[0]["title"] for s in f.sent) == ["Action request", "Tacitus"]
     queued = {q["tag"]: q for q in f.store.push_queued()}
     assert set(queued) == {f"main/{b.thread_key}", f"main/{key}", f"r1/{rkey}"}
     assert {q["due_at"] for q in queued.values()} == {end}
@@ -879,7 +879,7 @@ def test_a_settled_card_clears_its_notifications_once(pushing):
     tag = f"dm/{ref.thread_key}"
     assert f.sent[0][0]["tag"] == tag
     assert f.replace_card_with_status(ref, ":hourglass_flowing_sand: Sending...")
-    assert until(lambda: clears(f) == [{"type": "clear", "tag": tag, "title": "Tacitus"}])
+    assert until(lambda: clears(f) == [{"type": "clear", "tag": tag, "title": "Action request"}])
     f.post("dm", "The send failed: the draft is gone.", thread_ts=ref.thread_key)
     assert until(lambda: len(shown(f)) == 2)
     assert f.replace_card_with_status(ref, ":x: Not sent.")
@@ -923,7 +923,7 @@ def test_a_mirrored_owner_reply_clears_like_one_from_the_app(tmp_path):
         f.mirror_post(MessageRef("stream:7", "1002", key, time.time()), "Sent it myself.",
                       "owner")
         assert until(lambda: clears(f) == [{"type": "clear", "tag": f"stream:7/{key}",
-                                            "title": "Tacitus"}])
+                                            "title": "Action request"}])
     finally:
         f.stop()
 
@@ -944,7 +944,7 @@ def test_a_card_settled_on_the_primary_clears_like_one_settled_here(tmp_path):
         assert until(lambda: len(f.sent) == 1)
         f.mirror_card_status(ref, ":white_check_mark: Sent.")
         assert until(lambda: clears(f) == [{"type": "clear", "tag": f"stream:7/{key}",
-                                            "title": "Tacitus"}])
+                                            "title": "Action request"}])
         f.mirror_card_status(ref, ":white_check_mark: Sent.")
         f.mirror_card_status(MessageRef("stream:7", "1003", "stream:7:topic:other", time.time()),
                              ":white_check_mark: Sent.")

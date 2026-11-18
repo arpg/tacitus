@@ -145,16 +145,22 @@ def _chat_section(cfg: dict, profile: dict) -> list[str]:
     if frontend == "web":
         web = _web_prompt_strings()
         if ea_config.web_sched_on(chat):
-            channels = ("Channels: `ea` (the EA channel), `dm` (the DM) and `Scheduling` "
-                        "(the scheduling channel, where each scheduling request found in "
+            channels = (f"Channels: `ea` (the EA channel, Ask Tacitus in the app), `dm` (the "
+                        f"DM, {web['card_place']} in the app) and `Scheduling` (the "
+                        "scheduling channel, where each scheduling request found in "
                         f"mail opens a conversation); {room_note}.")
         else:
-            channels = (f"Channels: `ea` (the EA channel) and `dm` (the DM); {room_note}. "
+            channels = (f"Channels: `ea` (the EA channel, Ask Tacitus in the app) and `dm` (the "
+                        f"DM, {web['card_place']} in the app); {room_note}. "
                         "There is no scheduling channel: meeting requests come in `ea`.")
         lines.append(f"- Platform: the {web['platform']}, which the bot serves itself. "
                      + channels)
-        lines.append(f"- Each confirmation card goes to the DM with a one-line pointer in the "
-                     f"thread: say \"{web['confirm_location']}\", never \"above\".")
+        lines.append(f"- The DM is named {web['card_place']} here and takes button presses "
+                     "only: the user types in Ask Tacitus, quick asks too. Where CLAUDE.md, a "
+                     f"skill or a guide says the user's DM, say {web['card_place']}.")
+        lines.append(f"- Each confirmation card goes to {web['card_place']} with a one-line "
+                     f"pointer in the thread: say \"{web['confirm_location']}\", never "
+                     "\"above\".")
     else:
         channel = profile.get("slack_channel_name") or ""
         lines.append(f"- Platform: Slack. EA channel: `{channel or 'see user-profile.json'}`.")
@@ -177,12 +183,14 @@ def _chat_section(cfg: dict, profile: dict) -> list[str]:
 # The web chat's own phrases (WebFrontend.PROMPT_STRINGS), for a render
 # where the chat package does not load.
 _WEB_WORDING = {"platform": "Tacitus web chat",
-                "confirm_location": "the Send button is on the card in your DM thread"}
+                "confirm_location": "the Send button is on the card in Action requests",
+                "card_place": "Action requests"}
 
 
 def _web_prompt_strings() -> dict:
-    """The web front end's prompt wording: its platform name and where
-    the Send button is, as the bot's own prompts say them."""
+    """The web front end's prompt wording: its platform name, where the
+    Send button is and the name of the place where cards wait, as the bot's
+    own prompts say them."""
     try:
         from chat.web_frontend import WebFrontend
         got = WebFrontend.PROMPT_STRINGS

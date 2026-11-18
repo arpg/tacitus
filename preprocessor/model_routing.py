@@ -286,7 +286,7 @@ BUILTIN_PRESETS = {
 }
 assert all(set(p["tasks"]) == set(TASKS) for p in BUILTIN_PRESETS.values())
 # Where each chat lane's turns happen, as the web chat names them.
-PLACES = {"main": "Ask Tacitus", "dm": "Direct messages", "room": "project rooms"}
+PLACES = {"main": "Ask Tacitus", "dm": "Action requests", "room": "project rooms"}
 # The chat lanes (ea-chat-bot.py _turn_lane) and the task each belongs to.
 LANE_TASK = {"main": "chat", "dm": "chat", "room": "chat",
              "sched-channel": "scheduling", "proactive": "scheduling"}

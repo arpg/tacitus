@@ -34,6 +34,7 @@ SLACK_LIKE_PROMPT_STRINGS = {
     "format_rule_reply": "Your reply is posted to a Slack thread in Slack mrkdwn.",
     "confirm_location": "the Send button is in your DM with the bot",
     "confirm_sentence": "The bot posts a :lock: confirmation with Send and Cancel buttons in your DM.",
+    "card_place": "your DM",
     "history_note": "Earlier messages in this Slack thread are included below.",
     "room_word": "channel",
     "continuation_header": "Continuing the Slack thread:",

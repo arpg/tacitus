@@ -456,7 +456,7 @@ def test_a_change_runs_the_rules_at_once_and_appends_the_event(store):
     assert events == [("thread_state", {"channel": "main", "thread_key": row["thread_key"],
                                         "state": "working", "by": "rule",
                                         "reason": "You wrote last and Tacitus has not answered yet.",
-                                        "at": st["at"], "stale": False})]
+                                        "at": st["at"], "stale": False, "tap": False})]
     # a card outcome is a change too
     card = store.add_message("dm", mid=None, thread_key=None, author="bot", kind="card",
                              text="Confirm send", card=live_card())
@@ -662,7 +662,7 @@ def test_the_engine_reads_which_messages_were_copied_from_the_past(store):
     assert verdict == "open"
 
 
-# ── a conversation's cards in Direct messages (rule 2b) ───────────────
+# ── a conversation's cards in Action requests (rule 2b) ───────────────
 
 def dm_card(card_id="w9", *, kind="card", text="", at=None, updated=None, history=False,
             card=None, channel="dm"):
@@ -683,7 +683,7 @@ ASK = [m(1, "owner", "Draft a reply to Avery.", reactions=["white_check_mark"], 
 LINK_CASES = [
     # (name, linked cards, more messages after ASK, expected (state, reason) or None)
     ("a live card in the DM waits for the owner", [dm_card()], [],
-     ("needs_you", "Its card in Direct messages waits for you.")),
+     ("needs_you", ts.CARD_WAITS)),
     ("a card sent from the DM settles the conversation",
      [dm_card(kind="status", text=":white_check_mark: Sent.", updated=NOW - 600)], [],
      ("done", "Its card was handled: Sent.")),
@@ -694,7 +694,7 @@ LINK_CASES = [
      [], ("done", "Its cards were handled: Sent from Outlook.")),
     ("one handled and one live is live",
      [dm_card("w8", kind="status", text=":white_check_mark: Sent.", updated=NOW - 900),
-      dm_card()], [], ("needs_you", "Its card in Direct messages waits for you.")),
+      dm_card()], [], ("needs_you", ts.CARD_WAITS)),
     ("an owner message after the last outcome is the later rules'",
      [dm_card(kind="status", text=":white_check_mark: Sent.", updated=NOW - 600)],
      [m(4, "owner", "Thanks. And the other one?", reactions=["white_check_mark"], at=NOW - 300),
@@ -896,12 +896,18 @@ def test_pointers_name_their_card_on_each_platform():
     # the lock under Zulip's name, as history imported from Zulip writes it
     imported = (":locked: The Publish button for this change is in your DM: "
                 "[open it](https://h.example.test/chat/#/dm/stream%3A6%3Atopic%3Ax/5664)")
+    # the web chat's own name for the place, as the bot writes it there now
+    named = (":lock: The Send button for this draft is in Action requests: "
+             "[open it](https://h.example.test/chat/#/dm/t6/w6)")
+    assert ts.pointer_targets(named) == [("dm", "w6")]
+    assert ts.names_card_place(named) and ts.names_card_place(web) and not ts.names_card_place("in a DM")
     assert ts.pointer_targets(web) == [("dm", "w5")]
     assert ts.pointer_targets(slack) == [("D0123ABC", "1700000000.123456")]
     assert ts.pointer_targets(imported) == [("dm", "5664")]
     assert ts.pointer_targets(web + "\n" + slack) == [("dm", "w5"),
                                                       ("D0123ABC", "1700000000.123456")]
     for text in (":lock: The Send button for this draft is in your DM.",  # no link
+                 ":lock: The Send button for this draft is in Action requests.",
                  "I made a reply draft. The Send button is in your DM.",
                  ":sunny: **Morning briefing**: 3 drafts are waiting as a card in your DM: one.",
                  "See [the card](https://h.example.test/chat/#/dm/t5/w5)."):
@@ -1024,9 +1030,9 @@ def test_the_prompt_gives_each_linked_card_one_line_by_its_time():
               {"kind": "missing", "channel": "", "id": "5522", "card": None}]
     msgs = ASK + [m(4, "owner", "Did it go?", at=NOW - 300)]
     p = ts.judge_prompt(msgs, linked=linked, now=NOW)
-    expired = '] card "Confirm send" in Direct messages: expired\n'
-    failed = '] card "Confirm send" in Direct messages: failed\n'
-    sent = '] card "Confirm send" in Direct messages: Sent.\n'
+    expired = '] card "Confirm send" in Action requests: expired\n'
+    failed = '] card "Confirm send" in Action requests: failed\n'
+    sent = '] card "Confirm send" in Action requests: Sent.\n'
     for line in (expired, failed, sent):
         assert p.count(line) == 1, line
     assert "[bot, " in p.split(failed)[0].splitlines()[-1]
@@ -1037,13 +1043,13 @@ def test_the_prompt_gives_each_linked_card_one_line_by_its_time():
     # never a card's body or fields, nor its failure's words; a link to no card is no line
     for absent in ("model never sees", "x@example.test", "the draft is gone", "5522"):
         assert absent not in p
-    assert "A card in Direct messages is one this conversation asked for" in p
+    assert "A card in Action requests is one this conversation asked for" in p
     # the hosted part carries the same lines
     part = ts.batch_part("c1", msgs, linked=linked, now=NOW)
     assert all(line in part for line in (expired, failed, sent))
-    # a card in Direct messages still live reads the same way
+    # a card in Action requests still live reads the same way
     p = ts.judge_prompt(ASK, linked=[dm_card(at=NOW - 3 * 3600 + 90)], now=NOW)
-    assert 'card "Confirm send" in Direct messages: waiting for a button' in p
+    assert 'card "Confirm send" in Action requests: waiting for a button' in p
 
 
 def _failed_link(store):
@@ -1064,12 +1070,12 @@ def test_the_model_reads_a_linked_card_that_decides_nothing(store):
     model = FakeModel()
     out = engine(store, model).tick()
     assert out["model_calls"] == 1
-    assert 'card "Confirm send" in Direct messages: failed' in model.prompts[0]
+    assert 'card "Confirm send" in Action requests: failed' in model.prompts[0]
     # the hosted call reads the same line
     _failed_link(store)
     hosted = FakeHosted()
     assert hosted_engine(store, hosted).tick()["hosted_threads"] == 1
-    assert 'card "Confirm send" in Direct messages: failed' in hosted.prompts[0]
+    assert 'card "Confirm send" in Action requests: failed' in hosted.prompts[0]
 
 
 # ── a linked card the store never took ────────────────────────────────
@@ -1091,7 +1097,7 @@ def test_a_linked_card_the_store_never_took_stays_missing(store):
                     "card": None}
     model = FakeModel()
     engine(store, model).tick()
-    assert len(model.prompts) == 1 and "in Direct messages:" not in model.prompts[0]
+    assert len(model.prompts) == 1 and "in Action requests:" not in model.prompts[0]
 
 
 # ── the hosted step: one call a tick over a batch of threads ─────────
@@ -2024,3 +2030,19 @@ def test_the_write_back_through_the_real_ledger_cli(tmp_path, monkeypatch):
     assert row["status"] == "open" and row.get("confirmed_open_at")
     feedback = (ea / "logs" / "item-feedback.jsonl").read_text()
     assert '"kind": "still_open"' in feedback and '"source": "web-chat"' in feedback
+
+
+def test_a_state_that_only_says_a_card_waits_is_a_tap():
+    """Needs you leaves to Action requests a state whose only reason is a
+    card that waits: rule 2 (a live card in the thread) and rule 2b (its
+    request in Action requests), and the reason rows held before the place
+    had its name. A state the owner set, or any other reason, is no tap."""
+    assert ts.waits_on_tap("needs_you", "rule", ts.CARD_WAITS)
+    assert ts.waits_on_tap("needs_you", "rule", ts.CARD_WAITS_BEFORE)
+    assert ts.waits_on_tap("needs_you", "rule", 'The card "Confirm send" still has its buttons.')
+    assert ts.waits_on_tap("needs_you", "rule", "A card here still has its buttons.")
+    assert not ts.waits_on_tap("needs_you", "owner", ts.CARD_WAITS)
+    assert not ts.waits_on_tap("waiting", "rule", ts.CARD_WAITS)
+    assert not ts.waits_on_tap("needs_you", "rule", ts.NOT_ANSWERED)
+    assert not ts.waits_on_tap("needs_you", "model", "A question waits for you.")
+    assert ts.CARD_WAITS == "Its request in Action requests waits for you."

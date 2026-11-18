@@ -755,13 +755,15 @@ function renderMsg(m) {
 /* -- Channels and threads ------------------------------------------- */
 
 const chan = (id) => S.channels.find((c) => c.id === id);
-const KIND_NAMES = { main: 'Ask Tacitus', dm: 'Direct messages', sched: 'Scheduling', digest: 'Mail digests' }; // a room: its name, no "ea-"
+const KIND_NAMES = { main: 'Ask Tacitus', dm: 'Action requests', sched: 'Scheduling', digest: 'Mail digests' }; // a room: its name, no "ea-"
 const channelName = (c) => (c ? KIND_NAMES[c.kind] || String(c.name || c.id).replace(/^ea-(?=.)/, '') : '');
 const hashFor = (ch, tk) => '#/' + enc(ch) + (tk ? '/' + enc(tk) : '');
 
 // The thread on screen shows no count while the page is in view: the owner is reading it (readSoon).
 const countOf = (k) => (k === tkey(S.channel, S.thread) && tagInView() ? 0 : S.unread.get(k) || 0);
 const unreadFor = (ch) => [...S.unread.keys()].reduce((n, k) => n + (k.startsWith(ch + '\n') ? countOf(k) : 0), 0);
+// What a place's count means: in Action requests the requests that wait for a tap, elsewhere unread messages.
+const countFor = (c) => (c.kind === 'dm' ? c.waiting || 0 : unreadFor(c.id));
 
 // The bot's counts for a channel (its row, a `channel` or `read` event, a read's answer) take in every event up to
 // their `as_of`: they replace this page's unless the page has taken in a later event of the channel already.
@@ -799,24 +801,25 @@ function readSoon() {
 
 function renderChannels() {
   const box = $('channel-list');
-  // Under Recent, Ask Tacitus and Direct messages in that order; the other places under More, where a channel with
+  // Under Recent, Ask Tacitus and Action requests in that order; the other places under More, where a channel with
   // unread messages rises to the top and the rest keep their kind order, then their names. A muted one keeps its
   // place, shows its count in grey and adds nothing to the menu's count or the title. A hidden one (the health
   // channel while debug mode is off) is left out, its count and its conversations in Recent too.
-  const loud = (c) => (!c.muted && unreadFor(c.id) ? 1 : 0);
+  const loud = (c) => (!c.muted && countFor(c) ? 1 : 0);
   const rows = S.channels.filter((c) => !c.hidden).sort((a, b) => loud(b) - loud(a)
     || (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9) || channelName(a).localeCompare(channelName(b)));
   let total = 0;
   const item = (c) => {
-    const n = unreadFor(c.id);
+    const n = countFor(c);
     if (!c.archived && !c.muted) total += n;
     return roomRow(c, h('a', {
       class: 'chan' + (c.id === S.channel && !S.needsView ? ' active' : '') + (n && !c.muted ? ' unread' : '')
         + (c.muted ? ' muted' : ''),
       href: hashFor(c.id), title: c.description || null,
-    }, h('span', { class: 'c-icon', 'aria-hidden': 'true' }, c.kind === 'dm' ? '@' : '#'),
+    }, h('span', { class: 'c-icon', 'aria-hidden': 'true' }, c.kind === 'dm' ? '✓' : '#'),
     h('span', { class: 'c-name' }, channelName(c)),
-    n ? h('span', { class: 'badge' + (c.muted ? ' muted' : ''), 'aria-label': `${n} unread${c.muted ? ', muted' : ''}` }, String(n)) : null));
+    n ? h('span', { class: 'badge' + (c.muted ? ' muted' : ''), 'aria-label': c.kind === 'dm' ? `${n} waiting for you`
+      : `${n} unread${c.muted ? ', muted' : ''}` }, String(n)) : null));
   };
   const open = rows.filter((c) => !c.archived), top = (c) => c.kind === 'main' || c.kind === 'dm';
   const more = open.filter((c) => !top(c)).map(item);
@@ -830,7 +833,7 @@ function renderChannels() {
   document.title = total ? `(${total}) Tacitus` : 'Tacitus';
   fitNav();
   const here = chan(S.channel);
-  const others = total - (here && !here.archived && !here.muted && !here.hidden ? unreadFor(S.channel) : 0);
+  const others = total - (here && !here.archived && !here.muted && !here.hidden ? countFor(here) : 0);
   $('menu').dataset.unread = others > 0 ? String(others) : '';
   // The Needs you entry above the channels, with the count of threads that need the owner this week.
   const need = needsRows().filter((r) => stateOf(r.channel, threadOf(r)) === 'needs_you' && !staleOf(r)).length;
@@ -842,11 +845,14 @@ function renderChannels() {
   $('new-room').hidden = !mainChannel() || Boolean(S.me && S.me.rooms === false);
 }
 
-// Recent: the latest conversations of every place, in the bot's order (newest first, a card that waits for a tap
-// and is unread first), so a conversation begun on one device is at hand on another. An answer older than the
-// list shown (its `as_of`, the last event it takes in) is dropped; each count is this page's, as on every card.
+// Recent: the latest conversations of every place, in the bot's order (newest first), so a conversation begun on one
+// device is at hand on another. The bot lists conversations only (a thread the owner wrote in, or a briefing); the page
+// also keeps out what it can tell is none: a card's thread, and a thread in Action requests the owner did not open.
+// An answer older than the list shown (its `as_of`, the last event it takes in) is dropped; each count is this
+// page's, as on every card.
 const RECENT_SHOWN = 5;
 const RECENT_CUES = new Set([...CREATED, 'status', 'read', 'channel']); // the events that can move the list
+const TAP_CUES = new Set(['card', 'status', 'update']); // the events that change what waits in Action requests
 Object.assign(S, { recent: [], recentAsOf: -1, recentAll: false, names: new Map() });
 const recentSoon = () => { clearTimeout(S.recentTimer); S.recentTimer = setTimeout(loadRecent, 300); };
 // The names the owner gave conversations, from every list the bot sends: the cards and the header show them.
@@ -862,8 +868,12 @@ async function loadRecent() {
   if (S.ready) renderChannels();
 }
 
+const conversation = (r, c) => !CARD_KINDS.has(r.kind) && (c.kind !== 'dm' || r.author === 'owner');
+const CARD_KINDS = new Set(['card', 'status']);
+
 function recentPart() {
-  const rows = S.recent.filter((r) => chan(r.channel) && !chan(r.channel).archived && !chan(r.channel).hidden);
+  const rows = S.recent.filter((r) => chan(r.channel) && !chan(r.channel).archived && !chan(r.channel).hidden
+    && conversation(r, chan(r.channel)));
   if (!rows.length) return [];
   const toggle = () => { S.recentAll = !S.recentAll; renderChannels(); $('recent-more').focus(); };
   return [h('section', { class: 'recent', 'aria-labelledby': 'recent-head' }, h('h2', { id: 'recent-head', class: 'nav-head' }, 'Recent'),
@@ -921,15 +931,38 @@ function renderThreads() {
   const chips = h('div', { class: 'filters', role: 'group', 'aria-label': 'Show conversations' }, FILTERS.map(([v, label]) =>
     h('button', { type: 'button', class: 'filter' + (v === S.filter ? ' on' : ''), 'aria-pressed': String(v === S.filter),
       'data-filter': v, onclick: () => setFilter(v) }, label)));
-  const kind = (chan(S.channel) || {}).kind; // Direct messages says what it is for, above its cards
-  box.replaceChildren(...(th.list.length ? [...(kind === 'dm' ? [h('p', { class: 'place-note' }, DM_NOTE)] : []), chips] : []),
-    ...shown.map((p) => threadCard(p, S.channel)));
+  const kind = (chan(S.channel) || {}).kind;
+  if (kind === 'dm') return box.replaceChildren(...requestsPart(sorted, th.more).filter(Boolean));
+  box.replaceChildren(...(th.list.length ? [chips] : []), ...shown.map((p) => threadCard(p, S.channel)));
   if (!th.list.length) box.append(emptyNote(kind));
   else if (!shown.length) box.append(h('p', { class: 'empty' }, FILTERS.find(([v]) => v === S.filter)[2]));
   if (th.more) {
     box.append(h('button', { type: 'button', class: 'btn plain more', onclick: () => loadThreads(S.channel, true) },
       'Show older conversations'));
   }
+}
+
+// Action requests says what it is for, then the requests that wait for a tap, newest first, and under a shut
+// "Earlier" part the rest (answered, expired, notices, and conversations typed there before it took taps only).
+function requestsPart(sorted, more) {
+  const wait = sorted.filter((p) => p.waiting), rest = sorted.filter((p) => !p.waiting);
+  const toggle = () => { S.earlierOpen = !S.earlierOpen; renderThreads(); $('earlier-toggle').focus(); };
+  return [h('p', { class: 'place-note' }, DM_NOTE), ...wait.map((p) => threadCard(p, S.channel)),
+    wait.length ? null : h('p', { class: 'empty' }, 'Nothing waits for you now.'),
+    rest.length ? h('section', { class: 'older', 'aria-label': 'Earlier' }, h('div', { class: 'needs-head' },
+      h('button', { type: 'button', id: 'earlier-toggle', class: 'older-toggle', 'aria-expanded': String(Boolean(S.earlierOpen)),
+        onclick: toggle }, `Earlier (${rest.length})`)), S.earlierOpen ? rest.map((p) => threadCard(p, S.channel)) : null) : null,
+    more ? h('button', { type: 'button', class: 'btn plain more', onclick: () => loadThreads(S.channel, true) }, 'Show older') : null];
+}
+
+// A card's arrival or its answer changes what waits in Action requests: its count and its list come from the bot again.
+function tapSoon() {
+  clearTimeout(S.tapTimer);
+  S.tapTimer = setTimeout(() => {
+    loadChannels().then(redraw, () => {});
+    const dm = S.channels.find((c) => c.kind === 'dm');
+    if (dm && S.threads.has(dm.id)) loadThreads(dm.id);
+  }, 300);
 }
 
 function setFilter(v) {
@@ -953,7 +986,7 @@ if (!FILTERS.some(([v]) => v === S.filter)) S.filter = 'all';
 
 // A thread row carries state_by, state_reason, state_at; an event carries by, reason, at.
 const rowState = (r) => ({ state: r.state, by: r.state_by ?? r.by, reason: r.state_reason ?? r.reason, at: r.state_at ?? r.at ?? 0,
-  stale: Boolean(r.stale) });
+  stale: Boolean(r.stale), tap: Boolean(r.tap) });
 const stateOf = (ch, tk) => (S.states.get(tkey(ch, tk)) || {}).state || 'none';
 // A state the bot put on the stale shelf: a week or more with no change.
 const staleOf = (r) => Boolean((S.states.get(tkey(r.channel, threadOf(r))) || {}).stale);
@@ -974,10 +1007,13 @@ function noteState(ch, r, asked) {
 }
 
 // The Needs you list as the bot gave it, less the threads whose state has
-// moved on since: needs you first, then the newest.
+// moved on since: needs you first, then the newest. What waits on a tap is
+// Action requests' alone, as the bot leaves it out: a request there, and a
+// conversation whose only wait is its request (`tap`).
 function needsRows() {
   const rank = (r) => ({ needs_you: 0, waiting: 1 })[stateOf(r.channel, threadOf(r))];
-  return S.needs.filter((r) => rank(r) !== undefined)
+  const tap = (r) => (S.states.get(tkey(r.channel, threadOf(r))) || {}).tap || !conversation(r, chan(r.channel) || {});
+  return S.needs.filter((r) => rank(r) !== undefined && !tap(r))
     .sort((a, b) => rank(a) - rank(b) || (b.last_at || b.posted_at || 0) - (a.last_at || a.posted_at || 0));
 }
 
@@ -1197,9 +1233,10 @@ function parseHash() {
   return { ch: dec(ch), tk: dec(tk) };
 }
 
+// The app opens on Ask Tacitus, where the owner asks; a link or the address names any other place.
 function defaultChannel() {
   const open = S.channels.filter((c) => !c.archived);
-  return open.find((c) => c.kind === 'dm') || open.find((c) => c.kind === 'main') || open[0] || S.channels[0];
+  return open.find((c) => c.kind === 'main') || open.find((c) => c.kind === 'dm') || open[0] || S.channels[0];
 }
 
 async function route() {
@@ -1223,7 +1260,7 @@ async function route() {
   document.body.dataset.view = S.thread ? 'thread' : 'threads';
   $('channel-name').textContent = S.needsView ? 'Needs you' : channelName(chan(ch));
   $('new-thread').hidden = S.needsView;
-  digestView();
+  composerView();
   swapDraft();
   stateShown();
   if (needs) loadNeeds();
@@ -1332,6 +1369,7 @@ function onEvent(type, id, raw) {
 
 function apply(type, data, seq = 0) {
   if (RECENT_CUES.has(type)) recentSoon();
+  if (TAP_CUES.has(type) && (chan(data.channel) || {}).kind === 'dm') tapSoon();
   if (type === 'thread_state') {
     if (data.channel && data.thread_key) onState(data);
     return;
@@ -1569,7 +1607,7 @@ function sent(place, text, files) {
 // never opens the file in the app's place.
 function dropFiles() {
   const dragged = (e) => [...((e.dataTransfer && e.dataTransfer.types) || [])].includes('Files');
-  const here = (e) => Boolean(e.target.closest && e.target.closest('#thread')) && !document.body.classList.contains('digest');
+  const here = (e) => Boolean(e.target.closest && e.target.closest('#thread')) && !document.body.classList.contains('no-composer');
   window.addEventListener('dragover', (e) => {
     if (!dragged(e)) return;
     e.preventDefault();
@@ -3344,14 +3382,19 @@ function emptyNote(kind) {
   }[kind] || 'Nothing here yet.');
 }
 
-const DM_NOTE = 'Drafts and meetings wait here as cards. Nothing goes out until you tap Send or Create.';
-// The digest channel takes no message: the bot posts there and reads no reply. Its threads
-// show no composer and no New conversation, and a line says why.
+const DM_NOTE = 'Drafts, meetings and other requests wait here for your tap. Nothing goes out until you tap Send or Create.';
+// Two places take no message, so their threads show no composer and no New conversation, and a line says why:
+// the digests (the bot posts there and reads no reply) and Action requests (it takes taps only; words go to Ask Tacitus).
 const DIGEST_NOTE = 'Tacitus posts your mail digests here; it does not read replies.';
-function digestView() {
-  const digest = !S.needsView && (chan(S.channel) || {}).kind === 'digest';
-  document.body.classList.toggle('digest', digest);
-  $('composer-off').hidden = !digest;
+function composerView() {
+  const kind = S.needsView ? '' : (chan(S.channel) || {}).kind, main = mainChannel();
+  document.body.classList.toggle('no-composer', kind === 'digest' || kind === 'dm');
+  $('composer-off').hidden = kind !== 'digest' && kind !== 'dm';
+  if (kind === 'digest') $('composer-off').replaceChildren(DIGEST_NOTE);
+  else if (kind === 'dm') {
+    $('composer-off').replaceChildren('Here you only tap buttons. To ask Tacitus something, use ',
+      main ? h('a', { href: hashFor(main.id) }, 'Ask Tacitus') : 'Ask Tacitus', '.');
+  }
 }
 
 // New room: the owner's own words to the bot, in a new conversation in the

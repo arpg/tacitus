@@ -77,6 +77,14 @@ _SUBJECT_PREFIX = re.compile(r"^\s*(?:(?:re|fw|fwd|aw|sv)\s*:\s*|\[[^\]]{0,40}\]
 # instead?". The thread decides those.
 _HEDGE = re.compile(r"\b(instead|rather|alternatively|probably|tentative(?:ly)?|pencil)\b", re.I)
 
+def _card_place() -> str:
+    """Where the cards wait, as the chat front end names it
+    (chat_notify.card_place): "your DM" on Slack, "Action requests" on the
+    web chat."""
+    import chat_notify
+    return chat_notify.card_place()
+
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -422,7 +430,7 @@ def stage(items: list[dict], *, runner=None, set_last_action=None, now: datetime
             it.update(staged_event=event, stage_when=acc.get("when") or "", stage_notes=notes)
             if row_id:
                 set_last_action(row_id, f"{now.date().isoformat()}: the invite for {acc.get('when') or event['start']}"
-                                        " is staged from their acceptance; the Create button is in the DM.")
+                                        f" is staged from their acceptance; the Create button is in {_card_place()}.")
             if record:
                 _store_append(dict(base, status="staged", event=event, minutes=acc.get("minutes") or 0,
                                    conflicts=check.get("conflicts") or [], notes=notes))

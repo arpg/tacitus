@@ -5371,6 +5371,10 @@ _LAST_REPLY_CHECK = [0.0]
 REPLY_CARD_RETIRED = (":zzz: No answer on this card. A thread that still waits is on the "
                       "next Replies card.")
 REPLY_ROW_GONE = ":information_source: This thread changed since the card. Nothing was done."
+# Where the Replies card's own lines say the Send cards are: "this DM" where
+# the DM is a DM (Slack), the web chat's name for the place otherwise.
+_CARDS_HERE = ("this DM" if getattr(FRONTEND, "dm_takes_text", True)
+               else FRONTEND.prompt_strings()["card_place"])
 # The line the owner may add to a Draft it click (CardAction.ask).
 REPLY_ASK_SAY, REPLY_ASK_ANSWER = "what the reply must say", "your answer"
 _REPLY_STATE_WORDS = {"draft": "its Send card closed", "decision": "needs your answer",
@@ -5540,7 +5544,7 @@ def _replies_card(batch_id: str, todo: list[tuple], ready: int) -> "_chat.Confir
              f"The oldest has waited {_days(todo[0][0].get('age_days') or 0)}.")
     if ready:
         title += (f" {ready} more {'has' if ready == 1 else 'have'} a draft ready: "
-                  f"{'its Send card is' if ready == 1 else 'their Send cards are'} in this DM.")
+                  f"{'its Send card is' if ready == 1 else 'their Send cards are'} in {_CARDS_HERE}.")
     lines = [f"{i + 1}. {inert((r.get('description') or r['id']).strip(), 90)} "
              f"({_days(r.get('age_days') or 0)}, {_REPLY_STATE_WORDS[state]})"
              for i, (r, state) in enumerate(shown)]
@@ -5913,12 +5917,12 @@ def handle_reply_draft(ev: "_chat.ActionEvent"):
     if state in ("card", "sent"):
         _replace_buttons_with_status(
             channel, card_id,
-            ":lock: Its Send card is up in this DM." if state == "card"
+            f":lock: Its Send card is up in {_CARDS_HERE}." if state == "card"
             else ":information_source: The reply went out. Nothing was done.")
         return
     if state == "draft" and _reply_new_send_card(draft_id, channel, thread):
         _replace_buttons_with_status(channel, card_id,
-                                     ":lock: The new Send card is in this DM.")
+                                     f":lock: The new Send card is in {_CARDS_HERE}.")
         return
     words = _chat.action_text(getattr(ev, "text", ""))
     ok = _dispatch_reply_draft(row, channel, thread, ev.user_id, words=words)
@@ -6025,12 +6029,24 @@ def handle_edit_draft(ev: "_chat.ActionEvent"):
                     "will revise it and post a new Send card. You can also edit it in your "
                     "mail client.")
         asked = None
+        # A DM that takes button presses only (the web chat's Action
+        # requests) has no place to type the change: a draft whose
+        # conversation is there, or that has none, is asked about in a new
+        # conversation in the EA channel.
+        taps_only = getattr(FRONTEND, "dm_takes_text", True) is False
         if key:
             channel = _delivery_channel(key)
+            if not (taps_only and FRONTEND.is_dm(channel)):
+                try:
+                    asked = FRONTEND.post(channel=channel, thread_ts=key, text=question)
+                except Exception as e:
+                    log.warning(f"edit tap: the conversation of the draft refused the question: {e}")
+        if asked is None and taps_only:
+            channel = CHANNEL_ID
             try:
-                asked = FRONTEND.post(channel=channel, thread_ts=key, text=question)
+                asked = FRONTEND.post(channel=channel, thread_ts=None, text=question)
             except Exception as e:
-                log.warning(f"edit tap: the conversation of the draft refused the question: {e}")
+                log.warning(f"edit tap: the EA channel refused the question: {e}")
         if asked is None:
             # A draft from no conversation (a cron run), or one whose
             # conversation is gone, is asked about under its card, where the
@@ -8693,7 +8709,9 @@ def _post_dm_breadcrumb(ea_channel: str, thread_ts: str | None, dm_channel: str,
             link = FRONTEND.permalink(dm_channel, dm_ts) or ""
         except Exception as e:
             log.debug(f"permalink lookup failed: {e}")
-    text = f":lock: {what} is in your DM" + (f": <{link}|open it>" if link else ".")
+    # The place by the front end's name for it: "your DM" on Slack,
+    # "Action requests" on the web chat (prompt strings, `card_place`).
+    text = f":lock: {what} is in {_PS['card_place']}" + (f": <{link}|open it>" if link else ".")
     try:
         # unfurl OFF: a permalink to a message unfurls as a copy of that
         # message, buttons included and clickable. A click on the copy edits
@@ -11018,7 +11036,7 @@ def _dashboard_project_url(project_id: str) -> str:
 
 # The web chat's own channels by the names its app shows them under
 # (webui/app.js, KIND_NAMES), by the channel's kind in the store.
-_WEB_CHANNEL_NAMES = {"main": "Ask Tacitus", "dm": "Direct messages", "sched": "Scheduling",
+_WEB_CHANNEL_NAMES = {"main": "Ask Tacitus", "dm": "Action requests", "sched": "Scheduling",
                       "digest": "Mail digests"}
 
 

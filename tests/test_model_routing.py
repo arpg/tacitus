@@ -629,7 +629,7 @@ def test_the_screen_data_and_the_chat_lines(table):
     assert rows["mail"]["why"] == "Auto picked your own model" and rows["tagging"]["effective"] == "local"
     assert rows["tagging"]["why"] == 'Auto does what "Reading your mail" does'
     assert rows["chat"]["effective"] == "mixed"
-    assert rows["chat"]["why"] == "Auto picked your own model for Direct messages, and Claude for the rest"
+    assert rows["chat"]["why"] == "Auto picked your own model for Action requests, and Claude for the rest"
     assert rows["briefing"] == {**rows["briefing"], "value": "auto", "effective": "hosted",
                                 "why": "Auto picked Claude", "locked": False}
     # the same rows in the code's terms, for `show --verbose` and the doctor
@@ -746,7 +746,7 @@ def test_every_string_the_settings_screen_can_show_is_plain(owner, monkeypatch):
     # each branch of the why lines is reached
     for part in (*(a.format(hosted="Claude") for a in mr.AUTO_SAYS.values()), mr.JUDGMENT,
                  mr.NOT_SET_UP.format(hosted="Claude"), "set to your own model", "set to Claude", "set to Codex",
-                 "Claude waits", "@local", "for Direct messages", "for Ask Tacitus and project rooms",
+                 "Claude waits", "@local", "for Action requests", "for Ask Tacitus and project rooms",
                  'Auto does what "Reading your mail" does', "takes what it leaves"):
         assert any(part in w for w in whys), part
     # the local model's state: no key, no call yet, a failure whose error
