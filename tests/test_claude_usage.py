@@ -51,14 +51,17 @@ EVENT = {"type": "rate_limit_event",
          "uuid": "00000000-0000-0000-0000-000000000000", "session_id": "s-1"}
 
 
-def _event(session=0.12, weekly=0.37, *, hours=3, days=4, status="allowed"):
-    """A rate_limit_event whose windows reset `hours` and `days` from now."""
+def _event(session=0.12, weekly=0.37, *, hours=3, days=4, status="allowed", opus=None):
+    """A rate_limit_event whose windows reset `hours` and `days` from now;
+    with `opus`, the Opus week too."""
     now = datetime.now(timezone.utc)
-    return {"type": "rate_limit_event", "rate_limit_info": {"status": status, "unifiedWindows": {
-        "five_hour": {"utilization": session, "resetsAt": (now + timedelta(hours=hours)).timestamp(),
-                      "status": status},
-        "seven_day": {"utilization": weekly, "resetsAt": (now + timedelta(days=days)).timestamp(),
-                      "status": "allowed"}}}}
+    week = {"resetsAt": (now + timedelta(days=days)).timestamp(), "status": "allowed"}
+    windows = {"five_hour": {"utilization": session, "resetsAt": (now + timedelta(hours=hours)).timestamp(),
+                             "status": status},
+               "seven_day": {"utilization": weekly, **week}}
+    if opus is not None:
+        windows["seven_day_opus"] = {"utilization": opus, **week}
+    return {"type": "rate_limit_event", "rate_limit_info": {"status": status, "unifiedWindows": windows}}
 
 
 def _snapshot_file(d: Path, *, age_s=0, **kw) -> Path:
@@ -312,7 +315,8 @@ def test_the_report_order_is_reading_then_refresh_then_endpoint():
 
     def refresh():
         runs.append(1)
-        rl.note_stream_event(EVENT, source="chat:usage", path=path)
+        # windows that reset from now: a fixed time would pass and drop the window
+        rl.note_stream_event(_event(opus=0.05), source="chat:usage", path=path)
     memo = {}
     u = cu.report_usage(refresh=refresh, fetch=_no_call, account_lookup=lambda: {}, path=path, memo=memo)
     assert runs == [1] and u["age_s"] < 60 and u["session_percent_used"] == 12.0
