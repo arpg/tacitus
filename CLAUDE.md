@@ -406,7 +406,7 @@ meeting confirmation is the body.
    item comes from an email. Every closure signal joins on the
    conversation id, so a row without one never closes on evidence.
    `add` derives the conversation id from the message id. A row from
-   no email is fine; `add` warns that it cannot auto-close.
+   no email needs `--deadline` (its event or due date) or `--closes-on`.
 8. Closing follows `preprocessor/closure.py`. You close a row only when:
    the user said it is done (`ledger.py close --id <id> --note "reason"
    --user-said "<their exact words>"`); it repeats another row

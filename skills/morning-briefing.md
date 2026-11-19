@@ -212,8 +212,8 @@ judged done, and re-runs you ONCE with a `PRE-SEND AUDIT RESULT` block
 at the end of your prompt. When that block is present, it is the last
 word: the rows it lists as CLOSED are closed, so they leave the queue
 and go to the Quietly handled line with their evidence in a few words;
-the rows it lists as ambiguous stay, with the evidence added to their
-line as one short clause ending in "still open?". Everything else in
+the rows it lists as ambiguous stay exactly as they were, with no
+evidence and no question added to their line. Everything else in
 your draft stays as it was. Do not re-litigate the verdicts, and do not
 call any tool to check them: the check already ran.
 

@@ -47,6 +47,7 @@ The policy lives here and nowhere else: a closer names its signal and
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -371,12 +372,65 @@ def settle(conn: sqlite3.Connection, entry_id: str, *, signal: str, actor: str,
                        evidence=evidence, evidence_ts=evidence_ts, _row=row, _tier=DEMOTED)
     if t == DECISIVE or move == PROMOTED:
         t = move or t
-        return {"action": "closed", "tier": t, "signal": signal,
-                "ids": _close_row(conn, row, signal=signal, actor=actor, note=note,
-                                  evidence=evidence, evidence_ts=evidence_ts, tier_=t,
-                                  sweep=sweep, why=why)}
+        out = {"action": "closed", "tier": t, "signal": signal,
+               "ids": _close_row(conn, row, signal=signal, actor=actor, note=note,
+                                 evidence=evidence, evidence_ts=evidence_ts, tier_=t,
+                                 sweep=sweep, why=why)}
+        if signal == "duplicate_of" and isinstance(evidence, dict) and evidence.get("duplicate_of"):
+            out["folded"] = fold_duplicate(conn, row, str(evidence["duplicate_of"]), actor=actor,
+                                           quote=str(evidence.get("quote") or ""))
+        return out
     return propose(conn, entry_id, signal=signal, actor=actor, note=why or note,
                    evidence=evidence, evidence_ts=evidence_ts, _row=row)
+
+
+# A model's proposal that a row repeats another (ledger_reconcile); its
+# evidence names the other row (`of`), and older ones say it in the why.
+DUPLICATE_PROPOSALS = frozenset({"llm:reconcile-duplicate"})
+_DUPLICATE_WHY = re.compile(r"^duplicate of (\S+?):")
+_DUE_LABEL = re.compile(r"^Due \d{4}-\d{2}-\d{2}:")
+
+
+def fold_duplicate(conn: sqlite3.Connection, dup_row, primary_id: str, *, actor: str,
+                   quote: str = "") -> dict:
+    """A row closed as a repeat of `primary_id` hands that row what only it
+    knew, so the item's facts outlive the close:
+      - its date, when its mail is newer than the primary's (the newer mail
+        moved the date: the end of a window, a corrected due day);
+      - the user's word that the item is done, when the close carried it
+        (`close --duplicate-of <id> --user-said "..."`): the primary
+        closes on that word too.
+    A confirm of a model's duplicate proposal says only that the two rows
+    are one item: it carries the date, never a close. Returns what changed
+    on the primary; the caller commits."""
+    prim = conn.execute("SELECT * FROM ledger WHERE id = ?", (primary_id,)).fetchone()
+    if prim is None or prim["status"] not in _ledger.OPEN_STATUSES:
+        return {}
+    out: dict = {}
+    new_due = str(dup_row["deadline"] or "")[:10]
+    old_due = str(prim["deadline"] or "")[:10]
+
+    def born(r) -> str:
+        return str(r["date_identified"] or r["created_at"] or "")
+    if new_due and new_due != old_due and (not old_due or born(dup_row) > born(prim)):
+        now = _now()
+        line = f"{now[:10]}: its date is {new_due}, from a newer message about the same item"
+        desc = str(prim["description"] or "")
+        if _DUE_LABEL.match(desc):
+            desc = f"Due {new_due}:" + desc[len("Due 0000-00-00:"):]
+        conn.execute("UPDATE ledger SET deadline = ?, description = ?, last_action = ?, "
+                     "updated_at = ? WHERE id = ?",
+                     (new_due, desc, f"{line}. {prim['last_action'] or ''}".strip()[:2000], now,
+                      primary_id))
+        record_event(conn, primary_id, "fold", signal="duplicate_of", actor=actor,
+                     evidence={"from": dup_row["id"], "deadline": [old_due, new_due]}, note=line)
+        out["deadline"] = new_due
+    if quote:
+        res = settle(conn, primary_id, signal="user_stated", actor=actor,
+                     note=f"done, per the user (closed with its repeat {dup_row['id']})",
+                     evidence={"quote": quote, "with": dup_row["id"]})
+        out["closed"] = res.get("ids") or []
+    return out
 
 
 def resident_actor(actor: str) -> bool:
@@ -475,10 +529,17 @@ def confirm(conn: sqlite3.Connection, entry_id: str, *, actor: str = "user") -> 
     why = prop.get("why") or "looked done"
     record_event(conn, row["id"], "confirm", tier=DECISIVE, signal=prop.get("signal") or "",
                  actor=actor, evidence=prop.get("evidence"), note=why)
-    return {"action": "closed", "tier": DECISIVE, "signal": "user_confirmed",
-            "ids": _close_row(conn, row, signal="user_confirmed", actor=actor,
-                              note=f"Confirmed done in chat: {why}"[:600],
-                              evidence={"proposal": prop}, evidence_ts="", tier_=DECISIVE)}
+    out = {"action": "closed", "tier": DECISIVE, "signal": "user_confirmed",
+           "ids": _close_row(conn, row, signal="user_confirmed", actor=actor,
+                             note=f"Confirmed done in chat: {why}"[:600],
+                             evidence={"proposal": prop}, evidence_ts="", tier_=DECISIVE)}
+    if ({prop.get("signal")} | set(prop.get("signals") or [])) & DUPLICATE_PROPOSALS:
+        ev = prop.get("evidence") if isinstance(prop.get("evidence"), dict) else {}
+        m = _DUPLICATE_WHY.match(str(prop.get("why") or ""))
+        primary = str(ev.get("of") or (m.group(1) if m else ""))
+        if primary and primary != row["id"]:
+            out["folded"] = fold_duplicate(conn, row, primary, actor=actor)
+    return out
 
 
 def reject(conn: sqlite3.Connection, entry_id: str, *, actor: str = "user") -> dict:

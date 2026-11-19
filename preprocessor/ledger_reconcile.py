@@ -611,12 +611,19 @@ def apply(group: dict, items: list[dict], threads: dict[str, dict], verdicts: li
                 out["threaded"].append({"id": row["id"], "conversation_id": conv,
                                         "on_row": not _ledger.closes_on_reply(row)})
                 touched = True
-        if v["verdict"] in PROPOSING:
+        if v["verdict"] == "lapsed" and date_rule_ends(row, now):
+            # Code closes this row on its date before the briefing
+            # (ledger.close_lapsed): a proposal now would put a card up
+            # for a row that is closed by morning.
+            rec["proposal"] = "left to the date rule"
+            out["skipped"].append({"id": row["id"], "why": "the date rule closes it"})
+        elif v["verdict"] in PROPOSING:
             why = f"duplicate of {rec['of']}: {v['why']}" if v["verdict"] == "duplicate" else v["why"]
             res = {"action": "dry-run"} if dry_run else propose(
                 row["id"], signal=PROPOSING[v["verdict"]],
                 note=why, evidence={"thread": rec.get("thread") or row.get("conversation_id") or "",
-                                    "group": group["label"]},
+                                    "group": group["label"],
+                                    **({"of": rec["of"]} if rec.get("of") else {})},
                 evidence_ts=(by_ref[v["ref"]].get("thread") or {}).get("latest") or "")
             rec["proposal"] = res.get("action")
             if res.get("action") in ("proposed", "dry-run"):
@@ -637,6 +644,23 @@ def apply(group: dict, items: list[dict], threads: dict[str, dict], verdicts: li
             _log(f"[reconcile] {row['id']} {v['verdict']}"
                  f"{' thread' if v['thread'] else ''}{' note' if v['note'] else ''}")
     return out
+
+
+def date_rule_ends(row: dict, now: datetime) -> bool:
+    """The row lapses (ledger.lapses) and its date is past on the user's
+    clock: the preprocessor's ledger.close_lapsed settles it before the
+    next briefing, on code's own evidence."""
+    due = str(row.get("deadline") or "")[:10]
+    return bool(due) and _ledger.lapses(row) \
+        and due < now.astimezone(_user_zone()).date().isoformat()
+
+
+def _user_zone():
+    try:
+        import user_tz
+        return user_tz.zone()
+    except Exception:
+        return None
 
 
 def _propose(entry_id: str, **kw) -> dict:

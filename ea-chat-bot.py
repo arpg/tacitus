@@ -5166,18 +5166,26 @@ def _expire_close_cards(force: bool = False) -> int:
     """Router tick: a close-proposal card with no answer in
     CLOSE_CARD_EXPIRE_S gives way to a status line, so it leaves Needs you;
     its rows keep their proposals, on the briefing's "Looks done?" line. A
-    card already answered (retired) is dropped from the store. Returns the
-    count retired."""
+    card already answered (retired) is dropped from the store. A card none
+    of whose rows still waits on the user (each was closed, or kept open,
+    another way: the date rule, his word in chat) gives way at once, so no
+    live card asks about a closed row. Returns the count retired."""
     now = time.time()
     if not force and now - _LAST_EXPIRY_CHECK[0] < CLOSE_PROPOSAL_CHECK_S:
         return 0
     _LAST_EXPIRY_CHECK[0] = now
     batches = _load_close_batches()
+    if not batches:
+        return 0
+    listed = _ledger_cli("proposals")
+    pending = {r.get("id") for r in (listed.get("entries") or [])}
+    # No answer from the ledger is no news: only an answer can retire a card early.
+    known = isinstance(listed.get("entries"), list)
     due = {k: v for k, v in batches.items()
-           if now - float(v.get("created") or now) >= CLOSE_CARD_EXPIRE_S}
+           if now - float(v.get("created") or now) >= CLOSE_CARD_EXPIRE_S
+           or (known and not any(i in pending for i in v.get("ids") or []))}
     if not due:
         return 0
-    pending = {r.get("id") for r in (_ledger_cli("proposals").get("entries") or [])}
     retired = 0
     for batch_id, b in due.items():
         batches.pop(batch_id, None)

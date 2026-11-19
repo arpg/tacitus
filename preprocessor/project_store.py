@@ -1162,6 +1162,19 @@ def auto_merge_scan(conn=None) -> list:
     return created
 
 
+def merged_into(conn=None) -> dict:
+    """merged_id -> primary_id for every merge whose primary row is still
+    open (a plugin's row too): the primary carries the item, so a reader
+    of open work shows the primary, never the merged row as well."""
+    conn = conn or _get_db()
+    try:
+        return {r["merged_id"]: r["primary_id"] for r in conn.execute(
+            "SELECT m.merged_id, m.primary_id FROM item_merges m JOIN ledger p "
+            "ON p.id = m.primary_id WHERE p.status NOT IN ('completed', 'closed')")}
+    except sqlite3.OperationalError:
+        return {}
+
+
 def merge_info_for(conn=None) -> dict:
     """primary_id -> {entity, count} for rendering aggregation badges."""
     conn = conn or _get_db()

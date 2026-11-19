@@ -775,6 +775,26 @@ def test_an_answered_card_is_dropped_quietly_when_its_week_is_up():
     assert ns["_load_close_batches"]() == {} and len(calls["status"]) == 1
 
 
+def test_a_card_whose_rows_closed_another_way_comes_down_at_once():
+    """A row on a live card closed by the date rule (or the user's word in
+    chat) two hours later: the card gives way on the next tick, so no live
+    card asks about a closed row. A ledger that does not answer retires
+    nothing."""
+    calls: dict = {}
+    ns = _bot_ns(calls)
+    rows = [{"id": "t1", "description": "a", "proposal": {"at": _ago(hours=2)}}]
+    ns["_ledger_cli"] = lambda *a: {"entries": rows} if a[0] == "proposals" else {}
+    ns["_post_close_proposals"](force=True)
+    ns["_ledger_cli"] = lambda *a: {}                          # the ledger did not answer
+    assert ns["_expire_close_cards"](force=True) == 0
+    ns["_ledger_cli"] = lambda *a: {"count": 0, "entries": []} if a[0] == "proposals" else {}
+    assert ns["_expire_close_cards"](force=True) == 1
+    assert calls["status"] == [":information_source: Already closed or changed."]
+    assert ns["_load_close_batches"]() == {}
+    import closure_labels as cl
+    assert cl.outcome_class(calls["status"][0]) == "outside"
+
+
 def test_a_promoted_close_gets_a_note_with_reopen_and_its_mail_archived_after():
     calls: dict = {}
     ns = _bot_ns(calls)

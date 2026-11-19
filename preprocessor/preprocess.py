@@ -640,6 +640,10 @@ def build_today_top(needs_resp: list, dropped: list, deadlines: list,
         # other side's, for ledger.WAITING_DAYS; the post lists it as waiting.
         if _ledger_mod.waiting_on_reply(ob, local_today):
             continue
+        # Others owe it and ask nothing of him before their date; or it is
+        # one item with the row it was merged into, which ranks for both.
+        if _ledger_mod.waiting_off_list(ob, local_today) or ob.get("merged_into"):
+            continue
         score, reasons = 5, []
         unanswered = _ledger_mod.unanswered_since(ob, local_today)
         if unanswered:
@@ -2850,6 +2854,15 @@ def run_full_daily(force_full: bool = False) -> dict:
     except Exception as e:
         print(f"  Auto-merge scan skipped: {e}", file=sys.stderr)
         auto_merged = []
+    # A row merged into another is one item with it: the readers of open
+    # work (the ranking, the remote briefing) show the row it merged into.
+    try:
+        _merged = _ps_mod.merged_into()
+        for ob in open_obligations:
+            if ob.get("id") in _merged:
+                ob["merged_into"] = _merged[ob["id"]]
+    except Exception as e:
+        print(f"  Merge marks skipped: {e}", file=sys.stderr)
 
     # Deterministic priority queue: ranking happens HERE, in code, so the
     # briefing leads with what needs doing instead of enumerating.
