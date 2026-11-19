@@ -579,7 +579,8 @@ and the row's posts carry its tag so its block shows only its own lines
 
 Each project room with items
 in the post then gets its slice in a new topic (`briefing_rooms.py`,
-switch `briefing_rooms`), posted only to rooms the owner's record names. An
+switch `briefing_rooms`), posted only to rooms the owner's record names
+and opened by what it holds (the first item's title, "and N more"). An
 item's project is its ledger link, its filed thread, or the mail tagger's
 project call on its mail when the item's words show a trace of that project;
 with no tagger call, the word match alone, where a generic name word scores

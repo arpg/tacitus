@@ -118,8 +118,9 @@ threads whose state is days old and on the shelf.
 
 GET /api/recent lists the latest conversations of every channel that is
 neither archived nor muted, newest first, as the bot does (is_conversation:
-a thread the owner wrote in, or a briefing the bot opened, in a talk place;
-in the DM only a thread the owner opened; never a card's thread), with
+a thread the owner wrote in, in a talk place, or a briefing the bot opened
+in the main channel; in the DM only a thread the owner opened; never a
+card's thread), with
 `as_of`; `recent_gets` counts the reads. `names` maps a thread key to the
 name the owner gave it, which its rows carry as `title`.
 
@@ -174,7 +175,7 @@ STUB_HOSTED = "https://app.example.org/"  # the website's copy of the app a hand
 STUB_HANDOFF_PAIRING = "7" * 32  # the pairing id behind the made-up handoff code
 WEEKLY = "stream:9:topic:weekly%20plan"
 # A briefing's opening line, as the bot's push policy reads its title.
-BRIEFING = re.compile(r"^\W*(?:morning briefing|afternoon update)\b", re.I)
+BRIEFING = re.compile(r"^\W*(?::[a-z0-9_+-]+:\W*)?(?:morning briefing|afternoon update)\b", re.I)
 ROOM_ASK = re.compile(r"^\s*open a (?:channel|room) for (?P<name>.+?)\s*$", re.I)
 NOTIFY = {"briefings": True, "replies": True, "rooms": True, "quiet": "queue"}
 NOTIFY_NAMES = {"briefings": "Briefings", "replies": "Replies", "rooms": "Rooms"}
@@ -541,7 +542,7 @@ class Stub:
             return p["author"] == "owner"
         if any(m["author"] == "owner" for m in self.thread(p["channel"], p["thread_key"])):
             return True
-        return p["author"] == "bot" and bool(BRIEFING.match(p["text"] or ""))
+        return c["kind"] == "main" and p["author"] == "bot" and bool(BRIEFING.match(p["text"] or ""))
 
     def requests(self, limit: int = 40) -> dict:
         """Action requests as blocks, as the bot gives them (WebFrontend.

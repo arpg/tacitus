@@ -24,6 +24,13 @@ A row the owner marked as no project's (project_store move-ledger
 --project none, which marks it loose) places nothing past stage 1. An
 item with no project stays in the EA post only.
 
+A post opens with its name, the words that title its thread wherever a
+list shows it (the web chat's Recent once the owner answers, the room's
+own list of threads, Slack's channel): the first item's title in plain
+words, with "and N more" for the rest (conversation_name). Its last line
+says which briefing it comes from. On the web chat a post the owner has
+not answered stays out of Recent (web_frontend.is_conversation).
+
 A room gets a post only when the registry binds it to the project, it is
 not archived, and the owner's own record (owner_rooms) names it. The
 post goes through chat_notify.post with the key `room:<channel id>`:
@@ -35,6 +42,7 @@ Switch: `"briefing_rooms": false` in remote-llm.json turns the slices off.
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -46,6 +54,9 @@ MATCH_FLOOR = 3
 MAX_PROJECTS = 2
 ALSO_OPEN = 5
 MAX_ITEMS = 12
+# The longest name a post opens with, "and N more" included: the
+# distinctive words come first, since a phone's list shows about 25.
+NAME_MAX = 60
 
 # The section an item came from, as the room post names it.
 SECTIONS = {
@@ -229,17 +240,74 @@ def _cut(text: str, cap: int, clean) -> str:
     return t[:cap].rsplit(" ", 1)[0].rstrip(" ,;:(") + "..."
 
 
-def render(heading: str, project_name: str, entries: list[dict], others: list[str],
-           clean) -> str:
-    lines = [f"*{heading}: {clean(project_name, 80)}*"]
-    for sec in SECTIONS:
-        for e in (x for x in entries if x["section"] == sec):
-            head = SECTIONS[sec].format(place=_card_place()) if sec == "draft" else SECTIONS[sec]
-            lines.append(f"{head}: {e['line']}")
+# What opens a title but names no topic: a reply or forward mark, a mail
+# system's tag ("[EXT]"), the ledger's own labels.
+_TITLE_NOISE = re.compile(
+    r"^\s*(?:(?:re|fw|fwd|aw|wg)\s*:|\[[^\]]{1,24}\]|(?:due \d{4}-\d{2}-\d{2}|task|"
+    r"needs response|scheduling request|follow[- ]up|deadline|reminder)\s*:)\s*", re.I)
+# Small words a cut title must not end on.
+_TAIL_WORDS = frozenset("a an and as at by for from in of on or the to with".split())
+
+
+def plain_title(title: str, clean) -> str:
+    """An item's title in plain words: no reply marks, tags, ledger labels,
+    markup or emoji codes."""
+    t = re.sub(r"(?<!\w):[a-z][a-z0-9_+-]*:(?!\w)", " ", clean(title, 10_000))
+    t = re.sub(r"(?<!\w)[_~]+|[_~]+(?!\w)", "", t)
+    while True:
+        bare = _TITLE_NOISE.sub("", t, count=1)
+        if bare == t:
+            break
+        t = bare
+    return re.sub(r"\s+([,;:])", r"\1", " ".join(t.split())).strip(" ,;:-")
+
+
+def _fit(text: str, cap: int) -> str:
+    """`text` cut at the last whole word that fits in `cap` characters,
+    with no small word left at its end, and "…" where it is cut."""
+    if len(text) <= cap:
+        return text
+    cut = text[:cap - 1]
+    if text[cap - 1] != " " and " " in cut:
+        cut = cut.rsplit(" ", 1)[0]  # not the word the cut went through
+    words = cut.split()
+    while len(words) > 1 and words[-1].lower().strip(",;:-") in _TAIL_WORDS:
+        words.pop()
+    return " ".join(words).rstrip(" ,;:-(") + "…"
+
+
+def _in_order(entries: list[dict]) -> list[dict]:
+    """The entries as the post shows them: by section, in SECTIONS order."""
+    return [e for sec in SECTIONS for e in entries if e.get("section") == sec]
+
+
+def conversation_name(entries: list[dict], clean) -> str:
+    """The name a slice's post opens with: the first item's title in plain
+    words, "and N more" when the post has more items, at most NAME_MAX
+    characters, cut at a word."""
+    shown = _in_order(entries)
+    if not shown:
+        return ""
+    first = plain_title(shown[0].get("title") or "", clean) \
+        or plain_title(shown[0].get("line") or "", clean)
+    more = f" and {len(shown) - 1} more" if len(shown) > 1 else ""
+    return _fit(first or "Items from the briefing", NAME_MAX - len(more)) + more
+
+
+def render(heading: str, entries: list[dict], others: list[str], clean) -> str:
+    """One room's post: its name, its items under their sections, the
+    project's other open rows, and a line that names the briefing it
+    comes from (`heading`, "Morning briefing, Mon Oct 12")."""
+    lines = [f"*{conversation_name(entries, clean)}*"]
+    for e in _in_order(entries):
+        sec = e["section"]
+        head = SECTIONS[sec].format(place=_card_place()) if sec == "draft" else SECTIONS[sec]
+        lines.append(f"{head}: {e['line']}")
     if others:
         lines += ["", f"Also open here ({len(others)}): "
                   + "; ".join(_cut(o, 90, clean) for o in others)]
-    lines += ["", "_From the briefing in the EA channel. Reply in this thread to act on it here._"]
+    source = heading[:1].lower() + heading[1:]
+    lines += ["", f"_From the {source}. Reply in this thread to act on it here._"]
     return "\n".join(lines)
 
 
@@ -251,7 +319,6 @@ def plan_posts(entries: list[dict], *, heading: str, open_rows: list[dict], conn
     `skip` ({project: [ledger id]}, "*" for every room) keeps rows off
     a room's list."""
     idx = index(conn, votes)
-    names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM projects")}
     posts = []
     for pid, items in slices(entries, targets, conn, matcher=matcher, idx=idx).items():
         shown = {e["ledger_id"] for e in items if e.get("ledger_id")} | \
@@ -260,7 +327,7 @@ def plan_posts(entries: list[dict], *, heading: str, open_rows: list[dict], conn
         others = also_open(pid, open_rows, shown, conn, matcher=matcher, idx=idx, ids=ids)
         posts.append({"project": pid, "channel": targets[pid]["channel"],
                       "room": targets[pid]["room"],
-                      "text": render(heading, names.get(pid) or pid, items, others, clean),
+                      "text": render(heading, items, others, clean),
                       "refs": [e["ref"] for e in items], "also": ids, "also_text": others})
     posts.sort(key=lambda p: p["room"])
     return posts

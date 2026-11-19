@@ -6,6 +6,15 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A project room's part of the briefing is named by what it holds.**
+  Each room's post from the morning briefing or the afternoon update now
+  opens with its first item's title in plain words, with "and 2 more"
+  when it holds more, and its last line says which briefing it came from.
+  It used to open with "Morning briefing" and the date, so five rooms made
+  five rows alike in Recent with the project cut off. A room post you have
+  not answered stays out of Recent; once you answer it, it shows there
+  under that title. The topic that opens in Ask Tacitus when the briefing
+  sends items to Claude now names its first item on its first line too.
 - **The web chat opens on Home.** Home is a short page that says what
   Tacitus already did today and what is left for you: the requests that
   wait for a tap, the replies you owe and the morning's top items, with a

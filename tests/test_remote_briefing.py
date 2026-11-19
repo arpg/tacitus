@@ -426,6 +426,8 @@ def test_the_tick_hands_a_briefing_to_one_turn(tmp_path):
     ns["_remote_escalation_tick"]()
     assert len(posts) == 1 and len(turns) == 1
     assert "2 items" in posts[0]["text"] and "handed these 2 items" in turns[0][0][3]
+    # the first line, the topic's title in a list, names the first item
+    assert posts[0]["text"].splitlines()[0] == ":arrow_up: *S0 and 1 more*"
     # A batch runs on the turn's own clocks: no limit of its own.
     assert turns[0][1] is None
     assert len(_json.loads(seen_file.read_text())) == 2
@@ -439,6 +441,7 @@ def test_the_tick_hands_a_briefing_to_one_turn(tmp_path):
     ns["_remote_escalation_tick"]()
     assert len(turns) == 4 and turns[3][1] is None
     assert "handed this one item" in turns[3][0][3]
+    assert posts[-1]["text"].splitlines()[0] == ":arrow_up: *S9*"
 
 
 def _tick_ns(tmp_path, post, write_json):

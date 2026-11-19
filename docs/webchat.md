@@ -826,12 +826,14 @@ so a conversation begun on one device is at hand on another
 
 - Recent holds conversations only (`web_frontend.is_conversation`). A
   conversation is a thread the owner wrote in, in Ask Tacitus,
-  Scheduling or a room, or a morning briefing or an afternoon update (posted only with Home off) the
-  bot opened there (its first lines carry the title, as the push policy
-  reads it, `web_push_policy.report_title`). Never one: a thread that
-  opens with a card or a card's status line, anything else the bot opened
-  that the owner never wrote in (a notice, an alert, a check, the reply to
-  the question after an Edit tap), the digests, and anything
+  Scheduling or a room, or a morning briefing or an afternoon update the
+  bot opened in Ask Tacitus (posted there only with Home off; its first
+  lines carry the title, as the push policy reads it,
+  `web_push_policy.report_title`). Never one: a thread that opens with a
+  card or a card's status line, anything else the bot opened that the
+  owner never wrote in (a briefing's slice in a project room, a notice,
+  an alert, a check, the reply to the question after an Edit tap), the
+  digests, and anything
   in Action requests but a thread the owner opened by typing there before
   it took button presses only. A card, read or unread, waits in Action
   requests, never here.
@@ -856,7 +858,10 @@ so a conversation begun on one device is at hand on another
   conversation`, kept as `name` in the session registry beside the
   default title, which a new session's first words replace; a name lasts
   while the registry keeps the thread, two weeks idle), else the first
-  message's card title or first line. The bot hands the names to the web
+  message's card title or first line. A briefing's slice in a project
+  room opens with what it is about (the first item's title, "and N more"
+  for the rest; `briefing_rooms.conversation_name`), so that line titles
+  it once the owner answers it. The bot hands the names to the web
   front end (`conversation_names`, read at most once in 30 seconds and
   at once after a rename), and the threads, Needs you and search rows
   carry them too (`title`, a search hit's `thread_title`): the cards and
