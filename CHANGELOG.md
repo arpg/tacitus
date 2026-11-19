@@ -6,6 +6,18 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A status light at the top of the app says whether everything works.**
+  It is a green check while all is well, a yellow triangle when something
+  is slow or will fix itself, and a red mark when something needs you,
+  such as a lost Outlook or Claude sign-in. Hover over it, or tap it on a
+  phone, to see what is wrong in plain words, since when, and what to do;
+  each item opens to its details and recent log lines, with Copy, on your
+  own network. What cleared in the last day stays listed. The alerts that
+  used to land in Ask Tacitus while debug mode is off (a service down, a
+  safety check, a plugin switched off) now set the light instead, the
+  reports you must read stay on it until you tap Got it, and the urgent
+  ones send one notification that opens the light's page. Debug mode and
+  Slack work as before.
 - **The message you are editing keeps its ring.** In the web chat, a
   reaction or the check Tacitus puts on a message drew the message again
   and dropped the ring that marks it as the one you are editing.
@@ -20,7 +32,6 @@ repository that preceded it.
   a switch's request checked before it reached the stub) are gone. Pull
   requests run the browser tests in CI (the `browser` job). The app's
   line budget is a file per change in `tests/webui_budget/`.
-
 - **A reply you answered in Action requests shows what really happened.**
   It stays at "Writing the reply" (then "Still writing") until the reply
   is drafted, and then opens its Send request, even when the draft comes

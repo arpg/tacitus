@@ -397,12 +397,24 @@ MUTE_FIXED = frozenset({"main", "dm"})
 MUTE_DEFAULT_KEY = "muted_default:"
 # Channel ids the app's routes take for their own (`#/needs`, the Needs you
 # view): no channel may have one.
-RESERVED_CHANNEL_IDS = frozenset({"needs"})
+RESERVED_CHANNEL_IDS = frozenset({"needs", "status"})
 # The longest room name the owner may give a room from the app; a room
 # that lives on Slack in shadow mode takes it too.
 ROOM_NAME_MAX = 60
 EVENT_TYPES = ("message", "update", "reaction", "card", "status", "file", "channel",
-               "thread_state", "release", "read")
+               "thread_state", "release", "read", "light")
+# The status light (docs/webchat.md, Status light): the meta keys of the
+# host's record of what it showed and of its tick, the push tag of its
+# notifications (one on a device at a time; a recovery clears it), how
+# often the tick runs, the notices kept, and the words a device that may
+# not see the details reads.
+LIGHT_MEMORY_KEY = "light_memory"
+LIGHT_TICK_KEY = "light_tick"
+LIGHT_TAG = "status"
+LIGHT_TICK_S = 30.0
+LIGHT_NOTICES_KEEP = 50
+LIGHT_NOTICE_READ_KEEP_S = 7 * 86400
+LIGHT_DETAILS_REFUSED = "Details show only in Tacitus on your own network."
 LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
 # Host names a loopback client (the relay client, a test) puts in Host and
 # Origin, with this server's port.
@@ -514,6 +526,8 @@ CREATE TABLE IF NOT EXISTS message_tags(
     channel TEXT, id TEXT, tag TEXT, PRIMARY KEY (channel, id));
 CREATE TABLE IF NOT EXISTS nudges(
     channel TEXT, thread_key TEXT, msg_id TEXT, at REAL, PRIMARY KEY (channel, thread_key));
+CREATE TABLE IF NOT EXISTS light_notices(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, text TEXT, at REAL, read_at REAL);
 """
 
 
@@ -1885,6 +1899,78 @@ class WebStore:
                                          (time.time() - keep_s,))
             return cur.rowcount
 
+    # the status light (docs/webchat.md, Status light): the host's record of
+    # what the light showed, the notices a poster left for it, the tick's
+    # mark, and its `light` event
+
+    def _meta_get(self, key: str) -> str | None:
+        row = self._one("SELECT value FROM meta WHERE key=?", (key,))
+        return row["value"] if row else None
+
+    def _meta_set(self, key: str, value: str) -> None:
+        with self._lock:
+            with self._conn:
+                self._conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                                   (key, value))
+
+    def light_memory(self) -> dict:
+        """The host's record of what the light showed; {} when there is none
+        or it does not read as an object."""
+        data = _loads(self._meta_get(LIGHT_MEMORY_KEY))
+        return data if isinstance(data, dict) else {}
+
+    def set_light_memory(self, memory: dict) -> None:
+        self._meta_set(LIGHT_MEMORY_KEY, json.dumps(memory, separators=(",", ":")))
+
+    def light_mark(self, at: float | None = None) -> None:
+        """The serving bot's tick ran now: the light is on (light_alive)."""
+        self._meta_set(LIGHT_TICK_KEY, str(time.time() if at is None else float(at)))
+
+    def light_alive(self, within_s: float) -> bool:
+        """True when the bot's light ticked in the last `within_s` seconds,
+        so an alert handed to it shows (chat_notify)."""
+        try:
+            return time.time() - float(self._meta_get(LIGHT_TICK_KEY) or 0) <= within_s
+        except (TypeError, ValueError):
+            return False
+
+    def light_notice_add(self, kind: str, text: str, at: float | None = None) -> int:
+        """Keep an alert the owner must read (chat_notify, a notice kind)
+        until it is marked read; its id. Read notices older than a week go,
+        and past LIGHT_NOTICES_KEEP the oldest read ones."""
+        now = time.time() if at is None else float(at)
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute("INSERT INTO light_notices(kind, text, at, read_at) "
+                                         "VALUES (?,?,?,NULL)", (str(kind)[:40], str(text), now))
+                self._conn.execute("DELETE FROM light_notices WHERE read_at IS NOT NULL AND "
+                                   "read_at < ?", (now - LIGHT_NOTICE_READ_KEEP_S,))
+                self._conn.execute(
+                    "DELETE FROM light_notices WHERE read_at IS NOT NULL AND id NOT IN "
+                    "(SELECT id FROM light_notices ORDER BY id DESC LIMIT ?)", (LIGHT_NOTICES_KEEP,))
+            return int(cur.lastrowid)
+
+    def light_notices(self, *, unread: bool = True) -> list[dict]:
+        """The notices, oldest first: the unread ones, or every kept one."""
+        rows = self._all("SELECT id, kind, text, at, read_at FROM light_notices"
+                         + (" WHERE read_at IS NULL" if unread else "") + " ORDER BY id")
+        return [dict(r) for r in rows]
+
+    def light_notice_read(self, nid: int, at: float | None = None) -> dict | None:
+        """Mark a notice read; its row, None when there is no such notice."""
+        now = time.time() if at is None else float(at)
+        with self._lock:
+            with self._conn:
+                self._conn.execute("UPDATE light_notices SET read_at=? WHERE id=? AND read_at IS NULL",
+                                   (now, int(nid)))
+            row = self._conn.execute("SELECT id, kind, text, at, read_at FROM light_notices "
+                                     "WHERE id=?", (int(nid),)).fetchone()
+        return dict(row) if row else None
+
+    def light_emit(self, payload: dict) -> int:
+        """Append a `light` event: the light's summary, for every open app."""
+        return self._transaction(lambda: self._emit("light", "", "", payload))
+
     def upsert_channel(self, cid: str, name: str, kind: str, archived: bool = False,
                        description: str | None = None, muted: bool | None = None) -> dict:
         """Write a channel row; a `channel` event when it changed. A
@@ -2795,6 +2881,16 @@ class WebFrontend(ChatFrontend):
         # host without one, or one that fails, gives the blocks no project
         # and no deadline.
         self.request_context: Callable[[list[dict]], dict] | None = None
+        # The status light (docs/webchat.md, Status light): an object the
+        # host sets before start(), with summary() -> dict (the level, the
+        # conditions in plain words and what cleared), details(id) -> dict
+        # or None (the technical detail and log lines of one condition),
+        # mark_read(id) -> dict or None (a notice the owner read; the new
+        # summary) and tick() (on a thread of its own every
+        # LIGHT_TICK_S seconds: it reads the sources and tells the apps).
+        # None: no light, and /api/status answers 404.
+        self.light: Any = None
+        self._light_thread: threading.Thread | None = None
         self.html_csp = self._html_csp()
         # The app's signed bundle (web_bundle.Bundle) once start() signed it.
         self._bundle: web_bundle.Bundle | None = None
@@ -3056,6 +3152,45 @@ class WebFrontend(ChatFrontend):
             self.refresh_bundle()
             if self.thread_states is not None:
                 self.thread_states.start()
+            if self.light is not None:
+                self._light_thread = threading.Thread(target=self._light_loop, name="webchat-light",
+                                                      daemon=True)
+                self._light_thread.start()
+
+    def _light_loop(self) -> None:
+        """The status light's tick, every LIGHT_TICK_S seconds until stop:
+        the host reads its sources and tells the open apps of a change. A
+        failed tick is logged and the next one runs."""
+        while not self._stop.is_set():
+            try:
+                self.light.tick()
+            except Exception:
+                log.exception("web chat: the status light's tick failed")
+            self._stop.wait(LIGHT_TICK_S)
+
+    def light_changed(self, summary: dict) -> None:
+        """The light's level or its conditions changed: a `light` event with
+        the summary, so every open app redraws it."""
+        self.store.light_emit(summary)
+
+    def light_clear(self) -> None:
+        """Every condition the light pushed has cleared: the push queued
+        under LIGHT_TAG is dropped and each browser it reached gets a clear,
+        which closes the notification. Never raises."""
+        self._clear_tag(LIGHT_TAG, "the status light's recovery")
+
+    def _clear_tag(self, tag: str, why: str) -> None:
+        """Drop the push queued under `tag` and clear it on each browser a
+        push under it reached (web_push.Pusher.clear). Never raises."""
+        if not web_push.AVAILABLE:
+            return
+        try:
+            self.store.push_cancel(tag)
+            owed = self.store.push_shown_take(tag)
+            if owed:
+                self.push.clear(tag, owed, wait=self.writer_only)
+        except Exception:
+            log.exception("web chat: %s did not clear its notifications", why)
 
     # the relay (docs/webchat-relay.md)
 
@@ -3362,6 +3497,9 @@ class WebFrontend(ChatFrontend):
             relay.stop()
         if self.thread_states is not None:
             self.thread_states.stop()
+        light, self._light_thread = self._light_thread, None
+        if light is not None and light is not threading.current_thread():
+            light.join(timeout=5)
         if self._store is not None:
             self._store.close_subscribers()
         if self._push is not None:
@@ -3786,7 +3924,11 @@ class WebFrontend(ChatFrontend):
             key = self.store.thread_of(channel, key) or key
             tag = self._push_tag({"channel": channel, "thread_key": key})
         owed = bool(endpoint) and self.store.push_seen(endpoint, tag)
-        if elsewhere:
+        if elsewhere and tag == LIGHT_TAG:
+            # The status sheet is open on some device: the light's
+            # notification is done with everywhere.
+            self._clear_tag(LIGHT_TAG, "the status sheet seen in the app")
+        elif elsewhere:
             self._clear_thread(channel, key, "a thread seen in the app")
         return owed
 
@@ -4925,7 +5067,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                  **self._owner_routes(),
                                  "bundle": fe.bundle_hash(),
                                  "rooms": fe.rooms_on(),
-                                 "settings": sorted(fe.settings_pages)})
+                                 "settings": sorted(fe.settings_pages),
+                                 "light": fe.light is not None})
                 return None
             if segs == ["push", "vapid"]:
                 self._json(200, {"key": self._pusher().vapid.public_key})
@@ -5006,6 +5149,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return None
         if segs and segs[0] == "relay":
             self._relay_api(method, segs[1:])
+            return None
+        if segs and segs[0] == "status":
+            self._status(method, segs[1:], relayed)
             return None
         if n == 2 and segs[0] == "settings":
             self._settings(method, segs[1])
@@ -5137,6 +5283,33 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                       text if isinstance(text, str) else "")
                 self._json(200, {"ok": True})
                 return after
+        raise _HttpError(404, "not found")
+
+    def _status(self, method: str, rest: list[str], relayed: bool) -> None:
+        """`/api/status`: the status light (docs/webchat.md, Status light).
+        GET answers the summary to any device that reads, with `details`,
+        whether this one may open a condition's details. The details
+        (`/api/status/<id>`: the technical detail and log lines) and marking
+        a notice read (`POST /api/status/<id>/read`) answer only in the
+        owner's own web chat, as a settings change does: a relayed request
+        gets 403 with the words the sheet shows."""
+        light = self.fe.light
+        if light is None:
+            raise _HttpError(404, "no status light")
+        if method == "GET" and not rest:
+            self._json(200, {**light.summary(), "details": not relayed})
+            return
+        if len(rest) == 1 and method == "GET" or len(rest) == 2 and method == "POST" and rest[1] == "read":
+            if relayed:
+                raise _HttpError(403, LIGHT_DETAILS_REFUSED)
+            cid = rest[0]
+            if not cid or len(cid) > 120:
+                raise _HttpError(404, "no such condition")
+            out = light.details(cid) if method == "GET" else light.mark_read(cid)
+            if out is None:
+                raise _HttpError(404, "no such condition")
+            self._json(200, out)
+            return
         raise _HttpError(404, "not found")
 
     def _settings(self, method: str, name: str) -> None:

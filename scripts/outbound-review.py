@@ -65,9 +65,12 @@ def main() -> int:
     text = R.render(report)
     flagged = R.has_flags(report)
     print(text)
+    # A protection that did not hold is an alert, which the web chat's status
+    # light keeps until the owner marks it read (chat_notify, `light`).
+    failed = protection_failed(report, R.NO_CURSOR)
     if (flagged or _today().weekday() == HEARTBEAT_WEEKDAY) and not chat_notify.post(
             chat_notify.health_channel_key(), text,
-            diagnostic=not protection_failed(report, R.NO_CURSOR)):
+            diagnostic=not failed, light="outbound" if failed else ""):
         print("outbound-review: post failed; cursors not advanced", file=sys.stderr)
         return 1
     if state is not None and state.get("cursor_problem"):

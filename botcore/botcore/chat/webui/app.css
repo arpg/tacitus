@@ -606,7 +606,7 @@ a.file-link .file-name { color: var(--accent); }
   box-shadow: var(--shadow);
 }
 .gate h2, .gate p { margin: 0; }
-.gate h2, #phone h2, #settings h2, #room h2, #welcome h2 { font-size: 20px; font-weight: 650; line-height: 1.25; letter-spacing: -.01em; }
+.gate h2, #phone h2, #settings h2, #status h2, #room h2, #welcome h2 { font-size: 20px; font-weight: 650; line-height: 1.25; letter-spacing: -.01em; }
 .refusal { grid-column: 1 / -1; padding: 24px; max-width: 40em; }
 .gate input, #room-name { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--bg); font-size: 16px; }
 .error { color: var(--danger); min-height: 1em; }
@@ -626,7 +626,7 @@ a.file-link .file-name { color: var(--accent); }
 
 /* pairing a phone: the code is dark on light in either scheme */
 
-#phone, #settings, #room, #welcome {
+#phone, #settings, #status, #room, #welcome {
   width: min(calc(100% - 32px), 420px);
   max-height: calc(100dvh - 32px);
   padding: 24px;
@@ -636,12 +636,12 @@ a.file-link .file-name { color: var(--accent); }
   color: var(--text);
   box-shadow: var(--shadow-lg);
 }
-#phone[open], #settings[open], #room[open], #welcome[open] { animation: fade .18s var(--ease); } /* no transform: a dialog keeps its measured size */
+#phone[open], #settings[open], #status[open], #room[open], #welcome[open] { animation: fade .18s var(--ease); } /* no transform: a dialog keeps its measured size */
 @keyframes fade { from { opacity: 0; } }
-#phone::backdrop, #settings::backdrop, #room::backdrop, #welcome::backdrop { background: var(--scrim); }
-#phone form, #settings form, #room form, #welcome form { display: grid; gap: 12px; }
-#phone h2, #phone h3, #phone p, #settings h2, #settings h3, #settings p, #room h2, #room p, #welcome h2, #welcome p { margin: 0; }
-#phone h3, #settings h3 { margin-top: 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
+#phone::backdrop, #settings::backdrop, #status::backdrop, #room::backdrop, #welcome::backdrop { background: var(--scrim); }
+#phone form, #settings form, #status form, #room form, #welcome form { display: grid; gap: 12px; }
+#phone h2, #phone h3, #phone p, #settings h2, #settings h3, #settings p, #status h2, #status h3, #status p, #room h2, #room p, #welcome h2, #welcome p { margin: 0; }
+#phone h3, #settings h3, #status h3 { margin-top: 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
 #phone-qr { width: 100%; max-width: 280px; justify-self: center; padding: 12px; border: 1px solid var(--border); border-radius: var(--r-m);
   image-rendering: pixelated; background: #fff; }
 #phone-link { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--bg); color: var(--text); font: 12px var(--mono); }
@@ -851,7 +851,7 @@ body.no-composer #composer, body.no-composer #new-thread { display: none; }
 #settings-conn { margin-top: 6px; }
 #settings-conn:empty, #notify-why:empty { display: none; }
 @media (max-width: 599px) {
-  #settings { width: 100%; max-width: none; margin: auto 0 0; border-width: 1px 0 0; border-radius: var(--r-xl) var(--r-xl) 0 0;
+  #settings, #status { width: 100%; max-width: none; margin: auto 0 0; border-width: 1px 0 0; border-radius: var(--r-xl) var(--r-xl) 0 0;
     max-height: calc(100dvh - 16px - env(safe-area-inset-top)); padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
 }
 /* A room's menu: the dots beside a room in the drawer (shown on hover or
@@ -955,3 +955,45 @@ button.chip { cursor: pointer; }
   .pend .icon { width: 44px; height: 44px; margin-block: -6px; }
 }
 #file-sheet .size, #file-sheet .note { color: var(--muted); }
+
+/* The status light (docs/webchat.md, Status light): a shape per level as well as a colour, calm while all
+   is good, its words in a tooltip; one at a time: in the menu's column on a wide screen, in the list's bar
+   below that, in a conversation's bar on a phone only when something needs a look. The sheet: a block per
+   condition, its edge in the level's colour, its details folded; then what cleared in the last day. */
+.lv-ok { color: var(--ok); } .lv-warn { color: var(--warn); } .lv-problem { color: var(--danger); } .lv-unknown { color: var(--muted); }
+:is(.light-btn, .lv) svg :is(.ring, .ink) { fill: none; stroke: currentColor; stroke-width: 1.8; }
+:is(.light-btn, .lv) svg .fill { fill: currentColor; stroke: currentColor; stroke-width: 1.2; }
+:is(.light-btn, .lv) svg .mark { fill: var(--panel); stroke: var(--panel); stroke-width: 2.2; }
+:is(.light-btn, .lv) svg .dash { stroke-dasharray: 3 2.6; }
+.light-btn.lv-ok svg { opacity: .75; }
+.lv { display: inline-flex; flex: none; } .lv svg { width: 18px; height: 18px; fill: none; }
+.light-wrap { position: relative; display: inline-flex; flex: none; }
+.light-tip { display: none; position: absolute; top: calc(100% + 2px); right: 0; z-index: 6; width: max-content;
+  max-width: min(300px, calc(100vw - 24px)); padding: 10px 12px; gap: 6px; border: 1px solid var(--border);
+  border-radius: var(--r-m); background: var(--panel); box-shadow: var(--shadow); font-size: 14px; pointer-events: none; }
+.light-tip > span:not(.s-key) { display: flex; align-items: center; gap: 6px; }
+.light-tip p { margin: 0; max-width: 260px; }
+.light-tip .s-key, .cond .s-key, #status-cleared-list .s-key { font-size: 13px; color: var(--muted); }
+@media (hover: hover) { .light-btn:hover + .light-tip { display: grid; } }
+.light-btn:focus-visible + .light-tip { display: grid; }
+.at-nav .light-tip { right: auto; left: -8px; }
+#light-nav { width: 32px; height: 32px; }
+@media (max-width: 999px) { .at-nav { display: none; } }
+@media (min-width: 1000px) { .at-list { display: none; } }
+#light-here.lv-ok, #light-here[hidden] { display: none; }
+@media (min-width: 600px) { #light-here { display: none; } }
+#status-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 16px; }
+#status-head .lv svg { width: 22px; height: 22px; } #status-head .s-key { flex-basis: 100%; }
+#status-list, .cond-more { display: grid; gap: 10px; }
+.cond { display: grid; gap: 4px; padding: 12px 14px; border-left: 4px solid var(--border-strong); border-radius: var(--r-m); background: var(--bg); }
+.cond[data-level="warn"] { border-left-color: var(--warn); } .cond[data-level="problem"] { border-left-color: var(--danger); }
+#status .cond h3 { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 16px; font-weight: 600; color: var(--text); }
+.cond-todo { font-weight: 500; }
+.cond-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.cond summary { padding-block: 6px; color: var(--accent); font-weight: 600; cursor: pointer; }
+.cond-more pre { margin: 0; max-height: 240px; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cond-more .btn { justify-self: start; }
+#status-cleared-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+#status-cleared-list li { display: flex; align-items: flex-start; gap: 8px; }
+@media (pointer: coarse) { #light-nav { width: 44px; height: 44px; } .cond summary { padding-block: 13px; } .cond-acts .btn { min-height: 44px; } }
+@media (min-width: 600px) { #status { width: min(calc(100% - 32px), 480px); } }

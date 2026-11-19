@@ -23,6 +23,8 @@ Checks:
   11. circuit breakers not stuck open       (external service down)
   12. resident tmux Claude pane alive        (when resident mode on)
   13. ea-bot creds carry a refresh token (resident can re-authenticate)
+  14. Outlook sign-in renews                 (the ledger sync's last run got a token)
+  15. the mail mediator runs                 (when mail mediation is on)
 
 Alerting:
   - One consolidated message to the 'ea-assistant' webhook, bypassing the
@@ -37,6 +39,11 @@ Alerting:
     most every REALERT_HOURS; a changed fingerprint — a new check failing,
     OR a different failure of an already-failing check — alerts
     immediately; full recovery posts a single all-clear and resets state.
+  - Every run also writes its results (results.json beside the state, mode
+    0600): each check, when each failing one began, and the checks that
+    recovered in the last two days. The web chat's status light reads it
+    (preprocessor/status_light.py), and on the web chat with debug mode off
+    the light carries the alert instead of a post (chat_notify, `light`).
 
 Usage:
     python3 preprocessor/sentinel.py check [--json] [--force-alert]
@@ -49,6 +56,7 @@ import hashlib
 import json
 import re
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -124,6 +132,15 @@ LOGIN_FIX = (f"cd / && sudo -u ea-bot env HOME={EA_BOT_HOME} "
 BOT_LOG = "slack-bot.log"
 LOGIN_LOST_MARKER = "Claude login is gone"
 LOGIN_LOST_WINDOW_MIN = 60
+# graph_client.authenticate's words when a background run finds no token it
+# can renew; the ledger sync prints them in its one JSON line per run.
+GRAPH_SIGN_IN_MARKER = "Graph token expired and no refresh token available"
+GRAPH_SIGN_IN_FIX = ("sign in again as the owner in a terminal: python3 preprocessor/graph_client.py "
+                     "(docs/AUTHENTICATION.md), or refresh the token an owner plugin's auth source supplies")
+MEDIATOR_UNIT = "ea-mail-mediator"
+# The recoveries results.json keeps, for the status light's Recently cleared.
+CLEARED_KEEP_S = 2 * 24 * 3600
+CLEARED_MAX = 30
 
 
 # ---------------------------------------------------------------------------
@@ -852,6 +869,56 @@ def check_ea_bot_login() -> tuple[bool, str]:
     return (True, "ea-bot creds have a refresh token (auth self-heals)")
 
 
+def _last_line(path: Path, window: int = 64_000) -> str:
+    """The last non-empty line of a log; "" when it cannot be read."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - window))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return ""
+    return next((ln for ln in reversed(lines) if ln.strip()), "")
+
+
+def check_mail_sign_in() -> tuple[bool, str]:
+    """Outlook's sign-in, by the ledger sync's last run (every 15 minutes,
+    on every install with Outlook): its one line says when no token could
+    be had. A run with nothing to check makes no mail call and says
+    nothing either way."""
+    last = _last_line(LEDGER_SYNC_LOG)
+    if GRAPH_SIGN_IN_MARKER in last:
+        return (False, "Outlook sign-in is GONE: the ledger sync's last run could not get a mail "
+                       "token (graph_client: no refresh token it can use); mail reads, drafts and "
+                       "sends fail until it is renewed; fix: " + GRAPH_SIGN_IN_FIX)
+    return (True, "Outlook sign-in renews (the ledger sync's last run)")
+
+
+def check_mail_mediator() -> tuple[bool, str]:
+    """The owner's mail mediator, where mail mediation is on and the host
+    has its systemd unit: the resident's mail reads and drafts wait for it."""
+    if not shutil.which("systemctl"):
+        return (True, "mediator check skipped (no systemctl)")
+    try:
+        import mail_mediation
+        on = mail_mediation.mediation_active_for_resident()
+    except Exception as e:
+        return (True, f"mediator check skipped ({type(e).__name__})")
+    if not on:
+        return (True, "mail mediation is off")
+    try:
+        unit = subprocess.run(["systemctl", "cat", MEDIATOR_UNIT], capture_output=True, timeout=10)
+    except Exception:
+        return (True, "mediator check skipped (systemctl did not answer)")
+    if unit.returncode != 0:
+        return (True, f"no {MEDIATOR_UNIT} unit on this host")
+    state = _systemctl("is-active", MEDIATOR_UNIT) or "unknown"
+    if state == "active":
+        return (True, f"{MEDIATOR_UNIT} is active")
+    return (False, f"{MEDIATOR_UNIT} is {state}: mail reads and drafts from chat turns and "
+                   f"cron lanes fail; fix: sudo systemctl restart {MEDIATOR_UNIT}")
+
+
 CHECKS = [
     ("service_active", check_service_active),
     ("service_enabled", check_service_enabled),
@@ -867,6 +934,8 @@ CHECKS = [
     ("circuit_breakers", check_circuit_breakers),
     ("resident_pane", check_resident_pane),
     ("ea_bot_login", check_ea_bot_login),
+    ("mail_sign_in", check_mail_sign_in),
+    ("mail_mediator", check_mail_mediator),
 ]
 
 
@@ -886,7 +955,9 @@ def _log_local(record: dict) -> None:
 def _post_alert(text: str) -> bool:
     """Post to the health channel (the main EA channel when none is
     configured); retry once; fall back to 'personal'. An alert: it posts
-    whether or not debug mode is on (chat_notify, Debug mode).
+    whether or not debug mode is on (chat_notify, Debug mode). On the web
+    chat with debug mode off the status light shows it instead, from
+    results.json (chat_notify, `light`), and the call counts as delivered.
 
     Returns True if any channel accepted the message."""
     try:
@@ -903,7 +974,7 @@ def _post_alert(text: str) -> bool:
         try:
             if slack_notifier.post_to_slack(key, text,
                                             priority="urgent",
-                                            _bypass_quiet=True):
+                                            _bypass_quiet=True, light="sentinel"):
                 return True
         except Exception:
             pass
@@ -934,6 +1005,48 @@ def _save_state(state: dict) -> None:
         pass
 
 
+def results_file() -> Path:
+    """results.json beside the anti-spam state (the owner's private home)."""
+    return STATE_FILE.parent / "results.json"
+
+
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
+
+
+def _parse_iso(text) -> float | None:
+    try:
+        dt = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def write_results(results: list[dict], now: float | None = None) -> None:
+    """results.json for this run: each check, when each failing one began
+    (kept from the last run while it keeps failing), and the checks that
+    recovered in the last CLEARED_KEEP_S seconds. Written by replacement,
+    mode 0600; a failure to write is logged and never stops the run."""
+    now = time.time() if now is None else now
+    path = results_file()
+    old = _load_json(path)
+    was = old.get("since") if isinstance(old.get("since"), dict) else {}
+    since = {r["check"]: (was.get(r["check"]) if _parse_iso(was.get(r["check"])) else _iso(now))
+             for r in results if not r["ok"]}
+    cleared = [c for c in (old.get("cleared") if isinstance(old.get("cleared"), list) else [])
+               if isinstance(c, dict) and (_parse_iso(c.get("until")) or 0) >= now - CLEARED_KEEP_S]
+    cleared += [{"check": name, "since": began, "until": _iso(now)}
+                for name, began in sorted(was.items()) if name not in since and _parse_iso(began)]
+    doc = {"version": 1, "checked": _iso(now), "results": results, "since": since,
+           "cleared": cleared[-CLEARED_MAX:]}
+    try:
+        import atomic_io
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_io.write_json(path, doc, mode=0o600)
+    except Exception as e:
+        _log_local({"ts": _iso(now), "event": "results_not_written", "error": str(e)[:200]})
+
+
 def run_checks() -> list[dict]:
     results = []
     for name, fn in CHECKS:
@@ -952,6 +1065,8 @@ def cmd_check(as_json: bool, force_alert: bool) -> int:
         return 0
 
     results = run_checks()
+    write_results(results)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     failing = [r for r in results if not r["ok"]]
     # Check names PLUS a digest of the details: a different failure of an
     # already-failing check must alert immediately; only the byte-identical
@@ -993,7 +1108,7 @@ def cmd_check(as_json: bool, force_alert: bool) -> int:
             _save_state({**state, "fingerprint": fingerprint})
         if not as_json:
             for r in failing:
-                print(f"PROBLEM: {r['detail']}")
+                print(f"{stamp} PROBLEM {r['check']}: {r['detail']}")
         return 1
 
     # All clear — post recovery exactly once if we were failing.
@@ -1004,7 +1119,7 @@ def cmd_check(as_json: bool, force_alert: bool) -> int:
                     "event": "recovered", "was": prev_fp})
     _save_state({})
     if not as_json:
-        print("all checks ok")
+        print(f"{stamp} all checks ok")
     return 0
 
 

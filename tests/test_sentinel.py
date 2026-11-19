@@ -627,9 +627,9 @@ class _PostRecorder:
         self.results = results or {}
 
     def post_to_slack(self, channel_key, text, blocks=None,
-                      priority="normal", _bypass_quiet=False):
+                      priority="normal", _bypass_quiet=False, light=""):
         self.calls.append({"channel": channel_key, "text": text,
-                           "priority": priority, "bypass": _bypass_quiet})
+                           "priority": priority, "bypass": _bypass_quiet, "light": light})
         return self.results.get(channel_key, True)
 
 
@@ -658,6 +658,8 @@ def test_alert_posts_urgent_bypass():
         assert rec.calls[0]["channel"] == "ea-assistant"
         assert rec.calls[0]["priority"] == "urgent"
         assert rec.calls[0]["bypass"] is True
+        # the web chat's status light may carry it (chat_notify, `light`)
+        assert rec.calls[0]["light"] == "sentinel"
 
 
 def test_antispam_no_realert_within_window():

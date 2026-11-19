@@ -72,6 +72,15 @@ row carries `hidden`, as the bot's does with debug mode off; a POST to
 /api/settings/debug sets it, records the body in `debug_posts` and sends
 the room's row as a `channel` event, as the bot does.
 
+`status` (a summary as the bot's status light gives it; None, the
+default, answers /api/status with 404, as a bot without the light does)
+serves the light: GET /api/status adds `details` (`status_details_ok`,
+True by default, False as for a device away from home), GET
+/api/status/<id> answers `status_details[id]` (403 where details are
+refused), and POST /api/status/<id>/read moves a notice to Recently
+cleared, recorded in `status_reads`. `set_status` changes the summary and
+sends it as a `light` event, as the bot's tick does.
+
 The owner's own actions: GET /api/search finds the messages that hold
 every word of `q` (any case, anywhere in the text), newest first, with
 the bot's row shape; POST /api/messages/<ch>/<id>/react toggles one of the
@@ -238,8 +247,13 @@ class Stub:
                  sign: bool = False, relay_pairing: bool = False, settings: bool | list = False,
                  push: bool = False, handoff: bool = False, owner_routes: str | None = None,
                  subscriptions: list | None = None, public_url: str | None = None,
-                 rooms: bool | None = None, debug: bool | None = None):
+                 rooms: bool | None = None, debug: bool | None = None, status: dict | None = None):
         self.cond = threading.Condition()
+        self.status = status
+        self.status_details: dict[str, dict] = {}
+        self.status_details_ok = True
+        self.status_reads: list[str] = []
+        self.status_gets = 0
         self.public_url = public_url
         # /api/me's `rooms`: None leaves it out, as a bot from before it did
         self.rooms = rooms
@@ -433,6 +447,14 @@ class Stub:
         with self.cond:
             m.update({"updated_at": time.time(), **fields})
             self._event(typ, m)
+
+    def set_status(self, summary: dict) -> None:
+        """The status light's new summary, sent as a `light` event."""
+        with self.cond:
+            self.status = summary
+            self.eseq += 1
+            self.events.append((self.eseq, "light", dict(summary)))
+            self.cond.notify_all()
 
     def emit_bot(self, channel: str = DM, text: str = "A new message from the stub.",
                  thread_key: str | None = None) -> dict:
@@ -872,7 +894,7 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["me"]:
             return self._json(200, {"owner": "owner", "bot": "bot", "public_url": s.public_url,
                                     "bundle": s.bundle.hash if s.bundle else "",
-                                    "settings": s.settings, "push": s.push,
+                                    "settings": s.settings, "push": s.push, "light": s.status is not None,
                                     **({"rooms": s.rooms} if s.rooms is not None else {}),
                                     **({"relay": True} if s.relay_pairing else {}),
                                     **({"owner_routes": s.owner_routes, "handoff": s.handoff} if s.owner_routes else {})})
@@ -882,6 +904,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, s.notify)
         if parts == ["settings", "debug"] and "debug" in s.settings:
             return self._json(200, {"on": s.debug})
+        if parts and parts[0] == "status" and s.status is not None:
+            if len(parts) == 1:
+                s.status_gets += 1
+                return self._json(200, {**s.status, "details": s.status_details_ok})
+            if not s.status_details_ok:
+                return self._json(403, {"error": "Details show only in Tacitus on your own network."})
+            if len(parts) == 2 and parts[1] in s.status_details:
+                return self._json(200, s.status_details[parts[1]])
+            return self._json(404, {"error": "no such condition"})
         if parts == ["push", "vapid"] and s.push:
             return self._json(200, {"key": STUB_VAPID})
         if parts == ["push", "subscriptions"] and s.push:
@@ -944,6 +975,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(401, {"error": "not the owner"})
         if not self._owner():
             return self._json(401, {"error": "not the owner"})
+        if len(parts) == 3 and parts[:1] == ["status"] and parts[2] == "read" and s.status is not None:
+            self._body()
+            if not s.status_details_ok:
+                return self._json(403, {"error": "Details show only in Tacitus on your own network."})
+            cond = next((c for c in s.status["conditions"] if c["id"] == parts[1] and c.get("read")), None)
+            if cond is None:
+                return self._json(404, {"error": "no such condition"})
+            s.status_reads.append(parts[1])
+            rest = [c for c in s.status["conditions"] if c is not cond]
+            worst = max((c["level"] for c in rest), key=["ok", "warn", "problem"].index, default="ok")
+            s.set_status({**s.status, "conditions": rest, "level": worst,
+                          "line": rest[0]["title"] if len(rest) == 1 else f"{len(rest)} things need a look" if rest else "All good",
+                          "cleared": [{**cond, "until": time.time(), "how": "read"}, *s.status.get("cleared", [])]})
+            return self._json(200, s.status)
         if len(parts) == 3 and parts[0] == "channels" and parts[2] in ("archive", "unarchive"):
             return self._json(*s.change_room(parts[1], archived=parts[2] == "archive"))
         if len(parts) == 3 and parts[0] == "channels" and parts[2] in ("mute", "unmute"):

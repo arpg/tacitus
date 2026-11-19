@@ -100,22 +100,9 @@ def fail(name, detail="", fix=""):
 # --share: the output a user pastes into a public issue. Addresses, the
 # account names in home paths, host names and long ids become fixed
 # placeholders, so the shape of the report survives and the identities do
-# not. The masking runs on the rendered text, never on the checks.
-_SHARE_RULES = [
-    (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "<email>"),
-    (re.compile(r"(/(?:home|Users)/)(?!ea-bot/)[^/\s'\"]+"), r"\1<user>"),
-    (re.compile(r"https?://[^\s'\"]+"), "<url>"),
-    (re.compile(r"\b[a-z0-9-]+\.(?:ts\.net|local|lan|edu|com|org|net)\b"), "<host>"),
-    (re.compile(r"\b[0-9a-f]{24,}\b"), "<id>"),
-]
-
-
-def share_mask(text: str) -> str:
-    """The text with addresses, home-path user names, URLs, host names and
-    long hexadecimal ids replaced by placeholders."""
-    for rx, rep in _SHARE_RULES:
-        text = rx.sub(rep, text)
-    return text
+# not. The masking runs on the rendered text, never on the checks. The
+# rules live in log_redact, which the web chat's status light shares.
+from log_redact import share_mask  # noqa: E402,F401
 
 
 def _read_env(path: Path) -> dict:

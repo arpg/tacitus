@@ -176,8 +176,13 @@ under a ShadowFrontend the composite switches the shadow off
   with LIKE.
 - `events(seq INTEGER PK AUTOINCREMENT, at REAL, type TEXT, channel TEXT,
   id TEXT, payload TEXT)`: the SSE log; `type` is `message`, `update`,
-  `reaction`, `card`, `status`, `file`, `channel`, `thread_state`,
-  `release`, `read`.
+  `reaction`, `card`, `status` (a card's final line), `file`, `channel`,
+  `thread_state`, `release`, `read`, `light` (the status light).
+- `light_notices(id INTEGER PK AUTOINCREMENT, kind TEXT, text TEXT, at REAL,
+  read_at REAL)`: the alerts the owner must read, kept for the status
+  light until marked read (Status light); the `meta` rows `light_memory`
+  (what the light showed, since when, what pushed and what cleared) and
+  `light_tick` (when the bot's light last looked) beside them.
 - `reads(channel TEXT PK, seq INT)`: each channel's floor, under which
   every message is read; `thread_reads(channel TEXT, thread_key TEXT,
   seq INT, PK(channel, thread_key))`: each thread's read mark above it
@@ -234,7 +239,7 @@ subset and escapes everything else; it never injects HTML from text.
 
 | Verb | Path | Body / result |
 |---|---|---|
-| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool, "relay": bool, "card_actions": bool, "owner_routes": "all" \| "handoff" \| "none", "handoff": bool, "bundle": "<hash>", "rooms": bool, "settings": ["notify", "routing"]}`; `owner_routes` is which device routes this request reaches (`"all"` in the owner's own web chat, `"handoff"` through the relay from an approved phone paired on the bot's own origin, `"none"` from any other device; `docs/webchat-relay.md`, the relayed owner routes), `handoff` whether "A computer" works from here now; `bundle` is the bundle hash the bot signs now, "" when it signs none (Code integrity); `rooms` whether the install's mode opens project rooms (the collaborator mode; the app shows its New room button only then); `settings` names the settings pages the host registered |
+| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool, "relay": bool, "card_actions": bool, "owner_routes": "all" \| "handoff" \| "none", "handoff": bool, "bundle": "<hash>", "rooms": bool, "settings": ["notify", "routing"]}`; `owner_routes` is which device routes this request reaches (`"all"` in the owner's own web chat, `"handoff"` through the relay from an approved phone paired on the bot's own origin, `"none"` from any other device; `docs/webchat-relay.md`, the relayed owner routes), `handoff` whether "A computer" works from here now; `bundle` is the bundle hash the bot signs now, "" when it signs none (Code integrity); `rooms` whether the install's mode opens project rooms (the collaborator mode; the app shows its New room button only then); `settings` names the settings pages the host registered; `light` whether the bot runs the status light (Status light) |
 | GET | `/manifest.sig.json` | the signed manifest of the app's files, without auth (Code integrity); 404 when the bot signs none |
 | GET | `/api/bundle` | the same document, for the owner: the route the relay reaches |
 | GET | `/api/app/{file}` | a file that the signed manifest names, its bytes as on disk (`headers.json` as the bot writes it), as an attachment with the sandbox policy and the type of its name; 404 for any other name. A phone off the tailnet, or on the relay's origin, takes a new release here, through the relay (Code integrity) |
@@ -257,7 +262,7 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/channels/{ch}/files` | multipart `file` (one part, or up to 10 parts in order), optional `text`, `thread_key`, `nonce` → the stored `file` message of the first file, which carries the text; each other file is a `file` message of its own after it in the same thread (the stream brings them); dispatches one `InboundMessage` with `files=[FileRef, ...]`, every file in order. A `nonce` the browser sent before answers the same row and dispatches nothing, as for a message; 400 for more than 10 files |
 | GET | `/api/files/{id}` | the bytes, `Content-Disposition: attachment` |
 | POST | `/api/cards/{ch}/{id}/actions` | `{"action_id", "value"?, "selected"?, "text"?}` → `{"ok": true}`; dispatches an `ActionEvent` (`source` `button` or `select`); `text` is the owner's line, kept on one line of 300 characters at most and only for an action the card stored with `ask` |
-| GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row, `thread_state` events `{"channel", "thread_key", "state", "by", "reason", "at", "stale", "tap"}` (`tap`: the state says only that a card waits, Action requests), `release` events `{"bundle"}` when the bot signs a new release of the app, `read` events `{"channel", "thread_key", "unread", "unread_threads", "as_of"}` when a thread read on some device changes the channel's counts, `thread_key` "" for the whole channel); a `: ping` comment every 20 s |
+| GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row, `light` events the status light's summary as `GET /api/status` gives it, without `details` (Status light), `thread_state` events `{"channel", "thread_key", "state", "by", "reason", "at", "stale", "tap"}` (`tap`: the state says only that a card waits, Action requests), `release` events `{"bundle"}` when the bot signs a new release of the app, `read` events `{"channel", "thread_key", "unread", "unread_threads", "as_of"}` when a thread read on some device changes the channel's counts, `thread_key` "" for the whole channel); a `: ping` comment every 20 s |
 | POST | `/api/pair` | `{"token"}` → sets the cookie |
 | GET | `/api/push/vapid` | `{"key": "<base64url P-256 point>"}`, the `applicationServerKey`; 404 when push is off |
 | POST | `/api/push/subscribe` | the browser's `PushSubscription.toJSON()` → `{"ok": true}` |
@@ -275,6 +280,9 @@ subset and escapes everything else; it never injects HTML from text.
 | GET | `/api/relay/status` | `{"enabled": bool, ...}`: the relay client's state (`connected`, `install_id`, `bot_public`, `client_key`, `sign_public`, `devices`, `pending`, ...), how a phone can pair (`pair_own`, `pair_relay`, and `bundle`, the bundle hash or null), and `handoff` (a code for a computer would work now) with `hosted_app` (where that computer opens the app, "" when off) |
 | GET | `/api/settings/{name}` | the page's data; for `routing` (the EA's routing table, `docs/llm-lanes.md` 1.1): `{"local": {"configured", "model", "reachable", "detail"}, "source", "values", "hosted_default", "simple": {"model", "choices": [{"model", "name", "ready"}], "line", "custom", "custom_line"}, "rows": [{"task", "label", "what", "value", "allowed", "locked", "floor", "effective", "why"}]}`; for `notify` (Notifications): `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}`, the settings in force; for `debug` (Debug mode): `{"on": bool}`; 404 for a page the host did not register |
 | POST | `/api/settings/{name}` | for `routing`, `{"tasks": {"<task>": "local" \| "hosted" \| "auto"}}`, or the pick at the top alone, `{"hosted_default": "claude" \| "codex"}`, → the page's data with `"saved": true`; the bot writes the owner-private `routing.json`, never `ea-config.json`. 400 with the reason for an unknown task or value or a value under a floor. For `notify`, the keys to change, any of `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}` → the page's data with `"saved": true`; the bot merges them over the web block's `notify_push` in the owner-private `chat.json` (every other key kept, mode 0600; `preprocessor/web_notify_settings.py`) and pushes by them at once. 400 with the reason for an unknown key, a switch that is not true or false, another `quiet`, an empty body, or a process that is not the owner's. For `debug`, `{"on": bool}` → `{"on": bool, "saved": true}`; the bot writes the chat block's `diagnostics` into the owner-private `chat.json` the same way and sends the health room's row with its `hidden` mark as a `channel` event; 400 "Debug mode takes on or off." for any other body. Every page: 403 for a relayed request (settings change only in the owner's own web chat) |
+| GET | `/api/status` | `{"level": "ok" \| "warn" \| "problem", "line", "conditions": [{"id", "level", "title", "line", "todo", "since", "until"?, "action"?, "read"}], "cleared": [{"id", "level", "title", "line", "since", "until", "how": "fixed" \| "read"}], "as_of", "details": bool}`: the status light (Status light); `details` says whether this device may open a condition's details; 404 where the bot runs no light |
+| GET | `/api/status/{id}` | `{"id", "detail", "log": [...], "log_from"}`: one condition's technical detail and the log lines of its part, bounded and masked (Status light); 404 for an id the light does not show; 403 "Details show only in Tacitus on your own network." for a relayed request |
+| POST | `/api/status/{id}/read` | `{}` → the summary as `GET /api/status` gives it: the owner read a notice, which leaves the light for Recently cleared; 404 for an id that is no notice on the light; 403 for a relayed request, as above |
 | POST | `/api/relay/attest` | `{"bundle": "<hash>"}`, from a phone through the relay only → `{"ok": true, "bundle_verified": true, "release"}`, or 409 `{"error", "bundle_verified": false}` for another hash; it records the check and grants nothing (Code integrity) |
 
 The owner routes under `/api/relay/`, and `/api/pair`, answer only in
@@ -414,8 +422,11 @@ owner-private `chat.json` alone, so the resident's copy in
   `hidden` as a `channel` event, so every open app shows or hides it at
   once. The Mail digests channel stays: it holds the list and admissions
   digests as well.
-- **Alerts.** A post with no mark goes out in any mode. While the health
-  room is hidden, a post under the `health` key goes to the EA channel
+- **Alerts.** A post with no mark goes out in any mode. An alert the
+  status light can carry (`light=`, Status light) goes to the light
+  instead while debug mode is off on the web chat; in debug mode it posts
+  to the health room as before. While the health room is hidden, any other
+  post under the `health` key goes to the EA channel
   (`chat_notify._web_route`). On Slack the health webhook keeps its alerts.
 - **An install from before the switch** has no `diagnostics` key, so it
   reads off: its diagnostics stop with the update, and its health room
@@ -441,7 +452,7 @@ when a new poster under the `health` key or a digest is not in it):
 | Release tests that are not green | `tests/release/run_release.py --alert` | diagnostic |
 | The outbound web review: its all-clear and its flags | `scripts/outbound-review.py` | diagnostic |
 | The outbound web review when a protection did not hold (a web tool in a cron lane, an ea-bot log rewritten, a cursor refused) | `scripts/outbound-review.py` | alert |
-| The sentinel: a service down, a briefing that did not post, a Graph breaker open 30 minutes, a sign-in that cannot renew, and its recovery | `sentinel.py check` | alert |
+| The sentinel: a service down, a briefing that did not post, a Graph breaker open 30 minutes, a sign-in that cannot renew, the mail mediator down, and its recovery | `sentinel.py check` | alert |
 | The boundary audit, on a change | `scripts/boundary-audit.py` | alert |
 | A plugin whose files changed, which does not act | `plugin_registry.alert_integrity_failures` | alert |
 | Sealed mail that fails to seal or comes back unread in bulk | `ghost_week.tripwire` | alert |
@@ -451,6 +462,144 @@ when a new poster under the `health` key or a digest is not in it):
 
 A loud alert (`alert.py`, a page watch), a card, the briefings and a
 failed update (the briefing's update line) never pass through the gate.
+
+## Status light
+
+A light in the app's top bar answers one question: is everything working
+right now. It is green while it is, yellow when something is degraded or
+will fix itself, red when something needs the owner, and never a debug
+surface: plain words first, the technical detail only when the owner
+opens it. It replaces the alerts that told of a state in Ask Tacitus.
+
+**The bot's side** (`preprocessor/status_light.py`, the bot's
+`WebFrontend.light`). A tick every 30 seconds (`LIGHT_TICK_S`) reads the
+state the system already keeps, with no probe of its own, and gives the
+conditions now: each with an id, a level (`warn` or `problem`), a title
+of a few words, one plain sentence, what the owner can do, since when,
+an action the app can offer where one exists, and a technical detail with
+the log lines of its part for the drill-down. The overall level is the
+worst condition's, `ok` with none; the line is "All good", the one
+condition's title, or "N things need a look".
+
+| Condition | Source | Level |
+|---|---|---|
+| Tacitus stopped (the bot's service); no briefing today | the sentinel's `results.json`, every 10 minutes | problem |
+| Scheduled work stopped (the cron heartbeat) | the sentinel | problem, pushes |
+| Claude sign-in needs you; Mail sign-in needs you (the ledger sync's last run found no Outlook token); Mail helper stopped (the mediator's unit, where mail mediation is on) | the sentinel | problem, pushes |
+| Program files unprotected (the deploy tree's check) | the sentinel | problem, pushes |
+| Start at boot is off; a second copy runs; no afternoon update; no weekly review; a scheduled job failed; held messages stuck; running an older copy; a check the sentinel adds later | the sentinel | warn |
+| Checks stopped (the sentinel's results are over 40 minutes old) | the sentinel's `results.json` | warn |
+| Outlook is not answering, or is limiting Tacitus | `circuit-breakers.json`, the Graph lanes | warn inside the sentinel's 30-minute grace, problem past it |
+| A service is not answering | `circuit-breakers.json`, another service | warn |
+| A safety check failed / needs a look | the boundary audit's state (daily) | problem (a FAIL), pushes; warn (WARN only) |
+| An add-on is switched off | the bot's own check of each plugin (`plugin_registry.verified_plugins`); the record of posted failures where that check cannot run | problem |
+| Private mail check failed (the sealed-mail tripwire) | a notice | problem, pushes, until read |
+| A web safety check failed (an outbound review where a protection did not hold) | a notice | problem, pushes, until read |
+| A setting changed (the persistence watch) | a notice | warn, until read |
+| Plan limit reached / Plan nearly used (90%) | the saved rate-limit reading (`rate_limits.py`), when under 12 hours old and its window has not reset | problem, pushes / warn |
+| Your own AI is not answering | `model_routing.local_status`, after 10 minutes | warn, with Open Models |
+| Away from home is down (the relay client not connected) | the relay client, after 10 minutes | warn |
+| An update did not install, stopped, waits for a new key, is on hold, or was not looked for in two days | the updater's status (`update_status.doctor_row`), on the release layout | warn, with Show version |
+| Google Drive is not connected | the Drive accounts user-profile.json lists with no sign-in | warn, with Connect |
+| A check could not run | a source that failed (its kind of error only) | warn |
+
+Never on the light: the crontab against `crontab.master` (the symptom
+checks see what it breaks), the resident pane (chat turns do not run
+there), a tuning or tool model's own breaker, an update channel set in
+the wrong file or a tree not laid out for updates (the doctor says
+those). The doctor's own checks are not read: the doctor keeps no result
+between runs, and the light never runs it.
+
+**Trust.** The status comes from the owner's bot. An owner file it reads
+(the sentinel's results, the audit's state, the plugin record, the
+updater's status, the plan reading) passes the owner checks. What comes
+from the resident's space (the breakers, user-profile.json) adds a
+condition in the fixed words above, with only checked fields (a known
+service, a count, a time, a fixed kind of error) in its detail, never its
+text. A notice's text is the poster's own report, shown escaped in the
+drill-down.
+
+**Memory and Recently cleared.** The store keeps what the light showed
+(`light_memory`): when each condition began (the source's own time where
+it has one), and the conditions that cleared in the last day, with how
+(`fixed`, or `read` for a notice). The sentinel keeps its own recoveries
+of the last two days in `results.json`, which the light adds, so a light
+that was red while the bot itself was down still explains itself. A
+condition with a grace (the local model, the relay) shows once it has
+lasted that long.
+
+**The `light` event.** When the level or a condition changes (its id,
+level or words) or something clears, the tick sends the summary as a
+`light` event, and every open app redraws the light and an open sheet.
+
+**Notifications.** A condition marked to push sends one notification
+when it turns red: "Tacitus" and its sentence (or "N things need a
+look."), under the tag `status`, at high urgency, opening `#/status`
+(the sheet). It pushes once per episode, and not again for six hours
+(`PUSH_AGAIN_S`) if it comes back. Once every condition that pushed has
+cleared, the notification is cleared on each device it reached, with no
+new buzz; opening the sheet clears it everywhere too (`/api/push/seen`
+with the tag `status`). Only where the web chat runs alone: in shadow
+mode the primary's health channel has the alert.
+
+**The drill-down.** `GET /api/status/{id}` gives a condition's detail
+and the log lines of its part, only in the owner's own web chat: a
+relayed request gets 403 with "Details show only in Tacitus on your own
+network.", the rule a settings change follows, and the sheet says that
+line instead of Details. The lines come only from owner logs that hold
+no mail, and only lines of a known shape: the sentinel's (`sentinel.log`,
+that check's own lines), the Graph client's retries (`graph-client.log`,
+"Graph API HTTP 5xx ..." lines), the mediator's audit
+(`mail-mediator.log`, a failed run's time, tool, verb and outcome), the
+boundary audit's last table (its warn and FAIL rows), the updater's
+`[update]` lines, and the local model's failed calls (time, task and the
+kind of error). The ledger sync's log, the tagger's and the bot's own
+are never read: they can name mail. At most the newest 20 lines from an
+hour before the condition began, each cut at 300 characters, 6,000 in
+all; the detail at 4,000. Every line and the detail pass
+`log_redact.redact`: the credential shapes the secrets lint refuses, a
+bearer value, the value after a secret-looking name, then the doctor's
+`--share` masking (addresses, home-path names, URLs, hosts, long ids).
+
+**Alerts that the light carries** (`chat_notify.post(..., light=<kind>)`,
+on the web chat with debug mode off, while the bot's light ticked in the
+last five minutes; otherwise, and on any failure, the alert posts as
+before):
+
+| Alert | Poster | Now |
+|---|---|---|
+| The sentinel's problems and its recovery | `sentinel.py check` | light; a push once for the conditions marked so above |
+| The boundary audit, on a change | `scripts/boundary-audit.py` | light (its state); a push once on a FAIL |
+| A plugin whose files changed | `plugin_registry.alert_integrity_failures` | light |
+| The sealed-mail tripwire | `ghost_week.tripwire` | light with Got it; a push once |
+| An outbound review where a protection did not hold | `scripts/outbound-review.py` | light with Got it; a push once |
+| The persistence watch | `scripts/persistence-digest.py` | light with Got it |
+| A standing rule added or retired | `scripts/preferences-digest.py` | still a post in Ask Tacitus (the owner answers it there) |
+
+In debug mode every one of them posts to the health room as before (and
+the light shows the same state). On Slack nothing changes: there is no
+light, and the health webhook keeps every alert.
+
+**The app.** The light sits in the top bar: beside the name in the
+menu's column from 1000 px wide, in the list's bar below that, and in a
+conversation's bar on a phone only while something needs a look. Each
+level has a shape as well as a colour (a ringed check, calm and a little
+faded; a triangle with a mark; a filled circle with a mark) and its
+words in the label ("Status: All good"); while the app is not connected
+it is a dashed ring that says it cannot know. Under a mouse, or with the
+keyboard's focus, a tooltip says the line and the conditions. A press
+(a tap on a phone) opens the sheet, "How Tacitus is doing", docked to the
+bottom on a phone: the line and when it was checked, then a block per
+condition with its edge in the level's colour, its sentence, since when,
+what to do, its action (Connect posts its words in a new Ask Tacitus
+conversation, Open Models opens Settings), Got it on a notice, and
+Details folded, which reads the drill-down when opened and has Copy; then
+Recently cleared, each with when and after how long. The app asks for
+the status when it starts (where `/api/me` says `light`) and each time
+its stream opens, and redraws on each `light` event; a Details left open
+stays open through a redraw. `#/status` opens the sheet over the place
+the app shows. The welcome's third card says the light stays green while
+everything works.
 
 ## Unread
 

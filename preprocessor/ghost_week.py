@@ -1173,13 +1173,16 @@ def tripwire(*, now: datetime | None = None, post=None, cfg: dict | None = None)
         last = _parse(st.get("last_alert") or "")
         if last is None or (now - last).total_seconds() >= TRIPWIRE_EVERY_S:
             # An alert: mail that does not seal is mail no lane can read, so
-            # it posts whether or not debug mode is on (chat_notify, Debug mode).
+            # it posts whether or not debug mode is on (chat_notify, Debug mode);
+            # on the web chat with debug mode off the status light keeps it
+            # until the owner marks it read (chat_notify, `light`).
             text = ":warning: Ghost-week tripwire. " + " ".join(alerts) + \
                 " Turn back with `remote_llm.py set mail enforce` or `set scheduling shadow`."
             try:
                 if post is None:
                     import slack_notifier
-                    slack_notifier.post_to_slack(slack_notifier.health_channel_key(), text)
+                    slack_notifier.post_to_slack(slack_notifier.health_channel_key(), text,
+                                                 light="tripwire")
                 else:
                     post(text)
                 out["posted"] = True
