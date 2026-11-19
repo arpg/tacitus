@@ -1,0 +1,1 @@
++213   the status light (a light in the top bar per width with its shape and words, the connection folded into it, its tooltip, the sheet with each condition, its action, Got it, its details read when opened and Copy, Recently cleared, the `light` event, the #/status route, and the welcome's line on it)

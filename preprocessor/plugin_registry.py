@@ -627,13 +627,15 @@ def integrity_failures() -> dict:
 
 def _post_health(text: str) -> bool:
     """An alert: it posts whether or not debug mode is on (chat_notify,
-    Debug mode)."""
+    Debug mode). On the web chat with debug mode off the status light shows
+    the failing plugins instead, from INTEGRITY_ALERTS_FILE (chat_notify,
+    `light`)."""
     try:
         import chat_notify
     except ModuleNotFoundError:
         from preprocessor import chat_notify
     return bool(chat_notify.post(chat_notify.health_channel_key(), text,
-                                 priority="urgent", _bypass_quiet=True))
+                                 priority="urgent", _bypass_quiet=True, light="plugin-integrity"))
 
 
 def alert_integrity_failures(failures=None, private=None, post=None, checked=None) -> int:

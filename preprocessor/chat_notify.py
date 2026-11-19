@@ -43,6 +43,19 @@ WebFrontend.hidden_channels), so a health post that still goes out goes
 to the EA channel (_web_route). docs/webchat.md, Debug mode, lists each
 poster and its kind.
 
+The status light (preprocessor/status_light.py, docs/webchat.md, Status
+light) carries the alerts that tell of a state or that the owner must
+read, on the web chat while debug mode is off. A poster names its alert
+(`light=`, one of LIGHT_KINDS) and post() then hands it to the light
+instead of the EA channel: a state kind (the sentinel, the boundary audit,
+a plugin's integrity) is read by the light from the poster's own record,
+so nothing is stored here; a notice kind (the sealed-mail tripwire, the
+persistence watch, an outbound review whose protection did not hold) is
+kept in the web chat's store with its full text until the owner marks it
+read. Only while the bot's light runs (its tick within LIGHT_ALIVE_S);
+otherwise, and on any failure, the alert posts as before. Slack and debug
+mode keep every post.
+
 post_as_bot() is the direct post with bot credentials that owner-side
 jobs (scheduled_sends, owner plugins) use for alerts into the EA
 channel. llm_tool_grants() names the chat tools the LLM gets on the
@@ -50,7 +63,7 @@ configured platform, without building a client.
 
 CLI:
     chat_notify.py llm-grants
-    chat_notify.py post --key personal --text "..." [--diagnostic]
+    chat_notify.py post --key personal --text "..." [--diagnostic] [--light <kind>]
     chat_notify.py debug [on|off]     # debug mode: say it, or set it (owner only)
 """
 from __future__ import annotations
@@ -478,11 +491,55 @@ def web_direct(text: str) -> bool:
     return bool(_send_web("personal", [text], direct=True))
 
 
+# ── The status light ─────────────────────────────────────────────────
+# The alerts the web chat's status light carries while debug mode is off.
+# A state kind: the light reads the poster's own record, so the post is
+# left out. A notice kind: kept in the store until the owner marks it read.
+
+LIGHT_STATE_KINDS = ("sentinel", "boundary", "plugin-integrity")
+LIGHT_NOTICE_KINDS = ("tripwire", "persistence", "outbound")
+LIGHT_KINDS = LIGHT_STATE_KINDS + LIGHT_NOTICE_KINDS
+# The light runs when the bot's tick marked the store within this long.
+LIGHT_ALIVE_S = 300
+# The longest notice text kept; a report past it is cut with a mark.
+LIGHT_NOTICE_MAX = 20_000
+
+
+def light_carries(kind: str) -> bool:
+    """True when an alert of `kind` goes to the status light instead of a
+    post: the web chat, debug mode off, and a kind the light knows."""
+    return kind in LIGHT_KINDS and frontend_name() == "web" and not diagnostics_on()
+
+
+def _light(kind: str, text: str) -> bool:
+    """Hand an alert to the status light: a notice is stored for it, a
+    state kind needs nothing stored. False when the light cannot take it
+    (no light running, a process that is not the owner's, a store that
+    does not open), and the caller then posts it: no alert is dropped."""
+    try:
+        fe = _web_sender()
+        store = getattr(fe, "store", None)
+        if store is None:
+            return False
+        if not store.light_alive(LIGHT_ALIVE_S):
+            print(f"[status light] not running; the {kind} alert posts")
+            return False
+        if kind in LIGHT_NOTICE_KINDS:
+            body = text if len(text) <= LIGHT_NOTICE_MAX else text[:LIGHT_NOTICE_MAX] + "\n[cut]"
+            store.light_notice_add(kind, body)
+        print(f"[status light] {kind} alert shown on the status light, not posted "
+              f"({len(text)} characters)")
+        return True
+    except Exception as e:
+        print(f"[status light] the {kind} alert could not go to the light ({e}); it posts")
+        return False
+
+
 # ── Public API ────────────────────────────────────────────────────────
 
 def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
          priority: str = "normal", _bypass_quiet: bool = False,
-         diagnostic: bool = False) -> bool | str:
+         diagnostic: bool = False, light: str = "") -> bool | str:
     """Post a message to the configured chat platform.
 
     If `text` contains `SPLIT_MARKER`, splits into multiple top-level
@@ -493,6 +550,10 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
     debug mode is off (diagnostics_on) it reaches no frontend and no
     quiet-hours queue, and the call returns True. A held one carries the
     mark, so a flush after debug mode went off drops it.
+
+    `light` names an alert the web chat's status light can carry
+    (LIGHT_KINDS): on the web chat with debug mode off it goes to the light
+    and the call returns True; when the light cannot take it, it posts.
 
     `priority`: "normal" or "urgent". When the user is in local quiet hours
     (see quiet_hours.py / travel mode), a deferrable post is HELD in a queue
@@ -509,6 +570,8 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
     """
     if diagnostic and not diagnostics_on():
         return _withheld(channel_key, text)
+    if light and light_carries(light) and _light(light, text):
+        return True
     if not _bypass_quiet and channel_key not in DIGEST_KEYS:
         try:
             import quiet_hours
@@ -648,6 +711,8 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--bypass-quiet", action="store_true")
     p.add_argument("--diagnostic", action="store_true",
                    help="one of the bot's own reports: posted only in debug mode")
+    p.add_argument("--light", default="", choices=("",) + LIGHT_KINDS,
+                   help="an alert the web chat's status light carries while debug mode is off")
     d = sub.add_parser("debug", help="say whether debug mode is on, or turn it on or off "
                                      "(writes the owner-private chat.json)")
     d.add_argument("state", nargs="?", choices=("on", "off"))
@@ -669,7 +734,7 @@ def main(argv: Optional[list] = None) -> int:
         print(f"Debug mode is {'on' if diagnostics_on() else 'off'}.")
         return 0
     return 0 if post(a.key, a.text, priority=a.priority, _bypass_quiet=a.bypass_quiet,
-                     diagnostic=a.diagnostic) else 1
+                     diagnostic=a.diagnostic, light=a.light) else 1
 
 
 if __name__ == "__main__":

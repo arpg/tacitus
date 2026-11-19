@@ -1542,7 +1542,9 @@ def _save_state(state: dict) -> None:
 def _post(text: str) -> bool:
     """Post to the health channel (the main EA channel when none is
     configured); retry once, then the personal channel. An alert: it posts
-    whether or not debug mode is on (chat_notify, Debug mode)."""
+    whether or not debug mode is on (chat_notify, Debug mode). On the web
+    chat with debug mode off the status light shows the audit's state
+    instead, from STATE_FILE (chat_notify, `light`)."""
     try:
         import slack_notifier
     except Exception as e:
@@ -1555,7 +1557,7 @@ def _post(text: str) -> bool:
     for attempt in (1, 2):
         try:
             if slack_notifier.post_to_slack(key, text, priority="urgent",
-                                            _bypass_quiet=True):
+                                            _bypass_quiet=True, light="boundary"):
                 return True
         except Exception:
             pass

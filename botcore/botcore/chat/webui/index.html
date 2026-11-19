@@ -26,6 +26,8 @@
   <header class="bar">
     <img class="logo" src="favicon.svg" alt="" width="24" height="24">
     <span class="brand">Tacitus</span>
+    <span class="light-wrap at-nav"><button type="button" id="light-nav" class="icon light-btn" aria-haspopup="dialog" aria-describedby="light-nav-tip" hidden></button>
+      <span id="light-nav-tip" class="light-tip" role="tooltip"></span></span>
     <span id="live" class="live wait" title="Connecting"></span>
   </header>
   <button type="button" id="search-open"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L20 20"/></svg>
@@ -57,6 +59,8 @@
         enterkeyhint="search" autocomplete="off" spellcheck="false">
       <button type="button" id="search-close" class="icon" aria-label="Close search"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </form>
+    <span class="light-wrap at-list"><button type="button" id="light" class="icon light-btn" aria-haspopup="dialog" aria-describedby="light-tip" hidden></button>
+      <span id="light-tip" class="light-tip" role="tooltip"></span></span>
     <button type="button" id="new-thread" class="btn small">New conversation</button>
   </header>
   <div id="thread-list" class="scroll"></div>
@@ -70,6 +74,7 @@
     <h2 id="thread-title"></h2>
     <button type="button" id="to-claude" class="btn small" hidden aria-label="Make a file to talk this over in the Claude app">Claude</button>
     <button type="button" id="thread-state" class="btn small" hidden>Mark done</button>
+    <button type="button" id="light-here" class="icon light-btn" aria-haspopup="dialog" hidden></button>
   </header>
   <div id="messages" class="scroll" aria-live="polite"></div>
   <form id="composer" autocomplete="off">
@@ -179,6 +184,19 @@
   </form>
 </dialog>
 
+<dialog id="status" aria-labelledby="status-title">
+  <form method="dialog">
+    <header class="set-head">
+      <h2 id="status-title">How Tacitus is doing</h2>
+      <button type="submit" class="icon" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </header>
+    <p id="status-head" aria-live="polite"></p>
+    <div id="status-list"></div>
+    <p id="status-off" class="s-key" hidden>Details show only in Tacitus on your own network.</p>
+    <section id="status-cleared" hidden><h3>Recently cleared</h3><ul id="status-cleared-list"></ul></section>
+  </form>
+</dialog>
+
 <dialog id="welcome" aria-label="Welcome to Tacitus" tabindex="-1">
   <form method="dialog">
     <p class="w-hello">Welcome to Tacitus</p>
@@ -198,6 +216,7 @@
       <section>
         <h2>Needs you</h2>
         <p>The <strong>Needs you</strong> list at the top gathers the conversations waiting on your answer. Buttons to tap wait in Action requests. Tap <strong>Mark done</strong> when a conversation is handled.</p>
+        <p>The light at the top stays green while everything works. Tap it to see what needs a look.</p>
         <div class="w-sample" aria-hidden="true"><span>Budget question</span><span class="sticker st-needs_you">Needs you</span></div>
       </section>
     </div>

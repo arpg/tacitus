@@ -122,6 +122,14 @@ for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
         from preprocessor import web_requests as _web_requests
         _web.request_context = lambda items: _web_requests.context(
             items, payload_of=lambda v: _staged_button_payload(v, consume=False))
+        # The status light in the app's top bar (docs/webchat.md, Status
+        # light): is everything working right now, from the state the
+        # system keeps. A red condition that may interrupt pushes once, only
+        # where the web chat runs alone: in shadow mode the primary's health
+        # channel has the alert.
+        from preprocessor import status_light as _status_light
+        _web.light = _status_light.Light(
+            _web, push_on=lambda w=_web: getattr(w, "inbound", None) is None)
 
 
 def _private_state(name: str) -> Path:

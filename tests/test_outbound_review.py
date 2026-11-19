@@ -575,7 +575,7 @@ def test_the_daily_script_posts_an_anomaly_and_holds_the_cursor_on_a_failed_post
     monkeypatch.setattr(chat_notify, "post", lambda key, text, **kw: posts.append(text) or kinds.append(kw) or True)
     assert mod.main() == 0 and len(posts) == 1                       # first run: posted
     assert f"LOG CHECK {R.NO_CURSOR}" in posts[0]
-    assert kinds == [{"diagnostic": True}]       # a first run's missing cursor: a diagnostic
+    assert kinds == [{"diagnostic": True, "light": ""}]       # a first run's missing cursor: a diagnostic
     seeded = R.read_state()
     _add(paths["fetch_url"], _line("2999-01-01T00:00:00Z"))
     monkeypatch.setattr(chat_notify, "post", lambda key, text, **kw: bool(posts.append(text)))
@@ -583,7 +583,8 @@ def test_the_daily_script_posts_an_anomaly_and_holds_the_cursor_on_a_failed_post
     monkeypatch.setattr(chat_notify, "post", lambda key, text, **kw: posts.append(text) or kinds.append(kw) or True)
     assert mod.main() == 0
     assert "LOG CHECK fetch-url.log: 1 record(s) with a time in the future" in posts[-1]
-    assert kinds[-1] == {"diagnostic": False}    # an ea-bot log that looks rewritten: an alert
+    # an ea-bot log that looks rewritten: an alert, which the status light keeps until read
+    assert kinds[-1] == {"diagnostic": False, "light": "outbound"}
     assert R.read_state()["logs"]["fetch_url"]["offset"] == paths["fetch_url"].stat().st_size
 
 
@@ -605,7 +606,7 @@ def test_a_clear_review_posts_on_mondays_only_and_still_advances(logs, tmp_path,
     assert R.read_state()["last_ts"] >= seeded["last_ts"]
     monkeypatch.setattr(mod, "_today", lambda: datetime(2026, 11, 16))   # a Monday
     assert mod.main() == 0 and len(posts) == 2 and "Nothing looked off." in posts[-1]
-    assert kinds[-1] == {"diagnostic": True}
+    assert kinds[-1] == {"diagnostic": True, "light": ""}
 
 
 # --- a lost, refused or bad cursor never skips a window silently -------------
@@ -629,7 +630,7 @@ def test_a_cursor_that_is_not_json_is_set_aside_and_each_log_is_read_from_its_st
     assert ("LOG CHECK the review cursor is not JSON; it is set aside and each log was read "
             "from its start") in posts[-1]
     assert "CHECK URL (encoded query value) to out.example" in posts[-1]
-    assert kinds[-1] == {"diagnostic": False}    # a cursor that is not JSON: an alert
+    assert kinds[-1] == {"diagnostic": False, "light": "outbound"}    # a cursor that is not JSON: an alert
     aside = list(tmp_path.glob("seen.json.bad-*"))
     assert len(aside) == 1 and aside[0].read_text() == "{broken"
     st = R.read_state()

@@ -14,7 +14,7 @@
 
 const BASE = location.pathname.replace(/\/index\.html$/, '').replace(/\/+$/, '');
 const enc = encodeURIComponent;
-const EVENT_TYPES = ['message', 'update', 'reaction', 'card', 'status', 'file', 'channel', 'thread_state', 'release', 'read'];
+const EVENT_TYPES = ['message', 'update', 'reaction', 'card', 'status', 'file', 'channel', 'thread_state', 'release', 'read', 'light'];
 const CREATED = new Set(['message', 'card', 'file']); // the event types that post a message
 const KIND_ORDER = { main: 0, dm: 1, sched: 2, room: 3, digest: 4 };
 const NEW_THREAD = '+'; // never a thread key: every key opens with a letter or digit
@@ -93,6 +93,7 @@ const S = {
   updateReady: false,   // a new release is kept and waits for a reload
   looking: false,       // a look for a new release is under way
   lookedAt: 0,          // when the app last looked, coming back to the screen
+  light: null,          // the status light's summary (GET /status, the `light` event)
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1383,6 +1384,8 @@ function defaultChannel() {
 async function route() {
   if (!S.ready) return;
   const { ch, tk, id } = parseHash();
+  // A notification of the status light opens its sheet over the place the app shows.
+  if (ch === STATUS) { location.replace(hashFor(S.channel || (defaultChannel() || {}).id || '')); openStatus(); return; }
   const needs = ch === NEEDS;
   // A link to a card in Action requests (the bot's pointer) opens its block in place, in the list.
   if (id && (chan(ch) || {}).kind === 'dm') { S.reqFocus = id; location.replace(hashFor(ch)); return; }
@@ -1433,6 +1436,7 @@ function setLive(state) {
   el.className = 'live ' + state;
   el.title = { on: 'Live', off: 'Not connected', wait: S.downAt ? 'Reconnecting' : 'Connecting' }[state];
   if ($('settings').open) connLine();
+  drawLight();
 }
 setLive.grace = 10000;
 
@@ -1445,7 +1449,7 @@ function connect() {
   let opened;
   const handle = { ready: new Promise((resolve) => { opened = resolve; }) };
   const es = T.events(S.lastSeq, {
-    open: () => { S.retry = 0; setLive('on'); opened(); loadNeeds(); recentSoon(); if (S.ready) { resync(); recount(); } },
+    open: () => { S.retry = 0; setLive('on'); opened(); loadNeeds(); recentSoon(); loadLight(); if (S.ready) { resync(); recount(); } },
     event: onEvent,
     down: (closed) => {
       setLive('down');
@@ -1522,6 +1526,7 @@ function apply(type, data, seq = 0) {
     if (data.bundle && S.me && data.bundle !== S.me.bundle) lookAgain().catch(() => {});
     return;
   }
+  if (type === 'light') { S.light = { ...data, details: S.light ? S.light.details : !T.relay }; drawLight(); return; }
   // A thread read on some device: the channel's counts as the bot keeps them.
   if (type === 'read') { takeCounts(data.channel, data); passed(data.channel, seq); redraw(); return; }
   if (type === 'channel') {
@@ -3285,14 +3290,16 @@ async function settingsPage(page) {
   try { renderSettings(await call('GET', '/settings/routing')); } catch (e) { $('simple-note').textContent = `Could not read the settings: ${e.message}`; }
 }
 
-// The menu's last line: how this browser reaches Tacitus now, the live dot in words.
-function connLine() {
+// The menu's last line, and the status light's while the stream is not open: how this browser reaches
+// Tacitus now, the live dot (or the light that carries it) in words.
+function connWords() {
   const dot = $('live').classList;
   const how = T.relay ? `away from home, through ${new URL(T.rec.relay).host}` : 'on your own network';
   const since = new Date(S.downAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  $('settings-conn').textContent = dot.contains('off') ? `Not connected since ${since}. Trying again ${how}.`
+  return dot.contains('off') ? `Not connected since ${since}. Trying again ${how}.`
     : dot.contains('wait') ? `${S.downAt ? 'Reconnecting' : 'Connecting'} ${how}...` : `Connected ${how}.`;
 }
+function connLine() { $('settings-conn').textContent = connWords(); }
 
 function settingsMenu() {
   $('open-settings').addEventListener('click', () => openSettings());
@@ -3368,6 +3375,148 @@ async function saveDebug(e) {
     box.checked = !box.checked;
     $('settings-conn').textContent = `Debug mode not saved: ${err.message}`;
   } finally { box.disabled = false; }
+}
+
+/* -- The status light (docs/webchat.md, Status light) --------------- */
+
+// The bot's answer to "is everything working": a light in the top bar with a shape and words as well as a
+// colour, its words in a tooltip under a mouse or the keyboard, and a sheet a tap opens: each condition in plain
+// words with what to do, its details on the owner's own network, and what cleared in the last day. The `light`
+// event redraws it on every device; while the app is not connected the light says it does not know.
+const STATUS = 'status'; // the sheet's route (#/status), which the light's notification opens
+const MARK = (y1, y2, dot) => [['path', { d: `M12 ${y1}v${y2 - y1}`, class: 'mark' }], ['circle', { cx: 12, cy: dot, r: 0.5, class: 'mark' }]];
+const LIGHT_SHAPES = {
+  ok: [['circle', { cx: 12, cy: 12, r: 8, class: 'ring' }], ['path', { d: 'M8.6 12.3l2.3 2.3 4.5-4.8', class: 'ink' }]],
+  warn: [['path', { d: 'M12 3.6l9.4 16.4H2.6z', class: 'fill' }], ...MARK(9.6, 14, 17.1)],
+  problem: [['circle', { cx: 12, cy: 12, r: 9, class: 'fill' }], ...MARK(7.2, 12.8, 16.5)],
+  unknown: [['circle', { cx: 12, cy: 12, r: 8, class: 'ring dash' }]],
+};
+
+function lightIcon(level) {
+  const svg = document.createElementNS($('menu').querySelector('svg').namespaceURI, 'svg'); // the page's own icons' namespace
+  [['viewBox', '0 0 24 24'], ['aria-hidden', 'true']].forEach(([k, v]) => svg.setAttribute(k, v));
+  for (const [tag, attrs] of LIGHT_SHAPES[level] || LIGHT_SHAPES.unknown) {
+    const el = svg.appendChild(document.createElementNS(svg.namespaceURI, tag));
+    Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, String(v)));
+  }
+  return svg;
+}
+
+const lightLevel = () => (!S.light || $('live').classList.contains('off') ? 'unknown' : S.light.level);
+const lightLine = () => (lightLevel() === 'unknown' ? 'Not connected, so Tacitus cannot say' : S.light.line);
+const badge = (level) => h('span', { class: `lv lv-${level}` }, lightIcon(level));
+
+async function loadLight() {
+  if (!S.me || !S.me.light) return; // a bot from before the light has none
+  try { S.light = await call('GET', '/status'); } catch (e) { if (e.status === 404) S.light = null; }
+  drawLight();
+}
+
+// The light carries the connection too: the dot beside it leaves while it shows, it pulses while the
+// stream opens again, and turns to the dashed ring once the stream has been down past the dot's grace.
+function drawLight() {
+  const level = lightLevel(), line = lightLine(), conds = (S.light && S.light.conditions) || [];
+  const away = level === 'unknown' || $('live').classList.contains('wait');
+  $('live').classList.toggle('folded', Boolean(S.light));
+  for (const id of ['light-nav', 'light', 'light-here']) {
+    const b = $(id);
+    b.hidden = !S.light;
+    b.className = `icon light-btn lv-${level}${away && level !== 'unknown' ? ' wait' : ''}`;
+    b.replaceChildren(lightIcon(level));
+    b.setAttribute('aria-label', `Status: ${line}${away && level !== 'unknown' ? `. ${connWords()}` : ''}`);
+  }
+  // One condition: its sentence under its name; more: a name each, the first four.
+  const rows = () => (level === 'unknown' || !conds.length ? [] : conds.length === 1 ? [h('p', {}, conds[0].line)]
+    : [...conds.slice(0, 4).map((c) => h('span', {}, badge(c.level), c.title)),
+      ...(conds.length > 4 ? [h('span', {}, `and ${conds.length - 4} more`)] : [])]);
+  const hint = away ? connWords() : 'Click for the details.';
+  document.querySelectorAll('.light-tip').forEach((tip) => tip.replaceChildren(h('strong', {}, line), ...rows(),
+    h('span', { class: 's-key' }, hint)));
+  if ($('status').open) drawStatus();
+}
+
+async function openStatus() {
+  if (!$('status').open) $('status').showModal();
+  drawStatus();
+  seenHere(STATUS).catch(() => {}); // its notification is done with here and on the owner's other devices
+  await loadLight();
+}
+
+const lasted = (s) => { const [n, unit] = s < 3600 ? [Math.max(1, Math.round(s / 60)), 'minute'] : [Math.round(s / 3600), 'hour'];
+  return `${n} ${unit}${n === 1 ? '' : 's'}`; };
+const clearedWhen = (c) => (c.how === 'read' ? `Read ${when(c.until)}`
+  : `Cleared ${when(c.until)}${c.since && c.until > c.since ? ` after ${lasted(c.until - c.since)}` : ''}`);
+
+function drawStatus() {
+  const level = lightLevel(), conds = (S.light && S.light.conditions) || [], cleared = (S.light && S.light.cleared) || [];
+  const openIds = new Set([...$('status-list').querySelectorAll('details[open]')].map((d) => d.dataset.id));
+  const away = level === 'unknown' || $('live').classList.contains('wait');
+  $('status-head').replaceChildren(badge(level), h('strong', {}, level === 'ok' ? 'Everything is working.' : lightLine()),
+    ...(away ? [h('span', { class: 's-key' }, connWords())] : []),
+    ...(S.light && level !== 'unknown' ? [h('span', { class: 's-key' }, `Checked ${when(S.light.as_of)}`)] : []));
+  $('status-list').replaceChildren(...(level === 'unknown' ? [] : conds.map((c) => condBlock(c, openIds.has(c.id)))));
+  $('status-off').hidden = !conds.length || !S.light || S.light.details !== false;
+  $('status-cleared').hidden = !cleared.length;
+  $('status-cleared-list').replaceChildren(...cleared.map((c) => h('li', {}, badge('ok'),
+    h('span', {}, h('strong', {}, c.title), h('br'), h('span', { class: 's-key' }, clearedWhen(c))))));
+}
+
+function condBlock(c, wasOpen) {
+  const times = [c.since && `Since ${when(c.since)}`, c.until && `Until ${when(c.until)}`].filter(Boolean).join('. ');
+  const box = h('section', { class: 'cond', 'data-level': c.level, 'data-id': c.id },
+    h('h3', {}, badge(c.level), c.title), h('p', {}, c.line), times && h('p', { class: 's-key' }, times),
+    c.todo && h('p', { class: 'cond-todo' }, c.todo));
+  const acts = h('div', { class: 'cond-acts' });
+  const a = c.action;
+  if (a && (a.say || (a.settings && !$(`go-${a.settings}`)?.hidden))) {
+    acts.append(h('button', { type: 'button', class: 'btn small primary', onclick: () => statusAction(a) }, a.label));
+  }
+  if (c.read && S.light.details) acts.append(h('button', { type: 'button', class: 'btn small', onclick: (e) => markRead(c, e.target) }, 'Got it'));
+  if (acts.children.length) box.append(acts);
+  if (S.light.details) {
+    const d = h('details', { 'data-id': c.id }, h('summary', {}, 'Details'), h('div', { class: 'cond-more' }));
+    d.addEventListener('toggle', () => { if (d.open) loadDetails(c, d); });
+    d.open = wasOpen;
+    box.append(d);
+  }
+  return box;
+}
+
+// The technical detail and the log lines of one condition, which the bot reads, bounds and masks.
+async function loadDetails(c, d) {
+  const box = d.querySelector('.cond-more');
+  if (!box.children.length) box.append(h('p', { class: 's-key' }, 'Reading...'));
+  try {
+    const x = await call('GET', `/status/${enc(c.id)}`);
+    const log = x.log || [], from = x.log_from || '';
+    const text = [x.detail, ...(log.length ? ['', `The last lines of ${from}:`, ...log] : [])].join('\n');
+    box.replaceChildren(h('pre', {}, x.detail || ''),
+      ...(log.length ? [h('p', { class: 's-key' }, `The last lines of ${from}:`), h('pre', {}, log.join('\n'))] : []),
+      h('button', { type: 'button', class: 'btn small', onclick: () => copyText(text) }, 'Copy'));
+  } catch (e) {
+    box.replaceChildren(h('p', { class: 'error' }, e.status === 404 ? 'This has cleared.' : `Could not read the details: ${e.message}`));
+  }
+}
+
+// An action the bot offers: words it posts as the owner in a new Ask Tacitus conversation, which then opens, or a Settings page.
+async function statusAction(a) {
+  if (a.settings) { $('status').close(); openSettings(a.settings); return; }
+  const main = mainChannel();
+  if (!main) return;
+  try {
+    const m = await call('POST', `/channels/${enc(main.id)}/messages`, { text: a.say });
+    $('status').close();
+    if (m && m.id) ingest(m);
+    goTo(hashFor(main.id, m && m.thread_key));
+  } catch (e) { toast(`Not sent: ${e.message}`); }
+}
+
+async function markRead(c, btn) {
+  btn.disabled = true;
+  try {
+    S.light = { ...(await call('POST', `/status/${enc(c.id)}/read`, {})), details: S.light.details };
+    drawLight();
+  } catch (e) { btn.disabled = false; toast(`Not saved: ${e.message}`); }
 }
 
 /* -- A room's menu: rename, mute, archive, bring back -------------- */
@@ -3877,6 +4026,7 @@ async function init() {
   $('back').addEventListener('click', () => goTo(S.needsView ? hashFor(NEEDS) : hashFor(S.channel)));
   $('thread-state').addEventListener('click', () => { if (Date.now() - shown.at >= FLIP_GUARD_MS) setState(S.channel, S.thread); });
   $('to-claude').addEventListener('click', toClaude);
+  ['light-nav', 'light', 'light-here'].forEach((id) => $(id).addEventListener('click', openStatus));
   longPress($('thread-list'));
   $('new-thread').addEventListener('click', () => { goTo(hashFor(S.channel, NEW_THREAD)); $('text').focus(); });
   // A link into the app goes through goTo, not the browser, so the composer moves with the hash.

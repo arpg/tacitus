@@ -224,6 +224,7 @@ UNLISTED = {
     "botcore/botcore/chat/slack_frontend.py": "downloads, written through chat.files (resident_io in the EA)",
     "preprocessor/graph_client.py": "the --align --write path of its CLI, after a Graph sign-in",
     "preprocessor/resident_io.py": "the mechanism itself (tests/test_resident_io.py)",
+    "preprocessor/sentinel.py": "its one atomic write is its own results file, in the owner's home",
     "scripts/boundary-audit.py": "its one write is its own state file, in the owner's home",
     "scripts/closure-metrics-checkin.py": "a one-off check-in script",
     "scripts/update.py": "its one write in resident space is the EA's copy of the update "

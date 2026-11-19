@@ -1263,7 +1263,17 @@ main EA channel as the fallback when no health channel is configured, or
 while debug mode keeps the web chat's health room out of the drawer. Debug
 mode, off by default, holds back only the bot's own reports: each check
 above posts in any mode, and so does an outbound review that finds a
-protection that did not hold (docs/webchat.md, Debug mode).
+protection that did not hold (docs/webchat.md, Debug mode). On the web
+chat with debug mode off, the status light carries them instead of a post
+(docs/webchat.md, Status light): the sentinel's, the audit's and a
+plugin's state from their own owner-private records, and the tripwire,
+the outbound review and the persistence watch as notices kept in the
+owner's store until read; when the light is not running, each one posts.
+The light reads what comes from the resident's space (the breakers,
+user-profile.json) as a condition in fixed words only, shows a
+condition's log lines only in the owner's own web chat (never through
+the relay), from owner logs that hold no mail, bounded and masked
+(`log_redact`).
 
 sshd refuses logins for the resident, which controls its own
 `authorized_keys`: `deploy/ssh-deny-resident.sh` (root; --status,
