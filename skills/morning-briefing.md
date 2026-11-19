@@ -325,7 +325,9 @@ the decision is, not that a decision exists. An item or row with
 draft against it. When it says no reply goes out, the one line is "They
 asked again. On <day> you said no reply. Still no reply?". `create-reply` holds these rules in code for a scheduled run:
 when it answers `needs_owner`, record its `reason` as the decision; never
-retry it.
+retry it. A row with `kept_level` "Kept on your machine" or "Facts only"
+stays on the user's own model: never read or draft it, and list it under
+Needs you as kept on his own model.
 
 **Then work the reply queue (`reply_backlog`):**
 

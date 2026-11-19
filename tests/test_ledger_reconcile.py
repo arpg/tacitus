@@ -222,6 +222,32 @@ def test_a_kept_thread_reaches_the_judge_as_counts_only(priv, db):
     assert "badge" not in json.dumps(items[0]["thread"]).lower()
 
 
+def test_a_kept_row_reaches_the_judge_with_no_note_or_last_action(priv, db):
+    """The row's own words about kept mail (a local model's summary in its
+    notes, a hosted turn's note in its last action) stay off the hosted
+    judge: the shared check (keep_gate) reads the thread's records."""
+    _records()
+    rows = [r for r in _rows(db) if r["id"] in ("badge-form", "reply-lee-seminar")]
+    rows[[r["id"] for r in rows].index("badge-form")].update(
+        notes="Kept mail summary: the badge office asks for a form.",
+        last_action="2026-10-22: read the thread")
+    g = {"label": "loose#1", "project": "", "name": "", "people": set(), "rows": rows}
+    items, _ = lr.items_for(g, index=mp.load_index(), df={}, user=USER, now=NOW)
+    kept = next(i for i in items if i["title"].startswith("Badge form"))
+    assert kept["kept"] is True and kept["notes"] == "" and kept["last_action"] == ""
+    assert kept["thread"]["kept"] is True and "badge office" not in json.dumps(items)
+    other = next(i for i in items if i["title"].startswith("Reply to Lee"))
+    assert "kept" not in other
+    # When the check cannot run, every row from mail goes as counts.
+    import keep_gate
+    real = keep_gate.levels
+    keep_gate.levels = lambda rows, records=None, **k: real(rows, records=lambda r: 1 / 0)
+    try:
+        assert lr.kept_rows(rows, mp.load_index()) == {"badge-form"}
+    finally:
+        keep_gate.levels = real
+
+
 # ── the verdicts ──────────────────────────────────────────────────────
 
 def test_parse_drops_invented_refs_threads_and_unexplained_verdicts():

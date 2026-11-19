@@ -486,6 +486,33 @@ def test_cron_refusal_reads_the_rows_the_draft_names():
     assert draft_gate.cron_refusal(run_id="chat-x", rows=[row], decisions=[]) == ""
 
 
+def test_a_scheduled_lane_never_drafts_on_a_kept_thread(monkeypatch):
+    """Rule 5: a thread kept from hosted models below Summary is the
+    owner's. The shared check (keep_gate) reads the row's brief, its
+    label, and the mail's records; a chat turn is not gated here."""
+    import keep_gate
+    kept = {"id": "kept-review", "thread_brief": {"keep_level": "local"}}
+    labelled = {"id": "kept-notice", "kept_from_claude": "listed domain reviews.example.org"}
+    for row in (kept, labelled):
+        assert draft_gate.cron_refusal(run_id="cron-morning-briefing-1", rows=[row], decisions=[],
+                                       keep_records=False) == keep_gate.KEPT_REFUSAL
+        assert draft_gate.cron_refusal(run_id="chat-1", rows=[row], decisions=[], keep_records=False) == ""
+    records = lambda i: {"c-kept": "facts", "c-summary": "summary"}.get(i.get("conversation_id"), "full")  # noqa: E731
+    assert draft_gate.cron_refusal(run_id="cron-x", conversation_id="c-kept", rows=[], decisions=[],
+                                   keep_records=records) == keep_gate.KEPT_REFUSAL
+    for conv in ("c-summary", "c-plain"):
+        assert draft_gate.cron_refusal(run_id="cron-x", conversation_id=conv, rows=[], decisions=[],
+                                       keep_records=records) == ""
+    # create-reply holds it for the morning sweep on Claude or Codex: the
+    # records keep this thread on the machine.
+    monkeypatch.setattr(keep_gate, "_records", lambda: (lambda i: "local" if i.get("conversation_id") == CONV
+                                                       else "full"))
+    out, made = _create_reply(monkeypatch, "cron-morning-briefing-1", people=[])
+    assert out["status"] == "needs_owner" and made == [] and out["reason"] == keep_gate.KEPT_REFUSAL
+    out, made = _create_reply(monkeypatch, "chat-1700000000.0001", people=[])
+    assert out["status"] == "reply_draft_created" and len(made) == 1
+
+
 def test_the_remote_briefing_turns_a_refused_reply_into_a_decision(priv):
     b = _nov19(decided=False)
     b["pending_rsvps"] = []

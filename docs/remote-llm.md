@@ -216,6 +216,12 @@ fired, the participants), the rules in force and the user's engagement now.
 | `summary` | Summary | the record: summary, ask, deadline, times; no verbatim quote | the same | rows, threads and cards as sealed mail; the brief names the level | never |
 | `full` | Normal mail | as the mail mode gives | as the mail mode gives | as before | read; applicant files stay on the machine |
 
+A hosted model works an item with no owner asking in that turn (a
+hand-off from a scheduled lane, a scheduled lane's reply draft) only at
+`summary` or `full`; one check decides it for every path
+(`preprocessor/keep_gate.py`, docs/llm-lanes.md 2.3), and when it cannot
+read the records every item from mail reads `local`.
+
 The gate applies under `enforce`, `ghost` and `sealed`; under `shadow` the
 levels only label. `mail_privacy.FACT_FIELDS` is the one list a `facts`
 view keeps. The release log counts reads by level and by the model of the

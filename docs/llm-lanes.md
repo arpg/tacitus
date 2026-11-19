@@ -436,6 +436,23 @@ level as that level's view: the remote record in place of the text, or
 the facts alone; and no lane reads the files of a kept message. When the
 check itself fails for a cron lane, the read is refused.
 
+**No hosted model works a kept item on its own.** A hosted model may take
+an item with no owner asking in that turn (a hand-off to the EA channel, a
+scheduled lane's reply draft) only at `summary` or `full`. One check
+decides it for every path (`preprocessor/keep_gate.py`): the strictest of
+what the item, its metadata and its thread brief say (a keep label alone
+reads `facts`), the level of the thread's records and of the message's
+own, and `local` for anyone on the keep list among its addresses. When the
+records cannot be read, every item from mail reads `local`. The remote
+briefing's candidates and reply queue, the weekly audit's hand-offs, the
+queue's merge and the bot's tick, `create-reply` for a scheduled run
+(`draft_gate.cron_refusal`, rule 5), the inbox scan block, the pre-send
+review's packet, the nightly reconcile's judge (a kept row goes as its
+title and dates, with no note or last action) and the briefing JSON's
+rows (`keep_level`, `kept_level`) all use it. A kept item that needs more than a reply is listed under
+Needs you as kept on the owner's own model; the owner can still ask for
+it in a room or thread, where a chat turn gets its level's view.
+
 **A message kept on the machine that asks for something becomes a ledger row.** The
 lanes would otherwise never hear of it: the digest is the only place a
 kept ask lands, and nothing reads the digest. The owner's tick
@@ -675,9 +692,11 @@ off, and the Claude lane runs as before. Any other failure posts a status
 line; it never falls back to a Claude run.
 
 - **Candidates.** Code gives each item a ref: today's ranked queue, new mail
-  that needs a reply, dropped threads, RSVPs, and the open ledger rows. Mail
-  kept from Claude is never a candidate, because the post lands in `#ea`,
-  which Claude lanes read.
+  that needs a reply, dropped threads, RSVPs, and the open ledger rows. New
+  mail kept on the machine is never a candidate (the mail gate leaves it
+  out); a `kept-` row is one, as its record's summary. Each candidate
+  carries its keep level from the shared check (`preprocessor/keep_gate.py`,
+  section 2.3).
 - **One remote call** under a strict schema picks refs for the do-list (with
   when and why), the flexes, the replies to draft (with what each must say),
   the decisions, and the hand-offs. A ref it invents is dropped.
@@ -703,7 +722,10 @@ line; it never falls back to a Claude run.
   wait for the next tick) and runs one Claude turn there with the items
   numbered, under a limit of 600 s per item up to 1200 s; that session
   reads each item's thread and reports one line per item. A single hand-off gets the
-  prompt below. An item with no thread becomes a decision instead.
+  prompt below. An item with no thread becomes a decision instead. An item
+  kept below `summary` is never handed off: code moves the pick to Needs
+  you, as kept on the owner's own model, and the queue and the bot's tick
+  check each hand-off again (section 2.3).
 - **The pre-send review** (`preprocessor/briefing_review.py`) checks the
   whole post before it, its room slices or its reply drafts go out; the
   subsection below has the detail. When it cannot run, **the still-open
@@ -1943,7 +1965,7 @@ row ids, never text. `run --dry-run` judges and writes nothing;
 |---|---|---|
 | The morning briefing and the afternoon update | Claude (Opus) read every new message: subject, sender, about 500 characters of text | No Claude run. The remote model writes both |
 | The Sunday audit, the scheduling channel, and what the code-only checks write for them (ledger rows, priority alerts, the scheduling queue) | Every new message: subject, sender, about 500 characters of text | Actionable mail only (about 40%): subject, sender, the remote summary |
-| Hand-offs from the remote briefing | None | One thread per item, at most three a morning |
+| Hand-offs from the remote briefing | None | One thread per item, at most three a morning; never a thread kept below `summary` |
 | Tagger, every 2 minutes | Every message to Claude Haiku: subject, sender, 320 characters | The remote model |
 | List digest, twice a day | Claude read each list digest | The remote model; the post goes to `mail-digest` |
 | Admissions digest, weekly | Claude read a week of applicant mail | The remote model; the post goes to `mail-digest` |

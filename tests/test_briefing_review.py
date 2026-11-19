@@ -802,7 +802,7 @@ def test_the_whole_morning_with_the_upstream_rules_and_the_review(tmp_path, priv
     # Upstream: work others owe before its date is no candidate at all.
     assert "row-edits" not in ref and "row-reviewer" not in ref
     # A careless plan: rows on the do-list and the flexes, both replies
-    # drafted as a yes, the kept review handed to Claude.
+    # drafted as a yes, the kept review handed to a hosted model.
     plan = {"get_done_today": [{"ref": ref[i], "when": "first thing", "why": "do it"}
                                for i in ("row-install", "row-survey", "row-lapsed")],
             "flexes": [{"ref": ref[i], "line": "fine today"} for i in ("row-runshow", "row-townhall")],
@@ -820,10 +820,13 @@ def test_the_whole_morning_with_the_upstream_rules_and_the_review(tmp_path, priv
         return br.review_post(agent, text, b, conn=conn, levels={"kept-secret": "local"}, evidence={},
                               call=_combined_answer, who="claude", appender=lambda n, rec: None,
                               propose=lambda lid, why: proposed.append(lid) or True, **kw)
+    # The briefing's copy of the kept row has no label; the mail's records
+    # keep its thread on the machine.
+    records = lambda i: "local" if i.get("conversation_id") == "c-secret" else "full"  # noqa: E731
     text, rec = rb.run("morning-briefing", b, run_id="cron-morning-briefing-t", now=NOW,
                        chat=lambda messages, **kw: (json.loads(json.dumps(plan)), {}), review=review,
                        queue=lambda items, agent, now: queued.extend(items) or len(items),
-                       rooms=lambda *a, **k: [], mark=lambda *a, **k: True)
+                       rooms=lambda *a, **k: [], mark=lambda *a, **k: True, keep_records=records)
     body, footer = text.split(":mag: *Checked before sending* by Claude.")
     # The gate turned both replies into his decisions before a word was
     # written: no draft, no Send card, and nothing for the review to hold.
@@ -844,5 +847,8 @@ def test_the_whole_morning_with_the_upstream_rules_and_the_review(tmp_path, priv
     assert proposed == ["row-runshow"] and "*Looks done?* (1)" in body
     assert "co-authors" not in text and "Reviewer report" not in text
     assert "did not see the records of 1 item" in footer
-    assert [q["ledger_id"] for q in queued] == ["kept-secret"]
+    # The kept review is never handed to a hosted model: it is his, as kept
+    # on his own model.
+    assert queued == [] and "Sent to Claude" not in body
+    assert "Review confirmation" in needs and "Kept on your own model" in needs
     assert rec["review"]["status"] == "ok" and rec["review"]["held"] == 0

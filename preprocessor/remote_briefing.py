@@ -16,12 +16,16 @@ owner process, `run` exits 3 and run-agent.sh runs the Claude lane.
 The morning run:
   1. Code gives every candidate item a ref: today's ranked queue, new mail
      that needs a reply, dropped threads, RSVPs, and the open ledger rows
-     (deadlines, follow-ups, stale rows). Mail kept from hosted models is not a
-     candidate: the post lands in the EA channel, which Claude lanes read.
+     (deadlines, follow-ups, stale rows). New mail kept on the machine is
+     not a candidate (the mail gate leaves it out). Each candidate carries
+     its keep level (keep_gate: its labels and the mail's records, failing
+     closed).
   2. One remote call, under a strict schema, picks by ref: the ordered
      "get done today" list with when and why, the flexes, the replies to
      draft and what each must say, the decisions for the user, and the
-     items to hand to Claude. A ref the call invents is dropped.
+     items to hand to Claude. A ref the call invents is dropped. An item
+     kept below Summary is never handed off: code lists it under Needs
+     you as kept on the owner's own model.
   3. Code applies the rails: no draft to a dean or a program officer, on
      money, a contract or a legal matter, for a decline, or to someone
      outside the institution's safety-rail domain the user never wrote
@@ -87,6 +91,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import draft_gate  # noqa: E402
 import institution as _institution  # noqa: E402
+import keep_gate  # noqa: E402
 import ledger as _ledger  # noqa: E402
 import remote_llm  # noqa: E402
 import sched_render  # noqa: E402
@@ -245,7 +250,11 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                     "state": rec.get("state") or "", "scheduling": rec.get("scheduling") or "none",
                     **{k: it[k] for k in ("to", "cc") if isinstance(it.get(k), list)},
                     "owner_said": owner_said(b, conv, row),
-                    "asked": _asked(row, it.get("received") or "")}
+                    "asked": _asked(row, it.get("received") or ""),
+                    # How far a hosted model may take it (keep_gate): what the
+                    # item and its row say; run() adds the mail's records.
+                    "keep_level": keep_gate.stricter(keep_gate.label_level(it),
+                                                     keep_gate.label_level(row))}
             if item["ledger_id"]:
                 seen_rows.add(item["ledger_id"])
             if isinstance(row.get("close_proposal"), dict):
@@ -310,7 +319,8 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                   "state": str((brief or {}).get("state") or ""),
                   "scheduling": str((brief or {}).get("scheduling") or "none"),
                   "owner_said": owner_said(b, conv, o),
-                  "asked": _asked(o, str((brief or {}).get("last_inbound") or ""))})
+                  "asked": _asked(o, str((brief or {}).get("last_inbound") or "")),
+                  "keep_level": keep_gate.label_level(o)})
     return out
 
 
@@ -416,7 +426,7 @@ He wants an ordered do-list fitted to the gaps in his day, then the flexes, then
 - drafts: replies he would send that the item's summary and ask already answer: a yes, an answer he gave before, a link or a form, an intro, a meeting he already agreed. For each, what the reply must say in one or two sentences. When their ask is a question only he can answer (what he plans, what he needs, his use case, his preference), the reply only thanks them and says he will follow up; never answer for him, and never repeat their own message back to them. Never draft for money, a contract or a legal matter; a dean or a program officer; a decline; a decision only he can make; mail where he is only copied. Those go to needs_you.
 - An item with `owner_said` is a thread he already decided, in his words. Never draft against it and never put it on the do-list; when it says no reply goes out, leave it to code, which asks him once.
 - needs_you: refs with the decision in one line, and what happens once he decides.
-- escalate: at most 3 refs that need more than a reply or a decision: a document to write, a multi-step task, a reply the summary does not say enough to write. Give why, and the task for the assistant.
+- escalate: at most 3 refs that need more than a reply or a decision: a document to write, a multi-step task, a reply the summary does not say enough to write. Give why, and the task for the assistant. Never an item marked `kept`: it stays on his own model, so it goes to needs_you.
 A ref goes in at most one of drafts, needs_you and escalate.
 
 {rules}"""
@@ -537,6 +547,8 @@ def _prompt_items(cands: dict[str, dict], today: date | None = None) -> list[dic
             d["due_in"] = _due_in(c["due"], today)
         if c.get("wrote_since"):
             d["wrote_since"] = _wrote_since_line(c)
+        if not keep_gate.may_hand_off(c.get("keep_level")):
+            d["kept"] = True
         out.append(d)
     return out
 
@@ -606,7 +618,13 @@ def check_plan(obj: dict, cands: dict[str, dict], *, morning: bool) -> dict:
     used = {p["ref"] for p in plan["drafts"]}
     plan["needs_you"] = [p for p in owed(picks("needs_you", 8)) if p["ref"] not in used]
     used |= {p["ref"] for p in plan["needs_you"]}
-    plan["escalate"] = [p for p in his(picks("escalate", MAX_ESCALATE)) if p["ref"] not in used]
+    esc = [p for p in his(picks("escalate", MAX_ESCALATE)) if p["ref"] not in used]
+    # A thread kept from hosted models below Summary is never handed to
+    # one (keep_gate), whatever the model picked: it is the owner's, in
+    # code's own words, and the plan's words about the mail stay out.
+    plan["escalate"] = [p for p in esc if keep_gate.may_hand_off(cands[p["ref"]].get("keep_level"))]
+    plan["needs_you"] += [{"ref": p["ref"], "decision": keep_gate.KEPT_DECISION, "kept": True}
+                          for p in owed(esc) if p not in plan["escalate"]]
     return plan
 
 
@@ -710,12 +728,13 @@ def gate(cand: dict, reply_must_say: str, *, wrote_before=_wrote_to_before) -> d
     """None when this run may draft `reply_must_say` for `cand`; else the
     decision it becomes, {"rule", "why", "line", "choices"}. The owner's
     own word on the thread comes first (a follow-up on a thread he said
-    gets no reply is one quiet question), then the rails, then
+    gets no reply is one quiet question), and a thread kept below Summary
+    (keep_gate) is his with no draft written, then the rails, then
     draft_gate's rules: a choice only he makes, a yes or no to taking
     part in a program or committee, a reply-all to many. A line never carries an answer the
     model wrote for him, but for the rails' own lines."""
     found = draft_gate.check(cand, reply_must_say, own=_own_addresses())
-    if found and found["rule"] == "no_reply":
+    if found and found["rule"] in ("no_reply", "kept"):
         return found
     why = rail(cand, reply_must_say, wrote_before=wrote_before)
     if why:
@@ -733,7 +752,7 @@ def _refused(cand: dict, why: str) -> dict:
     question = found.get("line") or (f"They ask: {_clean(cand.get('ask'), 140)}" if cand.get("ask")
                                      else f"Your answer on {_clean(cand.get('title'), 90)}")
     return {"rule": "refused", "why": why, "choices": found.get("choices") or [],
-            "line": question if found.get("rule") == "no_reply"
+            "line": question if found.get("rule") in ("no_reply", "kept")
             else f"Reply needs you ({_clean(why, 80)}): {question}"}
 
 
@@ -834,9 +853,15 @@ def _escalated_recently(conv: str, now: datetime) -> bool:
 
 def queue_escalations(items: list[dict], *, agent: str, now: datetime) -> int:
     """Merge the hand-offs into the bot's queue, one per thread, and record
-    them. Returns how many were queued."""
+    them. Returns how many were queued. Each is checked again against the
+    mail's records (keep_gate): a thread kept below Summary never reaches
+    the queue, whoever picked it."""
     import atomic_io
     import resident_io
+    items, kept = keep_gate.split_handoffs(items)
+    for i in kept:
+        print(f"remote_briefing: a hand-off stays on the owner's model "
+              f"(kept: {i.get('keep_level')}); not queued", file=sys.stderr)
     fresh = [i for i in items if i.get("conversation_id")
              and not _escalated_recently(i["conversation_id"], now)]
     if not fresh:
@@ -867,6 +892,7 @@ def _escalation(cand: dict, pick: dict, now: datetime) -> dict:
             "subject": _clean(cand.get("title"), 160), "from_name": _clean(cand.get("who"), 80),
             "why": _clean(pick.get("why"), 300), "task": _clean(pick.get("task"), 400),
             "brief": cand.get("brief") if isinstance(cand.get("brief"), dict) else None,
+            "keep_level": cand.get("keep_level") or "",
             "queued_at": now.isoformat(timespec="seconds")}
 
 
@@ -932,7 +958,8 @@ def backlog_candidates(b: dict) -> dict[str, dict]:
             "thread": thread, "notes": e.get("notes") or "", "last_action": e.get("last_action") or "",
             "age_days": int(e.get("age_days") or 0), "since": e.get("since") or "",
             "has_draft": e.get("has_draft"), "queued": e.get("queued") or {},
-            "kept": bool(e.get("kept")), "total": int(e.get("total") or 0),
+            "kept": bool(e.get("kept")), "keep_level": keep_gate.label_level(e),
+            "total": int(e.get("total") or 0),
             "type": e.get("type") or "", "due": "", "tags": [], "brief": None,
             "owner_said": [d for d in e.get("owner_said") or [] if isinstance(d, dict)]}
     return out
@@ -1745,14 +1772,19 @@ def room_slices(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dic
 
 def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run: bool = False,
         now: datetime | None = None, chat=None, audit=None, drafter=None,
-        queue=None, rooms=None, mark=None, review=None) -> tuple[str, dict]:
+        queue=None, rooms=None, mark=None, review=None, keep_records=None) -> tuple[str, dict]:
     """(the post, the run record). `review` stands in for the pre-send
     review (briefing_review.review_post); an `audit` given alone stands in
-    for the still-open audit, with no review."""
+    for the still-open audit, with no review. `keep_records` stands in
+    for the mail's records in the keep check (keep_gate.levels)."""
     now = now or _now()
     morning = agent == "morning-briefing"
     t0 = time.monotonic()
     cands = candidates(briefing, today=now.astimezone(_tz()).date())
+    # Each candidate's keep level from its labels and the mail's records,
+    # failing closed (keep_gate): the plan cannot hand a kept one to a
+    # hosted model.
+    keep_gate.annotate(cands.values(), records=keep_records)
     rec: dict = {"ts": now.isoformat(timespec="seconds"), "agent": agent, "run_id": run_id,
                  "dry_run": dry_run, "candidates": len(cands)}
     fallback = ""
@@ -1830,7 +1862,10 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
         escalated = [{"ref": p["ref"], "why": p.get("why")} for p, _c in handoffs]
     # The reply queue, after the plan's own work: its items join the
     # candidates under their own refs, and the plan's threads are left out.
-    cands.update(backlog_candidates(briefing))
+    queue_cands = backlog_candidates(briefing)
+    for c in keep_gate.annotate(queue_cands.values(), records=keep_records):
+        c["kept"] = c["kept"] or not keep_gate.may_hand_off(c["keep_level"])
+    cands.update(queue_cands)
     taken = note_plan(cands, plan, drafts, escalated, now=now,
                       mark=(lambda *a, **k: False) if dry_run else mark)
     backlog: dict = {}

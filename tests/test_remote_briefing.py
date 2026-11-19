@@ -408,7 +408,7 @@ def test_the_tick_hands_a_briefing_to_one_turn(tmp_path):
         "_remote_escalations_seen": lambda: (_json.loads(seen_file.read_text()) if seen_file.exists() else {}),
         "FRONTEND": types.SimpleNamespace(post=lambda **k: posts.append(k) or _Seed()),
         "_atomic": types.SimpleNamespace(write_json=lambda p, d, **k: p.write_text(_json.dumps(d))),
-        "handle_message_async": None,
+        "handle_message_async": None, "_keep_split": lambda items: (list(items), []),
         "threading": types.SimpleNamespace(Thread=lambda target, args, daemon, kwargs=None: types.SimpleNamespace(
             start=lambda: turns.append((args, kwargs)))),
     })
@@ -449,7 +449,7 @@ def _tick_ns(tmp_path, post, write_json):
         "_remote_escalations_seen": lambda: (_json.loads(seen_file.read_text()) if seen_file.exists() else {}),
         "FRONTEND": types.SimpleNamespace(post=post),
         "_atomic": types.SimpleNamespace(write_json=write_json),
-        "handle_message_async": None,
+        "handle_message_async": None, "_keep_split": lambda items: (list(items), []),
         "threading": types.SimpleNamespace(Thread=lambda target, args, daemon, kwargs=None: types.SimpleNamespace(
             start=lambda: turns.append(args))),
     })
@@ -1110,3 +1110,161 @@ def test_the_audit_is_asked_about_every_row_the_queue_line_names():
         _owed("kim", 6), _owed("ann", 5, has_draft=True), _owed("jo", 2))})
     for morning in (True, False):
         assert rb.shown_refs(cands, {}, [], [], now=NOW, morning=morning) == ["Q1"]
+
+
+# ── mail kept from hosted models is never handed to one ───────────────
+
+def _kept_morning(label: bool = True):
+    """A review system's notice kept on the machine, as an open `kept-` row:
+    its label on the row and on its brief as the briefing copies them
+    (`label`), or no label at all, so that only the mail's records know."""
+    b = _briefing()
+    lab = {"kept_from_claude": "listed domain reviews.example.org"} if label else {}
+    b["open_obligations"].append({
+        "id": "kept-review", "type": "deadline", "description": "Review confirmation",
+        "deadline": "2026-10-12", "from_email": "notices@reviews.example.org",
+        "conversation_id": "c-review", "source_message_id": "m-review",
+        "notes": "Written by the local model. A review is due today.", **lab,
+        "thread_brief": {"conversation_id": "c-review", "ask": "Submit the review.",
+                         "last_inbound": "2026-10-05T16:20:33Z", **lab,
+                         "messages": [{"from": "notices@reviews.example.org",
+                                       "gist": "A review is due today."}]}})
+    return b
+
+
+def _kept_run(b, **kw):
+    cands = rb.candidates(b, today=NOW.date())
+    kept = next(r for r, c in cands.items() if c.get("ledger_id") == "kept-review")
+    plan = dict(PLAN, drafts=[], escalate=[{"ref": kept, "why": "a full review is due",
+                                            "task": "summarize the manuscript"},
+                                           {"ref": "R3", "why": "a section of a paper to write",
+                                            "task": "draft the related-work section"}])
+    queued, marks, prompts = [], [], []
+
+    def chat(messages, **k):
+        prompts.append(messages[-1]["content"])
+        return json.loads(json.dumps(plan)), {}
+    text, rec = rb.run("morning-briefing", b, run_id="cron-morning-briefing-t", now=NOW, chat=chat,
+                       queue=lambda items, agent, now: queued.extend(items) or len(items),
+                       audit=lambda *a, **k: {}, mark=lambda lid, since, outcome, **k: marks.append(
+                           (lid, outcome)) or True, **kw)
+    return text, rec, queued, marks, json.loads(prompts[0]), kept
+
+
+def test_a_kept_row_the_plan_hands_off_stays_with_the_owner(priv):
+    """The fault: the plan picked a `kept-` row for a hand-off and a hosted
+    turn worked it. Code now moves the pick to Needs you, in its own words,
+    and only the ordinary thread is queued."""
+    text, rec, queued, marks, prompt, kept = _kept_run(_kept_morning())
+    assert [q["conversation_id"] for q in queued] == ["c-paper"]
+    assert "*Sent to Claude* (1)" in text and rec["escalated"] == 1
+    needs = text.split("*Needs you*")[1].split("\n\n")[0]
+    assert "*Review confirmation* (notices@reviews.example.org): Kept on your own model, so no hosted " \
+        "model works on it. It needs you: open it in Outlook." in needs
+    sent = text.split("*Sent to Claude*")[1]
+    assert "Review confirmation" not in sent and "summarize the manuscript" not in text
+    assert ("kept-review", "decision") in marks and ("kept-review", "escalated") not in marks
+    # The planner is told which items stay on the owner's own model.
+    item = next(i for i in prompt["items"] if i["ref"] == kept)
+    assert item.get("kept") is True
+
+
+def test_a_kept_row_with_no_label_is_caught_by_the_mail_records(priv):
+    """The briefing's copy of a row may carry no keep label: the mail's
+    records (and the keep list) still keep it from the hand-off."""
+    records = lambda i: "local" if i.get("conversation_id") == "c-review" else "full"  # noqa: E731
+    text, rec, queued, marks, prompt, kept = _kept_run(_kept_morning(label=False), keep_records=records)
+    assert [q["conversation_id"] for q in queued] == ["c-paper"]
+    assert "Kept on your own model" in text.split("*Needs you*")[1]
+    # When the check cannot run, the row stays with the owner too.
+    def broken(i):
+        raise OSError("store locked")
+    _t, _r, queued, _m, _p, _k = _kept_run(_kept_morning(label=False), keep_records=broken)
+    assert queued == []
+
+
+def test_the_queue_never_takes_a_kept_hand_off(priv, tmp_path, monkeypatch):
+    import resident_io
+    import atomic_io
+    q = tmp_path / "remote-escalations.json"
+    monkeypatch.setattr(rb, "ESCALATIONS", q)
+    monkeypatch.setattr(resident_io, "read_text", lambda p: q.read_text() if q.exists() else None)
+    monkeypatch.setattr(atomic_io, "write_json", lambda p, obj, **kw: q.write_text(json.dumps(obj)))
+    kept = {"conversation_id": "c-review", "subject": "Review confirmation", "keep_level": "local",
+            "queued_at": NOW.isoformat()}
+    plain = {"conversation_id": "c-paper", "subject": "Survey", "keep_level": "full",
+             "queued_at": NOW.isoformat()}
+    assert rb.queue_escalations([kept, plain], agent="morning-briefing", now=NOW) == 1
+    assert [e["conversation_id"] for e in json.loads(q.read_text())] == ["c-paper"]
+    # An item from the plan carries its level into the queue.
+    c = {"conversation_id": "c-x", "keep_level": "facts", "title": "t", "who": "w"}
+    assert rb._escalation(c, {"why": "", "task": ""}, NOW)["keep_level"] == "facts"
+
+
+def test_the_bot_never_opens_a_topic_for_a_kept_hand_off(tmp_path):
+    """Whoever queued it: the bot's tick checks each item again, marks a
+    kept one seen with its level and posts only the rest."""
+    import json as _json
+    import types
+    queue = [{"conversation_id": "AAQk100000", "subject": "Review", "from_name": "P", "keep_level": "local"},
+             {"conversation_id": "AAQk200000", "subject": "Survey", "from_name": "Q", "keep_level": "full"}]
+    posts, turns = [], []
+    seen_file = tmp_path / "seen.json"
+    ns = _prompt_ns()
+    log = types.SimpleNamespace(info=lambda *a: None, warning=lambda *a: None)
+    ns.update({
+        "json": _json, "datetime": __import__("datetime").datetime, "timezone": __import__("datetime").timezone,
+        "REMOTE_ESCALATIONS": tmp_path / "q.json", "REMOTE_ESCALATIONS_SEEN": seen_file,
+        "REMOTE_ESCALATION_BATCH_MAX": 2, "_CONV_ID_RE": __import__("re").compile(r"^[A-Za-z0-9]{6,}$"),
+        "CHANNEL_ID": "C0MAIN", "log": log, "_resident_text": lambda p: _json.dumps(queue),
+        "_remote_escalations_seen": lambda: (_json.loads(seen_file.read_text()) if seen_file.exists() else {}),
+        "FRONTEND": types.SimpleNamespace(post=lambda **k: posts.append(k) or types.SimpleNamespace(
+            id="m1", thread_key="topic-1")),
+        "_atomic": types.SimpleNamespace(write_json=lambda p, d, **k: p.write_text(_json.dumps(d))),
+        "handle_message_async": None,
+        "threading": types.SimpleNamespace(Thread=lambda target, args, daemon, kwargs=None: types.SimpleNamespace(
+            start=lambda: turns.append(args))),
+    })
+    exec(_fn("_keep_split"), ns)
+    exec(_fn("_remote_escalation_tick"), ns)
+    ns["_remote_escalation_tick"]()
+    assert len(posts) == 1 and "Survey" in posts[0]["text"] and "Review" not in posts[0]["text"]
+    assert "AAQk100000" not in turns[0][3]
+    seen = _json.loads(seen_file.read_text())
+    assert seen["AAQk100000"]["kept"] == "local" and seen["AAQk200000"]["thread"] == "topic-1"
+    # A queue of kept items alone posts nothing, and asks nothing again.
+    queue[:] = [{"conversation_id": "AAQk300000", "subject": "R2", "from_name": "P", "keep_level": "facts"}]
+    ns["_remote_escalation_tick"]()
+    assert len(posts) == 1 and _json.loads(seen_file.read_text())["AAQk300000"]["kept"] == "facts"
+    # When the check cannot run, nothing is posted and nothing marked: the next tick asks again.
+    queue[:] = [{"conversation_id": "AAQk400000", "subject": "S4", "from_name": "P"}]
+    import keep_gate
+    real = keep_gate.split_handoffs
+    keep_gate.split_handoffs = lambda items, **k: (_ for _ in ()).throw(OSError("store locked"))
+    try:
+        ns["_remote_escalation_tick"]()
+    finally:
+        keep_gate.split_handoffs = real
+    assert len(posts) == 1 and "AAQk400000" not in _json.loads(seen_file.read_text())
+
+
+def test_a_reply_on_a_kept_thread_is_his_with_no_draft_written(priv):
+    """New mail kept at Facts only reaches the briefing as its facts (the
+    mail gate): a draft the plan picks for it is a decision, made before
+    the writer runs, and create-reply would refuse it in any case."""
+    b = _briefing()
+    b["new_needs_response"].append({
+        "message_id": "m-app", "conversation_id": "c-app", "subject": "Question about the lab",
+        "from": "applicant@example.net", "from_name": "A. Applicant", "kept_level": "Facts only",
+        "kept_from_frontier": "your rule", "remote_record": {}})
+    cands = rb.candidates(b, today=NOW.date())
+    ref = next(r for r, c in cands.items() if c.get("message_id") == "m-app")
+    assert cands[ref]["keep_level"] == "facts"
+    plan = dict(PLAN, drafts=[{"ref": ref, "reply_must_say": "Yes, there is a place in the lab."}],
+                escalate=[])
+    text, rec = rb.run("morning-briefing", b, run_id="cron-morning-briefing-t", now=NOW,
+                       chat=_model(plan), drafter=lambda *a, **k: pytest.fail("drafted"),
+                       queue=lambda *a, **k: 0, audit=lambda *a, **k: {})
+    needs = text.split("*Needs you*")[1].split("\n\n")[0]
+    assert "Question about the lab" in needs and "Reply needs you (kept on your own model)" in needs
+    assert "a place in the lab" not in text and rec["drafts"] == 0

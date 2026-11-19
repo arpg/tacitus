@@ -1472,11 +1472,14 @@ RECENT_MESSAGES = 3
 
 def kept_thread(entry: dict, brief: dict | None = None) -> bool:
     """The row's mail is kept from the frontier models (on the machine, or
-    facts only): a surface they read shows no gist of it."""
+    facts only): a surface they read shows no gist of it. The row's own
+    `keep_level` is the shared check's stamp (keep_gate, as the briefing
+    writes it)."""
     brief = brief if brief is not None else entry.get("thread_brief")
     brief = brief if isinstance(brief, dict) else {}
     return bool(entry.get("kept_from_frontier") or entry.get("kept_from_claude")
                 or brief.get("kept_from_frontier") or brief.get("kept_from_claude")
+                or entry.get("keep_level") in ("local", "facts")
                 or brief.get("keep_level") in ("local", "facts"))
 
 

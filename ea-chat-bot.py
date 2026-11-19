@@ -2684,6 +2684,21 @@ def _reply_scan_placer():
          "title": r.get("description") or "", "summary": r.get("notes") or ""}, idx, conn)
 
 
+def _keep_marked(rows: list[dict]) -> list[dict]:
+    """Reply-queue rows with `kept` from the shared keep check
+    (preprocessor/keep_gate.py, the owner's mail records included): the
+    scan block shows a kept row's subject, sender and age only. When the
+    check cannot run, every row reads kept."""
+    try:
+        import keep_gate  # noqa: PLC0415  (preprocessor/ on sys.path)
+        return keep_gate.mark_kept(rows)
+    except Exception as e:
+        log.warning(f"reply scan: keep check unavailable, every row reads kept: {e}")
+        for r in rows:
+            r["kept"] = True
+        return rows
+
+
 def _reply_scan_for(channel: str) -> tuple[str, list[dict], int]:
     """(the block, the rows it shows, the count it leaves out) for a scan
     turn in `channel`: the live reply queue with the replies that came
@@ -2695,7 +2710,7 @@ def _reply_scan_for(channel: str) -> tuple[str, list[dict], int]:
     if not isinstance(entries, list):
         log.warning("reply scan: the ledger gave no reply queue")
         return "", [], 0
-    rows = [r for r in entries if isinstance(r, dict) and r.get("id")]
+    rows = _keep_marked([r for r in entries if isinstance(r, dict) and r.get("id")])
     owed, outside = int(out.get("owed") or 0), 0
     scope = _channel_scope(channel) if channel != CHANNEL_ID else None
     if scope and scope.get("kind") == "project" and scope.get("project"):
@@ -15854,6 +15869,19 @@ def _remote_escalation_item(e: dict) -> list[str]:
     return lines
 
 
+def _keep_split(items: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(the hand-offs a hosted turn may take, the ones it may not): a
+    thread kept from hosted models below Summary stays on the owner's own
+    model (preprocessor/keep_gate.py). When the check cannot run, none
+    goes and none is marked: the next tick asks again."""
+    try:
+        import keep_gate  # noqa: PLC0415  (preprocessor/ on sys.path)
+        return keep_gate.split_handoffs(items, strict=True)
+    except Exception as e:
+        log.warning(f"remote escalation: keep check unavailable, nothing handed off: {e}")
+        return [], []
+
+
 def _remote_escalation_tick() -> None:
     try:
         import quiet_hours
@@ -15868,16 +15896,37 @@ def _remote_escalation_tick() -> None:
     if not isinstance(items, list):
         return
     seen = _remote_escalations_seen()
-    batch: list[dict] = []
+    fresh: list[dict] = []
     for e in items:
-        cid = str((e or {}).get("conversation_id") or "")
+        cid = str(e.get("conversation_id") or "") if isinstance(e, dict) else ""
         if not cid or cid in seen or not _CONV_ID_RE.match(cid):
             continue
-        if any(b.get("conversation_id") == cid for b in batch):
+        if any(f.get("conversation_id") == cid for f in fresh):
             continue
-        batch.append(e)
-        if len(batch) >= REMOTE_ESCALATION_BATCH_MAX:
-            break
+        fresh.append(e)
+    if not fresh:
+        return
+    # A thread kept from hosted models below Summary never reaches a
+    # hosted turn, whoever queued it (keep_gate): it is marked seen, with
+    # its level, and never posted.
+    allowed, kept = _keep_split(fresh)
+    batch = allowed[:REMOTE_ESCALATION_BATCH_MAX]
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for e in kept:
+        seen[str(e.get("conversation_id"))] = {"ts": stamp, "kept": str(e.get("keep_level") or "local")}
+
+    def _write_seen() -> bool:
+        try:
+            _atomic.write_json(REMOTE_ESCALATIONS_SEEN, seen, mode=0o600, indent=1, sort_keys=True)
+            return True
+        except Exception as ex:
+            log.warning(f"remote escalation seen-set write failed: {ex}")
+            return False
+
+    if kept:
+        log.info(f"Remote escalation: {len(kept)} kept item(s) stay on the owner's model")
+        if not batch:
+            _write_seen()
     if not batch:
         return
 
@@ -15895,18 +15944,9 @@ def _remote_escalation_tick() -> None:
         prompt = _remote_escalation_batch_prompt(batch)
     # The seen set is written before the post: a batch that cannot be
     # marked is not posted, so a failed write never re-posts it next tick.
-    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cids = [str(e.get("conversation_id")) for e in batch]
     for cid in cids:
         seen[cid] = {"ts": stamp, "pending": True}
-
-    def _write_seen() -> bool:
-        try:
-            _atomic.write_json(REMOTE_ESCALATIONS_SEEN, seen, mode=0o600, indent=1, sort_keys=True)
-            return True
-        except Exception as ex:
-            log.warning(f"remote escalation seen-set write failed: {ex}")
-            return False
 
     if not _write_seen():
         return

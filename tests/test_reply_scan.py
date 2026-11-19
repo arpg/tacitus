@@ -331,6 +331,25 @@ def test_the_bot_reads_the_live_queue_with_todays_replies():
     assert ns["_reply_scan_for"]("ea") == ("", [], 0)
 
 
+def test_the_bot_marks_a_row_the_mail_records_keep(monkeypatch):
+    """The queue's own `kept` reads the row's labels; the bot asks the
+    shared check (keep_gate), whose mail records know more. A row kept
+    on the machine shows its subject, its sender and its age only."""
+    import keep_gate
+    monkeypatch.setattr(keep_gate, "_records", lambda: (
+        lambda i: "local" if i.get("conversation_id") == "conv-letter" else "full"))
+    ns, _ = _scan_bot(_queue())
+    block, shown, _hidden = ns["_reply_scan_for"]("ea")
+    line = next(ln for ln in block.splitlines() if "[response-letter]" in ln)
+    assert "Kept from hosted models: no text here" in line and "Confirm you will write" not in block
+    assert "Approve the revised lab budget." in block
+    assert [r["id"] for r in shown if r["kept"]] == ["response-letter"]
+    # When the check cannot run, every row reads kept.
+    monkeypatch.setattr(keep_gate, "mark_kept", lambda rows: (_ for _ in ()).throw(OSError("locked")))
+    block, shown, _hidden = ns["_reply_scan_for"]("ea")
+    assert all(r["kept"] for r in shown) and "Approve the revised lab budget." not in block
+
+
 def test_the_bot_slices_the_queue_in_a_project_room_and_falls_back_on_error():
     scope = {"kind": "project", "project": "campus-ai"}
     ns, _ = _scan_bot(_queue(), scope=scope,

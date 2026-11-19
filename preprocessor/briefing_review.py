@@ -525,44 +525,12 @@ def user_close(row: dict, events: list[dict]) -> dict | None:
 
 def keep_levels(rows: list[dict]) -> dict[str, str]:
     """{row id: keep level} for rows from mail; a row from no mail is
-    `full`. The strictest of the thread's records, the row's own
-    message, its brief's level and its kept label (a label alone reads
-    `facts`). Fails closed: when the gate cannot say, every row from mail
-    reads `local`."""
-    out: dict[str, str] = {}
-    try:
-        import mail_privacy
-        import privacy_rules
-        import remote_llm
-        index = mail_privacy.load_index()
-        ctx = mail_privacy.keep_context(remote_llm.config())
-    except Exception as e:
-        print(f"briefing_review: keep check unavailable, mail rows withheld: {str(e)[:120]}",
-              file=sys.stderr)
-        for r in rows:
-            out[r.get("id") or ""] = "local" if (r.get("conversation_id") or r.get("source_message_id")) \
-                else "full"
-        return out
-    for r in rows:
-        rid = r.get("id") or ""
-        level = "full"
-        try:
-            conv, mid = r.get("conversation_id") or "", r.get("source_message_id") or ""
-            if conv:
-                level = privacy_rules.stricter(level, mail_privacy.conversation_level(conv, index, ctx))
-            rec = index["by_id"].get(mid) if mid else None
-            if rec is not None:
-                level = privacy_rules.stricter(level, mail_privacy.level_of(rec, index=index, ctx=ctx))
-            brief = _meta(r).get("thread_brief") or r.get("thread_brief") or {}
-            if isinstance(brief, dict) and brief.get("keep_level") in privacy_rules.LEVELS:
-                level = privacy_rules.stricter(level, brief["keep_level"])
-            if mail_privacy.kept_label(r) or mail_privacy.kept_label(_meta(r)) or \
-                    (isinstance(brief, dict) and mail_privacy.kept_label(brief)):
-                level = privacy_rules.stricter(level, "facts")
-        except Exception:
-            level = "local" if (r.get("conversation_id") or r.get("source_message_id")) else "full"
-        out[rid] = level
-    return out
+    `full`. The shared check (keep_gate.levels): the strictest of the
+    thread's records, the row's own message, its brief's level, its kept
+    label (a label alone reads `facts`) and the keep list. Fails closed:
+    when the gate cannot say, every row from mail reads `local`."""
+    import keep_gate
+    return keep_gate.levels(rows)
 
 
 def _open(level: str) -> bool:
