@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sqlite3
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -311,6 +312,12 @@ def place_row(row: dict, conn, projects: dict[str, dict] | None = None,
     too, so the hits are filtered here."""
     import mail_tagger
     import project_store
+    try:
+        if conn.execute("SELECT 1 FROM loose_ledger WHERE ledger_id=?",
+                        (row.get("id") or "",)).fetchone():
+            return ""   # the owner said it belongs to no project (move-ledger --project none)
+    except sqlite3.OperationalError:
+        pass
     projects = projects if projects is not None else project_map(conn)[0]
     hits = [h for h in project_store.match_projects(_row_text(row), conn)
             if (projects.get(h["id"]) or {}).get("status") == "active"]

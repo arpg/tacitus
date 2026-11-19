@@ -177,6 +177,19 @@ def test_groups_place_an_unlinked_row_in_the_one_project_its_words_name(priv, db
                       ).fetchone()[0] == "harbor-survey"
 
 
+def test_a_row_the_owner_moved_out_of_every_project_is_never_relinked(priv, db):
+    """`move-ledger --project none` marks the row loose: the nightly pass
+    leaves it alone, whatever its words name."""
+    rows = {r["id"]: r for r in _rows(db)}
+    visit = rows["response-visit"]          # its words name harbor-survey
+    assert lr.place_row(visit, db, votes={}) == "harbor-survey"
+    project_store.move_ledger(db, "response-visit", "none", quote="not a project item")
+    db.commit()
+    assert lr.place_row(visit, db, votes={}) == ""
+    _, linked = lr.groups(list(rows.values()), db, link=lambda *a: None, votes={})
+    assert "response-visit" not in {l["id"] for l in linked}
+
+
 def test_the_taggers_call_links_a_row_only_when_its_words_echo_it(priv, db):
     db.execute("INSERT INTO projects (id,name,domain,status,aliases,created_at,updated_at) "
                "VALUES ('lumen-array','Lumen array','research','active','',?,?)",

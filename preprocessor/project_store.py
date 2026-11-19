@@ -23,6 +23,8 @@ Usage:
     python3 project_store.py add-person --email x@example.edu --name "..." [--org --role --notes]
     python3 project_store.py link-person --project field-trial --email x@example.edu --role "POC"
     python3 project_store.py link-ledger --project state-grant --ledger-id state-grant-application
+    python3 project_store.py move-ledger --ledger-id <id> --project <id|none> [--quote "<owner's words>"]
+    python3 project_store.py placement --ledger-id <id>   # which rooms a row goes to, and why
     python3 project_store.py file-message --project survey-paper --conversation-id <id> --subject "..." [--gist "..."]
     python3 project_store.py journal --project state-grant --text "Report submitted" [--kind milestone]
     python3 project_store.py update-project --id survey-paper [--summary ...] [--next-actions ...] [--status dormant]
@@ -160,13 +162,19 @@ def _get_db(db_path: Path | None = None) -> sqlite3.Connection:
     conn = _ledger.guarded_connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    ensure_schema(conn)
+    return conn
+
+
+def ensure_schema(conn) -> None:
+    """The store's tables on a connection to the shared database (the
+    ledger CLI's own, when it links a row it adds)."""
     conn.executescript(SCHEMA)
     for migration in MIGRATIONS:
         try:
             conn.execute(migration)
         except sqlite3.OperationalError:
             pass  # column already exists
-    return conn
 
 
 def _out(obj) -> int:
@@ -315,16 +323,171 @@ def cmd_link_person(args) -> int:
                  "email": email})
 
 
+def link_ledger(conn, project: str, ledger_id: str) -> None:
+    """Link a ledger row to a project: an explicit placement, which also
+    ends a mark that the row belongs to no project. The caller commits."""
+    conn.execute("INSERT OR IGNORE INTO project_ledger (project_id,ledger_id) "
+                 "VALUES (?,?)", (project, ledger_id))
+    conn.execute("DELETE FROM loose_ledger WHERE ledger_id=?", (ledger_id,))
+
+
+def mark_loose(conn, ledger_id: str) -> None:
+    """Mark a ledger row as no project's: the dashboard's unfiled tray
+    leaves it out, and no word match places it in a room. The caller
+    commits."""
+    conn.execute("INSERT OR REPLACE INTO loose_ledger (ledger_id, marked_at) VALUES (?,?)",
+                 (ledger_id, _now()))
+
+
 def cmd_link_ledger(args) -> int:
     conn = _get_db()
     if not _project(conn, args.project):
         return _err(f"no project {args.project}")
-    conn.execute(
-        "INSERT OR IGNORE INTO project_ledger (project_id,ledger_id) "
-        "VALUES (?,?)", (args.project, args.ledger_id))
+    link_ledger(conn, args.project, args.ledger_id)
     conn.commit()
     return _out({"ok": True, "action": "linked", "project": args.project,
                  "ledger_id": args.ledger_id})
+
+
+def cmd_unlink_ledger(args) -> int:
+    conn = _get_db()
+    conn.execute("DELETE FROM project_ledger WHERE project_id=? AND ledger_id=?",
+                 (args.project, args.ledger_id))
+    conn.commit()
+    return _out({"ok": True, "action": "unlinked", "project": args.project,
+                 "ledger_id": args.ledger_id})
+
+
+def move_ledger(conn, ledger_id: str, project: str, *, quote: str = "",
+                actor: str = "") -> dict:
+    """Place a ledger row in exactly one project, or in none: the fix when
+    the owner says an item is in the wrong room. Every other link of the
+    row goes; `project` "none" marks the row loose, so no word match
+    places it again (briefing_rooms.placement). The move is recorded as a
+    `placed` ledger event and, with the owner's words, in the journal of
+    the project it goes to. Returns {"ok", "from", "to"} or {"ok": False,
+    "error"}. The caller commits."""
+    target = "" if project.strip().lower() == "none" else project.strip()
+    if target:
+        row = _project(conn, target)
+        if not row:
+            return {"ok": False, "error": f"no project {target}"}
+        if row["status"] == "closed":
+            return {"ok": False, "error": f"project {target} is closed"}
+    before = [r["project_id"] for r in conn.execute(
+        "SELECT project_id FROM project_ledger WHERE ledger_id=?", (ledger_id,))]
+    conn.execute("DELETE FROM project_ledger WHERE ledger_id=?", (ledger_id,))
+    if target:
+        link_ledger(conn, target, ledger_id)
+    else:
+        mark_loose(conn, ledger_id)
+    try:
+        try:
+            import closure as _closure
+        except ModuleNotFoundError:  # imported as preprocessor.<mod>
+            from preprocessor import closure as _closure
+        _closure.record_event(conn, ledger_id, "placed", actor=actor or "cli",
+                              evidence={"from": before, "to": target or "none"},
+                              note=quote[:500])
+    except Exception as e:
+        print(f"NOTE: the move of {ledger_id} is not in the ledger events: {e}", file=sys.stderr)
+    if target:
+        said = f' The owner said: "{quote[:300]}"' if quote else ""
+        conn.execute("INSERT INTO project_events (project_id,ts,kind,text) VALUES (?,?,?,?)",
+                     (target, _now(), "note",
+                      f"Ledger row {ledger_id} placed here"
+                      + (f" (it was under {', '.join(before)})" if before else "") + "." + said))
+    return {"ok": True, "ledger_id": ledger_id, "from": before, "to": target or "none"}
+
+
+def cmd_move_ledger(args) -> int:
+    conn = _get_db()
+    out = move_ledger(conn, args.ledger_id, args.project, quote=args.quote or "",
+                      actor="cli:" + ("chat" if os.environ.get("EA_RUN_ID") else "cli"))
+    if not out.get("ok"):
+        return _err(out["error"])
+    conn.commit()
+    return _out({**out, "action": "moved"})
+
+
+# The environment variable the chat bot sets for a turn in a project room
+# (ea-chat-bot.py _room_env): the project the room is bound to.
+ROOM_PROJECT_ENV = "EA_ROOM_PROJECT"
+
+
+def room_project() -> str:
+    """The project of the room this process's chat turn runs in, from the
+    environment; "" outside a project room."""
+    pid = os.environ.get(ROOM_PROJECT_ENV, "").strip()
+    return pid if _slug_ok(pid) else ""
+
+
+def project_error(conn, project: str) -> str:
+    """Why `project` cannot take a ledger row ("" when it can): "none" (no
+    project) always can; otherwise it must exist and not be closed."""
+    if project.strip().lower() == "none":
+        return ""
+    row = _project(conn, project.strip())
+    if not row:
+        return f"no project {project}; `project_store.py suggest --text ...` finds the id"
+    if row["status"] == "closed":
+        return f"project {project} is closed"
+    return ""
+
+
+def place_new_row(conn, ledger_id: str, project: str) -> dict:
+    """Place a row the caller just added in `project`, or in none
+    ("none" marks it loose). The caller checked project_error and
+    commits."""
+    if project.strip().lower() == "none":
+        mark_loose(conn, ledger_id)
+        return {"linked": "none"}
+    link_ledger(conn, project.strip(), ledger_id)
+    return {"linked": project.strip()}
+
+
+def room_link_verdict(conn, ledger_id: str, room: str, text: str, *, created: bool) -> dict:
+    """Whether a row that a project room's turn added (`created`) or
+    changed goes under the room's project, writing nothing: {"link":
+    room} or {"skipped": reason}. A row the turn added goes there: the
+    room is where the owner asked for it, and a row for another project
+    names it with `ledger.py add --project`. A row the turn changed goes
+    there only when it has no project, the owner never marked it as no
+    project's, and its words name no other project: such a row is often
+    one the briefing posted in this room by its words, maybe wrongly
+    (two projects tied on them), and acting on it here is no proof of
+    its place."""
+    row = _project(conn, room)
+    if not row or row["status"] == "closed":
+        return {"skipped": f"the room's project {room} is not an open project"}
+    linked = [r["project_id"] for r in conn.execute(
+        "SELECT project_id FROM project_ledger WHERE ledger_id=?", (ledger_id,))]
+    if room in linked:
+        return {"skipped": f"already under {room}", "already": True}
+    if created:
+        return {"link": room}
+    if linked:
+        return {"skipped": f"already under {', '.join(linked)}"}
+    if conn.execute("SELECT 1 FROM loose_ledger WHERE ledger_id=?", (ledger_id,)).fetchone():
+        return {"skipped": "the owner marked it as no project's"}
+    others = [h["id"] for h in match_projects(text, conn) if h["score"] >= 3 and h["id"] != room]
+    if others:
+        return {"skipped": f"its words name {', '.join(others)}; move-ledger places it"}
+    return {"link": room}
+
+
+def room_link(conn, ledger_id: str, room: str, text: str, *, created: bool) -> dict:
+    """Link a row a project room's turn added or changed to the room's
+    project (room_link_verdict decides), so the briefing never has to
+    guess its place from words. Returns {"linked": project} or
+    {"skipped": reason}. The caller commits."""
+    verdict = room_link_verdict(conn, ledger_id, room, text, created=created)
+    if verdict.get("already"):
+        return {"linked": room, "already": True}
+    if "link" not in verdict:
+        return verdict
+    link_ledger(conn, room, ledger_id)
+    return {"linked": room}
 
 
 def cmd_file_message(args) -> int:
@@ -558,42 +721,104 @@ def alias_weight(alias: str) -> int:
     return 2 if alias.isalpha() and alias.islower() else 3
 
 
+# Words that say what kind of work a project is, never which one: a
+# project named "Project and proposal" would otherwise claim every text
+# about any project or proposal. A plural counts as its singular.
+GENERIC_WORDS = frozenset("""
+    project proposal research researcher workshop network review meeting
+    engagement program programme committee group working center centre
+    advising advisor advisory award grant team plan planning study course
+    class seminar initiative collaboration partnership application submission
+    report paper campaign effort work task support update call session
+    service office development activity matter general misc other
+""".split())
+
+# A name word that this many open projects' names share names none of
+# them; 0 turns the count off.
+SHARED_NAME_WORD = 4
+
+
+def _words(text: str) -> list[str]:
+    return [t for t in re.split(r"\W+", (text or "").lower()) if t]
+
+
+def _name_words(name: str) -> list[str]:
+    """The words of a project name the matcher reads: four letters or more."""
+    return [t for t in _words(name) if len(t) >= 4]
+
+
+def _is_generic(word: str) -> bool:
+    return word in GENERIC_WORDS or (word.endswith("s") and word[:-1] in GENERIC_WORDS)
+
+
+def generic_name_words(names) -> set[str]:
+    """The name words that tell no project apart: GENERIC_WORDS (and
+    their plurals), and any word SHARED_NAME_WORD or more of `names` share
+    (a word in four project names belongs to none of them)."""
+    df: dict[str, int] = {}
+    for n in names:
+        for t in set(_name_words(n)):
+            df[t] = df.get(t, 0) + 1
+    return {t for t, k in df.items()
+            if _is_generic(t) or (SHARED_NAME_WORD and k >= SHARED_NAME_WORD)}
+
+
 def match_projects(text: str, conn=None) -> list:
     """Deterministic project lookup for dispatch injection: name words,
-    aliases, and member names/emails, scored. Returns [{id, score}]."""
+    aliases, the project id, and member names/emails, scored. Returns
+    [{id, score, by}], best first; `by` names the kinds of evidence
+    (alias, name, id, member), so a caller can tell a match that rests on
+    name words alone (name_only).
+
+    The full name (every name word of four letters or more) in the text
+    scores 3 when one of its words is distinctive (generic_name_words);
+    two distinctive name words score 2; generic words alone score
+    nothing. A name with no distinctive word ("Project and proposal")
+    places by its aliases, id and people only. The id counts as a phrase
+    (`lab-210` reads `lab 210`); a one-word id never counts inside
+    another word (`ridges` in "bridges"), a hyphenated one does (`ms-geo`
+    in "MS-GEOX")."""
     conn = conn or _get_db()
     raw = (text or "").lower()
-    hay = " " + re.sub(r"\W+", " ", raw) + " "
+    hay = " " + " ".join(_words(raw)) + " "
     scores: dict = {}
+    kinds: dict = {}
 
-    def bump(pid, n):
+    def bump(pid, n, kind):
         scores[pid] = scores.get(pid, 0) + n
+        kinds.setdefault(pid, set()).add(kind)
 
-    for r in conn.execute("SELECT id,name,aliases,status FROM projects"):
-        if r["status"] == "closed":
-            continue
+    rows = [r for r in conn.execute("SELECT id,name,aliases,status FROM projects")
+            if r["status"] != "closed"]
+    generic = generic_name_words(r["name"] for r in rows)
+    for r in rows:
         for alias in filter(None, (a.strip() for a in (r["aliases"] or "").split(","))):
             if f" {alias.lower()} " in hay:
-                bump(r["id"], alias_weight(alias))
-        name_tokens = [t for t in re.split(r"\W+", r["name"].lower())
-                       if len(t) >= 4]
-        n_hits = sum(1 for t in name_tokens if f" {t} " in hay)
-        if name_tokens and n_hits == len(name_tokens):
-            bump(r["id"], 3)
-        elif n_hits >= 2:
-            bump(r["id"], 2)
-        if f" {r['id']} " in hay or r["id"] in raw:
-            bump(r["id"], 3)
+                bump(r["id"], alias_weight(alias), "alias")
+        words = list(dict.fromkeys(_name_words(r["name"])))
+        hit = [t for t in words if f" {t} " in hay]
+        distinct = [t for t in hit if t not in generic]
+        if words and len(hit) == len(words) and distinct:
+            bump(r["id"], 3, "name")
+        elif len(distinct) >= 2:
+            bump(r["id"], 2, "name")
+        if f" {' '.join(_words(r['id']))} " in hay or ("-" in r["id"] and r["id"] in raw):
+            bump(r["id"], 3, "id")
     for r in conn.execute(
             "SELECT pp.project_id, pp.email, p.name FROM project_people pp "
             "LEFT JOIN people p ON p.email=pp.email"):
         if r["email"] and r["email"] in raw:
-            bump(r["project_id"], 2)
+            bump(r["project_id"], 2, "member")
         last = (r["name"] or "").split()[-1].lower() if r["name"] else ""
         if len(last) >= 4 and f" {last} " in hay:
-            bump(r["project_id"], 1)
-    return sorted(({"id": k, "score": v} for k, v in scores.items()),
+            bump(r["project_id"], 1, "member")
+    return sorted(({"id": k, "score": v, "by": sorted(kinds[k])} for k, v in scores.items()),
                   key=lambda x: -x["score"])
+
+
+def name_only(hit: dict) -> bool:
+    """A match_projects hit that rests on name words alone."""
+    return list(hit.get("by") or []) == ["name"]
 
 
 TRACE = 1   # the least word score that confirms the mail tagger's call
@@ -675,6 +900,58 @@ def cmd_match(args) -> int:
 
 def cmd_suggest(args) -> int:
     return _out(suggest_projects(args.text, limit=args.limit))
+
+
+def explain_placement(conn, ledger_id: str) -> dict | None:
+    """Which projects (and so which rooms) the briefing gives a ledger row,
+    and why, in one sentence a room turn can tell the owner
+    (briefing_rooms.placement). None when there is no such row. Run by
+    the EA, it cannot read the mail sorter's (mail_tagger) calls, which
+    only the owner's processes read; `sorter_calls_read` says so."""
+    try:
+        import briefing_rooms as _br
+    except ModuleNotFoundError:  # imported as preprocessor.<mod>
+        from preprocessor import briefing_rooms as _br
+    row = conn.execute("SELECT * FROM ledger WHERE id=?", (ledger_id,)).fetchone()
+    if not row:
+        return None
+    try:
+        idx = _br.index(conn)
+    except Exception:  # the mail sorter's log, which only the owner reads
+        idx = _br.index(conn, {"messages": {}, "conversations": {}})
+    item = {"ledger_id": row["id"], "conversation_id": row["conversation_id"] or "",
+            "title": row["description"] or "", "summary": row["notes"] or ""}
+    got = _br.placement(item, idx, conn)
+    pids, hits = got["projects"], got.get("hits") or []
+    names = ", ".join(pids)
+    why = {
+        "link": f"It is linked to {names}.",
+        "thread": f"Its mail thread is filed under {names}.",
+        "loose": "The owner marked it as no project's, so no room gets it.",
+        "tagger": (f"The mail sorter put its mail under {got.get('call')}, and its words "
+                   f"show that project too." if pids else
+                   "The mail sorter put its mail under no project, or its words do not "
+                   "show the project the sorter named, so no room gets it."),
+        "words": f"It has no link. Its words match {names}: " + "; ".join(
+            f"{h['id']} by {' and '.join(h.get('by') or ['words'])}, score {h['score']}"
+            for h in hits if h["id"] in pids) + ".",
+        "none": ("It has no link, and its words match two projects equally only by "
+                 "their names, so no room gets it." if got.get("tie") else
+                 "It has no link, and its words name no project clearly, so no room gets it."),
+    }[got["by"]]
+    return {"ledger_id": ledger_id, "description": row["description"] or "",
+            "projects": pids, "by": got["by"], "why": why,
+            "word_matches": [{k: h.get(k) for k in ("id", "score", "by")} for h in hits[:4]],
+            "sorter_calls_read": bool((idx.get("votes") or {}).get("messages")),
+            "fix": ("project_store.py move-ledger --ledger-id <id> --project <project or none> "
+                    "--quote \"<the owner's words>\"")}
+
+
+def cmd_placement(args) -> int:
+    out = explain_placement(_get_db(), args.ledger_id)
+    if out is None:
+        return _err(f"no ledger row {args.ledger_id}")
+    return _out(out)
 
 
 def index_brief(conn=None, max_chars: int = 3200, status: str = "active") -> str:
@@ -926,8 +1203,7 @@ def cmd_loose(args) -> int:
     loose, so triage converges to empty."""
     conn = _get_db()
     if args.mark:
-        conn.execute("INSERT OR REPLACE INTO loose_ledger (ledger_id, "
-                     "marked_at) VALUES (?,?)", (args.mark, _now()))
+        mark_loose(conn, args.mark)
         conn.commit()
         return _out({"ok": True, "action": "loose", "ledger_id": args.mark})
     if args.unmark:
@@ -1004,6 +1280,23 @@ def main() -> int:
     p.add_argument("--project", required=True)
     p.add_argument("--ledger-id", dest="ledger_id", required=True)
     p.set_defaults(func=cmd_link_ledger)
+
+    p = sub.add_parser("unlink-ledger", allow_abbrev=False)
+    p.add_argument("--project", required=True)
+    p.add_argument("--ledger-id", dest="ledger_id", required=True)
+    p.set_defaults(func=cmd_unlink_ledger)
+
+    p = sub.add_parser("move-ledger", allow_abbrev=False,
+                       help="place a ledger row in one project (or none), dropping its other links")
+    p.add_argument("--ledger-id", dest="ledger_id", required=True)
+    p.add_argument("--project", required=True, help="the project it belongs to, or none")
+    p.add_argument("--quote", help="the owner's words that asked for the move")
+    p.set_defaults(func=cmd_move_ledger)
+
+    p = sub.add_parser("placement", allow_abbrev=False,
+                       help="which project rooms a ledger row goes to, and why")
+    p.add_argument("--ledger-id", dest="ledger_id", required=True)
+    p.set_defaults(func=cmd_placement)
 
     p = sub.add_parser("file-message", allow_abbrev=False)
     p.add_argument("--project", required=True)

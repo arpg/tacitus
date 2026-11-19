@@ -728,8 +728,13 @@ line; it never falls back to a Claude run.
   description ("Due 2026-11-04: ", "Task: ") never reach the post.
 - **Project rooms get their slice** (`preprocessor/briefing_rooms.py`).
   An item belongs to a project by its ledger link, then by its filed
-  thread, then by the strict project matcher (score 3 or more; a tie
-  goes to both projects, at most two). Each room with items gets one
+  thread, then by the mail tagger's call checked against the words, then
+  by the strict project matcher (score 3 or more; a tie goes to both
+  projects, at most two, unless name words alone put one of them
+  there: then to neither). A generic name word (`project`, `proposal`,
+  or a word four or more project names share) scores nothing. A row a
+  project room's turn adds is linked to that room's project when it is
+  written. Each room with items gets one
   post as a new thread: the items under their
   section, then up to five other open rows of the project. A reply in
   that thread is a room turn with the post as thread history. A post

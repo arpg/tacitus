@@ -113,6 +113,20 @@ def test_a_live_turn_runs_on_the_real_ea_dir_with_writes_confined_and_keeps_its_
     assert ct.thread_row("t1", "live")["turns"] == 2 and ct.thread_row("t1", "live")["thread_id"] == "th-2"
 
 
+def test_a_project_room_turn_carries_its_project_to_every_command(private):
+    """A row the turn adds through ledger.py goes under the room's project
+    (project_store.room_link); the variable reaches the commands through
+    the turn's environment. The turn's own variables are never replaced."""
+    run = _codex([{"output": "Done.", "thread_id": "th-r"}])
+    ct.run_turn("C", thread_key="t7", run_id="run-room", live=True, fresh_prompt="F", codex_run=run,
+                env={"EA_ROOM_PROJECT": "tern-geo", "EA_RUN_ID": "spoofed"})
+    env = {p.split("=", 1)[0]: p.split("=", 1)[1] for p in run.calls[0]["prefix"][5:]}
+    assert env["EA_ROOM_PROJECT"] == "tern-geo" and env["EA_RUN_ID"] == "run-room"
+    plain = _codex([{"output": "Done.", "thread_id": "th-p"}])
+    ct.run_turn("C", thread_key="t8", run_id="run-main", live=True, fresh_prompt="F", codex_run=plain)
+    assert not any(p.startswith("EA_ROOM_PROJECT=") for p in plain.calls[0]["prefix"])
+
+
 def test_a_command_keeps_its_run_time_and_the_bots_summary(private):
     """The trace shows how long a command ran and what its whole output
     said; the bot's summary hook goes to the runner, and a command with

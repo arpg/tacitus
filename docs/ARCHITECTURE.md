@@ -570,8 +570,11 @@ in the post then gets its slice in a new topic (`briefing_rooms.py`,
 switch `briefing_rooms`), posted only to rooms the owner's record names. An
 item's project is its ledger link, its filed thread, or the mail tagger's
 project call on its mail when the item's words show a trace of that project;
-with no tagger call, the word match alone. The nightly reconcile links rows by
-the same test. Items the
+with no tagger call, the word match alone, where a generic name word scores
+nothing and a tie that name words decide places nothing. A row a project
+room's turn adds is linked to the room's project as it is written (the bot
+sets `EA_ROOM_PROJECT` for the turn; `ledger.py add` and `update` read it).
+The nightly reconcile links rows by the same test. Items the
 remote model cannot handle go to a queue the bot drains each tick
 (`_remote_escalation_tick`): the pending hand-offs (up to two, the rest
 next tick) share one EA topic and one Claude session, which reads each

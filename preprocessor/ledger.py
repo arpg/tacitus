@@ -769,6 +769,42 @@ def _checked_closes_on(value: str) -> str:
     return how
 
 
+def _project_store():
+    try:
+        import project_store as _ps
+    except ModuleNotFoundError:  # imported as preprocessor.<mod>
+        from preprocessor import project_store as _ps
+    return _ps
+
+
+def _place(db, entry_id: str, *, created: bool, project: str | None = None) -> dict:
+    """The project a row this command added or changed goes under:
+    `project` (add --project, an id or "none") when given; else, in a
+    chat turn in a project room, the room's project
+    (project_store.room_link). {} when neither applies. A failure is
+    reported in the result and never fails the command: the row is
+    written."""
+    ps = _project_store()
+    room = ps.room_project()
+    if not project and not room:
+        return {}
+    try:
+        ps.ensure_schema(db)
+        if project:
+            out = ps.place_new_row(db, entry_id, project)
+            out["by"] = "--project"
+        else:
+            row = db.execute("SELECT description, notes FROM ledger WHERE id = ?",
+                             (entry_id,)).fetchone()
+            text = f"{row['description'] or ''} {(row['notes'] or '')[:300]}" if row else ""
+            out = ps.room_link(db, entry_id, room, text, created=created)
+            out["by"] = "room"
+        db.commit()
+        return out
+    except Exception as e:
+        return {"skipped": f"not placed in a project: {str(e)[:160]}"}
+
+
 def cmd_add(args) -> int:
     """Add a new ledger entry."""
     if not args.id or not args.type:
@@ -783,6 +819,19 @@ def cmd_add(args) -> int:
         _output({"error": f"Entry already exists: {args.id}", "hint": "Use 'update' to modify"})
         db.close()
         return 1
+
+    project = (getattr(args, "project", None) or "").strip()
+    if project:
+        ps = _project_store()
+        try:
+            ps.ensure_schema(db)
+            problem = ps.project_error(db, project)
+        except Exception as e:
+            problem = f"the project store cannot be read: {str(e)[:160]}"
+        if problem:
+            _output({"error": f"--project {project}: {problem}"})
+            db.close()
+            return 1
 
     metadata = {}
     core_extra = {}
@@ -844,10 +893,14 @@ def cmd_add(args) -> int:
         now,
     ))
     db.commit()
+    placed = _place(db, args.id, created=True, project=project or None)
 
     row = db.execute("SELECT * FROM ledger WHERE id = ?", (args.id,)).fetchone()
     db.close()
-    _output({"ok": True, "action": "added", "entry": _row_to_dict(row)})
+    out = {"ok": True, "action": "added", "entry": _row_to_dict(row)}
+    if placed:
+        out["project"] = placed
+    _output(out)
     return 0
 
 
@@ -1009,8 +1062,11 @@ def cmd_update(args) -> int:
         db.commit()
 
     updated = db.execute("SELECT * FROM ledger WHERE id = ?", (args.id,)).fetchone()
+    placed = _place(db, args.id, created=False) if updated["status"] in OPEN_STATUSES else {}
     db.close()
     out = {"ok": True, "action": "updated", "entry": _row_to_dict(updated)}
+    if placed:
+        out["project"] = placed
     if settled is not None:
         out["close"] = settled["action"]
         if settled["action"] == "proposed":
@@ -2702,6 +2758,9 @@ def main():
                             "passing: a vote, an RSVP, a sign-up)")
     p_add.add_argument("--set", nargs="*", metavar="KEY=VALUE",
                        help="Extra fields (core or metadata)")
+    p_add.add_argument("--project",
+                       help="The project the row belongs to (an id, or none). In a project "
+                            "room a new row goes under the room's project without it.")
 
     # update
     p_upd = sub.add_parser("update", help="Update an existing entry", allow_abbrev=False)
