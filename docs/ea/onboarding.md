@@ -34,7 +34,10 @@ the built-in `privacy-engaged-applicants` level (docs/remote-llm.md,
   morning briefing, which ends with the question of the day under
   `:seedling: *One question*`. The user answers in that thread; the
   turn runs `onboarding.py answer --id <id> --text "<their words>"` and
-  confirms the rule in one line. *skip* runs `skip --id <id>`, *stop
+  confirms the rule in one line. On the web chat the question is on
+  Home, and the answer starts a new conversation in Ask Tacitus with
+  `My answer to today's question ("<the question>"):`; the id is the
+  briefing JSON's `onboarding_question.id`, recorded the same way. *skip* runs `skip --id <id>`, *stop
   asking* runs `stop`. The afternoon catchup never asks; it only
   records an answer. One question a day: `next` returns nothing while
   the question asked today is still open (`--force` overrides).

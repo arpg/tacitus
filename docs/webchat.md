@@ -77,7 +77,7 @@ below):
 ```
 
 `briefings` (default true) pushes the morning briefing and the afternoon
-update; `replies` (default true) pushes the bot's answer in a
+update (with Home on, the one push that says Home has it: Home, below); `replies` (default true) pushes the bot's answer in a
 conversation you wrote in, in the EA and scheduling channels; `rooms`
 (default true) does the same in the project rooms; `quiet` is `"queue"`
 (the default: those three wait for the end of your quiet hours) or
@@ -85,7 +85,11 @@ conversation you wrote in, in the EA and scheduling channels; `rooms`
 DM (Action requests) and alerts push whatever the block says. The app's Settings dialog
 (Notifications) changes the block: the bot writes it into the
 owner-private `chat.json` and pushes by it at once (`/api/settings/notify`,
-HTTP API). An optional `relay` block
+HTTP API). An optional `home` block,
+`{"tone": "breezy" | "dry" | "facts", "briefing": "home" | "post"}`, is
+Home's (Home, below): how its greeting sounds and whether the briefing
+goes to Home (the default) or posts in Ask Tacitus; the app's Settings
+(Home) writes it the same way. An optional `relay` block
 turns on the relay (`docs/webchat-relay.md`, Config); it counts only from
 the owner-private `chat.json`.
 `"shadow": "web"` with any primary wraps the primary in `ShadowFrontend`.
@@ -177,12 +181,18 @@ under a ShadowFrontend the composite switches the shadow off
 - `events(seq INTEGER PK AUTOINCREMENT, at REAL, type TEXT, channel TEXT,
   id TEXT, payload TEXT)`: the SSE log; `type` is `message`, `update`,
   `reaction`, `card`, `status` (a card's final line), `file`, `channel`,
-  `thread_state`, `release`, `read`, `light` (the status light).
+  `thread_state`, `release`, `read`, `light` (the status light), `home`
+  (Home changed).
 - `light_notices(id INTEGER PK AUTOINCREMENT, kind TEXT, text TEXT, at REAL,
   read_at REAL)`: the alerts the owner must read, kept for the status
   light until marked read (Status light); the `meta` rows `light_memory`
   (what the light showed, since when, what pushed and what cleared) and
-  `light_tick` (when the bot's light last looked) beside them.
+  `light_tick` (when the bot's light last looked) beside them. Home's
+  records are `meta` rows too: `home:checkin` (the last two visits),
+  `home:greeting` (the model's line and the facts it was written for),
+  `home:sig` (what the last `home` event said), `home:report:<agent>`
+  (the briefing text handed to Home) and `home_tick` (when Home last
+  looked) (Home).
 - `reads(channel TEXT PK, seq INT)`: each channel's floor, under which
   every message is read; `thread_reads(channel TEXT, thread_key TEXT,
   seq INT, PK(channel, thread_key))`: each thread's read mark above it
@@ -239,7 +249,7 @@ subset and escapes everything else; it never injects HTML from text.
 
 | Verb | Path | Body / result |
 |---|---|---|
-| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool, "relay": bool, "card_actions": bool, "owner_routes": "all" \| "handoff" \| "none", "handoff": bool, "bundle": "<hash>", "rooms": bool, "settings": ["notify", "routing"]}`; `owner_routes` is which device routes this request reaches (`"all"` in the owner's own web chat, `"handoff"` through the relay from an approved phone paired on the bot's own origin, `"none"` from any other device; `docs/webchat-relay.md`, the relayed owner routes), `handoff` whether "A computer" works from here now; `bundle` is the bundle hash the bot signs now, "" when it signs none (Code integrity); `rooms` whether the install's mode opens project rooms (the collaborator mode; the app shows its New room button only then); `settings` names the settings pages the host registered; `light` whether the bot runs the status light (Status light) |
+| GET | `/api/me` | `{"owner": "...", "bot": "...", "public_url": ..., "push": bool, "relay": bool, "card_actions": bool, "owner_routes": "all" \| "handoff" \| "none", "handoff": bool, "bundle": "<hash>", "rooms": bool, "settings": ["notify", "routing"]}`; `owner_routes` is which device routes this request reaches (`"all"` in the owner's own web chat, `"handoff"` through the relay from an approved phone paired on the bot's own origin, `"none"` from any other device; `docs/webchat-relay.md`, the relayed owner routes), `handoff` whether "A computer" works from here now; `bundle` is the bundle hash the bot signs now, "" when it signs none (Code integrity); `rooms` whether the install's mode opens project rooms (the collaborator mode; the app shows its New room button only then); `settings` names the settings pages the host registered; `light` whether the bot runs the status light (Status light); `home` whether it runs Home (Home) |
 | GET | `/manifest.sig.json` | the signed manifest of the app's files, without auth (Code integrity); 404 when the bot signs none |
 | GET | `/api/bundle` | the same document, for the owner: the route the relay reaches |
 | GET | `/api/app/{file}` | a file that the signed manifest names, its bytes as on disk (`headers.json` as the bot writes it), as an attachment with the sandbox policy and the type of its name; 404 for any other name. A phone off the tailnet, or on the relay's origin, takes a new release here, through the relay (Code integrity) |
@@ -262,7 +272,7 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/channels/{ch}/files` | multipart `file` (one part, or up to 10 parts in order), optional `text`, `thread_key`, `nonce` → the stored `file` message of the first file, which carries the text; each other file is a `file` message of its own after it in the same thread (the stream brings them); dispatches one `InboundMessage` with `files=[FileRef, ...]`, every file in order. A `nonce` the browser sent before answers the same row and dispatches nothing, as for a message; 400 for more than 10 files |
 | GET | `/api/files/{id}` | the bytes, `Content-Disposition: attachment` |
 | POST | `/api/cards/{ch}/{id}/actions` | `{"action_id", "value"?, "selected"?, "text"?}` → `{"ok": true}`; dispatches an `ActionEvent` (`source` `button` or `select`); `text` is the owner's line, kept on one line of 300 characters at most and only for an action the card stored with `ask` |
-| GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row, `light` events the status light's summary as `GET /api/status` gives it, without `details` (Status light), `thread_state` events `{"channel", "thread_key", "state", "by", "reason", "at", "stale", "tap"}` (`tap`: the state says only that a card waits, Action requests), `release` events `{"bundle"}` when the bot signs a new release of the app, `read` events `{"channel", "thread_key", "unread", "unread_threads", "as_of"}` when a thread read on some device changes the channel's counts, `thread_key` "" for the whole channel); a `: ping` comment every 20 s |
+| GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row, `light` events the status light's summary as `GET /api/status` gives it, without `details` (Status light), `home` events `{"at"}` or `{"report"}` (Home changed; each app reads `/api/home` again for its own zone), `thread_state` events `{"channel", "thread_key", "state", "by", "reason", "at", "stale", "tap"}` (`tap`: the state says only that a card waits, Action requests), `release` events `{"bundle"}` when the bot signs a new release of the app, `read` events `{"channel", "thread_key", "unread", "unread_threads", "as_of"}` when a thread read on some device changes the channel's counts, `thread_key` "" for the whole channel); a `: ping` comment every 20 s |
 | POST | `/api/pair` | `{"token"}` → sets the cookie |
 | GET | `/api/push/vapid` | `{"key": "<base64url P-256 point>"}`, the `applicationServerKey`; 404 when push is off |
 | POST | `/api/push/subscribe` | the browser's `PushSubscription.toJSON()` → `{"ok": true}` |
@@ -278,8 +288,10 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/relay/approve` | `{"device", "cards"?}` → `{"ok": true}`: let a waiting device in, and set whether a relay-origin or hosted device may press card buttons (`cards`, default false; approving again changes it); 400 for a `cards` that is not true or false, 404 for an unknown device. Through the relay, only for a device whose handoff this same phone started (403 otherwise), with a DM notice to the owner |
 | POST | `/api/relay/revoke` | `{"device"}` → `{"ok": true}`: its sessions and streams end, its push subscriptions go; 404 for an unknown device. Through the relay, only a computer the asking phone added with a code (403 otherwise: other devices are removed in the owner's own web chat) |
 | GET | `/api/relay/status` | `{"enabled": bool, ...}`: the relay client's state (`connected`, `install_id`, `bot_public`, `client_key`, `sign_public`, `devices`, `pending`, ...), how a phone can pair (`pair_own`, `pair_relay`, and `bundle`, the bundle hash or null), and `handoff` (a code for a computer would work now) with `hosted_app` (where that computer opens the app, "" when off) |
-| GET | `/api/settings/{name}` | the page's data; for `routing` (the EA's routing table, `docs/llm-lanes.md` 1.1): `{"local": {"configured", "model", "reachable", "detail"}, "source", "values", "hosted_default", "simple": {"model", "choices": [{"model", "name", "ready"}], "line", "custom", "custom_line"}, "rows": [{"task", "label", "what", "value", "allowed", "locked", "floor", "effective", "why"}]}`; for `notify` (Notifications): `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}`, the settings in force; for `debug` (Debug mode): `{"on": bool}`; 404 for a page the host did not register |
-| POST | `/api/settings/{name}` | for `routing`, `{"tasks": {"<task>": "local" \| "hosted" \| "auto"}}`, or the pick at the top alone, `{"hosted_default": "claude" \| "codex"}`, → the page's data with `"saved": true`; the bot writes the owner-private `routing.json`, never `ea-config.json`. 400 with the reason for an unknown task or value or a value under a floor. For `notify`, the keys to change, any of `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}` → the page's data with `"saved": true`; the bot merges them over the web block's `notify_push` in the owner-private `chat.json` (every other key kept, mode 0600; `preprocessor/web_notify_settings.py`) and pushes by them at once. 400 with the reason for an unknown key, a switch that is not true or false, another `quiet`, an empty body, or a process that is not the owner's. For `debug`, `{"on": bool}` → `{"on": bool, "saved": true}`; the bot writes the chat block's `diagnostics` into the owner-private `chat.json` the same way and sends the health room's row with its `hidden` mark as a `channel` event; 400 "Debug mode takes on or off." for any other body. Every page: 403 for a relayed request (settings change only in the owner's own web chat) |
+| GET | `/api/settings/{name}` | the page's data; for `routing` (the EA's routing table, `docs/llm-lanes.md` 1.1): `{"local": {"configured", "model", "reachable", "detail"}, "source", "values", "hosted_default", "simple": {"model", "choices": [{"model", "name", "ready"}], "line", "custom", "custom_line"}, "rows": [{"task", "label", "what", "value", "allowed", "locked", "floor", "effective", "why"}]}`; for `notify` (Notifications): `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}`, the settings in force; for `debug` (Debug mode): `{"on": bool}`; for `home` (Home): `{"tone", "briefing"}`; 404 for a page the host did not register |
+| POST | `/api/settings/{name}` | for `routing`, `{"tasks": {"<task>": "local" \| "hosted" \| "auto"}}`, or the pick at the top alone, `{"hosted_default": "claude" \| "codex"}`, → the page's data with `"saved": true`; the bot writes the owner-private `routing.json`, never `ea-config.json`. 400 with the reason for an unknown task or value or a value under a floor. For `notify`, the keys to change, any of `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}` → the page's data with `"saved": true`; the bot merges them over the web block's `notify_push` in the owner-private `chat.json` (every other key kept, mode 0600; `preprocessor/web_notify_settings.py`) and pushes by them at once. 400 with the reason for an unknown key, a switch that is not true or false, another `quiet`, an empty body, or a process that is not the owner's. For `debug`, `{"on": bool}` → `{"on": bool, "saved": true}`; the bot writes the chat block's `diagnostics` into the owner-private `chat.json` the same way and sends the health room's row with its `hidden` mark as a `channel` event; 400 "Debug mode takes on or off." for any other body. For `home`, any of `{"tone": "breezy" \| "dry" \| "facts", "briefing": "home" \| "post"}` → the page's data with `"saved": true`, written as the web block's `home` the same way; 400 with the reason for anything else. Every page: 403 for a relayed request (settings change only in the owner's own web chat) |
+| GET | `/api/home?tz=<zone>&checkin=1` | Home as the app draws it (Home): `{"as_of", "date", "day", "greeting": {"text", "by": "code" \| "model", "tone", "plain"}, "facts", "mode": {"kind": "normal" \| "travel" \| "vacation", "until", "why", "line"?, "held"?}, "tally": {"done", "left"}, "left": [item], "held": [item], "done": [{"id", "kind", "by": "you" \| "tacitus", "title", "at", "href"?}], "next": {"line", "minutes", "event", "fits"} \| null, "since": {"at", "lines": [{"text", "href"?}]} \| null, "calendar": [{"title", "start", "end", "all_day"}], "question": {...} \| null, "reports": [{"kind", "title", "text", "at"}], "clear", "light"}`; an item is `{"id", "kind": "request" \| "reply" \| "item", "label", "title", "detail", "urgency", "due", "fire", "href"? \| "ask"?, "project"?}`. `tz` is the device's IANA zone (another is ignored); `checkin=1` says the owner opened Home (a visit). Any device that reads may read it, as Action requests; 404 where the bot runs no Home |
+| POST | `/api/home/vote` | `{"vote": "up" \| "down", "text": "<the greeting>"}` → `{"ok": true, "vote"}`: the owner's thumbs on the greeting, a calibration line in the preferences store under the scope `home`; 400 for another body. A chat action, like a reaction |
 | GET | `/api/status` | `{"level": "ok" \| "warn" \| "problem", "line", "conditions": [{"id", "level", "title", "line", "todo", "since", "until"?, "action"?, "read"}], "cleared": [{"id", "level", "title", "line", "since", "until", "how": "fixed" \| "read"}], "as_of", "details": bool}`: the status light (Status light); `details` says whether this device may open a condition's details; 404 where the bot runs no light |
 | GET | `/api/status/{id}` | `{"id", "detail", "log": [...], "log_from"}`: one condition's technical detail and the log lines of its part, bounded and masked (Status light); 404 for an id the light does not show; 403 "Details show only in Tacitus on your own network." for a relayed request |
 | POST | `/api/status/{id}/read` | `{}` → the summary as `GET /api/status` gives it: the owner read a notice, which leaves the light for Recently cleared; 404 for an id that is no notice on the light; 403 for a relayed request, as above |
@@ -613,6 +625,155 @@ stays open through a redraw. `#/status` opens the sheet over the place
 the app shows. The welcome's third card says the light stays green while
 everything works.
 
+## Home
+
+The app opens on Home: what Tacitus did today against what is left for
+the owner, with the calendar's next gap, what changed since they last
+looked and one line that greets them. It reads like running into an
+assistant at the water cooler: short, encouraging, never a score.
+Every number and every list is built in code from the state the system
+keeps; a model writes the greeting line only, and Home never waits for
+it. The briefing's own post is gone from the web chat: Home shows it.
+
+**The bot's side** (`preprocessor/home_screen.py`, the bot's
+`WebFrontend.home`). Home is built from, read-only:
+
+| Part | Source |
+|---|---|
+| Left for you | what the post lists, never more: the Action requests that wait for a tap (`WebFrontend.requests`, never one at work; a decision the draft gate or the review made is one, with its answer buttons); the post's own sections after its pre-send review where the run kept them for Home (`remote_briefing.home_view`: Get done today as To do, the date banner as Due, Needs you as Answer needed with the question as its title, Flexes as Can wait, the afternoon's New today and Waiting on you); with no such list (the Claude lane, the review off), the briefing's ranked `today_top` still open, less what the post leaves out upstream (`ledger.waiting_off_list`, a row merged into another, a thread the owner said gets no reply, `owner_said`); and the replies owed a day or more (`ledger.reply_backlog` on the live rows with `ledger.with_owner_decisions`, from the Replies ladder's first rung, `REPLY_DRAFT_DAYS`: mail that came today does not count yet), less any thread the review dropped, one an earlier run found needs no reply, and one the owner said gets none; one an earlier run made a decision is that question. An item kept from hosted models is its fixed words alone (Kept mail, below). A row or thread is listed once. Most urgent first (overdue, soon, calm; then a tap, a question, a reply, a task) |
+| So far today | the ledger rows closed today, one per mail conversation, each by "You" (the owner's word, a confirm, a send, an archive) or "Tacitus" (a lapse, a sibling, a rule); the requests answered today; the drafts Tacitus made that wait for Send |
+| The ring | `done` against `left`: the two numbers above |
+| The next gap | today's timed events (the briefing's events, each placed by its own start, a declined or free one left out): the minutes before the next one, or, while the owner is in a meeting, after the busy stretch (meetings less than 10 minutes apart are one: "You are busy until 1:30. Then you have 50 minutes before your 2:20."), and how many of the list's first items fit (a tap 2 minutes, a reply 10, a task 20): "You have 50 minutes before your 2:00. That is enough for the 2 replies." With one button that opens the first item |
+| Since you last checked in | what changed since the visit before this one: new requests, drafts, rows closed by Tacitus, what the owner finished, conversations with a new answer, the briefing's arrival. A visit is a check-in (`checkin=1`, the app opening Home after 30 minutes away) more than 30 minutes after the last (`VISIT_GAP_S`), on any device |
+| Travel and vacation | an all-day vacation or out-of-office block on today's calendar (a vacation); a trip or conference block, travel mode (`quiet_hours`) or a device whose clock is in another zone than home (travel) |
+| The question of the day | the first-week question the morning briefing's data carried today (`onboarding_question`) |
+| The briefing | the text the briefing lane handed to Home today (below) |
+
+**What each state shows.**
+
+- Normal: the greeting with its thumbs, the ring, the next gap, Left for
+  you, the question of the day, then (beside them from 1200 px) Since
+  you last checked in, So far today, Today's calendar and the briefing,
+  each folded where it is long.
+- Done (nothing left): "You are clear for today. Nothing waits for you.
+  Close the app and go do something else." The greeting says the same,
+  and there is no gap to fill.
+- Red light or anything overdue: the greeting is the plain line ("2
+  things are overdue. Start there.", "Tacitus needs a look. 6 things
+  wait for you."), no thumbs; a red light also puts "Something needs a
+  look before the rest." with See what (the status sheet) at the top.
+- Travel: "You are away until Saturday. Only what cannot wait shows
+  here. Tacitus holds 4 other things for when you are back." Left for you
+  holds what is overdue or due before the day after the trip; the rest
+  is under "Show the rest".
+- Vacation: the greeting "Nothing is on fire.", "You are off until
+  Sunday." under it, no gap to fill, and the held
+  items folded under "Peek anyway"; only an overdue item, or one due in
+  the next day, shows, and then the line says what cannot wait.
+- No local model: the greeting is the template's line; nothing else
+  changes.
+
+**The greeting.** The owner's own model writes it where one is set up
+(`model_routing.local_ready`; `remote_llm.chat`, purpose `chat-home`,
+the bot's small jobs' breaker), on a thread of its own, from the facts
+alone: the counts, the part of the day, the weekday, the mode, the next
+event's time, the light's level, never a name, a subject or mail. It
+never goes to a hosted model. The prompt gives it the whole of what is
+left and tells it to speak of that whole or stay general. A line longer
+than 120 characters, on more than one line, with an address, a link, a
+dash between clauses or a number (in digits or words) the facts do not
+hold is dropped, and so is a line that misstates the list
+(`home_screen.counts_ok`): a count of items in a clause about what got
+done, what is overdue or what is held must be that count; of what is
+left, a part it names (replies, taps, to-dos) must be that part's own
+count, and the line must name the whole ("6 things", "6 left") or parts
+that add up to it; a vague count ("a few replies") is refused. "Two
+replies and a tap" above six items never shows. The templates count only
+the whole. Until it answers, and with no
+model, a line from the templates shows, picked by the day. The tone
+(Settings, Home: Breezy, Dry, Facts only) sets the voice; Facts only, a
+red light or anything overdue gives the plain line and asks no model.
+The model is asked at most once in five minutes, and again only when
+the facts it wrote for change. The thumbs record a calibration line in
+the preferences store under the scope `home` ("Liked the Home greeting
+(breezy): ..."), which the next prompt reads; a thumbs down drops the
+model's line at once. No streaks, no scores.
+
+**The briefing.** On the web chat alone (Slack and a shadow keep the
+post), with the web block's `home.briefing` "home" (the default), the
+morning briefing and the afternoon update are handed to Home
+(`chat_notify.post(..., home=<agent>)`, from run-agent.sh) while Home's
+tick ran in the last five minutes: the text is kept (`home:report:<agent>`),
+a `home` event goes out, and one push says Home has it ("Your morning is
+ready"), under the Briefings switch and quiet hours as the post's own
+push was. run-agent.sh hands the run id too, after the pre-send review and the
+audit: the list the remote run kept for Home under that id (its post's
+sections after the review) comes with the text, so what the review
+dropped is not on Home, a held reply is its question there and never a
+draft, a rewritten line shows as rewritten, and a check that did not run
+shows the post's own words ("Not checked before sending: ... Tacitus's
+own checks ran.") under the ring. The call returns True, so run-agent.sh writes the post marker
+and the sentinel's "No briefing today" and "No afternoon update" keep
+working. Home shows each of today's texts folded at the bottom ("This
+afternoon's update", "This morning's briefing"), as the post would have
+shown it, with Ask about it. With Home off ("As a message"), not
+running, or on any failure, the briefing posts in Ask Tacitus as before.
+The weekly review still posts.
+
+What the post carried, and where it is now:
+
+| The post carried | Now |
+|---|---|
+| Get done today, Flexes, the calendar line, Quietly handled, Drafts ready, Needs you, the Reply queue line, the counts | Home's lists, built from the same data, and the text itself under "This morning's briefing" |
+| A reply under the post about an item | Ask about this on the item (or Ask about it on the briefing): a new conversation in Ask Tacitus that starts with the item's words, which the next briefing reads among the owner's messages |
+| The question of the day (`:seedling:`) | Home's question card, Answer it (a new conversation with the question named); now on the remote lane too |
+| The push "Your morning briefing is ready" | "Your morning is ready", opening Home |
+| Send cards, the Send-all card, Looks done?, the Replies card, hand-offs, timed alerts, room slices | unchanged: their own cards and posts (Action requests, rooms) |
+| The post marker for the sentinel, the update line, the usage tip's day | unchanged: the handed-off post counts as posted |
+
+**The app.** `#/home` is Home; `#/home/morning-briefing` and
+`#/home/afternoon-catchup` open that report on it. The
+drawer's first row is Home, and the app's name at its top leads there. Home
+sits in the list's pane and takes the conversation's room from 600 px,
+as Action requests does; the status light stays in the top bar. Each
+waiting item is a block with its edge in the urgency colour, as a
+request's: a request opens its block in Action requests (its buttons,
+Send among them, stay there; Home has none), anything else opens a new
+conversation in Ask Tacitus with the item's words in the composer and
+the keyboard up. A conversation opened from Home goes back to Home. The
+app reads Home on a visit (`checkin=1`), on each `home` event, on a card
+or status in Action requests, on a `light` event, when its stream opens
+again and every five minutes while Home shows; a part the owner opened
+stays open through a redraw. Home in view clears the Home push on every
+device, as a thread in view does (`/api/push/seen`, tag `home`).
+Settings has a Home page with the tone and where the briefing goes,
+each saved on change.
+
+**Kept mail.** Home's payload goes to the browser and through the relay,
+and a conversation started from it goes to a hosted model, so an item kept
+from hosted models below Summary (`keep_gate`, docs/remote-llm.md, "Keep
+from frontier models") shows there as the post shows it: in code's fixed
+words alone (`keep_gate.kept_line`). At `local` that is the message's
+date ("A kept message from Nov 17 needs you. Open it in Outlook."), at
+`facts` also its sender and subject as the headers give them; the
+Outlook link is the post's, where it looked one up. Every item Home lists
+gets its level from one shared check (`home_screen.mark_keep`, on
+`keep_gate.levels`): the replies owed, the open rows behind the ranking,
+the rows closed today, each request by the rows and thread its card
+names, and each item of the post's own list (which keeps the post's
+level and its fixed line, never the item's title or sender). A kept item
+carries no other words: no name, no project, no line of the post, and no
+Ask about this; a request keeps its block in Action requests, and So far
+today names a kept row "A kept message". When the keep check cannot run,
+every item from mail reads `local`. The folded briefing is the post's own
+text, whose kept lines are already fixed.
+
+**Away from home.** `/api/home` carries mail-derived words (titles, who
+wrote) as `/api/requests` and the threads do; a relayed device reads it
+the same way, sealed end to end, and may vote. The Settings page changes
+only in the owner's own web chat. The health room and debug-only content
+never reach Home.
+
 ## Unread
 
 The bot keeps the read state, per thread, and every device shows the
@@ -665,7 +826,7 @@ so a conversation begun on one device is at hand on another
 
 - Recent holds conversations only (`web_frontend.is_conversation`). A
   conversation is a thread the owner wrote in, in Ask Tacitus,
-  Scheduling or a room, or a morning briefing or an afternoon update the
+  Scheduling or a room, or a morning briefing or an afternoon update (posted only with Home off) the
   bot opened there (its first lines carry the title, as the push policy
   reads it, `web_push_policy.report_title`). Never one: a thread that
   opens with a card or a card's status line, anything else the bot opened
@@ -854,8 +1015,8 @@ and what the place does changed.
   and the install overlay, which tells the model to say Action requests where its
   guides say the user's DM. The pointer reading (`thread_state.POINTER_RE`)
   takes both names, and what the store held before.
-- **Opening place.** The app opens on Ask Tacitus; a link or the address
-  names any other place.
+- **Opening place.** The app opens on Home (a bot from before it: on Ask
+  Tacitus); a link or the address names any other place.
 
 ## State
 
@@ -1126,7 +1287,8 @@ from `bundle.js`; Code integrity, below).
 
 Layout: a channel list (left on wide screens, a drawer on narrow), a
 thread list for the selected channel, and the open thread with a
-composer at the bottom. Ask Tacitus opens by default. Unread badges
+composer at the bottom. Home opens by default (Home, below; Ask Tacitus
+with a bot from before it). Unread badges
 show the bot's counts per thread (Unread): on a thread's card, on its
 channel's row, as the dot on the Menu button for the other channels and
 in the page's title; Action requests' row counts the requests that wait
@@ -1652,7 +1814,8 @@ their own:
 |---|---|---|---|---|
 | A new card (`post_card`, `mirror_card` for a new row) | "Action request" and the card's title | high | at once | none |
 | A bot message in a `dm` channel | "Tacitus" and the first line | high for a direct message (`send_direct`, origin `personal`), else normal | at once | none |
-| The opening of a morning briefing or an afternoon update in the EA channel: a thread a notifier opened (`thread_origin`), the owner never wrote in, whose first three lines carry the title | "Your morning briefing is ready" or "Afternoon update", no body | normal | waits | `briefings` |
+| The opening of a morning briefing or an afternoon update in the EA channel: a thread a notifier opened (`thread_origin`), the owner never wrote in, whose first three lines carry the title (Home off, or Home not running) | "Your morning briefing is ready" or "Afternoon update", no body | normal | waits | `briefings` |
+| A morning briefing or an afternoon update handed to Home (`chat_notify`, Home) | "Your morning is ready" and "Tap to see your day.", or "Your afternoon update is ready" and "Tap to see what is left today."; tag `home`, opening `#/home` | normal | waits | `briefings` |
 | The bot's answer in a conversation the owner wrote in, outside the DM and rooms (the EA and scheduling channels): the owner's newest message there is newer than the bot's previous answer (a message, a file or a card), and no card that conversation asked for in another one (the DM; the `card_link` table) was posted in the two minutes before (`CARD_QUIETS_S`: the card's push covers both) | "Tacitus replied" and the first line | normal | waits | `replies` |
 | The same in a project room | "Tacitus replied in" and the room's name, then the first line | normal | waits | `rooms` |
 | A loud alert: `chat.direct.web_notify` (alert.py, next to the direct message; page_watch.py; the weekly usage tip at normal) | "Tacitus" and the first line | high | at once (a scheduled alert waits for its moment) | none |

@@ -56,6 +56,17 @@ read. Only while the bot's light runs (its tick within LIGHT_ALIVE_S);
 otherwise, and on any failure, the alert posts as before. Slack and debug
 mode keep every post.
 
+Home (docs/webchat.md, Home) carries the morning briefing and the
+afternoon update on the web chat: run-agent.sh names the report
+(`home=<agent>`, one of HOME_KINDS) and post() then keeps its text in the
+web chat's store for Home and sends one short push that opens Home,
+instead of a post in the EA channel. Only on the web chat alone (Slack and
+a shadow keep the post), while the web block's `home.briefing` is "home"
+(the default; "post" keeps the post) and the bot's Home ticked within
+HOME_ALIVE_S; otherwise, and on any failure, it posts as before. The call
+returns True either way, so the briefing's marker for the sentinel is
+written as after a post.
+
 post_as_bot() is the direct post with bot credentials that owner-side
 jobs (scheduled_sends, owner plugins) use for alerts into the EA
 channel. llm_tool_grants() names the chat tools the LLM gets on the
@@ -63,7 +74,7 @@ configured platform, without building a client.
 
 CLI:
     chat_notify.py llm-grants
-    chat_notify.py post --key personal --text "..." [--diagnostic] [--light <kind>]
+    chat_notify.py post --key personal --text "..." [--diagnostic] [--light <kind>] [--home <agent>]
     chat_notify.py debug [on|off]     # debug mode: say it, or set it (owner only)
 """
 from __future__ import annotations
@@ -535,11 +546,96 @@ def _light(kind: str, text: str) -> bool:
         return False
 
 
+# ── Home ──────────────────────────────────────────────────────────────
+# The reports Home carries on the web chat in place of a post, and how
+# recently the bot's Home must have ticked for it to take one.
+
+HOME_KINDS = ("morning-briefing", "afternoon-catchup")
+HOME_ALIVE_S = 300
+# The longest report text kept; a report past it is cut with a mark.
+HOME_REPORT_MAX = 40_000
+# The push that tells the owner Home has the report: its title and line.
+HOME_PUSH = {"morning-briefing": ("Your morning is ready", "Tap to see your day."),
+             "afternoon-catchup": ("Your afternoon update is ready", "Tap to see what is left today.")}
+HOME_TAG = "home"
+
+
+def home_carries(kind: str) -> bool:
+    """True when a report of `kind` goes to Home instead of a post: the web
+    chat alone, and the web block's `home.briefing` is not "post"."""
+    if kind not in HOME_KINDS or frontend_name() != "web":
+        return False
+    home = _web_cfg().get("home")
+    return not (isinstance(home, dict) and home.get("briefing") == "post")
+
+
+def _home_view(kind: str, run: str) -> dict | None:
+    """The list the remote briefing's run `run` kept for Home (its items
+    after the pre-send review; remote_briefing.home_handoff); None for a
+    report another lane wrote, or when it cannot be read."""
+    if not run:
+        return None
+    try:
+        try:
+            import remote_briefing
+        except ImportError:
+            from preprocessor import remote_briefing
+        return remote_briefing.home_handoff(kind, run)
+    except Exception as e:
+        print(f"[home] the {kind}'s list could not be read ({e}); Home lists from the briefing data")
+        return None
+
+
+def _home(kind: str, text: str, run: str = "") -> bool:
+    """Hand a report to Home: its text kept in the store with the list its
+    run kept (`run`, the run id: what the post lists after the pre-send
+    review), a `home` event for the open apps, and one push that opens Home
+    (the Briefings switch and quiet hours apply, as to the post's own push).
+    False when Home cannot take it (no Home running, a process that is not
+    the owner's, a store that does not open), and the caller then posts it:
+    no report is lost."""
+    try:
+        fe = _web_sender()
+        store = getattr(fe, "store", None)
+        if store is None:
+            return False
+        if not store.home_alive(HOME_ALIVE_S):
+            print(f"[home] not running; the {kind} posts")
+            return False
+        if SPLIT_MARKER in text:
+            text = "\n\n".join(p.strip() for p in text.split(SPLIT_MARKER) if p.strip())
+        body = text if len(text) <= HOME_REPORT_MAX else text[:HOME_REPORT_MAX] + "\n[cut]"
+        # as a post would show: Slack marks become Markdown
+        store.home_report(kind, fe._out(body), view=_home_view(kind, run))
+        store.home_emit({"report": kind})
+        _home_push(fe, kind)
+        print(f"[home] the {kind} is on Home, not posted ({len(text)} characters)")
+        return True
+    except Exception as e:
+        print(f"[home] the {kind} could not go to Home ({e}); it posts")
+        return False
+
+
+def _home_push(fe, kind: str) -> None:
+    """The one push for a report on Home: while the Briefings switch is on,
+    held until the owner's quiet hours end when the switch says so."""
+    settings = getattr(fe, "push_settings", None)
+    if settings is not None and not settings.briefings:
+        return
+    title, line = HOME_PUSH[kind]
+    at = None
+    quiet_end = getattr(fe, "_quiet_end", None)
+    if settings is not None and settings.quiet == "queue" and callable(quiet_end):
+        at = quiet_end()
+    fe.notify(title, line, f"{fe.app_url()}#/home", HOME_TAG, at=at,
+              wait=bool(getattr(fe, "writer_only", False)))
+
+
 # ── Public API ────────────────────────────────────────────────────────
 
 def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
          priority: str = "normal", _bypass_quiet: bool = False,
-         diagnostic: bool = False, light: str = "") -> bool | str:
+         diagnostic: bool = False, light: str = "", home: str = "", home_run: str = "") -> bool | str:
     """Post a message to the configured chat platform.
 
     If `text` contains `SPLIT_MARKER`, splits into multiple top-level
@@ -554,6 +650,11 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
     `light` names an alert the web chat's status light can carry
     (LIGHT_KINDS): on the web chat with debug mode off it goes to the light
     and the call returns True; when the light cannot take it, it posts.
+
+    `home` names a report Home carries (HOME_KINDS): on the web chat with
+    Home on it goes to Home and the call returns True; when Home cannot
+    take it, it posts. `home_run` is the run that wrote it, whose list
+    (after the pre-send review) Home shows.
 
     `priority`: "normal" or "urgent". When the user is in local quiet hours
     (see quiet_hours.py / travel mode), a deferrable post is HELD in a queue
@@ -571,6 +672,8 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
     if diagnostic and not diagnostics_on():
         return _withheld(channel_key, text)
     if light and light_carries(light) and _light(light, text):
+        return True
+    if home and home_carries(home) and _home(home, text, home_run):
         return True
     if not _bypass_quiet and channel_key not in DIGEST_KEYS:
         try:
@@ -713,6 +816,9 @@ def main(argv: Optional[list] = None) -> int:
                    help="one of the bot's own reports: posted only in debug mode")
     p.add_argument("--light", default="", choices=("",) + LIGHT_KINDS,
                    help="an alert the web chat's status light carries while debug mode is off")
+    p.add_argument("--home", default="", choices=("",) + HOME_KINDS,
+                   help="a report Home carries on the web chat instead of a post")
+    p.add_argument("--home-run", default="", help="the run id that wrote that report")
     d = sub.add_parser("debug", help="say whether debug mode is on, or turn it on or off "
                                      "(writes the owner-private chat.json)")
     d.add_argument("state", nargs="?", choices=("on", "off"))
@@ -734,7 +840,7 @@ def main(argv: Optional[list] = None) -> int:
         print(f"Debug mode is {'on' if diagnostics_on() else 'off'}.")
         return 0
     return 0 if post(a.key, a.text, priority=a.priority, _bypass_quiet=a.bypass_quiet,
-                     diagnostic=a.diagnostic, light=a.light) else 1
+                     diagnostic=a.diagnostic, light=a.light, home=a.home, home_run=a.home_run) else 1
 
 
 if __name__ == "__main__":

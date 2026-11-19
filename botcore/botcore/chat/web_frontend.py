@@ -206,6 +206,15 @@ press card buttons. The bot logs a warning when a
 file on disk no longer matches what it signed; `refresh_bundle()` signs
 again.
 
+Home (docs/webchat.md, Home): the screen the app opens on. The host's
+`home` object builds it in code (what Tacitus did today, what is left,
+the next gap in the calendar, what changed since the last visit, one
+greeting line); `/api/home` serves it to any device that reads, for that
+device's time zone, and a `home` event tells the open apps it changed.
+Its tick runs on a thread of its own and marks the store (`home_tick`),
+so a briefing handed to Home (chat_notify) shows there; its records sit
+in the `meta` rows `home:<name>`.
+
 A store that holds history imported from Zulip keeps it under the web
 chat's own channel ids (`main`, `dm`, `sched`, `digests`, `r<n>`), with
 the thread keys and message ids Zulip gave it. The store's `meta` row
@@ -402,7 +411,7 @@ RESERVED_CHANNEL_IDS = frozenset({"needs", "status"})
 # that lives on Slack in shadow mode takes it too.
 ROOM_NAME_MAX = 60
 EVENT_TYPES = ("message", "update", "reaction", "card", "status", "file", "channel",
-               "thread_state", "release", "read", "light")
+               "thread_state", "release", "read", "light", "home")
 # The status light (docs/webchat.md, Status light): the meta keys of the
 # host's record of what it showed and of its tick, the push tag of its
 # notifications (one on a device at a time; a recovery clears it), how
@@ -415,6 +424,13 @@ LIGHT_TICK_S = 30.0
 LIGHT_NOTICES_KEEP = 50
 LIGHT_NOTICE_READ_KEEP_S = 7 * 86400
 LIGHT_DETAILS_REFUSED = "Details show only in Tacitus on your own network."
+# Home (docs/webchat.md, Home): the meta keys the host keeps its records
+# under (`home:<name>`: the check-ins, the greeting, the briefing text the
+# briefing lane handed over), the key of its tick's mark, and how often the
+# tick runs.
+HOME_KEY_PREFIX = "home:"
+HOME_TICK_KEY = "home_tick"
+HOME_TICK_S = 60.0
 LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
 # Host names a loopback client (the relay client, a test) puts in Host and
 # Origin, with this server's port.
@@ -1971,6 +1987,42 @@ class WebStore:
         """Append a `light` event: the light's summary, for every open app."""
         return self._transaction(lambda: self._emit("light", "", "", payload))
 
+    # Home (docs/webchat.md, Home)
+
+    def home_get(self, name: str) -> dict:
+        """One of Home's records (`home:<name>`); {} when there is none."""
+        data = _loads(self._meta_get(HOME_KEY_PREFIX + name))
+        return data if isinstance(data, dict) else {}
+
+    def home_set(self, name: str, value: dict) -> None:
+        self._meta_set(HOME_KEY_PREFIX + name, json.dumps(value, separators=(",", ":")))
+
+    def home_mark(self, at: float | None = None) -> None:
+        """The serving bot's Home ticked now (home_alive)."""
+        self._meta_set(HOME_TICK_KEY, str(time.time() if at is None else float(at)))
+
+    def home_alive(self, within_s: float) -> bool:
+        """True when the bot's Home ticked in the last `within_s` seconds, so
+        a briefing handed to it shows (chat_notify)."""
+        try:
+            return time.time() - float(self._meta_get(HOME_TICK_KEY) or 0) <= within_s
+        except (TypeError, ValueError):
+            return False
+
+    def home_report(self, kind: str, text: str, at: float | None = None, view: dict | None = None) -> None:
+        """Keep the briefing text the briefing lane handed to Home: the
+        newest of each kind (`report:<kind>`), with the list its run kept
+        for Home (`view`, the post's items after its pre-send review)."""
+        rec = {"text": str(text), "at": time.time() if at is None else float(at)}
+        if isinstance(view, dict):
+            rec["view"] = view
+        self.home_set(f"report:{kind}", rec)
+
+    def home_emit(self, payload: dict) -> int:
+        """Append a `home` event: Home changed, and each open app reads it
+        again."""
+        return self._transaction(lambda: self._emit("home", "", "", payload))
+
     def upsert_channel(self, cid: str, name: str, kind: str, archived: bool = False,
                        description: str | None = None, muted: bool | None = None) -> dict:
         """Write a channel row; a `channel` event when it changed. A
@@ -2891,6 +2943,14 @@ class WebFrontend(ChatFrontend):
         # None: no light, and /api/status answers 404.
         self.light: Any = None
         self._light_thread: threading.Thread | None = None
+        # Home (docs/webchat.md, Home): an object the host sets before
+        # start(), with payload(device_zone, checkin) -> dict (Home as the app
+        # draws it), vote(up, text) -> dict (the owner's thumbs on the
+        # greeting) and tick() (on a thread of its own every HOME_TICK_S
+        # seconds: it reads the sources and tells the apps through
+        # home_changed()). None: no Home, and /api/home answers 404.
+        self.home: Any = None
+        self._home_thread: threading.Thread | None = None
         self.html_csp = self._html_csp()
         # The app's signed bundle (web_bundle.Bundle) once start() signed it.
         self._bundle: web_bundle.Bundle | None = None
@@ -3156,6 +3216,10 @@ class WebFrontend(ChatFrontend):
                 self._light_thread = threading.Thread(target=self._light_loop, name="webchat-light",
                                                       daemon=True)
                 self._light_thread.start()
+            if self.home is not None:
+                self._home_thread = threading.Thread(target=self._home_loop, name="webchat-home",
+                                                     daemon=True)
+                self._home_thread.start()
 
     def _light_loop(self) -> None:
         """The status light's tick, every LIGHT_TICK_S seconds until stop:
@@ -3167,6 +3231,26 @@ class WebFrontend(ChatFrontend):
             except Exception:
                 log.exception("web chat: the status light's tick failed")
             self._stop.wait(LIGHT_TICK_S)
+
+    def _home_loop(self) -> None:
+        """Home's tick, every HOME_TICK_S seconds until stop: the host reads
+        its sources, marks the store (Home runs) and tells the open apps of
+        a change. A failed tick is logged and the next one runs."""
+        while not self._stop.is_set():
+            try:
+                self.home.tick()
+            except Exception:
+                log.exception("web chat: Home's tick failed")
+            try:
+                self.store.home_mark()
+            except Exception:
+                log.exception("web chat: Home's tick was not marked")
+            self._stop.wait(HOME_TICK_S)
+
+    def home_changed(self) -> None:
+        """Home changed: a `home` event, so every open app reads it again
+        (each with its own time zone)."""
+        self.store.home_emit({"at": time.time()})
 
     def light_changed(self, summary: dict) -> None:
         """The light's level or its conditions changed: a `light` event with
@@ -5068,7 +5152,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                  "bundle": fe.bundle_hash(),
                                  "rooms": fe.rooms_on(),
                                  "settings": sorted(fe.settings_pages),
-                                 "light": fe.light is not None})
+                                 "light": fe.light is not None,
+                                 "home": fe.home is not None})
                 return None
             if segs == ["push", "vapid"]:
                 self._json(200, {"key": self._pusher().vapid.public_key})
@@ -5152,6 +5237,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return None
         if segs and segs[0] == "status":
             self._status(method, segs[1:], relayed)
+            return None
+        if segs and segs[0] == "home":
+            self._home(method, segs[1:], query)
             return None
         if n == 2 and segs[0] == "settings":
             self._settings(method, segs[1])
@@ -5309,6 +5397,33 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if out is None:
                 raise _HttpError(404, "no such condition")
             self._json(200, out)
+            return
+        raise _HttpError(404, "not found")
+
+    def _home(self, method: str, rest: list[str], query: dict) -> None:
+        """`/api/home`: Home as the app draws it (docs/webchat.md, Home), for
+        the device's time zone (`tz`, an IANA name; another is ignored);
+        `checkin=1` says the owner opened it. Read like Action requests, by
+        any device that reads. `POST /api/home/vote` is the owner's thumbs on
+        the greeting, a chat action like a reaction."""
+        home = self.fe.home
+        if home is None:
+            raise _HttpError(404, "no Home")
+        if method == "GET" and not rest:
+            tz = (query.get("tz") or [""])[0][:64]
+            checkin = (query.get("checkin") or [""])[0] == "1"
+            self._json(200, home.payload(tz, checkin))
+            return
+        if method == "POST" and rest == ["vote"]:
+            body = self._read_json()
+            vote, text = body.get("vote"), body.get("text")
+            if vote not in ("up", "down") or not isinstance(text, str) or not text.strip():
+                raise _HttpError(400, "vote is up or down, with the greeting's text")
+            try:
+                self._json(200, home.vote(vote == "up", text[:400]))
+            except Exception as e:
+                log.warning("web chat: the vote on Home's greeting was not kept: %s", e)
+                raise _HttpError(409, "Tacitus could not keep that. Try again later.") from None
             return
         raise _HttpError(404, "not found")
 

@@ -6,6 +6,20 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The web chat opens on Home.** Home is a short page that says what
+  Tacitus already did today and what is left for you: the requests that
+  wait for a tap, the replies you owe and the morning's top items, with a
+  ring that shows the split. It finds the next gap in your calendar ("You
+  have 50 minutes before your 2:00. That is enough for the 2 replies."),
+  lists what changed since you last looked, and greets you with one line
+  your own model writes where you have one (a thumbs up or down teaches
+  it; Settings, Home picks Breezy, Dry or Facts only). On a trip or on
+  vacation it shows only what cannot wait. Each item opens its place: a
+  request its block with the Send button, anything else a new
+  conversation about it. On the web chat the morning briefing and the
+  afternoon update no longer post in Ask Tacitus: Home shows them, and one
+  notification says your morning is ready. Settings, Home turns the post
+  back on. Slack works as before.
 - **Mail you keep from hosted models stays off their work list.** A
   thread kept on your machine or at "facts only" is never handed to
   Claude or Codex by a scheduled run: not by the morning briefing, the

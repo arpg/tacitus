@@ -39,15 +39,19 @@ SPLIT_MARKER = "---===FF_BRIEFING_SPLIT===---"
 
 def post_to_slack(channel_key: str, text: str, blocks: Optional[list] = None,
                   priority: str = "normal", _bypass_quiet: bool = False,
-                  diagnostic: bool = False, light: str = "") -> bool:
+                  diagnostic: bool = False, light: str = "", home: str = "", home_run: str = "") -> bool:
     """Post a message through chat_notify.post (debug-mode and quiet-hours
     gates, split, route by frontend). `diagnostic=True` marks one of the
     bot's own reports, posted only in debug mode; `light` names the alert
-    the web chat's status light can carry (chat_notify.LIGHT_KINDS).
-    Returns True on success, deferral, a diagnostic left out or an alert
-    the light carries, False on a real send failure."""
+    the web chat's status light can carry (chat_notify.LIGHT_KINDS); `home`
+    names a report the web chat's Home carries (chat_notify.HOME_KINDS),
+    `home_run` the run that wrote it.
+    Returns True on success, deferral, a diagnostic left out, an alert
+    the light carries or a report Home carries, False on a real send
+    failure."""
     return bool(chat_notify.post(channel_key, text, blocks=blocks, priority=priority,
-                                 _bypass_quiet=_bypass_quiet, diagnostic=diagnostic, light=light))
+                                 _bypass_quiet=_bypass_quiet, diagnostic=diagnostic, light=light,
+                                 home=home, home_run=home_run))
 
 
 def scheduling_channel_key() -> str:

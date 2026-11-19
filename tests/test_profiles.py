@@ -216,7 +216,7 @@ def test_cron_lane_writes_the_report_and_posts_only_with_a_chat():
     assert '"$REPORT_DIR/${AGENT}-latest.md"' in src
     assert 'if [[ "$HAS_SLACK" == 1 ]]; then' in src
     # the report file is written before the chat decision
-    assert src.index('${AGENT}-latest.md') < src.index("slack.post_to_slack('ea-assistant', msg)")
+    assert src.index('${AGENT}-latest.md') < src.index("slack.post_to_slack('ea-assistant', msg")
     # with drafting off the no-chat block says so instead of promising drafts
     assert 'if [[ "${HAS_DRAFTING:-1}" != 1 ]]; then' in src and "${NO_DRAFTING_LINE}" in src
 

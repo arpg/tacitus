@@ -51,6 +51,9 @@ The morning run:
   7. Each project room with items in the post gets its slice, in a new
      topic (briefing_rooms), as the review placed them; the EA post names
      those rooms in one line.
+  8. The post's sections after the review are kept for the web chat's
+     Home (home_view, HOME_FILE, with this run's id), so Home lists what
+     the post lists (docs/webchat.md, Home).
 The afternoon run picks what is new since the morning and what is still
 pending; it escalates nothing. When the remote model cannot answer, code
 renders the ranked queue alone and the post says so.
@@ -2031,6 +2034,10 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
             print(f"remote_briefing: room pointer line skipped: {str(e)[:160]}", file=sys.stderr)
         rec["rooms"] = [{"room": p["room"], "items": len(p["refs"]), "ok": p.get("ok")}
                         for p in posts]
+    try:
+        rec["home"] = home_view(agent, cands, plan, drafts, escalated, checked, now)
+    except Exception as e:
+        print(f"remote_briefing: no list for Home: {str(e)[:160]}", file=sys.stderr)
     rec.update(plan={k: len(v) for k, v in plan.items()},
                drafts=sum(1 for d in drafts if d.get("ok")),
                decisions_from_rails=sum(1 for d in drafts
@@ -2040,6 +2047,92 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
                       for k, v in (checked or {}).items() if k not in ("review", "review_record")},
                seconds=round(time.monotonic() - t0, 1), post=text)
     return text, rec
+
+
+# ── Home (docs/webchat.md, Home) ───────────────────────────────────────
+# The web chat's Home lists what this post lists, so the two never
+# disagree: the post's own items after the pre-send review and the rules
+# upstream of it, by section, with the line the post shows, and the rows
+# and threads the review took out. The run writes it beside its record;
+# chat_notify hands it to Home with the post's text.
+
+HOME_FILE = "briefing-home.json"
+# The sections Home lists as work for the owner: a draft is its Send card
+# in Action requests, and a hand-off is Claude's work, not his.
+HOME_SECTIONS = {"morning-briefing": ("due", "top", "needs", "flex"),
+                 "afternoon-catchup": ("since", "pending")}
+
+
+def home_view(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dict],
+              escalated: list[dict], checked: dict | None, now: datetime) -> dict:
+    """What Home lists from this post: {"agent", "review": {"status",
+    "reason", "note"}, "items": [{"section", "ledger_id",
+    "conversation_id", "head", "line", "due", "kept"}] (`kept`: the keep
+    level of an item kept below Summary, whose line is keep_gate's fixed
+    words and whose head is empty), "gone":
+    [{"ledger_id", "conversation_id", "kind"}]}. The items are the post's
+    sections as it renders them (the review's drops, holds, moves and
+    rewrites applied; a held reply is under "needs" as its question);
+    `gone` is what the review dropped or held and the rows the still-open
+    audit closed or set aside."""
+    import briefing_review
+    today = now.astimezone(_tz()).date()
+    audit = checked or {}
+    lists = (_morning_lists(cands, plan, drafts, escalated, audit, today) if agent == "morning-briefing"
+             else _afternoon_lists(cands, plan, audit, drafts))
+    items = []
+    for sec in HOME_SECTIONS.get(agent, ()):
+        for ref, line in lists.get(sec) or []:
+            c = cands.get(ref) or {}
+            # A kept item is its fixed line alone (_hide_kept made it), with
+            # its level: no title, no sender beside it.
+            kept = c.get("keep_level") if _kept(c) else ""
+            items.append({"section": sec, "ledger_id": c.get("ledger_id") or "",
+                          "conversation_id": c.get("conversation_id") or "",
+                          "head": "" if kept else _line_of(c), "line": line,
+                          "due": str(c.get("due") or "")[:10], "kept": kept})
+    rv = audit.get("review") or {}
+    gone = []
+    for ref, why in [(r, (v or {}).get("kind") or "dropped") for r, v in (rv.get("drop") or {}).items()] + \
+            [(r, "held") for r in (rv.get("hold") or {})]:
+        c = cands.get(ref) or {}
+        gone.append({"ledger_id": c.get("ledger_id") or "", "conversation_id": c.get("conversation_id") or "",
+                     "kind": why})
+    for lid in list(audit.get("closed") or []) + list(audit.get("parked") or []):
+        gone.append({"ledger_id": str(lid), "conversation_id": "", "kind": "closed"})
+    return {"agent": agent, "review": {"status": rv.get("status") or "off", "reason": rv.get("reason") or "",
+                                        "note": briefing_review.not_checked(rv)},
+            "items": items, "gone": [g for g in gone if g["ledger_id"] or g["conversation_id"]]}
+
+
+def write_home(agent: str, run_id: str, view: dict | None) -> None:
+    """Keep this run's view for Home (owner-private, one per agent)."""
+    if not view:
+        return
+    import atomic_io
+    path = remote_llm.store_dir() / HOME_FILE
+    try:
+        data = json.loads(path.read_text()) if path.exists() else {}
+    except (OSError, ValueError):
+        data = {}
+    data = data if isinstance(data, dict) else {}
+    data[agent] = {"run_id": run_id, "view": view}
+    atomic_io.write_json(path, data, indent=None, mode=0o600)
+
+
+def home_handoff(agent: str, run_id: str) -> dict | None:
+    """The view this run kept for Home, or None: no run of the remote
+    lane wrote one for this agent, or the one kept is another run's."""
+    if not run_id:
+        return None
+    try:
+        data = json.loads((remote_llm.store_dir() / HOME_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    got = data.get(agent) if isinstance(data, dict) else None
+    if not isinstance(got, dict) or got.get("run_id") != run_id or not isinstance(got.get("view"), dict):
+        return None
+    return got["view"]
 
 
 def main(argv=None) -> int:
@@ -2062,7 +2155,13 @@ def main(argv=None) -> int:
         print(f"remote_briefing: {e}", file=sys.stderr)
         return 1
     text, rec = run(a.agent, briefing, run_id=a.run_id, stale=a.stale, dry_run=a.dry_run)
+    view = rec.pop("home", None)
     remote_llm.append(RUNS, rec)
+    if not a.dry_run:
+        try:
+            write_home(a.agent, a.run_id, view)
+        except Exception as e:
+            print(f"remote_briefing: the list for Home was not kept: {str(e)[:160]}", file=sys.stderr)
     if a.dry_run:
         if a.preview:
             rec["preview_posted"] = _preview(text)

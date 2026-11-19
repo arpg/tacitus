@@ -398,7 +398,7 @@ def _runs_the_bots_release(page, fe, device):
     """The approved computer took the bot's signed files through the sealed
     channel, keeps and runs them, and attested the bot's release."""
     from playwright.sync_api import expect
-    expect(page.locator(".chan .c-name").first).to_be_visible(timeout=40000)
+    expect(page.locator("#channel-list .chan .c-name").first).to_be_visible(timeout=40000)
     expect(page.locator("h1")).not_to_have_text("Tacitus stopped")
     bot_css = (WEBUI / "app.css").read_text()
     assert _kept(page, "app.css") == bot_css
@@ -461,14 +461,14 @@ def test_a_computer_sets_up_with_a_code_and_runs_the_bots_release(browser, relay
         keys = page.evaluate("caches.open('tacitus-webchat-v3').then((c) => c.keys()).then((r) => r.map((q) => q.url))")
         assert keys and not [k for k in keys if "?" in k or "relay=" in k], keys
         page.goto(shown)
-        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=20000)
+        expect(page.locator("#channel-list .chan .c-name").first).to_be_visible(timeout=20000)
         assert "the website's own index" not in page.content()  # the bot's index, not the website's
         # The website's release.txt and a stray link stop nothing.
         page.goto(url + "release.txt")
         assert page.inner_text("body").strip() == WEBSITE_RELEASE.strip()
         assert page.goto(url + "stray.html").status == 404
         page.goto(url)
-        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=20000)
+        expect(page.locator("#channel-list .chan .c-name").first).to_be_visible(timeout=20000)
         assert _worker_state(page, "refused") is None
         assert _worker_state(page, "trusted")["hash"] == fe.bundle_hash()
         assert not errors, errors
