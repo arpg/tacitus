@@ -2796,7 +2796,28 @@ proposal on one he wrote in or kept open. An intake row lapses only while
 its whole thread asks nothing: a later ask keeps it. The briefing names the closed rows once under "Quietly
 handled", and the nightly reconcile can propose `lapsed` for a row the
 EA wrote whose thread shows the chance ended (the results came out, the
-event was held). Work still owed after its date never lapses.
+event was held). Work still owed after its date never lapses. The
+reconcile leaves a row that lapses on its own to that run, so no card goes
+up for a row code closes by morning, and the bot takes down a live close
+card once none of its rows still waits on the user.
+
+A row the EA writes from chat with no mail behind it (`ledger.chat_row`)
+can never close on mail evidence, so its date ends it. `add` takes the
+date its description names ("Review Tuesday team run of show") as
+`event_date` when it has no `--deadline`, follow-up date or
+`--closes-on`, and warns loudly when there is none. Once that date passes,
+`close_lapsed` proposes the close under `date_passed` (never a close; a
+row that waits on others is left alone). A last action that names a
+document the EA made (`~/.ea/docs/`, `~/.ea/letters/`) is kept as the
+row's `delivered`; on a `draft_pending` row it proposes the close under
+`delivered`. A `task` or `deadline` row whose description says someone
+else does the work is stored as `waiting`; such a row stays off the
+do-list, the decisions and the hand-offs until its date passes or its
+thread asks the user something, and the briefing's line for it is
+code's, never an action a model made up. A row closed with
+`--duplicate-of` hands the row it repeats its date when its mail is
+newer, and closes it too when the close carries the user's words
+(`--user-said`); a confirmed duplicate proposal hands over the date only.
 
 Every transition (close, reopen, renew, propose, confirm, reject) is a
 row in `ledger_events` with its signal, actor and evidence, and `ledger.py

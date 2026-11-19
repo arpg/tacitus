@@ -713,7 +713,22 @@ line; it never falls back to a Claude run.
   the post again.
 - **One mention per item.** A do-list item does not repeat in the date
   banner, "Needs you" or "Sent to Claude"; the banner names only due
-  items no other section shows.
+  items no other section shows, a drafted reply included, and a
+  follow-up that came due is not named again at the foot of the post.
+  A row merged into another (`item_merges`) is one item with it. An item
+  the audit was unsure of stays as it is: the audit's working text is
+  never part of an item's line.
+- **Work others owe is not his to-do.** A `waiting` row, or a task or
+  deadline row whose description says someone else does the work, is
+  not a candidate until its date passes or its thread asks the user
+  something (`ledger.waiting_off_list`). Then it never goes to the
+  flexes or to Claude, stays out of the date banner, and its do-list
+  line is code's ("Others owe this. Was due Fri Nov 20"), never the
+  model's action.
+- **An event on the calendar is not an item.** A notice that asks
+  nothing, or only asks him to attend, whose event is on today's or
+  tomorrow's calendar (two shared words with the event's subject) is
+  left to the calendar line.
 - **What asks nothing is never a to-do.** A dated item whose mail asks
   nothing of the user and wants no reply (a contest vote, a talk, a town
   hall, a call for volunteers) reaches the model tagged optional, with no

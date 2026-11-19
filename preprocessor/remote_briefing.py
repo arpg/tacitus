@@ -233,6 +233,8 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                 seen_rows.add(item["ledger_id"])
             if isinstance(row.get("close_proposal"), dict):
                 continue  # looks done: on the "Looks done?" line, not an ask
+            if (optional or _attend_only(item["ask"])) and on_calendar(item["title"], d, b, today):
+                continue  # its event is on the calendar line already
             add(prefix, item)
     stale = {o.get("id") for o in b.get("stale_obligations") or []}
     resurrected = {o.get("id") for o in b.get("resurrected_follow_ups") or []}
@@ -245,13 +247,25 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
         seen_rows.add(lid)
         if _ledger.waiting_on_reply(o, today):
             continue  # his question is out: on the "Waiting on replies" line
+        if o.get("merged_into"):
+            continue  # one item with the row it was merged into, which carries it
+        if _ledger.waiting_off_list(o, today):
+            continue  # others owe it, and nothing is asked of him before their date
         tags = [t for t, on in (("stale", lid in stale), ("follow-up due", lid in resurrected)) if on]
+        waits = _ledger.waits_on_others(o)
+        if waits:
+            # Past their date, or they asked him something: never his own work.
+            tags.append("others owe this work, not him")
         unanswered = _ledger.unanswered_since(o, today)
         if unanswered:
             tags.append(f"no answer to your question since {unanswered}")
         due = str(o.get("deadline") or "")[:10]
         spent = _ledger.date_spent(o, today)
         optional = bool(_date(due)) and _ledger.lapses(o)
+        brief = o.get("thread_brief") if isinstance(o.get("thread_brief"), dict) else None
+        if (optional or _attend_only((brief or {}).get("ask") or "")) \
+                and on_calendar(o.get("description") or "", _date(due), b, today):
+            continue  # its event is on the calendar line already
         if optional and not spent:
             tags.append(_optional_tag(_date(due), today))
             due = ""
@@ -262,7 +276,6 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
             d = _date(due)
             tags.append(f"its {d:%b} {d.day} date passed; {spent}")
             due = ""
-        brief = o.get("thread_brief") if isinstance(o.get("thread_brief"), dict) else None
         add("L", {"kind": "ledger", "title": o.get("description") or lid,
                   "who": o.get("from_name") or o.get("from_email") or "",
                   "from": o.get("from_email") or "", "ledger_id": lid,
@@ -273,9 +286,47 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                   "conversation_id": o.get("conversation_id") or "",
                   "summary": (o.get("notes") or "")[:400],
                   "last_action": _last_action(o),
-                  "due": due, "tags": tags, "optional": optional,
+                  "due": due, "tags": tags, "optional": optional, "waiting": waits,
                   "type": o.get("type") or ""})
     return out
+
+
+# An ask that is only to be at an event: the calendar holds it.
+_ATTEND = re.compile(r"^\s*(?:please\s+)?(?:attend|join|come\s+to|go\s+to|be\s+at|"
+                     r"participate\s+in)\b", re.I)
+# Words that name no event: a calendar line and a notice share them by chance.
+_CAL_STOP = frozenset((
+    "reminder remind invitation invite invited meeting event events the and for with your you "
+    "from this that are due today tomorrow week next please join attend all new update "
+    "monday tuesday wednesday thursday friday saturday sunday jan feb mar apr may jun jul aug "
+    "sep sept oct nov dec january february march april june july august september october "
+    "november december").split())
+
+
+def _attend_only(ask: str) -> bool:
+    return bool(_ATTEND.match(ask or ""))
+
+
+def _event_words(text) -> set[str]:
+    return {w for w in re.findall(r"[a-z][a-z0-9]{2,}", str(text or "").lower())
+            if w not in _CAL_STOP}
+
+
+def on_calendar(title: str, when: date | None, b: dict, today: date) -> str:
+    """The subject of the calendar event on `when` (today or tomorrow, the
+    days the briefing has) that shares two or more words with `title`, or
+    ''. A notice of an event he has on his calendar asks nothing more."""
+    if when == today:
+        events = b.get("todays_events") or []
+    elif when == today + timedelta(days=1):
+        events = b.get("tomorrows_events") or []
+    else:
+        return ""
+    words = _event_words(title)
+    for e in events:
+        if len(words & _event_words(e.get("subject"))) >= 2:
+            return str(e.get("subject") or "")
+    return ""
 
 
 def _optional_tag(d: date, today: date) -> str:
@@ -495,15 +546,20 @@ def check_plan(obj: dict, cands: dict[str, dict], *, morning: bool) -> dict:
     # picked: code holds this, not the prompt.
     def owed(items):
         return [p for p in items if not cands[p["ref"]].get("optional")]
+
+    # Work others owe is never his flex or a task handed to Claude; on the
+    # do-list its line is code's own (_top_line), never an action made up.
+    def his(items):
+        return [p for p in items if not cands[p["ref"]].get("waiting")]
     plan = {"get_done_today": owed(picks("get_done_today", MAX_TOP + 3))[:MAX_TOP],
-            "flexes": picks("flexes", MAX_FLEX),
+            "flexes": his(picks("flexes", MAX_FLEX + 2))[:MAX_FLEX],
             "drafts": [p for p in picks("drafts", MAX_DRAFTS)
                        if cands[p["ref"]]["kind"] in ("reply", "dropped", "rsvp")
                        and not in_motion(cands[p["ref"]])]}
     used = {p["ref"] for p in plan["drafts"]}
     plan["needs_you"] = [p for p in owed(picks("needs_you", 8)) if p["ref"] not in used]
     used |= {p["ref"] for p in plan["needs_you"]}
-    plan["escalate"] = [p for p in picks("escalate", MAX_ESCALATE) if p["ref"] not in used]
+    plan["escalate"] = [p for p in his(picks("escalate", MAX_ESCALATE)) if p["ref"] not in used]
     return plan
 
 
@@ -1047,8 +1103,8 @@ def _top_line(c: dict, p: dict, today: date) -> str:
     """A do-list line: the item, the window, the model's few words on
     what is left, and the due date in code's words."""
     why = _clean(p.get("why"), 140)
-    if _DATE_ONLY.match(why or ""):
-        why = ""
+    if _DATE_ONLY.match(why or "") or c.get("waiting"):
+        why = "Others owe this" if c.get("waiting") else ""
     parts = [x.rstrip(". ") for x in (why, _due_phrase(c.get("due"), today)) if x]
     tail = ". ".join(parts)
     return (_line_of(c) + (f": {_clean(p.get('when'), 60)}" if p.get("when") else "")
@@ -1059,7 +1115,8 @@ def _soon_refs(cands: dict[str, dict], today: date, skip: set[str]) -> list[str]
     out = []
     for r, c in cands.items():
         d = _date(c.get("due"))
-        if d and r not in skip and (d < today or (d - today).days <= SOON_DAYS):
+        if d and r not in skip and not c.get("waiting") \
+                and (d < today or (d - today).days <= SOON_DAYS):
             out.append(r)
     return out[:6]
 
@@ -1148,14 +1205,10 @@ def _morning_lists(cands: dict[str, dict], plan: dict, drafts: list[dict],
     named once: the do-list wins, and the date banner ("due") names only
     what no other section shows. A line is the item and its detail, with
     no section marker; the EA post and the room slices both use them."""
+    # An item the audit was unsure of stays as it is: the audit's working
+    # text is never part of an item's line.
     gone = set(audit.get("closed") or []) | set(audit.get("parked") or [])
-    unsure = {u["id"]: u.get("why", "") for u in audit.get("unsure_rows") or []}
     skip = {r for r, c in cands.items() if c.get("ledger_id") in gone}
-
-    def mark(r: str) -> str:
-        why = unsure.get(cands[r].get("ledger_id") or "")
-        return f" Evidence: {_clean(why, 120)}; still open?" if why else ""
-
     top = [p for p in plan.get("get_done_today") or [] if p["ref"] not in skip]
     on_list = {p["ref"] for p in top}
     flex = [p for p in plan.get("flexes") or [] if p["ref"] not in skip | on_list]
@@ -1164,7 +1217,7 @@ def _morning_lists(cands: dict[str, dict], plan: dict, drafts: list[dict],
     needs = [p for p in needs if p["ref"] not in on_list]
     escalated = [e for e in escalated if e["ref"] not in on_list]
     elsewhere = on_list | {p["ref"] for p in flex} | {p["ref"] for p in needs} \
-        | {e["ref"] for e in escalated}
+        | {e["ref"] for e in escalated} | {d["ref"] for d in drafts if d.get("ok")}
     due = []
     for r in _soon_refs(cands, today, skip | elsewhere):
         d = _date(cands[r].get("due"))
@@ -1172,8 +1225,8 @@ def _morning_lists(cands: dict[str, dict], plan: dict, drafts: list[dict],
                                                      else f"{d:%a %b} {d.day}")))
     lists = {
         "due": due,
-        "top": [(p["ref"], _top_line(cands[p["ref"]], p, today) + mark(p["ref"])) for p in top],
-        "flex": [(p["ref"], f"{_line_of(cands[p['ref']])}: {_clean(p.get('line'), 140)}{mark(p['ref'])}")
+        "top": [(p["ref"], _top_line(cands[p["ref"]], p, today)) for p in top],
+        "flex": [(p["ref"], f"{_line_of(cands[p['ref']])}: {_clean(p.get('line'), 140)}")
                  for p in flex],
         "draft": [(d["ref"], _draft_line(cands[d["ref"]], d)) for d in drafts if d.get("ok")],
         "needs": [(p["ref"], f"{_line_of(cands[p['ref']])}: {_clean(p.get('decision'), 160)}")
@@ -1313,8 +1366,10 @@ def render_morning(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime
     n_sched = len(b.get("new_scheduling_requests") or [])
     if n_sched and b.get("scheduling_channel_active"):
         tail.append(f":calendar: {n_sched} scheduling request(s): handling in the scheduling channel.")
+    shown = {cands[r].get("ledger_id") for sec, items in lists.items() for r, _l in items}
     for f in b.get("resurrected_follow_ups") or []:
-        tail.append(f":alarm_clock: Follow-up due: {_clean(f.get('description'), 120)}")
+        if f.get("id") not in shown:    # a row the post already names is named once
+            tail.append(f":alarm_clock: Follow-up due: {_clean(f.get('description'), 120)}")
     for d in b.get("woken_snoozed") or []:
         tail.append(f":email: Snoozed email returned: {_clean(d, 120)}")
     for s in b.get("scheduled_sends_due_today") or []:

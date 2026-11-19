@@ -127,8 +127,8 @@ Your previous draft was checked in code against the mailbox and the
 ledger, and was not posted. The rows the block lists as CLOSED are
 closed: drop them from "Pending your response" and name them in "Since
 this morning" with the evidence in a few words. The rows it lists as
-ambiguous stay, with the evidence added as one short clause ending in
-"still open?". Change nothing else, and call no tool to re-check.
+ambiguous stay exactly as they were, with nothing added to their line.
+Change nothing else, and call no tool to re-check.
 
 ### 7. WRITE THE UPDATE (MUST be your FINAL action — no tool calls after)
 

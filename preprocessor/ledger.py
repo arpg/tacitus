@@ -37,6 +37,7 @@ import argparse
 import json
 import os
 import pwd
+import re
 import sqlite3
 import stat
 import subprocess
@@ -859,6 +860,8 @@ def cmd_add(args) -> int:
 
     from_email = args.from_email or core_extra.get("from_email", "")
     from_name = args.from_name or core_extra.get("from_name", "")
+    told = row_end_on_add(args, core_extra, metadata, entry_type) if status in OPEN_STATUSES else {}
+    entry_type = told.pop("type", entry_type)
 
     if len(args.description or "") > TITLE_CHARS:
         print(f"NOTE: ledger row {args.id!r} has a {len(args.description)}-character description. "
@@ -897,11 +900,64 @@ def cmd_add(args) -> int:
 
     row = db.execute("SELECT * FROM ledger WHERE id = ?", (args.id,)).fetchone()
     db.close()
-    out = {"ok": True, "action": "added", "entry": _row_to_dict(row)}
+    out = {"ok": True, "action": "added", "entry": _row_to_dict(row), **told}
     if placed:
         out["project"] = placed
     _output(out)
     return 0
+
+
+def row_end_on_add(args, core_extra: dict, metadata: dict, entry_type: str) -> dict:
+    """What `add` tells the writer about how a new main-EA row ends, and
+    the changes it makes for it (metadata in place; a new type under
+    "type"):
+      - a task or deadline row whose description says someone else does
+        the work is stored as `waiting` ("type_changed");
+      - a row with no mail behind it, no deadline, no follow-up date and
+        no --closes-on takes the date its description names as
+        `event_date` ("end"): once that date passes, the user is asked to
+        close it. With no date there, "warning" says nothing can end it
+        but the user's word."""
+    source = core_extra.get("source") or ""
+    if str(source).startswith("plugin:"):
+        return {}
+    out: dict = {}
+    desc = args.description or ""
+    if entry_type in OWN_WORK_TYPES and reads_as_waiting(desc):
+        out["type"] = "waiting"
+        out["type_changed"] = {"from": entry_type, "to": "waiting",
+                               "why": "the description says someone else does the work"}
+        print(f"NOTE: ledger row {args.id!r} is stored as `waiting`, not `{entry_type}`: its "
+              f"description says someone else does the work, so it stays off the user's "
+              f"do-list until its date passes. If the work is the user's, say so in the "
+              f"description (\"Integrate the edits ...\") and update the type.", file=sys.stderr)
+    entry = {"id": args.id, "source": source,
+             "conversation_id": args.conversation_id or core_extra.get("conversation_id"),
+             "source_message_id": args.source_message_id or core_extra.get("source_message_id"),
+             "gmail_thread_id": getattr(args, "gmail_thread_id", None)
+             or core_extra.get("gmail_thread_id")}
+    dated = (args.deadline or core_extra.get("deadline") or args.follow_up_after
+             or core_extra.get("follow_up_after") or metadata.get("event_date"))
+    if not chat_row(entry) or dated or metadata.get("closes_on"):
+        return out
+    # The description only: notes carry dated history ("<date>: the user
+    # said ..."), and such a stamp is never the row's end.
+    when, words = date_in_text(desc, local_today())
+    if when:
+        metadata["event_date"] = when
+        metadata["event_date_from"] = words[:40]
+        out["end"] = (f"No mail is behind this row, so its date ends it: {when} (from "
+                      f"\"{words[:40]}\"). Once it passes, the user is asked to close it. "
+                      f"Pass --deadline if the date is wrong.")
+        print(f"NOTE: ledger row {args.id!r}: {out['end']}", file=sys.stderr)
+        return out
+    out["warning"] = (f"WARNING: ledger row {args.id!r} has no mail, no date and no "
+                      f"--closes-on: nothing can end it but the user's word, and it will stay "
+                      f"on every briefing until he says it is done. Give it --deadline "
+                      f"<YYYY-MM-DD> (the date of the event or the due date), or --closes-on "
+                      f"manual if only the user can say it is done.")
+    print(out["warning"], file=sys.stderr)
+    return out
 
 
 def cmd_update(args) -> int:
@@ -1036,6 +1092,17 @@ def cmd_update(args) -> int:
             if not prior.get("closed_note"):
                 meta_updates["closed_note"] = closing
 
+    # The work recorded (CLAUDE.md rule 8a) names the document the EA made.
+    # On a row with no mail behind it nothing else ever says the work went
+    # out: the row keeps the delivery, and the user is asked to close a
+    # staged-document row (draft_pending) once its document is ready.
+    delivered = ""
+    if args.last_action and row["status"] in OPEN_STATUSES and not settle_close \
+            and chat_row(_row_to_dict(row)):
+        delivered = delivered_file(args.last_action)
+        if delivered:
+            meta_updates["delivered"] = {"at": now, "path": delivered}
+
     if meta_updates:
         existing_meta = {}
         try:
@@ -1060,6 +1127,15 @@ def cmd_update(args) -> int:
                                  actor="cli:" + (_lane() if not _is_owner() else "owner"),
                                  note=args.last_action or "closed", evidence=evidence or None)
         db.commit()
+    elif delivered and canonical_type(new_type or row["type"]) == "draft_pending":
+        import closure
+        name = Path(delivered).name
+        settled = closure.settle(db, args.id, signal="delivered",
+                                 actor="cli:" + (_lane() if not _is_owner() else "owner"),
+                                 note=f"{now[:10]}: the document is ready ({name})",
+                                 evidence={"path": delivered}, evidence_ts=now,
+                                 why=f"the document is ready: {name}")
+        db.commit()
 
     updated = db.execute("SELECT * FROM ledger WHERE id = ?", (args.id,)).fetchone()
     placed = _place(db, args.id, created=False) if updated["status"] in OPEN_STATUSES else {}
@@ -1069,7 +1145,10 @@ def cmd_update(args) -> int:
         out["project"] = placed
     if settled is not None:
         out["close"] = settled["action"]
-        if settled["action"] == "proposed":
+        if settled["action"] == "proposed" and delivered:
+            out["message"] = ("The document is recorded as delivered. The user gets a card to "
+                              "close the row once he has used it; it stays open until then.")
+        elif settled["action"] == "proposed":
             out["message"] = ("The close is recorded as a proposal; the row stays open "
                               "until the user confirms. Use `close --user-said` when "
                               "the user told you it is done.")
@@ -1118,6 +1197,10 @@ def _close_signal(args, row) -> tuple[str, dict, str]:
         if not entry_exists(dup):
             return "", evidence, f"--duplicate-of {dup}: no such row"
         evidence["duplicate_of"] = dup
+        if getattr(args, "user_said", None):
+            # The user said the item is done: the row it repeats closes on
+            # the same words (closure.fold_duplicate).
+            evidence["quote"] = args.user_said
         return "duplicate_of", evidence, ""
     if getattr(args, "user_said", None):
         evidence["quote"] = args.user_said
@@ -1218,6 +1301,15 @@ def cmd_close(args) -> int:
         db.commit()
         if len(res["ids"]) > 1:
             out["co_closed_siblings"] = res["ids"][1:]
+        folded = res.get("folded") or {}
+        if folded:
+            out["folded_into"] = {"id": evidence.get("duplicate_of"), **folded}
+            if folded.get("closed"):
+                prim = db.execute("SELECT * FROM ledger WHERE id = ?",
+                                  (folded["closed"][0],)).fetchone()
+                if prim is not None:
+                    _archive_after_close(db, prim, folded["closed"], args.skip_archive)
+                    db.commit()
     elif res["action"] == "proposed":
         out["message"] = (
             "Recorded as a proposal; the row stays open. The user confirms it in "
@@ -1956,6 +2048,193 @@ def lapses(entry: dict) -> bool:
     return how == "lapse"
 
 
+# ── Rows from chat: how each one ends ───────────────────────────────────
+# A row the EA writes from a chat turn or its own work has no mail behind
+# it, so no evidence from mail ever joins it. Its date ends it: the date
+# it was given (`deadline`), or the one its description names
+# (`event_date`, which `add` reads). Once that date passes, the row is
+# put to the user to close (close_lapsed, the `date_passed` signal).
+
+# Ids intake makes from mail: a row with one of these has mail behind it.
+INTAKE_PREFIXES = DETECTOR_PREFIXES + ("deadline-", "task-", "kept-")
+
+
+def chat_row(entry: dict) -> bool:
+    """A main-EA row with no mail behind it: no conversation, message or
+    Gmail thread, and not an id intake makes from mail."""
+    if str(entry.get("source") or "").strip():
+        return False
+    if any(str(entry.get(k) or "").strip()
+           for k in ("conversation_id", "source_message_id", "gmail_thread_id")):
+        return False
+    return not str(entry.get("id") or "").startswith(INTAKE_PREFIXES)
+
+
+def row_date(entry: dict) -> str:
+    """The date that ends the row: its deadline, else the date its
+    description names (`event_date`); '' with neither."""
+    for key in ("deadline", "event_date"):
+        raw = str(entry.get(key) or "").strip()[:10]
+        try:
+            return date.fromisoformat(raw).isoformat()
+        except ValueError:
+            continue
+    return ""
+
+
+_MONTHS = {m: i for i, ms in enumerate(
+    (("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"), ("may",),
+     ("jun", "june"), ("jul", "july"), ("aug", "august"), ("sep", "sept", "september"),
+     ("oct", "october"), ("nov", "november"), ("dec", "december")), 1) for m in ms}
+_MONTH_RE = "|".join(sorted(_MONTHS, key=len, reverse=True))
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_DATE_RES = (
+    ("iso", re.compile(r"\b(20\d\d)-(\d\d)-(\d\d)\b")),
+    ("md", re.compile(rf"\b({_MONTH_RE})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?\b(?:,?\s+(20\d\d))?",
+                      re.I)),
+    ("dm", re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({_MONTH_RE})\b(?:,?\s+(20\d\d))?", re.I)),
+    ("num", re.compile(r"(?<![\d/])(\d{1,2})/(\d{1,2})(?:/(\d{4}|\d{2}))?(?![\d/])")),
+    ("wd", re.compile(r"\b(" + "|".join(_WEEKDAYS) + r")\b", re.I)),
+)
+# Words just before a date that make it the row's own date: due by it.
+_DATE_CUE = re.compile(r"\b(?:by|due|before|until|on|for|deadline)\W{0,3}(?:\w+,?\s+)?$", re.I)
+
+
+def _next_day_of(month: int, day: int, today: date) -> date | None:
+    """The month and day on or after today, within the coming year. A day
+    that passed lately names past mail or a past meeting: None."""
+    try:
+        d = date(today.year, month, day)
+    except ValueError:
+        return None
+    if d >= today:
+        return d
+    if (today - d).days > 180:
+        try:
+            return date(today.year + 1, month, day)
+        except ValueError:
+            return None
+    return None
+
+
+def _text_dates(text: str, today: date):
+    """(date, start, words) for each date `text` names on or after today."""
+    for kind, rx in _DATE_RES:
+        for m in rx.finditer(text or ""):
+            g = m.groups()
+            try:
+                if kind == "iso":
+                    d = date(int(g[0]), int(g[1]), int(g[2]))
+                elif kind in ("md", "dm"):
+                    mon, day = (g[0], g[1]) if kind == "md" else (g[1], g[0])
+                    month = _MONTHS[mon.lower()]
+                    d = (date(int(g[2]), month, int(day)) if g[2]
+                         else _next_day_of(month, int(day), today))
+                elif kind == "num":
+                    month, day = int(g[0]), int(g[1])
+                    if not (1 <= month <= 12 and 1 <= day <= 31):
+                        continue
+                    year = int(g[2]) + (2000 if len(g[2] or "") == 2 else 0) if g[2] else 0
+                    d = date(year, month, day) if year else _next_day_of(month, day, today)
+                else:
+                    want = _WEEKDAYS.index(g[0].lower())
+                    d = today + timedelta(days=(want - today.weekday()) % 7)
+            except (ValueError, KeyError):
+                continue
+            if d and d >= today:
+                yield d, m.start(), m.group(0).strip(), kind == "num" and not g[2]
+
+
+def date_in_text(text: str, today: date) -> tuple[str, str]:
+    """(YYYY-MM-DD, the words it came from) for the date `text` names, or
+    ("", ""). Only a date on or after `today` counts. A weekday is
+    its next day from `today`, today included; "11/19" counts only after
+    "by", "due" and the like ("2/3 of the budget" is no date). Of several
+    dates, the first one after "by", "due", "before", "until", "on" or
+    "for" wins, else the earliest."""
+    best = None
+    for d, at, words, needs_cue in _text_dates(text, today):
+        cue = bool(_DATE_CUE.search(text[max(0, at - 24):at]))
+        if needs_cue and not cue:
+            continue
+        key = (not cue, d, at)
+        if best is None or key < best[0]:
+            best = (key, d, words)
+    return (best[1].isoformat(), best[2]) if best else ("", "")
+
+
+# A row whose own words say someone else owes the work: its subject is
+# another party doing it ("collaborators finish the edits"), or it waits
+# ("Waiting on ...", "Await ..."). A label ("Project name: ") may lead.
+_OTHERS = (r"(?:the\s+|all\s+|our\s+|my\s+)?(?:collaborators?|co-?authors?|co-?pis?|reviewers?|"
+           r"referees?|students?|partners?|team\s+members?|they|others|committee|sponsors?|"
+           r"vendors?|contractors?|installers?|department|office|utility|agency)")
+_THEIR_VERBS = (r"(?:finish|send|submit|return|deliver|complete|review|repl(?:y|ies|ied)|"
+                r"respond|provide|sign|approve|confirm|decide|share|fill|upload|finali[sz]e|"
+                r"edit|write|draft|prepare)")
+_WAITS_ON_OTHERS = re.compile(
+    rf"^\s*(?:[^:]{{1,60}}:\s*)?(?:{_OTHERS}\s+(?:to\s+|will\s+|must\s+|should\s+|need\s+to\s+)?"
+    rf"{_THEIR_VERBS}\w*\b|(?:waiting|wait)\s+(?:on|for)\b|await\w*\b)", re.I)
+# The types a row of the user's own dated work takes. One whose words say
+# someone else does the work is a `waiting` row.
+OWN_WORK_TYPES = frozenset({"task", "deadline"})
+
+
+def reads_as_waiting(text: str) -> bool:
+    """The row's description says someone else owes the work."""
+    return bool(_WAITS_ON_OTHERS.search(text or ""))
+
+
+def waits_on_others(entry: dict) -> bool:
+    """Someone else owes this row's work: its type is `waiting`, or it is
+    a task or deadline row whose own description says others do it."""
+    if is_waiting(entry):
+        return True
+    return (canonical_type(entry.get("type")) in OWN_WORK_TYPES
+            and not str(entry.get("source") or "").startswith("plugin:")
+            and reads_as_waiting(str(entry.get("description") or "")))
+
+
+def waiting_off_list(entry: dict, today=None) -> bool:
+    """A row that waits on others and asks nothing of the user today: its
+    date has not passed, and its thread does not ask him anything. It
+    stays off the do-list, the decisions and the hand-offs, and no action
+    is made up for it."""
+    if not waits_on_others(entry):
+        return False
+    if today is None:
+        today = datetime.now().astimezone().date()
+    due = row_date(entry)
+    if due and due < today.isoformat():
+        return False
+    brief = entry.get("thread_brief")
+    return not (isinstance(brief, dict) and brief.get("needs_reply"))
+
+
+def local_today() -> date:
+    """Today on the user's clock (user_tz), else the machine's."""
+    try:
+        try:
+            import user_tz as _user_tz
+        except ModuleNotFoundError:  # imported as preprocessor.<mod>
+            from preprocessor import user_tz as _user_tz
+        return datetime.now(_user_tz.zone()).date()
+    except Exception:
+        return datetime.now().astimezone().date()
+
+
+# A file the EA made for a row, named in the last action it records for
+# it (CLAUDE.md rule 8a: "<date>: <what and where>").
+_DELIVERED_RE = re.compile(r"(?:~|/home/[\w.-]+)/\.ea/(?:docs|letters)/[^\s'\"<>|]+?"
+                           r"\.(?:pdf|docx?|pptx?|xlsx|csv|md|tex|html?|zip)\b", re.I)
+
+
+def delivered_file(text: str) -> str:
+    """The path of the document a last action says the EA made, or ''."""
+    m = _DELIVERED_RE.search(text or "")
+    return m.group(0) if m else ""
+
+
 def date_spent(entry: dict, today=None) -> str:
     """Why the row's past deadline is not overdue work, or '' when it is
     (or the date has not passed). A meeting's date passes when the meeting
@@ -2253,9 +2532,18 @@ def close_lapsed(db_path: Path | None = None, today=None) -> list[dict]:
     user leaves nothing to do once its day is over. closure.settle decides
     each one under its `lapsed` signal: a declared lapse, or a row whose
     thread the user never wrote in, closes; a row the user wrote in or
-    kept open is proposed instead. Returns [{"id", "action",
-    "description", "deadline"}] for each row it settled. Called by the
-    preprocessor before the briefing is built."""
+    kept open is proposed instead.
+
+    A row with no mail behind it (chat_row) that does not lapse is put to
+    the user once its date (row_date: the deadline, or the date its words
+    name) has passed: no mail can ever say it is done, and its day is
+    over. It is proposed under `date_passed`, never closed, with the
+    document the EA made for it when the row records one. A row that waits
+    on others is left alone: past their date the user may need to chase.
+
+    Returns [{"id", "action", "description", "deadline"}] for each row it
+    settled. Called by the preprocessor before the briefing is built, and
+    by the nightly reconcile before it judges the rows."""
     import closure
     if today is None:
         today = datetime.now().astimezone().date()
@@ -2266,13 +2554,17 @@ def close_lapsed(db_path: Path | None = None, today=None) -> list[dict]:
     rows = conn.execute(f"""
         SELECT * FROM ledger
         WHERE status IN ('open', 'follow_up', 'snoozed')
-        AND deadline IS NOT NULL AND deadline != '' AND substr(deadline, 1, 10) < ?
+        AND ((deadline IS NOT NULL AND deadline != '' AND substr(deadline, 1, 10) < ?)
+             OR metadata LIKE '%"event_date"%')
         {src_sql}
     """, [today.isoformat()] + list(src_params)).fetchall()
     out = []
     for r in rows:
         entry = _row_to_dict(r)
         if not lapses(entry):
+            res = _propose_date_passed(conn, entry, today)
+            if res:
+                out.append(res)
             continue
         due = str(entry.get("deadline") or "")[:10]
         try:
@@ -2290,6 +2582,39 @@ def close_lapsed(db_path: Path | None = None, today=None) -> list[dict]:
     conn.commit()
     conn.close()
     return out
+
+
+DATE_PASSED = "date_passed"
+
+
+def _propose_date_passed(conn, entry: dict, today: date) -> dict | None:
+    """close_lapsed's ask for a chat row whose date passed: the proposal
+    (closure.settle under DATE_PASSED), or None when the row is not one,
+    waits on others, is parked or already carries this proposal."""
+    due = row_date(entry)
+    if not due or due >= today.isoformat() or not chat_row(entry) \
+            or waits_on_others(entry) or parked_until(entry, today):
+        return None
+    prop = entry.get("close_proposal")
+    if isinstance(prop, dict) and DATE_PASSED in (prop.get("signals") or []):
+        return None
+    d = date.fromisoformat(due)
+    why = f"its {d:%b} {d.day} date passed"
+    sent = entry.get("delivered") if isinstance(entry.get("delivered"), dict) else {}
+    try:
+        at = datetime.fromisoformat(str(sent.get("at")).replace("Z", "+00:00")).astimezone().date()
+        why += f", and the document was ready on {at:%b} {at.day}"
+    except (TypeError, ValueError):
+        pass
+    import closure
+    res = closure.settle(conn, entry["id"], signal=DATE_PASSED, actor="intake",
+                         note=f"{today.isoformat()}: {why}", why=why[0].upper() + why[1:] + ".",
+                         evidence={"date": due, **({"delivered": sent.get("path")} if sent else {})},
+                         evidence_ts=f"{due}T23:59:59Z", sweep=False)
+    if res.get("action") not in ("closed", "proposed"):
+        return None
+    return {"id": entry["id"], "action": res["action"],
+            "description": entry.get("description") or "", "deadline": due}
 
 
 def get_closed_conversation_ids(db_path: Path | None = None,

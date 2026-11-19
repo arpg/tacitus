@@ -660,9 +660,9 @@ def build_note(done: list[dict], unsure: list[dict],
             lines.append(f"  - {d['id']}: {d['description'][:100]} -- {d['why']}")
     if unsure:
         lines.append("")
-        lines.append("These items have ambiguous evidence. Keep them, and add the "
-                     "evidence to their line in one short clause ending with "
-                     "'still open?', so the user can confirm or close:")
+        lines.append("These items have ambiguous evidence. Keep each one exactly as "
+                     "it is: add no evidence and no question to its line. The user "
+                     "never sees this check's working text:")
         for u in unsure:
             lines.append(f"  - {u['id']}: {u['description'][:100]} -- {u['why']}")
     return "\n".join(lines)

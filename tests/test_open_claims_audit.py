@@ -296,7 +296,8 @@ def test_apply_proposes_done_rows_logs_them_and_writes_the_rewrite_note():
     assert note.startswith("PRE-SEND AUDIT RESULT")
     assert "flint-sep8-rsvp" in note and "look done" in note
     assert "Looks done (confirm in the card)" in note
-    assert "ai-search-okonkwo-confirm" in note and "still open?" in note
+    assert "ai-search-okonkwo-confirm" in note and "exactly as it is" in note
+    assert "still open?" not in note
     assert "response-doe-016" not in note
 
 

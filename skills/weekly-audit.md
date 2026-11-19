@@ -182,8 +182,8 @@ Your previous report was checked in code against the mailbox and the
 ledger, and was not posted. The rows the block lists as CLOSED are
 closed: take them out of every open list and count them under closure
 automation with the evidence in a few words. The rows it lists as
-ambiguous stay, with the evidence added as one short clause ending in
-"still open?". Change nothing else, and call no tool to re-check.
+ambiguous stay exactly as they were, with nothing added to their line.
+Change nothing else, and call no tool to re-check.
 
 ### 8. Post weekly report to chat
 Write the report as your text output (the orchestrator posts it to the
