@@ -171,7 +171,8 @@ pointers posted before the change still resolve correctly.
 A click reaches the bot as an interaction payload on its own Socket
 Mode websocket, opened with the app-level token; the bot verifies no
 Slack signature and checks the clicker against `EA_SLACK_OWNER_ID`. In
-the web chat the same card is a message in the DM with the same buttons;
+the web chat the same card is a message in the DM (the app's Action
+requests, which takes button presses only) with the same buttons;
 a click reaches the bot through the app's own API, which serves only
 the owner (docs/webchat.md, Identity and auth). A card that withholds
 its approval (more than one card shows) has no primary action, so no
@@ -819,7 +820,8 @@ check, cross, ...).
   identity header is the login, on tailscaled's own connection only) or
   by a pair token. It serves only the owner-private chat block, from
   private files outside the resident's tree (docs/SECURITY.md, Web
-  chat). With the app closed, a new card, a bot message in the DM and a
+  chat). With the app closed, a new card, a bot message in the DM (Action
+  requests in the app) and a
   loud alert arrive as Web Push notifications (`chat/web_push.py`:
   VAPID and `aes128gcm` with the `cryptography` package, to the
   browser vendors' push services only). Alone it makes the EA channel,

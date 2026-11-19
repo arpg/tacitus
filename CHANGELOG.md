@@ -6,6 +6,17 @@ repository that preceded it.
 
 ## Unreleased
 
+- **Action requests: the place for taps, apart from your conversations.**
+  In the web chat, Direct messages is now Action requests: the one place
+  where a Send, Create or other button waits for you. It takes taps only,
+  so it has no box to type in; its count says how many requests wait;
+  waiting ones come first and the rest fold under Earlier. Recent lists
+  conversations only (a thread you wrote in, or a briefing), never a
+  card. Needs you lists the conversations waiting on your answer and
+  leaves the taps to Action requests. The app opens on Ask Tacitus. Words
+  typed into the old place from an older copy of the app start a new
+  conversation in Ask Tacitus. On Slack nothing changes: the cards stay
+  in your DM.
 - **The web chat's menu starts with Recent.** The latest conversations of
   every place, newest first, in the bot's order, so the list is the same
   on your phone and your computer and you can pick up on one what you

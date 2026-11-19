@@ -491,6 +491,9 @@ class SlackFrontend(ChatFrontend):
             + " NEVER **double asterisks** (renders as literal **)\n"
             "  _italic_ (underscore), :emoji_shortcodes: (not unicode)"),
         "confirm_location": "the Send button is in your DM",
+        # The place where every card waits, as a sentence names it ("is in
+        # your DM"); the web chat's is "Action requests".
+        "card_place": "your DM",
         "confirm_sentence": (
             "Every :lock: block (Send, Create, Schedule) is posted to the user's DM "
             "with the bot, with a one-line pointer in this thread; say \"the Send "

@@ -273,22 +273,22 @@ def test_a_page_with_push_off_clears_the_thread_it_shows_on_the_other_browsers(a
     import webui_stub_server as W
     from test_webui import open_thread, wait_for
     page, stub, errors = app(push=True, init=FAST_SEEN)
-    new = stub.emit_bot(W.DM, "A thread read on the computer")
+    new = stub.emit_bot(W.MAIN, "A thread read on the computer")
     open_thread(page, "A thread read on the computer")
-    tag = f"{W.DM}/{new['thread_key']}"
+    tag = f"{W.MAIN}/{new['thread_key']}"
     wait_for(lambda: stub.seen)
     assert stub.seen == [{"tag": tag, "elsewhere": True}]
     page.evaluate("window.__seenFast = true; document.hasFocus = () => false")
-    stub.emit_bot(W.DM, "An answer while nobody looks", new["thread_key"])
+    stub.emit_bot(W.MAIN, "An answer while nobody looks", new["thread_key"])
     page.wait_for_selector("#messages .msg:has-text('An answer while nobody looks')")
     time.sleep(0.5)
     assert len(stub.seen) == 1
     page.evaluate("document.hasFocus = () => true")
-    stub.emit_bot(W.DM, "An answer the owner reads here", new["thread_key"])
+    stub.emit_bot(W.MAIN, "An answer the owner reads here", new["thread_key"])
     wait_for(lambda: len(stub.seen) == 2)
     assert stub.seen[1] == {"tag": tag, "elsewhere": True}
     # a message in another thread, not the one in view, says nothing
-    stub.emit_bot(W.DM, "Another thread")
+    stub.emit_bot(W.MAIN, "Another thread")
     time.sleep(0.5)
     assert len(stub.seen) == 2
     assert not errors, errors
@@ -344,14 +344,14 @@ def test_the_owners_message_clears_its_threads_unread_count(app):
     import webui_stub_server as W
     page, stub, errors = app()
     expect(page.locator("#live.on")).to_be_attached()
-    new = stub.emit_bot(W.DM, "A brand new thread")
+    new = stub.emit_bot(W.MAIN, "A brand new thread")
     item = page.locator(".thread-item:has-text('A brand new thread')")
     expect(item.locator(".badge")).to_have_text("1")
     # the owner answers elsewhere (Slack, mirrored), the thread still closed here
-    stub.add(W.DM, "On it from my phone", author="owner", thread_key=new["thread_key"],
+    stub.add(W.MAIN, "On it from my phone", author="owner", thread_key=new["thread_key"],
              event="message")
     expect(item.locator(".badge")).to_have_count(0)
-    # in another channel: its count, the server's before it was opened, goes as the server counts
+    # in another conversation: its count, the server's before it was opened, goes as the server counts
     main = page.locator('a.chan[href="#/stream%3A9"] .badge')
     expect(main).to_have_text("2")
     stub.add(W.MAIN, "Thanks", author="owner", thread_key=W.WEEKLY, event="message")

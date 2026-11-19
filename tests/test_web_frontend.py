@@ -371,7 +371,8 @@ def test_prompt_strings_and_attributes(tmp_path):
     f = make(tmp_path)
     ps = f.prompt_strings()
     assert set(ps) == set(SLACK_LIKE_PROMPT_STRINGS)
-    assert ps["confirm_location"] == "the Send button is on the card in your DM thread"
+    assert ps["confirm_location"] == "the Send button is on the card in Action requests"
+    assert ps["card_place"] == "Action requests" and "Action requests" in ps["confirm_sentence"]
     assert "web chat" in ps["platform"] and "Markdown" in ps["format_rule_main"]
     assert f.llm_tool_grants() == ""
     assert f.capabilities == {"buttons", "select", "files", "private_rooms", "reactions"}
@@ -843,7 +844,7 @@ def test_posting_a_message_dispatches_an_inbound_message(fe):
     ev.clear()
     status, _h, body = owner(fe, "POST", "/api/channels/dm/messages", {"text": "x"})
     ev.wait(5)
-    assert got[-1].is_dm
+    assert got[-1].channel == "main" and not got[-1].is_dm  # Action requests takes taps only
     ev.clear()
     owner(fe, "POST", "/api/channels/main/messages",
           {"text": "more", "thread_key": row["thread_key"]})
@@ -1304,6 +1305,73 @@ def test_a_file_id_another_process_took_is_minted_again(tmp_path):
     assert Path(row["path"]).read_bytes() == b"mine"
 
 
+def test_a_message_typed_to_action_requests_starts_a_conversation_in_ask_tacitus(fe, tmp_path,
+                                                                                 monkeypatch):
+    """Action requests (the DM) takes button presses only. A message an
+    older app posts there, top level or under a request, and an upload,
+    start a new conversation in the EA channel: the bot's line opens it and
+    names the request (its title, its first fields, a link), the owner's
+    words follow, and the core reads them there. Nothing lands in the DM,
+    and a retry with the same nonce posts once."""
+    monkeypatch.setenv("EA_DIR", str(tmp_path / "ea"))
+    got, ev = catcher(fe)
+    req = fe.post_card("dm", card())
+    status, _h, body = owner(fe, "POST", "/api/channels/dm/messages",
+                             {"text": "make it shorter", "thread_key": req.thread_key, "nonce": "n-1"})
+    row = json.loads(body)
+    assert status == 200 and row["channel"] == "main" and row["author"] == "owner"
+    assert row["text"] == "make it shorter" and row["thread_key"] != req.thread_key
+    opener, typed = fe.store.thread("main", row["thread_key"])
+    assert typed["id"] == row["id"] and opener["author"] == "bot"
+    assert opener["text"].startswith("You wrote this about a request in Action requests: [Send this draft?](")
+    assert "To: someone@example.test" in opener["text"] and f"#/dm/{req.thread_key}/{req.id}" in opener["text"]
+    assert ev.wait(5)
+    msg = got[-1]
+    assert (msg.channel, msg.thread_key, msg.msg_id, msg.is_dm, msg.is_reply) == \
+        ("main", row["thread_key"], row["id"], False, True)
+    assert [m["id"] for m in fe.store.thread("dm", req.thread_key)] == [req.id]  # the request holds no words
+    assert wf.is_conversation("main", "message", "bot", opener["text"], True)  # Recent finds it
+    assert owner(fe, "POST", "/api/channels/dm/messages", {"text": "make it shorter",
+                 "thread_key": req.thread_key, "nonce": "n-1"})[2] == body  # a retry: the same row
+    assert len(fe.store.thread("main", row["thread_key"])) == 2
+    # top level: a line that says why, then the words
+    ev.clear()
+    row = json.loads(owner(fe, "POST", "/api/channels/dm/messages", {"text": "what is on today?"})[2])
+    opener = fe.store.thread("main", row["thread_key"])[0]
+    assert opener["text"] == "You wrote this in Action requests, which takes taps only, so it starts here."
+    assert ev.wait(5) and got[-1].channel == "main"
+    # an upload goes the same way
+    body, ctype = multipart({"text": "the figure", "file": ("fig.txt", "text/plain", b"bytes")})
+    row = json.loads(owner(fe, "POST", "/api/channels/dm/files", raw=body,
+                           headers={"Content-Type": ctype})[2])
+    assert row["channel"] == "main" and row["kind"] == "file" and row["text"] == "the figure"
+    assert not [m for m in fe.store.thread("dm", req.thread_key)[1:]]
+
+
+def test_shadow_mode_takes_words_typed_to_the_dm_to_the_ea_channel(tmp_path):
+    """In shadow mode the words go to the primary's EA channel as a new
+    conversation, with no line of the web store's own."""
+    f = make(tmp_path)
+    handed: list = []
+
+    def composite(ev):
+        handed.append(ev)
+        ref = MessageRef(ev.channel, str(9000 + len(handed)), ev.thread_key or "t-new", 5.0)
+        f.mirror_post(ref, ev.text, "owner")
+        return ref
+    f.inbound = composite
+    f.start()
+    try:
+        f.mirror_channel("C0EA", "ea", "main")
+        f.mirror_channel("D0DM", "dm", "dm")
+        status, _h, body = owner(f, "POST", "/api/channels/D0DM/messages", {"text": "hi"})
+        assert status == 200 and json.loads(body)["channel"] == "C0EA"
+        assert (handed[0].channel, handed[0].thread_key, handed[0].is_dm) == ("C0EA", None, False)
+        assert f.store.thread("D0DM", "t-new") == []
+    finally:
+        f.stop()
+
+
 def test_shadow_mode_hands_web_input_to_the_composite(tmp_path):
     f = make(tmp_path)
     handed: list = []
@@ -1371,7 +1439,7 @@ def test_load_frontend_builds_the_web_frontend(tmp_path):
     assert f.store_path == tmp_path / "state" / "webchat.sqlite"
     assert f.base_path == "/c" and f.bind == "127.0.0.1"
     assert prompt_strings_for_config(ea)["confirm_location"] == \
-        "the Send button is on the card in your DM thread"
+        "the Send button is on the card in Action requests"
     # ea-config.json is not the owner's file: built, but it serves nothing
     # (tests/test_web_hardening.py has the owner's block)
     assert f.trusted_config is False
@@ -1681,14 +1749,15 @@ def test_needs_lists_what_waits_on_the_owner_needs_you_first(fe, monkeypatch):
     fe.post("main", "later", thread_ts=t["w1"])
     status, _h, body = owner(fe, "GET", "/api/needs")
     got = json.loads(body)["threads"]
-    assert status == 200 and [r["text"] for r in got] == ["n2", "n1", "w1", "w2"]
+    # n2 and w2 wait in Action requests, which the bot opened: they are its, not Needs you's
+    assert status == 200 and [r["text"] for r in got] == ["n1", "w1"]
     first = got[0]
-    assert first["channel"] == "dm" and first["channel_name"] == "dm" and first["state"] == "needs_you"
+    assert first["channel"] == "main" and first["channel_name"] == "ea" and first["state"] == "needs_you"
     assert {"seq", "id", "thread_key", "reply_count", "last_at", "state_by", "state_reason",
-            "state_at"} <= set(first)
-    assert got[2]["reply_count"] == 1 and got[2]["channel_name"] == "ea"
-    monkeypatch.setattr(wf, "NEEDS_CAP", 3)
-    assert len(json.loads(owner(fe, "GET", "/api/needs")[2])["threads"]) == 3
+            "state_at", "tap"} <= set(first)
+    assert got[1]["reply_count"] == 1 and got[1]["channel_name"] == "ea"
+    monkeypatch.setattr(wf, "NEEDS_CAP", 1)
+    assert len(json.loads(owner(fe, "GET", "/api/needs")[2])["threads"]) == 1
     assert call(fe, "GET", "/api/needs")[0] == 401
 
 
@@ -1715,7 +1784,7 @@ def test_the_owner_sets_a_thread_s_state_and_the_stream_says_so(fe):
         assert json.loads(ev["data"]) == {"channel": "main", "thread_key": a.thread_key,
                                           "state": "done", "by": "owner",
                                           "reason": "You marked this done.",
-                                          "at": row["state_at"], "stale": False}
+                                          "at": row["state_at"], "stale": False, "tap": False}
     finally:
         s.close()
     stored = fe.store.thread_state("main", a.thread_key)
@@ -1750,24 +1819,30 @@ def _recent(f, query=""):
     return json.loads(body)
 
 
+def _say(f, ch, text, key=None):
+    """The owner's message, stored as the web route stores it (no dispatch)."""
+    return f.store.add_message(ch, mid=None, thread_key=key, author="owner", kind="message", text=text)
+
+
 def test_recent_lists_the_latest_conversations_of_every_place_newest_first(fe):
     fe.create_private_room("ea-trip")
     fe.create_private_room("ea-old")
     rooms = {c["name"]: c["id"] for c in fe.store.channels()}
-    a = fe.post("main", "a")
-    fe.post("sched", "s")
-    fe.post(rooms["ea-trip"], "r")
-    fe.post(rooms["ea-old"], "o")
+    a = _say(fe, "main", "a")
+    _say(fe, "sched", "s")
+    _say(fe, rooms["ea-trip"], "r")
+    _say(fe, rooms["ea-old"], "o")
     fe.archive(rooms["ea-old"])
-    fe.post("dm", "d")
-    fe.post("main", "a2", thread_ts=a.thread_key)  # a reply makes `a` the newest
+    _say(fe, "dm", "d")  # typed in the DM before it took taps only: a conversation
+    fe.post("main", "a2", thread_ts=a["thread_key"])  # a reply makes `a` the newest
     before = owner(fe, "GET", "/api/channels")[2]
     out = _recent(fe)
     assert [t["text"] for t in out["threads"]] == ["a", "d", "r", "s"]  # the archived room's left out
     first = out["threads"][0]
     assert (first["channel"], first["channel_name"], first["reply_count"], first["unread"],
-            first["needs_tap"], first["state"]) == ("main", "ea", 1, 2, False, "none")
-    assert first["last_at"] == fe.store.thread("main", a.thread_key)[-1]["posted_at"]
+            first["state"]) == ("main", "ea", 1, 1, "none")
+    assert "needs_tap" not in first
+    assert first["last_at"] == fe.store.thread("main", a["thread_key"])[-1]["posted_at"]
     assert [t["text"] for t in _recent(fe, "?limit=2")["threads"]] == ["a", "d"]
     for bad in ("0", "51", "x"):
         assert owner(fe, "GET", f"/api/recent?limit={bad}")[0] == 400
@@ -1775,37 +1850,66 @@ def test_recent_lists_the_latest_conversations_of_every_place_newest_first(fe):
     assert call(fe, "GET", "/api/recent")[0] == 401
 
 
-def test_recent_puts_an_unread_card_first_and_leaves_out_muted_places(fe):
-    c = fe.post_card("dm", card())
-    fe.post("main", "newer")
+def test_recent_holds_conversations_only_never_a_request(fe):
+    """Recent lists a thread the owner wrote in and a briefing the bot
+    opened. A card's thread (waiting or answered, read or unread, the owner
+    typing in it too), a notice the bot opened, a pointer, a thread in
+    Action requests the bot opened, a digest and a muted place's stay out."""
+    waiting = fe.post_card("dm", card())
+    answered = fe.post_card("dm", card(title="Create the review meeting?"))
+    fe.replace_card_with_status(answered, ":white_check_mark: Created.")
+    _say(fe, "dm", "make it shorter", waiting.thread_key)  # typed under a card, from an older app
+    alert = fe.post("dm", "Your flight leaves at nine.")
+    _say(fe, "dm", "thanks", alert.thread_key)  # a notice the owner answered in the DM: still not one
+    notice = fe.post("main", "The calendar check found no clash.")
+    brief = fe.post("main", "*Morning briefing*\n\nTwo meetings today.")
+    talk = _say(fe, "main", "Reply to the lab and say Tuesday works.")
+    fe.post("main", ":lock: The Send button for this draft is in Action requests: [open it](#/dm/x/y)",
+            thread_ts=talk["thread_key"])
     fe.store.upsert_channel("digests", "Mail digests", "digest")  # a digest place starts muted
     fe.post("digests", "a digest")
-    got = _recent(fe)["threads"]
-    assert [(t["channel"], t["needs_tap"]) for t in got] == [("dm", True), ("main", False)]
-    # read, the card takes its place by time
-    fe.store.mark_thread_read("dm", c.thread_key)
-    got = _recent(fe)["threads"]
-    assert [(t["channel"], t["needs_tap"]) for t in got] == [("main", False), ("dm", False)]
-    # an unread card in a muted place comes first; once its status line replaces it, the place's out again
-    k = fe.post_card("digests", card(title="Keep this list?"))
-    got = _recent(fe)["threads"]
-    assert (got[0]["channel"], got[0]["needs_tap"], got[0]["unread"]) == ("digests", True, 1)
-    fe.replace_card_with_status(k, "Kept.")
-    assert [t["channel"] for t in _recent(fe)["threads"]] == ["main", "dm"]
+    fe.create_private_room("ea-quiet")
+    quiet = next(c["id"] for c in fe.store.channels() if c["name"] == "ea-quiet")
+    _say(fe, quiet, "a muted room's talk")
+    fe.store.set_channel(quiet, muted=True)
+    got = [(t["channel"], t["thread_key"]) for t in _recent(fe)["threads"]]
+    assert got == [("main", talk["thread_key"]), ("main", brief.thread_key)]
+    fe.store.mark_thread_read("dm", waiting.thread_key)  # read or unread, a card stays out
+    assert ("dm", waiting.thread_key) not in [(t["channel"], t["thread_key"]) for t in _recent(fe)["threads"]]
+    _say(fe, "main", "Good.", notice.thread_key)  # the owner writes in the notice: now it is one
+    assert _recent(fe)["threads"][0]["thread_key"] == notice.thread_key
+
+
+@pytest.mark.parametrize("kind,first_kind,author,text,owner_in,want", [
+    ("main", "message", "owner", "hi", True, True),
+    ("sched", "message", "bot", "Finding a time.", True, True),
+    ("room", "message", "bot", "*Morning briefing*\n\nx", False, True),
+    ("main", "message", "bot", "Afternoon update: two items", False, True),
+    ("main", "message", "bot", "A notice", False, False),
+    ("main", "card", "bot", "", True, False),
+    ("main", "status", "bot", "Sent.", True, False),
+    ("dm", "message", "owner", "quick ask", True, True),
+    ("dm", "message", "bot", "Your flight", True, False),
+    ("dm", "card", "bot", "", True, False),
+    ("digest", "message", "bot", "Morning briefing", False, False),
+])
+def test_is_conversation_is_the_rule_of_recent(kind, first_kind, author, text, owner_in, want):
+    assert wf.is_conversation(kind, first_kind, author, text, owner_in) is want
 
 
 def test_recent_leaves_out_the_health_room_while_debug_mode_hides_it(tmp_path):
     """While debug mode is off, Recent leaves out the hidden health room's
-    conversations, an unread card too (a muted place would show that one);
-    turned on, they come back."""
+    conversations; turned on, they come back."""
     store = wf.WebStore(tmp_path / "priv" / "webchat.sqlite")
     store.upsert_channel("r5", "ea-health", "room")
     store.close()
     f = make(tmp_path, notify={"health": {"channel": "r5"}})
     f.start()
     try:
-        f.post("main", "a")
-        f.post_card("r5", card(title="Check the mail gate?"))
+        _say(f, "main", "a")
+        f.store.set_channel("r5", muted=False)  # muted by default; the hiding is what this tests
+        report = f.post("r5", "The mail gate held two.")
+        _say(f, "r5", "Which two?", report.thread_key)
         debug = {"on": False}
         f.debug_on = lambda: debug["on"]
         assert _hidden(f) == ["r5"]
@@ -1820,7 +1924,8 @@ def test_recent_is_one_snapshot_the_same_on_every_device(fe):
     """Two devices that ask with no event in between get the same answer,
     and its counts are the channel rows' counts at the same as_of."""
     a = fe.post("main", "a")
-    fe.post("dm", "b")
+    _say(fe, "main", "a1", a.thread_key)
+    _say(fe, "dm", "b")
     first, second = _recent(fe), _recent(fe)
     assert first == second and first["as_of"] == fe.store.max_event_seq()
     fe.post("main", "a2", thread_ts=a.thread_key)
@@ -1837,6 +1942,7 @@ def test_recent_is_one_snapshot_the_same_on_every_device(fe):
 
 def test_the_owner_s_names_title_recent_threads_needs_and_search(fe):
     a = fe.post("main", "Budget question for the trip")
+    _say(fe, "main", "And the hotel?", a.thread_key)
     _state(fe, "main", a.thread_key, "needs_you")
     fe.conversation_names = lambda: {a.thread_key: "  Trip \n  budget  ", "t999": "Elsewhere"}
     assert _recent(fe)["threads"][0]["title"] == "Trip budget"
@@ -2528,3 +2634,93 @@ def test_shadow_mode_keeps_the_owner_s_changes_in_the_web_store(tmp_path):
     finally:
         f.stop()
 
+
+
+# ── Action requests (docs/webchat.md, Action requests) ───────────────────
+
+def test_action_requests_counts_the_cards_that_wait_and_needs_you_leaves_them_to_it(fe):
+    """The DM's row counts the cards whose buttons still act (`waiting`),
+    and its threads rows each theirs: never an answered card, an undo note,
+    a card past the registry's age or a plain message. Needs you leaves out
+    what waits on a tap: a request in the DM, and a conversation whose only
+    wait is its request; the owner's own Needs me stays."""
+    from dataclasses import asdict
+    from chat import thread_state as ts
+    live = fe.post_card("dm", card())
+    done = fe.post_card("dm", card(title="Create the review meeting?"))
+    fe.replace_card_with_status(done, ":white_check_mark: Created.")
+    note = fe.post_card("dm", card(title="Closed at once", undo=True))
+    old = fe.store.add_message("dm", mid=None, thread_key=None, author="bot", kind="card",
+                               text="Old", card=asdict(card()), posted_at=time.time() - 8 * 86400)
+    fe.post("dm", "Your flight leaves at nine.")
+    rows = {r["id"]: r for r in json.loads(owner(fe, "GET", "/api/channels")[2])}
+    assert rows["dm"]["waiting"] == 1 and "waiting" not in rows["main"]
+    assert rows["dm"]["unread"] == 5  # unread messages are still counted apart
+    per = {t["thread_key"]: t["waiting"] for t in json.loads(owner(fe, "GET", "/api/channels/dm/threads")[2])}
+    assert per[live.thread_key] == 1
+    assert per[done.thread_key] == per[note.thread_key] == per[old["thread_key"]] == 0
+    talk = _say(fe, "main", "Reply to the lab and say Tuesday works.")
+    other = _say(fe, "main", "Which budget line is it?")
+    _state(fe, "main", talk["thread_key"], "needs_you", reason=ts.CARD_WAITS)
+    _state(fe, "main", other["thread_key"], "needs_you", by="model", reason="A question waits for you.")
+    _state(fe, "dm", live.thread_key, "needs_you", reason='The card "Send this draft?" still has its buttons.')
+    needs = json.loads(owner(fe, "GET", "/api/needs")[2])["threads"]
+    assert [t["thread_key"] for t in needs] == [other["thread_key"]]
+    rows = {t["thread_key"]: t for t in json.loads(owner(fe, "GET", "/api/channels/main/threads")[2])}
+    assert rows[talk["thread_key"]]["tap"] is True and rows[other["thread_key"]]["tap"] is False
+    # the owner's own Needs me is a conversation that needs the owner, whatever its card
+    owner(fe, "POST", f"/api/threads/main/{talk['thread_key']}/state", {"state": "needs_you"})
+    needs = json.loads(owner(fe, "GET", "/api/needs")[2])["threads"]
+    assert {t["thread_key"] for t in needs} == {talk["thread_key"], other["thread_key"]}
+
+
+def test_each_front_end_names_the_place_where_cards_wait():
+    """One source names the place: the front end's prompt strings
+    (`card_place`). The web chat says Action requests in its pointer, its
+    prompts and its states; Slack keeps "your DM"."""
+    from chat.slack_frontend import SlackFrontend
+    from chat import thread_state as ts
+    web, slack = WebFrontend.PROMPT_STRINGS, SlackFrontend.PROMPT_STRINGS
+    assert web["card_place"] == ts.CARD_PLACE == "Action requests"
+    assert slack["card_place"] == SLACK_LIKE_PROMPT_STRINGS["card_place"] == "your DM"
+    assert "Action requests" in web["confirm_location"] and "your DM" not in web["confirm_location"]
+    assert "Action requests" in web["confirm_sentence"] and "Action requests" in web["confirm_sentence_wrapped"]
+    assert "your DM" in slack["confirm_location"] and "Action requests" not in " ".join(slack.values())
+    assert ts.CARD_WAITS == "Its request in Action requests waits for you." and ts.LINKED_PLACE == ts.CARD_PLACE
+    assert "A card in Action requests" in ts.PROMPT and "Direct messages" not in ts.PROMPT + ts.BATCH_PROMPT
+    bot = (ROOT / "ea-chat-bot.py").read_text()
+    assert "is in {_PS['card_place']}" in bot  # the pointer line takes the front end's name
+    assert '"dm": "Action requests"' in bot
+    assert WebFrontend.dm_takes_text is False and SlackFrontend.dm_takes_text is True
+    # the Replies card's own lines: "this DM" on Slack, the web chat's name on the web chat
+    import types
+    expr = bot[bot.index("_CARDS_HERE = (") + len("_CARDS_HERE = "):]
+    expr = expr[:expr.index('["card_place"])') + len('["card_place"])')]
+    web_fe = types.SimpleNamespace(dm_takes_text=False, prompt_strings=lambda: dict(web))
+    slack_fe = types.SimpleNamespace(prompt_strings=lambda: dict(slack))
+    assert eval(expr, {"FRONTEND": web_fe}) == "Action requests"
+    assert eval(expr, {"FRONTEND": slack_fe}) == "this DM"
+    assert "in {_CARDS_HERE}." in bot and "in this DM." not in bot
+
+
+def test_the_posters_take_the_place_name_from_the_configured_front_end(tmp_path, monkeypatch):
+    """chat_notify.card_place reads the configured front end's name for the
+    place: "your DM" on Slack (and with no chat block), "Action requests" on
+    the web chat; the posters' lines carry it."""
+    sys.path.insert(0, str(ROOT / "preprocessor"))
+    import chat_notify
+    import sched_agent
+    ea = tmp_path / "ea"
+    (ea / "config").mkdir(parents=True)
+    monkeypatch.setenv("EA_DIR", str(ea))
+    monkeypatch.setenv("EA_PRIVATE_DIR", str(tmp_path / "private"))
+    cfg = ea / "config" / "ea-config.json"
+    seen = {}
+    for frontend, want in (("slack", "your DM"), ("web", "Action requests")):
+        cfg.write_text(json.dumps({"chat": {"frontend": frontend}}))
+        monkeypatch.setattr(chat_notify, "_chat_cfg", lambda f=frontend: {"frontend": f})
+        monkeypatch.setattr(chat_pkg.ea_config, "get_chat", lambda *a, f=frontend, **k: {"frontend": f, "web": {}})
+        seen[frontend] = chat_notify.card_place()
+        line = sched_agent.fallback_reply({"writes": [{"tool": "create-reply", "executed": True}]})
+        assert f"the Send button is in {want}." in line, line
+    assert seen == {"slack": "your DM", "web": "Action requests"}

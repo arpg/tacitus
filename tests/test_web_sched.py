@@ -190,7 +190,7 @@ def bot(tmp_path, monkeypatch):
         posted_cards.append(ref)
         return ref
 
-    ns = {"json": json, "re": re, "time": time, "log": _Log(), "FRONTEND": fe,
+    ns = {"json": json, "re": re, "time": time, "log": _Log(), "FRONTEND": fe, "_PS": fe.prompt_strings(),
           "CHANNEL_ID": fe.main_channel, "CHANNEL_NAME": fe.main_channel_name,
           "SCHED_CHANNEL_ID": fe.sched_channel, "OWNER_SLACK_USER_ID": fe.owner_id,
           "BOT_USER_ID": fe.bot_user_id, "EA_DIR": tmp_path, "_USER_FIRST_NAME": "Robin",
@@ -294,7 +294,8 @@ def test_the_create_card_lands_in_the_dm_with_a_pointer_in_scheduling(bot):
     dm, card_ts = ns["_deliver_confirmation"]("sched", thread, card, "The Create card", "event")
     assert dm == "dm" and fe.store.message("dm", card_ts)["kind"] == "card"
     pointer = [m["text"] for m in fe.store.thread("sched", thread) if m["id"] != seed.id]
-    assert len(pointer) == 1 and "The Create card is in your DM" in pointer[0], pointer
+    # the web chat names the place Action requests (prompt strings, card_place); Slack's says "your DM"
+    assert len(pointer) == 1 and "The Create card is in Action requests" in pointer[0], pointer
     assert "#/dm/" in pointer[0]
 
 

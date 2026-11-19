@@ -46,13 +46,24 @@ MAX_ITEMS = 12
 SECTIONS = {
     "top": ":dart: Do today",
     "needs": ":question: Needs you",
-    "draft": ":envelope: Draft ready (Send is in your DM)",
+    "draft": ":envelope: Draft ready (Send is in {place})",
     "escalated": ":arrow_up: Sent to Claude",
     "flex": ":leaves: Flex",
     "due": ":alarm_clock: Due",
     "since": ":new: Since this morning",
     "pending": ":hourglass: Pending",
 }
+
+def _card_place() -> str:
+    """Where the cards wait, as the chat front end names it
+    (chat_notify.card_place): "your DM" on Slack, "Action requests" on the
+    web chat."""
+    try:
+        import chat_notify
+    except ImportError:
+        from preprocessor import chat_notify
+    return chat_notify.card_place()
+
 
 
 def enabled(cfg: dict | None = None) -> bool:
@@ -192,7 +203,8 @@ def render(heading: str, project_name: str, entries: list[dict], others: list[st
     lines = [f"*{heading}: {clean(project_name, 80)}*"]
     for sec in SECTIONS:
         for e in (x for x in entries if x["section"] == sec):
-            lines.append(f"{SECTIONS[sec]}: {e['line']}")
+            head = SECTIONS[sec].format(place=_card_place()) if sec == "draft" else SECTIONS[sec]
+            lines.append(f"{head}: {e['line']}")
     if others:
         lines += ["", f"Also open here ({len(others)}): "
                   + "; ".join(_cut(o, 90, clean) for o in others)]

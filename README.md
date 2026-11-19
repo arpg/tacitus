@@ -58,7 +58,7 @@ gets a room of its own.
 
 | You say | The EA does |
 |---|---|
-| "reply to Nico and say Tuesday works" | Drafts in your voice; a card with Send / Edit / Handled / Cancel lands in your DM |
+| "reply to Nico and say Tuesday works" | Drafts in your voice; a card with Send / Edit / Handled / Cancel lands in Action requests (your DM on Slack) |
 | "that's done" / "snooze the vendor thread until Wednesday" | Closes or snoozes the ledger item and archives the mail |
 | "find a time with Ari and Oakley next week" | Runs the solver over every calendar, proposes times, stages the invite behind a Create button |
 | "fill the When2Meet in that email" | Reads the poll, shows the conflicts, fills it when you say so |
@@ -92,7 +92,7 @@ an hour once IT has registered the app. You can change the mode later.
 | Mode | What you get |
 |---|---|
 | `reviewer` | No chat. Triage, the ledger, drafts in your voice left in your mailbox, meeting times proposed in the report (no holds or events: nothing places one without the chat buttons). Reports land in `~/.ea/state/reports/<agent>-latest.md` on the schedule you pick (weekdays, every day, or only when you run one), with a phone push if you want one. You send drafts from Outlook yourself. `"drafting": false` in `ea-config.json` turns the drafts off. |
-| `assistant` (default) | One chat on your phone: the web chat (or Slack) with the EA channel, your DM with the Send and Create cards, scheduling and digests, plugins. No project rooms. |
+| `assistant` (default) | One chat on your phone: the web chat (or Slack) with the EA channel, Action requests (your DM on Slack) with the Send and Create cards, scheduling and digests, plugins. No project rooms. |
 | `collaborator` | The assistant, plus a room for each big project. |
 
 ## What stays on your machine

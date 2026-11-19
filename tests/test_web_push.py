@@ -463,7 +463,7 @@ def test_a_card_and_a_dm_post_are_pushed_once_per_thread(fe, svc):
     req = svc.wait(1)[0]
     assert req["headers"]["urgency"] == "high"
     got = json.loads(decrypt(req["body"], key, auth))
-    assert got["title"] == "Tacitus" and got["body"] == "Confirm send"
+    assert got["title"] == "Action request" and got["body"] == "Confirm send"
     assert got["url"].endswith(f"#/dm/{c.thread_key}/{c.id}") and got["tag"] == f"dm/{c.thread_key}"
     # a bot reply in the thread: a message push, which a card push does not hold back
     fe.post("dm", "Reply *one*", thread_ts=c.thread_key)
@@ -492,7 +492,7 @@ def test_a_card_push_shows_the_title_and_never_a_field_line_or_body(fe, svc):
     fe.post_card("dm", card(lines=["", ":warning: *Check the date*"]))
     fe.post_card("main", card(fields=[], lines=[], title=""))
     assert [(p[0], wp.plain_line(p[1])) for p in pushes] == [
-        ("Tacitus", "Confirm send"), ("Tacitus", "A card to confirm")]
+        ("Action request", "Confirm send"), ("Action request", "A card to confirm")]
     for p in pushes:
         assert "someone@example.test" not in p[1] and "Hello there" not in p[1]
         assert "Plans" not in p[1] and "Check the date" not in p[1]
@@ -524,7 +524,7 @@ def test_shadow_mirrors_push_new_cards_and_the_bots_dm_posts(tmp_path):
             time.sleep(0.02)
         time.sleep(0.1)
         assert [(s["title"], s["body"], u) for s, u in sent] == [
-            ("Tacitus", "hi", "normal"), ("Tacitus", "Confirm send", "high")]
+            ("Tacitus", "hi", "normal"), ("Action request", "Confirm send", "high")]
         assert sent[0][0]["url"] == f"{f.public_url}/#/stream%3A7/stream%3A7%3Atopic%3Ahello/1001"
     finally:
         f.stop()

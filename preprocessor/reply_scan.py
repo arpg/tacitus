@@ -55,7 +55,7 @@ _OWNER_WORDS = {
     "none": "no draft yet",
     "meeting": "a meeting to place",
     "escalated": "no draft yet",
-    "drafted": "a draft is ready for Send in your DM",
+    "drafted": "a draft is ready for Send in {place}",
 }
 
 RULE = (
@@ -293,6 +293,17 @@ def unanswered(rows, reply: str, tool_calls=(), *, owner: set[str] = frozenset()
             and not acted(r, tool_calls) and not named(r, reply, owner)]
 
 
+def _card_place() -> str:
+    """Where the cards wait, as the chat front end names it
+    (chat_notify.card_place): "your DM" on Slack, "Action requests" on the
+    web chat."""
+    try:
+        import chat_notify
+    except ImportError:
+        from preprocessor import chat_notify
+    return chat_notify.card_place()
+
+
 def _days(n) -> str:
     n = int(n or 0)
     return "today" if n <= 0 else "1 day" if n == 1 else f"{n} days"
@@ -307,7 +318,7 @@ def footer(missing, *, hidden: int = 0, cap: int = FOOTER_CAP) -> str:
     lines = [":inbox_tray: *Also waiting for your reply:*"]
     for r in missing[:cap]:
         lines.append(f"- {who(r)}: {what(r, 90)} ({_days(r.get('age_days'))}, "
-                     f"{_OWNER_WORDS.get(outcome(r), 'no draft yet')})")
+                     f"{_OWNER_WORDS.get(outcome(r), 'no draft yet').format(place=_card_place())})")
     more = len(missing) - min(len(missing), cap) + max(hidden, 0)
     if more:
         lines.append(f"And {more} more {'wait' if more != 1 else 'waits'} for a reply.")

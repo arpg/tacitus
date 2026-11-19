@@ -212,6 +212,9 @@ class ChatFrontend(ABC):
     sched_channel: str = ""
     owner_id: str = ""
     bot_user_id: str = ""
+    # False where the owner's DM with the bot takes button presses only (the
+    # web chat's Action requests): the core asks for words elsewhere.
+    dm_takes_text: bool = True
 
     def __init__(self) -> None:
         self.registry = HandlerRegistry()

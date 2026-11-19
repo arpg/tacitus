@@ -100,6 +100,14 @@ _STOP = {
     "thanks", "week", "next", "last", "still", "open", "done", "task", "waiting",
 }
 
+def _card_place() -> str:
+    """Where the cards wait, as the chat front end names it
+    (chat_notify.card_place): "your DM" on Slack, "Action requests" on the
+    web chat."""
+    import chat_notify
+    return chat_notify.card_place()
+
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -716,7 +724,7 @@ def summary_line(rec: dict) -> str:
     n = len(rec.get("proposed") or [])
     parts.append(f"{n} look{'s' if n == 1 else ''} done (on the morning card)")
     if rec.get("closed"):
-        parts.append(f"{len(rec['closed'])} closed at once (a note with Reopen in your DM)")
+        parts.append(f"{len(rec['closed'])} closed at once (a note with Reopen in {_card_place()})")
     parts.append(f"{len(rec.get('noted') or [])} notes")
     if rec.get("threaded"):
         parts.append(f"{len(rec['threaded'])} rows given their thread")

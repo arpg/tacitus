@@ -116,6 +116,14 @@ GRADING_DIR = "grading"
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]")
 _EMAIL = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
+def _card_place() -> str:
+    """Where the cards wait, as the chat front end names it
+    (chat_notify.card_place): "your DM" on Slack, "Action requests" on the
+    web chat."""
+    import chat_notify
+    return chat_notify.card_place()
+
+
 
 def _now() -> datetime:
     return datetime.now().astimezone()
@@ -1316,9 +1324,9 @@ def fallback_reply(turn: dict) -> str:
             and w.get("result") not in ("error", "refused")]
     parts = []
     if any(w["tool"] in ("create-reply", "create-draft", "update-draft") for w in done):
-        parts.append("I drafted the reply; the Send button is in your DM.")
+        parts.append(f"I drafted the reply; the Send button is in {_card_place()}.")
     if any(w["tool"].startswith("stage-event") for w in done):
-        parts.append("I staged the event; the button is in your DM.")
+        parts.append(f"I staged the event; the button is in {_card_place()}.")
     if any(w["tool"] in ("ea-managed-hold", "clear-hold") for w in done):
         parts.append("I updated the holds.")
     parts.append("I could not finish the rest of this request. Tell me what else you need.")

@@ -550,7 +550,7 @@ def test_memory_history_and_files(tmp_path):
     keys = {"platform", "format_rule_main", "format_rule_reply",
             "confirm_location", "confirm_sentence", "history_note", "room_word",
             "continuation_header", "output_only", "output_only_resume",
-            "format_rule_closing", "confirm_sentence_wrapped"}
+            "format_rule_closing", "confirm_sentence_wrapped", "card_place"}
     assert set(fe.prompt_strings()) == keys
 
 

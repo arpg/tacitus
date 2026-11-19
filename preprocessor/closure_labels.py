@@ -133,9 +133,9 @@ _CARD_TITLE_KINDS = (
     ("confirm event deletion", "event_delete"), ("confirm calendar", "event"),
     ("push to", "publish"), ("publish", "publish"), ("invit", "invite"), ("schedule", "schedule"),
 )
-# The one-line pointer to a card in the DM (thread_state.POINTER_RE reads
-# its link).
-_POINTER_RE = re.compile(r"\bin your DM\b", re.I)
+# The one-line pointer to a card in the DM, which the web chat names
+# Action requests (thread_state.POINTER_RE reads its link).
+_POINTER_RE = re.compile(r"\bin (?:your DM|Action requests)\b", re.I)
 
 # The subject of an owner's ask, by the closure analysis's regexes over
 # the first owner message (scheduling intent wins over drafting).
@@ -181,6 +181,7 @@ _RULE_IDS = (
     ("A card here still has", "2-live-card"),
     ("phone waits", "2a-device-pending"),
     ("Its card in Direct messages waits", "2b-linked-card"),
+    (_ts.CARD_WAITS, "2b-linked-card"),
     ("Its card was handled", "2b-linked-card"),
     ("Its cards were handled", "2b-linked-card"),
     ("phone was approved", "2a-device-settled"),
@@ -852,7 +853,7 @@ class StoreReader:
 
     def pointer_messages(self) -> list[dict]:
         rows = self.conn.execute("SELECT * FROM messages WHERE author!='owner' AND "
-                                 "text LIKE '%in your DM%'").fetchall()
+                                 "(text LIKE '%in your DM%' OR text LIKE '%in Action requests%')").fetchall()
         return [self._msg(r) for r in rows]
 
 

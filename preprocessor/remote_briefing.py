@@ -99,6 +99,14 @@ _MONEY = re.compile(r"\$\s?\d|\b(budget|invoice|payment|reimburs\w*|contract|agr
 _ROLES = re.compile(r"\b(dean|program officer|program manager|provost|chancellor)\b", re.I)
 _DECLINE = re.compile(r"\b(declin\w*|turn (it|this|them) down|not able to|unable to|can(no|')t)\b", re.I)
 
+def _card_place() -> str:
+    """Where the cards wait, as the chat front end names it
+    (chat_notify.card_place): "your DM" on Slack, "Action requests" on the
+    web chat."""
+    import chat_notify
+    return chat_notify.card_place()
+
+
 
 def active(cfg: dict | None = None) -> bool:
     """The briefings switch at `remote`, or the routing table's `briefing`
@@ -1125,7 +1133,7 @@ def _looks_done_line(b: dict, audit: dict) -> list[str]:
     # A card with no answer for a week expires (ea-chat-bot.py), and its
     # rows stay here: the reply in this thread closes or keeps them too.
     return ["", f":grey_question: *Looks done?* ({len(looks)}) Close or keep each one on its "
-                f"card in your DM, or tell me here: " + "; ".join(looks[:8]) + "."]
+                f"card in {_card_place()}, or tell me here: " + "; ".join(looks[:8]) + "."]
 
 
 def _draft_line(c: dict, d: dict) -> str:
@@ -1291,7 +1299,7 @@ def render_morning(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime
                    f"{_clean(m.get('entity'), 60)}; say *unmerge {m.get('id', '')}* if wrong")
     if ok:
         out += ["", f":envelope: *Drafts ready* ({len(ok)}): Send, Edit or Handled on each "
-                    "block in your DM; one Send-all card when several are ready"]
+                    f"block in {_card_place()}; one Send-all card when several are ready"]
         out += [f"- {line}" for _r, line in ok]
     if lists["needs"]:
         out += ["", f":question: *Needs you* ({len(lists['needs'])})"]
@@ -1365,7 +1373,7 @@ def render_afternoon(b: dict, cands: dict[str, dict], plan: dict, *, now: dateti
         out += [f"- {line}" for _r, line in lists["pending"]]
     if lists["draft"]:
         out += ["", f":envelope: *Drafts ready* ({len(lists['draft'])}): Send, Edit or Handled on "
-                    "each block in your DM"]
+                    f"each block in {_card_place()}"]
         out += [f"- {line}" for _r, line in lists["draft"]]
     out += _queue_line(cands, drafts, lists, gone)
     out += _waiting_line(b, local.date())

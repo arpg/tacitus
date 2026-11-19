@@ -108,6 +108,21 @@ def frontend_name() -> str:
     return str(_chat_cfg().get("frontend") or "slack")
 
 
+def card_place() -> str:
+    """Where every card with buttons waits, as a sentence names it ("is in
+    ..."): the configured front end's `card_place` prompt string, "your
+    DM" on Slack and "Action requests" on the web chat, so one source names
+    the place for the bot, the prompts and the posters."""
+    try:
+        try:
+            from chat import prompt_strings_for_config
+        except ImportError:
+            from preprocessor.chat import prompt_strings_for_config
+        return str(prompt_strings_for_config().get("card_place") or "your DM")
+    except Exception:
+        return "your DM"
+
+
 # The key the health and boundary checks post under (health_channel_key).
 HEALTH_KEY = "health"
 
