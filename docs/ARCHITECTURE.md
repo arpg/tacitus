@@ -503,14 +503,21 @@ runs `remote_briefing.py` instead of Claude for the morning briefing and
 the afternoon update: code numbers the candidates, one remote call picks
 them by ref, code applies the rails (an afternoon pick the sent folder or
 the EA channel already shows the user on leaves "since this morning" for
-an "Already in motion" line), drafts through the writer and renders
-the post, and the open-claims audit asks Claude about every row the post
-shows (remote verdicts when Claude fails). No scheduled lane drafts a
-reply the owner must decide (`draft_gate.py`): one against his earlier
-word on the thread, a choice only he makes, a yes or no to taking part
-in a program or committee, or a big reply-all becomes a decision, and
-`create-reply` refuses it for any `cron-` run. A meeting request is the
-scheduling lane's and is drafted as before. Both runs then work the reply
+an "Already in motion" line), writes the reply bodies through the writer
+and renders the post. The pre-send review (`briefing_review.py`) then
+gives the hosted model each item with its ledger row, history, closed
+rows on its thread with the owner's words, thread brief, rooms and
+staged reply; code holds a reply against the owner's recorded decision
+and drops closed, snoozed and repeated rows first, and applies the
+model's drops, moves, holds and rewrites by ref. Only then are the
+replies it did not hold staged, the hand-offs queued and the room slices
+posted. When the review fails, the open-claims audit asks about every
+row the post shows, as before. No scheduled lane drafts a reply the
+owner must decide (`draft_gate.py`): one against his earlier word on the
+thread, a choice only he makes, a yes or no to taking part in a program
+or committee, or a big reply-all becomes a decision, and `create-reply`
+refuses it for any `cron-` run. A meeting request is the scheduling
+lane's and is drafted as before. Both runs then work the reply
 queue: the briefing JSON's `reply_backlog` (`ledger.reply_backlog`) holds
 the threads that have waited a day or more for the user's reply, aged from
 the other side's last message. A second remote call answers draft, decide
@@ -2596,7 +2603,8 @@ Files that participate in prompt construction and action execution:
 | `botcore/botcore/chat/action_requests.py` | Action requests as blocks in the web chat (docs/webchat.md, Action requests): a request's folded words from its card's kind and labelled fields (the action, who, what, when; its title for a card with none), and its urgency (overdue, soon by two working days, calm) from its linked deadline, its event's start, its buttons' last day and its wait; a request Tacitus is acting on (`working`), the request a status line links to (`next`) and the bot's lines that belong to it, by tag (`lines_of`) |
 | `preprocessor/web_requests.py` | The EA's view of each request in Action requests, read-only: the project and deadline from the ledger rows and the mail conversation its buttons name (project_store's `project_ledger` and `project_messages`), and an event card's start from its staged payload |
 | `botcore/botcore/chat/web_push_policy.py` | Which bot posts in the web chat push (docs/webchat.md, Notifications): the DM, the opening of a morning briefing or an afternoon update, the bot's answer in a conversation the owner wrote in; never a digest, a nudge, a progress line or a notice the owner never wrote in; the `notify_push` switches; the text fingerprint that lets one text push once; no answer push within two minutes of a card the conversation asked for in the DM; the alerts whose text a conversation carries, which the owner's reply there clears |
-| `preprocessor/status_light.py` | The web chat's status light (docs/webchat.md, Status light): the conditions now from the state the system keeps (the sentinel's results, the breakers, the boundary audit, the plugins, the notices, the plan reading, the local model, the relay, the updater, Drive), the worst level, the memory of since and cleared in the store, one push for what turns red, and each condition's bounded, masked log lines |
+| `preprocessor/briefing_review.py` | The pre-send review of the remote briefings and the weekly audit (docs/llm-lanes.md, "The pre-send review"): the packet built in code with keep levels held, code's own checks, one tool-less hosted call by ref, the verdicts applied to the post, the rooms and the staged replies, the run record and the state the status light reads |
+| `preprocessor/status_light.py` | The web chat's status light (docs/webchat.md, Status light): the conditions now from the state the system keeps (the sentinel's results, the breakers, the boundary audit, the plugins, the notices, the plan reading, the local model, the relay, the updater, Drive, the briefing's pre-send review), the worst level, the memory of since and cleared in the store, one push for what turns red, and each condition's bounded, masked log lines |
 | `preprocessor/log_redact.py` | The masking the doctor's `--share` report and the status light's log lines share: credential shapes, secret values, addresses, home-path names, URLs, hosts, long ids |
 | `preprocessor/web_notify_settings.py` | The web chat's Notifications settings (`/api/settings/notify`): the `notify_push` switches read from the running front end and written into the owner-private `chat.json` through `owner_trust.write_owner_file`, in force at once; and debug mode (`/api/settings/debug`), the chat block's `diagnostics` in the same file |
 | `botcore/botcore/chat/relay_client.py` | The bot side of the relay: `start_relay` from the `web` block's `relay` block; a thread that long-polls the relay (outbound only), opens each sealed request, replays it on the loopback web chat with the pairing cookie and seals the answer, with bounds on whatever the relay hands it and no redirect followed; the owner-private key file (`KeyStore`), pairing links, device approval by a code from the handshake (a DM notice per new device), revocation that ends a device's streams, relay-origin devices that read and chat once paired against the signed app bundle (card buttons only when the owner approves the device with `cards`; one paired without the hash only when `chat.json` opts in), `rotate` (a new relay token, install id and client key, with a backup of the old file; the running client takes it at its next poll), and the CLI behind `scripts/webchat-relay.py` (docs/webchat-relay.md) |

@@ -32,7 +32,7 @@ web chat's store. This module gives it what only the EA has:
       to 20 threads, one JSON array back), on the hosted and auto routes.
       One tool-less run of the Claude CLI as the resident
       (mail_privacy._run_claude, the call the nightly ledger reconcile, the
-      briefing's still-open check and the scheduling backstop make), on the
+      briefing's pre-send review and the scheduling backstop make), on the
       `thread_state` model of ea-config.json's `models`, else opus. It runs
       in the bot's own process on the engine's worker thread, never as a
       chat turn. A failure returns None (the states stay as they were) and

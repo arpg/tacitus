@@ -218,7 +218,7 @@ next tick asks again.
 
 **The hosted step.** One tool-less run of the Claude CLI as the
 resident (`mail_privacy._run_claude`: the call the nightly ledger
-reconcile, the briefing's still-open check and the scheduling backstop
+reconcile, the briefing's pre-send review and the scheduling backstop
 make), on the `thread_state` model of `ea-config.json`'s `models`, else
 `opus`, with a 5-minute limit. It runs in the bot's own process on a
 worker thread of the engine, never as a chat turn, so the rules keep

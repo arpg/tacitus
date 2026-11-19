@@ -426,8 +426,9 @@ done < <("$PYTHON3" "$SCRIPT_DIR/preprocessor/claude_cli.py" flags \
 # (docs/llm-lanes.md, "Briefings"). With `briefings` at `remote` in the
 # owner-private remote-llm.json, remote_briefing.py writes the post, its
 # drafts, its ledger notes and its hand-offs to Claude, runs the
-# open-claim audit (Claude's verdicts) and posts each project room its
-# slice of the post; no Claude run is
+# pre-send review (briefing_review.py, the hosted model the routing table
+# names for `review`) before any of them goes out, and posts each project
+# room its slice of the post; no Claude run is
 # made. Exit 3 means the switch is off, and the Claude lane below runs as
 # before. Any other failure posts a status line, never a Claude run.
 REMOTE_BRIEFING=0

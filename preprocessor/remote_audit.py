@@ -21,9 +21,12 @@ The run:
      up to three items to hand to Claude (a whole-thread read, a report or
      proposal draft, a reply to a program officer). A ref the call invents
      is dropped; a row kept from hosted models is never handed to it.
-  3. Code renders the skill's template. The pre-send audit runs with the
-     remote model's verdicts (remote_briefing.audit_post); rows it closes
-     or parks leave the post.
+  3. Code renders the skill's template. The pre-send review checks it
+     against the ledger (briefing_review, the hosted model the routing
+     table names for `review`); rows it drops leave the post, a "done"
+     becomes a close proposal, and the post ends with what it changed.
+     When the review cannot run, the still-open audit
+     (remote_briefing.audit_post) runs as before and the post says so.
   4. The hand-offs go to the bot's queue (remote_briefing.queue_escalations);
      the bot gives a run's hand-offs to one Claude session.
 The remote model sees no calendar, so the post makes no calendar claim.
@@ -298,10 +301,48 @@ def render(cands: dict[str, dict], plan: dict, *, closed: list[dict], reimb: lis
 
 # ── the run ───────────────────────────────────────────────────────────
 
+def _review(text: str, b: dict, cands: dict[str, dict], plan: dict, *, now: datetime,
+            dry_run: bool, run_id: str) -> dict:
+    """The pre-send review of the weekly post (briefing_review), with the
+    still-open audit as its fallback; the audit alone when it is off."""
+    import briefing_review
+
+    def audit():
+        return rb.audit_post(AGENT, text, b, dry_run=dry_run, chat=None)
+    if not briefing_review.enabled():
+        return audit()
+    lists = {k: [(p["ref"], _line(cands[p["ref"]], p.get("why") or "")) for p in plan.get(k) or []]
+             for k in ("critical", "important")}
+    return briefing_review.review_briefing(AGENT, text, b, cands=cands, lists=lists, drafts=[], now=now,
+                                           dry_run=dry_run, run_id=run_id, fallback=audit)
+
+
+def reviewed_plan(plan: dict, review: dict | None) -> dict:
+    """`plan` with the review applied: dropped refs out, a move between
+    critical and important, a rewritten line as the item's why."""
+    rv = review or {}
+    gone = set(rv.get("drop") or {})
+    out = dict(plan)
+    picks = {k: [dict(p) for p in plan.get(k) or [] if p["ref"] not in gone] for k in ("critical", "important")}
+    for k in picks:
+        for p in picks[k]:
+            if p["ref"] in (rv.get("rewrite") or {}):
+                p["why"] = rv["rewrite"][p["ref"]]
+    for ref, to in (rv.get("move") or {}).items():
+        src = next((k for k in picks if any(p["ref"] == ref for p in picks[k])), "")
+        if src and to in picks and to != src:
+            p = next(p for p in picks[src] if p["ref"] == ref)
+            picks[src].remove(p)
+            picks[to].append(p)
+    out.update(picks)
+    return out
+
+
 def run(briefing: dict, *, run_id: str, dry_run: bool = False, now: datetime | None = None,
         rows: list[dict] | None = None, closed: list[dict] | None = None, closure: dict | None = None,
-        chat=None, audit=None, queue=None) -> tuple[str, dict]:
-    """(the post, the run record)."""
+        chat=None, audit=None, queue=None, review=None) -> tuple[str, dict]:
+    """(the post, the run record). `review` stands in for the pre-send
+    review; an `audit` given alone stands in for the still-open audit."""
     now = now or datetime.now(timezone.utc)
     t0 = time.monotonic()
     today = now.astimezone().date()
@@ -329,12 +370,22 @@ def run(briefing: dict, *, run_id: str, dry_run: bool = False, now: datetime | N
     kw = dict(closed=closed, reimb=reimb, hygiene=_hygiene(briefing), closure=closure,
               counts=counts, now=now, handed=handed, fallback=fallback)
     text = render(cands, plan, **kw)
-    checked = (audit or rb.audit_post)(AGENT, text, briefing, dry_run=dry_run, chat=None)
+    if review is not None or audit is None:
+        checked = (review or _review)(text, briefing, cands, plan, now=now, dry_run=dry_run,
+                                      run_id=run_id)
+    else:
+        checked = audit(AGENT, text, briefing, dry_run=dry_run, chat=None)
     drop = set((checked or {}).get("closed") or []) | set((checked or {}).get("parked") or [])
-    if drop:
-        text = render(cands, plan, drop=drop, **kw)
+    rv = (checked or {}).get("review")
+    if drop or rv:
+        text = render(cands, reviewed_plan(plan, rv), drop=drop, **kw)
+        text = "\n".join([text] + list((rv or {}).get("footer") or []))
+    if rv:
+        import briefing_review
+        rec["review"] = briefing_review.summary(checked)
     rec.update(plan={k: len(v) for k, v in plan.items()}, handed=len(handed),
-               audit={k: (len(v) if isinstance(v, list) else v) for k, v in (checked or {}).items()},
+               audit={k: (len(v) if isinstance(v, list) else v) for k, v in (checked or {}).items()
+                      if k not in ("review", "review_record")},
                seconds=round(time.monotonic() - t0, 1), post=text)
     return text, rec
 

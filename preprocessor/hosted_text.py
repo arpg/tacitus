@@ -3,7 +3,8 @@
 
 Three routing tasks make a tool-less call to a hosted model:
 `thread_state` (web_thread_state: the web chat's conversation states),
-`review` (remote_briefing: the briefing's still-open check;
+`review` (briefing_review: the briefing's pre-send review, and the
+still-open audit it falls back to;
 ledger_reconcile: the nightly reconcile; sched_agent: the backstop on
 local scheduling writes) and `tagging` (mail_tagger: Outlook categories).
 Each one asks `model_for(task)` which hosted model the owner's routing

@@ -29,6 +29,8 @@ The sources:
   relay       the relay client, when one runs
   update      the updater's status (update_status.doctor_row)
   drive       the Drive accounts user-profile.json lists with no sign-in
+  review      the briefing's pre-send check (briefing_review's state file):
+              failed on several days in a row
 
 Noise never colours the light: the crontab-versus-master drift, the
 resident pane (chat turns do not use it), a tuning or tool model's own
@@ -605,10 +607,39 @@ def src_drive(ctx: Ctx) -> list[Condition]:
                       action={"label": "Connect", "say": "connect Google Drive"})]
 
 
+# ── the briefing's pre-send check ────────────────────────────────────
+
+REVIEW_TODO = {
+    "limit": "Nothing to do. It works again when the plan resets.",
+}
+REVIEW_TODO_DEFAULT = ("Nothing to do if it works tomorrow. If it keeps failing and someone set "
+                       "Tacitus up for you, ask them.")
+
+
+def src_review(ctx: Ctx) -> list[Condition]:
+    try:
+        import briefing_review
+    except ModuleNotFoundError:
+        from preprocessor import briefing_review
+    state = _owner_json(ctx.private / "remote-llm" / briefing_review.STATE)
+    today = datetime.fromtimestamp(ctx.now).astimezone().date()
+    n, last = briefing_review.failing_days(state, today=today)
+    if n < briefing_review.FAIL_DAYS:
+        return []
+    reason = str((last or {}).get("reason") or "error")
+    reason = reason if _NAME_RE.match(reason) else "error"
+    return [Condition("review", "warn", "Briefing not checked",
+                      f"For {n} days, Tacitus could not check the briefing before it went out.",
+                      REVIEW_TODO.get(reason, REVIEW_TODO_DEFAULT), "",
+                      f"The pre-send review failed on {n} days in a row; the last reason: {reason}, "
+                      f"at {_plain((last or {}).get('at'), 40) or '?'} (remote-llm/{briefing_review.REVIEW_LOG}).")]
+
+
 SOURCES: list[tuple[str, Callable[[Ctx], list[Condition]]]] = [
     ("sentinel", src_sentinel), ("breakers", src_breakers), ("boundary", src_boundary),
     ("plugins", src_plugins), ("notices", src_notices), ("usage", src_usage),
     ("local", src_local), ("relay", src_relay), ("update", src_update), ("drive", src_drive),
+    ("review", src_review),
 ]
 
 

@@ -31,18 +31,22 @@ The morning run:
      scheduling lane's), for a yes or no to taking part in a program or a
      committee, or for a reply-all to many people. Each becomes a decision for the
      user, with Yes and No buttons where the ask is yes or no.
-  4. Each draft: email_writer writes the body; graph_actions create-reply
-     makes the draft under this run's id, so the bot posts its Send block
-     as for any cron draft; the ledger row gets its last_action; draft_ab
-     records the draft for the send measure.
-  5. Escalations go to the bot's queue (ESCALATIONS). The bot opens one EA
-     topic for a briefing's items, and one Claude session reads their threads.
-  6. Code renders the post in the skill's shape, naming each item once.
-     The open-claims audit asks about every ledger row the post shows,
-     with Claude's verdicts (the remote model's when Claude fails); rows
-     it closes or parks leave the post, and the post is rendered again.
+  4. Each draft: email_writer writes the body (write_reply); nothing is
+     staged yet.
+  5. Code renders the post in the skill's shape, naming each item once.
+     The pre-send review (briefing_review) checks it: code's own checks,
+     then the hosted model by ref; its drops, moves, holds and rewrites
+     apply, and the post is rendered again with what it changed. When it
+     fails, the open-claims audit runs as before.
+  6. The replies the review did not hold are staged (stage_reply:
+     graph_actions create-reply under this run's id, so the bot posts its
+     Send block as for any cron draft; the row's last_action; draft_ab's
+     send measure). Escalations it did not drop go to the bot's queue
+     (ESCALATIONS); the bot opens one EA topic for a briefing's items,
+     and one Claude session reads their threads.
   7. Each project room with items in the post gets its slice, in a new
-     topic (briefing_rooms); the EA post names those rooms in one line.
+     topic (briefing_rooms), as the review placed them; the EA post names
+     those rooms in one line.
 The afternoon run picks what is new since the morning and what is still
 pending; it escalates nothing. When the remote model cannot answer, code
 renders the ranked queue alone and the post says so.
@@ -753,13 +757,11 @@ def _run_json(argv: list[str], *, env: dict, timeout: int = 180) -> tuple[int, d
     return p.returncode, out if isinstance(out, dict) else {}
 
 
-def make_draft(cand: dict, reply_must_say: str, *, run_id: str, write=None, runner=None,
-               note=None) -> dict:
-    """One reply draft: the writer's body, the draft under this run's id,
-    the ledger note, the send-measure record. Returns what happened."""
+def write_reply(cand: dict, reply_must_say: str, *, write=None) -> dict:
+    """The writer's body for one reply, nothing staged: {"ok", "body"},
+    or {"ok": False, "why", "need"}."""
     import email_writer
     write = write or email_writer.write
-    runner = runner or _run_json
     to = (cand.get("from") or "").lower()
     ask = cand.get("ask") or ""
     ask_line = f"Their ask: {ask}\n" if ask and ask not in (cand.get("summary") or "") else ""
@@ -767,11 +769,31 @@ def make_draft(cand: dict, reply_must_say: str, *, run_id: str, write=None, runn
              f"Thread: {cand.get('title')}. {cand.get('summary')}\n"
              f"{ask_line}The reply must say: {reply_must_say}")
     with tempfile.TemporaryDirectory(prefix="remote-briefing-") as td:
-        body_path = str(Path(td) / "body.txt")
-        answer, code = write(to, brief, body_path, conversation_id=cand.get("conversation_id") or "")
+        body_path = Path(td) / "body.txt"
+        answer, code = write(to, brief, str(body_path), conversation_id=cand.get("conversation_id") or "")
         if code != 0:
             return {"ok": False, "why": "the writer " + str(answer.get("reason") or "failed")[:120],
                     "need": answer.get("need", "")}
+        return {"ok": True, "body": body_path.read_text() if body_path.exists() else ""}
+
+
+def make_draft(cand: dict, reply_must_say: str, *, run_id: str, write=None, runner=None,
+               note=None) -> dict:
+    """One reply draft: the writer's body, the draft under this run's id,
+    the ledger note, the send-measure record. Returns what happened."""
+    w = write_reply(cand, reply_must_say, write=write)
+    if not w["ok"]:
+        return w
+    return stage_reply(cand, w["body"], run_id=run_id, runner=runner, note=note)
+
+
+def stage_reply(cand: dict, body: str, *, run_id: str, runner=None, note=None) -> dict:
+    """The draft for a written body, under this run's id (the bot posts its
+    Send card), the ledger note and the send-measure record."""
+    runner = runner or _run_json
+    with tempfile.TemporaryDirectory(prefix="remote-briefing-") as td:
+        body_path = str(Path(td) / "body.txt")
+        Path(body_path).write_text(body)
         env = dict(os.environ, EA_RUN_ID=run_id)
         # The row this reply answers: its Send closes exactly that row.
         link = ["--ledger-id", cand["ledger_id"]] if cand.get("ledger_id") else []
@@ -1253,7 +1275,7 @@ def _looks_done(b: dict, audit: dict) -> list[str]:
     seen = {r[0] for r in rows}
     rows += [(d.get("id"), d.get("description"), d.get("why"))
              for d in audit.get("closed_rows") or [] if d.get("id") not in seen]
-    return [_clean(desc or rid, 80) + (f" ({_clean(why, 70)})" if why else "")
+    return [_clean(desc or rid, 80) + (f" ({_words(why, 90).rstrip('.')})" if why else "")
             for rid, desc, why in rows if desc or rid]
 
 
@@ -1336,7 +1358,15 @@ def _morning_lists(cands: dict[str, dict], plan: dict, drafts: list[dict],
         "escalated": [(e["ref"], f"{_line_of(cands[e['ref']])}: {_clean(e.get('why'), 140)}")
                       for e in escalated],
     }
-    return _one_per_thread(cands, lists)
+    return _reviewed(cands, _one_per_thread(cands, lists), audit)
+
+
+def _reviewed(cands: dict[str, dict], lists: dict, audit: dict) -> dict:
+    """`lists` with the pre-send review's verdicts applied (briefing_review):
+    its drops, moves and rewrites, and audit text cut from every line."""
+    import briefing_review
+    return briefing_review.apply_lists(lists, (audit or {}).get("review"),
+                                       head=lambda r: _line_of(cands[r]))
 
 
 # Highest first: a thread shows in the first of these sections that has it.
@@ -1385,7 +1415,7 @@ def _afternoon_lists(cands: dict[str, dict], plan: dict, audit: dict, drafts=())
             lists["draft"].append((d["ref"], _draft_line(c, d)))
         elif not _thread_keys(c) & shown:
             lists["pending"].append((d["ref"], f"{_line_of(c)}: {_clean(d.get('decision'), 180)}"))
-    return lists
+    return _reviewed(cands, lists, audit)
 
 
 def room_entries(cands: dict[str, dict], lists: dict) -> list[dict]:
@@ -1469,9 +1499,11 @@ def render_morning(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime
     if n_sched and b.get("scheduling_channel_active"):
         tail.append(f":calendar: {n_sched} scheduling request(s): handling in the scheduling channel.")
     shown = {cands[r].get("ledger_id") for sec, items in lists.items() for r, _l in items}
+    hide = set(((audit or {}).get("review") or {}).get("hide_tail") or ())
     for f in b.get("resurrected_follow_ups") or []:
-        if f.get("id") not in shown:    # a row the post already names is named once
-            tail.append(f":alarm_clock: Follow-up due: {_clean(f.get('description'), 120)}")
+        if f.get("id") in shown or f.get("id") in hide:
+            continue    # a row the post already names is named once; the review hid it
+        tail.append(f":alarm_clock: Follow-up due: {_clean(f.get('description'), 120)}")
     for d in b.get("woken_snoozed") or []:
         tail.append(f":email: Snoozed email returned: {_clean(d, 120)}")
     for s in b.get("scheduled_sends_due_today") or []:
@@ -1484,6 +1516,7 @@ def render_morning(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime
     counts = (f"Open: {by.get('open', 0)} · Follow-up: {by.get('follow_up', 0)}{snoozed}"
               f" · Waiting on others: {by.get('waiting', 0)}") if by else \
         f"Open obligations: {ds.get('open_obligations', len(b.get('open_obligations') or []))}"
+    out += ((audit or {}).get("review") or {}).get("footer") or []
     out += ["", f"{counts} | Inbox: {ds.get('total_inbox', 0)} messages | _written by the remote model_"]
     return "\n".join(out)
 
@@ -1535,6 +1568,7 @@ def render_afternoon(b: dict, cands: dict[str, dict], plan: dict, *, now: dateti
     out += _queue_line(cands, drafts, lists, gone)
     out += _waiting_line(b, local.date())
     out += _looks_done_line(b, audit)
+    out += ((audit or {}).get("review") or {}).get("footer") or []
     out += ["", "_written by the remote model_"]
     return "\n".join(out)
 
@@ -1678,6 +1712,12 @@ def room_slices(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dic
     lists = (_morning_lists(cands, plan, drafts, escalated, audit, local.date()) if morning
              else _afternoon_lists(cands, plan, audit, drafts))
     entries = room_entries(cands, lists)
+    import briefing_review
+    review = (audit or {}).get("review")
+    moves = briefing_review.room_moves(review)
+    for e in entries:
+        if e["ref"] in moves:
+            e["projects"] = moves[e["ref"]]
     if not entries:
         return []
     if conn is None:
@@ -1695,7 +1735,8 @@ def room_slices(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dic
             open_rows = briefing.get("open_obligations") or []
     open_rows = [o for o in open_rows if _live_row(o, local.date()) and o.get("id") not in gone]
     posts = briefing_rooms.plan_posts(entries, heading=heading, open_rows=open_rows, conn=conn,
-                                      targets=targets, clean=_clean, matcher=matcher)
+                                      targets=targets, clean=_clean, matcher=matcher,
+                                      skip=briefing_review.room_skip(review, cands))
     if not dry_run:
         for p, r in zip(posts, briefing_rooms.send(posts, poster=poster)):
             p["ok"] = r["ok"]
@@ -1704,8 +1745,10 @@ def room_slices(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dic
 
 def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run: bool = False,
         now: datetime | None = None, chat=None, audit=None, drafter=None,
-        queue=None, rooms=None, mark=None) -> tuple[str, dict]:
-    """(the post, the run record)."""
+        queue=None, rooms=None, mark=None, review=None) -> tuple[str, dict]:
+    """(the post, the run record). `review` stands in for the pre-send
+    review (briefing_review.review_post); an `audit` given alone stands in
+    for the still-open audit, with no review."""
     now = now or _now()
     morning = agent == "morning-briefing"
     t0 = time.monotonic()
@@ -1723,7 +1766,17 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
         rec["fallback"] = str(e)[:200]
     drafts: list[dict] = []
     escalated: list[dict] = []
+    handoffs: list[tuple[dict, dict]] = []
     os.environ["EA_RUN_ID"] = run_id
+    # The pre-send review can hold a reply, so a live run writes its
+    # replies now and stages them after the check: a held one never gets
+    # a Send card. The reply queue's notes wait for the draft's id.
+    reviewing = review is not None or audit is None
+    pending, base_mark = None, mark or mark_queued
+    if reviewing and drafter is None and not dry_run:
+        import briefing_review
+        pending = briefing_review.PendingDrafts()
+        drafter, mark = pending, pending.wrap(base_mark)
     if morning:
         for p in plan.get("drafts") or []:
             c = cands[p["ref"]]
@@ -1774,9 +1827,6 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
         plan["needs_you"] = list(plan.get("needs_you") or []) + [
             {"ref": p["ref"], "decision": f"Needs more than a reply: {_clean(p.get('task') or p.get('why'), 140)}"}
             for p in plan.get("escalate") or [] if not cands[p["ref"]].get("conversation_id")]
-        if handoffs and not dry_run:
-            (queue or queue_escalations)([_escalation(c, p, now) for p, c in handoffs],
-                                         agent=agent, now=now)
         escalated = [{"ref": p["ref"], "why": p.get("why")} for p, _c in handoffs]
     # The reply queue, after the plan's own work: its items join the
     # candidates under their own refs, and the plan's threads are left out.
@@ -1796,9 +1846,34 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
                                          fallback=fallback, drafts=drafts))
     text = render(None)
     shown = shown_refs(cands, plan, drafts, escalated, now=now, morning=morning)
-    checked = (audit or audit_post)(agent, text, briefing, dry_run=dry_run, chat=None,
-                                    rendered=shown_rows(cands, shown))
-    if checked and (checked.get("closed") or checked.get("parked") or checked.get("unsure_rows")):
+    if reviewing:
+        import briefing_review
+        try:
+            checked = (review or briefing_review.review_post)(
+                agent, text, briefing, cands=cands, plan=plan, drafts=drafts, escalated=escalated,
+                now=now, dry_run=dry_run, run_id=run_id, rooms=rooms, pending=pending,
+                rendered=shown_rows(cands, shown))
+        except Exception as e:
+            # The briefing never fails on its check: the still-open audit
+            # runs as before, and every reply this run wrote is staged.
+            print(f"remote_briefing: the pre-send review failed: {str(e)[:200]}", file=sys.stderr)
+            checked = (audit or audit_post)(agent, text, briefing, dry_run=dry_run, chat=None,
+                                            rendered=shown_rows(cands, shown))
+        rec["review"] = briefing_review.summary(checked)
+        rec["review"].update(briefing_review.settle_drafts(
+            drafts, cands, checked, run_id=run_id, dry_run=dry_run, pending=pending, mark=base_mark))
+    else:
+        checked = audit(agent, text, briefing, dry_run=dry_run, chat=None,
+                        rendered=shown_rows(cands, shown))
+    if handoffs and not dry_run:
+        # A hand-off the review took out of the post is not queued.
+        gone = set(((checked or {}).get("review") or {}).get("drop") or ())
+        kept = [(p, c) for p, c in handoffs if p["ref"] not in gone]
+        if kept:
+            (queue or queue_escalations)([_escalation(c, p, now) for p, c in kept],
+                                         agent=agent, now=now)
+    if checked and (checked.get("closed") or checked.get("parked") or checked.get("unsure_rows")
+                    or checked.get("review")):
         text = render(checked)
     try:
         posts = (rooms or room_slices)(agent, cands, plan, drafts, escalated, checked or {},
@@ -1821,7 +1896,7 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
                                         if not d.get("ok") and not d.get("backlog")),
                escalated=len(escalated), backlog=backlog,
                audit={k: (len(v) if isinstance(v, list) else v)
-                      for k, v in (checked or {}).items()},
+                      for k, v in (checked or {}).items() if k not in ("review", "review_record")},
                seconds=round(time.monotonic() - t0, 1), post=text)
     return text, rec
 
