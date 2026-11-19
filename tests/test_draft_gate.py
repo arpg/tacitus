@@ -293,7 +293,7 @@ def test_without_his_word_a_yes_or_no_ask_is_still_his_decision(priv):
     assert rec["drafts"] == 0 and "Drafts ready" not in text
     ((rid, outcome, note, choices),) = mark.seen
     assert (rid, outcome, choices) == ("priority-followup", "decision", ["Yes", "No"])
-    assert note == f"Reply needs you (an RSVP is your call): They ask: {ASK_2}"
+    assert note == f"Reply needs you (the answer is your decision): They ask: {ASK_2}"
     assert "I would like to participate" not in text
 
 
@@ -351,7 +351,62 @@ def test_the_rules_each_route_to_the_owner():
     assert many["rule"] == "many" and many["why"] == "a reply to all 10 people on it"
     assert draft_gate.check(_item(to=[OWNER] + CROWD[:8]), "Yes, the slides go out tonight.",
                             own={OWNER}) is None
-    assert draft_gate.check(_item(kind="rsvp"), "Yes.", own={OWNER})["rule"] == "invitation"
+    assert draft_gate.check(_item(ask="Confirm the date."), "I accept the invitation to join the "
+                            "advisory board.", own={OWNER})["rule"] == "invitation"
+
+
+# ── meeting scheduling is the scheduling lane's, untouched ────────────
+
+MEETING_YES = "Yes, happy to meet. Would Tuesday at 2 or Thursday at 10 work for you?"
+
+
+def test_a_one_to_one_meeting_yes_with_times_still_drafts():
+    """A meeting request from one person: the gate leaves it to the
+    scheduling lane and the morning sweep, whatever the record's words or
+    state, and whether the item came as a reply or an RSVP."""
+    for kind in ("reply", "rsvp", "backlog"):
+        for ask, state in (("Find a time to meet next week.", "scheduling"),
+                           ("Decide on a time for the project meeting.", "needs-reply"),
+                           ("Let me know whether Tuesday or Thursday works.", "decide"),
+                           ("Reply yes or no: can you meet Tuesday at 2?", "needs-reply")):
+            item = _item(kind=kind, ask=ask, state=state, scheduling="request",
+                         to=[OWNER], cc=["assistant@example.edu"])
+            for says in (MEETING_YES, "Happy to join the call on Tuesday at 2.",
+                         "Yes, I can attend on Tuesday at 2.", "Thanks, I accept. Tuesday at 2 works.",
+                         "Unfortunately I cannot make Tuesday; Thursday at 10 works."):
+                assert draft_gate.check(item, says, own={OWNER}) is None, (kind, ask, says)
+    # An RSVP that is no meeting and no participation choice drafts too.
+    assert draft_gate.check(_item(kind="rsvp", ask="Confirm you received the agenda."), "Received, thanks.",
+                            own={OWNER}) is None
+
+
+def test_a_meeting_reply_in_a_scheduled_lane_is_not_refused():
+    """The morning sweep's create-reply on a scheduling row or a meeting
+    thread: no rule but the owner's no-reply word and the big reply-all."""
+    sched = {"id": "sched-mtg123", "type": "scheduling",
+             "thread_brief": {"state": "decide", "scheduling": "request", "ask": "Decide on a time.",
+                              "messages": [{"own": False, "state": "decide"}]}}
+    meeting = {"id": "response-mtg456", "type": "response_needed",
+               "thread_brief": {"state": "needs-reply", "scheduling": "proposes-times",
+                                "ask": "Reply yes or no: does Tuesday at 2 work?"}}
+    for row in (sched, meeting):
+        for body in (MEETING_YES, "Yes, I can attend on Tuesday at 2."):
+            assert draft_gate.cron_refusal(run_id="cron-morning-briefing-1", rows=[row], decisions=[],
+                                           body=body, recipient_count=2) == "", (row["id"], body)
+    assert draft_gate.cron_refusal(run_id="cron-morning-briefing-1", rows=[sched], decisions=SAID,
+                                   body=MEETING_YES, recipient_count=2).startswith("the owner said no reply")
+    assert draft_gate.cron_refusal(run_id="cron-morning-briefing-1", rows=[sched], decisions=[],
+                                   body=MEETING_YES, recipient_count=12) == \
+        "a reply to all 12 people on the thread"
+
+
+def test_the_scheduling_lanes_never_run_under_a_scheduled_lanes_id():
+    """The scheduling channel, the pipeline and the reschedule path write
+    under the bot's dispatch ids (hex, or shadow-), never `cron-`."""
+    for run_id in ("1a1f37ea1f2-b258d4", "shadow-1a1f37ea1f2-b258d4", "pipe-1763550000", "manual", ""):
+        assert not draft_gate.autonomous_run(run_id)
+        assert draft_gate.cron_refusal(run_id=run_id, rows=[], decisions=SAID, body="Yes, I will "
+                                       "participate in the program.", recipient_count=40) == ""
 
 
 # ── the last step: create-reply in a scheduled lane ───────────────────

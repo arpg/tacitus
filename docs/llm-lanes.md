@@ -724,9 +724,11 @@ line; it never falls back to a Claude run.
   said no reply. Still no reply?"); the Replies card's Not needed answers
   it. Nor does a
   scheduled lane draft a reply whose ask is his choice (the record's
-  `decide` state, a yes or no, a whether), a yes or no to an invitation
-  (to join, take part, serve, attend) or an RSVP, or a reply-all that
-  reaches 10 people or more (`MANY_RECIPIENTS`). Each becomes a decision
+  `decide` state, a yes or no, a whether), a yes or no to taking part in
+  something (a program, a committee, a panel, a board), or a reply-all
+  that reaches 10 people or more (`MANY_RECIPIENTS`). A meeting request
+  is the scheduling lane's: its words and state are never read as his
+  choice, so a yes with times to a one-to-one meeting is still drafted. Each becomes a decision
   under "Needs you", with Yes and No buttons where the ask is yes or no,
   and its question is never an answer a model wrote. `graph_actions
   create-reply` (and `mail_actions` for Gmail) holds the same rules for

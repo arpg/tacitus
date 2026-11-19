@@ -15,10 +15,15 @@ sweep. Whatever a model picked, code holds these rules there:
      another (the thread record's `decide` state, or the ask's words). It
      becomes a decision with answer buttons; the draft comes after his
      answer.
-  3. The reply accepts or declines an invitation (to join, take part,
-     serve, attend), or the item is an RSVP.
+  3. The reply says yes or no to taking part in something: a program, a
+     committee, a panel, a board.
   4. The reply goes to many people: a reply-all that reaches
      MANY_RECIPIENTS others or more.
+
+A meeting request is the scheduling lane's: rules 2 and 3 never read a
+thread whose record is a meeting request or a scheduling row, so a yes
+with times to a one-to-one meeting is still drafted. Rules 1 and 4 hold
+for every thread.
 
 check() gives the remote briefing the decision for a candidate before it
 asks the writer. cron_refusal() is the same rule at the last step, in
@@ -51,26 +56,43 @@ _CHOICE = re.compile(
     r"\b(?:confirm|indicate|let \w+ know)\b[^.]{0,30}\b(?:participation|interest|attendance|"
     r"availability to serve)\b",
     re.I)
-# An invitation to join something that is not a meeting: a team, a board,
-# a program, a panel. Read only where the thread is no meeting request.
-_INVITED = re.compile(
-    r"\binvit\w*\b[^.]{0,80}\b(?:join|participat\w*|serve|take part|be part|be on|sit on|attend|"
-    r"nominat\w*|present|speak|chair|lead|review)\b|"
-    r"\b(?:would|will|do|are|is) (?:you|he|chris|the user) (?:like to|want to|be willing to|"
-    r"be interested in|be able to|interested in|willing to)\s+(?:join|participat\w*|serve|take part|"
-    r"be part|chair|lead)\b",
-    re.I)
-# A reply that says yes or no to an invitation. A yes to a meeting (join
-# the call) is the scheduling lane's, and an invitation the owner sends
-# ("I would like to invite you to serve") is neither.
+# A reply that says yes or no to an invitation to take part in something:
+# a program, a committee, a panel, a board. A yes to a meeting ("happy to
+# join the call", "I can attend on Tuesday at 2") is the scheduling lane's
+# and is not this, and an invitation the owner sends ("I would like to
+# invite you to serve") is neither.
+_MEETING_WORDS = r"(?:call|meeting|zoom|teams|chat|discussion|session|lunch|coffee|visit|talk|seminar)"
+_BODY_WORDS = (r"program\w*|pilot|committee|board|panel|council|cohort|initiative|consortium|"
+               r"network|working group|task force|search|study|fellowship|role|position|advisory|"
+               r"commission|jury|team")
+_BODIES = f"(?:{_BODY_WORDS})"
 _ANSWER = re.compile(
     r"\b(?:yes|happy to|glad to|delighted to|pleased to|honou?red to|would (?:like|love) to|"
     r"i(?:'d| would) (?:like|love) to|i will|i'll|i accept|i am in|i'm in|count me in|"
     r"no(?:,| thank)|unfortunately|regret|sorry|declin\w*|not able to|unable to|can(?:no|')t|"
     r"won'?t be able|will not|have to pass|must pass)\b(?:(?!invit)[^.]){0,60}?"
-    r"\b(?:join|participat\w*|take part|serve|be part of|be a part of|be on|sit on|accept|"
-    r"attend|volunteer|sign up|nominat\w*)\b(?!\s+(?:the |a |an |our |your )?"
-    r"(?:call|meeting|zoom|teams|chat|discussion|session with)\b)",
+    r"(?:\b(?:participat\w*|take part|serve|be part of|be a part of|sit on|volunteer|sign up|"
+    r"nominat\w*)\b(?!\s+(?:in |on |at |for )?(?:the |a |an |our |your |this |that )?"
+    + _MEETING_WORDS + r"\b)"
+    r"|\b(?:join|attend|accept|be on)\b(?:(?!\b" + _MEETING_WORDS + r"\b)[^.]){0,40}?\b"
+    + _BODIES + r"\b)",
+    re.I)
+# "I accept your invitation to join the board", "I must decline the
+# invitation to serve".
+_ANSWER_INVITE = re.compile(
+    r"\b(?:accept\w*|declin\w*)\b[^.]{0,20}\binvitation\b(?:(?!\b" + _MEETING_WORDS
+    + r"\b)[^.]){0,50}?\b(?:" + _BODY_WORDS + r"|participat\w*|serve|take part)\b",
+    re.I)
+# An invitation to take part in something that is not a meeting: a team,
+# a board, a program, a panel. An invitation to a repository, a document
+# or a call is not this.
+_INVITED = re.compile(
+    r"\binvit\w*\b(?:(?!\b" + _MEETING_WORDS + r"\b)[^.]){0,80}?"
+    r"(?:\b(?:participat\w*|serve|take part|be part|sit on|nominat\w*)\b"
+    r"|\b(?:join|be on)\b(?:(?!\b" + _MEETING_WORDS + r"\b)[^.]){0,40}?\b" + _BODIES + r"\b)|"
+    r"\b(?:would|will|do|are|is) (?:you|he|chris|the user) (?:like to|want to|be willing to|"
+    r"be interested in|be able to|interested in|willing to)\s+(?:join|participat\w*|serve|take part|"
+    r"be part|chair|lead)\b",
     re.I)
 _DECLINE = re.compile(r"\b(declin\w*|turn (it|this|them) down|not able to|unable to|can(no|')t)\b", re.I)
 
@@ -83,6 +105,20 @@ def autonomous_run(run_id: str) -> bool:
 
 def _meeting(scheduling: str, state: str) -> bool:
     return str(scheduling or "none").strip().lower() not in ("", "none") or state == "scheduling"
+
+
+def meeting_row(row: dict) -> bool:
+    """A ledger row about placing a meeting: a row of a type that matches
+    the calendar (ledger.CALENDAR_MATCH_TYPES), a sched- row, or a thread
+    whose record is a meeting request."""
+    try:
+        import ledger as _ledger
+    except ModuleNotFoundError:  # imported as preprocessor.<mod>
+        from preprocessor import ledger as _ledger
+    brief = row.get("thread_brief") if isinstance(row.get("thread_brief"), dict) else {}
+    return (_ledger.canonical_type(row.get("type")) in _ledger.CALENDAR_MATCH_TYPES
+            or str(row.get("id") or "").startswith("sched-")
+            or _meeting(str(brief.get("scheduling") or "none"), str(brief.get("state") or "")))
 
 
 def _brief_states(brief: dict | None) -> list[str]:
@@ -105,22 +141,23 @@ def owner_choice(ask: str, state: str = "", scheduling: str = "none", brief: dic
     """The answer the thread wants is the owner's choice: the record says
     `decide` (the thread's, or a message's since he last wrote), or the
     ask is yes or no, whether, accept or decline, or an invitation to join
-    something that is not a meeting."""
+    something. Never for a meeting request (the thread's `scheduling` or
+    `scheduling` state): placing a meeting is the scheduling lane's."""
+    # A meeting request is the scheduling lane's, whatever its words:
+    # "decide on a time", "yes or no for Tuesday" are the solver's.
+    if _meeting(scheduling, state):
+        return False
     if state == "decide" or "decide" in _brief_states(brief):
         return True
     asks = " ".join(x for x in [ask or "", str((brief or {}).get("ask") or "")] if x)
-    if _YES_NO.search(asks) or _DECIDE.search(asks):
-        return True
-    # In a meeting request, "whether Tuesday works" is the solver's.
-    if _meeting(scheduling, state):
-        return False
-    return bool(_CHOICE.search(asks) or _INVITED.search(asks))
+    return bool(_YES_NO.search(asks) or _DECIDE.search(asks) or _CHOICE.search(asks)
+                or _INVITED.search(asks))
 
 
 def answers_invitation(text: str) -> str:
     """'accepts' or 'declines' when the reply says yes or no to an
     invitation (to join, take part, serve, attend), else ''."""
-    m = _ANSWER.search(str(text or ""))
+    m = _ANSWER.search(str(text or "")) or _ANSWER_INVITE.search(str(text or ""))
     if not m:
         return ""
     return "declines" if _DECLINE.search(m.group(0)) or re.match(
@@ -187,13 +224,11 @@ def check(item: dict, says: str = "", *, own=()) -> dict | None:
                         "said no reply. Still no reply?"}
     question = f"They ask: {_clip(ask, 140)}" if ask else f"Your answer on {title}"
     picks = ["Yes", "No"] if yes_no(ask) else []
-    if item.get("kind") == "rsvp":
-        return {"rule": "invitation", "why": "an RSVP is your call", "line": question,
-                "choices": picks}
-    if owner_choice(ask, str(item.get("state") or ""), str(item.get("scheduling") or "none"), brief):
+    state, scheduling = str(item.get("state") or ""), str(item.get("scheduling") or "none")
+    if owner_choice(ask, state, scheduling, brief):
         return {"rule": "owner_choice", "why": "the answer is your decision", "line": question,
                 "choices": picks}
-    answer = answers_invitation(says)
+    answer = "" if _meeting(scheduling, state) else answers_invitation(says)
     if answer:
         return {"rule": "invitation", "why": f"it {answer} an invitation", "line": question,
                 "choices": picks}
@@ -241,12 +276,16 @@ def cron_refusal(*, run_id: str, conversation_id: str = "", ledger_ids=(), body:
         when = _day(said.get("at"))
         return (f"the owner said no reply on this thread{' on ' + when if when else ''} "
                 f"(\"{_clip(said.get('said'), 100)}\")")
+    meeting = False
     for row in rows or ():
         brief = row.get("thread_brief") if isinstance(row.get("thread_brief"), dict) else None
+        if meeting_row(row):
+            meeting = True
+            continue
         if brief and owner_choice(str(brief.get("ask") or ""), str(brief.get("state") or ""),
                                   str(brief.get("scheduling") or "none"), brief):
             return "the answer is the owner's decision"
-    answer = answers_invitation(body)
+    answer = "" if meeting else answers_invitation(body)
     if answer:
         return f"the reply {answer} an invitation"
     if recipient_count is not None and recipient_count >= MANY_RECIPIENTS:

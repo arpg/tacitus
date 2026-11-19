@@ -27,8 +27,9 @@ The morning run:
      outside the institution's safety-rail domain the user never wrote
      to; and draft_gate's rules: no draft on a thread the user already
      said gets no reply (one quiet question instead, asked once), for a
-     choice only he makes, for a yes or no to an invitation or an RSVP,
-     or for a reply-all to many people. Each becomes a decision for the
+     choice only he makes (never a meeting request: that is the
+     scheduling lane's), for a yes or no to taking part in a program or a
+     committee, or for a reply-all to many people. Each becomes a decision for the
      user, with Yes and No buttons where the ask is yes or no.
   4. Each draft: email_writer writes the body; graph_actions create-reply
      makes the draft under this run's id, so the bot posts its Send block
@@ -706,8 +707,8 @@ def gate(cand: dict, reply_must_say: str, *, wrote_before=_wrote_to_before) -> d
     decision it becomes, {"rule", "why", "line", "choices"}. The owner's
     own word on the thread comes first (a follow-up on a thread he said
     gets no reply is one quiet question), then the rails, then
-    draft_gate's rules: a choice only he makes, a yes or no to an
-    invitation, a reply-all to many. A line never carries an answer the
+    draft_gate's rules: a choice only he makes, a yes or no to taking
+    part in a program or committee, a reply-all to many. A line never carries an answer the
     model wrote for him, but for the rails' own lines."""
     found = draft_gate.check(cand, reply_must_say, own=_own_addresses())
     if found and found["rule"] == "no_reply":
