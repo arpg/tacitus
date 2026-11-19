@@ -2,9 +2,10 @@
 Status light): the light per level with its shape and words, the tooltip
 under a mouse and the keyboard, the sheet with its conditions, details,
 Got it and Recently cleared, a device that may not open the details, the
-live `light` event, the sheet a notification opens, and a phone's top bar
-at 382 px with nothing overlapping. The bot's side is in
-tests/test_status_light.py. Made-up data only."""
+live `light` event, the connection the light carries, the sheet a
+notification opens, and a phone's top bar at 382 px with nothing
+overlapping. The bot's side is in tests/test_status_light.py; the
+fixtures are tests/webui_browser.py's. Made-up data only."""
 from __future__ import annotations
 
 import sys
@@ -13,7 +14,9 @@ from pathlib import Path
 
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
-from test_webui import PHONE, SIDEWAYS, SMALL_TARGETS, app, browser, stub_factory, wait_for  # noqa: E402,F401  (the fixtures)
+from webui_browser import (  # noqa: E402,F401  (the fixtures)
+    PHONE, SIDEWAYS, SMALL_TARGETS, app, browser, drawer_drawn, stub_factory, wait_for,
+)
 
 NOW = time.time()
 OK = {"level": "ok", "line": "All good", "conditions": [], "cleared": [], "as_of": NOW}
@@ -169,6 +172,7 @@ def test_a_phones_top_bar_holds_the_light_with_nothing_overlapping_at_382px(app)
     page, stub, errors = app(status=summary(), viewport={"width": 382, "height": 820},
                              context=PHONE["context"])
     page.wait_for_selector(".thread-item")
+    drawer_drawn(page)
     overlaps = """(sel) => { const els = [...document.querySelectorAll(sel)].filter((e) => e.offsetParent);
       const r = els.map((e) => e.getBoundingClientRect()), out = [];
       for (let i = 0; i < r.length; i++) for (let j = i + 1; j < r.length; j++)
