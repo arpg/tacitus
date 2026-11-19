@@ -409,13 +409,15 @@ def test_a_dropped_stream_resumes_from_the_last_event(app):
     stub.drop_streams()
     stub.emit_bot(W.MAIN, "While away", thread_key=tk)
     expect(page.locator("#messages .msg:has-text('While away')")).to_be_visible()
-    assert any(s["last_event_id"] == seen for s in stub.streams), stub.streams
+    # Each open reads the open thread again (resync), so a message can show before the stream that
+    # brings it: the stub's record of the reconnect is what says how the browser asked.
+    wait_for(lambda: any(s["last_event_id"] == seen for s in stub.streams))
     # A refused reconnect closes the stream; the app opens a new one with ?since=.
     seen = str(stub.eseq)
     stub.drop_streams(refuse=1)
     stub.emit_bot(W.MAIN, "After a refusal", thread_key=tk)
     expect(page.locator("#messages .msg:has-text('After a refusal')")).to_be_visible(timeout=10000)
-    assert any(s["since"] == seen for s in stub.streams), stub.streams
+    wait_for(lambda: any(s["since"] == seen for s in stub.streams), 10)
     expect(page.locator("#messages .msg")).to_have_count(6)
     assert not [e for e in errors if "EventSource" not in e and "503" not in e], errors
 
