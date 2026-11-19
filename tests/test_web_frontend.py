@@ -2786,3 +2786,29 @@ def test_the_requests_route_gives_each_request_its_block_and_urgency(fe):
     out = json.loads(owner(fe, "GET", "/api/requests")[2])
     assert {j["id"]: j["project"] for j in out["waiting"]}[over.id] == "grant"  # the room still names it
     assert {j["id"]: j["urgency"] for j in out["waiting"]}[over.id] == "calm"  # no deadline known
+
+
+def test_a_request_being_acted_on_stays_on_top_and_its_answer_links_on(fe):
+    """A card whose status line says Tacitus is at work on the press
+    (Writing the reply) is listed with the waiting ones, `working`, never
+    counted as waiting; its final status line that links to the draft's
+    Send request carries that request's id as `next`."""
+    from chat.cards import ConfirmationCard
+    row = fe.post_card("dm", ConfirmationCard(kind="replies", title="Review request", actions=[
+        CardAction("reply_draft", "Draft it", {"row": "response-x"}, "primary", "draft", ask="your answer")],
+        question={"text": "Will you review it?", "from": "Pat", "since": "", "about": "Review request"}))
+    first = json.loads(owner(fe, "GET", "/api/requests")[2])["waiting"][0]
+    assert (first["id"], first["action"], first["what"], first["who"]) == \
+        (row.id, "Answer needed", "Will you review it?", "From Pat")
+    assert first["card"]["question"]["text"] == "Will you review it?"
+    fe.replace_card_with_status(row, ":hourglass_flowing_sand: Writing the reply: Yes.")
+    out = json.loads(owner(fe, "GET", "/api/requests")[2])
+    assert [(j["id"], j["working"], j["waiting"]) for j in out["waiting"]] == [(row.id, True, False)]
+    rows = {r["id"]: r for r in json.loads(owner(fe, "GET", "/api/channels")[2])}
+    assert rows["dm"]["waiting"] == 0  # at work is not waiting for a tap
+    send = fe.post_card("dm", card())
+    fe.replace_card_with_status(row, ":white_check_mark: The reply is drafted. Its Send request: "
+                                     f"<{fe.permalink('dm', send.id)}|open it>")
+    out = json.loads(owner(fe, "GET", "/api/requests")[2])
+    assert [j["id"] for j in out["waiting"]] == [send.id]
+    assert {j["id"]: j.get("next") for j in out["done"]}[row.id] == send.id

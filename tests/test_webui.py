@@ -521,7 +521,11 @@ def test_the_app_stays_small():
     # 5,845: 5,708 plus Action requests as blocks (a block per request folded to what to decide, its edge and
     #     word by urgency, its project's tag, opened in place to the card with its own buttons and the bot's lines,
     #     answered ones one line each, a pointer opening its block, the focus kept through a redraw).
-    assert lines <= 5845, f"{lines} lines: the contract keeps the app near 5,845 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line, the home-screen file sheet, a long card link shown as its site, a channel's mute, debug mode, the drawer's Recent list, the one model pick with the rest under Advanced and Action requests as blocks"
+    # 5,919: 5,845 plus a question answered in place (the question as the headline, one Your answer control
+    #     with the quick answers, a line and one button pressable once there is an answer, Try again with the
+    #     answer kept, Skip and Not needed quiet), a request at work kept on top, and an answered request giving
+    #     way to the one its status links to (the draft's Send request, one more question).
+    assert lines <= 5919, f"{lines} lines: the contract keeps the app near 5,919 with the relay, the phone setup, the thread states, the teaching, the rooms' menus, the owner's own actions, a computer through the relay, the release note, the menu's width, its notifications cleared where they are done, the Settings menu, a send that goes again through a restart, the hosted model switch and presets, per task and its help, the drafts and the files that wait for Send, links routed in place, a calm connection line, the home-screen file sheet, a long card link shown as its site, a channel's mute, debug mode, the drawer's Recent list, the one model pick with the rest under Advanced, and Action requests as blocks with questions answered in place"
 
 
 # A `:name:` in the sources that is not an emoji: a prompt that names the
@@ -3151,6 +3155,166 @@ def test_an_answered_request_is_one_quiet_line_and_opens_to_what_happened(app):
     line.locator(".req-head").click()
     expect(line.locator(".req-body .card.status")).to_contain_text("Sent to someone@example.org.")
     expect(line.locator(".req-body button")).to_have_count(0)  # an answered card keeps no button
+    assert not errors, errors
+
+
+def _decision(stub, picks=True, at=None, **question):
+    """A Replies row that waits on the owner's decision, as the bot posts it
+    for the web chat: its quick answers, the answer line, Skip and Not
+    needed, and the question it asks."""
+    import webui_stub_server as W
+    from datetime import datetime, timedelta
+    value = {"row": "response-r1", "batch": "b1"}
+    acts = ([{"id": "reply_choice_one", "label": ":one: Yes, I will review it", "style": "", "ask": "",
+              "value": dict(value, choice="Yes, I will review it"), "word": "one"},
+             {"id": "reply_choice_two", "label": ":two: No, I cannot make the deadline", "style": "",
+              "value": dict(value, choice="No, I cannot make the deadline"), "word": "two", "ask": ""},
+             {"id": "reply_draft", "label": ":pencil2: Other answer", "value": value, "style": "", "word": "other",
+              "ask": "your answer"}] if picks else
+            [{"id": "reply_draft", "label": ":pencil2: Draft the reply", "value": value, "style": "primary",
+              "word": "draft", "ask": "your answer"}])
+    acts += [{"id": "reply_skip", "label": ":fast_forward: Skip 3 days", "value": value, "style": "", "word": "skip", "ask": ""},
+             {"id": "reply_not_needed", "label": "Not needed", "value": value, "style": "danger", "word": "not needed", "ask": ""}]
+    q = {"text": "Will you review the workshop paper by December 1?", "from": "Pat",
+         "since": (datetime.now() - timedelta(days=2)).isoformat(timespec="seconds"), "about": "Review request", **question}
+    return stub.add(W.DM, "", kind="card", event="card", at=at, card={
+        "kind": "replies", "title": ":inbox_tray: *Review request*\nFrom Pat, 2 days ago.", "fields": [], "lines": [],
+        "body": "", "quoted": "", "actions": acts, "select": None, "block_id": "", "footer": "", "fallback_text": "Review",
+        "thread_ts": "", "ea_channel": W.DM, "content_fingerprint": "", "no_default": picks, "question": q})
+
+
+@SIZES
+def test_a_decision_asks_its_question_and_drafts_the_reply_from_one_answer(app, size):
+    """A row that waits on the owner's decision folds to Answer needed and
+    its question. Opened, the question is the headline, with who wrote and
+    how long it has waited, then one Your answer control: the quick
+    answers, a line, and Draft the reply, pressable only with an answer.
+    Enter sends the line through the card's own action; the block shows the
+    reply being written in place, then the draft's Send request opens in its
+    place in the same list."""
+    from playwright.sync_api import expect
+    page, stub, errors = app(**(PHONE if size == "phone" else {}))
+    stub.reply_flow = True
+    page.wait_for_selector(".thread-item")
+    m = _decision(stub)
+    page.evaluate("location.hash = '#/stream%3A7'")
+    block = page.locator(f'.req[data-id="{m["id"]}"]')
+    expect(block.locator(".req-act")).to_have_text("Answer needed")
+    expect(block.locator(".req-what")).to_have_text("Will you review the workshop paper by December 1?")
+    expect(block.locator(".req-who")).to_have_text("From Pat")
+    expect(block.locator(".card, [data-action]")).to_have_count(0)  # folded: nothing to press
+    block.locator(".req-head").click()
+    card = block.locator(".card.answer")
+    expect(card.locator(".answer-q")).to_have_text("Will you review the workshop paper by December 1?")
+    expect(card.locator(".answer-from")).to_have_text("From Pat · waiting 2 days")
+    expect(block.locator(".req-what")).to_have_count(0)  # the question once, as the headline
+    expect(card.locator("legend")).to_have_text("Your answer")
+    picks, field = card.locator(".answer-pick"), card.locator(".answer-ctl input")
+    expect(picks).to_have_text(["Yes, I will review it", "No, I cannot make the deadline"])
+    go = card.locator(".answer-ctl .btn.primary")
+    expect(go).to_have_text("Draft the reply")
+    expect(go).to_be_disabled()
+    field.press("Enter")
+    page.wait_for_timeout(200)
+    assert stub.clicks == []  # no answer, no press
+    picks.first.click()
+    expect(picks.first).to_have_attribute("aria-pressed", "true")
+    expect(go).to_be_enabled()
+    field.fill("Yes, if the deadline can move to December 8.")
+    expect(picks.first).to_have_attribute("aria-pressed", "false")  # a typed line takes the place of a quick answer
+    field.fill("")
+    expect(go).to_be_disabled()
+    expect(card.locator(".answer-more .btn")).to_have_text(["Skip 3 days", "Not needed"])  # quiet, below
+    expect(card).not_to_contain_text("in this thread")
+    if size == "phone":
+        assert page.evaluate(SMALL_TARGETS) == []
+        page.set_viewport_size({"width": 390, "height": 420})  # the keyboard takes the lower half
+        field.focus()
+        page.wait_for_timeout(500)
+        box = field.bounding_box()
+        assert 0 <= box["y"] and box["y"] + box["height"] <= 420, box
+        page.set_viewport_size({"width": 382, "height": 760})
+        assert page.evaluate(SIDEWAYS) == [0, 0]
+        assert page.evaluate("$('thread-list').scrollWidth - $('thread-list').clientWidth") == 0
+    field.fill("Yes, if the deadline can move to December 8.")
+    field.press("Enter")
+    wait_for(lambda: stub.clicks)
+    assert stub.clicks == [{"channel": m["channel"], "id": m["id"], "action_id": "reply_draft",
+                            "value": {"row": "response-r1", "batch": "b1"},
+                            "text": "Yes, if the deadline can move to December 8."}]
+    expect(page.locator(f'.req.u-working[data-id="{m["id"]}"] .req-busy')).to_have_text(
+        "Writing the reply: Yes, if the deadline can move to December 8.")
+    send = page.locator(".req.open:has(.card button:has-text('Send'))")
+    expect(send).to_be_visible(timeout=8000)  # the draft's Send request, opened in its place
+    expect(send.locator(".card-body")).to_contain_text("Yes, if the deadline can move to December 8")
+    assert page.locator(f'.req[data-id="{m["id"]}"]').count() == 0 or \
+        page.locator(f'.req.open[data-id="{m["id"]}"]').count() == 0
+    assert not errors, errors
+
+
+def test_a_quick_answer_goes_through_its_own_button_and_skip_stays_quiet(app):
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    m = _decision(stub)
+    page.evaluate("location.hash = '#/stream%3A7'")
+    page.locator(f'.req[data-id="{m["id"]}"] .req-head').click()
+    card = page.locator(".req.open .card.answer")
+    card.locator(".answer-pick").nth(1).click()
+    card.locator(".answer-ctl .btn.primary").click()
+    wait_for(lambda: stub.clicks)
+    assert stub.clicks == [{"channel": m["channel"], "id": m["id"], "action_id": "reply_choice_two",
+                            "value": {"row": "response-r1", "batch": "b1", "choice": "No, I cannot make the deadline"}}]
+    expect(page.locator(f'.req[data-id="{m["id"]}"]')).to_have_count(0)  # answered: under the shut Earlier
+    other = _decision(stub)
+    page.locator(f'.req[data-id="{other["id"]}"] .req-head').click()
+    quiet = page.locator(f'.req[data-id="{other["id"]}"] .answer-more .btn')
+    assert all("plain" in (quiet.nth(i).get_attribute("class") or "") for i in range(2))
+    quiet.nth(1).click()  # Not needed: the card's own action, as before
+    wait_for(lambda: len(stub.clicks) == 2)
+    assert stub.clicks[1]["action_id"] == "reply_not_needed"
+    assert not errors, errors
+
+
+def test_a_draft_that_did_not_start_offers_try_again_with_the_answer_kept(app):
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    m = _decision(stub, picks=False, failed=True, answer="Yes, if the deadline can move.")
+    page.evaluate("location.hash = '#/stream%3A7'")
+    page.locator(f'.req[data-id="{m["id"]}"] .req-head').click()
+    card = page.locator(".req.open .card.answer")
+    expect(card.locator(".answer-failed")).to_have_text("The draft did not start. Your answer is kept: tap Try again.")
+    expect(card.locator(".answer-ctl input")).to_have_value("Yes, if the deadline can move.")
+    go = card.locator(".answer-ctl .btn.primary")
+    expect(go).to_have_text("Try again")
+    expect(go).to_be_enabled()
+    expect(card).not_to_contain_text("Ask me here")
+    go.click()
+    wait_for(lambda: stub.clicks)
+    assert stub.clicks[0]["text"] == "Yes, if the deadline can move."
+    assert not errors, errors
+
+
+def test_tacitus_s_one_more_question_opens_in_place_with_the_same_answer_control(app):
+    """When the turn needs one more fact, the answered card links to a new
+    card that asks it; the open block gives way to that one, which takes
+    the answer the same way."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    m = _decision(stub)
+    page.evaluate("location.hash = '#/stream%3A7'")
+    page.locator(f'.req[data-id="{m["id"]}"] .req-head').click()
+    follow = _decision(stub, picks=False, text="Which rate should the renewal state, the old or the new?")
+    stub.change(m, "status", kind="status", text=":speech_balloon: One more answer is needed: "
+                f"<http://127.0.0.1/chat/#/{W.DM.replace(':', '%3A')}/{follow['thread_key']}/{follow['id']}|open it>")
+    opened = page.locator(f'.req.open[data-id="{follow["id"]}"]')
+    expect(opened.locator(".answer-q")).to_have_text("Which rate should the renewal state, the old or the new?")
+    expect(opened.locator(".answer-pick")).to_have_count(0)
+    expect(opened.locator(".answer-ctl input")).to_have_attribute("placeholder", "Type your answer")
+    expect(opened.locator(".answer-ctl input")).to_be_visible()
     assert not errors, errors
 
 

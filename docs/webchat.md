@@ -244,7 +244,7 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/channels/{ch}/mute`, `/api/channels/{ch}/unmute` | `{}` → the channel's row with `muted` set or cleared; a channel in that state already is answered as it is. 400 for the EA channel and the DM, 404 for an unknown channel. A chat action, as the rename (Muted channels) |
 | GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count`, `last_at` and the thread's state: `state`, `state_by`, `state_reason`, `state_at`, `stale` (State); `title` on a conversation the owner named (Recent) |
 | GET | `/api/recent?limit=20` | `{"threads": [...], "as_of"}`: the drawer's Recent list, conversations only, one snapshot whose `as_of` is the last event it takes in; each a threads row with `channel_name` and `unread` (the thread's count); `limit` 1 to 50 (Recent). It moves no read mark |
-| GET | `/api/requests?limit=40` | `{"waiting": [...], "done": [...], "as_of"}`: Action requests as blocks, one snapshot. Each a message JSON (a card, a status line, or a thread's first plain message) with `waiting`, the folded words `action`, `who`, `what`, `when`, `urgency` (`overdue`, `soon`, `calm`) with `why` (`due`, `starts`, `expires`, `waited`, "") and `at`, `project`, and `origin` (`{"channel", "thread_key", "kind", "name"}`) for a card that names its conversation; waiting ones by urgency, then newest first; `done` newest first, `limit` (1 to 200) at most. It moves no read mark (Action requests) |
+| GET | `/api/requests?limit=40` | `{"waiting": [...], "done": [...], "as_of"}`: Action requests as blocks, one snapshot. Each a message JSON (a card, a status line, or a thread's first plain message) with `waiting`, the folded words `action`, `who`, `what`, `when`, `urgency` (`overdue`, `soon`, `calm`) with `why` (`due`, `starts`, `expires`, `waited`, "") and `at`, `project`, and `origin` (`{"channel", "thread_key", "kind", "name"}`) for a card that names its conversation; `working` for a status line that says Tacitus is acting on the press (listed with the waiting ones, never counted as waiting) and `next` for one that links to another request in the place; waiting ones (at work first) by urgency, then newest first; `done` newest first, `limit` (1 to 200) at most. It moves no read mark (Action requests) |
 | GET | `/api/needs` | `{"threads": [...]}`: the conversations whose state is `needs_you` or `waiting` in channels that are not archived, less what waits on a tap (Action requests), each a threads row with `channel_name` (and `title`, as there); `needs_you` first, then newest first; at most 200; it moves no read mark (State). `needs` is never a channel id |
 | POST | `/api/threads/{ch}/{thread_key}/state` | `{"state": "done" \| "needs_you" \| "waiting"}` → the thread's row as the threads route gives it, with `channel_name`: the owner's override (`state_by` `owner`), until a new message lands in the thread; 400 for another state, 404 for an unknown thread. A chat action: a relayed device that may chat may take it (State) |
 | GET | `/api/channels/{ch}/threads/{thread_key}` | the thread, oldest first, parent first; like every GET, it moves no read mark |
@@ -596,6 +596,30 @@ and what the place does changed.
   page. An answered request opens to its status line, with no button.
   The bot's pointer (`#/<dm>/<thread>/<message>`) opens Action requests
   with that request open, never a thread view.
+- **A question answered in place.** A card that carries `question`
+  (`ConfirmationCard.question`: a Replies row that waits on the owner's
+  decision, or Tacitus's one more question about it) folds to "Answer
+  needed", its question and who wrote. Opened, the question is the
+  headline, with who wrote and how long it has waited, then one "Your
+  answer" control: the card's quick answers (its `reply_choice_*`
+  actions), a line (the action that `ask`s), and one primary button, Draft
+  the reply, pressable only once a quick answer is chosen or a line typed
+  (a typed line takes the place of a chosen answer). Enter in the line
+  presses it; the line scrolls above a phone's keyboard. Each press is one
+  of the card's own actions on its own route with its own value; Skip and
+  Not needed stay below as quiet buttons. The bot, on the web chat
+  (`ChatFrontend.dm_takes_text` false), turns the card into "Writing the
+  reply" before the turn starts; the list keeps it on top (`working`).
+  When the turn ends (`_reply_turn_done`) the card links to the draft's
+  Send request, which the app opens in the answered block's place (`next`),
+  so answering, reading the draft and Send happen in one list. A turn that
+  needs one more fact posts it as a new row card in the same thread with
+  the same control, whose answer runs in the same side session of the
+  row, so the turn that asked reads it; no turn ever asks in a place with
+  no composer. A turn that did not start gives the same card back, in
+  place, with Try again and the answer kept; one that ended with neither a
+  draft nor a question offers Try again on a new card. Slack keeps its
+  path and words: the thread takes typed answers there.
 - **The cue: urgency.** The block's left edge is its urgency, the one
   colour system; Soon and Overdue also carry the word, so colour is never
   the only sign, in light and dark. Overdue: its linked deadline passed,

@@ -250,6 +250,25 @@ button, select, textarea, input { font: inherit; color: inherit; }
 .req.u-soon { border-left-color: var(--u-soon); }
 .req.u-overdue { border-left-color: var(--u-overdue); }
 .req.u-done { border-left-color: var(--border); }
+.req.u-working { border-left-color: var(--accent); }
+.req-busy { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+.req-busy::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+  animation: pulse 1.2s var(--ease) infinite alternate; }
+/* A question for the owner: the question is the headline, one answer control, quiet secondary actions. */
+.card.answer .answer-q { margin: 0; font-size: 17px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
+.answer-from, .answer-about { margin: 4px 0 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.answer-failed { margin: 8px 0 0; color: var(--danger); font-size: 14px; }
+.answer-ctl { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; border: 0; min-width: 0; }
+.answer-ctl legend { padding: 0; margin-bottom: 6px; font-weight: 600; }
+.answer-picks { display: flex; flex-wrap: wrap; gap: 8px; }
+.answer-pick { min-height: 44px; white-space: normal; text-align: left; }
+.answer-pick[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--accent); }
+.answer-ctl .card-ask { min-height: 44px; width: 100%; }
+.answer-ctl .btn.primary { min-height: 44px; justify-self: start; }
+.answer-ctl .btn.primary:disabled { opacity: .45; cursor: not-allowed; }
+.answer-more { margin-top: 8px; }
+.answer-more .btn { min-height: 44px; }
 .req-head { display: grid; gap: 2px; width: 100%; min-height: 44px; padding: 10px 12px; border: 0; background: none;
   color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .req-top { display: flex; align-items: baseline; gap: 8px; }
@@ -267,6 +286,7 @@ button, select, textarea, input { font: inherit; color: inherit; }
 .req-sum b { color: var(--text); font-weight: 600; }
 .req-out { display: inline; }
 .req-body { padding: 0 12px 12px; border-top: 1px solid var(--border); }
+.req-body:empty { display: none; }
 .req-body .card { margin-top: 10px; }
 .req-body .card-body { max-height: none; overflow: visible; } /* the page scrolls, never a small box */
 .req-line { margin-top: 8px; color: var(--muted); font-size: 14px; }

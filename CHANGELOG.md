@@ -6,6 +6,16 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A question waits for your answer, and you answer it right there.**
+  When a reply needs your decision, its request in Action requests puts
+  the question first, says who wrote and how long it has waited, and
+  offers the quick answers and a line to type, with one Draft the reply
+  button that works once you have answered. The request then shows the
+  reply being written and opens the draft's Send request in its place. If
+  Tacitus needs one more fact, it asks it the same way, on a new request;
+  if the draft did not start, Try again keeps your answer. Skip and Not
+  needed are still there. Waiting requests count in the tab title, and
+  "Soon" now means by the end of the second working day.
 - **Action requests shows each request as a block you open in place.**
   Folded, a block says what you are deciding: Send email, Create meeting,
   Close item and so on, who and what it is about, the meeting's time, how

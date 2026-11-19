@@ -738,3 +738,142 @@ def test_the_cards_age_is_the_ladders_third_day_and_the_tick_is_wired():
     assert 0 < body.index("_post_reply_queue()") < gate       # an install with no resident gets it
     from botcore.chat import slack_frontend
     assert "replies" in slack_frontend.RENDERERS
+
+
+# ── the web chat: a decision answered in Action requests, in place ─────
+
+def _plain(text):
+    from botcore.chat import card_text
+    return card_text.strip_inert(text)
+
+
+class _WebFrontend:
+    """The web chat as the Replies code sees it: Action requests takes
+    button presses only (dm_takes_text False). `said` is what the turn
+    posts in the thread after its progress line."""
+    dm_takes_text = False
+
+    def __init__(self, calls, said=""):
+        self.calls, self.said, self.updates = calls, said, []
+
+    def post(self, channel="", thread_ts=None, text=""):
+        self.calls["posts"].append((channel, thread_ts, text))
+        return types.SimpleNamespace(id=f"p{len(self.calls['posts'])}")
+
+    def update_card(self, ref, card):
+        self.updates.append((ref.id, card))
+
+    def permalink(self, channel, msg_id):
+        return f"https://chat.example/#/{channel}/{msg_id}/{msg_id}"
+
+    def thread_replies(self, channel, thread):
+        msgs = [types.SimpleNamespace(msg_id=p, text="", posted_at=float(i), is_bot=True, is_self=True)
+                for i, p in enumerate(f"p{n + 1}" for n in range(len(self.calls["posts"])))]
+        if self.said:
+            msgs.append(types.SimpleNamespace(msg_id="t-said", text=self.said, posted_at=999.0,
+                                              is_bot=True, is_self=True))
+        return msgs
+
+
+def _web(queue, said="", **kw):
+    ns, calls = _bot(queue, **kw)
+    fe = _WebFrontend(calls, said)
+    ns.update(FRONTEND=fe, _DRAINING=False, REPLY_DONE_WAIT_S=0,
+              _card_ref=lambda ch, ts: types.SimpleNamespace(channel=ch, id=ts, thread_key=ts))
+    return ns, calls, fe
+
+
+def test_a_decision_card_carries_its_question_for_the_web_chat():
+    """The decision row's card names its question, who wrote and when, for
+    the web chat's answer control; Slack's card is as it was (its title and
+    buttons), since Slack never reads `question`."""
+    ns, calls = _bot([_q("lee", 8, queued=ASKED)])
+    _tick(ns)
+    card = calls["cards"][0]
+    assert card.question == {"text": "Renew for one year or for three?", "from": "Lee",
+                             "since": "2026-10-05T16:00:00Z", "about": "Reply to Lee"}
+    assert "I need your answer before I write it" in _text(card)
+    ns, calls = _bot([_q("ana", 8)])  # no decision: no question, the card as before
+    _tick(ns)
+    assert calls["cards"][0].question == {}
+
+
+def test_on_the_web_an_answer_writes_the_reply_in_place_and_links_its_send_request():
+    """A tap on a quick answer, or a typed line, starts the row's turn; the
+    card says the reply is being written; when the turn ends with a draft,
+    the card links to the draft's Send request. An empty Draft it on a
+    decision starts nothing: the web chat's control needs an answer."""
+    row = _q("lee", 8, queued=ASKED)
+    confirms: dict = {}
+    journal: list = []
+    ns, calls, fe = _web([row], confirms=confirms, journal=journal)
+
+    def turn(*a, session_key=""):  # the turn makes the draft, and the bot posts its Send card
+        calls["turns"].append(a)
+        calls["sessions"].append(session_key)
+        journal.append({"action": "created", "draft_id": f"d-{len(journal)}", "ledger_ids": ["response-lee"],
+                        "ts": "2026-10-09T10:00:00"})
+        confirms[f"d-{len(journal) - 1}"] = {"status": "live", "channel": "dm", "message_ts": "w77"}
+    ns["handle_message_async"] = turn
+    value = {"row": "response-lee", "batch": "b1"}
+    ns["handle_reply_draft"](_ev(value, text=""))
+    assert calls["turns"] == [] and calls["status"] == []  # no question first, no dead end
+    ns["handle_reply_draft"](_ev(value, text="Three years, at the same rate."))
+    assert len(calls["turns"]) == 1 and "Three years, at the same rate." in calls["turns"][0][3]
+    assert calls["sessions"] == [calls["sessions"][0]] and "reply-response-lee" in calls["sessions"][0]
+    (first, last) = calls["status"]
+    assert (first[0], _plain(first[1])) == ("m1", ":hourglass_flowing_sand: Writing the reply: Three years, at the same rate.")
+    assert last == ("m1", ":white_check_mark: The reply is drafted. Its Send request: "
+                          "<https://chat.example/#/dm/w77/w77|open it>")
+    assert not any("Ask me here" in t or "Tell me your answer" in t for _ts, t in calls["status"])
+    # a quick answer goes the same way, through its own action
+    calls["status"].clear()
+    journal.clear()
+    confirms.clear()
+    ns["handle_reply_choice"](_ev(dict(value, choice="Renew for three years"), card_id="m2"))
+    assert (calls["status"][0][0], _plain(calls["status"][0][1])) == \
+        ("m2", ":hourglass_flowing_sand: Writing the reply: Renew for three years.")
+    assert calls["status"][-1][1].startswith(":white_check_mark: The reply is drafted.")
+
+
+def test_on_the_web_the_turn_s_one_more_question_is_a_card_in_the_same_thread():
+    """A turn that asks one more fact and writes no draft: its question
+    becomes a row card in the thread, with the answer control (Draft the
+    reply takes the answer), and the answered card links to it. Its answer
+    runs in the same side session, so the turn that asked reads it."""
+    row = _q("lee", 8, queued=ASKED)
+    ns, calls, fe = _web([row], said="Which rate should the renewal state, the old or the new?")
+    value = {"row": "response-lee", "batch": "b1"}
+    ns["handle_reply_draft"](_ev(value, text="Three years.", thread="t-replies"))
+    follow = calls["cards"][-1]
+    assert calls["threads"][-1] == "t-replies"
+    assert follow.question["text"] == "Which rate should the renewal state, the old or the new?"
+    assert [(a.id, a.ask) for a in follow.actions] == [("reply_draft", "your answer"), ("reply_skip", ""),
+                                                       ("reply_not_needed", "")]
+    assert "One more question: Which rate" in _text(follow)
+    assert calls["status"][-1] == ("m1", ":speech_balloon: One more answer is needed: "
+                                         f"<https://chat.example/#/dm/m{len(calls['cards'])}/"
+                                         f"m{len(calls['cards'])}|open it>")
+    session = calls["sessions"][0]
+    ns["handle_reply_draft"](_ev(follow.actions[0].value, card_id=f"m{len(calls['cards'])}",
+                                 thread="t-replies", text="The new rate."))
+    assert calls["sessions"][-1] == session
+
+
+def test_on_the_web_a_draft_that_did_not_start_offers_try_again_with_the_answer_kept():
+    """No turn started: the same card again, in place, with Try again and
+    the owner's answer. A turn that ended with neither a draft nor a
+    question: a new card that offers Try again. Never "Ask me here"."""
+    row = _q("lee", 8, queued=ASKED)
+    ns, calls, fe = _web([row])
+    ns["_dispatch_reply_draft"] = lambda *a, **k: False
+    ns["handle_reply_draft"](_ev({"row": "response-lee", "batch": "b1"}, text="Three years."))
+    ((card_id, card),) = fe.updates
+    assert card_id == "m1" and card.question["failed"] and card.question["answer"] == "Three years."
+    assert "The draft did not start. Try again." in _text(card) and calls["status"] == []
+    ns, calls, fe = _web([row])
+    ns["handle_reply_draft"](_ev({"row": "response-lee", "batch": "b1"}, text="Three years."))
+    again = calls["cards"][-1]
+    assert again.question["failed"] and again.question["answer"] == "Three years."
+    assert calls["status"][-1][1].startswith(":warning: The draft did not start: <")
+    assert not any("Ask me here" in t for _ts, t in calls["status"])

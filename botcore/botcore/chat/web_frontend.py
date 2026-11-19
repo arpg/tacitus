@@ -1481,24 +1481,32 @@ class WebStore:
         `waiting` (a card whose buttons still act, thread_state.is_live_card)
         and, for a card that names the conversation it reports to, `origin`
         ({"channel", "thread_key", "kind", "name"}) when the store holds that
-        channel. Every waiting one, newest first; of the rest the newest
-        `limit`. It moves no read mark."""
+        channel. `working`: a status line that says Tacitus is acting on the
+        press (action_requests.working), listed with the waiting ones;
+        `next`: the request in this place a status line links to (the
+        draft's Send request). Every waiting one, newest first; of the rest
+        the newest `limit`. It moves no read mark."""
         def read() -> dict:
             now = time.time()
             kinds = {r["id"]: (r["kind"], r["name"]) for r in self._all("SELECT id, kind, name FROM channels")}
             waiting, done = [], []
+            ids = {r["id"] for r in self._all("SELECT id FROM messages WHERE channel=?", (channel,))}
             for r in self._all(
                     "SELECT * FROM messages WHERE channel=? AND deleted_at IS NULL AND (kind IN "
                     "('card', 'status') OR seq IN (SELECT MIN(seq) FROM messages WHERE channel=? "
                     "GROUP BY thread_key)) ORDER BY seq DESC", (channel, channel)):
                 j = self._msg_json(r, 0)
                 j["waiting"] = _ts.is_live_card(j, now)
+                j["working"] = _requests.working(j, now)
+                nxt = _requests.next_request(j, channel)
+                if nxt in ids:
+                    j["next"] = nxt
                 origin = _ts.card_origin(j.get("card"))
                 if origin and origin[0] in kinds and origin[0] != channel:
                     kind, name = kinds[origin[0]]
                     j["origin"] = {"channel": origin[0], "thread_key": self.thread_of(*origin) or origin[1],
                                    "kind": kind, "name": name or origin[0]}
-                if j["waiting"]:
+                if j["waiting"] or j["working"]:
                     waiting.append(j)
                 elif len(done) < int(limit):
                     done.append(j)

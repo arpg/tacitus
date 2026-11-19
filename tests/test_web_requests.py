@@ -162,3 +162,21 @@ def test_soon_counts_two_working_days_for_a_deadline_or_a_start():
         assert ar.urgency(fresh(now), True, ctx, now)["urgency"] == want, (ctx, now)
     # the wait counts calendar days, as the Replies card's rungs do
     assert ar.urgency(msg(at=friday - 3 * DAY), True, {}, friday)["why"] == "waited"
+
+
+def test_a_question_folds_to_answer_needed_and_a_status_links_on():
+    q = card("replies", ":inbox_tray: *Review request*")
+    q["question"] = {"text": "Will you review the paper by December 1?", "from": "Pat", "since": "", "about": "x"}
+    assert ar.block(msg(card=q)) == {"action": "Answer needed", "who": "From Pat",
+                                     "what": "Will you review the paper by December 1?", "when": ""}
+    writing = msg("status", text=":hourglass_flowing_sand: Writing the reply: Yes.", updated_at=NOW - 60)
+    assert ar.working(writing, NOW) and not ar.working({**writing, "updated_at": NOW - 3600}, NOW)
+    assert not ar.working(msg("status", text=":white_check_mark: Sent."), NOW)
+    done = msg("status", text=":white_check_mark: The reply is drafted. Its Send request: "
+                              "[open it](https://h.example.test/chat/#/dm/t9/w9)")
+    assert ar.next_request(done, "dm") == "w9" and ar.next_request(done, "main") == ""
+    core = msg("status", text=":speech_balloon: One more answer is needed: <https://h.example.test/chat/#/dm/t8/w8|open it>")
+    assert ar.next_request(core, "dm") == "w8"
+    assert ar.next_request(msg("card", text="[open it](https://h.example.test/chat/#/dm/t9/w9)"), "dm") == ""
+    items = [{"urgency": "overdue", "posted_at": 1}, {"urgency": "calm", "posted_at": 0, "working": True}]
+    assert [j.get("working", False) for j in ar.order(items)] == [True, False]

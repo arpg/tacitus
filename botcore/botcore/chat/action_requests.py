@@ -54,6 +54,9 @@ WAITED_S = 3 * 86400
 EXPIRES_S = 86400
 LEVELS = ("overdue", "soon", "calm")
 _ADDRESSES_SHOWN = 2
+# A link in a status line: Markdown's [text](url), or the core's <url|text>,
+# which a status line keeps as written.
+_LINK_RE = re.compile(r"\]\((\S+?)\)|<([^|>\s]+)\|[^>]*>")
 _MULTI_RE = re.compile(r"\s*[,;]\s*")
 
 
@@ -97,6 +100,11 @@ def block(msg: dict) -> dict:
         device = _ts.device_code(msg.get("text"))
         return {"action": "Approve a device" if device else "Notice", "who": "", "what": title,
                 "when": ""}
+    question = card.get("question") if isinstance(card.get("question"), dict) else {}
+    if question.get("text"):
+        who = card_text.one_line(str(question.get("from") or ""), 80)
+        return {"action": "Answer needed", "who": f"From {who}" if who else "",
+                "what": card_text.one_line(str(question["text"]), 300), "when": ""}
     kind = str(card.get("kind") or "")
     fields = _fields(card)
     label, who = _first(fields, WHO)
@@ -172,7 +180,28 @@ def urgency(msg: dict, waiting: bool, ctx: dict | None = None,
 
 
 def order(items: list[dict]) -> list[dict]:
-    """Waiting requests as the list shows them: overdue, then soon, then
-    calm, each newest first."""
-    return sorted(items, key=lambda j: (LEVELS.index(j.get("urgency") or "calm"),
+    """Waiting requests as the list shows them: the ones Tacitus is acting
+    on (`working`) first, then overdue, soon and calm, each newest first."""
+    return sorted(items, key=lambda j: (not j.get("working"),
+                                        LEVELS.index(j.get("urgency") or "calm"),
                                         -float(j.get("posted_at") or 0)))
+
+
+def working(msg: dict, now: float) -> bool:
+    """A card whose status line says Tacitus is acting on the press (an
+    hourglass: "Writing the reply", "Sending...") within the window a turn
+    may take: the list keeps it at the top, in progress."""
+    return msg.get("kind") == "status" and _ts.outcome(msg.get("text")) == "busy" \
+        and now - float(msg.get("updated_at") or msg.get("posted_at") or 0) < _ts.WORKING_WINDOW_S
+
+
+def next_request(msg: dict, channel: str) -> str:
+    """The id of the request a status line links to in the same place (the
+    draft's Send request, Tacitus's one more question), or ""."""
+    if msg.get("kind") != "status":
+        return ""
+    for md, core in _LINK_RE.findall(str(msg.get("text") or "")):
+        got = _ts.link_target(md or core)
+        if got and got[0] == channel:
+            return got[1]
+    return ""

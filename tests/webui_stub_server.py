@@ -300,6 +300,8 @@ class Stub:
         self.thread_gets: list[tuple[str, str]] = []  # each GET of one thread
         self.recent_gets = 0
         self.requests_gets = 0
+        self.reply_flow = False  # a Replies row answered goes as the bot's web path goes (reply_answered)
+        self.reply_delay = 0.6
         self.request_context: dict[str, dict] = {}  # message id -> {"project", "due", "starts"}
         self.names: dict[str, str] = {}  # thread key -> the name the owner gave it
         # Each stream request: its Last-Event-ID header and its ?since=.
@@ -518,9 +520,13 @@ class Stub:
                 c = m.get("card") or {}
                 live = m["kind"] == "card" and bool(c.get("actions") or c.get("select")) and not c.get("undo")
                 ctx = self.request_context.get(m["id"], {})
-                j = {**self.view(m), "waiting": live, **ar.block(m), **ar.urgency(m, live, ctx),
-                     "project": ctx.get("project", "")}
-                (waiting if live else done).append(j)
+                busy = ar.working(m, time.time())
+                j = {**self.view(m), "waiting": live, "working": busy, **ar.block(m),
+                     **ar.urgency(m, live, ctx), "project": ctx.get("project", "")}
+                nxt = ar.next_request(m, DM)
+                if nxt and self.find(DM, nxt):
+                    j["next"] = nxt
+                (waiting if live or busy else done).append(j)
             return {"waiting": ar.order(waiting), "done": done[:limit], "as_of": self.eseq}
 
     def set_state(self, channel: str, thread_key: str, state: str, by: str = "rule",
@@ -765,11 +771,39 @@ class Stub:
             self.change(m, "update", text="", deleted=True, owner_reactions=[])
         return 200, self.view(m)
 
+    def reply_answered(self, m: dict, body: dict) -> None:
+        """The bot's web path for a Replies row answered (`reply_flow`): the
+        card says the reply is being written; `reply_delay` seconds later
+        the draft's Send request is posted and the row's card links to it."""
+        said = (body.get("text") or (body.get("value") or {}).get("choice") or "").strip().rstrip(".")
+        self.change(m, "status", kind="status",
+                    text=":hourglass_flowing_sand: Writing the reply" + (f": {said}." if said else "."))
+
+        def drafted():
+            q = (m.get("card") or {}).get("question") or {}
+            card = self.add(DM, "", kind="card", event="card", card={
+                "kind": "send", "title": ":lock: *Send this reply?*",
+                "fields": [{"label": "To", "value": "pat@example.org"},
+                           {"label": "Subject", "value": f"Re: {q.get('about') or 'Your note'}"}],
+                "lines": [], "body": f"Hi Pat,\n\n{said or 'Thanks for the note.'}\n\nThanks", "quoted": "",
+                "actions": [{"id": "approve_send", "label": ":outbox_tray: Send", "value": {"d": 2}, "style": "primary",
+                             "word": "send"},
+                            {"id": "cancel_send", "label": "Cancel", "value": {"d": 2}, "style": "danger", "word": "cancel"}],
+                "select": None, "block_id": "", "footer": "", "fallback_text": "Send this reply?", "thread_ts": "",
+                "ea_channel": DM, "content_fingerprint": "", "no_default": False})
+            self.change(m, "status", kind="status", text=":white_check_mark: The reply is drafted. Its Send request: "
+                        f"[open it](/chat/#/{DM.replace(':', '%3A')}/{card['thread_key']}/{card['id']})")
+        threading.Timer(self.reply_delay, drafted).start()
+
     def click(self, channel: str, msg_id: str, body: dict) -> bool:
         m = self.find(channel, msg_id)
         if not m or m["kind"] != "card":
             return False
         self.clicks.append({"channel": channel, "id": msg_id, **body})
+        if self.reply_flow and (m.get("card") or {}).get("kind") == "replies" and (
+                body.get("action_id", "").startswith("reply_choice_") or body.get("text")):
+            threading.Timer(0.2, lambda: self.reply_answered(m, body)).start()
+            return True
         label = body.get("selected") or body.get("action_id")
         threading.Timer(0.2, lambda: self.change(
             m, "status", kind="status", text=f":white_check_mark: Done: {label}.")).start()

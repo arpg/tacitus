@@ -961,11 +961,16 @@ const URGENT = { overdue: 'Overdue', soon: 'Soon' };
 async function loadRequests() {
   try { S.reqs = await call('GET', '/requests'); } catch { return; } // the list keeps what it had
   if ((chan(S.channel) || {}).kind !== 'dm' || S.needsView || S.search) return;
+  // An open request whose status links on (its draft's Send request, one more question) gives way to that one.
+  const all = [...S.reqs.waiting, ...S.reqs.done];
+  for (const x of all) {
+    if (S.reqOpen.has(x.id) && x.next && all.some((y) => y.id === x.next)) { S.reqOpen.delete(x.id); S.reqFocus = x.next; }
+  }
   renderThreads();
-  const r = S.reqFocus && [...S.reqs.waiting, ...S.reqs.done].find((x) => x.id === S.reqFocus);
+  const r = S.reqFocus && all.find((x) => x.id === S.reqFocus);
   S.reqFocus = '';
   if (!r) return;
-  if (!r.waiting) { S.earlierOpen = true; renderThreads(); }
+  if (!r.waiting && !r.working) { S.earlierOpen = true; renderThreads(); }
   S.reqOpen.delete(r.id);
   await toggleRequest(r);
   const li = $('thread-list').querySelector(`.req[data-id="${CSS.escape(r.id)}"]`);
@@ -997,9 +1002,11 @@ function reqWhy(r) {
 }
 
 function reqBlock(r) {
-  const open = S.reqOpen.has(r.id), id = `req-${r.id}`, done = !r.waiting;
-  const word = !done && URGENT[r.urgency];
-  const what = r.what || (done ? '' : r.text && oneLine(r.text, 120)), why = !done && reqWhy(r);
+  const open = S.reqOpen.has(r.id), id = `req-${r.id}`, busy = r.working, done = !r.waiting && !busy;
+  const word = r.waiting && URGENT[r.urgency];
+  // Opened, a question shows itself as the card's headline: the head keeps the action and the time.
+  const asked = open && r.kind === 'card' && ((r.card || {}).question || {}).text;
+  const what = asked ? '' : r.what || (done ? '' : r.text && oneLine(r.text, 120)), why = !done && !asked && reqWhy(r);
   const time = h('time', { class: 'req-time' }, when(r.posted_at, true));
   const button = (...kids) => h('button', { type: 'button', class: 'req-head', 'aria-expanded': String(open), 'aria-controls': id,
     onclick: () => toggleRequest(r) }, ...kids);
@@ -1009,10 +1016,11 @@ function reqBlock(r) {
     : button(h('span', { class: 'req-top' }, h('span', { class: 'req-act' }, r.action || 'Request'),
       word ? h('span', { class: `req-flag u-${r.urgency}` }, word) : null, time),
     what ? h('span', { class: 'req-what' }, what) : null,
-    r.who || r.when ? h('span', { class: 'req-who' }, [r.who, r.when].filter(Boolean).join(' · ')) : null,
-    why || r.project ? h('span', { class: 'req-meta' }, why ? h('span', {}, why) : null,
+    busy ? h('span', { class: 'req-busy', role: 'status' }, cardText(String(r.text || '').replace(/^\s*:[a-z0-9_]+:\s*/, ''), 'req-out')) // at work
+      : !asked && (r.who || r.when) ? h('span', { class: 'req-who' }, [r.who, r.when].filter(Boolean).join(' · ')) : null,
+    !busy && (why || r.project) ? h('span', { class: 'req-meta' }, why ? h('span', {}, why) : null,
       r.project ? h('span', { class: 'req-proj' }, r.project) : null) : null);
-  return h('li', { class: `req u-${done ? 'done' : r.urgency || 'calm'}${open ? ' open' : ''}`, 'data-id': r.id }, head,
+  return h('li', { class: `req u-${busy ? 'working' : done ? 'done' : r.urgency || 'calm'}${open ? ' open' : ''}`, 'data-id': r.id }, head,
     h('div', { class: 'req-body', id, hidden: !open }, open ? reqBody(r) : null));
 }
 
@@ -1021,10 +1029,56 @@ function reqBlock(r) {
 function reqBody(r) {
   const lines = (S.reqLines.get(r.id) || []).map((m) => h('div', { class: 'req-line' }, markdown(m.text)));
   const from = r.origin ? h('a', { class: 'req-from', href: hashFor(r.origin.channel, r.origin.thread_key) }, 'Open the conversation') : null;
-  if (r.kind === 'card' && r.card) return [renderCard(r), ...lines, from];
-  if (r.kind === 'status') return [cardText(r.text, 'card status'), ...lines, from];
+  if (r.kind === 'card' && r.card) return [(r.card.question || {}).text ? answerCard(r) : renderCard(r), ...lines, from];
+  if (r.kind === 'status') return [r.working ? null : cardText(r.text, 'card status'), ...lines, from]; // at work: its head says so
   return [h('div', { class: 'text' }, markdown(r.text || '')), r.file ? renderFile(r.file) : null, ...lines,
     h('a', { class: 'req-from', href: hashFor(r.channel, r.thread_key) }, 'Open it')];
+}
+
+// A question for the owner (a Replies row that waits on a decision, or Tacitus's one more question about it): the
+// question is the headline, with who wrote and how long it has waited, then one "Your answer" control, the quick
+// answers the card offers and a line to type, and one primary button, pressable once there is an answer, that drafts
+// the reply. Each press is one of the card's own actions on the card's own route; Skip and Not needed stay quiet below.
+function answerCard(msg) {
+  const c = msg.card, q = c.question;
+  const picks = (c.actions || []).filter((a) => /^reply_choice_/.test(a.id)), ask = (c.actions || []).find((a) => a.ask);
+  const rest = (c.actions || []).filter((a) => a !== ask && !picks.includes(a));
+  const box = h('div', { class: 'card answer', 'data-kind': c.kind || '' });
+  const words = (a) => oneLine(stripInert(a.label || a.word || a.id).replace(/^\s*:[a-z0-9_+-]+:\s*/, ''), 80);
+  let chosen = picks.find((a) => words(a) === q.answer) || null;
+  const field = ask ? h('input', { class: 'card-ask', maxlength: 300, autocomplete: 'off', enterkeyhint: 'send',
+    'aria-label': 'Your answer', placeholder: picks.length ? 'Or type your answer' : 'Type your answer' }) : null;
+  if (field && !chosen && q.answer) field.value = q.answer;
+  const go = h('button', { type: 'button', class: 'btn primary', 'data-action': 'answer' }, q.failed ? 'Try again' : 'Draft the reply');
+  const chips = picks.map((a) => h('button', { type: 'button', class: 'btn answer-pick', 'data-action': a.id,
+    onclick: () => { chosen = chosen === a ? null : a; if (chosen && field) field.value = ''; sync(); } }, words(a)));
+  const locked = Boolean(S.me && S.me.card_actions === false);
+  const sync = () => {
+    chips.forEach((b, i) => b.setAttribute('aria-pressed', String(picks[i] === chosen)));
+    go.disabled = locked || !(chosen || (field && field.value.trim()));
+  };
+  const press = () => !go.disabled && act(msg, chosen ? { action_id: chosen.id, value: chosen.value ?? '' }
+    : { action_id: ask.id, value: ask.value ?? '', text: field.value.trim() }, box).then(sync);
+  go.addEventListener('click', press);
+  if (field) {
+    field.addEventListener('input', () => { if (field.value.trim()) chosen = null; sync(); });
+    field.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); press(); } });
+    field.addEventListener('focus', () => setTimeout(() => field.scrollIntoView({ block: 'center' }), 250)); // above the keyboard
+  }
+  const since = Date.parse(q.since || '');
+  box.append(...[h('p', { class: 'answer-q' }, oneLine(q.text, 300)),
+    h('p', { class: 'answer-from' }, [q.from && `From ${q.from}`, since && `waiting ${ageDays(since / 1000)}`].filter(Boolean).join(' · ')),
+    q.about ? h('p', { class: 'answer-about' }, oneLine(q.about, 120)) : null,
+    q.failed ? h('p', { class: 'answer-failed', role: 'alert' }, 'The draft did not start. Your answer is kept: tap Try again.') : null,
+    h('fieldset', { class: 'card-actions answer-ctl' }, h('legend', {}, 'Your answer'),
+      chips.length ? h('div', { class: 'answer-picks', role: 'group', 'aria-label': 'Quick answers' }, chips) : null, field, go),
+    rest.length ? h('div', { class: 'card-actions answer-more' }, rest.map((a) => h('button', { type: 'button',
+      class: 'btn plain small' + (a.style === 'danger' ? ' danger' : ''), 'data-action': a.id,
+      onclick: () => act(msg, { action_id: a.id, value: a.value ?? '' }, box) }, words(a)))) : null,
+    h('div', { class: 'card-note', 'aria-live': 'polite' }, locked ? noCards() : null)].filter(Boolean));
+  if (locked) box.querySelectorAll('button, input').forEach((x) => { x.disabled = true; });
+  sync();
+  return box;
 }
 
 async function toggleRequest(r) {
