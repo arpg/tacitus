@@ -2019,9 +2019,17 @@ def detect_pending_rsvps(inbox: list) -> list:
 
         rsvps.append({
             "message_id": m["id"],
+            # The thread and the people a reply-all reaches: the owner's
+            # earlier word on the thread and the reply-all rule read them
+            # (draft_gate).
+            "conversation_id": m.get("conversationId", ""),
             "subject": subject,
             "from": from_addr,
             "from_name": m.get("from", {}).get("emailAddress", {}).get("name", ""),
+            "to": [r.get("emailAddress", {}).get("address", "").lower()
+                   for r in m.get("toRecipients") or []],
+            "cc": [r.get("emailAddress", {}).get("address", "").lower()
+                   for r in m.get("ccRecipients") or []],
             "received": m.get("receivedDateTime", ""),
             "body_preview": preview[:400],
             "is_calendar_invite": "invitation:" in subject.lower(),
@@ -2186,6 +2194,9 @@ def _reopen_mail_row_if_newer(entry_id: str, item: dict, kind: dict) -> bool:
                     f"{now[:10]}: reopened, a new message after the close", json.dumps(meta), now, entry_id))
         db.commit()
         db.close()
+        # His word at the close stands on the new ask: the notes were just
+        # replaced by the new message's.
+        _ledger_mod.carry_owner_decisions(entry_id)
         print(f"  reopened {entry_id}: a new message arrived after its close", file=sys.stderr)
         return True
     except Exception as e:
@@ -2249,6 +2260,7 @@ def update_ledger_from_analysis(
         ))
         db.commit()
         db.close()
+        _ledger_mod.carry_owner_decisions(entry_id)
 
     # --- Scheduling requests ---
     for item in (scheduling_requests or []):
@@ -2806,6 +2818,9 @@ def run_full_daily(force_full: bool = False) -> dict:
               file=sys.stderr)
     open_obligations = _deduped_obligations
     _mark_parked(open_obligations)
+    # The owner's earlier word on each row's thread (ledger.owner_decisions):
+    # no lane drafts against it.
+    _ledger_mod.with_owner_decisions(open_obligations)
 
     # Count totals for the summary
     delta_item_count = (
@@ -2836,6 +2851,7 @@ def run_full_daily(force_full: bool = False) -> dict:
                   file=sys.stderr)
             open_obligations = _ledger_mod.get_open_entries()
             _mark_parked(open_obligations)
+            _ledger_mod.with_owner_decisions(open_obligations)
     except Exception as e:
         print(f"  Draft-claim reconcile skipped: {e}", file=sys.stderr)
 
@@ -2933,6 +2949,14 @@ def run_full_daily(force_full: bool = False) -> dict:
             open_obligations, datetime.now(_user_zone()).date(), zone=_user_zone(),
             draft_convs=({d.get("conversation_id") for d in staged_drafts}
                          if drafts_read else None)),
+        # The owner's earlier word on the threads of the new mail above
+        # ({conversation id: [decision]}, ledger.owner_decisions): a close
+        # in his words or by his click. A follow-up on such a thread is
+        # never drafted against it (draft_gate).
+        "owner_decisions": _ledger_mod.owner_decisions(
+            {i.get("conversation_id") for i in
+             list(needs_resp_delta) + list(dropped_delta) + list(pending_rsvps)
+             if isinstance(i, dict)}),
         # Rows closed this run because their date passed and their mail
         # asked nothing (ledger.close_lapsed): one "Quietly handled" line.
         "lapsed": [r for r in lapsed if r["action"] == "closed"][:20],

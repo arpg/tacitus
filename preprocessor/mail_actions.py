@@ -149,6 +149,32 @@ def _gmail_user_replied(acct: str, orig: dict) -> str:
     return sender[0] if sender and sender[0].lower() == acct.lower() else ""
 
 
+def _draft_gate():
+    try:
+        import draft_gate
+    except ModuleNotFoundError:  # imported as preprocessor.<mod>
+        from preprocessor import draft_gate
+    return draft_gate
+
+
+def _gmail_scheduled_refusal(args, acct: str, body: str) -> str:
+    """'' when this run may make the Gmail reply, else why not: the rule
+    graph_actions create-reply holds on Outlook (draft_gate.cron_refusal),
+    for a scheduled lane's run only. The thread's rows are the ones the
+    draft names (--ledger-id)."""
+    gate = _draft_gate()
+    run_id = os.environ.get("EA_RUN_ID", "")
+    if not gate.autonomous_run(run_id):
+        return ""
+    orig = getattr(args, "_answered", None) or {}
+    people = {a.lower() for a in _addrs(orig.get("from"), orig.get("to"), orig.get("cc"))}
+    return gate.cron_refusal(run_id=run_id, ledger_ids=getattr(args, "ledger_id", None) or (),
+                             body=body,
+                             recipient_count=(len(people - {acct.lower()})
+                                              if orig and not getattr(args, "sender_only", False)
+                                              else None))
+
+
 def _gmail_reply_cc(acct: str, orig: dict, extra: str) -> str:
     """The Cc of a Gmail reply-all: the answered message's To and Cc and the
     caller's --cc, less the account itself and the sender (who gets the To
@@ -345,6 +371,7 @@ def cmd_delegated(args) -> int:
         acct = _gmail_account(args.account)
         if not acct:
             return _fail("No Gmail account configured")
+    body = ""
     if getattr(args, "body_file", None) is not None:
         try:
             body = Path(args.body_file).read_text(encoding="utf-8")
@@ -358,6 +385,12 @@ def cmd_delegated(args) -> int:
         args._answered, err = _gmail_answered(acct, args.message_id, args.thread_id)
         if err:
             return _fail(err)
+        why = _gmail_scheduled_refusal(args, acct, body)
+        if why:
+            print(json.dumps({"status": "needs_owner", "reason": why,
+                              "hint": _draft_gate().NEEDS_OWNER_HINT,
+                              "provider": "gmail", "account": acct}, indent=2))
+            return 0
         sender = _gmail_user_replied(acct, args._answered)
         if sender and not args.force:
             print(json.dumps({

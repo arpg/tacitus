@@ -25,8 +25,12 @@ The morning run:
   3. Code applies the rails: no draft to a dean or a program officer, on
      money, a contract or a legal matter, for a decline, or to someone
      outside the institution's safety-rail domain the user never wrote
-     to. Each becomes a
-     decision for the user.
+     to; and draft_gate's rules: no draft on a thread the user already
+     said gets no reply (one quiet question instead, asked once), for a
+     choice only he makes (never a meeting request: that is the
+     scheduling lane's), for a yes or no to taking part in a program or a
+     committee, or for a reply-all to many people. Each becomes a decision for the
+     user, with Yes and No buttons where the ask is yes or no.
   4. Each draft: email_writer writes the body; graph_actions create-reply
      makes the draft under this run's id, so the bot posts its Send block
      as for any cron draft; the ledger row gets its last_action; draft_ab
@@ -77,6 +81,7 @@ from zoneinfo import ZoneInfo
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import draft_gate  # noqa: E402
 import institution as _institution  # noqa: E402
 import ledger as _ledger  # noqa: E402
 import remote_llm  # noqa: E402
@@ -197,9 +202,11 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                               ("V", "pending_rsvps", "rsvp")):
         for it in b.get(key) or []:
             mid, conv = it.get("message_id") or "", it.get("conversation_id") or ""
+            row = by_mid.get(mid) or by_conv.get(conv) or {}
+            # An RSVP item names no conversation: its row does.
+            conv = conv or str(row.get("conversation_id") or "")
             if conv and conv in closed_convs:
                 continue  # a row on this thread closed this week
-            row = by_mid.get(mid) or by_conv.get(conv) or {}
             rec = it.get("remote_record") or {}
             due, tags = str(rec.get("deadline") or "")[:10], []
             d = _date(due)
@@ -228,7 +235,13 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                     "unread_by_remote": bool(it.get("remote_unread")),
                     "optional": optional,
                     "ledger_id": row.get("id") or "",
-                    "brief": row.get("thread_brief") if isinstance(row.get("thread_brief"), dict) else None}
+                    "brief": row.get("thread_brief") if isinstance(row.get("thread_brief"), dict) else None,
+                    # What draft_gate reads: the record's state, the people a
+                    # reply-all reaches, and the owner's earlier word on the thread.
+                    "state": rec.get("state") or "", "scheduling": rec.get("scheduling") or "none",
+                    **{k: it[k] for k in ("to", "cc") if isinstance(it.get(k), list)},
+                    "owner_said": owner_said(b, conv, row),
+                    "asked": _asked(row, it.get("received") or "")}
             if item["ledger_id"]:
                 seen_rows.add(item["ledger_id"])
             if isinstance(row.get("close_proposal"), dict):
@@ -276,6 +289,7 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
             d = _date(due)
             tags.append(f"its {d:%b} {d.day} date passed; {spent}")
             due = ""
+        conv = str(o.get("conversation_id") or (brief or {}).get("conversation_id") or "")
         add("L", {"kind": "ledger", "title": o.get("description") or lid,
                   "who": o.get("from_name") or o.get("from_email") or "",
                   "from": o.get("from_email") or "", "ledger_id": lid,
@@ -287,7 +301,12 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                   "summary": (o.get("notes") or "")[:400],
                   "last_action": _last_action(o),
                   "due": due, "tags": tags, "optional": optional, "waiting": waits,
-                  "type": o.get("type") or ""})
+                  "type": o.get("type") or "",
+                  "ask": str((brief or {}).get("ask") or ""),
+                  "state": str((brief or {}).get("state") or ""),
+                  "scheduling": str((brief or {}).get("scheduling") or "none"),
+                  "owner_said": owner_said(b, conv, o),
+                  "asked": _asked(o, str((brief or {}).get("last_inbound") or ""))})
     return out
 
 
@@ -327,6 +346,23 @@ def on_calendar(title: str, when: date | None, b: dict, today: date) -> str:
         if len(words & _event_words(e.get("subject"))) >= 2:
             return str(e.get("subject") or "")
     return ""
+
+
+def owner_said(b: dict, conv: str, row: dict) -> list[dict]:
+    """The owner's earlier word on the thread (ledger.owner_decisions):
+    the briefing's `owner_decisions` for the conversation, else the row's
+    own `owner_said`."""
+    found = (b.get("owner_decisions") or {}).get(conv) if conv else None
+    found = found or row.get("owner_said")
+    return [d for d in found if isinstance(d, dict)] if isinstance(found, list) else []
+
+
+def _asked(row: dict, inbound: str) -> bool:
+    """A run already asked the owner about this message, or judged it
+    needs no reply (the row's `reply_queue` record for the same inbound
+    message): the question is not asked twice."""
+    rq = row.get("reply_queue") if isinstance(row.get("reply_queue"), dict) else {}
+    return bool(inbound) and rq.get("inbound") == inbound and rq.get("outcome") in ("decision", "left")
 
 
 def _optional_tag(d: date, today: date) -> str:
@@ -374,6 +410,7 @@ He wants an ordered do-list fitted to the gaps in his day, then the flexes, then
 - get_done_today: at most 5 refs, in the order to do them. Start from today_top's order. Drop an item whose summary or last action shows it is settled. An item with `wrote_since` (he has written to that person since their mail) or `in_slack` goes in only if the ask is plainly still open, and the why says what he already did. An item with `replied_earlier` is a new message in a thread he already answered: it goes in, or gets a draft, only when it asks him something new. You may promote an item the ranking cannot see, and the why says so. `when` is a window from today's free time ("before your 9:30", "in the 1-2:30 gap", "first thing"). `why` is a few words on what is left to do or what it unblocks; never the due date alone, which code adds from `due_in`. An item tagged optional asks nothing of him: it never goes in get_done_today or needs_you. A meeting is on his calendar, not a to-do: it goes in only for work he must do before it.
 - flexes: at most 4 more refs, one short line each.
 - drafts: replies he would send that the item's summary and ask already answer: a yes, an answer he gave before, a link or a form, an intro, a meeting he already agreed. For each, what the reply must say in one or two sentences. When their ask is a question only he can answer (what he plans, what he needs, his use case, his preference), the reply only thanks them and says he will follow up; never answer for him, and never repeat their own message back to them. Never draft for money, a contract or a legal matter; a dean or a program officer; a decline; a decision only he can make; mail where he is only copied. Those go to needs_you.
+- An item with `owner_said` is a thread he already decided, in his words. Never draft against it and never put it on the do-list; when it says no reply goes out, leave it to code, which asks him once.
 - needs_you: refs with the decision in one line, and what happens once he decides.
 - escalate: at most 3 refs that need more than a reply or a decision: a document to write, a multi-step task, a reply the summary does not say enough to write. Give why, and the task for the assistant.
 A ref goes in at most one of drafts, needs_you and escalate.
@@ -490,6 +527,8 @@ def _prompt_items(cands: dict[str, dict], today: date | None = None) -> list[dic
     out = []
     for r, c in cands.items():
         d = {"ref": r, **{k: c[k] for k in keep if c.get(k)}}
+        if c.get("owner_said"):
+            d["owner_said"] = _ledger.owner_said_line(c["owner_said"])
         if today is not None and c.get("due"):
             d["due_in"] = _due_in(c["due"], today)
         if c.get("wrote_since"):
@@ -544,15 +583,19 @@ def check_plan(obj: dict, cands: dict[str, dict], *, morning: bool) -> dict:
     # An item that asks nothing of him (a vote, a talk, a call for
     # volunteers) is never on the do-list or a decision, whatever the model
     # picked: code holds this, not the prompt.
+    # A thread the owner said gets no reply is no to-do either: code asks
+    # him once whether that still holds (gate), whatever the model picked.
     def owed(items):
-        return [p for p in items if not cands[p["ref"]].get("optional")]
+        return [p for p in items if not cands[p["ref"]].get("optional")
+                and not draft_gate.no_reply_said(cands[p["ref"]].get("owner_said"))]
 
     # Work others owe is never his flex or a task handed to Claude; on the
     # do-list its line is code's own (_top_line), never an action made up.
     def his(items):
         return [p for p in items if not cands[p["ref"]].get("waiting")]
     plan = {"get_done_today": owed(picks("get_done_today", MAX_TOP + 3))[:MAX_TOP],
-            "flexes": his(picks("flexes", MAX_FLEX + 2))[:MAX_FLEX],
+            "flexes": [p for p in his(picks("flexes", MAX_FLEX + 2))
+                       if not draft_gate.no_reply_said(cands[p["ref"]].get("owner_said"))][:MAX_FLEX],
             "drafts": [p for p in picks("drafts", MAX_DRAFTS)
                        if cands[p["ref"]]["kind"] in ("reply", "dropped", "rsvp")
                        and not in_motion(cands[p["ref"]])]}
@@ -650,6 +693,46 @@ def rail(cand: dict, reply_must_say: str, *, wrote_before=_wrote_to_before) -> s
     return ""
 
 
+def _own_addresses() -> set[str]:
+    """The owner's own address, which a reply-all does not count."""
+    try:
+        prof = json.loads((EA_DIR / "config" / "user-profile.json").read_text())
+        return {str(prof.get("email") or "").lower()} - {""}
+    except Exception:
+        return set()
+
+
+def gate(cand: dict, reply_must_say: str, *, wrote_before=_wrote_to_before) -> dict | None:
+    """None when this run may draft `reply_must_say` for `cand`; else the
+    decision it becomes, {"rule", "why", "line", "choices"}. The owner's
+    own word on the thread comes first (a follow-up on a thread he said
+    gets no reply is one quiet question), then the rails, then
+    draft_gate's rules: a choice only he makes, a yes or no to taking
+    part in a program or committee, a reply-all to many. A line never carries an answer the
+    model wrote for him, but for the rails' own lines."""
+    found = draft_gate.check(cand, reply_must_say, own=_own_addresses())
+    if found and found["rule"] == "no_reply":
+        return found
+    why = rail(cand, reply_must_say, wrote_before=wrote_before)
+    if why:
+        return {"rule": "rail", "why": why, "choices": [],
+                "line": f"Reply needs you ({why}): {_clean(reply_must_say, 120)}"}
+    if found:
+        return dict(found, line=f"Reply needs you ({found['why']}): {found['line']}")
+    return None
+
+
+def _refused(cand: dict, why: str) -> dict:
+    """The decision for a reply create-reply refused for a scheduled lane
+    (draft_gate.cron_refusal), in the shape gate() gives."""
+    found = draft_gate.check(dict(cand, kind=""), "", own=_own_addresses()) or {}
+    question = found.get("line") or (f"They ask: {_clean(cand.get('ask'), 140)}" if cand.get("ask")
+                                     else f"Your answer on {_clean(cand.get('title'), 90)}")
+    return {"rule": "refused", "why": why, "choices": found.get("choices") or [],
+            "line": question if found.get("rule") == "no_reply"
+            else f"Reply needs you ({_clean(why, 80)}): {question}"}
+
+
 # ── the actions ───────────────────────────────────────────────────────
 
 def _run_json(argv: list[str], *, env: dict, timeout: int = 180) -> tuple[int, dict]:
@@ -697,6 +780,10 @@ def make_draft(cand: dict, reply_must_say: str, *, run_id: str, write=None, runn
                           "--conversation-id", cand.get("conversation_id") or "",
                           "--body", "x", "--body-file", body_path, *link], env=env)
     draft_id = out.get("id") or ""
+    if out.get("status") == "needs_owner":
+        # create-reply holds the same rule for a scheduled lane
+        # (draft_gate.cron_refusal): the reply is the owner's to decide.
+        return {"ok": False, "why": "the reply needs the owner", "owner": str(out.get("reason") or "")}
     if rc != 0 or not draft_id:
         return {"ok": False, "why": "create-reply: " + str(out.get("error") or out.get("status")
                                                          or "failed")[:160]}
@@ -789,6 +876,7 @@ Each item is a mail thread where the other side wrote last and he has not answer
 - draft: a reply he would send that the thread already answers: a yes, a thanks, an answer he gave before, a link or a form, an intro, a meeting he already agreed. `text` is what the reply must say, in one or two sentences. Never answer a question only he can answer, and never repeat their own message back to them.
 - decide: he must choose first: money, a contract or a legal matter; a dean or a program officer; a decline; a question only he can answer; work that must be done before the reply. `text` is the question for him in one line, with the choices when the thread gives them. `choices` is the two or three answers he could give when the question has that few, each one whole in a few words ("Yes, I will review it", "No, not this term"); his pick becomes the reply.
 - leave: the thread needs no reply from him: the notes or the last action show it is settled, or the last message only informs. `text` says why in a few words.
+`owner_said` is what he already decided on the thread, in his words: never draft against it.
 `choices` is an empty list for a draft, for a leave and for an open question.
 Write short plain sentences. Never write an em-dash. Use only the items given.
 
@@ -823,7 +911,8 @@ def backlog_candidates(b: dict) -> dict[str, dict]:
             "age_days": int(e.get("age_days") or 0), "since": e.get("since") or "",
             "has_draft": e.get("has_draft"), "queued": e.get("queued") or {},
             "kept": bool(e.get("kept")), "total": int(e.get("total") or 0),
-            "type": e.get("type") or "", "due": "", "tags": [], "brief": None}
+            "type": e.get("type") or "", "due": "", "tags": [], "brief": None,
+            "owner_said": [d for d in e.get("owner_said") or [] if isinstance(d, dict)]}
     return out
 
 
@@ -859,7 +948,9 @@ def ask_backlog(cands: dict[str, dict], refs: list[str], *, rules: str, now: dat
                                    rules=rules or "")
     keep = ("who", "ask", "thread", "notes", "last_action")
     items = [{"ref": r, "title": _title(cands[r]), "waiting_days": cands[r]["age_days"],
-              **{k: cands[r][k] for k in keep if cands[r].get(k)}} for r in refs]
+              **{k: cands[r][k] for k in keep if cands[r].get(k)},
+              **({"owner_said": _ledger.owner_said_line(cands[r]["owner_said"])}
+                 if cands[r].get("owner_said") else {})} for r in refs]
     obj, _meta = chat([{"role": "system", "content": system},
                        {"role": "user", "content": json.dumps({"items": items}, ensure_ascii=False)}],
                       purpose="briefing-backlog", schema=BACKLOG_SCHEMA,
@@ -917,11 +1008,16 @@ def clear_backlog(cands: dict[str, dict], refs: list[str], *, rules: str, now: d
              "deferred": 0}
     if not refs:
         return [], stats
+    # A thread the owner said gets no reply is not the model's to sort: it
+    # is the one quiet question (gate), whatever the model would answer.
+    quiet = [r for r in refs if draft_gate.no_reply_said(cands[r].get("owner_said"))]
+    asked = [r for r in refs if r not in quiet]
     try:
-        picks = ask_backlog(cands, refs, rules=rules, now=now, chat=chat)
+        picks = ask_backlog(cands, asked, rules=rules, now=now, chat=chat) if asked else {}
     except remote_llm.RemoteLLMError as e:
         stats["error"] = str(e)[:200]
         return [], stats
+    picks.update({r: {"ref": r, "action": "draft", "text": "", "choices": []} for r in quiet})
     mark = mark or mark_queued
     out: list[dict] = []
 
@@ -929,14 +1025,15 @@ def clear_backlog(cands: dict[str, dict], refs: list[str], *, rules: str, now: d
         if not dry_run:
             mark(c["ledger_id"], c["since"], outcome, now=now, **kw)
 
-    def decide(ref: str, text: str, choices=()) -> None:
+    def decide(ref: str, text: str, choices=(), line: bool = False) -> None:
+        """A question for the owner. `line`: code wrote it (gate), whole."""
         c = cands[ref]
         if stats["decisions"] >= MAX_BACKLOG_DECISIONS:
             stats["deferred"] += 1
             return
         stats["decisions"] += 1
         out.append({"ref": ref, "ok": False, "backlog": True,
-                    "decision": f"{_clean(text, 170)} ({c['age_days']}d)"})
+                    "decision": f"{_clean(text, 240 if line else 170)} ({c['age_days']}d)"})
         picks = backlog_choices(choices)
         record(c, "decision", note=text, **({"choices": picks} if picks else {}))
 
@@ -952,9 +1049,9 @@ def clear_backlog(cands: dict[str, dict], refs: list[str], *, rules: str, now: d
         if p["action"] == "decide":
             decide(ref, text, p.get("choices"))
             continue
-        why = rail(c, text)
-        if why:
-            decide(ref, f"Reply needs you ({why}): {_clean(text, 120)}")
+        held = gate(c, text)
+        if held:
+            decide(ref, held["line"], held["choices"], line=True)
             continue
         says, ack = text, False
         if asks_for_facts(c):
@@ -975,6 +1072,9 @@ def clear_backlog(cands: dict[str, dict], refs: list[str], *, rules: str, now: d
             out.append({"ref": ref, "ok": True, "backlog": True, "says": says, "ack": ack,
                         "draft_id": res.get("draft_id")})
             record(c, "drafted", draft_id=res.get("draft_id") or "", note=says)
+        elif res.get("owner"):
+            held = _refused(c, res["owner"])
+            decide(ref, held["line"], held["choices"], line=True)
         elif res.get("need"):
             decide(ref, f"The writer asks: {_clean(res['need'], 140)}")
         else:
@@ -992,11 +1092,12 @@ def note_plan(cands: dict[str, dict], plan: dict, drafts: list[dict], escalated:
     mark = mark or mark_queued
     queue = [c for c in cands.values() if c.get("kind") == "backlog"]
     done = [(d["ref"], "" if d.get("failed") else "drafted" if d.get("ok") else "decision",
-             d.get("says") or d.get("decision") or "", d.get("draft_id") or "") for d in drafts]
-    done += [(p["ref"], "decision", p.get("decision") or "", "") for p in plan.get("needs_you") or []]
-    done += [(e["ref"], "escalated", e.get("why") or "", "") for e in escalated]
+             d.get("says") or d.get("decision") or "", d.get("draft_id") or "",
+             d.get("choices") or ()) for d in drafts]
+    done += [(p["ref"], "decision", p.get("decision") or "", "", ()) for p in plan.get("needs_you") or []]
+    done += [(e["ref"], "escalated", e.get("why") or "", "", ()) for e in escalated]
     taken: set[str] = set()
-    for ref, outcome, note, draft_id in done:
+    for ref, outcome, note, draft_id, choices in done:
         c = cands[ref]
         keys = _thread_keys(c)
         taken |= keys
@@ -1004,7 +1105,8 @@ def note_plan(cands: dict[str, dict], plan: dict, drafts: list[dict], escalated:
         if not outcome or (row and row.get("queued")):
             continue
         since = (row or {}).get("since") or (c.get("brief") or {}).get("last_inbound") or ""
-        mark((row or c).get("ledger_id") or "", since, outcome, now=now, draft_id=draft_id, note=note)
+        mark((row or c).get("ledger_id") or "", since, outcome, now=now, draft_id=draft_id, note=note,
+             **({"choices": list(choices)} if choices else {}))
     return taken
 
 
@@ -1625,10 +1727,13 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
     if morning:
         for p in plan.get("drafts") or []:
             c = cands[p["ref"]]
-            why = rail(c, p.get("reply_must_say") or "")
-            if why:
-                drafts.append({"ref": p["ref"], "ok": False,
-                               "decision": f"Reply needs you ({why}): {_clean(p.get('reply_must_say'), 120)}"})
+            held = gate(c, p.get("reply_must_say") or "")
+            if held:
+                # Asked once: a follow-up the owner said gets no reply is
+                # not asked again for the same message.
+                if not (held["rule"] == "no_reply" and c.get("asked")):
+                    drafts.append({"ref": p["ref"], "ok": False, "decision": held["line"],
+                                   "choices": held["choices"]})
                 continue
             says, ack = p.get("reply_must_say") or "", False
             if asks_for_facts(c):
@@ -1643,11 +1748,26 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
             if res.get("ok"):
                 drafts.append({"ref": p["ref"], "ok": True, "says": says, "ack": ack,
                                "draft_id": res.get("draft_id")})
+            elif res.get("owner"):
+                held = _refused(c, res["owner"])
+                drafts.append({"ref": p["ref"], "ok": False, "decision": held["line"],
+                               "choices": held["choices"]})
             else:
                 decision = (f"The draft could not be made ({_clean(res.get('why'), 80)}). "
                             + (f"Question: {_clean(res.get('need'), 120)}" if res.get("need")
                                else _clean(p.get("reply_must_say"), 120)))
                 drafts.append({"ref": p["ref"], "ok": False, "decision": decision, "failed": True})
+        # A decision on a thread the owner said gets no reply is the one
+        # quiet question, asked once (gate).
+        quiet = []
+        for p in plan.get("needs_you") or []:
+            c = cands[p["ref"]]
+            if draft_gate.no_reply_said(c.get("owner_said")):
+                if c.get("asked"):
+                    continue
+                p = dict(p, decision=draft_gate.check(c, "")["line"])
+            quiet.append(p)
+        plan["needs_you"] = quiet
         handoffs = [(p, cands[p["ref"]]) for p in plan.get("escalate") or []
                     if cands[p["ref"]].get("conversation_id")]
         # An item with no thread cannot be handed off; it is the user's call.

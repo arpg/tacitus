@@ -898,6 +898,10 @@ def cmd_add(args) -> int:
     db.commit()
     placed = _place(db, args.id, created=True, project=project or None)
 
+    db.close()
+    # A row on a thread the owner already decided carries his word.
+    carry_owner_decisions(args.id)
+    db = _get_db()
     row = db.execute("SELECT * FROM ledger WHERE id = ?", (args.id,)).fetchone()
     db.close()
     out = {"ok": True, "action": "added", "entry": _row_to_dict(row), **told}
@@ -1371,7 +1375,7 @@ def cmd_reply_queue(args) -> int:
         zone = user_tz.zone()
     except Exception:
         zone = None   # the system's zone
-    queue = reply_backlog(get_open_entries(), draft_convs=None, zone=zone,
+    queue = reply_backlog(with_owner_decisions(get_open_entries()), draft_convs=None, zone=zone,
                           cap=REPLY_BACKLOG_CAP, min_days=min(args.min_age, REPLY_DRAFT_DAYS))
     owed = queue[0]["total"] if queue else 0
     entries = [e for e in queue if e["age_days"] >= args.min_age]
@@ -2385,7 +2389,8 @@ def reply_backlog(rows: list[dict], today=None, *, draft_convs=(), zone=None,
             queued = {}
         kept = kept_thread(o, brief)
         thread =[{"own": bool(m.get("own")), "received": str(m.get("received") or "")[:10],
-                   "gist": str(m.get("gist") or "")[:300]}
+                   "gist": str(m.get("gist") or "")[:300],
+                   **({"state": str(m["state"])} if m.get("state") else {})}
                   for m in (brief.get("messages") or [])[-3:] if isinstance(m, dict)]
         same_sender = target["from"].lower() == str(o.get("from_email") or "").lower()
         out.append({
@@ -2400,11 +2405,184 @@ def reply_backlog(rows: list[dict], today=None, *, draft_convs=(), zone=None,
             "notes": str(o.get("notes") or "")[:300],
             "last_action": str(o.get("last_action") or "")[:200],
             "has_draft": None if drafts is None else bool(conv) and conv in drafts,
-            "queued": queued, "kept": kept})
+            "queued": queued, "kept": kept,
+            # What the owner already decided on this thread (owner_decisions),
+            # when a caller read it (with_owner_decisions): a reply that goes
+            # against it is never drafted (draft_gate).
+            **({"owner_said": o["owner_said"]} if o.get("owner_said") else {})})
     out.sort(key=lambda e: (-e["age_days"], e["id"]))
     for e in out:
         e["total"] = len(out)
     return out[:cap]
+
+
+# ── the owner's word on a thread ──────────────────────────────────────
+# A row the owner closed in his own words, or by his click, is his
+# decision on that thread. A later message in the same conversation makes
+# a new row (a second detector, a renewal), and that row must carry the
+# decision: no lane may draft against it. owner_decisions() reads it from
+# the close events, so it reaches every row of the conversation, new or
+# old, whenever it was made.
+
+# The close signals that carry the owner's own word: what he said in chat,
+# his click (Handled, Not needed), a standing rule he wrote.
+OWNER_SIGNALS = ("user_stated", "user_handled", "user_rule")
+OWNER_SAID_MAX = 3
+OWNER_SAID_CHARS = 160
+# His words that mean no reply goes out: "no response", "don't reply",
+# "not joining", "decline", "not needed". The Replies card's Not needed
+# note matches too.
+NO_REPLY_RE = re.compile(
+    r"\bno (?:reply|replies|response|answer|email|mail)\b|"
+    r"\b(?:don'?t|do not|never|won'?t|will not|not) (?:reply|respond|answer|send|write)\b|"
+    r"\bnot (?:joining|join|attending|attend|participating|participate|going|interested|"
+    r"taking part|serving|needed|doing (?:it|this))\b|"
+    r"\b(?:will not|won'?t|can'?t|cannot) (?:join|attend|participate|take part|serve|make it|go)\b|"
+    r"\bdeclin\w*|\bturn(?:ed|ing)? (?:it|this|them) down\b|\bpass(?:ing)? on (?:it|this)\b|"
+    r"\b(?:just )?file (?:it|this)(?: away)?\b|\bignore (?:it|this|them)\b",
+    re.I)
+
+
+def says_no_reply(text: str) -> bool:
+    """Whether the owner's words say no reply goes out on the thread."""
+    return bool(NO_REPLY_RE.search(str(text or "")))
+
+
+def owner_decisions(conversation_ids, db_path: Path | None = None) -> dict[str, list[dict]]:
+    """{conversation id: [decision, ...]}, newest first, OWNER_SAID_MAX
+    each, for the conversations given that carry one. A decision is a
+    close of a main-EA row on that conversation under an OWNER_SIGNALS
+    signal: {"row", "at" (the day), "signal", "said" (his quote, else the
+    close's note), "no_reply"}. A close the owner later reopened by hand
+    is no decision; a renewal (a new message) leaves it standing.
+    {} when nothing is asked or the ledger cannot be read."""
+    convs = sorted({str(c) for c in conversation_ids or () if c})
+    if not convs:
+        return {}
+    try:
+        import closure
+    except ModuleNotFoundError:  # imported as preprocessor.<mod>
+        from preprocessor import closure
+    path = db_path or DB_PATH
+    try:
+        conn = guarded_connect(path)
+    except Exception:
+        return {}
+    conn.row_factory = sqlite3.Row
+    out: dict[str, list[dict]] = {}
+    try:
+        for i in range(0, len(convs), 400):
+            part = convs[i:i + 400]
+            marks = ",".join("?" * len(part))
+            rows = conn.execute(f"""
+                SELECT e.seq, e.ts, e.entry_id, e.kind, e.signal, e.actor, e.evidence, e.note,
+                       l.conversation_id, COALESCE(l.last_action, '') AS last_action
+                FROM ledger_events e JOIN ledger l ON l.id = e.entry_id
+                WHERE l.conversation_id IN ({marks}) AND l.source IS NULL
+                  AND e.kind IN ('close', 'reopen')
+                ORDER BY e.seq
+            """, part).fetchall()
+            standing: dict[str, dict] = {}
+            for r in rows:
+                if r["kind"] == "reopen":
+                    if not closure.is_renewal(r["kind"], r["actor"]):
+                        standing.pop(r["entry_id"], None)
+                    continue
+                if r["signal"] not in OWNER_SIGNALS:
+                    continue
+                try:
+                    ev = json.loads(r["evidence"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    ev = {}
+                ev = ev if isinstance(ev, dict) else {}
+                quote = str(ev.get("quote") or ev.get("rule") or "").strip()
+                note = str(r["note"] or "").strip()
+                said = " ".join((quote or note or r["last_action"]).split())
+                standing[r["entry_id"]] = {
+                    "row": r["entry_id"], "at": str(r["ts"] or "")[:10], "signal": r["signal"],
+                    "said": brief_title(said, OWNER_SAID_CHARS), "conversation_id": r["conversation_id"],
+                    "no_reply": says_no_reply(" ".join((quote, note)))}
+            for d in standing.values():
+                out.setdefault(d.pop("conversation_id"), []).append(d)
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    for conv, found in out.items():
+        found.sort(key=lambda d: d["at"], reverse=True)
+        out[conv] = found[:OWNER_SAID_MAX]
+    return out
+
+
+def _conversation_of(entry: dict) -> str:
+    brief = entry.get("thread_brief") if isinstance(entry.get("thread_brief"), dict) else {}
+    return str(entry.get("conversation_id") or brief.get("conversation_id") or "")
+
+
+def with_owner_decisions(rows: list[dict], db_path: Path | None = None) -> list[dict]:
+    """The rows, each with `owner_said` (owner_decisions of its
+    conversation) where it has one. A row's own close counts: a row that
+    reopened on a new message still carries what he said when it closed.
+    Changes the dicts in place and returns the list."""
+    found = owner_decisions({_conversation_of(r) for r in rows or [] if isinstance(r, dict)},
+                            db_path)
+    for r in rows or []:
+        if isinstance(r, dict) and found.get(_conversation_of(r)):
+            r["owner_said"] = found[_conversation_of(r)]
+    return rows
+
+
+def owner_said_line(decisions) -> str:
+    """The owner's newest decision on a thread as one line for a note or a
+    model's brief: 'On Nov 14 the user said: "Not joining. No response."
+    No reply goes out.' '' when there is none."""
+    d = next((x for x in decisions or () if isinstance(x, dict) and x.get("said")), None)
+    if not d:
+        return ""
+    try:
+        day = date.fromisoformat(str(d.get("at") or "")[:10])
+        when = f"On {day:%b} {day.day} the user"
+    except ValueError:
+        when = "Earlier the user"
+    line = f'{when} said: "{d["said"]}"'
+    return line + (" No reply goes out." if d.get("no_reply") else "")
+
+
+def carry_owner_decisions(entry_id: str, db_path: Path | None = None) -> list[dict]:
+    """On a row just added (or opened again) on a conversation the owner
+    already decided: `owner_said` in its metadata and his line first in
+    its notes, so every reader of the row sees it. Returns the decisions
+    ([] when there are none). Never raises: a row without the note is
+    still read with owner_decisions by every lane that drafts."""
+    try:
+        entry = get_entry(entry_id, db_path)
+        conv = _conversation_of(entry) if entry else ""
+        decisions = owner_decisions([conv], db_path).get(conv) if conv else None
+        if not decisions:
+            return []
+        line = owner_said_line(decisions)
+        notes = str(entry.get("notes") or "")
+        conn = guarded_connect(db_path or DB_PATH)
+        try:
+            row = conn.execute("SELECT metadata FROM ledger WHERE id = ?", (entry_id,)).fetchone()
+            try:
+                meta = json.loads((row[0] if row else "") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+            meta = meta if isinstance(meta, dict) else {}
+            meta["owner_said"] = decisions
+            if line and line not in notes:
+                notes = f"{line} {notes}".strip()
+            conn.execute("UPDATE ledger SET metadata = ?, notes = ? WHERE id = ?",
+                         (json.dumps(meta, sort_keys=True, default=str), notes, entry_id))
+            conn.commit()
+        finally:
+            conn.close()
+        return decisions
+    except Exception as e:
+        print(f"NOTE: the owner's earlier word was not carried to {entry_id}: {str(e)[:160]}",
+              file=sys.stderr)
+        return []
 
 
 # drafted: a draft is made; decision: a question for the user, in `note`;
@@ -2864,6 +3042,10 @@ def add_entry(entry_id: str, entry_type: str, description: str,
     ))
     conn.commit()
     conn.close()
+    # A follow-up on a thread the owner already decided (a second
+    # detector's row, a priority row) carries his word from the start.
+    if conversation_id and source is None:
+        carry_owner_decisions(entry_id, db_path)
     return True
 
 

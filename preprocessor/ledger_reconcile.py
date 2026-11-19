@@ -415,6 +415,10 @@ def items_for(group: dict, *, index: dict, df: dict[str, int], user: set[str],
         wait = _ledger.waiting_on_reply(row, now.astimezone().date())
         if wait:
             item["waiting_on_user_question"] = wait
+        if row.get("owner_said"):
+            # His word when he closed a row of this thread: a follow-up
+            # that asks the same again is not new work on its own.
+            item["owner_said"] = _ledger.owner_said_line(row["owner_said"])
         conv = (row.get("conversation_id") or "").strip() or _prev_thread(row)
         if conv:
             brief = row.get("thread_brief") if isinstance(row.get("thread_brief"), dict) else None
@@ -455,6 +459,7 @@ You get one group of open ledger rows ({group}) and, for each, what the mail sho
 For every row, by its ref, answer:
 - verdict: "done" when the thread shows the row's work happened (he replied to the person who asked, the thing was sent, the meeting was placed, the question was answered); "duplicate" when another row in this group (give `of`) carries the same work; "lapsed" when the row's only work was a chance that ended at a time now past (a vote, an RSVP, a registration, a sign-up, a call for nominations or volunteers, going to an event) and the thread shows it ended (the event was held, the results came out, the window closed); else "open". Never say done because time passed, and never because the row's note sounds finished: the thread must show it. Work he still owes after its date (a letter, a review, a report, a form) is never lapsed.
 - thread: for a row with candidate threads, the T ref that is the row's own thread, or "" when none is. A thread that merely mentions the topic is not the row's thread.
+- owner_said, when a row has it, is what the user already decided on its thread, in his words. Never write a note that goes against it.
 - note: one sentence, at most {note_chars} characters, on what the mail shows that the row's last_action does not: a reply arrived, the date moved, the thing was sent, who now owns it. Empty when nothing new happened, when the last_action already says it, or when the thread is kept (counts only); never write "nothing new" or that content is not visible. Plain words, no em-dash, no advice.
 - why: one short sentence for a done, duplicate or lapsed verdict, naming the message (date and who) that shows it.
 
@@ -712,7 +717,7 @@ def run(*, dry_run: bool = False, only: str = "", now: datetime | None = None,
         return rec
     synced = (sync or (lambda: mail_privacy.sync_briefs(cap=BRIEF_CAP, now=now)))()
     rec["briefs"] = synced if isinstance(synced, dict) else {}
-    rows = rows if rows is not None else _ledger.get_open_entries()
+    rows = rows if rows is not None else _ledger.with_owner_decisions(_ledger.get_open_entries())
     rows = [r for r in rows if (r.get("status") or "open") in _ledger.OPEN_STATUSES]
     index = index if index is not None else mail_privacy.load_index()
     user = user if user is not None else mail_privacy._user_addresses()
