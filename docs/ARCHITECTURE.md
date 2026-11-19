@@ -505,7 +505,11 @@ them by ref, code applies the rails (an afternoon pick the sent folder or
 the EA channel already shows the user on leaves "since this morning" for
 an "Already in motion" line), drafts through the writer and renders
 the post, and the open-claims audit asks Claude about every row the post
-shows (remote verdicts when Claude fails). Both runs then work the reply
+shows (remote verdicts when Claude fails). No scheduled lane drafts a
+reply the owner must decide (`draft_gate.py`): one against his earlier
+word on the thread, a choice only he makes, an invitation answer or a
+big reply-all becomes a decision, and `create-reply` refuses it for any
+`cron-` run. Both runs then work the reply
 queue: the briefing JSON's `reply_backlog` (`ledger.reply_backlog`) holds
 the threads that have waited a day or more for the user's reply, aged from
 the other side's last message. A second remote call answers draft, decide
@@ -2606,6 +2610,7 @@ Files that participate in prompt construction and action execution:
 | `scripts/install/setup_questions.py` | Every install question as data (answer key, kind, label, default sources, condition, notes), read by `user_init.py` and `setup_web.py`; the README's "Your responsibility" notice for the profile phase |
 | `preprocessor/mail_links.py` | Redirect links in an email body (google.com/url?q=, SafeLinks) and where its quoted history starts; the Send card warning and gmail_client's quoting use it |
 | `preprocessor/reply_files.py` | The files a reply names, for the bot to attach after the turn: path extraction, the turn's own uploads, the (thread, digest) sent log |
+| `preprocessor/draft_gate.py` | Whether a scheduled lane may draft a reply without the owner's word in that turn: never against his earlier decision on the thread (`ledger.owner_decisions`; a no-reply thread gets one quiet question), never for a choice only he makes, a yes or no to an invitation, an RSVP or a reply-all to 10 or more; `check` for the remote briefing, `cron_refusal` for `graph_actions` create-reply and create-draft and `mail_actions` on Gmail (status `needs_owner`) |
 | `preprocessor/reply_scan.py` | The replies that wait, for a chat turn that scans the inbox (the `scan` module): the reply queue as a prompt block with the rule to account for every row, a project room's part of it, and after the turn the footer that names each row the reply left out |
 | `preprocessor/slack_reader.py` | Shim over `chat_read` |
 | `preprocessor/slack_notifier.py` | Shim over `chat_notify` (`post_to_slack`) |
