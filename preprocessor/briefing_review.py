@@ -217,6 +217,11 @@ def collect_items(lists: dict, cands: dict, *, follow_ups=(), room_posts=()) -> 
     for p in room_posts or []:
         for r in p.get("refs") or []:
             rooms_of.setdefault(r, []).append(p.get("project") or "")
+    import keep_gate
+    # A kept item (keep_gate) is named in fixed words wherever the post or
+    # its footer names it: hosted turns read the channel.
+    kept_ids = {c.get("ledger_id") for c in cands.values()
+                if isinstance(c, dict) and keep_gate.kept(c.get("keep_level")) and c.get("ledger_id")}
     items: list[dict] = []
     by_ref: dict[str, dict] = {}
     for sec in order:
@@ -233,16 +238,18 @@ def collect_items(lists: dict, cands: dict, *, follow_ups=(), room_posts=()) -> 
                           "conversation_id": c.get("conversation_id") or "",
                           "message_id": c.get("message_id") or "",
                           "title": c.get("title") or "", "kind": c.get("kind") or "",
+                          "kept": keep_gate.kept(c.get("keep_level")),
                           "rooms": rooms_of.get(ref, []),
                           "owner_said": [d for d in c.get("owner_said") or [] if isinstance(d, dict)]})
             by_ref[ref] = items[-1]
     for n, f in enumerate(follow_ups or [], 1):
         if isinstance(f, dict) and f.get("id"):
+            kept = f["id"] in kept_ids or keep_gate.kept(keep_gate.label_level(f))
+            desc = keep_gate.KEPT_NAME if kept else f.get("description") or ""
             items.append({"ref": f"F{n}", "section": "followup", "sections": ["followup"],
-                          "ledger_id": f["id"],
-                          "line": f"Follow-up due: {_one(f.get('description'), 120)}",
+                          "ledger_id": f["id"], "line": f"Follow-up due: {_one(desc, 120)}",
                           "conversation_id": f.get("conversation_id") or "", "message_id": "",
-                          "title": f.get("description") or "", "kind": "ledger", "rooms": []})
+                          "title": desc, "kind": "ledger", "rooms": [], "kept": kept})
     n = 0
     for p in room_posts or []:
         for lid, desc in zip(p.get("also") or [], p.get("also_text") or []):
@@ -525,44 +532,12 @@ def user_close(row: dict, events: list[dict]) -> dict | None:
 
 def keep_levels(rows: list[dict]) -> dict[str, str]:
     """{row id: keep level} for rows from mail; a row from no mail is
-    `full`. The strictest of the thread's records, the row's own
-    message, its brief's level and its kept label (a label alone reads
-    `facts`). Fails closed: when the gate cannot say, every row from mail
-    reads `local`."""
-    out: dict[str, str] = {}
-    try:
-        import mail_privacy
-        import privacy_rules
-        import remote_llm
-        index = mail_privacy.load_index()
-        ctx = mail_privacy.keep_context(remote_llm.config())
-    except Exception as e:
-        print(f"briefing_review: keep check unavailable, mail rows withheld: {str(e)[:120]}",
-              file=sys.stderr)
-        for r in rows:
-            out[r.get("id") or ""] = "local" if (r.get("conversation_id") or r.get("source_message_id")) \
-                else "full"
-        return out
-    for r in rows:
-        rid = r.get("id") or ""
-        level = "full"
-        try:
-            conv, mid = r.get("conversation_id") or "", r.get("source_message_id") or ""
-            if conv:
-                level = privacy_rules.stricter(level, mail_privacy.conversation_level(conv, index, ctx))
-            rec = index["by_id"].get(mid) if mid else None
-            if rec is not None:
-                level = privacy_rules.stricter(level, mail_privacy.level_of(rec, index=index, ctx=ctx))
-            brief = _meta(r).get("thread_brief") or r.get("thread_brief") or {}
-            if isinstance(brief, dict) and brief.get("keep_level") in privacy_rules.LEVELS:
-                level = privacy_rules.stricter(level, brief["keep_level"])
-            if mail_privacy.kept_label(r) or mail_privacy.kept_label(_meta(r)) or \
-                    (isinstance(brief, dict) and mail_privacy.kept_label(brief)):
-                level = privacy_rules.stricter(level, "facts")
-        except Exception:
-            level = "local" if (r.get("conversation_id") or r.get("source_message_id")) else "full"
-        out[rid] = level
-    return out
+    `full`. The shared check (keep_gate.levels): the strictest of the
+    thread's records, the row's own message, its brief's level, its kept
+    label (a label alone reads `facts`) and the keep list. Fails closed:
+    when the gate cannot say, every row from mail reads `local`."""
+    import keep_gate
+    return keep_gate.levels(rows)
 
 
 def _open(level: str) -> bool:
@@ -1207,7 +1182,12 @@ def footer(review: dict, items: list[dict]) -> list[str]:
         return []
     name = _name(review.get("model") or "")
     by_ref = {i["ref"]: i for i in items}
-    t = {r: _title(i) for r, i in by_ref.items()}
+    import keep_gate
+    withheld = set(review.get("withheld") or ())
+    # A kept item is named in fixed words (keep_gate): hosted turns read
+    # the channel the footer lands in.
+    t = {r: keep_gate.KEPT_NAME if i.get("kept") or r in withheld else _title(i)
+         for r, i in by_ref.items()}
     if st == "local":
         head = (":mag: *Checked before sending* by your own model, not by Claude or Codex. "
                 "Your Models setting sends this check there.")

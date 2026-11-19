@@ -24,7 +24,9 @@ composes each thread into a brief, and Claude judges the briefs.
        duplicate or lapsed (a chance that ended, such as a vote or an
        RSVP), a thread for a row that has none, and one line on
        what changed. Refs it invents are dropped. A kept thread (a
-       keep_from_frontier sender) reaches it as counts and dates only.
+       keep_from_frontier sender) reaches it as counts and dates only,
+       and a row kept below Summary (keep_gate) as its title and dates,
+       with no note or last action.
     4. Code writes: a `done`, `duplicate` or `lapsed` verdict is a close PROPOSAL
        (closure.propose_or_promote; the morning briefing's "Looks done?"
        line and the DM card carry it, one click closes; a signal the hill
@@ -393,15 +395,36 @@ def _prev_thread(row: dict) -> str:
     return str(rec.get("thread") or "")
 
 
+def kept_rows(rows: list[dict], index: dict) -> set[str]:
+    """Ids of the rows kept from hosted models below Summary (keep_gate,
+    over this night's index): the judge gets their title, people and
+    dates, never their notes, last action or thread text. Fails closed:
+    every row from mail when the check cannot run."""
+    import keep_gate
+    try:
+        import mail_privacy
+        cfg = remote_llm.config()
+        recs = (cfg, index, mail_privacy.keep_context(cfg))
+    except Exception as e:
+        print(f"ledger_reconcile: keep check unavailable, mail rows go as counts: {str(e)[:120]}",
+              file=sys.stderr)
+        recs = lambda _row: None  # noqa: E731  (each row from mail reads local)
+    found = keep_gate.levels(rows, records=recs)
+    return {rid for rid, lv in found.items() if not keep_gate.may_hand_off(lv)}
+
+
 def items_for(group: dict, *, index: dict, df: dict[str, int], user: set[str],
               now: datetime, brief_of=None, table: list[dict] | None = None
               ) -> tuple[list[dict], dict[str, dict]]:
     """(the items Claude sees, {thread ref: brief}). Each item carries its
     thread's view when the row has one, else up to CAND_PER_ROW
-    candidate views by ref (T1, T2, ...)."""
+    candidate views by ref (T1, T2, ...). A row kept below Summary
+    (kept_rows) goes as its title, people and dates, its thread as
+    counts."""
     import mail_privacy
     brief_of = brief_of or (lambda conv: mail_privacy.thread_brief(conv, index, user=user, now=now))
     table = table if table is not None else thread_table(index, now=now, user=user)
+    kept = kept_rows(group["rows"], index)
     items, threads = [], {}
     tn = 0
     for n, row in enumerate(group["rows"], 1):
@@ -412,6 +435,16 @@ def items_for(group: dict, *, index: dict, df: dict[str, int], user: set[str],
                 "opened": (row.get("date_identified") or "")[:10],
                 "due": row.get("deadline") or "", "last_action": (row.get("last_action") or "")[:300],
                 "notes": (row.get("notes") or "")[:NOTES_CHARS]}
+        if row.get("id") in kept:
+            item.update(kept=True, last_action="", notes="")
+            conv = (row.get("conversation_id") or "").strip()
+            brief = row.get("thread_brief") if isinstance(row.get("thread_brief"), dict) else None
+            if conv and (not brief or brief.get("conversation_id") != conv):
+                brief = brief_of(conv)
+            if brief:
+                item["thread"] = _kept_stub(brief)
+            items.append(item)
+            continue
         wait = _ledger.waiting_on_reply(row, now.astimezone().date())
         if wait:
             item["waiting_on_user_question"] = wait
@@ -454,7 +487,7 @@ SYSTEM = """You reconcile a professor's obligation ledger with his mail for his 
 {profile}
 It is {now}.
 
-You get one group of open ledger rows ({group}) and, for each, what the mail shows: the row's own thread as a list of messages (date, who, a one-line gist, the ask), or candidate threads (T refs) that may be the row's thread. "the user" is the professor. A thread marked kept shows counts and dates only. Nothing here is the mail's text.
+You get one group of open ledger rows ({group}) and, for each, what the mail shows: the row's own thread as a list of messages (date, who, a one-line gist, the ask), or candidate threads (T refs) that may be the row's thread. "the user" is the professor. A thread or a row marked kept shows its title, counts and dates only. Nothing here is the mail's text.
 
 For every row, by its ref, answer:
 - verdict: "done" when the thread shows the row's work happened (he replied to the person who asked, the thing was sent, the meeting was placed, the question was answered); "duplicate" when another row in this group (give `of`) carries the same work; "lapsed" when the row's only work was a chance that ended at a time now past (a vote, an RSVP, a registration, a sign-up, a call for nominations or volunteers, going to an event) and the thread shows it ended (the event was held, the results came out, the window closed); else "open". Never say done because time passed, and never because the row's note sounds finished: the thread must show it. Work he still owes after its date (a letter, a review, a report, a form) is never lapsed.

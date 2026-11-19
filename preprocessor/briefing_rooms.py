@@ -40,6 +40,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import keep_gate  # noqa: E402
 
 MATCH_FLOOR = 3
 MAX_PROJECTS = 2
@@ -209,7 +210,10 @@ def also_open(pid: str, open_rows: list[dict], shown: set[str], conn, *,
         item = {"ledger_id": lid, "conversation_id": o.get("conversation_id") or "",
                 "title": o.get("description") or "", "summary": o.get("notes") or ""}
         if pid in projects_for(item, idx, conn, matcher=matcher):
-            out.append(o.get("description") or lid)
+            # A row kept from hosted models is named in code's fixed words
+            # (keep_gate): room sessions read this post.
+            out.append(keep_gate.KEPT_NAME if keep_gate.kept(keep_gate.label_level(o))
+                       else o.get("description") or lid)
             if ids is not None:
                 ids.append(lid)
         if len(out) >= ALSO_OPEN:

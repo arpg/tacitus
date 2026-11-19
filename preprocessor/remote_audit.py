@@ -20,7 +20,8 @@ The run:
      and important lists with a short why, up to four pattern lines, and
      up to three items to hand to Claude (a whole-thread read, a report or
      proposal draft, a reply to a program officer). A ref the call invents
-     is dropped; a row kept from hosted models is never handed to it.
+     is dropped; a row kept from hosted models below Summary (keep_gate)
+     is never handed to it, and the post lists it as the owner's.
   3. Code renders the skill's template. The pre-send review checks it
      against the ledger (briefing_review, the hosted model the routing
      table names for `review`); rows it drops leave the post, a "done"
@@ -51,6 +52,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import keep_gate  # noqa: E402
 import ledger as _ledger  # noqa: E402
 import remote_briefing as rb  # noqa: E402
 import remote_llm  # noqa: E402
@@ -105,7 +107,10 @@ def candidates(rows: list[dict], b: dict, *, today: date) -> dict[str, dict]:
             "ask": (brief or {}).get("ask") or "",
             "conversation_id": o.get("conversation_id") or "",
             "message_id": o.get("source_message_id") or "",
-            "kept": bool(o.get("kept_from_frontier") or o.get("kept_from_claude")), "brief": brief}
+            "received": str(o.get("kept_received") or (brief or {}).get("last_inbound")
+                            or (brief or {}).get("latest") or ""),
+            "subject": str((brief or {}).get("subject") or ""),
+            "keep_level": keep_gate.label_level(o), "brief": brief}
     n = 0
     for t in b.get("new_dropped_threads") or []:
         conv = t.get("conversation_id") or ""
@@ -119,7 +124,8 @@ def candidates(rows: list[dict], b: dict, *, today: date) -> dict[str, dict]:
             "due": rec.get("deadline") or "", "days_left": None,
             "days_stale": t.get("days_stale"), "summary": t.get("body_preview") or "",
             "ask": rec.get("ask") or "", "conversation_id": conv,
-            "message_id": t.get("message_id") or "", "kept": False, "brief": None}
+            "message_id": t.get("message_id") or "", "keep_level": keep_gate.label_level(t),
+            "received": t.get("received") or "", "subject": t.get("subject") or "", "brief": None}
     return out
 
 
@@ -162,7 +168,7 @@ Use only the items given, and pick them by ref. Write short plain sentences. Nev
 - critical: at most 8 refs that need action this week: a deadline within seven days, a consequence if it slips, a sponsor or program officer waiting. `why` is one short sentence from the item's facts.
 - important: at most 8 more refs that need action within about a month, each with a short why.
 - patterns: at most 4 short observations that the items show across the week: kinds of mail that wait, senders who wait long, work that keeps slipping. Say nothing the items do not show.
-- handoffs: at most 3 refs that need more than these facts: a whole-thread read to know whether a reply is needed, a report or proposal to draft, a reply to a program officer. Give why, and the task for the assistant.
+- handoffs: at most 3 refs that need more than these facts: a whole-thread read to know whether a reply is needed, a report or proposal to draft, a reply to a program officer. Give why, and the task for the assistant. Never an item marked `kept`: it stays on his own model.
 Never state anything about the calendar: you cannot see it. Never call an item done; the ledger decides that.
 
 {rules}"""
@@ -171,7 +177,8 @@ Never state anything about the calendar: you cannot see it. Never call an item d
 def _prompt_items(cands: dict[str, dict]) -> list[dict]:
     keep = ("kind", "title", "who", "status", "type", "due", "days_left", "days_stale",
             "last_action", "summary", "ask")
-    return [{"ref": r, **{k: c[k] for k in keep if c.get(k) not in (None, "", [])}}
+    return [{"ref": r, **{k: c[k] for k in keep if c.get(k) not in (None, "", [])},
+             **({} if keep_gate.may_hand_off(c.get("keep_level")) else {"kept": True})}
             for r, c in cands.items()]
 
 
@@ -193,7 +200,8 @@ def ask_plan(cands: dict[str, dict], closed: list[dict], *, now: datetime, chat=
 
 def check_plan(obj: dict, cands: dict[str, dict]) -> dict:
     """Unknown refs dropped, caps applied, a ref in one list only, and no
-    hand-off without a thread or of a row kept from hosted models."""
+    hand-off without a thread or of a row kept from hosted models below
+    Summary (keep_gate): those are listed as the owner's (`kept`)."""
     def picks(key, cap, used):
         out = []
         for p in (obj or {}).get(key) or []:
@@ -204,8 +212,9 @@ def check_plan(obj: dict, cands: dict[str, dict]) -> dict:
     used: set[str] = set()
     plan = {"critical": picks("critical", MAX_CRITICAL, used),
             "important": picks("important", MAX_IMPORTANT, used)}
-    plan["handoffs"] = [p for p in picks("handoffs", MAX_HANDOFFS, set())
-                        if cands[p["ref"]].get("conversation_id") and not cands[p["ref"]].get("kept")]
+    handoffs = [p for p in picks("handoffs", MAX_HANDOFFS, set()) if cands[p["ref"]].get("conversation_id")]
+    plan["handoffs"] = [p for p in handoffs if keep_gate.may_hand_off(cands[p["ref"]].get("keep_level"))]
+    plan["kept"] = [p for p in handoffs if p not in plan["handoffs"]]
     plan["patterns"] = [rb._clean(s, 200) for s in (obj or {}).get("patterns") or []
                         if isinstance(s, str) and s.strip()][:MAX_PATTERNS]
     return plan
@@ -229,6 +238,10 @@ def fallback_plan(cands: dict[str, dict]) -> dict:
 # ── the post ──────────────────────────────────────────────────────────
 
 def _line(c: dict, why: str) -> str:
+    if rb._kept(c):
+        # Code's fixed words alone (keep_gate.kept_line): hosted turns read
+        # the channel this post lands in.
+        return f"• {rb._kept_text(c)}"
     who = f" ({rb._clean(c.get('who'), 60)})" if c.get("who") else ""
     due = f", due {c['due']}" if c.get("due") else ""
     return f"• *{rb._clean(c.get('title'), 120)}*{who}{due}: {rb._clean(why, 160)}"
@@ -275,10 +288,12 @@ def render(cands: dict[str, dict], plan: dict, *, closed: list[dict], reimb: lis
     section("🔴 Critical (action this week):", plan.get("critical") or [])
     section("🟡 Important (action soon):", plan.get("important") or [])
     out.extend(["", "🟢 Completed this week:"]
-               + ([f"• {rb._clean(c.get('description'), 120)}" for c in closed[:15]]
+               + ([f"• {keep_gate.KEPT_NAME}" if rb._row_kept(c) else
+                   f"• {rb._clean(c.get('description'), 120)}" for c in closed[:15]]
                   or ["• Nothing closed this week."]))
     out.extend(["", "💰 Reimbursement status:"]
-               + ([f"• {rb._clean(r.get('description'), 100)}: "
+               + ([f"• {keep_gate.KEPT_NAME}" if rb._row_kept(r) else
+                   f"• {rb._clean(r.get('description'), 100)}: "
                    f"{rb._clean(r.get('last_action') or 'no action recorded', 120)}" for r in reimb]
                   or ["• No open reimbursement items."]))
     if plan.get("patterns"):
@@ -290,6 +305,10 @@ def render(cands: dict[str, dict], plan: dict, *, closed: list[dict], reimb: lis
                       for h in hygiene[:8]]
                    + ["Reply `dormant <id>` (or `dormant all`) to apply, `keep <id>` to leave it active."])
     out.extend([""] + _closure_block(closure))
+    kept = [p for p in plan.get("kept") or [] if cands[p["ref"]].get("ledger_id") not in drop]
+    if kept:
+        out.extend(["", "🔒 Kept on your own model, so no hosted model works on these:"]
+                   + [f"• {rb._kept_text(cands[p['ref']])}" for p in kept])
     if handed:
         out.extend(["", "🤖 Handed to Claude (one session in the EA channel):"]
                    + [f"• {rb._clean(cands[h['ref']].get('title'), 120)}: {rb._clean(h.get('task'), 140)}"
@@ -340,9 +359,12 @@ def reviewed_plan(plan: dict, review: dict | None) -> dict:
 
 def run(briefing: dict, *, run_id: str, dry_run: bool = False, now: datetime | None = None,
         rows: list[dict] | None = None, closed: list[dict] | None = None, closure: dict | None = None,
-        chat=None, audit=None, queue=None, review=None) -> tuple[str, dict]:
+        chat=None, audit=None, queue=None, review=None, keep_records=None,
+        links=None) -> tuple[str, dict]:
     """(the post, the run record). `review` stands in for the pre-send
-    review; an `audit` given alone stands in for the still-open audit."""
+    review; an `audit` given alone stands in for the still-open audit.
+    `keep_records` stands in for the mail's records in the keep check,
+    `links` for the Outlook link lookup (remote_briefing.outlook_links)."""
     now = now or datetime.now(timezone.utc)
     t0 = time.monotonic()
     today = now.astimezone().date()
@@ -350,6 +372,8 @@ def run(briefing: dict, *, run_id: str, dry_run: bool = False, now: datetime | N
     closed = closed if closed is not None else _ledger.get_recently_closed(7)
     closure = closure if closure is not None else _closure_numbers()
     cands = candidates(rows, briefing, today=today)
+    keep_gate.annotate(cands.values(), records=keep_records)
+    rb.add_links(cands, links)
     reimb = [o for o in rows if (o.get("type") == "reimbursement")
              and (o.get("status") or "open") in _PENDING]
     counts = {"open": sum(1 for o in rows if (o.get("status") or "open") in ("open", "follow_up")),

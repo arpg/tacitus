@@ -493,6 +493,27 @@ def _mark_parked(obligations: list) -> None:
             ob["parked_until"] = until
 
 
+def _mark_keep(rows: list) -> None:
+    """Stamp each row from mail kept from hosted models with its keep
+    level (keep_gate: its labels and the owner's mail records, failing
+    closed): `keep_level`, and `kept_level` in plain words. Every lane
+    that reads the briefing sees which rows stay on the owner's own
+    model; a scheduled lane's draft on one is refused in code
+    (draft_gate). A row of ordinary mail gets no stamp."""
+    try:
+        import keep_gate
+        import privacy_rules
+        keep_gate.annotate(rows or [])
+    except Exception as e:
+        print(f"  Keep levels: not stamped ({str(e)[:120]})", file=sys.stderr)
+        return
+    for ob in rows or []:
+        if ob.get("keep_level") == "full":
+            ob.pop("keep_level", None)
+        elif ob.get("keep_level"):
+            ob["kept_level"] = privacy_rules.plain(ob["keep_level"])
+
+
 _CLOCK_TIME_RE = re.compile(
     r"\b(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?))(?:\s*(?:MT|MDT|MST|ET|PT|CT))?", re.IGNORECASE)
 
@@ -2728,6 +2749,7 @@ def run_full_daily(force_full: bool = False) -> dict:
 
     # Pre-filter stale obligations (>7 days open)
     stale = _ledger_mod.get_stale_entries(7)
+    _mark_keep(stale)
 
     # Wake snoozed emails (move back to inbox if due)
     try:
@@ -2818,6 +2840,7 @@ def run_full_daily(force_full: bool = False) -> dict:
               file=sys.stderr)
     open_obligations = _deduped_obligations
     _mark_parked(open_obligations)
+    _mark_keep(open_obligations)
     # The owner's earlier word on each row's thread (ledger.owner_decisions):
     # no lane drafts against it.
     _ledger_mod.with_owner_decisions(open_obligations)
@@ -2851,6 +2874,7 @@ def run_full_daily(force_full: bool = False) -> dict:
                   file=sys.stderr)
             open_obligations = _ledger_mod.get_open_entries()
             _mark_parked(open_obligations)
+            _mark_keep(open_obligations)
             _ledger_mod.with_owner_decisions(open_obligations)
     except Exception as e:
         print(f"  Draft-claim reconcile skipped: {e}", file=sys.stderr)
@@ -3228,6 +3252,7 @@ def run_full_weekly() -> dict:
     update_ledger_from_analysis([], dropped, travel)
 
     open_obligations = _ledger_mod.get_open_entries()
+    _mark_keep(open_obligations)
     availability = compute_merged_availability(calendar)
 
     # RESET delta tracking for the new week

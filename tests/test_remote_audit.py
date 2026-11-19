@@ -16,6 +16,12 @@ import remote_briefing as rb  # noqa: E402
 import remote_llm as rl  # noqa: E402
 
 NOW = datetime(2026, 3, 18, 18, 0, tzinfo=timezone.utc)   # a Wednesday in any US zone
+
+
+@pytest.fixture(autouse=True)
+def _no_outlook_lookup(monkeypatch):
+    """The Outlook link lookup is a live Graph read: a test gives its own."""
+    monkeypatch.setattr(rb, "outlook_links", lambda convs, **k: {})
 ROWS = [
     {"id": "deadline-report", "description": "Annual report to the sponsor", "status": "open",
      "deadline": "2026-03-20", "type": "deadline", "from_name": "Program Office",
@@ -154,3 +160,35 @@ def test_switch_and_run_agent_wiring():
     assert "remote_audit.py\" run" in body and 'elif [[ "$REMOTE_RC" != "3" ]]' in body
     assert "REMOTE_BRIEFING=1" in body.split("elif")[0]
     assert "REMOTE_BRIEFING=1" not in body.split("elif")[1].split(";;")[0]
+
+
+def test_a_row_kept_by_its_brief_or_the_records_is_never_handed_off(priv):
+    """A row whose thread brief says the thread stays on the machine, and
+    one only the mail's records keep: the shared check (keep_gate) holds
+    both back from the hand-off, and the post names them as the owner's."""
+    rows = ROWS + [
+        {"id": "row-review", "description": "Review for the journal", "status": "open",
+         "deadline": "2026-03-19", "type": "deadline", "conversation_id": "CONV-REVIEW",
+         "thread_brief": {"conversation_id": "CONV-REVIEW", "keep_level": "local",
+                          "kept_level": "Kept on your machine"}},
+        {"id": "row-contract", "description": "Partner follow-up", "status": "open",
+         "deadline": "2026-03-21", "type": "task", "conversation_id": "CONV-PARTNER"}]
+    c = ra.candidates(rows, BRIEFING, today=NOW.date())
+    ref = {v["ledger_id"] or v["title"]: k for k, v in c.items()}
+    plan = {"critical": [{"ref": ref["row-review"], "why": "Due tomorrow."}], "important": [],
+            "patterns": [],
+            "handoffs": [{"ref": ref["row-review"], "why": "a review", "task": "read the manuscript"},
+                         {"ref": ref["row-contract"], "why": "a reply", "task": "draft it"},
+                         {"ref": ref["deadline-report"], "why": "a report", "task": "draft the report"}]}
+    records = lambda i: "local" if i.get("conversation_id") == "CONV-PARTNER" else "full"  # noqa: E731
+    text, rec, queued = _run(plan, rows=rows, keep_records=records)
+    assert [q["conversation_id"] for q in queued] == ["CONV-REPORT"] and rec["handed"] == 1
+    kept = text.split("🔒 Kept on your own model, so no hosted model works on these:")[1].split("\n\n")[0]
+    # Code's fixed words: the brief's level is the machine's, so no title;
+    # the records keep the other one there too.
+    assert kept.count("• A kept message needs you. Open it in Outlook.") == 2
+    assert "Review for the journal" not in text and "Partner follow-up" not in text
+    assert "read the manuscript" not in text and "Due tomorrow." not in text
+    # The planner is told which items stay on the owner's own model.
+    items = ra._prompt_items(c)
+    assert next(i for i in items if i["ref"] == ref["row-review"]).get("kept") is True

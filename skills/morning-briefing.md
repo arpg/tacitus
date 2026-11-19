@@ -325,7 +325,11 @@ the decision is, not that a decision exists. An item or row with
 draft against it. When it says no reply goes out, the one line is "They
 asked again. On <day> you said no reply. Still no reply?". `create-reply` holds these rules in code for a scheduled run:
 when it answers `needs_owner`, record its `reason` as the decision; never
-retry it.
+retry it. A row with `kept_level` "Kept on your machine" or "Facts only"
+stays on the user's own model: never read or draft it, and never put its
+notes, ask or gist in the post. List it under Needs you in these words
+only: "A kept message from <day> needs you. Open it in Outlook." (with
+"Facts only", the sender and the subject may follow "from").
 
 **Then work the reply queue (`reply_backlog`):**
 
