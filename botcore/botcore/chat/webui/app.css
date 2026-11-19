@@ -1043,6 +1043,7 @@ details.h-card[open] > summary::before { transform: rotate(90deg); }
 .h-alert { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 0; padding: 10px 14px;
   border: 1px solid var(--u-overdue); border-left-width: 6px; border-radius: var(--r-m); background: var(--panel); font-weight: 600; }
 .h-mode { border-left: 6px solid var(--accent); font-weight: 600; }
+.h-unchecked { margin: 0; padding: 0 4px; color: var(--muted); font-size: 13px; }
 .h-clear { border-left: 6px solid var(--ok); }
 .h-big { font-size: 18px; font-weight: 700; }
 .h-next .btn { margin-top: 12px; min-height: 44px; }

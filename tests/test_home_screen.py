@@ -582,7 +582,8 @@ def test_the_briefings_switch_off_keeps_home_quiet(web):
 def test_run_agent_names_the_two_reports_home_carries():
     src = (REPO / "run-agent.sh").read_text()
     assert 'case "$AGENT" in morning-briefing|afternoon-catchup) HOME_KIND="$AGENT" ;; esac' in src
-    assert "slack.post_to_slack('ea-assistant', msg, home=sys.argv[1])" in src
+    assert "slack.post_to_slack('ea-assistant', msg, home=sys.argv[1], home_run=sys.argv[2])" in src
+    assert '" "$HOME_KIND" "cron-${AGENT}-${TIMESTAMP}" <<<' in src  # the remote run's own id
     assert set(chat_notify.HOME_KINDS) == set(H.REPORTS) == {"morning-briefing", "afternoon-catchup"}
 
 
@@ -592,3 +593,155 @@ def test_home_shows_todays_reports_the_newest_first_and_none_from_yesterday():
     assert [r["title"] for r in H.build(src)["reports"]] == ["This afternoon's update", "This morning's briefing"]
     src.reports = [{**src.reports[0], "at": F.at(16, 0, -1)}]
     assert H.build(src)["reports"] == []
+
+
+# ── Home lists what the post lists (the pre-send review, the rules upstream) ──
+
+@pytest.fixture
+def remote(tmp_path, monkeypatch):
+    """The remote briefing on made-up data, as tests/test_briefing_review.py
+    runs it: an owner-private store, no network, no model, no Graph."""
+    import remote_briefing as rb
+    import remote_llm as rl
+    d = tmp_path / "private"
+    d.mkdir(mode=0o700)
+    monkeypatch.setenv("EA_PRIVATE_DIR", str(d))
+    ea = tmp_path / "ea"
+    (ea / "config").mkdir(parents=True)
+    (ea / "config" / "user-profile.json").write_text(json.dumps({"email": "kit@example.edu"}))
+    monkeypatch.setenv("EA_DIR", str(ea))
+    monkeypatch.setattr(rl, "_owner", lambda: True)
+    monkeypatch.setattr(rl, "_breaker", lambda *a: None)
+    monkeypatch.setattr(rb, "_rules", lambda: "")
+    monkeypatch.setattr(rb, "_profile", lambda: "The user: a professor.")
+    monkeypatch.setattr(rb, "rail", lambda c, says, **k: "")
+    monkeypatch.setattr(rb, "write_reply", lambda c, says, write=None: {"ok": True, "body": says})
+    monkeypatch.setattr(rb, "stage_reply", lambda c, body, run_id, **k: {"ok": True, "draft_id": "d-" + c["message_id"]})
+    cfg = {"endpoint": "https://llm.example.edu/v1", "model": "m-1", "mail": "enforce",
+           "drafting": "remote", "briefings": "remote", "shadow_until": "2099-01-01"}
+    owner_trust.write_owner_file(d / rl.CONFIG_FILE, json.dumps(cfg).encode(), mode=0o600)
+    return rb
+
+
+MAIL = [{"message_id": f"m-{k}", "conversation_id": f"c-{k}", "subject": subj, "from": f"{who.lower()}@example.edu",
+         "from_name": who, "body_preview": ask, "remote_record": {"ask": ask}}
+        for k, subj, who, ask in (("a", "Talk on Friday", "Pat", "Can you give the talk?"),
+                                  ("b", "Slides", "Lee", "Send the slides."),
+                                  ("c", "Paper section", "Ana", "Write the section."))]
+
+
+def _morning(rb, review, monkeypatch):
+    """One morning: a do-today item (R3) and two replies written (R1, R2);
+    the review stand-in decides; the post and the run record come back."""
+    b = {"new_needs_response": [dict(m) for m in MAIL], "open_obligations": [], "delta_summary": {},
+         "recently_closed": []}
+    plan = {"get_done_today": [{"ref": "R3", "why": "the section is due"}], "flexes": [], "needs_you": [],
+            "drafts": [{"ref": "R1", "reply_must_say": "Yes."}, {"ref": "R2", "reply_must_say": "Here they are."}],
+            "escalate": []}
+    chat = lambda messages, **kw: (json.loads(json.dumps(plan)), {})  # noqa: E731
+    return rb.run("morning-briefing", b, run_id="cron-morning-briefing-t1", now=datetime.now(F.ZONE), chat=chat,
+                  review=review, queue=lambda items, agent, now: len(items), rooms=lambda *a, **k: [],
+                  mark=lambda *a, **k: True)
+
+
+def _home_after(text, view):
+    """Home on the morning the post came from: the staged reply's Send card
+    waits in Action requests, and the reply queue still names all three
+    threads, as it does until the owner acts."""
+    src = F.sources()
+    src.reports = [{"kind": "morning-briefing", "text": text, "at": F.at(5, 0), "view": view}]
+    send = F.request("w51", "send", "Send email", "Re: Slides", "To Lee")
+    send["card"]["actions"][0]["value"] = json.dumps({"conversation_id": "c-b"})
+    src.requests = {"waiting": [send], "done": []}
+    src.replies = [{"id": "", "subject": m["subject"], "from_name": m["from_name"], "age_days": 2,
+                    "conversation_id": m["conversation_id"]} for m in MAIL]
+    return H.build(src)
+
+
+def test_the_review_drops_one_item_and_holds_one_draft_and_home_shows_neither_as_work_or_a_draft(remote, monkeypatch):
+    def review(agent, text, b, **kw):
+        return {"closed": [], "closed_rows": [], "unsure_rows": [], "parked": [],
+                "review": {"status": "ok", "model": "codex", "hold": {"R1": "the choice is his"},
+                           "drop": {"R3": {"kind": "not-owners", "why": "Ana writes it"}},
+                           "footer": ["", ":mag: *Checked before sending* by Codex."]}}
+    text, rec = _morning(remote, review, monkeypatch)
+    view = rec["home"]
+    assert {g["conversation_id"]: g["kind"] for g in view["gone"]} == {"c-c": "not-owners", "c-a": "held"}
+    assert "Paper section" not in text and "I held the reply I wrote: the choice is his." in text
+    p = _home_after(text, view)
+    every = p["left"] + p["held"]
+    # the dropped item is nowhere: not as work, not as its reply
+    assert not [x for x in every if "Paper section" in x["title"] + x.get("detail", "")]
+    # the held draft is its question, never a draft ready, never a Send card
+    talk = [x for x in every if "Talk on Friday" in x["title"] + x.get("detail", "")]
+    assert [(x["kind"], x["label"]) for x in talk] == [("question", "Answer needed")]
+    assert talk[0]["title"].startswith("I held the reply I wrote: the choice is his.")
+    assert not [d for d in p["done"] if d["kind"] == "drafted" and "Talk" in d["title"]]
+    # the staged reply is its Send card, once
+    slides = [x for x in every if "Slides" in x["title"]]
+    assert [x["kind"] for x in slides] == ["request"]
+    # the briefing's own ranking is not Home's list once the post's is there
+    assert "Send the workshop review" not in [x["title"] for x in every]
+    assert p["unchecked"] == ""
+    # the run kept the list for Home; the handoff takes it only for its own run
+    remote.write_home("morning-briefing", "cron-morning-briefing-t1", view)
+    assert remote.home_handoff("morning-briefing", "cron-morning-briefing-t1") == view
+    assert remote.home_handoff("morning-briefing", "cron-morning-briefing-t0") is None
+    assert remote.home_handoff("afternoon-catchup", "cron-morning-briefing-t1") is None
+
+
+def test_a_review_that_did_not_run_gives_home_the_posts_own_words(remote, monkeypatch):
+    import briefing_review as br
+
+    def review(agent, text, b, **kw):
+        return {"closed": [], "closed_rows": [], "unsure_rows": [], "parked": [],
+                "review": {"status": "failed", "reason": "timeout", "model": "codex",
+                           "footer": br.footer({"status": "failed", "reason": "timeout", "model": "codex"}, [])}}
+    text, rec = _morning(remote, review, monkeypatch)
+    note = rec["home"]["review"]["note"]
+    assert note == "Not checked before sending: Codex did not answer in time. Tacitus's own checks ran."
+    assert f":warning: *Not checked before sending*: {note.split(': ', 1)[1]}" in text
+    p = _home_after(text, rec["home"])
+    assert p["unchecked"] == note
+    plain(note)
+    # unchecked, the post's items are Home's: the do-today item shows as the post shows it
+    assert [x["label"] for x in p["left"] if "Paper section" in x["title"]] == ["To do"]
+
+
+def test_without_a_view_home_keeps_the_upstream_rules():
+    """No run kept a list (the Claude lane, the review off): the briefing's
+    ranking, less a row others owe before their date, a row merged into
+    another and a thread the owner said gets no reply."""
+    src = F.sources()
+    src.reports = []
+    src.briefing["open_obligations"] = [{"id": "task-s2", "merged_into": "deadline-w1"}]
+    src.rows = {"deadline-w1": {"id": "deadline-w1", "type": "deadline", "status": "open",
+                                "description": "Send the workshop review",
+                                "owner_said": [{"said": "Not doing it. No response.", "no_reply": True}]}}
+    titles = [x["title"] for x in H.left(src)]
+    assert "Send the workshop review" not in titles and "Send the slides to the committee" not in titles
+    src.rows = {"deadline-w1": {"id": "deadline-w1", "type": "waiting", "status": "open",
+                                "description": "The panel sends its review", "deadline": "2099-01-01"}}
+    src.briefing["open_obligations"] = []
+    titles = [x["title"] for x in H.left(src)]
+    assert "Send the workshop review" not in titles and "Send the slides to the committee" in titles
+
+
+def test_a_reply_an_earlier_run_turned_into_a_question_is_that_question_and_a_kept_one_says_only_the_fixed_words():
+    src = F.sources()
+    src.replies = [
+        {"id": "r-q", "subject": "Committee seat", "from_name": "Sam", "age_days": 2, "conversation_id": "c-q",
+         "queued": {"outcome": "decision", "note": "Join the committee? Yes or no."}},
+        {"id": "r-l", "subject": "Thanks note", "from_name": "Lee", "age_days": 2, "conversation_id": "c-l",
+         "queued": {"outcome": "left", "note": "No reply needed."}},
+        {"id": "r-n", "subject": "Survey", "from_name": "Jo", "age_days": 2, "conversation_id": "c-n",
+         "owner_said": [{"said": "No reply.", "no_reply": True}]},
+        {"id": "r-k", "subject": "Applicant question", "from_name": "Kim", "age_days": 4, "conversation_id": "c-k",
+         "kept": True, "ask": "words from the kept mail"}]
+    got = {x["id"]: x for x in H.left(src)}
+    assert (got["reply:r-q"]["kind"], got["reply:r-q"]["label"], got["reply:r-q"]["title"]) == \
+        ("question", "Answer needed", "Join the committee? Yes or no.")
+    assert "reply:r-l" not in got and "reply:r-n" not in got
+    kept = got["reply:r-k"]
+    assert (kept["title"], kept["detail"]) == ("Applicant question", "Kept mail · Waiting 4 days")
+    assert "Kim" not in str(kept) and "kept mail" not in str({k: v for k, v in kept.items() if k != "detail"})

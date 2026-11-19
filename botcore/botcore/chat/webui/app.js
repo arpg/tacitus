@@ -1218,6 +1218,7 @@ function renderHome(box) {
   }
   if (away) main.push(h('section', { class: 'h-card h-mode', 'data-kind': md.kind }, h('p', {}, md.line)));
   main.push(tally(x));
+  if (x.unchecked) main.push(h('p', { class: 'h-unchecked', role: 'note' }, x.unchecked)); // the post's own line, as it says it
   if (x.clear && !away) {
     main.push(h('section', { class: 'h-card h-clear' }, h('p', { class: 'h-big' }, 'You are clear for today.'),
       h('p', {}, 'Nothing waits for you. Close the app and go do something else.')));

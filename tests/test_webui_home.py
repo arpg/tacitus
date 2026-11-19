@@ -141,6 +141,20 @@ def test_a_red_light_says_so_first_and_opens_the_status_sheet(app):
     assert not errors, errors
 
 
+def test_the_posts_own_list_and_its_not_checked_line_show_on_home(app):
+    """Where the remote run kept its post's list, Home lists that: a
+    question as Answer needed, and the post's own line when its check did
+    not run; an item the review left out is not there."""
+    from playwright.sync_api import expect
+    page, stub, errors = home_app(app, "unchecked")
+    expect(page.locator(".h-unchecked")).to_have_text(
+        "Not checked before sending: Codex did not answer in time. Tacitus's own checks ran.")
+    q = page.locator(".h-item", has_text="Join the committee this term? Yes or no.")
+    expect(q.locator(".h-label")).to_have_text("Answer needed")
+    expect(page.locator(".h-main")).not_to_contain_text("Send the slides to the committee")
+    assert not errors, errors
+
+
 def test_vacation_folds_what_waits_under_peek_anyway(app):
     from playwright.sync_api import expect
     page, stub, errors = home_app(app, "vacation")

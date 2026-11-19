@@ -2009,10 +2009,14 @@ class WebStore:
         except (TypeError, ValueError):
             return False
 
-    def home_report(self, kind: str, text: str, at: float | None = None) -> None:
+    def home_report(self, kind: str, text: str, at: float | None = None, view: dict | None = None) -> None:
         """Keep the briefing text the briefing lane handed to Home: the
-        newest of each kind (`report:<kind>`)."""
-        self.home_set(f"report:{kind}", {"text": str(text), "at": time.time() if at is None else float(at)})
+        newest of each kind (`report:<kind>`), with the list its run kept
+        for Home (`view`, the post's items after its pre-send review)."""
+        rec = {"text": str(text), "at": time.time() if at is None else float(at)}
+        if isinstance(view, dict):
+            rec["view"] = view
+        self.home_set(f"report:{kind}", rec)
 
     def home_emit(self, payload: dict) -> int:
         """Append a `home` event: Home changed, and each open app reads it

@@ -1174,6 +1174,21 @@ def _reason(v: dict) -> str:
     return _one((v.get("why") or KIND_WORDS.get(v.get("kind") or "", "")).rstrip("."), 110)
 
 
+def not_checked(review: dict | None) -> str:
+    """The plain sentence the post's footer opens with when the check did
+    not run, without its marks ("Not checked before sending: ..."); '' when
+    it ran or is off. Home shows the same words."""
+    rv = review or {}
+    if rv.get("status") != "failed":
+        return ""
+    name = _name(rv.get("model") or "")
+    why = {"limit": "your plan's limit is reached",
+           "timeout": f"{name} did not answer in time",
+           "unreadable": f"{name} gave an answer Tacitus could not read"}.get(
+        rv.get("reason") or "", "the check could not run")
+    return f"Not checked before sending: {why}. Tacitus's own checks ran."
+
+
 def footer(review: dict, items: list[dict]) -> list[str]:
     """The post's lines on the check: whether it ran and on what model,
     one line per change with its reason, and what it did not see."""
@@ -1194,11 +1209,8 @@ def footer(review: dict, items: list[dict]) -> list[str]:
     elif st == "ok":
         head = f":mag: *Checked before sending* by {name}."
     else:
-        why = {"limit": "your plan's limit is reached",
-               "timeout": f"{name} did not answer in time",
-               "unreadable": f"{name} gave an answer Tacitus could not read"}.get(
-            review.get("reason") or "", "the check could not run")
-        head = f":warning: *Not checked before sending*: {why}. Tacitus's own checks ran."
+        why = not_checked(review).removeprefix("Not checked before sending: ")
+        head = f":warning: *Not checked before sending*: {why}"
     lines: list[str] = []
     by = review.get("by") or {}
     for r, v in (review.get("drop") or {}).items():

@@ -640,7 +640,7 @@ it. The briefing's own post is gone from the web chat: Home shows it.
 
 | Part | Source |
 |---|---|
-| Left for you | the Action requests that wait for a tap (`WebFrontend.requests`, never one at work), the replies owed a day or more (`ledger.reply_backlog` on the live rows, as `ledger.py reply-queue` reads them, from the Replies ladder's first rung, `REPLY_DRAFT_DAYS`: mail that came today does not count yet) and the last briefing's ranked `today_top` still open; a row a waiting card names is listed once, as the card. Most urgent first (overdue, soon, calm; then a tap, a reply, a task) |
+| Left for you | what the post lists, never more: the Action requests that wait for a tap (`WebFrontend.requests`, never one at work; a decision the draft gate or the review made is one, with its answer buttons); the post's own sections after its pre-send review where the run kept them for Home (`remote_briefing.home_view`: Get done today as To do, the date banner as Due, Needs you as Answer needed with the question as its title, Flexes as Can wait, the afternoon's New today and Waiting on you); with no such list (the Claude lane, the review off), the briefing's ranked `today_top` still open, less what the post leaves out upstream (`ledger.waiting_off_list`, a row merged into another, a thread the owner said gets no reply, `owner_said`); and the replies owed a day or more (`ledger.reply_backlog` on the live rows with `ledger.with_owner_decisions`, from the Replies ladder's first rung, `REPLY_DRAFT_DAYS`: mail that came today does not count yet), less any thread the review dropped, one an earlier run found needs no reply, and one the owner said gets none; one an earlier run made a decision is that question. A kept thread shows its subject and the post's fixed words ("Kept mail") only. A row or thread is listed once. Most urgent first (overdue, soon, calm; then a tap, a question, a reply, a task) |
 | So far today | the ledger rows closed today, one per mail conversation, each by "You" (the owner's word, a confirm, a send, an archive) or "Tacitus" (a lapse, a sibling, a rule); the requests answered today; the drafts Tacitus made that wait for Send |
 | The ring | `done` against `left`: the two numbers above |
 | The next gap | today's timed events (the briefing's events, each placed by its own start, a declined or free one left out): the minutes before the next one, or after the one under way, and how many of the list's first items fit (a tap 2 minutes, a reply 10, a task 20): "You have 50 minutes before your 2:00. That is enough for the 2 replies." With one button that opens the first item |
@@ -706,7 +706,13 @@ morning briefing and the afternoon update are handed to Home
 tick ran in the last five minutes: the text is kept (`home:report:<agent>`),
 a `home` event goes out, and one push says Home has it ("Your morning is
 ready"), under the Briefings switch and quiet hours as the post's own
-push was. The call returns True, so run-agent.sh writes the post marker
+push was. run-agent.sh hands the run id too, after the pre-send review and the
+audit: the list the remote run kept for Home under that id (its post's
+sections after the review) comes with the text, so what the review
+dropped is not on Home, a held reply is its question there and never a
+draft, a rewritten line shows as rewritten, and a check that did not run
+shows the post's own words ("Not checked before sending: ... Tacitus's
+own checks ran.") under the ring. The call returns True, so run-agent.sh writes the post marker
 and the sentinel's "No briefing today" and "No afternoon update" keep
 working. Home shows each of today's texts folded at the bottom ("This
 afternoon's update", "This morning's briefing"), as the post would have

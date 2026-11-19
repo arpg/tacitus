@@ -199,6 +199,9 @@ class Sources:
     requests: dict = field(default_factory=dict)
     replies: list = field(default_factory=list)
     open_ids: set | None = None
+    # The open rows by id as the lanes read them (with `owner_said`, the
+    # owner's word on the thread); None where they were not read.
+    rows: dict | None = None
     closed: list = field(default_factory=list)
     travel: dict = field(default_factory=dict)
     light: str = ""
@@ -338,19 +341,105 @@ def _fire(urgency: str, due: float | None, now: float) -> bool:
     return urgency == "overdue" or (due is not None and due - now < 86400)
 
 
+# What the post's sections are on Home: the label and whether its line is a
+# question for the owner (its line after the item's name is the question).
+VIEW_SECTIONS = {"top": ("To do", False), "due": ("Due", False), "flex": ("Can wait", False),
+                 "needs": ("Answer needed", True), "since": ("New today", False),
+                 "pending": ("Waiting on you", True)}
+# The words the post gives a kept thread in its reply line ("(3d, kept
+# mail)"): Home shows those and the subject, never more.
+KEPT_WORDS = "Kept mail"
+
+
+def _no_reply(row: dict | None) -> bool:
+    """The owner said no reply goes out on this thread (owner_said, the
+    draft gate's record): it is not his to do, and code asks him once."""
+    said = (row or {}).get("owner_said")
+    if not said:
+        return False
+    try:
+        import draft_gate
+    except ModuleNotFoundError:  # imported as preprocessor.home_screen
+        from preprocessor import draft_gate
+    try:
+        return bool(draft_gate.no_reply_said(said))
+    except Exception:
+        return False
+
+
+def _off_list(row: dict | None, today: date) -> bool:
+    """Others owe it and nothing is asked of him before their date
+    (ledger.waiting_off_list): off the do-list, as the post has it."""
+    if not row:
+        return False
+    try:
+        import ledger
+    except ModuleNotFoundError:
+        from preprocessor import ledger
+    try:
+        return bool(ledger.waiting_off_list(row, today))
+    except Exception:
+        return False
+
+
+def views(src: Sources) -> list[dict]:
+    """Today's lists the briefing runs kept for Home (the post's own items
+    after the pre-send review), newest first; [] when no run kept one today
+    (the Claude lane, the review off, a run from before)."""
+    today = _today(src)
+    out = [r for r in src.reports or [] if isinstance(r.get("view"), dict)
+           and _local_day(float(r.get("at") or 0), src.zone) == today]
+    return [r["view"] for r in sorted(out, key=lambda r: -float(r.get("at") or 0))]
+
+
+def _due_at(day: str, zone: ZoneInfo) -> float | None:
+    try:
+        return datetime.combine(date.fromisoformat(day[:10]), datetime.max.time().replace(microsecond=0),
+                                zone).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _urgency(due: float | None, now: float) -> str:
+    return "overdue" if due and due < now else ("soon" if due and due - now < 2 * 86400 else "calm")
+
+
 def left(src: Sources) -> list[dict]:
-    """What waits for the owner, most urgent first: the Action requests that
-    wait for a tap, the replies owed a day or more (REPLY_MIN_DAYS), and the briefing's ranked items
-    still open. Each is {"id", "kind", "label", "title", "detail",
-    "urgency", "due", "fire", "mins", "href" or "ask"}: a request opens its
-    block in Action requests; a reply or an item has no place of its own,
-    so it starts a new conversation about it in Ask Tacitus (`ask`, the
-    words the composer starts with). A row a waiting card names is listed
-    once, as the card."""
-    now = src.now
+    """What waits for the owner, most urgent first, as the post has it.
+
+    - The Action requests that wait for a tap (a decision the draft gate
+      or the review made is one, with its answer buttons there).
+    - The briefing's items: the post's own sections after its pre-send
+      review where the run kept them for Home (views): what the review
+      dropped, held or the audit set aside is never here, a held reply is
+      its question, never a draft, and a rewritten line shows as rewritten.
+      With no view, the briefing's ranking with the rules the post applies
+      upstream: no row others owe before their date, no row merged into
+      another, no thread the owner said gets no reply.
+    - The replies owed a day or more (REPLY_MIN_DAYS), less those threads:
+      a reply an earlier run turned into a decision is that question; one
+      it found needs none, or the owner said gets none, is not here; a kept
+      thread shows its subject and the post's fixed words only.
+
+    Each is {"id", "kind", "label", "title", "detail", "urgency", "due",
+    "fire", "mins", "href" or "ask"}: a request opens its block in Action
+    requests; anything else starts a new conversation about it in Ask
+    Tacitus (`ask`, the words the composer starts with). A row or thread
+    is listed once."""
+    now, today = src.now, _today(src)
+    rows = src.rows or {}
     out: list[dict] = []
     named_ids: set = set()
     named_convs: set = set()
+
+    def taken(lid: str, conv: str) -> bool:
+        return bool(lid and lid in named_ids) or bool(conv and conv in named_convs)
+
+    def take(lid: str, conv: str) -> None:
+        if lid:
+            named_ids.add(lid)
+        if conv:
+            named_convs.add(conv)
     for r in (src.requests or {}).get("waiting") or []:
         if not isinstance(r, dict) or r.get("working") or not r.get("waiting", True):
             continue
@@ -366,48 +455,92 @@ def left(src: Sources) -> list[dict]:
                     "detail": detail, "urgency": urgency, "due": due,
                     "fire": _fire(urgency, due, now), "mins": MINUTES["request"],
                     "href": _request_href(r, src.dm), "project": _plain(r.get("project"), 60)})
+    kept_views = views(src)
+    gone_ids, gone_convs = set(), set()
+    for v in kept_views:
+        for g in v.get("gone") or []:
+            if g.get("kind") == "held":
+                continue  # a held reply is under the post's Needs you as its question
+            if g.get("ledger_id"):
+                gone_ids.add(g["ledger_id"])
+            if g.get("conversation_id"):
+                gone_convs.add(g["conversation_id"])
+    for v in kept_views:
+        for it in v.get("items") or []:
+            lid, conv = str(it.get("ledger_id") or ""), str(it.get("conversation_id") or "")
+            if taken(lid, conv) or lid in gone_ids or (conv and conv in gone_convs):
+                continue
+            take(lid, conv)
+            label, asks = VIEW_SECTIONS.get(it.get("section"), ("To do", False))
+            head = _plain(it.get("head"), 120)
+            line = str(it.get("line") or "")
+            rest = line[len(it.get("head") or ""):].lstrip(" :,") if line.startswith(it.get("head") or "\0") \
+                else line
+            rest = _plain(rest, 200)
+            due = _due_at(str(it.get("due") or ""), src.zone)
+            urgency = "calm" if it.get("section") == "flex" else _urgency(due, now)
+            title, detail = (rest or head, head) if asks else (head or rest, rest)
+            out.append({"id": f"item:{lid or conv or hashlib.sha1(line.encode()).hexdigest()[:10]}",
+                        "kind": "question" if asks else "item", "label": label, "title": title or "An item",
+                        "detail": detail if detail != title else "", "urgency": urgency, "due": due,
+                        "fire": _fire(urgency, due, now), "mins": MINUTES["question" if asks else "item"],
+                        "ask": f'About "{head or title}": '})
     for e in src.replies or []:
-        if not isinstance(e, dict) or e.get("id") in named_ids \
-                or (e.get("conversation_id") and e["conversation_id"] in named_convs):
+        if not isinstance(e, dict):
+            continue
+        lid, conv = str(e.get("id") or ""), str(e.get("conversation_id") or "")
+        if taken(lid, conv) or lid in gone_ids or (conv and conv in gone_convs):
             continue
         age = int(e.get("age_days") or 0)
-        if age < REPLY_MIN_DAYS:
+        queued = e.get("queued") if isinstance(e.get("queued"), dict) else {}
+        if age < REPLY_MIN_DAYS or queued.get("outcome") == "left" or _no_reply(e) or _no_reply(rows.get(lid)):
             continue
-        who = _plain(e.get("from_name") or e.get("from"), 60)
+        take(lid, conv)
         title = _plain(e.get("subject") or e.get("description"), 120) or "A reply"
         urgency = "soon" if age >= 3 else "calm"
-        named_ids.add(e.get("id"))
-        out.append({"id": f"reply:{e.get('id')}", "kind": "reply", "label": "Reply owed", "title": title,
-                    "detail": " · ".join(x for x in (f"From {who}" if who else "",
-                                                     f"Waiting {_n(age, 'day')}") if x),
+        waited = f"Waiting {_n(age, 'day')}"
+        if e.get("kept"):
+            out.append({"id": f"reply:{lid}", "kind": "reply", "label": "Reply owed", "title": title,
+                        "detail": f"{KEPT_WORDS} · {waited}", "urgency": urgency, "due": None, "fire": False,
+                        "mins": MINUTES["reply"], "ask": f'About the reply to "{title}": '})
+            continue
+        who = _plain(e.get("from_name") or e.get("from"), 60)
+        if queued.get("outcome") == "decision" and queued.get("note"):
+            out.append({"id": f"reply:{lid}", "kind": "question", "label": "Answer needed",
+                        "title": _plain(queued["note"], 200), "detail": " · ".join(
+                            x for x in (title, f"From {who}" if who else "", waited) if x),
+                        "urgency": urgency, "due": None, "fire": False, "mins": MINUTES["question"],
+                        "ask": f'About the reply to "{title}": '})
+            continue
+        out.append({"id": f"reply:{lid}", "kind": "reply", "label": "Reply owed", "title": title,
+                    "detail": " · ".join(x for x in (f"From {who}" if who else "", waited) if x),
                     "urgency": urgency, "due": None, "fire": False, "mins": MINUTES["reply"],
                     "ask": f'About the reply to "{title}": '})
-    for t in (src.briefing or {}).get("today_top") or []:
-        if not isinstance(t, dict):
-            continue
-        ref = str(t.get("ref") or "")
-        if ref and (ref in named_ids or (src.open_ids is not None and ref not in src.open_ids)):
-            continue
-        title = _plain(t.get("title"), 120)
-        if not title:
-            continue
-        due = None
-        m = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", str(t.get("title") or "") + " " + str(t.get("reason") or ""))
-        if m:
-            try:
-                due = datetime.combine(date.fromisoformat(m.group(1)), datetime.max.time().replace(microsecond=0),
-                                       src.zone).timestamp()
-            except ValueError:
-                due = None
-        urgency = "overdue" if due and due < now else ("soon" if due and due - now < 2 * 86400 else "calm")
-        title = re.sub(r"^Due \d{4}-\d{2}-\d{2}:\s*", "", title)
-        named_ids.add(ref)
-        out.append({"id": f"item:{ref or hashlib.sha1(title.encode()).hexdigest()[:10]}", "kind": "item",
-                    "label": "To do", "title": title, "detail": _plain(t.get("reason"), 120),
-                    "urgency": urgency, "due": due, "fire": _fire(urgency, due, now),
-                    "mins": MINUTES["item"], "ask": f'About "{title}": '})
+    if not kept_views:
+        merged = {o.get("id") for o in (src.briefing or {}).get("open_obligations") or []
+                  if isinstance(o, dict) and o.get("merged_into")}
+        for t in (src.briefing or {}).get("today_top") or []:
+            if not isinstance(t, dict):
+                continue
+            ref = str(t.get("ref") or "")
+            row = rows.get(ref)
+            if ref and (taken(ref, "") or (src.open_ids is not None and ref not in src.open_ids)
+                        or ref in merged or _off_list(row, today) or _no_reply(row)):
+                continue
+            title = _plain(t.get("title"), 120)
+            if not title:
+                continue
+            m = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", str(t.get("title") or "") + " " + str(t.get("reason") or ""))
+            due = _due_at(m.group(1), src.zone) if m else None
+            urgency = _urgency(due, now)
+            title = re.sub(r"^Due \d{4}-\d{2}-\d{2}:\s*", "", title)
+            take(ref, str((row or {}).get("conversation_id") or ""))
+            out.append({"id": f"item:{ref or hashlib.sha1(title.encode()).hexdigest()[:10]}", "kind": "item",
+                        "label": "To do", "title": title, "detail": _plain(t.get("reason"), 120),
+                        "urgency": urgency, "due": due, "fire": _fire(urgency, due, now),
+                        "mins": MINUTES["item"], "ask": f'About "{title}": '})
     rank = {"overdue": 0, "soon": 1, "calm": 2}
-    kinds = {"request": 0, "reply": 1, "item": 2}
+    kinds = {"request": 0, "question": 1, "reply": 2, "item": 3}
     out.sort(key=lambda x: (rank.get(x["urgency"], 2), kinds[x["kind"]], x["due"] or float("inf")))
     return out[:LEFT_MAX]
 
@@ -624,6 +757,7 @@ def facts(src: Sources, todo: list[dict], got: list[dict], md: dict, gap: dict |
            "replies": sum(1 for x in shown if x["kind"] == "reply"),
            "taps": sum(1 for x in shown if x["kind"] == "request"),
            "todos": sum(1 for x in shown if x["kind"] == "item"),
+           "questions": sum(1 for x in shown if x["kind"] == "question"),
            "mode": md["kind"], "held": len(todo) - len(shown),
            "light": src.light or "ok"}
     if gap and gap.get("minutes"):
@@ -707,6 +841,8 @@ _PART = {"reply": "replies", "replies": "replies", "answer": "replies", "answers
          "buttons": "taps", "approval": "taps", "approvals": "taps",
          "task": "todos", "tasks": "todos", "to-do": "todos", "to-dos": "todos", "todo": "todos",
          "todos": "todos", "chore": "todos", "chores": "todos",
+         "question": "questions", "questions": "questions", "decision": "questions",
+         "decisions": "questions",
          "thing": "left", "things": "left", "item": "left", "items": "left",
          # a bare count of what is left: "6 left", "6 to go", "6 are yours"
          "left": "left", "to go": "left", "remain": "left", "remaining": "left", "waiting": "left",
@@ -732,7 +868,8 @@ def counts_ok(line: str, f: dict) -> bool:
     count, and the line names the whole ("6 things") or parts that add up to
     it. A vague count is refused."""
     left = int(f.get("left") or 0)
-    parts_true = {"replies": f.get("replies"), "taps": f.get("taps"), "todos": f.get("todos")}
+    parts_true = {"replies": f.get("replies"), "taps": f.get("taps"), "todos": f.get("todos"),
+                  "questions": f.get("questions")}
     whole, parts = [], []
     for clause in _CLAUSE_RE.split(line):
         done, overdue, held = _DONE_RE.search(clause), _OVERDUE_RE.search(clause), _HELD_RE.search(clause)
@@ -853,6 +990,9 @@ def build(src: Sources) -> dict:
         "reports": [{"kind": r["kind"], "title": REPORTS[r["kind"]], "text": r["text"], "at": r["at"]}
                     for r in reps],
         "clear": not shown,
+        # The post's own line when its pre-send review did not run.
+        "unchecked": next((v["review"]["note"] for v in views(src)
+                           if (v.get("review") or {}).get("note")), ""),
         "light": src.light or "ok",
     }
     return out
@@ -988,7 +1128,8 @@ class Home:
         except Exception as e:
             log.warning("home: Action requests could not be read: %s", e)
         try:
-            src.replies, src.open_ids, src.closed = _ledger_reads(zone, now)
+            src.replies, src.rows, src.closed = _ledger_reads(zone, now)
+            src.open_ids = set(src.rows)
         except Exception as e:
             log.warning("home: the ledger could not be read: %s", e)
         try:
@@ -1151,17 +1292,19 @@ def _valid_zone(name: str) -> bool:
         return False
 
 
-def _ledger_reads(zone: ZoneInfo, now: float) -> tuple[list, set, list]:
-    """(the replies owed now, the ids of the open rows, the rows closed since
-    yesterday), read-only."""
+def _ledger_reads(zone: ZoneInfo, now: float) -> tuple[list, dict, list]:
+    """(the replies owed a day or more, the open rows by id with the owner's
+    word on each thread, the rows closed since yesterday), read-only."""
     try:
         import ledger
     except ModuleNotFoundError:
         from preprocessor import ledger
-    rows = ledger.get_open_entries()
+    rows = ledger.with_owner_decisions(ledger.get_open_entries())
     replies = ledger.reply_backlog(rows, draft_convs=None, zone=zone, cap=ledger.REPLY_BACKLOG_CAP,
                                    min_days=REPLY_MIN_DAYS)
-    open_ids = {r.get("id") for r in rows}
+    # Follow-up once keep_gate (#325) is on main: the shared keep check marks
+    # the kept threads, failing closed: replies = keep_gate.mark_kept(replies)
+    by_id = {r.get("id"): r for r in rows if r.get("id")}
     cutoff = datetime.fromtimestamp(now - 2 * 86400, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     conn = ledger.guarded_connect(ledger.DB_PATH, read_only=True)
     try:
@@ -1173,7 +1316,7 @@ def _ledger_reads(zone: ZoneInfo, now: float) -> tuple[list, set, list]:
             (cutoff,))]
     finally:
         conn.close()
-    return replies, open_ids, closed
+    return replies, by_id, closed
 
 
 def _travel() -> dict:

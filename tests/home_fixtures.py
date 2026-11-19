@@ -5,7 +5,9 @@ sends. Every name, subject and time here is invented.
 
 `sources(state)` gives the Sources of one state; `payload(state)` builds it.
 The states: normal, model (the same day with a line the owner's model
-wrote), done, red (the status light is red), overdue, travel, vacation.
+wrote), done, red (the status light is red), overdue, travel, vacation,
+unchecked (the remote run kept its post's list for Home, and its pre-send
+review did not run).
 The clock is today at 1:10 PM in ZONE, so the app's own times match."""
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ import home_screen as H  # noqa: E402
 
 ZONE_NAME = "America/Denver"
 ZONE = ZoneInfo(ZONE_NAME)
-STATES = ("normal", "model", "done", "red", "overdue", "travel", "vacation")
+STATES = ("normal", "model", "done", "red", "overdue", "travel", "vacation", "unchecked")
 
 
 def at(hour: int, minute: int = 0, days: int = 0) -> float:
@@ -126,6 +128,19 @@ def sources(state: str = "normal", dm: str = "dm", main: str = "main") -> H.Sour
     elif state == "travel":
         src.travel = {"enabled": True, "timezone": "Europe/Lisbon", "until": (today + timedelta(days=2)).isoformat()}
         src.device_zone = "Europe/Lisbon"
+    elif state == "unchecked":
+        src.reports = [{**src.reports[0], "view": {
+            "agent": "morning-briefing",
+            "review": {"status": "failed", "reason": "timeout",
+                       "note": "Not checked before sending: Codex did not answer in time. Tacitus's own checks ran."},
+            "items": [{"section": "top", "ledger_id": "deadline-w1", "conversation_id": "",
+                       "head": "*Send the workshop review*", "kept": False,
+                       "line": "*Send the workshop review*: due tomorrow, in the 3:00 to 4:30 gap",
+                       "due": (today + timedelta(days=1)).isoformat()},
+                      {"section": "needs", "ledger_id": "task-q1", "conversation_id": "conv-q1",
+                       "head": "*Committee seat* (Sam Rivera)", "kept": False, "due": "",
+                       "line": "*Committee seat* (Sam Rivera): Join the committee this term? Yes or no."}],
+            "gone": [{"ledger_id": "task-s2", "conversation_id": "", "kind": "not-owners"}]}}]
     elif state == "vacation":
         src.briefing = {**briefing, "todays_events": [all_day("Vacation", today - timedelta(days=1), 5)] + evs[:2],
                         "onboarding_question": None}

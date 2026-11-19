@@ -1194,7 +1194,10 @@ if [[ -n "$CLAUDE_OUTPUT" ]]; then
         # tested below and the "Slack post FAILED" branch is unreachable.
         # On the web chat the morning briefing and the afternoon update go to
         # Home instead of a post (chat_notify.home_carries, docs/webchat.md,
-        # Home); a success there writes the marker below as a post does.
+        # Home), after the pre-send review and the audit, with their text;
+        # the run id names the list the remote run kept for Home (what the
+        # post lists after its review). A success there writes the marker
+        # below as a post does.
         HOME_KIND=""
         case "$AGENT" in morning-briefing|afternoon-catchup) HOME_KIND="$AGENT" ;; esac
         set +e
@@ -1203,8 +1206,8 @@ import sys, os
 sys.path.insert(0, '$SCRIPT_DIR/preprocessor')
 import slack_notifier as slack
 msg = sys.stdin.read().strip()
-sys.exit(0 if (msg and slack.post_to_slack('ea-assistant', msg, home=sys.argv[1])) else 1)
-" "$HOME_KIND" <<< "$CLAUDE_OUTPUT" 2>&1 | tee -a "$LOG_FILE"
+sys.exit(0 if (msg and slack.post_to_slack('ea-assistant', msg, home=sys.argv[1], home_run=sys.argv[2])) else 1)
+" "$HOME_KIND" "cron-${AGENT}-${TIMESTAMP}" <<< "$CLAUDE_OUTPUT" 2>&1 | tee -a "$LOG_FILE"
         POST_RC="${PIPESTATUS[0]}"
         set -e
     else

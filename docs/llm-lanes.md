@@ -1008,6 +1008,14 @@ applies what it may change.
 - **The post says what changed**: one line that it was checked and by
   which model, then one line per change with its reason, how many items
   the model did not see, and its notes.
+- **Home lists what the post lists.** On the web chat, where the post
+  goes to Home (docs/webchat.md, Home), the run keeps its sections after
+  the review for Home (`remote_briefing.home_view`, in
+  `<private dir>/remote-llm/briefing-home.json`, one per agent with its
+  run id), and run-agent.sh hands Home the run id with the text: a
+  dropped item is not on Home, a held reply is its question there, never
+  a draft, a rewritten line shows as rewritten, and a check that did not
+  run shows the post's own "Not checked before sending" words.
 
 ```text
 :mag: *Checked before sending* by Codex.

@@ -569,12 +569,31 @@ def home_carries(kind: str) -> bool:
     return not (isinstance(home, dict) and home.get("briefing") == "post")
 
 
-def _home(kind: str, text: str) -> bool:
-    """Hand a report to Home: its text kept in the store, a `home` event for
-    the open apps, and one push that opens Home (the Briefings switch and
-    quiet hours apply, as to the post's own push). False when Home cannot
-    take it (no Home running, a process that is not the owner's, a store
-    that does not open), and the caller then posts it: no report is lost."""
+def _home_view(kind: str, run: str) -> dict | None:
+    """The list the remote briefing's run `run` kept for Home (its items
+    after the pre-send review; remote_briefing.home_handoff); None for a
+    report another lane wrote, or when it cannot be read."""
+    if not run:
+        return None
+    try:
+        try:
+            import remote_briefing
+        except ImportError:
+            from preprocessor import remote_briefing
+        return remote_briefing.home_handoff(kind, run)
+    except Exception as e:
+        print(f"[home] the {kind}'s list could not be read ({e}); Home lists from the briefing data")
+        return None
+
+
+def _home(kind: str, text: str, run: str = "") -> bool:
+    """Hand a report to Home: its text kept in the store with the list its
+    run kept (`run`, the run id: what the post lists after the pre-send
+    review), a `home` event for the open apps, and one push that opens Home
+    (the Briefings switch and quiet hours apply, as to the post's own push).
+    False when Home cannot take it (no Home running, a process that is not
+    the owner's, a store that does not open), and the caller then posts it:
+    no report is lost."""
     try:
         fe = _web_sender()
         store = getattr(fe, "store", None)
@@ -586,7 +605,8 @@ def _home(kind: str, text: str) -> bool:
         if SPLIT_MARKER in text:
             text = "\n\n".join(p.strip() for p in text.split(SPLIT_MARKER) if p.strip())
         body = text if len(text) <= HOME_REPORT_MAX else text[:HOME_REPORT_MAX] + "\n[cut]"
-        store.home_report(kind, fe._out(body))  # as a post would show: Slack marks become Markdown
+        # as a post would show: Slack marks become Markdown
+        store.home_report(kind, fe._out(body), view=_home_view(kind, run))
         store.home_emit({"report": kind})
         _home_push(fe, kind)
         print(f"[home] the {kind} is on Home, not posted ({len(text)} characters)")
@@ -615,7 +635,7 @@ def _home_push(fe, kind: str) -> None:
 
 def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
          priority: str = "normal", _bypass_quiet: bool = False,
-         diagnostic: bool = False, light: str = "", home: str = "") -> bool | str:
+         diagnostic: bool = False, light: str = "", home: str = "", home_run: str = "") -> bool | str:
     """Post a message to the configured chat platform.
 
     If `text` contains `SPLIT_MARKER`, splits into multiple top-level
@@ -633,7 +653,8 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
 
     `home` names a report Home carries (HOME_KINDS): on the web chat with
     Home on it goes to Home and the call returns True; when Home cannot
-    take it, it posts.
+    take it, it posts. `home_run` is the run that wrote it, whose list
+    (after the pre-send review) Home shows.
 
     `priority`: "normal" or "urgent". When the user is in local quiet hours
     (see quiet_hours.py / travel mode), a deferrable post is HELD in a queue
@@ -652,7 +673,7 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
         return _withheld(channel_key, text)
     if light and light_carries(light) and _light(light, text):
         return True
-    if home and home_carries(home) and _home(home, text):
+    if home and home_carries(home) and _home(home, text, home_run):
         return True
     if not _bypass_quiet and channel_key not in DIGEST_KEYS:
         try:
@@ -797,6 +818,7 @@ def main(argv: Optional[list] = None) -> int:
                    help="an alert the web chat's status light carries while debug mode is off")
     p.add_argument("--home", default="", choices=("",) + HOME_KINDS,
                    help="a report Home carries on the web chat instead of a post")
+    p.add_argument("--home-run", default="", help="the run id that wrote that report")
     d = sub.add_parser("debug", help="say whether debug mode is on, or turn it on or off "
                                      "(writes the owner-private chat.json)")
     d.add_argument("state", nargs="?", choices=("on", "off"))
@@ -818,7 +840,7 @@ def main(argv: Optional[list] = None) -> int:
         print(f"Debug mode is {'on' if diagnostics_on() else 'off'}.")
         return 0
     return 0 if post(a.key, a.text, priority=a.priority, _bypass_quiet=a.bypass_quiet,
-                     diagnostic=a.diagnostic, light=a.light, home=a.home) else 1
+                     diagnostic=a.diagnostic, light=a.light, home=a.home, home_run=a.home_run) else 1
 
 
 if __name__ == "__main__":
