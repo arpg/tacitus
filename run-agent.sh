@@ -1192,14 +1192,19 @@ if [[ -n "$CLAUDE_OUTPUT" ]]; then
         # `set +e`: without it, errexit + pipefail kill the script the moment
         # the post fails, so POST_RC could only ever be 0 by the time it is
         # tested below and the "Slack post FAILED" branch is unreachable.
+        # On the web chat the morning briefing and the afternoon update go to
+        # Home instead of a post (chat_notify.home_carries, docs/webchat.md,
+        # Home); a success there writes the marker below as a post does.
+        HOME_KIND=""
+        case "$AGENT" in morning-briefing|afternoon-catchup) HOME_KIND="$AGENT" ;; esac
         set +e
         "$PYTHON3" -c "
 import sys, os
 sys.path.insert(0, '$SCRIPT_DIR/preprocessor')
 import slack_notifier as slack
 msg = sys.stdin.read().strip()
-sys.exit(0 if (msg and slack.post_to_slack('ea-assistant', msg)) else 1)
-" <<< "$CLAUDE_OUTPUT" 2>&1 | tee -a "$LOG_FILE"
+sys.exit(0 if (msg and slack.post_to_slack('ea-assistant', msg, home=sys.argv[1])) else 1)
+" "$HOME_KIND" <<< "$CLAUDE_OUTPUT" 2>&1 | tee -a "$LOG_FILE"
         POST_RC="${PIPESTATUS[0]}"
         set -e
     else

@@ -1,5 +1,12 @@
 ## Data sources
 
+On the web chat the morning briefing and the afternoon update are not
+posted: Home shows them, beside lists it builds from this same data
+(docs/webchat.md, Home). The owner asks about an item in a new Ask
+Tacitus conversation that starts `About "<the item>":` (a reply owed:
+`About the reply to "<subject>":`); find the row with `ledger.py search`.
+The briefing's text as written is `~/.ea/state/reports/<agent>-latest.md`.
+
 When `mail_gate.mode` is `enforce`, no email text is in this file. An
 email item's `body_preview` is the remote model's summary (with its ask,
 due date and offered times; `remote_record` has the fields). FYI mail and

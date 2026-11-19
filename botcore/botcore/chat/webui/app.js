@@ -14,7 +14,7 @@
 
 const BASE = location.pathname.replace(/\/index\.html$/, '').replace(/\/+$/, '');
 const enc = encodeURIComponent;
-const EVENT_TYPES = ['message', 'update', 'reaction', 'card', 'status', 'file', 'channel', 'thread_state', 'release', 'read', 'light'];
+const EVENT_TYPES = ['message', 'update', 'reaction', 'card', 'status', 'file', 'channel', 'thread_state', 'release', 'read', 'light', 'home'];
 const CREATED = new Set(['message', 'card', 'file']); // the event types that post a message
 const KIND_ORDER = { main: 0, dm: 1, sched: 2, room: 3, digest: 4 };
 const NEW_THREAD = '+'; // never a thread key: every key opens with a letter or digit
@@ -816,7 +816,7 @@ function renderChannels() {
     const n = countFor(c);
     if (!c.archived && !c.muted) total += n;
     return roomRow(c, h('a', {
-      class: 'chan' + (c.id === S.channel && !S.needsView ? ' active' : '') + (n && !c.muted ? ' unread' : '')
+      class: 'chan' + (c.id === S.channel && !S.needsView && !S.homeView ? ' active' : '') + (n && !c.muted ? ' unread' : '')
         + (c.muted ? ' muted' : ''),
       href: hashFor(c.id), title: c.description || null,
     }, h('span', { class: 'c-icon', 'aria-hidden': 'true' }, c.kind === 'dm' ? '✓' : '#'),
@@ -835,13 +835,15 @@ function renderChannels() {
   }
   document.title = total ? `(${total}) Tacitus` : 'Tacitus';
   fitNav();
-  const here = chan(S.channel);
+  const here = !S.homeView && chan(S.channel);
   const others = total - (here && !here.archived && !here.muted && !here.hidden ? countFor(here) : 0);
   $('menu').dataset.unread = others > 0 ? String(others) : '';
   // The Needs you entry above the channels, with the count of threads that need the owner this week.
   const need = needsRows().filter((r) => stateOf(r.channel, threadOf(r)) === 'needs_you' && !staleOf(r)).length;
   $('needs-link').hidden = false;
   $('needs-link').classList.toggle('active', S.needsView);
+  $('home-link').hidden = !homeOn();
+  $('home-link').classList.toggle('active', S.homeView);
   $('needs-count').hidden = !need;
   $('needs-count').textContent = String(need);
   $('needs-count').setAttribute('aria-label', `${need} ${need === 1 ? 'conversation needs' : 'conversations need'} you`);
@@ -915,6 +917,7 @@ function threadCard(p, ch, withChannel) {
 function renderThreads() {
   const box = $('thread-list');
   if (S.search) return renderSearch();
+  if (S.homeView) return renderHome(box);
   if (S.needsView) {
     const rows = needsRows();
     const fresh = rows.filter((r) => !staleOf(r)), old = rows.filter(staleOf);
@@ -1105,6 +1108,164 @@ function tapSoon() {
     loadChannels().then(redraw, () => {});
     if (S.reqs) loadRequests();
   }, 300);
+}
+
+/* -- Home: the screen the app opens on (docs/webchat.md, Home) ------ */
+
+// Home (GET /api/home) is what Tacitus did today against what is left for the owner, the next gap in the calendar,
+// what changed since the last visit and one line that greets them. The bot builds every number and list, for this
+// device's time zone (a phone on a trip says where it is); a `home` event says Home changed and the page reads it
+// again. A waiting item opens its place: a request its block in Action requests, anything else a new conversation in
+// Ask Tacitus that starts with its words. Home has no Send of its own: the buttons stay in the request's block.
+const HOME = 'home';
+const VISIT_MS = 30 * 60000; // back after this long, a visit: "since you last checked in" counts from the one before
+Object.assign(S, { home: null, homeView: false, homeAt: 0, homeStale: false, homeFocus: '', backHome: false, voted: {} });
+const homeOn = () => Boolean(S.me && S.me.home);
+const homeZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch { return ''; } };
+const homeHash = () => (homeOn() ? hashFor(HOME) : hashFor((defaultChannel() || {}).id || ''));
+
+async function loadHome(checkin = false) {
+  if (!homeOn()) return;
+  try { S.home = await call('GET', `/home?tz=${enc(homeZone())}${checkin ? '&checkin=1' : ''}`); } catch { return; }
+  if (checkin) S.homeAt = Date.now();
+  S.homeStale = false;
+  if (S.homeView && !S.search && S.ready) renderThreads();
+}
+// A change the page hears of: Home is read again in a moment while it shows, and on the next visit otherwise.
+const homeSoon = () => {
+  if (!homeOn()) return;
+  clearTimeout(S.homeTimer);
+  S.homeTimer = setTimeout(() => { if (S.homeView && document.visibilityState === 'visible') loadHome(); else S.homeStale = true; }, 300);
+};
+setInterval(() => { if (S.homeView && document.visibilityState === 'visible') loadHome(); }, 5 * 60000); // the gap's minutes
+function enterHome() { // its push (Home is ready) clears as a thread's does: tagInView, watchSeen
+  const visit = !S.homeAt || Date.now() - S.homeAt > VISIT_MS;
+  if (visit || S.homeStale || !S.home) loadHome(visit);
+}
+
+// A conversation about an item: a new one in Ask Tacitus, its words in the composer, the keyboard up within the tap.
+function askAbout(text) {
+  const main = mainChannel();
+  if (!main) return;
+  goTo(hashFor(main.id, NEW_THREAD));
+  document.body.classList.remove('home', 'no-composer', 'requests', 'drawer');
+  document.body.dataset.view = 'thread';
+  $('text').value = text;
+  saveDraft();
+  grow();
+  $('text').focus();
+  $('text').setSelectionRange(text.length, text.length);
+}
+const openItem = (it) => (it.href ? goTo(it.href) : askAbout(it.ask));
+
+const svgEl = (tag, attrs) => {
+  const el = document.createElementNS($('menu').querySelector('svg').namespaceURI, tag);
+  Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, String(v)));
+  return el;
+};
+// The day's split: a ring whose filled part is what got done, beside the two numbers it stands for.
+function tally(x) {
+  const done = x.tally.done, left = x.tally.left, all = done + left, round = 2 * Math.PI * 26;
+  const ring = svgEl('svg', { viewBox: '0 0 64 64', class: 'h-ring', 'aria-hidden': 'true' });
+  ring.append(svgEl('circle', { cx: 32, cy: 32, r: 26, class: 'h-track' }));
+  if (done) ring.append(svgEl('circle', { cx: 32, cy: 32, r: 26, class: 'h-arc', transform: 'rotate(-90 32 32)',
+    'stroke-dasharray': `${(round * done / all).toFixed(1)} ${round.toFixed(1)}` }));
+  return h('section', { class: 'h-card h-tally', 'aria-label': `${done} done today, ${left} left for you` }, ring,
+    h('p', { class: 'h-count' }, h('span', {}, h('b', {}, String(done)), ' done so far'),
+      h('span', {}, h('b', {}, String(left)), left === 1 ? ' thing left for you' : ' things left for you')));
+}
+
+const homeItem = (it) => {
+  const word = URGENT[it.urgency];
+  const kids = [h('span', { class: 'h-top' }, h('span', { class: 'h-label' }, it.label),
+    word ? h('span', { class: `req-flag u-${it.urgency}` }, word) : null, it.project ? h('span', { class: 'req-proj' }, it.project) : null),
+  h('span', { class: 'h-title' }, it.title), it.detail ? h('span', { class: 'h-detail' }, it.detail) : null];
+  const cls = `h-item u-${it.urgency || 'calm'}`;
+  return h('li', {}, it.href ? h('a', { class: cls, href: it.href }, ...kids)
+    : h('button', { type: 'button', class: cls, onclick: () => askAbout(it.ask) }, ...kids, h('span', { class: 'h-ask' }, 'Ask about this')));
+};
+const items = (list, label) => h('ul', { class: 'h-items', 'aria-label': label }, list.map(homeItem));
+
+// The greeting's thumbs: the owner's vote on the line, which Tacitus keeps and the next lines follow.
+function voteRow(text) {
+  const how = S.voted[text] || '';
+  const b = (v, label, glyph) => h('button', { type: 'button', class: 'icon h-vote-btn', 'aria-label': label,
+    'aria-pressed': String(how === v), disabled: Boolean(how), onclick: () => vote(v, text) }, glyph);
+  return h('div', { class: 'h-vote', role: 'group', 'aria-label': 'This line' }, b('up', 'More lines like this', '👍'),
+    b('down', 'Fewer lines like this', '👎'), how ? h('span', { class: 's-key', role: 'status' }, 'Thanks. Noted.') : null);
+}
+async function vote(how, text) {
+  try {
+    await call('POST', '/home/vote', { vote: how, text });
+    S.voted[text] = how;
+  } catch (e) { toast(`Not saved: ${e.message}`); }
+  if (S.homeView) renderThreads();
+}
+
+const DONE_WORDS = { drafted: 'Drafted: ' };
+const hm = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+function renderHome(box) {
+  const x = S.home;
+  if (!x) { box.replaceChildren(h('p', { class: 'empty' }, 'Loading...')); return; }
+  const g = x.greeting || {}, md = x.mode || {}, away = md.kind && md.kind !== 'normal';
+  const was = (cls) => Boolean(box.querySelector(`details.${cls}[open]`)); // a part the owner opened stays open
+  const main = [h('header', { class: 'h-hello' }, h('p', { class: 'h-day' }, x.day || ''),
+    h('p', { class: 'h-greet' }, g.text || ''), g.plain ? null : voteRow(g.text))];
+  if (x.light === 'problem' && S.light) {
+    main.push(h('p', { class: 'h-alert', role: 'status' }, h('span', {}, 'Something needs a look before the rest.'),
+      h('button', { type: 'button', class: 'btn small', onclick: openStatus }, 'See what')));
+  }
+  if (away) main.push(h('section', { class: 'h-card h-mode', 'data-kind': md.kind }, h('p', {}, md.line)));
+  main.push(tally(x));
+  if (x.clear && !away) {
+    main.push(h('section', { class: 'h-card h-clear' }, h('p', { class: 'h-big' }, 'You are clear for today.'),
+      h('p', {}, 'Nothing waits for you. Close the app and go do something else.')));
+  }
+  if (x.next) {
+    main.push(h('section', { class: 'h-card h-next' }, h('h2', {}, 'Your next gap'), h('p', {}, x.next.line),
+      x.left.length ? h('button', { type: 'button', class: 'btn primary', onclick: () => openItem(x.left[0]) }, 'Open the first one') : null));
+  }
+  if (x.left.length) main.push(h('section', { class: 'h-card' }, h('h2', {}, `Left for you (${x.left.length})`), items(x.left, 'Left for you')));
+  if (x.held && x.held.length) {
+    main.push(h('details', { class: 'h-card h-peek', open: was('h-peek') }, h('summary', {}, md.kind === 'vacation' ? 'Peek anyway' : `Show the rest (${x.held.length})`),
+      items(x.held, 'Held for later')));
+  }
+  const q = x.question;
+  if (q) {
+    main.push(h('section', { class: 'h-card h-question' }, h('h2', {}, `One question (${q.left} left)`), h('p', {}, q.text),
+      q.why ? h('p', { class: 'h-detail' }, q.why) : null, q.example ? h('p', { class: 'h-detail' }, `For example: ${q.example}`) : null,
+      h('button', { type: 'button', class: 'btn primary', onclick: () => askAbout(q.ask) }, 'Answer it'),
+      h('p', { class: 'h-detail' }, 'Say skip to pass it, or stop asking to end the questions.')));
+  }
+  const side = [];
+  if (x.since) {
+    side.push(h('section', { class: 'h-card h-since' }, h('h2', {}, `Since you last checked in at ${hm(x.since.at)}`),
+      h('ul', {}, x.since.lines.map((l) => h('li', {}, h(l.href ? 'a' : 'span', { class: 'h-row', href: l.href || null },
+        h('span', { class: 'h-title' }, l.text)))))));
+  }
+  const done = x.done || [];
+  if (done.length) {
+    const shown = S.doneAll ? done : done.slice(0, 5);
+    side.push(h('section', { class: 'h-card h-done' }, h('h2', {}, `So far today (${done.length})`),
+      h('ul', {}, shown.map((d) => h('li', {}, h(d.href ? 'a' : 'span', { class: 'h-row', href: d.href || null },
+        h('span', { class: `h-by by-${d.by}` }, d.by === 'you' ? 'You' : 'Tacitus'),
+        h('span', { class: 'h-title' }, `${DONE_WORDS[d.kind] || ''}${d.title}`), h('time', {}, hm(d.at)))))),
+      done.length > 5 ? h('button', { type: 'button', id: 'done-all', class: 'btn plain small', 'aria-expanded': String(Boolean(S.doneAll)),
+        onclick: () => { S.doneAll = !S.doneAll; renderThreads(); $('done-all').focus(); } }, S.doneAll ? 'Show less' : 'Show all') : null));
+  }
+  const cal = x.calendar || [];
+  side.push(cal.length ? h('details', { class: 'h-card h-cal', open: was('h-cal') }, h('summary', {}, `Today's calendar (${cal.length})`),
+    h('ul', {}, cal.map((e) => h('li', {}, h('time', {}, e.all_day ? 'All day' : `${hm(e.start)} to ${hm(e.end)}`), h('span', { class: 'h-title' }, e.title)))))
+    : h('p', { class: 'h-card h-cal-none' }, 'Nothing on your calendar today.'));
+  for (const r of x.reports || []) { // today's briefing and update, as they would have posted, each folded
+    side.push(h('details', { class: `h-card h-report r-${r.kind}`, id: `home-${r.kind}`, open: S.homeFocus === r.kind || was(`r-${r.kind}`) },
+      h('summary', {}, r.title), h('div', { class: 'text' }, markdown(r.text)),
+      h('button', { type: 'button', class: 'btn small', onclick: () => askAbout(`About ${r.title.toLowerCase()}: `) }, 'Ask about it')));
+  }
+  box.replaceChildren(h('div', { class: 'h-page' }, h('div', { class: 'h-main' }, ...main), h('div', { class: 'h-side' }, ...side)));
+  const focus = S.homeFocus && $(`home-${S.homeFocus}`);
+  if (focus) { S.homeFocus = ''; focus.scrollIntoView({ block: 'start' }); }
 }
 
 function setFilter(v) {
@@ -1375,7 +1536,7 @@ function parseHash() {
   return { ch: dec(ch), tk: dec(tk), id: dec(id) };
 }
 
-// The app opens on Ask Tacitus, where the owner asks; a link or the address names any other place.
+// With no Home (a bot from before it), the app opens on Ask Tacitus, where the owner asks.
 function defaultChannel() {
   const open = S.channels.filter((c) => !c.archived);
   return open.find((c) => c.kind === 'main') || open.find((c) => c.kind === 'dm') || open[0] || S.channels[0];
@@ -1385,33 +1546,37 @@ async function route() {
   if (!S.ready) return;
   const { ch, tk, id } = parseHash();
   // A notification of the status light opens its sheet over the place the app shows.
-  if (ch === STATUS) { location.replace(hashFor(S.channel || (defaultChannel() || {}).id || '')); openStatus(); return; }
-  const needs = ch === NEEDS;
+  if (ch === STATUS) { location.replace(S.homeView || !S.channel ? homeHash() : hashFor(S.channel)); openStatus(); return; }
+  const needs = ch === NEEDS, home = ch === HOME && homeOn();
   // A link to a card in Action requests (the bot's pointer) opens its block in place, in the list.
   if (id && (chan(ch) || {}).kind === 'dm') { S.reqFocus = id; location.replace(hashFor(ch)); return; }
-  if (!needs && !chan(ch)) {
-    const def = defaultChannel();
-    if (def) location.replace(hashFor(def.id));
+  // The app opens on Home (a bot from before it: Ask Tacitus); a link or the address names any other place.
+  if (!needs && !home && !chan(ch)) {
+    if (homeOn() || defaultChannel()) location.replace(homeHash());
     else $('thread-list').replaceChildren(h('p', { class: 'empty' }, 'Nothing here yet.'));
     return;
   }
   const token = ++S.route;
-  // A thread opened from the Needs you list keeps the list beside it, and Back returns to it.
-  S.needsView = needs || (Boolean(tk) && S.needsView);
-  const changed = !needs && ch !== S.channel;
-  if (!needs) S.channel = ch;
+  // A thread opened from the Needs you list keeps the list beside it, and Back returns to it; one opened from Home returns there.
+  S.backHome = !home && Boolean(tk) && (S.homeView || S.backHome);
+  S.homeView = home;
+  S.needsView = !home && (needs || (Boolean(tk) && S.needsView));
+  const changed = !needs && !home && ch !== S.channel;
+  if (!needs && !home) S.channel = ch;
   else if (!chan(S.channel)) S.channel = (defaultChannel() || {}).id || '';
-  S.thread = needs ? '' : tk;
+  S.thread = needs || home ? '' : tk;
   document.body.classList.remove('drawer');
   document.body.dataset.view = S.thread ? 'thread' : 'threads';
-  $('channel-name').textContent = S.needsView ? 'Needs you' : channelName(chan(ch));
-  $('new-thread').hidden = S.needsView;
+  $('channel-name').textContent = home ? 'Home' : S.needsView ? 'Needs you' : channelName(chan(ch));
+  $('new-thread').hidden = S.needsView || home;
+  if (home) S.homeFocus = tk;
   composerView();
   swapDraft();
   stateShown();
-  if (needs) loadNeeds();
+  if (home) enterHome();
+  else if (needs) loadNeeds();
   else if (changed || !S.threads.has(ch)) loadThreads(ch);
-  if (!needs && (chan(ch) || {}).kind === 'dm') loadRequests();
+  if (!needs && !home && (chan(ch) || {}).kind === 'dm') loadRequests();
   await openThread(S.channel, S.thread, token);
 }
 
@@ -1449,7 +1614,7 @@ function connect() {
   let opened;
   const handle = { ready: new Promise((resolve) => { opened = resolve; }) };
   const es = T.events(S.lastSeq, {
-    open: () => { S.retry = 0; setLive('on'); opened(); loadNeeds(); recentSoon(); loadLight(); if (S.ready) { resync(); recount(); } },
+    open: () => { S.retry = 0; setLive('on'); opened(); loadNeeds(); recentSoon(); loadLight(); if (S.ready) { resync(); recount(); homeSoon(); } },
     event: onEvent,
     down: (closed) => {
       setLive('down');
@@ -1464,7 +1629,7 @@ function connect() {
 // The stream is back after a drop (a deploy restarts the bot): the open
 // place is read again, so what the stream missed in between shows now.
 function resync() {
-  if (!S.channel || S.needsView) return;
+  if (!S.channel || S.needsView || S.homeView) return;
   if (!S.threads.has(S.channel) || true) loadThreads(S.channel);
   if (S.thread && S.thread !== NEW_THREAD) openThread(S.channel, S.thread, S.route).catch(() => {});
 }
@@ -1517,7 +1682,8 @@ function onEvent(type, id, raw) {
 
 function apply(type, data, seq = 0) {
   if (RECENT_CUES.has(type)) recentSoon();
-  if (TAP_CUES.has(type) && (chan(data.channel) || {}).kind === 'dm') tapSoon();
+  if (TAP_CUES.has(type) && (chan(data.channel) || {}).kind === 'dm') { tapSoon(); homeSoon(); }
+  if (type === 'home') { homeSoon(); return; }
   if (type === 'thread_state') {
     if (data.channel && data.thread_key) onState(data);
     return;
@@ -1526,7 +1692,7 @@ function apply(type, data, seq = 0) {
     if (data.bundle && S.me && data.bundle !== S.me.bundle) lookAgain().catch(() => {});
     return;
   }
-  if (type === 'light') { S.light = { ...data, details: S.light ? S.light.details : !T.relay }; drawLight(); return; }
+  if (type === 'light') { S.light = { ...data, details: S.light ? S.light.details : !T.relay }; drawLight(); homeSoon(); return; }
   // A thread read on some device: the channel's counts as the bot keeps them.
   if (type === 'read') { takeCounts(data.channel, data); passed(data.channel, seq); redraw(); return; }
   if (type === 'channel') {
@@ -2169,7 +2335,9 @@ async function initPush() {
 // notification is gone in three seconds as silent. The worker says {shown: tag} for a push here; with push
 // off here, the message on the stream says it (ingest).
 const SEEN_MS = 5000;
-const tagInView = () => (document.visibilityState === 'visible' && S.thread && S.thread !== NEW_THREAD ? `${S.channel}/${S.thread}` : '');
+// Home in view is the tag of its push (Your morning is ready), so its notification clears the same way.
+const tagInView = () => (document.visibilityState !== 'visible' ? '' : S.homeView ? HOME
+  : S.thread && S.thread !== NEW_THREAD ? `${S.channel}/${S.thread}` : '');
 async function seenHere(tag, elsewhere = true) {
   if (!tag || !S.push) return;
   const { reg, sub } = S.push;
@@ -3242,7 +3410,7 @@ function renderSettings(data) {
 // The sections the bot serves: the routing table, and the notification switches where push works.
 const settingsShown = () => {
   const pages = (S.me && S.me.settings) || [];
-  return { notify: pages.includes('notify') && Boolean(S.me.push), routing: pages.includes('routing') };
+  return { notify: pages.includes('notify') && Boolean(S.me.push), routing: pages.includes('routing'), home: pages.includes('home') };
 };
 
 /* -- Settings: the menu and its pages ------------------------------- */
@@ -3254,7 +3422,7 @@ const settingsShown = () => {
 // with Back, and Escape on a page goes back to the menu; Devices and the tour
 // are dialogs of their own, so the menu closes for them.
 const PAGES = { menu: ['settings-menu', 'Settings'], notify: ['notify-settings', 'Notifications'],
-  routing: ['routing-settings', 'Models'] };
+  routing: ['routing-settings', 'Models'], home: ['home-settings', 'Home'] };
 
 function openSettings(page = 'menu') {
   if (!$('settings').open) $('settings').showModal();
@@ -3285,6 +3453,11 @@ async function settingsPage(page) {
     }
     return;
   }
+  if (page === 'home') {
+    $('home-note').textContent = '';
+    call('GET', '/settings/home').then(renderHomeSettings, (e) => { $('home-note').textContent = `Could not read the settings: ${e.message}`; });
+    return;
+  }
   $('settings-note').textContent = $('simple-note').textContent = '';
   $('settings-advanced').open = false;
   try { renderSettings(await call('GET', '/settings/routing')); } catch (e) { $('simple-note').textContent = `Could not read the settings: ${e.message}`; }
@@ -3306,6 +3479,8 @@ function settingsMenu() {
   $('settings-back').addEventListener('click', () => settingsPage('menu'));
   $('go-notify').addEventListener('click', () => settingsPage('notify'));
   $('go-routing').addEventListener('click', () => settingsPage('routing'));
+  $('go-home').addEventListener('click', () => settingsPage('home'));
+  $('home-rows').addEventListener('change', saveHomeSettings);
   $('settings').addEventListener('cancel', (e) => {
     if ($('settings').dataset.page !== 'menu') { e.preventDefault(); settingsPage('menu'); }
   });
@@ -3365,6 +3540,22 @@ async function saveNotify(e) {
   } finally {
     inputs.forEach((i) => { i.disabled = false; });
   }
+}
+
+// Home's page: how its greeting sounds and where the briefing goes, each saved on change (the web block's `home`).
+const renderHomeSettings = (data) => $('home-rows').querySelectorAll('input').forEach((el) => { el.checked = data[el.name] === el.value; });
+async function saveHomeSettings(e) {
+  const el = e.target, inputs = [...$('home-rows').querySelectorAll('input')];
+  if (!el.checked) return;
+  inputs.forEach((i) => { i.disabled = true; });
+  try {
+    renderHomeSettings(await call('POST', '/settings/home', { [el.name]: el.value }));
+    $('home-note').textContent = 'Saved.';
+    S.homeStale = true;
+  } catch (err) {
+    $('home-note').textContent = `Not saved: ${err.message}`;
+    await call('GET', '/settings/home').then(renderHomeSettings, () => {});
+  } finally { inputs.forEach((i) => { i.disabled = false; }); }
 }
 
 // Debug mode (docs/webchat.md): saved at once; the bot's `channel` event then shows or hides its place on every open app.
@@ -3680,9 +3871,10 @@ const DM_NOTE = 'Drafts, meetings and other requests wait here for your tap. Not
 // the digests (the bot posts there and reads no reply) and Action requests (it takes taps only; words go to Ask Tacitus).
 const DIGEST_NOTE = 'Tacitus posts your mail digests here; it does not read replies.';
 function composerView() {
-  const kind = S.needsView ? '' : (chan(S.channel) || {}).kind;
+  const kind = S.needsView || S.homeView ? '' : (chan(S.channel) || {}).kind;
   document.body.classList.toggle('no-composer', kind === 'digest' || kind === 'dm');
   document.body.classList.toggle('requests', kind === 'dm'); // on a wide screen its blocks take the conversation's room
+  document.body.classList.toggle('home', S.homeView); // and Home's cards too
   $('composer-off').hidden = kind !== 'digest' && kind !== 'dm';
   if (kind === 'digest') $('composer-off').replaceChildren(DIGEST_NOTE);
   else if (kind === 'dm') $('composer-off').replaceChildren(...tapsOnly());
@@ -4005,6 +4197,7 @@ async function boot() {
   $('go-notify').hidden = !S.me.push;
   $('notify-kinds').hidden = T.relay || !shown.notify; // the bot saves settings only from the owner's own copy
   $('go-routing').hidden = T.relay || !shown.routing;
+  $('go-home').hidden = T.relay || !shown.home; // saved only from the owner's own copy
   $('open-settings').hidden = false;
   footer();
   $('debug-row').hidden = T.relay || !((S.me && S.me.settings) || []).includes('debug'); // saved only from the owner's own copy
@@ -4023,7 +4216,7 @@ async function init() {
   $('channels').addEventListener('click', (e) => {
     if (e.target.closest('a.chan')) document.body.classList.remove('drawer');
   });
-  $('back').addEventListener('click', () => goTo(S.needsView ? hashFor(NEEDS) : hashFor(S.channel)));
+  $('back').addEventListener('click', () => goTo(S.backHome ? hashFor(HOME) : S.needsView ? hashFor(NEEDS) : hashFor(S.channel)));
   $('thread-state').addEventListener('click', () => { if (Date.now() - shown.at >= FLIP_GUARD_MS) setState(S.channel, S.thread); });
   $('to-claude').addEventListener('click', toClaude);
   ['light-nav', 'light', 'light-here'].forEach((id) => $(id).addEventListener('click', openStatus));
@@ -4109,7 +4302,7 @@ async function init() {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !document.querySelector('dialog[open]')) document.body.classList.remove('drawer'); });
   // Back on the screen: the thread in view is read, and every count comes from the bot again.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && !S.halted && S.ready) { redraw(); readSoon(); recount(); }
+    if (document.visibilityState === 'visible' && !S.halted && S.ready) { redraw(); readSoon(); recount(); if (S.homeView) enterHome(); }
   });
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register(`${BASE}/sw.js`, { scope: `${BASE}/` }).catch(() => {});

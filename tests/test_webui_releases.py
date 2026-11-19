@@ -175,7 +175,7 @@ def test_an_open_app_offers_a_release_the_bot_signs_and_takes_it_on_update(brows
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.goto(bot["public"] + "/")
-        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+        expect(page.locator("#channel-list .chan .c-name").first).to_be_visible(timeout=15000)
         first = fe.bundle_hash()
         wait_for(lambda: (_worker_state(page, "trusted") or {}).get("hash") == first, 15)
         expect(page.locator("#app-update")).to_be_hidden()
@@ -190,7 +190,7 @@ def test_an_open_app_offers_a_release_the_bot_signs_and_takes_it_on_update(brows
         assert _worker_state(page, "trusted")["hash"] == fe.bundle_hash()
         page.click("#app-update-go")
         page.wait_for_function("window.__open === undefined", timeout=15000)
-        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+        expect(page.locator("#channel-list .chan .c-name").first).to_be_visible(timeout=15000)
         assert page.evaluate("fetch('app.css').then((r) => r.text())") == css.decode()
         expect(page.locator("#app-update")).to_be_hidden()
         assert not errors, errors
@@ -231,7 +231,7 @@ def test_a_phone_off_the_tailnet_takes_a_new_release_through_the_relay(browser, 
         (webui / "app.css").write_bytes(old + b"\n/* not signed */\n")
         with caplog.at_level(logging.INFO, logger="chat.web"):
             page.reload()
-            expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+            expect(page.locator("#channel-list .chan .c-name").first).to_be_visible(timeout=15000)
             wait_for(lambda: any('"what": "update"' in r.getMessage() and "app.css does not match the manifest"
                                  in r.getMessage() for r in caplog.records), 20)
         assert _kept(page, "app.css") == old.decode()
@@ -248,7 +248,7 @@ def test_a_phone_off_the_tailnet_takes_a_new_release_through_the_relay(browser, 
         del fe.note_served
         (webui / "app.css").write_bytes(new)
         page.reload()
-        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+        expect(page.locator("#channel-list .chan .c-name").first).to_be_visible(timeout=15000)
         page.evaluate("window.__open = true")
         expect(page.locator("#app-update")).to_be_visible(timeout=20000)
         expect(page.locator("#update-note")).to_have_text(line)
@@ -257,7 +257,7 @@ def test_a_phone_off_the_tailnet_takes_a_new_release_through_the_relay(browser, 
         assert _worker_state(page, "trusted")["hash"] == fe.bundle_hash()
         # The next start runs the new release from the worker's copy.
         page.reload()
-        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+        expect(page.locator("#channel-list .chan .c-name").first).to_be_visible(timeout=15000)
         assert page.evaluate("fetch('app.css').then((r) => r.text())") == new.decode()
         expect(page.locator("#update-note")).to_be_hidden()
 
@@ -273,7 +273,7 @@ def test_a_phone_off_the_tailnet_takes_a_new_release_through_the_relay(browser, 
         assert _kept_headers(page, "index.html") == {k.lower(): v for k, v in fe.page_headers()["index.html"].items()}
         assert _worker_state(page, "trusted")["headers"] == json.loads(fe.bundle.written["headers.json"])
         assert page.reload().headers["content-security-policy"] == policy  # the next start runs under it
-        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+        expect(page.locator("#channel-list .chan .c-name").first).to_be_visible(timeout=15000)
         # A bot that signs no headers (an earlier release): a page it brings keeps the kept copy's.
         fe.page_headers = lambda: None
         html = (webui / "index.html").read_bytes() + b"<!-- the next release -->\n"
@@ -342,7 +342,7 @@ def test_a_relay_origin_phone_checks_its_app_and_presses_cards_when_the_owner_al
         expect(row.locator("label")).to_have_text("Allow card buttons on this phone")
         expect(box).not_to_be_checked()
         row.locator("button", has_text="Approve").click()
-        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=20000)
+        expect(page.locator("#channel-list .chan .c-name").first).to_be_visible(timeout=20000)
         (d,) = fe.relay.devices()
         assert d["pending"] is False and d["bundle_verified"] is True and d["cards_allowed"] is False
         expect(row).to_contain_text("not on your network", timeout=10000)
@@ -367,7 +367,7 @@ def test_a_relay_origin_phone_checks_its_app_and_presses_cards_when_the_owner_al
         row.locator("input[type=checkbox]").check()
         wait_for(lambda: fe.relay.devices()[0]["cards_allowed"], 10)
         page.reload()
-        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=20000)
+        expect(page.locator("#channel-list .chan .c-name").first).to_be_visible(timeout=20000)
         assert page.evaluate("S.me.card_actions") is True
         page.evaluate("location.hash = '#/dm'")
         head = page.locator(".req:has-text('Send this draft?') .req-head")
@@ -420,7 +420,7 @@ def test_a_relay_origin_phone_takes_a_new_release_from_the_bot_through_the_relay
     contexts = []
     try:
         page, errors, device = _relay_origin_phone(browser, bot, contexts)
-        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=20000)
+        expect(page.locator("#channel-list .chan .c-name").first).to_be_visible(timeout=20000)
         first = fe.bundle_hash()
         wait_for(lambda: fe.relay.store.device_by_id(device).get("attested_bundle") == first, 15)
         assert _worker_state(page, "trusted")["hash"] == first
@@ -447,7 +447,7 @@ def test_a_relay_origin_phone_takes_a_new_release_from_the_bot_through_the_relay
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(f"{rbase}/bundle.js", timeout=5) as r:
             assert r.read() == (WEBUI / "bundle.js").read_bytes()
         page.reload()
-        expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+        expect(page.locator("#channel-list .chan .c-name").first).to_be_visible(timeout=15000)
         expect(page.locator("#update-note")).to_be_hidden()
         assert page.evaluate("fetch('app.css').then((r) => r.text())") == css.decode()
         assert _worker_state(page, "trusted")["hash"] == new

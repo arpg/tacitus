@@ -24,12 +24,14 @@
 <body data-view="threads">
 <nav id="channels" aria-label="Menu">
   <header class="bar">
-    <img class="logo" src="favicon.svg" alt="" width="24" height="24">
-    <span class="brand">Tacitus</span>
+    <a class="brand" href="#/home" aria-label="Tacitus, go to Home"><img class="logo" src="favicon.svg" alt="" width="24" height="24">
+      <span>Tacitus</span></a>
     <span class="light-wrap at-nav"><button type="button" id="light-nav" class="icon light-btn" aria-haspopup="dialog" aria-describedby="light-nav-tip" hidden></button>
       <span id="light-nav-tip" class="light-tip" role="tooltip"></span></span>
     <span id="live" class="live wait" title="Connecting"></span>
   </header>
+  <a id="home-link" class="chan home-link" href="#/home" hidden><span class="c-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7M6 9.5V20h12V9.5"/></svg></span>
+    <span class="c-name">Home</span></a>
   <button type="button" id="search-open"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L20 20"/></svg>
     Search</button>
   <a id="needs-link" class="chan needs" href="#/needs" hidden><span class="c-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 21V4h12l-2 4 2 4H5"/></svg></span>
@@ -141,6 +143,7 @@
     <div id="settings-menu" class="s-menu">
       <button type="button" id="go-notify" class="s-item" hidden><span class="s-label">Notifications</span><span id="notify-detail" class="s-detail"></span></button>
       <button type="button" id="pair-phone" class="s-item" hidden><span class="s-label">Devices</span><span class="s-detail">Add a phone or computer, or remove one</span></button>
+      <button type="button" id="go-home" class="s-item" hidden><span class="s-label">Home</span><span class="s-detail">How Home greets you, and where your briefing goes</span></button>
       <button type="button" id="go-routing" class="s-item" hidden><span class="s-label">Models</span><span class="s-detail">Which model does each task</span></button>
       <button type="button" id="tour-again" class="s-item"><span class="s-label">How Tacitus works</span><span class="s-detail">A short tour in three cards</span></button>
       <label id="debug-row" class="s-item" hidden><span class="s-label">Debug mode</span><span class="s-detail">Shows the checks and reports Tacitus runs on itself. Problems you need to fix show either way.</span><input type="checkbox" role="switch" id="debug"></label>
@@ -168,6 +171,22 @@
       </div>
       <h3 id="subs-title" hidden>Where notifications go</h3>
       <ul id="push-subs" class="subs" aria-labelledby="subs-title"></ul>
+    </section>
+    <section id="home-settings" aria-labelledby="settings-title" hidden>
+      <ul id="home-rows">
+        <li><span class="s-name" id="home-tone">The line at the top</span>
+          <span class="seg" role="radiogroup" aria-labelledby="home-tone">
+            <label><input type="radio" name="tone" value="breezy"> Breezy</label>
+            <label><input type="radio" name="tone" value="dry"> Dry</label>
+            <label><input type="radio" name="tone" value="facts"> Facts only</label></span>
+          <p>Breezy and Dry have a little fun. Facts only says the numbers. When something is overdue or Tacitus needs a look, the line is plain.</p></li>
+        <li><span class="s-name" id="home-brief">Your briefing</span>
+          <span class="seg" role="radiogroup" aria-labelledby="home-brief">
+            <label><input type="radio" name="briefing" value="home"> On Home</label>
+            <label><input type="radio" name="briefing" value="post"> As a message</label></span>
+          <p>Your morning briefing and afternoon update. On Home, they wait at the bottom of Home and one notification says they are ready. As a message, they come in Ask Tacitus as before.</p></li>
+      </ul>
+      <p id="home-note" aria-live="polite"></p>
     </section>
     <section id="routing-settings" aria-labelledby="settings-title" hidden>
       <div id="settings-default"></div>

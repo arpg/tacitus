@@ -433,7 +433,7 @@ def _pair_and_approve(browser, relay_bot, contexts, workers=False):
     assert page.evaluate("() => T.relay") is True
     expect(page.locator("#live.on")).to_be_attached(timeout=15000)
     page.reload()
-    expect(page.locator(".chan .c-name").first).to_be_visible(timeout=15000)
+    expect(page.locator("#channel-list .chan .c-name").first).to_be_visible(timeout=15000)
     expect(page.locator("#live.on")).to_be_attached(timeout=10000)
     return tail, page, errors, asked
 

@@ -130,6 +130,14 @@ for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
         from preprocessor import status_light as _status_light
         _web.light = _status_light.Light(
             _web, push_on=lambda w=_web: getattr(w, "inbound", None) is None)
+        # Home, the screen the app opens on (docs/webchat.md, Home): what
+        # Tacitus did today against what is left, built in code; the
+        # owner's own model writes its greeting line where one is set up.
+        # Its Settings page holds the greeting's tone and where the
+        # briefing goes (Home, or a post as before).
+        from preprocessor import home_screen as _home_screen
+        _web.home = _home_screen.Home(_web)
+        _web.settings_pages["home"] = _home_screen.HomeSettings(_web)
 
 
 def _private_state(name: str) -> Path:

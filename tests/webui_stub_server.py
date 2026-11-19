@@ -81,6 +81,14 @@ refused), and POST /api/status/<id>/read moves a notice to Recently
 cleared, recorded in `status_reads`. `set_status` changes the summary and
 sends it as a `light` event, as the bot's tick does.
 
+`home` (Home as the bot builds it; None, the default, leaves /api/me's
+`home` false and answers /api/home with 404, as a bot without Home does)
+serves Home: GET /api/home records each ask's time zone and check-in in
+`home_gets`, POST /api/home/vote records the vote in `votes`, and the
+Settings page `home` reads `home_settings` and records each change in
+`home_posts`. `set_home` changes Home and sends a `home` event, as the
+bot's tick does.
+
 The owner's own actions: GET /api/search finds the messages that hold
 every word of `q` (any case, anywhere in the text), newest first, with
 the bot's row shape; POST /api/messages/<ch>/<id>/react toggles one of the
@@ -247,9 +255,15 @@ class Stub:
                  sign: bool = False, relay_pairing: bool = False, settings: bool | list = False,
                  push: bool = False, handoff: bool = False, owner_routes: str | None = None,
                  subscriptions: list | None = None, public_url: str | None = None,
-                 rooms: bool | None = None, debug: bool | None = None, status: dict | None = None):
+                 rooms: bool | None = None, debug: bool | None = None, status: dict | None = None,
+                 home: dict | None = None):
         self.cond = threading.Condition()
         self.status = status
+        self.home = home
+        self.home_gets: list[dict] = []
+        self.votes: list[dict] = []
+        self.home_settings = {"tone": "breezy", "briefing": "home"}
+        self.home_posts: list[dict] = []
         self.status_details: dict[str, dict] = {}
         self.status_details_ok = True
         self.status_reads: list[str] = []
@@ -265,6 +279,8 @@ class Stub:
         self.debug_posts: list[dict] = []
         if debug is not None:
             self.settings.append("debug")
+        if home is not None:
+            self.settings.append("home")
         self.push = push
         self.subscriptions = list(subscriptions or [])
         self.routing = json.loads(json.dumps(ROUTING))
@@ -454,6 +470,14 @@ class Stub:
             self.status = summary
             self.eseq += 1
             self.events.append((self.eseq, "light", dict(summary)))
+            self.cond.notify_all()
+
+    def set_home(self, payload: dict) -> None:
+        """Home's new payload, and a `home` event, as the bot's tick sends."""
+        with self.cond:
+            self.home = payload
+            self.eseq += 1
+            self.events.append((self.eseq, "home", {"at": time.time()}))
             self.cond.notify_all()
 
     def emit_bot(self, channel: str = DM, text: str = "A new message from the stub.",
@@ -895,6 +919,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"owner": "owner", "bot": "bot", "public_url": s.public_url,
                                     "bundle": s.bundle.hash if s.bundle else "",
                                     "settings": s.settings, "push": s.push, "light": s.status is not None,
+                                    "home": s.home is not None,
                                     **({"rooms": s.rooms} if s.rooms is not None else {}),
                                     **({"relay": True} if s.relay_pairing else {}),
                                     **({"owner_routes": s.owner_routes, "handoff": s.handoff} if s.owner_routes else {})})
@@ -904,6 +929,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, s.notify)
         if parts == ["settings", "debug"] and "debug" in s.settings:
             return self._json(200, {"on": s.debug})
+        if parts == ["settings", "home"] and "home" in s.settings:
+            return self._json(200, s.home_settings)
+        if parts == ["home"] and s.home is not None:
+            s.home_gets.append({"tz": q.get("tz", [""])[0], "checkin": q.get("checkin", [""])[0] == "1"})
+            return self._json(200, s.home)
         if parts and parts[0] == "status" and s.status is not None:
             if len(parts) == 1:
                 s.status_gets += 1
@@ -1030,6 +1060,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, first)
         if parts == ["settings", "debug"] and "debug" in s.settings:
             return self._json(*s.set_debug(json.loads(self._body() or b"{}")))
+        if parts == ["home", "vote"] and s.home is not None:
+            body = json.loads(self._body() or b"{}")
+            if body.get("vote") not in ("up", "down") or not body.get("text"):
+                return self._json(400, {"error": "vote is up or down, with the greeting's text"})
+            s.votes.append(body)
+            return self._json(200, {"ok": True, "vote": body["vote"]})
+        if parts == ["settings", "home"] and "home" in s.settings:
+            body = json.loads(self._body() or b"{}")
+            s.home_posts.append(body)
+            ok = {"tone": ("breezy", "dry", "facts"), "briefing": ("home", "post")}
+            if not body or any(body[k] not in ok.get(k, ()) for k in body):
+                return self._json(400, {"error": "Home has no such setting."})
+            s.home_settings.update(body)
+            return self._json(200, {**s.home_settings, "saved": True})
         if parts == ["settings", "notify"] and "notify" in s.settings:
             body = json.loads(self._body() or b"{}")
             s.notify_posts.append(body)

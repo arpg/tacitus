@@ -105,6 +105,7 @@ SCOPES = {
     "drafting": "email and document drafts in the user's voice",
     "manuscripts": "editorial and reviewing work",
     "admissions": "prospective-student inquiries (the weekly admissions digest)",
+    "home": "the web chat's Home: how its greeting lands (the owner's thumbs up or down)",
     "privacy": "how much of your mail a hosted model (Claude, Codex) may see: keep levels "
                "(privacy_rules.py); applied by code, never rendered into a prompt",
 }
