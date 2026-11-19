@@ -3290,14 +3290,16 @@ async function settingsPage(page) {
   try { renderSettings(await call('GET', '/settings/routing')); } catch (e) { $('simple-note').textContent = `Could not read the settings: ${e.message}`; }
 }
 
-// The menu's last line: how this browser reaches Tacitus now, the live dot in words.
-function connLine() {
+// The menu's last line, and the status light's while the stream is not open: how this browser reaches
+// Tacitus now, the live dot (or the light that carries it) in words.
+function connWords() {
   const dot = $('live').classList;
   const how = T.relay ? `away from home, through ${new URL(T.rec.relay).host}` : 'on your own network';
   const since = new Date(S.downAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  $('settings-conn').textContent = dot.contains('off') ? `Not connected since ${since}. Trying again ${how}.`
+  return dot.contains('off') ? `Not connected since ${since}. Trying again ${how}.`
     : dot.contains('wait') ? `${S.downAt ? 'Reconnecting' : 'Connecting'} ${how}...` : `Connected ${how}.`;
 }
+function connLine() { $('settings-conn').textContent = connWords(); }
 
 function settingsMenu() {
   $('open-settings').addEventListener('click', () => openSettings());
@@ -3410,20 +3412,24 @@ async function loadLight() {
   drawLight();
 }
 
+// The light carries the connection too: the dot beside it leaves while it shows, it pulses while the
+// stream opens again, and turns to the dashed ring once the stream has been down past the dot's grace.
 function drawLight() {
   const level = lightLevel(), line = lightLine(), conds = (S.light && S.light.conditions) || [];
+  const away = level === 'unknown' || $('live').classList.contains('wait');
+  $('live').classList.toggle('folded', Boolean(S.light));
   for (const id of ['light-nav', 'light', 'light-here']) {
     const b = $(id);
     b.hidden = !S.light;
-    b.className = `icon light-btn lv-${level}`;
+    b.className = `icon light-btn lv-${level}${away && level !== 'unknown' ? ' wait' : ''}`;
     b.replaceChildren(lightIcon(level));
-    b.setAttribute('aria-label', `Status: ${line}`);
+    b.setAttribute('aria-label', `Status: ${line}${away && level !== 'unknown' ? `. ${connWords()}` : ''}`);
   }
   // One condition: its sentence under its name; more: a name each, the first four.
   const rows = () => (level === 'unknown' || !conds.length ? [] : conds.length === 1 ? [h('p', {}, conds[0].line)]
     : [...conds.slice(0, 4).map((c) => h('span', {}, badge(c.level), c.title)),
       ...(conds.length > 4 ? [h('span', {}, `and ${conds.length - 4} more`)] : [])]);
-  const hint = level === 'unknown' ? 'It shows again once the app reconnects.' : 'Click for the details.';
+  const hint = away ? connWords() : 'Click for the details.';
   document.querySelectorAll('.light-tip').forEach((tip) => tip.replaceChildren(h('strong', {}, line), ...rows(),
     h('span', { class: 's-key' }, hint)));
   if ($('status').open) drawStatus();
@@ -3444,7 +3450,9 @@ const clearedWhen = (c) => (c.how === 'read' ? `Read ${when(c.until)}`
 function drawStatus() {
   const level = lightLevel(), conds = (S.light && S.light.conditions) || [], cleared = (S.light && S.light.cleared) || [];
   const openIds = new Set([...$('status-list').querySelectorAll('details[open]')].map((d) => d.dataset.id));
+  const away = level === 'unknown' || $('live').classList.contains('wait');
   $('status-head').replaceChildren(badge(level), h('strong', {}, level === 'ok' ? 'Everything is working.' : lightLine()),
+    ...(away ? [h('span', { class: 's-key' }, connWords())] : []),
     ...(S.light && level !== 'unknown' ? [h('span', { class: 's-key' }, `Checked ${when(S.light.as_of)}`)] : []));
   $('status-list').replaceChildren(...(level === 'unknown' ? [] : conds.map((c) => condBlock(c, openIds.has(c.id)))));
   $('status-off').hidden = !conds.length || !S.light || S.light.details !== false;

@@ -479,7 +479,13 @@ of a few words, one plain sentence, what the owner can do, since when,
 an action the app can offer where one exists, and a technical detail with
 the log lines of its part for the drill-down. The overall level is the
 worst condition's, `ok` with none; the line is "All good", the one
-condition's title, or "N things need a look".
+condition's title, or "N things need a look". Red means the owner must
+act; what fixes itself or asks nothing of the owner is yellow. What to
+do is complete without the details: a step only someone at Tacitus's
+computer can take says so in plain words and ends "If someone set
+Tacitus up for you, ask them.", and the details hold the commands for
+that person. Where the app can start the step (Connect starts the Drive
+sign-in), the condition carries that button instead.
 
 | Condition | Source | Level |
 |---|---|---|
@@ -489,7 +495,7 @@ condition's title, or "N things need a look".
 | Program files unprotected (the deploy tree's check) | the sentinel | problem, pushes |
 | Start at boot is off; a second copy runs; no afternoon update; no weekly review; a scheduled job failed; held messages stuck; running an older copy; a check the sentinel adds later | the sentinel | warn |
 | Checks stopped (the sentinel's results are over 40 minutes old) | the sentinel's `results.json` | warn |
-| Outlook is not answering, or is limiting Tacitus | `circuit-breakers.json`, the Graph lanes | warn inside the sentinel's 30-minute grace, problem past it |
+| Outlook is not answering, or is limiting Tacitus | `circuit-breakers.json`, the Graph lanes | warn, however long (Microsoft's outage asks nothing of the owner) |
 | A service is not answering | `circuit-breakers.json`, another service | warn |
 | A safety check failed / needs a look | the boundary audit's state (daily) | problem (a FAIL), pushes; warn (WARN only) |
 | An add-on is switched off | the bot's own check of each plugin (`plugin_registry.verified_plugins`); the record of posted failures where that check cannot run | problem |
@@ -585,8 +591,13 @@ menu's column from 1000 px wide, in the list's bar below that, and in a
 conversation's bar on a phone only while something needs a look. Each
 level has a shape as well as a colour (a ringed check, calm and a little
 faded; a triangle with a mark; a filled circle with a mark) and its
-words in the label ("Status: All good"); while the app is not connected
-it is a dashed ring that says it cannot know. Under a mouse, or with the
+words in the label ("Status: All good"). It carries the connection as
+well, so the live dot leaves the top bar while the light shows (it stays
+where the bot runs no light): the light pulses while the stream opens
+again, its label and tooltip saying "Reconnecting ...", and once the
+stream has been down past the dot's grace it is a dashed ring that says
+it cannot know, with the Settings line's words ("Not connected since
+... Trying again ...") in its tooltip and at the top of the sheet. Under a mouse, or with the
 keyboard's focus, a tooltip says the line and the conditions. A press
 (a tap on a phone) opens the sheet, "How Tacitus is doing", docked to the
 bottom on a phone: the line and when it was checked, then a block per
@@ -1190,7 +1201,9 @@ seen seq, reconnect handled by the browser. The dot in the header is on
 while the stream is open, pulses while it opens or opens again, and turns
 to "not connected" only once the stream has been down for ten seconds
 (`setLive.grace`): a routine re-open (a restart of the bot for a deploy,
-a stream the relay ended) is a reconnect, not an outage. Through the relay
+a stream the relay ended) is a reconnect, not an outage. Where the bot
+runs the status light the dot leaves the top bar and the light shows the
+same states (Status light). Through the relay
 a page hidden for five minutes closes its stream and opens one again at
 once back in view (docs/webchat-relay.md, For the web app). Composer: Enter sends,
 Shift+Enter newline. Sign-in: on 401 show a field for the sign-in code

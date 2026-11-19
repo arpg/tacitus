@@ -14,13 +14,14 @@ The sources:
   sentinel    the sentinel's results.json (every 10 minutes): the bot,
               the briefings, the schedule, the Claude and Outlook
               sign-ins, the mail mediator; and its own staleness
-  breakers    circuit-breakers.json: Outlook not answering (inside the
-              sentinel's 30-minute grace a warning, past it a problem),
-              another service down
+  breakers    circuit-breakers.json: Outlook not answering, or limiting
+              Tacitus (a warning however long: Microsoft's outage asks
+              nothing of the owner; red means the owner must act), another
+              service down
   boundary    the boundary audit's state (daily): a protection that does
               not hold, or a check to look at
-  plugins     plugin-integrity-alerts.json, less what this process found
-              passing since: an add-on switched off
+  plugins     the bot's own check of each installed plugin (the record
+              of posted failures where it cannot run): an add-on switched off
   notices     the alerts the owner must read (chat_notify, a notice kind),
               kept in the web chat's store until marked read
   usage       the plan's saved rate-limit reading (rate_limits.py)
@@ -68,8 +69,6 @@ except ModuleNotFoundError:  # imported as preprocessor.status_light
 RANK = {"ok": 0, "warn": 1, "problem": 2}
 # The sentinel runs every 10 minutes; results older than this mean it stopped.
 SENTINEL_STALE_S = 40 * 60
-# A Graph breaker inside the sentinel's grace is a warning (sentinel.GRAPH_OPEN_GRACE_S).
-GRAPH_GRACE_S = 30 * 60
 GRAPH_BREAKERS = ("graph", "graph-background")
 # Readings and outages that must last this long before the light shows them.
 LOCAL_GRACE_S = 10 * 60
@@ -96,8 +95,11 @@ _NAME_RE = re.compile(r"^[a-z0-9_-]{1,40}$")
 _PLUGIN_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _PRINTABLE_RE = re.compile(r"[^\x20-\x7e]")
 
-# Who can help, said the same way everywhere.
-HELPER = "the person who set up Tacitus"
+# The second sentence of every step that only someone at Tacitus's computer
+# can take: the plain line is complete without the details, which hold the
+# commands for that person.
+ASK = "If someone set Tacitus up for you, ask them."
+NEEDS_A_LOOK = "Tacitus's computer needs a look. " + ASK
 
 
 @dataclass
@@ -199,45 +201,43 @@ def _plain(text, limit: int = 200) -> str:
 
 SENTINEL_WORDS = {
     "service_active": ("problem", "Tacitus stopped", "Tacitus stopped running on its computer.",
-                       f"Start it again on its computer, or ask {HELPER}. The details say how.", False),
+                       "Tacitus needs to be started again on its computer. " + ASK, False),
     "service_enabled": ("warn", "Start at boot is off",
                         "Tacitus will not start by itself after its computer restarts.",
-                        f"Ask {HELPER} to turn on its start at boot. The details say how.", False),
+                        "Nothing is broken now. Tacitus needs to be set to start by itself on its "
+                        "computer. " + ASK, False),
     "no_duplicate_bot": ("warn", "A second copy runs", "A second copy of Tacitus is running.",
-                         f"Ask {HELPER} to stop the extra copy. The details say which.", False),
+                         "The extra copy needs to be stopped on Tacitus's computer. " + ASK, False),
     "briefing_posted": ("problem", "No briefing today", "This morning's briefing did not arrive.",
                         "Ask Tacitus for a briefing if you need one now. It tries again tomorrow.",
                         False),
     "afternoon_posted": ("warn", "No afternoon update", "This afternoon's update did not arrive.",
                          "Nothing to do. It comes again tomorrow.", False),
     "weekly_audit": ("warn", "No weekly review", "The weekly review did not run this week.",
-                     "Nothing to do now. It runs again on Sunday.", False),
+                     "Nothing to do. It runs again next week.", False),
     "cron_heartbeat": ("problem", "Scheduled work stopped",
                        "Tacitus's scheduled work stopped: briefings and mail checks do not run.",
-                       f"Ask {HELPER} to check its schedule. The details say what to look at.", True),
+                       "Tacitus's schedule needs to be started again on its computer. " + ASK, True),
     "recent_failures": ("warn", "A scheduled job failed", "A scheduled job failed in the last day.",
-                        "Nothing to do unless it keeps happening.", False),
+                        "Nothing to do unless it keeps happening. If it does and someone set "
+                        "Tacitus up for you, ask them.", False),
     "deferred_queue": ("warn", "Held messages are stuck",
-                       "Messages held for your quiet hours did not go out.",
-                       f"Ask {HELPER} to check the quiet-hours delivery.", False),
+                       "Messages held for your quiet hours did not go out.", NEEDS_A_LOOK, False),
     "deploy_integrity": ("warn", "Running an older copy",
                          "Tacitus is running an older copy of itself than the one installed.",
-                         f"Ask {HELPER} to restart it. The details say how.", False),
+                         "Tacitus needs a restart on its computer to use its newest copy. " + ASK,
+                         False),
     "ea_bot_login": ("problem", "Claude sign-in needs you",
                      "Tacitus is signed out of Claude, so it cannot answer or write.",
-                     f"Sign it in to Claude again on its computer, or ask {HELPER}. "
-                     "The details say how.", True),
+                     "Tacitus needs you to sign in to Claude again on its computer. " + ASK, True),
     "mail_sign_in": ("problem", "Mail sign-in needs you",
                      "Tacitus is signed out of Outlook, so it cannot read or send mail.",
-                     f"Sign in to Outlook again on Tacitus's computer, or ask {HELPER}. "
-                     "The details say how.", True),
+                     "Tacitus needs you to sign in to Outlook again on its computer. " + ASK, True),
     "mail_mediator": ("problem", "Mail helper stopped",
                       "The helper that reaches your mail stopped, so mail reads and drafts fail.",
-                      f"Restart it on Tacitus's computer, or ask {HELPER}. The details say how.",
-                      True),
+                      "The mail helper needs to be started again on Tacitus's computer. " + ASK, True),
 }
-GENERIC_CHECK = ("warn", "A check failed", "One of Tacitus's own checks failed.",
-                 f"Ask {HELPER} to look at the details.", False)
+GENERIC_CHECK = ("warn", "A check failed", "One of Tacitus's own checks failed.", NEEDS_A_LOOK, False)
 # Never on the light: drift between the installed schedule and its saved
 # copy (the symptom checks see what it breaks), the resident pane (chat
 # turns do not run there), and the breakers (the breaker source reads them).
@@ -245,7 +245,7 @@ SENTINEL_NOISE = frozenset({"crontab_drift", "resident_pane", "circuit_breakers"
 # The deploy check when the program files are not protected: a problem.
 _UNSAFE_TREE = ("problem", "Program files unprotected",
                 "Tacitus's program files are not protected from its helper account.",
-                f"Ask {HELPER} to run the hardening step. The details say how.", True)
+                "Tacitus's computer needs its protection step run again. " + ASK, True)
 
 
 def _sentinel_words(check: str, detail: str) -> tuple:
@@ -267,7 +267,8 @@ def src_sentinel(ctx: Ctx) -> list[Condition]:
     if checked is None or ctx.now - checked > SENTINEL_STALE_S:
         out.append(Condition("sentinel", "warn", "Checks stopped",
                              "Tacitus's own checks stopped running, so this light may be out of date.",
-                             f"Ask {HELPER} to check its schedule.", "sentinel",
+                             "Tacitus's schedule needs to be started again on its computer. " + ASK,
+                             "sentinel",
                              f"The sentinel's last run: {_iso(checked)} (it runs every 10 minutes).",
                              since=checked))
     since = doc.get("since") if isinstance(doc.get("since"), dict) else {}
@@ -336,7 +337,6 @@ def src_breakers(ctx: Ctx) -> list[Condition]:
         began = min((_ts(b.get("since")) or _ts(b.get("opened_at")) or ctx.now) for b in graph)
         kinds = {_error_kind(b.get("last_error")) for b in graph}
         throttled = kinds == {"too many requests (HTTP 429)"}
-        long = ctx.now - began >= GRAPH_GRACE_S
         title = "Outlook is limiting Tacitus" if throttled else "Outlook is not answering"
         line = ("Microsoft is limiting how often Tacitus reads your mail." if throttled
                 else "Outlook is not answering, so mail is not read for now.")
@@ -344,13 +344,13 @@ def src_breakers(ctx: Ctx) -> list[Condition]:
             f"Breaker {b['service']}: open since {_iso(_ts(b.get('since')) or _ts(b.get('opened_at')))}, "
             f"{int(b.get('failures') or 0)} failures in a row, {int(b.get('opens') or 0)} openings; "
             f"last error: {_error_kind(b.get('last_error'))}" for b in graph)
-        out.append(Condition("mail-service", "problem" if long else "warn", title, line,
+        out.append(Condition("mail-service", "warn", title, line,
                              "Nothing to do. Tacitus keeps trying, and the light turns green when "
                              "Outlook answers again.", "graph", detail, since=began))
     for b in others:
         out.append(Condition(f"service:{b['service']}", "warn", "A service is not answering",
                              "One of the services Tacitus uses is not answering. Tacitus keeps trying.",
-                             "Nothing to do unless it lasts.", "",
+                             "Nothing to do. Tacitus keeps trying.", "",
                              f"Breaker {b['service']}: open since {_iso(_ts(b.get('opened_at')))}, "
                              f"{int(b.get('failures') or 0)} failures in a row; last error: "
                              f"{_error_kind(b.get('last_error'))}",
@@ -379,11 +379,11 @@ def src_boundary(ctx: Ctx) -> list[Condition]:
     if failed:
         return [Condition("boundary", "problem", "A safety check failed",
                           "A daily safety check found a protection that does not hold.",
-                          f"Ask {HELPER} to read the safety check. The details name what it found.",
+                          NEEDS_A_LOOK,
                           "boundary", detail, push=True)]
     return [Condition("boundary", "warn", "A safety check needs a look",
                       "A daily safety check found something to look at.",
-                      f"Ask {HELPER} to read the safety check. The details name what it found.",
+                      NEEDS_A_LOOK,
                       "boundary", detail)]
 
 
@@ -422,7 +422,7 @@ def src_plugins(ctx: Ctx) -> list[Condition]:
         out.append(Condition(
             f"plugin:{name}", "problem", "An add-on is switched off",
             "An add-on's files changed, so Tacitus switched it off.",
-            f"If you did not change it, ask {HELPER} to check it. The details say how.", "",
+            "If you did not change this add-on, it needs a look on Tacitus's computer. " + ASK, "",
             f"Plugin {name}: its files no longer match what the owner installed, so it gets no "
             f"skill, tool grant or scheduled run until they do.\n"
             f"Check it: python3 scripts/ea-plugin.py verify {name}\n"
@@ -436,19 +436,18 @@ def src_plugins(ctx: Ctx) -> list[Condition]:
 NOTICE_WORDS = {
     "tripwire": ("problem", "Private mail check failed",
                  "Mail kept for your own model could not be read safely.",
-                 "Read the report in the details. Tacitus changes nothing by itself. "
-                 "Tap Got it when you have read it.", True),
+                 "Tacitus changes nothing by itself. If someone set Tacitus up for you, show them "
+                 "this. Tap Got it once you have.", True),
     "persistence": ("warn", "A setting changed",
                     "Tacitus's helper changed one of the files that guide its later work.",
-                    f"Read the change in the details. If you did not expect it, ask {HELPER}. "
-                    "Tap Got it when you have read it.", False),
+                    "Nothing to do if you expected it. If not, and someone set Tacitus up for you, "
+                    "show them this. Tap Got it once you have looked.", False),
     "outbound": ("problem", "A web safety check failed",
                  "A check on how Tacitus uses the web found a protection that did not hold.",
-                 f"Read the report in the details and show it to {HELPER}. "
-                 "Tap Got it when you have read it.", True),
+                 "If someone set Tacitus up for you, show them this. Tap Got it once you have.", True),
 }
 GENERIC_NOTICE = ("warn", "A report to read", "Tacitus has a report for you to read.",
-                  "Read it in the details. Tap Got it when you have read it.", False)
+                  "Tap Got it once you have read it.", False)
 
 
 def _notice_words(kind: str) -> tuple:
@@ -520,8 +519,8 @@ def src_local(ctx: Ctx) -> list[Condition]:
     tech = model_routing.local_status(verbose=True).get("detail") or ""
     return [Condition("local", "warn", "Your own AI is not answering",
                       "Your own AI model is not answering, so the work it does waits.",
-                      "Nothing to do if it is restarting. If it lasts, check the computer it runs on, "
-                      "or move its work in Models.", "local",
+                      "Nothing to do if it is restarting. If it lasts, its computer needs a look, or "
+                      "tap Open Models to give its work to Claude or Codex.", "local",
                       f"Model {_plain(st.get('model'), 80)}: {tech}",
                       action={"label": "Open Models", "settings": "routing"}, grace_s=LOCAL_GRACE_S)]
 
@@ -551,13 +550,13 @@ UPDATE_WORDS = {
     "failed": ("An update did not install", "The last update did not install.",
                "Nothing to do. Tacitus tries again within the hour."),
     "stopped": ("Updates stopped", "Tacitus's updater stopped before it could install anything.",
-                f"Ask {HELPER} to check the updater. The details say what it said."),
+                "Tacitus's updater needs a look on its computer. " + ASK),
     "key": ("An update waits for you", "A new release is signed with a new key and waits.",
-            f"Ask {HELPER} to check the new key before it installs."),
+            "Someone needs to confirm the new key on Tacitus's computer before it installs. " + ASK),
     "held": ("An update is on hold", "An update is on hold.",
              "Nothing to do. It installs with the next release."),
     "stale": ("Updates are not checked", "Tacitus has not looked for updates for two days.",
-              f"Ask {HELPER} to check the update timer."),
+              "Tacitus's update timer needs a look on its computer. " + ASK),
 }
 
 
@@ -623,7 +622,7 @@ def conditions(ctx: Ctx, sources=None) -> list[Condition]:
         except Exception as e:
             out.append(Condition(f"source:{name}", "warn", "A check could not run",
                                  "Tacitus could not read one of its own checks.",
-                                 f"Ask {HELPER} to look at the details.", "",
+                                 NEEDS_A_LOOK, "",
                                  f"The {name} source failed: {type(e).__name__}."))
     return out
 

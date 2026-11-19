@@ -966,6 +966,8 @@ button.chip { cursor: pointer; }
 :is(.light-btn, .lv) svg .mark { fill: var(--panel); stroke: var(--panel); stroke-width: 2.2; }
 :is(.light-btn, .lv) svg .dash { stroke-dasharray: 3 2.6; }
 .light-btn.lv-ok svg { opacity: .75; }
+.live.folded { display: none; } /* the light carries the connection */
+.light-btn.wait svg { animation: pulse 1.4s ease-in-out infinite; }
 .lv { display: inline-flex; flex: none; } .lv svg { width: 18px; height: 18px; fill: none; }
 .light-wrap { position: relative; display: inline-flex; flex: none; }
 .light-tip { display: none; position: absolute; top: calc(100% + 2px); right: 0; z-index: 6; width: max-content;

@@ -50,8 +50,10 @@ def _shape(page, sel):
 
 def test_the_light_says_each_level_in_shape_and_words_and_follows_the_bot(app):
     """Green is a ringed check, yellow a triangle, red a filled circle with
-    a mark; the label says the bot's line. A `light` event redraws it, and a
-    stream that stays down leaves a dashed ring that says it cannot know."""
+    a mark; the label says the bot's line. A `light` event redraws it. The
+    light carries the connection: the dot leaves while it shows, it pulses
+    while the stream opens again, and a stream that stays down leaves a
+    dashed ring that says it cannot know."""
     from playwright.sync_api import expect
     page, stub, errors = app(status=summary())
     light = page.locator("#light-nav")
@@ -59,6 +61,7 @@ def test_the_light_says_each_level_in_shape_and_words_and_follows_the_bot(app):
     expect(light).to_have_class("icon light-btn lv-ok")
     assert _shape(page, "#light-nav") == "circle.ring path.ink"
     expect(page.locator("#light")).to_be_hidden()  # one light at a time: the menu's column on a wide screen
+    expect(page.locator("#live")).to_be_hidden()  # no green dot beside it: the light says the connection
     stub.set_status(summary(SLOW))
     expect(light).to_have_attribute("aria-label", "Status: Outlook is not answering")
     assert _shape(page, "#light-nav") == "path.fill path.mark circle.mark"
@@ -67,10 +70,18 @@ def test_the_light_says_each_level_in_shape_and_words_and_follows_the_bot(app):
     expect(light).to_have_class("icon light-btn lv-problem")
     assert _shape(page, "#light-nav") == "circle.fill path.mark circle.mark"
     assert not errors, errors
+    page.evaluate("setLive.grace = 60000; setLive('down')")  # reopening, inside the dot's grace
+    expect(light).to_have_class("icon light-btn lv-problem wait")
+    expect(light).to_have_attribute("aria-label", "Status: 2 things need a look. Reconnecting on your own network...")
+    page.evaluate("setLive('on')")
+    expect(light).to_have_class("icon light-btn lv-problem")
     page.evaluate("setLive.grace = 200")
     stub.drop_streams(refuse=2)
     expect(light).to_have_class("icon light-btn lv-unknown", timeout=5000)
     expect(light).to_have_attribute("aria-label", "Status: Not connected, so Tacitus cannot say")
+    light.click()
+    expect(page.locator("#status-head")).to_contain_text("Trying again on your own network.")
+    page.keyboard.press("Escape")
     expect(light).to_have_class("icon light-btn lv-problem", timeout=15000)  # back, and read again
 
 
@@ -187,4 +198,5 @@ def test_a_bot_without_the_light_shows_none_and_asks_nothing(app):
     page.wait_for_selector(".thread-item")
     expect(page.locator("#light-nav")).to_be_hidden()
     expect(page.locator("#light")).to_be_hidden()
+    expect(page.locator("#live")).to_be_visible()  # the dot stays where there is no light
     assert stub.status_gets == 0 and not errors, errors
