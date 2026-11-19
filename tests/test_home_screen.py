@@ -739,7 +739,7 @@ def test_without_a_view_home_keeps_the_upstream_rules():
     assert "Send the workshop review" not in titles and "Send the slides to the committee" in titles
 
 
-def test_a_reply_an_earlier_run_turned_into_a_question_is_that_question_and_a_kept_one_says_only_the_fixed_words():
+def test_a_reply_an_earlier_run_turned_into_a_question_is_that_question():
     src = F.sources()
     src.replies = [
         {"id": "r-q", "subject": "Committee seat", "from_name": "Sam", "age_days": 2, "conversation_id": "c-q",
@@ -747,13 +747,170 @@ def test_a_reply_an_earlier_run_turned_into_a_question_is_that_question_and_a_ke
         {"id": "r-l", "subject": "Thanks note", "from_name": "Lee", "age_days": 2, "conversation_id": "c-l",
          "queued": {"outcome": "left", "note": "No reply needed."}},
         {"id": "r-n", "subject": "Survey", "from_name": "Jo", "age_days": 2, "conversation_id": "c-n",
-         "owner_said": [{"said": "No reply.", "no_reply": True}]},
-        {"id": "r-k", "subject": "Applicant question", "from_name": "Kim", "age_days": 4, "conversation_id": "c-k",
-         "kept": True, "ask": "words from the kept mail"}]
+         "owner_said": [{"said": "No reply.", "no_reply": True}]}]
     got = {x["id"]: x for x in H.left(src)}
     assert (got["reply:r-q"]["kind"], got["reply:r-q"]["label"], got["reply:r-q"]["title"]) == \
         ("question", "Answer needed", "Join the committee? Yes or no.")
     assert "reply:r-l" not in got and "reply:r-n" not in got
-    kept = got["reply:r-k"]
-    assert (kept["title"], kept["detail"]) == ("Applicant question", "Kept mail · Waiting 4 days")
-    assert "Kim" not in str(kept) and "kept mail" not in str({k: v for k, v in kept.items() if k != "detail"})
+
+
+# ── mail kept from hosted models: keep_gate's fixed words, nothing more ──
+
+SECRET_SUBJECT, SECRET_WHO = "Applicant question about funding", "Kim Example"
+SINCE = "2026-11-17T15:00:00+00:00"
+
+
+def _kept_reply(level):
+    return {"id": "r-k", "subject": SECRET_SUBJECT, "from_name": SECRET_WHO, "from": "kim@example.org",
+            "age_days": 4, "conversation_id": "c-k", "message_id": "m-k", "since": SINCE,
+            "ask": "words from the kept mail", "keep_level": level}
+
+
+def _only(p: dict, *gone: str) -> None:
+    """None of `gone` is anywhere in what goes to the browser."""
+    sent = json.dumps(p)
+    for g in gone:
+        assert g not in sent, g
+
+
+def test_a_local_reply_shows_its_date_alone_and_the_payload_carries_nothing_more():
+    src = F.sources()
+    src.replies = [_kept_reply("local")]
+    p = H.build(src)
+    k = next(x for x in p["left"] if x["id"] == "reply:r-k")
+    assert k["title"] == "A kept message from Nov 17 needs you. Open it in Outlook."
+    assert (k["label"], k["detail"], k["kept"]) == ("Reply owed", "Waiting 4 days", "local")
+    assert "ask" not in k and "project" not in k
+    _only(p, SECRET_SUBJECT, SECRET_WHO, "kim@example.org", "words from the kept mail")
+
+
+def test_a_facts_reply_shows_its_sender_and_subject_from_the_headers_and_no_more():
+    src = F.sources()
+    src.replies = [_kept_reply("facts")]
+    p = H.build(src)
+    k = next(x for x in p["left"] if x["id"] == "reply:r-k")
+    assert k["title"] == f"A kept message from {SECRET_WHO} on Nov 17 needs you: {SECRET_SUBJECT}. Open it in Outlook."
+    assert "ask" not in k
+    _only(p, "kim@example.org", "words from the kept mail")
+
+
+@pytest.mark.parametrize("level", ["summary", "full", None])
+def test_a_reply_at_summary_or_full_is_an_ordinary_reply(level):
+    src = F.sources()
+    src.replies = [{**_kept_reply(level), "keep_level": level} if level else
+                   {k: v for k, v in _kept_reply("full").items() if k != "keep_level"}]
+    k = next(x for x in H.left(src) if x["id"] == "reply:r-k")
+    assert (k["title"], k["detail"]) == (SECRET_SUBJECT, f"From {SECRET_WHO} · Waiting 4 days")
+    assert k["ask"] == f'About the reply to "{SECRET_SUBJECT}": ' and "kept" not in k
+
+
+@pytest.mark.parametrize("level,title", [
+    ("local", "A reply to the kept message is ready."),
+    ("facts", "A reply to the kept message is ready: Re: Lab budget.")])
+def test_a_kept_request_names_no_one_and_keeps_its_block(level, title):
+    src = F.sources()
+    src.requests["waiting"][0]["keep_level"] = level
+    p = H.build(src)
+    k = next(x for x in p["left"] if x["id"] == "request:w41")
+    assert (k["title"], k["detail"], k["href"]) == (title, "", "#/dm/tw41/w41")
+    assert "project" not in k
+    _only(p, "Pat Example")
+
+
+def test_a_kept_item_of_the_posts_list_is_its_fixed_line_with_its_link():
+    src = F.sources("unchecked")
+    view = src.reports[0]["view"]
+    view["items"].append({"section": "needs", "ledger_id": "row-k", "conversation_id": "c-k", "head": "",
+                          "kept": "local", "due": "",
+                          "line": "A kept message from Nov 17 needs you. <https://outlook.example.com/k1|Open it in Outlook>."})
+    k = next(x for x in H.left(src) if x["id"] == "item:row-k")
+    assert (k["title"], k["link"], k["label"], k["detail"]) == (
+        "A kept message from Nov 17 needs you. Open it in Outlook.", "https://outlook.example.com/k1",
+        "Answer needed", "")
+    assert "ask" not in k
+    # a level the live check found stricter than the post's own hides the item too
+    view["items"][0]["keep_level"] = "local"
+    k = next(x for x in H.left(src) if x["id"] == "item:deadline-w1")
+    assert k["title"] == "A kept message needs you. Open it in Outlook." and "workshop" not in json.dumps(k)
+
+
+def test_a_kept_row_of_the_ranking_and_kept_rows_done_today_show_the_fixed_words():
+    src = F.sources()
+    src.rows = {"deadline-w1": {"id": "deadline-w1", "type": "deadline", "status": "open", "keep_level": "local",
+                                "description": "Send the workshop review", "conversation_id": "c-w",
+                                "from_name": SECRET_WHO, "date_identified": SINCE}}
+    src.closed[0]["keep_level"] = "local"
+    src.requests["done"][0]["keep_level"] = "facts"
+    p = H.build(src)
+    k = next(x for x in p["left"] if x["id"] == "item:deadline-w1")
+    assert k["title"] == "A kept message from Nov 17 needs you. Open it in Outlook." and "ask" not in k
+    titles = {d["id"]: d["title"] for d in p["done"]}
+    assert titles["closed:row-c1"] == "A kept message" and titles["answered:w40"] == "A kept message"
+    _only(p, "Parking permit renewal", "Sent to Lee Example", SECRET_WHO)
+
+
+def test_the_keep_check_stamps_every_item_and_fails_closed():
+    src = F.sources("unchecked")
+    src.rows = {"deadline-w1": {"id": "deadline-w1", "conversation_id": "c-w"}}
+    src.replies = [{k: v for k, v in _kept_reply("full").items() if k != "keep_level"}]
+    asked = []
+
+    def levels(items, key):
+        asked.extend(items)
+        return {key(i): ("facts" if i.get("conversation_id") == "c-k" else "full") for i in items}
+    H.mark_keep(src, levels=levels)
+    assert src.replies[0]["keep_level"] == "facts"
+    assert src.requests["waiting"][0]["keep_level"] == "full"           # its card names its thread
+    assert src.reports[0]["view"]["items"][0]["keep_level"] == "full"    # by its row
+    assert all(c.get("conversation_id") or c.get("id") for c in asked)
+
+    def broken(items, key):
+        raise RuntimeError("the records cannot be read")
+    src = F.sources("unchecked")
+    src.rows = {"deadline-w1": {"id": "deadline-w1", "conversation_id": "c-w"}}
+    src.replies = [{k: v for k, v in _kept_reply("full").items() if k != "keep_level"}]
+    H.mark_keep(src, levels=broken)
+    assert src.replies[0]["keep_level"] == "local"
+    assert src.requests["waiting"][0]["keep_level"] == "local"
+    assert src.rows["deadline-w1"]["keep_level"] == "local"
+    p = H.build(src)
+    # every part Home builds; the folded briefing is the post's own text, kept lines already fixed
+    _only({k: v for k, v in p.items() if k != "reports"}, SECRET_SUBJECT, SECRET_WHO, "Re: Lab budget",
+          "Pat Example", "Send the workshop review")
+
+
+def test_the_real_keep_check_fails_closed_when_its_records_cannot_be_read(monkeypatch):
+    import keep_gate
+    monkeypatch.setattr(keep_gate, "_records", lambda: (_ for _ in ()).throw(OSError("no store")))
+    src = F.sources()
+    src.replies = [{k: v for k, v in _kept_reply("full").items() if k != "keep_level"}]
+    H.mark_keep(src)
+    assert src.replies[0]["keep_level"] == "local"
+
+
+def test_a_kept_item_reaches_home_from_the_post_as_its_fixed_line_only(remote, monkeypatch):
+    """The remote run hides a kept item in the post (keep_gate.kept_line);
+    its entry in the list kept for Home has no title and no sender."""
+    monkeypatch.setattr(remote, "outlook_links", lambda convs, **k: {c: "https://outlook.example.com/" + c for c in convs})
+
+    def review(agent, text, b, **kw):
+        return {"closed": [], "closed_rows": [], "unsure_rows": [], "parked": [],
+                "review": {"status": "ok", "model": "codex", "footer": []}}
+    b_mail = [dict(m) for m in MAIL]
+    b_mail[2]["kept_level"] = "Facts only"
+    b_mail[2]["received"] = SINCE
+    b = {"new_needs_response": b_mail, "open_obligations": [], "delta_summary": {}, "recently_closed": []}
+    plan = {"get_done_today": [{"ref": "R3", "why": "the section is due"}], "flexes": [], "needs_you": [],
+            "drafts": [], "escalate": []}
+    chat = lambda messages, **kw: (json.loads(json.dumps(plan)), {})  # noqa: E731
+    text, rec = remote.run("morning-briefing", b, run_id="cron-morning-briefing-k", now=datetime.now(F.ZONE),
+                           chat=chat, review=review, queue=lambda *a, **k: 0, rooms=lambda *a, **k: [],
+                           mark=lambda *a, **k: True)
+    item = next(i for i in rec["home"]["items"] if i["conversation_id"] == "c-c")
+    assert item["kept"] in ("local", "facts") and item["head"] == ""
+    assert item["line"].startswith("A kept message") and "Write the section" not in json.dumps(item)
+    src = F.sources()
+    src.reports = [{"kind": "morning-briefing", "text": text, "at": F.at(5, 0), "view": rec["home"]}]
+    k = next(x for x in H.left(src) if x["id"] == "item:c-c")
+    assert k["title"].startswith("A kept message") and k["link"] == "https://outlook.example.com/c-c"
+    assert "ask" not in k

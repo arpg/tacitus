@@ -155,6 +155,29 @@ def test_the_posts_own_list_and_its_not_checked_line_show_on_home(app):
     assert not errors, errors
 
 
+def test_kept_mail_shows_its_fixed_words_its_outlook_link_and_no_way_to_ask(app):
+    """An item kept from hosted models is keep_gate's fixed line: at local
+    its date, at facts its sender and subject; the post's link opens
+    Outlook; nothing starts a conversation about it."""
+    from playwright.sync_api import expect
+    page, stub, errors = home_app(app, "kept")
+    linked = page.locator("a.h-item[target='_blank']")
+    expect(linked).to_have_attribute("href", "https://outlook.example.com/mail/k1")
+    expect(linked).to_have_attribute("rel", "noopener noreferrer")
+    local = page.locator("div.h-item", has_text="Seminar date")
+    expect(local).to_have_count(0)  # a local reply names no subject
+    expect(page.locator(".h-item", has_text="A kept message from Alex Kim on")).to_contain_text("Data access form")
+    expect(page.locator("div.h-item", has_text="needs you. Open it in Outlook.").first).to_be_visible()
+    kept_req = next(x for x in stub.home["left"] if x["kind"] == "request" and x.get("kept"))
+    expect(page.locator(".h-item", has_text="A reply to the kept message is ready.")).to_have_attribute(
+        "href", kept_req["href"])  # its block in Action requests, as any request
+    for item in page.locator(".h-item:has-text('kept')").all():
+        assert "Ask about this" not in item.inner_text()
+    expect(page.locator(".h-main")).not_to_contain_text("Seminar date")
+    expect(page.locator(".h-main")).not_to_contain_text("Pat Example")
+    assert not errors, errors
+
+
 def test_vacation_folds_what_waits_under_peek_anyway(app):
     from playwright.sync_api import expect
     page, stub, errors = home_app(app, "vacation")

@@ -1156,7 +1156,7 @@ function askAbout(text) {
   $('text').focus();
   $('text').setSelectionRange(text.length, text.length);
 }
-const openItem = (it) => (it.href ? goTo(it.href) : askAbout(it.ask));
+const openItem = (it) => (it.href ? goTo(it.href) : it.ask ? askAbout(it.ask) : it.link && window.open(it.link, '_blank', 'noopener'));
 
 const svgEl = (tag, attrs) => {
   const el = document.createElementNS($('menu').querySelector('svg').namespaceURI, tag);
@@ -1181,8 +1181,10 @@ const homeItem = (it) => {
     word ? h('span', { class: `req-flag u-${it.urgency}` }, word) : null, it.project ? h('span', { class: 'req-proj' }, it.project) : null),
   h('span', { class: 'h-title' }, it.title), it.detail ? h('span', { class: 'h-detail' }, it.detail) : null];
   const cls = `h-item u-${it.urgency || 'calm'}`;
+  // A kept item (Kept mail, below Summary) has the fixed words alone: its Outlook link where the post had one.
   return h('li', {}, it.href ? h('a', { class: cls, href: it.href }, ...kids)
-    : h('button', { type: 'button', class: cls, onclick: () => askAbout(it.ask) }, ...kids, h('span', { class: 'h-ask' }, 'Ask about this')));
+    : it.ask ? h('button', { type: 'button', class: cls, onclick: () => askAbout(it.ask) }, ...kids, h('span', { class: 'h-ask' }, 'Ask about this'))
+      : it.link ? h('a', { class: cls, href: it.link, target: '_blank', rel: 'noopener noreferrer' }, ...kids) : h('div', { class: cls }, ...kids));
 };
 const items = (list, label) => h('ul', { class: 'h-items', 'aria-label': label }, list.map(homeItem));
 
@@ -1225,7 +1227,8 @@ function renderHome(box) {
   }
   if (x.next) {
     main.push(h('section', { class: 'h-card h-next' }, h('h2', {}, 'Your next gap'), h('p', {}, x.next.line),
-      x.left.length ? h('button', { type: 'button', class: 'btn primary', onclick: () => openItem(x.left[0]) }, 'Open the first one') : null));
+      x.left.some((it) => it.href || it.ask) ? h('button', { type: 'button', class: 'btn primary',
+        onclick: () => openItem(x.left.find((it) => it.href || it.ask)) }, 'Open the first one') : null));
   }
   if (x.left.length) main.push(h('section', { class: 'h-card' }, h('h2', {}, `Left for you (${x.left.length})`), items(x.left, 'Left for you')));
   if (x.held && x.held.length) {

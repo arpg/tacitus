@@ -2067,7 +2067,9 @@ def home_view(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dict]
               escalated: list[dict], checked: dict | None, now: datetime) -> dict:
     """What Home lists from this post: {"agent", "review": {"status",
     "reason", "note"}, "items": [{"section", "ledger_id",
-    "conversation_id", "head", "line", "due", "kept"}], "gone":
+    "conversation_id", "head", "line", "due", "kept"}] (`kept`: the keep
+    level of an item kept below Summary, whose line is keep_gate's fixed
+    words and whose head is empty), "gone":
     [{"ledger_id", "conversation_id", "kind"}]}. The items are the post's
     sections as it renders them (the review's drops, holds, moves and
     rewrites applied; a held reply is under "needs" as its question);
@@ -2082,9 +2084,13 @@ def home_view(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dict]
     for sec in HOME_SECTIONS.get(agent, ()):
         for ref, line in lists.get(sec) or []:
             c = cands.get(ref) or {}
+            # A kept item is its fixed line alone (_hide_kept made it), with
+            # its level: no title, no sender beside it.
+            kept = c.get("keep_level") if _kept(c) else ""
             items.append({"section": sec, "ledger_id": c.get("ledger_id") or "",
-                          "conversation_id": c.get("conversation_id") or "", "head": _line_of(c),
-                          "line": line, "due": str(c.get("due") or "")[:10], "kept": bool(c.get("kept"))})
+                          "conversation_id": c.get("conversation_id") or "",
+                          "head": "" if kept else _line_of(c), "line": line,
+                          "due": str(c.get("due") or "")[:10], "kept": kept})
     rv = audit.get("review") or {}
     gone = []
     for ref, why in [(r, (v or {}).get("kind") or "dropped") for r, v in (rv.get("drop") or {}).items()] + \

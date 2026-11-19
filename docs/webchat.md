@@ -640,7 +640,7 @@ it. The briefing's own post is gone from the web chat: Home shows it.
 
 | Part | Source |
 |---|---|
-| Left for you | what the post lists, never more: the Action requests that wait for a tap (`WebFrontend.requests`, never one at work; a decision the draft gate or the review made is one, with its answer buttons); the post's own sections after its pre-send review where the run kept them for Home (`remote_briefing.home_view`: Get done today as To do, the date banner as Due, Needs you as Answer needed with the question as its title, Flexes as Can wait, the afternoon's New today and Waiting on you); with no such list (the Claude lane, the review off), the briefing's ranked `today_top` still open, less what the post leaves out upstream (`ledger.waiting_off_list`, a row merged into another, a thread the owner said gets no reply, `owner_said`); and the replies owed a day or more (`ledger.reply_backlog` on the live rows with `ledger.with_owner_decisions`, from the Replies ladder's first rung, `REPLY_DRAFT_DAYS`: mail that came today does not count yet), less any thread the review dropped, one an earlier run found needs no reply, and one the owner said gets none; one an earlier run made a decision is that question. A kept thread shows its subject and the post's fixed words ("Kept mail") only. A row or thread is listed once. Most urgent first (overdue, soon, calm; then a tap, a question, a reply, a task) |
+| Left for you | what the post lists, never more: the Action requests that wait for a tap (`WebFrontend.requests`, never one at work; a decision the draft gate or the review made is one, with its answer buttons); the post's own sections after its pre-send review where the run kept them for Home (`remote_briefing.home_view`: Get done today as To do, the date banner as Due, Needs you as Answer needed with the question as its title, Flexes as Can wait, the afternoon's New today and Waiting on you); with no such list (the Claude lane, the review off), the briefing's ranked `today_top` still open, less what the post leaves out upstream (`ledger.waiting_off_list`, a row merged into another, a thread the owner said gets no reply, `owner_said`); and the replies owed a day or more (`ledger.reply_backlog` on the live rows with `ledger.with_owner_decisions`, from the Replies ladder's first rung, `REPLY_DRAFT_DAYS`: mail that came today does not count yet), less any thread the review dropped, one an earlier run found needs no reply, and one the owner said gets none; one an earlier run made a decision is that question. An item kept from hosted models is its fixed words alone (Kept mail, below). A row or thread is listed once. Most urgent first (overdue, soon, calm; then a tap, a question, a reply, a task) |
 | So far today | the ledger rows closed today, one per mail conversation, each by "You" (the owner's word, a confirm, a send, an archive) or "Tacitus" (a lapse, a sibling, a rule); the requests answered today; the drafts Tacitus made that wait for Send |
 | The ring | `done` against `left`: the two numbers above |
 | The next gap | today's timed events (the briefing's events, each placed by its own start, a declined or free one left out): the minutes before the next one, or, while the owner is in a meeting, after the busy stretch (meetings less than 10 minutes apart are one: "You are busy until 1:30. Then you have 50 minutes before your 2:20."), and how many of the list's first items fit (a tap 2 minutes, a reply 10, a task 20): "You have 50 minutes before your 2:00. That is enough for the 2 replies." With one button that opens the first item |
@@ -748,6 +748,25 @@ stays open through a redraw. Home in view clears the Home push on every
 device, as a thread in view does (`/api/push/seen`, tag `home`).
 Settings has a Home page with the tone and where the briefing goes,
 each saved on change.
+
+**Kept mail.** Home's payload goes to the browser and through the relay,
+and a conversation started from it goes to a hosted model, so an item kept
+from hosted models below Summary (`keep_gate`, docs/remote-llm.md, "Keep
+from frontier models") shows there as the post shows it: in code's fixed
+words alone (`keep_gate.kept_line`). At `local` that is the message's
+date ("A kept message from Nov 17 needs you. Open it in Outlook."), at
+`facts` also its sender and subject as the headers give them; the
+Outlook link is the post's, where it looked one up. Every item Home lists
+gets its level from one shared check (`home_screen.mark_keep`, on
+`keep_gate.levels`): the replies owed, the open rows behind the ranking,
+the rows closed today, each request by the rows and thread its card
+names, and each item of the post's own list (which keeps the post's
+level and its fixed line, never the item's title or sender). A kept item
+carries no other words: no name, no project, no line of the post, and no
+Ask about this; a request keeps its block in Action requests, and So far
+today names a kept row "A kept message". When the keep check cannot run,
+every item from mail reads `local`. The folded briefing is the post's own
+text, whose kept lines are already fixed.
 
 **Away from home.** `/api/home` carries mail-derived words (titles, who
 wrote) as `/api/requests` and the threads do; a relayed device reads it

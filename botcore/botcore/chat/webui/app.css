@@ -1052,7 +1052,7 @@ details.h-card[open] > summary::before { transform: rotate(90deg); }
   border-left: 6px solid var(--u-calm); border-radius: var(--r-m); background: var(--panel); color: inherit; font: inherit;
   text-align: left; text-decoration: none; cursor: pointer; }
 .h-item.u-soon { border-left-color: var(--u-soon); }
-.h-item.u-overdue { border-left-color: var(--u-overdue); }
+.h-item.u-overdue { border-left-color: var(--u-overdue); } div.h-item { cursor: default; }
 .h-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
 .h-label { color: var(--muted); font-size: 13px; font-weight: 700; }
 .h-title { overflow-wrap: anywhere; }

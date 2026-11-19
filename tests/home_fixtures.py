@@ -7,7 +7,8 @@ sends. Every name, subject and time here is invented.
 The states: normal, model (the same day with a line the owner's model
 wrote), done, red (the status light is red), overdue, travel, vacation,
 unchecked (the remote run kept its post's list for Home, and its pre-send
-review did not run).
+review did not run), kept (mail kept from hosted models at each level:
+keep_gate's fixed words, with an Outlook link where the post had one).
 The clock is today at 1:10 PM in ZONE, so the app's own times match."""
 from __future__ import annotations
 
@@ -24,7 +25,7 @@ import home_screen as H  # noqa: E402
 
 ZONE_NAME = "America/Denver"
 ZONE = ZoneInfo(ZONE_NAME)
-STATES = ("normal", "model", "done", "red", "overdue", "travel", "vacation", "unchecked")
+STATES = ("normal", "model", "done", "red", "overdue", "travel", "vacation", "unchecked", "kept")
 
 
 def at(hour: int, minute: int = 0, days: int = 0) -> float:
@@ -79,6 +80,11 @@ REPORT = (":sunny: **Morning Briefing, today**\n\n:dart: **Get done today** (in 
           ":leaves: **Flexes**\n- The slides for the committee can wait until Friday.\n\n"
           ":clipboard: 9:00 Group meeting · 2:00 Seminar\n\n"
           ":white_check_mark: **Quietly handled**: 2 rows closed, 1 draft staged.")
+
+
+def _day(ts: float) -> str:
+    d = datetime.fromtimestamp(ts, ZONE)
+    return f"{d:%b} {d.day}"
 
 
 def sources(state: str = "normal", dm: str = "dm", main: str = "main") -> H.Sources:
@@ -141,6 +147,18 @@ def sources(state: str = "normal", dm: str = "dm", main: str = "main") -> H.Sour
                        "head": "*Committee seat* (Sam Rivera)", "kept": False, "due": "",
                        "line": "*Committee seat* (Sam Rivera): Join the committee this term? Yes or no."}],
             "gone": [{"ledger_id": "task-s2", "conversation_id": "", "kind": "not-owners"}]}}]
+    elif state == "kept":
+        since = datetime.fromtimestamp(at(9, 0, -2), timezone.utc).isoformat()
+        src.replies = [dict(replies[0], keep_level="local", since=since),
+                       dict(replies[1], keep_level="facts", since=since)]
+        src.requests = {"waiting": [dict(reqs["waiting"][0], keep_level="local"), reqs["waiting"][1]],
+                        "done": reqs["done"]}
+        src.reports = [{**src.reports[0], "view": {
+            "agent": "morning-briefing", "review": {"status": "ok", "reason": "", "note": ""}, "gone": [],
+            "items": [{"section": "needs", "ledger_id": "row-k1", "conversation_id": "conv-k1", "head": "",
+                       "kept": "local", "due": "",
+                       "line": f"A kept message from {_day(at(9, 0, -2))} needs you. "
+                               "<https://outlook.example.com/mail/k1|Open it in Outlook>."}]}}]
     elif state == "vacation":
         src.briefing = {**briefing, "todays_events": [all_day("Vacation", today - timedelta(days=1), 5)] + evs[:2],
                         "onboarding_question": None}

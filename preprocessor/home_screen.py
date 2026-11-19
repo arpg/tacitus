@@ -320,6 +320,122 @@ def mode(src: Sources, evs: list[dict]) -> dict:
     return {"kind": "normal", "until": "", "why": ""}
 
 
+# ── mail kept from hosted models ──────────────────────────────────────
+# Home's payload goes to the browser and through the relay, and a
+# conversation started from it goes to a hosted model. An item kept below
+# Summary (keep_gate) is shown there in code's fixed words alone
+# (keep_gate.kept_line, as the post shows it): at `local` its date and an
+# Outlook link where the post had one, at `facts` also its sender and
+# subject as the headers give them. Nothing else of it is in the payload:
+# no line, no name, no project, no words to ask with. Every item Home
+# lists carries its `keep_level` (mark_keep, from the live sources); when
+# the keep check cannot run, every item from mail reads `local`.
+
+def _keep():
+    try:
+        import keep_gate
+    except ModuleNotFoundError:  # imported as preprocessor.home_screen
+        from preprocessor import keep_gate
+    return keep_gate
+
+
+def is_kept(level) -> bool:
+    return level in ("local", "facts")
+
+
+def kept_title(level: str, *, day: str = "", who: str = "", subject: str = "", draft: bool = False) -> str:
+    """A kept item's whole line (keep_gate.kept_line); the date-only line
+    when it cannot be made."""
+    try:
+        return _keep().kept_line(level, day=day, who=who, subject=subject, draft=draft)
+    except Exception:
+        return "A kept message needs you. Open it in Outlook."
+
+
+def kept_name() -> str:
+    """A kept item where a list names it in a few words (So far today)."""
+    try:
+        return _keep().KEPT_NAME
+    except Exception:
+        return "A kept message"
+
+
+_LINK_MARK = re.compile(r"<(https?://[^|>\s]+)\|([^>]*)>")
+
+
+def _unlink(text: str) -> tuple[str, str]:
+    """A post line's "<url|words>" as its words, and the url."""
+    m = _LINK_MARK.search(text or "")
+    if not m:
+        return text or "", ""
+    return text[:m.start()] + m.group(2) + text[m.end():], m.group(1)
+
+
+def _mail_day(value, zone: ZoneInfo) -> str:
+    """"Nov 17" on the owner's clock for a mail time; '' with none."""
+    ts = _ts(value)
+    if ts is None:
+        return ""
+    d = datetime.fromtimestamp(ts, zone)
+    return f"{d.strftime('%b')} {d.day}"
+
+
+def _from_mail(item: dict) -> bool:
+    brief = item.get("thread_brief") if isinstance(item.get("thread_brief"), dict) else {}
+    return bool(item.get("conversation_id") or item.get("source_message_id") or item.get("message_id")
+                or brief.get("conversation_id"))
+
+
+def mark_keep(src: Sources, levels=None) -> None:
+    """Write `keep_level` on every item Home may list from mail: the replies
+    owed, the open rows, the rows closed, each request (by the rows and the
+    thread its card names) and each item of the post's own list. One shared
+    check (keep_gate.levels, or `levels`, a stand-in); when it cannot run,
+    every item from mail reads `local`. A level already written (the post's)
+    stays when it is stricter."""
+    rows = src.rows or {}
+    pairs: list[tuple[dict, dict]] = []
+    for r in src.replies or []:
+        if isinstance(r, dict):
+            pairs.append((r, r))
+    for row in rows.values():
+        pairs.append((row, row))
+    for row in src.closed or []:
+        if isinstance(row, dict):
+            pairs.append((row, row))
+    for r in list((src.requests or {}).get("waiting") or []) + list((src.requests or {}).get("done") or []):
+        if not isinstance(r, dict):
+            continue
+        ids, convs = _card_keys(r.get("card"))
+        row = next((rows[i] for i in ids if i in rows), None)
+        check = dict(row or {})
+        if convs:
+            check["conversation_id"] = convs[0]
+        if check:
+            pairs.append((r, check))
+    for rep_ in src.reports or []:
+        for it in ((rep_.get("view") or {}).get("items") or []) if isinstance(rep_.get("view"), dict) else []:
+            check = dict(rows.get(it.get("ledger_id")) or {})
+            if it.get("conversation_id"):
+                check["conversation_id"] = it["conversation_id"]
+            if check:
+                pairs.append((it, check))
+    if not pairs:
+        return
+    try:
+        kg = _keep()
+        found = (levels or kg.levels)([c for _t, c in pairs], key=lambda i: str(id(i)))
+        for target, check in pairs:
+            level = found.get(str(id(check)), "local")
+            mine = target.get("keep_level") or (target.get("kept") if is_kept(target.get("kept")) else "")
+            target["keep_level"] = kg.stricter(level, mine) if mine else level
+    except Exception as e:
+        log.warning("home: the keep check could not run; mail items read local: %s", e)
+        for target, check in pairs:
+            if _from_mail(check):
+                target["keep_level"] = "local"
+
+
 # ── what is left ─────────────────────────────────────────────────────
 
 def _card_keys(card: Any) -> tuple[list[str], list[str]]:
@@ -349,11 +465,6 @@ def _fire(urgency: str, due: float | None, now: float) -> bool:
 VIEW_SECTIONS = {"top": ("To do", False), "due": ("Due", False), "flex": ("Can wait", False),
                  "needs": ("Answer needed", True), "since": ("New today", False),
                  "pending": ("Waiting on you", True)}
-# The words the post gives a kept thread in its reply line ("(3d, kept
-# mail)"): Home shows those and the subject, never more.
-KEPT_WORDS = "Kept mail"
-
-
 def _no_reply(row: dict | None) -> bool:
     """The owner said no reply goes out on this thread (owner_said, the
     draft gate's record): it is not his to do, and code asks him once."""
@@ -451,13 +562,19 @@ def left(src: Sources) -> list[dict]:
         named_convs.update(convs)
         due = _ts(r.get("at")) if r.get("why") in ("due", "starts", "expires") else None
         urgency = str(r.get("urgency") or "calm")
+        base = {"id": f"request:{r.get('id')}", "kind": "request",
+                "label": _plain(r.get("action"), 40) or "Request", "urgency": urgency, "due": due,
+                "fire": _fire(urgency, due, now), "mins": MINUTES["request"], "href": _request_href(r, src.dm)}
+        if is_kept(r.get("keep_level")):
+            card = r.get("card") if isinstance(r.get("card"), dict) else {}
+            out.append({**base, "title": kept_title(r["keep_level"], subject=_plain(r.get("what"), 100),
+                                                    draft=card.get("kind") in DRAFT_KINDS),
+                        "detail": "", "kept": r["keep_level"]})
+            continue
         what = _plain(r.get("what") or r.get("text"), 120)
         detail = " · ".join(x for x in (_plain(r.get("who"), 80), _plain(r.get("when"), 60)) if x)
-        out.append({"id": f"request:{r.get('id')}", "kind": "request",
-                    "label": _plain(r.get("action"), 40) or "Request", "title": what or "A request",
-                    "detail": detail, "urgency": urgency, "due": due,
-                    "fire": _fire(urgency, due, now), "mins": MINUTES["request"],
-                    "href": _request_href(r, src.dm), "project": _plain(r.get("project"), 60)})
+        out.append({**base, "title": what or "A request", "detail": detail,
+                    "project": _plain(r.get("project"), 60)})
     kept_views = views(src)
     gone_ids, gone_convs = set(), set()
     for v in kept_views:
@@ -475,13 +592,23 @@ def left(src: Sources) -> list[dict]:
                 continue
             take(lid, conv)
             label, asks = VIEW_SECTIONS.get(it.get("section"), ("To do", False))
+            due = _due_at(str(it.get("due") or ""), src.zone)
+            urgency = "calm" if it.get("section") == "flex" else _urgency(due, now)
+            level = it.get("keep_level") or (it.get("kept") if is_kept(it.get("kept")) else "")
+            if is_kept(level):
+                # the post's own fixed line where it made one, else the date-only line
+                words, link = _unlink(str(it.get("line") or "")) if it.get("kept") else ("", "")
+                out.append({"id": f"item:{lid or conv}", "kind": "question" if asks else "item",
+                            "label": label, "title": _plain(words, 300) or kept_title(level), "detail": "",
+                            "urgency": urgency, "due": due, "fire": _fire(urgency, due, now),
+                            "mins": MINUTES["question" if asks else "item"], "kept": level,
+                            **({"link": link} if link else {})})
+                continue
             head = _plain(it.get("head"), 120)
             line = str(it.get("line") or "")
             rest = line[len(it.get("head") or ""):].lstrip(" :,") if line.startswith(it.get("head") or "\0") \
                 else line
             rest = _plain(rest, 200)
-            due = _due_at(str(it.get("due") or ""), src.zone)
-            urgency = "calm" if it.get("section") == "flex" else _urgency(due, now)
             title, detail = (rest or head, head) if asks else (head or rest, rest)
             out.append({"id": f"item:{lid or conv or hashlib.sha1(line.encode()).hexdigest()[:10]}",
                         "kind": "question" if asks else "item", "label": label, "title": title or "An item",
@@ -499,14 +626,18 @@ def left(src: Sources) -> list[dict]:
         if age < REPLY_MIN_DAYS or queued.get("outcome") == "left" or _no_reply(e) or _no_reply(rows.get(lid)):
             continue
         take(lid, conv)
-        title = _plain(e.get("subject") or e.get("description"), 120) or "A reply"
         urgency = "soon" if age >= 3 else "calm"
         waited = f"Waiting {_n(age, 'day')}"
-        if e.get("kept"):
-            out.append({"id": f"reply:{lid}", "kind": "reply", "label": "Reply owed", "title": title,
-                        "detail": f"{KEPT_WORDS} · {waited}", "urgency": urgency, "due": None, "fire": False,
-                        "mins": MINUTES["reply"], "ask": f'About the reply to "{title}": '})
+        level = e.get("keep_level") or ("facts" if e.get("kept") else "")
+        if is_kept(level):
+            out.append({"id": f"reply:{lid}", "kind": "reply", "label": "Reply owed",
+                        "title": kept_title(level, day=_mail_day(e.get("since"), src.zone),
+                                            who=_plain(e.get("from_name") or e.get("from"), 60),
+                                            subject=_plain(e.get("subject"), 100)),
+                        "detail": waited, "urgency": urgency, "due": None, "fire": False,
+                        "mins": MINUTES["reply"], "kept": level})
             continue
+        title = _plain(e.get("subject") or e.get("description"), 120) or "A reply"
         who = _plain(e.get("from_name") or e.get("from"), 60)
         if queued.get("outcome") == "decision" and queued.get("note"):
             out.append({"id": f"reply:{lid}", "kind": "question", "label": "Answer needed",
@@ -538,6 +669,15 @@ def left(src: Sources) -> list[dict]:
             urgency = _urgency(due, now)
             title = re.sub(r"^Due \d{4}-\d{2}-\d{2}:\s*", "", title)
             take(ref, str((row or {}).get("conversation_id") or ""))
+            if is_kept((row or {}).get("keep_level")):
+                brief = row.get("thread_brief") if isinstance(row.get("thread_brief"), dict) else {}
+                out.append({"id": f"item:{ref}", "kind": "item", "label": "To do",
+                            "title": kept_title(row["keep_level"], day=_mail_day(row.get("date_identified"), src.zone),
+                                                who=_plain(row.get("from_name") or row.get("from_email"), 60),
+                                                subject=_plain(brief.get("subject"), 100)),
+                            "detail": "", "urgency": urgency, "due": due, "fire": _fire(urgency, due, now),
+                            "mins": MINUTES["item"], "kept": row["keep_level"]})
+                continue
             out.append({"id": f"item:{ref or hashlib.sha1(title.encode()).hexdigest()[:10]}", "kind": "item",
                         "label": "To do", "title": title, "detail": _plain(t.get("reason"), 120),
                         "urgency": urgency, "due": due, "fire": _fire(urgency, due, now),
@@ -598,7 +738,8 @@ def done(src: Sources, since: float | None = None) -> list[dict]:
         if conv:
             convs.add(conv)
         out.append({"id": f"closed:{row.get('id')}", "kind": "closed", "by": _closed_by(row),
-                    "title": _plain(row.get("description"), 120) or "An item", "at": at})
+                    "title": kept_name() if is_kept(row.get("keep_level"))
+                    else _plain(row.get("description"), 120) or "An item", "at": at})
     reqs = src.requests or {}
     for r in list(reqs.get("waiting") or []) + list(reqs.get("done") or []):
         if not isinstance(r, dict):
@@ -608,7 +749,8 @@ def done(src: Sources, since: float | None = None) -> list[dict]:
         href = _request_href(r, src.dm)
         if card.get("kind") in DRAFT_KINDS and r.get("waiting") and posted and start <= posted <= src.now + 60:
             out.append({"id": f"drafted:{r.get('id')}", "kind": "drafted", "by": "tacitus",
-                        "title": _plain(r.get("what"), 120) or "A reply", "at": posted, "href": href})
+                        "title": kept_name() if is_kept(r.get("keep_level"))
+                        else _plain(r.get("what"), 120) or "A reply", "at": posted, "href": href})
         if r.get("kind") == "status" and not r.get("waiting") and not r.get("working") and changed \
                 and start <= changed <= src.now + 60:
             _ids, cv = _card_keys(card)
@@ -616,7 +758,8 @@ def done(src: Sources, since: float | None = None) -> list[dict]:
                 continue
             convs.update(cv)
             out.append({"id": f"answered:{r.get('id')}", "kind": "answered", "by": "you",
-                        "title": _plain(r.get("text"), 120) or "A request", "at": changed, "href": href})
+                        "title": kept_name() if is_kept(r.get("keep_level"))
+                        else _plain(r.get("text"), 120) or "A request", "at": changed, "href": href})
     out.sort(key=lambda x: -x["at"])
     return out[:DONE_MAX]
 
@@ -1149,6 +1292,7 @@ class Home:
                 src.light = ""
         src.reports = self.reports()
         src.checkin = self.checkins()
+        mark_keep(src)
         try:
             hidden = fe.hidden_channels()
             src.recent = [t for t in store.recent(20).get("threads", []) if t.get("channel") not in hidden]
@@ -1307,8 +1451,6 @@ def _ledger_reads(zone: ZoneInfo, now: float) -> tuple[list, dict, list]:
     rows = ledger.with_owner_decisions(ledger.get_open_entries())
     replies = ledger.reply_backlog(rows, draft_convs=None, zone=zone, cap=ledger.REPLY_BACKLOG_CAP,
                                    min_days=REPLY_MIN_DAYS)
-    # Follow-up once keep_gate (#325) is on main: the shared keep check marks
-    # the kept threads, failing closed: replies = keep_gate.mark_kept(replies)
     by_id = {r.get("id"): r for r in rows if r.get("id")}
     cutoff = datetime.fromtimestamp(now - 2 * 86400, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     conn = ledger.guarded_connect(ledger.DB_PATH, read_only=True)
