@@ -140,7 +140,8 @@ The actions:
 
 Rules:
 - Use only the records given. Never add an item. Never invent a fact, a date, a number or a name.
-- His own words (a `quote`) outrank the assistant's notes.
+- His own words (a `quote`, an `owner_said`) outrank the assistant's notes.
+- An item's `placement` is its own: `no_project` keeps it out of every room, `linked_to` keeps it in those rooms, and `owner_moved` is his move. Never move an item against it.
 - When the records do not settle it, keep the item.
 - `why` is one short sentence for him, in plain words.
 - `notes` is at most 3 short sentences about the post as a whole; [] when there is nothing to say.
@@ -232,7 +233,8 @@ def collect_items(lists: dict, cands: dict, *, follow_ups=(), room_posts=()) -> 
                           "conversation_id": c.get("conversation_id") or "",
                           "message_id": c.get("message_id") or "",
                           "title": c.get("title") or "", "kind": c.get("kind") or "",
-                          "rooms": rooms_of.get(ref, [])})
+                          "rooms": rooms_of.get(ref, []),
+                          "owner_said": [d for d in c.get("owner_said") or [] if isinstance(d, dict)]})
             by_ref[ref] = items[-1]
     for n, f in enumerate(follow_ups or [], 1):
         if isinstance(f, dict) and f.get("id"):
@@ -394,6 +396,80 @@ def projects_of(ids, *, conn=None) -> dict[str, list[str]]:
     return out
 
 
+def placements_of(ids, *, conn=None) -> dict[str, dict]:
+    """{ledger id: {"links": [project], "loose": bool, "placed": {...}}}
+    for the rows that carry a placement of their own: an explicit project
+    link (project_ledger: the owner's move, a room's own row, a link),
+    the loose mark (project_store move-ledger --project none: no
+    project's), and the newest `placed` event, the owner's move with his
+    words. The review never moves an item against these."""
+    ids = sorted({i for i in ids if i})
+    if not ids:
+        return {}
+    own = conn is None
+    conn = conn or _connect()
+    factory, conn.row_factory = conn.row_factory, _dict_row
+    out: dict[str, dict] = {}
+
+    def at(i):
+        return out.setdefault(i, {"links": [], "loose": False})
+    try:
+        for chunk in _chunks(ids):
+            q = ",".join("?" * len(chunk))
+            for r in conn.execute(f"SELECT l.ledger_id, l.project_id FROM project_ledger l "
+                                  f"JOIN projects p ON p.id = l.project_id "
+                                  f"WHERE l.ledger_id IN ({q}) AND COALESCE(p.status, '') != 'closed'",
+                                  chunk):
+                at(r["ledger_id"])["links"].append(r["project_id"])
+            for table, query in (
+                    ("loose", f"SELECT ledger_id FROM loose_ledger WHERE ledger_id IN ({q})"),
+                    ("placed", f"SELECT entry_id AS ledger_id, ts, evidence, note FROM ledger_events "
+                               f"WHERE kind = 'placed' AND entry_id IN ({q}) ORDER BY seq")):
+                try:
+                    for r in conn.execute(query, chunk):
+                        if table == "loose":
+                            at(r["ledger_id"])["loose"] = True
+                            continue
+                        try:
+                            ev = json.loads(r.get("evidence") or "{}")
+                        except (TypeError, ValueError):
+                            ev = {}
+                        at(r["ledger_id"])["placed"] = {
+                            "at": str(r.get("ts") or "")[:10],
+                            "to": str((ev if isinstance(ev, dict) else {}).get("to") or ""),
+                            "said": _one(r.get("note"), CAP["quote"])}
+                except Exception:
+                    continue    # a store from before the mark or the event
+    except Exception:
+        return {}
+    finally:
+        conn.row_factory = factory
+        if own:
+            conn.close()
+    return out
+
+
+def placement_refusal(to: str, it: dict, placed: dict | None) -> str:
+    """Why a room move contradicts the row's own placement, '' when it
+    does not: a row marked no project's goes into no room; a row linked to
+    projects stays in their rooms (a move may narrow it to one of them).
+    For an "Also open" row (`it` in section `also`) the move takes it out
+    of the room it is listed in."""
+    placed = placed or {}
+    links = list(placed.get("links") or [])
+    if it.get("section") == "also":
+        room = (it.get("rooms") or [""])[0]
+        return f"its row is linked to {room}" if room in links else ""
+    if to == "room:none":
+        return f"its row is linked to {', '.join(links)}" if links else ""
+    target = to.split(":", 1)[1] if ":" in to else to
+    if placed.get("loose"):
+        return "the owner marked its row as no project's"
+    if links and target not in links:
+        return f"its row is linked to {', '.join(links)}"
+    return ""
+
+
 def room_labels(rooms: dict, *, conn=None) -> dict[str, str]:
     """{project: "<project name> (#<room>)"} for the rooms the model may
     name: the project's own name says what belongs there."""
@@ -521,8 +597,39 @@ def _brief_view(brief: dict, n_msgs: int, cap: dict) -> dict:
     return out
 
 
+def _placement_view(placed: dict | None, names: dict | None = None) -> dict:
+    placed = placed or {}
+    out: dict = {}
+    if placed.get("links"):
+        out["linked_to"] = [f"room:{p}" for p in placed["links"]]
+    if placed.get("loose"):
+        out["no_project"] = True
+    if placed.get("placed"):
+        out["owner_moved"] = placed["placed"]
+    return out
+
+
+def _owner_said_view(it: dict, rec: dict) -> str:
+    """The owner's earlier word on the thread (ledger.owner_said_line), when
+    the record does not already quote it."""
+    said = it.get("owner_said") or []
+    if not said:
+        return ""
+    try:
+        import ledger as _ledger
+        line = _ledger.owner_said_line(said)
+    except Exception:
+        return ""
+    shown = json.dumps(rec.get("same_thread") or [], ensure_ascii=False)
+    quotes = [str(d.get("said") or "") for d in said if d.get("said")]
+    if quotes and all(_one(q, CAP["quote"]) in shown for q in quotes):
+        return ""
+    return _one(line, 300)
+
+
 def item_record(it: dict, ledger: dict, *, level: str, projects: list[str], draft: dict | None,
-                evidence: list[str], shed: dict, snapshot: dict | None = None) -> dict:
+                evidence: list[str], shed: dict, snapshot: dict | None = None,
+                placed: dict | None = None) -> dict:
     """One item of the packet. Below `summary`, only the line and the
     row's type, status and dates go."""
     cap = {**CAP, **{k: v for k, v in shed.items() if k in CAP}}
@@ -539,8 +646,16 @@ def item_record(it: dict, ledger: dict, *, level: str, projects: list[str], draf
         out["rooms"] = [f"room:{p}" for p in it["rooms"] if p]
     if projects:
         out["projects"] = projects[:3]
+    view = _placement_view(placed)
+    if view:
+        # Placement is the owner's or a room's own fact, not mail: it goes
+        # at every keep level.
+        out["placement"] = view
     if not lid:
         out["row"] = None
+        said = _owner_said_view(it, out)
+        if said:
+            out["owner_said"] = said
         if draft:
             out["draft"] = draft
         return out
@@ -553,6 +668,10 @@ def item_record(it: dict, ledger: dict, *, level: str, projects: list[str], draf
     if not _open(level):
         out["row"] = facts
         out["withheld"] = "kept mail: only the line and the row's dates are shown"
+        # His own words, said in chat, are no mail: they go at every level.
+        said = _owner_said_view(it, out)
+        if said:
+            out["owner_said"] = said
         return out
     facts["description"] = _one(row.get("description"), cap["description"])
     if row.get("last_action") and cap.get("last_action"):
@@ -600,6 +719,9 @@ def item_record(it: dict, ledger: dict, *, level: str, projects: list[str], draf
         elif d.get("body"):
             d["body"] = _one(d["body"], cap["body"])
         out["draft"] = d
+    said = _owner_said_view(it, out)
+    if said:
+        out["owner_said"] = said
     if evidence and cap.get("evidence"):
         out["mail_evidence"] = [_one(e, cap["evidence"]) for e in evidence[:MAX_EVIDENCE]]
     return out
@@ -607,7 +729,8 @@ def item_record(it: dict, ledger: dict, *, level: str, projects: list[str], draf
 
 def build_packet(*, agent: str, post: str, items: list[dict], ledger: dict, levels: dict,
                  projects: dict, drafts: dict, evidence: dict, calendar: list[str],
-                 rooms: dict, rules: str, snapshots: dict | None = None) -> tuple[dict, dict]:
+                 rooms: dict, rules: str, snapshots: dict | None = None,
+                 placements: dict | None = None) -> tuple[dict, dict]:
     """(the packet the model reads, what was cut and withheld). Detail is
     shed step by step (SHED) until the packet fits PROMPT_MAX_CHARS; then
     items are cut from the end."""
@@ -628,7 +751,8 @@ def build_packet(*, agent: str, post: str, items: list[dict], ledger: dict, leve
         recs = [item_record(i, ledger, level=levels.get(i.get("ledger_id") or "", "full"),
                             projects=projects.get(i.get("ledger_id") or "", []),
                             draft=drafts.get(i["ref"]), evidence=evidence.get(i.get("ledger_id") or "", []),
-                            shed=shed, snapshot=snapshots.get(i.get("ledger_id") or ""))
+                            shed=shed, snapshot=snapshots.get(i.get("ledger_id") or ""),
+                            placed=(placements or {}).get(i.get("ledger_id") or ""))
                 for i in shown]
         packet = dict(base, items=recs)
         if len(json.dumps(packet, ensure_ascii=False)) <= PROMPT_MAX_CHARS:
@@ -747,11 +871,15 @@ def _numbers_known(text: str, record: dict) -> bool:
     return all(n in blob for n in _NUM.findall(text or ""))
 
 
-def check_verdicts(obj: dict, packet: dict, *, agent: str) -> tuple[dict, list[dict], list[str]]:
+def check_verdicts(obj: dict, packet: dict, *, agent: str, items: list[dict] | None = None,
+                   placements: dict | None = None) -> tuple[dict, list[dict], list[str]]:
     """({ref: verdict}, rejected, notes): only refs in the packet, only
     the actions each section allows, a move only to a place the packet
-    names, a rewrite or a reason only with numbers its item's records
-    hold. The first verdict for a ref counts."""
+    names and never against the row's own placement (a loose mark, an
+    explicit project link: placement_refusal), a rewrite or a reason only
+    with numbers its item's records hold. The first verdict for a ref
+    counts."""
+    by_ref = {i["ref"]: i for i in items or []}
     recs = {r["ref"]: r for r in packet.get("items") or []}
     rooms = set(packet.get("rooms") or {}) | {"room:none"}
     moves = set(MOVES.get(agent, ()))
@@ -790,6 +918,12 @@ def check_verdicts(obj: dict, packet: dict, *, agent: str) -> tuple[dict, list[d
                 no(v, "drop without a known kind")
                 continue
             if sec == "also":
+                it = by_ref.get(ref) or {"section": sec}
+                against = placement_refusal("room:none", it,
+                                            (placements or {}).get(it.get("ledger_id") or ""))
+                if against:
+                    no(v, f"a move against the row's own placement: {against}")
+                    continue
                 out[ref] = {"action": "move", "to": "room:none", "why": why}
                 continue
             out[ref] = {"action": "drop", "kind": kind, "why": why}
@@ -806,6 +940,12 @@ def check_verdicts(obj: dict, packet: dict, *, agent: str) -> tuple[dict, list[d
             elif to not in moves or to == sec or secs & {"draft", "followup"}:
                 no(v, "a move to a section this item cannot take")
                 continue
+            if to.startswith("room:"):
+                it = by_ref.get(ref) or {"section": sec}
+                against = placement_refusal(to, it, (placements or {}).get(it.get("ledger_id") or ""))
+                if against:
+                    no(v, f"a move against the row's own placement: {against}")
+                    continue
             out[ref] = {"action": "move", "to": to, "why": why}
         elif act == "hold-draft":
             if "draft" not in secs:
@@ -1287,7 +1427,7 @@ def review_briefing(agent: str, text: str, b: dict, *, cands: dict, lists: dict,
                     bodies=None, headers=None, ledger=None, levels=None, projects=None,
                     evidence=None, call=None, chat=None, who=None, propose=None, appender=None,
                     as_of: str = "", fallback=None, no_fetch: bool = False, conn=None,
-                    state=None, timeout: float = TIMEOUT_S) -> dict:
+                    state=None, placements=None, timeout: float = TIMEOUT_S) -> dict:
     """The whole check for one post. Returns the `checked` dict the
     renderers read: the still-open audit's keys (closed, closed_rows,
     unsure_rows, parked, asked, judge) and `review`. On a failed call
@@ -1311,11 +1451,12 @@ def review_briefing(agent: str, text: str, b: dict, *, cands: dict, lists: dict,
         rows = [_row(i, ledger, snapshots) for i in ids]
         levels = levels if levels is not None else keep_levels(rows)
         projects = projects if projects is not None else projects_of(ids, conn=conn)
+        placements = placements if placements is not None else placements_of(ids, conn=conn)
     except Exception as e:
         print(f"briefing_review: records unreadable: {str(e)[:200]}", file=sys.stderr)
         rec.update(status="failed", reason="error", error=f"records: {str(e)[:160]}")
         ledger = {"rows": {}, "events": {}, "by_conv": {}, "naming": {}}
-        levels, projects = {i: "local" for i in ids}, {}
+        levels, projects, placements = {i: "local" for i in ids}, {}, {}
     hard = hard_checks(items, ledger, today=today, snapshots=snapshots,
                        keep_parked=agent == "weekly-audit")
     who = who or judge()
@@ -1334,7 +1475,7 @@ def review_briefing(agent: str, text: str, b: dict, *, cands: dict, lists: dict,
                                     calendar=_calendar_lines(b, today) if agent != "weekly-audit" else [],
                                     rooms=room_labels(room_names or {}, conn=conn),
                                     rules=_rules(),
-                                    snapshots=snapshots)
+                                    snapshots=snapshots, placements=placements)
         prompt = prompt_text(agent, packet, profile=rb._profile(), now=local)
         rec.update(prompt_chars=len(prompt), est_prompt_tokens=len(prompt) // 4,
                    asked=[r["ref"] for r in packet["items"]], cut=meta["cut"],
@@ -1350,7 +1491,8 @@ def review_briefing(agent: str, text: str, b: dict, *, cands: dict, lists: dict,
             if not obj:
                 answer.update(ok=False, reason="unreadable")
             else:
-                model_v, rejected, notes = check_verdicts(obj, packet, agent=agent)
+                model_v, rejected, notes = check_verdicts(obj, packet, agent=agent, items=items,
+                                                          placements=placements)
         review.update(model=answer["model"], withheld=meta["withheld"], cut=meta["cut"])
         if answer["ok"]:
             review.update(status="local" if who == "remote" else "ok", notes=notes)
@@ -1413,11 +1555,25 @@ def _rules() -> str:
         return ""
 
 
-def _propose(ledger_id: str, why: str) -> bool:
-    """A close proposal through the ledger CLI, as the still-open audit
-    makes one (open_claims_audit._close_row), and its missed-closure line."""
-    import open_claims_audit as oca
-    res = oca._close_row(ledger_id, why)
+PROPOSE_SIGNAL = "llm:briefing-review"
+
+
+def _propose(ledger_id: str, why: str, *, runner=None) -> bool:
+    """A close proposal through the ledger CLI (`ledger.py propose`, signal
+    PROPOSE_SIGNAL) and its missed-closure line. The row stays open. A row
+    another signal already proposed (the date rule's date_passed, a
+    delivered document) keeps its one proposal and its one card:
+    closure.propose adds this signal to it and keeps its `carded` mark."""
+    import subprocess
+    argv = [sys.executable, str(HERE / "ledger.py"), "propose", "--id", ledger_id,
+            "--signal", PROPOSE_SIGNAL, "--why", why]
+    try:
+        r = (runner or (lambda a: subprocess.run(a, capture_output=True, text=True, timeout=120)))(argv)
+        out = json.loads((r.stdout or "").strip().splitlines()[-1])
+    except Exception as e:
+        print(f"briefing_review: no close proposal for {ledger_id}: {str(e)[:160]}", file=sys.stderr)
+        return False
+    res = {"ok": r.returncode == 0 and bool(out.get("ok"))}
     if res.get("ok"):
         try:
             import log_missed_closure as lmc

@@ -13,8 +13,8 @@ repository that preceded it.
   your own words when you closed a row on the same thread, the thread's
   summary, its rooms and any reply waiting for Send. It can leave an
   item out (done, someone else's work, a duplicate, already on your
-  calendar), move it to another section or room, hold a reply, or
-  reword a line; it cannot add items or close anything, and a "done"
+  calendar), move it to another section or room (never against a room
+  choice you made), hold a reply, or reword a line; it cannot add items or close anything, and a "done"
   becomes a card for you to confirm. A held reply never reaches your
   Drafts and gets no Send card: it becomes a question under Needs you.
   Code holds a reply on a thread you closed yourself, and drops closed,

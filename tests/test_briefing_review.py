@@ -8,6 +8,13 @@ else's deadline shown as his, one obligation on two rows (one closed), a
 closed row still in the post, audit text inside a line, one row twice,
 and an event already on the calendar. Code's own checks catch some with
 no model; a recorded answer stands in for the hosted model for the rest.
+
+The review is the last gate: the candidates reach it here as the local
+model's plan would hand them over, built in this file and not by
+remote_briefing.candidates, whose own filters (the draft gate, the rules
+for others' work and calendar notices) now keep several of these faults
+out upstream. One test runs the whole morning with those filters on and
+says what the post shows.
 Nothing here reaches the network, Graph, a model, the real ledger or the
 real private dir."""
 import json
@@ -109,8 +116,11 @@ ROWS = [
     # 8. A row closed before the post (its date lapsed) still in the plan.
     _row("row-lapsed", "deadline", "Admissions workshop sign-up", status="completed",
          deadline="2026-10-14", closed_at="2026-10-15T10:30:00Z"),
-    # 10. The same row on the do-list and on a Follow-up due line.
+    # 10. The same row on the do-list and on a Follow-up due line; the
+    #     owner marked it as no project's.
     _row("row-install", "task", "Send Sam the install guide"),
+    # 3. A row the radar room lists under Also open, linked to that project.
+    _row("row-parts", "task", "Order the radar parts"),
     # 11. An event already on today's calendar.
     _row("row-townhall", "deadline", "Department town hall", deadline="2026-10-15",
          notes="Town hall 4-6 PM today."),
@@ -130,7 +140,8 @@ def _db(tmp_path):
     c.executescript(ledger_mod.SCHEMA)
     c.executescript(closure.EVENTS_SCHEMA)
     c.executescript("CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT, status TEXT);"
-                    "CREATE TABLE project_ledger (project_id TEXT, ledger_id TEXT);")
+                    "CREATE TABLE project_ledger (project_id TEXT, ledger_id TEXT);"
+                    "CREATE TABLE loose_ledger (ledger_id TEXT PRIMARY KEY, marked_at TEXT NOT NULL);")
     cols = list(ROWS[0])
     c.executemany(f"INSERT INTO ledger ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
                   [[r[k] for k in cols] for r in ROWS])
@@ -139,6 +150,11 @@ def _db(tmp_path):
     c.executemany("INSERT INTO projects VALUES (?,?,?)",
                   [("survey", "Survey paper", "active"), ("radar", "Radar grant", "active")])
     c.execute("INSERT INTO project_ledger VALUES ('survey', 'row-runshow')")
+    c.execute("INSERT INTO project_ledger VALUES ('radar', 'row-parts')")
+    c.execute("INSERT INTO loose_ledger VALUES ('row-install', '2026-10-12T09:00:00Z')")
+    c.execute("INSERT INTO ledger_events (ts, entry_id, kind, actor, evidence, note) VALUES "
+              "('2026-10-12T09:00:00Z', 'row-install', 'placed', 'cli:chat', "
+              "'{\"from\": [\"radar\"], \"to\": \"none\"}', 'That is not a radar task.')")
     c.commit()
     return c
 
@@ -171,9 +187,46 @@ def _briefing():
     }
 
 
+# The owner's word on a thread (ledger.owner_decisions), as the siblings
+# carry it on a candidate: the pilot's is also a closed row's quote on the
+# thread; the panel's comes only from his word, carried on its row.
+OWNER_NO = [{"row": "row-pilot", "at": "2026-10-09", "signal": "user_stated",
+             "said": "Not joining. No reply.", "no_reply": True}]
+PANEL_SAID = [{"row": "row-panel-old", "at": "2026-10-01", "signal": "user_stated",
+               "said": "One panel a term, and only in spring.", "no_reply": False}]
+
+
+def _cand(kind, rid, **kw):
+    row = next(r for r in ROWS if r["id"] == rid)
+    c = {"kind": kind, "title": row["description"], "who": row["from_name"] or row["from_email"],
+         "from": row["from_email"], "ledger_id": rid, "message_id": row["source_message_id"],
+         "conversation_id": row["conversation_id"], "summary": row["notes"], "ask": "",
+         "due": str(row["deadline"] or "")[:10], "tags": [], "type": row["type"], "optional": False,
+         "brief": None, "owner_said": [], "state": "", "scheduling": "none",
+         "last_action": row["last_action"]}
+    c.update(kw)
+    return c
+
+
+def _candidates():
+    """Every fault as the review receives it, one ref each."""
+    many = ["kit@example.edu"] + [f"member{i}@example.edu" for i in range(23)]
+    return {
+        "R1": _cand("reply", "row-pilot-2", title="RE: Pilot program", due="2026-10-16",
+                    ask="Reply yes or no on joining the pilot.", to=many, cc=[], owner_said=OWNER_NO),
+        "R2": _cand("reply", "row-panel", title="Spring workshop panel",
+                    ask="Say yes or no to the panel seat.", to=["kit@example.edu"], cc=[],
+                    owner_said=PANEL_SAID),
+        "L1": _cand("ledger", "row-install"), "L2": _cand("ledger", "row-edits"),
+        "L3": _cand("ledger", "row-survey"), "L4": _cand("ledger", "row-runshow"),
+        "L5": _cand("ledger", "row-townhall"), "L6": _cand("ledger", "row-lapsed"),
+        "L7": _cand("ledger", "row-reviewer"), "L8": _cand("ledger", "kept-secret"),
+    }
+
+
 def _morning(b):
-    cands = rb.candidates(b, today=TODAY)
-    ref = {c["ledger_id"] or c["message_id"]: r for r, c in cands.items()}
+    cands = _candidates()
+    ref = {c["ledger_id"]: r for r, c in cands.items()}
     r = lambda lid: ref[lid]  # noqa: E731
     plan = {"get_done_today": [{"ref": r("row-install"), "when": "first thing", "why": "Sam waits"},
                                {"ref": r("row-edits"), "when": "in the 1-2 gap", "why": "check in"},
@@ -197,15 +250,18 @@ ROOM_NAMES = {"survey": "Survey paper", "radar": "Radar grant"}
 
 def _rooms(r):
     return [{"project": "radar", "room": "ea-radar", "refs": [r("row-edits")],
-             "also": ["row-runshow"], "also_text": ["Review Tuesday's workshop run of show"]},
+             "also": ["row-runshow", "row-parts"],
+             "also_text": ["Review Tuesday's workshop run of show", "Order the radar parts"]},
             {"project": "survey", "room": "ea-survey", "refs": [r("row-edits")], "also": [], "also_text": []}]
 
 
 def _answer(r):
     """What the hosted model answered, recorded; refs as this test's
-    candidates name them. Code refuses the last five: a ref it never gave,
-    a room that does not exist, a second verdict for one ref, a number no
-    record holds, a hold on an item that is not a draft."""
+    candidates name them. Code refuses the last seven: a ref it never gave,
+    a room that does not exist, a move into a room against the owner's
+    loose mark, an Also open row out of the room its row is linked to, a
+    second verdict for one ref, a number no record holds, a hold on an
+    item that is not a draft."""
     return json.dumps({"items": [
         {"ref": r("row-panel"), "action": "hold-draft",
          "why": "The yes or no is his to give; the draft answers it for him."},
@@ -224,6 +280,8 @@ def _answer(r):
         {"ref": "A1", "action": "move", "to": "room:none", "why": "Wrong room."},
         {"ref": "X9", "action": "drop", "kind": "done", "why": "invented"},
         {"ref": r("row-install"), "action": "move", "to": "room:moon", "why": "no such room"},
+        {"ref": r("row-install"), "action": "move", "to": "room:survey", "why": "it is survey work"},
+        {"ref": "A2", "action": "drop", "kind": "not-owners", "why": "not this room's"},
         {"ref": r("row-survey"), "action": "drop", "kind": "done", "why": "second verdict, ignored"},
         {"ref": r("kept-secret"), "action": "rewrite-line", "line": "Due in 47 days.", "why": "invented"},
         {"ref": r("row-install"), "action": "hold-draft", "why": "not a draft"},
@@ -281,6 +339,15 @@ def test_the_prompt_carries_the_records_and_never_kept_mail(tmp_path, priv):
     assert packet["rooms"] == {"room:radar": "Radar grant", "room:survey": "Survey paper"}
     assert "Never answer an invitation for me." in packet["owner_rules"]
     assert {"A1"} <= set(items) and items["A1"]["section"] == "also"
+    # the owner's word: the panel's only on its row; the pilot's already a closed row's quote
+    assert items[r("row-panel")]["owner_said"] == 'On Oct 1 the user said: "One panel a term, and only in spring."'
+    assert "owner_said" not in pilot
+    # placement goes at every keep level: a link, the loose mark and the owner's own move
+    assert items[r("row-runshow")]["placement"] == {"linked_to": ["room:survey"]}
+    assert items[r("row-install")]["placement"] == {
+        "no_project": True, "owner_moved": {"at": "2026-10-12", "to": "none",
+                                            "said": "That is not a radar task."}}
+    assert items["A2"]["placement"] == {"linked_to": ["room:radar"]}
 
 
 def test_each_fault_class_and_what_the_post_shows(tmp_path, priv):
@@ -308,6 +375,11 @@ def test_each_fault_class_and_what_the_post_shows(tmp_path, priv):
     rejected = {(x["ref"], x["why"]) for x in checked["review_record"]["rejected"]}
     assert ("X9", "unknown ref") in rejected
     assert (r("row-install"), "unknown room") in rejected
+    # never against the row's own placement (a loose mark, an explicit link)
+    assert (r("row-install"), "a move against the row's own placement: "
+                              "the owner marked its row as no project's") in rejected
+    assert ("A2", "a move against the row's own placement: its row is linked to radar") in rejected
+    assert r("row-install") not in rv["rooms"]
     assert (r("kept-secret"), "a number the records do not hold") in rejected
     assert (r("row-install"), "hold-draft on an item that is not a draft") in rejected
 
@@ -655,3 +727,122 @@ def test_a_review_that_raises_never_stops_the_briefing(priv, monkeypatch):
                        rooms=lambda *a, **k: [], mark=lambda *a, **k: True)
     assert staged == ["m-b"] and "*Drafts ready* (1)" in text
     assert rec["review"]["status"] == "off" and rec["audit"]["asked"] == 1
+
+
+def test_a_room_move_never_goes_against_the_rows_own_placement():
+    """#321's loose mark and an explicit project link are the owner's (or
+    a room's) placement: a move may narrow a linked row to one of its own
+    rooms, never put a loose row in a room or take a linked one out."""
+    loose = {"links": [], "loose": True}
+    linked = {"links": ["radar", "survey"], "loose": False}
+    item = {"section": "top", "rooms": ["radar"]}
+    assert br.placement_refusal("room:radar", item, loose) == "the owner marked its row as no project's"
+    assert br.placement_refusal("room:none", item, loose) == ""
+    assert br.placement_refusal("room:survey", item, linked) == ""
+    assert br.placement_refusal("room:lumen", item, linked) == "its row is linked to radar, survey"
+    assert br.placement_refusal("room:none", item, linked) == "its row is linked to radar, survey"
+    assert br.placement_refusal("room:lumen", item, None) == ""
+    also = {"section": "also", "rooms": ["radar"]}
+    assert br.placement_refusal("room:none", also, linked) == "its row is linked to radar"
+    assert br.placement_refusal("room:none", also, {"links": ["survey"]}) == ""
+
+
+def test_a_done_the_date_rule_already_proposed_stays_one_card(tmp_path):
+    """The review's "done" is a proposal under its own signal. On a row the
+    date rule (#320, date_passed) already proposed and carded, it joins
+    that one proposal: the card mark stays, so the bot posts no second card."""
+    argvs = []
+
+    class Done:
+        returncode, stdout = 0, '{"ok": true, "action": "proposed"}'
+    assert br._propose("row-x", "it prepared for a past event", runner=lambda a: argvs.append(a) or Done())
+    assert argvs[0][2:] == ["propose", "--id", "row-x", "--signal", "llm:briefing-review",
+                            "--why", "it prepared for a past event"]
+    conn = _db(tmp_path)
+    conn.row_factory = sqlite3.Row
+    closure.propose(conn, "row-runshow", signal="date_passed", actor="intake", note="its date passed")
+    closure.mark_carded(conn, ["row-runshow"], at="2026-10-15T09:00:00Z")
+    closure.propose(conn, "row-runshow", signal=br.PROPOSE_SIGNAL, actor="cli:owner",
+                    note="it prepared for a past event")
+    props = closure.pending_proposals(conn)
+    assert [p["id"] for p in props] == ["row-runshow"]
+    prop = props[0]["close_proposal"]
+    assert prop["signals"] == ["date_passed", "llm:briefing-review"]
+    assert prop["carded"] == "2026-10-15T09:00:00Z"
+
+
+def _combined_answer(prompt, timeout):
+    """The hosted model on the whole morning, recorded: by row id, so the
+    refs the run gives do not matter."""
+    packet = json.loads(prompt.split("The post and its items:\n", 1)[1])
+    ref = {(i.get("row") or {}).get("id"): i["ref"] for i in packet["items"]
+           if i["section"] != "also"}
+    out = []
+    if "row-runshow" in ref:
+        out.append({"ref": ref["row-runshow"], "action": "drop", "kind": "done",
+                    "why": "It prepared for the Oct 13 workshop, which is past."})
+    if "row-townhall" in ref:
+        out.append({"ref": ref["row-townhall"], "action": "drop", "kind": "on-calendar",
+                    "why": "The town hall is on today's calendar."})
+    if "row-survey" in ref:
+        out.append({"ref": ref["row-survey"], "action": "rewrite-line",
+                    "line": "Remind students to fill in the course survey by Oct 30.",
+                    "why": "The Oct 12 date is when the survey opened."})
+    return {"text": json.dumps({"items": out, "notes": []}), "rc": 0, "model_used": "claude"}
+
+
+def test_the_whole_morning_with_the_upstream_rules_and_the_review(tmp_path, priv, monkeypatch):
+    """The morning as it runs now: the draft gate and the rules for others'
+    work, repeats and the calendar act on the plan first; the review then
+    checks what is left, before anything is staged or queued."""
+    b = _briefing()
+    b["owner_decisions"] = {"c-pilot": OWNER_NO}
+    cands = rb.candidates(b, today=TODAY)
+    ref = {c["ledger_id"]: r for r, c in cands.items()}
+    # Upstream: work others owe before its date is no candidate at all.
+    assert "row-edits" not in ref and "row-reviewer" not in ref
+    # A careless plan: rows on the do-list and the flexes, both replies
+    # drafted as a yes, the kept review handed to Claude.
+    plan = {"get_done_today": [{"ref": ref[i], "when": "first thing", "why": "do it"}
+                               for i in ("row-install", "row-survey", "row-lapsed")],
+            "flexes": [{"ref": ref[i], "line": "fine today"} for i in ("row-runshow", "row-townhall")],
+            "drafts": [{"ref": ref["row-pilot-2"], "reply_must_say": "Yes, I would like to join the pilot."},
+                       {"ref": ref["row-panel"], "reply_must_say": "Yes, I will sit on the panel."}],
+            "needs_you": [], "escalate": [{"ref": ref["kept-secret"], "why": "a full review",
+                                           "task": "write it"}]}
+    written, queued, proposed = [], [], []
+    monkeypatch.setattr(rb, "write_reply", lambda c, says, write=None: written.append(c["ledger_id"]) or
+                        {"ok": True, "body": says})
+    monkeypatch.setattr(rb, "stage_reply", lambda *a, **k: pytest.fail("staged"))
+    conn = _db(tmp_path)
+
+    def review(agent, text, b, **kw):
+        return br.review_post(agent, text, b, conn=conn, levels={"kept-secret": "local"}, evidence={},
+                              call=_combined_answer, who="claude", appender=lambda n, rec: None,
+                              propose=lambda lid, why: proposed.append(lid) or True, **kw)
+    text, rec = rb.run("morning-briefing", b, run_id="cron-morning-briefing-t", now=NOW,
+                       chat=lambda messages, **kw: (json.loads(json.dumps(plan)), {}), review=review,
+                       queue=lambda items, agent, now: queued.extend(items) or len(items),
+                       rooms=lambda *a, **k: [], mark=lambda *a, **k: True)
+    body, footer = text.split(":mag: *Checked before sending* by Claude.")
+    # The gate turned both replies into his decisions before a word was
+    # written: no draft, no Send card, and nothing for the review to hold.
+    assert written == [] and "Drafts ready" not in text and "Held the reply" not in footer
+    needs = body.split("*Needs you*")[1].split("\n\n")[0]
+    assert needs.count("Pilot program") == 1 and needs.count("Spring workshop panel") == 1
+    assert body.count("Pilot program") == 1 and "join the pilot" not in text
+    # The do-list: the row closed since the briefing's copy is gone (code),
+    # the survey line says the real window (the model), the follow-up line
+    # does not repeat the install task (upstream).
+    top = body.split(":dart:")[1].split("\n\n")[0]
+    assert "Send Sam the install guide" in top and "Admissions workshop sign-up" not in body
+    assert "Remind students to fill in the course survey by Oct 30." in top
+    assert "Follow-up due" not in text and "Evidence:" not in text
+    # The calendar notice is on the calendar line only; the past workshop's
+    # prep is a close for him to confirm, once.
+    assert "Department town hall" not in body.split(":clipboard:")[0]
+    assert proposed == ["row-runshow"] and "*Looks done?* (1)" in body
+    assert "co-authors" not in text and "Reviewer report" not in text
+    assert "did not see the records of 1 item" in footer
+    assert [q["ledger_id"] for q in queued] == ["kept-secret"]
+    assert rec["review"]["status"] == "ok" and rec["review"]["held"] == 0

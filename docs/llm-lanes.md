@@ -924,8 +924,11 @@ applies what it may change.
   status, deadline, last action, notes), the row's history
   (`ledger_events`), the other rows on its conversation, closed ones too,
   with the owner's own words from their close, the rows whose history
-  names it (a duplicate folded into it), the thread brief (the remote
-  model's records, never mail text), its project links and the rooms it
+  names it (a duplicate folded into it), the owner's word on the thread
+  (`owner_said`, the draft gate's own record) where no closed row
+  already quotes it, the thread brief (the remote model's records, never
+  mail text), its placement (an explicit project link, the loose mark
+  "no project's", the owner's own move with his words) and the rooms it
   is headed to (the room slices are planned, not sent), a staged reply
   (how many people the reply-all reaches, the subject, what it says, the
   body), and the still-open audit's mail evidence; today's calendar and
@@ -933,12 +936,15 @@ applies what it may change.
   item whose thread is kept on the machine or at facts goes as its line
   and its row's type, status and dates only, and the post says how many
   went so; when the keep check cannot run, every item from mail goes
-  that way. The packet stays under 90,000 characters: detail is shed
+  that way. The owner's own words and an item's placement are no mail
+  and go at every level. The packet stays under 90,000 characters: detail is shed
   first (evidence, bodies, notes, history, gists), then items are cut
   from the end, and the post says how many were not checked.
 - **Code first.** Before any model, and whatever it answers: a reply on
   a conversation the owner closed in their own words in the last 45
-  days is held; an item whose row is closed or snoozed leaves the post
+  days is held (a check of its own, beside the draft gate's
+  `owner_said` rule, which turns such a reply into a decision before it
+  is written: either one stops a draft); an item whose row is closed or snoozed leaves the post
   (the weekly audit keeps snoozed rows); a row shown twice stays in its
   first section; audit text inside a line ("Evidence: ...; still open?")
   is cut from every line on every render.
@@ -946,7 +952,9 @@ applies what it may change.
   `drop` with a kind (`done`, `not-owners`, `duplicate`, `on-calendar`);
   `move` to another section of the lane (a demotion: never into
   "Drafts ready" or "Sent to Claude") or to another room, or out of
-  every room; `hold-draft` for a staged reply; `rewrite-line` in plain
+  every room, never against the row's own placement (code refuses a
+  room for a row marked no project's, and taking a linked row out of
+  its project's room); `hold-draft` for a staged reply; `rewrite-line` in plain
   words; each with a one-line reason; and at most three notes on the
   whole post. Code drops a ref it invents, a move to a place the packet
   does not name, a rewrite or a reason with a number the item's records
@@ -955,7 +963,10 @@ applies what it may change.
   room, and no room lists it again under "Also open". `done` is a close
   proposal (`ledger.py propose`, signal `llm:briefing-review`, a line in
   the missed-closure log): the row stays open, the item moves to the
-  "Looks done?" line, and the owner confirms on its card. A held reply
+  "Looks done?" line, and the owner confirms on its card. On a row
+  another signal already proposed (the date rule's `date_passed`, a
+  `delivered` document) the signal joins that one proposal, which keeps
+  its card mark, so the owner gets one card. A held reply
   is never staged: the writer writes the bodies before the check, and
   `create-reply` runs after it for the replies it did not hold, so a
   held one never reaches Drafts and never gets a Send card; it goes
