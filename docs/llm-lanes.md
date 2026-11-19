@@ -711,6 +711,27 @@ line; it never falls back to a Claude run.
   gives the verdicts (`briefing_audit`); the remote model answers when
   Claude fails. Rows it closes or parks leave the post, and code renders
   the post again.
+- **The owner's decisions are not the model's** (`preprocessor/draft_gate.py`).
+  A close of a row in the owner's words, or by his click (Handled, Not
+  needed), is his decision on that conversation (`ledger.owner_decisions`,
+  read from the close events). Every later row on the conversation
+  carries it as `owner_said`: the ledger's add paths write it into the
+  row's notes, and the briefing, the reply queue, the Replies card, the
+  Draft it turn, the inbox scan block and the nightly reconcile read it.
+  No scheduled lane drafts against it. A follow-up on a thread he said
+  gets no reply is never a draft or a to-do: it is one quiet question,
+  asked once under the item's title ("They asked again. On Nov 14 you
+  said no reply. Still no reply?"); the Replies card's Not needed answers
+  it. Nor does a
+  scheduled lane draft a reply whose ask is his choice (the record's
+  `decide` state, a yes or no, a whether), a yes or no to an invitation
+  (to join, take part, serve, attend) or an RSVP, or a reply-all that
+  reaches 10 people or more (`MANY_RECIPIENTS`). Each becomes a decision
+  under "Needs you", with Yes and No buttons where the ask is yes or no,
+  and its question is never an answer a model wrote. `graph_actions
+  create-reply` (and `mail_actions` for Gmail) holds the same rules for
+  every run whose id is a scheduled lane's (`cron-...`): it answers
+  `needs_owner` with the reason and makes no draft, whoever asks.
 - **One mention per item.** A do-list item does not repeat in the date
   banner, "Needs you" or "Sent to Claude"; the banner names only due
   items no other section shows, a drafted reply included, and a

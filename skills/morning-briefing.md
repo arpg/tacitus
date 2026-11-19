@@ -320,7 +320,12 @@ Do not draft, and surface as a one-line question instead, when a rail
 applies: money, contracts or legal commitments; program officers or
 deans; declining an invitation or request; a first email to someone
 outside the institution's domains; or a decision only the user can make. Say what
-the decision is, not that a decision exists.
+the decision is, not that a decision exists. An item or row with
+`owner_said` is a thread the user already decided, in his words: never
+draft against it. When it says no reply goes out, the one line is "They
+asked again. On <day> you said no reply. Still no reply?". `create-reply` holds these rules in code for a scheduled run:
+when it answers `needs_owner`, record its `reason` as the decision; never
+retry it.
 
 **Then work the reply queue (`reply_backlog`):**
 

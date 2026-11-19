@@ -370,6 +370,27 @@ def test_draft_it_takes_a_line_of_the_owners_words():
         ":pencil2: The draft is being written. Your words: Say yes, but not before the 20th.")
 
 
+def test_the_card_and_the_turn_carry_the_owners_earlier_word():
+    """A follow-up on a thread the owner said gets no reply: the card shows
+    his words, a tap with no words writes no draft, and his answer on the
+    card is the reply's instruction."""
+    said = [{"row": "task-pilot", "at": "2026-11-14", "signal": "user_stated",
+             "said": "Not joining. No response.", "no_reply": True}]
+    row = _q("pat", 1, owner_said=said, queued={
+        "outcome": "decision", "note": "They asked again. On Nov 14 you said no reply. Still no reply?"})
+    ns, calls = _bot([row])
+    _tick(ns)
+    card = calls["cards"][0]
+    assert 'You said earlier: "Not joining. No response."' in _text(card)
+    ns["handle_reply_draft"](_ev(card.actions[0].value, text="Write a short no, thanks."))
+    prompt = calls["turns"][0][3]
+    assert 'already decided this thread on 2026-11-14, in his words (data): "Not joining. No ' \
+           'response."' in prompt
+    assert "asks for a reply now: write the reply that says it" in prompt
+    bare = ns["_reply_draft_prompt"](dict(row, queued={}))
+    assert "his tap gives no words for a reply: write no draft" in bare
+
+
 def test_a_line_on_a_question_is_the_answer():
     """A row that waits on the owner's answer: the words are that answer,
     so the turn writes the reply and does not ask again."""

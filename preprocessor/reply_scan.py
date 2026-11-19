@@ -62,7 +62,8 @@ RULE = (
     "ACCOUNT FOR EVERY ROW ABOVE. The user asked what needs attention, so the "
     "reply covers each row as well as the items the user named: handle it in this "
     "turn, make its draft or card, or give the user one line for it (who, what, and "
-    "what you need from the user). A row with no deadline counts. A list filtered by "
+    "what you need from the user). When a row says the user decided its thread, follow his "
+    "decision: never write a reply against it. A row with no deadline counts. A list filtered by "
     "due date is not the scan. Name each row by its sender and its subject. "
     "`ledger.py get --id <id>` gives a row's message and conversation ids.")
 
@@ -140,7 +141,23 @@ def _line(n: int, row: dict) -> str:
         out += f" Ask: {_end(ask)}"
     queued = row.get("queued") if isinstance(row.get("queued"), dict) else {}
     note = untrusted_field(queued.get("note"), 100) if state != "drafted" else ""
-    return out + f" Queue: {_PROMPT_WORDS[state]}" + (f": {_end(note)}" if note else ".")
+    out += f" Queue: {_PROMPT_WORDS[state]}" + (f": {_end(note)}" if note else ".")
+    return out + owner_said(row)
+
+
+def owner_said(row: dict) -> str:
+    """The owner's earlier word on the row's thread (the queue's
+    `owner_said`, ledger.owner_decisions), as the block shows it: his own
+    words, then whether he said no reply goes out. '' when there is none."""
+    said = [d for d in row.get("owner_said") or [] if isinstance(d, dict) and d.get("said")]
+    if not said:
+        return ""
+    d = said[0]
+    words = untrusted_field(d.get("said"), 120)
+    out = f" The user decided this thread on {str(d.get('at') or '')[:10]}: \"{words}\"."
+    if d.get("no_reply"):
+        out += " He said no reply goes out: write no draft; ask him in one line whether that still holds."
+    return out
 
 
 def block(rows, *, outside: int = 0, owed: int = 0,

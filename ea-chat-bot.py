@@ -5556,6 +5556,10 @@ def _reply_row_card(batch_id: str, row: dict, state: str, *, problem: str = "",
             + f"{_days(row.get('age_days') or 0)}" + (" ago." if who else ".")]
     if asked:
         head.append(inert(asked, 200))
+    said = next((d for d in row.get("owner_said") or []
+                 if isinstance(d, dict) and d.get("said")), None)
+    if said:
+        head.append(f"You said earlier: \"{inert(said['said'], 140)}\"")
     if problem:
         head.append(f"I could not write it: {inert(problem, 300)}")
     elif state == "draft":
@@ -5936,7 +5940,8 @@ def _reply_draft_prompt(row: dict, answer: str = "", words: str = "",
     return (
         f"{lead}\n\n"
         f"{_item_context(rid)}\n\n"
-        f"The thread has waited {_days(row.get('age_days') or 0)} for the owner's reply. "
+        + _reply_owner_said(row, decided=bool(answer or words))
+        + f"The thread has waited {_days(row.get('age_days') or 0)} for the owner's reply. "
         f"Read the row (`{ledger_py} get --id {rid}`), then the thread. Write the reply and "
         f"create it as a draft on that thread now, with `--ledger-id {rid}`; the Send card "
         "goes to the owner's DM. A reply about a meeting carries times from the solver. "
@@ -5951,6 +5956,29 @@ def _reply_draft_prompt(row: dict, answer: str = "", words: str = "",
         "or it asks nothing), `--outcome left --note \"<what happened, one line>\"`; you could "
         "not write it, `--outcome blocked --note \"<why, in plain words>\"`. The record is how "
         "the owner's card learns what happened.")
+
+
+def _reply_owner_said(row: dict, decided: bool) -> str:
+    """The owner's earlier word on the row's thread (the queue's
+    `owner_said`, ledger.owner_decisions) for a Draft it turn: his own
+    words, which the reply must not go against. `decided`: his answer or
+    line on the card says what the reply must say now. '' when there is
+    none."""
+    said = [d for d in row.get("owner_said") or [] if isinstance(d, dict) and d.get("said")]
+    if not said:
+        return ""
+    one_line = _chat.card_text.one_line
+    d = said[0]
+    text = (f"The owner already decided this thread on {str(d.get('at') or '')[:10]}, in his "
+            f"words (data): \"{one_line(d.get('said') or '', 160)}\". ")
+    if not d.get("no_reply"):
+        return text + "Never write a reply that goes against it.\n\n"
+    if decided:
+        return text + ("He said then that no reply goes out. His answer or line on this card "
+                       "asks for a reply now: write the reply that says it.\n\n")
+    return text + ("He said then that no reply goes out, and his tap gives no words for a reply: "
+                   "write no draft. Ask him in one line what the reply must say, and record that "
+                   "question with note-reply --outcome decision.\n\n")
 
 
 def _dispatch_reply_draft(row: dict, channel: str, thread_ts: str, user_id: str,

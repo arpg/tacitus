@@ -400,6 +400,18 @@ def cmd_create_draft(args):
         return
     to_addrs = [a.strip() for a in args.to.split(",")]
     cc_addrs = [a.strip() for a in args.cc.split(",")] if args.cc else None
+    # The rule create-reply holds for a scheduled lane holds for a new
+    # message too: the rows it names, its words, how many it goes to.
+    run_id = os.environ.get("EA_RUN_ID", "")
+    if _draft_gate().autonomous_run(run_id):
+        people = {a.lower() for a in to_addrs + (cc_addrs or []) if a} - _user_addresses()
+        why = _draft_gate().cron_refusal(run_id=run_id, ledger_ids=getattr(args, "ledger_id", None) or (),
+                                         body=args.body or "", recipient_count=len(people))
+        if why:
+            _draft_events.record("skipped", "", verb="create-draft:needs-owner")
+            print(json.dumps({"status": "needs_owner", "reason": why,
+                              "hint": _draft_gate().NEEDS_OWNER_HINT}, indent=2))
+            return
     result = graph.create_draft(
         to=to_addrs,
         subject=args.subject,
@@ -511,7 +523,56 @@ def _latest_reached_sender(conv: str, message_id: str) -> bool:
     return sender in latest["recipients"]
 
 
+def _reply_all_count(message: dict) -> int | None:
+    """How many people a reply-all to `message` reaches besides the owner:
+    its sender, To and Cc. None when the message could not be read."""
+    if not message:
+        return None
+    people = {str(((r or {}).get("emailAddress") or {}).get("address") or "").strip().lower()
+              for r in [message.get("from")] + list(message.get("toRecipients") or [])
+              + list(message.get("ccRecipients") or [])}
+    return len({p for p in people if p} - _user_addresses())
+
+
+def _draft_gate():
+    try:
+        import draft_gate
+    except ModuleNotFoundError:  # imported as preprocessor.<mod>
+        from preprocessor import draft_gate
+    return draft_gate
+
+
+def _scheduled_lane_refusal(args) -> str:
+    """'' when this run may make the reply, else why not
+    (draft_gate.cron_refusal). Only a scheduled lane's run (EA_RUN_ID
+    `cron-...`) is ever refused: no owner asked for its draft in that turn.
+    --force does not apply."""
+    run_id = os.environ.get("EA_RUN_ID", "")   # draft_events.RUN_ID_ENV
+    draft_gate = _draft_gate()
+    if not draft_gate.autonomous_run(run_id):
+        return ""
+    try:
+        message = graph.get_message_full(args.message_id) or {}
+    except Exception:
+        message = {}
+    everyone = not getattr(args, "sender_only", False) and not getattr(args, "to", None)
+    return draft_gate.cron_refusal(
+        run_id=run_id,
+        conversation_id=getattr(args, "conversation_id", None) or message.get("conversationId") or "",
+        ledger_ids=getattr(args, "ledger_id", None) or (), body=args.body or "",
+        recipient_count=_reply_all_count(message) if everyone else None)
+
+
 def cmd_create_reply(args):
+    # A scheduled lane (the morning sweep, the remote briefing) drafts no
+    # reply the owner must decide: a thread he said gets no reply, a choice
+    # only he makes, a yes or no to an invitation, a reply-all to many.
+    why = _scheduled_lane_refusal(args)
+    if why:
+        _draft_events.record("skipped", "", verb="create-reply:needs-owner")
+        print(json.dumps({"status": "needs_owner", "reason": why,
+                          "hint": _draft_gate().NEEDS_OWNER_HINT}, indent=2))
+        return
     # Guard: if the user already sent the most recent message in this
     # conversation, they've handled the thread -- do NOT auto-draft a reply.
     # Fixes the "drafted a reply even though I already replied" bug: a briefing
