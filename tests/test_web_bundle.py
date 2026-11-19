@@ -7,7 +7,7 @@ signed manifest and the files it names, the signing key in the relay key file, a
 attestation recorded on its device (which grants nothing; the owner's
 `cards` flag does), and a file changed on disk found and signed again at
 refresh. The app's side (bundle.js, the service worker)
-is in tests/test_webui.py; the relay's gate in tests/test_relay.py.
+is in tests/test_webui_releases.py; the relay's gate in tests/test_relay.py.
 """
 from __future__ import annotations
 

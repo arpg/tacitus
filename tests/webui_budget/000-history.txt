@@ -1,0 +1,58 @@
+# The web app's line budget up to the move to a file per change: the lines
+# each change added, in order, with what they buy. This file is closed
+# (tests/test_webui.py checks its sum); a change that grows the app adds a
+# file of its own beside it, named after the change, with one line
+# `+N  what the lines buy`.
+
++1600  the chat
++900   qr.js and the relay transport (docs/webchat-relay.md)
++60    the relay's device approval, the pairing checks and the file rule
++280   the check of the app's code (bundle.js, the worker's and the page's part)
++10    the card-button choice per relay-origin phone under "Add a device"
++70    the Settings screen (the routing table: a row per task, the floors, Save)
++20    the phone dialog's one-tap setup and its plain notes
++180   a phone that leaves the owner's network moves to the relay without a restart (the connection check)
++50    the look (a radius and shadow scale, bubbles, blurred headers, the send state) and the dual-screen split at the hinge
++20    the height pin that lets go when a screen changes size
++50    a new release through the relay (the page fetches it, the worker checks and keeps it)
++190   the thread states (stickers, Needs you, the filter chips, the override and long press)
++200   the teaching (the welcome's three cards, the examples, New room, the empty lists)
++50    the stale shelf (This week and Older in Needs you, Mark all done, the muted sticker)
++20    the keyboard check that needs a focused field
++70    the clear no browser counts as silent (the worker's choice per push service, and the page's own clear of the thread in view)
++10    the Phones list stacked at phone width (name, the box, the buttons)
++90    each release from the bot on the relay's origin too, the worker's loader (sw.js runs the bundle.js it kept and checked) and the release's own security headers on each kept copy
++90    Notifications in Settings (three switches and the quiet-hours choice, each saved on change) and the digest channel's line in place of the composer
++110   a room's menu (the dots and the long press in the drawer, the sheet with Rename room, Archive room and Bring back, and its phone layout)
++340   the owner's own actions (search with its grouped hits and the marked hit, the reaction strip and chips, edit and delete of the owner's message, Copy on a phone)
++10    Copy on each code block (the block's text alone), left out of the message's copy
++50    the keyboard on a window that shrinks with it (the screen's height per width, the pin held a second past the focus, no scroll fight) and the phone's note per keyboard change
++190   a computer through the relay ("Add a device" with its three ways, the code and Approve for the computer, the "Set up this computer" screen with its PBKDF2 and sealed handoff, the website's copy taking the bot's release, and the page's own security policy)
++20    the review's hardening of it (a mailbox per relay from one PBKDF2 block, the worker's copies kept and found by their exact address, the first hosted adoption's cleanup)
++70    a release offered while the app is open (the note above the composer with its Update, the look on the stream's `release`, on the reconnect and on the return to the screen)
++100   the menu's width (the width its names need, the edge a drag or the keys move, kept per browser, the bounds that keep the panes beside it usable) and its foot that stays inside it
++10    the thread in view cleared on the owner's other browsers, push on here or not (the tag alone with push off, a message on the stream as the cue, the focus for a cue)
++20    the notifications no clear reached (the iPhone's): the worker closes the tags a push carries once its own shows, and the page sweeps them when it starts or comes back into view
++110   the Settings menu (one entry at the foot with its hint, a row per page with what it holds, Back and Close, a page at a time, where notifications go by maker, the connection in words, and the sheet docked on a phone)
++40    a send that goes again through a restart (the send's nonce)
++20    the hosted model per task on the Models page (Claude or Codex where a task has both, the line under a task with no choice) and its save
++20    the "?" beside a task's name on the Models page (its note under the row, the small circle in a finger's press area on a touch screen)
++50    links to the bot's own address routed in place on any copy of the app, the live dot's grace before "not connected" with the Settings line that says how it reconnects, and a relayed stream let go while the page is hidden for long
++160   a draft per conversation (kept per place in the browser, back after a reload, a Draft mark on its card) and the files that wait in the composer until Send (several at once, chosen, dropped or pasted, a chip each with its cross, one request with the words)
++30    drafts and files together with links routed in place and the calm connection line
++10    the one hosted-model switch at the top of the Models page, and each task's line saying whether it follows the switch or is set apart, with Use default
++30    the presets on the Models page (a button each, sent alone on Save, and Save current as... with the browser's own name box) and each choice named by its model
++10    the hash and the composer moved in one step (goTo, and a link into the app through it)
++10    a thread's state kept by the order the page learned it, not by its `at`
++37    the bot's read state (the counts per conversation from the bot and its `read` event, kept over an older answer, the read of the conversation on screen, and the counts taken again on the return)
++67    the home-screen file sheet (#294: in the iOS home-screen app a tap on a file opens a sheet whose Save shares the file it fetched, since the file's own page has no way back)
++12    a long link target on a card shown as its site (an Outlook link on a close card)
++1     the emoji the code and the prompts write that the table lacked
++16    a channel's mute (Mute and Unmute in a room's or the digests' menu, a muted channel's grey count kept off the menu's count and the title, and its place kept in the drawer)
++17    debug mode (#245: a channel the bot marks hidden left out of the drawer with its count, and the Debug mode switch in the Settings menu, read when the menu opens and saved at once)
++59    the drawer's Recent list (the latest conversations of every place in the bot's order, five shown until Show more, the names the owner gave them on every card), its parts (Ask Tacitus and Direct messages, then More), the line that says what Direct messages is for, and a room's sheet that the tap ending a long press does not press
++28    the Models page's one pick at the top (#252: Claude or Codex saved at once, the line for one AI set up and for custom settings, Open Advanced) and the rest under Advanced
++58    the Claude button (a handoff file asked for in the open conversation) and Send to Claude on that file (its bytes fetched when it shows, shared in one tap, saved where a page cannot share)
++43    Action requests (the DM's new name, its count of the requests that wait for a tap, no composer and the line that says to ask in Ask Tacitus, waiting requests first and the rest under Earlier), Recent and Needs you left to conversations, and the app opening on Ask Tacitus
++137   Action requests as blocks (a block per request folded to what to decide, its edge and word by urgency, its project's tag, opened in place to the card with its own buttons and the bot's lines, answered ones one line each, a pointer opening its block, the focus kept through a redraw)
++74    a question answered in place (the question as the headline, one Your answer control with the quick answers, a line and one button pressable once there is an answer, Try again with the answer kept, Skip and Not needed quiet), a request at work kept on top, and an answered request giving way to the one its status links to (the draft's Send request, one more question)

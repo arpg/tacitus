@@ -17,8 +17,7 @@ The handoff's crypto is checked against the shared vectors
 (tests/fixtures/relay_vectors.json, `handoff`: made by relay_crypto at 1,000
 iterations, with the production values at 600,000), and the full runs use
 the bot's own handoff (POST /api/relay/handoff) and the real relay's
-mailbox. The rest of the app's tests are in tests/test_webui.py, whose
-browser fixtures this file borrows.
+mailbox. The browser fixtures and helpers are in tests/webui_browser.py.
 """
 import base64
 import functools
@@ -36,7 +35,7 @@ TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
 sys.path.insert(0, str(TESTS.parent / "botcore"))
 
-from test_webui import (  # noqa: E402,F401  (the fixtures and helpers)
+from webui_browser import (  # noqa: E402,F401  (the fixtures and helpers)
     WEBUI, _kept, _owner_context, _pair_and_approve, _worker_state, app, browser, open_devices, relay_bot,
     stub_factory, wait_for,
 )

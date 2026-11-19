@@ -25,7 +25,7 @@ This is part D of the Tacitus web chat: A is the web front end
 | `tests/test_relay_install.py` | The install script's checks, the units it writes (the relay and its updater), the nginx rules |
 | `hosted/` | What the hosted app's site repository holds: `deploy.yml` (its workflow), `build.py` (verify a signed release, build the site), `README.md`, `relays.json.example` (The hosted app) |
 | `tests/test_hosted_site.py` | The site build: each verification refusal, the built tree, `release.txt`, the workflow's pins and permissions |
-| `tests/fixtures/relay_vectors.json` | The protocol with fixed keys, made by `relay_crypto`; the app reproduces it in a browser (`tests/test_webui.py`, and `tests/test_webui_handoff.py` for the handoff) |
+| `tests/fixtures/relay_vectors.json` | The protocol with fixed keys, made by `relay_crypto`; the app reproduces it in a browser (`tests/test_webui_relay.py`, and `tests/test_webui_handoff.py` for the handoff) |
 
 ## What it is for
 
