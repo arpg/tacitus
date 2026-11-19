@@ -310,7 +310,7 @@ count.
 
 Three routing tasks make one tool-less call to a hosted model and read
 its text: `tagging` (`mail_tagger`), `thread_state` (`web_thread_state`)
-and `review` (the briefing's still-open check, the nightly reconcile and
+and `review` (the briefing's pre-send review, the nightly reconcile and
 the backstop on local scheduling writes). Each goes through
 `preprocessor/hosted_text.py`, which asks the routing table for the
 task's hosted model. On Codex the call is `codex exec` with every tool

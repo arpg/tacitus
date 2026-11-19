@@ -507,6 +507,7 @@ sign-in), the condition carries that button instead.
 | Away from home is down (the relay client not connected) | the relay client, after 10 minutes | warn |
 | An update did not install, stopped, waits for a new key, is on hold, or was not looked for in two days | the updater's status (`update_status.doctor_row`), on the release layout | warn, with Show version |
 | Google Drive is not connected | the Drive accounts user-profile.json lists with no sign-in | warn, with Connect |
+| Briefing not checked (the pre-send review failed on three days in a row, with no good check on those days) | `briefing-review-state.json` in the remote-LLM store (docs/llm-lanes.md, "The pre-send review") | warn |
 | A check could not run | a source that failed (its kind of error only) | warn |
 
 Never on the light: the crontab against `crontab.master` (the symptom

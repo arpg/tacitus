@@ -48,7 +48,7 @@ lane default (the tool gateway, every write checked by the hosted
 backstop), not through `scheduling enforce`. Two floors sit under every
 value:
 
-  stakes  `review` (the briefing's still-open check, the nightly ledger
+  stakes  `review` (the briefing's pre-send review, the nightly ledger
           reconcile, the backstop on local scheduling writes, the
           hand-offs from the briefings and the audit) is hosted only. In
           chat and scheduling turns the per-message stakes rule
@@ -188,7 +188,7 @@ TECH = {
             "a dean or a decline goes to the hosted model.",
     "thread_state": "Reads a web chat thread the rules cannot settle and says if it needs you, "
                     "waits or is done. Without a local model the hosted model reads it.",
-    "review": "Checks if briefing items are still open, reconciles the ledger each night "
+    "review": "Checks each briefing before it goes out, reconciles the ledger each night "
               "and reviews local scheduling writes.",
 }
 assert tuple(TASKS) == tuple(TECH) == _ea_config.ROUTING_TASKS

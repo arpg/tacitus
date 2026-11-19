@@ -73,7 +73,8 @@ switched.
 | `drafting` | `off` `ab` `remote` | `remote` | `email_writer.py` writes every email body. The `email-author` subagent writes only on a fallback and for letters. Edits at Send are recorded. |
 | `digests` | `off` `remote` | `remote` | The list digest and the admissions digest are judged by the remote model and post to `mail-digest`. |
 | `briefings` | `off` `remote` | `remote` | The morning briefing (04:00) and the afternoon update (15:00) are written by the remote model, with drafts and hand-offs to Claude. |
-| `briefing_audit` | `claude` `remote` | `claude` | The briefings' pre-send check: Claude decides whether each item the post shows is still open, from evidence with kept mail removed. The remote model answers when the Claude run fails. `remote` puts the verdict back on the remote model. |
+| `briefing_review` | `true` `false` | `true` | The briefings' pre-send review (section 2.9, "The pre-send review"): before the post, the room slices and the reply drafts go out, the hosted model the routing table names for `review` checks every item against the ledger and the thread records, and code applies what it may change. `false` leaves the still-open audit alone, as before. |
+| `briefing_audit` | `claude` `remote` | `claude` | The still-open audit, the pre-send review's fallback: Claude decides whether each item the post shows is still open, from evidence with kept mail removed. The remote model answers when the Claude run fails. `remote` puts the verdict back on the remote model. |
 | `briefing_rooms` | `true` `false` | `true` | Each briefing item that belongs to a project with a room (`#ea-<project>`) is also posted there, one message per room in a new topic, with the project's other open rows; the EA post names those rooms in one line. Any chat frontend: rooms are posted through the frontend abstraction. |
 | `audits` | `off` `remote` | `off` | `remote`: the Sunday audit is written by the remote model (remote_audit.py), with flagged items handed to one Claude session. `off`: the Claude lane on skills/weekly-audit.md. |
 | `reconcile` | `off` `nightly` | `nightly` | `nightly`: every open ledger row is judged against the remote model's thread records once a night, one tool-less Claude call per project (ledger_reconcile.py, section 2.19). It proposes closes, appends notes, gives id-less rows their thread and places rows in projects; it never closes a row. Needs `mail` at enforce. |
@@ -154,7 +155,7 @@ backend, is in [model-routing.md](model-routing.md).
 | `scheduling` | the scheduling channel and the proactive scheduler | `model_tiers.resolve` (lanes `sched-channel`, `proactive`); `remote_llm.mode("scheduling")` | the lane's tier is `local` (the tool gateway, every write checked by the backstop); `enforce` still needs its ghost-week GO | the agent is off and the lane's local picks run on `opus` | stakes rule per message |
 | `chat` | turns in topics, rooms and the DM | `model_tiers.resolve` (lanes `main`, `dm`, `room`) | the lane's tier is `local` | a pick that would run on `local` runs on `opus` | stakes rule per message |
 | `thread_state` | the state of a web chat thread the rules leave open (default `local`; `auto` runs the local model, then the hosted call for what it left) | `web_thread_state.route` | the local model judges it | one tool-less hosted call a tick (`hosted_text`: Claude or Codex) over up to 20 threads (also `local` with no local model) | |
-| `review` | the briefing's still-open check, the nightly reconcile, the backstop on local scheduling writes, the hand-offs | `remote_briefing.audit_judge` | refused | always, on Claude or Codex (`hosted_text`) | stakes: hosted only |
+| `review` | the briefings' pre-send review, the nightly reconcile, the backstop on local scheduling writes, the hand-offs | `remote_briefing.audit_judge` | refused | always, on Claude or Codex (`hosted_text`) | stakes: hosted only |
 
 **The floors.** No value lowers them. *Stakes:* `review` is hosted only:
 a file that says otherwise reads `hosted`, and a save is refused. In chat
@@ -703,14 +704,17 @@ line; it never falls back to a Claude run.
   numbered, under a limit of 600 s per item up to 1200 s; that session
   reads each item's thread and reports one line per item. A single hand-off gets the
   prompt below. An item with no thread becomes a decision instead.
-- **The pre-send audit** asks about every ledger row the post shows, by
-  ref, plus rows its words name that have evidence. The evidence covers
-  the row's own thread, archived mail from the person a waiting row waits
-  on, and rows closed since with the same thread or correspondent, with
-  their notes. Kept mail is removed first, and one tool-less Claude call
-  gives the verdicts (`briefing_audit`); the remote model answers when
-  Claude fails. Rows it closes or parks leave the post, and code renders
-  the post again.
+- **The pre-send review** (`preprocessor/briefing_review.py`) checks the
+  whole post before it, its room slices or its reply drafts go out; the
+  subsection below has the detail. When it cannot run, **the still-open
+  audit** runs as before: it asks about every ledger row the post shows,
+  by ref, plus rows its words name that have evidence (the row's own
+  thread, archived mail from the person a waiting row waits on, rows
+  closed since with the same thread or correspondent, with their notes).
+  Kept mail is removed first, and one tool-less hosted call gives the
+  verdicts (`briefing_audit`); the remote model answers when that call
+  fails. Rows it closes or parks leave the post, and code renders the
+  post again.
 - **The owner's decisions are not the model's** (`preprocessor/draft_gate.py`).
   A close of a row in the owner's words, or by his click (Handled, Not
   needed), is his decision on that conversation (`ledger.owner_decisions`,
@@ -899,7 +903,113 @@ Then do the work under CLAUDE.md; email bodies come from email_writer.py. Read n
 `remote_briefing.py run --dry-run --preview` runs the whole morning on
 live data, makes no draft, queues nothing, closes nothing, prints counts
 only, and posts the preview to `mail-digest` (topic "Briefing preview"),
-or on the web chat to the digest channel, in a thread of its own.
+or on the web chat to the digest channel, in a thread of its own. The
+dry run asks the pre-send review too, and the preview shows what it
+changed.
+
+#### The pre-send review
+
+The local model plans the briefing, and it can be wrong in ways no
+single rule sees: a reply that says yes after the owner said no in
+chat, collaborators' deadline in "Get done today", a finished
+deliverable for a past event, an item in the wrong project room. Before
+the morning briefing, the afternoon update or the weekly audit posts,
+one tool-less call to the hosted model the routing table names for
+`review` (`hosted_text`: Claude or Codex) checks every item, and code
+applies what it may change.
+
+- **What it reads**, built in code: the rendered post; each item by ref
+  (each section's lines, the "Follow-up due" lines as `F` refs, each
+  room's "Also open here" rows as `A` refs) with its ledger row (type,
+  status, deadline, last action, notes), the row's history
+  (`ledger_events`), the other rows on its conversation, closed ones too,
+  with the owner's own words from their close, the rows whose history
+  names it (a duplicate folded into it), the owner's word on the thread
+  (`owner_said`, the draft gate's own record) where no closed row
+  already quotes it, the thread brief (the remote model's records, never
+  mail text), its placement (an explicit project link, the loose mark
+  "no project's", the owner's own move with his words) and the rooms it
+  is headed to (the room slices are planned, not sent), a staged reply
+  (how many people the reply-all reaches, the subject, what it says, the
+  body), and the still-open audit's mail evidence; today's calendar and
+  the owner's rules for the briefing and drafting. Keep levels hold: an
+  item whose thread is kept on the machine or at facts goes as its line
+  and its row's type, status and dates only, and the post says how many
+  went so; when the keep check cannot run, every item from mail goes
+  that way. The owner's own words and an item's placement are no mail
+  and go at every level. The packet stays under 90,000 characters: detail is shed
+  first (evidence, bodies, notes, history, gists), then items are cut
+  from the end, and the post says how many were not checked.
+- **Code first.** Before any model, and whatever it answers: a reply on
+  a conversation the owner closed in their own words in the last 45
+  days is held (a check of its own, beside the draft gate's
+  `owner_said` rule, which turns such a reply into a decision before it
+  is written: either one stops a draft); an item whose row is closed or snoozed leaves the post
+  (the weekly audit keeps snoozed rows); a row shown twice stays in its
+  first section; audit text inside a line ("Evidence: ...; still open?")
+  is cut from every line on every render.
+- **What the model may answer**, by ref, under a strict shape: `keep`;
+  `drop` with a kind (`done`, `not-owners`, `duplicate`, `on-calendar`);
+  `move` to another section of the lane (a demotion: never into
+  "Drafts ready" or "Sent to Claude") or to another room, or out of
+  every room, never against the row's own placement (code refuses a
+  room for a row marked no project's, and taking a linked row out of
+  its project's room); `hold-draft` for a staged reply; `rewrite-line` in plain
+  words; each with a one-line reason; and at most three notes on the
+  whole post. Code drops a ref it invents, a move to a place the packet
+  does not name, a rewrite or a reason with a number the item's records
+  do not hold, a hold on what is no reply. It cannot add an item.
+- **What code does with it.** A dropped item leaves the post and every
+  room, and no room lists it again under "Also open". `done` is a close
+  proposal (`ledger.py propose`, signal `llm:briefing-review`, a line in
+  the missed-closure log): the row stays open, the item moves to the
+  "Looks done?" line, and the owner confirms on its card. On a row
+  another signal already proposed (the date rule's `date_passed`, a
+  `delivered` document) the signal joins that one proposal, which keeps
+  its card mark, so the owner gets one card. A held reply
+  is never staged: the writer writes the bodies before the check, and
+  `create-reply` runs after it for the replies it did not hold, so a
+  held one never reaches Drafts and never gets a Send card; it goes
+  under "Needs you" as a question, with why, and the reply queue records
+  a decision. A hand-off the review dropped is not queued for Claude.
+- **The post says what changed**: one line that it was checked and by
+  which model, then one line per change with its reason, how many items
+  the model did not see, and its notes.
+
+```text
+:mag: *Checked before sending* by Codex.
+- Left out *Co-authors finish their edits by Friday*: Friday is the co-authors' deadline, not yours.
+- Held the reply to *RE: Pilot program*: you closed this thread on Oct 9: "Not joining. No reply." It is under Needs you, with no Send card.
+- 1 item looks done. See Looks done?
+- Reworded 1 line to match the records.
+- To keep their mail private, Codex did not see the records of 1 item.
+```
+
+- **Failure and time.** Each call waits at most 240 seconds
+  (`TIMEOUT_S`); a Codex call with no answer goes to Claude once
+  (`hosted_text`). With Claude's plan at its limit (the saved
+  rate-limit reading) no call is made. When the review fails for any
+  reason, code's own checks still apply, the still-open audit runs as
+  before, and the post's line says `:warning: *Not checked before
+  sending*` and why. An owner who routes `review` to the local model
+  gets it there, and the line says so.
+- **The record.** Every run is one line in
+  `<private dir>/remote-llm/briefing-reviews.jsonl`: the refs asked,
+  what was withheld and cut, the size (characters and estimated tokens),
+  the model, the time, the usage the harness reports, code's verdicts,
+  the model's verdicts and the ones refused, and what changed;
+  `briefing-review-latest.json` holds the last prompt and answer. The
+  briefing's own run record carries a summary under `review`.
+  `briefing-review-state.json` counts each day's live checks; after
+  three days in a row with a failed check and no good one, the status
+  light shows "Briefing not checked" (docs/webchat.md, Status light).
+- **Cost**, measured on a real morning of 22 items (a dry replay): a
+  packet of 49,000 characters, about 12,000 tokens by the
+  four-characters rule. Codex reported 27,000 input tokens with its own
+  instructions, 600 to 1,300 output tokens and 16 to 36 seconds; Claude
+  Opus 23,500 input tokens, 6,800 output tokens (most of them thinking)
+  and 62 seconds. The briefings run twice a day and the audit once a
+  week, on the plan the owner's chat uses.
 
 ### 2.10 Sealed mail (`mail = sealed`)
 

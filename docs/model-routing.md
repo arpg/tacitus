@@ -53,7 +53,7 @@ command line.
 | `scheduling` | Finding meeting times | the scheduling channel and the proactive scheduler; every local write passes the Claude backstop | `scheduling`; `tiers.lanes` sched-channel and proactive | the thread, solver output |
 | `chat` | Talking with you | turns in topics, rooms and the DM | `tiers.lanes` main, dm and room; `@local`, `use local` | the topic's transcript |
 | `thread_state` | Noticing what needs you | the state of a web chat thread the rules leave open (docs/webchat-state.md) | none: `auto` runs the local model, and the hosted model takes the threads left when it does not answer | only threads the owner has written in: the thread's messages (card titles and outcomes, never a card's body), the channel, the linked ledger rows' type, status, deadline and last action |
-| `review` | Checking its own work | the briefing's still-open check, the nightly ledger reconcile, the scheduling backstop, the hand-offs from the briefings and the audit | none: hosted only | nothing |
+| `review` | Checking its own work | the briefing's pre-send review, the nightly ledger reconcile, the scheduling backstop, the hand-offs from the briefings and the audit | none: hosted only | nothing |
 
 Letters have no task: the `email-author` subagent writes them, whatever
 `drafting` says.

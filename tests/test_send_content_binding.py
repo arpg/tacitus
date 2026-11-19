@@ -1224,8 +1224,9 @@ def test_an_owner_side_draft_edit_waits_for_a_send_and_changes_nothing():
 
 def test_the_mail_clis_take_the_owner_lock_before_they_dispatch():
     """graph_actions, gmail_client and mail_actions take it right after the child-parse
-    check and before the verb runs; remote_briefing's draft is a
-    graph_actions.py create-reply run, so it holds the lock too."""
+    check and before the verb runs; remote_briefing's draft (stage_reply,
+    after the pre-send review) is a graph_actions.py create-reply run, so
+    it holds the lock too."""
     for path, dispatch in ((ROOT / "preprocessor" / "graph_actions.py", "run_verb(args)"),
                            (ROOT / "preprocessor" / "gmail_client.py",
                             'if args.setup or args.command == "setup":'),
@@ -1237,7 +1238,7 @@ def test_the_mail_clis_take_the_owner_lock_before_they_dispatch():
         assert lock < src.index(dispatch, check), path.name
     import remote_briefing
     import inspect
-    src = inspect.getsource(remote_briefing.make_draft)
+    src = inspect.getsource(remote_briefing.stage_reply)
     assert '"graph_actions.py"), "create-reply"' in src
     assert "graph_client" not in src
 

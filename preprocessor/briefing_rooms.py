@@ -184,20 +184,22 @@ def slices(entries: list[dict], targets: dict[str, dict], conn, *, matcher=None,
            idx: dict | None = None) -> dict[str, list[dict]]:
     """{project: [entry]} for the projects that have a room. Each entry
     is {ref, section, line, ledger_id, conversation_id, title, summary};
-    an entry goes to every room its projects have."""
+    an entry goes to every room its projects have. An entry that carries
+    `projects` (the pre-send review moved it) goes to those alone."""
     idx = idx if idx is not None else index(conn)
     out: dict[str, list[dict]] = {}
     for e in entries:
-        for pid in projects_for(e, idx, conn, matcher=matcher):
+        pids = e["projects"] if "projects" in e else projects_for(e, idx, conn, matcher=matcher)
+        for pid in pids:
             if pid in targets and len(out.get(pid, [])) < MAX_ITEMS:
                 out.setdefault(pid, []).append(e)
     return out
 
 
 def also_open(pid: str, open_rows: list[dict], shown: set[str], conn, *,
-              matcher=None, idx: dict | None = None) -> list[str]:
+              matcher=None, idx: dict | None = None, ids: list | None = None) -> list[str]:
     """Descriptions of the project's other open rows, the post's own
-    items left out, at most ALSO_OPEN."""
+    items left out, at most ALSO_OPEN; their ids go into `ids`."""
     idx = idx if idx is not None else index(conn)
     out = []
     for o in open_rows:
@@ -208,6 +210,8 @@ def also_open(pid: str, open_rows: list[dict], shown: set[str], conn, *,
                 "title": o.get("description") or "", "summary": o.get("notes") or ""}
         if pid in projects_for(item, idx, conn, matcher=matcher):
             out.append(o.get("description") or lid)
+            if ids is not None:
+                ids.append(lid)
         if len(out) >= ALSO_OPEN:
             break
     return out
@@ -237,18 +241,23 @@ def render(heading: str, project_name: str, entries: list[dict], others: list[st
 
 def plan_posts(entries: list[dict], *, heading: str, open_rows: list[dict], conn,
                targets: dict[str, dict], clean, matcher=None,
-               votes: dict | None = None) -> list[dict]:
-    """[{project, channel, room, text, refs}], one per room with items."""
+               votes: dict | None = None, skip: dict | None = None) -> list[dict]:
+    """[{project, channel, room, text, refs, also, also_text}], one per
+    room with items; `also` is the ids of its "Also open here" rows.
+    `skip` ({project: [ledger id]}, "*" for every room) keeps rows off
+    a room's list."""
     idx = index(conn, votes)
     names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM projects")}
     posts = []
     for pid, items in slices(entries, targets, conn, matcher=matcher, idx=idx).items():
-        shown = {e["ledger_id"] for e in items if e.get("ledger_id")}
-        others = also_open(pid, open_rows, shown, conn, matcher=matcher, idx=idx)
+        shown = {e["ledger_id"] for e in items if e.get("ledger_id")} | \
+            set((skip or {}).get(pid) or ()) | set((skip or {}).get("*") or ())
+        ids: list[str] = []
+        others = also_open(pid, open_rows, shown, conn, matcher=matcher, idx=idx, ids=ids)
         posts.append({"project": pid, "channel": targets[pid]["channel"],
                       "room": targets[pid]["room"],
                       "text": render(heading, names.get(pid) or pid, items, others, clean),
-                      "refs": [e["ref"] for e in items]})
+                      "refs": [e["ref"] for e in items], "also": ids, "also_text": others})
     posts.sort(key=lambda p: p["room"])
     return posts
 

@@ -6,6 +6,23 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A hosted model checks each briefing before it goes out.** Before the
+  morning briefing, the afternoon update, their project-room posts or
+  the weekly audit go out, Claude or Codex (your Models choice for
+  "Checking its own work") reads every item with its ledger records,
+  your own words when you closed a row on the same thread, the thread's
+  summary, its rooms and any reply waiting for Send. It can leave an
+  item out (done, someone else's work, a duplicate, already on your
+  calendar), move it to another section or room (never against a room
+  choice you made), hold a reply, or reword a line; it cannot add items or close anything, and a "done"
+  becomes a card for you to confirm. A held reply never reaches your
+  Drafts and gets no Send card: it becomes a question under Needs you.
+  Code holds a reply on a thread you closed yourself, and drops closed,
+  snoozed or repeated rows and audit notes, before the model answers.
+  The briefing ends with what the check changed and why, and says when
+  it could not check or kept mail private. Three failed days in a row
+  turn the status light yellow. `"briefing_review": false` in
+  remote-llm.json turns it off.
 - **A status light at the top of the app says whether everything works.**
   It is a green check while all is well, a yellow triangle when something
   is slow or will fix itself, and a red mark when something needs you,
