@@ -119,12 +119,24 @@ def test_in_a_meeting_the_gap_after_it_and_with_nothing_left_the_first_event_tom
     src = F.sources()
     src.now = F.at(14, 20)
     gap = H.next_gap(src, H.events(src), H.left(src))
-    assert gap["line"] == "Your 2:00 runs until 3:00. After that your day is open."
+    assert gap["line"] == "You are busy until 3:00. After that your day is open."
     src.now = F.at(15, 30)
     gap = H.next_gap(src, H.events(src), H.left(src))
     assert gap["line"] == "Nothing else is on your calendar today. Tomorrow starts at 9:30."
     src.briefing["tomorrows_events"] = []
     assert H.next_gap(src, H.events(src), [])["line"] == "Nothing else is on your calendar today."
+
+
+def test_back_to_back_meetings_are_one_busy_stretch_and_the_gap_is_the_one_after_it():
+    src = F.sources()
+    src.now = F.at(11, 40)
+    src.briefing["todays_events"] = [F.event("Review", F.at(11, 30), F.at(12, 0)),
+                                     F.event("Lunch talk", F.at(12, 0), F.at(13, 0)),
+                                     F.event("Office hours", F.at(13, 5), F.at(13, 30)),
+                                     F.event("Seminar", F.at(14, 20), F.at(15, 0))]
+    gap = H.next_gap(src, H.events(src), H.left(src))
+    assert gap["line"].startswith("You are busy until 1:30. Then you have 50 minutes before your 2:20.")
+    assert gap["minutes"] == 50 and "have 0 minutes" not in gap["line"]
 
 
 def test_a_long_gap_is_nothing_until_and_after_midnight_it_is_late():

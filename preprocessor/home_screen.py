@@ -85,6 +85,9 @@ PURPOSE = "chat-home"
 MINUTES = {"request": 2, "reply": 10, "item": 20, "question": 3}
 # A gap this long is said as "nothing until", not as a count of minutes.
 LONG_GAP_MIN = 180
+# Meetings with less than this between them are one busy stretch: the
+# next gap is the free time after it, never "0 minutes before your 12:00".
+SHORT_GAP_MIN = 10
 # A reply counts on Home once it has waited this many days: the Replies
 # ladder's first rung (ledger.REPLY_DRAFT_DAYS), so mail that came today
 # does not swell what is left.
@@ -694,41 +697,43 @@ def _fit(items: list[dict], minutes: int) -> tuple[int, str]:
 
 
 def next_gap(src: Sources, evs: list[dict], todo: list[dict]) -> dict | None:
-    """The time before the next timed event today: {"line", "minutes",
-    "event": {"title", "start", "end"}, "fits"}. In a meeting now, the gap
-    after it; with nothing left today, the first event tomorrow."""
+    """The first free time before the next timed event today: {"line",
+    "minutes", "event": {"title", "start", "end"}, "fits"}. Meetings now
+    and the ones that follow them with less than SHORT_GAP_MIN between are
+    one busy stretch, and the gap is the one after it; with nothing left
+    today, the first event tomorrow."""
     now = src.now
     today = _today(src)
-    timed = [e for e in evs if not e["all_day"] and e["show"] != "free" and e["end"] > now]
-    current = [e for e in timed if e["start"] <= now < e["end"]]
-    free_from = max([now] + [e["end"] for e in current])
-    upcoming = [e for e in timed if e["start"] >= free_from - 60]
+    timed = sorted((e for e in evs if not e["all_day"] and e["show"] != "free" and e["end"] > now),
+                   key=lambda e: e["start"])
+    free_from = now
+    for e in timed:  # sorted by start: each one that begins before the stretch ends extends it
+        if e["start"] <= free_from + SHORT_GAP_MIN * 60 and e["end"] > free_from:
+            free_from = e["end"]
+    busy = free_from > now + 60
+    upcoming = [e for e in timed if e["start"] >= free_from]
     later_today = [e for e in upcoming if _local_day(e["start"], src.zone) == today]
-    if current and not later_today:
-        e = current[0]
-        return {"line": f"Your {clock(e['start'], src.zone)} runs until {clock(e['end'], src.zone)}. "
-                        "After that your day is open.",
-                "minutes": 0, "event": {k: e[k] for k in ("title", "start", "end")}, "fits": 0}
+    until = f"You are busy until {clock(free_from, src.zone)}."
     if later_today:
         e = later_today[0]
         minutes = int((e["start"] - free_from) // 60)
         at = clock(e["start"], src.zone)
-        if part_of_day(src) == "night" and not current:
+        if part_of_day(src) == "night" and not busy:
             return {"line": f"It is late. Your calendar starts at {at}.", "minutes": 0,
                     "event": {k: e[k] for k in ("title", "start", "end")}, "fits": 0}
         if minutes >= LONG_GAP_MIN:
-            head = f"Nothing is on your calendar until your {at}."
-        elif current:
-            head = f"After your {clock(current[0]['start'], src.zone)}, you have {_n(minutes, 'minute')} " \
-                   f"before your {at}."
-        elif minutes < 1:
-            head = f"Your {at} starts now."
+            head = (f"{until} Then nothing until your {at}." if busy
+                    else f"Nothing is on your calendar until your {at}.")
+        elif busy:
+            head = f"{until} Then you have {_n(minutes, 'minute')} before your {at}."
         else:
             head = f"You have {_n(minutes, 'minute')} before your {at}."
         n, words = _fit(todo, minutes)
         tail = f" That is enough for {words}." if n else (" Save the list for after it." if todo else "")
         return {"line": head + tail, "minutes": max(minutes, 0),
                 "event": {k: e[k] for k in ("title", "start", "end")}, "fits": n}
+    if busy and _local_day(free_from - 1, src.zone) == today:
+        return {"line": f"{until} After that your day is open.", "minutes": 0, "event": None, "fits": 0}
     tomorrow = [e for e in upcoming if _local_day(e["start"], src.zone) == today + timedelta(days=1)]
     if tomorrow:
         return {"line": f"Nothing else is on your calendar today. Tomorrow starts at "
