@@ -216,6 +216,7 @@ still reaches its conversation.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import http.cookies
@@ -509,6 +510,8 @@ CREATE TABLE IF NOT EXISTS card_link(
     PRIMARY KEY (channel, thread_key, card_channel, card_id));
 CREATE INDEX IF NOT EXISTS card_link_card ON card_link(card_id);
 CREATE INDEX IF NOT EXISTS messages_id ON messages(id);
+CREATE TABLE IF NOT EXISTS message_tags(
+    channel TEXT, id TEXT, tag TEXT, PRIMARY KEY (channel, id));
 CREATE TABLE IF NOT EXISTS nudges(
     channel TEXT, thread_key TEXT, msg_id TEXT, at REAL, PRIMARY KEY (channel, thread_key));
 """
@@ -525,6 +528,24 @@ def _loads(text: str | None) -> Any:
         return json.loads(text)
     except ValueError:
         return None
+
+
+# The tag the posts made inside tagging() carry (this thread's), so a block
+# in Action requests shows only its own lines (WebStore.requests).
+_POST_TAG = threading.local()
+
+
+@contextlib.contextmanager
+def tagging(tag: str):
+    """Every message this thread stores inside it carries `tag` (the
+    `message_tags` table): the host names what a post belongs to (a Replies
+    row: "reply:<row id>") with no match on its text."""
+    before = getattr(_POST_TAG, "tag", "")
+    _POST_TAG.tag = str(tag or "")[:120]
+    try:
+        yield
+    finally:
+        _POST_TAG.tag = before
 
 
 # The places where the owner talks with Tacitus; Action requests (`dm`)
@@ -1484,13 +1505,20 @@ class WebStore:
         channel. `working`: a status line that says Tacitus is acting on the
         press (action_requests.working), listed with the waiting ones;
         `next`: the request in this place a status line links to (the
-        draft's Send request). Every waiting one, newest first; of the rest
+        draft's Send request); `lines`: the bot's lines in its thread that
+        belong to it (action_requests.lines_of: by tag, never by text). Every waiting one, newest first; of the rest
         the newest `limit`. It moves no read mark."""
         def read() -> dict:
             now = time.time()
             kinds = {r["id"]: (r["kind"], r["name"]) for r in self._all("SELECT id, kind, name FROM channels")}
             waiting, done = [], []
             ids = {r["id"] for r in self._all("SELECT id FROM messages WHERE channel=?", (channel,))}
+            tags = {r["id"]: r["tag"] for r in self._all(
+                "SELECT id, tag FROM message_tags WHERE channel=?", (channel,))}
+            threads: dict[str, list] = {}
+            for r in self._all("SELECT seq, id, thread_key, author, kind, text, posted_at, deleted_at "
+                               "FROM messages WHERE channel=? ORDER BY seq", (channel,)):
+                threads.setdefault(r["thread_key"], []).append(r)
             for r in self._all(
                     "SELECT * FROM messages WHERE channel=? AND deleted_at IS NULL AND (kind IN "
                     "('card', 'status') OR seq IN (SELECT MIN(seq) FROM messages WHERE channel=? "
@@ -1501,6 +1529,7 @@ class WebStore:
                 nxt = _requests.next_request(j, channel)
                 if nxt in ids:
                     j["next"] = nxt
+                j["lines"] = _requests.lines_of(j, threads.get(j["thread_key"], []), tags)
                 origin = _ts.card_origin(j.get("card"))
                 if origin and origin[0] in kinds and origin[0] != channel:
                     kind, name = kinds[origin[0]]
@@ -1960,6 +1989,10 @@ class WebStore:
                                (mid if mid is not None else f"w{seq}",
                                 thread_key if thread_key is not None else f"t{seq}", seq))
         row = self._conn.execute("SELECT * FROM messages WHERE seq=?", (seq,)).fetchone()
+        tag = getattr(_POST_TAG, "tag", "")
+        if tag and not history:
+            self._conn.execute("INSERT OR REPLACE INTO message_tags(channel, id, tag) VALUES "
+                               "(?,?,?)", (channel, row["id"], tag))
         self._link(row)
         self._index(seq, row["text"] or "")
         out = self._msg_json(row)
@@ -2783,6 +2816,20 @@ class WebFrontend(ChatFrontend):
             return bool(self.rooms_enabled())
         except Exception:
             return True
+
+    def tagging(self, tag: str):
+        """The posts this thread makes inside it carry `tag` (module
+        tagging())."""
+        return tagging(tag)
+
+    def lines_tagged(self, channel: str, thread_key: str, tag: str) -> list[dict]:
+        """The bot's text lines in the thread that carry `tag`, oldest
+        first: {"id", "seq", "text"}."""
+        channel = self._canon(channel)
+        return [dict(r) for r in self.store._all(
+            "SELECT m.id, m.seq, m.text FROM messages m JOIN message_tags t ON t.channel = m.channel "
+            "AND t.id = m.id WHERE m.channel=? AND m.thread_key=? AND t.tag=? AND m.author=? AND "
+            "m.kind='message' AND m.deleted_at IS NULL ORDER BY m.seq", (channel, thread_key, tag, BOT))]
 
     def requests(self, limit: int = REQUESTS_LIMIT) -> dict:
         """Action requests as blocks (GET /api/requests): the store's items

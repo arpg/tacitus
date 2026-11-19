@@ -6,6 +6,15 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A reply you answered in Action requests shows what really happened.**
+  It stays at "Writing the reply" (then "Still writing") until the reply
+  is drafted, and then opens its Send request, even when the draft comes
+  late. If Tacitus needs one more answer, it asks it on a new request; if
+  it could not write the reply, the request says why in plain words with
+  Try again and Open in Ask Tacitus; if no reply is needed, it says so.
+  A second tap never starts a second draft. Each request shows only its
+  own messages, and a restart or a stop never leaves it saying it is
+  still writing.
 - **A question waits for your answer, and you answer it right there.**
   When a reply needs your decision, its request in Action requests puts
   the question first, says who wrote and how long it has waited, and

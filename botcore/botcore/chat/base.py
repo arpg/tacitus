@@ -216,6 +216,12 @@ class ChatFrontend(ABC):
     # web chat's Action requests): the core asks for words elsewhere.
     dm_takes_text: bool = True
 
+    def tagging(self, tag: str):
+        """A context in which this thread's posts carry `tag`, where the
+        platform keeps one (the web chat); elsewhere nothing."""
+        import contextlib
+        return contextlib.nullcontext()
+
     def __init__(self) -> None:
         self.registry = HandlerRegistry()
 

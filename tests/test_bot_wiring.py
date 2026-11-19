@@ -545,7 +545,7 @@ def test_scheduling_lane_is_one_session_per_thread():
     prompts/CLAUDE-scheduling.md, and a new thread starts from nothing."""
     hm = _fn_body("handle_message_async")
     assert "sched_lane = bool(SCHED_CHANNEL_ID) and channel == SCHED_CHANNEL_ID" in hm
-    assert "if _resident_cfg.enabled() and not sched_lane and not per_topic:" in hm
+    assert "if _resident_cfg.enabled() and not sched_lane and not per_topic and not session_key:" in hm
     i = hm.index("        with _room_rotate_lock(channel):\n            if not sched_lane and not session_key:\n"
                  "                try:\n"
                  "                    _maybe_rotate_room_session(channel, thread_ts, is_thread_reply)")
@@ -613,11 +613,12 @@ def test_a_timeout_keeps_the_session_and_surfaces_its_drafts():
     assert "if cr.returncode != -1 and (cr.returncode != 0 or not cr.output):" in body
     assert "cr.returncode != 0 or (not cr.output" not in body
     assert "journal_offset = None" in body.split("if _DRAINING:")[0]
-    assert ('_surface_run_drafts(channel, thread_ts, journal_offset, run_id, "mono",\n'
-            '                                tool_calls=cr.tool_calls)') in body
+    assert ('run_drafts = _surface_run_drafts(channel, thread_ts, journal_offset, run_id, "mono",\n'
+            '                                             tool_calls=cr.tool_calls) or []') in body
     handler = body.split('except subprocess.TimeoutExpired as e:\n')[1]
     handler = handler.split("\n    except Exception")[0]
-    assert '_surface_run_drafts(channel, thread_ts, journal_offset, run_id, "mono-timeout")' in handler
+    assert ('_surface_run_drafts(channel, thread_ts, journal_offset, run_id,\n'
+            '                                                 "mono-timeout")') in handler
     assert "_claim_event_actions(newer_than=run_started,\n" in handler and "token=stage_tok)" in handler
     assert "`continue`" in handler and "smaller steps" not in handler
     surface = _fn_body("_surface_run_drafts")
@@ -636,7 +637,7 @@ def test_per_topic_sessions_keep_chat_off_the_resident():
     i = BOT_SRC.index("_try_resident_dispatch(channel, thread_ts, msg_ts,")
     gate = BOT_SRC[BOT_SRC.rindex("sched_lane = bool(SCHED_CHANNEL_ID)", 0, i):i]
     assert 'get_chat_sessions() == "per-topic"' in gate
-    assert "if _resident_cfg.enabled() and not sched_lane and not per_topic:" in gate
+    assert "if _resident_cfg.enabled() and not sched_lane and not per_topic and not session_key:" in gate
     # a follow-up in a topic gets the topic's full history when its session is new
     pre = BOT_SRC[:BOT_SRC.rindex("sched_lane = bool(SCHED_CHANNEL_ID)", 0, i)]
     assert "history = fetch_thread_history(channel, thread_ts)" in pre[-4000:]
@@ -755,7 +756,8 @@ def test_a_side_session_runs_beside_its_thread():
     assert hm.index("side_drafts = (_side_drafts_note(thread_ts)") < hm.index("full_prompt = prompt")
     dr = _fn_body("_dispatch_reply_draft")
     assert 'key = "" if asks else _sessions.side_key(thread_ts or ts, f"reply-{row[\'id\']}")' in dr
-    assert "handle_message_async(channel, thread_ts or ts, ts, prompt, user_id, True, session_key=key)" in dr
+    assert ("handle_message_async(channel, thread_ts or ts, ts, prompt, user_id, True,\n"
+            "                                 session_key=key)") in dr
 
 def test_the_thread_session_knows_the_drafts_side_sessions_made():
     """A change the owner asks for in a thread with side sessions reaches

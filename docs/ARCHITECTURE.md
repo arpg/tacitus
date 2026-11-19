@@ -555,6 +555,15 @@ before, so one Replies card is live at a time
 (`reply-queue-cards.json` in the owner-private dir). The card's buttons name
 their rows as `row` and `rows`, never `ledger_id`, so the web chat's Mark
 done on the Replies thread closes nothing.
+On the web chat a press on a row records its turn (`reply-turns.json` in
+the owner-private dir) and the row's card shows that turn's real outcome
+when the turn itself ends (`handle_message_async` hands its end and its
+run's drafts to `_reply_turn_ended`): the draft's Send request, the
+question or the reason the turn recorded with `ledger.py note-reply`
+(`decision`, `blocked`, `left`), or that it could not write it; a Send
+card whose draft names the row takes over late (`_reply_draft_carded`),
+and the row's posts carry its tag so its block shows only its own lines
+(docs/webchat.md, Action requests).
 
 Each project room with items
 in the post then gets its slice in a new topic (`briefing_rooms.py`,
@@ -2576,7 +2585,7 @@ Files that participate in prompt construction and action execution:
 | `botcore/botcore/chat/web_frontend.py` | `WebFrontend`, the bot's own web chat: serves the static app (`chat/webui/`, no build step) and a JSON API over loopback HTTP, stdlib only; keeps messages, cards, reactions, files and the read marks per thread (every device shows the store's unread counts) in a SQLite store in the owner-private directory; one server-sent event stream with replay from the last seen sequence. The owner signs in by the Tailscale login header on tailscaled's own connection, or by the pairing cookie; it serves only the owner-private chat block, and refuses another origin before auth; at most 64 connections, 8 from one address other than loopback (`peer_connections`) (docs/webchat.md, docs/SECURITY.md "Web chat") |
 | `botcore/botcore/chat/shadow_frontend.py` | `ShadowFrontend`: drives a primary (Slack) and mirrors every post, update, card, status line, reaction and file into the web front end under the primary's ids; takes the owner's input from either side (a web message goes into the primary as the bot, its id kept in the owner-private list); copies the last `web.backfill_days` of history at start; a shadow failure is logged and never reaches the core |
 | `botcore/botcore/chat/web_push.py` | Web Push for the web chat: a VAPID key pair made on first use, each payload encrypted to the subscription (RFC 8291, `aes128gcm`, the `cryptography` package) and padded, sent only to the browser vendors' push hosts with no redirect; a card shows only its title, a DM message its first line; one push per thread in two minutes |
-| `botcore/botcore/chat/action_requests.py` | Action requests as blocks in the web chat (docs/webchat.md, Action requests): a request's folded words from its card's kind and labelled fields (the action, who, what, when; its title for a card with none), and its urgency (overdue, soon by two working days, calm) from its linked deadline, its event's start, its buttons' last day and its wait; a request Tacitus is acting on (`working`) and the request a status line links to (`next`) |
+| `botcore/botcore/chat/action_requests.py` | Action requests as blocks in the web chat (docs/webchat.md, Action requests): a request's folded words from its card's kind and labelled fields (the action, who, what, when; its title for a card with none), and its urgency (overdue, soon by two working days, calm) from its linked deadline, its event's start, its buttons' last day and its wait; a request Tacitus is acting on (`working`), the request a status line links to (`next`) and the bot's lines that belong to it, by tag (`lines_of`) |
 | `preprocessor/web_requests.py` | The EA's view of each request in Action requests, read-only: the project and deadline from the ledger rows and the mail conversation its buttons name (project_store's `project_ledger` and `project_messages`), and an event card's start from its staged payload |
 | `botcore/botcore/chat/web_push_policy.py` | Which bot posts in the web chat push (docs/webchat.md, Notifications): the DM, the opening of a morning briefing or an afternoon update, the bot's answer in a conversation the owner wrote in; never a digest, a nudge, a progress line or a notice the owner never wrote in; the `notify_push` switches; the text fingerprint that lets one text push once; no answer push within two minutes of a card the conversation asked for in the DM; the alerts whose text a conversation carries, which the owner's reply there clears |
 | `preprocessor/web_notify_settings.py` | The web chat's Notifications settings (`/api/settings/notify`): the `notify_push` switches read from the running front end and written into the owner-private `chat.json` through `owner_trust.write_owner_file`, in force at once; and debug mode (`/api/settings/debug`), the chat block's `diagnostics` in the same file |

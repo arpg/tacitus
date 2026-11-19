@@ -119,7 +119,8 @@ def _bot(queue: list | None, *, confirms: dict | None = None, journal: list | No
     import threading as _threading
     ns = {"json": json, "re": __import__("re"), "time": __import__("time"), "datetime": datetime, "timedelta": timedelta,
           "uuid": __import__("uuid"), "_chat": _chat, "app": App(), "_CARDS": Cards(),
-          "threading": types.SimpleNamespace(Thread=_SyncThread),
+          "threading": types.SimpleNamespace(Thread=_SyncThread, Lock=_threading.Lock),
+          "TIMEOUT_SECONDS": 3600, "timezone": __import__("datetime").timezone,
           "_private_state": lambda name: Path("/nonexistent") / name,
           "_atomic": types.SimpleNamespace(write_json=lambda p, d, mode=0: store.update(d=d)),
           "log": types.SimpleNamespace(info=lambda *a: None, warning=lambda *a: None,
@@ -749,15 +750,29 @@ def _plain(text):
 
 class _WebFrontend:
     """The web chat as the Replies code sees it: Action requests takes
-    button presses only (dm_takes_text False). `said` is what the turn
-    posts in the thread after its progress line."""
+    button presses only. `said` is what the turn posts in the thread after
+    its progress line; `tags` records the tag each post carried."""
     dm_takes_text = False
 
     def __init__(self, calls, said=""):
-        self.calls, self.said, self.updates = calls, said, []
+        self.calls, self.said, self.updates, self.tags, self._tag = calls, said, [], [], ""
+
+    def tagging(self, tag):
+        import contextlib
+        fe = self
+
+        @contextlib.contextmanager
+        def ctx():
+            before, fe._tag = fe._tag, tag
+            try:
+                yield
+            finally:
+                fe._tag = before
+        return ctx()
 
     def post(self, channel="", thread_ts=None, text=""):
         self.calls["posts"].append((channel, thread_ts, text))
+        self.tags.append(("post", text[:20], self._tag))
         return types.SimpleNamespace(id=f"p{len(self.calls['posts'])}")
 
     def update_card(self, ref, card):
@@ -775,105 +790,399 @@ class _WebFrontend:
         return msgs
 
 
+VALUE = {"row": "response-lee", "batch": "b1"}
+
+
 def _web(queue, said="", **kw):
+    """The Replies section on the web chat, with its turns kept in memory,
+    and a turn stand-in that ends as `turn` says (see _turn)."""
     ns, calls = _bot(queue, **kw)
     fe = _WebFrontend(calls, said)
-    ns.update(FRONTEND=fe, _DRAINING=False, REPLY_DONE_WAIT_S=0,
+    turns: dict = {}
+    ns.update(FRONTEND=fe, _DRAINING=False, CHANNEL_ID="main", _dispatch_lock=_threading_lock(),
+              _active_dispatches={}, _load_reply_turns=lambda: json.loads(json.dumps(turns)),
+              _save_reply_turns=lambda d: (turns.clear(), turns.update(d)),
               _card_ref=lambda ch, ts: types.SimpleNamespace(channel=ch, id=ts, thread_key=ts))
-    return ns, calls, fe
+    real_post_card = ns["_post_card"]
+
+    def post_card(ch, card, thread_ts=None):  # the card carries the tag it was posted under
+        fe.tags.append(("card", card.kind, fe._tag))
+        return real_post_card(ch, card, thread_ts=thread_ts)
+    ns["_post_card"] = post_card
+    return ns, calls, fe, turns
+
+
+def _threading_lock():
+    import threading
+    return threading.Lock()
+
+
+def _turn(ns, calls, *, record=None, draft=None, journal=None, confirms=None, how="done"):
+    """A turn stand-in as handle_message_async runs one: it may make a
+    draft (its Send card posts, as _note_draft_confirmation calls
+    _reply_draft_carded) or write the row's record (note-reply), then its
+    own end calls _reply_turn_ended."""
+    def run(channel, thread, progress, prompt, user_id, is_reply, session_key=""):
+        calls["turns"].append((channel, thread, progress, prompt))
+        calls["sessions"].append(session_key)
+        calls["posts"].append((channel, thread, "turn words"))
+        ns["FRONTEND"].tags.append(("turn", "", ns["FRONTEND"]._tag))
+        drafts = []
+        if draft:
+            journal.append({"action": "created", "draft_id": draft, "ledger_ids": ["response-lee"],
+                            "ts": "2026-10-09T10:00:00"})
+            confirms[draft] = {"status": "live", "channel": "dm", "message_ts": "w77"}
+            ns["_reply_draft_carded"](draft, "dm", "w77")
+            drafts = [draft]
+        if record is not None:
+            from datetime import timezone as _tz
+            ns["_test_queue"][0]["queued"] = dict(record, at=datetime.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        ns["_reply_turn_ended"](progress, how, drafts)
+    ns["handle_message_async"] = run
+
+
+def _queue(row):
+    q = [row]
+    return q
 
 
 def test_a_decision_card_carries_its_question_for_the_web_chat():
     """The decision row's card names its question, who wrote and when, for
-    the web chat's answer control; Slack's card is as it was (its title and
-    buttons), since Slack never reads `question`."""
+    the web chat's answer control; Slack's card is as it was."""
     ns, calls = _bot([_q("lee", 8, queued=ASKED)])
     _tick(ns)
     card = calls["cards"][0]
     assert card.question == {"text": "Renew for one year or for three?", "from": "Lee",
                              "since": "2026-10-05T16:00:00Z", "about": "Reply to Lee"}
-    assert "I need your answer before I write it" in _text(card)
+    assert card.problem == {} and "I need your answer before I write it" in _text(card)
     ns, calls = _bot([_q("ana", 8)])  # no decision: no question, the card as before
     _tick(ns)
     assert calls["cards"][0].question == {}
 
 
-def test_on_the_web_an_answer_writes_the_reply_in_place_and_links_its_send_request():
-    """A tap on a quick answer, or a typed line, starts the row's turn; the
-    card says the reply is being written; when the turn ends with a draft,
-    the card links to the draft's Send request. An empty Draft it on a
-    decision starts nothing: the web chat's control needs an answer."""
-    row = _q("lee", 8, queued=ASKED)
-    confirms: dict = {}
-    journal: list = []
-    ns, calls, fe = _web([row], confirms=confirms, journal=journal)
-
-    def turn(*a, session_key=""):  # the turn makes the draft, and the bot posts its Send card
-        calls["turns"].append(a)
-        calls["sessions"].append(session_key)
-        journal.append({"action": "created", "draft_id": f"d-{len(journal)}", "ledger_ids": ["response-lee"],
-                        "ts": "2026-10-09T10:00:00"})
-        confirms[f"d-{len(journal) - 1}"] = {"status": "live", "channel": "dm", "message_ts": "w77"}
-    ns["handle_message_async"] = turn
-    value = {"row": "response-lee", "batch": "b1"}
-    ns["handle_reply_draft"](_ev(value, text=""))
-    assert calls["turns"] == [] and calls["status"] == []  # no question first, no dead end
-    ns["handle_reply_draft"](_ev(value, text="Three years, at the same rate."))
-    assert len(calls["turns"]) == 1 and "Three years, at the same rate." in calls["turns"][0][3]
-    assert calls["sessions"] == [calls["sessions"][0]] and "reply-response-lee" in calls["sessions"][0]
-    (first, last) = calls["status"]
-    assert (first[0], _plain(first[1])) == ("m1", ":hourglass_flowing_sand: Writing the reply: Three years, at the same rate.")
-    assert last == ("m1", ":white_check_mark: The reply is drafted. Its Send request: "
-                          "<https://chat.example/#/dm/w77/w77|open it>")
-    assert not any("Ask me here" in t or "Tell me your answer" in t for _ts, t in calls["status"])
-    # a quick answer goes the same way, through its own action
-    calls["status"].clear()
-    journal.clear()
-    confirms.clear()
-    ns["handle_reply_choice"](_ev(dict(value, choice="Renew for three years"), card_id="m2"))
-    assert (calls["status"][0][0], _plain(calls["status"][0][1])) == \
-        ("m2", ":hourglass_flowing_sand: Writing the reply: Renew for three years.")
-    assert calls["status"][-1][1].startswith(":white_check_mark: The reply is drafted.")
+def _setup(row=None, **kw):
+    row = row or _q("lee", 8, queued=dict(ASKED))
+    q = [row]
+    journal, confirms = [], {}
+    ns, calls, fe, turns = _web(q, journal=journal, confirms=confirms, **kw)
+    ns["_test_queue"] = q
+    ns["_draft_events"].ledger_ids_of = lambda did: [
+        lid for ev in journal if ev.get("draft_id") == did for lid in ev.get("ledger_ids") or ()]
+    return ns, calls, fe, turns, journal, confirms
 
 
-def test_on_the_web_the_turn_s_one_more_question_is_a_card_in_the_same_thread():
-    """A turn that asks one more fact and writes no draft: its question
-    becomes a row card in the thread, with the answer control (Draft the
-    reply takes the answer), and the answered card links to it. Its answer
-    runs in the same side session, so the turn that asked reads it."""
-    row = _q("lee", 8, queued=ASKED)
-    ns, calls, fe = _web([row], said="Which rate should the renewal state, the old or the new?")
-    value = {"row": "response-lee", "batch": "b1"}
-    ns["handle_reply_draft"](_ev(value, text="Three years.", thread="t-replies"))
-    follow = calls["cards"][-1]
-    assert calls["threads"][-1] == "t-replies"
-    assert follow.question["text"] == "Which rate should the renewal state, the old or the new?"
-    assert [(a.id, a.ask) for a in follow.actions] == [("reply_draft", "your answer"), ("reply_skip", ""),
-                                                       ("reply_not_needed", "")]
-    assert "One more question: Which rate" in _text(follow)
-    assert calls["status"][-1] == ("m1", ":speech_balloon: One more answer is needed: "
-                                         f"<https://chat.example/#/dm/m{len(calls['cards'])}/"
-                                         f"m{len(calls['cards'])}|open it>")
-    session = calls["sessions"][0]
-    ns["handle_reply_draft"](_ev(follow.actions[0].value, card_id=f"m{len(calls['cards'])}",
-                                 thread="t-replies", text="The new rate."))
-    assert calls["sessions"][-1] == session
+def test_web_a_draft_the_turn_made_links_its_send_request_and_nothing_else_shows():
+    """The card says "Writing the reply" before the turn runs, and once the
+    turn's draft has its Send card, links to it: no timer, no Try again."""
+    ns, calls, fe, turns, journal, confirms = _setup()
+    _turn(ns, calls, draft="d-7", journal=journal, confirms=confirms)
+    ns["handle_reply_draft"](_ev(VALUE, text="Three years, at the same rate."))
+    statuses = [(_ts, _plain(t)) for _ts, t in calls["status"]]
+    assert statuses == [("m1", ":hourglass_flowing_sand: Writing the reply: Three years, at the same rate."),
+                        ("m1", ":white_check_mark: The reply is drafted. Its Send request: "
+                               "<https://chat.example/#/dm/w77/w77|open it>.")]
+    assert len(calls["turns"]) == 1 and calls["cards"] == []
+    (t,) = turns.values()
+    assert t["outcome"] == "drafted" and t["ended"]
+    # the turn's posts and the progress line carry the row's tag
+    assert [x for x in fe.tags if x[0] in ("post", "turn")] == [
+        ("post", ":hourglass_flowing_s", "reply:response-lee"), ("turn", "", "reply:response-lee")]
+
+
+def test_web_a_late_send_card_attaches_and_corrects_the_card_shown_before():
+    """A turn that left no draft shows its "could not" card; the draft's
+    Send card that posts later (the same row's `--ledger-id`) takes both the
+    pressed card and that card over: nothing wrong is left behind."""
+    ns, calls, fe, turns, journal, confirms = _setup()
+    _turn(ns, calls)
+    ns["handle_reply_draft"](_ev(VALUE, card_id="m7", text="Three years."))
+    problem = calls["cards"][-1]                                   # posted as m1
+    assert problem.problem["text"] == "Tacitus did not say what happened." and problem.question == {}
+    assert calls["status"][-1] == ("m7", ":warning: The reply was not written: "
+                                         "<https://chat.example/#/dm/m1/m1|see why>.")
+    journal.append({"action": "created", "draft_id": "d-9", "ledger_ids": ["response-lee"], "ts": "x"})
+    ns["_reply_draft_carded"]("d-9", "dm", "w99")
+    drafted = ":white_check_mark: The reply is drafted. Its Send request: <https://chat.example/#/dm/w99/w99|open it>."
+    assert ("m7", drafted) in calls["status"] and ("m1", drafted) in calls["status"]
+    (t,) = turns.values()
+    assert t["outcome"] == "drafted"
+    assert not any("not written" in text for ts, text in calls["status"][-2:])
+
+
+def test_web_a_second_press_never_starts_a_second_turn():
+    """While the row's turn runs (or another press holds the row), a press
+    starts nothing; a press on another card of the row says the reply is
+    being written already. Once the row's draft exists, the press offers its
+    Send card, as before."""
+    ns, calls, fe, turns, journal, confirms = _setup()
+    ns["handle_message_async"] = lambda *a, session_key="": calls["turns"].append(a)  # still running
+    ns["handle_reply_draft"](_ev(VALUE, text="Three years."))
+    ns["_reply_after_run"] = lambda progress: None
+    ns["handle_reply_draft"](_ev(VALUE, text="Three years."))            # the same card again
+    ns["handle_reply_draft"](_ev(dict(VALUE, choice="x"), card_id="m9", text="One year."))  # another card
+    assert len(calls["turns"]) == 1
+    assert _plain(calls["status"][-1][1]).startswith(":hourglass_flowing_sand: This reply is being written already")
+    assert calls["status"][-1][0] == "m9"
+    assert ns["_reply_claim"]("response-lee") is False
+    # a press that holds the row: the second, at the same moment, waits on it
+    ns2, calls2, *_ = _setup()
+    ns2["_REPLY_CLAIMED"].add("response-lee")
+    ns2["handle_reply_draft"](_ev(VALUE, text="Three years."))
+    assert calls2["turns"] == []
+
+
+def test_web_only_a_question_is_a_question_and_unmarked_text_is_could_not():
+    """The turn's record says what it left: decision is a question card
+    with the answer control; blocked says why with Try again and Open in Ask
+    Tacitus; left closes the card with what happened. Text with no record is
+    the could-not card, never a question; a record older than the turn
+    counts for nothing."""
+    ns, calls, fe, turns, *_ = _setup()
+    _turn(ns, calls, record={"outcome": "decision", "note": "Which rate should it state?",
+                             "inbound": "x", "choices": ["The old rate", "The new rate"]})
+    ns["handle_reply_draft"](_ev(VALUE, text="Three years."))
+    q = calls["cards"][-1]
+    assert q.question["text"] == "Which rate should it state?" and q.problem == {}
+    assert [a.id for a in q.actions][:2] == ["reply_choice_one", "reply_choice_two"]
+    assert _plain(calls["status"][-1][1]).startswith(":speech_balloon: One more answer is needed: <")
+
+    ns, calls, fe, turns, *_ = _setup()
+    _turn(ns, calls, record={"outcome": "blocked", "note": "The thread has no address to answer.", "inbound": "x"})
+    ns["handle_reply_draft"](_ev(VALUE, text="Three years."))
+    b = calls["cards"][-1]
+    assert b.question == {} and b.problem["text"] == "The thread has no address to answer."
+    assert [(a.id, a.ask) for a in b.actions] == [("reply_draft", ""), ("reply_discuss", ""),
+                                                  ("reply_skip", ""), ("reply_not_needed", "")]
+    assert b.actions[0].value["again"] == "Three years."            # Try again repeats the answer
+    assert b.actions[1].value["why"] == "The thread has no address to answer."
+    assert "I could not write it: " in _text(b)
+
+    ns, calls, fe, turns, *_ = _setup()
+    _turn(ns, calls, record={"outcome": "left", "note": "They answered the question themselves.", "inbound": "x"})
+    ns["handle_reply_draft"](_ev(VALUE, text="Three years."))
+    assert calls["cards"] == []
+    assert _plain(calls["status"][-1][1]) == ":white_check_mark: No reply is needed: They answered the question themselves."
+
+    old = _q("lee", 8, queued=dict(ASKED, at="2020-01-01T00:00:00Z"))   # a briefing run's, not this turn's
+    ns, calls, fe, turns, *_ = _setup(row=old, said="I looked, and the thread asks something unclear?")
+    _turn(ns, calls)
+    ns["handle_reply_draft"](_ev(VALUE, text="Three years."))
+    u = calls["cards"][-1]
+    # text that reads like a question, with no record: its own words as the reason, never a question
+    assert u.question == {} and u.problem["text"] == "I looked, and the thread asks something unclear?"
+    assert not any(a.ask for a in u.actions)
+
+
+def test_web_a_turn_cut_short_says_so_in_plain_words():
+    for how, words in (("stopped", "The reply was stopped before it was written."),
+                       ("timeout", "Writing the reply took too long, so it was stopped."),
+                       ("error", "Something went wrong while writing the reply.")):
+        ns, calls, fe, turns, *_ = _setup()
+        _turn(ns, calls, how=how)
+        ns["handle_reply_draft"](_ev(VALUE, text="Three years."))
+        assert calls["cards"][-1].problem["text"] == words, how
+
+
+def test_web_a_restart_mid_turn_ends_truthfully():
+    """A restart that parks the turn shows nothing yet; the next instance's
+    run of the same turn ends it; a turn no instance finished by its limit
+    ends as lost; one still running is left alone. "Still writing" shows
+    after REPLY_STILL_S and is written again, so the list keeps it at work."""
+    ns, calls, fe, turns, journal, confirms = _setup()
+    ns["handle_message_async"] = lambda *a, session_key="": calls["turns"].append(a)
+    ns["_DRAINING"] = True
+    ns["handle_reply_draft"](_ev(VALUE, text="Three years."))
+    (progress,) = turns
+    assert not turns[progress].get("ended")                     # parked: no outcome yet
+    ns["_DRAINING"] = False
+    _turn(ns, calls, draft="d-5", journal=journal, confirms=confirms)
+    ns["handle_message_async"]("dm", "m1", progress, "", "U1", True)   # the next instance's run
+    assert turns[progress]["outcome"] == "drafted"
+
+    ns, calls, fe, turns, *_ = _setup()
+    ns["handle_message_async"] = lambda *a, session_key="": None
+    ns["_reply_after_run"] = lambda progress: None
+    ns["handle_reply_draft"](_ev(VALUE, text="Three years."))
+    (progress,) = turns
+    start = turns[progress]["started"]
+    ns["_active_threads"].add(progress)
+    ns["_reply_watch_tick"](start + ns["REPLY_STILL_S"] + 1)
+    assert _plain(calls["status"][-1][1]) == ":hourglass_flowing_sand: Still writing the reply: Three years."
+    n = len(calls["status"])
+    ns["_reply_watch_tick"](start + ns["REPLY_STILL_S"] + 30)
+    assert len(calls["status"]) == n                             # not again before REPLY_REFRESH_S
+    ns["_reply_watch_tick"](start + ns["REPLY_STILL_S"] + ns["REPLY_REFRESH_S"] + 1)
+    assert len(calls["status"]) == n + 1
+    ns["_reply_watch_tick"](start + ns["REPLY_TURN_LIMIT_S"] + 60)
+    assert not turns[progress].get("ended")                      # still running here: left alone
+    ns["_active_threads"].discard(progress)
+    ns["_reply_watch_tick"](start + ns["REPLY_TURN_LIMIT_S"] + 120)
+    assert turns[progress]["outcome"] == "problem"
+    assert calls["cards"][-1].problem["text"] == "Tacitus restarted while writing the reply."
+
+
+def test_web_a_turn_the_old_process_left_ends_soon_after_a_restart():
+    """A turn begun before this process started, that no run here took up
+    within the catch-up's grace, ended with the old process: it says so
+    then, not an hour later; one the catch-up re-ran is left to its run."""
+    ns, calls, fe, turns, *_ = _setup()
+    ns["handle_message_async"] = lambda *a, session_key="": None
+    ns["_reply_after_run"] = lambda progress: None
+    ns["handle_reply_draft"](_ev(VALUE, text="Three years."))
+    (progress,) = turns
+    turns[progress]["started"] = ns["_REPLY_PROCESS_START"] - 60
+    start = ns["_REPLY_PROCESS_START"]
+    ns["_active_threads"].add(progress)                       # the catch-up re-ran it
+    ns["_reply_watch_tick"](start + ns["REPLY_RESTART_GRACE_S"] + 1)
+    assert not turns[progress].get("ended")
+    ns["_active_threads"].discard(progress)
+    ns["_REPLY_TICKS"]["watch"] = 0
+    ns["_reply_watch_tick"](start + ns["REPLY_RESTART_GRACE_S"] + 20)
+    assert turns[progress]["outcome"] == "problem"
+    assert calls["cards"][-1].problem["text"] == "Tacitus restarted while writing the reply."
+
+
+def test_web_open_in_ask_tacitus_starts_a_conversation_about_the_row():
+    ns, calls, fe, turns, *_ = _setup()
+    ns["handle_reply_discuss"](_ev(dict(VALUE, why="The thread has no address."), card_id="m4"))
+    channel, thread, text = calls["posts"][-1]
+    assert (channel, thread) == ("main", None)
+    assert "Reply to Lee" in text and "The thread has no address." in text and "`response-lee`" in text
+    assert calls["status"][-1] == ("m4", ":speech_balloon: Opened in Ask Tacitus: "
+                                         f"<https://chat.example/#/main/p{len(calls['posts'])}/p{len(calls['posts'])}|open it>.")
+
+
+def test_web_a_card_whose_thread_no_longer_waits_says_so():
+    ns, calls, fe, turns, *_ = _setup()
+    ns["_test_queue"].clear()
+    store = {"cards": {"b1-x": {"rows": ["response-lee"], "channel": "dm", "card": "m1"}}}
+    calls["cards"].append(object())                    # m1 is a live card
+    ns["_load_reply_cards"] = lambda: store
+    ns["_reply_watch_tick"](10 ** 10)
+    assert calls["status"][-1] == ("m1", ":information_source: This thread no longer waits for a reply.")
 
 
 def test_on_the_web_a_draft_that_did_not_start_offers_try_again_with_the_answer_kept():
     """No turn started: the same card again, in place, with Try again and
-    the owner's answer. A turn that ended with neither a draft nor a
-    question: a new card that offers Try again. Never "Ask me here"."""
-    row = _q("lee", 8, queued=ASKED)
-    ns, calls, fe = _web([row])
+    the owner's answer. Never "Ask me here"."""
+    ns, calls, fe, turns, *_ = _setup()
     ns["_dispatch_reply_draft"] = lambda *a, **k: False
-    ns["handle_reply_draft"](_ev({"row": "response-lee", "batch": "b1"}, text="Three years."))
+    ns["handle_reply_draft"](_ev(VALUE, text="Three years."))
     ((card_id, card),) = fe.updates
     assert card_id == "m1" and card.question["failed"] and card.question["answer"] == "Three years."
     assert "The draft did not start. Try again." in _text(card) and calls["status"] == []
-    ns, calls, fe = _web([row])
-    ns["handle_reply_draft"](_ev({"row": "response-lee", "batch": "b1"}, text="Three years."))
-    again = calls["cards"][-1]
-    assert again.question["failed"] and again.question["answer"] == "Three years."
-    assert calls["status"][-1][1].startswith(":warning: The draft did not start: <")
     assert not any("Ask me here" in t for _ts, t in calls["status"])
+    assert ns["_reply_claim"]("response-lee")             # the row is free again
+
+
+# ── end to end on the real web front end, with a stand-in turn ──────────
+
+def test_on_the_real_web_chat_two_rows_in_one_thread_each_show_their_own_outcome(tmp_path):
+    """The Replies section on a real web front end (a temporary store),
+    with turns stood in: two rows' cards share the One by one thread. Row
+    A's turn makes a draft; row B's leaves no record. GET /api/requests
+    then shows A's card linking to its Send request (`next`), B's could-not
+    card ("Not written", its reason), each block with only its own row's
+    lines, and an untagged line of the thread in no block."""
+    from preprocessor.chat.web_frontend import WebFrontend
+    from preprocessor.chat.types import MessageRef
+    fe = WebFrontend.from_config({"port": 0, "tailscale_login": "owner@example.test",
+                                  "public_url": "https://host.example.test/chat"},
+                                 store_path=tmp_path / "webchat" / "webchat.sqlite",
+                                 webui_dir=tmp_path / "webui", trusted_config=True)
+    fe.start()
+    try:
+        rows = [_q("ana", 8, queued=dict(ASKED)), _q("ben", 8, queued=dict(ASKED))]
+        journal, confirms = [], {}
+        ns, calls, _fe, turns = _web(rows, journal=journal, confirms=confirms)
+        ns["_test_queue"] = rows
+        ns["_draft_events"].ledger_ids_of = lambda did: [
+            lid for ev in journal if ev.get("draft_id") == did for lid in ev.get("ledger_ids") or ()]
+        registry: dict = {}
+
+        def post_card(ch, card, thread_ts=None):
+            ref = fe.post_card(ch, card, thread_ts=thread_ts)
+            registry[ref.id] = "live"
+            return ref
+
+        def replace(ch, ts, text):
+            registry[ts] = "retired"
+            fe.replace_card_with_status(MessageRef(ch, ts, ts), text)
+        ns.update(FRONTEND=fe, _post_card=post_card, _replace_buttons_with_status=replace,
+                  _card_ref=lambda ch, ts: MessageRef(ch, ts, ts),
+                  _CARDS=types.SimpleNamespace(by_ref=lambda ch, mid: {"status": registry.get(mid, "")}
+                                                if mid in registry else None))
+        parent = fe.post_card("dm", ns["_replies_card"]("b1", [(r, "decision") for r in rows], 0))
+        cards = {}
+        for r in rows:
+            with ns["_reply_tagged"](r["id"]):
+                cards[r["id"]] = post_card("dm", ns["_reply_row_card"]("b1", r, "decision"),
+                                           thread_ts=parent.thread_key)
+        fe.post("dm", ":hourglass_flowing_sand: Still working... (3m)", thread_ts=parent.thread_key)
+
+        def turn(channel, thread, progress, prompt, user_id, is_reply, session_key=""):
+            rid = "response-ana" if "response-ana" in prompt else "response-ben"
+            fe.post(channel, f"Turn words for {rid[-3:]}.", thread_ts=thread)
+            drafts = []
+            if rid == "response-ana":
+                send = fe.post_card("dm", ns["_chat"].ConfirmationCard(
+                    kind="send", title=":lock: Send this reply?", actions=[
+                        ns["_chat"].CardAction("approve_send", "Send", {"d": 1}, "primary", "send")]))
+                journal.append({"action": "created", "draft_id": "d-a", "ledger_ids": [rid], "ts": "x"})
+                confirms["d-a"] = {"status": "live", "channel": "dm", "message_ts": send.id}
+                ns["_reply_draft_carded"]("d-a", "dm", send.id)
+                drafts = ["d-a"]
+            ns["_reply_turn_ended"](progress, "done", drafts)
+        ns["handle_message_async"] = turn
+        thread = parent.thread_key
+        real_turn = turn
+
+        def turn_late_words(channel, thread_, progress, prompt, user_id, is_reply, session_key=""):
+            # Row ana's turn, still running, writes a line after ben's last words: by time it
+            # would be ben's reason; by tag it is ana's alone.
+            if "response-ben" not in prompt:
+                return real_turn(channel, thread_, progress, prompt, user_id, is_reply, session_key)
+            fe.post(channel, "Turn words for ben.", thread_ts=thread_)
+            with ns["_reply_tagged"]("response-ana"):
+                fe.post(channel, "A late line of row ana.", thread_ts=thread_)
+            ns["_reply_turn_ended"](progress, "done", [])
+        ns["handle_message_async"] = turn_late_words
+        for rid in ("response-ana", "response-ben"):
+            ns["handle_reply_draft"](types.SimpleNamespace(
+                value={"row": rid, "batch": "b1"}, user_id="U1", text="Yes, three years.",
+                card=types.SimpleNamespace(channel="dm", id=cards[rid].id, thread_key=thread)))
+        out = fe.requests()
+        items = {j["id"]: j for j in out["waiting"] + out["done"]}
+        a, b = items[cards["response-ana"].id], items[cards["response-ben"].id]
+        send_id = confirms["d-a"]["message_ts"]
+        assert a["next"] == send_id and items[send_id]["waiting"]          # A: its Send request
+        assert all("ana" in x["text"].lower() for x in a["lines"]) and a["lines"]
+        assert "A late line of row ana." in [x["text"] for x in a["lines"]]
+        assert all("ben" in x["text"].lower() for x in b["lines"]) and b["lines"]
+        assert not any("Still working" in x["text"] for j in items.values() for x in j.get("lines") or [])
+        could_not = items[b["next"]]
+        assert (could_not["action"], could_not["waiting"]) == ("Not written", True)
+        assert could_not["what"] == "Turn words for ben."
+        assert could_not["card"]["problem"]["text"] == "Turn words for ben."
+        assert not could_not["card"]["question"]
+    finally:
+        fe.stop()
+
+
+def test_the_turn_s_own_end_the_send_card_and_the_tick_are_wired():
+    """handle_message_async names how each turn ended and the drafts it
+    made, and hands them to _reply_turn_ended in its own end; a Send card's
+    registry write tells the Replies rows of its draft; the router tick
+    checks the turns. No timer decides an outcome."""
+    start = BOT_SRC.index("def handle_message_async(")
+    hm = BOT_SRC[start:BOT_SRC.index('@app.event("message")', start)]
+    for how in ('turn_end = "done"', 'turn_end = "stopped"', 'turn_end = "timeout"', 'turn_end = "error"'):
+        assert hm.count(how) == 1, how
+    fin = hm[hm.rindex("    finally:"):]
+    assert "_reply_turn_ended(msg_ts, turn_end, run_drafts)" in fin
+    assert hm.count("run_drafts = _surface_run_drafts(") == 3
+    note = BOT_SRC[BOT_SRC.index("def _note_draft_confirmation("):BOT_SRC.index("def _set_draft_fingerprint(")]
+    assert "_reply_draft_carded(draft_id, confirm_channel, confirm_ts)" in note
+    assert "_reply_watch_tick()" in BOT_SRC[BOT_SRC.index("def resident_router_loop("):]
+    assert "REPLY_DONE_WAIT_S" not in BOT_SRC and "time.sleep(3)" not in BOT_SRC[
+        BOT_SRC.index("# The web chat (a DM that takes button presses only)"):BOT_SRC.index('@app.action("reply_draft")')]

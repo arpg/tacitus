@@ -244,7 +244,7 @@ subset and escapes everything else; it never injects HTML from text.
 | POST | `/api/channels/{ch}/mute`, `/api/channels/{ch}/unmute` | `{}` → the channel's row with `muted` set or cleared; a channel in that state already is answered as it is. 400 for the EA channel and the DM, 404 for an unknown channel. A chat action, as the rename (Muted channels) |
 | GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count`, `last_at` and the thread's state: `state`, `state_by`, `state_reason`, `state_at`, `stale` (State); `title` on a conversation the owner named (Recent) |
 | GET | `/api/recent?limit=20` | `{"threads": [...], "as_of"}`: the drawer's Recent list, conversations only, one snapshot whose `as_of` is the last event it takes in; each a threads row with `channel_name` and `unread` (the thread's count); `limit` 1 to 50 (Recent). It moves no read mark |
-| GET | `/api/requests?limit=40` | `{"waiting": [...], "done": [...], "as_of"}`: Action requests as blocks, one snapshot. Each a message JSON (a card, a status line, or a thread's first plain message) with `waiting`, the folded words `action`, `who`, `what`, `when`, `urgency` (`overdue`, `soon`, `calm`) with `why` (`due`, `starts`, `expires`, `waited`, "") and `at`, `project`, and `origin` (`{"channel", "thread_key", "kind", "name"}`) for a card that names its conversation; `working` for a status line that says Tacitus is acting on the press (listed with the waiting ones, never counted as waiting) and `next` for one that links to another request in the place; waiting ones (at work first) by urgency, then newest first; `done` newest first, `limit` (1 to 200) at most. It moves no read mark (Action requests) |
+| GET | `/api/requests?limit=40` | `{"waiting": [...], "done": [...], "as_of"}`: Action requests as blocks, one snapshot. Each a message JSON (a card, a status line, or a thread's first plain message) with `waiting`, the folded words `action`, `who`, `what`, `when`, `urgency` (`overdue`, `soon`, `calm`) with `why` (`due`, `starts`, `expires`, `waited`, "") and `at`, `project`, and `origin` (`{"channel", "thread_key", "kind", "name"}`) for a card that names its conversation; `working` for a status line that says Tacitus is acting on the press (listed with the waiting ones, never counted as waiting), `next` for one that links to another request in the place, and `lines`, the bot's lines that belong to it (`{"id", "text", "posted_at"}`, by tag); waiting ones (at work first) by urgency, then newest first; `done` newest first, `limit` (1 to 200) at most. It moves no read mark (Action requests) |
 | GET | `/api/needs` | `{"threads": [...]}`: the conversations whose state is `needs_you` or `waiting` in channels that are not archived, less what waits on a tap (Action requests), each a threads row with `channel_name` (and `title`, as there); `needs_you` first, then newest first; at most 200; it moves no read mark (State). `needs` is never a channel id |
 | POST | `/api/threads/{ch}/{thread_key}/state` | `{"state": "done" \| "needs_you" \| "waiting"}` → the thread's row as the threads route gives it, with `channel_name`: the owner's override (`state_by` `owner`), until a new message lands in the thread; 400 for another state, 404 for an unknown thread. A chat action: a relayed device that may chat may take it (State) |
 | GET | `/api/channels/{ch}/threads/{thread_key}` | the thread, oldest first, parent first; like every GET, it moves no read mark |
@@ -607,19 +607,54 @@ and what the place does changed.
   (a typed line takes the place of a chosen answer). Enter in the line
   presses it; the line scrolls above a phone's keyboard. Each press is one
   of the card's own actions on its own route with its own value; Skip and
-  Not needed stay below as quiet buttons. The bot, on the web chat
-  (`ChatFrontend.dm_takes_text` false), turns the card into "Writing the
+  Not needed stay below as quiet buttons. Slack keeps its path and words:
+  the thread takes typed answers there.
+- **A reply's turn shows its real outcome, never a guess.** On the web
+  chat (`ChatFrontend.dm_takes_text` false) a press records the row's turn
+  in the owner-private `reply-turns.json` (`_reply_begin`: the row, its
+  card, the progress line's id) and turns the card into "Writing the
   reply" before the turn starts; the list keeps it on top (`working`).
-  When the turn ends (`_reply_turn_done`) the card links to the draft's
-  Send request, which the app opens in the answered block's place (`next`),
-  so answering, reading the draft and Send happen in one list. A turn that
-  needs one more fact posts it as a new row card in the same thread with
-  the same control, whose answer runs in the same side session of the
-  row, so the turn that asked reads it; no turn ever asks in a place with
-  no composer. A turn that did not start gives the same card back, in
-  place, with Try again and the answer kept; one that ended with neither a
-  draft nor a question offers Try again on a new card. Slack keeps its
-  path and words: the thread takes typed answers there.
+  The card changes again only on an outcome of that turn, read when the
+  turn itself ends (`handle_message_async` calls `_reply_turn_ended` on
+  done, stopped, cut at its limit or failed; a turn that stopped before its
+  run, with the EA paused or its session busy past the wait, ends when the
+  dispatch returns):
+  - the Send card of a draft the turn made (the run's own journal records,
+    `_surface_run_drafts`), or any Send card whose draft names the row
+    (`--ledger-id`, `_reply_draft_carded` from the registry write): the
+    card links to it, and the app opens it in the block's place (`next`).
+    A Send card that posts late takes over the turn's card and any card of
+    the row still live (a question, could not, Try again), so nothing
+    wrong is left behind;
+  - the turn's own record on the row, written after it began (`ledger.py
+    note-reply`): `decision` is a new row card in the same thread with the
+    answer control (its answer runs in the row's side session, so the
+    turn that asked reads it); `blocked` is the "could not" card: why, in
+    plain words, with Try again (the same answer again) and Open in Ask
+    Tacitus (`reply_discuss`: a new conversation in the EA channel opened
+    by the bot's line that names the row), and no answer control; `left`
+    (or `escalated`) closes the card with what happened;
+  - neither: the "could not" card, with the turn's own last words as the
+    reason (its lines that carry the row's tag), or plain words for a turn
+    stopped, cut at its limit, failed or lost. Words with no record are
+    never taken for a question.
+  The card says "Still writing the reply" after 90 seconds and writes it
+  again every 10 minutes, so the list keeps it at work while the turn
+  runs. A turn a restart parked or cut short ends in the next instance's
+  run of it; one the old process left and no run took up within 3 minutes
+  of the start, or one past its own limit, ends as lost. While a turn of a
+  row runs, or another press holds the row, no second turn starts; a press
+  on another card of the row says the reply is being written already, and
+  a row whose draft exists offers its Send card. A card whose thread no
+  longer waits says so within 10 minutes. A turn that did not start gives
+  the same card back, in place, with Try again and the answer kept.
+- **Each request's own lines.** The bot's posts for a Replies row carry
+  the row's tag (`ChatFrontend.tagging`, the web store's `message_tags`):
+  the progress line, the turn's own posts and the row's cards. A request
+  takes the later lines with its own tag; one alone in its own thread takes
+  its untagged lines; a line in a thread several requests share that
+  carries no tag belongs to none and stays in the thread view
+  (`action_requests.lines_of`, the requests route's `lines`).
 - **The cue: urgency.** The block's left edge is its urgency, the one
   colour system; Soon and Overdue also carry the word, so colour is never
   the only sign, in light and dark. Overdue: its linked deadline passed,

@@ -211,8 +211,8 @@ def test_bot_captures_gmail_ids_from_tool_results_and_routes_by_system():
         assert "_draft_events.system_of(" in _fn_src(name), name
     mono = BOT_SRC[BOT_SRC.index("Draft detection via the draft-events journal"):]
     mono = mono[:mono.index("_warn_if_button_promised")]
-    assert ('_surface_run_drafts(channel, thread_ts, journal_offset, run_id, "mono",\n'
-            '                                tool_calls=cr.tool_calls)') in mono
+    assert ('run_drafts = _surface_run_drafts(channel, thread_ts, journal_offset, run_id, "mono",\n'
+            '                                             tool_calls=cr.tool_calls) or []') in mono
     surface = _fn_src("_surface_run_drafts")
     assert "_draft_events.system_of(run_events" in surface
     assert "_post_new_draft(" in surface and "_post_new_draft(" in _fn_src("_sweep_late_resident_drafts")

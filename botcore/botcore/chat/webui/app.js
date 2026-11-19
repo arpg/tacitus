@@ -955,7 +955,7 @@ function renderThreads() {
 // edge by urgency with a word for Soon and Overdue. A tap opens it in place to the card as it is, with the same
 // buttons, the same route and the same rules; folded, it has no button. The answered ones fold to one line each under
 // a shut Earlier part. The bot sends every word of the folded block; an old card with none shows its title.
-Object.assign(S, { reqs: null, reqOpen: new Set(), reqLines: new Map() });
+Object.assign(S, { reqs: null, reqOpen: new Set() });
 const URGENT = { overdue: 'Overdue', soon: 'Soon' };
 
 async function loadRequests() {
@@ -1027,7 +1027,8 @@ function reqBlock(r) {
 // Opened: the card as the bot posted it, with its buttons while they act; its status line once answered; then the
 // bot's lines under it (a question, a pointer) and a link to the conversation it came from.
 function reqBody(r) {
-  const lines = (S.reqLines.get(r.id) || []).map((m) => h('div', { class: 'req-line' }, markdown(m.text)));
+  // Only the lines the bot says are this request's own (a thread several requests share shows each its own).
+  const lines = (r.lines || []).map((m) => h('div', { class: 'req-line' }, markdown(m.text)));
   const from = r.origin ? h('a', { class: 'req-from', href: hashFor(r.origin.channel, r.origin.thread_key) }, 'Open the conversation') : null;
   if (r.kind === 'card' && r.card) return [(r.card.question || {}).text ? answerCard(r) : renderCard(r), ...lines, from];
   if (r.kind === 'status') return [r.working ? null : cardText(r.text, 'card status'), ...lines, from]; // at work: its head says so
@@ -1089,13 +1090,9 @@ async function toggleRequest(r) {
   };
   redrawOne();
   if (!S.reqOpen.has(r.id)) return;
-  try { // the bot's lines after the card in its thread, and the thread read up to them
-    const rows = await call('GET', `/channels/${enc(r.channel)}/threads/${enc(r.thread_key)}`);
-    S.reqLines.set(r.id, rows.filter((m) => m.seq > r.seq && m.kind === 'message' && m.author !== 'owner' && m.text));
-    const upto = Math.max(0, ...rows.map((m) => m.seq || 0));
-    if (S.reqOpen.has(r.id)) redrawOne();
-    if (upto) call('POST', `/channels/${enc(r.channel)}/threads/${enc(r.thread_key)}/read`, { upto }).then((out) => takeCounts(r.channel, out), () => {});
-  } catch { /* the card shows without its lines */ }
+  // Opening it reads its thread.
+  await call('POST', `/channels/${enc(r.channel)}/threads/${enc(r.thread_key)}/read`, {})
+    .then((out) => takeCounts(r.channel, out), () => {});
 }
 
 // A card's arrival or its answer changes what waits in Action requests: its count and its list come from the bot again.

@@ -283,6 +283,11 @@ class ShadowFrontend(ChatFrontend):
     def dm_takes_text(self) -> bool:
         return getattr(self.primary, "dm_takes_text", True)
 
+    def tagging(self, tag: str):
+        """The web side keeps the tag: its mirror of each post is made in
+        the same thread."""
+        return self.shadow.tagging(tag)
+
     # lifecycle
 
     def start(self) -> None:

@@ -10,7 +10,7 @@ Usage:
     python3 ledger.py update --id <id> [--status <s>] [--last-action <a>] [--notes <n>] ...
     python3 ledger.py close --id <id> [--note <reason>] [--user-said "<words>" | --duplicate-of <id>]
     python3 ledger.py propose --id <id> --why "<why it looks done>"
-    python3 ledger.py note-reply --id <id> --outcome drafted|decision|left [--draft-id <id>] [--note "<line>"]
+    python3 ledger.py note-reply --id <id> --outcome drafted|decision|left|blocked [--draft-id <id>] [--note "<line>"]
     python3 ledger.py reply-queue [--min-age <days>]
     python3 ledger.py proposals | reject --id <id> | closure-report [--days 30]
     python3 ledger.py get --id <id>
@@ -2072,7 +2072,10 @@ def reply_backlog(rows: list[dict], today=None, *, draft_convs=(), zone=None,
     return out[:cap]
 
 
-REPLY_OUTCOMES = ("drafted", "decision", "left", "escalated")
+# drafted: a draft is made; decision: a question for the user, in `note`;
+# left: no reply is needed; escalated: handed to the EA channel; blocked:
+# this run could not write it, why in `note` (the next run may try again).
+REPLY_OUTCOMES = ("drafted", "decision", "left", "escalated", "blocked")
 REPLY_CHOICES_MAX, REPLY_CHOICE_CHARS = 3, 48
 
 
@@ -2757,7 +2760,8 @@ def main():
     p_note.add_argument("--id", required=True)
     p_note.add_argument("--outcome", required=True, choices=REPLY_OUTCOMES,
                         help="drafted: a reply draft exists; decision: the user was asked; "
-                             "left: nothing to send; escalated: handed to another lane")
+                             "left: nothing to send; escalated: handed to another lane; "
+                             "blocked: this run could not write it")
     p_note.add_argument("--draft-id", help="The draft, when the outcome is drafted")
     p_note.add_argument("--note", help="The line shown to the user, or why nothing was sent")
     p_note.add_argument("--choice", action="append",

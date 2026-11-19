@@ -3307,6 +3307,10 @@ def _note_draft_confirmation(draft_id: str, confirm_channel: str,
             "summary": dict(summary or {}),
         }
         _save_draft_confirms(data)
+    try:
+        _reply_draft_carded(draft_id, confirm_channel, confirm_ts)
+    except Exception as e:
+        log.warning(f"Replies rows of draft ...{draft_id[-12:]} not updated: {e}")
     if not sendable:
         return
     try:
@@ -3465,8 +3469,10 @@ def _journal_update_times(events) -> dict:
 
 
 def _surface_run_drafts(channel: str, thread_ts: str, journal_offset: int,
-                        run_id: str, label: str, tool_calls=None) -> None:
+                        run_id: str, label: str, tool_calls=None) -> list[str]:
     """Give the drafts one run made, revised or deleted their send path,
+    and return the ids of the ones it made or revised (a Replies row's turn
+    reads its outcome from them, _reply_turn_ended),
     from the draft-events journal records that name the run. With the
     run's tool calls, a new Outlook draft written by the email-author
     subagent first goes through draft_ab.py, which puts the remote model's
@@ -3483,6 +3489,7 @@ def _surface_run_drafts(channel: str, thread_ts: str, journal_offset: int,
     _retire_deleted_drafts(net["deleted"], label)
     if not net["created"]:
         log.info("No new drafts detected after Claude run.")
+    surfaced = sorted(set(net["created"]) | set(net["updated"]))
     for draft_id in sorted(net["created"]):
         system, acct = _draft_events.system_of(run_events, draft_id)
         log.info(f"Draft detected via journal ({system}): ...{draft_id[-20:]}")
@@ -3497,6 +3504,7 @@ def _surface_run_drafts(channel: str, thread_ts: str, journal_offset: int,
             except Exception as e:
                 log.warning(f"draft A/B skipped: {e}")
         _post_new_draft(channel, thread_ts, draft_id, system, acct)
+    return surfaced
 
 
 def _reconfirm_updated_drafts(channel: str, thread_ts: str | None,
@@ -5493,14 +5501,15 @@ def _days(n) -> str:
     return f"{n} day" if n == 1 else f"{n} days"
 
 
-def _reply_row_card(batch_id: str, row: dict, state: str, *, follow_up: str = "",
+def _reply_row_card(batch_id: str, row: dict, state: str, *, problem: str = "",
                     answer: str = "", failed: bool = False) -> "_chat.ConfirmationCard":
-    """One thread's card. A row that waits on the owner's decision, and
-    Tacitus's one more question about it (`follow_up`, the web chat's: the
-    turn's question becomes a card, since Action requests takes no typing),
-    carry `question` for the web chat's answer control. `failed` marks a
-    draft that did not start (the web chat's Try again), with the owner's
-    `answer` kept."""
+    """One thread's card. A row that waits on the owner's decision (a
+    briefing run's question, or the one a reply turn recorded with
+    note-reply) carries `question` for the web chat's answer control.
+    `failed` marks a draft that did not start (Try again in place, the
+    owner's `answer` kept). `problem` is the web chat's "could not" card: why
+    the turn wrote no reply, with Try again (the same `answer` again) and
+    Open in Ask Tacitus, and no answer control."""
     inert, one = _chat.card_text.inert, _chat.card_text.one_line
     desc = inert((row.get("description") or row.get("subject") or row["id"]).strip(), 110)
     who = (row.get("from_name") or row.get("from") or "").strip()
@@ -5511,8 +5520,8 @@ def _reply_row_card(batch_id: str, row: dict, state: str, *, follow_up: str = ""
             + f"{_days(row.get('age_days') or 0)}" + (" ago." if who else ".")]
     if asked:
         head.append(inert(asked, 200))
-    if follow_up:
-        head.append(f"One more question: {inert(follow_up, 300)}")
+    if problem:
+        head.append(f"I could not write it: {inert(problem, 300)}")
     elif state == "draft":
         head.append("A draft is in your Drafts folder. Its Send card closed.")
     elif state == "decision":
@@ -5526,18 +5535,20 @@ def _reply_row_card(batch_id: str, row: dict, state: str, *, follow_up: str = ""
     title = "\n".join(head)
     value = {"row": row["id"], "batch": batch_id}
     question: dict = {}
-    if follow_up or state == "decision":
-        question = {"text": one(follow_up or note or asked or desc, 300), "from": one(who, 80),
-                    "since": str(row.get("since") or ""),
-                    "about": one(_chat.card_text.strip_inert(desc), 120)}
+    facts = {"from": one(who, 80), "since": str(row.get("since") or ""),
+             "about": one(_chat.card_text.strip_inert(desc), 120)}
+    if state == "decision" and not problem:
+        question = {"text": one(note or asked or desc, 300), **facts}
         if answer:
             question["answer"] = one(answer, _chat.ACTION_TEXT_CHARS)
         if failed:
             question["failed"] = True
-    picks = _reply_choices(row) if state == "decision" and not follow_up else []
-    if follow_up:
-        actions = [_chat.CardAction("reply_draft", ":pencil2: Draft the reply", value, "primary",
-                                    "draft", ask=REPLY_ASK_ANSWER)]
+    picks = _reply_choices(row) if state == "decision" and not problem else []
+    if problem:
+        again = dict(value, again=one(answer, _chat.ACTION_TEXT_CHARS)) if answer else value
+        actions = [_chat.CardAction("reply_draft", ":repeat: Try again", again, "primary", "again"),
+                   _chat.CardAction("reply_discuss", ":speech_balloon: Open in Ask Tacitus",
+                                    dict(value, why=one(problem, 200)), "", "ask")]
     elif picks:
         actions = [_chat.CardAction(f"reply_choice_{key}", f":{key}: {inert(text, 0)}",
                                     dict(value, choice=text), "", key)
@@ -5560,7 +5571,8 @@ def _reply_row_card(batch_id: str, row: dict, state: str, *, follow_up: str = ""
     return _chat.ConfirmationCard(
         kind="replies", title=title, actions=actions, no_default=bool(picks),
         block_id=f"reply_row_{batch_id}_{row['id'][-8:]}", fallback_text=title,
-        question=question)
+        question=question,
+        problem={"text": one(problem, 300), **facts} if problem else {})
 
 
 def _replies_card(batch_id: str, todo: list[tuple], ready: int) -> "_chat.ConfirmationCard":
@@ -5639,7 +5651,10 @@ def _post_reply_queue(force: bool = False) -> int:
     if todo:
         batch_id = uuid.uuid4().hex[:12]
         try:
-            ref = _post_card(dm_channel, _replies_card(batch_id, todo, ready))
+            import contextlib
+            # One thread alone is its own row card, tagged with its row.
+            with (_reply_tagged(todo[0][0]["id"]) if len(todo) == 1 else contextlib.nullcontext()):
+                ref = _post_card(dm_channel, _replies_card(batch_id, todo, ready))
         except Exception as e:
             log.warning(f"Replies card failed: {e}")
             return 0
@@ -5682,7 +5697,8 @@ def handle_review_replies(ev: "_chat.ActionEvent"):
     for row, state in todo:
         sub = f"{batch_id}-{row['id'][-8:]}"
         try:
-            ref = _post_card(ev.card.channel, _reply_row_card(sub, row, state), thread_ts=thread)
+            with _reply_tagged(row["id"]):
+                ref = _post_card(ev.card.channel, _reply_row_card(sub, row, state), thread_ts=thread)
         except Exception as e:
             log.warning(f"Replies row card failed for {row['id']}: {e}")
             continue
@@ -5857,8 +5873,8 @@ def _reply_draft_prompt(row: dict, answer: str = "", words: str = "",
                f"\"{one_line(answer, REPLY_CHOICE_CHARS)}\". That answer is the owner's "
                "decision for this reply and for nothing else. Write the reply that says it, "
                "a decline too: the draft waits for the owner's Send. When the reply needs a "
-               "fact the thread and the answer do not give, ask that one question here and "
-               "write no draft. ")
+               "fact the thread and the answer do not give, ask that one question and write "
+               "no draft. ")
     elif words:
         lead = ("[Reply queue: the owner tapped Draft it on a reply that waits and wrote what "
                 "the reply must say. Work this one ledger row and answer in one or two short "
@@ -5870,7 +5886,7 @@ def _reply_draft_prompt(row: dict, answer: str = "", words: str = "",
                "instruction for this reply and for nothing else. Write the reply that says "
                "it in the owner's voice, a decline too: the draft waits for the owner's "
                "Send. When the reply needs a fact the thread and the line do not give, ask "
-               "that one question here and write no draft. ")
+               "that one question and write no draft. ")
     else:
         lead = ("[Reply queue: the owner tapped Draft it on a reply that waits. Work this "
                 "one ledger row and answer in one or two short lines.]")
@@ -5892,13 +5908,18 @@ def _reply_draft_prompt(row: dict, answer: str = "", words: str = "",
            f"the brief goes to `{files[0]}` and the body to `{files[1]}`. " if files else "")
         + how
         + f"When the draft exists, record it: `{ledger_py} note-reply --id {rid} "
-        "--outcome drafted --draft-id <the draft id>`.")
+        "--outcome drafted --draft-id <the draft id>`. When you write no draft, record why, "
+        "exactly one of: a question only the owner can answer, `--outcome decision --note "
+        "\"<the question, one line>\"` (with `--choice \"<answer>\"` for each of two or three "
+        "short answers the owner could pick); no reply is needed (it was answered elsewhere, "
+        "or it asks nothing), `--outcome left --note \"<what happened, one line>\"`; you could "
+        "not write it, `--outcome blocked --note \"<why, in plain words>\"`. The record is how "
+        "the owner's card learns what happened.")
 
 
 def _dispatch_reply_draft(row: dict, channel: str, thread_ts: str, user_id: str,
                           answer: str = "", words: str = "",
-                          on_done: "Callable[[str], None] | None" = None,
-                          started: "Callable[[], None] | None" = None) -> bool:
+                          started: "Callable[[str], None] | None" = None) -> bool:
     """Draft it: one line in the Replies thread, then a turn there that
     writes the reply for the row (the reply that says `answer`, when the
     owner picked one, or `words`, when the owner wrote a line). The click
@@ -5906,18 +5927,19 @@ def _dispatch_reply_draft(row: dict, channel: str, thread_ts: str, user_id: str,
     so replies started one after another are written at the same time.
     The question first is the thread's own turn: the owner answers it with
     a message in the thread, and the thread's session reads that.
-    `started()` runs once the turn is sure to start, before it does, and
-    `on_done(progress id)` once it has ended (the web chat's in-place
-    result: _reply_writing, _reply_turn_done)."""
+    `started(progress id)` runs once the turn is sure to start, before it
+    does (the web chat records the turn: _reply_begin). Its posts carry the
+    row's tag (_reply_tagged)."""
     desc = _chat.card_text.inert((row.get("description") or row["id"]).strip(), 110)
     queued = row.get("queued") if isinstance(row.get("queued"), dict) else {}
     asks = not answer and not words and queued.get("outcome") == "decision"
     try:
-        posted = FRONTEND.post(
-            channel=channel, thread_ts=thread_ts or None,
-            text=f":hourglass_flowing_sand: One question first: {desc}." if asks
-            else f":hourglass_flowing_sand: Writing the reply: {desc}. Its Send card "
-                 f"comes to {_CARDS_HERE}.")
+        with _reply_tagged(row["id"]):
+            posted = FRONTEND.post(
+                channel=channel, thread_ts=thread_ts or None,
+                text=f":hourglass_flowing_sand: One question first: {desc}." if asks
+                else f":hourglass_flowing_sand: Writing the reply: {desc}. Its Send card "
+                     f"comes to {_CARDS_HERE}.")
         ts = posted.id
     except Exception as e:
         log.warning(f"reply-draft status post failed: {e}")
@@ -5931,56 +5953,216 @@ def _dispatch_reply_draft(row: dict, channel: str, thread_ts: str, user_id: str,
     files = (_body_file_path(ts, "brief"), _body_file_path(ts))
     prompt = _reply_draft_prompt(row, answer, words, files)
     if started is not None:
-        started()
+        started(ts)
 
     def run() -> None:
-        handle_message_async(channel, thread_ts or ts, ts, prompt, user_id, True, session_key=key)
-        if on_done is not None:
-            try:
-                on_done(ts)
-            except Exception as e:
-                log.warning(f"Replies row {row['id']}: the turn's result was not shown: {e}")
+        with _reply_tagged(row["id"]):
+            handle_message_async(channel, thread_ts or ts, ts, prompt, user_id, True,
+                                 session_key=key)
+        if started is not None:
+            _reply_after_run(ts)
     threading.Thread(target=run, daemon=True).start()
     return True
 
 
 # The web chat (a DM that takes button presses only) shows a Replies row's
-# answer in place: the press turns the row's card into "Writing the reply",
-# and when the turn ends the card links to the draft's Send request, or a new
-# row card asks Tacitus's one more question, or offers Try again with the
-# owner's answer kept. Slack keeps its own path: the thread takes words.
-REPLY_DONE_WAIT_S = 30.0
+# answer in place. A press records the row's turn (_reply_begin: the row, its
+# card, the progress line's id, in the owner-private reply-turns.json, so a
+# restart keeps it) and turns the card into "Writing the reply". The card
+# changes again only on a real outcome of that turn:
+#   - a Send card for a draft the turn made (_surface_run_drafts names the
+#     run's drafts), or any Send card whose draft names the row
+#     (`--ledger-id`, _reply_draft_carded): the card links to it, and a
+#     Try again or question card shown before gives way to it;
+#   - the turn's own record on the row (ledger.py note-reply, written by
+#     the turn after it started): `decision` is a question card with the
+#     answer control, `blocked` a card that says why with Try again and Open
+#     in Ask Tacitus, `left` or `escalated` closes the card with what
+#     happened;
+#   - a turn that ended with neither (stopped, cut at its limit, failed, or
+#     silent): the "could not" card, never a question.
+# The turn's end is handle_message_async's own (_reply_turn_ended), never a
+# timer: a turn a restart cut short ends in the next instance, and one no
+# instance finishes is ended by the tick past its own limit. While a turn
+# runs no second turn starts for its row (_reply_claim). Slack keeps its own
+# path: the thread takes words.
 REPLY_WRITING = ":hourglass_flowing_sand: Writing the reply"
+REPLY_STILL = ":hourglass_flowing_sand: Still writing the reply"
+_REPLY_TURNS = _private_state("reply-turns.json")
+_REPLY_TURNS_LOCK = threading.Lock()
+_REPLY_CLAIMED: set = set()
+# "Still writing" after this long; the line is written again this often, so
+# the list keeps the card as at work (action_requests.working); a turn no
+# instance has finished this long after it began has ended.
+REPLY_STILL_S = 90
+REPLY_REFRESH_S = 600
+REPLY_TURN_LIMIT_S = TIMEOUT_SECONDS + 300
+REPLY_TICK_S = 15
+REPLY_GONE_CHECK_S = 600
+# A turn begun before this process started that no run here has taken up
+# this long after the start (the restart catch-up re-dispatches within it)
+# was lost with the old process.
+REPLY_RESTART_GRACE_S = 180
+_REPLY_PROCESS_START = time.time()
+_REPLY_TICKS = {"watch": 0.0, "gone": 0.0}
+# What the "could not" card says when the turn left no words of its own.
+REPLY_ENDED_WORDS = {"stopped": "The reply was stopped before it was written.",
+                     "timeout": "Writing the reply took too long, so it was stopped.",
+                     "error": "Something went wrong while writing the reply.",
+                     "lost": "Tacitus restarted while writing the reply.",
+                     "done": "Tacitus did not say what happened."}
 
 
 def _reply_taps_only() -> bool:
     return getattr(FRONTEND, "dm_takes_text", True) is False
 
 
-def _reply_writing(channel: str, card_id: str, said: str) -> None:
-    """The row's card while its turn runs on the web chat: "Writing the
-    reply", set before the turn starts, so its result always comes after."""
+def _reply_tagged(rid: str):
+    """The posts made inside it carry the row's tag on the web chat, so a
+    request's block shows only its own row's lines (WebFrontend.tagging)."""
+    import contextlib
+    tagging = getattr(FRONTEND, "tagging", None)
+    return tagging(f"reply:{rid}") if callable(tagging) else contextlib.nullcontext()
+
+
+def _load_reply_turns() -> dict:
+    try:
+        data = json.loads(_REPLY_TURNS.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_reply_turns(data: dict) -> None:
+    try:
+        _atomic.write_json(_REPLY_TURNS, data, mode=0o600)
+    except Exception as e:
+        log.warning(f"reply-turn store failed: {e}")
+
+
+def _reply_turn_of(rid: str, turns: dict | None = None) -> tuple[str, dict]:
+    """(progress id, record) of the row's turn still open, or ("", {})."""
+    for key, t in (turns if turns is not None else _load_reply_turns()).items():
+        if t.get("row", {}).get("id") == rid and not t.get("ended"):
+            return key, t
+    return "", {}
+
+
+def _reply_claim(rid: str) -> bool:
+    """Take the row for one turn: False while another press holds it or a
+    turn of the row is open."""
+    with _REPLY_TURNS_LOCK:
+        if rid in _REPLY_CLAIMED or _reply_turn_of(rid)[0]:
+            return False
+        _REPLY_CLAIMED.add(rid)
+        return True
+
+
+def _reply_unclaim(rid: str) -> None:
+    with _REPLY_TURNS_LOCK:
+        _REPLY_CLAIMED.discard(rid)
+
+
+def _reply_status(channel: str, card_id: str, text: str) -> None:
+    try:
+        _replace_buttons_with_status(channel, card_id, text)
+    except Exception as e:
+        log.warning(f"Replies card {card_id}: status not shown: {e}")
+
+
+def _reply_writing_line(said: str, still: bool = False) -> str:
     said = said.strip().rstrip(".")
-    _replace_buttons_with_status(channel, card_id, REPLY_WRITING + (
-        f": {_chat.card_text.inert(said, 0)}." if said else "."))
+    return (REPLY_STILL if still else REPLY_WRITING) + (
+        f": {_chat.card_text.inert(said, 0)}." if said else ".")
+
+
+def _reply_begin(row: dict, state: str, channel: str, thread: str, card_id: str,
+                 batch: str, said: str, progress: str) -> None:
+    """The row's turn is starting: record it and say so on its card,
+    before the turn runs, so its outcome always comes after."""
+    now = time.time()
+    with _REPLY_TURNS_LOCK:
+        turns = _load_reply_turns()
+        turns[progress] = {"row": row, "state": state, "channel": channel, "thread": thread,
+                           "card": card_id, "batch": batch, "said": said, "started": now,
+                           "shown_at": now, "still": False}
+        _save_reply_turns(turns)
+    _reply_status(channel, card_id, _reply_writing_line(said))
 
 
 def _reply_failed(row: dict, state: str, channel: str, card_id: str, batch: str,
                   said: str) -> None:
-    """The row's card when its turn did not start, on the web chat: the
-    same card again, in place, with Try again and the owner's answer kept."""
+    """The row's card when its turn did not start: the same card again, in
+    place, with Try again and the owner's answer kept."""
     try:
         FRONTEND.update_card(_card_ref(channel, card_id),
                              _reply_row_card(batch, row, state, answer=said, failed=True))
     except Exception as e:
         log.warning(f"Replies row {row['id']}: Try again was not shown: {e}")
-        _replace_buttons_with_status(channel, card_id, ":warning: The draft did not start.")
+        _reply_status(channel, card_id, ":warning: The draft did not start.")
 
 
-def _reply_turn_text(channel: str, thread: str, after: str) -> str:
-    """What the turn said in the thread after its progress line: the bot's
-    last message there that is not a progress line, a restart notice or an
-    error; '' when there is none."""
+def _reply_end(progress: str, outcome: str) -> dict | None:
+    """Close the turn's record once, with its outcome (drafted, question,
+    problem, done, gone): its record, or None when it was closed already
+    (an outcome is shown once; a late draft corrects it, _reply_draft_carded)."""
+    with _REPLY_TURNS_LOCK:
+        turns = _load_reply_turns()
+        t = turns.get(progress)
+        if not t or t.get("ended"):
+            return None
+        t.update(ended=time.time(), outcome=outcome)
+        _save_reply_turns(turns)
+        return t
+
+
+def _reply_link(where: tuple[str, str], fallback_channel: str) -> str:
+    link = FRONTEND.permalink(where[0] or fallback_channel, where[1])
+    return f"<{link}|open it>" if link else "it is in " + _CARDS_HERE
+
+
+def _reply_drafted_line(where: tuple[str, str], channel: str) -> str:
+    return ":white_check_mark: The reply is drafted. Its Send request: " + _reply_link(where, channel) + "."
+
+
+def _reply_live_send(draft_ids) -> tuple[str, str]:
+    """(channel, message id) of a live Send card for one of these drafts."""
+    confirms = _load_draft_confirms()
+    for did in draft_ids or ():
+        entry = confirms.get(did) or {}
+        if entry.get("status") == "live" and entry.get("message_ts"):
+            return entry.get("channel") or "", entry["message_ts"]
+    return "", ""
+
+
+def _reply_record(row: dict | None, since: float) -> dict:
+    """The row's reply record when the turn wrote it (ledger.py note-reply
+    after the turn began), else {}."""
+    queued = (row or {}).get("queued") if isinstance((row or {}).get("queued"), dict) else {}
+    try:
+        at = datetime.strptime(str(queued.get("at") or ""), "%Y-%m-%dT%H:%M:%SZ") \
+            .replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return {}
+    return queued if at >= since - 1 else {}
+
+
+def _reply_turn_text(channel: str, thread: str, after: str, rid: str = "") -> str:
+    """The turn's own last words in the thread after its progress line,
+    plain, for the "could not" card: '' when it left none. On the web chat
+    they are the lines that carry the row's tag, so a thread where several
+    rows' turns run at once gives each its own."""
+    lines_tagged = getattr(FRONTEND, "lines_tagged", None)
+    if rid and callable(lines_tagged):
+        try:
+            got = lines_tagged(channel, thread, f"reply:{rid}")
+        except Exception as e:
+            log.warning(f"Replies thread {thread} unreadable: {e}")
+            return ""
+        at = next((m["seq"] for m in got if m["id"] == after), None)
+        said = [m["text"] for m in got if at is not None and m["seq"] > at and m["text"]
+                and not m["text"].lstrip().startswith(":hourglass")]
+        return _chat.card_text.one_line(_strip_slack_markup(said[-1]), 300) if said else ""
     try:
         msgs = FRONTEND.thread_replies(channel, thread)
     except Exception as e:
@@ -5990,64 +6172,266 @@ def _reply_turn_text(channel: str, thread: str, after: str) -> str:
     if at is None:
         return ""
     said = [m.text for m in msgs if (m.is_bot or m.is_self) and m.posted_at > at and m.text
-            and not m.text.lstrip().startswith((":hourglass", ":recycle:", "Error:", ":x:",
-                                                ":warning:"))]
-    return _chat.card_text.one_line(said[-1], 300) if said else ""
+            and not m.text.lstrip().startswith(":hourglass")]
+    return _chat.card_text.one_line(_strip_slack_markup(said[-1]), 300) if said else ""
 
 
-def _reply_send_card(rid: str) -> tuple[str, str]:
-    """(channel, message id) of the live Send card for the row's draft, or
-    ("", "")."""
-    fresh = next((r for r in _reply_queue_rows() or [] if r["id"] == rid), None)
-    linked = _reply_linked_drafts()
-    draft_id = _reply_state(fresh, linked)[1] if fresh else (linked.get(rid) or ("",))[0]
-    entry = _load_draft_confirms().get(draft_id) if draft_id else None
-    if entry and entry.get("status") == "live" and entry.get("message_ts"):
-        return entry.get("channel") or "", entry["message_ts"]
-    return "", ""
+def _strip_slack_markup(text: str) -> str:
+    """A line as plain words: no emoji shortcodes, marks or link targets."""
+    text = re.sub(r"<[^|>]+\|([^>]+)>", r"\1", str(text or ""))
+    text = re.sub(r":[a-z0-9_+-]+:", "", text)
+    return re.sub(r"[*_`~]", "", text).strip()
 
 
-def _reply_turn_done(row: dict, state: str, channel: str, thread: str, card_id: str,
-                     batch: str, said: str, progress: str) -> None:
-    """The web chat's result of a Replies row's turn, on the row's card: a
-    link to the draft's Send request; else the turn's one more question as a
-    new row card in the thread, linked; else Try again with the answer kept.
-    A restart that parked the turn shows nothing yet."""
-    if _DRAINING:
-        return
-    rid = row["id"]
-    deadline = time.time() + REPLY_DONE_WAIT_S
-    where = _reply_send_card(rid)
-    while not where[1] and time.time() < deadline:
-        time.sleep(3)
-        where = _reply_send_card(rid)
-    if where[1]:
-        link = FRONTEND.permalink(where[0] or channel, where[1])
-        _replace_buttons_with_status(channel, card_id, ":white_check_mark: The reply is drafted. "
-                                     "Its Send request: " + (f"<{link}|open it>" if link else "below."))
-        return
-    fresh = next((r for r in _reply_queue_rows() or [] if r["id"] == rid), None)
-    if fresh is None:
-        _replace_buttons_with_status(channel, card_id,
-                                     ":information_source: This thread no longer waits for a reply.")
-        return
-    asked = _reply_turn_text(channel, thread, progress)
-    now_state = _reply_state(fresh, _reply_linked_drafts())[0]
-    card = (_reply_row_card(batch, fresh, now_state if now_state != "card" else state,
-                            follow_up=asked)
-            if asked else _reply_row_card(batch, fresh, state, answer=said, failed=True))
+def _reply_post_next(t: dict, card) -> str:
+    """Post the row's next card in its thread, tagged with the row, and
+    record it; its id, or '' when it did not post."""
+    rid = t["row"]["id"]
     try:
-        ref = _post_card(channel, card, thread_ts=thread)
+        with _reply_tagged(rid):
+            ref = _post_card(t["channel"], card, thread_ts=t["thread"])
     except Exception as e:
         log.warning(f"Replies row {rid}: the next card failed: {e}")
-        return
+        return ""
     store = _load_reply_cards()
-    _record_reply_card(store, f"{batch}-next-{ref.id}", [rid], ref, channel)
+    _record_reply_card(store, f"{t['batch']}-next-{ref.id}", [rid], ref, t["channel"])
     _save_reply_cards(store)
-    link = FRONTEND.permalink(channel, ref.id)
-    _replace_buttons_with_status(channel, card_id, (
-        ":speech_balloon: One more answer is needed: " if asked
-        else ":warning: The draft did not start: ") + (f"<{link}|open it>" if link else "below."))
+    return ref.id
+
+
+def _reply_turn_ended(progress: str, how: str, drafts=()) -> None:
+    """A Replies row's turn has ended (handle_message_async's own end:
+    `how` is done, stopped, timeout or error; the tick says lost). Its card
+    shows the real outcome, once: the Send card of a draft it made, the
+    record it wrote on the row, or else that it could not write it."""
+    if not progress or progress not in _load_reply_turns():
+        return
+    with _REPLY_TURNS_LOCK:
+        t = _load_reply_turns().get(progress)
+    if not t or t.get("ended"):
+        return
+    rid, channel, card_id = t["row"]["id"], t["channel"], t["card"]
+    where = _reply_live_send(drafts)
+    if where[1]:
+        if _reply_end(progress, "drafted"):
+            _reply_status(channel, card_id, _reply_drafted_line(where, channel))
+        return
+    queue = _reply_queue_rows()
+    if queue is None:
+        # The ledger gave no answer: the turn has ended, its outcome is read
+        # again on the next tick (_reply_watch_tick).
+        with _REPLY_TURNS_LOCK:
+            turns = _load_reply_turns()
+            if progress in turns:
+                turns[progress]["ended_how"] = how
+                _save_reply_turns(turns)
+        return
+    fresh = next((r for r in queue if r["id"] == rid), None)
+    if fresh is None:
+        where = _reply_live_send([(_reply_linked_drafts().get(rid) or ("",))[0]])
+        if _reply_end(progress, "drafted" if where[1] else "gone"):
+            _reply_status(channel, card_id, _reply_drafted_line(where, channel) if where[1]
+                          else ":information_source: This thread no longer waits for a reply.")
+        return
+    state, draft_id = _reply_state(fresh, _reply_linked_drafts())
+    where = _reply_live_send([draft_id]) if draft_id else ("", "")
+    if where[1]:
+        if _reply_end(progress, "drafted"):
+            _reply_status(channel, card_id, _reply_drafted_line(where, channel))
+        return
+    rec = _reply_record(fresh, float(t.get("started") or 0))
+    kind = rec.get("outcome") or ""
+    note = _chat.card_text.one_line(str(rec.get("note") or ""), 300)
+    shown = ("question" if kind == "decision" else "done" if kind in ("left", "escalated")
+             else "drafted" if kind == "drafted" and state == "draft" else "problem")
+    if not _reply_end(progress, shown):
+        return
+    if kind == "decision":
+        nxt = _reply_post_next(t, _reply_row_card(t["batch"], fresh, "decision"))
+        link = FRONTEND.permalink(channel, nxt) if nxt else ""
+        _reply_status(channel, card_id, ":speech_balloon: One more answer is needed: "
+                      + (f"<{link}|open it>." if link else "below."))
+    elif kind in ("left", "escalated"):
+        _reply_status(channel, card_id, (":white_check_mark: No reply is needed" if kind == "left"
+                                         else ":speech_balloon: This moved to Ask Tacitus")
+                      + (f": {_chat.card_text.inert(note, 0)}" if note else "."))
+    elif kind == "drafted" and state == "draft":
+        # The turn made a draft whose Send card is not up: offer it again.
+        nxt = _reply_post_next(t, _reply_row_card(t["batch"], fresh, "draft"))
+        _reply_status(channel, card_id, ":white_check_mark: The reply is drafted"
+                      + (f": <{FRONTEND.permalink(channel, nxt)}|show its Send card>." if nxt else "."))
+    else:
+        # Its own words: the record's reason, else what a turn that ran to
+        # its end said; a turn cut short gets the plain words for how.
+        why = note if kind == "blocked" and note else REPLY_ENDED_WORDS[how] if how != "done" \
+            else _reply_turn_text(channel, t["thread"], progress, rid)
+        nxt = _reply_post_next(t, _reply_row_card(t["batch"], fresh, t["state"], answer=t["said"],
+                                                  problem=why or REPLY_ENDED_WORDS["done"]))
+        link = FRONTEND.permalink(channel, nxt) if nxt else ""
+        _reply_status(channel, card_id, ":warning: The reply was not written: "
+                      + (f"<{link}|see why>." if link else "see below."))
+
+
+def _reply_running(progress: str) -> bool:
+    """The turn runs here, or waits for the next instance (a restart parked
+    it, or cut it short and kept it in the inflight file)."""
+    with _active_lock:
+        if progress in _active_threads:
+            return True
+    with _dispatch_lock:
+        return any(d.get("msg_ts") == progress for d in _active_dispatches.values())
+
+
+def _reply_after_run(progress: str) -> None:
+    """handle_message_async has returned. A turn that stopped before its
+    run's end (the EA paused, a session busy past its wait, a withdrawn
+    message) has an outcome now too: what it said in the thread. One parked
+    for the next instance ends there."""
+    if _DRAINING or _reply_running(progress):
+        return
+    _reply_turn_ended(progress, "done")
+
+
+def _reply_draft_carded(draft_id: str, channel: str, message_ts: str) -> None:
+    """A Send card is up for a draft: each row the draft names (its
+    `--ledger-id`) with an open turn, or a live card of its own that a turn
+    left (a question, Try again, could not), now links to it. A Send card
+    that posts late attaches to its row, and a card shown before gives way."""
+    if not _reply_taps_only() or not draft_id:
+        return
+    try:
+        rows = set(_draft_events.ledger_ids_of(draft_id))
+    except Exception as e:
+        log.warning(f"draft {draft_id[-12:]}: its rows unreadable: {e}")
+        return
+    if not rows:
+        return
+    line = _reply_drafted_line((channel, message_ts), channel)
+    for progress, t in list(_load_reply_turns().items()):
+        if t.get("row", {}).get("id") not in rows:
+            continue
+        if not t.get("ended"):
+            if _reply_end(progress, "drafted"):
+                _reply_status(t["channel"], t["card"], line)
+        elif t.get("outcome") in ("problem", "question"):
+            # It ended saying no draft came; the draft came after all.
+            with _REPLY_TURNS_LOCK:
+                turns = _load_reply_turns()
+                if progress in turns:
+                    turns[progress]["outcome"] = "drafted"
+                    _save_reply_turns(turns)
+            _reply_status(t["channel"], t["card"], line)
+    # Any card of the row still live (a question, Try again, could not, or
+    # the day's row card) is out of date once its row has a draft.
+    for c in (_load_reply_cards().get("cards") or {}).values():
+        if len(c.get("rows") or []) != 1 or c["rows"][0] not in rows:
+            continue
+        ch, mid = c.get("channel") or "", c.get("card") or ""
+        reg = _CARDS.by_ref(ch, mid) if ch and mid else None
+        if reg and reg.get("status") == "live":
+            _reply_status(ch, mid, line)
+
+
+def _reply_watch_tick(now: float | None = None) -> None:
+    """Router tick: a turn still running says "Still writing" after
+    REPLY_STILL_S and writes it again every REPLY_REFRESH_S; a turn no
+    instance has finished past REPLY_TURN_LIMIT_S ends as lost; a row card
+    whose thread no longer waits says so."""
+    now = time.time() if now is None else now
+    if now - _REPLY_TICKS["watch"] >= REPLY_TICK_S:
+        _REPLY_TICKS["watch"] = now
+        for progress, t in list(_load_reply_turns().items()):
+            if t.get("ended"):
+                if now - float(t["ended"]) > 7 * 86400:
+                    with _REPLY_TURNS_LOCK:
+                        turns = _load_reply_turns()
+                        turns.pop(progress, None)
+                        _save_reply_turns(turns)
+                continue
+            age = now - float(t.get("started") or now)
+            before_start = float(t.get("started") or 0) < _REPLY_PROCESS_START
+            if t.get("ended_how") and not _reply_running(progress):
+                _reply_turn_ended(progress, t["ended_how"])
+            elif (age > REPLY_TURN_LIMIT_S or before_start and
+                  now - _REPLY_PROCESS_START > REPLY_RESTART_GRACE_S) and not _reply_running(progress):
+                _reply_turn_ended(progress, "lost")
+            elif age >= REPLY_STILL_S and (not t.get("still") or
+                                          now - float(t.get("shown_at") or 0) >= REPLY_REFRESH_S):
+                with _REPLY_TURNS_LOCK:
+                    turns = _load_reply_turns()
+                    if progress in turns and not turns[progress].get("ended"):
+                        turns[progress].update(still=True, shown_at=now)
+                        _save_reply_turns(turns)
+                _reply_status(t["channel"], t["card"], _reply_writing_line(t.get("said") or "", True))
+    if now - _REPLY_TICKS["gone"] >= REPLY_GONE_CHECK_S:
+        _REPLY_TICKS["gone"] = now
+        live = []
+        for c in (_load_reply_cards().get("cards") or {}).values():
+            ch, mid = c.get("channel") or "", c.get("card") or ""
+            reg = _CARDS.by_ref(ch, mid) if ch and mid and len(c.get("rows") or []) == 1 else None
+            if reg and reg.get("status") == "live":
+                live.append((c["rows"][0], ch, mid))
+        queue = _reply_queue_rows() if live else None
+        if queue is not None:
+            waiting = {r["id"] for r in queue}
+            for rid, ch, mid in live:
+                if rid not in waiting and not _reply_turn_of(rid)[0]:
+                    _reply_status(ch, mid, ":information_source: This thread no longer waits for a reply.")
+
+
+def _reply_start(row: dict, state: str, channel: str, thread: str, card_id: str, batch: str,
+                 user_id: str, *, answer: str = "", words: str = "") -> None:
+    """The web chat's press on a Replies row: one turn for the row at a
+    time. While a turn of the row runs, or another press holds it, nothing
+    starts; this card, when it is not that turn's own, says so."""
+    rid = row["id"]
+    if not _reply_claim(rid):
+        progress, t = _reply_turn_of(rid)
+        if t.get("card") != card_id:
+            link = FRONTEND.permalink(t.get("channel") or channel, t.get("card") or "") if t else ""
+            _reply_status(channel, card_id, ":hourglass_flowing_sand: This reply is being written "
+                          "already" + (f": <{link}|open it>." if link else ". Nothing more was started."))
+        return
+    said = answer or words
+    try:
+        ok = _dispatch_reply_draft(
+            row, channel, thread, user_id, answer, words,
+            started=lambda progress: _reply_begin(row, state, channel, thread, card_id, batch,
+                                                  said, progress))
+    finally:
+        _reply_unclaim(rid)
+    if not ok:
+        _reply_failed(row, state, channel, card_id, batch, said)
+
+
+@app.action("reply_discuss")
+def handle_reply_discuss(ev: "_chat.ActionEvent"):
+    """Open in Ask Tacitus, on a card that says why a reply was not
+    written: a new conversation in the EA channel about the row, opened by
+    the bot's line that names it, and the card links there."""
+    if not _verify_button_user(ev):
+        return
+    rid, _batch, row = _reply_click(ev)
+    channel, card_id = ev.card.channel, ev.card.id
+    v = ev.value if isinstance(ev.value, dict) else {}
+    problem = _chat.card_text.one_line(str(v.get("why") or ""), 200)
+    if row is None:
+        _reply_status(channel, card_id, REPLY_ROW_GONE)
+        return
+    one = _chat.card_text.one_line
+    who = one((row.get("from_name") or row.get("from") or "").strip(), 80)
+    what = one((row.get("description") or rid).strip(), 120)
+    text = (f":inbox_tray: The reply to {who or 'this mail'} about *{_chat.card_text.inert(what, 0)}* "
+            "was not written" + (f": {_chat.card_text.inert(problem, 0)}" if problem else ".")
+            + f" Tell me how to go on. (ledger item `{rid}`)")
+    try:
+        ref = FRONTEND.post(channel=CHANNEL_ID, thread_ts=None, text=text)
+    except Exception as e:
+        log.warning(f"Replies row {rid}: Ask Tacitus refused the conversation: {e}")
+        return
+    link = FRONTEND.permalink(CHANNEL_ID, ref.id)
+    _reply_status(channel, card_id, ":speech_balloon: Opened in Ask Tacitus: "
+                  + (f"<{link}|open it>." if link else "see the EA channel."))
 
 
 @app.action("reply_draft")
@@ -6078,14 +6462,12 @@ def handle_reply_draft(ev: "_chat.ActionEvent"):
     if _reply_taps_only():
         # Action requests takes no typing: a decision is drafted from an
         # answer (the answer control sends one), never a question first.
+        # Try again carries the answer it repeats.
+        v = ev.value if isinstance(ev.value, dict) else {}
+        words = words or _chat.action_text(str(v.get("again") or ""))
         if state == "decision" and not words:
             return
-        if not _dispatch_reply_draft(
-                row, channel, thread, ev.user_id, words=words,
-                started=lambda: _reply_writing(channel, card_id, words),
-                on_done=lambda progress: _reply_turn_done(row, state, channel, thread, card_id,
-                                                          _batch, words, progress)):
-            _reply_failed(row, state, channel, card_id, _batch, words)
+        _reply_start(row, state, channel, thread, card_id, _batch, ev.user_id, words=words)
         return
     ok = _dispatch_reply_draft(row, channel, thread, ev.user_id, words=words)
     _replace_buttons_with_status(
@@ -6115,12 +6497,7 @@ def handle_reply_choice(ev: "_chat.ActionEvent"):
         return
     thread = getattr(ev.card, "thread_key", "") or card_id
     if _reply_taps_only():
-        if not _dispatch_reply_draft(
-                row, channel, thread, ev.user_id, answer,
-                started=lambda: _reply_writing(channel, card_id, answer),
-                on_done=lambda progress: _reply_turn_done(row, "decision", channel, thread,
-                                                          card_id, _batch, answer, progress)):
-            _reply_failed(row, "decision", channel, card_id, _batch, answer)
+        _reply_start(row, "decision", channel, thread, card_id, _batch, ev.user_id, answer=answer)
         return
     ok = _dispatch_reply_draft(row, channel, thread, ev.user_id, answer)
     _replace_buttons_with_status(
@@ -13009,6 +13386,11 @@ def handle_message_async(
     run_started = 0.0
     run_timeout = timeout_s or TIMEOUT_SECONDS
     journal_offset = None  # the draft journal's offset when the run began
+    # How the turn ended, once it has ("done", "stopped", "timeout",
+    # "error"; "" for a turn parked for the next instance or handed on),
+    # and the drafts it made or revised: a Replies row's card reads its
+    # outcome from them (_reply_turn_ended).
+    turn_end, run_drafts = "", []
     if _DRAINING:
         # A restart is seconds away. Park the message for the next instance
         # instead of starting a run the restart would kill.
@@ -13178,7 +13560,9 @@ actually want.
             per_topic = True
         try:
             from preprocessor import resident_bridge as _resident_cfg
-            if _resident_cfg.enabled() and not sched_lane and not per_topic:
+            # A side session (session_key) is a thread's own construct: the
+            # one resident session has none, so such a turn runs here.
+            if _resident_cfg.enabled() and not sched_lane and not per_topic and not session_key:
                 if _try_resident_dispatch(channel, thread_ts, msg_ts,
                                           user_msg, is_thread_reply,
                                           skill_instructions):
@@ -14251,8 +14635,8 @@ Reminders:
         # message id quoted in prose, and a created-then-deleted draft (a
         # rewrite flow) nets out structurally.
         try:
-            _surface_run_drafts(channel, thread_ts, journal_offset, run_id, "mono",
-                                tool_calls=cr.tool_calls)
+            run_drafts = _surface_run_drafts(channel, thread_ts, journal_offset, run_id, "mono",
+                                             tool_calls=cr.tool_calls) or []
         except Exception as e:
             log.warning(f"Draft detection failed: {e}")
 
@@ -14326,14 +14710,17 @@ Reminders:
                 response=response, model=run_model, prompt=prompt, fresh_prompt=full_prompt,
                 claude_cwd=str(prompt_cwd or EA_BOT_SCRIPT_DIR))
 
+        turn_end = "done"
     except _TurnCancelled:
         # The user stopped this turn: no reply. What it staged before the
         # stop gets its cards, so the user can cancel those too.
+        turn_end = "stopped"
         _swap_reaction(channel, msg_ts, "eyes", "x")
         _LIVE_RUNS.forget(run_id)
         if run_id and journal_offset is not None:
             try:
-                _surface_run_drafts(channel, thread_ts, journal_offset, run_id, "mono-stopped")
+                run_drafts = _surface_run_drafts(channel, thread_ts, journal_offset, run_id,
+                                                 "mono-stopped") or []
             except Exception as e:
                 log.warning(f"Draft detection after a stop failed: {e}")
             try:
@@ -14346,6 +14733,7 @@ Reminders:
     except subprocess.TimeoutExpired as e:
         # The stall clock (quiet for STALL_SECONDS) or the turn's ceiling.
         stalled = e.timeout is not None and e.timeout < run_timeout
+        turn_end = "timeout"
         log.error(f"Claude {'stalled' if stalled else 'timed out'} after {int(e.timeout or run_timeout)}s "
                   f"for message: {user_msg[:120]!r}")
         _swap_reaction(channel, msg_ts, "eyes", "x")
@@ -14353,7 +14741,8 @@ Reminders:
         # blocks and its staged events their buttons, as after a full run.
         if run_id and journal_offset is not None:
             try:
-                _surface_run_drafts(channel, thread_ts, journal_offset, run_id, "mono-timeout")
+                run_drafts = _surface_run_drafts(channel, thread_ts, journal_offset, run_id,
+                                                 "mono-timeout") or []
             except Exception as e:
                 log.warning(f"Draft detection after timeout failed: {e}")
             try:
@@ -14373,6 +14762,7 @@ Reminders:
                   "cards. Reply `continue` to pick up where it stopped."),
         )
     except Exception as e:
+        turn_end = "error"
         log.exception("Error handling message")
         _swap_reaction(channel, msg_ts, "eyes", "x")
         FRONTEND.post(
@@ -14389,6 +14779,11 @@ Reminders:
             _unregister_dispatch(run_id)
         if held_session_lock is not None:
             held_session_lock.release()
+        if turn_end:
+            try:
+                _reply_turn_ended(msg_ts, turn_end, run_drafts)
+            except Exception as e:
+                log.warning(f"Replies turn {msg_ts}: its outcome was not shown: {e}")
 
 
 @app.event("message")
@@ -14729,6 +15124,11 @@ def resident_router_loop():
                 _post_reply_queue()
             except Exception as e:
                 log.warning(f"Replies card failed: {e}")
+            try:
+                if _reply_taps_only():
+                    _reply_watch_tick()
+            except Exception as e:
+                log.warning(f"Replies turns check failed: {e}")
             if not (_resident.enabled() and _resident.pane_alive()):
                 continue
             for d in _resident.router_poll():
