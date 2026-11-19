@@ -359,6 +359,38 @@ def test_a_held_reply_is_never_staged_and_the_queue_records_a_decision(tmp_path,
     assert ("row-pilot-2", "decision", "") in marks and ("row-panel", "drafted", "d-7") in marks
 
 
+def test_a_reply_create_reply_refuses_becomes_the_gates_decision(tmp_path, priv, monkeypatch):
+    """A reply the check let through that create-reply then refuses for a
+    scheduled lane (draft_gate.cron_refusal, on the message itself) is the
+    owner's decision as the gate words it, with its choices, and the queue
+    records a decision: the line never carries the answer the model wrote."""
+    b = _briefing()
+    cands, plan, drafts, escalated, r = _morning(b)
+    pending = br.PendingDrafts()
+    monkeypatch.setattr(rb, "write_reply", lambda c, says, write=None: {"ok": True, "body": f"Hi. {says}"})
+    for d in drafts:
+        res = pending(cands[d["ref"]], d["says"], run_id="t")
+        d.update(draft_id=res["draft_id"], pending=res["pending"])
+    marks = []
+    mark = pending.wrap(lambda *a, **k: marks.append(("now", a, k)))
+    mark("row-panel", "2026-10-14T11:00:00Z", "drafted", now=NOW, note="Yes")
+    refused = {"ok": False, "why": "the reply needs the owner", "owner": "a reply-all that reaches 12 people"}
+    out = br.settle_drafts(drafts, cands, {"review": {"hold": {}}}, run_id="cron-t", dry_run=False,
+                           pending=pending,
+                           mark=lambda lid, inbound, outcome, now, draft_id="", note="", **k:
+                           marks.append((lid, outcome, note, k.get("choices"))),
+                           stage=lambda c, body, run_id: refused if c["message_id"] == "m-panel"
+                           else {"ok": True, "draft_id": "d-8"})
+    assert out["refused"] == 1 and out["staged"] == 1 and out["failed"] == 0
+    panel = drafts[1]
+    want = rb._refused(cands[panel["ref"]], refused["owner"])
+    assert panel["ok"] is False and not panel.get("failed")
+    assert panel["decision"] == want["line"] and panel["choices"] == want["choices"]
+    assert "sit on the panel" not in panel["decision"]
+    assert [m for m in marks if m[0] == "row-panel"] == [
+        ("row-panel", "decision", want["line"], list(want["choices"]) or None)]
+
+
 def test_a_reply_already_staged_by_a_stand_in_is_withdrawn(tmp_path, priv):
     b = _briefing()
     cands, plan, drafts, escalated, r = _morning(b)

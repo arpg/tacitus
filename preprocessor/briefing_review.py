@@ -1473,7 +1473,9 @@ def settle_drafts(drafts: list[dict], cands: dict, checked: dict, *, run_id: str
     """Act on the check for each reply this run wrote. A held one becomes
     a decision for the owner (under "Needs you", with why) and is never
     staged; one staged before the check (a stand-in drafter) is deleted
-    from Drafts. The rest are staged now. Returns counts."""
+    from Drafts. The rest are staged now; one create-reply refuses for a
+    scheduled lane (draft_gate.cron_refusal) becomes the gate's decision,
+    as remote_briefing._refused words it. Returns counts."""
     import remote_briefing as rb
     hold = ((checked or {}).get("review") or {}).get("hold") or {}
     stage = stage or rb.stage_reply
@@ -1504,6 +1506,15 @@ def settle_drafts(drafts: list[dict], cands: dict, checked: dict, *, run_id: str
             d.update(draft_id=res.get("draft_id") or "", pending=False)
             out["staged"] += 1
             final[_key(c)] = ("drafted", d["draft_id"], item["says"])
+        elif res.get("owner"):
+            # create-reply refused it for a scheduled lane (draft_gate's
+            # rules on the message itself): the owner's decision, worded as
+            # the gate words it, never the answer the model wrote.
+            held = rb._refused(c, res["owner"])
+            d.update(ok=False, draft_id="", pending=False, decision=held["line"],
+                     choices=held["choices"])
+            out["refused"] = out.get("refused", 0) + 1
+            final[_key(c)] = ("decision", "", held["line"], held["choices"])
         else:
             d.update(ok=False, failed=True,
                      decision=f"The draft could not be made ({_one(res.get('why'), 80)}). "
@@ -1521,8 +1532,10 @@ def settle_drafts(drafts: list[dict], cands: dict, checked: dict, *, run_id: str
                                             "conversation_id": k[2]}) & mine), None)
             if hit is None:
                 continue   # not staged: the next run tries again
-            outcome, draft_id, text = hit
-            mark(lid, inbound, outcome, now=now, draft_id=draft_id, note=text)
+            outcome, draft_id, text, *rest = hit
+            choices = rest[0] if rest else ()
+            mark(lid, inbound, outcome, now=now, draft_id=draft_id, note=text,
+                 **({"choices": list(choices)} if choices else {}))
     return out
 
 
