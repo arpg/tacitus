@@ -21,7 +21,9 @@ git prints, and fetch and push go to the repository github.json names,
 never to the clone's remote.
 
     doc_review.py open    --file F --title T [--slug S] [--thread KEY] [--project ID] [--purge]
-    doc_review.py fetch   --pr N --out F
+    doc_review.py fetch   --pr N --out F       the PR's text; once merged, main's copy
+    doc_review.py fetch   --doc PATH --out F   a document as main holds it now
+    doc_review.py list                          the documents on main
     doc_review.py update  --pr N --file F --message M
     doc_review.py review  --pr N
     doc_review.py reply   --pr N --comment-id C --body B
@@ -268,26 +270,64 @@ def _git(*args: str) -> str:
     return r.stdout
 
 
+def _fetch_branch(branch: str) -> None:
+    _git("fetch", "-q", remote_url(), f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
+
+
+def _tip(branch: str) -> str:
+    """The commit the clone last fetched for `branch`."""
+    try:
+        return _git("rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}^{{commit}}").strip()
+    except ReviewError:
+        raise ReviewError(f"the clone holds no copy of {branch} yet") from None
+
+
+def _has(commit: str, path: str) -> bool:
+    try:
+        _git("cat-file", "-e", f"{commit}:{path}")
+    except ReviewError:
+        return False
+    return True
+
+
 def _remote_text(branch: str, path: str) -> str:
     """The file as the pull request's branch holds it on GitHub now."""
-    _git("fetch", "-q", remote_url(), f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
+    _fetch_branch(branch)
     return _git("cat-file", "blob", f"origin/{branch}:{path}")
 
 
-def _merged_text(merge_commit: str, path: str) -> str:
-    """The file as the merge commit holds it. GitHub deletes a review
-    branch on merge, so a merged pull request is read at its merge commit,
-    which stays on main."""
-    _git("fetch", "-q", remote_url(), merge_commit)
-    return _git("cat-file", "blob", f"{merge_commit}:{path}")
+def _main_commit(refresh: bool = True) -> str:
+    """main as GitHub holds it now, or with refresh False as the clone last
+    fetched it (a sandbox with no mediator has no network)."""
+    if refresh:
+        _fetch_branch(BASE_BRANCH)
+    return _tip(BASE_BRANCH)
+
+
+def _row_read(row: dict) -> dict:
+    """The pull request's current text, with where it was read and the
+    commit. While open: its branch. Once merged: main as it is now, since
+    GitHub deletes the review branch and the owner may edit on main after
+    the merge; the merge commit only when main no longer holds the file."""
+    path = row["path"]
+    if row.get("state") == "merged":
+        main = _main_commit()
+        if _has(main, path):
+            return {"text": _git("cat-file", "blob", f"{main}:{path}"), "source": BASE_BRANCH,
+                    "commit": main}
+        merge = row.get("merge_commit") or ""
+        if not merge:
+            raise ReviewError(f"{path} is not on {BASE_BRANCH} and GitHub names no merge commit")
+        _git("fetch", "-q", remote_url(), merge)
+        return {"text": _git("cat-file", "blob", f"{merge}:{path}"), "source": "merge_commit",
+                "commit": merge}
+    _fetch_branch(row["branch"])
+    tip = _tip(row["branch"])
+    return {"text": _git("cat-file", "blob", f"{tip}:{path}"), "source": "branch", "commit": tip}
 
 
 def _row_text(row: dict) -> str:
-    """The pull request's current text: its branch while open, its merge
-    commit once merged."""
-    if row.get("state") == "merged" and row.get("merge_commit"):
-        return _merged_text(row["merge_commit"], row["path"])
-    return _remote_text(row["branch"], row["path"])
+    return _row_read(row)["text"]
 
 
 def _commit_and_push(branch: str, start: str, path: str, text: str, message: str) -> str:
@@ -498,7 +538,8 @@ def cmd_prefetch(gh: GitHub, pr: int) -> dict:
     threads, read outside the sandbox, for `review` and `fetch` to answer
     from inside one."""
     row = _entry(gh, pr)
-    text, review = _row_text(row), cmd_review(gh, pr)
+    text = _row_text(row)
+    review = cmd_review(gh, pr, row, text)
     d = _cache_dir()
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{int(pr)}.md").write_text(text)
@@ -570,10 +611,95 @@ def cmd_open(gh: GitHub, file: str, title: str, slug: str = "", thread: str = ""
 
 def cmd_fetch(gh: GitHub, pr: int, out: str) -> dict:
     row = _entry(gh, pr)
-    text = _row_text(row)
-    Path(out).write_text(text)
+    read = _row_read(row)
+    Path(out).write_text(read["text"])
     return {"status": "fetched", "pr": pr, "path": row["path"],
-            "bytes": len(text.encode("utf-8")), "out": out, "state": row["state"]}
+            "bytes": len(read["text"].encode("utf-8")), "out": out, "state": row["state"],
+            "source": read["source"], "commit": read["commit"]}
+
+
+# --- main: the finished documents ---------------------------------------------
+
+# A document's path in the repo: plain names, no dot or dash leading any part.
+DOC_PATH_RE = re.compile(r"^(?:[A-Za-z0-9_][A-Za-z0-9._-]*/)*[A-Za-z0-9_][A-Za-z0-9._-]*\.md$")
+
+
+def _doc_path(doc: str) -> str:
+    """A document on main, named by its path in the repo (as `list` prints
+    it) or by its slug."""
+    doc = (doc or "").strip()
+    if SLUG_RE.match(doc):
+        doc = f"{DOC_DIR}/{doc}.md"
+    if len(doc) > 300 or not DOC_PATH_RE.match(doc):
+        raise ReviewError(f"--doc takes a document's path on {BASE_BRANCH}, as `list` prints "
+                          f"it, or its slug; not {doc[:80]!r}")
+    return doc
+
+
+def _registry_by_path() -> dict[str, tuple[int, dict]]:
+    """The newest pull request in the registry for each document path."""
+    out: dict[str, tuple[int, dict]] = {}
+    for num, row in load_registry()["prs"].items():
+        path = row.get("path") or ""
+        if path and num.isdigit() and int(num) > out.get(path, (0, {}))[0]:
+            out[path] = (int(num), row)
+    return out
+
+
+def cmd_list(refresh: bool = True) -> dict:
+    """The Markdown documents on main, each with its last change there (a
+    merge or the owner's own edit) and the pull request that brought it."""
+    main = _main_commit(refresh)
+    paths = [p for p in _git("ls-tree", "-r", "-z", "--name-only", main).split("\0")
+             if DOC_PATH_RE.match(p)]
+    last: dict[str, dict] = {}
+    if paths:
+        log = _git("log", "--first-parent", "-m", "--name-only",
+                   "--format=\x01%H\t%cI\t%s", main, "--", "*.md")
+        for entry in log.split("\x01")[1:]:
+            head, _, names = entry.partition("\n")
+            commit, date, subject = (head.split("\t", 2) + ["", ""])[:3]
+            for name in names.split("\n"):
+                if name and name not in last:
+                    last[name] = {"commit": commit, "updated": date, "subject": subject[:160]}
+            if len(last) >= len(paths):
+                break
+    prs = _registry_by_path()
+    docs = []
+    for p in sorted(paths):
+        d = {"path": p, **last.get(p, {})}
+        if p in prs:
+            num, row = prs[p]
+            d.update({"pr": num, "title": row.get("title", ""), "pr_state": row.get("state", "")})
+        docs.append(d)
+    return {"status": "ok", "main": main, "documents": docs}
+
+
+def cmd_fetch_doc(doc: str, out: str, refresh: bool = True) -> dict:
+    """A document as main holds it: the finished text, the owner's edits
+    after the merge included."""
+    path = _doc_path(doc)
+    main = _main_commit(refresh)
+    if not _has(main, path):
+        raise ReviewError(f"{BASE_BRANCH} holds no {path}; `list` names the documents there")
+    text = _git("cat-file", "blob", f"{main}:{path}")
+    Path(out).write_text(text)
+    res = {"status": "fetched", "doc": path, "source": BASE_BRANCH, "commit": main,
+           "bytes": len(text.encode("utf-8")), "out": out}
+    num_row = _registry_by_path().get(path)
+    if num_row:
+        res["pr"] = num_row[0]
+    return res
+
+
+def cmd_prefetch_doc(doc: str) -> dict:
+    """`fetch --doc` in a sandbox: main fetched into the clone outside it,
+    for the sandboxed call to read from the clone."""
+    path = _doc_path(doc)
+    main = _main_commit()
+    if not _has(main, path):
+        raise ReviewError(f"{BASE_BRANCH} holds no {path}; `list` names the documents there")
+    return {"status": "prefetched", "doc": path, "commit": main}
 
 
 def cmd_update(gh: GitHub, pr: int, file: str, message: str) -> dict:
@@ -643,11 +769,14 @@ def _anchor(lines: list[str], thread: dict) -> str:
     return "\n".join(tail[-max(1, span):])
 
 
-def cmd_review(gh: GitHub, pr: int) -> dict:
+def cmd_review(gh: GitHub, pr: int, row: dict | None = None, text: str | None = None) -> dict:
+    """The owner's open threads. The anchors come from the pull request's
+    current text, which is main's copy once it is merged (the branch is
+    gone)."""
     owner = _owner_login()
-    row = _entry(gh, pr)
+    row = row or _entry(gh, pr)
     pull = _pull(gh, pr)
-    lines = _remote_text(row["branch"], row["path"]).split("\n")
+    lines = (_row_text(row) if text is None else text).split("\n")
     threads = []
     for t in (pull.get("reviewThreads") or {}).get("nodes") or []:
         comments = (t.get("comments") or {}).get("nodes") or []
@@ -762,11 +891,19 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--thread", default="")
     s.add_argument("--project", default="")
     s.add_argument("--purge", action="store_true")
+    # Each parser is spelled out: the mediator reads the options from this
+    # source (mail_mediation._ParserScan), and a computed verb name hides them.
+    doc_help = "a document on main: its path, as `list` prints it, or its slug"
     s = sub.add_parser("prefetch", allow_abbrev=False)
-    s.add_argument("--pr", type=int, required=True)
+    which = s.add_mutually_exclusive_group(required=True)
+    which.add_argument("--pr", type=int)
+    which.add_argument("--doc", help=doc_help)
     s = sub.add_parser("fetch", allow_abbrev=False)
-    s.add_argument("--pr", type=int, required=True)
+    which = s.add_mutually_exclusive_group(required=True)
+    which.add_argument("--pr", type=int)
+    which.add_argument("--doc", help=doc_help)
     s.add_argument("--out", required=True)
+    sub.add_parser("list", allow_abbrev=False)
     s = sub.add_parser("update", allow_abbrev=False)
     s.add_argument("--pr", type=int, required=True)
     s.add_argument("--file", required=True)
@@ -792,12 +929,15 @@ def _parser() -> argparse.ArgumentParser:
     return ap
 
 
-def _refresh_cache(mail_mediation, pr: int) -> dict | None:
+def _refresh_cache(mail_mediation, pr: int | None = None, doc: str | None = None) -> dict | None:
     """In a Codex turn's sandbox on a mediated host: run `prefetch` as the
     resident outside it, so `review` and `fetch` answer from a copy read a
-    moment ago. Returns the refusal to print, None when the cache is fresh
-    or this is no such sandbox (the copy the bot prefetched then stands)."""
-    r = mail_mediation.sandbox_request("doc_review", ["prefetch", "--pr", str(pr)])
+    moment ago (for `--doc`, main fetched into the clone). Returns the
+    refusal to print, None when the copy is fresh or this is no such
+    sandbox (the copy the bot prefetched, or the clone's last main, then
+    stands)."""
+    which = ["--doc", doc] if doc is not None else ["--pr", str(pr)]
+    r = mail_mediation.sandbox_request("doc_review", ["prefetch", *which])
     if r is None or not int(r.get("rc", 0)):
         return None
     return r
@@ -827,20 +967,34 @@ def main(argv: list[str] | None = None) -> int:
             gh = GitHub()
             if args.verb in STAGEABLE and (staged := _stage_write([args.verb] + argv[1:])):
                 res = staged
-            elif args.verb in ("review", "fetch") and not _clone_git_writable():
-                failed = _refresh_cache(mail_mediation, args.pr)
-                if failed:
-                    sys.stdout.write(failed.get("stdout", ""))
-                    sys.stderr.write(failed.get("stderr", ""))
-                    return int(failed.get("rc", 2))
-                res = _cached(args.verb, args.pr, getattr(args, "out", ""))
+            elif args.verb in ("review", "fetch", "list") and not _clone_git_writable():
+                # A sandbox. On a mediated host `list` was forwarded whole above.
+                doc = getattr(args, "doc", None)
+                if args.verb != "list":
+                    failed = _refresh_cache(mail_mediation, args.pr, doc)
+                    if failed:
+                        sys.stdout.write(failed.get("stdout", ""))
+                        sys.stderr.write(failed.get("stderr", ""))
+                        return int(failed.get("rc", 2))
+                if args.verb == "list" or doc is not None:
+                    # main as the clone holds it: fetched by that prefetch a
+                    # moment ago, or with no mediator as last fetched.
+                    res = cmd_list(False) if doc is None else cmd_fetch_doc(doc, args.out, False)
+                    if doc is None or not mail_mediation.resident_net_applies("doc_review", "prefetch"):
+                        res["refreshed"] = False
+                        res["note"] = f"{BASE_BRANCH} as the clone last fetched it; this turn has no network"
+                else:
+                    res = _cached(args.verb, args.pr, getattr(args, "out", ""))
             elif args.verb == "prefetch":
-                res = cmd_prefetch(gh, args.pr)
+                res = cmd_prefetch_doc(args.doc) if args.doc is not None else cmd_prefetch(gh, args.pr)
             elif args.verb == "open":
                 res = cmd_open(gh, args.file, args.title, args.slug, args.thread,
                                args.project, args.purge)
+            elif args.verb == "list":
+                res = cmd_list()
             elif args.verb == "fetch":
-                res = cmd_fetch(gh, args.pr, args.out)
+                res = (cmd_fetch_doc(args.doc, args.out) if args.doc is not None
+                       else cmd_fetch(gh, args.pr, args.out))
             elif args.verb == "update":
                 res = cmd_update(gh, args.pr, args.file, args.message)
             elif args.verb == "purge":

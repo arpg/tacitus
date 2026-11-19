@@ -15365,6 +15365,11 @@ def _doc_review_tick():
             text = (f":white_check_mark: {link} is merged. The finished Markdown is on `main`."
                     if ev["kind"] == "merged" else f":x: {link} was closed without a merge.")
             FRONTEND.post(channel=channel, thread_ts=thread or None, text=text)
+            if ev["kind"] == "merged":
+                try:  # a later Codex turn with no mediator reads the merged text, not the last review's
+                    _doc_review_cli("prefetch", "--pr", str(ev["pr"]), timeout=120)
+                except Exception as e:
+                    log.warning(f"doc review: merged PR #{ev['pr']} not prefetched: {e}")
             continue
         n = int(ev.get("open_threads") or 0)
         if not n and not ev.get("has_note"):

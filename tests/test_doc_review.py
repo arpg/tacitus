@@ -296,29 +296,136 @@ def test_fetch_update_and_purge_follow_the_pr(env, tmp_path):
         dr.cmd_update(gh, 1, str(out), "late")
 
 
-def test_fetch_reads_a_merged_pr_at_its_merge_commit(env, tmp_path):
+def _head(env):
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=env["seed"], capture_output=True,
+                          text=True, check=True).stdout.strip()
+
+
+def _merge(env, gh, pr, branch):
+    """The owner merges on GitHub, and GitHub deletes the review branch."""
+    _run("git", "fetch", "-q", "origin", cwd=env["seed"])
+    _run("git", "checkout", "-q", "main", cwd=env["seed"])
+    _run("git", "merge", "-q", "--no-ff", "-m", f"Merge pull request #{pr}", f"origin/{branch}",
+         cwd=env["seed"])
+    sha = _head(env)
+    _run("git", "push", "-q", "origin", "main", cwd=env["seed"])
+    _run("git", "push", "-q", "origin", "--delete", branch, cwd=env["seed"])
+    gh.pulls[pr].update({"merged": True, "state": "closed", "merge_commit_sha": sha})
+    return sha
+
+
+def _owner_commits_on_main(env, path, text, message):
+    (env["seed"] / path).parent.mkdir(parents=True, exist_ok=True)
+    (env["seed"] / path).write_text(text)
+    _run("git", "add", "-A", cwd=env["seed"])
+    _run("git", "commit", "-q", "-m", message, cwd=env["seed"])
+    _run("git", "push", "-q", "origin", "main", cwd=env["seed"])
+    return _head(env)
+
+
+def test_fetch_reads_a_merged_pr_from_main(env, tmp_path):
     """GitHub deletes the review branch on merge; fetch and purge then read
-    the file at the merge commit, which stays on main."""
+    the file on main, the owner's edits after the merge included, and the
+    merge commit only when main no longer holds it."""
     gh = FakeGitHub()
     draft = _draft(env, "One. Two!")
     dr.cmd_open(gh, str(draft), "Notes", slug="notes")
-    _run("git", "fetch", "-q", "origin", cwd=env["seed"])
-    _run("git", "checkout", "-q", "main", cwd=env["seed"])
-    _run("git", "merge", "-q", "--no-ff", "-m", "Merge notes", "origin/review/notes",
-         cwd=env["seed"])
-    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=env["seed"], capture_output=True,
-                         text=True, check=True).stdout.strip()
-    _run("git", "push", "-q", "origin", "main", cwd=env["seed"])
-    _run("git", "push", "-q", "origin", "--delete", "review/notes", cwd=env["seed"])
-    gh.pulls[1].update({"merged": True, "state": "closed", "merge_commit_sha": sha})
+    sha = _merge(env, gh, 1, "review/notes")
     out = tmp_path / "merged.md"
     res = dr.cmd_fetch(gh, 1, str(out))
-    assert res["state"] == "merged" and out.read_text() == "One.\nTwo!\n"
+    assert out.read_text() == "One.\nTwo!\n"
+    assert (res["state"], res["source"], res["commit"]) == ("merged", "main", sha)
     assert dr.cmd_purge(gh, 1, str(draft))["status"] == "purged" and not draft.exists()
+    edit = _owner_commits_on_main(env, "docs/notes.md", "One.\nTwo, final.\n", "Final wording")
+    res = dr.cmd_fetch(gh, 1, str(out))
+    assert out.read_text() == "One.\nTwo, final.\n" and res["commit"] == edit
+    _run("git", "rm", "-q", "docs/notes.md", cwd=env["seed"])
+    _run("git", "commit", "-q", "-m", "Move it elsewhere", cwd=env["seed"])
+    _run("git", "push", "-q", "origin", "main", cwd=env["seed"])
+    res = dr.cmd_fetch(gh, 1, str(out))
+    assert out.read_text() == "One.\nTwo!\n" and (res["source"], res["commit"]) == ("merge_commit", sha)
     # an open row whose branch is gone still fails, in one line
     gh.pulls[1].update({"merged": False, "state": "open", "merge_commit_sha": None})
     with pytest.raises(dr.ReviewError, match="git fetch"):
         dr.cmd_fetch(gh, 1, str(out))
+
+
+def test_review_and_prefetch_read_a_merged_pr_without_its_branch(env, tmp_path):
+    """The sandboxed fetch forwards prefetch, and prefetch reads the review
+    too: both read main once the branch is gone."""
+    gh = FakeGitHub()
+    dr.cmd_open(gh, str(_draft(env, "Line one. Line two.\n")), "Notes", slug="notes")
+    gh.graph[1] = _pull(threads=[_thread("PRRT_t1", 2, "shorter", resolved=True)],
+                        merged=True, state="MERGED")
+    _merge(env, gh, 1, "review/notes")
+    assert dr.cmd_review(gh, 1)["state"] == "merged"
+    assert dr.cmd_prefetch(gh, 1) == {"status": "prefetched", "pr": 1, "threads": 0}
+    out = tmp_path / "copy.md"
+    assert dr._cached("fetch", 1, str(out))["cached"] is True
+    assert out.read_text() == "Line one.\nLine two.\n"
+
+
+def test_list_and_fetch_doc_read_main(env, tmp_path):
+    """`list` names every document on main with its last change there and
+    the pull request that brought it; `fetch --doc` reads one by path or
+    slug, also one that no pull request in the registry names."""
+    gh = FakeGitHub()
+    dr.cmd_open(gh, str(_draft(env, "One. Two!")), "Notes", slug="notes")
+    merge = _merge(env, gh, 1, "review/notes")
+    dr._update_rows({"1": {"state": "merged"}})
+    own = _owner_commits_on_main(env, "docs/plans/budget.md", "Budget.\n", "Owner adds a budget")
+    res = dr.cmd_list()
+    assert res["main"] == own
+    docs = {d["path"]: d for d in res["documents"]}
+    assert set(docs) == {"README.md", "docs/notes.md", "docs/plans/budget.md"}
+    assert (docs["docs/notes.md"]["commit"], docs["docs/notes.md"]["subject"]) == \
+        (merge, "Merge pull request #1")
+    assert (docs["docs/notes.md"]["pr"], docs["docs/notes.md"]["pr_state"]) == (1, "merged")
+    assert docs["docs/plans/budget.md"]["commit"] == own and "pr" not in docs["docs/plans/budget.md"]
+    out = tmp_path / "doc.md"
+    res = dr.cmd_fetch_doc("notes", str(out))
+    assert out.read_text() == "One.\nTwo!\n"
+    assert (res["doc"], res["source"], res["commit"], res["pr"]) == ("docs/notes.md", "main", own, 1)
+    dr.cmd_fetch_doc("docs/plans/budget.md", str(out))
+    assert out.read_text() == "Budget.\n"
+    with pytest.raises(dr.ReviewError, match="holds no docs/gone.md"):
+        dr.cmd_fetch_doc("gone", str(out))
+    for bad in ("../x.md", "docs/../x.md", "/etc/x.md", "-x.md", "docs/.git/x.md", "docs/x.txt",
+                "main:docs/x.md", ""):
+        with pytest.raises(dr.ReviewError, match="--doc takes"):
+            dr.cmd_fetch_doc(bad, str(out))
+
+
+def test_main_reads_in_a_sandbox_with_no_mediator_use_the_clone_as_last_fetched(env, tmp_path,
+                                                                               monkeypatch, capsys):
+    """No network and a read-only .git: `list` and `fetch --doc` read main
+    as the clone last fetched it, and say so."""
+    import json
+    gh = FakeGitHub()
+    dr.cmd_open(gh, str(_draft(env, "One. Two!")), "Notes", slug="notes")
+    _merge(env, gh, 1, "review/notes")
+    dr.cmd_list()                      # the clone fetches main
+    _owner_commits_on_main(env, "docs/notes.md", "Later.\n", "A later edit the clone has not seen")
+    monkeypatch.setattr(dr, "GitHub", lambda: gh)
+    monkeypatch.setattr(dr, "_clone_git_writable", lambda: False)
+    monkeypatch.setattr(dr, "remote_url", lambda: "/nonexistent/no-network.git")
+    monkeypatch.delenv(M.SANDBOX_ENV, raising=False)
+    git_dir = env["clone"] / ".git"
+    modes = {p: p.stat().st_mode for p in [git_dir, *git_dir.rglob("*")] if p.is_dir()}
+    try:
+        for p in modes:
+            p.chmod(0o555)
+        out = tmp_path / "doc.md"
+        assert dr.main(["fetch", "--doc", "docs/notes.md", "--out", str(out)]) == 0
+        res = json.loads(capsys.readouterr().out)
+        assert out.read_text() == "One.\nTwo!\n" and res["refreshed"] is False
+        assert dr.main(["list"]) == 0
+        res = json.loads(capsys.readouterr().out)
+        assert res["refreshed"] is False and [d["path"] for d in res["documents"]] == \
+            ["README.md", "docs/notes.md"]
+    finally:
+        for p, mode in modes.items():
+            p.chmod(mode)
 
 
 def test_update_never_forces_over_a_newer_push(env, tmp_path, monkeypatch):
@@ -415,7 +522,7 @@ def test_the_owner_never_runs_a_doc_review_verb():
     assert "doc_review" not in mm.TOOLS
     assert "doc_review" in mm.RESIDENT_NET_TOOLS
     assert M.RESIDENT_NET["doc_review"] == {
-        "open", "update", "reply", "resolve", "status", "purge", "prefetch"}
+        "open", "update", "reply", "resolve", "status", "purge", "prefetch", "list"}
     src = (ROOT / "preprocessor" / "doc_review.py").read_text()
     assert "sandbox_forward(" in src and "forward_or_none" not in src
 

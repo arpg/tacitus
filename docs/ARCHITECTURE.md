@@ -1574,6 +1574,7 @@ What Claude actually sees. Two different compositions depending on path.
    |        "pipeline"        --> recruiter-pipeline.md
    |        "family schedule" --> family-sync.md
    |        "sync calendar"   --> calendar-bridge.md
+   |        "claude handoff"  --> claude-handoff.md
    |        "export this"     --> context-export.md
    |        "dispute"         --> dispute-tracker.md
    |      Multiple skills can load if message spans concerns.

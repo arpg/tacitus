@@ -10,7 +10,8 @@ names, when all of these hold:
   * the reply gives a full path: absolute, or `~/` for the resident's home
     (the reply is the resident's, so its `~` is the resident's);
   * the file's type is one a person opens (ATTACH_EXTENSIONS), so a `.tex`
-    source or a JSON state file beside the PDF stays a path;
+    source or a JSON state file beside the PDF stays a path; a Markdown
+    handoff for the Claude app (`<name>.claude.md`) is one too;
   * the turn uploaded no file of that name itself (chat_upload.py or
     slack_upload.py --file) and the same bytes have not already gone to
     that thread;
@@ -43,6 +44,9 @@ ATTACH_EXTENSIONS = frozenset({
     "png", "jpg", "jpeg", "gif", "webp", "svg",
     "zip",
 })
+# A handoff file for the Claude app (skills/claude-handoff.md) is Markdown
+# made for the user to share, unlike a `.md` source beside a PDF.
+HANDOFF_SUFFIXES = (".claude.md",)
 MAX_ATTACH_BYTES = 10 * 1024 * 1024
 MAX_ATTACH_FILES = 4
 # A file counts as the turn's when it changed after the turn began, less
@@ -62,7 +66,9 @@ _UPLOAD_SCRIPT_RE = re.compile(r"(?:chat|slack)_upload\.py")
 
 
 def _attachable(path: str) -> bool:
-    return PurePosixPath(path).suffix.lower().lstrip(".") in ATTACH_EXTENSIONS
+    name = PurePosixPath(path).name.lower()
+    return (PurePosixPath(name).suffix.lstrip(".") in ATTACH_EXTENSIONS
+            or (name.endswith(HANDOFF_SUFFIXES) and len(name) > len(".claude.md")))
 
 
 def _absolute(raw: str, home: str) -> str | None:

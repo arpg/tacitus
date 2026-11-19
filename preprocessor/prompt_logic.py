@@ -790,6 +790,14 @@ SKILL_SIGNALS: list[tuple[str, tuple[str, ...]]] = [
         "add to outlook", "add to google", "calendar gap",
         "auto-bridge",
     )),
+    # A file to take to the Claude app (skills/claude-handoff.md), and the
+    # return block the user pastes back from that chat. Before
+    # context-export, whose in-thread phrases take over the turn.
+    ("claude-handoff", (
+        "claude handoff", "handoff file", "handoff doc", "hand off to claude",
+        "take this to claude", "talk it over in claude", "for a claude chat",
+        "for a claude project", "tacitus return",
+    )),
     ("context-export", (
         "export this", "package this", "export context",
         "bundle this", "export thread",

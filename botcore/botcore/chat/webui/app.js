@@ -493,6 +493,7 @@ function renderFile(f) {
     f.size != null ? h('span', { class: 'size' }, size(f.size)) : null];
   box.append(url ? h('a', { class: 'file-link', href, download: f.name || true }, label)
     : h('span', { class: 'file-link' }, label));
+  if (url && f.id && HANDOFF_FILE.test(f.name || '')) box.append(claudeButton(f));
   const sheet = url && homeScreenIOS();
   if (viaRelay) relayFile(f, box, !sheet);
   if (sheet) {
@@ -502,6 +503,48 @@ function renderFile(f) {
     }
   }
   return box;
+}
+
+// A handoff file for the Claude app (skills/claude-handoff.md): one tap
+// hands it to the share sheet, where the owner picks Claude. The file is
+// fetched when the button shows, once per file, since iOS shares only while
+// a tap is fresh; where the page cannot share a file, the button saves it.
+const HANDOFF_FILE = /.\.claude\.md$/i;
+const handoffs = new Map(); // file id -> the fetch of its bytes
+function claudeButton(f) {
+  const btn = h('button', { type: 'button', class: 'btn primary small to-claude-file', disabled: true }, 'Getting the file\u2026');
+  let got = handoffs.get(f.id);
+  if (!got) {
+    got = fetchFile(f);
+    handoffs.set(f.id, got);
+    got.catch(() => handoffs.delete(f.id));
+  }
+  got.then((file) => {
+    btn.disabled = false;
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      btn.textContent = 'Send to Claude';
+      btn.onclick = async () => {
+        try {
+          await navigator.share({ files: [file] });
+        } catch (e) {
+          if (e.name !== 'AbortError') toast(`Not shared: ${e.message}`);
+        }
+      };
+      return;
+    }
+    btn.textContent = 'Save for Claude';
+    btn.onclick = () => {
+      const u = URL.createObjectURL(file), a = h('a', { href: u, download: file.name });
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(u), 60000);
+    };
+  }).catch((e) => {
+    btn.textContent = 'Could not get the file';
+    btn.title = e.message;
+  });
+  return btn;
 }
 
 // In the iPhone or iPad home-screen app a link to a file takes the app's
@@ -960,10 +1003,22 @@ function stateShown() {
   renderThreads();
   const btn = $('thread-state');
   btn.hidden = !S.thread || S.thread === NEW_THREAD;
+  $('to-claude').hidden = btn.hidden;
   const label = stateOf(S.channel, S.thread) === 'done' ? 'Needs me' : 'Mark done', key = tkey(S.channel, S.thread);
   if (key === shown.key && label !== shown.label) shown.at = Date.now();
   Object.assign(shown, { key, label });
   btn.textContent = label;
+}
+
+// The Claude button: asks Tacitus, in the open conversation, for one file
+// to take to the Claude app (skills/claude-handoff.md). The file comes back
+// on Tacitus's reply with a Send to Claude button (claudeButton).
+const HANDOFF_ASK = 'Make a Claude handoff file for this conversation.';
+function toClaude() {
+  const { ch, tk } = target();
+  if (!tk) return;
+  const n = sendNonce();
+  submit(() => call('POST', `/channels/${enc(ch)}/messages`, { text: HANDOFF_ASK, thread_key: tk, nonce: n }), HANDOFF_ASK, []);
 }
 
 // A `thread_state` event: the sticker, the filter and Needs you follow, and
@@ -3634,6 +3689,7 @@ async function init() {
   });
   $('back').addEventListener('click', () => goTo(S.needsView ? hashFor(NEEDS) : hashFor(S.channel)));
   $('thread-state').addEventListener('click', () => { if (Date.now() - shown.at >= FLIP_GUARD_MS) setState(S.channel, S.thread); });
+  $('to-claude').addEventListener('click', toClaude);
   longPress($('thread-list'));
   $('new-thread').addEventListener('click', () => { goTo(hashFor(S.channel, NEW_THREAD)); $('text').focus(); });
   // A link into the app goes through goTo, not the browser, so the composer moves with the hash.

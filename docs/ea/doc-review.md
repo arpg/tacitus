@@ -67,15 +67,31 @@ review.
    with your question and leave the thread open.
 5. Reply in the chat thread: what changed, and which threads are still open.
 
+**After the merge: main.** The merged file on `main` is the approved text.
+GitHub deletes the review branch when the user merges. The user can also edit
+the file on `main` after the merge.
+- `fetch --pr <n> --out <file>` reads a merged document from `main` as it is
+  now. `source` says where the text came from (`branch`, `main`, or
+  `merge_commit` when `main` no longer holds the file), and `commit` names the
+  commit.
+- `list` gives every document on `main`: its `path`, its last change there
+  (`commit`, `updated`, `subject`) and, when the registry knows it, the `pr`
+  that brought it.
+- `fetch --doc <path or slug> --out <file>` reads one document from `main`,
+  also one with no pull request in the registry.
+- Build every finished product (a PDF, an attachment, a page) from this
+  copy, never from a local draft or an earlier fetch.
+- `"refreshed": false` means that this turn has no network and no mediator:
+  the text is `main` as the clone last fetched it. Say so when you use it.
+
 **Rules.**
 - Never merge, never push to `main`, and never force a push. Merging is
   the user's step, and it means that the document is final. The bot posts in
   the thread when the user merges.
 - Your replies on GitHub are in the assistant voice (Simplified Technical
   English). The document itself is in the user's voice.
-- One pull request per document. `fetch --pr <n>` reads a merged document
-  too, at its merge commit; the branch is gone after the merge. To review a
-  merged document again, open a new review with another `--slug`.
+- One pull request per document. To review a merged document again, open a
+  new review with another `--slug`.
 - `status` lists the open reviews, with the threads left and the last review.
 - "github.json names no doc_review.repo" (or no `doc_review.owner_login`):
   the config is incomplete. Tell the user; SETUP.md has the keys.
