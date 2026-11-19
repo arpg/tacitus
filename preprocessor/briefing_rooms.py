@@ -27,7 +27,8 @@ item with no project stays in the EA post only.
 A post opens with its name, the words that title its thread wherever a
 list shows it (the web chat's Recent once the owner answers, the room's
 own list of threads, Slack's channel): the first item's title in plain
-words, with "and N more" for the rest (conversation_name). Its last line
+words, with "and N more" for the rest (conversation_name; an item kept
+from hosted models is keep_gate's fixed words). Its last line
 says which briefing it comes from. On the web chat a post the owner has
 not answered stays out of Recent (web_frontend.is_conversation).
 
@@ -284,12 +285,17 @@ def _in_order(entries: list[dict]) -> list[dict]:
 def conversation_name(entries: list[dict], clean) -> str:
     """The name a slice's post opens with: the first item's title in plain
     words, "and N more" when the post has more items, at most NAME_MAX
-    characters, cut at a word."""
+    characters, cut at a word. A first item kept from hosted models
+    (keep_gate, its `keep_level`) is named in code's fixed words, never
+    by its subject or sender: room sessions and lists read the name."""
     shown = _in_order(entries)
     if not shown:
         return ""
-    first = plain_title(shown[0].get("title") or "", clean) \
-        or plain_title(shown[0].get("line") or "", clean)
+    if keep_gate.kept(shown[0].get("keep_level")):
+        first = keep_gate.KEPT_NAME
+    else:
+        first = plain_title(shown[0].get("title") or "", clean) \
+            or plain_title(shown[0].get("line") or "", clean)
     more = f" and {len(shown) - 1} more" if len(shown) > 1 else ""
     return _fit(first or "Items from the briefing", NAME_MAX - len(more)) + more
 

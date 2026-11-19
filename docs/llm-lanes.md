@@ -812,7 +812,8 @@ line; it never falls back to a Claude run.
   written. Each room with items gets one
   post as a new thread: its name (the first item's title in plain
   words, "and N more" for the rest, at most 60 characters, cut at a
-  word), the items under their section, up to five other open rows of
+  word; a first item kept from hosted models is "A kept message", never
+  its subject or sender), the items under their section, up to five other open rows of
   the project, and a last line that names the briefing and its date.
   The name titles the thread in the room's list and, once the owner
   answers it, in the web chat's Recent; a post the owner has not

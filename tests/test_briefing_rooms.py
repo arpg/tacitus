@@ -252,6 +252,33 @@ def test_a_long_title_is_cut_at_a_word():
                                 rb._clean) == "Radar quote (Pat): first thing"
 
 
+@pytest.mark.parametrize("level", ["local", "facts"])
+def test_a_kept_item_names_its_slice_in_fixed_words(level):
+    """A first item kept from hosted models gives the post code's fixed
+    words, never its subject or its sender; a later kept item adds only
+    to the count, and an item a hosted model may read is named as usual."""
+    kept = {**_entry("top", "Re: Tenure case letter for Dr. Example"), "keep_level": level,
+            "line": "A kept message from Pat Example on Mon Oct 12 needs you: Tenure case letter."}
+    name = br.conversation_name([kept, _entry("flex", "Lunch order")], rb._clean)
+    assert name == "A kept message and 1 more"
+    assert br.render("Morning briefing, Mon Oct 12", [kept], [], rb._clean).splitlines()[0] == (
+        "*A kept message*")
+    # no title: still never the kept line's words
+    assert br.conversation_name([{**kept, "title": ""}], rb._clean) == "A kept message"
+    later = br.conversation_name([_entry("top", "Radar quote"), {**kept, "section": "flex"}], rb._clean)
+    assert later == "Radar quote and 1 more" and "Tenure" not in later and "Pat" not in later
+    for open_level in ("summary", "full", ""):
+        assert br.conversation_name([{**kept, "keep_level": open_level}], rb._clean) == (
+            "Tenure case letter for Dr. Example")
+
+
+def test_the_run_hands_each_items_keep_level_to_its_room():
+    cands = {"R1": {"title": "Re: Tenure case letter", "keep_level": "facts", "ledger_id": "row-k"}}
+    got = rb.room_entries(cands, {"needs": [("R1", "A kept message needs you.")]})
+    assert got[0]["keep_level"] == "facts"
+    assert br.conversation_name(got, rb._clean) == "A kept message"
+
+
 def test_an_unanswered_slice_stays_out_of_recent_and_needs_you(tmp_path, monkeypatch):
     """A slice the owner has not answered is in neither Recent nor Needs
     you, in its new form or its old; once the owner writes in it, it is
