@@ -99,6 +99,16 @@ class ConfirmationCard:
     # close made at once, with Reopen). It waits on nobody: the web chat's
     # conversation states never read it as a card that needs the owner.
     undo: bool = False
+    # A question the owner answers on the card (a Replies row that waits on
+    # the owner's decision, or Tacitus's one more question about it):
+    # {"text": the question, "from": who wrote the mail, "since": when it
+    # came (ISO), "about": its subject, "answer": the owner's last answer
+    # when a draft did not start, "failed": true then}. The web chat makes
+    # the question the card's headline and gathers the card's quick answers
+    # (`reply_choice_*` actions) and its line (the action that `ask`s) into
+    # one answer control; the buttons, routes and values are the card's own.
+    # Other front ends show the title as before and never read it.
+    question: dict = field(default_factory=dict)
 
 
 # Reactions the owner can put on a card, by the role of the action they pick.

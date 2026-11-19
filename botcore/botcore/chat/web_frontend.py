@@ -261,6 +261,7 @@ from .base import (
 )
 from . import thread_state as _ts
 from . import card_text
+from . import action_requests as _requests
 from .cards import ConfirmationCard, action_text
 from .text import mrkdwn_to_markdown
 from .types import (
@@ -352,6 +353,10 @@ BUNDLE_CHECK_S = 15.0
 CARD_PUSH_TITLE = "Action request"
 # Threads the Needs you view lists at most.
 NEEDS_CAP = 200
+# Action requests: the answered requests one list carries at most (every
+# waiting one goes), and the most one call may ask.
+REQUESTS_LIMIT = 40
+REQUESTS_CAP = 200
 # The drawer's Recent list: the conversations it asks for, and the most one
 # request may ask.
 RECENT_LIMIT = 20
@@ -1466,6 +1471,46 @@ class WebStore:
                     j.update(channel_name=names[r["channel"]], unread=unread(r["channel"], r["k"]))
                     rows.append(j)
             return {"threads": rows, "as_of": self.max_event_seq()}
+        return self._snapshot(read)
+
+    def requests(self, channel: str, limit: int = REQUESTS_LIMIT) -> dict:
+        """Action requests' items in one snapshot, {"waiting", "done",
+        "as_of"}: each card and status line of the channel (at the top or in
+        a thread) and each thread there that opens with a plain message (a
+        notice, or words the owner typed before), as the message JSON with
+        `waiting` (a card whose buttons still act, thread_state.is_live_card)
+        and, for a card that names the conversation it reports to, `origin`
+        ({"channel", "thread_key", "kind", "name"}) when the store holds that
+        channel. `working`: a status line that says Tacitus is acting on the
+        press (action_requests.working), listed with the waiting ones;
+        `next`: the request in this place a status line links to (the
+        draft's Send request). Every waiting one, newest first; of the rest
+        the newest `limit`. It moves no read mark."""
+        def read() -> dict:
+            now = time.time()
+            kinds = {r["id"]: (r["kind"], r["name"]) for r in self._all("SELECT id, kind, name FROM channels")}
+            waiting, done = [], []
+            ids = {r["id"] for r in self._all("SELECT id FROM messages WHERE channel=?", (channel,))}
+            for r in self._all(
+                    "SELECT * FROM messages WHERE channel=? AND deleted_at IS NULL AND (kind IN "
+                    "('card', 'status') OR seq IN (SELECT MIN(seq) FROM messages WHERE channel=? "
+                    "GROUP BY thread_key)) ORDER BY seq DESC", (channel, channel)):
+                j = self._msg_json(r, 0)
+                j["waiting"] = _ts.is_live_card(j, now)
+                j["working"] = _requests.working(j, now)
+                nxt = _requests.next_request(j, channel)
+                if nxt in ids:
+                    j["next"] = nxt
+                origin = _ts.card_origin(j.get("card"))
+                if origin and origin[0] in kinds and origin[0] != channel:
+                    kind, name = kinds[origin[0]]
+                    j["origin"] = {"channel": origin[0], "thread_key": self.thread_of(*origin) or origin[1],
+                                   "kind": kind, "name": name or origin[0]}
+                if j["waiting"] or j["working"]:
+                    waiting.append(j)
+                elif len(done) < int(limit):
+                    done.append(j)
+            return {"waiting": waiting[:REQUESTS_CAP], "done": done, "as_of": self.max_event_seq()}
         return self._snapshot(read)
 
     # One thread's row as threads() gives it, by channel and thread key.
@@ -2711,6 +2756,12 @@ class WebFrontend(ChatFrontend):
         # a callable the host sets that answers {thread key: name}. The
         # thread rows carry them as their titles (named()).
         self.conversation_names: Callable[[], dict] | None = None
+        # The host's view of each request (docs/webchat.md, Action requests):
+        # given the items ({"id", "card"}), {id: {"project", "due", "starts"}},
+        # read from the ledger, the project store and the staged event. A
+        # host without one, or one that fails, gives the blocks no project
+        # and no deadline.
+        self.request_context: Callable[[list[dict]], dict] | None = None
         self.html_csp = self._html_csp()
         # The app's signed bundle (web_bundle.Bundle) once start() signed it.
         self._bundle: web_bundle.Bundle | None = None
@@ -2732,6 +2783,36 @@ class WebFrontend(ChatFrontend):
             return bool(self.rooms_enabled())
         except Exception:
             return True
+
+    def requests(self, limit: int = REQUESTS_LIMIT) -> dict:
+        """Action requests as blocks (GET /api/requests): the store's items
+        (WebStore.requests) of the DM, each with its folded words
+        (action_requests.block), its `project` (the host's, else the room its
+        conversation is in) and its urgency (action_requests.urgency, from the
+        host's deadline and event start); waiting ones by urgency, then newest
+        first. {"waiting": [], "done": [], "as_of"} with no DM."""
+        dm = next((c["id"] for c in self.store.channels() if c["kind"] == "dm"), "")
+        if not dm:
+            return {"waiting": [], "done": [], "as_of": self.store.max_event_seq()}
+        out = self.store.requests(dm, limit)
+        items = out["waiting"] + out["done"]
+        ctx: dict = {}
+        if self.request_context is not None and items:
+            try:
+                got = self.request_context([{"id": j["id"], "card": j.get("card")} for j in items])
+                ctx = got if isinstance(got, dict) else {}
+            except Exception as e:
+                log.warning("web chat: the requests' context could not be read: %s", e)
+        now = time.time()
+        for j in items:
+            mine = ctx.get(j["id"]) if isinstance(ctx.get(j["id"]), dict) else {}
+            j.update(_requests.block(j))
+            j.update(_requests.urgency(j, j["waiting"], mine, now))
+            origin = j.get("origin") or {}
+            room = str(origin.get("name") or "").removeprefix("ea-") if origin.get("kind") == "room" else ""
+            j["project"] = card_text.one_line(str(mine.get("project") or room), 60)
+        out["waiting"] = _requests.order(out["waiting"])
+        return out
 
     def named(self, rows: list[dict], field: str = "title") -> list[dict]:
         """The rows, each with the name the owner gave its conversation in
@@ -4840,6 +4921,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return None
             if segs == ["needs"]:
                 self._json(200, {"threads": fe.named(store.needs(NEEDS_CAP))})
+                return None
+            if segs == ["requests"]:
+                self._json(200, fe.requests(self._int(query, "limit", REQUESTS_LIMIT, 1, REQUESTS_CAP)))
                 return None
             if segs == ["recent"]:
                 out = store.recent(self._int(query, "limit", RECENT_LIMIT, 1, RECENT_CAP))

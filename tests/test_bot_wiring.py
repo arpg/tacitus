@@ -755,7 +755,7 @@ def test_a_side_session_runs_beside_its_thread():
     assert hm.index("side_drafts = (_side_drafts_note(thread_ts)") < hm.index("full_prompt = prompt")
     dr = _fn_body("_dispatch_reply_draft")
     assert 'key = "" if asks else _sessions.side_key(thread_ts or ts, f"reply-{row[\'id\']}")' in dr
-    assert 'kwargs={"session_key": key}' in dr
+    assert "handle_message_async(channel, thread_ts or ts, ts, prompt, user_id, True, session_key=key)" in dr
 
 def test_the_thread_session_knows_the_drafts_side_sessions_made():
     """A change the owner asks for in a thread with side sessions reaches

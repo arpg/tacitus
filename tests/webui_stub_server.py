@@ -299,6 +299,10 @@ class Stub:
         self.read_posts: list[dict] = []  # each POST .../read: channel, thread key and body
         self.thread_gets: list[tuple[str, str]] = []  # each GET of one thread
         self.recent_gets = 0
+        self.requests_gets = 0
+        self.reply_flow = False  # a Replies row answered goes as the bot's web path goes (reply_answered)
+        self.reply_delay = 0.6
+        self.request_context: dict[str, dict] = {}  # message id -> {"project", "due", "starts"}
         self.names: dict[str, str] = {}  # thread key -> the name the owner gave it
         # Each stream request: its Last-Event-ID header and its ?since=.
         self.streams: list[dict] = []
@@ -491,6 +495,39 @@ class Stub:
         if any(m["author"] == "owner" for m in self.thread(p["channel"], p["thread_key"])):
             return True
         return p["author"] == "bot" and bool(BRIEFING.match(p["text"] or ""))
+
+    def requests(self, limit: int = 40) -> dict:
+        """Action requests as blocks, as the bot gives them (WebFrontend.
+        requests): each card and status line of the DM and each thread
+        there that opens with a plain message, with the bot's own words for
+        the folded block (botcore's action_requests) and its urgency from
+        `request_context` ({message id: {"project", "due", "starts"}}), the
+        made-up deadlines a test sets."""
+        import sys
+        sys.path.insert(0, str(WEBUI.parents[2]))
+        from botcore.chat import action_requests as ar
+        with self.cond:
+            self.requests_gets += 1
+            firsts = {}
+            for m in self.messages:
+                if m["channel"] == DM:
+                    firsts.setdefault(m["thread_key"], m["id"])
+            waiting, done = [], []
+            for m in sorted(self.messages, key=lambda m: -m["seq"]):
+                if m["channel"] != DM or m["deleted"] or (m["kind"] not in ("card", "status")
+                                                          and firsts[m["thread_key"]] != m["id"]):
+                    continue
+                c = m.get("card") or {}
+                live = m["kind"] == "card" and bool(c.get("actions") or c.get("select")) and not c.get("undo")
+                ctx = self.request_context.get(m["id"], {})
+                busy = ar.working(m, time.time())
+                j = {**self.view(m), "waiting": live, "working": busy, **ar.block(m),
+                     **ar.urgency(m, live, ctx), "project": ctx.get("project", "")}
+                nxt = ar.next_request(m, DM)
+                if nxt and self.find(DM, nxt):
+                    j["next"] = nxt
+                (waiting if live or busy else done).append(j)
+            return {"waiting": ar.order(waiting), "done": done[:limit], "as_of": self.eseq}
 
     def set_state(self, channel: str, thread_key: str, state: str, by: str = "rule",
                   reason: str = "", *, at: float | None = None, stale: bool = False,
@@ -734,11 +771,39 @@ class Stub:
             self.change(m, "update", text="", deleted=True, owner_reactions=[])
         return 200, self.view(m)
 
+    def reply_answered(self, m: dict, body: dict) -> None:
+        """The bot's web path for a Replies row answered (`reply_flow`): the
+        card says the reply is being written; `reply_delay` seconds later
+        the draft's Send request is posted and the row's card links to it."""
+        said = (body.get("text") or (body.get("value") or {}).get("choice") or "").strip().rstrip(".")
+        self.change(m, "status", kind="status",
+                    text=":hourglass_flowing_sand: Writing the reply" + (f": {said}." if said else "."))
+
+        def drafted():
+            q = (m.get("card") or {}).get("question") or {}
+            card = self.add(DM, "", kind="card", event="card", card={
+                "kind": "send", "title": ":lock: *Send this reply?*",
+                "fields": [{"label": "To", "value": "pat@example.org"},
+                           {"label": "Subject", "value": f"Re: {q.get('about') or 'Your note'}"}],
+                "lines": [], "body": f"Hi Pat,\n\n{said or 'Thanks for the note.'}\n\nThanks", "quoted": "",
+                "actions": [{"id": "approve_send", "label": ":outbox_tray: Send", "value": {"d": 2}, "style": "primary",
+                             "word": "send"},
+                            {"id": "cancel_send", "label": "Cancel", "value": {"d": 2}, "style": "danger", "word": "cancel"}],
+                "select": None, "block_id": "", "footer": "", "fallback_text": "Send this reply?", "thread_ts": "",
+                "ea_channel": DM, "content_fingerprint": "", "no_default": False})
+            self.change(m, "status", kind="status", text=":white_check_mark: The reply is drafted. Its Send request: "
+                        f"[open it](/chat/#/{DM.replace(':', '%3A')}/{card['thread_key']}/{card['id']})")
+        threading.Timer(self.reply_delay, drafted).start()
+
     def click(self, channel: str, msg_id: str, body: dict) -> bool:
         m = self.find(channel, msg_id)
         if not m or m["kind"] != "card":
             return False
         self.clicks.append({"channel": channel, "id": msg_id, **body})
+        if self.reply_flow and (m.get("card") or {}).get("kind") == "replies" and (
+                body.get("action_id", "").startswith("reply_choice_") or body.get("text")):
+            threading.Timer(0.2, lambda: self.reply_answered(m, body)).start()
+            return True
         label = body.get("selected") or body.get("action_id")
         threading.Timer(0.2, lambda: self.change(
             m, "status", kind="status", text=f":white_check_mark: Done: {label}.")).start()
@@ -843,6 +908,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, data, mime, {"Content-Disposition": f'attachment; filename="{name}"'})
         if parts == ["needs"]:
             return self._json(200, {"threads": s.needs()})
+        if parts == ["requests"]:
+            return self._json(200, s.requests(int(q.get("limit", ["40"])[0])))
         if parts == ["recent"]:
             return self._json(200, s.recent(int(q.get("limit", ["20"])[0])))
         if parts == ["search"]:

@@ -6,6 +6,26 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A question waits for your answer, and you answer it right there.**
+  When a reply needs your decision, its request in Action requests puts
+  the question first, says who wrote and how long it has waited, and
+  offers the quick answers and a line to type, with one Draft the reply
+  button that works once you have answered. The request then shows the
+  reply being written and opens the draft's Send request in its place. If
+  Tacitus needs one more fact, it asks it the same way, on a new request;
+  if the draft did not start, Try again keeps your answer. Skip and Not
+  needed are still there. Waiting requests count in the tab title, and
+  "Soon" now means by the end of the second working day.
+- **Action requests shows each request as a block you open in place.**
+  Folded, a block says what you are deciding: Send email, Create meeting,
+  Close item and so on, who and what it is about, the meeting's time, how
+  long it has waited and its project. Its left edge shows how urgent it
+  is, with the word Soon or Overdue: a deadline that passed or is near, a
+  meeting that starts soon, a card about to expire, or a long wait. Tap it
+  and the full card opens right there, with the same buttons as before;
+  the Send button is only ever inside the opened card. Answered requests
+  fold to one line each under Earlier, and the link in a conversation
+  opens its request in place.
 - **Action requests: the place for taps, apart from your conversations.**
   In the web chat, Direct messages is now Action requests: the one place
   where a Send, Create or other button waits for you. It takes taps only,

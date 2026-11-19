@@ -27,6 +27,11 @@
   --warn: #b07a0c;
   --warn-text: #865600; /* amber text: the Waiting sticker */
   --warn-soft: #fcefd4;
+  /* a request's urgency: the block's edge, and its word's background (white text) */
+  --u-calm: #a3abb8;
+  --u-soon: #c88c0e;
+  --u-soon-strong: #865600;
+  --u-overdue: #c42b42;
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, .05);
   --shadow: 0 1px 3px rgba(16, 24, 40, .06), 0 6px 20px rgba(16, 24, 40, .07);
   --shadow-lg: 0 2px 8px rgba(16, 24, 40, .08), 0 24px 56px rgba(16, 24, 40, .2);
@@ -63,6 +68,10 @@
     --warn: #e0a83a;
     --warn-text: #e0a83a;
     --warn-soft: #3a3122;
+    --u-calm: #555d6b;
+    --u-soon: #e0a83a;
+    --u-soon-strong: #8a5a00;
+    --u-overdue: #d6455a;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3);
     --shadow: 0 1px 3px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .3);
     --shadow-lg: 0 2px 8px rgba(0, 0, 0, .4), 0 24px 56px rgba(0, 0, 0, .55);
@@ -232,6 +241,63 @@ button, select, textarea, input { font: inherit; color: inherit; }
 .chan.unread .r-title { font-weight: 700; }
 #recent-more { margin: 2px 8px 0; color: var(--accent); }
 .place-note { margin: 0 16px 12px; color: var(--muted); font-size: 14px; }
+
+/* Action requests: a block per request. Folded it says what to decide; its left edge is the urgency, with a word for
+   Soon and Overdue, so the colour is never the only sign. Opened, the card itself, which scrolls with the page. */
+.reqs { list-style: none; margin: 0 12px 12px; padding: 0; display: grid; gap: 8px; }
+.req { border: 1px solid var(--border); border-left: 6px solid var(--u-calm); border-radius: var(--r-m);
+  background: var(--panel); overflow: hidden; }
+.req.u-soon { border-left-color: var(--u-soon); }
+.req.u-overdue { border-left-color: var(--u-overdue); }
+.req.u-done { border-left-color: var(--border); }
+.req.u-working { border-left-color: var(--accent); }
+.req-busy { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+.req-busy::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+  animation: pulse 1.2s var(--ease) infinite alternate; }
+/* A question for the owner: the question is the headline, one answer control, quiet secondary actions. */
+.card.answer .answer-q { margin: 0; font-size: 17px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
+.answer-from, .answer-about { margin: 4px 0 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.answer-failed { margin: 8px 0 0; color: var(--danger); font-size: 14px; }
+.answer-ctl { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; border: 0; min-width: 0; }
+.answer-ctl legend { padding: 0; margin-bottom: 6px; font-weight: 600; }
+.answer-picks { display: flex; flex-wrap: wrap; gap: 8px; }
+.answer-pick { min-height: 44px; white-space: normal; text-align: left; }
+.answer-pick[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--accent); }
+.answer-ctl .card-ask { min-height: 44px; width: 100%; }
+.answer-ctl .btn.primary { min-height: 44px; justify-self: start; }
+.answer-ctl .btn.primary:disabled { opacity: .45; cursor: not-allowed; }
+.answer-more { margin-top: 8px; }
+.answer-more .btn { min-height: 44px; }
+.req-head { display: grid; gap: 2px; width: 100%; min-height: 44px; padding: 10px 12px; border: 0; background: none;
+  color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.req-top { display: flex; align-items: baseline; gap: 8px; }
+.req-act { font-weight: 700; }
+.req-flag { padding: 0 8px; border-radius: 999px; font-size: 12px; font-weight: 700; color: #fff; }
+.req-flag.u-soon { background: var(--u-soon-strong); }
+.req-flag.u-overdue { background: var(--u-overdue); }
+.req-time { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.req-what, .req-who { overflow-wrap: anywhere; }
+.req-who, .req-meta { color: var(--muted); font-size: 13px; }
+.req-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.req-proj { padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 999px; color: var(--text); font-size: 12px; }
+.reqs.done .req-head { display: flex; align-items: center; gap: 8px; padding-block: 8px; color: var(--muted); }
+.req-sum { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 14px; }
+.req-sum b { color: var(--text); font-weight: 600; }
+.req-out { display: inline; }
+.req-body { padding: 0 12px 12px; border-top: 1px solid var(--border); }
+.req-body:empty { display: none; }
+.req-body .card { margin-top: 10px; }
+.req-body .card-body { max-height: none; overflow: visible; } /* the page scrolls, never a small box */
+.req-line { margin-top: 8px; color: var(--muted); font-size: 14px; }
+.req-from { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent); }
+.taps-note { margin: 16px 16px 12px; color: var(--muted); font-size: 14px; }
+.taps-note a, #composer-off a { display: inline-block; min-height: 44px; line-height: 44px; color: var(--accent); }
+@media (min-width: 600px) {
+  body.requests:not([data-view="thread"]) #thread { display: none; }
+  body.requests:not([data-view="thread"]) #threads { grid-column: 2 / -1; border-right: 0; }
+  body.requests #thread-list > * { max-width: 760px; }
+}
 
 /* The channels' edge where they are a column: a handle that drags their
    width (app.js), a line in the accent while it is held, hovered or focused. */
