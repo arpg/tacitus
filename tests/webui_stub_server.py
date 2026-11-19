@@ -303,6 +303,7 @@ class Stub:
         self.reply_flow = False  # a Replies row answered goes as the bot's web path goes (reply_answered)
         self.reply_delay = 0.6
         self.request_context: dict[str, dict] = {}  # message id -> {"project", "due", "starts"}
+        self.tags: dict[str, str] = {}  # message id -> the tag it was posted under (a Replies row)
         self.names: dict[str, str] = {}  # thread key -> the name the owner gave it
         # Each stream request: its Last-Event-ID header and its ?since=.
         self.streams: list[dict] = []
@@ -526,6 +527,7 @@ class Stub:
                 nxt = ar.next_request(m, DM)
                 if nxt and self.find(DM, nxt):
                     j["next"] = nxt
+                j["lines"] = ar.lines_of(m, self.thread(DM, m["thread_key"]), self.tags)
                 (waiting if live or busy else done).append(j)
             return {"waiting": ar.order(waiting), "done": done[:limit], "as_of": self.eseq}
 

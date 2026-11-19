@@ -100,6 +100,11 @@ def block(msg: dict) -> dict:
         device = _ts.device_code(msg.get("text"))
         return {"action": "Approve a device" if device else "Notice", "who": "", "what": title,
                 "when": ""}
+    problem = card.get("problem") if isinstance(card.get("problem"), dict) else {}
+    if problem.get("text"):
+        who = card_text.one_line(str(problem.get("from") or ""), 80)
+        return {"action": "Not written", "who": f"From {who}" if who else "",
+                "what": card_text.one_line(str(problem["text"]), 300), "when": ""}
     question = card.get("question") if isinstance(card.get("question"), dict) else {}
     if question.get("text"):
         who = card_text.one_line(str(question.get("from") or ""), 80)
@@ -185,6 +190,32 @@ def order(items: list[dict]) -> list[dict]:
     return sorted(items, key=lambda j: (not j.get("working"),
                                         LEVELS.index(j.get("urgency") or "calm"),
                                         -float(j.get("posted_at") or 0)))
+
+
+LINES_CAP = 10
+
+
+def lines_of(item: dict, thread: list, tags: dict) -> list[dict]:
+    """The bot's lines that belong to one request, from its thread's rows
+    (oldest first) and the store's tags: a tagged request takes the later
+    lines with its own tag; an untagged one that opens a thread holding no
+    other card or status line takes the later untagged lines; any other
+    takes none, so a thread several requests share shows each only its
+    own. Each {"id", "text", "posted_at"}, the newest LINES_CAP."""
+    def row(r, k):
+        return r[k] if not isinstance(r, dict) else r.get(k)
+    mine = tags.get(item.get("id"))
+    seq = int(item.get("seq") or 0)
+    cards = [r for r in thread if row(r, "kind") in ("card", "status")]
+    opens = bool(thread) and row(thread[0], "id") == item.get("id")
+    if not mine and not (opens and len(cards) <= 1):
+        return []
+    out = [{"id": row(r, "id"), "text": row(r, "text") or "", "posted_at": row(r, "posted_at")}
+           for r in thread
+           if int(row(r, "seq") or 0) > seq and row(r, "author") != "owner"
+           and row(r, "kind") == "message" and not row(r, "deleted_at") and row(r, "text")
+           and tags.get(row(r, "id")) == mine]
+    return out[-LINES_CAP:]
 
 
 def working(msg: dict, now: float) -> bool:

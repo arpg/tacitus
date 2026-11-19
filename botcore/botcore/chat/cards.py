@@ -109,6 +109,11 @@ class ConfirmationCard:
     # one answer control; the buttons, routes and values are the card's own.
     # Other front ends show the title as before and never read it.
     question: dict = field(default_factory=dict)
+    # Why a reply turn wrote no reply (the web chat's "could not" card for a
+    # Replies row): {"text": the reason in plain words, "from", "since",
+    # "about"}. The block folds to "Not written" and the reason; the card
+    # offers Try again and Open in Ask Tacitus, never an answer control.
+    problem: dict = field(default_factory=dict)
 
 
 # Reactions the owner can put on a card, by the role of the action they pick.

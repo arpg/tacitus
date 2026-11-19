@@ -180,3 +180,31 @@ def test_a_question_folds_to_answer_needed_and_a_status_links_on():
     assert ar.next_request(msg("card", text="[open it](https://h.example.test/chat/#/dm/t9/w9)"), "dm") == ""
     items = [{"urgency": "overdue", "posted_at": 1}, {"urgency": "calm", "posted_at": 0, "working": True}]
     assert [j.get("working", False) for j in ar.order(items)] == [True, False]
+
+
+def test_a_request_shows_only_its_own_lines():
+    """Two rows' cards share one thread: each takes the later lines with its
+    own tag. A card alone in its own thread takes the later untagged lines.
+    An untagged line in a shared thread belongs to no request."""
+    thread = [{"seq": 1, "id": "w1", "kind": "card", "author": "bot", "text": ""},
+              {"seq": 2, "id": "w2", "kind": "card", "author": "bot", "text": ""},
+              {"seq": 3, "id": "w3", "kind": "card", "author": "bot", "text": ""},
+              {"seq": 4, "id": "w4", "kind": "message", "author": "bot", "text": "Writing A"},
+              {"seq": 5, "id": "w5", "kind": "message", "author": "bot", "text": "Writing B"},
+              {"seq": 6, "id": "w6", "kind": "message", "author": "bot", "text": "Still working"},
+              {"seq": 7, "id": "w7", "kind": "message", "author": "owner", "text": "mine"}]
+    tags = {"w2": "reply:a", "w3": "reply:b", "w4": "reply:a", "w5": "reply:b"}
+    assert [x["text"] for x in ar.lines_of({"id": "w2", "seq": 2}, thread, tags)] == ["Writing A"]
+    assert [x["text"] for x in ar.lines_of({"id": "w3", "seq": 3}, thread, tags)] == ["Writing B"]
+    assert ar.lines_of({"id": "w1", "seq": 1}, thread, tags) == []   # the shared thread's parent
+    alone = [{"seq": 1, "id": "w1", "kind": "card", "author": "bot", "text": ""},
+             {"seq": 2, "id": "w2", "kind": "message", "author": "bot", "text": "Tell me the change"}]
+    assert [x["text"] for x in ar.lines_of({"id": "w1", "seq": 1}, alone, {})] == ["Tell me the change"]
+
+
+def test_a_reply_that_was_not_written_folds_to_its_reason():
+    c = card("replies", ":inbox_tray: *Review request*")
+    c["problem"] = {"text": "The thread has no address to answer.", "from": "Pat", "since": "", "about": "x"}
+    c["question"] = {}
+    assert ar.block(msg(card=c)) == {"action": "Not written", "who": "From Pat",
+                                     "what": "The thread has no address to answer.", "when": ""}

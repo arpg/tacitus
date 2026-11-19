@@ -2812,3 +2812,27 @@ def test_a_request_being_acted_on_stays_on_top_and_its_answer_links_on(fe):
     out = json.loads(owner(fe, "GET", "/api/requests")[2])
     assert [j["id"] for j in out["waiting"]] == [send.id]
     assert {j["id"]: j.get("next") for j in out["done"]}[row.id] == send.id
+
+
+def test_posts_made_inside_tagging_carry_the_tag_and_a_request_takes_its_own_lines(fe):
+    """WebFrontend.tagging(): this thread's posts inside it carry the tag
+    (nested, the inner wins and the outer comes back); the requests route
+    gives each request the lines with its own tag; lines_tagged reads them."""
+    from chat import thread_state as ts  # noqa: F401
+    parent = fe.post_card("dm", card(title="Two replies wait"))
+    with fe.tagging("reply:a"):
+        a = fe.post_card("dm", card(title="Reply to A"), thread_ts=parent.thread_key)
+        fe.post("dm", "Writing the reply to A.", thread_ts=parent.thread_key)
+        with fe.tagging("reply:b"):
+            b = fe.post_card("dm", card(title="Reply to B"), thread_ts=parent.thread_key)
+        fe.post("dm", "Its Send request is up.", thread_ts=parent.thread_key)
+    with fe.tagging("reply:b"):
+        fe.post("dm", "Writing the reply to B.", thread_ts=parent.thread_key)
+    fe.post("dm", "Still working... (3m)", thread_ts=parent.thread_key)
+    items = {j["id"]: j for j in fe.requests()["waiting"]}
+    assert [x["text"] for x in items[a.id]["lines"]] == ["Writing the reply to A.", "Its Send request is up."]
+    assert [x["text"] for x in items[b.id]["lines"]] == ["Writing the reply to B."]
+    assert items[parent.id]["lines"] == []          # a shared thread's untagged line belongs to none
+    assert [x["text"] for x in fe.lines_tagged("dm", parent.thread_key, "reply:b")] == ["Writing the reply to B."]
+    out = json.loads(owner(fe, "GET", "/api/requests")[2])
+    assert {j["id"]: len(j["lines"]) for j in out["waiting"]}[a.id] == 2
