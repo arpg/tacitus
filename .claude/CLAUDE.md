@@ -13,7 +13,7 @@ never reads it.
   deploying checkout deploys at once (the post-commit hook), so work on a
   branch or in a worktree. Only the owner merges. Other sessions may
   share the checkout: stage files by name.
-- **CI on a pull request is the lint only.** Pushes to `main` run the
+- **CI on a pull request is the lint and the browser tests.** Pushes to `main` run the
   full tiers, and a green one is a signed release `vX.Y.Z` that installs
   pick up within the hour (docs/updates.md); `#minor` or `#major` in the
   merge commit raises that part of the version. Branch protection requires the one `ci` check; a pull

@@ -1,0 +1,1 @@
++2     the ring of the message being edited, kept when an event draws the message again

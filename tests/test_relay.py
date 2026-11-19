@@ -568,10 +568,10 @@ def test_owner_cli_pairs_through_the_relay_with_the_bundle_hash(tmp_path, capsys
 
 def test_the_terminal_qr_is_the_apps_code():
     """relay_qr encodes module for module as the app's qr.js (the codes
-    tests/test_webui.py pins), and the terminal drawing holds that grid."""
+    tests/test_webui_relay.py pins), and the terminal drawing holds that grid."""
     import hashlib
     from botcore.chat import relay_qr
-    from test_webui import QR_BASE, QR_PINNED
+    from webui_browser import QR_BASE, QR_PINNED
     for n, (sha, _decodable) in QR_PINNED.items():
         rows = ["".join("1" if c else "0" for c in r) for r in relay_qr.encode(QR_BASE[:n])]
         assert hashlib.sha256("\n".join(rows).encode()).hexdigest() == sha, n
@@ -1214,7 +1214,7 @@ def _fixed(label: str) -> bytes:
 def relay_vectors() -> dict:
     """The protocol run with fixed keys and clock, through relay_crypto
     itself: the ephemeral keys it would draw are fixed by a stand-in for
-    X25519PrivateKey.generate. tests/test_webui.py runs the app's
+    X25519PrivateKey.generate. tests/test_webui_relay.py runs the app's
     WebCrypto code on the same inputs in a browser."""
     from unittest import mock
     real = rc.X25519PrivateKey

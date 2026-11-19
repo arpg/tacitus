@@ -2,6 +2,10 @@
 #
 #   lint-and-validate   the secrets lint, the config templates, the syntax
 #                       of the bot and the preprocessor (ubuntu, every run)
+#   browser             the web app's browser tests (tests/test_webui*.py)
+#                       with Chromium installed, on every pull request: the
+#                       wall legs have no browser and skip them, so without
+#                       this a browser failure showed first on main
 #   wall                tier 1: the unit wall with no accounts, on
 #                       ubuntu-22.04 (Python 3.10, the floor), ubuntu-latest
 #                       and macos-latest (a macOS minute costs ten Linux
@@ -14,8 +18,8 @@
 #                       Run workflow only
 #
 # Every push to main and every tag runs the full tiers (the repository is
-# public, so standard runners cost nothing). A pull request runs the lint,
-# and the tiers only on a full run:
+# public, so standard runners cost nothing). A pull request runs the lint
+# and the browser tests, and the tiers only on a full run:
 #   - a pull request with the `full-ci` label (adding the label starts the
 #     run, through full-ci-label.yml);
 #   - Actions > CI > Run workflow on a branch.
@@ -92,6 +96,36 @@ jobs:
           for f in *.py; do
             python3 -c "import ast; ast.parse(open('$f').read())" && echo "$f OK"
           done
+
+  browser:
+    # The browser files alone (run_wall.py --browser), a few at a time:
+    # about three minutes with the install.
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies and Chromium
+        run: |
+          python3 -m pip install -r requirements.txt pytest pyyaml
+          python3 -m playwright install --with-deps chromium
+
+      - name: Point HOME and EA_DIR at empty directories
+        # Chromium stays where the install put it, under the runner's own home.
+        run: |
+          mkdir -p "$RUNNER_TEMP/home" "$RUNNER_TEMP/ea"
+          echo "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright" >> "$GITHUB_ENV"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+          echo "EA_DIR=$RUNNER_TEMP/ea" >> "$GITHUB_ENV"
+
+      - name: Browser tests
+        env:
+          WALL_VERBOSE: "1"
+        run: python3 tests/run_wall.py --browser
 
   wall:
     name: wall (${{ matrix.os }})
@@ -238,7 +272,7 @@ jobs:
     # The one check branch protection requires. always() keeps it running
     # when a job it needs was skipped; the step reads each result.
     if: always()
-    needs: [lint-and-validate, wall, wall-docker, bootstrap-linux, bootstrap-macos, install-smoke-linux, install-smoke-macos]
+    needs: [lint-and-validate, browser, wall, wall-docker, bootstrap-linux, bootstrap-macos, install-smoke-linux, install-smoke-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Every job passed or was skipped

@@ -10,9 +10,9 @@ push on there or not, which then owes that browser no clear and clears
 the owner's other browsers, and sweeps the tags no clear reached when it
 starts or comes back into view; and the app drops a thread's unread
 count when the owner's message arrives on the stream, from this browser
-or mirrored from elsewhere, also with the thread closed. The rest of the
-app's tests are in tests/test_webui.py, whose browser fixtures this file
-borrows; the server's side is in tests/test_web_push_policy.py."""
+or mirrored from elsewhere, also with the thread closed. The browser
+fixtures are in tests/webui_browser.py; the server's side is in
+tests/test_web_push_policy.py."""
 import json
 import re
 import shutil
@@ -25,7 +25,7 @@ import pytest
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
 
-from test_webui import WEBUI, app, browser, stub_factory  # noqa: E402,F401  (the fixtures)
+from webui_browser import WEBUI, app, browser, stub_factory  # noqa: E402,F401  (the fixtures)
 
 # sw.js, which imports the worker's code (bundle.js), in a node `vm` context
 # with no Cache Storage (so it runs that imported copy), once per scenario: a `self` whose registration
@@ -271,7 +271,7 @@ def test_a_page_with_push_off_clears_the_thread_it_shows_on_the_other_browsers(a
     notification stays."""
     import time
     import webui_stub_server as W
-    from test_webui import open_thread, wait_for
+    from webui_browser import open_thread, wait_for
     page, stub, errors = app(push=True, init=FAST_SEEN)
     new = stub.emit_bot(W.MAIN, "A thread read on the computer")
     open_thread(page, "A thread read on the computer")
@@ -320,7 +320,7 @@ def test_the_phone_closes_what_no_clear_reached_when_the_app_comes_back(app):
     reached in this browser (POST /api/push/unclosed with its endpoint),
     and closes their notifications. Hidden, it asks nothing."""
     import time
-    from test_webui import wait_for
+    from webui_browser import wait_for
     page, stub, errors = app(push=True, init=FAKE_PHONE)
     page.wait_for_selector(".thread-item")
     endpoint = "https://web.push.apple.com/made-up"

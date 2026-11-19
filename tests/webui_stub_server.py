@@ -1200,7 +1200,9 @@ def serve(port: int = 0, **kw) -> tuple[ThreadingHTTPServer, Stub]:
     handler = type("StubHandler", (Handler,), {"stub": stub})
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
     server.daemon_threads = True
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # stop() waits for the loop to see its shutdown, which it checks once per
+    # poll: 50 ms, not the default half second, at the end of every test.
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
     return server, stub
 
 

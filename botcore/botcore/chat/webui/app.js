@@ -734,7 +734,9 @@ function renderCard(msg) {
 
 function renderMsg(m) {
   const own = m.author === 'owner';
-  const el = h('article', { class: `msg ${own ? 'own' : 'bot'} kind-${m.kind || 'message'}${m.deleted ? ' removed' : ''}`, 'data-id': m.id });
+  // The message being edited keeps its ring when an event draws it again (a reaction, the bot's check).
+  const editing = S.editing && S.editing.id === m.id ? ' editing' : '';
+  const el = h('article', { class: `msg ${own ? 'own' : 'bot'} kind-${m.kind || 'message'}${m.deleted ? ' removed' : ''}${editing}`, 'data-id': m.id });
   const edited = m.kind === 'message' && !m.deleted && m.updated_at && m.posted_at && m.updated_at - m.posted_at > 1;
   el.append(h('header', { class: 'meta' },
     h('span', { class: 'who' }, own ? 'You' : 'Tacitus'),

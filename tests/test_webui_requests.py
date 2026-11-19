@@ -1,7 +1,8 @@
 """Action requests in the web app, as a person sees it (docs/webchat.md,
 Action requests): a reply that was not written, and a thread several
-requests share. The app's other tests are in tests/test_webui.py, whose
-browser fixtures this file borrows. Made-up data only."""
+requests share. The browser fixtures are in tests/webui_browser.py; the
+rest of Action requests is in tests/test_webui_action_requests.py. Made-up
+data only."""
 from __future__ import annotations
 
 import sys
@@ -9,7 +10,7 @@ from pathlib import Path
 
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
-from test_webui import PHONE, SIDEWAYS, SMALL_TARGETS, app, browser, stub_factory, wait_for  # noqa: E402,F401  (the fixtures)
+from webui_browser import PHONE, SIDEWAYS, SMALL_TARGETS, app, browser, stub_factory, wait_for  # noqa: E402,F401  (the fixtures)
 
 VALUE = {"row": "response-r1", "batch": "b1"}
 
