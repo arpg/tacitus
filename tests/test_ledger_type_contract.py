@@ -48,8 +48,12 @@ def _sites(path: Path) -> list[str]:
         if isinstance(n, ast.Compare) and any(
                 isinstance(o, (ast.Eq, ast.NotEq, ast.In, ast.NotIn)) for o in n.ops):
             sides = [n.left, *n.comparators]
+            # The literal first: get_source_segment reads the whole source
+            # on each call, so it runs only for a comparison with a type name.
+            if not any(_names(s) for s in sides):
+                continue
             other = " ".join(ast.get_source_segment(src, s) or "" for s in sides if not _names(s))
-            if any(_names(s) for s in sides) and "type" in other.lower():
+            if "type" in other.lower():
                 out.append(ast.get_source_segment(src, n))
         elif isinstance(n, ast.Assign) and any(
                 isinstance(t, ast.Name) and t.id.endswith("_TYPES") for t in n.targets) \
