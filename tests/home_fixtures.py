@@ -134,7 +134,8 @@ def sources(state: str = "normal", dm: str = "dm", main: str = "main") -> H.Sour
 
 def payload(state: str = "normal", dm: str = "dm", main: str = "main") -> dict:
     p = H.build(sources(state, dm, main))
-    if state == "model":
-        p["greeting"].update(text="Afternoon. Two replies and a tap stand between you and a quiet evening.",
-                             by="model")
+    if state == "model":  # a line the owner's model could write: it passes the bot's own check
+        text = "Afternoon. 6 things left and 50 minutes before your 2:00. Plenty of room."
+        assert H.checked_line(text, p["facts"]) == text
+        p["greeting"].update(text=text, by="model")
     return p

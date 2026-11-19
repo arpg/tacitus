@@ -61,6 +61,17 @@ def test_a_row_a_card_names_is_listed_once_and_a_closed_item_not_at_all():
     assert titles.count("Re: Lab budget") == 1
 
 
+def test_a_reply_counts_once_it_has_waited_a_day():
+    import ledger
+    assert H.REPLY_MIN_DAYS == ledger.REPLY_DRAFT_DAYS == 1  # the Replies ladder's first rung
+    src = F.sources()
+    src.replies.append({"id": "response-r3", "subject": "Came in this morning", "from_name": "Lee",
+                        "age_days": 0, "conversation_id": "conv-r3"})
+    titles = [x["title"] for x in H.left(src)]
+    assert "Came in this morning" not in titles and "Seminar date" in titles
+    assert "min_days=REPLY_MIN_DAYS" in (Path(H.__file__)).read_text()
+
+
 def test_a_request_at_work_is_not_left_for_the_owner():
     src = F.sources()
     src.requests["waiting"][1]["working"] = True
@@ -209,7 +220,7 @@ def test_since_counts_from_the_visit_before_and_links_where_it_can():
 # ── the greeting ─────────────────────────────────────────────────────
 
 FACTS = {"part_of_day": "afternoon", "weekday": "Thursday", "done_today": 7, "done_by_tacitus": 3, "left": 6,
-         "overdue": 0, "replies": 2, "taps": 2, "mode": "normal", "held": 0, "light": "ok",
+         "overdue": 0, "replies": 2, "taps": 2, "todos": 2, "mode": "normal", "held": 0, "light": "ok",
          "minutes_free": 50, "next_at": "2:00"}
 
 
@@ -242,6 +253,34 @@ def test_the_models_line_is_kept_only_when_it_is_one_short_line_of_the_facts():
         assert H.checked_line(bad, FACTS) == "", bad
 
 
+@pytest.mark.parametrize("line", [
+    "Afternoon. Two replies and a tap stand between you and a quiet evening.",  # 3 of 6
+    "Two replies wait for you.", "Just a tap or two left.", "A few replies and you are done.",
+    "Some quick taps left.", "Three things left.", "Tacitus handled 4 things. 6 left.",
+    "6 things left, among them 3 replies.", "Seven left. Go.", "One reply, then coffee."])
+def test_a_line_that_misstates_the_list_is_dropped(line):
+    """The owner's model may speak of what is left only as the whole, or with
+    parts that are each true and add up to it."""
+    assert H.checked_line(line, FACTS) == "", line
+
+
+@pytest.mark.parametrize("line", [
+    "Afternoon. 6 things left and 50 minutes before your 2:00.",
+    "Six things to go. None of them bite.", "Two replies, two taps and two to-dos. That is the lot.",
+    "Tacitus handled 7 things. 6 are yours.", "Tacitus took care of 3 items, and six things wait.",
+    "6 things left, 2 of them replies.", "Afternoon. Plenty of room before your 2:00.", "Halfway there."])
+def test_a_line_true_to_the_list_is_kept(line):
+    assert H.checked_line(line, FACTS) == line, line
+
+
+def test_the_overdue_and_held_counts_are_checked_where_a_line_says_them():
+    f = {**FACTS, "overdue": 1, "held": 4}
+    assert H.checked_line("1 thing is overdue. 6 things in all.", f)
+    assert H.checked_line("2 things are overdue.", f) == ""
+    assert H.checked_line("Tacitus holds 4 things for when you are back.", f)
+    assert H.checked_line("Tacitus holds 3 things for later.", f) == ""
+
+
 def test_the_prompt_holds_the_numbers_and_the_votes_never_a_name():
     p = F.payload()
     prompt = H.greeting_prompt(p["facts"], "breezy", ["Liked line."], ["Disliked line."])
@@ -249,6 +288,7 @@ def test_the_prompt_holds_the_numbers_and_the_votes_never_a_name():
     for name in ("Pat", "Alex", "Sam", "Lab budget", "Seminar", "workshop"):
         assert name not in prompt
     assert "Liked line." in prompt and "Disliked line." in prompt
+    assert "What is left is 6 things in all. Speak of it as that whole, or stay general." in prompt
 
 
 class FakeStore:

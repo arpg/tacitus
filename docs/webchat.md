@@ -640,7 +640,7 @@ it. The briefing's own post is gone from the web chat: Home shows it.
 
 | Part | Source |
 |---|---|
-| Left for you | the Action requests that wait for a tap (`WebFrontend.requests`, never one at work), the replies owed now (`ledger.reply_backlog` on the live rows, as `ledger.py reply-queue` reads them) and the last briefing's ranked `today_top` still open; a row a waiting card names is listed once, as the card. Most urgent first (overdue, soon, calm; then a tap, a reply, a task) |
+| Left for you | the Action requests that wait for a tap (`WebFrontend.requests`, never one at work), the replies owed a day or more (`ledger.reply_backlog` on the live rows, as `ledger.py reply-queue` reads them, from the Replies ladder's first rung, `REPLY_DRAFT_DAYS`: mail that came today does not count yet) and the last briefing's ranked `today_top` still open; a row a waiting card names is listed once, as the card. Most urgent first (overdue, soon, calm; then a tap, a reply, a task) |
 | So far today | the ledger rows closed today, one per mail conversation, each by "You" (the owner's word, a confirm, a send, an archive) or "Tacitus" (a lapse, a sibling, a rule); the requests answered today; the drafts Tacitus made that wait for Send |
 | The ring | `done` against `left`: the two numbers above |
 | The next gap | today's timed events (the briefing's events, each placed by its own start, a declined or free one left out): the minutes before the next one, or after the one under way, and how many of the list's first items fit (a tap 2 minutes, a reply 10, a task 20): "You have 50 minutes before your 2:00. That is enough for the 2 replies." With one button that opens the first item |
@@ -678,9 +678,18 @@ it. The briefing's own post is gone from the web chat: Home shows it.
 the bot's small jobs' breaker), on a thread of its own, from the facts
 alone: the counts, the part of the day, the weekday, the mode, the next
 event's time, the light's level, never a name, a subject or mail. It
-never goes to a hosted model. A line longer than 120 characters, on more
-than one line, with an address, a link, a dash between clauses or a
-number the facts do not hold is dropped. Until it answers, and with no
+never goes to a hosted model. The prompt gives it the whole of what is
+left and tells it to speak of that whole or stay general. A line longer
+than 120 characters, on more than one line, with an address, a link, a
+dash between clauses or a number (in digits or words) the facts do not
+hold is dropped, and so is a line that misstates the list
+(`home_screen.counts_ok`): a count of items in a clause about what got
+done, what is overdue or what is held must be that count; of what is
+left, a part it names (replies, taps, to-dos) must be that part's own
+count, and the line must name the whole ("6 things", "6 left") or parts
+that add up to it; a vague count ("a few replies") is refused. "Two
+replies and a tap" above six items never shows. The templates count only
+the whole. Until it answers, and with no
 model, a line from the templates shows, picked by the day. The tone
 (Settings, Home: Breezy, Dry, Facts only) sets the voice; Facts only, a
 red light or anything overdue gives the plain line and asks no model.

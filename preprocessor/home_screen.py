@@ -85,6 +85,10 @@ PURPOSE = "chat-home"
 MINUTES = {"request": 2, "reply": 10, "item": 20, "question": 3}
 # A gap this long is said as "nothing until", not as a count of minutes.
 LONG_GAP_MIN = 180
+# A reply counts on Home once it has waited this many days: the Replies
+# ladder's first rung (ledger.REPLY_DRAFT_DAYS), so mail that came today
+# does not swell what is left.
+REPLY_MIN_DAYS = 1
 # The most items each list carries.
 LEFT_MAX = 30
 DONE_MAX = 40
@@ -336,7 +340,7 @@ def _fire(urgency: str, due: float | None, now: float) -> bool:
 
 def left(src: Sources) -> list[dict]:
     """What waits for the owner, most urgent first: the Action requests that
-    wait for a tap, the replies owed now, and the briefing's ranked items
+    wait for a tap, the replies owed a day or more (REPLY_MIN_DAYS), and the briefing's ranked items
     still open. Each is {"id", "kind", "label", "title", "detail",
     "urgency", "due", "fire", "mins", "href" or "ask"}: a request opens its
     block in Action requests; a reply or an item has no place of its own,
@@ -367,13 +371,14 @@ def left(src: Sources) -> list[dict]:
                 or (e.get("conversation_id") and e["conversation_id"] in named_convs):
             continue
         age = int(e.get("age_days") or 0)
+        if age < REPLY_MIN_DAYS:
+            continue
         who = _plain(e.get("from_name") or e.get("from"), 60)
         title = _plain(e.get("subject") or e.get("description"), 120) or "A reply"
         urgency = "soon" if age >= 3 else "calm"
         named_ids.add(e.get("id"))
         out.append({"id": f"reply:{e.get('id')}", "kind": "reply", "label": "Reply owed", "title": title,
                     "detail": " · ".join(x for x in (f"From {who}" if who else "",
-                                                     "Came today" if age == 0 else
                                                      f"Waiting {_n(age, 'day')}") if x),
                     "urgency": urgency, "due": None, "fire": False, "mins": MINUTES["reply"],
                     "ask": f'About the reply to "{title}": '})
@@ -618,6 +623,7 @@ def facts(src: Sources, todo: list[dict], got: list[dict], md: dict, gap: dict |
            "left": len(shown), "overdue": overdue,
            "replies": sum(1 for x in shown if x["kind"] == "reply"),
            "taps": sum(1 for x in shown if x["kind"] == "request"),
+           "todos": sum(1 for x in shown if x["kind"] == "item"),
            "mode": md["kind"], "held": len(todo) - len(shown),
            "light": src.light or "ok"}
     if gap and gap.get("minutes"):
@@ -684,9 +690,81 @@ def template(f: dict, tone: str, day_key: str) -> str:
 _BAD_LINE = re.compile(r"[\u2014\u2013\n\r\"*#`<>\[\]{}]|https?:|@")
 
 
+# How a line counts items: a number (a digit or a word, "a" for one) before
+# a noun for items, maybe with a word or two between ("two quick replies").
+# The noun says which part of the list it counts; "things", "items" and a
+# bare "6 left" are the whole of it. A vague count ("a few replies") cannot
+# be checked.
+_NUMBER_WORDS = {w: i for i, w in enumerate(
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
+    "sixteen seventeen eighteen nineteen twenty".split())}
+_COUNT_WORDS = {**_NUMBER_WORDS, "no": 0, "a": 1, "an": 1, "single": 1, "both": 2}
+_VAGUE = ("a few", "a couple of", "a couple", "a handful of", "a bunch of", "a pile of", "lots of",
+          "plenty of", "several", "some", "many", "few")
+_PART = {"reply": "replies", "replies": "replies", "answer": "replies", "answers": "replies",
+         "email": "replies", "emails": "replies", "message": "replies", "messages": "replies",
+         "tap": "taps", "taps": "taps", "request": "taps", "requests": "taps", "button": "taps",
+         "buttons": "taps", "approval": "taps", "approvals": "taps",
+         "task": "todos", "tasks": "todos", "to-do": "todos", "to-dos": "todos", "todo": "todos",
+         "todos": "todos", "chore": "todos", "chores": "todos",
+         "thing": "left", "things": "left", "item": "left", "items": "left",
+         # a bare count of what is left: "6 left", "6 to go", "6 are yours"
+         "left": "left", "to go": "left", "remain": "left", "remaining": "left", "waiting": "left",
+         "yours": "left", "on your list": "left"}
+_COUNT_RE = re.compile(
+    r"\b(" + "|".join(sorted(map(re.escape, _VAGUE), key=len, reverse=True)) + r"|\d+|"
+    + "|".join(sorted(_COUNT_WORDS, key=len, reverse=True)) + r")\s+(?:[a-z]+\s+){0,2}?("
+    + "|".join(sorted(map(re.escape, _PART), key=len, reverse=True)) + r")\b", re.I)
+# What a clause says its count is: done, overdue or held; else what is left.
+_DONE_RE = re.compile(r"\b(handled|done|did|finished|closed|cleared|sorted|answered|sent|took care|"
+                      r"taken care|wrapped|knocked out|behind you)\b", re.I)
+_OVERDUE_RE = re.compile(r"\b(overdue|late|past due)\b", re.I)
+_HELD_RE = re.compile(r"\b(hold|holds|held|until you are back|when you are back|for later)\b", re.I)
+_CLAUSE_RE = re.compile(r"[.;:!?,]|\bbut\b|\bwhile\b", re.I)
+
+
+def counts_ok(line: str, f: dict) -> bool:
+    """Whether every count of items in `line` is true to the facts, so a line
+    never makes the list sound smaller or bigger than it is. A count in a
+    clause about what got done is the day's done count (or Tacitus's part);
+    about what is overdue, the overdue count; about what is held, the held
+    count. Of what is left, a part (replies, taps, to-dos) is that part's own
+    count, and the line names the whole ("6 things") or parts that add up to
+    it. A vague count is refused."""
+    left = int(f.get("left") or 0)
+    parts_true = {"replies": f.get("replies"), "taps": f.get("taps"), "todos": f.get("todos")}
+    whole, parts = [], []
+    for clause in _CLAUSE_RE.split(line):
+        done, overdue, held = _DONE_RE.search(clause), _OVERDUE_RE.search(clause), _HELD_RE.search(clause)
+        for m in _COUNT_RE.finditer(clause):
+            word, part = m.group(1).lower(), _PART[m.group(2).lower()]
+            if word in _VAGUE:
+                return False
+            n = int(word) if word.isdigit() else _COUNT_WORDS[word]
+            if done and done.start() < m.start():
+                if n not in (f.get("done_today"), f.get("done_by_tacitus")):
+                    return False
+            elif overdue:
+                if n != f.get("overdue"):
+                    return False
+            elif held:
+                if n != f.get("held"):
+                    return False
+            elif part == "left":
+                whole.append(n)
+            else:
+                if n != parts_true.get(part):
+                    return False
+                parts.append(n)
+    if whole:
+        return all(n == left for n in whole)
+    return not parts or sum(parts) == left
+
+
 def checked_line(text: str, f: dict) -> str:
-    """The model's line, or "" when it is not one line, too long, or holds a
-    number the facts do not (a time's digits count)."""
+    """The model's line, or "" when it is not one line, too long, holds a
+    number the facts do not (a time's digits count; so does a number in
+    words), or counts the list in a way the facts do not (counts_ok)."""
     raw = str(text or "").strip().strip("\"'")
     line = " ".join(raw.split())
     if not line or "\n" in raw or len(line) > GREETING_MAX or _BAD_LINE.search(line):
@@ -694,7 +772,9 @@ def checked_line(text: str, f: dict) -> str:
     allowed = set()
     for v in f.values():
         allowed.update(_NUM_RE.findall(str(v)))
-    if any(n not in allowed for n in _NUM_RE.findall(line)):
+    said = _NUM_RE.findall(line) + [str(_NUMBER_WORDS[w]) for w in re.findall(r"[a-z]+", line.lower())
+                                     if w in _NUMBER_WORDS and w != "one"]
+    if any(n not in allowed for n in said) or not counts_ok(line, f):
         return ""
     return line
 
@@ -710,6 +790,8 @@ def greeting_prompt(f: dict, tone: str, liked: list[str], disliked: list[str]) -
         json.dumps(f, sort_keys=True),
         "Rules: one line, at most 90 characters, plain words, no names, no emoji, no quotes, "
         "no dash between clauses. Do not invent a number, a meeting or a task.",
+        f"What is left is {f.get('left', 0)} things in all. Speak of it as that whole, or stay general. "
+        "Never count only a part of it (the replies, the taps, the to-dos) as if it were all there is.",
     ]
     if liked:
         lines.append("Lines the owner liked: " + " | ".join(liked[-4:]))
@@ -1078,7 +1160,7 @@ def _ledger_reads(zone: ZoneInfo, now: float) -> tuple[list, set, list]:
         from preprocessor import ledger
     rows = ledger.get_open_entries()
     replies = ledger.reply_backlog(rows, draft_convs=None, zone=zone, cap=ledger.REPLY_BACKLOG_CAP,
-                                   min_days=0)
+                                   min_days=REPLY_MIN_DAYS)
     open_ids = {r.get("id") for r in rows}
     cutoff = datetime.fromtimestamp(now - 2 * 86400, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     conn = ledger.guarded_connect(ledger.DB_PATH, read_only=True)
