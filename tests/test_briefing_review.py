@@ -36,6 +36,12 @@ import remote_briefing as rb  # noqa: E402
 import remote_llm as rl  # noqa: E402
 
 NOW = datetime(2026, 10, 15, 11, 0, tzinfo=timezone.utc)      # Thu 05:00 MT
+
+
+@pytest.fixture(autouse=True)
+def _no_outlook_lookup(monkeypatch):
+    """The Outlook link lookup is a live Graph read: a test gives its own."""
+    monkeypatch.setattr(rb, "outlook_links", lambda convs, **k: {})
 TODAY = date(2026, 10, 15)
 
 
@@ -826,7 +832,8 @@ def test_the_whole_morning_with_the_upstream_rules_and_the_review(tmp_path, priv
     text, rec = rb.run("morning-briefing", b, run_id="cron-morning-briefing-t", now=NOW,
                        chat=lambda messages, **kw: (json.loads(json.dumps(plan)), {}), review=review,
                        queue=lambda items, agent, now: queued.extend(items) or len(items),
-                       rooms=lambda *a, **k: [], mark=lambda *a, **k: True, keep_records=records)
+                       rooms=lambda *a, **k: [], mark=lambda *a, **k: True, keep_records=records,
+                       links=lambda convs: {})
     body, footer = text.split(":mag: *Checked before sending* by Claude.")
     # The gate turned both replies into his decisions before a word was
     # written: no draft, no Send card, and nothing for the review to hold.
@@ -850,5 +857,21 @@ def test_the_whole_morning_with_the_upstream_rules_and_the_review(tmp_path, priv
     # The kept review is never handed to a hosted model: it is his, as kept
     # on his own model.
     assert queued == [] and "Sent to Claude" not in body
-    assert "Review confirmation" in needs and "Kept on your own model" in needs
+    assert "- A kept message needs you. Open it in Outlook." in needs
+    assert "Review confirmation" not in text and "a full review" not in text
     assert rec["review"]["status"] == "ok" and rec["review"]["held"] == 0
+
+
+def test_the_footer_and_the_packet_name_a_kept_item_in_fixed_words():
+    """The footer lands in the channel hosted turns read: a kept item is
+    "A kept message" there, and a kept follow-up's line too."""
+    cands = {"L1": {"ledger_id": "kept-a", "title": "Secret review title", "keep_level": "local"},
+             "L2": {"ledger_id": "row-b", "title": "Lab order", "keep_level": "full"}}
+    lists = {"top": [("L1", "A kept message needs you. Open it in Outlook."), ("L2", "*Lab order*: today")]}
+    items = br.collect_items(lists, cands, follow_ups=[{"id": "kept-a", "description": "Secret review title"}])
+    review = {"status": "ok", "model": "claude", "drop": {"L1": {"kind": "stale", "why": "it is old"},
+                                                         "L2": {"kind": "stale", "why": "it is old"}},
+              "hold": {}, "move": {}}
+    text = "\n".join(br.footer(review, items))
+    assert "Left out *A kept message*: it is old." in text and "Left out *Lab order*" in text
+    assert "Secret" not in text and "Secret" not in json.dumps(items[-1])

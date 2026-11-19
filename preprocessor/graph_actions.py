@@ -2720,6 +2720,10 @@ if __name__ == "__main__":
     except ModuleNotFoundError:
         from preprocessor import mail_mediation as _mm_child
     _mediated = _mm_child.check_child_parse(parser, args)  # the verb the mediator checked
+    if _mediated:
+        # A resident's request never speaks for the local writer
+        # (keep_gate.LOCAL_WRITER_ENV, draft_gate rule 5).
+        os.environ.pop("EA_DRAFT_WRITER", None)
     # Every id option is a plain mail id, whoever runs the tool.
     _mm_child.refuse_unplain_ids("graph_actions", getattr(args, "command", "") or "", sys.argv[1:])
     # An owner-side draft edit the mediator did not start holds the draft's

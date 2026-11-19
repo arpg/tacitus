@@ -19,8 +19,9 @@ sweep. Whatever a model picked, code holds these rules there:
      committee, a panel, a board.
   4. The reply goes to many people: a reply-all that reaches
      MANY_RECIPIENTS others or more.
-  5. The thread is kept from hosted models below Summary (keep_gate):
-     no scheduled lane works it; the reply is the owner's.
+  5. The thread is kept from hosted models (keep_gate): on the machine,
+     no scheduled lane drafts on it; at `facts`, only the local writer's
+     body goes (the remote briefing), never a hosted model's.
 
 A meeting request is the scheduling lane's: rules 2 and 3 never read a
 thread whose record is a meeting request or a scheduling row, so a yes
@@ -39,6 +40,7 @@ reads the owner's mail records and fails closed).
 """
 from __future__ import annotations
 
+import os
 import re
 from datetime import date
 
@@ -234,8 +236,8 @@ def check(item: dict, says: str = "", *, own=()) -> dict | None:
                 "line": f"They asked again. {'On ' + when + ' you' if when else 'Earlier you'} "
                         "said no reply. Still no reply?"}
     question = f"They ask: {_clip(ask, 140)}" if ask else f"Your answer on {title}"
-    if "keep_level" in item and not _keep_gate().may_hand_off(item.get("keep_level")):
-        # Rule 5: the thread is kept from hosted models below Summary.
+    if item.get("keep_level") == "local":
+        # Rule 5: no scheduled run drafts on a thread kept on the machine.
         return {"rule": "kept", "why": "kept on your own model", "choices": [],
                 "line": f"Reply needs you (kept on your own model): {question}"}
     picks = ["Yes", "No"] if yes_no(ask) else []
@@ -258,14 +260,16 @@ def check(item: dict, says: str = "", *, own=()) -> dict | None:
 
 def cron_refusal(*, run_id: str, conversation_id: str = "", ledger_ids=(), body: str = "",
                  recipient_count: int | None = None, decisions=None, rows=None,
-                 keep_records=None) -> str:
+                 keep_records=None, local_writer: bool | None = None) -> str:
     """'' when a scheduled lane may make this reply draft, else why not, in
     plain words. `rows` (the ledger rows the draft names, as
     ledger.get_entry gives them) and `decisions` (the owner's on the
     conversation and on those rows' conversations) are read from the
     ledger when not given; `keep_records` stands in for the mail's
-    records in the keep check (keep_gate.levels). A chat turn's run is
-    never refused here."""
+    records in the keep check (keep_gate.levels). `local_writer` says the
+    body is the local writer's (the remote briefing sets
+    keep_gate.LOCAL_WRITER_ENV for its own create-reply; read from the
+    environment when not given). A chat turn's run is never refused here."""
     if not autonomous_run(run_id):
         return ""
     if decisions is None or rows is None:
@@ -294,9 +298,14 @@ def cron_refusal(*, run_id: str, conversation_id: str = "", ledger_ids=(), body:
         when = _day(said.get("at"))
         return (f"the owner said no reply on this thread{' on ' + when if when else ''} "
                 f"(\"{_clip(said.get('said'), 100)}\")")
-    # A thread kept from hosted models below Summary is never worked by a
-    # scheduled lane (keep_gate, failing closed): the reply is the owner's.
-    kept = _keep_gate().refusal(rows or (), conversation_id=conversation_id, records=keep_records)
+    # Rule 5 (keep_gate, failing closed): no scheduled lane drafts on a
+    # thread kept on the machine; on a `facts` thread only the local
+    # writer's body goes, never a hosted model's.
+    kg = _keep_gate()
+    if local_writer is None:
+        local_writer = os.environ.get(kg.LOCAL_WRITER_ENV) == "local"
+    kept = kg.refusal(rows or (), conversation_id=conversation_id, records=keep_records,
+                      local_writer=local_writer)
     if kept:
         return kept
     meeting = False

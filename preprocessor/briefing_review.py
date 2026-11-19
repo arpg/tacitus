@@ -217,6 +217,11 @@ def collect_items(lists: dict, cands: dict, *, follow_ups=(), room_posts=()) -> 
     for p in room_posts or []:
         for r in p.get("refs") or []:
             rooms_of.setdefault(r, []).append(p.get("project") or "")
+    import keep_gate
+    # A kept item (keep_gate) is named in fixed words wherever the post or
+    # its footer names it: hosted turns read the channel.
+    kept_ids = {c.get("ledger_id") for c in cands.values()
+                if isinstance(c, dict) and keep_gate.kept(c.get("keep_level")) and c.get("ledger_id")}
     items: list[dict] = []
     by_ref: dict[str, dict] = {}
     for sec in order:
@@ -233,16 +238,18 @@ def collect_items(lists: dict, cands: dict, *, follow_ups=(), room_posts=()) -> 
                           "conversation_id": c.get("conversation_id") or "",
                           "message_id": c.get("message_id") or "",
                           "title": c.get("title") or "", "kind": c.get("kind") or "",
+                          "kept": keep_gate.kept(c.get("keep_level")),
                           "rooms": rooms_of.get(ref, []),
                           "owner_said": [d for d in c.get("owner_said") or [] if isinstance(d, dict)]})
             by_ref[ref] = items[-1]
     for n, f in enumerate(follow_ups or [], 1):
         if isinstance(f, dict) and f.get("id"):
+            kept = f["id"] in kept_ids or keep_gate.kept(keep_gate.label_level(f))
+            desc = keep_gate.KEPT_NAME if kept else f.get("description") or ""
             items.append({"ref": f"F{n}", "section": "followup", "sections": ["followup"],
-                          "ledger_id": f["id"],
-                          "line": f"Follow-up due: {_one(f.get('description'), 120)}",
+                          "ledger_id": f["id"], "line": f"Follow-up due: {_one(desc, 120)}",
                           "conversation_id": f.get("conversation_id") or "", "message_id": "",
-                          "title": f.get("description") or "", "kind": "ledger", "rooms": []})
+                          "title": desc, "kind": "ledger", "rooms": [], "kept": kept})
     n = 0
     for p in room_posts or []:
         for lid, desc in zip(p.get("also") or [], p.get("also_text") or []):
@@ -1175,7 +1182,12 @@ def footer(review: dict, items: list[dict]) -> list[str]:
         return []
     name = _name(review.get("model") or "")
     by_ref = {i["ref"]: i for i in items}
-    t = {r: _title(i) for r, i in by_ref.items()}
+    import keep_gate
+    withheld = set(review.get("withheld") or ())
+    # A kept item is named in fixed words (keep_gate): hosted turns read
+    # the channel the footer lands in.
+    t = {r: keep_gate.KEPT_NAME if i.get("kept") or r in withheld else _title(i)
+         for r, i in by_ref.items()}
     if st == "local":
         head = (":mag: *Checked before sending* by your own model, not by Claude or Codex. "
                 "Your Models setting sends this check there.")

@@ -7,7 +7,10 @@ A hosted model (Claude, Codex, any frontier model) works an item on its
 own, with no owner asking in that turn, only at `summary` or `full`: a
 hand-off to the EA channel, a scheduled lane's reply draft. Below that
 (`local`, `facts`) the item stays on the owner's own model: the
-remote briefing lists it under Needs you, and nothing hands it on.
+remote briefing lists it under Needs you, and nothing hands it on. The
+local writer may still draft a `facts` reply in a scheduled run; no
+scheduled run drafts on a `local` thread. A channel that hosted turns
+read names a kept item in code's fixed words only (kept_line).
 Every path that decides this asks here, so one rule holds for all of
 them: the remote briefing's candidates, hand-offs and reply queue, the
 weekly audit's hand-offs, the bot's hand-off queue, a scheduled lane's
@@ -21,7 +24,8 @@ Replies card's rows, and the pre-send review's packet.
     annotate(items)      the same, written onto each item as `keep_level`
     may_hand_off(level)  True at `summary` and `full`
     split_handoffs(items)  (the ones a hosted model may take, the rest)
-    refusal(items, ...)  '' or why a scheduled lane may not work them
+    refusal(items, ...)  '' or why a scheduled lane may not draft on them
+    kept_line(level, ...)  the fixed words a hosted-read channel shows
 
 What an item says itself (label_level): its `keep_level`, a `kept_level`
 in plain words (privacy_rules.PLAIN), the same on its thread brief
@@ -53,12 +57,19 @@ _FROM_PLAIN = {v: k for k, v in privacy_rules.PLAIN.items()}
 _ADDRESS_KEYS = ("from", "from_email", "sender")
 _LIST_KEYS = ("to", "cc")
 
-# The words the owner reads for an item kept from hosted models that
-# needs more than a reply (the remote briefing's Needs you line).
+# The note the reply queue records for an item kept from hosted models
+# that needs more than a reply (the remote briefing's Needs you pick).
 KEPT_DECISION = ("Kept on your own model, so no hosted model works on it. It needs you: "
                  "open it in Outlook.")
 # Why a scheduled lane may not draft on a kept thread (draft_gate).
 KEPT_REFUSAL = "the thread is kept on the owner's own model"
+# A kept item where a list names it in a few words (Also open, Looks done).
+KEPT_NAME = "A kept message"
+# Set by the remote briefing for its own create-reply: the body is the
+# local writer's, so a `facts` thread may take it (draft_gate rule 5).
+# A mediated child (a resident's request) never carries it.
+LOCAL_WRITER_ENV = "EA_DRAFT_WRITER"
+_LINK_UNSAFE = str.maketrans({"<": "", ">": "", "|": " ", "*": "", "`": ""})
 
 
 def stricter(*found: str) -> str:
@@ -73,6 +84,31 @@ def may_hand_off(level) -> bool:
     """A hosted model may work the item with no owner asking: `summary`
     or `full`. Anything else, a missing level included, may not."""
     return level in HANDOFF_LEVELS
+
+
+def kept(level) -> bool:
+    """Kept below Summary: the item stays on the owner's own model."""
+    return level in ("local", "facts")
+
+
+def kept_line(level: str, *, day: str = "", who: str = "", subject: str = "", link: str = "",
+              draft: bool = False) -> str:
+    """The whole line a channel that hosted turns read shows for an item
+    kept below Summary: fixed words from code, never a model's, with no
+    more than the level lets a hosted reader see. `local`: the message's
+    date alone; `facts`: also its sender and subject as the headers give
+    them. `link` is the message's Outlook link; `draft` words the line for
+    a reply that waits for Send."""
+    facts = level == "facts"   # any other level shows the date alone
+    who = " ".join(str(who or "").translate(_LINK_UNSAFE).split()) if facts else ""
+    subject = " ".join(str(subject or "").translate(_LINK_UNSAFE).split()).rstrip(".") if facts else ""
+    frm = f" from {who}" if who else ""
+    on = (f" on {day}" if frm else f" from {day}") if day else ""
+    about = f": {subject}" if subject else ""
+    if draft:
+        return f"A reply to the kept message{frm}{on} is ready{about}."
+    opener = f"<{link}|Open it in Outlook>" if link else "Open it in Outlook"
+    return f"A kept message{frm}{on} needs you{about}. {opener}."
 
 
 def _meta(item: dict) -> dict:
@@ -248,13 +284,18 @@ def split_handoffs(items: Iterable[dict], *, records=None,
     return ok, [i for i in items if not may_hand_off(i["keep_level"])]
 
 
-def refusal(items: Iterable[dict] = (), *, conversation_id: str = "", records=None) -> str:
-    """'' when a hosted model may work these rows and this thread on its
-    own, else KEPT_REFUSAL. Fails closed as levels() does."""
+def refusal(items: Iterable[dict] = (), *, conversation_id: str = "", records=None,
+            local_writer: bool = False) -> str:
+    """'' when a scheduled lane may draft on these rows and this thread,
+    else KEPT_REFUSAL: never at `local`; at `facts` only when the body is
+    the local writer's (`local_writer`), never a hosted model's. Fails
+    closed as levels() does."""
     pool = [i for i in items if isinstance(i, dict)]
     if conversation_id:
         pool.append({"conversation_id": conversation_id})
     if not pool:
         return ""
-    found = levels(pool, key=lambda i: str(id(i)), records=records)
-    return "" if all(may_hand_off(v) for v in found.values()) else KEPT_REFUSAL
+    level = stricter(*levels(pool, key=lambda i: str(id(i)), records=records).values())
+    if level == "local" or (level == "facts" and not local_writer):
+        return KEPT_REFUSAL
+    return ""

@@ -170,6 +170,22 @@ def test_each_room_gets_one_post_with_its_items_and_its_other_open_rows(conn):
     assert sent == [{"room": "ea-kestrel", "ok": True}, {"room": "ea-lumen", "ok": False}]
 
 
+def test_a_kept_row_in_also_open_is_named_in_fixed_words(conn):
+    """Room sessions read the slice: a row kept from hosted models is
+    named in code's fixed words, by its stamp or its keep label."""
+    entries = [{"ref": "L1", "section": "top", "line": "*Radar order* (Pat): first thing",
+                "ledger_id": "row-k", "conversation_id": "", "title": "Radar order", "summary": ""}]
+    open_rows = [{"id": "row-k", "description": "Radar order"},
+                 {"id": "kept-k2", "description": "Kestrel export licence", "keep_level": "local"},
+                 {"id": "kept-k3", "description": "Kestrel badge form", "kept_from_frontier": "listed domain"},
+                 {"id": "row-k4", "description": "Kestrel parts list", "keep_level": "summary"}]
+    posts = br.plan_posts(entries, heading="Morning briefing, Mon Oct 12", open_rows=open_rows,
+                          conn=conn, targets=TARGETS, clean=rb._clean, matcher=_matcher({"kestrel": 3}))
+    k = posts[0]["text"]
+    assert "Also open here (3): A kept message; A kept message; Kestrel parts list" in k
+    assert "export licence" not in k and "badge form" not in k
+
+
 def test_the_morning_run_posts_slices_and_names_the_rooms(monkeypatch, conn, tmp_path):
     monkeypatch.setenv("EA_DIR", str(tmp_path))
     monkeypatch.setattr(br, "enabled", lambda cfg=None: True)

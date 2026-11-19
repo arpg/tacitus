@@ -819,6 +819,10 @@ def main() -> int:
     args = parser.parse_args()
     import mail_mediation as _mm_child
     _mediated = _mm_child.check_child_parse(parser, args)  # the verb the mediator checked
+    if _mediated:
+        # A resident's request never speaks for the local writer
+        # (keep_gate.LOCAL_WRITER_ENV, draft_gate rule 5).
+        os.environ.pop("EA_DRAFT_WRITER", None)
     if not hasattr(args, "func"):
         parser.print_help()
         return 1

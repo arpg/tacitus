@@ -9,12 +9,15 @@ repository that preceded it.
 - **Mail you keep from hosted models stays off their work list.** A
   thread kept on your machine or at "facts only" is never handed to
   Claude or Codex by a scheduled run: not by the morning briefing, the
-  weekly audit or the queue that opens their topics, and no scheduled
-  run drafts a reply on it. When such an item needs more than a reply,
-  the briefing lists it under Needs you as kept on your own model, and
-  the weekly audit names it the same way. Every path asks one check,
-  which reads your keep list and your own model's records and, when it
-  cannot read them, keeps the mail on your machine.
+  weekly audit or the queue that opens their topics, and Claude or Codex
+  drafts no reply on it in a scheduled run. Your own model still drafts
+  replies to "facts only" mail; no scheduled run drafts on mail kept on
+  your machine. The briefing, its room posts and the weekly audit name a
+  kept item in fixed words, never a model's: "A kept message from Oct 5
+  needs you. Open it in Outlook.", with the link, and the sender and
+  subject too for "facts only" mail. Every path asks one check, which
+  reads your keep list and your own model's records and, when it cannot
+  read them, keeps the mail on your machine.
 - **A hosted model checks each briefing before it goes out.** Before the
   morning briefing, the afternoon update, their project-room posts or
   the weekly audit go out, Claude or Codex (your Models choice for

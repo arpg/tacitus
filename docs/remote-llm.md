@@ -218,9 +218,12 @@ fired, the participants), the rules in force and the user's engagement now.
 
 A hosted model works an item with no owner asking in that turn (a
 hand-off from a scheduled lane, a scheduled lane's reply draft) only at
-`summary` or `full`; one check decides it for every path
-(`preprocessor/keep_gate.py`, docs/llm-lanes.md 2.3), and when it cannot
-read the records every item from mail reads `local`.
+`summary` or `full`; the local writer still drafts a `facts` reply in the
+remote briefing, and no scheduled run drafts on a `local` thread. A
+channel hosted turns read names a kept item in code's fixed words only.
+One check decides it for every path (`preprocessor/keep_gate.py`,
+docs/llm-lanes.md 2.3), and when it cannot read the records every item
+from mail reads `local`.
 
 The gate applies under `enforce`, `ghost` and `sealed`; under `shadow` the
 levels only label. `mail_privacy.FACT_FIELDS` is the one list a `facts`

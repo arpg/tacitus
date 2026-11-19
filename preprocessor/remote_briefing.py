@@ -251,6 +251,8 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                     **{k: it[k] for k in ("to", "cc") if isinstance(it.get(k), list)},
                     "owner_said": owner_said(b, conv, row),
                     "asked": _asked(row, it.get("received") or ""),
+                    # The headers a kept item's line may name (keep_gate.kept_line).
+                    "received": it.get("received") or "", "subject": it.get("subject") or "",
                     # How far a hosted model may take it (keep_gate): what the
                     # item and its row say; run() adds the mail's records.
                     "keep_level": keep_gate.stricter(keep_gate.label_level(it),
@@ -320,6 +322,9 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                   "scheduling": str((brief or {}).get("scheduling") or "none"),
                   "owner_said": owner_said(b, conv, o),
                   "asked": _asked(o, str((brief or {}).get("last_inbound") or "")),
+                  "received": str(o.get("kept_received") or (brief or {}).get("last_inbound")
+                                  or (brief or {}).get("latest") or ""),
+                  "subject": str((brief or {}).get("subject") or ""),
                   "keep_level": keep_gate.label_level(o)})
     return out
 
@@ -813,7 +818,9 @@ def stage_reply(cand: dict, body: str, *, run_id: str, runner=None, note=None) -
     with tempfile.TemporaryDirectory(prefix="remote-briefing-") as td:
         body_path = str(Path(td) / "body.txt")
         Path(body_path).write_text(body)
-        env = dict(os.environ, EA_RUN_ID=run_id)
+        # The body is the local writer's: a `facts` thread may take it
+        # (draft_gate rule 5); a hosted lane's create-reply never says so.
+        env = dict(os.environ, EA_RUN_ID=run_id, **{keep_gate.LOCAL_WRITER_ENV: "local"})
         # The row this reply answers: its Send closes exactly that row.
         link = ["--ledger-id", cand["ledger_id"]] if cand.get("ledger_id") else []
         rc, out = runner([str(HERE / "graph_actions.py"), "create-reply",
@@ -959,6 +966,7 @@ def backlog_candidates(b: dict) -> dict[str, dict]:
             "age_days": int(e.get("age_days") or 0), "since": e.get("since") or "",
             "has_draft": e.get("has_draft"), "queued": e.get("queued") or {},
             "kept": bool(e.get("kept")), "keep_level": keep_gate.label_level(e),
+            "received": e.get("since") or "", "subject": e.get("subject") or "",
             "total": int(e.get("total") or 0),
             "type": e.get("type") or "", "due": "", "tags": [], "brief": None,
             "owner_said": [d for d in e.get("owner_said") or [] if isinstance(d, dict)]}
@@ -1205,7 +1213,13 @@ def _queue_line(cands: dict[str, dict], drafts: list[dict], lists: dict, gone=()
         names = []
         for r in v["named"]:
             c = cands[r]
-            tag = ", a meeting to place" if _meeting(c) else ", kept mail" if c.get("kept") else ""
+            if _kept(c) or c.get("kept"):
+                # Code's words alone; the subject only where Facts allow it.
+                name = (_words(c.get("subject"), 60) if c.get("keep_level") == "facts"
+                        and c.get("subject") else "a kept message")
+                names.append(f"{name} ({c['age_days']}d, kept mail)")
+                continue
+            tag = ", a meeting to place" if _meeting(c) else ""
             names.append(f"{_words(_title(c), 60)} ({c['age_days']}d{tag})")
         line += " No draft yet: " + "; ".join(names) \
             + (f"; and {v['more']} more." if v["more"] > 0 else ".")
@@ -1228,6 +1242,80 @@ def _title(c: dict) -> str:
 def _line_of(c: dict) -> str:
     who = f" ({_clean(c.get('who'), 60)})" if c.get("who") else ""
     return f"*{_clean(_title(c), 120)}*{who}"
+
+
+# ── items kept from hosted models in the post ─────────────────────────
+# The post, its room slices and the weekly audit land in channels that
+# hosted turns read. An item kept below Summary (keep_gate) is named
+# there in code's fixed words alone (keep_gate.kept_line): never the
+# plan's, the reviewer's or the local model's words, and no more of its
+# headers than its level lets a hosted reader see.
+
+def _day(ts) -> str:
+    """'Oct 5' on the user's clock for a mail time; '' when none parses."""
+    try:
+        at = datetime.fromisoformat(str(ts or "").strip().replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    at = at.astimezone(_tz())
+    return f"{at:%b} {at.day}"
+
+
+def _kept(c: dict) -> bool:
+    return keep_gate.kept(c.get("keep_level"))
+
+
+def _kept_text(c: dict, *, draft: bool = False) -> str:
+    """A kept item's whole line (keep_gate.kept_line)."""
+    return keep_gate.kept_line(c.get("keep_level") or "local", day=_day(c.get("received")),
+                               who=_clean(c.get("who"), 60), subject=_clean(c.get("subject"), 100),
+                               link=c.get("outlook_link") or "", draft=draft)
+
+
+def _hide_kept(cands: dict[str, dict], lists: dict) -> dict:
+    """`lists` with each kept item's line in code's fixed words, whatever
+    the plan or the review wrote for it."""
+    return {sec: [(r, _kept_text(cands[r], draft=sec == "draft") if _kept(cands[r]) else line)
+                  for r, line in items]
+            for sec, items in lists.items()}
+
+
+def _row_kept(o: dict) -> bool:
+    """A briefing row kept below Summary, from what it says (the
+    preprocessor stamps the shared check's level on it)."""
+    return keep_gate.kept(keep_gate.label_level(o))
+
+
+def outlook_links(convs: list[str], *, runner=None) -> dict[str, str]:
+    """{conversation id: the Outlook link of its newest message}, looked up
+    now (graph_actions web-links, as the close card does); {} on any
+    failure, and the line then says "Open it in Outlook" with no link."""
+    if not convs:
+        return {}
+    try:
+        _rc, out = (runner or _run_json)([str(HERE / "graph_actions.py"), "web-links",
+                                          *[f"--conversation-id={c}" for c in convs]],
+                                         env=dict(os.environ), timeout=60)
+    except Exception as e:
+        print(f"remote_briefing: Outlook links skipped: {str(e)[:160]}", file=sys.stderr)
+        return {}
+    links = out.get("links") if isinstance(out, dict) else None
+    good = re.compile(r"^https://[^\s<>|]+$")
+    return {c: str(v.get("web_link")) for c, v in (links or {}).items()
+            if isinstance(v, dict) and good.match(str(v.get("web_link") or ""))}
+
+
+def add_links(cands: dict[str, dict], links=None) -> None:
+    """Put the Outlook link on each kept candidate with a thread."""
+    want = [c for c in cands.values()
+            if _kept(c) and c.get("conversation_id") and "outlook_link" not in c]
+    if not want:
+        return
+    found = (links or outlook_links)(list(dict.fromkeys(c["conversation_id"] for c in want)))
+    for c in want:
+        c["outlook_link"] = (found or {}).get(c["conversation_id"], "")
 
 
 # A `why` that only restates the due date: code says the date itself.
@@ -1297,12 +1385,16 @@ def _looks_done(b: dict, audit: dict) -> list[str]:
     """The rows that look done and wait on the user's confirm (its card, or
     a reply to the briefing once the card expired): the ledger's
     proposals, then the ones this run's pre-send audit added."""
+    kept = {o.get("id") for o in (b.get("open_obligations") or []) + (b.get("stale_obligations") or [])
+            if isinstance(o, dict) and _row_kept(o)}
+    kept |= {p.get("id") for p in b.get("close_proposals") or [] if isinstance(p, dict) and _row_kept(p)}
     rows = [(p.get("id"), p.get("description"), p.get("why"))
             for p in b.get("close_proposals") or []]
     seen = {r[0] for r in rows}
     rows += [(d.get("id"), d.get("description"), d.get("why"))
              for d in audit.get("closed_rows") or [] if d.get("id") not in seen]
-    return [_clean(desc or rid, 80) + (f" ({_words(why, 90).rstrip('.')})" if why else "")
+    return [keep_gate.KEPT_NAME if rid in kept else
+            _clean(desc or rid, 80) + (f" ({_words(why, 90).rstrip('.')})" if why else "")
             for rid, desc, why in rows if desc or rid]
 
 
@@ -1328,6 +1420,9 @@ def _waiting_line(b: dict, today: date) -> list[str]:
         except ValueError:
             when = None
         day = f" {when:%b} {when.day}" if when else ""
+        if _row_kept(o):
+            rows.append(f"a kept message (you asked{day})")
+            continue
         rows.append(f"{_words(o.get('description') or o.get('id'), 100)} (you asked{day}{asked})")
     if not rows:
         return []
@@ -1385,7 +1480,7 @@ def _morning_lists(cands: dict[str, dict], plan: dict, drafts: list[dict],
         "escalated": [(e["ref"], f"{_line_of(cands[e['ref']])}: {_clean(e.get('why'), 140)}")
                       for e in escalated],
     }
-    return _reviewed(cands, _one_per_thread(cands, lists), audit)
+    return _hide_kept(cands, _reviewed(cands, _one_per_thread(cands, lists), audit))
 
 
 def _reviewed(cands: dict[str, dict], lists: dict, audit: dict) -> dict:
@@ -1442,7 +1537,7 @@ def _afternoon_lists(cands: dict[str, dict], plan: dict, audit: dict, drafts=())
             lists["draft"].append((d["ref"], _draft_line(c, d)))
         elif not _thread_keys(c) & shown:
             lists["pending"].append((d["ref"], f"{_line_of(c)}: {_clean(d.get('decision'), 180)}"))
-    return _reviewed(cands, lists, audit)
+    return _hide_kept(cands, _reviewed(cands, lists, audit))
 
 
 def room_entries(cands: dict[str, dict], lists: dict) -> list[dict]:
@@ -1495,7 +1590,8 @@ def render_morning(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime
         handled.append(f"{n_reply} answered by your replies")
     lapsed = b.get("lapsed") or []
     if lapsed:
-        names = "; ".join(_words(_LABEL.sub("", str(r.get("description") or ""), count=1), 60)
+        names = "; ".join("a kept message" if _row_kept(r) else
+                          _words(_LABEL.sub("", str(r.get("description") or ""), count=1), 60)
                           for r in lapsed[:3])
         handled.append(f"{len(lapsed)} closed when their date passed, with nothing asked of you"
                        f" ({names}{'; ...' if len(lapsed) > 3 else ''})")
@@ -1567,7 +1663,8 @@ def render_afternoon(b: dict, cands: dict[str, dict], plan: dict, *, now: dateti
     motion = [p for p in plan.get("in_motion") or [] if p["ref"] not in skip]
     if motion:
         out += ["", "*Already in motion* (checked against your sent mail and the channel):"]
-        out += [f"- {_line_of(cands[p['ref']])}: {in_motion(cands[p['ref']])}" for p in motion]
+        out += [f"- {_kept_text(cands[p['ref']])}" if _kept(cands[p["ref"]])
+                else f"- {_line_of(cands[p['ref']])}: {in_motion(cands[p['ref']])}" for p in motion]
     rest = []
     for e in b.get("todays_events") or []:
         start, _end = _event_times(e)
@@ -1581,7 +1678,7 @@ def render_afternoon(b: dict, cands: dict[str, dict], plan: dict, *, now: dateti
         when = "all day" if e.get("isAllDay") else (sched_render.clock(start) if start else "")
         tom.append(f"- {when} {_clean(e.get('subject'), 80)}")
     tomorrow = local.date() + timedelta(days=1)
-    tom += [f"- Due tomorrow: {_line_of(c)}" for r, c in cands.items()
+    tom += [f"- Due tomorrow: {_kept_text(c) if _kept(c) else _line_of(c)}" for r, c in cands.items()
             if _date(c.get("due")) == tomorrow and r not in skip]
     if tom:
         out += ["", "*Tomorrow preview:*"] + tom[:10]
@@ -1761,6 +1858,8 @@ def room_slices(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dic
         except Exception:
             open_rows = briefing.get("open_obligations") or []
     open_rows = [o for o in open_rows if _live_row(o, local.date()) and o.get("id") not in gone]
+    # Each row's keep level (keep_gate): a kept one is named in fixed words.
+    keep_gate.annotate(open_rows)
     posts = briefing_rooms.plan_posts(entries, heading=heading, open_rows=open_rows, conn=conn,
                                       targets=targets, clean=_clean, matcher=matcher,
                                       skip=briefing_review.room_skip(review, cands))
@@ -1772,11 +1871,13 @@ def room_slices(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dic
 
 def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run: bool = False,
         now: datetime | None = None, chat=None, audit=None, drafter=None,
-        queue=None, rooms=None, mark=None, review=None, keep_records=None) -> tuple[str, dict]:
+        queue=None, rooms=None, mark=None, review=None, keep_records=None,
+        links=None) -> tuple[str, dict]:
     """(the post, the run record). `review` stands in for the pre-send
     review (briefing_review.review_post); an `audit` given alone stands in
     for the still-open audit, with no review. `keep_records` stands in
-    for the mail's records in the keep check (keep_gate.levels)."""
+    for the mail's records in the keep check (keep_gate.levels), `links`
+    for the Outlook link lookup (outlook_links)."""
     now = now or _now()
     morning = agent == "morning-briefing"
     t0 = time.monotonic()
@@ -1864,7 +1965,9 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
     # candidates under their own refs, and the plan's threads are left out.
     queue_cands = backlog_candidates(briefing)
     for c in keep_gate.annotate(queue_cands.values(), records=keep_records):
-        c["kept"] = c["kept"] or not keep_gate.may_hand_off(c["keep_level"])
+        # The local writer drafts as before; a thread kept on the machine
+        # it never drafts (draft_gate rule 5).
+        c["kept"] = c["kept"] or c["keep_level"] == "local"
     cands.update(queue_cands)
     taken = note_plan(cands, plan, drafts, escalated, now=now,
                       mark=(lambda *a, **k: False) if dry_run else mark)
@@ -1874,6 +1977,9 @@ def run(agent: str, briefing: dict, *, run_id: str, stale: bool = False, dry_run
                                       run_id=run_id, dry_run=dry_run, chat=chat, drafter=drafter,
                                       mark=mark)
         drafts += more
+    # The Outlook link of each kept item: its line has nothing else to
+    # open it by.
+    add_links(cands, links)
     render = (lambda a: render_morning(briefing, cands, plan, now=now, drafts=drafts,
                                        escalated=escalated, audit=a, stale=stale,
                                        fallback=fallback)) if morning else \

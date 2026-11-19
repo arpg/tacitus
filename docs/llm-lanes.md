@@ -438,7 +438,15 @@ check itself fails for a cron lane, the read is refused.
 
 **No hosted model works a kept item on its own.** A hosted model may take
 an item with no owner asking in that turn (a hand-off to the EA channel, a
-scheduled lane's reply draft) only at `summary` or `full`. One check
+scheduled lane's reply draft) only at `summary` or `full`. The local writer
+still drafts a `facts` reply in the remote briefing; no scheduled run
+drafts on a `local` thread. A channel that hosted turns read (the EA
+channel, the project rooms) names a kept item in code's fixed words only
+(`keep_gate.kept_line`), never a model's: at `local`, "A kept message from
+Oct 5 needs you. Open it in Outlook." with the Outlook link; at `facts`,
+the sender and the subject as the headers give them too. The waiting line,
+Looks done, the quietly handled names, the reply-queue line, Also open and
+the weekly audit's lists hold the same rule. One check
 decides it for every path (`preprocessor/keep_gate.py`): the strictest of
 what the item, its metadata and its thread brief say (a keep label alone
 reads `facts`), the level of the thread's records and of the message's
@@ -446,12 +454,15 @@ own, and `local` for anyone on the keep list among its addresses. When the
 records cannot be read, every item from mail reads `local`. The remote
 briefing's candidates and reply queue, the weekly audit's hand-offs, the
 queue's merge and the bot's tick, `create-reply` for a scheduled run
-(`draft_gate.cron_refusal`, rule 5), the inbox scan block, the pre-send
+(`draft_gate.cron_refusal`, rule 5: never at `local`; at `facts` only the
+body the remote briefing's local writer made, which it says with
+`EA_DRAFT_WRITER=local` and a mediated request never carries), the inbox
+scan block, the pre-send
 review's packet, the nightly reconcile's judge (a kept row goes as its
 title and dates, with no note or last action) and the briefing JSON's
 rows (`keep_level`, `kept_level`) all use it. A kept item that needs more than a reply is listed under
-Needs you as kept on the owner's own model; the owner can still ask for
-it in a room or thread, where a chat turn gets its level's view.
+Needs you in those fixed words; the owner can still ask for it in a room
+or thread, where a chat turn gets its level's view.
 
 **A message kept on the machine that asks for something becomes a ledger row.** The
 lanes would otherwise never hear of it: the digest is the only place a
@@ -724,8 +735,8 @@ line; it never falls back to a Claude run.
   reads each item's thread and reports one line per item. A single hand-off gets the
   prompt below. An item with no thread becomes a decision instead. An item
   kept below `summary` is never handed off: code moves the pick to Needs
-  you, as kept on the owner's own model, and the queue and the bot's tick
-  check each hand-off again (section 2.3).
+  you, named in fixed words, and the queue and the bot's tick check each
+  hand-off again (section 2.3).
 - **The pre-send review** (`preprocessor/briefing_review.py`) checks the
   whole post before it, its room slices or its reply drafts go out; the
   subsection below has the detail. When it cannot run, **the still-open

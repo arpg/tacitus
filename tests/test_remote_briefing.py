@@ -20,6 +20,14 @@ import remote_briefing as rb  # noqa: E402
 
 NOW = datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc)   # Mon 04:00 MT
 
+REAL_OUTLOOK_LINKS = rb.outlook_links
+
+
+@pytest.fixture(autouse=True)
+def _no_outlook_lookup(monkeypatch):
+    """The Outlook link lookup is a live Graph read: a test gives its own."""
+    monkeypatch.setattr(rb, "outlook_links", lambda convs, **k: {})
+
 
 @pytest.fixture
 def mountain(monkeypatch):
@@ -304,7 +312,7 @@ def test_make_draft(priv):
     calls, argvs = [], []
 
     def runner(argv, env, timeout=180):
-        calls.append((argv[1], env.get("EA_RUN_ID")))
+        calls.append((argv[1], env.get("EA_RUN_ID"), env.get("EA_DRAFT_WRITER")))
         argvs.append(argv)
         return 0, {"status": "reply_draft_created", "id": "d-9"}
     cand = {"from": "pat@example.edu", "who": "Pat", "title": "Slides", "summary": "s",
@@ -313,7 +321,9 @@ def test_make_draft(priv):
                        write=lambda to, brief, out, conversation_id: (Path(out).write_text("Hi") and
                                                                       ({"status": "ok"}, 0)))
     assert ok == {"ok": True, "draft_id": "d-9", "status": "reply_draft_created"}
-    assert calls == [("create-reply", "cron-x"), ("update", "cron-x")]
+    # The body is the local writer's, and create-reply is told so
+    # (draft_gate rule 5: a Facts only thread may take it).
+    assert calls == [("create-reply", "cron-x", "local"), ("update", "cron-x", "local")]
     # The draft names the row it answers, so its Send closes that row only.
     assert argvs[0][-2:] == ["--ledger-id", "row-1"]
     bad = rb.make_draft(cand, "Yes.", run_id="cron-x", runner=runner,
@@ -954,7 +964,7 @@ def test_a_morning_run_works_the_reply_queue(mountain, priv):
     assert _queue_text(text) == (
         ":inbox_tray: *Reply queue*: 8 replies owed, the oldest for 7 days. 2 have a draft ready for "
         "Send. No draft yet: Reply to Bo (7d); Reply to Lee (4d); Reply to Di (4d, a meeting to place); "
-        "Reply to Cy (3d, kept mail); and 1 more.")
+        "About cy (3d, kept mail); and 1 more.")
     assert rec["backlog"] == {"asked": 3, "drafted": 1, "decisions": 1, "left": 1, "failed": 0,
                               "deferred": 0}
     assert rec["drafts"] == 1 and rec["decisions_from_rails"] == 0
@@ -1126,6 +1136,7 @@ def _kept_morning(label: bool = True):
         "conversation_id": "c-review", "source_message_id": "m-review",
         "notes": "Written by the local model. A review is due today.", **lab,
         "thread_brief": {"conversation_id": "c-review", "ask": "Submit the review.",
+                         "subject": "Review confirmation",
                          "last_inbound": "2026-10-05T16:20:33Z", **lab,
                          "messages": [{"from": "notices@reviews.example.org",
                                        "gist": "A review is due today."}]}})
@@ -1144,6 +1155,7 @@ def _kept_run(b, **kw):
     def chat(messages, **k):
         prompts.append(messages[-1]["content"])
         return json.loads(json.dumps(plan)), {}
+    kw.setdefault("links", lambda convs: {c: f"https://outlook.example.com/mail/{c}" for c in convs})
     text, rec = rb.run("morning-briefing", b, run_id="cron-morning-briefing-t", now=NOW, chat=chat,
                        queue=lambda items, agent, now: queued.extend(items) or len(items),
                        audit=lambda *a, **k: {}, mark=lambda lid, since, outcome, **k: marks.append(
@@ -1158,11 +1170,18 @@ def test_a_kept_row_the_plan_hands_off_stays_with_the_owner(priv):
     text, rec, queued, marks, prompt, kept = _kept_run(_kept_morning())
     assert [q["conversation_id"] for q in queued] == ["c-paper"]
     assert "*Sent to Claude* (1)" in text and rec["escalated"] == 1
+    # The post names it in code's fixed words, at its level: the label
+    # alone reads Facts only, so the sender and the subject may show.
     needs = text.split("*Needs you*")[1].split("\n\n")[0]
-    assert "*Review confirmation* (notices@reviews.example.org): Kept on your own model, so no hosted " \
-        "model works on it. It needs you: open it in Outlook." in needs
+    assert needs == (" (1)\n- A kept message from notices@reviews.example.org on Oct 5 needs you: Review "
+                     "confirmation. <https://outlook.example.com/mail/c-review|Open it in Outlook>.")
+    # Nothing the models wrote about it, on any line: not the plan's why
+    # or task, not the local model's summary or ask.
+    for words in ("a full review is due", "summarize the manuscript", "A review is due today",
+                  "Submit the review"):
+        assert words not in text
     sent = text.split("*Sent to Claude*")[1]
-    assert "Review confirmation" not in sent and "summarize the manuscript" not in text
+    assert "Review confirmation" not in sent
     assert ("kept-review", "decision") in marks and ("kept-review", "escalated") not in marks
     # The planner is told which items stay on the owner's own model.
     item = next(i for i in prompt["items"] if i["ref"] == kept)
@@ -1173,9 +1192,14 @@ def test_a_kept_row_with_no_label_is_caught_by_the_mail_records(priv):
     """The briefing's copy of a row may carry no keep label: the mail's
     records (and the keep list) still keep it from the hand-off."""
     records = lambda i: "local" if i.get("conversation_id") == "c-review" else "full"  # noqa: E731
-    text, rec, queued, marks, prompt, kept = _kept_run(_kept_morning(label=False), keep_records=records)
+    text, rec, queued, marks, prompt, kept = _kept_run(_kept_morning(label=False), keep_records=records,
+                                                       links=lambda convs: {})
     assert [q["conversation_id"] for q in queued] == ["c-paper"]
-    assert "Kept on your own model" in text.split("*Needs you*")[1]
+    # Kept on the machine: the date alone, no sender and no subject; with
+    # no link found, the line still says where to open it.
+    needs = text.split("*Needs you*")[1].split("\n\n")[0]
+    assert needs == " (1)\n- A kept message from Oct 5 needs you. Open it in Outlook."
+    assert "Review confirmation" not in text and "notices@reviews.example.org" not in text
     # When the check cannot run, the row stays with the owner too.
     def broken(i):
         raise OSError("store locked")
@@ -1248,23 +1272,71 @@ def test_the_bot_never_opens_a_topic_for_a_kept_hand_off(tmp_path):
     assert len(posts) == 1 and "AAQk400000" not in _json.loads(seen_file.read_text())
 
 
-def test_a_reply_on_a_kept_thread_is_his_with_no_draft_written(priv):
+def test_the_local_writer_drafts_a_facts_reply_and_never_a_local_one(priv):
     """New mail kept at Facts only reaches the briefing as its facts (the
-    mail gate): a draft the plan picks for it is a decision, made before
-    the writer runs, and create-reply would refuse it in any case."""
+    mail gate). The local writer still drafts its reply in the scheduled
+    run, and the post names it in fixed words. A thread kept on the
+    machine gets no draft: it is his, before the writer runs."""
     b = _briefing()
     b["new_needs_response"].append({
-        "message_id": "m-app", "conversation_id": "c-app", "subject": "Question about the lab",
-        "from": "applicant@example.net", "from_name": "A. Applicant", "kept_level": "Facts only",
-        "kept_from_frontier": "your rule", "remote_record": {}})
+        "message_id": "m-fac", "conversation_id": "c-fac", "subject": "Lab access form",
+        "from": "pat.rivera@example.edu", "from_name": "Pat Rivera", "kept_level": "Facts only",
+        "kept_from_frontier": "your rule", "received": "2026-10-11T15:00:00Z", "remote_record": {}})
+    b["new_needs_response"].append({
+        "message_id": "m-loc", "conversation_id": "c-loc", "subject": "Badge renewal",
+        "from": "pat.rivera@example.edu", "from_name": "Pat Rivera",
+        "received": "2026-10-11T16:00:00Z", "remote_record": {}})
     cands = rb.candidates(b, today=NOW.date())
-    ref = next(r for r, c in cands.items() if c.get("message_id") == "m-app")
-    assert cands[ref]["keep_level"] == "facts"
-    plan = dict(PLAN, drafts=[{"ref": ref, "reply_must_say": "Yes, there is a place in the lab."}],
-                escalate=[])
+    ref = {c.get("message_id"): r for r, c in cands.items()}
+    assert cands[ref["m-fac"]]["keep_level"] == "facts"
+    plan = dict(PLAN, drafts=[{"ref": ref["m-fac"], "reply_must_say": "Yes, the form is signed."},
+                              {"ref": ref["m-loc"], "reply_must_say": "Yes, renew it."}], escalate=[])
+    made = []
+    records = lambda i: "local" if i.get("conversation_id") == "c-loc" else "full"  # noqa: E731
     text, rec = rb.run("morning-briefing", b, run_id="cron-morning-briefing-t", now=NOW,
-                       chat=_model(plan), drafter=lambda *a, **k: pytest.fail("drafted"),
+                       chat=_model(plan), keep_records=records, links=lambda convs: {},
+                       drafter=lambda c, says, run_id: made.append(c["message_id"]) or
+                       {"ok": True, "draft_id": "d-1"},
                        queue=lambda *a, **k: 0, audit=lambda *a, **k: {})
+    assert made == ["m-fac"] and rec["drafts"] == 1
+    drafts = text.split("*Drafts ready*")[1].split("\n\n")[0]
+    assert "- A reply to the kept message from Pat Rivera on Oct 11 is ready: Lab access form." in drafts
+    assert "the form is signed" not in text and "renew it" not in text
     needs = text.split("*Needs you*")[1].split("\n\n")[0]
-    assert "Question about the lab" in needs and "Reply needs you (kept on your own model)" in needs
-    assert "a place in the lab" not in text and rec["drafts"] == 0
+    assert "- A kept message from Oct 11 needs you. Open it in Outlook." in needs
+    assert "Badge renewal" not in text
+
+
+def test_kept_rows_in_the_other_lines_of_the_post():
+    """The waiting line, Looks done and the quietly handled names: a kept
+    row is named in fixed words there too."""
+    since = (NOW - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    b = _briefing()
+    kept = {"id": "kept-k", "description": "Grant panel scores", "keep_level": "local",
+            "kept_level": "Kept on your machine",
+            "thread_brief": {"waiting_on_reply": {"since": since, "asked": "Send me the panel scores."}}}
+    b["open_obligations"].append(kept)
+    b["close_proposals"] = [{"id": "kept-k", "description": "Grant panel scores", "why": "the scores came"}]
+    b["lapsed"] = [{"id": "kept-l", "description": "Panel sign-up", "kept_from_frontier": "listed domain"}]
+    post = rb.render_morning(b, rb.candidates(b, today=NOW.date()),
+                             {"get_done_today": [], "flexes": [], "needs_you": []},
+                             now=NOW, drafts=[], escalated=[])
+    assert "a kept message (you asked" in post and "*Looks done?* (1)" in post
+    for words in ("Grant panel scores", "panel scores", "the scores came", "Panel sign-up"):
+        assert words not in post
+
+
+def test_the_outlook_link_comes_from_the_close_cards_lookup_and_only_a_safe_one_shows():
+    calls = []
+
+    def runner(argv, *, env, timeout):
+        calls.append(argv[1:])
+        return 0, {"links": {"c-1": {"web_link": "https://outlook.example.com/owa/?ItemID=a%2Bb"},
+                             "c-2": {"web_link": "https://x.example/|<script>"},
+                             "c-3": {"web_link": "javascript:alert(1)"}}, "errors": {}}
+    got = REAL_OUTLOOK_LINKS(["c-1", "c-2", "c-3"], runner=runner)
+    assert got == {"c-1": "https://outlook.example.com/owa/?ItemID=a%2Bb"}
+    assert calls == [["web-links", "--conversation-id=c-1", "--conversation-id=c-2", "--conversation-id=c-3"]]
+    assert REAL_OUTLOOK_LINKS([], runner=lambda *a, **k: pytest.fail("looked up")) == {}
+    broken = lambda argv, **k: (_ for _ in ()).throw(OSError("graph down"))  # noqa: E731
+    assert REAL_OUTLOOK_LINKS(["c-1"], runner=broken) == {}

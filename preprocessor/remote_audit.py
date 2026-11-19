@@ -107,6 +107,9 @@ def candidates(rows: list[dict], b: dict, *, today: date) -> dict[str, dict]:
             "ask": (brief or {}).get("ask") or "",
             "conversation_id": o.get("conversation_id") or "",
             "message_id": o.get("source_message_id") or "",
+            "received": str(o.get("kept_received") or (brief or {}).get("last_inbound")
+                            or (brief or {}).get("latest") or ""),
+            "subject": str((brief or {}).get("subject") or ""),
             "keep_level": keep_gate.label_level(o), "brief": brief}
     n = 0
     for t in b.get("new_dropped_threads") or []:
@@ -122,7 +125,7 @@ def candidates(rows: list[dict], b: dict, *, today: date) -> dict[str, dict]:
             "days_stale": t.get("days_stale"), "summary": t.get("body_preview") or "",
             "ask": rec.get("ask") or "", "conversation_id": conv,
             "message_id": t.get("message_id") or "", "keep_level": keep_gate.label_level(t),
-            "brief": None}
+            "received": t.get("received") or "", "subject": t.get("subject") or "", "brief": None}
     return out
 
 
@@ -235,6 +238,10 @@ def fallback_plan(cands: dict[str, dict]) -> dict:
 # ── the post ──────────────────────────────────────────────────────────
 
 def _line(c: dict, why: str) -> str:
+    if rb._kept(c):
+        # Code's fixed words alone (keep_gate.kept_line): hosted turns read
+        # the channel this post lands in.
+        return f"• {rb._kept_text(c)}"
     who = f" ({rb._clean(c.get('who'), 60)})" if c.get("who") else ""
     due = f", due {c['due']}" if c.get("due") else ""
     return f"• *{rb._clean(c.get('title'), 120)}*{who}{due}: {rb._clean(why, 160)}"
@@ -281,10 +288,12 @@ def render(cands: dict[str, dict], plan: dict, *, closed: list[dict], reimb: lis
     section("🔴 Critical (action this week):", plan.get("critical") or [])
     section("🟡 Important (action soon):", plan.get("important") or [])
     out.extend(["", "🟢 Completed this week:"]
-               + ([f"• {rb._clean(c.get('description'), 120)}" for c in closed[:15]]
+               + ([f"• {keep_gate.KEPT_NAME}" if rb._row_kept(c) else
+                   f"• {rb._clean(c.get('description'), 120)}" for c in closed[:15]]
                   or ["• Nothing closed this week."]))
     out.extend(["", "💰 Reimbursement status:"]
-               + ([f"• {rb._clean(r.get('description'), 100)}: "
+               + ([f"• {keep_gate.KEPT_NAME}" if rb._row_kept(r) else
+                   f"• {rb._clean(r.get('description'), 100)}: "
                    f"{rb._clean(r.get('last_action') or 'no action recorded', 120)}" for r in reimb]
                   or ["• No open reimbursement items."]))
     if plan.get("patterns"):
@@ -298,8 +307,8 @@ def render(cands: dict[str, dict], plan: dict, *, closed: list[dict], reimb: lis
     out.extend([""] + _closure_block(closure))
     kept = [p for p in plan.get("kept") or [] if cands[p["ref"]].get("ledger_id") not in drop]
     if kept:
-        out.extend(["", "🔒 Kept on your own model, so no hosted model works on these. They need you:"]
-                   + [f"• {rb._clean(cands[p['ref']].get('title'), 120)}" for p in kept])
+        out.extend(["", "🔒 Kept on your own model, so no hosted model works on these:"]
+                   + [f"• {rb._kept_text(cands[p['ref']])}" for p in kept])
     if handed:
         out.extend(["", "🤖 Handed to Claude (one session in the EA channel):"]
                    + [f"• {rb._clean(cands[h['ref']].get('title'), 120)}: {rb._clean(h.get('task'), 140)}"
@@ -350,10 +359,12 @@ def reviewed_plan(plan: dict, review: dict | None) -> dict:
 
 def run(briefing: dict, *, run_id: str, dry_run: bool = False, now: datetime | None = None,
         rows: list[dict] | None = None, closed: list[dict] | None = None, closure: dict | None = None,
-        chat=None, audit=None, queue=None, review=None, keep_records=None) -> tuple[str, dict]:
+        chat=None, audit=None, queue=None, review=None, keep_records=None,
+        links=None) -> tuple[str, dict]:
     """(the post, the run record). `review` stands in for the pre-send
     review; an `audit` given alone stands in for the still-open audit.
-    `keep_records` stands in for the mail's records in the keep check."""
+    `keep_records` stands in for the mail's records in the keep check,
+    `links` for the Outlook link lookup (remote_briefing.outlook_links)."""
     now = now or datetime.now(timezone.utc)
     t0 = time.monotonic()
     today = now.astimezone().date()
@@ -362,6 +373,7 @@ def run(briefing: dict, *, run_id: str, dry_run: bool = False, now: datetime | N
     closure = closure if closure is not None else _closure_numbers()
     cands = candidates(rows, briefing, today=today)
     keep_gate.annotate(cands.values(), records=keep_records)
+    rb.add_links(cands, links)
     reimb = [o for o in rows if (o.get("type") == "reimbursement")
              and (o.get("status") or "open") in _PENDING]
     counts = {"open": sum(1 for o in rows if (o.get("status") or "open") in ("open", "follow_up")),
