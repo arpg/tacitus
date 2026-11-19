@@ -6,6 +6,21 @@ repository that preceded it.
 
 ## Unreleased
 
+- **The message you are editing keeps its ring.** In the web chat, a
+  reaction or the check Tacitus puts on a message drew the message again
+  and dropped the ring that marks it as the one you are editing.
+- **The test wall runs the web app's browser tests side by side.** The
+  browser tests moved from `tests/test_webui.py` (about 200 seconds) to a
+  file per area of the app, `tests/test_webui_<area>.py`, on shared
+  fixtures in `tests/webui_browser.py`; `run_wall.py` runs them a few at
+  a time beside the other files, gives each file's time, names a failing
+  file's failing tests, keeps its output and names a file past 90
+  seconds. Three races the tests had with the page (the stub's reply
+  closing the message strip, the drawer drawn again when Recent arrives,
+  a switch's request checked before it reached the stub) are gone. Pull
+  requests run the browser tests in CI (the `browser` job). The app's
+  line budget is a file per change in `tests/webui_budget/`.
+
 - **A reply you answered in Action requests shows what really happened.**
   It stays at "Writing the reply" (then "Still writing") until the reply
   is drafted, and then opens its Send request, even when the draft comes

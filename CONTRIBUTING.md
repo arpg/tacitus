@@ -57,7 +57,7 @@ first; the operating file is read on every turn of every install.
 3. Match the code around your change. Comments state what the code does,
    in present tense.
 4. Add or update tests. Run the wall, every test file the way CI runs
-   it: `python3 tests/run_wall.py` (about ten minutes). One file:
+   it: `python3 tests/run_wall.py` (about seven minutes). One file:
    `python3 -m pytest -q tests/test_<name>.py`.
 5. Never commit real names, email addresses or mail text, in code,
    tests, commit messages or pull request descriptions. Use made-up
@@ -128,6 +128,7 @@ construction and approval gates; its File Index lists every module.
 
 ```bash
 python3 tests/run_wall.py                 # every test file, the way CI runs them
+python3 tests/run_wall.py --browser       # the web app's browser files alone
 python3 -m pytest -q tests/test_<name>.py # one file
 python3 tests/evals/run_evals.py --verbose  # prompt evals: real prompt assembly, judged against fixtures
 ./tests/smoke_test.sh                     # health of a full install
@@ -135,11 +136,61 @@ python3 tests/evals/run_evals.py --verbose  # prompt evals: real prompt assembly
 python3 tests/validate_config.py          # config files are complete
 ```
 
+The wall runs every other file one at a time and, beside them, the
+browser files (`tests/test_webui*.py`) a few at a time: half the CPUs
+the load leaves free, at most four, or `WALL_BROWSER_JOBS`. Each file's
+line gives its time. A failing file's line is followed by the ids of its
+failing tests and the path of its whole output (under the temp
+directory, `tacitus-wall-<uid>/`). A file over 90 seconds is named at the
+end: split it by area well before it reaches the 240-second limit.
+
+### Browser tests
+
+The web app's browser tests drive Chromium against the stub server
+(`tests/webui_stub_server.py`), one file per area of the app:
+`tests/test_webui_<area>.py` (the thread, the composer, the drawer, the
+thread states, the owner's actions, the teaching, Recent, Action
+requests, installing, releases, the relay, Settings). `tests/test_webui.py`
+holds the checks that need no browser. A new test goes in its area's
+file; a new area gets its own `test_webui_<area>.py`, a name that puts it
+in the wall's browser lane. It imports its fixtures from
+`tests/webui_browser.py`, with the fixtures they ask for (`app` needs
+`browser` and `stub_factory`). One area alone:
+`python3 -m pytest -q tests/test_webui_drawer.py`; one test: add
+`-k <name>`.
+
+A stable test waits for what a person would see and acts on what has
+stopped moving:
+
+- Wait with a web-first assertion (`expect(locator).to_have_text(...)`),
+  never with a sleep for something to appear. A fixed wait is only for
+  proving that nothing happens, and stays short.
+- Let the page's own answers land before acting: after a post,
+  `echoed(page, stub, text)` (the stub answers 0.3 s later, and its reply
+  scrolls the thread, which closes an open strip, and draws the message
+  again); before a step that holds a drawer row, `drawer_drawn(page)`
+  (Recent's first read draws the drawer again 300 ms after the app
+  starts).
+- A click re-finds its element after a redraw; `scroll_into_view_if_needed`,
+  `bounding_box` and element handles do not, so take them once the page
+  is still.
+- Check a stub's record (`stub.posts`, `stub.clicks`) with `wait_for`, not
+  a bare `assert`: a switch or a button can show its new state before its
+  request reaches the stub.
+- Before you call a flaky test fixed, run it 50 times while the machine
+  is busy (several pytest processes at once).
+
+The app's text files have a line budget (`test_the_app_stays_small`): the
+sum of the grants in `tests/webui_budget/`. A change that grows the app
+adds a file of its own there, named after the change, with one line
+`+N  what the lines buy`; `000-history.txt` holds the grants before that
+and is closed. Two pull requests then never edit the same line.
+
 On `main` in the deploying checkout, the post-commit hook copies each
 commit to the bot's tree, runs the wall and the evals, and restarts the
 bot only when running code changed, after any thread in progress ends.
-CI lints every pull request once it is ready for review; a draft runs
-nothing. A push to `main` that passes the full tiers is a release: CI
+CI lints every pull request once it is ready for review and runs the web
+app's browser tests (the `browser` job); a draft runs nothing. A push to `main` that passes the full tiers is a release: CI
 signs the next `vX.Y.Z` tag on it, and installs pick it up within the
 hour ([docs/updates.md](docs/updates.md)). The patch number goes up by
 default; `#minor` or `#major` as a word of its own in the pull request's

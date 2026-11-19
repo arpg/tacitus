@@ -24,8 +24,10 @@ rather than passing on the owner's machine. The wall needs `pytest` and
 
 Every push to `main` and every tag runs the full tiers, macOS included
 (standard runners are free on a public repository). A pull request runs
-only the lint unless it carries the `full-ci` label (adding the label
-starts the run) or is run by hand with Actions > CI > Run workflow; the
+the lint and the `browser` job (the web app's browser tests,
+`tests/test_webui*.py`, with Chromium installed; the wall legs have no
+browser and skip them) unless it carries the `full-ci` label (adding the
+label starts the full run) or is run by hand with Actions > CI > Run workflow; the
 wall legs start, skip their steps and report, and the `ci` job at the
 end passes when every job passed or was skipped; branch protection
 requires that one check, and a pull request need not be current with
@@ -208,8 +210,9 @@ exit codes.
 ## Cost notes
 
 - Standard runners are free on a public repository, so pushes to `main`
-  and tags run everything. Pull requests still run only the lint unless
-  labelled `full-ci`, to keep the queue short and the wall a local habit;
+  and tags run everything. Pull requests run the lint and the browser
+  tests (about three minutes) unless labelled `full-ci`, to keep the
+  queue short and the wall a local habit;
   the macOS smoke runs on tags and Run workflow only.
 - The Linux smoke downloads Claude Code for ea-bot and the Python
   packages on every run (a few minutes). It starts no service that
