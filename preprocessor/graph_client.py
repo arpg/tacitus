@@ -2842,6 +2842,93 @@ def _strip_html(text: str) -> str:
 
 
 # -------------------------------------------------------------------
+# Teams chats over Graph (delegated Chat.Read)
+# -------------------------------------------------------------------
+# Kept out of SCOPES on purpose: Entra refuses a silent grant that names
+# any scope not yet consented, so folding Chat.Read into the mail scopes
+# would take mail down on every install without it. The chat token is
+# asked for on its own, and its absence only empties the Teams section.
+CHAT_READ_SCOPES = ["https://graph.microsoft.com/Chat.Read"]
+
+
+def _chat_token() -> Optional[str]:
+    """A silent Chat.Read token from the cached sign-in, or None (no
+    consent for the app, no cached account, or no confidential login)."""
+    try:
+        accounts = _app.get_accounts()
+        if not accounts:
+            return None
+        result = _app.acquire_token_silent(CHAT_READ_SCOPES, account=accounts[0])
+    except Exception:
+        return None
+    if result and "access_token" in result:
+        _save_cache(_cache)
+        return result["access_token"]
+    return None
+
+
+def _chat_get(path: str, token: str, params: dict) -> dict:
+    resp = requests.get(f"{GRAPH_URL}{path}", params=params, timeout=30,
+                        headers={"Authorization": f"Bearer {token}"})
+    resp.raise_for_status()
+    return resp.json() or {}
+
+
+def _graph_time(value: str):
+    try:
+        return datetime.fromisoformat((value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def get_graph_teams_chats(days_back: int = 1, token: Optional[str] = None):
+    """Recent Teams 1:1 chats through Graph, in the shape the teams-dms
+    plugin prints under "chats": [{chat_id, chat_type, display_name, email,
+    messages: [{id, from, body_preview, created, message_type}]}], newest
+    message first. None when the app has no Chat.Read consent, so a caller
+    can tell "not available" from "no recent messages" ([])."""
+    token = token or _chat_token()
+    if not token:
+        return None
+    me = _decode_jwt_payload(token).get("oid", "")
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+    chats = _chat_get("/me/chats", token, {
+        "$filter": "chatType eq 'oneOnOne'",
+        "$expand": "members,lastMessagePreview",
+        "$orderby": "lastMessagePreview/createdDateTime desc",
+        "$top": 50,
+    }).get("value", [])
+    out = []
+    for chat in chats:
+        last = _graph_time((chat.get("lastMessagePreview") or {}).get("createdDateTime"))
+        if last is None or last < cutoff:
+            break  # ordered newest first: every later chat is older
+        other = next((m for m in chat.get("members") or []
+                      if m.get("userId") and m.get("userId") != me), {})
+        raw = _chat_get(f"/chats/{chat['id']}/messages", token, {
+            "$top": 20, "$orderby": "createdDateTime desc"}).get("value", [])
+        messages = []
+        for m in raw:
+            created = _graph_time(m.get("createdDateTime"))
+            if m.get("messageType") != "message" or m.get("deletedDateTime") \
+                    or created is None or created < cutoff:
+                continue
+            body = (m.get("body") or {}).get("content", "") or ""
+            messages.append({
+                "id": m.get("id", ""),
+                "from": ((m.get("from") or {}).get("user") or {}).get("displayName") or "?",
+                "body_preview": _strip_html(body)[:300],
+                "created": m.get("createdDateTime", ""),
+                "message_type": "message",
+            })
+        if messages:
+            out.append({"chat_id": chat["id"], "chat_type": "oneOnOne",
+                        "display_name": other.get("displayName") or "Unknown",
+                        "email": other.get("email") or "", "messages": messages})
+    return out
+
+
+# -------------------------------------------------------------------
 # Calendar
 # -------------------------------------------------------------------
 def get_calendar_view(

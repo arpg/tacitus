@@ -160,11 +160,29 @@ def test_the_preprocessor_reads_teams_dms_through_the_plugin_verb(monkeypatch):
     answers = [None, (0, json.dumps({"status": "ok", "chats": [{"chat_id": "c1"}]}), ""),
                (2, "", "integrity check failed"), (0, "not json", "")]
     monkeypatch.setattr(plugin_verbs, "call_alias", alias)
-    assert preprocess.get_teams_dms(days_back=1) == []          # no plugin declares it
+    graph_reads = []
+    monkeypatch.setattr(preprocess.graph, "get_graph_teams_chats",
+                        lambda days_back=1: graph_reads.append(days_back))
+    assert preprocess.get_teams_dms(days_back=1) == []          # no plugin, no Graph consent
     assert preprocess.get_teams_dms(days_back=2) == [{"chat_id": "c1"}]
     assert preprocess.get_teams_dms() == []                     # the verb failed
     assert preprocess.get_teams_dms() == []                     # unreadable output
     assert seen[1] == ("graph_actions", "get-teams-dms", ["--days", "2"])
+    # Graph is read only when no plugin declares the verb: the plugin wins.
+    assert graph_reads == [1]
+
+
+def test_without_the_plugin_the_preprocessor_reads_teams_through_graph(monkeypatch):
+    import preprocess
+    monkeypatch.setattr(plugin_verbs, "call_alias", lambda *a, **k: None)
+    monkeypatch.setattr(preprocess.graph, "get_graph_teams_chats",
+                        lambda days_back=1: [{"chat_id": "g1"}])
+    assert preprocess.get_teams_dms() == [{"chat_id": "g1"}]
+
+    def boom(days_back=1):
+        raise RuntimeError("503")
+    monkeypatch.setattr(preprocess.graph, "get_graph_teams_chats", boom)
+    assert preprocess.get_teams_dms() == []
 
 
 # ── mail rules ────────────────────────────────────────────────────────

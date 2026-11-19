@@ -231,6 +231,17 @@ plugin's README, "Moving from the core's copy", lists the steps;
 `scripts/ea-doctor.py` fails `auth: outlook web token path` until they
 are done.
 
+### Teams chats (optional, delegated Chat.Read)
+
+The briefing's Teams section and `graph_actions.py get-teams-chats` read
+your recent Teams 1:1 chats through Graph when the app has the delegated
+`Chat.Read` permission with consent. Your tenant admin adds it to the app
+registration and grants consent; no new sign-in is needed after that, the
+cached sign-in gets a chat token silently. `Chat.Read` is requested on its
+own, never with the mail scopes, so a missing consent only leaves Teams
+empty. A tenant that blocks it can use the teams-dms owner plugin instead
+(docs/plugins.md), which wins when installed.
+
 ### REST API vs Graph API Compatibility
 
 The system auto-detects your token's audience and routes API calls
