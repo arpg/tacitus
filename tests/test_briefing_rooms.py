@@ -280,9 +280,9 @@ def test_the_run_hands_each_items_keep_level_to_its_room():
 
 
 def test_an_unanswered_slice_stays_out_of_recent_and_needs_you(tmp_path, monkeypatch):
-    """A slice the owner has not answered is in neither Recent nor Needs
-    you, in its new form or its old; once the owner writes in it, it is
-    listed, titled by its name."""
+    """A slice the owner has not answered is in neither Recent, Needs you
+    nor Home's "since you last checked in", in its new form or its old;
+    once the owner writes in it, it is listed, titled by its name."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from test_web_frontend import make, owner
     import json
@@ -315,6 +315,19 @@ def test_an_unanswered_slice_stays_out_of_recent_and_needs_you(tmp_path, monkeyp
             return [(t["channel"], t["thread_key"]) for t in json.loads(body)["threads"]]
 
         assert recent() == []
+        # Home's "since you last checked in" counts Recent's threads with an
+        # unread answer: an unanswered slice is none of them
+        import time
+        from zoneinfo import ZoneInfo
+        import home_screen
+
+        def since():
+            src = home_screen.Sources(now=time.time() + 120, zone=ZoneInfo("UTC"),
+                                      checkin={"prev": time.time() - 3600},
+                                      recent=fe.store.recent(20)["threads"])
+            return home_screen.since(src, [], [])
+
+        assert since() is None
         # the rules give an unanswered slice no state, so Needs you leaves it out
         first = fe.store.thread(ids["ea-kestrel"], k)
         state = thread_state.decide(first, origin=f"room:{ids['ea-kestrel']}")
@@ -325,5 +338,8 @@ def test_an_unanswered_slice_stays_out_of_recent_and_needs_you(tmp_path, monkeyp
         status, _h, body = owner(fe, "GET", "/api/recent")
         row = json.loads(body)["threads"][0]
         assert row["text"].splitlines()[0] == "**Survey dates**"  # the app's title: the first line
+        fe.store.add_message(ids["ea-lumen"], mid=None, thread_key=lum, author="bot", kind="message",
+                             text="Done: the first date.")
+        assert [x["text"] for x in since()["lines"]] == ["1 conversation has a new answer."]
     finally:
         fe.stop()
