@@ -3014,6 +3014,23 @@ def test_action_requests_takes_taps_only_and_says_so(app, size):
     assert not errors, errors
 
 
+def test_a_waiting_request_counts_in_the_tab_title_and_the_menu_dot(app):
+    """The requests that wait for a tap count like unread messages: in the
+    page's title and the menu button's dot, and leave them once answered."""
+    from playwright.sync_api import expect
+    page, stub, errors = app(**PHONE)
+    page.wait_for_selector(".thread-item")
+    expect(page).to_have_title("(2) Tacitus")  # the weekly plan's two unread replies
+    expect(page.locator("#menu")).to_have_attribute("data-unread", "")  # that is the place on screen
+    req = _request(stub, "Send this reply?")
+    expect(page).to_have_title("(3) Tacitus")
+    expect(page.locator("#menu")).to_have_attribute("data-unread", "1")
+    stub.change(req, "status", kind="status", text=":white_check_mark: Sent.")
+    expect(page).to_have_title("(2) Tacitus")
+    expect(page.locator("#menu")).to_have_attribute("data-unread", "")
+    assert not errors, errors
+
+
 def test_the_app_opens_on_ask_tacitus(app):
     """With no place in its address, the app opens on Ask Tacitus, never on
     Action requests; an address that names a place still opens it."""

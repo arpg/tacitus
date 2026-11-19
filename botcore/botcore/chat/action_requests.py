@@ -17,12 +17,16 @@ urgency() is the one cue the block is coloured by: `overdue`, `soon` or
 inputs are the request's linked deadline and its event's start (the
 host's request_context, from the ledger and the staged event), the card's
 age against the seven days its buttons last, and how long it has waited.
+"Soon" for a deadline or a start counts working days (soon_until): Monday
+to Friday, the week the scheduler's earliest slot and the booking links
+count, since the install keeps no list of working days outside its
+calendar's working-hours events.
 """
 from __future__ import annotations
 
 import re
 import time
-from datetime import datetime
+from datetime import date, datetime, time as dtime, timedelta
 from typing import Any
 
 from . import card_text
@@ -39,11 +43,13 @@ ACTIONS = {
 WHO = ("To", "Attendees", "Organizer", "From")
 WHAT = ("Subject", "Event")
 WHEN = ("New time", "When")
-# A waiting request turns `soon` this long before its deadline or its
-# event, or after it has waited this long (the Replies card's first rung);
-# `overdue` once the deadline or the event has passed, or a day before its
-# buttons stop acting.
-SOON_S = 2 * 86400
+# A waiting request turns `soon` when its deadline or its event comes by the
+# end of the SOON_WORKDAYS-th working day after today (WORKDAYS: Monday is
+# 0), or after it has waited WAITED_S (calendar days, as the Replies card's
+# first rung counts); `overdue` once the deadline or the event has passed,
+# or a day before its buttons stop acting.
+SOON_WORKDAYS = 2
+WORKDAYS = frozenset(range(5))
 WAITED_S = 3 * 86400
 EXPIRES_S = 86400
 LEVELS = ("overdue", "soon", "calm")
@@ -122,14 +128,30 @@ def _epoch(value: Any, *, end_of_day: bool) -> float | None:
         return None
 
 
+def soon_until(now: float, workdays: int = SOON_WORKDAYS) -> float:
+    """The last moment that is still soon: the end of the `workdays`-th
+    working day after today, local time. On a Friday that is the end of
+    Tuesday; on a Wednesday, the end of Friday. It is never less than two
+    calendar days ahead, since two working days span at least two days."""
+    day: date = datetime.fromtimestamp(now).date()
+    left = workdays
+    while left:
+        day += timedelta(days=1)
+        if day.weekday() in WORKDAYS:
+            left -= 1
+    return datetime.combine(day, dtime(23, 59, 59)).timestamp()
+
+
 def urgency(msg: dict, waiting: bool, ctx: dict | None = None,
             now: float | None = None) -> dict:
     """{"urgency", "why", "at"} for one request. Only a waiting request is
     anything but calm. Overdue: its linked deadline passed, its event's
     start passed, or its buttons stop acting within a day. Soon: a deadline
     or a start within two days, or three days of waiting. The first that
-    holds, in that order, names `why` and `at`."""
+    holds, in that order, names `why` and `at`. "Within two days" is two
+    working days (soon_until)."""
     now = time.time() if now is None else float(now)
+    soon = soon_until(now)
     if not waiting:
         return {"urgency": "calm", "why": "", "at": None}
     ctx = ctx or {}
@@ -141,8 +163,8 @@ def urgency(msg: dict, waiting: bool, ctx: dict | None = None,
             ("overdue", "due", due, due is not None and due < now),
             ("overdue", "starts", starts, starts is not None and starts < now),
             ("overdue", "expires", expires, msg.get("kind") == "card" and expires - now < EXPIRES_S),
-            ("soon", "due", due, due is not None and due - now < SOON_S),
-            ("soon", "starts", starts, starts is not None and starts - now < SOON_S),
+            ("soon", "due", due, due is not None and due <= soon),
+            ("soon", "starts", starts, starts is not None and starts <= soon),
             ("soon", "waited", posted, now - posted >= WAITED_S)):
         if test:
             return {"urgency": level, "why": why, "at": at}

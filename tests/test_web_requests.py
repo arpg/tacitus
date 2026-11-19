@@ -136,3 +136,29 @@ def test_the_bot_hands_the_web_chat_its_requests_context():
     bot = (ROOT / "ea-chat-bot.py").read_text()
     assert "_web.request_context = lambda items: _web_requests.context(" in bot
     assert "_staged_button_payload(v, consume=False)" in bot  # the staged event stays for its button
+
+
+def test_soon_counts_two_working_days_for_a_deadline_or_a_start():
+    """Soon is by the end of the second working day after today (Monday to
+    Friday). On a Friday a Monday deadline is soon, a Sunday start too (two
+    calendar days), a Tuesday deadline too; next Wednesday's is not. On a
+    Wednesday, Friday's deadline is soon and Saturday's is not."""
+    friday = datetime(2026, 11, 20, 10, 0).timestamp()
+    wednesday = datetime(2026, 11, 18, 10, 0).timestamp()
+    assert datetime.fromtimestamp(friday).weekday() == 4
+    assert datetime.fromtimestamp(ar.soon_until(friday)) == datetime(2026, 11, 24, 23, 59, 59)
+    fresh = lambda now: msg(at=now - 600)  # noqa: E731
+    cases = [
+        (friday, {"due": "2026-11-23"}, "soon"),                     # Monday
+        (friday, {"starts": "2026-11-22T15:00:00"}, "soon"),         # Sunday
+        (friday, {"due": "2026-11-24"}, "soon"),                     # Tuesday, the second working day
+        (friday, {"due": "2026-11-25"}, "calm"),                     # next Wednesday
+        (friday, {"starts": "2026-11-25T09:00:00"}, "calm"),
+        (wednesday, {"due": "2026-11-20"}, "soon"),                  # Friday
+        (wednesday, {"due": "2026-11-21"}, "calm"),                  # Saturday
+        (wednesday, {"due": "2026-11-17"}, "overdue"),
+    ]
+    for now, ctx, want in cases:
+        assert ar.urgency(fresh(now), True, ctx, now)["urgency"] == want, (ctx, now)
+    # the wait counts calendar days, as the Replies card's rungs do
+    assert ar.urgency(msg(at=friday - 3 * DAY), True, {}, friday)["why"] == "waited"

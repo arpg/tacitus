@@ -600,8 +600,13 @@ and what the place does changed.
   colour system; Soon and Overdue also carry the word, so colour is never
   the only sign, in light and dark. Overdue: its linked deadline passed,
   its event's start passed, or its buttons stop acting within a day (a
-  card lives seven days). Soon: a deadline or a start within two days, or
-  three days of waiting (the Replies card's first rung). Calm: anything
+  card lives seven days). Soon: a deadline or a start by the end of the
+  second working day after today (Monday to Friday, as the scheduler's
+  earliest slot and the booking links count; the install keeps no list of
+  working days outside its calendar's working-hours events): on a Friday a
+  Monday or Tuesday deadline is soon, a Sunday start too, next Wednesday's
+  is not. Or three calendar days of waiting, as the Replies card's rungs
+  count (`action_requests.soon_until`). Calm: anything
   else, no word. The waiting requests sort by it, then newest first. The
   deadline and the start come from the host (`request_context`,
   `preprocessor/web_requests.py`): the earliest deadline of the open
@@ -612,7 +617,9 @@ and what the place does changed.
   is in.
 - **The count.** The drawer's count for Action requests is the requests
   that wait for a tap (`waiting` on the DM's row), not unread messages; it
-  adds to the menu's count and the title as an unread count does.
+  adds to the menu button's dot and the page's title as an unread count
+  does (a muted place's count stays out of both, as before; the DM cannot
+  be muted).
 - **Needs you is the other list.** Needs you gathers the conversations
   that wait on the owner's words or decision. It leaves out what waits on
   a tap: a request in Action requests, and a conversation whose only wait
