@@ -1552,7 +1552,8 @@ def room_entries(cands: dict[str, dict], lists: dict) -> list[dict]:
             out.append({"ref": ref, "section": sec, "line": line,
                         "ledger_id": c.get("ledger_id") or "",
                         "conversation_id": c.get("conversation_id") or "",
-                        "title": c.get("title") or "", "summary": c.get("summary") or ""})
+                        "title": c.get("title") or "", "summary": c.get("summary") or "",
+                        "keep_level": c.get("keep_level") or ""})
     return out
 
 

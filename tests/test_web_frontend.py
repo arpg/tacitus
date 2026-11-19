@@ -1883,7 +1883,9 @@ def test_recent_holds_conversations_only_never_a_request(fe):
 @pytest.mark.parametrize("kind,first_kind,author,text,owner_in,want", [
     ("main", "message", "owner", "hi", True, True),
     ("sched", "message", "bot", "Finding a time.", True, True),
-    ("room", "message", "bot", "*Morning briefing*\n\nx", False, True),
+    ("room", "message", "bot", "*Morning briefing*\n\nx", False, False),  # a slice: not until answered
+    ("room", "message", "bot", "*Radar quote and 2 more*\n\nx", True, True),
+    ("sched", "message", "bot", "Morning briefing", False, False),
     ("main", "message", "bot", "Afternoon update: two items", False, True),
     ("main", "message", "bot", "A notice", False, False),
     ("main", "card", "bot", "", True, False),

@@ -63,6 +63,10 @@ def priv(tmp_path, monkeypatch):
     (ea / "config").mkdir(parents=True)
     (ea / "config" / "user-profile.json").write_text(json.dumps({"email": "kit@example.edu"}))
     monkeypatch.setenv("EA_DIR", str(ea))
+    # mail_tagger fixes its EA_DIR on import, which an earlier test file in
+    # the same process may have done: the owner's address comes from here.
+    import mail_tagger
+    monkeypatch.setattr(mail_tagger, "EA_DIR", ea)
     monkeypatch.setattr(rl, "_owner", lambda: True)
     monkeypatch.setattr(rl, "_breaker", lambda *a: None)
     monkeypatch.setattr(rb, "_rules", lambda: "")

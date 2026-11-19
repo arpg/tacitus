@@ -165,7 +165,8 @@ Recent (docs/webchat.md, Recent): `/api/recent` lists the latest
 conversations of every channel that is neither archived nor muted, newest
 activity first, in one snapshot with `as_of`, so every device shows the
 same list. A conversation is a thread the owner wrote in, or a briefing the
-bot opened in a talk place (is_conversation); a card's thread, a notice and
+bot opened in the EA channel (is_conversation); a card's thread, a
+briefing's slice in a room the owner has not answered, a notice and
 anything in Action requests (the DM) but a thread the owner opened there
 are not. A hidden channel's (Debug mode) are left out by the app.
 
@@ -590,10 +591,10 @@ def is_conversation(kind: str, first_kind: str, first_author: str, first_text: s
     is; in Action requests (`dm`) only a thread the owner opened by typing
     there (before the place took button presses only) is one; in a talk
     place (TALK_KINDS) a thread the owner wrote in is one, and so is a
-    briefing the bot opened (the morning briefing or an afternoon update,
-    as the push policy reads its title). Anything else the bot opened (a
-    notice, an alert, a pointer, a check) is not, until the owner writes in
-    it."""
+    briefing the bot opened in the EA channel (`main`: the morning briefing
+    or an afternoon update, as the push policy reads its title). Anything
+    else the bot opened (a briefing's slice in a project room, a notice, an
+    alert, a pointer, a check) is not, until the owner writes in it."""
     if first_kind in ("card", "status"):
         return False
     if kind == "dm":
@@ -602,7 +603,7 @@ def is_conversation(kind: str, first_kind: str, first_author: str, first_text: s
         return False
     if owner_in:
         return True
-    return first_author == BOT and first_kind == "message" \
+    return kind == "main" and first_author == BOT and first_kind == "message" \
         and bool(web_push_policy.report_title(first_text))
 
 

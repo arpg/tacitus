@@ -15942,11 +15942,18 @@ def _remote_escalation_tick() -> None:
         return (f"_{_untrusted_field(e.get('subject'), 120)}_ from "
                 f"{_untrusted_field(e.get('from_name'), 60) or 'unknown'}")
 
+    # The first line names what the topic is about (the first subject, "and
+    # N more"), so its title in a list (Recent) differs from day to day.
+    import briefing_rooms  # noqa: PLC0415  (preprocessor/ on sys.path)
+    name = briefing_rooms.conversation_name(
+        [{"section": "escalated", "title": _untrusted_field(e.get("subject"), 120)} for e in batch],
+        lambda t, _cap: t)
     if len(batch) == 1:
-        text = f":arrow_up: *Sent to Claude by the remote briefing*: {_named(batch[0])}. Working on it."
+        text = (f":arrow_up: *{name}*\nSent to Claude by the remote briefing: {_named(batch[0])}. "
+                "Working on it.")
         prompt = _remote_escalation_prompt(batch[0])
     else:
-        text = (f":arrow_up: *Sent to Claude by the remote briefing*: {len(batch)} items.\n"
+        text = (f":arrow_up: *{name}*\nSent to Claude by the remote briefing: {len(batch)} items.\n"
                 + "\n".join(f"{i}. {_named(e)}" for i, e in enumerate(batch, 1))
                 + "\nWorking on them.")
         prompt = _remote_escalation_batch_prompt(batch)

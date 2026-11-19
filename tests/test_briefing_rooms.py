@@ -160,7 +160,8 @@ def test_each_room_gets_one_post_with_its_items_and_its_other_open_rows(conn):
                           conn=conn, targets=TARGETS, clean=rb._clean, matcher=_matcher({"kestrel": 3}))
     assert [(p["room"], p["refs"]) for p in posts] == [("ea-kestrel", ["L1"]), ("ea-lumen", ["R1"])]
     k = posts[0]["text"]
-    assert k.startswith("*Morning briefing, Mon Oct 12: Kestrel radar*")
+    assert k.startswith("*Radar order*\n")
+    assert k.endswith("_From the morning briefing, Mon Oct 12. Reply in this thread to act on it here._")
     assert ":dart: Do today: *Radar order* (Pat): first thing" in k
     assert "Also open here (1): Kestrel field test plan" in k and "Lunch" not in k
     assert "—" not in k
@@ -209,3 +210,136 @@ def test_the_morning_run_posts_slices_and_names_the_rooms(monkeypatch, conn, tmp
     dry = rb.room_slices("morning-briefing", cands, plan, [], [], {}, b, now=NOW, dry_run=True,
                          poster=lambda *a: pytest.fail("posted"), **kw)
     assert dry and "ok" not in dry[0]
+
+
+# ── the post's name (the Recent row and the room's thread list) ────────
+
+def _entry(section, title, line=""):
+    return {"ref": title[:4], "section": section, "line": line or f"*{title}*", "ledger_id": "",
+            "conversation_id": "", "title": title, "summary": ""}
+
+
+def test_a_slice_is_named_by_its_items_in_plain_words():
+    """A post opens with what it is about, never "Morning briefing, <date>:
+    <project>", which made one row per room alike in the web chat's Recent
+    with the project cut off."""
+    one = [_entry("flex", "Re: FW: Kestrel calendar changes")]
+    assert br.conversation_name(one, rb._clean) == "Kestrel calendar changes"
+    # several: the first the post shows, by section, then how many more
+    several = [_entry("flex", "Lunch order"), _entry("due", "Task: Survey consent form"),
+               _entry("top", "Due 2026-10-12: Radar quote :memo:")]
+    assert br.conversation_name(several, rb._clean) == "Radar quote and 2 more"
+    text = br.render("Afternoon update, Mon Oct 12", several, [], rb._clean)
+    lines = text.splitlines()
+    assert lines[0] == "*Radar quote and 2 more*"
+    assert lines[1].startswith(":dart: Do today:") and lines[-1] == (
+        "_From the afternoon update, Mon Oct 12. Reply in this thread to act on it here._")
+    assert "Morning briefing" not in text and "Afternoon update" not in text and "\u2014" not in text
+
+
+def test_a_long_title_is_cut_at_a_word():
+    long = "[EXT] Apply the staged Kestrel Monday rotation and the prerequisite calendar changes for the winter"
+    name = br.conversation_name([_entry("flex", long)], rb._clean)
+    # whole words only, and no small word ("and the") left at the cut
+    assert name == "Apply the staged Kestrel Monday rotation…"
+    more = br.conversation_name([_entry("flex", long)] + [_entry("due", "x")] * 11, rb._clean)
+    assert more == "Apply the staged Kestrel Monday rotation… and 11 more"
+    assert len(more) <= br.NAME_MAX
+    one_word = br.conversation_name([_entry("top", "K" * 90)], rb._clean)
+    assert len(one_word) == br.NAME_MAX and one_word.endswith("…")
+    # no title: the item's line in plain words
+    assert br.conversation_name([_entry("top", "", "*Radar quote* (Pat): first thing")],
+                                rb._clean) == "Radar quote (Pat): first thing"
+
+
+@pytest.mark.parametrize("level", ["local", "facts"])
+def test_a_kept_item_names_its_slice_in_fixed_words(level):
+    """A first item kept from hosted models gives the post code's fixed
+    words, never its subject or its sender; a later kept item adds only
+    to the count, and an item a hosted model may read is named as usual."""
+    kept = {**_entry("top", "Re: Tenure case letter for Dr. Example"), "keep_level": level,
+            "line": "A kept message from Pat Example on Mon Oct 12 needs you: Tenure case letter."}
+    name = br.conversation_name([kept, _entry("flex", "Lunch order")], rb._clean)
+    assert name == "A kept message and 1 more"
+    assert br.render("Morning briefing, Mon Oct 12", [kept], [], rb._clean).splitlines()[0] == (
+        "*A kept message*")
+    # no title: still never the kept line's words
+    assert br.conversation_name([{**kept, "title": ""}], rb._clean) == "A kept message"
+    later = br.conversation_name([_entry("top", "Radar quote"), {**kept, "section": "flex"}], rb._clean)
+    assert later == "Radar quote and 1 more" and "Tenure" not in later and "Pat" not in later
+    for open_level in ("summary", "full", ""):
+        assert br.conversation_name([{**kept, "keep_level": open_level}], rb._clean) == (
+            "Tenure case letter for Dr. Example")
+
+
+def test_the_run_hands_each_items_keep_level_to_its_room():
+    cands = {"R1": {"title": "Re: Tenure case letter", "keep_level": "facts", "ledger_id": "row-k"}}
+    got = rb.room_entries(cands, {"needs": [("R1", "A kept message needs you.")]})
+    assert got[0]["keep_level"] == "facts"
+    assert br.conversation_name(got, rb._clean) == "A kept message"
+
+
+def test_an_unanswered_slice_stays_out_of_recent_and_needs_you(tmp_path, monkeypatch):
+    """A slice the owner has not answered is in neither Recent, Needs you
+    nor Home's "since you last checked in", in its new form or its old;
+    once the owner writes in it, it is listed, titled by its name."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_web_frontend import make, owner
+    import json
+    import owner_rooms
+    from chat import thread_state
+    fe = make(tmp_path)
+    fe.start()
+    try:
+        fe.create_private_room("ea-kestrel")
+        fe.create_private_room("ea-lumen")
+        ids = {c["name"]: c["id"] for c in fe.store.channels()}
+        monkeypatch.setattr(owner_rooms, "get", lambda cid: {"name": "ea-x"} if cid in ids.values() else None)
+        monkeypatch.setattr(chat_notify, "_ROOM_FE", [fe])
+        monkeypatch.setattr(chat_notify, "frontend_name", lambda: "web")
+        heading = "Morning briefing, Mon Oct 12"
+        k_text = br.render(heading, [_entry("top", "Radar quote"), _entry("flex", "Lunch order")], [],
+                           rb._clean)
+        l_text = br.render(heading, [_entry("needs", "Re: Survey dates")], [], rb._clean)
+        k = chat_notify.post(chat_notify.room_key(ids["ea-kestrel"]), k_text, _bypass_quiet=True)
+        lum = chat_notify.post(chat_notify.room_key(ids["ea-lumen"]), l_text, _bypass_quiet=True)
+        assert fe.store.thread_origin(ids["ea-kestrel"], k) == f"room:{ids['ea-kestrel']}"
+        # a slice in the old form, which opens with the briefing's title
+        chat_notify.post(chat_notify.room_key(ids["ea-kestrel"]),
+                         "*Morning briefing, Sun Oct 11: Kestrel radar*\n:dart: Do today: *Radar quote*",
+                         _bypass_quiet=True)
+
+        def recent():
+            status, _h, body = owner(fe, "GET", "/api/recent")
+            assert status == 200, body
+            return [(t["channel"], t["thread_key"]) for t in json.loads(body)["threads"]]
+
+        assert recent() == []
+        # Home's "since you last checked in" counts Recent's threads with an
+        # unread answer: an unanswered slice is none of them
+        import time
+        from zoneinfo import ZoneInfo
+        import home_screen
+
+        def since():
+            src = home_screen.Sources(now=time.time() + 120, zone=ZoneInfo("UTC"),
+                                      checkin={"prev": time.time() - 3600},
+                                      recent=fe.store.recent(20)["threads"])
+            return home_screen.since(src, [], [])
+
+        assert since() is None
+        # the rules give an unanswered slice no state, so Needs you leaves it out
+        first = fe.store.thread(ids["ea-kestrel"], k)
+        state = thread_state.decide(first, origin=f"room:{ids['ea-kestrel']}")
+        assert state[0] == "none"
+        fe.store.add_message(ids["ea-lumen"], mid=None, thread_key=lum, author="owner", kind="message",
+                             text="Pick the first date.")
+        assert recent() == [(ids["ea-lumen"], lum)]
+        status, _h, body = owner(fe, "GET", "/api/recent")
+        row = json.loads(body)["threads"][0]
+        assert row["text"].splitlines()[0] == "**Survey dates**"  # the app's title: the first line
+        fe.store.add_message(ids["ea-lumen"], mid=None, thread_key=lum, author="bot", kind="message",
+                             text="Done: the first date.")
+        assert [x["text"] for x in since()["lines"]] == ["1 conversation has a new answer."]
+    finally:
+        fe.stop()

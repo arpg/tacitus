@@ -810,8 +810,14 @@ line; it never falls back to a Claude run.
   or a word four or more project names share) scores nothing. A row a
   project room's turn adds is linked to that room's project when it is
   written. Each room with items gets one
-  post as a new thread: the items under their
-  section, then up to five other open rows of the project. A reply in
+  post as a new thread: its name (the first item's title in plain
+  words, "and N more" for the rest, at most 60 characters, cut at a
+  word; a first item kept from hosted models is "A kept message", never
+  its subject or sender), the items under their section, up to five other open rows of
+  the project, and a last line that names the briefing and its date.
+  The name titles the thread in the room's list and, once the owner
+  answers it, in the web chat's Recent; a post the owner has not
+  answered stays out of Recent. A reply in
   that thread is a room turn with the post as thread history. A post
   goes only to a room the owner's record (`owner_rooms`) names, through
   `chat_notify.post` with the key `room:<channel id>`: quiet hours hold
