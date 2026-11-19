@@ -509,6 +509,7 @@ def _sudo_claude_cmd(claude_args: list[str], run_id: str = "",
     ]
     if run_id:
         env_vars.append(f"EA_RUN_ID={run_id}")
+        env_vars += [f"{k}={v}" for k, v in _room_env(run_id).items()]
     passthrough = ["GRAPH_CLIENT_ID", "GRAPH_AUTHORITY", "GRAPH_AUTH_METHOD",
                    "GRAPH_REDIRECT_URI", "GRAPH_SCOPES",
                    "EA_SLACK_CHANNEL_ID"]
@@ -2243,16 +2244,35 @@ def _persist_inflight_locked() -> None:
 def _register_dispatch(run_id: str, channel: str, thread_ts: str | None,
                        ttl_s: float = DISPATCH_TTL_S, *, lane: str = "mono",
                        msg_ts: str = "", user_msg: str = "", user_id: str = "",
-                       is_thread_reply: bool = False, session_key: str = "") -> None:
+                       is_thread_reply: bool = False, session_key: str = "",
+                       room_project: str = "") -> None:
     with _dispatch_lock:
         _prune_dispatches_locked()
         _active_dispatches[run_id] = {
             "channel": channel, "thread_ts": thread_ts, "lane": lane,
             "msg_ts": msg_ts, "user_msg": user_msg[:6000], "user_id": user_id,
             "is_thread_reply": is_thread_reply, "session_key": session_key,
+            "room_project": room_project,
             "started_at": time.time(), "expires_at": time.time() + ttl_s,
         }
         _persist_inflight_locked()
+
+
+# The variable that tells the ledger CLI a turn runs in a project room
+# (project_store.ROOM_PROJECT_ENV): a row the turn adds, or an unplaced
+# row it changes, goes under the room's project at once
+# (project_store.room_link), so the briefing never guesses its room from
+# words.
+ROOM_PROJECT_ENV = "EA_ROOM_PROJECT"
+
+
+def _room_env(run_id: str) -> dict:
+    """{ROOM_PROJECT_ENV: project} for a registered turn in a project
+    room; {} for any other turn. Every run of the turn (Claude, its
+    resume and reruns, the Codex arm) carries it."""
+    with _dispatch_lock:
+        pid = str((_active_dispatches.get(run_id) or {}).get("room_project") or "")
+    return {ROOM_PROJECT_ENV: pid} if pid else {}
 
 
 def _extend_dispatch(run_id: str, ttl_s: float) -> None:
@@ -13055,7 +13075,8 @@ def _codex_turn_live(*, prompt, fresh_prompt, run_id, thread_ts, lane,
         rec = _ct.run_turn(prompt, thread_key=thread_ts, run_id=run_id, live=True,
                            fresh_prompt=fresh_prompt, lane=lane, claude_cwd=claude_cwd,
                            user_text=user_text, summarize=_scheduler_trace_summary,
-                           on_event=progress.codex_event if progress is not None else None)
+                           on_event=progress.codex_event if progress is not None else None,
+                           env=_room_env(run_id))
     except Exception as e:
         log.warning(f"codex arm: raised, Claude takes the turn: {e}")
         return None, {"harness_error": str(e)[:200]}
@@ -14096,13 +14117,19 @@ Reminders:
         # sweepers know a turn is live in this thread.
         run_id = _new_run_id()
         run_started = time.time()
-        # A project or session room's turn gets the longer limit.
-        if channel != CHANNEL_ID and _channel_scope(channel):
+        # A project or session room's turn gets the longer limit; a
+        # project room's turn files the rows it adds under its project
+        # (_room_env).
+        turn_room = _channel_scope(channel) if channel != CHANNEL_ID else None
+        if turn_room:
             run_timeout = ROOM_TIMEOUT_SECONDS
+        room_project = ""
+        if turn_room and turn_room.get("kind", "project") == "project":
+            room_project = turn_room.get("project") or ""
         _begin_run_tally()
         _register_dispatch(run_id, channel, thread_ts, msg_ts=msg_ts, user_msg=user_msg,
                            user_id=user_id, is_thread_reply=is_thread_reply,
-                           session_key=session_key)
+                           session_key=session_key, room_project=room_project)
 
         t0 = time.monotonic()
         # The scheduling channel and the proactive scheduler on the remote
@@ -14887,7 +14914,11 @@ def on_message(msg: "_chat.InboundMessage"):
                 f"[From the private #{_scope.get('name', channel)} channel, "
                 f"scoped to project '{_scope['project']}'. Reply in this "
                 f"thread; the project pack follows below. Anything you draft "
-                f"or journal belongs to this project unless said otherwise.]"
+                f"or journal belongs to this project unless said otherwise. "
+                f"A ledger row you add here goes under it; another project's "
+                f"row takes `--project <id>`. An item the user says is in the "
+                f"wrong room: fix it this turn (project_store.py placement, "
+                f"move-ledger).]"
                 f"\n\n" + user_msg
             )
     if _is_dm and user_msg and not _is_bot_command(user_msg):

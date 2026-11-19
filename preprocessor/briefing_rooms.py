@@ -17,8 +17,12 @@ Which project an item belongs to, strongest first:
      call of no project, places nothing;
   4. with no call (Gmail, a row from chat, the tagger off), the strict
      matcher alone, at MATCH_FLOOR or more. Projects tied at the top
-     score all get it, at most MAX_PROJECTS.
-An item with no project stays in the EA post only.
+     score all get it, at most MAX_PROJECTS, unless one of them is there
+     on its name words alone (project_store.name_only): a tie that name
+     words decide places nothing.
+A row the owner marked as no project's (project_store move-ledger
+--project none, which marks it loose) places nothing past stage 1. An
+item with no project stays in the EA post only.
 
 A room gets a post only when the registry binds it to the project, it is
 not archived, and the owner's own record (owner_rooms) names it. The
@@ -77,8 +81,9 @@ def enabled(cfg: dict | None = None) -> bool:
 def index(conn, votes: dict | None = None) -> dict:
     """The store's explicit links: {"rows": {ledger id: [project]},
     "threads": {conversation id: [project]}}, active projects only; with
-    "sources" {ledger id: source message id} and the mail tagger's
-    "votes" (mail_tagger.project_votes, read here unless given)."""
+    "sources" {ledger id: source message id}, the mail tagger's "votes"
+    (mail_tagger.project_votes, read here unless given) and "loose", the
+    rows the owner said belong to no project."""
     live = {r["id"] for r in conn.execute("SELECT id, status FROM projects")
             if r["status"] != "closed"}
     rows: dict[str, list[str]] = {}
@@ -97,21 +102,36 @@ def index(conn, votes: dict | None = None) -> dict:
             sources[r["id"]] = r["source_message_id"]
     except sqlite3.OperationalError:
         pass
+    loose: set[str] = set()
+    try:
+        loose = {r["ledger_id"] for r in conn.execute("SELECT ledger_id FROM loose_ledger")}
+    except sqlite3.OperationalError:
+        pass
     if votes is None:
         import mail_tagger
         votes = mail_tagger.project_votes(live)
-    return {"rows": rows, "threads": threads, "sources": sources, "votes": votes}
+    return {"rows": rows, "threads": threads, "sources": sources, "votes": votes,
+            "loose": loose}
 
 
 def projects_for(item: dict, idx: dict, conn, *, matcher=None) -> list[str]:
     """The projects an item belongs to, strongest evidence first; [] for
     none. `item` carries ledger_id, conversation_id, title, summary."""
+    return placement(item, idx, conn, matcher=matcher)["projects"]
+
+
+def placement(item: dict, idx: dict, conn, *, matcher=None) -> dict:
+    """Why an item goes where it goes: {"projects", "by", "hits"}. `by` is
+    link, thread, loose, tagger, words or none; `hits` is the word match
+    when one was made (project_store.match_projects)."""
     lid = item.get("ledger_id") or ""
     if lid and idx["rows"].get(lid):
-        return idx["rows"][lid][:MAX_PROJECTS]
+        return {"projects": idx["rows"][lid][:MAX_PROJECTS], "by": "link", "hits": []}
+    if lid and lid in (idx.get("loose") or ()):
+        return {"projects": [], "by": "loose", "hits": []}
     conv = item.get("conversation_id") or ""
     if conv and idx["threads"].get(conv):
-        return idx["threads"][conv][:MAX_PROJECTS]
+        return {"projects": idx["threads"][conv][:MAX_PROJECTS], "by": "thread", "hits": []}
     import mail_tagger
     import project_store
     matcher = matcher or project_store.match_projects
@@ -120,11 +140,14 @@ def projects_for(item: dict, idx: dict, conn, *, matcher=None) -> list[str]:
                                 (idx.get("sources") or {}).get(lid, ""), conv)
     checked = project_store.checked_call(call, hits)
     if checked is not None:
-        return checked
+        return {"projects": checked, "by": "tagger", "call": call, "hits": hits}
     if not hits or hits[0]["score"] < MATCH_FLOOR:
-        return []
+        return {"projects": [], "by": "none", "hits": hits}
     best = hits[0]["score"]
-    return [h["id"] for h in hits if h["score"] == best][:MAX_PROJECTS]
+    top = [h for h in hits if h["score"] == best]
+    if len(top) > 1 and any(project_store.name_only(h) for h in top):
+        return {"projects": [], "by": "none", "tie": [h["id"] for h in top], "hits": hits}
+    return {"projects": [h["id"] for h in top][:MAX_PROJECTS], "by": "words", "hits": hits}
 
 
 # ── which rooms ───────────────────────────────────────────────────────

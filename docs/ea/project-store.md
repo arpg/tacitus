@@ -50,7 +50,21 @@ about and who is in it".
   `link-person` / `add-person` when someone new appears. The store rots
   without this, and a rotted store is worse than none.
 - `match --text "..."` finds the project for a message (aliases, names,
-  members). Use it before filing rather than guessing ids.
+  members). Use it before filing rather than guessing ids. A generic
+  word in a project's name (`project`, `proposal`, `workshop`) matches
+  nothing; give such a project an alias that names it.
+- In a project room, a ledger row you add is linked to the room's
+  project when it is written, and a row with no project that you change
+  there too. A row for another project: `ledger.py add ... --project
+  <id>` (or `--project none`).
+- When the user asks why an item is in a room, or says it belongs
+  elsewhere, fix it in the same turn. `placement --ledger-id <id>` says
+  which rooms the row goes to and why. `move-ledger --ledger-id <id>
+  --project <id or none> --quote "<their words>"` moves it: it drops the
+  row's other links, records the move, and the briefing then follows the
+  link (with `none`, no room gets the row). When the cause is a project's
+  words (a generic name, a loose alias), say so, and offer to change the
+  name or the aliases with `update-project`.
 - Aliases place mail in a project's room and link ledger rows to it.
   Write a name, an acronym or a phrase as it is written (`Northwind`,
   `ORION`, `foundation repair`). One lowercase word (`foundation`) is a

@@ -440,7 +440,7 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
              lane: str = "", model: str = "", timeout: int | None = None, codex_run=None,
              scratch_runner=None, clear_runner=None, on_event=None, persist: bool = True,
              keep_scratch: bool = False, claude_cwd=None, user_text: str = "",
-             pages_runner=None, summarize=None) -> dict:
+             pages_runner=None, summarize=None, env: dict | None = None) -> dict:
     """One turn. `fresh_prompt` is the fresh prompt the bot built for this
     turn (it carries the chat thread's history); `prompt`, the prompt it
     would send a resumed Claude session, stands in when there is none.
@@ -449,7 +449,9 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
     `user_text` is the message the user sent this turn: a live turn's
     staged preference writes are applied after it only when the words they
     quote are in it. `summarize(command, output)` is the bot's trace
-    reading of a command's whole output (codex_cli.parse_events). Returns
+    reading of a command's whole output (codex_cli.parse_events). `env`
+    adds variables to the turn's environment, which its commands inherit
+    (the bot's _room_env: the project room the turn runs in). Returns
     the bot's result shape (`_shape`); `harness_error` set means Codex did
     not answer and the caller lets Claude take the turn.
 
@@ -482,8 +484,8 @@ def run_turn(prompt: str, *, thread_key: str, run_id: str, live: bool, fresh_pro
     # (codex_cli.temp_flags): a live turn and a ghost alike.
     tmp_dir = codex_ghost.ensure_codex_tmp(runner=scratch_runner)
     # EA_TURN_MODEL names the model for the mail release log (data only).
-    prefix = codex_ghost._bot_env({"EA_DIR": str(ea_dir), "EA_RUN_ID": run_id, "EA_BOT_HOME": str(BOT_HOME),
-                                   "EA_TURN_MODEL": "codex"})
+    prefix = codex_ghost._bot_env({**(env or {}), "EA_DIR": str(ea_dir), "EA_RUN_ID": run_id,
+                                   "EA_BOT_HOME": str(BOT_HOME), "EA_TURN_MODEL": "codex"})
     runner = codex_run or codex_cli.run
     last_dir = root if not live else BOT_HOME / ".local" / "state" / "ea-lanes"
     text = fresh_prompt or prompt

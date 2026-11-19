@@ -743,7 +743,9 @@ def test_a_side_session_runs_beside_its_thread():
     for verb in ("lookup", "remember", "invalidate", "mark_used"):
         assert f"_sessions.{verb}(thread_ts" not in hm, verb
     assert "if not sched_lane and not session_key:" in hm
-    assert hm.count("session_key=session_key)") == 2, "the deferred and the live registration"
+    assert hm.count("session_key=session_key)") + hm.count(
+        "session_key=session_key, room_project=room_project)") == 2, \
+        "the deferred and the live registration"
     assert '"session_key": session_key' in _fn_body("_register_dispatch")
     catchup = BOT_SRC[BOT_SRC.index("def _restart_catchup"):
                       BOT_SRC.index("threading.Thread(target=_restart_catchup")]
