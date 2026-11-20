@@ -317,6 +317,8 @@ class Stub:
         self.events: list[tuple[int, str, dict]] = []
         self.files: dict[str, tuple[str, str, bytes]] = {}
         self.clicks: list[dict] = []
+        self.modal_views: dict[str, dict] = {}  # action id -> the window its click opens
+        self.modal_saves: list[dict] = []       # each window saved: its trigger and values
         self.posts: list[dict] = []
         self.uploads: list[dict] = []  # each POST .../files: its text, thread key, nonce and (name, bytes) per file
         self.owner_actions: list[dict] = []  # each search, reaction, edit and removal
@@ -916,6 +918,8 @@ class Handler(BaseHTTPRequestHandler):
         parts = [unquote(p) for p in rest.split("/")[1:]]
         q = parse_qs(url.query)
         s = self.stub
+        if len(parts) == 2 and parts[0] == "modals":
+            return self._json(200, {"modal": s.modal_views.get(parts[1].removeprefix("web:"))})
         if parts == ["me"]:
             return self._json(200, {"owner": "owner", "bot": "bot", "public_url": s.public_url,
                                     "bundle": s.bundle.hash if s.bundle else "",
@@ -1210,10 +1214,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, s.row(rows[0]))
         if len(parts) == 4 and parts[0] == "messages" and parts[3] == "react":
             return self._json(*s.own("react", parts[1], parts[2], json.loads(self._body() or b"{}")))
+        if len(parts) == 2 and parts[0] == "modals":
+            body = json.loads(self._body() or b"{}")
+            s.modal_saves.append({"trigger": parts[1], **body})
+            return self._json(200, {"ok": True})
         if len(parts) == 4 and parts[0] == "cards" and parts[3] == "actions":
             body = json.loads(self._body() or b"{}")
             if s.click(parts[1], parts[2], body):
-                return self._json(200, {"ok": True})
+                return self._json(200, {"ok": True, "trigger": "web:" + str(body.get("action_id"))})
             return self._json(404, {"error": "no such card"})
         return self._json(404, {"error": "not found"})
 

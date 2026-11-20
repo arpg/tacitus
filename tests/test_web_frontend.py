@@ -864,7 +864,8 @@ def test_a_card_click_dispatches_an_action_with_the_stored_value(fe):
     path = f"/api/cards/dm/{ref.id}/actions"
     status, _h, body = owner(fe, "POST", path, {"action_id": "approve_send",
                                                 "value": {"token": "forged"}})
-    assert status == 200 and json.loads(body) == {"ok": True}
+    reply = json.loads(body)
+    assert status == 200 and reply["ok"] is True and reply["trigger"].startswith("web:")
     assert ev.wait(5)
     a = got[0]
     assert isinstance(a, ActionEvent)

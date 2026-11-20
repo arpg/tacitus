@@ -143,6 +143,33 @@ def test_card_buttons_post_to_the_actions_route(app):
     assert not errors, errors
 
 
+def test_a_card_button_that_opens_a_window_shows_it_and_saves_the_edit(app):
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    stub.modal_views["send"] = {
+        "type": "modal", "title": {"type": "plain_text", "text": "Edit draft"},
+        "submit": {"type": "plain_text", "text": "Save"}, "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [{"type": "context", "elements": [{"type": "mrkdwn", "text": "*To:* pat@example.org"}]},
+                   {"type": "input", "block_id": "body_block", "label": {"type": "plain_text", "text": "Body"},
+                    "element": {"type": "plain_text_input", "action_id": "body", "multiline": True,
+                                "initial_value": "Hi Pat,\n\nThanks"}}]}
+    open_thread(page, "Draft a reply")
+    page.locator(".card").first.locator("button.primary").click()
+    dlg = page.locator("dialog#modal")
+    expect(dlg).to_be_visible()
+    expect(dlg.locator("h2")).to_have_text("Edit draft")
+    expect(dlg.locator(".sheet-note")).to_contain_text("To: pat@example.org")
+    field = dlg.locator("textarea")
+    expect(field).to_have_value("Hi Pat,\n\nThanks")
+    field.fill("Hi Pat,\n\nThanks a lot")
+    dlg.locator("button[type=submit]").click()
+    wait_for(lambda: stub.modal_saves)
+    assert stub.modal_saves == [{"trigger": "web:send",
+                                 "values": {"body_block": {"body": "Hi Pat,\n\nThanks a lot"}}}]
+    expect(dlg).to_be_hidden()
+    assert not errors, errors
+
+
 def _reply_card(stub, thread_key):
     """A Replies row card in a thread, as the bot posts it."""
     import webui_stub_server as W
