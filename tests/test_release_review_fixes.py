@@ -457,8 +457,9 @@ def _edit_tap(fe, value, subject="Lab visit"):
     ns = {"FRONTEND": fe, "_verify_button_user": lambda ev: True, "CHANNEL_ID": "main",
           "_delivery_channel": lambda key: {"t100": "main", "t300": "dm"}.get(key, "main"),
           "_card_value": lambda ev: value,
-          "_fetch_draft_body": lambda did: {"subject": subject, "body": "x"} if subject
+          "_fetch_draft_body": lambda did, *acct: {"subject": subject, "body": "x"} if subject
           else {"error": "offline"},
+          "_draft_account": lambda v: ("outlook", ""),
           "log": types.SimpleNamespace(debug=lambda *a, **k: None, warning=lambda *a, **k: None)}
     handle = _bot_function("handle_edit_draft", ns)
     card = types.SimpleNamespace(thread_key="t200", channel="dm", id="w200")
@@ -518,6 +519,77 @@ def test_where_the_dm_takes_taps_only_the_question_opens_a_conversation_in_the_e
     fe = _TapsOnlyFrontend()
     _edit_tap(fe, {"draft_id": "d1", "thread_ts": "t100", "ea_channel": "main"})
     assert [p[:2] for p in fe.posts] == [("main", "t100"), ("dm", "w200")]
+
+
+class _ModalFrontend:
+    def __init__(self):
+        self.posts, self.modals = [], []
+
+    def supports(self, what):
+        return True
+
+    def post(self, channel, text, *, thread_ts=None, unfurl=True):
+        self.posts.append((channel, thread_ts, text))
+
+    def open_modal(self, trigger, view):
+        self.modals.append((trigger, view))
+
+
+def _account_fn():
+    return _bot_function("_draft_account", {"_GMAIL_ACCOUNT": "me@example.test"})
+
+
+def test_edit_opens_a_gmail_draft_too():
+    """A Gmail draft's Edit reads it from its own account and opens the box,
+    as an Outlook draft's does."""
+    fe, reads = _ModalFrontend(), []
+    ns = {"FRONTEND": fe, "_verify_button_user": lambda ev: True, "json": __import__("json"),
+          "_card_value": lambda ev: {"draft_id": "g1", "email_system": "gmail",
+                                     "gmail_email": "other@example.test"},
+          "_fetch_draft_body": lambda did, system, acct: reads.append((did, system, acct))
+          or {"to": "pat@example.test", "subject": "Hi", "body": "Hello"},
+          "_draft_account": _account_fn(),
+          "log": types.SimpleNamespace(warning=lambda *a, **k: None)}
+    handle = _bot_function("handle_edit_draft", ns)
+    handle(types.SimpleNamespace(card=types.SimpleNamespace(channel="dm", id="w1"),
+                                 trigger_id="web:t"))
+    assert reads == [("g1", "gmail", "other@example.test")]
+    assert not fe.posts, fe.posts
+    (trigger, view), = fe.modals
+    assert trigger == "web:t" and view["blocks"][1]["element"]["initial_value"] == "Hello"
+
+
+def test_the_card_value_names_the_drafts_account():
+    acct = _account_fn()
+    assert acct({"draft_id": "d"}) == ("outlook", "")
+    assert acct({"email_system": "gmail"}) == ("gmail", "me@example.test")
+    assert acct({"email_system": "gmail", "gmail_email": "b@example.test"}) == ("gmail", "b@example.test")
+
+
+def test_a_gmail_edit_saves_through_mail_actions(tmp_path):
+    runs, built = [], []
+
+    def run(cmd, **kw):
+        runs.append(cmd)
+        return types.SimpleNamespace(stdout='{"draft_id": "g1"}', returncode=0, stderr="")
+    import subprocess
+    real = subprocess.run
+    subprocess.run = run
+    try:
+        ns = {"FRONTEND": types.SimpleNamespace(post=lambda **k: None, update_card=lambda *a: None),
+              "CHANNEL_ID": "main", "_private_tmp": lambda: tmp_path, "_HELPER_PY": "python3",
+              "SCRIPT_DIR": REPO, "Path": __import__("pathlib").Path, "os": __import__("os"),
+              "json": __import__("json"), "_draft_account": _account_fn(),
+              "_build_send_confirmation": lambda *a: built.append(a) or (None, "x"),
+              "log": types.SimpleNamespace(info=lambda *a: None, error=lambda *a: None)}
+        _bot_function("_apply_draft_edit", ns)({"draft_id": "g1", "email_system": "gmail",
+                                                "thread_ts": "t1"}, "New text")
+    finally:
+        subprocess.run = real
+    (cmd,), = [runs]
+    assert cmd[1].endswith("mail_actions.py") and cmd[2:9] == [
+        "update-draft", "--provider", "gmail", "--account", "me@example.test", "--draft-id", "g1"]
+    assert built == [("main", "t1", "g1", "gmail", "me@example.test")]
 
 
 if __name__ == "__main__":

@@ -6653,9 +6653,10 @@ def handle_edit_draft(ev: "_chat.ActionEvent"):
         value = _card_value(ev)
         key = str(value.get("thread_ts") or "")
         subject = ""
-        if value.get("draft_id") and value.get("email_system", "outlook") == "outlook":
+        if value.get("draft_id"):
             try:
-                subject = str(_fetch_draft_body(value["draft_id"]).get("subject") or "").strip()
+                subject = str(_fetch_draft_body(value["draft_id"], *_draft_account(value))
+                              .get("subject") or "").strip()
             except Exception as e:
                 log.debug(f"edit tap: draft subject unread: {e}")
         about = f" to *{subject}*" if subject else ""
@@ -6702,12 +6703,7 @@ def handle_edit_draft(ev: "_chat.ActionEvent"):
     if "draft_id" not in value:
         return
     dm_channel, message_ts = ev.card.channel, ev.card.id
-    email_system = value.get("email_system", "outlook")
-    if email_system != "outlook":
-        FRONTEND.post(channel=dm_channel, thread_ts=message_ts,
-                      text="Gmail drafts are edited in Gmail; the Send button stays.")
-        return
-    draft = _fetch_draft_body(value["draft_id"])
+    draft = _fetch_draft_body(value["draft_id"], *_draft_account(value))
     if "error" in draft:
         FRONTEND.post(channel=dm_channel, thread_ts=message_ts,
                       text=f":warning: Could not load the draft: {draft['error']}")
@@ -6750,6 +6746,13 @@ def handle_edit_draft_submit(ev: "_chat.ViewEvent"):
     threading.Thread(target=_apply_draft_edit, args=(meta, new_body), daemon=True).start()
 
 
+def _draft_account(value: dict) -> tuple[str, str]:
+    """(email_system, gmail account) of a Send card's value."""
+    system = value.get("email_system") or "outlook"
+    acct = value.get("gmail_email") or (_GMAIL_ACCOUNT if system == "gmail" else "")
+    return system, acct
+
+
 def _apply_draft_edit(meta: dict, new_body: str) -> None:
     import subprocess as sp
     import tempfile
@@ -6766,14 +6769,20 @@ def _apply_draft_edit(meta: dict, new_body: str) -> None:
         body_file = Path(tmp_name)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(new_body.strip() + "\n")
-        r = sp.run(["python3", str(SCRIPT_DIR / "preprocessor" / "graph_actions.py"),
-                    "update-draft", "--message-id", draft_id, "--body", "x",
-                    "--body-file", str(body_file)],
-                   capture_output=True, text=True, timeout=40, cwd=str(SCRIPT_DIR))
+        system, acct = _draft_account(meta)
+        if system == "gmail":
+            cmd = ["python3", str(SCRIPT_DIR / "preprocessor" / "mail_actions.py"),
+                   "update-draft", "--provider", "gmail", "--account", acct,
+                   "--draft-id", draft_id, "--body-file", str(body_file)]
+        else:
+            cmd = ["python3", str(SCRIPT_DIR / "preprocessor" / "graph_actions.py"),
+                   "update-draft", "--message-id", draft_id, "--body", "x",
+                   "--body-file", str(body_file)]
+        r = sp.run(cmd, capture_output=True, text=True, timeout=40, cwd=str(SCRIPT_DIR))
         data = json.loads(r.stdout or "{}")
         if data.get("error") or r.returncode != 0:
             raise RuntimeError(data.get("error") or (r.stderr or "")[-200:])
-        card, _err = _build_send_confirmation(ea_channel, thread_ts, draft_id)
+        card, _err = _build_send_confirmation(ea_channel, thread_ts, draft_id, system, acct)
         if card is not None and dm_channel and message_ts:
             FRONTEND.update_card(_card_ref(dm_channel, message_ts), card)
             _set_draft_fingerprint(draft_id, message_ts,
