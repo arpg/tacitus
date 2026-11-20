@@ -552,6 +552,33 @@ def _status_name(status: Status | str) -> str:
     return status.value if isinstance(status, Status) else str(status)
 
 
+# A bot reply's details (docs/webchat.md, Agent and model details): the line the chat
+# bot appends to a reply ("---", then "_EA · opus: 11s · 10% session ..._",
+# maybe a rate-limit warning under it: claude_usage.format_usage_footer), and
+# the scheduler's tool trace ("─────", then one ":calendar: ..." line per
+# call: ea-chat-bot's _format_scheduler_trace), in either order at the end.
+# The store holds the bot's _italics_ as *italics* (post's mrkdwn to
+# markdown), so either mark ends a line. tests/test_web_frontend.py pins
+# both to the functions that write them.
+_USAGE_TAIL = re.compile(r"(?:\A|\n+)---\n[_*]EA\b[^\n]*[_*](?:\n[_*]:warning:[^\n]*[_*])*\s*\Z")
+_TRACE_TAIL = re.compile(r"(?:\A|\n+)\u2500{3,}\n(?::calendar:[^\n]*(?:\n|\Z))+\s*\Z")
+
+
+def details_at(text: str) -> int | None:
+    """Where a bot reply's details begin, in UTF-16 code units (the app's
+    string index), or None when the reply has none. 0 means the message is
+    details alone (a trace posted on its own)."""
+    end = len(text or "")
+    while True:
+        m = _TRACE_TAIL.search(text, 0, end) or _USAGE_TAIL.search(text, 0, end)
+        if m is None or m.start() >= end:
+            break
+        end = m.start()
+    if end == len(text or ""):
+        return None
+    return len(text[:end].encode("utf-16-le")) // 2
+
+
 def _loads(text: str | None) -> Any:
     if not text:
         return None
@@ -1257,7 +1284,17 @@ class WebStore:
                 "owner_reactions": _loads(row["owner_reactions"]) or [],
                 "deleted": row["deleted_at"] is not None,
                 "posted_at": row["posted_at"], "updated_at": row["updated_at"],
-                "reply_count": max(0, reply_count)}
+                "reply_count": max(0, reply_count),
+                **self._details_json(row)}
+
+    @staticmethod
+    def _details_json(row: sqlite3.Row) -> dict:
+        """`details_at` for a bot reply that ends in its details (details_at):
+        the app leaves them out unless Settings shows them."""
+        if row["author"] != BOT or row["kind"] != "message" or not row["text"]:
+            return {}
+        at = details_at(row["text"])
+        return {} if at is None else {"details_at": at}
 
     def thread_of(self, channel: str, key: str | None) -> str | None:
         """The thread key `key` names in the channel: the key itself when a

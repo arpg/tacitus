@@ -747,7 +747,11 @@ function renderMsg(m) {
   else if (m.kind === 'card' && m.card) el.append(renderCard(m));
   else if (m.kind === 'status') el.append(cardText(m.text, 'card status'));
   else {
-    if (m.text) el.append(h('div', { class: 'text' }, markdown(m.text)));
+    // A reply's details (the model, the time, the tool trace) leave the reply while the bot's setting says off; a
+    // trace posted on its own then leaves nothing to show (docs/webchat.md, Agent and model details).
+    const text = S.showDetails === false && m.details_at != null ? m.text.slice(0, m.details_at) : m.text;
+    if (!text && !m.file) el.hidden = true;
+    if (text) el.append(h('div', { class: 'text' }, markdown(text)));
     if (m.file) el.append(renderFile(m.file));
   }
   const chips = m.deleted ? null : reactionRow(m);
@@ -3443,6 +3447,7 @@ async function settingsPage(page) {
   if (page === 'menu') {
     connLine();
     if (!$('debug-row').hidden) call('GET', '/settings/debug').then((d) => { $('debug').checked = d.on === true; }, () => {});
+    if (!$('details-row').hidden) loadShowDetails().catch(() => {});
     if (from && from !== 'menu') $(`go-${from}`).focus(); // back where Back came from
     return;
   }
@@ -3493,6 +3498,7 @@ function settingsMenu() {
   $('settings-save').addEventListener('click', saveSettings);
   $('notify-rows').addEventListener('change', saveNotify);
   $('debug').addEventListener('change', saveDebug);
+  $('show-details').addEventListener('change', saveShowDetails);
 }
 
 // Advanced's Save sends the values and a task's own hosted model only where it changed
@@ -3569,6 +3575,27 @@ async function saveDebug(e) {
   try { box.checked = (await call('POST', '/settings/debug', { on: box.checked })).on === true; } catch (err) {
     box.checked = !box.checked;
     $('settings-conn').textContent = `Debug mode not saved: ${err.message}`;
+  } finally { box.disabled = false; }
+}
+
+// Show agent and model details (docs/webchat.md): the bot keeps the setting; a change draws the open thread again.
+// A bot that serves no such page leaves every reply whole.
+async function loadShowDetails() {
+  const on = (await call('GET', '/settings/details')).on === true;
+  $('show-details').checked = on;
+  if (on !== S.showDetails) { S.showDetails = on; if (S.thread && S.thread !== NEW_THREAD) renderThread(); }
+}
+
+async function saveShowDetails(e) {
+  const box = e.target;
+  box.disabled = true;
+  try {
+    S.showDetails = (await call('POST', '/settings/details', { on: box.checked })).on === true;
+    box.checked = S.showDetails;
+    if (S.thread && S.thread !== NEW_THREAD) renderThread();
+  } catch (err) {
+    box.checked = !box.checked;
+    $('settings-conn').textContent = `Not saved: ${err.message}`;
   } finally { box.disabled = false; }
 }
 
@@ -4180,6 +4207,8 @@ async function boot() {
     if (T.relay) setTimeout(boot, Math.min(30000, 1000 * 2 ** S.retry++));
     return;
   }
+  // Whether replies show their details: read before the first thread is drawn (a device away from home reads it too).
+  if (((S.me && S.me.settings) || []).includes('details')) await loadShowDetails().catch(() => {});
   const es = connect();
   // Wait for the stream before the first reads, so no event falls between them.
   await Promise.race([es.ready, new Promise((resolve) => { setTimeout(resolve, 3000); })]);
@@ -4205,6 +4234,7 @@ async function boot() {
   $('open-settings').hidden = false;
   footer();
   $('debug-row').hidden = T.relay || !((S.me && S.me.settings) || []).includes('debug'); // saved only from the owner's own copy
+  $('details-row').hidden = T.relay || !((S.me && S.me.settings) || []).includes('details'); // saved only from the owner's own copy
   welcomeOnce();
   if (!T.relay) checkBundle().catch(() => {}); // the bot's own copy: checked meanwhile
   else if (!relayCopy()) { // the bot's own copy off the tailnet: a new release comes through the relay

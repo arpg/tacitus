@@ -6,6 +6,12 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A reply in the web chat no longer ends with the model and the time.**
+  The line under each reply that names the model, how long it took and
+  how much of the plan it used ("EA · opus: 11s"), and the scheduling
+  tools' trace under it, now show only when Settings, "Show agent and
+  model details" is on. It is off by default; the text stays as the bot
+  wrote it, so turning the switch on shows them on every reply again.
 - **A project room's part of the briefing is named by what it holds.**
   Each room's post from the morning briefing or the afternoon update now
   opens with its first item's title in plain words, with "and 2 more"
