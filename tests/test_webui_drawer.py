@@ -424,6 +424,11 @@ ROW = """() => { const r = (id) => $(id).getBoundingClientRect(); const head = d
           light: r('light-nav'), message: r('new-message'), room: r('new-room'), width: r('new-row').width}; }"""
 
 
+# Each button of the row shows its whole label and stays inside the menu.
+WHOLE = """[...$('new-row').children].filter((b) => !b.hidden).every((b) => b.scrollWidth <= b.clientWidth
+  && b.getBoundingClientRect().right <= $('channels').getBoundingClientRect().right)"""
+
+
 def test_new_message_and_new_room_sit_under_the_menu_s_header(app):
     """New message and New room share a row under the menu's header, above
     Search; the status light keeps its place in the header beside the name,
@@ -446,7 +451,10 @@ def test_new_message_and_new_room_sit_under_the_menu_s_header(app):
     box = page.evaluate(ROW)
     assert box["head"] <= box["row"] < box["search"], box
     assert box["light"]["bottom"] <= box["row"], box  # the light stays in the header, clear of the row
-    assert box["message"]["right"] <= box["room"]["left"], box
+    # side by side where the font lets both fit, else one under the other; never cut, never outside the menu
+    side = box["message"]["right"] <= box["room"]["left"] and box["message"]["top"] == box["room"]["top"]
+    assert side or box["room"]["top"] >= box["message"]["bottom"], box
+    assert page.evaluate(WHOLE), box
     assert page.evaluate("$('drawer-foot').contains($('new-room'))") is False
     page.goto(page.url.split("#")[0] + f"#/{W.SCHED}")
     expect(page.locator("#channel-name")).to_have_text("Scheduling")
@@ -460,9 +468,7 @@ def test_new_message_and_new_room_sit_under_the_menu_s_header(app):
     page.locator("#nav-edge").press("Home")
     box = page.evaluate(ROW)
     assert box["room"]["top"] >= box["message"]["bottom"], box
-    assert page.evaluate("[...$('new-row').children].every((b) => b.scrollWidth <= b.clientWidth)")
-    assert page.evaluate("[...$('new-row').children].every((b) => b.getBoundingClientRect().right"
-                         " <= $('channels').getBoundingClientRect().right)")
+    assert page.evaluate(WHOLE), box
     assert not errors, errors
     # a mode without rooms: New message alone, the row's whole width
     page, stub, errors = app(rooms=False)
