@@ -6,6 +6,10 @@ repository that preceded it.
 
 ## Unreleased
 
+- **New message and New room sit at the top of the menu.** A row under
+  the menu's name, above Search, holds New message, which starts a new
+  conversation with Tacitus from any place, and New room, which moved up
+  from the foot of the menu. The status light stays beside the name.
 - **A project room's part of the briefing is named by what it holds.**
   Each room's post from the morning briefing or the afternoon update now
   opens with its first item's title in plain words, with "and 2 more"

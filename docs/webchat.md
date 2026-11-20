@@ -1547,8 +1547,12 @@ requests; Mark done when a conversation is handled). Next, a swipe or an arrow k
 moves; Skip, Done or Escape closes it, and closing it is what is kept.
 No card is about rooms: a room is a later step. An example opens a new
 conversation in the EA channel with its words in the composer and its
-name selected, so typing replaces it; it sends nothing. "New room", last
-and muted at the drawer's foot, asks what the project is called, says in
+name selected, so typing replaces it; it sends nothing. Two buttons
+share a row under the menu's header, above Search (side by side while
+both fit, else one under the other; the status light keeps its place in
+the header): "New message" opens a new conversation in the EA channel
+from any place, with the composer ready, and "New room", shown only in a
+mode with rooms, asks what the project is called, says in
 one line what a room is for, refuses an empty name where it is typed,
 and posts `open a room for <name>` as the owner in a new conversation in
 the EA channel, which then opens: the bot answers there, and the room

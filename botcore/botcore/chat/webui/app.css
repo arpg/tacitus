@@ -176,7 +176,7 @@ button, select, textarea, input { font: inherit; color: inherit; }
 .btn.danger { color: var(--danger); border-color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, var(--border)); }
 .btn.primary.danger { background: var(--danger); color: var(--accent-text); }
 .btn.plain { border-color: transparent; background: transparent; color: var(--muted); box-shadow: none; }
-#new-thread { border-color: transparent; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+#new-thread, .new-row .btn { border-color: transparent; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 600; white-space: nowrap; flex-shrink: 0; }
 
 .icon {
   display: inline-flex;
@@ -356,6 +356,10 @@ body.resizing, body.resizing * { cursor: col-resize; -webkit-user-select: none; 
 .filter.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
 #needs-link { margin-top: 8px; }
 #needs-link svg, #home-link svg { width: 18px; height: 18px; vertical-align: -3px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+/* New message and New room: a row under the menu's header, above Search; the status light keeps the header. */
+.new-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 8px 0; }
+.new-row .btn { flex: 1 1 auto; min-height: 36px; padding-inline: 12px; } /* side by side while both fit, else stacked */
+@media (pointer: coarse) { .new-row .btn { min-height: 44px; } }
 #home-link { margin-top: 8px; }
 #home-link + #search-open { margin-top: 4px; }
 .badge.needs { background: var(--accent); color: var(--accent-text); }
@@ -372,7 +376,6 @@ body.resizing, body.resizing * { cursor: col-resize; -webkit-user-select: none; 
 }
 .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 #update-note { margin: 0 0 8px; font-weight: 600; }
-#new-room { margin: 8px 4px 0 0; }
 /* Settings: a row as the channels are, its hint on the right ("Notifications off") */
 #drawer-foot .chan { width: calc(100% + 16px); margin: 4px -8px 0; border: 0; background: none; font-size: 15px; text-align: left; cursor: pointer; }
 #open-settings svg { width: 18px; height: 18px; vertical-align: -3px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
