@@ -58,6 +58,8 @@ routes ("all", "handoff" or "none"), beside `handoff`, as the bot says
 both; left out, /api/me says neither.
 
 A room's menu renames a room (PATCH /api/channels/<id> with a name),
+gives it one of the bot's ROOM_COLORS (PATCH with a color; each room has
+one, a new room the grid's first),
 archives it and brings it back (POST .../archive, .../unarchive), and
 mutes or unmutes a room or the digests (POST .../mute, .../unmute), each
 answered with the room's row and sent as a `channel` event, as the bot
@@ -155,6 +157,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 WEBUI = Path(__file__).resolve().parent.parent / "botcore" / "botcore" / "chat" / "webui"
+# The bot's room colors (web_frontend.ROOM_COLORS).
+ROOM_COLORS = (
+    "#56C1FF", "#73FDEA", "#88FA4E", "#FFF56D", "#FF968D", "#FF8AD8",
+    "#00A2FF", "#16E7CF", "#61D836", "#FFD932", "#FF644E", "#FF42A1",
+    "#0076BA", "#00AB8E", "#1DB100", "#FEAE00", "#EE220C", "#D31876",
+    "#004D80", "#006C65", "#017100", "#F27200", "#B51800", "#970E53",
+    "#FFFFFF", "#D6D5D5", "#929292", "#5E5E5E", "#000000")
 BASE = "/chat"
 TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".css": "text/css; charset=utf-8", ".webmanifest": "application/manifest+json",
@@ -348,14 +357,14 @@ class Stub:
             MAIN: {"id": MAIN, "name": "ea", "kind": "main", "archived": False},
             SCHED: {"id": SCHED, "name": "ea-scheduling", "kind": "sched", "archived": False},
             ROOM: {"id": ROOM, "name": "ea-example-project", "kind": "room", "archived": False,
-                   "description": "A made-up project room"},
-            OLD: {"id": OLD, "name": "ea-old-project", "kind": "room", "archived": True},
+                   "description": "A made-up project room", "color": "#0076BA"},
+            OLD: {"id": OLD, "name": "ea-old-project", "kind": "room", "archived": True, "color": "#929292"},
             DIGEST: {"id": DIGEST, "name": "Mail digests", "kind": "digest", "archived": False,
                      "muted": True},
         }
         if debug is not None:
             self.channels[HEALTH] = {"id": HEALTH, "name": "ea-health", "kind": "room",
-                                     "archived": False, "muted": False}
+                                     "archived": False, "muted": False, "color": "#5E5E5E"}
         self._seed()
         if debug is not None:
             self.add(HEALTH, ":broom: Reconcile: 12 rows in 3 groups.")
@@ -628,7 +637,7 @@ class Stub:
         with self.cond:
             slug = re.sub(r"[^a-z0-9]+", "-", project.lower()).strip("-")
             row = {"id": f"r{len(self.channels) + 1}", "name": f"ea-{slug}", "kind": "room",
-                   "archived": False}
+                   "archived": False, "color": ROOM_COLORS[0]}
             self.channels[row["id"]] = row
             out = self.channel_row(row["id"])
             self.eseq += 1
@@ -647,6 +656,11 @@ class Stub:
             if set(fields) == {"muted"}:
                 if row["kind"] in ("main", "dm"):
                     return 400, {"error": "Ask Tacitus and Direct messages cannot be muted."}
+            elif set(fields) == {"color"}:
+                if row["kind"] != "room":
+                    return 400, {"error": "Only a room has a color."}
+                if fields["color"] not in ROOM_COLORS:
+                    return 400, {"error": "Pick one of the colors in the room's menu."}
             elif row["kind"] != "room":
                 return 400, {"error": "Only a room can be renamed or archived."}
             name = fields.get("name")
@@ -1223,7 +1237,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(401, {"error": "not the owner"})
         parts = [unquote(p) for p in path[len(BASE) + 5:].split("/")] if path.startswith(BASE + "/api/") else []
         if len(parts) == 2 and parts[0] == "channels":
-            name = " ".join(str(json.loads(self._body() or b"{}").get("name") or "").split())
+            body = json.loads(self._body() or b"{}")
+            if isinstance(body, dict) and set(body) == {"color"}:
+                return self._json(*self.stub.change_room(parts[1], color=str(body["color"] or "").upper()))
+            name = " ".join(str(body.get("name") or "").split())
             if not name:
                 return self._json(400, {"error": "Type a name for the room."})
             return self._json(*self.stub.change_room(parts[1], name=name))

@@ -253,8 +253,8 @@ subset and escapes everything else; it never injects HTML from text.
 | GET | `/manifest.sig.json` | the signed manifest of the app's files, without auth (Code integrity); 404 when the bot signs none |
 | GET | `/api/bundle` | the same document, for the owner: the route the relay reaches |
 | GET | `/api/app/{file}` | a file that the signed manifest names, its bytes as on disk (`headers.json` as the bot writes it), as an attachment with the sandbox policy and the type of its name; 404 for any other name. A phone off the tailnet, or on the relay's origin, takes a new release here, through the relay (Code integrity) |
-| GET | `/api/channels` | `[{"id","name","kind","archived","description","muted","last_at","unread","unread_threads","as_of"}]`; `unread_threads` maps each thread with unread messages to its count, `unread` is their sum, and `as_of` is the last event the counts take in (Unread); a row the drawer leaves out also has `"hidden": true` (Debug mode); the DM's row also has `waiting`, the cards there whose buttons still act (Action requests) |
-| PATCH | `/api/channels/{ch}` | `{"name"}` → the room's row: the owner renames a room (Rooms). Its spaces are collapsed and a leading `#` dropped; 400 for an empty name, one over 60 characters or one with a control character, and for a fixed place (kind `main`, `dm`, `sched` or `digest`); 404 for an unknown room; 409 for a name another channel has; the same name answers the row as it is. A chat action: a relayed device that may chat may take it |
+| GET | `/api/channels` | `[{"id","name","kind","archived","description","muted","color","last_at","unread","unread_threads","as_of"}]`; `color` is a room's (Rooms; "" for a fixed place); `unread_threads` maps each thread with unread messages to its count, `unread` is their sum, and `as_of` is the last event the counts take in (Unread); a row the drawer leaves out also has `"hidden": true` (Debug mode); the DM's row also has `waiting`, the cards there whose buttons still act (Action requests) |
+| PATCH | `/api/channels/{ch}` | `{"color"}` alone → the room's row with that color, one of `ROOM_COLORS` in any case (400 for another color or a fixed place, 404 for an unknown place; a `channel` event when it changed; the same color answers the row as it is). `{"name"}` → the room's row: the owner renames a room (Rooms). Its spaces are collapsed and a leading `#` dropped; 400 for an empty name, one over 60 characters or one with a control character, and for a fixed place (kind `main`, `dm`, `sched` or `digest`); 404 for an unknown room; 409 for a name another channel has; the same name answers the row as it is. A chat action: a relayed device that may chat may take it |
 | POST | `/api/channels/{ch}/archive`, `/api/channels/{ch}/unarchive` | `{}` → the room's row with `archived` set or cleared; a room in that state already is answered as it is. 400 for a fixed place, 404 for an unknown room. A chat action, as the rename |
 | POST | `/api/channels/{ch}/mute`, `/api/channels/{ch}/unmute` | `{}` → the channel's row with `muted` set or cleared; a channel in that state already is answered as it is. 400 for the EA channel and the DM, 404 for an unknown channel. A chat action, as the rename (Muted channels) |
 | GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count`, `last_at` and the thread's state: `state`, `state_by`, `state_reason`, `state_at`, `stale` (State); `title` on a conversation the owner named (Recent) |
@@ -1339,14 +1339,26 @@ Needs you card's channel and a new conversation's box ("Ask Tacitus" in
 the main channel, "Message <name>" elsewhere) use the same names. The
 drawer is "Menu" to a screen reader.
 
+A room in the drawer is a card outlined in its own color, with no fill,
+and the rooms come last, under a rule after the other places of More. The
+open room has a short bar in its color beside its card, and its name in
+the list's header sits in the same outline. Each room has a color (the
+channel row's `color`): a new room gets one of the first 24 of the grid
+(`web_frontend.ROOM_COLORS`) at random, and a room from a store before
+colors gets one when the bot starts.
+
 A room's menu: each room in the drawer (and under Archived) has a small
 dots button, shown on hover or focus with a mouse ("Room options:
-<name>" to a screen reader); with a finger a long press on the room
-(600 ms, held still) opens the menu, and the tap that ends the press
+<name>" to a screen reader); a right-click on the room opens the same
+menu, and with a finger a long press on the room
+(600 ms, held still) opens it, and the tap that ends the press
 opens nothing, not even the sheet's button that opened under the
 finger. The fixed places (Ask Tacitus, Action requests, Scheduling, Mail
 digests, Needs you) have no menu. The menu is a dialog, a sheet docked
-to the bottom at phone width, titled with the room's name: "Rename room" and "Archive room", or "Bring back" alone for an
+to the bottom at phone width, titled with the room's name: the grid of
+colors (six columns, the greys last, the one in use pressed; a pick saves
+it with `PATCH /api/channels/<id>` `{"color": "#RRGGBB"}`, which takes
+one of `ROOM_COLORS` alone, and closes the menu), "Rename room" and "Archive room", or "Bring back" alone for an
 archived room, and Cancel. Rename room puts the name in a field with
 Cancel and Save; Save sends it with the bot's `ea-` mark kept when the
 old name had it, and a refusal ("Another room has that name.") stays
