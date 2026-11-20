@@ -2292,6 +2292,72 @@ function ownerActions() {
     else if (S.editing && document.activeElement === $('text')) endEdit();
     else if (S.search) { closeSearch(); $('search-open').focus(); }
   });
+  // Cmd+K (Ctrl+K on Windows and Linux) jumps to a place or a conversation, from anywhere, the
+  // reply box too; / opens search outside a text field. Neither acts over another open dialog.
+  document.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.defaultPrevented || !S.ready || S.halted) return;
+    const other = document.querySelector('dialog[open]:not(#jump)');
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
+      if (other) return;
+      e.preventDefault();
+      openJump();
+    } else if (e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey && !other
+      && !e.target.closest?.('input, textarea, select, [contenteditable]')) {
+      e.preventDefault();
+      openSearch();
+    }
+  });
+}
+
+// Jump to: the places and the conversations the app holds (Recent and each place it has opened),
+// filtered by the words typed; the arrows move, Enter or a click opens, Escape closes.
+function openJump() {
+  let dlg = $('jump');
+  if (!dlg) {
+    dlg = h('dialog', { id: 'jump', 'aria-label': 'Jump to' });
+    dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
+    document.body.append(dlg);
+  }
+  const shown = (c) => c && !c.archived && !c.hidden;
+  const all = [
+    ...S.channels.filter(shown).sort((a, b) => (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9)
+      || channelName(a).localeCompare(channelName(b))).map((c) => ({ title: channelName(c), where: '', hash: hashFor(c.id) })),
+    ...new Map([...S.recent, ...[...S.threads.values()].flatMap((t) => t.list)]
+      .filter((r) => shown(chan(r.channel)) && conversation(r, chan(r.channel)))
+      .map((r) => [tkey(r.channel, threadOf(r)), { title: threadTitle(r), where: channelName(chan(r.channel)),
+        hash: hashFor(r.channel, threadOf(r)) }])).values(),
+  ];
+  const field = h('input', { type: 'search', placeholder: 'Jump to a place or conversation', autocomplete: 'off',
+    'aria-label': 'Jump to', role: 'combobox', 'aria-controls': 'jump-list', 'aria-expanded': 'true' });
+  const list = h('ul', { id: 'jump-list', role: 'listbox', 'aria-label': 'Places and conversations' });
+  let hits = [], at = 0;
+  const go = (it) => { dlg.close(); closeSearch(); goTo(it.hash); };
+  const draw = () => {
+    const q = norm(field.value);
+    hits = (q ? all.filter((it) => norm(`${it.title} ${it.where}`).includes(q)) : all).slice(0, 12);
+    at = Math.min(at, Math.max(hits.length - 1, 0));
+    list.replaceChildren(...hits.map((it, i) => h('li', { id: `jump-${i}`, role: 'option', class: i === at ? 'on' : null,
+      'aria-selected': String(i === at), onclick: () => go(it) },
+    h('span', { class: 'j-title' }, it.title), it.where ? h('span', { class: 'j-where' }, it.where) : null)));
+    if (!hits.length) list.append(h('li', { class: 'j-none' }, 'Nothing matches.'));
+    if (hits.length) field.setAttribute('aria-activedescendant', `jump-${at}`); else field.removeAttribute('aria-activedescendant');
+  };
+  field.addEventListener('input', () => { at = 0; draw(); });
+  field.addEventListener('keydown', (e) => {
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && hits.length) {
+      e.preventDefault();
+      at = (at + (e.key === 'ArrowDown' ? 1 : hits.length - 1)) % hits.length;
+      draw();
+      $(`jump-${at}`).scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Enter' && !e.isComposing && hits[at]) {
+      e.preventDefault();
+      go(hits[at]);
+    }
+  });
+  dlg.replaceChildren(field, list);
+  draw();
+  if (!dlg.open) dlg.showModal();
+  field.focus();
 }
 
 /* -- Notifications (Web Push) --------------------------------------- */
