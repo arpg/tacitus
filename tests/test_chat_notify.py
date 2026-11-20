@@ -540,3 +540,58 @@ def test_a_digest_on_memory_is_recorded_and_elsewhere_has_no_place(env):
     assert chat_notify.MEMORY_POSTS == [("briefing-preview", "preview", None)]
     _set_chat(env, {"frontend": "carrier-pigeon"})
     assert chat_notify.post_digest("mail-digest", "x") is None
+
+
+# ── Beside a web chat shadow, an EA channel post goes through the composite ──
+
+HOOK = "https://hooks.example.test/ea"
+
+
+class _Composite:
+    """The composite as _send_through_shadow sees it: posts recorded, a
+    shadow and a main channel present, the first post refused when asked."""
+
+    def __init__(self, refuse=False):
+        self.shadow, self.main_channel, self.posts, self.refuse = object(), "C0MAIN", [], refuse
+
+    def post(self, channel, text, thread_ts=None):
+        if self.refuse:
+            raise RuntimeError("primary refused")
+        self.posts.append((channel, text))
+
+
+def _shadow_setup(monkeypatch, cfg, fe):
+    monkeypatch.setattr(chat_notify, "_load_webhooks", lambda: {"ea-assistant": HOOK})
+    monkeypatch.setattr(chat_notify, "_chat_cfg", lambda: cfg)
+    monkeypatch.setattr(chat_notify, "_room_frontend", lambda: fe)
+    rec = _PostRecorder()
+    monkeypatch.setattr(requests, "post", rec)
+    return rec
+
+
+def test_a_briefing_beside_a_web_shadow_goes_through_the_composite(monkeypatch):
+    fe = _Composite()
+    rec = _shadow_setup(monkeypatch, {"frontend": "slack", "shadow": "web"}, fe)
+    assert chat_notify._send_slack("ea-assistant", ["part one", "part two"], None) is True
+    assert fe.posts == [("C0MAIN", "part one"), ("C0MAIN", "part two")]
+    assert rec.calls == []  # no webhook: the composite posts and copies
+
+
+def test_without_a_shadow_or_with_blocks_or_another_key_the_webhook_posts(monkeypatch):
+    fe = _Composite()
+    rec = _shadow_setup(monkeypatch, {"frontend": "slack"}, fe)
+    assert chat_notify._send_slack("ea-assistant", ["hello"], None) is True
+    _shadow_setup(monkeypatch, {"frontend": "slack", "shadow": "web"}, fe)
+    monkeypatch.setattr(requests, "post", rec)
+    assert chat_notify._send_slack("ea-assistant", ["with blocks"], [{"type": "divider"}]) is True
+    assert fe.posts == []
+    assert [c[0][0] for c in rec.calls] == [HOOK, HOOK]
+
+
+def test_a_composite_that_refuses_leaves_the_post_to_the_webhook(monkeypatch):
+    rec = _shadow_setup(monkeypatch, {"frontend": "slack", "shadow": "web"}, _Composite(refuse=True))
+    out = io.StringIO()
+    with redirect_stdout(out):
+        assert chat_notify._send_slack("ea-assistant", ["hello"], None) is True
+    assert [c[1]["json"]["text"] for c in rec.calls] == ["hello"]
+    assert "no web chat copy" in out.getvalue()
