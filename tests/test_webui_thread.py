@@ -56,10 +56,10 @@ def test_the_drawer_names_each_place_in_plain_words(app):
     page, stub, errors = app()
     page.wait_for_selector(".thread-item")
     links = page.locator("#channel-list > a.chan, #channel-list > .chan-row > a.chan")
-    expect(links.locator(".c-name")).to_have_text(["Ask Tacitus", "Action requests", "Scheduling", "example-project",
-                                                   "Mail digests"])  # the two places to talk, then More by kind
+    expect(links.locator(".c-name")).to_have_text(["Ask Tacitus", "Action requests", "Scheduling", "Mail digests",
+                                                   "example-project"])  # the two places to talk, More by kind, rooms
     assert [links.nth(i).get_attribute("href") for i in range(5)] == [
-        "#/stream%3A9", "#/stream%3A7", "#/stream%3A11", "#/r1", "#/digests"]
+        "#/stream%3A9", "#/stream%3A7", "#/stream%3A11", "#/digests", "#/r1"]
     expect(page.locator("#channel-list details .c-name")).to_have_text("old-project")
     expect(page.locator("#new-thread")).to_have_text("New conversation")
     expect(page.locator("#back")).to_have_attribute("aria-label", "Back to conversations")

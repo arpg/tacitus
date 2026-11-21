@@ -14,6 +14,7 @@ tests/test_webui.py holds the checks that need no browser.
 import re
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -235,7 +236,7 @@ def test_a_rooms_dots_open_its_menu_and_rename_it_in_place(app):
     row.hover()
     dots.click()
     expect(menu.locator("h2")).to_have_text("example-project")
-    expect(menu.locator("button")).to_have_text(["Rename room", "Mute", "Archive room", "Cancel"])
+    expect(menu.locator("button:not(.swatch)")).to_have_text(["Rename room", "Mute", "Archive room", "Cancel"])
     assert page.evaluate("location.hash") == "#/stream%3A9"  # the dots open no room
     menu.get_by_role("button", name="Rename room").click()
     field = menu.locator("#room-menu-name")
@@ -415,4 +416,57 @@ def test_a_long_press_on_a_room_opens_its_menu_as_a_sheet_on_a_phone(app):
     page.evaluate(PRESS, '#channel-list > a.chan[href="#/stream%3A9"]')
     expect(menu).to_be_hidden()
     assert page.evaluate(SIDEWAYS) == [0, 0]
+    assert not errors, errors
+
+
+ROOM_LOOK = """(sel) => { const el = document.querySelector(sel), cs = getComputedStyle(el);
+  const bar = getComputedStyle(el, '::before');
+  return {border: cs.borderTopColor, width: cs.borderTopWidth, fill: cs.backgroundColor,
+          bar: bar.content === 'none' ? null : bar.backgroundColor}; }"""
+ROOM_LINK = '#channel-list .chan-row a.chan.room[href="#/r1"]'
+
+
+def test_a_room_is_a_card_in_its_color_and_its_menu_picks_another(app):
+    """Each room is a card outlined in its own color, with no fill, last in
+    the menu under a rule. The open room has a short bar in its color beside
+    the card, and its name in the list's header sits in the same outline. A
+    right-click on a room opens its menu, which offers the grid of colors
+    with the one in use pressed; a pick saves it and every outline follows.
+    A right-click on a place with no menu leaves the browser's own menu."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app()
+    drawer_drawn(page)
+    blue, orange, clear = "rgb(0, 118, 186)", "rgb(242, 114, 0)", "rgba(0, 0, 0, 0)"
+    room = page.locator(ROOM_LINK)
+    expect(room).to_be_visible()
+    assert page.evaluate(ROOM_LOOK, ROOM_LINK) == {"border": blue, "width": "1px", "fill": clear, "bar": None}
+    assert room.locator(".c-icon").count() == 0
+    assert page.evaluate("$('channel-list').lastElementChild.matches('details')")  # Archived, after the rooms
+    assert page.evaluate(f"document.querySelector('{ROOM_LINK}').parentElement.previousElementSibling.matches('hr')")
+    room.click()
+    expect(page.locator("#channel-name")).to_have_text("example-project")
+    expect(page.locator("#channel-name")).to_have_class(re.compile(r"\broom-title\b"))
+    look = page.evaluate(ROOM_LOOK, ROOM_LINK)
+    assert (look["border"], look["fill"], look["bar"]) == (blue, clear, blue), look
+    assert page.evaluate(ROOM_LOOK, "#channel-name")["border"] == blue
+    # the right-click: the menu, its colors, a pick
+    room.click(button="right")
+    menu = page.locator("#room-menu")
+    expect(menu).to_be_visible()
+    swatches = menu.locator(".swatch")
+    expect(swatches).to_have_count(29)
+    expect(menu.locator('.swatch[aria-pressed="true"]')).to_have_count(1)
+    assert swatches.nth(12).get_attribute("aria-pressed") == "true"  # #0076BA
+    swatches.nth(21).click()  # #F27200
+    wait_for(lambda: {"id": W.ROOM, "color": "#F27200"} in stub.room_changes)
+    expect(menu).to_be_hidden()
+    wait_for(lambda: page.evaluate(ROOM_LOOK, ROOM_LINK)["border"] == orange)
+    assert page.evaluate(ROOM_LOOK, "#channel-name")["border"] == orange
+    # no menu for Ask Tacitus: the browser keeps its own
+    page.locator(f'#channel-list a.chan[href="#/{quote(W.MAIN, safe="")}"]').click(button="right")
+    expect(menu).to_be_hidden()
+    # leaving the room for a fixed place drops the outline from the header
+    page.locator(f'#channel-list a.chan[href="#/{quote(W.MAIN, safe="")}"]').click()
+    expect(page.locator("#channel-name")).not_to_have_class(re.compile(r"\broom-title\b"))
     assert not errors, errors

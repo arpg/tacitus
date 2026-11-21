@@ -2077,6 +2077,46 @@ def _new_events(f: WebFrontend, since: int) -> list[tuple[str, dict]]:
     return [(t, json.loads(p)) for _s, t, p in f.store.events_since(since)]
 
 
+
+def test_a_room_has_a_color_the_owner_picks_from_the_grid(fe, tmp_path):
+    """A new room gets one of the grid's first 24 colors at random; a room
+    from a store before colors gets one at start (color_rooms). PATCH with
+    a color alone sets one of ROOM_COLORS, in any case, and every open app
+    hears it as a `channel` event; the same color again tells nobody. Any
+    other color, a fixed place or an unknown place is refused in plain
+    words, and a name in the same request is no color change."""
+    got, _ev = catcher(fe)
+    fe.create_private_room("ea-atlas")
+    assert fe.store.channel("r1")["color"] in wf.ROOM_COLORS[:24]
+    assert fe.store.channels()[[c["id"] for c in fe.store.channels()].index("r1")]["color"]
+    path = "/api/channels/r1"
+    assert call(fe, "PATCH", path, {"color": "#F27200"})[0] == 401
+    since = fe.store.max_event_seq()
+    status, _h, body = owner(fe, "PATCH", path, {"color": "#f27200"})
+    assert status == 200 and json.loads(body)["color"] == "#F27200"
+    assert [(t, e["id"], e["color"]) for t, e in _new_events(fe, since)] == [("channel", "r1", "#F27200")]
+    since = fe.store.max_event_seq()
+    assert owner(fe, "PATCH", path, {"color": "#F27200"})[0] == 200
+    assert _new_events(fe, since) == []
+    said = []
+    for where, body, want in (("r1", {"color": "#123456"}, 400), ("r1", {"color": ""}, 400),
+                              ("main", {"color": "#F27200"}, 400), ("r9", {"color": "#F27200"}, 404)):
+        status, _h, raw = owner(fe, "PATCH", f"/api/channels/{where}", body)
+        assert status == want, (where, body)
+        said.append(json.loads(raw)["error"])
+    assert said[:3] == ["Pick one of the colors in the room's menu."] * 2 + ["Only a room has a color."]
+    assert not [e for e in said if JARGON.search(e)], said
+    assert fe.store.channel("r1")["color"] == "#F27200" and not got
+    # a name and a color together is a rename, as before
+    assert owner(fe, "PATCH", path, {"name": "atlas", "color": "#000000"})[0] == 200
+    assert fe.store.channel("r1")["color"] == "#F27200"
+    # a room from before colors gets one at start
+    fe.store._conn.execute("UPDATE channels SET color=NULL WHERE id='r1'")
+    fe.store._conn.commit()
+    assert fe.store.color_rooms() == 1 and fe.store.channel("r1")["color"] in wf.ROOM_COLORS[:24]
+    assert fe.store.color_rooms() == 0
+    assert not fe.store.channel("main")["color"]
+
 def test_the_owner_renames_a_room_and_the_core_hears_it(fe):
     got, ev = catcher(fe)
     fe.create_private_room("ea-atlas", "the atlas project")

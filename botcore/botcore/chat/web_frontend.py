@@ -238,6 +238,7 @@ import logging
 import mimetypes
 import os
 import queue
+import random
 import re
 import secrets
 import select
@@ -417,6 +418,15 @@ MUTE_DEFAULT_KEY = "muted_default:"
 # Channel ids the app's routes take for their own (`#/needs`, the Needs you
 # view): no channel may have one.
 RESERVED_CHANNEL_IDS = frozenset({"needs", "status"})
+# A room's color in the app's menu (docs/webchat.md, Rooms): the grid of
+# six columns the color menu shows, the greys last. A new room gets one of
+# the first 24 at random; the owner picks any of them from the room's menu.
+ROOM_COLORS = (
+    "#56C1FF", "#73FDEA", "#88FA4E", "#FFF56D", "#FF968D", "#FF8AD8",
+    "#00A2FF", "#16E7CF", "#61D836", "#FFD932", "#FF644E", "#FF42A1",
+    "#0076BA", "#00AB8E", "#1DB100", "#FEAE00", "#EE220C", "#D31876",
+    "#004D80", "#006C65", "#017100", "#F27200", "#B51800", "#970E53",
+    "#FFFFFF", "#D6D5D5", "#929292", "#5E5E5E", "#000000")
 # The longest room name the owner may give a room from the app; a room
 # that lives on Slack in shadow mode takes it too.
 ROOM_NAME_MAX = 60
@@ -559,6 +569,10 @@ CREATE TABLE IF NOT EXISTS light_notices(
 
 def _status_name(status: Status | str) -> str:
     return status.value if isinstance(status, Status) else str(status)
+
+
+def _new_room_color() -> str:
+    return random.choice(ROOM_COLORS[:24])
 
 
 def _loads(text: str | None) -> Any:
@@ -1006,6 +1020,9 @@ class WebStore:
                 # new digest channel does (upsert_channel).
                 self._conn.execute("ALTER TABLE channels ADD COLUMN muted INT DEFAULT 0")
                 self._conn.execute("UPDATE channels SET muted=1 WHERE kind='digest'")
+            if "color" not in cols:
+                # A store from before room colors: each room gets one at start (color_rooms).
+                self._conn.execute("ALTER TABLE channels ADD COLUMN color TEXT")
             cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(push_subscriptions)")}
             if "last_seen" not in cols:
                 # A store from before: a subscription counts as posted when made.
@@ -1156,7 +1173,7 @@ class WebStore:
         last = self._one("SELECT MAX(posted_at) AS t FROM messages WHERE channel=?", (cid,))
         out = {"id": cid, "name": row["name"] or "", "kind": row["kind"] or "room",
                "archived": bool(row["archived"]), "description": row["description"] or "",
-               "muted": bool(row["muted"]),
+               "muted": bool(row["muted"]), "color": row["color"] or "",
                "last_at": last["t"] if last else None, **self._counts(cid)}
         if out["kind"] == "dm":
             out["waiting"] = sum(self.waiting_cards(cid).values())
@@ -2052,7 +2069,8 @@ class WebStore:
                    int(bool(mute)))
             if row is None:
                 self._conn.execute("INSERT INTO channels(id, name, kind, archived, description, "
-                                   "muted) VALUES (?,?,?,?,?,?)", (cid, *new))
+                                   "muted, color) VALUES (?,?,?,?,?,?,?)",
+                                   (cid, *new, _new_room_color() if kind == "room" else None))
             elif (row["name"], row["kind"], row["archived"], row["description"],
                   row["muted"]) != new:
                 self._conn.execute("UPDATE channels SET name=?, kind=?, archived=?, description=?, "
@@ -2076,6 +2094,28 @@ class WebStore:
                                    fields.get("archived", row["archived"]),
                                    fields.get("description", row["description"]),
                                    fields.get("muted", row["muted"]))
+
+    def set_color(self, cid: str, color: str) -> dict | None:
+        """Set a room's color; a `channel` event when it changed. None when
+        there is no such channel."""
+        def run() -> dict | None:
+            row = self._conn.execute("SELECT * FROM channels WHERE id=?", (cid,)).fetchone()
+            if row is None or (row["color"] or "") == color:
+                return self._channel_json(row) if row else None
+            self._conn.execute("UPDATE channels SET color=? WHERE id=?", (color, cid))
+            out = self._channel_json(self._conn.execute(
+                "SELECT * FROM channels WHERE id=?", (cid,)).fetchone())
+            self._emit("channel", cid, cid, out)
+            return out
+        return self._transaction(run)
+
+    def color_rooms(self) -> int:
+        """Give each room with no color one at random (a store from before
+        room colors, or a room a primary made); how many."""
+        rows = self._all("SELECT id FROM channels WHERE kind='room' AND (color IS NULL OR color='')")
+        for r in rows:
+            self.set_color(r["id"], _new_room_color())
+        return len(rows)
 
     def mute_once(self, cid: str) -> bool:
         """Mute channel `cid` the first time it is named here, once per
@@ -3202,6 +3242,7 @@ class WebFrontend(ChatFrontend):
             if self.inbound is None:
                 self._ensure_own_channels()
             self._mute_defaults()
+            self.store.color_rooms()
             cls = _Server6 if ":" in self.bind else _Server
             srv = cls((self.bind, self.port), _Handler, max_per_peer=self.peer_connections)
             srv.frontend = self
@@ -4942,6 +4983,20 @@ class WebFrontend(ChatFrontend):
                 pass
         return self.store.channel(channel) or ch
 
+    def web_color(self, channel: str, color: Any) -> dict:
+        """Give a room one of ROOM_COLORS: its row, sent to every open app as
+        a `channel` event. The color is this app's alone: in shadow mode the
+        primary is not told."""
+        ch = self.store.channel(channel)
+        if ch is None:
+            raise _HttpError(404, "There is no such place.")
+        if ch["kind"] != "room":
+            raise _HttpError(400, "Only a room has a color.")
+        color = str(color or "").strip().upper()
+        if color not in ROOM_COLORS:
+            raise _HttpError(400, "Pick one of the colors in the room's menu.")
+        return self.store.set_color(channel, color) or ch
+
     def web_mute(self, channel: str, muted: bool) -> dict:
         """Mute a channel, or unmute it: its row. A muted channel's unread
         count adds nothing to the app's menu badge or tab title, and the
@@ -5360,8 +5415,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._settings(method, segs[1])
             return None
         if method == "PATCH" and n == 2 and segs[0] == "channels":
-            # The owner renames a room: a chat action, like a message.
-            row, after = fe.web_rename(segs[1], self._read_json().get("name"))
+            # The owner renames a room or gives it a color: a chat action, like a message.
+            body = self._read_json()
+            if isinstance(body, dict) and set(body) == {"color"}:
+                self._json(200, fe.web_color(segs[1], body["color"]))
+                return None
+            row, after = fe.web_rename(segs[1], body.get("name"))
             self._json(200, row)
             return after
         if method == "POST":
