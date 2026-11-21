@@ -2063,15 +2063,19 @@ def detect_pending_rsvps(inbox: list) -> list:
 # Teams DMs (an owner plugin's verb)
 # -------------------------------------------------------------------
 def get_teams_dms(days_back: int = 1) -> list:
-    """Recent Teams 1:1 DMs from the owner plugin that declares
-    `graph_actions get-teams-dms` (docs/plugins.md), in the shape that verb
-    prints under "chats". [] when no enabled plugin declares it, or when
-    the plugin fails or has no token."""
+    """Recent Teams 1:1 DMs, in the shape `graph_actions get-teams-dms`
+    prints under "chats". From the owner plugin that declares that verb
+    (docs/plugins.md) when one is enabled; otherwise through Graph when the
+    app has Chat.Read consent. [] when neither, or when the source fails."""
     import plugin_verbs
     res = plugin_verbs.call_alias("graph_actions", "get-teams-dms",
                                   ["--days", str(int(days_back))])
     if res is None:
-        return []
+        try:
+            return graph.get_graph_teams_chats(days_back=days_back) or []
+        except Exception as e:
+            print(f"  Teams DMs: the Graph read failed: {str(e)[:200]}", file=sys.stderr)
+            return []
     rc, out, err = res
     if rc != 0:
         print(f"  Teams DMs: the plugin verb failed (exit {rc}): {err.strip()[-200:]}",

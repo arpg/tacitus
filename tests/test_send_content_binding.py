@@ -743,6 +743,7 @@ NOT_DRAFT_CHANGING = {
         "search-mail": "read", "list-mail": "read", "get-message": "read",
         "get-conversation": "read", "get-event": "read", "calendar-view": "read",
         "resolve-contact": "read", "get-attachments": "read",
+        "get-teams-chats": "read; Teams chats, never mail",
         "download-attachment": "read; writes a local file",
         "scan-attachments": "read", "get-gmail-draft": "read", "preflight-check": "read",
         "create-draft": "makes a new draft id, which gets its own card",
