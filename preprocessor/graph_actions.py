@@ -2436,7 +2436,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_resolve_contact)
 
     p = sub.add_parser("get-teams-chats", allow_abbrev=False,
-                       help="Recent Teams 1:1 chats through Graph (Chat.Read)")
+                       help="Recent Teams 1:1 and group chats through Graph (Chat.Read)")
     p.add_argument("--days", type=int, default=1, help="Look-back window in days")
     p.set_defaults(func=cmd_get_teams_chats)
 

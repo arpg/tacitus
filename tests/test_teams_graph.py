@@ -57,7 +57,8 @@ def test_recent_chats_keep_real_messages_in_the_window(monkeypatch):
     assert chats == [{
         "chat_id": "c1", "chat_type": "oneOnOne", "display_name": "Sam Example",
         "email": "c1@example.org",
-        "messages": [{"id": "m1", "from": "Sam Example", "body_preview": "see you at 3",
+        "messages": [{"id": "m1", "from": "Sam Example", "body": "see you at 3",
+                      "body_preview": "see you at 3",
                       "created": pages["/chats/c1/messages"]["value"][0]["createdDateTime"],
                       "message_type": "message"}]}]
     # c2 had nothing recent; the list stops at c3, older than the window,
@@ -95,3 +96,22 @@ def test_get_teams_chats_is_a_safe_read_and_says_unavailable(monkeypatch, capsys
     monkeypatch.setattr(graph_actions.graph, "get_graph_teams_chats", lambda days_back=1: None)
     graph_actions.cmd_get_teams_chats(type("A", (), {"days": 2})())
     assert json.loads(capsys.readouterr().out)["status"] == "unavailable"
+
+
+def test_group_chats_and_whole_messages_are_read_meeting_chats_skipped(monkeypatch):
+    long = "word " * 200
+    group = {"id": "g1", "chatType": "group", "topic": "",
+             "lastMessagePreview": {"createdDateTime": _ago(hours=1)},
+             "members": [{"userId": ME, "displayName": "Me"},
+                         {"userId": "oid-a", "displayName": "Ana Example"},
+                         {"userId": "oid-b", "displayName": "Bo Example"}]}
+    meeting = dict(group, id="t1", chatType="meeting")
+    pages = {"/me/chats": {"value": [meeting, group]},
+             "/chats/g1/messages": {"value": [_msg("m1", _ago(hours=1), long, sender="Ana Example")]}}
+    monkeypatch.setattr(graph_client, "_chat_get", lambda path, token, params: pages[path])
+    (chat,) = graph_client.get_graph_teams_chats(days_back=1, token=_token())
+    assert (chat["chat_type"], chat["display_name"], chat["email"]) == \
+        ("group", "Ana Example, Bo Example", "")
+    msg = chat["messages"][0]
+    assert msg["body"] == long.strip() and len(msg["body_preview"]) == 300
+

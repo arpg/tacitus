@@ -2882,18 +2882,19 @@ def _graph_time(value: str):
 
 
 def get_graph_teams_chats(days_back: int = 1, token: Optional[str] = None):
-    """Recent Teams 1:1 chats through Graph, in the shape the teams-dms
-    plugin prints under "chats": [{chat_id, chat_type, display_name, email,
-    messages: [{id, from, body_preview, created, message_type}]}], newest
-    message first. None when the app has no Chat.Read consent, so a caller
-    can tell "not available" from "no recent messages" ([])."""
+    """Recent Teams 1:1 and group chats through Graph, in the shape the
+    teams-dms plugin prints under "chats": [{chat_id, chat_type,
+    display_name, email, messages: [{id, from, body, body_preview, created,
+    message_type}]}], newest message first. `body` is the whole message
+    text; a group's display_name is its topic, else its members' names.
+    None when the app has no Chat.Read consent, so a caller can tell "not
+    available" from "no recent messages" ([])."""
     token = token or _chat_token()
     if not token:
         return None
     me = _decode_jwt_payload(token).get("oid", "")
     cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
     chats = _chat_get("/me/chats", token, {
-        "$filter": "chatType eq 'oneOnOne'",
         "$expand": "members,lastMessagePreview",
         "$orderby": "lastMessagePreview/createdDateTime desc",
         "$top": 50,
@@ -2903,8 +2904,11 @@ def get_graph_teams_chats(days_back: int = 1, token: Optional[str] = None):
         last = _graph_time((chat.get("lastMessagePreview") or {}).get("createdDateTime"))
         if last is None or last < cutoff:
             break  # ordered newest first: every later chat is older
-        other = next((m for m in chat.get("members") or []
-                      if m.get("userId") and m.get("userId") != me), {})
+        kind = chat.get("chatType")
+        if kind not in ("oneOnOne", "group"):
+            continue  # a meeting's chat belongs to the meeting
+        others = [m for m in chat.get("members") or []
+                  if m.get("userId") and m.get("userId") != me]
         raw = _chat_get(f"/chats/{chat['id']}/messages", token, {
             "$top": 20, "$orderby": "createdDateTime desc"}).get("value", [])
         messages = []
@@ -2913,18 +2917,26 @@ def get_graph_teams_chats(days_back: int = 1, token: Optional[str] = None):
             if m.get("messageType") != "message" or m.get("deletedDateTime") \
                     or created is None or created < cutoff:
                 continue
-            body = (m.get("body") or {}).get("content", "") or ""
+            body = _strip_html((m.get("body") or {}).get("content", "") or "")
             messages.append({
                 "id": m.get("id", ""),
                 "from": ((m.get("from") or {}).get("user") or {}).get("displayName") or "?",
-                "body_preview": _strip_html(body)[:300],
+                "body": body,
+                "body_preview": body[:300],
                 "created": m.get("createdDateTime", ""),
                 "message_type": "message",
             })
-        if messages:
-            out.append({"chat_id": chat["id"], "chat_type": "oneOnOne",
-                        "display_name": other.get("displayName") or "Unknown",
-                        "email": other.get("email") or "", "messages": messages})
+        if not messages:
+            continue
+        if kind == "group":
+            name = chat.get("topic") or ", ".join(
+                m.get("displayName") or "?" for m in others) or "Group chat"
+            email = ""
+        else:
+            other = others[0] if others else {}
+            name, email = other.get("displayName") or "Unknown", other.get("email") or ""
+        out.append({"chat_id": chat["id"], "chat_type": kind, "display_name": name,
+                    "email": email, "messages": messages})
     return out
 
 

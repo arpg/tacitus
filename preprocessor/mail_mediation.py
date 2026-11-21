@@ -99,7 +99,7 @@ SAFE = {
         "search-mail", "list-mail", "get-message", "get-conversation",
         "get-event",
         "calendar-view", "resolve-contact",
-        # Read-only: Teams 1:1 chats through Graph (delegated Chat.Read).
+        # Read-only: Teams 1:1 and group chats through Graph (Chat.Read).
         "get-teams-chats",
         "get-attachments", "download-attachment", "scan-attachments",
         "get-gmail-draft",
