@@ -153,7 +153,7 @@ OUTSIDE = """() => { const nav = $('channels').getBoundingClientRect();
 
 def test_the_menu_s_foot_stays_inside_the_menu_at_every_width(app):
     """Each control at the menu's foot (the install line with its buttons,
-    Settings with its hint, New room) stays inside the menu: in the drawer
+    Settings with its hint) stays inside the menu: in the drawer
     of a narrow window, in the column split at the centre and at its
     narrowest."""
     from playwright.sync_api import expect
@@ -416,6 +416,77 @@ def test_a_long_press_on_a_room_opens_its_menu_as_a_sheet_on_a_phone(app):
     page.evaluate(PRESS, '#channel-list > a.chan[href="#/stream%3A9"]')
     expect(menu).to_be_hidden()
     assert page.evaluate(SIDEWAYS) == [0, 0]
+    assert not errors, errors
+
+
+ROW = """() => { const r = (id) => $(id).getBoundingClientRect(); const head = document.querySelector('#channels > .bar');
+  return {head: head.getBoundingClientRect().bottom, row: r('new-row').top, search: r('search-open').top,
+          light: r('light-nav'), message: r('new-message'), room: r('new-room'), width: r('new-row').width}; }"""
+
+
+# Each button of the row shows its whole label and stays inside the menu.
+WHOLE = """[...$('new-row').children].filter((b) => !b.hidden).every((b) => b.scrollWidth <= b.clientWidth
+  && b.getBoundingClientRect().right <= $('channels').getBoundingClientRect().right)"""
+
+
+def test_new_message_and_new_room_sit_under_the_menu_s_header(app):
+    """New message and New room share a row under the menu's header, above
+    Search; the status light keeps its place in the header beside the name,
+    clear of the row. New message opens a new conversation in Ask Tacitus
+    from any place, with the composer ready; New room opens its dialog. In a
+    mode without rooms New message takes the whole row. On a phone the row
+    is in the drawer, each button a full tap target, and New message closes
+    the drawer."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    status = {"level": "warn", "line": "Outlook is not answering", "as_of": 0, "cleared": [],
+              "conditions": [{"id": "mail-service", "level": "warn", "title": "Outlook is not answering",
+                              "line": "Outlook is not answering.", "todo": "Nothing to do.", "since": 0,
+                              "read": False}]}
+    page, stub, errors = app(status=status)
+    drawer_drawn(page)
+    expect(page.locator("#new-message")).to_have_text("New message")
+    expect(page.locator("#new-room")).to_have_text("New room")
+    expect(page.locator("#light-nav")).to_be_visible()
+    box = page.evaluate(ROW)
+    assert box["head"] <= box["row"] < box["search"], box
+    assert box["light"]["bottom"] <= box["row"], box  # the light stays in the header, clear of the row
+    # side by side where the font lets both fit, else one under the other; never cut, never outside the menu
+    side = box["message"]["right"] <= box["room"]["left"] and box["message"]["top"] == box["room"]["top"]
+    assert side or box["room"]["top"] >= box["message"]["bottom"], box
+    assert page.evaluate(WHOLE), box
+    assert page.evaluate("$('drawer-foot').contains($('new-room'))") is False
+    page.goto(page.url.split("#")[0] + f"#/{W.SCHED}")
+    expect(page.locator("#channel-name")).to_have_text("Scheduling")
+    page.locator("#new-message").click()
+    expect(page).to_have_url(re.compile(re.escape("#/" + quote(W.MAIN, safe="") + "/%2B") + "$"))
+    expect(page.locator("#text")).to_be_focused()
+    page.locator("#new-room").click()
+    expect(page.locator("#room")).to_be_visible()
+    page.keyboard.press("Escape")
+    # the menu at its narrowest stacks the two, each whole and inside it
+    page.locator("#nav-edge").press("Home")
+    box = page.evaluate(ROW)
+    assert box["room"]["top"] >= box["message"]["bottom"], box
+    assert page.evaluate(WHOLE), box
+    assert not errors, errors
+    # a mode without rooms: New message alone, the row's whole width
+    page, stub, errors = app(rooms=False)
+    drawer_drawn(page)
+    expect(page.locator("#new-room")).to_be_hidden()
+    box = page.evaluate(ROW)
+    assert abs(box["message"]["width"] - box["width"]) < 1, box
+    assert not errors, errors
+    # a phone: the row in the drawer, full-size targets, and New message closes the drawer
+    page, stub, errors = app(**PHONE)
+    page.wait_for_selector(".thread-item")
+    page.click("#menu")
+    expect(page.locator("#new-message")).to_be_in_viewport()
+    assert page.evaluate(SMALL_TARGETS) == []
+    assert page.evaluate(SIDEWAYS) == [0, 0]
+    page.locator("#new-message").click()
+    expect(page.locator("body")).not_to_have_class(re.compile(r"\bdrawer\b"))
+    expect(page.locator("#text")).to_be_focused()
     assert not errors, errors
 
 

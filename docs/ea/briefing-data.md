@@ -80,10 +80,12 @@ The preprocessor (Python, no Claude tokens) produces a DELTA briefing JSON:
 - `recent_slack_messages`: the last 24h of the EA channel, already
   fetched. Includes `pending_instructions` (user messages with no bot
   reply yet). Read this instead of a chat read.
-- `recent_teams_dms`: Teams 1:1 DMs from the last 24h, read from the
-  Teams chat service by the teams-dms owner plugin (for a tenant that
-  blocks Graph Chat.Read). Empty when the plugin is not installed or
-  holds no token.
+- `recent_teams_dms`: Teams 1:1 and group chats from the last 24h (whole text in each message's `body`), read by the
+  teams-dms owner plugin when it is installed (for a tenant that blocks
+  Graph Chat.Read), otherwise through Graph when the app has Chat.Read
+  consent. Empty when neither source is available. For a wider window run
+  `graph_actions.py get-teams-chats --days <N>` (Graph) or the plugin's
+  `get-teams-dms --days <N>`.
 
 ### Thread context fields (on each email item)
 

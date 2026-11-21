@@ -47,8 +47,8 @@ def test_ios_safari_shows_the_install_line_until_it_is_hidden(app):
     expect(page.locator("#install-btn")).to_be_hidden()
     page.click("#install-close")
     expect(line).to_be_hidden()
-    # The stub offers no push and no relay: the foot keeps Settings and New room.
-    assert page.evaluate(FOOT) == ["open-settings", "new-room"]
+    # The stub offers no push and no relay: the foot keeps Settings.
+    assert page.evaluate(FOOT) == ["open-settings"]
     hidden_at = page.evaluate("Number(localStorage.getItem('tacitus-install-hidden'))")
     assert abs(hidden_at / 1000 - time.time()) < 60
     page.reload()
@@ -71,7 +71,7 @@ def test_the_installed_app_shows_no_install_line(app):
     page.wait_for_selector(".thread-item")
     page.evaluate(FAKE_PROMPT)
     expect(page.locator("#install")).to_be_hidden()
-    assert page.evaluate(FOOT) == ["open-settings", "new-room"]
+    assert page.evaluate(FOOT) == ["open-settings"]
     assert not errors, errors
 
 

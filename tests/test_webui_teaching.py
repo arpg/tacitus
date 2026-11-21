@@ -130,8 +130,9 @@ def test_new_room_asks_the_bot_in_the_ea_channel_and_opens_the_conversation(app,
     _drawer(page, size)
     btn = page.locator("#new-room")
     expect(btn).to_have_text("New room")
-    expect(btn).to_have_class(re.compile(r"\bplain\b"))  # muted, last in the drawer's foot
-    assert page.evaluate("$('drawer-foot').lastElementChild.id") == "new-room"
+    # beside New message, in the row under the menu's header
+    assert page.evaluate("[...$('new-row').children].map((b) => b.id)") == ["new-message", "new-room"]
+    assert page.evaluate("$('new-row').previousElementSibling.tagName") == "HEADER"
     btn.click()
     dlg, name = page.locator("#room"), page.locator("#room-name")
     expect(dlg).to_be_visible()

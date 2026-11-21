@@ -2842,6 +2842,123 @@ def _strip_html(text: str) -> str:
 
 
 # -------------------------------------------------------------------
+# Teams chats over Graph (delegated Chat.Read)
+# -------------------------------------------------------------------
+# Kept out of SCOPES on purpose: Entra refuses a silent grant that names
+# any scope not yet consented, so folding Chat.Read into the mail scopes
+# would take mail down on every install without it. The chat token is
+# asked for on its own, and its absence only empties the Teams section.
+CHAT_READ_SCOPES = ["https://graph.microsoft.com/Chat.Read"]
+
+
+def _chat_token() -> Optional[str]:
+    """A silent Chat.Read token from the cached sign-in, or None (no
+    consent for the app, no cached account, or no confidential login)."""
+    try:
+        accounts = _app.get_accounts()
+        if not accounts:
+            return None
+        result = _app.acquire_token_silent(CHAT_READ_SCOPES, account=accounts[0])
+    except Exception:
+        return None
+    if result and "access_token" in result:
+        _save_cache(_cache)
+        return result["access_token"]
+    return None
+
+
+def _chat_get(path: str, token: str, params: dict) -> dict:
+    url = path if path.startswith("http") else f"{GRAPH_URL}{path}"
+    if not url.startswith(GRAPH_URL + "/"):
+        raise ValueError("Teams URL is not on the Graph API host")
+    resp = requests.get(_check_endpoint(url), params=params, timeout=30,
+                        headers={"Authorization": f"Bearer {token}"})
+    resp.raise_for_status()
+    return resp.json() or {}
+
+
+def _chat_items(path: str, token: str, params: dict):
+    """Read Graph pages lazily, so the window's cutoff stops pagination."""
+    seen = set()
+    while path:
+        if path in seen:
+            raise ValueError("Teams pagination repeated a page")
+        seen.add(path)
+        page = _chat_get(path, token, params)
+        yield from page.get("value", [])
+        path = page.get("@odata.nextLink")
+        params = {}
+
+
+def _graph_time(value: str):
+    try:
+        return datetime.fromisoformat((value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def get_graph_teams_chats(days_back: int = 1, token: Optional[str] = None):
+    """Recent Teams 1:1 and group chats through Graph, in the shape the
+    teams-dms plugin prints under "chats": [{chat_id, chat_type,
+    display_name, email, messages: [{id, from, body, body_preview, created,
+    message_type}]}], newest message first. `body` is the whole message
+    text; a group's display_name is its topic, else its members' names.
+    None when the app has no Chat.Read consent, so a caller can tell "not
+    available" from "no recent messages" ([])."""
+    token = token or _chat_token()
+    if not token:
+        return None
+    me = _decode_jwt_payload(token).get("oid", "")
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+    chats = _chat_items("/me/chats", token, {
+        "$expand": "members,lastMessagePreview",
+        "$orderby": "lastMessagePreview/createdDateTime desc",
+        "$top": 50,
+    })
+    out = []
+    for chat in chats:
+        last = _graph_time((chat.get("lastMessagePreview") or {}).get("createdDateTime"))
+        if last is None or last < cutoff:
+            break  # ordered newest first: every later chat is older
+        kind = chat.get("chatType")
+        if kind not in ("oneOnOne", "group"):
+            continue  # a meeting's chat belongs to the meeting
+        others = [m for m in chat.get("members") or []
+                  if m.get("userId") and m.get("userId") != me]
+        raw = _chat_items(f"/chats/{chat['id']}/messages", token, {
+            "$top": 20, "$orderby": "createdDateTime desc"})
+        messages = []
+        for m in raw:
+            created = _graph_time(m.get("createdDateTime"))
+            if created is not None and created < cutoff:
+                break
+            if m.get("messageType") != "message" or m.get("deletedDateTime") \
+                    or created is None or created < cutoff:
+                continue
+            body = _strip_html((m.get("body") or {}).get("content", "") or "")
+            messages.append({
+                "id": m.get("id", ""),
+                "from": ((m.get("from") or {}).get("user") or {}).get("displayName") or "?",
+                "body": body,
+                "body_preview": body[:300],
+                "created": m.get("createdDateTime", ""),
+                "message_type": "message",
+            })
+        if not messages:
+            continue
+        if kind == "group":
+            name = chat.get("topic") or ", ".join(
+                m.get("displayName") or "?" for m in others) or "Group chat"
+            email = ""
+        else:
+            other = others[0] if others else {}
+            name, email = other.get("displayName") or "Unknown", other.get("email") or ""
+        out.append({"chat_id": chat["id"], "chat_type": kind, "display_name": name,
+                    "email": email, "messages": messages})
+    return out
+
+
+# -------------------------------------------------------------------
 # Calendar
 # -------------------------------------------------------------------
 def get_calendar_view(

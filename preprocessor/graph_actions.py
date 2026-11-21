@@ -2302,6 +2302,22 @@ def _resolve_body(args):
     return args
 
 
+def cmd_get_teams_chats(args):
+    """Recent Teams 1:1 chats through Graph (delegated Chat.Read). A tenant
+    that blocks that scope reads them through the teams-dms plugin's
+    `get-teams-dms` instead; a core verb of that name would hide it."""
+    try:
+        chats = graph.get_graph_teams_chats(days_back=args.days)
+    except Exception as e:
+        print(json.dumps({"status": "error", "error": str(e)[:300]}))
+        return
+    if chats is None:
+        print(json.dumps({"status": "unavailable", "error":
+            "no Chat.Read consent for this app (docs/AUTHENTICATION.md, Teams chats)"}))
+        return
+    print(json.dumps({"status": "ok", "chats": chats}, indent=2))
+
+
 def cmd_resolve_contact(args):
     """Resolve a person's name to their email via the People API."""
     import requests
@@ -2479,6 +2495,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--name", required=True, help="Person's name to search for")
     p.add_argument("--top", type=int, default=3, help="Max results")
     p.set_defaults(func=cmd_resolve_contact)
+
+    p = sub.add_parser("get-teams-chats", allow_abbrev=False,
+                       help="Recent Teams 1:1 and group chats through Graph (Chat.Read)")
+    p.add_argument("--days", type=int, default=1, help="Look-back window in days")
+    p.set_defaults(func=cmd_get_teams_chats)
 
     # create-event (requires --confirm-token when attendees are specified)
     p = sub.add_parser("create-event", allow_abbrev=False)
